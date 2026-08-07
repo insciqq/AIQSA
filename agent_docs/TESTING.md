@@ -126,6 +126,7 @@ npm run db:full-access:migration:contract
 npm run db:control-plane:migration:contract
 npm run db:retention:migration:contract
 npm run db:search:migration:contract
+npm run db:assistants:migration:contract
 ```
 
 Select the script owned by the migration; do not run this list as a generic release suite.
@@ -146,6 +147,17 @@ Provider Quick Setup repository integration:
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_PROVIDER_QUICK_SETUP_INTEGRATION_TEST=1 app \
   npx vitest run lib/server/admin/providers/quickSetupPrismaRepository.integration.test.ts
+```
+
+Assistant repository and run-acceptance authorization:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e AIQSA_ASSISTANTS_INTEGRATION_TEST=1 app \
+  npx vitest run lib/server/assistants/prismaRepository.integration.test.ts
+docker compose -f docker-compose.dev.yml exec -T \
+  -e AIQSA_ASSISTANT_RUN_AUTHORIZATION_INTEGRATION_TEST=1 app \
+  npx vitest run lib/server/runs/assistantProvenancePrismaRepository.integration.test.ts
 ```
 
 MCP protocol, database, and ToolHive boundaries:

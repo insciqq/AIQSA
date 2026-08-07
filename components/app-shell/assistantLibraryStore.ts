@@ -37,6 +37,7 @@ export type AssistantLibraryHistoryState = {
 
 export type AssistantLibrarySnapshot = {
   busy: boolean;
+  busyRequestId: number;
   mcpOptions: { id: string; name: string }[];
   category: import("@/lib/contracts/assistants").AssistantCategory | null;
   data: AssistantListResponse | null;
@@ -45,6 +46,8 @@ export type AssistantLibrarySnapshot = {
   editor: AssistantLibraryEditorState | null;
   filter: LibraryFilter;
   history: AssistantLibraryHistoryState | null;
+  historyRequestId: number;
+  listRequestId: number;
   mode: LibraryMode;
   notice: LibraryNotice | null;
   open: boolean;
@@ -60,6 +63,7 @@ export type AssistantLibraryStore = AssistantLibrarySnapshot & {
 
 export const initialAssistantLibrarySnapshot: AssistantLibrarySnapshot = {
   busy: false,
+  busyRequestId: 0,
   mcpOptions: [],
   category: null,
   data: null,
@@ -68,6 +72,8 @@ export const initialAssistantLibrarySnapshot: AssistantLibrarySnapshot = {
   editor: null,
   filter: "all",
   history: null,
+  historyRequestId: 0,
+  listRequestId: 0,
   mode: "discover",
   notice: null,
   open: false,

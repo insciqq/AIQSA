@@ -159,7 +159,7 @@ export function AdminProviderModelsTask({
                           className={dangerButton}
                           disabled={controller.state.busy}
                           onClick={() => requestConfirmation({
-                            body: "The deployment can be deleted only after profiles, grants, defaults, search references, and live run bindings are removed.",
+                            body: "The deployment can be deleted only after Assistant revisions, grants, defaults, Search references, and live run bindings are removed.",
                             confirmLabel: "Delete model",
                             dialogLabel: `Delete ${model.displayName} model`,
                             icon: "trash",

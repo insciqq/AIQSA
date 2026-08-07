@@ -238,13 +238,30 @@ async function persistAcceptedRunDefaults(
   }
 }
 
+class AssistantProvenanceSerializationError extends Error {
+  constructor() {
+    super("assistant_provenance_serialization_conflict");
+    this.name = "AssistantProvenanceSerializationError";
+  }
+}
+
+function isPrismaSerializationConflict(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError &&
+    (error.code === "P2034" ||
+      (error.code === "P2010" &&
+        isRecord(error.meta) &&
+        error.meta.code === "40001"));
+}
+
 /**
  * In-transaction Assistant acceptance recheck: the definition must still exist
  * unarchived, the revision must belong to it, and the runner must currently be
- * the owner or hold an active group/installation publication. A concurrent
- * revision advance is not a conflict — the run records the revision resolved at
- * admission — but access loss, archive, and publication revocation fail with a
- * stable privacy-safe conflict.
+ * the owner or hold an active group/installation publication for that exact
+ * revision. The locking reads serialize archive, publication, active-group, and
+ * membership changes with acceptance. A concurrent revision advance is not a
+ * conflict — the run records the revision resolved at admission — but access
+ * loss, archive, and publication revocation fail with a stable privacy-safe
+ * conflict.
  */
 async function assertAssistantRunProvenance(
   tx: Pick<Prisma.TransactionClient, "$queryRaw">,
@@ -254,40 +271,53 @@ async function assertAssistantRunProvenance(
     userId: string;
   }
 ): Promise<void> {
-  const rows = await tx.$queryRaw<Array<{ id: string }>>`
-    SELECT definition."id"
-    FROM "AssistantDefinition" AS definition
-    INNER JOIN "AssistantRevision" AS revision
-      ON revision."assistantId" = definition."id"
-     AND revision."id" = ${input.revisionId}
-    WHERE definition."id" = ${input.assistantId}
-      AND definition."archivedAt" IS NULL
-      AND (
-        definition."ownerUserId" = ${input.userId}
-        OR EXISTS (
-          SELECT 1
-          FROM "AssistantPublication" AS publication
-          WHERE publication."assistantId" = definition."id"
-            AND (
-              publication."scope" = 'installation'
-              OR (
-                publication."scope" = 'group'
-                AND publication."groupId" IN (
-                  SELECT membership."groupId"
-                  FROM "UserGroup" AS membership
-                  INNER JOIN "Group" AS member_group
-                    ON member_group."id" = membership."groupId"
-                   AND member_group."archivedAt" IS NULL
-                  WHERE membership."userId" = ${input.userId}
-                )
-              )
-            )
-        )
-      )
-  `;
+  try {
+    const definitions = await tx.$queryRaw<Array<{ ownerUserId: string }>>`
+      SELECT definition."ownerUserId"
+      FROM "AssistantDefinition" AS definition
+      INNER JOIN "AssistantRevision" AS revision
+        ON revision."assistantId" = definition."id"
+       AND revision."id" = ${input.revisionId}
+      WHERE definition."id" = ${input.assistantId}
+        AND definition."archivedAt" IS NULL
+      FOR SHARE OF definition
+    `;
+    const definition = definitions[0];
+    if (!definition) throw new AssistantRunConflictError();
+    if (definition.ownerUserId === input.userId) return;
 
-  if (!rows[0]) {
-    throw new AssistantRunConflictError();
+    const installationPublications = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT publication."id"
+      FROM "AssistantPublication" AS publication
+      WHERE publication."assistantId" = ${input.assistantId}
+        AND publication."revisionId" = ${input.revisionId}
+        AND publication."scope" = 'installation'
+      ORDER BY publication."id"
+      FOR SHARE OF publication
+    `;
+    if (installationPublications[0]) return;
+
+    const groupPublications = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT publication."id"
+      FROM "AssistantPublication" AS publication
+      INNER JOIN "UserGroup" AS membership
+        ON membership."groupId" = publication."groupId"
+       AND membership."userId" = ${input.userId}
+      INNER JOIN "Group" AS member_group
+        ON member_group."id" = membership."groupId"
+       AND member_group."archivedAt" IS NULL
+      WHERE publication."assistantId" = ${input.assistantId}
+        AND publication."revisionId" = ${input.revisionId}
+        AND publication."scope" = 'group'
+      ORDER BY publication."id"
+      FOR SHARE OF publication, membership, member_group
+    `;
+    if (!groupPublications[0]) throw new AssistantRunConflictError();
+  } catch (error) {
+    if (isPrismaSerializationConflict(error)) {
+      throw new AssistantProvenanceSerializationError();
+    }
+    throw error;
   }
 }
 
@@ -491,14 +521,13 @@ async function repeatableReadTransaction<Value>(
         timeout: 120_000
       });
     } catch (error) {
-      const serializationConflict =
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        (error.code === "P2034" ||
-          (error.code === "P2010" &&
-            isRecord(error.meta) &&
-            error.meta.code === "40001"));
+      const assistantSerializationConflict =
+        error instanceof AssistantProvenanceSerializationError;
+      const serializationConflict = assistantSerializationConflict ||
+        isPrismaSerializationConflict(error);
       if (serializationConflict) {
         if (attempt < 2) continue;
+        if (assistantSerializationConflict) throw new AssistantRunConflictError();
         throw new ProviderAdmissionConflictError();
       }
       throw error;
@@ -1250,6 +1279,14 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             throw new ActiveLeafConflictError();
           }
 
+          if (input.assistant) {
+            await assertAssistantRunProvenance(tx, {
+              assistantId: input.assistant.assistantId,
+              revisionId: input.assistant.revisionId,
+              userId: input.userId
+            });
+          }
+
           const chat = await tx.chat.findFirst({
             select: {
               _count: {
@@ -1314,14 +1351,6 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             if (linkedAttachments.count !== attachmentIds.length) {
               throw new AttachmentLinkConflictError();
             }
-          }
-
-          if (input.assistant) {
-            await assertAssistantRunProvenance(tx, {
-              assistantId: input.assistant.assistantId,
-              revisionId: input.assistant.revisionId,
-              userId: input.userId
-            });
           }
 
           const run = await tx.modelRun.create({
@@ -1413,6 +1442,14 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             throw new ActiveLeafConflictError();
           }
 
+          if (input.assistant) {
+            await assertAssistantRunProvenance(tx, {
+              assistantId: input.assistant.assistantId,
+              revisionId: input.assistant.revisionId,
+              userId: input.userId
+            });
+          }
+
           const userMessage = await tx.message.findFirst({
             select: {
               chatId: true,
@@ -1443,13 +1480,6 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               status: "streaming"
             }
           });
-          if (input.assistant) {
-            await assertAssistantRunProvenance(tx, {
-              assistantId: input.assistant.assistantId,
-              revisionId: input.assistant.revisionId,
-              userId: input.userId
-            });
-          }
           const run = await tx.modelRun.create({
             data: {
               assistantMessageId: assistantMessage.id,

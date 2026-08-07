@@ -48,7 +48,7 @@ export const adminSectionGroups = [
 export const adminSections = [
   {
     Icon: ServerCog,
-    description: "Connect a provider, manage its full configuration, and map installation run profiles.",
+    description: "Connect providers and manage models, credentials, access, and defaults.",
     group: "ai-setup",
     id: "providers",
     label: "Providers"

@@ -402,12 +402,14 @@ describe("ComposerControls", () => {
       searchOptionCompatibility: {
         [clientId]: {
           attachments: false,
+          clientToolCompatible: true,
           executionModes: ["all_selected", "model_choice"] as Array<
             "all_selected" | "model_choice"
           >
         },
         [hostedId]: {
           attachments: true,
+          clientToolCompatible: false,
           executionModes: ["model_choice"] as Array<"model_choice">
         }
       },

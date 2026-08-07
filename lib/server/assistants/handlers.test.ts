@@ -3,9 +3,12 @@ import type { AuthenticatedSession } from "../auth/requestAuth";
 import type { CatalogData } from "../catalog/currentUserCatalog";
 import type { ProviderModelCatalogEntry } from "../../domain/catalog";
 import {
+  createCreateAssistantHandler,
+  createDuplicateAssistantHandler,
   createGetAssistantHandler,
   createListAssistantsHandler,
   createPublishAssistantHandler,
+  createRevokeAssistantPublicationHandler,
   createUpdateAssistantHandler,
   type AssistantHandlerDeps
 } from "./handlers";
@@ -82,7 +85,20 @@ function catalogData(): CatalogData {
         description: "Web search",
         displayName: "OpenAI Search",
         kind: "web_search",
-        routes: [],
+        routes: [
+          {
+            adapterKind: "provider_model_client",
+            config: {},
+            credentialMode: "provider_model",
+            executionModes: ["all_selected", "model_choice"],
+            kind: "provider_model_web_search",
+            physicalStrategyId: "openai-search-client",
+            protocol: "openai_responses_web_search",
+            providerModelId: "search-model-1",
+            revisionId: "search-revision-1",
+            searchStrategyRowId: "search-strategy-row-1"
+          }
+        ],
         strategyId: "openai-native-web-search"
       }
     ],
@@ -140,13 +156,19 @@ function accessEntry(overrides: Partial<AssistantAccessEntry> = {}): AssistantAc
 function fakeRepository(overrides: Partial<AssistantHandlerDeps["repository"]> = {}) {
   return {
     create: vi.fn(async () => "assistant-1"),
-    duplicate: vi.fn(async () => null),
+    duplicate: vi.fn(async () => ({ kind: "not_found" as const })),
     getDetail: vi.fn(async () => null),
     getRevision: vi.fn(async () => null),
     listForUser: vi.fn(async () => []),
     listPublishableGroups: vi.fn(async () => []),
     listRevisions: vi.fn(async () => null),
     loadUserAccessibleMcpServerIds: vi.fn(async () => new Set<string>()),
+    loadUserMcpRunPlanView: vi.fn(async () => ({
+      isGenerationLive: () => false,
+      now: new Date("2026-08-07T10:00:00.000Z"),
+      recordsByServerId: new Map()
+    })),
+    loadUserRunnableMcpServerIds: vi.fn(async () => new Set<string>()),
     publish: vi.fn(async () => ({ kind: "not_found" as const })),
     revise: vi.fn(async () => ({ kind: "not_found" as const })),
     revokePublication: vi.fn(async () => "not_found" as const),
@@ -158,10 +180,10 @@ function fakeRepository(overrides: Partial<AssistantHandlerDeps["repository"]> =
 
 function handlerDeps(
   repositoryOverrides: Partial<AssistantHandlerDeps["repository"]> = {},
-  options: { role?: "admin" | "user" } = {}
+  options: { catalogData?: CatalogData; role?: "admin" | "user" } = {}
 ): AssistantHandlerDeps {
   return {
-    loadCatalogData: async () => catalogData(),
+    loadCatalogData: async () => options.catalogData ?? catalogData(),
     repository: fakeRepository(repositoryOverrides),
     resolveAuth: async () => session(options.role ?? "user")
   };
@@ -220,6 +242,29 @@ describe("assistant list handler", () => {
       fingerprint: { modelLabel: null }
     });
   });
+
+  it("marks a granted but disabled or unready MCP dependency unavailable", async () => {
+    const deps = handlerDeps({
+      listForUser: vi.fn(async () => [
+        accessEntry({
+          revision: revisionRow({ mcpServerIds: ["server-1"] })
+        })
+      ]),
+      loadUserAccessibleMcpServerIds: vi.fn(async () => new Set(["server-1"])),
+      loadUserMcpRunPlanView: vi.fn(async () => ({
+        isGenerationLive: () => false,
+        now: new Date("2026-08-07T10:00:00.000Z"),
+        recordsByServerId: new Map()
+      }))
+    });
+    const response = await createListAssistantsHandler(deps)(
+      new Request("http://test/api/me/assistants")
+    );
+    const body = (await response.json()) as { assistants: Array<Record<string, unknown>> };
+    expect(body.assistants[0]).toMatchObject({
+      availability: { ok: false, reason: "tools_access" }
+    });
+  });
 });
 
 describe("assistant detail handler", () => {
@@ -229,7 +274,11 @@ describe("assistant detail handler", () => {
         ...accessEntry({
           revision: revisionRow({
             mcpServerIds: ["granted-server", "hidden-server"],
-            providerModelId: "hidden-model"
+            providerModelId: "hidden-model",
+            searchPlan: {
+              mode: "all_selected",
+              optionIds: ["openai-native-web-search", "hidden-search"]
+            }
           })
         }),
         publications: null,
@@ -247,6 +296,10 @@ describe("assistant detail handler", () => {
     expect(revision.systemPrompt).toBe("You review code.");
     expect(revision.providerModelId).toBeNull();
     expect(revision.mcpServerIds).toEqual(["granted-server"]);
+    expect(revision.searchPlan).toEqual({
+      mode: "all_selected",
+      optionIds: ["openai-native-web-search"]
+    });
     expect(body.assistant.publications).toBeUndefined();
     expect(body.assistant.version).toBeUndefined();
   });
@@ -258,6 +311,93 @@ describe("assistant detail handler", () => {
     );
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "assistant_not_available" });
+  });
+});
+
+describe("assistant duplicate handler", () => {
+  it("fails closed instead of turning hidden dependencies into owned detail", async () => {
+    const duplicate = vi.fn(async () => ({ kind: "model_not_available" as const }));
+    const getDetail = vi.fn();
+    const deps = handlerDeps({
+      duplicate,
+      getDetail
+    });
+    const response = await createDuplicateAssistantHandler(deps)(
+      new Request("http://test/api/me/assistants/assistant-1/duplicate", { method: "POST" }),
+      { params: { assistantId: "assistant-1" } }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "assistant_model_not_available" });
+    expect(duplicate).toHaveBeenCalledWith("user-1", "assistant-1");
+    expect(getDetail).not.toHaveBeenCalled();
+  });
+});
+
+describe("assistant create handler", () => {
+  it("rejects model-incompatible controls, Search, and MCP before persistence", async () => {
+    const create = vi.fn(async () => "assistant-1");
+    const noTools = catalogModel();
+    noTools.capabilities = { ...noTools.capabilities, toolCalling: false };
+    const incompatibleCatalog = catalogData();
+    incompatibleCatalog.models = [noTools];
+    const deps = handlerDeps(
+      {
+        create,
+        loadUserAccessibleMcpServerIds: vi.fn(async () => new Set(["server-1"]))
+      },
+      { catalogData: incompatibleCatalog }
+    );
+    const request = (overrides: {
+      mcpServerIds?: string[];
+      optionIds?: string[];
+      runControls?: Record<string, unknown>;
+    }) =>
+      new Request("http://test/api/me/assistants", {
+        body: JSON.stringify({
+          avatar,
+          category: null,
+          description: "",
+          developerPrompt: null,
+          mcpServerIds: overrides.mcpServerIds ?? [],
+          name: "Reviewer",
+          providerModelId: "model-1",
+          runControls: overrides.runControls ?? {},
+          searchPlan: {
+            mode: "all_selected",
+            optionIds: overrides.optionIds ?? []
+          },
+          starterPrompts: [],
+          systemPrompt: ""
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      });
+
+    const controlsResponse = await createCreateAssistantHandler(deps)(
+      request({ runControls: { maxOutputTokens: 128_001 } })
+    );
+    expect(controlsResponse.status).toBe(400);
+    expect(await controlsResponse.json()).toEqual({
+      error: "assistant_run_controls_invalid"
+    });
+
+    const searchResponse = await createCreateAssistantHandler(deps)(
+      request({ optionIds: ["openai-native-web-search"] })
+    );
+    expect(searchResponse.status).toBe(400);
+    expect(await searchResponse.json()).toEqual({
+      error: "assistant_search_option_not_available"
+    });
+
+    const toolsResponse = await createCreateAssistantHandler(deps)(
+      request({ mcpServerIds: ["server-1"] })
+    );
+    expect(toolsResponse.status).toBe(400);
+    expect(await toolsResponse.json()).toEqual({
+      error: "assistant_tools_not_available"
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 });
 
@@ -291,6 +431,106 @@ describe("assistant update handler", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "assistant_model_not_available" });
+    expect(revise).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "a max-output value outside the selected model range",
+      { maxOutputTokens: 128_001 },
+      "assistant_run_controls_invalid"
+    ],
+    [
+      "an unsupported reasoning effort",
+      { reasoningEffort: "ultra" },
+      "assistant_run_controls_invalid"
+    ],
+    [
+      "reasoning disabled when the model does not offer a none option",
+      { reasoningEffort: "none" },
+      "assistant_run_controls_invalid"
+    ]
+  ])("rejects %s before persistence", async (_label, runControls, error) => {
+    const revise = vi.fn();
+    const response = await createUpdateAssistantHandler(handlerDeps({ revise }))(
+      new Request("http://test/api/me/assistants/assistant-1", {
+        body: JSON.stringify({
+          expectedVersion: 3,
+          revision: {
+            avatar,
+            category: null,
+            description: "",
+            developerPrompt: null,
+            mcpServerIds: [],
+            name: "Reviewer",
+            providerModelId: "model-1",
+            runControls,
+            searchPlan: { mode: "all_selected", optionIds: [] },
+            starterPrompts: [],
+            systemPrompt: ""
+          }
+        }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      }),
+      { params: { assistantId: "assistant-1" } }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error });
+    expect(revise).not.toHaveBeenCalled();
+  });
+
+  it("rejects Search and MCP choices that the selected model cannot execute", async () => {
+    const revise = vi.fn();
+    const noTools = catalogModel();
+    noTools.capabilities = { ...noTools.capabilities, toolCalling: false };
+    const unavailableCatalog = catalogData();
+    unavailableCatalog.models = [noTools];
+    const request = (overrides: { mcpServerIds: string[]; optionIds: string[] }) =>
+      new Request("http://test/api/me/assistants/assistant-1", {
+        body: JSON.stringify({
+          expectedVersion: 3,
+          revision: {
+            avatar,
+            category: null,
+            description: "",
+            developerPrompt: null,
+            mcpServerIds: overrides.mcpServerIds,
+            name: "Reviewer",
+            providerModelId: "model-1",
+            runControls: {},
+            searchPlan: { mode: "all_selected", optionIds: overrides.optionIds },
+            starterPrompts: [],
+            systemPrompt: ""
+          }
+        }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      });
+    const deps = handlerDeps(
+      {
+        loadUserAccessibleMcpServerIds: vi.fn(async () => new Set(["server-1"])),
+        revise
+      },
+      { catalogData: unavailableCatalog }
+    );
+
+    const searchResponse = await createUpdateAssistantHandler(deps)(
+      request({ mcpServerIds: [], optionIds: ["openai-native-web-search"] }),
+      { params: { assistantId: "assistant-1" } }
+    );
+    expect(searchResponse.status).toBe(400);
+    expect(await searchResponse.json()).toEqual({
+      error: "assistant_search_option_not_available"
+    });
+
+    const toolsResponse = await createUpdateAssistantHandler(deps)(
+      request({ mcpServerIds: ["server-1"], optionIds: [] }),
+      { params: { assistantId: "assistant-1" } }
+    );
+    expect(toolsResponse.status).toBe(400);
+    expect(await toolsResponse.json()).toEqual({ error: "assistant_tools_not_available" });
     expect(revise).not.toHaveBeenCalled();
   });
 
@@ -356,5 +596,33 @@ describe("assistant publish handler", () => {
     );
     expect(response.status).toBe(400);
     expect(publish).not.toHaveBeenCalled();
+  });
+});
+
+describe("assistant publication revoke handler", () => {
+  it("binds the publication deletion to the Assistant path parent", async () => {
+    const revokePublication = vi.fn(async () => "not_found" as const);
+    const response = await createRevokeAssistantPublicationHandler(
+      handlerDeps({ revokePublication })
+    )(
+      new Request(
+        "http://test/api/me/assistants/assistant-parent/publications/publication-child",
+        { method: "DELETE" }
+      ),
+      {
+        params: {
+          assistantId: "assistant-parent",
+          publicationId: "publication-child"
+        }
+      }
+    );
+
+    expect(response.status).toBe(404);
+    expect(revokePublication).toHaveBeenCalledWith({
+      actorIsAdmin: false,
+      assistantId: "assistant-parent",
+      publicationId: "publication-child",
+      userId: "user-1"
+    });
   });
 });

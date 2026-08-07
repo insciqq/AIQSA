@@ -41,6 +41,13 @@ describe("adminSections", () => {
     expect(adminSectionConfig("access").description).toContain("model and search entitlements");
   });
 
+  it("describes the current provider workspace without retired Run profiles", () => {
+    const providers = adminSections.find((section) => section.id === "providers");
+
+    expect(providers?.description).toContain("models");
+    expect(providers?.description).not.toMatch(/profiles/i);
+  });
+
   it("defaults to Providers and resolves legacy group destinations to Access", () => {
     expect(parseAdminSection("")).toBe("providers");
     expect(parseAdminSection("?section=invites")).toBe("invites");

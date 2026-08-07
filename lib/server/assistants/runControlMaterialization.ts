@@ -14,6 +14,29 @@ function recordValue(value: unknown): Record<string, unknown> {
   return isRecord(value) ? { ...value } : {};
 }
 
+export function assistantRunControlsSupported(
+  runControls: AssistantRunControls,
+  controls: ModelParameterControls
+): boolean {
+  return !(
+    (runControls.backgroundMode !== undefined && !controls.background.supported) ||
+    (runControls.streamMode !== undefined && !controls.stream.supported) ||
+    (runControls.maxOutputTokens !== undefined &&
+      runControls.maxOutputTokens > controls.maxOutputTokens.maxValue) ||
+    (runControls.temperature !== undefined &&
+      (!controls.temperature.supported ||
+        runControls.temperature < controls.temperature.minValue ||
+        runControls.temperature > controls.temperature.maxValue)) ||
+    (runControls.reasoningMode !== undefined &&
+      !(controls.reasoningMode?.supported === true &&
+        controls.reasoningMode.options.includes(runControls.reasoningMode))) ||
+    (runControls.reasoningEffort !== undefined &&
+      (controls.reasoningEffort.supported
+        ? !controls.reasoningEffort.options.includes(runControls.reasoningEffort)
+        : runControls.reasoningEffort !== "none"))
+  );
+}
+
 /**
  * Server-authoritative materialization of an Assistant revision's
  * provider-neutral controls into exact dialect params, shared by send,
@@ -30,28 +53,7 @@ export function materializeAssistantRunParams(input: {
 }): AssistantRunParamsResult {
   const { baseParams, controls, parameterProvider, runControls } = input;
 
-  if (runControls.backgroundMode !== undefined && !controls.background.supported) {
-    return { ok: false };
-  }
-  if (runControls.streamMode !== undefined && !controls.stream.supported) {
-    return { ok: false };
-  }
-  if (runControls.temperature !== undefined && !controls.temperature.supported) {
-    return { ok: false };
-  }
-  if (
-    runControls.reasoningMode !== undefined &&
-    !(controls.reasoningMode?.supported === true &&
-      controls.reasoningMode.options.includes(runControls.reasoningMode))
-  ) {
-    return { ok: false };
-  }
-  if (
-    runControls.reasoningEffort !== undefined &&
-    runControls.reasoningEffort !== "none" &&
-    !(controls.reasoningEffort.supported &&
-      controls.reasoningEffort.options.includes(runControls.reasoningEffort))
-  ) {
+  if (!assistantRunControlsSupported(runControls, controls)) {
     return { ok: false };
   }
 

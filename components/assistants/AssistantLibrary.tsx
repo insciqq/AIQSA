@@ -1,3 +1,4 @@
+import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
 import type {
@@ -24,7 +25,7 @@ import {
 } from "@/lib/contracts/assistants";
 import { MAX_SEARCH_PLAN_OPTIONS } from "@/lib/domain/search";
 import { ArrowLeft, ChevronDown, LoaderCircle, Plus, RotateCcw, Search } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-app-canvas";
@@ -139,46 +140,122 @@ function visibleAssistants(modeAssistants: AssistantSummary[], list: AssistantLi
 }
 
 export function AssistantLibrary({ view }: { view: AssistantLibraryView }) {
+  const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false);
+  const taskEntryRef = useRef<HTMLButtonElement>(null);
+  const editorMutationLocked =
+    view.task === "editor" && view.editor !== null && (view.busy || view.editor.saving);
+  const historyMutationLocked =
+    view.task === "history" && view.history !== null && (view.busy || view.history.restoring);
+  const libraryNavigationLocked = view.busy || editorMutationLocked || historyMutationLocked;
+  const requestEditorClose = () => {
+    if (view.task !== "editor" || !view.editor || editorMutationLocked) {
+      return;
+    }
+    if (view.editor.dirty) {
+      setDiscardConfirmationOpen(true);
+      return;
+    }
+    view.editor.onCancel();
+  };
   const escapeAction =
     view.task === "editor" && view.editor
-      ? view.editor.onCancel
+      ? requestEditorClose
       : view.task === "history" && view.history
         ? view.history.onBack
         : view.onBackToChat;
-  const dialogRef = useDialogFocus<HTMLDivElement>({ autoFocus: false, onClose: escapeAction });
+  const dialogRef = useDialogFocus<HTMLDivElement>({
+    autoFocus: false,
+    closeOnEscape: !discardConfirmationOpen && !libraryNavigationLocked,
+    containFocus: !discardConfirmationOpen,
+    onClose: escapeAction
+  });
+
+  useEffect(() => {
+    if (discardConfirmationOpen) return;
+    const timer = window.setTimeout(() => {
+      const dialog = dialogRef.current;
+      const active = document.activeElement;
+      const activeInside =
+        dialog !== null &&
+        active instanceof HTMLElement &&
+        active !== dialog &&
+        dialog.contains(active);
+      if (!dialog || activeInside) return;
+      const entry = taskEntryRef.current;
+      if (entry && !entry.disabled) {
+        entry.focus({ preventScroll: true });
+      } else {
+        dialog.focus({ preventScroll: true });
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    dialogRef,
+    discardConfirmationOpen,
+    view.busy,
+    view.editor?.saving,
+    view.history?.loading,
+    view.history?.restoring,
+    view.task
+  ]);
 
   return (
-    <div
-      ref={dialogRef}
-      className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col overflow-hidden bg-app-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
-      role="dialog"
-      aria-busy={view.busy || undefined}
-      aria-label="Assistants"
-      aria-modal="true"
-      data-testid="assistant-library"
-    >
-      {view.task === "editor" && view.editor ? (
-        <EditorTask
-          busy={view.busy}
-          editor={view.editor}
-          notice={view.notice}
-          onDismissNotice={view.onDismissNotice}
+    <>
+      <div
+        ref={dialogRef}
+        className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col overflow-hidden bg-app-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
+        role="dialog"
+        aria-busy={
+          view.busy || view.editor?.saving || view.history?.loading || view.history?.restoring || undefined
+        }
+        aria-hidden={discardConfirmationOpen || undefined}
+        aria-label="Assistants"
+        aria-modal="true"
+        data-testid="assistant-library"
+        inert={discardConfirmationOpen || undefined}
+      >
+        {view.task === "editor" && view.editor ? (
+          <EditorTask
+            busy={view.busy}
+            entryRef={taskEntryRef}
+            editor={view.editor}
+            notice={view.notice}
+            onDismissNotice={view.onDismissNotice}
+            onRequestClose={requestEditorClose}
+          />
+        ) : view.task === "history" && view.history ? (
+          <HistoryTask
+            busy={view.busy}
+            entryRef={taskEntryRef}
+            history={view.history}
+            notice={view.notice}
+            onDismissNotice={view.onDismissNotice}
+          />
+        ) : (
+          <ListTask
+            busy={view.busy}
+            catalogError={view.catalogError}
+            catalogState={view.catalogState}
+            list={view.list}
+            entryRef={taskEntryRef}
+            notice={view.notice}
+            onBackToChat={view.onBackToChat}
+            onDismissNotice={view.onDismissNotice}
+            onRetryCatalog={view.onRetryCatalog}
+          />
+        )}
+      </div>
+      {discardConfirmationOpen ? (
+        <DiscardChangesConfirmationDialog
+          label="assistant draft"
+          onCancel={() => setDiscardConfirmationOpen(false)}
+          onConfirm={() => {
+            setDiscardConfirmationOpen(false);
+            view.editor?.onCancel();
+          }}
         />
-      ) : view.task === "history" && view.history ? (
-        <HistoryTask history={view.history} notice={view.notice} onDismissNotice={view.onDismissNotice} />
-      ) : (
-        <ListTask
-          busy={view.busy}
-          catalogError={view.catalogError}
-          catalogState={view.catalogState}
-          list={view.list}
-          notice={view.notice}
-          onBackToChat={view.onBackToChat}
-          onDismissNotice={view.onDismissNotice}
-          onRetryCatalog={view.onRetryCatalog}
-        />
-      )}
-    </div>
+      ) : null}
+    </>
   );
 }
 
@@ -209,6 +286,7 @@ function ListTask({
   busy,
   catalogError,
   catalogState,
+  entryRef,
   list,
   notice,
   onBackToChat,
@@ -218,6 +296,7 @@ function ListTask({
   busy: boolean;
   catalogError: string | null;
   catalogState: "error" | "loading" | "ready";
+  entryRef: Ref<HTMLButtonElement>;
   list: AssistantLibraryListView;
   notice: LibraryNotice | null;
   onBackToChat(): void;
@@ -234,7 +313,7 @@ function ListTask({
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="shrink-0 border-b border-trace-subtle bg-app-canvas px-3 pt-3 sm:px-6 lg:px-8">
         <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
-          <button className={quietButton} type="button" onClick={onBackToChat}>
+          <button ref={entryRef} className={quietButton} disabled={busy} type="button" onClick={onBackToChat}>
             <ArrowLeft className="size-4 shrink-0" aria-hidden="true" />
             Back to chat
           </button>
@@ -249,6 +328,7 @@ function ListTask({
             />
             <input
               className={`${fieldInput} pl-9`}
+              disabled={busy}
               id="assistant-library-search"
               type="search"
               autoComplete="off"
@@ -264,7 +344,7 @@ function ListTask({
               }}
             />
           </label>
-          <button className={primaryButton} type="button" onClick={list.onNewAssistant}>
+          <button className={primaryButton} disabled={busy} type="button" onClick={list.onNewAssistant}>
             <Plus className="size-4" aria-hidden="true" />
             New assistant
           </button>
@@ -280,6 +360,7 @@ function ListTask({
               key={mode}
               aria-selected={list.mode === mode}
               className={tabClass(list.mode === mode)}
+              disabled={busy}
               onClick={() => list.onModeChange(mode)}
               role="tab"
               type="button"
@@ -314,7 +395,7 @@ function ListTask({
                 <p className="mt-1 text-xs leading-5 text-ink-secondary">
                   {catalogError ?? "Try loading assistants again."}
                 </p>
-                <button className={`${surfaceButton} mt-4`} type="button" onClick={onRetryCatalog}>
+                <button className={`${surfaceButton} mt-4`} disabled={busy} type="button" onClick={onRetryCatalog}>
                   <RotateCcw className="size-4" aria-hidden="true" />
                   Retry
                 </button>
@@ -330,6 +411,7 @@ function ListTask({
                 key={filter}
                 aria-pressed={list.filter === filter}
                 className={chipClass(list.filter === filter)}
+                disabled={busy}
                 onClick={() => list.onFilterChange(filter)}
                 type="button"
               >
@@ -342,6 +424,7 @@ function ListTask({
               aria-label="All categories"
               aria-pressed={list.category === null}
               className={chipClass(list.category === null)}
+              disabled={busy}
               onClick={() => list.onCategoryChange(null)}
               type="button"
             >
@@ -352,6 +435,7 @@ function ListTask({
                 key={category}
                 aria-pressed={list.category === category}
                 className={chipClass(list.category === category)}
+                disabled={busy}
                 onClick={() => list.onCategoryChange(category)}
                 type="button"
               >
@@ -370,7 +454,7 @@ function ListTask({
                   ? "Save a model, instructions, and tools once, then reuse them in any chat."
                   : "Assistants shared with your groups or the whole installation appear here."}
               </p>
-              <button className={`${surfaceButton} mt-4`} type="button" onClick={list.onNewAssistant}>
+              <button className={`${surfaceButton} mt-4`} disabled={busy} type="button" onClick={list.onNewAssistant}>
                 <Plus className="size-4" aria-hidden="true" />
                 Create your first assistant
               </button>
@@ -461,7 +545,7 @@ function AssistantCard({
         <button
           aria-label={`Use ${assistant.name}`}
           className={useButton}
-          disabled={useDisabled}
+          disabled={busy || useDisabled}
           onClick={() => list.onUse(assistant.id)}
           type="button"
         >
@@ -544,6 +628,7 @@ function CardMenu({
         aria-haspopup="menu"
         aria-label={`More actions for ${assistant.name}`}
         className={quietButton}
+        disabled={busy}
         onClick={() => setOpen((current) => !current)}
         type="button"
       >
@@ -556,11 +641,18 @@ function CardMenu({
           className="absolute right-0 top-full z-30 mt-1 w-56 rounded-panel border border-trace-subtle bg-overlay-surface p-1.5 shadow-overlay"
           role="menu"
         >
-          <button className={menuItem} onClick={closeAnd(() => list.onEdit(assistant.id))} role="menuitem" type="button">
+          <button
+            className={menuItem}
+            disabled={busy}
+            onClick={closeAnd(() => list.onEdit(assistant.id))}
+            role="menuitem"
+            type="button"
+          >
             Edit
           </button>
           <button
             className={menuItem}
+            disabled={busy}
             onClick={closeAnd(() => list.onOpenHistory(assistant.id))}
             role="menuitem"
             type="button"
@@ -753,21 +845,25 @@ function SharingGroup({ editor, locked }: { editor: AssistantEditorView; locked:
 function EditorTask({
   busy,
   editor,
+  entryRef,
   notice,
-  onDismissNotice
+  onDismissNotice,
+  onRequestClose
 }: {
   busy: boolean;
   editor: AssistantEditorView;
+  entryRef: Ref<HTMLButtonElement>;
   notice: LibraryNotice | null;
   onDismissNotice(): void;
+  onRequestClose(): void;
 }) {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ "run-setup": true });
   const draft = editor.draft;
   const selectedModel = editor.options.models.find((model) => model.id === draft.providerModelId) ?? null;
   const controls = selectedModel?.controls ?? null;
-  const saveDisabled = editor.saving || !draft.name.trim() || draft.providerModelId === null;
-  const title = draft.name.trim() || "New assistant";
   const mutationLocked = busy || editor.saving;
+  const saveDisabled = mutationLocked || !draft.name.trim() || draft.providerModelId === null;
+  const title = draft.name.trim() || "New assistant";
   const searchLimitReached = draft.searchOptionIds.length >= MAX_SEARCH_PLAN_OPTIONS;
   const toolsCaution = selectedModel !== null && !selectedModel.supportsTools && draft.mcpServerIds.length > 0;
 
@@ -807,7 +903,13 @@ function EditorTask({
   return (
     <section className="flex min-h-0 flex-1 flex-col" data-testid="assistant-editor">
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-trace-subtle bg-app-canvas px-3 py-3 sm:gap-3 sm:px-6 lg:px-8">
-        <button className={quietButton} disabled={editor.saving} onClick={editor.onCancel} type="button">
+        <button
+          ref={entryRef}
+          className={quietButton}
+          disabled={mutationLocked}
+          onClick={onRequestClose}
+          type="button"
+        >
           <ArrowLeft className="size-4 shrink-0" aria-hidden="true" />
           Back to assistants
         </button>
@@ -831,7 +933,7 @@ function EditorTask({
                   <AssistantAvatar label="Assistant avatar preview" recipe={draft.avatar} size={96} />
                   <button
                     className={quietButton}
-                    disabled={editor.saving}
+                    disabled={mutationLocked}
                     onClick={editor.onGenerateAvatar}
                     type="button"
                   >
@@ -852,7 +954,7 @@ function EditorTask({
                       aria-required="true"
                       autoComplete="off"
                       className={fieldInput}
-                      disabled={editor.saving}
+                      disabled={mutationLocked}
                       id="assistant-editor-name"
                       maxLength={ASSISTANT_NAME_MAX_LENGTH}
                       placeholder="For example, Release-note writer"
@@ -868,7 +970,7 @@ function EditorTask({
                     <textarea
                       aria-describedby="assistant-editor-description-help"
                       className={fieldTextarea}
-                      disabled={editor.saving}
+                      disabled={mutationLocked}
                       id="assistant-editor-description"
                       maxLength={ASSISTANT_DESCRIPTION_MAX_LENGTH}
                       rows={3}
@@ -885,7 +987,7 @@ function EditorTask({
                     </label>
                     <select
                       className={fieldInput}
-                      disabled={editor.saving}
+                      disabled={mutationLocked}
                       id="assistant-editor-category"
                       value={draft.category ?? ""}
                       onChange={(event) =>
@@ -919,7 +1021,7 @@ function EditorTask({
                   </label>
                   <textarea
                     className={fieldTextarea}
-                    disabled={editor.saving}
+                    disabled={mutationLocked}
                     id="assistant-editor-system"
                     maxLength={ASSISTANT_SYSTEM_PROMPT_MAX_LENGTH}
                     placeholder="Define the assistant’s role, priorities, and response style."
@@ -939,7 +1041,7 @@ function EditorTask({
                   </div>
                   <textarea
                     className={fieldTextarea}
-                    disabled={editor.saving}
+                    disabled={mutationLocked}
                     id="assistant-editor-developer"
                     maxLength={ASSISTANT_DEVELOPER_PROMPT_MAX_LENGTH}
                     rows={4}
@@ -964,7 +1066,7 @@ function EditorTask({
                 </label>
                 <select
                   className={fieldInput}
-                  disabled={editor.saving}
+                  disabled={mutationLocked}
                   id="assistant-editor-model"
                   value={draft.providerModelId ?? ""}
                   onChange={(event) =>
@@ -990,7 +1092,7 @@ function EditorTask({
                   </label>
                   <select
                     className={fieldInput}
-                    disabled={editor.saving}
+                    disabled={mutationLocked}
                     id="assistant-editor-reasoning-effort"
                     value={draft.reasoningEffort}
                     onChange={(event) => editor.onChange({ reasoningEffort: event.currentTarget.value })}
@@ -1014,7 +1116,7 @@ function EditorTask({
                   </label>
                   <select
                     className={fieldInput}
-                    disabled={editor.saving}
+                    disabled={mutationLocked}
                     id="assistant-editor-reasoning-mode"
                     value={draft.reasoningMode}
                     onChange={(event) => editor.onChange({ reasoningMode: event.currentTarget.value })}
@@ -1038,7 +1140,7 @@ function EditorTask({
                   </label>
                   <input
                     className={fieldInput}
-                    disabled={editor.saving}
+                    disabled={mutationLocked}
                     id="assistant-editor-temperature"
                     inputMode="decimal"
                     max={controls.temperature.maxValue}
@@ -1057,7 +1159,7 @@ function EditorTask({
                   </label>
                   <input
                     className={fieldInput}
-                    disabled={editor.saving}
+                    disabled={mutationLocked}
                     id="assistant-editor-max-tokens"
                     inputMode="numeric"
                     max={controls.maxOutputTokens.maxValue}
@@ -1070,7 +1172,7 @@ function EditorTask({
               ) : null}
               {controls?.background.supported ? (
                 <ToggleRow
-                  disabled={editor.saving}
+                  disabled={mutationLocked}
                   id="assistant-editor-background"
                   label="Background"
                   value={draft.backgroundMode}
@@ -1079,7 +1181,7 @@ function EditorTask({
               ) : null}
               {controls?.stream.supported ? (
                 <ToggleRow
-                  disabled={editor.saving}
+                  disabled={mutationLocked}
                   id="assistant-editor-stream"
                   label="Stream"
                   value={draft.streamMode}
@@ -1113,7 +1215,7 @@ function EditorTask({
                             <input
                               checked={checked}
                               className="size-4 shrink-0 accent-proof"
-                              disabled={editor.saving || (!checked && searchLimitReached)}
+                              disabled={mutationLocked || (!checked && searchLimitReached)}
                               type="checkbox"
                               onChange={(event) => toggleSearchOption(option.id, event.currentTarget.checked)}
                             />
@@ -1134,7 +1236,7 @@ function EditorTask({
                           <input
                             checked={draft.searchPlanMode === "all_selected"}
                             className="size-4 shrink-0 accent-proof"
-                            disabled={editor.saving}
+                            disabled={mutationLocked}
                             name="assistant-editor-search-mode"
                             type="radio"
                             onChange={() => editor.onChange({ searchPlanMode: "all_selected" })}
@@ -1145,7 +1247,7 @@ function EditorTask({
                           <input
                             checked={draft.searchPlanMode === "model_choice"}
                             className="size-4 shrink-0 accent-proof"
-                            disabled={editor.saving}
+                            disabled={mutationLocked}
                             name="assistant-editor-search-mode"
                             type="radio"
                             onChange={() => editor.onChange({ searchPlanMode: "model_choice" })}
@@ -1176,7 +1278,7 @@ function EditorTask({
                         <input
                           checked={draft.mcpServerIds.includes(server.id)}
                           className="size-4 shrink-0 accent-proof"
-                          disabled={editor.saving}
+                          disabled={mutationLocked}
                           type="checkbox"
                           onChange={(event) => toggleMcpServer(server.id, event.currentTarget.checked)}
                         />
@@ -1212,7 +1314,7 @@ function EditorTask({
                     </label>
                     <input
                       className={fieldInput}
-                      disabled={editor.saving}
+                      disabled={mutationLocked}
                       id={`assistant-editor-starter-${index}`}
                       maxLength={ASSISTANT_STARTER_PROMPT_MAX_LENGTH}
                       type="text"
@@ -1222,7 +1324,7 @@ function EditorTask({
                     <button
                       aria-label={`Remove starter prompt ${index + 1}`}
                       className={quietButton}
-                      disabled={editor.saving}
+                      disabled={mutationLocked}
                       onClick={() =>
                         editor.onChange({
                           starterPrompts: draft.starterPrompts.filter((_, position) => position !== index)
@@ -1238,7 +1340,7 @@ function EditorTask({
               {draft.starterPrompts.length < ASSISTANT_MAX_STARTER_PROMPTS ? (
                 <button
                   className={surfaceButton}
-                  disabled={editor.saving}
+                  disabled={mutationLocked}
                   onClick={() => editor.onChange({ starterPrompts: [...draft.starterPrompts, ""] })}
                   type="button"
                 >
@@ -1284,11 +1386,16 @@ function EditorTask({
               </p>
             ) : null}
             {editor.onUseInChat ? (
-              <button className={surfaceButton} onClick={editor.onUseInChat} type="button">
+              <button
+                className={surfaceButton}
+                disabled={mutationLocked || editor.dirty}
+                onClick={editor.onUseInChat}
+                type="button"
+              >
                 Use in chat
               </button>
             ) : null}
-            <button className={quietButton} disabled={editor.saving} onClick={editor.onCancel} type="button">
+            <button className={quietButton} disabled={mutationLocked} onClick={onRequestClose} type="button">
               Cancel
             </button>
             <button
@@ -1311,21 +1418,26 @@ function EditorTask({
 }
 
 function HistoryTask({
+  busy,
+  entryRef,
   history,
   notice,
   onDismissNotice
 }: {
+  busy: boolean;
+  entryRef: Ref<HTMLButtonElement>;
   history: AssistantHistoryView;
   notice: LibraryNotice | null;
   onDismissNotice(): void;
 }) {
   const newestRevision = history.entries.reduce((max, entry) => Math.max(max, entry.revisionNumber), 0);
   const viewed = history.viewedRevision;
+  const locked = busy || history.restoring;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col" data-testid="assistant-history">
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-trace-subtle bg-app-canvas px-3 py-3 sm:gap-3 sm:px-6 lg:px-8">
-        <button className={quietButton} onClick={history.onBack} type="button">
+        <button ref={entryRef} className={quietButton} disabled={locked} onClick={history.onBack} type="button">
           <ArrowLeft className="size-4 shrink-0" aria-hidden="true" />
           Back
         </button>
@@ -1371,6 +1483,7 @@ function HistoryTask({
                       <button
                         aria-label={`View revision ${entry.revisionNumber}`}
                         className={quietButton}
+                        disabled={locked}
                         onClick={() => history.onView(entry.revisionNumber)}
                         type="button"
                       >
@@ -1380,7 +1493,7 @@ function HistoryTask({
                         <button
                           aria-label={`Restore revision ${entry.revisionNumber}`}
                           className={quietButton}
-                          disabled={history.restoring}
+                          disabled={locked}
                           onClick={() => history.onRestore(entry.revisionNumber)}
                           type="button"
                         >

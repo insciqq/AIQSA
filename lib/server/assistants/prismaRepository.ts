@@ -5,7 +5,16 @@ import {
   type AssistantDraft
 } from "../../contracts/assistants";
 import { decodeSearchPlan } from "../../contracts/search";
+import { loadEntitlementsForUser } from "../auth/dbEntitlements";
+import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
+import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
+import { isMcpRunPlanRecordRunnable } from "../mcp/runPlan";
+import { loadMcpRunPlanRecords } from "../mcp/runPlanRepository";
 import { prisma } from "../prisma";
+import {
+  validateAssistantConfigurationAgainstCatalog,
+  type AssistantCatalogView
+} from "./catalogValidation";
 import type {
   AssistantRunMaterialization,
   AssistantRunResolution,
@@ -79,6 +88,14 @@ export type AssistantPublishResult =
   | { kind: "invalid" }
   | { kind: "not_found" }
   | { kind: "ok"; publication: AssistantPublicationRow };
+
+export type AssistantDuplicateResult =
+  | { assistantId: string; kind: "ok" }
+  | { kind: "model_not_available" }
+  | { kind: "not_found" }
+  | { kind: "run_controls_invalid" }
+  | { kind: "search_not_available" }
+  | { kind: "tools_not_available" };
 
 const revisionSelect = {
   author: { select: { displayName: true } },
@@ -171,13 +188,124 @@ async function activeMemberGroupIds(
   return memberships.map((membership) => membership.groupId);
 }
 
-export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
-  async function loadAccessEntry(
+type AssistantReadClient = Pick<
+  PrismaClient,
+  "assistantDefinition" | "assistantPin" | "userGroup"
+>;
+
+type AssistantMcpAccessClient = Pick<PrismaClient, "mcpGrant" | "userGroup">;
+
+async function loadUserAccessibleMcpServerIdsWith(
+  readClient: AssistantMcpAccessClient,
+  userId: string
+): Promise<Set<string>> {
+  const memberGroupIds = await activeMemberGroupIds(readClient, userId);
+  const grants = await readClient.mcpGrant.findMany({
+    select: { serverId: true },
+    where: {
+      canUse: true,
+      server: { archivedAt: null, enabled: true, activeRevisionId: { not: null } },
+      OR: [
+        { userId },
+        ...(memberGroupIds.length > 0 ? [{ groupId: { in: memberGroupIds } }] : [])
+      ]
+    }
+  });
+  return new Set(grants.map((grant) => grant.serverId));
+}
+
+function isPrismaSerializationConflict(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError &&
+    (error.code === "P2034" ||
+      (error.code === "P2010" &&
+        typeof error.meta === "object" &&
+        error.meta !== null &&
+        error.meta.code === "40001"));
+}
+
+export type PrismaAssistantRepositoryOptions = {
+  isMcpGenerationLive?(generationId: string): boolean;
+  loadCatalogView?(
+    tx: Prisma.TransactionClient,
+    userId: string
+  ): Promise<AssistantCatalogView | null>;
+  now?(): Date;
+};
+
+async function lockAssistantPublicationRows(
+  tx: Prisma.TransactionClient,
+  assistantId: string
+): Promise<void> {
+  await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT publication."id"
+    FROM "AssistantPublication" AS publication
+    WHERE publication."assistantId" = ${assistantId}
+    FOR UPDATE OF publication
+  `;
+}
+
+async function lockAssistantAccessRows(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  assistantId: string
+): Promise<void> {
+  // Serialize duplication with publication moves/revocation and with the
+  // group membership/archive rows that grant the caller access. A mutation
+  // that committed first is observed by the following access read; a
+  // duplicate that acquired these locks first completes from that exact
+  // authorized revision before the access mutation proceeds.
+  await lockAssistantPublicationRows(tx, assistantId);
+  await tx.$queryRaw<Array<{ groupId: string }>>`
+    SELECT membership."groupId"
+    FROM "UserGroup" AS membership
+    INNER JOIN "Group" AS team ON team."id" = membership."groupId"
+    WHERE membership."userId" = ${userId}
+      AND team."archivedAt" IS NULL
+    FOR UPDATE OF membership, team
+  `;
+}
+
+export function createPrismaAssistantRepository(
+  client: PrismaClient = prisma,
+  options: PrismaAssistantRepositoryOptions = {}
+) {
+  const loadCatalogView = options.loadCatalogView ?? (async (
+    tx: Prisma.TransactionClient,
+    userId: string
+  ): Promise<AssistantCatalogView | null> => {
+    const catalogData = await createPrismaCatalogDataLoader({
+      loadEntitlements: (catalogUserId) =>
+        loadEntitlementsForUser(catalogUserId, tx),
+      prisma: tx
+    })(userId);
+    if (!catalogData) return null;
+    const selection = resolveCurrentUserCatalogSelection(catalogData);
+    const accessibleMcpServerIds = await loadUserAccessibleMcpServerIdsWith(
+      tx,
+      userId
+    );
+    return {
+      accessibleMcpServerIds,
+      entitledSearchOptionIds: new Set(
+        selection.entitledStrategies.map((strategy) => strategy.strategyId)
+      ),
+      // Duplicate intentionally accepts accessible but currently unready MCP.
+      // No runtime liveness is consulted in this transaction.
+      mcpRunPlan: {
+        isGenerationLive: () => false,
+        now: options.now?.() ?? new Date(),
+        recordsByServerId: new Map()
+      },
+      modelById: new Map(selection.models.map((model) => [model.modelId, model]))
+    };
+  });
+  async function loadAccessEntryWith(
+    readClient: AssistantReadClient,
     userId: string,
     assistantId: string
   ): Promise<AssistantAccessEntry | null> {
     const [definition, memberGroupIds, pin] = await Promise.all([
-      client.assistantDefinition.findUnique({
+      readClient.assistantDefinition.findUnique({
         include: {
           currentRevision: { select: revisionSelect },
           owner: { select: { displayName: true } },
@@ -190,8 +318,8 @@ export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
         },
         where: { id: assistantId }
       }),
-      activeMemberGroupIds(client, userId),
-      client.assistantPin.findUnique({
+      activeMemberGroupIds(readClient, userId),
+      readClient.assistantPin.findUnique({
         select: { userId: true },
         where: { userId_assistantId: { assistantId, userId } }
       })
@@ -212,20 +340,28 @@ export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
       return null;
     }
 
+    const selectedPublication = owned
+      ? null
+      : [...accessiblePublications].sort(
+          (left, right) => right.revision.revisionNumber - left.revision.revisionNumber
+        )[0] ?? null;
     const accessibleRevision = owned
       ? definition.currentRevision
-      : accessiblePublications
-          .map((publication) => publication.revision)
-          .sort((left, right) => right.revisionNumber - left.revisionNumber)[0] ?? null;
+      : selectedPublication?.revision ?? null;
     if (!accessibleRevision) return null;
+    const selectedPublications = owned
+      ? definition.publications
+      : accessiblePublications.filter(
+          (publication) => publication.revision.id === accessibleRevision.id
+        );
 
     return {
       archived: definition.archivedAt !== null,
       id: definition.id,
-      installationScope: definition.publications.some(
+      installationScope: selectedPublications.some(
         (publication) => publication.scope === "installation"
       ),
-      memberGroupNames: accessiblePublications
+      memberGroupNames: selectedPublications
         .filter((publication) => publication.scope === "group")
         .map((publication) => publication.group?.name ?? "")
         .filter((name) => name.length > 0)
@@ -239,6 +375,9 @@ export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
       version: definition.version
     };
   }
+
+  const loadAccessEntry = (userId: string, assistantId: string) =>
+    loadAccessEntryWith(client, userId, assistantId);
 
   const repository = {
     async create(userId: string, draft: AssistantDraft): Promise<string> {
@@ -262,38 +401,92 @@ export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
       });
     },
 
-    async duplicate(userId: string, assistantId: string): Promise<string | null> {
-      const source = await loadAccessEntry(userId, assistantId);
-      if (!source) return null;
-      const copyName = `Copy of ${source.revision.name}`.slice(0, 80);
-      return client.$transaction(async (tx) => {
-        const definition = await tx.assistantDefinition.create({
-          data: { ownerUserId: userId }
-        });
-        const revision = await tx.assistantRevision.create({
-          data: {
-            assistantId: definition.id,
-            authorUserId: userId,
-            avatar: source.revision.avatar as Prisma.InputJsonValue,
-            category: source.revision.category,
-            description: source.revision.description,
-            developerPrompt: source.revision.developerPrompt,
-            mcpServerIds: [...source.revision.mcpServerIds],
-            name: copyName,
-            providerModelId: source.revision.providerModelId,
-            revisionNumber: 1,
-            runControls: source.revision.runControls as Prisma.InputJsonValue,
-            searchPlan: source.revision.searchPlan as Prisma.InputJsonValue,
-            starterPrompts: [...source.revision.starterPrompts],
-            systemPrompt: source.revision.systemPrompt
+    async duplicate(
+      userId: string,
+      assistantId: string
+    ): Promise<AssistantDuplicateResult> {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          return await client.$transaction(async (tx) => {
+            // Catalog dependencies and source access are read from one MVCC
+            // snapshot. The later locks serialize source publication/access
+            // mutations; repeatable-read retry handles a source row changed
+            // after the snapshot was established.
+            const catalogView = await loadCatalogView(tx, userId);
+            await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT "id"
+              FROM "AssistantDefinition"
+              WHERE "id" = ${assistantId}
+              FOR UPDATE
+            `;
+            await lockAssistantAccessRows(tx, userId, assistantId);
+            const source = await loadAccessEntryWith(tx, userId, assistantId);
+            if (!source) return { kind: "not_found" as const };
+            if (!catalogView) return { kind: "model_not_available" as const };
+            const runControls = decodeAssistantRunControls(source.revision.runControls ?? {});
+            const searchPlan = decodeSearchPlan(source.revision.searchPlan);
+            if (!runControls || !searchPlan.ok) {
+              throw new Error("assistant_revision_integrity_invalid");
+            }
+            const invalid = validateAssistantConfigurationAgainstCatalog(
+              {
+                mcpServerIds: source.revision.mcpServerIds,
+                providerModelId: source.revision.providerModelId,
+                runControls,
+                searchPlan: searchPlan.plan
+              },
+              catalogView,
+              { requireRunnableMcp: false }
+            );
+            if (invalid === "model") return { kind: "model_not_available" as const };
+            if (invalid === "run_controls") {
+              return { kind: "run_controls_invalid" as const };
+            }
+            if (invalid === "search") return { kind: "search_not_available" as const };
+            if (invalid === "tools") return { kind: "tools_not_available" as const };
+
+            const copyName = `Copy of ${source.revision.name}`.slice(0, 80);
+            const definition = await tx.assistantDefinition.create({
+              data: { ownerUserId: userId }
+            });
+            const revision = await tx.assistantRevision.create({
+              data: {
+                assistantId: definition.id,
+                authorUserId: userId,
+                avatar: source.revision.avatar as Prisma.InputJsonValue,
+                category: source.revision.category,
+                description: source.revision.description,
+                developerPrompt: source.revision.developerPrompt,
+                mcpServerIds: [...source.revision.mcpServerIds],
+                name: copyName,
+                providerModelId: source.revision.providerModelId,
+                revisionNumber: 1,
+                runControls: source.revision.runControls as Prisma.InputJsonValue,
+                searchPlan: source.revision.searchPlan as Prisma.InputJsonValue,
+                starterPrompts: [...source.revision.starterPrompts],
+                systemPrompt: source.revision.systemPrompt
+              }
+            });
+            await tx.assistantDefinition.update({
+              data: { currentRevisionId: revision.id },
+              where: { id: definition.id }
+            });
+            return { assistantId: definition.id, kind: "ok" as const };
+          }, {
+            isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+            maxWait: 10_000,
+            timeout: 30_000
+          });
+        } catch (error) {
+          if (isPrismaSerializationConflict(error)) {
+            if (attempt < 2) continue;
+            // Exhausted races reveal no dependency/source existence detail.
+            return { kind: "not_found" as const };
           }
-        });
-        await tx.assistantDefinition.update({
-          data: { currentRevisionId: revision.id },
-          where: { id: definition.id }
-        });
-        return definition.id;
-      });
+          throw error;
+        }
+      }
+      return { kind: "not_found" as const };
     },
 
     async getDetail(userId: string, assistantId: string): Promise<AssistantDetailData | null> {
@@ -397,13 +590,16 @@ export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
         const best = [...publications].sort(
           (left, right) => right.revision.revisionNumber - left.revision.revisionNumber
         )[0]!;
+        const selectedPublications = publications.filter(
+          (publication) => publication.revision.id === best.revision.id
+        );
         entries.push({
           archived: false,
           id: assistantId,
-          installationScope: publications.some(
+          installationScope: selectedPublications.some(
             (publication) => publication.scope === "installation"
           ),
-          memberGroupNames: publications
+          memberGroupNames: selectedPublications
             .filter((publication) => publication.scope === "group")
             .map((publication) => publication.group?.name ?? "")
             .filter((name) => name.length > 0)
@@ -544,15 +740,23 @@ export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
           if (!input.actorIsAdmin) return { kind: "forbidden" as const };
         } else {
           if (!input.groupId) return { kind: "invalid" as const };
-          const membership = await tx.userGroup.findFirst({
-            select: { groupId: true },
-            where: {
-              group: { archivedAt: null },
-              groupId: input.groupId,
-              userId: input.userId
-            }
-          });
-          if (!membership) return { kind: "forbidden" as const };
+          // Match duplicate/run lock order: definition, publications, then the
+          // exact membership and active group that authorize this publication.
+          // The share locks make membership removal and group archival
+          // serialize with the publication write rather than winning after an
+          // unlocked authorization check.
+          await lockAssistantPublicationRows(tx, input.assistantId);
+          const memberships = await tx.$queryRaw<Array<{ groupId: string }>>`
+            SELECT membership."groupId"
+            FROM "UserGroup" AS membership
+            INNER JOIN "Group" AS member_group
+              ON member_group."id" = membership."groupId"
+            WHERE membership."userId" = ${input.userId}
+              AND membership."groupId" = ${input.groupId}
+              AND member_group."archivedAt" IS NULL
+            FOR SHARE OF membership, member_group
+          `;
+          if (!memberships[0]) return { kind: "forbidden" as const };
         }
 
         const revision = input.revisionNumber === null
@@ -611,16 +815,20 @@ export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
 
     async revokePublication(input: {
       actorIsAdmin: boolean;
+      assistantId: string;
       publicationId: string;
       userId: string;
     }): Promise<"not_found" | "revoked"> {
       return client.$transaction(async (tx) => {
-        const publication = await tx.assistantPublication.findUnique({
+        const publication = await tx.assistantPublication.findFirst({
           select: {
-            assistant: { select: { ownerUserId: true } },
+            assistant: { select: { id: true, ownerUserId: true } },
             id: true
           },
-          where: { id: input.publicationId }
+          where: {
+            assistantId: input.assistantId,
+            id: input.publicationId
+          }
         });
         if (
           !publication ||
@@ -628,8 +836,19 @@ export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
         ) {
           return "not_found" as const;
         }
-        await tx.assistantPublication.delete({ where: { id: publication.id } });
-        return "revoked" as const;
+        await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "AssistantDefinition"
+          WHERE "id" = ${publication.assistant.id}
+          FOR UPDATE
+        `;
+        const deleted = await tx.assistantPublication.deleteMany({
+          where: {
+            assistantId: input.assistantId,
+            id: publication.id
+          }
+        });
+        return deleted.count === 1 ? "revoked" as const : "not_found" as const;
       });
     },
 
@@ -661,19 +880,33 @@ export function createPrismaAssistantRepository(client: PrismaClient = prisma) {
     },
 
     async loadUserAccessibleMcpServerIds(userId: string): Promise<Set<string>> {
-      const memberGroupIds = await activeMemberGroupIds(client, userId);
-      const grants = await client.mcpGrant.findMany({
-        select: { serverId: true },
-        where: {
-          canUse: true,
-          server: { archivedAt: null, enabled: true, activeRevisionId: { not: null } },
-          OR: [
-            { userId },
-            ...(memberGroupIds.length > 0 ? [{ groupId: { in: memberGroupIds } }] : [])
-          ]
-        }
-      });
-      return new Set(grants.map((grant) => grant.serverId));
+      return loadUserAccessibleMcpServerIdsWith(client, userId);
+    },
+
+    async loadUserRunnableMcpServerIds(userId: string): Promise<Set<string>> {
+      const now = options.now?.() ?? new Date();
+      const isGenerationLive = options.isMcpGenerationLive ?? (() => false);
+      const records = await loadMcpRunPlanRecords(userId, client);
+      return new Set(
+        records
+          .filter((record) =>
+            isMcpRunPlanRecordRunnable({ isGenerationLive, now, record })
+          )
+          .map((record) => record.serverId)
+      );
+    },
+
+    async loadUserMcpRunPlanView(userId: string) {
+      const now = options.now?.() ?? new Date();
+      const isGenerationLive = options.isMcpGenerationLive ?? (() => false);
+      const records = await loadMcpRunPlanRecords(userId, client);
+      return {
+        isGenerationLive,
+        now,
+        recordsByServerId: new Map(
+          records.map((record) => [record.serverId, record])
+        )
+      };
     }
   };
 

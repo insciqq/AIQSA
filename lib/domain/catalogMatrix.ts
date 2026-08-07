@@ -230,6 +230,12 @@ export function buildCatalogModel(
     return routes.length
       ? [[option.strategyId, {
           attachments: routes.some((route) => route.adapterKind === "answer_provider_hosted"),
+          // This is deliberately only a coarse, privacy-safe capability bit:
+          // Assistant validation needs to know that MCP can force Search onto
+          // a client route, but must not expose the technical model or route.
+          clientToolCompatible: routes.some(
+            (route) => route.adapterKind === "provider_model_client"
+          ),
           executionModes: [...new Set(routes.flatMap((route) => route.executionModes))]
         }]]
       : [];

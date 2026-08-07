@@ -3,7 +3,7 @@ import type {
   AssistantSummary
 } from "@/lib/contracts/assistants";
 import type { ModelParameterControls } from "@/lib/contracts/catalog";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AssistantLibrary } from "./AssistantLibrary";
 import type {
@@ -275,6 +275,164 @@ describe("AssistantLibrary", () => {
     expect(save).toHaveTextContent("Create assistant");
     fireEvent.click(save);
     expect(ready.onSave).toHaveBeenCalledOnce();
+  });
+
+  it("guards every dirty editor exit behind one discard confirmation", () => {
+    const editor = makeEditor({ dirty: true });
+    render(<AssistantLibrary view={makeView({ editor, task: "editor" })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to assistants" }));
+    expect(editor.onCancel).not.toHaveBeenCalled();
+    let confirmation = screen.getByRole("dialog", { name: "Discard assistant draft changes" });
+    expect(screen.getByTestId("assistant-library")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByTestId("assistant-library")).toHaveAttribute("inert");
+
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    confirmation = screen.getByRole("dialog", { name: "Discard assistant draft changes" });
+    expect(editor.onCancel).not.toHaveBeenCalled();
+
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    confirmation = screen.getByRole("dialog", { name: "Discard assistant draft changes" });
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm discard changes" }));
+    expect(editor.onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("closes a clean editor directly without opening discard confirmation", () => {
+    const editor = makeEditor({ dirty: false });
+    render(<AssistantLibrary view={makeView({ editor, task: "editor" })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(editor.onCancel).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("discard-changes-confirmation")).not.toBeInTheDocument();
+  });
+
+  it("locks editor mutation and dismissal paths while another library operation is busy", () => {
+    const editor = makeEditor({ dirty: true });
+    render(<AssistantLibrary view={makeView({ busy: true, editor, task: "editor" })} />);
+
+    expect(screen.getByRole("button", { name: "Back to assistants" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.getByTestId("assistant-editor-save")).toBeDisabled();
+    expect(screen.getByLabelText("Name")).toBeDisabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(editor.onCancel).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("discard-changes-confirmation")).not.toBeInTheDocument();
+  });
+
+  it("does not let Use in chat discard edits made after creation", () => {
+    const useInChat = vi.fn();
+    const dirtyEditor = makeEditor({ dirty: true, onUseInChat: useInChat });
+    const { rerender } = render(
+      <AssistantLibrary view={makeView({ editor: dirtyEditor, task: "editor" })} />
+    );
+
+    const dirtyUse = screen.getByRole("button", { name: "Use in chat" });
+    expect(dirtyUse).toBeDisabled();
+    fireEvent.click(dirtyUse);
+    expect(useInChat).not.toHaveBeenCalled();
+
+    const cleanEditor = makeEditor({ dirty: false, onUseInChat: useInChat });
+    rerender(<AssistantLibrary view={makeView({ editor: cleanEditor, task: "editor" })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Use in chat" }));
+    expect(useInChat).toHaveBeenCalledOnce();
+  });
+
+  it("moves actual focus into Assistants on entry and into the list after a clean editor exit", async () => {
+    const opener = document.createElement("button");
+    document.body.append(opener);
+    opener.focus();
+    const editor = makeEditor({ dirty: false });
+    const listView = makeView();
+    let rerender!: ReturnType<typeof render>["rerender"];
+    editor.onCancel = vi.fn(() => rerender(<AssistantLibrary view={listView} />));
+
+    ({ rerender } = render(<AssistantLibrary view={makeView({ editor, task: "editor" })} />));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to assistants" })).toHaveFocus());
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chat" })).toHaveFocus());
+    opener.remove();
+  });
+
+  it("returns focus to the editor after Keep editing and to the list after confirmed discard", async () => {
+    const editor = makeEditor({ dirty: true });
+    const listView = makeView();
+    let rerender!: ReturnType<typeof render>["rerender"];
+    editor.onCancel = vi.fn(() => rerender(<AssistantLibrary view={listView} />));
+    ({ rerender } = render(<AssistantLibrary view={makeView({ editor, task: "editor" })} />));
+    const back = screen.getByRole("button", { name: "Back to assistants" });
+    back.focus();
+
+    fireEvent.click(back);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Keep editing" })).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    await waitFor(() => expect(back).toHaveFocus());
+
+    fireEvent.click(back);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chat" })).toHaveFocus());
+  });
+
+  it("keeps focus on an editor control while a mutation lock is applied and released", async () => {
+    const editor = makeEditor();
+    const { rerender } = render(
+      <AssistantLibrary view={makeView({ editor, task: "editor" })} />
+    );
+    const save = screen.getByTestId("assistant-editor-save");
+    save.focus();
+    expect(save).toHaveFocus();
+
+    rerender(<AssistantLibrary view={makeView({ busy: true, editor, task: "editor" })} />);
+    await waitFor(() => expect(save).toHaveFocus());
+    expect(save).toBeDisabled();
+
+    rerender(<AssistantLibrary view={makeView({ editor, task: "editor" })} />);
+    await waitFor(() => expect(save).toHaveFocus());
+    expect(save).toBeEnabled();
+  });
+
+  it("blocks list navigation and conflicting actions while a library mutation is busy", () => {
+    const assistant = makeAssistant({ id: "owned", owned: true });
+    render(
+      <AssistantLibrary
+        view={makeView({ busy: true, list: makeList({ assistants: [assistant], mode: "yours" }) })}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Back to chat" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "New assistant" })).toBeDisabled();
+    expect(screen.getByRole("searchbox", { name: "Search assistants" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Use Code reviewer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "More actions for Code reviewer" })).toBeDisabled();
+  });
+
+  it("blocks history navigation and viewing while restore is pending", () => {
+    const history = makeHistory({
+      entries: [
+        {
+          authorDisplayName: "Dana Ops",
+          changedSections: ["identity"],
+          createdAt: "2026-08-03T12:00:00.000Z",
+          revisionNumber: 1
+        },
+        {
+          authorDisplayName: "Dana Ops",
+          changedSections: ["identity"],
+          createdAt: "2026-08-04T12:00:00.000Z",
+          revisionNumber: 2
+        }
+      ],
+      restoring: true
+    });
+    render(<AssistantLibrary view={makeView({ history, task: "history" })} />);
+
+    expect(screen.getByRole("button", { name: "Back" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "View revision 1" })).toBeDisabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(history.onBack).not.toHaveBeenCalled();
   });
 
   it("routes Generate another to the controller once per click without any fetch", () => {

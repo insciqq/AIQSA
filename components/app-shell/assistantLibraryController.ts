@@ -20,7 +20,8 @@ import {
 import { generateAssistantAvatarRecipe } from "@/components/assistants/avatarGeneration";
 import {
   useAssistantLibraryStore,
-  type AssistantLibraryEditorState
+  type AssistantLibraryEditorState,
+  type AssistantLibrarySnapshot
 } from "@/components/app-shell/assistantLibraryStore";
 import { loadUserMcpServers } from "@/components/app-shell/mcpSettingsApi";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
@@ -71,7 +72,7 @@ function editorErrorText(code: string, message: string): string {
     assistant_system_prompt_invalid: "Shorten the system prompt.",
     assistant_tools_not_available: "One selected MCP server is not available to you.",
     assistant_version_conflict:
-      "This assistant changed in another session. Reload the Library and reapply your edit."
+      "This assistant changed in another session. Reload Assistants and reapply your edit."
   };
   return known[code] ?? message;
 }
@@ -132,9 +133,54 @@ export type AssistantLibraryControllerInput = {
 export function createAssistantLibraryActions(input: AssistantLibraryControllerInput) {
   const store = () => useAssistantLibraryStore.getState();
 
+  function beginBusyOperation(): number | null {
+    const snapshot = store();
+    if (snapshot.busy || snapshot.editor?.saving || snapshot.history?.restoring) {
+      return null;
+    }
+    const requestId = snapshot.busyRequestId + 1;
+    snapshot.patch({ busy: true, busyRequestId: requestId });
+    return requestId;
+  }
+
+  function ownsBusyOperation(requestId: number): boolean {
+    const snapshot = store();
+    return snapshot.busy && snapshot.busyRequestId === requestId;
+  }
+
+  function finishBusyOperation(
+    requestId: number,
+    update: Partial<AssistantLibrarySnapshot> = {}
+  ): boolean {
+    const snapshot = store();
+    if (!snapshot.busy || snapshot.busyRequestId !== requestId) {
+      return false;
+    }
+    snapshot.patch({ ...update, busy: false });
+    return true;
+  }
+
+  function ownsHistoryRequest(requestId: number, assistantId: string): boolean {
+    const snapshot = store();
+    return (
+      snapshot.historyRequestId === requestId &&
+      snapshot.task === "history" &&
+      snapshot.history?.assistantId === assistantId
+    );
+  }
+
   async function refreshList() {
-    store().patch({ dataError: null, dataState: store().data ? "ready" : "loading" });
+    const snapshot = store();
+    const requestId = snapshot.listRequestId + 1;
+    snapshot.patch({
+      dataError: null,
+      dataState: snapshot.data ? "ready" : "loading",
+      listRequestId: requestId
+    });
     const result = await fetchAssistantList();
+    if (store().listRequestId !== requestId) {
+      return;
+    }
     if (!result.ok) {
       const current = store();
       if (current.data) {
@@ -161,6 +207,8 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   }
 
   function openLibrary(mode: "discover" | "yours" = "discover") {
+    const snapshot = store();
+    if (snapshot.busy || snapshot.editor?.saving || snapshot.history?.restoring) return;
     store().patch({
       editor: null,
       history: null,
@@ -174,10 +222,14 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   }
 
   function closeLibrary() {
+    const snapshot = store();
+    if (snapshot.busy || snapshot.editor?.saving || snapshot.history?.restoring) return;
     store().patch({ editor: null, history: null, notice: null, open: false, task: "list" });
   }
 
   function openNewAssistantEditor(prefill?: Partial<AssistantEditorDraftState>) {
+    const snapshot = store();
+    if (snapshot.busy || snapshot.editor?.saving || snapshot.history?.restoring) return;
     const draft = blankEditorDraft(prefill);
     const editor: AssistantLibraryEditorState = {
       assistantId: null,
@@ -235,11 +287,12 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   }
 
   async function openAssistantEditor(assistantId: string) {
-    store().patch({ busy: true });
+    const requestId = beginBusyOperation();
+    if (requestId === null) return;
     const result = await fetchAssistantDetail(assistantId);
-    store().patch({ busy: false });
+    if (!ownsBusyOperation(requestId)) return;
     if (!result.ok || !result.data.owned) {
-      store().patch({
+      finishBusyOperation(requestId, {
         notice: {
           kind: "error",
           text: result.ok ? "Only the owner can edit this assistant." : result.message
@@ -247,7 +300,7 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       });
       return;
     }
-    store().patch({
+    finishBusyOperation(requestId, {
       editor: editorFromDetail(result.data),
       history: null,
       notice: null,
@@ -256,8 +309,9 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   }
 
   async function saveEditor() {
-    const editor = store().editor;
-    if (!editor || editor.saving) return;
+    const snapshot = store();
+    const editor = snapshot.editor;
+    if (!editor || editor.saving || snapshot.busy) return;
     const controls = modelControlsFor(input.catalog, editor.draft.providerModelId);
     const draft = assistantDraftFromEditorState(editor.draft, controls);
     if (!draft) {
@@ -270,6 +324,14 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     const result = editor.assistantId && editor.expectedVersion !== null
       ? await reviseAssistant(editor.assistantId, editor.expectedVersion, draft)
       : await createAssistant(draft);
+    const currentEditor = store().editor;
+    if (
+      !currentEditor?.saving ||
+      currentEditor.assistantId !== editor.assistantId ||
+      currentEditor.expectedVersion !== editor.expectedVersion
+    ) {
+      return;
+    }
     if (!result.ok) {
       store().patchEditor({
         error: { code: result.code, text: editorErrorText(result.code, result.message) },
@@ -281,7 +343,7 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     store().patch({
       editor: {
         ...editorFromDetail(detail),
-        createdAssistantId: editor.assistantId ? null : detail.id
+        createdAssistantId: editor.createdAssistantId ?? (editor.assistantId ? null : detail.id)
       },
       notice: {
         kind: "success",
@@ -294,12 +356,22 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   }
 
   function closeEditor() {
+    const snapshot = store();
+    if (snapshot.busy || snapshot.editor?.saving || snapshot.history?.restoring) return;
     store().patch({ editor: null, task: "list" });
   }
 
-  async function openHistory(assistantId: string) {
-    const name = store().data?.assistants.find((assistant) => assistant.id === assistantId)?.name ?? "Assistant";
-    store().patch({
+  async function openHistory(
+    assistantId: string,
+    options: { assistantName?: string; preserveNotice?: boolean } = {}
+  ) {
+    const snapshot = store();
+    if (snapshot.busy || snapshot.editor?.saving || snapshot.history?.restoring) return;
+    const requestId = snapshot.historyRequestId + 1;
+    const name = options.assistantName ??
+      snapshot.data?.assistants.find((assistant) => assistant.id === assistantId)?.name ??
+      "Assistant";
+    snapshot.patch({
       history: {
         assistantId,
         assistantName: name,
@@ -308,11 +380,13 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
         restoring: false,
         viewedRevision: null
       },
-      notice: null,
+      historyRequestId: requestId,
+      ...(options.preserveNotice ? {} : { notice: null }),
       open: true,
       task: "history"
     });
     const result = await fetchAssistantRevisions(assistantId);
+    if (!ownsHistoryRequest(requestId, assistantId)) return;
     if (!result.ok) {
       store().patch({ history: null, notice: { kind: "error", text: result.message }, task: "list" });
       return;
@@ -321,9 +395,13 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   }
 
   async function viewHistoryRevision(revisionNumber: number) {
-    const history = store().history;
-    if (!history) return;
+    const snapshot = store();
+    const history = snapshot.history;
+    if (!history || history.loading || history.restoring || snapshot.busy) return;
+    const requestId = snapshot.historyRequestId + 1;
+    snapshot.patch({ historyRequestId: requestId });
     const result = await fetchAssistantRevision(history.assistantId, revisionNumber);
+    if (!ownsHistoryRequest(requestId, history.assistantId)) return;
     if (!result.ok) {
       store().patch({ notice: { kind: "error", text: result.message } });
       return;
@@ -333,13 +411,17 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
 
   /** Restore never rewrites history: it saves the old content as a new revision. */
   async function restoreHistoryRevision(revisionNumber: number) {
-    const history = store().history;
-    if (!history || history.restoring) return;
+    const snapshot = store();
+    const history = snapshot.history;
+    if (!history || history.loading || history.restoring || snapshot.busy) return;
+    const requestId = snapshot.historyRequestId + 1;
+    snapshot.patch({ historyRequestId: requestId });
     store().patchHistory({ restoring: true });
     const [revisionResult, detailResult] = await Promise.all([
       fetchAssistantRevision(history.assistantId, revisionNumber),
       fetchAssistantDetail(history.assistantId)
     ]);
+    if (!ownsHistoryRequest(requestId, history.assistantId)) return;
     if (!revisionResult.ok || !detailResult.ok || detailResult.data.version === undefined) {
       store().patchHistory({ restoring: false });
       store().patch({
@@ -373,13 +455,15 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       return;
     }
     const result = await reviseAssistant(history.assistantId, detailResult.data.version, draft);
-    store().patchHistory({ restoring: false });
+    if (!ownsHistoryRequest(requestId, history.assistantId)) return;
     if (!result.ok) {
+      store().patchHistory({ restoring: false });
       store().patch({
         notice: { kind: "error", text: editorErrorText(result.code, result.message) }
       });
       return;
     }
+    store().patchHistory({ restoring: false });
     store().patch({
       notice: {
         kind: "success",
@@ -387,39 +471,44 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       }
     });
     void refreshList();
-    void openHistory(history.assistantId);
+    void openHistory(history.assistantId, {
+      assistantName: result.data.revision.name,
+      preserveNotice: true
+    });
   }
 
   async function togglePinned(assistantId: string, pinned: boolean) {
-    store().patch({ busy: true });
+    const requestId = beginBusyOperation();
+    if (requestId === null) return;
     const result = await setAssistantPinned(assistantId, pinned);
-    store().patch({ busy: false });
+    if (!ownsBusyOperation(requestId)) return;
     if (!result.ok) {
-      store().patch({ notice: { kind: "error", text: result.message } });
+      finishBusyOperation(requestId, { notice: { kind: "error", text: result.message } });
       return;
     }
     const data = store().data;
-    if (data) {
-      store().patch({
-        data: {
-          ...data,
-          assistants: data.assistants.map((assistant) =>
-            assistant.id === assistantId ? { ...assistant, pinned } : assistant
-          )
+    finishBusyOperation(requestId, data
+      ? {
+          data: {
+            ...data,
+            assistants: data.assistants.map((assistant) =>
+              assistant.id === assistantId ? { ...assistant, pinned } : assistant
+            )
+          }
         }
-      });
-    }
+      : {});
   }
 
   async function duplicateById(assistantId: string) {
-    store().patch({ busy: true });
+    const requestId = beginBusyOperation();
+    if (requestId === null) return;
     const result = await duplicateAssistant(assistantId);
-    store().patch({ busy: false });
+    if (!ownsBusyOperation(requestId)) return;
     if (!result.ok) {
-      store().patch({ notice: { kind: "error", text: result.message } });
+      finishBusyOperation(requestId, { notice: { kind: "error", text: result.message } });
       return;
     }
-    store().patch({
+    finishBusyOperation(requestId, {
       mode: "yours",
       notice: { kind: "success", text: `Duplicated as ${result.data.revision.name}. The copy is private.` }
     });
@@ -427,9 +516,12 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   }
 
   async function toggleArchived(assistantId: string, archived: boolean) {
+    const requestId = beginBusyOperation();
+    if (requestId === null) return;
     const detail = await fetchAssistantDetail(assistantId);
+    if (!ownsBusyOperation(requestId)) return;
     if (!detail.ok || detail.data.version === undefined) {
-      store().patch({
+      finishBusyOperation(requestId, {
         notice: {
           kind: "error",
           text: detail.ok ? "Only the owner can archive this assistant." : detail.message
@@ -437,14 +529,15 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       });
       return;
     }
-    store().patch({ busy: true });
     const result = await setAssistantArchived(assistantId, detail.data.version, archived);
-    store().patch({ busy: false });
+    if (!ownsBusyOperation(requestId)) return;
     if (!result.ok) {
-      store().patch({ notice: { kind: "error", text: editorErrorText(result.code, result.message) } });
+      finishBusyOperation(requestId, {
+        notice: { kind: "error", text: editorErrorText(result.code, result.message) }
+      });
       return;
     }
-    store().patch({
+    finishBusyOperation(requestId, {
       notice: {
         kind: "success",
         text: archived
@@ -456,51 +549,61 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   }
 
   async function publish(assistantId: string, request: { groupId?: string; scope: "group" | "installation" }) {
-    store().patch({ busy: true });
+    const requestId = beginBusyOperation();
+    if (requestId === null) return;
     const result = await publishAssistant(assistantId, request);
-    store().patch({ busy: false });
+    if (!ownsBusyOperation(requestId)) return;
     if (!result.ok) {
-      store().patch({ notice: { kind: "error", text: result.message } });
+      finishBusyOperation(requestId, { notice: { kind: "error", text: result.message } });
       return;
     }
-    store().patch({
+    const shouldReconcileEditor = store().editor?.assistantId === assistantId;
+    const detail = shouldReconcileEditor ? await fetchAssistantDetail(assistantId) : null;
+    if (!ownsBusyOperation(requestId)) return;
+    const current = store();
+    const editor =
+      detail?.ok && detail.data.owned && current.editor?.assistantId === assistantId
+        ? {
+            ...current.editor,
+            expectedVersion: detail.data.version ?? null,
+            publications: detail.data.publications ?? null
+          }
+        : current.editor;
+    finishBusyOperation(requestId, {
+      ...(editor ? { editor } : {}),
       notice: {
         kind: "success",
         text: "Published this exact revision. Later saves stay private until you publish an update."
       }
     });
-    const editor = store().editor;
-    if (editor?.assistantId === assistantId) {
-      const detail = await fetchAssistantDetail(assistantId);
-      if (detail.ok && detail.data.owned) {
-        store().patchEditor({
-          expectedVersion: detail.data.version ?? null,
-          publications: detail.data.publications ?? null
-        });
-      }
-    }
     void refreshList();
   }
 
   async function revokePublicationById(assistantId: string, publicationId: string) {
-    store().patch({ busy: true });
+    const requestId = beginBusyOperation();
+    if (requestId === null) return;
     const result = await revokeAssistantPublication(assistantId, publicationId);
-    store().patch({ busy: false });
+    if (!ownsBusyOperation(requestId)) return;
     if (!result.ok) {
-      store().patch({ notice: { kind: "error", text: result.message } });
+      finishBusyOperation(requestId, { notice: { kind: "error", text: result.message } });
       return;
     }
-    store().patch({ notice: { kind: "success", text: "Publication revoked. The assistant itself is unchanged." } });
-    const editor = store().editor;
-    if (editor?.assistantId === assistantId) {
-      const detail = await fetchAssistantDetail(assistantId);
-      if (detail.ok && detail.data.owned) {
-        store().patchEditor({
-          expectedVersion: detail.data.version ?? null,
-          publications: detail.data.publications ?? null
-        });
-      }
-    }
+    const shouldReconcileEditor = store().editor?.assistantId === assistantId;
+    const detail = shouldReconcileEditor ? await fetchAssistantDetail(assistantId) : null;
+    if (!ownsBusyOperation(requestId)) return;
+    const current = store();
+    const editor =
+      detail?.ok && detail.data.owned && current.editor?.assistantId === assistantId
+        ? {
+            ...current.editor,
+            expectedVersion: detail.data.version ?? null,
+            publications: detail.data.publications ?? null
+          }
+        : current.editor;
+    finishBusyOperation(requestId, {
+      ...(editor ? { editor } : {}),
+      notice: { kind: "success", text: "Publication revoked. The assistant itself is unchanged." }
+    });
     void refreshList();
   }
 
@@ -510,13 +613,25 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
    * Library it also navigates to the blank workspace first.
    */
   async function useAssistant(assistantId: string, options: { navigate: boolean }) {
+    const snapshot = store();
+    if (
+      snapshot.editor &&
+      draftBaseline(snapshot.editor.draft) !== snapshot.editor.baseline
+    ) {
+      return false;
+    }
+    const requestId = beginBusyOperation();
+    if (requestId === null) return false;
     const result = await fetchAssistantDetail(assistantId);
+    if (!ownsBusyOperation(requestId)) return false;
     if (!result.ok) {
+      finishBusyOperation(requestId);
       input.setShellNotice({ kind: "error", text: result.message });
       return false;
     }
     const detail = result.data;
     if (!detail.availability.ok || detail.archived) {
+      finishBusyOperation(requestId);
       input.setShellNotice({
         kind: "error",
         text: "This assistant needs access you do not currently have."
@@ -539,6 +654,7 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       revision: detail.revision
     });
     if (!applied) {
+      finishBusyOperation(requestId);
       input.setShellNotice({
         kind: "error",
         text: "This assistant's model is not available to you right now."
@@ -546,7 +662,13 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       return false;
     }
     rememberRecentAssistant(assistantId);
-    closeLibrary();
+    finishBusyOperation(requestId, {
+      editor: null,
+      history: null,
+      notice: null,
+      open: false,
+      task: "list"
+    });
     return true;
   }
 
@@ -665,7 +787,16 @@ export function buildAssistantLibraryView(
           entries: history.entries,
           loading: history.loading,
           onBack() {
-            useAssistantLibraryStore.getState().patch({ history: null, task: "list" });
+            const current = useAssistantLibraryStore.getState();
+            if (
+              current.busy ||
+              current.history?.restoring ||
+              current.task !== "history" ||
+              current.history?.assistantId !== history.assistantId
+            ) {
+              return;
+            }
+            current.patch({ history: null, task: "list" });
           },
           onRestore(revisionNumber) {
             void actions.restoreHistoryRevision(revisionNumber);
@@ -686,7 +817,9 @@ export function buildAssistantLibraryView(
         void actions.toggleArchived(assistantId, archived);
       },
       onCategoryChange(category) {
-        useAssistantLibraryStore.getState().patch({ category });
+        const current = useAssistantLibraryStore.getState();
+        if (current.busy || current.editor?.saving || current.history?.restoring) return;
+        current.patch({ category });
       },
       onDuplicate(assistantId) {
         void actions.duplicateById(assistantId);
@@ -695,10 +828,14 @@ export function buildAssistantLibraryView(
         void actions.openAssistantEditor(assistantId);
       },
       onFilterChange(filter) {
-        useAssistantLibraryStore.getState().patch({ filter });
+        const current = useAssistantLibraryStore.getState();
+        if (current.busy || current.editor?.saving || current.history?.restoring) return;
+        current.patch({ filter });
       },
       onModeChange(mode) {
-        useAssistantLibraryStore.getState().patch({ filter: "all", mode });
+        const current = useAssistantLibraryStore.getState();
+        if (current.busy || current.editor?.saving || current.history?.restoring) return;
+        current.patch({ filter: "all", mode });
       },
       onNewAssistant() {
         actions.openNewAssistantEditor();
@@ -710,7 +847,9 @@ export function buildAssistantLibraryView(
         void actions.togglePinned(assistantId, pinned);
       },
       onQueryChange(query) {
-        useAssistantLibraryStore.getState().patch({ query });
+        const current = useAssistantLibraryStore.getState();
+        if (current.busy || current.editor?.saving || current.history?.restoring) return;
+        current.patch({ query });
       },
       onUse(assistantId) {
         void actions.useAssistant(assistantId, { navigate: true });
@@ -723,6 +862,8 @@ export function buildAssistantLibraryView(
       useAssistantLibraryStore.getState().patch({ notice: null });
     },
     onRetryCatalog() {
+      const current = useAssistantLibraryStore.getState();
+      if (current.busy || current.editor?.saving || current.history?.restoring) return;
       input.retryCatalog();
       void actions.refreshList();
     },

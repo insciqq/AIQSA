@@ -96,6 +96,30 @@ describe("catalog wire contract", () => {
     });
   });
 
+  it("strictly decodes privacy-safe client-tool Search compatibility", () => {
+    const response = validResponse();
+    response.catalog.models[0]!.searchOptionCompatibility = {
+      "company-search": {
+        attachments: false,
+        clientToolCompatible: true,
+        executionModes: ["all_selected", "model_choice"]
+      }
+    };
+
+    expect(
+      decodeCatalogResponse(response)?.models[0].searchOptionCompatibility
+    ).toEqual(response.catalog.models[0]!.searchOptionCompatibility);
+
+    const missingCompatibilityBit = structuredClone(response) as unknown as {
+      catalog: { models: Array<{ searchOptionCompatibility: Record<string, object> }> };
+    };
+    missingCompatibilityBit.catalog.models[0]!.searchOptionCompatibility["company-search"] = {
+      attachments: false,
+      executionModes: ["all_selected", "model_choice"]
+    };
+    expect(decodeCatalogResponse(missingCompatibilityBit)).toBeNull();
+  });
+
   it("strictly decodes the optional attachment-limit projection", () => {
     const response = validResponse();
     response.catalog.attachmentLimits = {

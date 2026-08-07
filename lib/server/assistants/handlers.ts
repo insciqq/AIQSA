@@ -23,6 +23,10 @@ import {
   resolveCurrentUserCatalogSelection,
   type CatalogData
 } from "../catalog/currentUserCatalog";
+import {
+  validateAssistantConfigurationAgainstCatalog,
+  type AssistantCatalogView
+} from "./catalogValidation";
 import type {
   AssistantAccessEntry,
   AssistantRevisionRow,
@@ -41,6 +45,8 @@ export type AssistantHandlerDeps = {
     | "listPublishableGroups"
     | "listRevisions"
     | "loadUserAccessibleMcpServerIds"
+    | "loadUserMcpRunPlanView"
+    | "loadUserRunnableMcpServerIds"
     | "publish"
     | "revise"
     | "revokePublication"
@@ -50,11 +56,7 @@ export type AssistantHandlerDeps = {
   resolveAuth: RequestAuthResolver;
 };
 
-type RunnerCatalogView = {
-  entitledSearchOptionIds: Set<string>;
-  mcpServerIds: Set<string>;
-  modelLabelById: Map<string, string>;
-};
+type RunnerCatalogView = AssistantCatalogView;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -75,20 +77,21 @@ async function runnerCatalogView(
   deps: AssistantHandlerDeps,
   userId: string
 ): Promise<RunnerCatalogView | null> {
-  const [catalogData, mcpServerIds] = await Promise.all([
+  const [catalogData, accessibleMcpServerIds, mcpRunPlan] = await Promise.all([
     deps.loadCatalogData(userId),
-    deps.repository.loadUserAccessibleMcpServerIds(userId)
+    deps.repository.loadUserAccessibleMcpServerIds(userId),
+    deps.repository.loadUserMcpRunPlanView(userId)
   ]);
   if (!catalogData) return null;
   const selection = resolveCurrentUserCatalogSelection(catalogData);
+  const modelById = new Map(selection.models.map((model) => [model.modelId, model]));
   return {
+    accessibleMcpServerIds,
     entitledSearchOptionIds: new Set(
       selection.entitledStrategies.map((strategy) => strategy.strategyId)
     ),
-    mcpServerIds,
-    modelLabelById: new Map(
-      selection.models.map((model) => [model.modelId, model.displayName])
-    )
+    mcpRunPlan,
+    modelById,
   };
 }
 
@@ -122,14 +125,28 @@ function availabilityFor(
   searchPlanOptionIds: readonly string[],
   view: RunnerCatalogView
 ): AssistantAvailability {
-  if (!view.modelLabelById.has(revision.providerModelId)) {
+  const runControls = decodeAssistantRunControls(revision.runControls ?? {});
+  const searchPlan = decodeSearchPlan(revision.searchPlan);
+  if (!runControls || !searchPlan.ok) {
+    throw new Error("assistant_revision_integrity_invalid");
+  }
+  const failure = validateAssistantConfigurationAgainstCatalog(
+    {
+      mcpServerIds: revision.mcpServerIds,
+      providerModelId: revision.providerModelId,
+      runControls,
+      searchPlan: {
+        mode: searchPlan.plan.mode,
+        optionIds: [...searchPlanOptionIds]
+      }
+    },
+    view,
+    { requireRunnableMcp: true }
+  );
+  if (failure === "search") return { ok: false, reason: "search_access" };
+  if (failure === "tools") return { ok: false, reason: "tools_access" };
+  if (failure === "model" || failure === "run_controls") {
     return { ok: false, reason: "model_access" };
-  }
-  if (searchPlanOptionIds.some((optionId) => !view.entitledSearchOptionIds.has(optionId))) {
-    return { ok: false, reason: "search_access" };
-  }
-  if (revision.mcpServerIds.some((serverId) => !view.mcpServerIds.has(serverId))) {
-    return { ok: false, reason: "tools_access" };
   }
   return { ok: true };
 }
@@ -145,7 +162,7 @@ function summaryFromEntry(entry: AssistantAccessEntry, view: RunnerCatalogView):
     description: entry.revision.description,
     fingerprint: {
       mcpServerCount: entry.revision.mcpServerIds.length,
-      modelLabel: view.modelLabelById.get(entry.revision.providerModelId) ?? null,
+      modelLabel: view.modelById.get(entry.revision.providerModelId)?.displayName ?? null,
       reasoningEffort: decoded.runControls.reasoningEffort ?? null,
       searchOptionCount: decoded.searchPlan.optionIds.length
     },
@@ -172,7 +189,7 @@ function revisionContent(
   options: { owned: boolean }
 ): AssistantRevisionContent {
   const decoded = decodeStoredRevision(revision);
-  const modelVisible = view.modelLabelById.has(revision.providerModelId);
+  const modelVisible = view.modelById.has(revision.providerModelId);
   return {
     authorDisplayName: revision.authorDisplayName,
     avatar: decoded.avatar,
@@ -184,12 +201,21 @@ function revisionContent(
     // project as null and MCP ids narrow to the runner's accessible servers.
     mcpServerIds: options.owned
       ? [...revision.mcpServerIds]
-      : revision.mcpServerIds.filter((serverId) => view.mcpServerIds.has(serverId)),
+      : revision.mcpServerIds.filter((serverId) =>
+          view.accessibleMcpServerIds.has(serverId)
+        ),
     name: revision.name,
     providerModelId: options.owned || modelVisible ? revision.providerModelId : null,
     revisionNumber: revision.revisionNumber,
     runControls: decoded.runControls,
-    searchPlan: decoded.searchPlan,
+    searchPlan: options.owned
+      ? decoded.searchPlan
+      : {
+          mode: decoded.searchPlan.mode,
+          optionIds: decoded.searchPlan.optionIds.filter((optionId) =>
+            view.entitledSearchOptionIds.has(optionId)
+          )
+        },
     starterPrompts: [...revision.starterPrompts],
     systemPrompt: revision.systemPrompt
   };
@@ -232,19 +258,17 @@ function validateDraftAgainstCatalog(
   draft: AssistantDraft,
   view: RunnerCatalogView
 ): Response | null {
-  if (!view.modelLabelById.has(draft.providerModelId)) {
-    return errorJson("assistant_model_not_available", 400);
+  const failure = validateAssistantConfigurationAgainstCatalog(draft, view, {
+    requireRunnableMcp: false
+  });
+  if (failure === "model") return errorJson("assistant_model_not_available", 400);
+  if (failure === "run_controls") {
+    return errorJson("assistant_run_controls_invalid", 400);
   }
-  if (
-    draft.searchPlan.optionIds.some(
-      (optionId) => !view.entitledSearchOptionIds.has(optionId)
-    )
-  ) {
+  if (failure === "search") {
     return errorJson("assistant_search_option_not_available", 400);
   }
-  if (draft.mcpServerIds.some((serverId) => !view.mcpServerIds.has(serverId))) {
-    return errorJson("assistant_tools_not_available", 400);
-  }
+  if (failure === "tools") return errorJson("assistant_tools_not_available", 400);
   return null;
 }
 
@@ -394,9 +418,27 @@ export function createDuplicateAssistantHandler(deps: AssistantHandlerDeps) {
     const resolved = await authAndView(deps, request);
     if ("response" in resolved) return resolved.response;
     const assistantId = await routeParam(context, "assistantId");
-    const duplicateId = await deps.repository.duplicate(resolved.auth.userId, assistantId);
-    if (!duplicateId) return errorJson("assistant_not_available", 404);
-    const detail = await deps.repository.getDetail(resolved.auth.userId, duplicateId);
+    const result = await deps.repository.duplicate(
+      resolved.auth.userId,
+      assistantId
+    );
+    if (result.kind === "not_found") return errorJson("assistant_not_available", 404);
+    if (result.kind === "model_not_available") {
+      return errorJson("assistant_model_not_available", 400);
+    }
+    if (result.kind === "run_controls_invalid") {
+      return errorJson("assistant_run_controls_invalid", 400);
+    }
+    if (result.kind === "search_not_available") {
+      return errorJson("assistant_search_option_not_available", 400);
+    }
+    if (result.kind === "tools_not_available") {
+      return errorJson("assistant_tools_not_available", 400);
+    }
+    const detail = await deps.repository.getDetail(
+      resolved.auth.userId,
+      result.assistantId
+    );
     if (!detail) return errorJson("assistant_not_available", 404);
     return Response.json(
       { assistant: detailFromEntry(detail, resolved.view) } satisfies AssistantDetailResponse,
@@ -526,6 +568,7 @@ export function createRevokeAssistantPublicationHandler(deps: AssistantHandlerDe
     const params = await context.params;
     const result = await deps.repository.revokePublication({
       actorIsAdmin: session.user.role === "admin",
+      assistantId: params.assistantId,
       publicationId: params.publicationId,
       userId: session.userId
     });

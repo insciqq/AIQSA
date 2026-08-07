@@ -114,6 +114,13 @@ describe("catalog handler", () => {
       "search-disabled",
       "openai-native-web-search"
     ]);
+    expect(
+      catalog?.models[0].searchOptionCompatibility?.["openai-native-web-search"]
+    ).toEqual({
+      attachments: true,
+      clientToolCompatible: false,
+      executionModes: ["model_choice"]
+    });
   });
 
   it("projects every supplied current and future catalog item for full access", () => {

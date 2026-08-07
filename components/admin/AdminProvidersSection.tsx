@@ -389,8 +389,8 @@ function ConnectionDetail({
                   disabled={controller.state.busy}
                   onClick={() => requestConfirmation({
                     body: connection.family === "openai_compatible"
-                      ? "AIQSA will remove this custom connection, its models, encrypted credentials, assignments, model grants, and model defaults together. Active or recoverable runs, Run profiles, and model-backed search strategies still block deletion so history and automation stay valid."
-                      : "The connection can be deleted only after child credentials, models, grants, defaults, profiles, search references, and live run bindings are removed.",
+                      ? "AIQSA will remove this custom connection, its models, encrypted credentials, assignments, model grants, and model defaults together. Active or recoverable runs, Assistant revisions, and model-backed Search strategies still block deletion so history and automation stay valid."
+                      : "The connection can be deleted only after child credentials, models, grants, defaults, Assistant revisions, Search references, and live run bindings are removed.",
                     confirmLabel: connection.family === "openai_compatible"
                       ? "Delete connection and configuration"
                       : "Delete connection",

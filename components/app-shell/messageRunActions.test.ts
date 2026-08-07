@@ -83,10 +83,12 @@ const mixedSearchModel: CatalogModel = {
   searchOptionCompatibility: {
     [clientSearchOptionId]: {
       attachments: false,
+      clientToolCompatible: true,
       executionModes: ["all_selected", "model_choice"]
     },
     [hostedSearchOptionId]: {
       attachments: true,
+      clientToolCompatible: false,
       executionModes: ["model_choice"]
     }
   },

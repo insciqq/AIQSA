@@ -80,6 +80,33 @@ function inventoryTools(value: unknown): McpRuntimeInventoryTool[] | null {
   return tools;
 }
 
+function hasCurrentRunnableGeneration(
+  record: McpRunPlanRecord,
+  now: Date
+): boolean {
+  return Boolean(
+    record.enabled &&
+    record.readiness === "ready" &&
+    record.generationId &&
+    record.fingerprint &&
+    record.inventoryUpdatedAt &&
+    now.getTime() - record.inventoryUpdatedAt.getTime() <= INVENTORY_FRESH_MS
+  );
+}
+
+/** Canonical pure readiness predicate shared by catalog availability and run
+ * admission. Persisted `ready` is insufficient: the exact generation must be
+ * live in this process, its inventory fresh, and every tool shape valid. */
+export function isMcpRunPlanRecordRunnable(input: {
+  isGenerationLive(generationId: string): boolean;
+  now: Date;
+  record: McpRunPlanRecord;
+}): boolean {
+  return hasCurrentRunnableGeneration(input.record, input.now) &&
+    input.isGenerationLive(input.record.generationId!) &&
+    inventoryTools(input.record.inventory) !== null;
+}
+
 function token(value: string, maxLength: number): string {
   const normalized = value.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_").replace(/^_+|_+$/gu, "");
   return (normalized || "tool").slice(0, maxLength);
@@ -90,7 +117,7 @@ export function namespacedMcpToolName(namespace: string, originalName: string): 
   return `mcp_${token(namespace, 20)}_${token(originalName, 24)}_${suffix}`.slice(0, 64);
 }
 
-function issues(records: McpRunPlanRecord[]) {
+function issues(records: readonly McpRunPlanRecord[]) {
   return records.map((record) => ({
     errorCode: record.errorCode,
     name: record.serverName,
@@ -98,8 +125,8 @@ function issues(records: McpRunPlanRecord[]) {
   }));
 }
 
-function buildPlan(
-  records: McpRunPlanRecord[],
+export function buildMcpRunPlan(
+  records: readonly McpRunPlanRecord[],
   now: Date,
   isGenerationLive: (generationId: string) => boolean
 ): McpRunPlanResult {
@@ -107,19 +134,37 @@ function buildPlan(
     return { code: "mcp_plan_too_large", issues: issues(records), ok: false };
   }
   const unavailable = records.filter((record) =>
-    !record.enabled || record.readiness !== "ready" || !record.generationId || !record.fingerprint ||
-    !record.inventoryUpdatedAt || now.getTime() - record.inventoryUpdatedAt.getTime() > INVENTORY_FRESH_MS ||
-    !isGenerationLive(record.generationId)
+    !isMcpRunPlanRecordRunnable({ isGenerationLive, now, record })
   );
   if (unavailable.length) {
     return {
       code: "mcp_not_ready",
       issues: unavailable.map((record) => {
-        const notLive = record.readiness === "ready" && Boolean(record.generationId) &&
-          !isGenerationLive(record.generationId!);
-        return notLive
-          ? { errorCode: "mcp_runtime_not_live", name: record.serverName, readiness: "restarting" }
-          : { errorCode: record.errorCode, name: record.serverName, readiness: record.readiness };
+        if (
+          hasCurrentRunnableGeneration(record, now) &&
+          !isGenerationLive(record.generationId!)
+        ) {
+          return {
+            errorCode: "mcp_runtime_not_live",
+            name: record.serverName,
+            readiness: "restarting" as const
+          };
+        }
+        if (
+          hasCurrentRunnableGeneration(record, now) &&
+          inventoryTools(record.inventory) === null
+        ) {
+          return {
+            errorCode: "mcp_inventory_invalid",
+            name: record.serverName,
+            readiness: "unavailable" as const
+          };
+        }
+        return {
+          errorCode: record.errorCode,
+          name: record.serverName,
+          readiness: record.readiness
+        };
       }),
       ok: false
     };
@@ -130,14 +175,7 @@ function buildPlan(
   const tools: McpRunPlanTool[] = [];
   let schemaBytes = 0;
   for (const record of records) {
-    const inventory = inventoryTools(record.inventory);
-    if (!inventory) {
-      return {
-        code: "mcp_not_ready",
-        issues: [{ errorCode: "mcp_inventory_invalid", name: record.serverName, readiness: "unavailable" }],
-        ok: false
-      };
-    }
+    const inventory = inventoryTools(record.inventory)!;
     bindings.push({
       fingerprint: record.fingerprint!,
       runtimeGenerationId: record.generationId!,
@@ -202,7 +240,7 @@ export async function prepareMcpRunPlan(input: {
 }): Promise<McpRunPlanResult> {
   const build = (records: McpRunPlanRecord[], at: Date): McpRunPlanResult => {
     if (!input.allowedServerIds) {
-      return buildPlan(records, at, input.isGenerationLive);
+      return buildMcpRunPlan(records, at, input.isGenerationLive);
     }
     const subset = applyAllowedServerSubset(records, input.allowedServerIds);
     if (subset.missing.length > 0) {
@@ -216,7 +254,7 @@ export async function prepareMcpRunPlan(input: {
         ok: false
       };
     }
-    return buildPlan(subset.records, at, input.isGenerationLive);
+    return buildMcpRunPlan(subset.records, at, input.isGenerationLive);
   };
 
   const now = input.now?.() ?? new Date();
