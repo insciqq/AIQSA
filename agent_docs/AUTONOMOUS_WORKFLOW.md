@@ -44,15 +44,12 @@ Five workers are a ceiling, not a target. Prefer a smaller wave when tasks share
 
 ## Verification Policy
 
-- Use `npm run check:hermetic` for deterministic host-local static/unit completion and `docker-compose.dev.yml` for container parity or integration; never point either lane at the default persistent installation.
-- Prefer focused Vitest files while implementing.
-- Run `npm run check:container` near completion only when the change needs PostgreSQL, container/process topology, or another integration boundary.
-- Run destructive local Playwright only for browser/server workflows or an explicit task requirement.
-- Development-stack data is disposable. Checks and E2E may mutate or reset only the `aiqsa-dev` database and object bucket.
-- Parallel stateful/container checks are unsupported. Hermetic focused files may run independently only when they do not share generated-output writes.
-- Provider smokes remain small, explicit, and conditional on operator-provided keys.
-
-Exact commands and test selection live in `agent_docs/TESTING.md`. Security-sensitive installation boundaries remain owned by `SECURITY.md`; parallel execution does not weaken auth, tenancy, migrations, backup, persistence, or deployment requirements.
+[Testing](TESTING.md) is the sole owner of lane selection, exact commands,
+disposable topology, and check-concurrency rules. While implementing, use its
+focused deterministic lane; before completion, select the proportional
+hermetic, container, browser, dependency, or explicitly authorized provider
+evidence it requires. Parallel execution does not weaken the installation and
+data boundaries routed by [Security](SECURITY.md).
 
 ## Autonomy Boundaries
 

@@ -2,52 +2,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { REQUIRED_DOCS } from "../../scripts/docs-manifest.mjs";
 
 const cli = path.resolve(process.cwd(), "scripts/docs-check.mjs");
 const generator = path.resolve(process.cwd(), "scripts/generate-doc-reference.mjs");
 const roots: string[] = [];
-const required = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  "README.md",
-  "CONTRIBUTING.md",
-  "SECURITY.md",
-  "components/AGENTS.md",
-  "components/CLAUDE.md",
-  "lib/server/AGENTS.md",
-  "lib/server/CLAUDE.md",
-  "ops/AGENTS.md",
-  "ops/CLAUDE.md",
-  "ops/nginx/README.md",
-  "ops/systemd/README.md",
-  "prisma/AGENTS.md",
-  "prisma/CLAUDE.md",
-  "agent_docs/AUTONOMOUS_WORKFLOW.md",
-  "agent_docs/ARCHITECTURE.md",
-  "agent_docs/BACKEND.md",
-  "agent_docs/backend/API_AND_AUTH.md",
-  "agent_docs/backend/PERSISTENCE_AND_RETENTION.md",
-  "agent_docs/backend/PROVIDER_ADAPTERS.md",
-  "agent_docs/backend/RUNS_AND_STREAMING.md",
-  "agent_docs/CRITICAL_INVARIANTS.md",
-  "agent_docs/DECISION_DEFAULTS.md",
-  "agent_docs/DESIGN_SYSTEM.md",
-  "agent_docs/FRONTEND.md",
-  "agent_docs/frontend/ACCOUNT_ADMIN_AND_SHARING.md",
-  "agent_docs/frontend/COMPOSER_AND_CONTROLS.md",
-  "agent_docs/frontend/IMPLEMENTATION_STATE.md",
-  "agent_docs/frontend/MESSAGES_AND_MARKDOWN.md",
-  "agent_docs/frontend/PRODUCT_AND_LAYOUT.md",
-  "agent_docs/frontend/VISUAL_INTERACTION.md",
-  "agent_docs/ENV_VARIABLES.md",
-  "agent_docs/PRODUCT_PRINCIPLES.md",
-  "agent_docs/PROVIDER_API_NOTES.md",
-  "agent_docs/RUN_PIPELINE.md",
-  "agent_docs/SECURITY.md",
-  "agent_docs/TESTING.md",
-  "agent_docs/tasks/README.md",
-  "agent_docs/generated/API_AND_SCHEMA.md"
-];
+const required = [...REQUIRED_DOCS];
 
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), "aiqsa-docs-check-"));
@@ -142,6 +102,10 @@ afterEach(() => {
 });
 
 describe("current documentation and harness sanity check", () => {
+  it("keeps one unique mandatory-document manifest", () => {
+    expect(new Set(REQUIRED_DOCS).size).toBe(REQUIRED_DOCS.length);
+  });
+
   it("accepts current docs, scoped imports, env keys, and a local task graph", () => {
     const root = fixture();
     task(root, "20260801120000001-follow-up");
@@ -154,12 +118,12 @@ describe("current documentation and harness sanity check", () => {
 
   it("reports missing required documents", () => {
     const root = fixture();
-    rmSync(path.join(root, "agent_docs/SECURITY.md"));
+    rmSync(path.join(root, "agent_docs/security/MCP_RUNTIME.md"));
 
     const result = check(root);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("missing required document: agent_docs/SECURITY.md");
+    expect(result.stderr).toContain("missing required document: agent_docs/security/MCP_RUNTIME.md");
   });
 
   it("reports broken local Markdown links", () => {
@@ -255,6 +219,38 @@ describe("current documentation and harness sanity check", () => {
       `# SECURITY\n\nOwner: Security maintainers\nScope: Current security behavior for the fixture only.\n\n${"security contract text long enough to exceed the cap\n".repeat(1_100)}`
     );
     expect(check(root).stderr).toContain("exceed the 40960-byte non-generated living-document cap");
+  });
+
+  it("rejects copied normative prose but ignores code and routing indexes", () => {
+    const root = fixture();
+    const first = path.join(root, "agent_docs/security/MCP_RUNTIME.md");
+    const second = path.join(root, "agent_docs/backend/api/AUTH_AND_ONBOARDING.md");
+    const router = path.join(root, "agent_docs/SECURITY.md");
+    const copied = "Every durable contract in this deliberately long fixture paragraph has one normative owner. "
+      + "Another bounded document links that owner and records only the enforcement or presentation facts "
+      + "specific to its own layer, so future edits cannot silently create two competing sources of truth.";
+
+    writeFileSync(first, `# MCP runtime\n\n${copied}\n`);
+    writeFileSync(second, `# Auth and onboarding\n\n${copied}\n`);
+
+    const duplicated = check(root);
+    expect(duplicated.status).toBe(1);
+    expect(duplicated.stderr).toContain("duplicates a substantial normative block from");
+
+    writeFileSync(second, `# Auth and onboarding\n\n\`\`\`text\n${copied}\n\`\`\`\n`);
+    writeFileSync(
+      router,
+      `# Security\n\nScope: Non-normative router to fixture owners.\n\n${copied}\n`
+    );
+    writeFileSync(
+      path.join(root, "AGENTS.md"),
+      `# AGENTS\n\nScope: fixture domain instructions.\n\n${copied}\n`
+    );
+    writeFileSync(path.join(root, "agent_docs/tasks/README.md"), `# Tasks\n\n${copied}\n`);
+    writeFileSync(path.join(root, "agent_docs/generated/COPY.md"), `# Generated\n\n${copied}\n`);
+
+    const nonNormativeCopies = check(root);
+    expect(nonNormativeCopies.status).toBe(0);
   });
 
   it("reports generated route or schema drift", () => {

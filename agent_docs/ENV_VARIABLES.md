@@ -38,13 +38,29 @@ no-op: the helper does not read it, alter permissions, replace values, or repair
 partial configuration. Consequently the helper is run instead of a preceding
 `cp .env.example .env`; manual creation remains supported.
 
-`AIQSA_AUTH_SESSION_SECRET`, `AIQSA_ENCRYPTION_KEY`, the PostgreSQL password, and the S3/MinIO secret must be deployment-specific high-entropy values. Generate the session secret with `openssl rand -hex 32` or stronger and the encrypted-state key with `openssl rand -base64 32`. Quick Setup derives its state-fence HMAC key from `AIQSA_AUTH_SESSION_SECRET` under the fixed `aiqsa:provider-quick-setup-state-token-key:v1` domain, so no additional environment value is required and changing the session secret invalidates outstanding Quick Setup fences. `AIQSA_ENCRYPTION_KEY` must decode to exactly 32 bytes; purpose/owner/value-bound envelopes use it for MCP values and OAuth tokens, administrator-owned provider credentials, and the SMTP password. It is never reused for sessions or flow signing. Back it up separately from Postgres. Changing or losing it requires an offline migration or re-entry of affected encrypted values. Compose derives the internal `DATABASE_URL`, `POSTGRES_*`, `MINIO_ROOT_*`, and `S3_*` values from these canonical inputs; operators do not duplicate the connection string.
+`AIQSA_AUTH_SESSION_SECRET`, `AIQSA_ENCRYPTION_KEY`, the PostgreSQL password,
+and the S3/MinIO secret must be deployment-specific high-entropy values.
+Generate the session secret with `openssl rand -hex 32` or stronger and the
+encrypted-state key with `openssl rand -base64 32`; the latter must decode to
+exactly 32 bytes. Back it up separately from Postgres. Changing or losing it
+requires an offline migration or re-entry of affected encrypted values.
+Compose derives the internal `DATABASE_URL`, `POSTGRES_*`, `MINIO_ROOT_*`, and
+`S3_*` values from these canonical inputs; operators do not duplicate the
+connection string. [HTTP and auth security](security/HTTP_AND_AUTH.md) owns
+cryptographic purpose separation and derived-key use.
 
 Use URI-safe hexadecimal database/storage secrets because Compose constructs the internal database URL without percent-encoding. Once a persistent volume contains data, changing database initialization credentials does not rewrite that database, and changing the bucket/volume selection exposes a different empty namespace. Such changes require an explicit backed-up datastore migration, not an ordinary env edit.
 
 Fresh installation and core readiness do not require a real LLM provider or SMTP. The initial administrator configures them after sign-in.
 
-The installation bootstrap always requires a valid `AIQSA_INITIAL_ADMIN_EMAIL`. On an empty database it also requires `AIQSA_INITIAL_ADMIN_PASSWORD`, defaults the display name to `Administrator`, and generates a UUID when `AIQSA_INITIAL_ADMIN_USER_ID` is blank. It creates no demo chat. On every later start it adopts the exact verified password identity by normalized email, optionally enforces the explicit UUID, synchronizes only code-owned catalog metadata, and preserves users, passwords, status/role, settings, grants, chats, and attachments. Remove the plaintext initial password after first success but keep the email stable.
+The installation bootstrap always requires a valid
+`AIQSA_INITIAL_ADMIN_EMAIL`. On an empty database it also requires
+`AIQSA_INITIAL_ADMIN_PASSWORD`, defaults the display name to `Administrator`,
+and generates a UUID when `AIQSA_INITIAL_ADMIN_USER_ID` is blank. Later starts
+use the stable email and optional explicit UUID to identify adoption. Remove the
+plaintext initial password after first success but keep the email stable;
+[persistence and retention](backend/PERSISTENCE_AND_RETENTION.md) owns the
+transactional fresh/adopted behavior and preservation set.
 
 ## Address, Cookies, And Proxy Trust
 
@@ -78,7 +94,13 @@ AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS=660000
 
 Provider connections, endpoints, adapter protocols, explicit compatible authentication mode, models, routing, credentials, direct-user/group assignments, activation evidence, stored diagnostics, and enabled state are database-owned and configured through `Control Center -> Providers`. Reviewed Quick and Custom endpoint setup persist neither an unsuccessful key nor failed test evidence. The long-running application receives no provider key/base-URL variables and has no environment fallback. `AIQSA_PROVIDER_TIMEOUT_MS` bounds an ordinary request through its complete buffered response; `AIQSA_PROVIDER_RESPONSE_MAX_BYTES` caps that non-stream body. A successful SSE instead has an independent 30-second idle-read guard, 10-minute absolute deadline, 4 MiB event-frame limit, 64 MiB total raw-wire limit, and 8 Mi-character retained provider-output limit. Activity resets only the idle guard. Stream values accept positive safe decimal integers; invalid or out-of-range values fall back to their defaults. Hard ceilings are 120,000 ms idle, 16 MiB/event, 256 MiB/stream, 660,000 ms absolute duration, and 32 Mi characters retained output; the effective event limit is also clamped to the total stream limit. Client Search calls use the selected immutable Search revision's database-owned timeout instead of `AIQSA_PROVIDER_TIMEOUT_MS`; the Search setting is bounded from 5 seconds through 15 minutes and defaults new integrations to 5 minutes. `AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS` separately bounds the complete OpenAI background polling lifecycle.
 
-`AIQSA_DEFAULT_MODEL` and `AIQSA_DEFAULT_SEARCH_MODEL` are optional explicit provider-smoke inputs only. `GEMINI_API_KEY` and optional `AIQSA_GEMINI_SMOKE_MODEL` are consumed only by `npm run smoke:gemini`; they select the one-off key/model for bounded sanitized native Interactions streaming, function-continuation, and Google Search checks and are not application configuration. `npm run smoke:custom-openai-compatible` uses only its own loopback fixture and no key or external network. The application uses persisted catalog/settings choices. Provider-smoke permission is defined in `CRITICAL_INVARIANTS.md`; no routine test makes a paid external call.
+`AIQSA_DEFAULT_MODEL`, `AIQSA_DEFAULT_SEARCH_MODEL`, `GEMINI_API_KEY`,
+`AIQSA_GEMINI_SMOKE_MODEL`, `ANTHROPIC_API_KEY`, and
+`AIQSA_ANTHROPIC_SMOKE_MODEL` are process-local provider-smoke inputs, never
+long-running application configuration. The application uses persisted
+catalog/settings choices. [Testing](TESTING.md) owns the commands and
+provider-specific selector/evidence behavior; `CRITICAL_INVARIANTS.md` owns
+permission and secret limits.
 
 ## MCP Runtime Wiring
 
@@ -106,17 +128,9 @@ or excessive values fall back independently to their defaults. Initialize,
 tool-call, and unknown-response values have a 16777216-byte hard ceiling;
 tool-inventory and SSE-event values have a 67108864-byte hard ceiling. The
 outbound JSON-RPC request reader has a fixed 1 MiB safety cap before operation
-and bounded request-id classification. Overflow cancels the upstream response.
-Initialize maps to `mcp_initialize_response_too_large`, `tools/list` to
-`mcp_inventory_response_too_large`, `tools/call` to
-`mcp_call_result_too_large`, and unknown/session frames to
-`mcp_response_too_large`. Public failures expose at most the stable code and
-safe message; a durable tool-error preview may additionally keep the
-bounded call id/name, never arguments or partial result. The internal typed
-cause retains operation, configured maximum, and observed bytes. Structured
-logs may add server id, tool name, operation, configured/reached bytes,
-transport, and opaque run correlation; body, arguments, endpoint, headers,
-credentials, and parser details remain excluded.
+and bounded request-id classification. [MCP runtime security](security/MCP_RUNTIME.md)
+owns overflow transport and redaction behavior; [runs and streaming](backend/RUNS_AND_STREAMING.md)
+owns its run-visible error and continuation effects.
 
 `AIQSA_TOOLHIVE_URL` is internal Compose wiring, not a normal operator endpoint override and not a browser-visible variable. Both Compose files hardcode it to the pinned ToolHive service on the private `mcp-control` network. ToolHive and its dynamic proxy endpoints are not published to the host. MCP server endpoints, source selectors, OAuth policy, shared values, and user values live in the administrator/user persistence model rather than `.env`.
 

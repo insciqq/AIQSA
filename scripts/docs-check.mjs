@@ -4,54 +4,18 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  NESTED_AGENT_INSTRUCTIONS,
+  NESTED_CLAUDE_INSTRUCTIONS,
+  REQUIRED_DOCS
+} from "./docs-manifest.mjs";
 import { generatedReferenceErrors } from "./generate-doc-reference.mjs";
 import { validateTaskLedger } from "./task-ledger.mjs";
 
-const NESTED_AGENT_INSTRUCTIONS = [
-  "components/AGENTS.md",
-  "lib/server/AGENTS.md",
-  "ops/AGENTS.md",
-  "prisma/AGENTS.md"
-];
-const NESTED_CLAUDE_INSTRUCTIONS = NESTED_AGENT_INSTRUCTIONS.map((filename) => (
-  filename.replace(/AGENTS\.md$/u, "CLAUDE.md")
-));
-const ROOT_MARKDOWN = ["AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md", "SECURITY.md"];
-const COLOCATED_MARKDOWN = ["ops/nginx/README.md", "ops/systemd/README.md"];
-const REQUIRED_DOCS = [
-  ...ROOT_MARKDOWN,
-  ...NESTED_AGENT_INSTRUCTIONS,
-  ...NESTED_CLAUDE_INSTRUCTIONS,
-  ...COLOCATED_MARKDOWN,
-  "agent_docs/AUTONOMOUS_WORKFLOW.md",
-  "agent_docs/ARCHITECTURE.md",
-  "agent_docs/BACKEND.md",
-  "agent_docs/backend/API_AND_AUTH.md",
-  "agent_docs/backend/PERSISTENCE_AND_RETENTION.md",
-  "agent_docs/backend/PROVIDER_ADAPTERS.md",
-  "agent_docs/backend/RUNS_AND_STREAMING.md",
-  "agent_docs/CRITICAL_INVARIANTS.md",
-  "agent_docs/DECISION_DEFAULTS.md",
-  "agent_docs/DESIGN_SYSTEM.md",
-  "agent_docs/FRONTEND.md",
-  "agent_docs/frontend/ACCOUNT_ADMIN_AND_SHARING.md",
-  "agent_docs/frontend/COMPOSER_AND_CONTROLS.md",
-  "agent_docs/frontend/IMPLEMENTATION_STATE.md",
-  "agent_docs/frontend/MESSAGES_AND_MARKDOWN.md",
-  "agent_docs/frontend/PRODUCT_AND_LAYOUT.md",
-  "agent_docs/frontend/VISUAL_INTERACTION.md",
-  "agent_docs/ENV_VARIABLES.md",
-  "agent_docs/PRODUCT_PRINCIPLES.md",
-  "agent_docs/PROVIDER_API_NOTES.md",
-  "agent_docs/RUN_PIPELINE.md",
-  "agent_docs/SECURITY.md",
-  "agent_docs/TESTING.md",
-  "agent_docs/tasks/README.md",
-  "agent_docs/generated/API_AND_SCHEMA.md"
-];
-
 const LARGE_LIVING_DOC_BYTES = 12_000;
 const MAX_LIVING_DOC_BYTES = 40 * 1_024;
+const DUPLICATE_BLOCK_MINIMUM_CHARACTERS = 180;
+const DUPLICATE_BLOCK_MINIMUM_WORDS = 24;
 const LIVING_DOC_SIZE_EXEMPTIONS = new Map();
 const DISCOVERY_EXCLUDED_PREFIXES = [
   ".agents/",
@@ -358,11 +322,113 @@ function livingDocumentErrors(root, markdown) {
   return errors;
 }
 
+function normativeLivingDocument(filename, body) {
+  if (!filename.startsWith("agent_docs/")) return false;
+  if (filename.startsWith("agent_docs/generated/") || filename.startsWith("agent_docs/tasks/")) return false;
+  const header = body.slice(0, 800);
+  return !/^Scope:\s+Non-normative router\b/imu.test(header)
+    && !/This file is (?:a router|a routing index)\b/iu.test(header);
+}
+
+function normalizedNormativeBlock(markdown) {
+  return markdown
+    .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1")
+    .replace(/<https?:\/\/[^>]+>/giu, "url")
+    .replace(/https?:\/\/\S+/giu, "url")
+    .replace(/<[^>]+>/gu, " ")
+    .replace(/[`*_~>#|{}()[\]]/gu, " ")
+    .replace(/&[a-z]+;/giu, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function normativeBlocks(body) {
+  const blocks = [];
+  let fenced = false;
+  let lines = [];
+  let startLine = 0;
+
+  const flush = () => {
+    if (!lines.length) return;
+    const raw = lines.join(" ").replace(/\s+/gu, " ").trim();
+    lines = [];
+    if (!raw || /^(?:Owner|Scope|Read when|Code owners|Not owned here):/u.test(raw)) return;
+    const normalized = normalizedNormativeBlock(raw);
+    const words = normalized ? normalized.split(" ") : [];
+    if (
+      normalized.length >= DUPLICATE_BLOCK_MINIMUM_CHARACTERS
+      && words.length >= DUPLICATE_BLOCK_MINIMUM_WORDS
+    ) {
+      blocks.push({ line: startLine, normalized });
+    }
+  };
+
+  for (const [index, rawLine] of body.split(/\r?\n/u).entries()) {
+    const line = rawLine.trim();
+    if (/^```/u.test(line)) {
+      flush();
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
+    if (!line || /^#{1,6}\s+/u.test(line)) {
+      flush();
+      continue;
+    }
+    if (/^\|.*\|$/u.test(line)) {
+      flush();
+      continue;
+    }
+    const listItem = /^(?:[-*+] |\d+\. )/u.test(line);
+    if (listItem) flush();
+    if (!lines.length) startLine = index + 1;
+    lines.push(line.replace(/^(?:[-*+] |\d+\. )/u, ""));
+  }
+  flush();
+  return blocks;
+}
+
+function normativeDuplicateErrors(root, markdown) {
+  const errors = [];
+  const owners = new Map();
+  for (const target of markdown) {
+    const filename = portablePath(path.relative(root, target));
+    const body = readFileSync(target, "utf8");
+    if (!normativeLivingDocument(filename, body)) continue;
+    for (const block of normativeBlocks(body)) {
+      const owner = owners.get(block.normalized);
+      if (!owner) {
+        owners.set(block.normalized, { filename, line: block.line });
+      } else if (owner.filename !== filename) {
+        errors.push(
+          `${filename}:${block.line}: duplicates a substantial normative block from `
+          + `${owner.filename}:${owner.line}; link the owner and keep only this layer's projection`
+        );
+      }
+    }
+  }
+  return errors;
+}
+
+function docsManifestErrors() {
+  const errors = [];
+  const seen = new Set();
+  for (const filename of REQUIRED_DOCS) {
+    if (seen.has(filename)) errors.push(`scripts/docs-manifest.mjs: duplicate required document: ${filename}`);
+    seen.add(filename);
+  }
+  return errors;
+}
+
 export function checkDocs(root = process.cwd()) {
   root = path.resolve(root);
   const errors = [];
   const files = repositoryFiles(root);
   const markdown = markdownFiles(root, files);
+  errors.push(...docsManifestErrors());
   for (const filename of REQUIRED_DOCS) {
     const target = path.join(root, filename);
     if (!existsSync(target) || !statSync(target).isFile()) errors.push(`missing required document: ${filename}`);
@@ -371,6 +437,7 @@ export function checkDocs(root = process.cwd()) {
   errors.push(...obsoleteHarnessErrors(root, markdown));
   errors.push(...currentSourceReferenceErrors(root, files));
   errors.push(...livingDocumentErrors(root, markdown));
+  errors.push(...normativeDuplicateErrors(root, markdown));
   errors.push(...localLinkErrors(root, markdown));
   errors.push(...validateTaskLedger(root).errors);
   errors.push(...taskPrivacyErrors(root));

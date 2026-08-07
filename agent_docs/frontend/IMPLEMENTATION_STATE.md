@@ -20,7 +20,10 @@ This document is a semantic ownership map, not a file inventory. Exact modules r
 | Resource availability | `components/resource-lifecycle/` | Neutral shared Enabled/Disabled presentation and restoration-action tone across app and admin features. |
 | Theme | app-shell theme owner plus root layout | Browser-local palette registry, cookie-backed first paint, and synchronized theme/color-scheme attributes. |
 
-Dependency direction is enforced by `eslint.config.mjs` and harness tests. Browser components do not import server/Prisma/Node-only owners; shared contracts do not depend on consumers; the app shell does not depend on Control Center internals. Avoid broad utility barrels and catch-all controllers: add behavior to the narrow semantic owner that already coordinates it.
+[Architecture](../ARCHITECTURE.md) owns and routes the executable dependency
+rules. Inside the browser boundary, avoid broad utility barrels and catch-all
+controllers: add behavior to the narrow semantic owner that already
+coordinates it.
 
 ## Server And UI State Boundary
 
@@ -69,7 +72,14 @@ Active-chat detail loading is a skeleton, not a blank chat. Detail failure has o
 
 Async writers capture their source key and token before awaiting. Send snapshots and clears visible input atomically; upload and send exclude each other; a failed send restores captured text only if no newer composer work exists. A successful first send transfers the blank session to the created chat. Deletion/authoritative refresh removes stale sources so late results cannot resurrect them.
 
-`composerControlStore` separately owns next-run provider/model/Search state, visibility toggles, per-model control drafts, and the selected Assistant identity with its preserved ordinary manual draft backup. Provider changes only as part of a selected concrete model, and Assistant selection applies one exact revision atomically. Governed-control changes distinguish user, system, and assistant origins: a manual user change removes the Assistant identity with a non-blocking notice while keeping the resolved values as the unnamed draft, a system rewrite (chat activation, defaults recovery) clears it silently, and explicit removal restores the preserved manual draft. Assistant-derived values never overwrite the user's saved defaults or per-model drafts. Prompt text is not browser state: ordinary runs receive the server-owned baseline and Assistant runs use their server-resolved revision.
+`composerControlStore` separately owns next-run provider/model/Search state,
+visibility toggles, per-model control drafts, selected Assistant identity, and
+the preserved ordinary-draft backup. Each mutation carries a user, system, or
+Assistant origin so one atomic state transition can retain, clear, or restore
+the correct draft without overwriting saved defaults. [Run controls](composer/RUN_CONTROLS.md)
+owns the visible selection/removal behavior and notices. Prompt text is not
+browser state: runs receive only the server-resolved ordinary or Assistant
+prompt owner.
 
 ### Run lifecycle and inspection
 
@@ -79,7 +89,9 @@ Async writers capture their source key and token before awaiting. Send snapshots
 
 Send and regenerate keep their distinct optimistic preparation but share one lifecycle executor for HTTP/SSE work, persisted-ID adoption, source reconciliation, terminal notification, failure/cancellation, and controller-safe cleanup. A rejected request rolls back only its optimistic rows. An ambiguous accepted/network failure performs a source-keyed durable refresh before retry.
 
-A failed assistant's visible Retry action delegates to that same regenerate owner with the failed assistant id. It therefore creates the ordinary sibling branch under the original user message and does not introduce a second retry store, history-deletion path, or draft mutation.
+A failed assistant retry delegates to the existing regenerate lifecycle owner
+with no second retry store, deletion path, or draft mutation; [Composer](composer/COMPOSER.md)
+owns the visible action and branch outcome.
 
 Foreground token deltas are buffered for React updates and adjacent event aggregation. Historical rows, Markdown/artifacts, and workspace summaries do not repaint for token-only changes. Malformed SSE frames are skipped, later frames continue, and one readable warning appears in the UI/Details.
 
@@ -113,15 +125,21 @@ The memoized left-pane adapter intentionally ignores callback identity churn and
 
 ### Run truth and thread behavior
 
-- Run activity renders consumed evidence only: `Working…` before a known stage, `Searching…` after search/citation evidence, `Answering…` after answer tokens, and a readable error after failure. It never invents provider stages or auto-opens Details.
-- Queued, live, cancelled, failed, complete-without-text, and ordinary complete assistant tails remain distinguishable. Search selected-off versus backend-skipped stays inspectable in durable run evidence rather than a fabricated live step.
-- Explicit Send in the still-active source chat reclaims scroll ownership after optimistic rows appear. Passive updates never move an unpinned reader. A streaming turn anchors at the newest question with bounded preceding context when it fits; an oversized newest question instead reveals its trailing edge together with the beginning/status of the live answer. Neither anchor chases every token to the tail.
-- `Jump to latest message` appears only when real message content extends beyond the viewport threshold; the just-submitted oversized question alone and receipt/action spacers do not trigger it. Activation or deliberate return to bottom resumes tail following.
-- Composer context shows approximate current input against the safe input budget, names full model context separately, and shows provider-reported branch usage. It does not estimate currency cost.
+Run presentation selectors consume only normalized lifecycle/event evidence and
+never synthesize provider stages or open inspection. Thread-scroll ownership is
+source-keyed: deliberate work in the active chat may establish one anchor,
+while passive or background updates cannot move another reader. Context
+selectors expose only backend-projected estimates and provider usage. Exact
+labels, assistant-tail states, anchor geometry, latest-message eligibility, and
+context disclosure belong to [Messages](MESSAGES_AND_MARKDOWN.md),
+[Composer](composer/COMPOSER.md), [Run controls](composer/RUN_CONTROLS.md), and
+[Receipt and Details](composer/RECEIPT_AND_DETAILS.md).
 
 ### Shell and session ownership
 
-- The conversation edge rail owns Workspace, compact New chat, truthful Pipeline activity, Share, state-aware Details, and Conversation actions. The fixed Workspace footer owns the only visible Account trigger plus Command palette, Assistants, Settings, Sign out, and entitled Admin.
+- Shell adapters project the action destinations and availability owned by
+  [product and layout](PRODUCT_AND_LAYOUT.md); they do not create a second
+  navigation, Account, conversation-action, or Details owner.
 - Initial bootstrap has one actionable Retry surface and disables dependent mutations. Blank-chat and zero-model states render only after readiness and distinguish an empty workspace from missing granted access. The zero-model projection also distinguishes admin authority: only an administrator receives the direct Control Center provider-setup action.
 - Above the compact shell threshold, Workspace-rail visibility is one browser-local presentation preference. Hiding closes rail-owned menus and focuses the surviving Workspace trigger; restoring focuses the rail's hide action. At compact widths the same trigger continues to own the modal drawer, and no chat/folder/account state migrates into this preference.
 - A persisted chat with no provider/model default is valid. The shell may show a visible catalog fallback without persisting it. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
@@ -146,4 +164,4 @@ Dialog focus is session-scoped: entry, Tab containment, Escape ownership, nested
 
 - Update this document only when semantic ownership, store boundaries, async reconciliation, or frontend testability changes.
 - Do not add file-by-file inventories, refactor chronology, or exhaustive leaf prop descriptions; source and focused tests own those facts.
-- Visual styling belongs to `DESIGN_SYSTEM.md`; durable user interaction belongs to the appropriate functional frontend owner.
+- Visual styling belongs to the bounded owners routed by `DESIGN_SYSTEM.md`; durable user interaction belongs to the appropriate functional frontend owner.

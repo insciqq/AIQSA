@@ -7,7 +7,7 @@ Scope: Current process topology, module dependency direction, durable data bound
 
 AIQSA is a TypeScript/Node.js Next.js modular monolith for a self-hosted installation. The supported topology is a hardened single-host, single-replica runtime. Before broad real-user exposure it still lacks shared-provider quotas, per-user pressure limits, general observability, and completed 50-user load evidence.
 
-Do not split a separate backend, frontend runtime, or microservice without a measured blocker that cannot be solved within this boundary. API behavior belongs to `BACKEND.md`, UI behavior to `FRONTEND.md`, deployment configuration to `ENV_VARIABLES.md`, and security/exposure rules to `SECURITY.md`.
+Do not split a separate backend, frontend runtime, or microservice without a measured blocker that cannot be solved within this boundary. API behavior is routed by `BACKEND.md`, UI behavior by `FRONTEND.md`, deployment configuration belongs to `ENV_VARIABLES.md`, and security/exposure rules are routed by `SECURITY.md`.
 
 ## System Shape
 
@@ -78,17 +78,13 @@ Postgres/Prisma is authoritative for:
 
 Private objects live in S3/MinIO in the bundled stack. A filesystem fallback exists only when S3 is absent outside that topology.
 
-Core rules:
-
-- private rows are resolved through the authenticated user; request-supplied ownership is never trusted;
-- catalogs are server-filtered and entitlements/configuration are revalidated at run admission;
-- installation Search policy recommends but never grants access; preferred intent is durable while model-compatible execution is ephemeral;
-- a chat is a message DAG with a persisted active leaf assembled by the server;
-- relational constraints keep parents/leaves inside their chat and grants inside one valid principal/target shape;
-- one active run is allowed per chat, while different chats may execute concurrently;
-- uploads stay private and enter provider payloads only after ownership/capability checks;
-- a public share is an immutable sanitized snapshot, never a live pointer into private chat state;
-- normalized bounded previews/events/evidence may persist; raw provider payloads do not persist by default.
+At the architecture layer, Postgres owns authenticated relational tenancy,
+mutable control-plane state, conversation/run graphs, and immutable accepted
+evidence; private object storage owns attachment bytes behind those relational
+references. Browser input never becomes ownership or entitlement authority, and
+external payloads cross into durable state only through a bounded normalized
+projection. `CRITICAL_INVARIANTS.md` owns the cross-cutting safety outcomes;
+the persistence, API, run, and security owners below own their exact mechanics.
 
 Exact schema constraints, migration policy, retention, branch repair, usage accounting, upload cleanup, and share sanitization live in `backend/PERSISTENCE_AND_RETENTION.md`. Applied migrations are historical artifacts and are not rewritten to refresh current prose.
 
@@ -108,23 +104,33 @@ authenticated mutation
 
 ### Preparation and admission
 
-Send and regenerate use one server-only preparation boundary. Route handlers retain auth, source lookup, orphan reconciliation, and the active-run gate; preparation owns content, capability, prompt, context, controls, Search, attachment, MCP, budget, and redacted-preview validation.
+Send and regenerate cross one server-only preparation boundary between thin
+authenticated route handlers and persistence/execution. It produces a frozen
+provider-neutral plain-data snapshot; persistence and execution receive
+isolated materializations and never rebuild accepted input from mutable browser
+or control-plane state.
 
-The prepared run is a deeply frozen plain-data snapshot. Persistence and execution receive isolated materializations instead of rebuilding it. Run creation independently revalidates entitlement, active revisions, model/Search compatibility, credential resolution, evidence, and MCP inventory freshness before atomically persisting messages, run graph, accepted defaults, and immutable bindings.
-
-Preferred logical Search-source intent remains distinct from the effective model-compatible plan. Admission selects one deterministic complete assignment of active physical routes belonging to the exact requested sources. Same-connection hosted execution is preferred only when the whole mode/source/client-tool plan remains valid; `all_selected` fan-out is all-client, and an unsatisfied assignment fails without source omission or cross-source fallback. Admission resolves the current user's exact technical provider credential/check rather than treating global route evidence as credential authority. Every selected source has an ordered immutable binding that also pins the physical strategy/revision and technical provider binding; each actual invocation is a separate execution record. MCP bindings similarly pin revision, generation, fingerprint, namespaced complete tool definitions, and safe source/account evidence.
+The atomic run graph binds every accepted logical choice to the immutable
+provider, Search, credential, and MCP identities required for continuation and
+recovery. [API state transitions](backend/api/CATALOG_CHATS_AND_RUNS.md) own the
+exact validation/commit sequence, [Search plans](run_pipeline/SEARCH_PLANS.md)
+own physical-route assignment, and [provider admission](backend/providers/ADMISSION_AND_BINDINGS.md)
+owns credential and deployment binding mechanics.
 
 ### Execution, tools, and recovery
 
-Foreground execution owns provider/tool dispatch, live SSE, batched token persistence, transient chat synchronization, and the process-local cancellation registry. Provider adapters translate only their wire/transport/parser semantics and return normalized events/results.
+Foreground execution owns provider/tool dispatch, normalized live events,
+batched persistence, transient chat synchronization, and process-local
+cancellation. One provider-neutral continuation owner coordinates Search and
+MCP while adapters remain limited to wire/transport/parser translation.
 
-Search and MCP use one provider-neutral continuation loop. It persists each complete requested tool batch before bounded parallel dispatch and preserves provider order. Every client Search adapter returns canonical bounded findings, an explicit normalized source list, safe operations/previews, and usage; those same findings/sources back the downstream tool result and separately attributable `SearchRun`. Completed calls can be reused after recovery; a call left running across a crash is outcome-unknown and is not repeated automatically. Private provider continuation signatures and raw provider bodies remain outside client projections.
+Recovery reconstructs work from durable accepted bindings, checkpoints, and
+evidence; live controllers and provider sessions remain process-local. Exact
+batch persistence, outcome-unknown handling, terminal settlement, and
+provider-specific live-only exceptions are owned by the routed run and provider
+contracts rather than repeated in this topology map.
 
-Recovery owns boot orphan sweep, explicit provider refresh, checkpointed tool continuation, and stale-run settlement. Terminal completion, recovered failure, and cancellation all use status-guarded database writes so only one writer finalizes messages, usage, and run state. Live token cadence may be finer than persistence and React updates.
-
-Hosted Gemini answer grounding is a special live-only boundary: once detected, answer/artifact drafts are purged and later grounded content/signatures remain transient. Durable state keeps status, usage, provenance, and neutral placeholders rather than misleading stored answer text. The separate query-only Gemini Search adapter never enters that answer mode: it discards Suggestions/signatures/raw steps after validation and returns only ordinary normalized client-Search findings and citations.
-
-`backend/RUNS_AND_STREAMING.md` owns exact lifecycle, cancellation, event, context, usage, and cost semantics. `backend/PROVIDER_ADAPTERS.md` owns provider-specific behavior. `RUN_PIPELINE.md` owns product-level run meaning.
+`backend/RUNS_AND_STREAMING.md` owns exact lifecycle, cancellation, event, context, usage, and cost semantics. The bounded owners routed by `backend/PROVIDER_ADAPTERS.md` own provider-specific behavior. Bounded owners routed by `RUN_PIPELINE.md` own product-level run meaning.
 
 ## Frontend Boundary
 

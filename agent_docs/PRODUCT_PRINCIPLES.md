@@ -13,7 +13,7 @@ Scope: Stable product intent and prioritization guidance that informs implementa
 - Current capabilities stay reachable through one presentation and one state owner. New visual treatments do not justify parallel classic/new applications, duplicate API clients, hidden fallback renderers, or invented product state.
 - Server-owned trust is visible rather than implied. Unavailable, unknown, pending, failed, revoked, and disabled facts remain distinct; the UI does not manufacture success, cost, readiness, entitlement, or audit evidence.
 - Progressive disclosure protects the reading flow while preserving complete access to setup and evidence. Conversation and composer remain primary; Workspace, Details, Settings, and administrative tasks appear when their object and authority exist.
-- The first-use palette is light `neutral`; all supported stored theme ids remain compatible and present the same semantic hierarchy. Visual specifics belong to `DESIGN_SYSTEM.md`.
+- The first-use palette is light `neutral`; all supported stored theme ids remain compatible and present the same semantic hierarchy. Visual specifics belong to the bounded owners routed by `DESIGN_SYSTEM.md`.
 - Dedicated WCAG conformance work remains explicitly deferred, but responsive access, keyboard-safe text entry, touch operation, readable overflow, and focus-safe existing interactions remain current behavior contracts.
 
 ## Decision Use

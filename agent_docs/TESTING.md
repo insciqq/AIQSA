@@ -13,7 +13,16 @@ Scope: Stable verification routing, disposable-environment rules, non-obvious op
 | Browser integration | Playwright against the disposable development stack | Browser/server routing, sessions, responsive interaction, streaming, and seeded persistence | Only for a real browser or cross-boundary product risk |
 | Opt-in boundary evidence | Focused scripts and integration tests | Migrations, installation, MCP/ToolHive, auth concurrency, security, and real-provider behavior | Only when the changed boundary requires it |
 
-Executable scripts in `package.json`, runner configuration, and the current test tree own exact code coverage and discoverable test names. Do not maintain volatile counts, exhaustive file inventories, exact test-title instructions, or feature-by-feature regression histories here. Accessibility and responsive product scope live in `FRONTEND.md`; provider, auth, persistence, and security assertions live in their subject owners.
+Executable scripts in `package.json`, runner configuration, and the current test tree own exact code coverage and discoverable test names. Do not maintain volatile counts, exhaustive file inventories, exact test-title instructions, or feature-by-feature regression histories here. Accessibility and responsive product scope are routed by `FRONTEND.md`; provider, auth, persistence, and security assertions live in their subject owners.
+
+`scripts/docs-manifest.mjs` is the sole executable inventory of mandatory
+documentation. The documentation checker also rejects a substantial normalized
+prose or list-item block copied between bounded normative living owners. It
+excludes routing indexes, metadata, headings, code fences, generated output,
+and task state; similarity remains a human audit input rather than an automated
+rewrite signal. Cross-layer ownership follows `DECISION_DEFAULTS.md`: tests may
+enforce the absence of a copied block, but only contract review can decide
+whether differently worded statements own the same proposition.
 
 ## Core Verification Lanes
 
@@ -76,7 +85,7 @@ docker compose -f docker-compose.dev.yml exec -T \
   npx playwright test <spec-files> --project=chromium
 ```
 
-Use the standalone `run --rm` form when the selected spec requires the configured reset and loss of interactive development fixtures is acceptable. Inspect material visual changes directly at the viewport, input, theme, zoom, and motion conditions owned by the frontend contract; there is no generated screenshot-gallery or final-evidence ceremony. Local auth fixtures and session-mutation safety are owned by `SECURITY.md`.
+Use the standalone `run --rm` form when the selected spec requires the configured reset and loss of interactive development fixtures is acceptable. Inspect material visual changes directly at the viewport, input, theme, zoom, and motion conditions owned by the frontend contract; there is no generated screenshot-gallery or final-evidence ceremony. Local auth fixtures and session-mutation safety are owned by the bounded security contracts routed by `SECURITY.md`.
 
 ## Test Authoring
 
@@ -187,6 +196,19 @@ npm run smoke:gemini
 
 It reads `GEMINI_API_KEY` and optional `AIQSA_GEMINI_SMOKE_MODEL`, uses the native v1 runtime with `store: false`, and keeps the call bounded. Output may contain only sanitized booleans, counts, status, and usage evidence; it must not print the key, response text, Suggestions markup, citation links, raw provider payload, or signatures. A missing key skips cleanly. Do not run large-context, deep-research, attachment-heavy, or long-background variants without fresh approval.
 
+The same authorized smoke has an explicit unary request-shape variant for the
+historical attachment-only edge case:
+
+```bash
+AIQSA_GEMINI_SMOKE_EMPTY_TEXT=1 npm run smoke:gemini
+```
+
+It sends the exact bounded `store: false` body produced by the current request
+builder, requires the historical attachment marker with no empty text part,
+HTTP 200 acceptance, a terminal response, and nonzero usage, and reports only
+those booleans, HTTP status, step counts, and usage. It never prints provider
+content or a raw payload.
+
 With the same permission, the exact native Google Search stream/parser path is selected explicitly:
 
 ```bash
@@ -202,6 +224,22 @@ npm run smoke:custom-openai-compatible
 ```
 
 It uses an in-process loopback Chat Completions fixture, reads no provider key, and makes no external request. Other real-provider or gateway proof has no standing permission here; it requires explicit operator authorization, the smallest useful request, and sanitized evidence.
+
+After explicit Anthropic authorization, the bounded Messages protocol smoke
+reads `ANTHROPIC_API_KEY` and optional `AIQSA_ANTHROPIC_SMOKE_MODEL`:
+
+```bash
+npm run smoke:anthropic
+```
+
+It makes one tiny valid control request, one empty-text-block request, and one
+request built through the production historical-attachment marker path. Output
+is limited to acceptance booleans, HTTP status, content-block counts,
+stop-reason presence, marker presence, and usage; it never prints message
+content, response text, ids, raw payloads, or the key. A missing key skips
+cleanly. Refusal and context-window probes are deliberately excluded because
+safely forcing those terminal shapes would require a harmful or unbounded
+request.
 
 After that explicit authorization, the direct OpenAI Responses smoke reads `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and optional `AIQSA_DEFAULT_MODEL`:
 

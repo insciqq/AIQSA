@@ -21,6 +21,14 @@ Persisted `Message` rows are durable chat memory. The backend, not the browser, 
 - Branch checkout persists by updating `Chat.activeLeafMessageId`; message deletion removes the selected subtree and falls back to the deleted root's parent if the active leaf was inside it.
 - Provider adapters receive a provider-neutral `context.mode = "branch_path"` payload with ordered user/assistant messages.
 - Request previews expose safe context ids, roles, and text snippets.
+- A historical attachment-only user turn remains non-empty in text replay as one
+  ordered marker line per stored block: `[image attachment]`,
+  `[file attachment: <fileName>]`, or the private-data-free `[attachment]`
+  fallback for a legacy kind. Always-redacted previews replace a named file
+  with `[file attachment]`, declare `attachment_filename`, and expose no
+  attachment id, storage fact, extracted text, media type, or bytes. Individual
+  provider owners document only a wire-specific deviation from this shared
+  projection.
 - If the chat belongs to a folder/project with memory, the run preparation boundary appends `Project memory` to the normalized system prompt for sends and regenerations before provider request preview/building.
 
 OpenAI Responses and native Gemini Interactions use ordered input/step items, Anthropic Messages and OpenRouter/compatible Chat use ordered message arrays, and the fake provider echoes a deterministic context-memory preview for tests. A grounded live-only assistant row contributes only its neutral placeholder, never its transient answer.
@@ -33,7 +41,10 @@ The visible assistant message is for the user-facing answer only. The run prepar
 - keep provider/search/request/usage/error details out of visible chat answers; the UI shows Events/Details summaries and the model-run API keeps debug previews inspectable;
 - include citations naturally in the answer only when useful.
 
-OpenAI Responses and OpenRouter answer adapters sanitize the common old debug-template shape before emitting/saving visible answer text. Raw provider text remains available in model-run response previews when it differs from the visible answer.
+OpenAI Responses, native Gemini Interactions, OpenRouter, and OpenAI-compatible
+Chat answer adapters sanitize the common old debug-template shape before
+emitting/saving visible answer text. Raw provider text remains available in
+model-run response previews when it differs from the visible answer.
 
 ## Chat Titles
 
@@ -52,7 +63,14 @@ The first send in a blank/new chat derives a short deterministic title from loca
 - batch token persistence: live SSE keeps per-token deltas, while assistant-message partial text and stored token `ModelRunEvent` rows flush as aggregated chunks;
 - require provider-specific terminal proof before durable completion. A truncated or safety-bounded provider stream flushes accepted partial text, then marks the assistant/run `error` without writing `done`; provider-reported usage already observed before failure may still be stored as incomplete-run operational usage, but is never guessed;
 - treat event/total-wire, absolute-deadline, idle-timeout, and retained-output safety failures as terminal recovery outcomes. They keep a stable value-free code and concise public message, cannot execute a tool or another provider round, and cannot be refreshed into success from a published provider response id. Structured warnings allow only provider family/adapter plus opaque local connection/model ids and numeric limit counters; provider text, reasoning, citations, tool arguments, endpoints, and credentials remain excluded. Ordinary transient provider failures retain the existing bounded refresh path;
-- treat a remote MCP wire-envelope overflow as a non-retryable tool/session failure before any partial JSON or result enters provider continuation, and close the affected SDK transport to suppress reconnect. Initialize, inventory, call, and unknown/session map respectively to `mcp_initialize_response_too_large`, `mcp_inventory_response_too_large`, `mcp_call_result_too_large`, and `mcp_response_too_large`. Public failures expose at most that code and safe message; the durable error-result preview may also keep bounded call id/name but never arguments or partial result. The separately persisted requested call retains its existing ordering/recovery and bounded inspection contracts. Structured warnings may add server id, tool name, operation, configured/reached bytes, transport, and opaque run correlation; body, arguments, endpoint, headers, credentials, and parser details remain excluded;
+- treat a remote MCP wire-envelope overflow as a non-retryable tool/session
+  failure before any partial JSON or result enters provider continuation.
+  Initialize, inventory, call, and unknown/session map respectively to
+  `mcp_initialize_response_too_large`,
+  `mcp_inventory_response_too_large`, `mcp_call_result_too_large`, and
+  `mcp_response_too_large`; the separately persisted requested call retains its
+  ordering/recovery contract. [MCP runtime security](../security/MCP_RUNTIME.md)
+  owns pre-parse transport closure and the preview/log redaction boundary;
 - send transient UI sync events such as `chat_update` without persisting them into `ModelRunEvent`;
 - annotate hosted `web_search_call` artifacts outside the provider call payload with the admitted logical Search option id and pinned friendly display name, so live and recovered UI retain exact source identity without inventing an OpenAI label for custom Responses endpoints;
 - update assistant content incrementally or at finalization;
@@ -78,4 +96,4 @@ Estimated cost is computed and stored from operator-maintained `ProviderModel.in
 
 ## Security
 
-`CRITICAL_INVARIANTS.md` and `SECURITY.md` own the security contract. Backend-specific observable ownership, entitlement, upload, share, and run-validation behavior remains documented in the relevant route/persistence sections above; do not maintain a second generic checklist here.
+`CRITICAL_INVARIANTS.md` and the bounded owners routed by `SECURITY.md` own the security contract. Backend-specific observable ownership, entitlement, upload, share, and run-validation behavior remains documented in the relevant route/persistence sections above; do not maintain a second generic checklist here.

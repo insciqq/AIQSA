@@ -1,7 +1,7 @@
 # FRONTEND PRODUCT AND LAYOUT
 
 Owner: Frontend product-contract maintainers
-Scope: Current UI capability, presentation boundary, accessibility scope, and functional responsive layout; visual recipes remain in DESIGN_SYSTEM.md.
+Scope: Current UI capability, presentation boundary, accessibility scope, and functional responsive layout; visual recipes are routed by DESIGN_SYSTEM.md.
 
 ## Current Product Contract
 
@@ -11,7 +11,7 @@ The shipped UI is one Chat workspace and task-first Control Center presentation 
 
 The current presentation is the only runtime view layer on the existing Next.js routes. Backend APIs, client contracts, domain modules, actions, and the focused workspace/thread/composer/run stores remain the only state owners unless a separately accepted decision changes them. There is no `/v2`, parallel API client, classic/new preference, hidden fallback renderer, or duplicate product state.
 
-The source map and behavioral detail below describe the currently shipped implementation. Future UI changes consume the existing feature contracts and update this document in the same change; mockups or isolated components never establish current behavior. `DESIGN_SYSTEM.md` is binding for visual work, while this file remains binding for behavior, state ownership, and responsive access.
+The source map and behavioral detail below describe the currently shipped implementation. Future UI changes consume the existing feature contracts and update this document in the same change; mockups or isolated components never establish current behavior. The bounded owners routed by `DESIGN_SYSTEM.md` are binding for visual work, while this file remains binding for behavior, state ownership, and responsive access.
 
 ## Deferred Accessibility Scope
 
@@ -19,33 +19,32 @@ Dedicated accessibility-conformance certification is not currently supported. Ad
 
 ## Primary UI
 
-The first screen is the usable Chat workspace; there is no landing-page product. It uses direct controls, adaptive disclosure, a centered blank-chat start state, one composer-control owner, and the current Provider Quick setup. This file takes precedence over visual inspiration for behavior, state, and responsive UX; `DESIGN_SYSTEM.md` owns appearance.
+The first screen is the usable Chat workspace; there is no landing-page product. It uses direct controls, adaptive disclosure, a centered blank-chat start state, one composer-control owner, and the current Provider Quick setup. This file takes precedence over visual inspiration for behavior, state, and responsive UX; the bounded owners routed by `DESIGN_SYSTEM.md` own appearance.
 
 After bootstrap, a zero-model state distinguishes authority. An administrator sees provider-setup language and a direct Control Center Providers action; a non-administrator sees the existing model-access explanation without an admin destination. Neither state redirects away from Chat or mounts a separate onboarding workflow.
 
 ## Capability Inventory
 
-This is the current capability inventory. A UI change is incomplete if it removes an applicable line or hides it without a discoverable product path.
+This table inventories reachability only. A UI change is incomplete if it
+removes an applicable capability family or hides it without a discoverable
+path; the linked bounded document is the sole owner of behavior inside that
+family.
 
-- **Workspace:** create and switch chats; blank first-send creation; search titles/provider/model and server-side message content; favorites; nested folders/projects; collapse, create, rename, move, delete, and project memory/settings; per-chat active-run cues.
-- **Catalog and next-run selection:** backend-entitled concrete-model selection grouped by provider, one ordered zero-to-three-option Search plan with explicit fan-out/model-choice mode and compatibility reconciliation on model change, opt-in Assistant selection through the quick picker and Assistants, model tool-calling capability, and per-model non-Search draft restoration/clamping. The ordinary composer is unnamed: no Assistant placeholder, `Custom`, or `Default` label exists, and a selected Assistant adds only its contextual chip.
-- **Run controls:** reasoning effort, background mode, provider Stream mode, citation visibility, reasoning/thinking visibility, default-on inline tool-activity visibility, answer sound, temperature, and max output tokens, with existing autosave/flush and next-run-only semantics where applicable. The three visibility controls are presentation preferences and never change an accepted provider request or tool execution.
-- **Composer and attachments:** per-chat drafts, Enter/Shift+Enter, IME safety, multiline growth, edit-branch mode, file picker and drag/drop, multiple PDF/image/text-like attachments, attachment-only send, upload progress/partial failure, Send, Stop, and cross-chat concurrent runs.
-- **Context and usage:** one circular safe-input-budget gauge with an accessible exact current-context estimate and warning state, a viewport-contained detail disclosure, truncation artifact, active-branch message/token/cached-input statistics, and no user-facing estimated dollar cost.
-- **Run and answer states:** catalog/workspace/chat-detail loading and error, queued/streaming/complete/cancelled/error assistant states, fake/provider streaming, run/search/tool activity, jump to latest, and background-run recovery/check action.
-- **Answer artifacts:** safe markdown, fenced-code copy/highlighting, tables/lists/quotes/links, hosted/native search summaries, compact expandable tool activity with nested client Search engine/provider-operation detail, citations, reasoning/thinking, provider artifacts/warnings, usage, and long-content containment.
-- **Message and branch actions:** regenerate, edit, copy, delete subtree, Branch from here, branch checkout/active leaf, Copy thread, confirmations, and mid-stream mutation gates.
-- **Details and inspection:** closed-by-default contextual Branch and Events access; readable run/status/error display; chronological grouped event meaning and counts; and true-fork/active-leaf checkout. Composer Run setup remains the only next-run parameter editor, while immutable model-run request/response inspection remains available through APIs.
-- **Sharing:** Share anonymously through an explicit confirmation dialog that explains the sanitized-snapshot semantics before any link exists, a visible/copyable secret link right after creation, a per-chat list of live links with per-link revocation across sessions, immutable sanitized public snapshots, and no private attachments/provider payloads/internal ids/user-group data.
-- **Command palette and overlays:** command palette across actions/chats/models/search/prompts, shortcut safety in text entry, picker/menu/tab interaction, close/cancel/backdrop behavior, and single-modal ownership.
-- **Assistants, settings, and appearance:** the authenticated full-screen Assistants surface as the only shipped reusable-resource type — card-grid Discover/Yours with bounded categories and per-user pinning, identity-first create/revise with browser-generated avatars, version history with restore-as-new-revision, group/installation publication with explicit publish-update and revoke, duplication, archive/restore — plus entitled MCP server enablement/readiness/personal fields/OAuth identity, dirty-close protection, six local palettes (AIQSA, Graphite, Verdant, Classic Dark, Classic Light, Paper), scheme-aware cookie-backed first paint, and project settings.
-- **Auth and public access:** email/password sign in, configured-only Google/Yandex OAuth sign in with same-email account merge, verified allowlisted access requests, direct one-time invite onboarding, verification, reset request/completion, readable generic failures, one-shot mid-use session-expiry re-authentication with keyed draft recovery, recovery-token UI absence, route guards, and public-share invalid/revoked states.
-- **Responsive access:** hideable browser-local Workspace navigation, Workspace and Details drawers, complete core workflow at 384-390x844, short-landscape operation at 844x390, deliberate tablet/1280px compact composition, touch-visible actions, safe overlays, no required hover, and no page-level horizontal overflow.
-- **Admin:** server-guarded entry and denial; Providers, Search, Users, Access & groups, Invites, Access rules, Usage, MCP servers, Email delivery, and Safety; passive installed/latest release awareness; full-width indexes plus dedicated resource details; approvals, direct group-membership editing, ordinary exact grants and the built-in `Full access` group's automatic current/future provider/model/Search/MCP coverage, rules, invites, and session controls; direct-user and group provider credential selection; provider connection/model/credential/preflight/diagnostic/activation lifecycle; Search integration add/test/activate/enable/disable/archive lifecycle; MCP draft/test/activation/update/rollback/rebuild/OAuth-validation lifecycle; SMTP save/test/activation lifecycle; deletion plus acting/final-admin guards. Legacy `groups` and `model-access` section values normalize to `access`.
+| Capability family | Reachable inventory | Normative owner |
+| --- | --- | --- |
+| Workspace and navigation | Chats, blank first-send creation, local/server search, favorites, nested folders/projects, project settings, per-chat live cues, command palette, and Account entry | [Navigation](composer/NAVIGATION.md) |
+| Composer and attachments | Keyed drafts, edit mode, text/IME/keyboard input, PDF/image/text attachments, upload feedback, Send/Stop, and independent cross-chat work | [Composer](composer/COMPOSER.md) |
+| Catalog and next-run controls | Entitled model choice, Search plans, optional Assistants, reasoning/background/Stream, visibility/sound preferences, temperature/output limits, Tools, and context disclosure | [Run controls](composer/RUN_CONTROLS.md) |
+| Answers, artifacts, and branches | Run states, safe Markdown/code/math, Search/tool/citation/reasoning artifacts, copy/edit/regenerate/delete/branch actions, active-leaf checkout, thread sharing, and long-content containment | [Messages and Markdown](MESSAGES_AND_MARKDOWN.md) |
+| Receipt and inspection | Message-bound run evidence, Branch and Events, recovery/error inspection, overlay access, and wide pinning; Run setup remains the next-run editor | [Receipt and Details](composer/RECEIPT_AND_DETAILS.md) |
+| Authentication and public access | Password/OAuth entry, access requests, invites, verification/reset, session-expiry return, route-safe failures, and anonymous immutable public viewing | [Auth and public sharing](account/AUTH_AND_PUBLIC_SHARING.md) |
+| Assistants and Settings | Discover/Yours, pins, create/revise/history/publication/duplication/archive, MCP & tools, appearance, and project settings | [Settings and Assistants](account/SETTINGS_AND_ASSISTANTS.md) |
+| Control Center | Providers, Search, team/access, usage, MCP, email, safety, release awareness, and their complete administrator lifecycle tasks | [Control Center](account/CONTROL_CENTER.md) |
+| Responsive shell | One conversation-first shell with persistent or on-demand Workspace, on-demand Details, safe overlays, coarse-pointer access, and no page-level overflow | [Layout](#layout) and [visual adaptation](../design_system/INTERACTION_AND_REVIEW.md) |
 
 ## Layout
 
-Above `1280px`, Chat may use a persistent Workspace rail beside one conversation column. The conversation column owns its compact edge-action rail, thread, and composer; no global application bar spans the Workspace rail. The desktop action rail occupies a protected top-right footprint without a full-width surface, separator, or vertical header row. Narrow conversation columns yield that right-side inline space; wide centered reading content clears it naturally. Global Account access is pinned in a footer below the Workspace browse scroller, so session destinations stay with application navigation rather than conversation actions. At `>=1440px`, explicitly pinned Details adds a third normal-flow column without changing the answer's reading measure. Overlay Details never changes the grid. Exact geometry belongs to `DESIGN_SYSTEM.md`.
+Above `1280px`, Chat may use a persistent Workspace rail beside one conversation column. The conversation column owns its compact edge-action rail, thread, and composer; no global application bar spans the Workspace rail. The desktop action rail occupies a protected top-right footprint without a full-width surface, separator, or vertical header row. Narrow conversation columns yield that right-side inline space; wide centered reading content clears it naturally. Global Account access is pinned in a footer below the Workspace browse scroller, so session destinations stay with application navigation rather than conversation actions. At `>=1440px`, explicitly pinned Details adds a third normal-flow column without changing the answer's reading measure. Overlay Details never changes the grid. Exact geometry belongs to the bounded owners routed by `DESIGN_SYSTEM.md`.
 
 ```text
 desktop: Workspace | conversation { edge actions, thread, composer }
@@ -53,7 +52,15 @@ wide pinned: Workspace | conversation | Details
 compact: conversation + on-demand Workspace/Details overlays
 ```
 
-At or below `1280px`, the edge-action rail floats over the conversation and exposes adjacent Workspace and `Start new chat` actions in one bounded group. A token-derived top readability veil softens content passing beneath the controls without creating an opaque header row; initial thread padding scrolls away with the document. Workspace opens the existing left chat/folder pane as a modal drawer; direct New chat activates the existing top-level blank session without opening the drawer or persisting a row before first send. It is disabled only before workspace readiness or during first-chat creation and remains available while another saved chat runs. The drawer reuses the desktop pane actions for chat search, new chat, folder creation, chat rename/move/share/delete/export, folder rename/move/delete, subfolders, project settings, and the pinned Account footer. It has an explicit touch-sized Close action, honors all safe-area edges, preserves the browse-region scroll position across close/reopen, and clears open row menus when it closes. Crossing the desktop breakpoint while it is open closes the drawer state before the CSS-hidden desktop composition can leave the shell blocked. Crossing into compact mode with the desktop Account menu open also closes that hidden menu and transfers focus to the now-visible Workspace trigger; if focus remains there when desktop composition returns, it transfers back to the visible Account trigger instead of falling to the document body. Opening Project Settings, Command palette, Assistants, or Settings from the drawer closes Workspace first and opens the replacement on the next event-loop turn, so only one modal layer is active.
+At or below `1280px`, the edge-action rail floats over the conversation and
+exposes adjacent Workspace and Start-new-chat actions in one bounded group. A
+token-derived readability veil lets document content pass beneath without an
+opaque header row. Workspace reuses the ordinary navigation pane as a
+safe-area-aware modal drawer with explicit Close and one browse scroller;
+[Navigation](composer/NAVIGATION.md) owns its action inventory and blank-chat
+semantics. [Implementation state](IMPLEMENTATION_STATE.md) owns cross-breakpoint
+closure, focus transfer, scroll preservation, and replacement-overlay
+sequencing so only one modal layer remains active.
 
 On wider screens the persistent Workspace rail has its own `Hide workspace` action. The same Workspace trigger remains visible after hiding and restores the rail instead of opening a modal drawer. That preference is browser-local, survives reload, preserves the existing Workspace/chat/folder state owners, and returns focus between the visible hide/show controls; it never changes account settings or server navigation state. Compact Workspace remains dismissible as its ordinary drawer regardless of the stored wide-screen preference.
 
@@ -61,19 +68,30 @@ The chat title is absent from visible conversation chrome; the selected Workspac
 
 The browser document title follows the visible active chat, with `New chat` as the blank-workspace fallback. Settings and Assistants replace that title while they own the workspace; transient drawers, palettes, inspectors, sharing, and confirmations preserve the underlying chat title. Sign in and public share use fixed privacy-safe route titles, while Control Center adds only its fixed active section label; public snapshot content, bearer tokens, account identity, selected resources, prompts, and message content never enter metadata.
 
-The responsive contract is verified at 384x844 portrait, 844x390 short landscape, 768x1024 tablet, and 1280px compact width in addition to the wider desktop evidence widths. Width chooses shell composition while the composer keeps one stable information model at every size: one accessible Message plane without a redundant visible label, one legible provider/model row without a redundant visible `Model` prefix, Search and More, then one action band with labeled Tools, one circular context gauge, Attach, and Send/addressable Stop. A selected Assistant adds one compact avatar-and-name chip adjacent to the controls; without a selection no Assistant field or placeholder exists. In the centered blank state, the context gauge is visually suppressed and Attach may use its icon-only compact form; all existing control owners remain. Rows may wrap when space is constrained instead of switching to a second control hierarchy. Composer disclosure follows its actual container and short-height budget, so browser zoom or enlarged root text cannot force desktop-only controls into a narrow column. Input capability chooses density; `(hover: none)` or `(pointer: coarse)` keeps required actions at least 44px even at landscape/tablet widths. The 768px and 1280px compact layouts keep the conversation primary with drawer navigation and bounded overlays rather than exposing a cropped desktop grid.
+The responsive contract is verified at 384x844 portrait, 844x390 short
+landscape, 768x1024 tablet, and 1280px compact width in addition to wider
+desktop evidence. Width chooses shell composition; [Composer](composer/COMPOSER.md)
+and [Run controls](composer/RUN_CONTROLS.md) keep their one information model
+and choose their own disclosures from actual container/height. Rows wrap rather
+than switch to a second hierarchy, browser zoom cannot force desktop-only
+controls into a narrow column, and coarse-pointer actions retain the shared
+touch target. Tablet and compact layouts remain conversation-first with drawer
+navigation and bounded overlays rather than a cropped desktop grid.
 
-Model and Search open their existing pickers directly. Search is a bounded multiselect: Off is zero options, one option rests as its name, and several rest as `Search: N engines`; the picker exposes only compatible additions, a three-option ceiling, selected order, and the orchestration choice when needed. At narrow widths Search keeps the complete ordered plan and mode in its accessible description/title while using the bounded resting count/name. More opens the same safe-area-aware, locally scrolling complete Run setup at every viewport. The circular context action visualizes approximate input as a percentage of the conservative safe input budget; its accessible name retains the exact estimate and budget. Opening it exposes approximate input, safe input budget, total context, active-branch messages, and provider-reported usage. On phones and viewports at most 32rem high that disclosure is a safe-area-aware fixed sheet with bounded width/height and local scrolling; desktop retains the anchored disclosure. Compact/short reading collapse is a session-local presentation state over that same control owner; it never creates a second draft, next-run state, or setup path.
+[Run controls](composer/RUN_CONTROLS.md) owns Model, Search, Run setup, context
+facts, and compact-reading semantics. The shell guarantees that their popovers
+and setup surfaces stay viewport-contained with one local scroller: compact or
+short compositions use safe-area sheets while eligible desktop disclosures may
+remain anchored. Responsive presentation never creates a second draft,
+next-run owner, or setup path.
 
 `app/layout.tsx` opts into both `viewport-fit=cover` and `interactive-widget=resizes-content`. The shell uses `h-dvh`, fixed/dialog surfaces subtract `env(safe-area-inset-*)` on every relevant edge, and each tall bounded surface keeps one local scroll owner. Surfaces that would not fit a viewport at or below 32rem high—Run settings, model/assistant/finite pickers, Settings, and the command palette—switch to viewport-bounded sheet geometry. Assistants is the deliberate exception: it always owns a safe-area-aware full-screen surface with its own local scroll owners. This contract follows content-viewport reduction from the software keyboard instead of assuming a stable `100vh` or hiding controls behind the keyboard.
 
-Details presentation modes:
-
-- `closed`: the fresh/default state; no Details width is reserved;
-- `overlay`: a shared responsive modal drawer/sheet with backdrop, blocked background, explicit Close, and Escape/backdrop close;
-- `pinned`: an optional normal-flow panel offered only at `>=1440px`.
-
-Opening Branch, Events, or the global Details action selects the requested tab and opens `overlay` unless Details is already pinned. Run and fork changes never auto-open Details. A pinned window narrowed below 1440px demotes the currently open panel to `overlay`. Only an explicit pinned choice persists in `aiqsa.detailsMode`; the transient overlay persists as closed, and first render remains hydration-stable.
+Details contributes no column while closed, one modal overlay plane when open,
+or one normal-flow wide column when explicitly pinned at the routed breakpoint.
+[Receipt and Details](composer/RECEIPT_AND_DETAILS.md) owns defaults, tabs,
+opening, demotion, persistence, focus, and dismissal; this layout owner only
+reserves the resulting plane without changing the answer measure.
 
 Main areas:
 

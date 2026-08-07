@@ -1,7 +1,7 @@
 # FRONTEND VISUAL INTERACTION
 
 Owner: Frontend interaction-motion maintainers
-Scope: Runtime motion-state behavior and reduced-motion ownership; visual timing and composition recipes remain in DESIGN_SYSTEM.md.
+Scope: Runtime motion-state behavior and reduced-motion ownership; visual timing and composition recipes are routed by DESIGN_SYSTEM.md.
 
 ## Motion
 
