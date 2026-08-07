@@ -10,11 +10,13 @@ function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), "aiqsa-task-ledger-"));
   roots.push(root);
   mkdirSync(path.join(root, "agent_docs/tasks"), { recursive: true });
+  mkdirSync(path.join(root, "agent_docs/task_archive"), { recursive: true });
   writeFileSync(path.join(root, "agent_docs/tasks/README.md"), "# TASKS\n");
+  writeFileSync(path.join(root, "agent_docs/task_archive/README.md"), "# TASK ARCHIVE\n");
   writeFileSync(path.join(root, "agent_docs/SECURITY.md"), "# SECURITY\n");
   writeFileSync(
     path.join(root, ".gitignore"),
-    "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n"
+    "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n/agent_docs/task_archive/*\n!/agent_docs/task_archive/README.md\n"
   );
   const initialized = spawnSync("git", ["init", "-q"], { cwd: root, encoding: "utf8" });
   if (initialized.status !== 0) throw new Error(initialized.stderr);
@@ -78,6 +80,14 @@ ${options.verification ?? "- [x] focused fixture check passed."}
   writeFileSync(path.join(root, "agent_docs/tasks", `${stem}.md`), body, "utf8");
 }
 
+function archivedTask(root: string, stem: string) {
+  writeFileSync(
+    path.join(root, "agent_docs/task_archive", `${stem}.md`),
+    `# ${stem}\n\nStatus: completed\n`,
+    "utf8"
+  );
+}
+
 function run(root: string, ...arguments_: string[]) {
   return spawnSync(process.execPath, [cli, ...arguments_, "--root", root], { encoding: "utf8" });
 }
@@ -113,7 +123,7 @@ describe("local unified task ledger", () => {
     expect(readdirSync(path.join(root, "agent_docs/tasks"))).toEqual(["README.md"]);
   });
 
-  it("completes by deleting the task and clearing remaining dependencies", () => {
+  it("completes by archiving the task and clearing remaining dependencies", () => {
     const root = fixture();
     const foundation = "20260801120000001-foundation";
     const followup = "20260801120000002-follow-up";
@@ -124,8 +134,45 @@ describe("local unified task ledger", () => {
 
     expect(result.status).toBe(0);
     expect(existsSync(path.join(root, "agent_docs/tasks", `${foundation}.md`))).toBe(false);
+    const archived = path.join(root, "agent_docs/task_archive", `${foundation}.md`);
+    expect(readFileSync(archived, "utf8")).toContain("Status: completed");
+    expect(spawnSync("git", ["check-ignore", "-q", `agent_docs/task_archive/${foundation}.md`], { cwd: root }).status).toBe(0);
     expect(readFileSync(path.join(root, "agent_docs/tasks", `${followup}.md`), "utf8")).toContain("Depends on: none");
+    expect(result.stdout).toContain(`archived ${foundation} at agent_docs/task_archive/${foundation}.md`);
     expect(result.stdout).toContain("cleared 1 dependency reference");
+  });
+
+  it("never prunes a full ten-task archive without an explicit operator cleanup request", () => {
+    const root = fixture();
+    for (let index = 0; index < 10; index += 1) {
+      const id = `20260701120000${String(index).padStart(3, "0")}`;
+      archivedTask(root, `${id}-archived-${index}`);
+    }
+    const current = "20260801120000001-current";
+    task(root, current, "in_progress");
+    const before = readdirSync(path.join(root, "agent_docs/task_archive")).sort();
+
+    const result = run(root, "complete", current);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("already contains 10 tasks");
+    expect(result.stderr).toContain("explicit operator request");
+    expect(existsSync(path.join(root, "agent_docs/tasks", `${current}.md`))).toBe(true);
+    expect(readdirSync(path.join(root, "agent_docs/task_archive")).sort()).toEqual(before);
+  });
+
+  it("rejects an archive that exceeds the manual retention limit", () => {
+    const root = fixture();
+    for (let index = 0; index < 11; index += 1) {
+      const id = `20260701120000${String(index).padStart(3, "0")}`;
+      archivedTask(root, `${id}-archived-${index}`);
+    }
+
+    const result = run(root, "list");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("must contain at most 10 completed tasks");
+    expect(result.stderr).toContain("explicit operator request");
   });
 
   it("allows parallel in_progress tasks and enforces dependency-free executable states", () => {
@@ -223,7 +270,7 @@ describe("local unified task ledger", () => {
 
     const invalid = "20260801120000003-invalid-rationale";
     task(root, invalid, "backlog", { rationale: "moved to README.md" });
-    expect(run(root, "list").stderr).toContain("owner must be an existing file outside agent_docs/tasks");
+    expect(run(root, "list").stderr).toContain("owner must be an existing file outside local task directories");
   });
 
   it("requires a concrete blocker only for blocked state", () => {

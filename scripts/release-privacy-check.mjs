@@ -14,7 +14,9 @@ const LEGACY_PRIVATE_PATHS = [
   "agent_docs/exec-plans"
 ];
 const TASK_PATH = "agent_docs/tasks";
+const TASK_ARCHIVE_PATH = "agent_docs/task_archive";
 const ALLOWED_TASK_FILE = "agent_docs/tasks/README.md";
+const ALLOWED_TASK_ARCHIVE_FILE = "agent_docs/task_archive/README.md";
 // Older public commits and release tags are intentionally grandfathered. This
 // clean commit introduced the local-only task policy and is the immutable scan
 // boundary for every later public ref.
@@ -32,7 +34,9 @@ function git(root, arguments_) {
 function forbiddenTaskPath(filename) {
   if (!filename) return false;
   if (LEGACY_PRIVATE_PATHS.some((prefix) => filename === prefix || filename.startsWith(`${prefix}/`))) return true;
-  return (filename === TASK_PATH || filename.startsWith(`${TASK_PATH}/`)) && filename !== ALLOWED_TASK_FILE;
+  if ((filename === TASK_PATH || filename.startsWith(`${TASK_PATH}/`)) && filename !== ALLOWED_TASK_FILE) return true;
+  return (filename === TASK_ARCHIVE_PATH || filename.startsWith(`${TASK_ARCHIVE_PATH}/`))
+    && filename !== ALLOWED_TASK_ARCHIVE_FILE;
 }
 
 function dockerPatternExpression(pattern) {
@@ -126,7 +130,7 @@ function dockerPrivacyErrors(root) {
 }
 
 function currentIndexErrors(root) {
-  const paths = git(root, ["ls-files", "--", ...LEGACY_PRIVATE_PATHS, TASK_PATH]);
+  const paths = git(root, ["ls-files", "--", ...LEGACY_PRIVATE_PATHS, TASK_PATH, TASK_ARCHIVE_PATH]);
   return paths.split(/\r?\n/u).filter(forbiddenTaskPath).map(
     (filename) => `${filename}: public Git tracks a private task artifact`
   );
@@ -136,7 +140,7 @@ function refTreeErrors(root, refs) {
   const errors = [];
   for (const ref of refs) {
     git(root, ["rev-parse", "--verify", `${ref}^{commit}`]);
-    const paths = git(root, ["ls-tree", "-r", "--name-only", ref, "--", ...LEGACY_PRIVATE_PATHS, TASK_PATH]);
+    const paths = git(root, ["ls-tree", "-r", "--name-only", ref, "--", ...LEGACY_PRIVATE_PATHS, TASK_PATH, TASK_ARCHIVE_PATH]);
     const forbidden = [...new Set(paths.split(/\r?\n/u).filter(forbiddenTaskPath))].sort();
     for (const filename of forbidden) errors.push(`${ref}: release tree contains private task artifact ${filename}`);
   }
@@ -163,7 +167,7 @@ function policyHistoryErrors(root, refs, historySince) {
       continue;
     }
     const range = `${historySince}..${ref}`;
-    const paths = git(root, ["log", "--format=", "--name-only", range, "--", ...LEGACY_PRIVATE_PATHS, TASK_PATH]);
+    const paths = git(root, ["log", "--format=", "--name-only", range, "--", ...LEGACY_PRIVATE_PATHS, TASK_PATH, TASK_ARCHIVE_PATH]);
     const forbidden = [...new Set(paths.split(/\r?\n/u).filter(forbiddenTaskPath))].sort();
     for (const filename of forbidden) {
       errors.push(`${ref}: post-baseline history contains private task artifact ${filename}`);

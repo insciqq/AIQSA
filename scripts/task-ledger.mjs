@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync
@@ -14,6 +15,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TASK_DIRECTORY = "agent_docs/tasks";
+const TASK_ARCHIVE_DIRECTORY = "agent_docs/task_archive";
+const TASK_ARCHIVE_LIMIT = 10;
 const TASK_FILE = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const TASK_STEM = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const TASK_ID = /^\d{17}$/;
@@ -171,12 +174,39 @@ function discoverTasks(root) {
   return { directory, invalidFiles, records };
 }
 
-export function readTaskLedger(root = process.cwd()) {
-  root = path.resolve(root);
-  const tasks = discoverTasks(root);
+function discoverArchivedTasks(root) {
+  const directory = path.join(root, TASK_ARCHIVE_DIRECTORY);
+  if (!existsSync(directory)) return { directory, invalidFiles: [], records: [] };
+
+  const invalidFiles = [];
+  const records = [];
+  for (const filename of readdirSync(directory).sort()) {
+    if (filename === "README.md") continue;
+    const absolutePath = path.join(directory, filename);
+    const match = TASK_FILE.exec(filename);
+    if (!match || !statSync(absolutePath).isFile()) {
+      invalidFiles.push(portable(path.join(TASK_ARCHIVE_DIRECTORY, filename)));
+      continue;
+    }
+    const body = readFileSync(absolutePath, "utf8");
+    records.push({
+      body,
+      filename,
+      id: match[1],
+      path: absolutePath,
+      relativePath: portable(path.join(TASK_ARCHIVE_DIRECTORY, filename)),
+      status: field(body, "Status"),
+      stem: filename.slice(0, -3)
+    });
+  }
+  records.sort(taskOrder);
+  return { directory, invalidFiles, records };
+}
+
+function indexRecords(records) {
   const byStem = new Map();
   const byId = new Map();
-  for (const record of tasks.records) {
+  for (const record of records) {
     const stemMatches = byStem.get(record.stem) ?? [];
     stemMatches.push(record);
     byStem.set(record.stem, stemMatches);
@@ -185,7 +215,16 @@ export function readTaskLedger(root = process.cwd()) {
     idMatches.push(record);
     byId.set(record.id, idMatches);
   }
-  return { byId, byStem, root, tasks };
+  return { byId, byStem };
+}
+
+export function readTaskLedger(root = process.cwd()) {
+  root = path.resolve(root);
+  const tasks = discoverTasks(root);
+  const archive = discoverArchivedTasks(root);
+  const { byId, byStem } = indexRecords(tasks.records);
+  const archiveIndex = indexRecords(archive.records);
+  return { archive: { ...archive, ...archiveIndex }, byId, byStem, root, tasks };
 }
 
 function cycleErrors(records) {
@@ -296,8 +335,10 @@ function durableRationaleErrors(record, root, { requireSettled = false } = {}) {
       || !normalized.startsWith("agent_docs/")
       || normalized === "agent_docs/tasks"
       || normalized.startsWith("agent_docs/tasks/")
+      || normalized === "agent_docs/task_archive"
+      || normalized.startsWith("agent_docs/task_archive/")
     ) {
-      errors.push(`${record.relativePath}: durable rationale owner must be an existing file outside agent_docs/tasks: ${owner}`);
+      errors.push(`${record.relativePath}: durable rationale owner must be an existing file outside local task directories: ${owner}`);
       continue;
     }
     const ownerPath = path.join(root, owner);
@@ -337,12 +378,39 @@ export function validateTaskLedger(root = process.cwd()) {
   const errors = ledger.tasks.invalidFiles.map(
     (filename) => `${filename}: task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
   );
+  errors.push(...ledger.archive.invalidFiles.map(
+    (filename) => `${filename}: archived task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
+  ));
+
+  if (ledger.archive.records.length > TASK_ARCHIVE_LIMIT) {
+    errors.push(`${TASK_ARCHIVE_DIRECTORY}: must contain at most ${TASK_ARCHIVE_LIMIT} completed tasks; cleanup requires an explicit operator request`);
+  }
 
   for (const [stem, matches] of ledger.byStem) {
     if (matches.length > 1) errors.push(`${stem}: duplicate task stem`);
   }
   for (const [id, matches] of ledger.byId) {
     if (matches.length > 1) errors.push(`${id}: duplicate task id`);
+  }
+  for (const [stem, matches] of ledger.archive.byStem) {
+    if (matches.length > 1) errors.push(`${stem}: duplicate archived task stem`);
+    if (ledger.byStem.has(stem)) errors.push(`${stem}: task exists in both the open queue and completion archive`);
+  }
+  for (const [id, matches] of ledger.archive.byId) {
+    if (matches.length > 1) errors.push(`${id}: duplicate archived task id`);
+    if (ledger.byId.has(id)) errors.push(`${id}: task id exists in both the open queue and completion archive`);
+  }
+
+  for (const record of ledger.archive.records) {
+    if (!isIgnoredTask(ledger.root, record.relativePath)) {
+      errors.push(`${record.relativePath}: archived task instances must be ignored and must not be tracked by public Git`);
+    }
+    if (!validTimestampId(record.id)) {
+      errors.push(`${record.relativePath}: archived task id is not a valid local timestamp`);
+    }
+    if (record.status !== "completed") {
+      errors.push(`${record.relativePath}: archived task Status must be completed`);
+    }
   }
 
   for (const record of ledger.tasks.records) {
@@ -420,7 +488,7 @@ function nextTaskId(ledger, date = new Date()) {
   let candidate = new Date(date.getTime());
   for (let attempts = 0; attempts < 10_000; attempts += 1) {
     const id = formatTimestampId(candidate);
-    if (!ledger.byId.has(id)) return id;
+    if (!ledger.byId.has(id) && !ledger.archive.byId.has(id)) return id;
     candidate = new Date(candidate.getTime() + 1);
   }
   throw new Error("could not allocate a unique task timestamp within ten seconds");
@@ -506,6 +574,18 @@ export function completeTask({ root = process.cwd(), reference }) {
   if (evidence.unavailableOnly) {
     throw new Error("Unavailable-only verification cannot complete a task; block it or add passed evidence");
   }
+  if (ledger.archive.records.length >= TASK_ARCHIVE_LIMIT) {
+    throw new Error(`${TASK_ARCHIVE_DIRECTORY} already contains ${TASK_ARCHIVE_LIMIT} tasks; cleanup requires an explicit operator request before completion`);
+  }
+
+  const archivePath = path.join(ledger.archive.directory, record.filename);
+  const archiveRelativePath = portable(path.relative(ledger.root, archivePath));
+  if (existsSync(archivePath)) {
+    throw new Error(`${archiveRelativePath} already exists; refusing to overwrite archived task evidence`);
+  }
+  if (!isIgnoredTask(ledger.root, archiveRelativePath)) {
+    throw new Error(`${archiveRelativePath} must be ignored before task completion`);
+  }
 
   let cleared = 0;
   for (const candidate of ledger.tasks.records) {
@@ -516,8 +596,10 @@ export function completeTask({ root = process.cwd(), reference }) {
       cleared += 1;
     }
   }
-  unlinkSync(record.path);
-  return { cleared, stem: record.stem };
+  mkdirSync(ledger.archive.directory, { recursive: true });
+  writeFileSync(record.path, replaceField(record.body, "Status", "completed"), "utf8");
+  renameSync(record.path, archivePath);
+  return { archiveRelativePath, cleared, stem: record.stem };
 }
 
 export function listTasks(root = process.cwd()) {
@@ -574,7 +656,7 @@ export function runTaskCli(argv = process.argv.slice(2)) {
   if (command === "complete") {
     const reference = oneReference(arguments_, command);
     const result = completeTask({ root, reference });
-    return `Completed and deleted ${result.stem}; cleared ${result.cleared} dependency reference(s).`;
+    return `Completed and archived ${result.stem} at ${result.archiveRelativePath}; cleared ${result.cleared} dependency reference(s).`;
   }
   throw new Error("usage: task-ledger <new|promote|start|block|complete|list> ...");
 }

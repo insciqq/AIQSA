@@ -1,6 +1,6 @@
 # TASKS
 
-This directory contains unfinished work only. Task instances are ignored local checkout state because the repository remote is public. A task file is the single artifact for its specification, implementation plan, inter-session progress, task-local decisions, and verification plan.
+This directory contains unfinished work only. Task instances are ignored local checkout state because the repository remote is public. A task file is the single artifact for its specification, implementation plan, inter-session progress, task-local decisions, and verification plan. Verified tasks move to the local completion archive at `agent_docs/task_archive/`.
 
 This queue is intentionally checkout-local. It is not a durable roadmap or a cross-machine/worktree handoff, so irreplaceable product commitments must not exist only here.
 
@@ -18,7 +18,7 @@ This queue is intentionally checkout-local. It is not a durable roadmap or a cro
 - `in_progress`: claimed by an integrating agent or one of its isolated worktree workers; multiple tasks may be active.
 - `blocked`: cannot proceed; `Blocked by` must state the exact condition.
 
-There is no human-review or `done` status. `node scripts/task-ledger.mjs complete <task>` deletes a verified local task and removes its stem from remaining dependency fields. Never force-add a task instance; this README is the only tracked file in this directory.
+There is no human-review or `done` status in the open queue. `node scripts/task-ledger.mjs complete <task>` moves a verified local task to the completion archive with `Status: completed` and removes its stem from remaining dependency fields. Never force-add a task instance; only the README files in the two task directories are tracked.
 
 ## Task Shape
 
@@ -26,7 +26,7 @@ There is no human-review or `done` status. `node scripts/task-ledger.mjs complet
 
 Keep current behavior in the owning living document rather than copying it into tasks. Link the relevant owners and describe only the delta. For complex work, make `Plan`, `Progress`, and `Decisions` detailed enough that a fresh agent can continue from the task and current checkout alone.
 
-Task-local decisions disappear when the task completes and are not recoverable from public Git history. Any rationale that future work still needs must be incorporated into the owning current contract and attested through `Durable rationale` before completion.
+Task-local decisions remain temporarily inspectable in the bounded local completion archive, but they are not durable or recoverable from public Git history. Any rationale that future work still needs must be incorporated into the owning current contract and attested through `Durable rationale` before completion.
 
 ## Commands
 
@@ -41,9 +41,13 @@ node scripts/task-ledger.mjs list
 
 `new` creates an ignored local `backlog` scaffold. `promote` requires a complete executable specification and no open dependencies. `start` claims one ready task and permits other tasks to remain `in_progress`. `block` records the exact unavailable condition. `complete` requires settled durable rationale and completed verification.
 
-Task filenames use a 17-digit local timestamp including milliseconds followed by a lowercase kebab-case slug, for example `20260801143025123-search-quota-guard.md`. This avoids a separate sequence ledger after completed tasks are deleted.
+Task filenames use a 17-digit local timestamp including milliseconds followed by a lowercase kebab-case slug, for example `20260801143025123-search-quota-guard.md`. Identifiers remain unique across the open queue and completion archive without a separate sequence ledger.
 
-Before completion, `Plan` has no unchecked items, `Progress` and `Decisions` no longer contain their scaffolds, and `Verification` contains checked evidence or `Not run: <check> — <specific reason>` with no unchecked items. `Decisions: - None.` is valid. Unavailable-only evidence cannot complete a task; record the unavailable condition with `block` or add passed evidence. `Durable rationale: pending` also blocks completion; use `none` or `moved to agent_docs/<owner>.md`. Completion deletes the task instead of archiving it and clears its stem from remaining `Depends on` fields.
+Before completion, `Plan` has no unchecked items, `Progress` and `Decisions` no longer contain their scaffolds, and `Verification` contains checked evidence or `Not run: <check> — <specific reason>` with no unchecked items. `Decisions: - None.` is valid. Unavailable-only evidence cannot complete a task; record the unavailable condition with `block` or add passed evidence. `Durable rationale: pending` also blocks completion; use `none` or `moved to agent_docs/<owner>.md`. Completion archives the task and clears its stem from remaining `Depends on` fields.
+
+## Completion Archive
+
+`agent_docs/task_archive/` contains at most the ten most recent completed task files and does not participate in queue selection or dependency resolution. `complete` never deletes, rotates, or overwrites archived evidence. When ten files are already present, completion stops without changing the task or archive; cleanup happens only after an explicit operator request, normally by removing the oldest archived files the operator selected. Archived task files remain ignored local state and must not be staged, committed, shipped, or treated as a durable contract.
 
 ## Parallel Ownership
 

@@ -57,6 +57,7 @@ const CURRENT_SOURCE_EXCLUDED_FILES = new Set([
 
 function discoveryExcluded(relative) {
   if (relative.startsWith("agent_docs/tasks/") && relative !== "agent_docs/tasks/README.md") return true;
+  if (relative.startsWith("agent_docs/task_archive/") && relative !== "agent_docs/task_archive/README.md") return true;
   return DISCOVERY_EXCLUDED_PREFIXES.some((prefix) => relative.startsWith(prefix));
 }
 

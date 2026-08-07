@@ -2,7 +2,7 @@
 
 Entry point for agent-driven development in this repository.
 
-AIQSA is a self-hosted, multi-user AI workspace with explicit provider and model control, optional web search, MCP tools, and inspectable runs. This harness is a current operating manual: keep current contracts, commands, and open work; delete obsolete narrative and completed tasks. Put durable rationale beside its owning rule.
+AIQSA is a self-hosted, multi-user AI workspace with explicit provider and model control, optional web search, MCP tools, and inspectable runs. This harness is a current operating manual: keep current contracts, commands, open work, and the bounded recent-task archive; delete obsolete narrative. Put durable rationale beside its owning rule.
 
 ## Autonomy Trigger
 
@@ -15,7 +15,7 @@ If the operator says "start implementation", "begin", "go ahead", or an equivale
 5. Mark every selected queued task `in_progress` before implementation.
 6. Implement the smallest complete vertical slice; the integrating agent owns task state, automated review, conflict resolution, and integration.
 7. Run proportional checks and update an owning living document only when its durable contract changed.
-8. Complete verified tasks directly; completion deletes each task and clears remaining dependency references.
+8. Complete verified tasks directly; completion moves each task to the bounded local archive and clears remaining dependency references.
 9. Continue only when broad implementation was requested and another concrete unblocked task or safe parallel wave remains.
 
 Stop only for missing secrets, unrequested destructive work, an unmockable unavailable service, or a product decision not covered by current contracts. Provider-smoke permission is in `agent_docs/CRITICAL_INVARIANTS.md`; dependency-security permission is in `agent_docs/SECURITY.md`.
@@ -67,7 +67,7 @@ If this is not a Git repository, record that in the final response and continue 
 
 ## Repository Publication
 
-`origin` is the public development/release repository. Open task instances are local ignored state and must never be staged, committed, included in Docker context/images, or added to a public ref. Older commits/tags are grandfathered archaeology and do not justify ref rewrites. Agents do not push, rewrite refs, or tag releases without an explicit request; release publication also requires fresh readiness and privacy checks.
+`origin` is the public development/release repository. Open and archived task instances are local ignored state and must never be staged, committed, included in Docker context/images, or added to a public ref. Older commits/tags are grandfathered archaeology and do not justify ref rewrites. Agents do not push, rewrite refs, or tag releases without an explicit request; release publication also requires fresh readiness and privacy checks.
 
 For repository sharing, export an inspected commit/tree with `git archive`; never archive the working directory, where ignored/untracked files remain. Use a fresh output path. Attach local tasks separately only after manual review.
 
@@ -77,7 +77,7 @@ For repository sharing, export an inspected commit/tree with `git archive`; neve
 - Use existing code and current local contracts before inventing scope or another abstraction.
 - Use the focused hermetic lane for deterministic static/unit work and `docker-compose.dev.yml` only for required container parity or integration. Never run destructive development or test workflows against the default persistent installation.
 - Keep one task file as the specification, execution plan, progress log, and task-local decision log. Do not create a second plan document for the same work.
-- Keep only local unfinished tasks in `agent_docs/tasks/`. Do not force-add them or create completion journals or decision-history directories.
+- Keep only local unfinished tasks in `agent_docs/tasks/`; `agent_docs/task_archive/` is the sole completed-task archive and retains at most ten recent tasks. Never prune it without an explicit operator request, and do not force-add either kind of task instance or create another completion journal or decision-history directory.
 - Update the owning living document only when the change modifies a durable product contract, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, or verification policy. A bug fix or implementation change that restores or preserves an already documented contract does not require a documentation edit.
 
 ## Before Final Response

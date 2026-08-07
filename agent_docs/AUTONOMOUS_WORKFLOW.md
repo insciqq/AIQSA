@@ -13,7 +13,7 @@ The operator's latest request is primary. A concrete same-session change may run
 5. Mark every selected task `in_progress` before implementation.
 6. Keep task-file state in the primary checkout. Workers receive the task specification but do not edit `agent_docs/tasks`; the integrating agent is its only writer.
 
-The [task queue manual](tasks/README.md) owns statuses, dependencies, commands, task shape, evidence gates, and completion deletion; `scripts/task-ledger.mjs` enforces them. A task is the executable plan and handoff artifact; do not create a parallel plan file or completed-plan archive.
+The [task queue manual](tasks/README.md) owns statuses, dependencies, commands, task shape, evidence gates, and the bounded completion archive; `scripts/task-ledger.mjs` enforces them. A task is the executable plan and handoff artifact; do not create a parallel plan file or any second completed-plan archive.
 
 ## Parallel Task Waves
 

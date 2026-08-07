@@ -27,7 +27,7 @@ function fixture() {
   writeFileSync(path.join(root, ".env.example"), "EXAMPLE_KEY=value\n");
   writeFileSync(
     path.join(root, ".gitignore"),
-    "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n"
+    "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n/agent_docs/task_archive/*\n!/agent_docs/task_archive/README.md\n"
   );
   writeFileSync(path.join(root, "README.md"), "# README\n\n[Architecture](agent_docs/ARCHITECTURE.md)\n");
   mkdirSync(path.join(root, "app/api/health"), { recursive: true });
