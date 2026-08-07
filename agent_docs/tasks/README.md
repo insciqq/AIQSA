@@ -47,4 +47,4 @@ Before completion, `Plan` has no unchecked items, `Progress` and `Decisions` no 
 
 ## Parallel Ownership
 
-The main OMP session is the only task-file writer. It claims up to five independent tasks, sends one native `task` batch with `isolated: true` writers, and keeps task metadata in the primary checkout. OMP applies successful isolation patches back to that checkout and preserves failed patch artifacts; the main Sol `max` session owns failed applies, conflicts, combined verification, automated final inspection, and completion.
+The main OMP session is the only task-file writer. It claims up to five independent tasks, sends one native batch of isolated Sol `high` task owners, and keeps task metadata in the primary checkout. Every owner obtains exactly one read-only Sol `high` review while it runs deterministic checks, fixes valid findings, and then returns its patch. OMP applies successful isolation patches back to the primary checkout and preserves failed patch artifacts; the main Sol `max` session owns failed applies, conflicts, combined verification, automated final inspection, and completion.

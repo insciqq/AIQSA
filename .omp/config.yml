@@ -7,7 +7,7 @@ modelRoles:
   smol: codex-lb/gpt-5.6-sol:low
   slow: codex-lb/gpt-5.6-sol:max
   plan: codex-lb/gpt-5.6-sol:max
-  task: codex-lb/gpt-5.6-sol:medium
+  task: codex-lb/gpt-5.6-sol:high
   designer: codex-lb/gpt-5.6-sol:high
   commit: codex-lb/gpt-5.6-sol:low
   tiny: codex-lb/gpt-5.6-sol:low
@@ -19,16 +19,12 @@ retry:
 tier:
   openai: none
   subagent: none
-providers:
-  maxInFlightRequests:
-    codex-lb: 5
 task:
   eager: always
   batch: true
-  enableEffort: true
-  maxEffort: max
+  enableEffort: false
   maxConcurrency: 5
-  maxRecursionDepth: 1
+  maxRecursionDepth: 2
   isolation:
     mode: auto
     apply: true
@@ -36,7 +32,7 @@ task:
     commits: generic
   showResolvedModelBadge: true
   agentModelOverrides:
-    task: codex-lb/gpt-5.6-sol:medium
+    task: codex-lb/gpt-5.6-sol:high
     scout: codex-lb/gpt-5.6-sol:low
     sonic: codex-lb/gpt-5.6-sol:low
     librarian: codex-lb/gpt-5.6-sol:medium

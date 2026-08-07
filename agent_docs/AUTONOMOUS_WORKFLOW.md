@@ -17,9 +17,9 @@ The [task queue manual](tasks/README.md) owns statuses, dependencies, commands, 
 
 ## OMP Setup
 
-Start `omp` from this repository root in WSL. Machine-local provider credentials and the `codex-lb` model definition live under `~/.omp/agent/`; the tracked `.omp/config.yml` contains no endpoint or secret. `CODEX_LB_API_KEY` must be exported in the launching shell. Project settings are discovered from the current directory only, so do not start OMP in a parent directory and `cd` here later.
+Start `omp` from this repository root in WSL. Machine-local provider credentials and the `codex-lb` model definition live under `~/.omp/agent/`; the tracked `.omp/config.yml` contains no endpoint or secret. The machine-local zsh `omp` wrapper injects `CODEX_LB_API_KEY` only into that command, matching the existing Codex wrapper without exporting the key globally. A shell that bypasses the wrapper must provide the variable itself. Project settings are discovered from the launch directory only, so do not start OMP elsewhere and `cd` here after startup.
 
-No repository installer or nested `codex exec` process is part of this workflow. The project config selects only `codex-lb/gpt-5.6-sol`, permits five concurrent subagents, enables per-item effort, and automatically applies non-conflicting isolated patches. To request the full native orchestration contract, include the exact standalone lowercase word `orchestrate` in the prompt, for example: `orchestrate: take up to five independent ready tasks, implement them in parallel, integrate conflicts, verify the combined result, and complete them.` Plain parallel requests may also delegate because eager task use is enabled.
+No repository installer or nested `codex exec` process is part of this workflow. The project config selects only `codex-lb/gpt-5.6-sol`, permits five concurrent task owners, allows one nested reviewer per owner, and automatically applies non-conflicting isolated patches. It does not impose a client-side provider request limit; upstream capacity and rate limits still apply. To request the full native orchestration contract, include the exact standalone lowercase word `orchestrate` in the prompt, for example: `orchestrate: take up to five independent ready tasks, implement them in parallel, integrate conflicts, verify the combined result, and complete them.` Plain parallel requests may also delegate because eager task use is enabled.
 
 ## Parallel Task Waves
 
@@ -27,25 +27,25 @@ When the operator asks to run queued tasks in parallel, the main OMP session is 
 
 1. Inspect ready tasks, current dirty paths, likely write sets, dependencies, migrations, generated outputs, and stateful checks. Exclude tasks that overlap the primary checkout's uncommitted work or each other.
 2. Select no more than five independent tasks and mark each one `in_progress` in the primary checkout before spawning workers.
-3. Make one batch call with shared repository context and one self-contained item per task. Use `isolated: true` for every writer, select `effort: lo|med|hi` by risk, and tell workers not to edit `agent_docs/tasks`. The batch creates one background subagent per item under the configured five-agent semaphore.
-4. Each worker implements and verifies only its assigned slice in its isolated workspace, then returns changed paths, exact checks, decisions, and blockers. Read-only mapping or independent hermetic checks may share a workspace only when they cannot mutate it.
+3. Make one batch call with shared repository context and one self-contained `task` item per selected queue task. Use `isolated: true` for every writer, omit per-item `effort`, and tell workers not to edit `agent_docs/tasks`. The batch creates one Sol `high` task owner per item under the configured five-owner semaphore.
+4. Each task owner implements only its assigned slice in its isolated workspace. After a coherent diff exists, it starts exactly one non-isolated Sol `high` `reviewer` in that workspace and runs proportional deterministic checks while review proceeds. The reviewer is read-only and cannot spawn another agent. The owner investigates the structured findings, fixes every valid in-scope defect, reruns affected checks, and returns changed paths, exact checks, review disposition, decisions, and blockers.
 5. Wait for every background job and inspect every result. OMP applies each successful non-conflicting isolation patch to the parent checkout and preserves a patch artifact when automatic application fails. A failed apply or conflict is an integration result, never permission to discard either side.
 6. Resolve failed patches in the main Sol `max` session against the artifact, both task contracts, and current code. Preserve unrelated dirty work, add an interaction regression when the conflict exposes one, and rerun the affected focused checks. Leave the task `in_progress` or block it with the exact condition when safe integration is impossible.
 7. Run combined verification only after successful results are integrated. Stateful and container checks remain serialized.
 8. Perform the final automated diff inspection, then complete each integrated task from the primary checkout.
 
-Five workers are a ceiling, not a target. Prefer a smaller wave when tasks share providers, run-pipeline code, schema/migrations, generated files, global configuration, or the same integration environment. Parallelize exploration and hermetic tests more freely than writes and stateful checks.
+Five task owners are a ceiling, not a target; their mandatory reviewers do not consume wave slots. Prefer a smaller wave when tasks share providers, run-pipeline code, schema/migrations, generated files, global configuration, or the same integration environment. Parallelize exploration and hermetic tests more freely than writes and stateful checks.
 
 ## Model Routing
 
-Every role uses `gpt-5.6-sol` through `codex-lb`; project model allowlisting, role selectors, and agent overrides prevent another model from being selected. Route effort as follows:
+Every role uses `gpt-5.6-sol` through `codex-lb`; project model allowlisting, fixed role selectors, and agent overrides prevent another model or per-item effort from being selected. Routing is deterministic:
 
-- `low`: scouts, sonic searches, and narrow mechanical work.
-- `medium`: ordinary bounded implementation and repository research.
-- `high`: automated design and code-review specialists.
-- `max`: the primary orchestrator, planning, security/schema-critical work, conflict resolution, and final integration inspection.
+- `low`: root-invoked scouts and sonic searches outside the task-owner pipeline.
+- `medium`: librarian and other bounded repository research outside the task-owner pipeline.
+- `high`: every task owner, its mandatory read-only reviewer, and design specialists.
+- `max`: the primary orchestrator, planning, security-review specialists, conflict resolution, and final integration inspection.
 
-For a generic task item, OMP maps `lo`, `med`, and `hi` to the lowest, middle, and highest configured Sol levels: `low`, `medium`, and `max`. Use the named design or review specialists when `high` is the intended ceiling. Do not use `xhigh`, Fast mode, model fallback, or a non-Sol subagent. Escalate ambiguity rather than compensating for an underspecified task merely by increasing effort.
+The main batch always selects the project `task` agent and omits `effort`; project configuration pins that owner and `reviewer` to `high`. The reviewer shares its owner's isolated workspace with `isolated: false`, may inspect but never edit the diff, and reaches the configured recursion ceiling, so it cannot spawn descendants. Do not use `xhigh`, Fast mode, model fallback, or a non-Sol subagent.
 
 ## Execution Loop
 
