@@ -38,6 +38,7 @@ import {
   ActiveRunConflictError,
   AssistantRunConflictError,
   AttachmentLinkConflictError,
+  KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
   type AcceptedRunDefaults,
@@ -49,7 +50,14 @@ import {
   decodeAssistantAvatarRecipe,
   type AssistantAvatarRecipe
 } from "../../contracts/assistants";
+import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
+import {
+  KnowledgeRunAdmissionError,
+  loadKnowledgeRunAdmissionPlan,
+  sameKnowledgeRunAdmissionPlan,
+  type KnowledgeRunAdmissionPlan
+} from "../knowledge/runAdmission";
 import { persistedToolCallActivity } from "./toolInspection";
 import {
   isToolLoopJsonValue,
@@ -74,6 +82,13 @@ function unique(values: string[]): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function knowledgePlanFromNormalizedRequest(value: unknown): KnowledgePlan {
+  const candidate = isRecord(value) ? value.knowledgePlan : undefined;
+  const decoded = decodeKnowledgePlan(candidate);
+  if (!decoded.ok) throw new Error("knowledge_plan_integrity_invalid");
+  return decoded.plan;
 }
 
 function canonicalJson(value: ToolLoopJsonValue): string {
@@ -410,6 +425,112 @@ export async function insertAcceptedMcpRunBindings(
         )
     `;
     if (inserted !== 1) throw new McpRunPlanConflictError();
+  }
+}
+
+async function lockKnowledgeRunAdmissionSources(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  input: Readonly<{ plan: KnowledgeRunAdmissionPlan; userId: string }>
+): Promise<void> {
+  for (const knowledgeBaseId of input.plan.knowledgePlan.baseIds) {
+    const bases = await tx.$queryRaw<Array<{
+      indexGenerationId: string;
+      ownerUserId: string;
+    }>>`
+      SELECT
+        base."ownerUserId",
+        generation."id" AS "indexGenerationId"
+      FROM "KnowledgeBase" AS base
+      INNER JOIN "KnowledgeIndexGeneration" AS generation
+        ON generation."knowledgeBaseId" = base."id"
+       AND generation."id" = base."activeIndexGenerationId"
+       AND generation."status" = 'active'
+      WHERE base."id" = ${knowledgeBaseId}
+        AND base."archivedAt" IS NULL
+      FOR SHARE OF base, generation
+    `;
+    const base = bases[0];
+    if (!base) throw new KnowledgeRunPlanConflictError();
+    if (base.ownerUserId === input.userId) continue;
+
+    const installation = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT publication."id"
+      FROM "KnowledgeBasePublication" AS publication
+      WHERE publication."knowledgeBaseId" = ${knowledgeBaseId}
+        AND publication."scope" = 'installation'
+      FOR SHARE OF publication
+    `;
+    if (installation[0]) continue;
+
+    const group = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT publication."id"
+      FROM "KnowledgeBasePublication" AS publication
+      INNER JOIN "UserGroup" AS membership
+        ON membership."groupId" = publication."groupId"
+       AND membership."userId" = ${input.userId}
+      INNER JOIN "Group" AS member_group
+        ON member_group."id" = membership."groupId"
+       AND member_group."archivedAt" IS NULL
+      WHERE publication."knowledgeBaseId" = ${knowledgeBaseId}
+        AND publication."scope" = 'group'
+      ORDER BY publication."id"
+      FOR SHARE OF publication, membership, member_group
+    `;
+    if (!group[0]) throw new KnowledgeRunPlanConflictError();
+  }
+}
+
+async function insertAcceptedKnowledgeRunBindings(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    plan: KnowledgeRunAdmissionPlan | undefined;
+    runId: string;
+    userId: string;
+  }>
+): Promise<void> {
+  if (!input.plan) return;
+  await lockKnowledgeRunAdmissionSources(tx, {
+    plan: input.plan,
+    userId: input.userId
+  });
+  let current: KnowledgeRunAdmissionPlan;
+  try {
+    current = await loadKnowledgeRunAdmissionPlan(tx, {
+      knowledgePlan: input.plan.knowledgePlan,
+      userId: input.userId
+    });
+  } catch (error) {
+    if (error instanceof KnowledgeRunAdmissionError || error instanceof ProviderAdmissionError) {
+      throw new KnowledgeRunPlanConflictError();
+    }
+    throw error;
+  }
+  if (!sameKnowledgeRunAdmissionPlan(input.plan, current)) {
+    throw new KnowledgeRunPlanConflictError();
+  }
+  for (const binding of current.bindings) {
+    const snapshot = binding.embeddingExecutionSnapshot;
+    if (!snapshot.credentialId || !snapshot.credentialVersionId) {
+      throw new KnowledgeRunPlanConflictError();
+    }
+    await tx.knowledgeRunBinding.create({
+      data: {
+        baseContentRevision: binding.baseContentRevision,
+        embeddingConnectionId: snapshot.connectionId,
+        embeddingCredentialId: snapshot.credentialId,
+        embeddingCredentialSource: binding.embeddingCredentialSource,
+        embeddingCredentialVersionId: snapshot.credentialVersionId,
+        embeddingExecutionSnapshot: json(snapshot),
+        embeddingProviderModelId: binding.embeddingProviderModelId,
+        indexedContentRevision: binding.indexedContentRevision,
+        indexGenerationId: binding.indexGenerationId,
+        knowledgeBaseId: binding.knowledgeBaseId,
+        modelRunId: input.runId,
+        ordinal: binding.ordinal,
+        targetDimension: binding.targetDimension,
+        vectorSpaceFingerprint: binding.vectorSpaceFingerprint
+      }
+    });
   }
 }
 
@@ -1375,6 +1496,12 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             }
           });
 
+          await insertAcceptedKnowledgeRunBindings(tx, {
+            plan: input.knowledgeAdmissionPlan,
+            runId: run.id,
+            userId: input.userId
+          });
+
           await insertAcceptedMcpRunBindings(tx, {
             bindings: input.mcpBindings,
             runId: run.id,
@@ -1500,6 +1627,12 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               userId: input.userId,
               userMessageId: input.userMessageId
             }
+          });
+
+          await insertAcceptedKnowledgeRunBindings(tx, {
+            plan: input.knowledgeAdmissionPlan,
+            runId: run.id,
+            userId: input.userId
           });
 
           await insertAcceptedMcpRunBindings(tx, {
@@ -1677,6 +1810,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
 	            }
 	          },
 	          activeLeafMessageId: true,
+	          defaultKnowledgePlan: true,
 	          defaultProviderModel: {
 	            select: {
 	              connectionId: true,
@@ -1685,6 +1819,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
 	          },
 	          folder: {
 	            select: {
+	              defaultKnowledgePlan: true,
 	              projectMemory: true
 	            }
 	          },
@@ -1700,8 +1835,10 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         chat
 	          ? {
 	              activeLeafMessageId: chat.activeLeafMessageId,
+	              defaultKnowledgePlan: chat.defaultKnowledgePlan,
 	              defaultModelId: chat.defaultProviderModel?.id ?? "",
 	              defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
+	              folderDefaultKnowledgePlan: chat.folder?.defaultKnowledgePlan ?? null,
 	              id: chat.id,
 	              messageCount: chat._count.messages,
 	              projectMemory: chat.folder?.projectMemory ?? null,
@@ -1792,6 +1929,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         include: {
           chat: {
             select: {
+              defaultKnowledgePlan: true,
               defaultProviderModel: {
                 select: {
                   connectionId: true,
@@ -1800,6 +1938,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               },
               folder: {
                 select: {
+                  defaultKnowledgePlan: true,
                   projectMemory: true
                 }
               },
@@ -1829,8 +1968,10 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       }
 
       const chat = {
+        defaultKnowledgePlan: sourceMessage.chat.defaultKnowledgePlan,
         defaultModelId: sourceMessage.chat.defaultProviderModel?.id ?? "",
         defaultProvider: sourceMessage.chat.defaultProviderModel?.connectionId ?? "",
+        folderDefaultKnowledgePlan: sourceMessage.chat.folder?.defaultKnowledgePlan ?? null,
         id: sourceMessage.chat.id,
         projectMemory: sourceMessage.chat.folder?.projectMemory ?? null
       };
@@ -1926,6 +2067,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               sequence: "asc"
             }
           },
+          knowledgeRunBindings: {
+            orderBy: { ordinal: "asc" }
+          },
           searchRuns: {
             orderBy: {
               createdAt: "asc"
@@ -1969,6 +2113,19 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         cachedInputTokens: run.cachedInputTokens,
         cacheWriteInputTokens: run.cacheWriteInputTokens,
         inputTokens: run.inputTokens,
+        knowledgeBindings: run.knowledgeRunBindings.map((binding) => ({
+          baseContentRevision: binding.baseContentRevision,
+          embeddingConnectionId: binding.embeddingConnectionId,
+          embeddingCredentialSource: binding.embeddingCredentialSource,
+          embeddingProviderModelId: binding.embeddingProviderModelId,
+          indexedContentRevision: binding.indexedContentRevision,
+          indexGenerationId: binding.indexGenerationId,
+          knowledgeBaseId: binding.knowledgeBaseId,
+          ordinal: binding.ordinal,
+          targetDimension: binding.targetDimension,
+          vectorSpaceFingerprint: binding.vectorSpaceFingerprint.trim()
+        })),
+        knowledgePlan: knowledgePlanFromNormalizedRequest(run.normalizedRequest),
         modelId: run.modelId,
         normalizedRequest: run.normalizedRequest,
         outputTokens: run.outputTokens,

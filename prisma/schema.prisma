@@ -597,6 +597,7 @@ model KnowledgeBase {
   activeIndexGeneration   KnowledgeIndexGeneration?  @relation("KnowledgeBaseActiveIndexGeneration", fields: [id, activeIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBase_activeIndexGeneration_fkey")
   documents               KnowledgeDocument[]
   indexGenerations        KnowledgeIndexGeneration[] @relation("KnowledgeBaseIndexGenerations")
+  runBindings             KnowledgeRunBinding[]
   owner                   User                       @relation("KnowledgeBaseOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   publications            KnowledgeBasePublication[]
   usageEvents             UsageEvent[]               @relation("KnowledgeUsageBase")
@@ -632,6 +633,7 @@ model KnowledgeIndexGeneration {
   generationDocuments      KnowledgeGenerationDocument[]
   ingestDocumentVersions   KnowledgeDocumentVersion[]     @relation("KnowledgeDocumentVersionIngestGeneration")
   knowledgeBase            KnowledgeBase                  @relation("KnowledgeBaseIndexGenerations", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+  runBindings              KnowledgeRunBinding[]
   sourceIndexGeneration    KnowledgeIndexGeneration?      @relation("KnowledgeIndexGenerationSource", fields: [knowledgeBaseId, sourceIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeIndexGeneration_source_fkey")
   usageEvents              UsageEvent[]                   @relation("KnowledgeUsageGeneration")
 
@@ -802,6 +804,7 @@ model ProviderModel {
   chatDefaults              Chat[]                         @relation("ChatDefaultProviderModel")
   installationDefaults      ModelPolicy[]                  @relation("InstallationDefaultProviderModel")
   knowledgeIndexGenerations KnowledgeIndexGeneration[]
+  knowledgeRunBindings      KnowledgeRunBinding[]
   systemUtilityRoles        SystemModelPolicy[]            @relation("SystemUtilityProviderModel")
   userDefaults              UserSettings[]                 @relation("UserDefaultProviderModel")
 
@@ -876,6 +879,7 @@ model ProviderCredential {
   groupAssignments       ProviderGroupCredentialAssignment[]
   userAssignments        ProviderUserCredentialAssignment[]
   providerRunBindings    ProviderRunBinding[]
+  knowledgeRunBindings   KnowledgeRunBinding[]
   versions               ProviderCredentialVersion[]         @relation("ProviderCredentialVersions")
 
   @@unique([connectionId, id])
@@ -899,6 +903,7 @@ model ProviderCredentialVersion {
   credential             ProviderCredential             @relation("ProviderCredentialVersions", fields: [credentialId], references: [id], onDelete: Restrict)
   draftChecks            ProviderDraftCheck[]
   providerRunBindings    ProviderRunBinding[]
+  knowledgeRunBindings   KnowledgeRunBinding[]
 
   @@unique([credentialId, id])
   @@unique([credentialId, version])
@@ -1002,6 +1007,37 @@ model ProviderRunBinding {
   @@index([connectionId, providerModelId], map: "ProviderRunBinding_connection_model_idx")
   @@index([credentialId, credentialVersionId], map: "ProviderRunBinding_credential_version_idx")
   @@index([recoverableUntil])
+}
+
+model KnowledgeRunBinding {
+  id                           String                    @id @default(uuid())
+  modelRunId                   String
+  knowledgeBaseId              String
+  ordinal                      Int
+  baseContentRevision          Int
+  indexGenerationId            String
+  indexedContentRevision       Int
+  vectorSpaceFingerprint       String                    @db.Char(64)
+  targetDimension              Int
+  embeddingConnectionId        String
+  embeddingProviderModelId     String
+  embeddingCredentialId        String
+  embeddingCredentialVersionId String
+  embeddingCredentialSource    ProviderCredentialSource
+  embeddingExecutionSnapshot   Json
+  createdAt                    DateTime                  @default(now())
+  embeddingCredential          ProviderCredential        @relation(fields: [embeddingConnectionId, embeddingCredentialId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_credential_fkey")
+  embeddingCredentialVersion   ProviderCredentialVersion @relation(fields: [embeddingCredentialId, embeddingCredentialVersionId], references: [credentialId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_credentialVersion_fkey")
+  embeddingModel               ProviderModel             @relation(fields: [embeddingConnectionId, embeddingProviderModelId], references: [connectionId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_embeddingModel_fkey")
+  indexGeneration              KnowledgeIndexGeneration  @relation(fields: [knowledgeBaseId, indexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeRunBinding_generation_fkey")
+  knowledgeBase                KnowledgeBase             @relation(fields: [knowledgeBaseId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  modelRun                     ModelRun                  @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+
+  @@unique([modelRunId, ordinal])
+  @@unique([modelRunId, knowledgeBaseId])
+  @@index([knowledgeBaseId, indexGenerationId])
+  @@index([embeddingConnectionId, embeddingProviderModelId], map: "KnowledgeRunBinding_embedding_model_idx")
+  @@index([embeddingCredentialId, embeddingCredentialVersionId], map: "KnowledgeRunBinding_credential_version_idx")
 }
 
 model SearchStrategy {
@@ -1145,7 +1181,7 @@ model Message {
 }
 
 model ModelRun {
-  id                           String               @id @default(uuid())
+  id                           String                @id @default(uuid())
   chatId                       String
   userId                       String
   userMessageId                String
@@ -1159,29 +1195,30 @@ model ModelRun {
   providerRequestPreview       Json?
   providerResponseId           String?
   finalProviderResponsePreview Json?
-  inputTokens                  Int                  @default(0)
-  cachedInputTokens            Int                  @default(0)
-  cacheWriteInputTokens        Int                  @default(0)
-  outputTokens                 Int                  @default(0)
-  reasoningTokens              Int                  @default(0)
-  totalTokens                  Int                  @default(0)
-  estimatedCostMicros          Int                  @default(0)
+  inputTokens                  Int                   @default(0)
+  cachedInputTokens            Int                   @default(0)
+  cacheWriteInputTokens        Int                   @default(0)
+  outputTokens                 Int                   @default(0)
+  reasoningTokens              Int                   @default(0)
+  totalTokens                  Int                   @default(0)
+  estimatedCostMicros          Int                   @default(0)
   errorPayload                 Json?
   toolLoopState                Json?
-  createdAt                    DateTime             @default(now())
-  updatedAt                    DateTime             @updatedAt
-  assistantMessage             Message?             @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  createdAt                    DateTime              @default(now())
+  updatedAt                    DateTime              @updatedAt
+  assistantMessage             Message?              @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
   /// The composite relation proves the accepted revision belongs to the accepted definition; a check constraint keeps both columns present or absent together.
-  assistantRevision            AssistantRevision?   @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
-  chat                         Chat                 @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  assistantRevision            AssistantRevision?    @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
+  chat                         Chat                  @relation(fields: [chatId], references: [id], onDelete: Cascade)
   events                       ModelRunEvent[]
   mcpRunBindings               McpRunBinding[]
+  knowledgeRunBindings         KnowledgeRunBinding[]
   providerRunBindings          ProviderRunBinding[]
   searchRuns                   SearchRun[]
   searchRunBindings            SearchRunBinding[]
   toolCalls                    ModelRunToolCall[]
-  user                         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userMessage                  Message              @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
+  user                         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userMessage                  Message               @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents                  UsageEvent[]
 
   @@index([assistantId, assistantRevisionId])

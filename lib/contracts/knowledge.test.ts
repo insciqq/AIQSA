@@ -3,10 +3,33 @@ import {
   decodeKnowledgeBaseCreate,
   decodeKnowledgeBasePublication,
   decodeKnowledgeBaseUpdate,
+  decodeKnowledgePlan,
   decodeKnowledgeReindex
 } from "./knowledge";
 
 describe("Knowledge Base contracts", () => {
+  it("decodes an ordered three-base plan and keeps absent input backward-compatible with Off", () => {
+    expect(decodeKnowledgePlan(undefined)).toEqual({ ok: true, plan: { baseIds: [] } });
+    expect(decodeKnowledgePlan({ baseIds: [" base-1 ", "base-2", "base-3"] })).toEqual({
+      ok: true,
+      plan: { baseIds: ["base-1", "base-2", "base-3"] }
+    });
+  });
+
+  it("rejects malformed, duplicate, over-limit, and expanded Knowledge plans", () => {
+    for (const value of [
+      null,
+      {},
+      { baseIds: "base-1" },
+      { baseIds: ["base-1", "base-1"] },
+      { baseIds: ["base-1", "base-2", "base-3", "base-4"] },
+      { baseIds: ["base 1"] },
+      { baseIds: [], ownerUserId: "attacker" }
+    ]) {
+      expect(decodeKnowledgePlan(value)).toEqual({ code: "knowledge_plan_invalid", ok: false });
+    }
+  });
+
   it("normalizes bounded create and update inputs", () => {
     expect(decodeKnowledgeBaseCreate({
       description: "  Team references  ",

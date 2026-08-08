@@ -473,6 +473,97 @@ describe("chat route handlers", () => {
     expect(body.chat).not.toHaveProperty("usageStats");
   });
 
+  it("validates and persists nullable chat and folder Knowledge defaults", async () => {
+    let chatDefault: Parameters<ChatRepository["updateChat"]>[0]["defaultKnowledgePlan"];
+    let folderDefault: Parameters<ChatRepository["updateFolder"]>[0]["defaultKnowledgePlan"];
+    const repository: ChatRepository = {
+      archiveChat: async () => false,
+      createChat: async () => null,
+      createFolder: async () => null,
+      deleteFolder: async () => false,
+      getChat: async () => null,
+      listWorkspace: async () => null,
+      searchChatContent: async () => [],
+      updateChat: async (input) => {
+        chatDefault = input.defaultKnowledgePlan;
+        return {
+          activeLeafMessageId: null,
+          createdAt: "2026-08-08T00:00:00.000Z",
+          defaultKnowledgePlan: input.defaultKnowledgePlan ?? null,
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          folderId: null,
+          id: input.chatId,
+          messageCount: 0,
+          pinned: false,
+          title: "Knowledge",
+          updatedAt: "2026-08-08T00:00:00.000Z"
+        };
+      },
+      updateFolder: async (input) => {
+        folderDefault = input.defaultKnowledgePlan;
+        return {
+          defaultKnowledgePlan: input.defaultKnowledgePlan ?? null,
+          id: input.folderId,
+          name: "Project",
+          parentId: null,
+          projectMemory: "",
+          sortOrder: 10
+        };
+      }
+    };
+    const chatPatch = createUpdateChatHandler({ repository, resolveAuth: auth.resolveAuth });
+    const folderPatch = createUpdateFolderHandler({ repository, resolveAuth: auth.resolveAuth });
+    const chatResponse = await chatPatch(
+      new Request("http://app.local/api/chats/chat-1", {
+        body: JSON.stringify({ defaultKnowledgePlan: { baseIds: ["base-1", "base-2"] } }),
+        headers: { cookie: authCookie() },
+        method: "PATCH"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+    const folderResponse = await folderPatch(
+      new Request("http://app.local/api/folders/folder-1", {
+        body: JSON.stringify({ defaultKnowledgePlan: null }),
+        headers: { cookie: authCookie() },
+        method: "PATCH"
+      }),
+      { params: { folderId: "folder-1" } }
+    );
+
+    expect(chatResponse.status).toBe(200);
+    expect(folderResponse.status).toBe(200);
+    expect(chatDefault).toEqual({ baseIds: ["base-1", "base-2"] });
+    expect(folderDefault).toBeNull();
+  });
+
+  it("rejects malformed Knowledge defaults before repository mutation", async () => {
+    let called = false;
+    const repository: ChatRepository = {
+      archiveChat: async () => false,
+      createChat: async () => null,
+      createFolder: async () => null,
+      deleteFolder: async () => false,
+      getChat: async () => null,
+      listWorkspace: async () => null,
+      searchChatContent: async () => [],
+      updateChat: async () => { called = true; return null; },
+      updateFolder: async () => { called = true; return null; }
+    };
+    const response = await createUpdateChatHandler({ repository, resolveAuth: auth.resolveAuth })(
+      new Request("http://app.local/api/chats/chat-1", {
+        body: JSON.stringify({ defaultKnowledgePlan: { baseIds: ["same", "same"] } }),
+        headers: { cookie: authCookie() },
+        method: "PATCH"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "knowledge_plan_invalid" });
+    expect(called).toBe(false);
+  });
+
   it("returns a stable conflict for active-leaf checkout and archive during an active run", async () => {
     const repository: ChatRepository = {
       archiveChat: async () => {

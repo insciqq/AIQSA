@@ -33,6 +33,7 @@ import {
   ActiveRunConflictError,
   AssistantRunConflictError,
   AttachmentLinkConflictError,
+  KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError
 } from "./runRepositoryContract";
@@ -53,6 +54,7 @@ export type RunHandlerDeps = {
   assistants?: RunPreparationDeps["assistants"];
   getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
   getConfig?: () => AuthConfig;
+  knowledgeAdmission?: RunPreparationDeps["knowledgeAdmission"];
   mcp?: RunPreparationDeps["mcp"];
   providerAdmission?: RunPreparationDeps["providerAdmission"];
   providerRuntime?: ProviderRuntimeResolver;
@@ -132,6 +134,13 @@ function isAttachmentLinkConflictError(error: unknown): error is AttachmentLinkC
 function isMcpRunPlanConflictError(error: unknown): error is McpRunPlanConflictError {
   return error instanceof McpRunPlanConflictError ||
     (error instanceof Error && error.name === "McpRunPlanConflictError");
+}
+
+function isKnowledgeRunPlanConflictError(
+  error: unknown
+): error is KnowledgeRunPlanConflictError {
+  return error instanceof KnowledgeRunPlanConflictError ||
+    (error instanceof Error && error.name === "KnowledgeRunPlanConflictError");
 }
 
 function isProviderAdmissionConflictError(
@@ -316,6 +325,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
             }
           : {}),
         expectedActiveLeafId: preparedData.expectedActiveLeafId,
+        ...(preparedData.knowledgeAdmissionPlan
+          ? { knowledgeAdmissionPlan: preparedData.knowledgeAdmissionPlan }
+          : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.providerAdmissionPlan
           ? { providerAdmissionPlan: preparedData.providerAdmissionPlan }
@@ -341,6 +353,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
       if (isMcpRunPlanConflictError(error)) {
         return Response.json({ error: "mcp_not_ready" }, { status: 409 });
+      }
+
+      if (isKnowledgeRunPlanConflictError(error)) {
+        return Response.json({ error: "knowledge_base_not_available" }, { status: 409 });
       }
 
       if (isProviderAdmissionConflictError(error)) {
@@ -441,6 +457,9 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
               }
             }
           : {}),
+        ...(preparedData.knowledgeAdmissionPlan
+          ? { knowledgeAdmissionPlan: preparedData.knowledgeAdmissionPlan }
+          : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.providerAdmissionPlan
           ? { providerAdmissionPlan: preparedData.providerAdmissionPlan }
@@ -463,6 +482,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
 
       if (isMcpRunPlanConflictError(error)) {
         return Response.json({ error: "mcp_not_ready" }, { status: 409 });
+      }
+
+      if (isKnowledgeRunPlanConflictError(error)) {
+        return Response.json({ error: "knowledge_base_not_available" }, { status: 409 });
       }
 
       if (isProviderAdmissionConflictError(error)) {

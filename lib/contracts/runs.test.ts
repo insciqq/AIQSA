@@ -141,6 +141,8 @@ describe("decodeGetModelRunResponse", () => {
       events: [{ eventType: "token", payload, sequence: 7 }],
       id: "run-1",
       inputTokens: 12,
+      knowledgeBindings: [],
+      knowledgePlan: { baseIds: [] },
       modelId: "gpt-5",
       outputTokens: 8,
       provider: "openai",
@@ -150,6 +152,41 @@ describe("decodeGetModelRunResponse", () => {
       toolCalls: [],
       totalTokens: 20
     });
+  });
+
+  it("decodes exact ordered Knowledge evidence and rejects plan/binding drift", () => {
+    const binding = {
+      baseContentRevision: 7,
+      embeddingConnectionId: "embedding-connection-1",
+      embeddingCredentialSource: "group",
+      embeddingProviderModelId: "embedding-model-1",
+      indexedContentRevision: 6,
+      indexGenerationId: "generation-1",
+      knowledgeBaseId: "base-1",
+      ordinal: 0,
+      targetDimension: 1_536,
+      vectorSpaceFingerprint: "a".repeat(64)
+    };
+    const run = {
+      ...requiredRunFields(),
+      knowledgeBindings: [binding],
+      knowledgePlan: { baseIds: ["base-1"] }
+    };
+
+    expect(decodeGetModelRunResponse({ run })).toMatchObject({
+      knowledgeBindings: [binding],
+      knowledgePlan: { baseIds: ["base-1"] }
+    });
+    for (const malformed of [
+      { ...run, knowledgeBindings: [] },
+      { ...run, knowledgeBindings: [{ ...binding, knowledgeBaseId: "base-2" }] },
+      { ...run, knowledgeBindings: [{ ...binding, ordinal: 1 }] },
+      { ...run, knowledgeBindings: [{ ...binding, targetDimension: 768 }] },
+      { ...run, knowledgeBindings: [{ ...binding, vectorSpaceFingerprint: "not-a-pin" }] },
+      { ...run, knowledgePlan: { baseIds: ["base-2"] } }
+    ]) {
+      expect(decodeGetModelRunResponse({ run: malformed })).toBeNull();
+    }
   });
 
   it("rejects a malformed assistant provenance", () => {
@@ -188,6 +225,8 @@ describe("decodeGetModelRunResponse", () => {
       events: [],
       id: "run-1",
       inputTokens: 12,
+      knowledgeBindings: [],
+      knowledgePlan: { baseIds: [] },
       modelId: "gpt-5",
       outputTokens: 0,
       provider: "openai",

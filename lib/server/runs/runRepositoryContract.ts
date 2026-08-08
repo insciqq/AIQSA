@@ -10,6 +10,7 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import type { ModelTokenPricing } from "../../domain/usage";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
+import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   SearchAdapterKind,
@@ -152,6 +153,13 @@ export class ProviderAdmissionConflictError extends Error {
   }
 }
 
+export class KnowledgeRunPlanConflictError extends Error {
+  constructor() {
+    super("knowledge_base_not_available");
+    this.name = "KnowledgeRunPlanConflictError";
+  }
+}
+
 export class AssistantRunConflictError extends Error {
   constructor() {
     super("assistant_not_available");
@@ -253,6 +261,7 @@ export type RunRepository = {
     content: { blocks: unknown[] };
     defaults?: AcceptedRunDefaults;
     expectedActiveLeafId: string | null;
+    knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
     mcpBindings?: McpRunPlanBinding[];
     modelId: string;
     normalizedRequest: NormalizedRunRequest;
@@ -269,6 +278,7 @@ export type RunRepository = {
     assistant?: AcceptedAssistantRun;
     chatId: string;
     defaults?: AcceptedRunDefaults;
+    knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
     mcpBindings?: McpRunPlanBinding[];
     modelId: string;
     normalizedRequest: NormalizedRunRequest;
@@ -303,8 +313,10 @@ export type RunRepository = {
   ): Promise<boolean>;
   findOwnedChat(chatId: string, userId: string): Promise<{
     activeLeafMessageId: string | null;
+    defaultKnowledgePlan?: unknown;
     defaultModelId: string;
     defaultProvider: string;
+    folderDefaultKnowledgePlan?: unknown;
     id: string;
     messageCount: number;
     projectMemory: string | null;
@@ -332,8 +344,10 @@ export type RunRepository = {
       provider: string | null;
     } | null;
     chat: {
+      defaultKnowledgePlan?: unknown;
       defaultModelId: string;
       defaultProvider: string;
+      folderDefaultKnowledgePlan?: unknown;
       id: string;
       projectMemory: string | null;
     };

@@ -22,10 +22,11 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
 
 1. Input
    - user message;
-   - an optional selected Assistant: a declarative, versioned execution profile over this same pipeline. The request then carries only the Assistant identity plus user content; the server resolves the currently authorized immutable revision at admission (the owner's current revision, or the exact revision pinned by the publication granting access), materializes its model, system/developer instructions, provider-neutral controls, logical Search plan, and exact MCP server allowlist, and rejects any client override field. An Assistant never grants provider, Search, or MCP entitlement — the runner's own admission still applies — and unavailable saved dependencies or unsupported saved controls fail closed with stable privacy-safe codes instead of clamping or substituting;
+   - an optional selected Assistant: a declarative, versioned execution profile over this same pipeline. The request then carries only the Assistant identity plus user content; the server resolves the currently authorized immutable revision at admission (the owner's current revision, or the exact revision pinned by the publication granting access), materializes its model, system/developer instructions, provider-neutral controls, logical Search plan, exact MCP server allowlist, and exact Knowledge-base allowlist, and rejects any client override field. An Assistant never grants provider, Search, MCP, or Knowledge entitlement — the runner's own admission still applies — and unavailable saved dependencies or unsupported saved controls fail closed with stable privacy-safe codes instead of clamping or substituting;
    - the server-owned active-branch context and local first-message title projection defined by [Runs and streaming](../backend/RUNS_AND_STREAMING.md);
    - server-owned prompts: an ordinary no-Assistant run receives the code-owned standard-chat baseline `You are a helpful AI assistant. Today is {local_date}, local time is {local_time}.` rendered at admission from the server clock plus a bounded validated IANA time-zone hint (missing/invalid context records the explicit UTC fallback); the browser has no authority over the baseline or its rendered date/time. Assistant runs use their revision's own instructions and do not inherit the baseline. Both modes keep the cross-cutting visible-answer developer contract explicit, record the exact rendered text plus zone evidence in `ModelRun.normalizedRequest`, and never depend on a live template or definition after acceptance;
    - selected provider and model;
+   - one bounded Knowledge plan. An ordinary run resolves its ordered list of at most three base ids as explicit request > chat default > folder/project default > Off; explicit `{ baseIds: [] }` is Off and therefore does not inherit. An Assistant run instead uses its authorized revision's exact list and rejects a simultaneous `knowledgePlan` override. Missing historical fields decode as Off;
    - explicit request parameters;
    - admitted user-owned attachments. [Provider admission](../backend/providers/ADMISSION_AND_BINDINGS.md) owns capability and PDF-route selection; [Runs and streaming](../backend/RUNS_AND_STREAMING.md) owns private materialization, replay, and context-budget mechanics.
 
@@ -57,7 +58,15 @@ change the grant, effective-inventory, or per-call-approval semantics owned by
 this pipeline.
 
 An accepted run freezes opaque deployment identities and exact provider/Search
-bindings before network I/O; later ordinary configuration or RBAC changes
+bindings before network I/O. A nonempty Knowledge plan is revalidated for live
+ownership or active group/installation publication, non-archived base state,
+active index generation, current embedding-model entitlement, exact vector
+space, and usable credential/check evidence. Its ordered base revision,
+generation, vector fingerprint/dimension, and embedding execution snapshot are
+inserted atomically with the run graph; an unknown, unavailable, or access-lost
+base returns the same value-free failure and leaves no partial messages or run.
+A base with zero ready documents is still admitted so later retrieval can expose
+honest empty evidence. Later revocation, archive, reindex, ordinary configuration, or RBAC changes
 affect future admission only. [Provider admission](../backend/providers/ADMISSION_AND_BINDINGS.md)
 owns credential resolution, the admission transaction, and revocation guards;
 [runs and streaming](../backend/RUNS_AND_STREAMING.md) owns continuation,

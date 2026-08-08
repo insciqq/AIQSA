@@ -108,6 +108,21 @@ function binding(embed: EmbeddingRuntimeBinding["adapter"]["embed"]): EmbeddingR
     credentialId: "credential-1",
     credentialSource: "default",
     credentialVersionId: "credential-version-1",
+    executionSnapshot: {
+      connection: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://api.openai.com/v1"
+      },
+      connectionDisplayName: "OpenAI",
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      credentialVersionId: "credential-version-1",
+      model: providerConfiguration,
+      modelDisplayName: "Embedding v1",
+      providerFamily: "openai",
+      providerModelId: "embedding-1",
+      version: 1
+    },
     modelVersion: 1,
     provider: "openai",
     providerModelId: "embedding-1"

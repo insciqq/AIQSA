@@ -1,5 +1,14 @@
 export const KNOWLEDGE_BASE_NAME_MAX_LENGTH = 80;
 export const KNOWLEDGE_BASE_DESCRIPTION_MAX_LENGTH = 2000;
+export const KNOWLEDGE_PLAN_MAX_BASES = 3;
+
+export type KnowledgePlan = Readonly<{
+  baseIds: string[];
+}>;
+
+export type KnowledgePlanDecodeResult =
+  | Readonly<{ code: "knowledge_plan_invalid"; ok: false }>
+  | Readonly<{ ok: true; plan: KnowledgePlan }>;
 
 export type KnowledgeBaseCreateInput = Readonly<{
   description: string;
@@ -176,6 +185,33 @@ function boundedId(value: unknown): string | null {
   return normalized && normalized.length <= 256 && !/[\u0000-\u0020\u007f]/u.test(normalized)
     ? normalized
     : null;
+}
+
+/**
+ * Strict bounded decoder shared by run requests and persisted defaults.
+ * Missing input is the backward-compatible Off plan; callers that need to
+ * distinguish inheritance from explicit Off do so from field presence/null
+ * before invoking this decoder.
+ */
+export function decodeKnowledgePlan(value: unknown): KnowledgePlanDecodeResult {
+  if (value === undefined) {
+    return { ok: true, plan: { baseIds: [] } };
+  }
+  if (!isRecord(value) || !allowedKeys(value, ["baseIds"]) || !Array.isArray(value.baseIds)) {
+    return { code: "knowledge_plan_invalid", ok: false };
+  }
+  if (value.baseIds.length > KNOWLEDGE_PLAN_MAX_BASES) {
+    return { code: "knowledge_plan_invalid", ok: false };
+  }
+  const baseIds = value.baseIds.map(boundedId);
+  if (baseIds.some((id) => id === null)) {
+    return { code: "knowledge_plan_invalid", ok: false };
+  }
+  const normalized = baseIds as string[];
+  if (new Set(normalized).size !== normalized.length) {
+    return { code: "knowledge_plan_invalid", ok: false };
+  }
+  return { ok: true, plan: { baseIds: normalized } };
 }
 
 export function decodeKnowledgeBaseCreate(value: unknown): DecodeResult<KnowledgeBaseCreateInput> {

@@ -134,6 +134,7 @@ npm run db:attachment-processing:migration:contract
 npm run db:gemini:migration:contract
 npm run db:knowledge:migration:contract
 npm run db:knowledge-ingestion:migration:contract
+npm run db:knowledge-run:migration:contract
 npm run db:provider:migration:contract
 npm run db:full-access:migration:contract
 npm run db:control-plane:migration:contract
@@ -171,6 +172,15 @@ docker compose -f docker-compose.dev.yml exec -T \
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_ASSISTANT_RUN_AUTHORIZATION_INTEGRATION_TEST=1 app \
   npx vitest run lib/server/runs/assistantProvenancePrismaRepository.integration.test.ts
+```
+
+Knowledge run admission, immutable binding persistence, and rollback after
+access loss:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e AIQSA_KNOWLEDGE_RUN_INTEGRATION_TEST=1 app \
+  npx vitest run lib/server/runs/knowledgeRunBindingsPrismaRepository.integration.test.ts
 ```
 
 MCP protocol, database, and ToolHive boundaries:

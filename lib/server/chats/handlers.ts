@@ -16,9 +16,11 @@ import type {
   ThreadAssistantIdentity,
   ThreadRunUsage,
   UpdateChatRequestWire,
+  UpdateFolderRequestWire,
   WorkspaceChatSummaryWire,
   WorkspaceChatsResponseWire
 } from "../../contracts/chats";
+import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 
 export type {
   ChatUsageStats,
@@ -46,6 +48,7 @@ export type ChatMessageRecord = {
 export type ChatSummaryRecord = {
   activeLeafMessageId: string | null;
   createdAt: Date | string;
+  defaultKnowledgePlan?: KnowledgePlan | null;
   defaultModelId: string | null;
   defaultProvider: string | null;
   folderId: string | null;
@@ -62,6 +65,7 @@ export type ChatDetailRecord = ChatSummaryRecord & {
 };
 
 export type FolderRecord = {
+  defaultKnowledgePlan?: KnowledgePlan | null;
   id: string;
   name: string;
   parentId: string | null;
@@ -88,6 +92,7 @@ export type ChatRepository = {
   listWorkspace(userId: string): Promise<ChatWorkspace | null>;
   searchChatContent(input: { limit: number; query: string; userId: string }): Promise<ChatContentMatchRecord[]>;
   updateFolder(input: {
+    defaultKnowledgePlan?: KnowledgePlan | null;
     folderId: string;
     name?: string | null;
     parentId?: string | null;
@@ -97,6 +102,7 @@ export type ChatRepository = {
   updateChat(input: {
     activeLeafMessageId?: string | null;
     chatId: string;
+    defaultKnowledgePlan?: KnowledgePlan | null;
     folderId?: string | null;
     pinned?: boolean;
     title?: string | null;
@@ -154,6 +160,19 @@ function pinnedValue(body: { pinned?: unknown } | null): boolean | undefined {
   return typeof body.pinned === "boolean" ? body.pinned : undefined;
 }
 
+function knowledgeDefaultValue(
+  body: { defaultKnowledgePlan?: unknown } | null
+): { ok: true; value: KnowledgePlan | null | undefined } | { ok: false } {
+  if (!body || !("defaultKnowledgePlan" in body)) {
+    return { ok: true, value: undefined };
+  }
+  if (body.defaultKnowledgePlan === null) {
+    return { ok: true, value: null };
+  }
+  const decoded = decodeKnowledgePlan(body.defaultKnowledgePlan);
+  return decoded.ok ? { ok: true, value: decoded.plan } : { ok: false };
+}
+
 function parentFolderValue(body: Record<string, unknown> | null): string | null | undefined {
   if (!body || !("parentId" in body)) {
     return undefined;
@@ -196,6 +215,7 @@ function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSummaryWire
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: iso(chat.createdAt),
+    defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
     defaultModelId: chat.defaultModelId,
     defaultProvider: chat.defaultProvider,
     folderId: chat.folderId,
@@ -357,11 +377,16 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     if (bodyError) {
       return bodyError;
     }
+    const defaultKnowledgePlan = knowledgeDefaultValue(body);
+    if (!defaultKnowledgePlan.ok) {
+      return chatRouteErrorJson({ error: "knowledge_plan_invalid" }, { status: 400 });
+    }
     let chat: ChatSummaryRecord | null;
     try {
       chat = await deps.repository.updateChat({
         activeLeafMessageId: activeLeafValue(body),
         chatId: params.chatId,
+        defaultKnowledgePlan: defaultKnowledgePlan.value,
         folderId: folderValue(body),
         pinned: pinnedValue(body),
         title: textValue(body?.title),
@@ -489,14 +514,23 @@ export function createUpdateFolderHandler(deps: ChatHandlerDeps) {
     }
 
     const params = await context.params;
-    const [body, bodyError] = await readJson(request);
+    const [body, bodyError] = await readJson<UpdateFolderRequestWire>(request);
     if (bodyError) {
       return bodyError;
     }
     const name = optionalTextValue(body, "name");
     const projectMemory = optionalTextValue(body, "projectMemory");
     const parentId = parentFolderValue(body);
-    if (name === undefined && projectMemory === undefined && parentId === undefined) {
+    const defaultKnowledgePlan = knowledgeDefaultValue(body);
+    if (!defaultKnowledgePlan.ok) {
+      return chatRouteErrorJson({ error: "knowledge_plan_invalid" }, { status: 400 });
+    }
+    if (
+      name === undefined &&
+      projectMemory === undefined &&
+      parentId === undefined &&
+      defaultKnowledgePlan.value === undefined
+    ) {
       return Response.json({ error: "folder_update_required" }, { status: 400 });
     }
     if (name !== undefined && !name) {
@@ -504,6 +538,7 @@ export function createUpdateFolderHandler(deps: ChatHandlerDeps) {
     }
 
     const folder = await deps.repository.updateFolder({
+      defaultKnowledgePlan: defaultKnowledgePlan.value,
       folderId: params.folderId,
       name,
       parentId,

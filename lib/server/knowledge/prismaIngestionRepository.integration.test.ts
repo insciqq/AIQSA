@@ -105,6 +105,21 @@ function runtimeBinding(providerModelId: string): EmbeddingRuntimeBinding {
     credentialId: "fake-credential",
     credentialSource: "default",
     credentialVersionId: "fake-credential-version",
+    executionSnapshot: {
+      connection: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://embedding.example.test/v1"
+      },
+      connectionDisplayName: "Embedding endpoint",
+      connectionId,
+      credentialId: "fake-credential",
+      credentialVersionId: "fake-credential-version",
+      model: configuration,
+      modelDisplayName: "Embedding model",
+      providerFamily: "openai_compatible",
+      providerModelId,
+      version: 1
+    },
     modelVersion: 1,
     provider: "openai_compatible",
     providerModelId

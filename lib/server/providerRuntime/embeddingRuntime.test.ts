@@ -43,10 +43,12 @@ function model() {
         id: "credential-1"
       }],
       defaultCredentialId: "credential-1",
+      displayName: "OpenRouter",
       family: "openrouter",
       unassignedPolicy: "use_default"
     },
     connectionId: "connection-1",
+    displayName: "Qwen embedding",
     id: "embedding-1",
     provider: "openrouter"
   };

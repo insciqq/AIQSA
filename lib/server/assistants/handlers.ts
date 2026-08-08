@@ -197,6 +197,10 @@ function revisionContent(
     createdAt: revision.createdAt.toISOString(),
     description: revision.description,
     developerPrompt: revision.developerPrompt,
+    // Knowledge ids are governed dependencies too. Published consumers do
+    // not receive opaque ids here; run admission resolves the exact revision
+    // server-side and returns one privacy-neutral availability failure.
+    knowledgeBaseIds: options.owned ? [...revision.knowledgeBaseIds] : [],
     // Consumers never learn hidden dependency ids: unresolvable model ids
     // project as null and MCP ids narrow to the runner's accessible servers.
     mcpServerIds: options.owned

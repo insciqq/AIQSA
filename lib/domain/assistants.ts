@@ -15,6 +15,7 @@ type ComparableRevision = Pick<
   | "category"
   | "description"
   | "developerPrompt"
+  | "knowledgeBaseIds"
   | "mcpServerIds"
   | "name"
   | "providerModelId"
@@ -62,7 +63,10 @@ export function assistantRevisionChangedSections(
   if (previous.providerModelId !== next.providerModelId) {
     changed.push("model");
   }
-  if (stable(previous.runControls) !== stable(next.runControls)) {
+  if (
+    stable(previous.runControls) !== stable(next.runControls) ||
+    stable(previous.knowledgeBaseIds) !== stable(next.knowledgeBaseIds)
+  ) {
     changed.push("run-setup");
   }
   if (stable(previous.searchPlan) !== stable(next.searchPlan)) {

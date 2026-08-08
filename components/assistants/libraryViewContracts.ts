@@ -38,6 +38,7 @@ export type AssistantEditorDraftState = {
   category: AssistantCategory | null;
   description: string;
   developerPrompt: string;
+  knowledgeBaseIds: string[];
   maxOutputTokens: string;
   mcpServerIds: string[];
   name: string;
@@ -173,6 +174,7 @@ export function assistantDraftFromEditorState(
     category: state.category,
     description: state.description.trim(),
     developerPrompt: state.developerPrompt.trim() ? state.developerPrompt : null,
+    knowledgeBaseIds: [...state.knowledgeBaseIds],
     mcpServerIds: [...state.mcpServerIds],
     name: state.name.trim(),
     providerModelId: state.providerModelId,
@@ -206,6 +208,7 @@ export function editorStateFromRevision(
     category: revision.category,
     description: revision.description,
     developerPrompt: revision.developerPrompt ?? "",
+    knowledgeBaseIds: [...revision.knowledgeBaseIds],
     maxOutputTokens:
       controls.maxOutputTokens !== undefined
         ? String(controls.maxOutputTokens)

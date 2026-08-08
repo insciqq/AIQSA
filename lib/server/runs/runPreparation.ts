@@ -1,4 +1,5 @@
 import { textMessageContent } from "../../domain/content";
+import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import { materializeAssistantRunParams } from "../assistants/runControlMaterialization";
 import type {
@@ -40,6 +41,10 @@ import type {
   ProviderSearchPolicy
 } from "../providers/types";
 import type { StorageAdapter } from "../uploads/storage";
+import {
+  KnowledgeRunAdmissionError,
+  type KnowledgeRunAdmissionPlan
+} from "../knowledge/runAdmission";
 import type { McpRunPlanBinding, McpRunPlanResult } from "../mcp/runPlan";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import { providerToolBridges } from "../tools/bridges";
@@ -106,6 +111,9 @@ export type RunPreparationDeps = Readonly<{
   allowFakeProvider?: boolean;
   assistants?: AssistantRunResolver;
   getAttachmentLimits?: () => RunAttachmentLimits;
+  knowledgeAdmission?: Readonly<{
+    load(input: { knowledgePlan: KnowledgePlan; userId: string }): Promise<KnowledgeRunAdmissionPlan>;
+  }>;
   mcp?: Readonly<{
     prepare(
       userId: string,
@@ -133,8 +141,10 @@ export type RunPreparationDeps = Readonly<{
 export type SendRunPreparationSource = Readonly<{
   chat: Readonly<{
     activeLeafMessageId: string | null;
+    defaultKnowledgePlan?: unknown;
     defaultModelId: string;
     defaultProvider: string;
+    folderDefaultKnowledgePlan?: unknown;
     id: string;
     projectMemory: string | null;
   }>;
@@ -149,8 +159,10 @@ export type RegenerateRunPreparationSource = Readonly<{
       provider: string | null;
     }> | null;
     chat: Readonly<{
+      defaultKnowledgePlan?: unknown;
       defaultModelId: string;
       defaultProvider: string;
+      folderDefaultKnowledgePlan?: unknown;
       id: string;
       projectMemory: string | null;
     }>;
@@ -195,6 +207,7 @@ export type MaterializedPreparedRunData = {
   contextTruncation: ContextTruncationSummary | null;
   defaults: PreparedRunDefaultsData | null;
   expectedActiveLeafId: string | null;
+  knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
   normalizedRequest: NormalizedRunRequest;
   providerAdmissionPlan?: ProviderAdmissionPlan;
@@ -364,6 +377,13 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
     contextTruncation: mutablePreparedData<ContextTruncationSummary | null>(prepared.contextTruncation),
     defaults: mutablePreparedData<PreparedRunDefaultsData | null>(prepared.defaults),
     expectedActiveLeafId: prepared.expectedActiveLeafId,
+    ...(prepared.knowledgeAdmissionPlan
+      ? {
+          knowledgeAdmissionPlan: mutablePreparedData<KnowledgeRunAdmissionPlan>(
+            prepared.knowledgeAdmissionPlan
+          )
+        }
+      : {}),
     ...(prepared.mcpBindings
       ? { mcpBindings: mutablePreparedData<McpRunPlanBinding[]>(prepared.mcpBindings) }
       : {}),
@@ -637,6 +657,7 @@ function assistantPrompt(assistant: AssistantRunMaterialization): NormalizedRunR
 const assistantGovernedBodyKeys = [
   "controlDefaults",
   "modelId",
+  "knowledgePlan",
   "params",
   "prompt",
   "provider",
@@ -646,6 +667,28 @@ const assistantGovernedBodyKeys = [
   "searchStrategy",
   "tools"
 ] as const;
+
+function resolvedOrdinaryKnowledgePlan(
+  body: Readonly<Record<string, unknown>> | null,
+  chat: Readonly<{
+    defaultKnowledgePlan?: unknown;
+    folderDefaultKnowledgePlan?: unknown;
+  }>
+): ReturnType<typeof decodeKnowledgePlan> {
+  if (body && "knowledgePlan" in body) {
+    return decodeKnowledgePlan(body.knowledgePlan);
+  }
+  if (chat.defaultKnowledgePlan !== null && chat.defaultKnowledgePlan !== undefined) {
+    return decodeKnowledgePlan(chat.defaultKnowledgePlan);
+  }
+  if (
+    chat.folderDefaultKnowledgePlan !== null &&
+    chat.folderDefaultKnowledgePlan !== undefined
+  ) {
+    return decodeKnowledgePlan(chat.folderDefaultKnowledgePlan);
+  }
+  return decodeKnowledgePlan(undefined);
+}
 
 function promptWithProjectMemory(
   prompt: NormalizedRunRequest["prompt"],
@@ -837,6 +880,31 @@ export async function prepareRun(
     assistantRun = resolution.assistant;
   }
 
+  const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
+  const decodedKnowledgePlan = assistantRun
+    ? { ok: true as const, plan: { baseIds: [...assistantRun.knowledgeBaseIds] } }
+    : resolvedOrdinaryKnowledgePlan(body, chat);
+  if (!decodedKnowledgePlan.ok) {
+    return failure(decodedKnowledgePlan.code, 400);
+  }
+  let knowledgeAdmissionPlan: KnowledgeRunAdmissionPlan | undefined;
+  if (decodedKnowledgePlan.plan.baseIds.length > 0) {
+    if (!deps.knowledgeAdmission) {
+      return failure("knowledge_base_not_available", 503);
+    }
+    try {
+      knowledgeAdmissionPlan = await deps.knowledgeAdmission.load({
+        knowledgePlan: decodedKnowledgePlan.plan,
+        userId: input.userId
+      });
+    } catch (error) {
+      if (error instanceof KnowledgeRunAdmissionError) {
+        return failure(error.code, 404);
+      }
+      throw error;
+    }
+  }
+
   const decodedSearchPlan = assistantRun
     ? null
     : decodeSearchPlan(body?.searchPlan, body?.searchStrategy);
@@ -863,7 +931,6 @@ export async function prepareRun(
       return failure("search_preference_invalid", 400);
     }
   }
-  const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
   const selectedProvider = assistantRun
     ? assistantRun.provider
     : typeof body?.provider === "string"
@@ -1230,6 +1297,7 @@ export async function prepareRun(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
+    knowledgePlan: { baseIds: [...decodedKnowledgePlan.plan.baseIds] },
     modelCapabilities,
     modelId: executionModelId,
     ...(mcpPlan?.ok && mcpPlan.snapshot.servers.length ? { mcp: mcpPlan.snapshot } : {}),
@@ -1324,6 +1392,7 @@ export async function prepareRun(
     contextTruncation: providerBudget.contextTruncation,
     defaults,
     expectedActiveLeafId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : null,
+    ...(knowledgeAdmissionPlan ? { knowledgeAdmissionPlan } : {}),
     ...(mcpPlan?.ok ? { mcpBindings: [...mcpPlan.bindings] } : {}),
     normalizedRequest,
     ...(admissionPlan ? { providerAdmissionPlan: admissionPlan } : {}),

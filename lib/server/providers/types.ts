@@ -11,6 +11,7 @@ import type {
   SearchProtocol,
   ValidatedSearchQuery
 } from "../../domain/search";
+import type { KnowledgePlan } from "../../contracts/knowledge";
 
 export type NormalizedSearchPlanOption = Readonly<{
   adapterKind: SearchAdapterKind;
@@ -80,6 +81,7 @@ export type NormalizedRunRequest = {
       truncation?: ContextTruncationSummary;
     };
   };
+  knowledgePlan?: KnowledgePlan;
   modelCapabilities: ProviderModelCapabilities;
   mcp?: McpRunPlanSnapshot;
   modelId: string;

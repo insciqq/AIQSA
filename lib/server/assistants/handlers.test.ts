@@ -124,6 +124,7 @@ function revisionRow(overrides: Partial<AssistantRevisionRow> = {}): AssistantRe
     description: "Reviews changes.",
     developerPrompt: null,
     id: "revision-1",
+    knowledgeBaseIds: [],
     mcpServerIds: [],
     name: "Code Reviewer",
     providerModelId: "model-1",

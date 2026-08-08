@@ -1,5 +1,6 @@
 import type { ErrorResponse, SessionErrorCode } from "./http";
 import { decodeThreadToolActivity, type ThreadToolActivity } from "./toolActivity";
+import { decodeKnowledgePlan, type KnowledgePlan } from "./knowledge";
 
 export type RunEventView = {
   data: unknown;
@@ -30,6 +31,19 @@ export type ModelRunAssistantProvenance = {
   revisionNumber: number;
 };
 
+export type KnowledgeRunBindingProjection = {
+  baseContentRevision: number;
+  embeddingConnectionId: string;
+  embeddingCredentialSource: "default" | "group" | "user";
+  embeddingProviderModelId: string;
+  indexedContentRevision: number;
+  indexGenerationId: string;
+  knowledgeBaseId: string;
+  ordinal: number;
+  targetDimension: number;
+  vectorSpaceFingerprint: string;
+};
+
 export type ModelRunResponseProjection = {
   assistant?: ModelRunAssistantProvenance | null;
   cachedInputTokens: number;
@@ -39,6 +53,8 @@ export type ModelRunResponseProjection = {
   events: ModelRunEventProjection[];
   id: string;
   inputTokens: number;
+  knowledgeBindings?: KnowledgeRunBindingProjection[];
+  knowledgePlan?: KnowledgePlan;
   modelId: string;
   outputTokens: number;
   provider: string;
@@ -117,6 +133,54 @@ function modelRunStatus(value: unknown): ModelRunStatus | null {
     value === "streaming"
     ? value
     : null;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function decodeKnowledgeRunBinding(value: unknown): KnowledgeRunBindingProjection | null {
+  if (!isRecord(value)) return null;
+  const baseContentRevision = nonNegativeInteger(value.baseContentRevision);
+  const indexedContentRevision = nonNegativeInteger(value.indexedContentRevision);
+  const ordinal = nonNegativeInteger(value.ordinal);
+  const targetDimension = nonNegativeInteger(value.targetDimension);
+  const knowledgeBaseId = nonEmptyString(value.knowledgeBaseId);
+  const indexGenerationId = nonEmptyString(value.indexGenerationId);
+  const vectorSpaceFingerprint = nonEmptyString(value.vectorSpaceFingerprint);
+  const embeddingConnectionId = nonEmptyString(value.embeddingConnectionId);
+  const embeddingProviderModelId = nonEmptyString(value.embeddingProviderModelId);
+  if (
+    baseContentRevision === null ||
+    indexedContentRevision === null ||
+    ordinal === null ||
+    ordinal > 2 ||
+    (targetDimension !== 1024 && targetDimension !== 1536) ||
+    !knowledgeBaseId ||
+    !indexGenerationId ||
+    !/^[0-9a-f]{64}$/u.test(vectorSpaceFingerprint ?? "") ||
+    !embeddingConnectionId ||
+    !embeddingProviderModelId ||
+    (value.embeddingCredentialSource !== "default" &&
+      value.embeddingCredentialSource !== "group" &&
+      value.embeddingCredentialSource !== "user")
+  ) {
+    return null;
+  }
+  return {
+    baseContentRevision,
+    embeddingConnectionId,
+    embeddingCredentialSource: value.embeddingCredentialSource,
+    embeddingProviderModelId,
+    indexedContentRevision,
+    indexGenerationId,
+    knowledgeBaseId,
+    ordinal,
+    targetDimension,
+    vectorSpaceFingerprint: vectorSpaceFingerprint!
+  };
 }
 
 export function decodeCancelModelRunResponse(
@@ -199,6 +263,24 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
   if (toolCalls.some((toolCall) => toolCall === null)) {
     return null;
   }
+  const decodedKnowledgePlan = decodeKnowledgePlan(run.knowledgePlan);
+  const knowledgeBindingsInput = run.knowledgeBindings ?? [];
+  if (
+    !decodedKnowledgePlan.ok ||
+    !Array.isArray(knowledgeBindingsInput) ||
+    knowledgeBindingsInput.length !== decodedKnowledgePlan.plan.baseIds.length
+  ) {
+    return null;
+  }
+  const knowledgeBindings = knowledgeBindingsInput.map(decodeKnowledgeRunBinding);
+  if (
+    knowledgeBindings.some((binding) => binding === null) ||
+    knowledgeBindings.some((binding, index) =>
+      binding?.ordinal !== index ||
+      binding.knowledgeBaseId !== decodedKnowledgePlan.plan.baseIds[index])
+  ) {
+    return null;
+  }
 
   let assistant: ModelRunAssistantProvenance | null = null;
   if (run.assistant !== undefined && run.assistant !== null) {
@@ -239,6 +321,10 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
     events,
     id,
     inputTokens,
+    knowledgeBindings: knowledgeBindings.filter(
+      (binding): binding is KnowledgeRunBindingProjection => binding !== null
+    ),
+    knowledgePlan: decodedKnowledgePlan.plan,
     modelId,
     outputTokens,
     provider,

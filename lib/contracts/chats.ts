@@ -18,6 +18,7 @@ import {
   type ThreadToolActivity,
   type ThreadToolActivityStatus
 } from "./toolActivity";
+import { decodeKnowledgePlan, type KnowledgePlan } from "./knowledge";
 
 export type {
   ThreadSearchExecution,
@@ -113,6 +114,7 @@ export type WorkspaceChatSummary = {
   activeLeafMessageId: string | null;
   createdAt: string;
   defaultModelId: string;
+  defaultKnowledgePlan?: KnowledgePlan | null;
   defaultProvider: string;
   folderId: string | null;
   id: string;
@@ -182,6 +184,7 @@ export type CreateChatRequestWire = {
 
 export type UpdateChatRequestWire = {
   activeLeafMessageId?: string | null;
+  defaultKnowledgePlan?: KnowledgePlan | null;
   folderId?: string | null;
   pinned?: boolean;
   title?: string | null;
@@ -193,6 +196,7 @@ export type ChatRouteServerErrorCode =
   | "active_run_in_progress"
   | "chat_not_created"
   | "chat_not_found"
+  | "knowledge_plan_invalid"
   | "workspace_not_found";
 
 export type ChatRouteErrorResponse = ErrorResponse<ChatRouteServerErrorCode>;
@@ -203,11 +207,19 @@ export type ChatContentMatchWire = {
 };
 
 export type FolderWire = {
+  defaultKnowledgePlan?: KnowledgePlan | null;
   id: string;
   name: string;
   parentId: string | null;
   projectMemory: string;
   sortOrder: number;
+};
+
+export type UpdateFolderRequestWire = {
+  defaultKnowledgePlan?: KnowledgePlan | null;
+  name?: string | null;
+  parentId?: string | null;
+  projectMemory?: string;
 };
 
 export type WorkspaceChatsResponseWire = {
@@ -629,6 +641,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     value.defaultModelId,
     value.defaultProvider
   );
+  const defaultKnowledgePlan = decodeKnowledgeDefault(value.defaultKnowledgePlan);
   const folderId = nullableId(value.folderId);
   const messageCount = nonNegativeInteger(value.messageCount);
   const title = requiredString(value.title);
@@ -637,6 +650,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     activeLeafMessageId === undefined ||
     !id ||
     !createdAt ||
+    defaultKnowledgePlan === undefined ||
     !defaultSelection ||
     folderId === undefined ||
     messageCount === null ||
@@ -650,6 +664,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   return {
     activeLeafMessageId,
     createdAt,
+    defaultKnowledgePlan,
     defaultModelId: defaultSelection.defaultModelId,
     defaultProvider: defaultSelection.defaultProvider,
     folderId,
@@ -661,21 +676,36 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   };
 }
 
+function decodeKnowledgeDefault(value: unknown): KnowledgePlan | null | undefined {
+  if (value === undefined || value === null) return null;
+  const decoded = decodeKnowledgePlan(value);
+  return decoded.ok ? decoded.plan : undefined;
+}
+
 function decodeFolderWire(value: unknown): FolderWire | null {
   if (!isRecord(value)) {
     return null;
   }
 
   const id = requiredString(value.id);
+  const defaultKnowledgePlan = decodeKnowledgeDefault(value.defaultKnowledgePlan);
   const name = requiredString(value.name);
   const parentId = nullableId(value.parentId);
   const projectMemory = typeof value.projectMemory === "string" ? value.projectMemory : null;
   const sortOrder = finiteNumber(value.sortOrder);
-  if (!id || !name || parentId === undefined || projectMemory === null || sortOrder === null) {
+  if (
+    defaultKnowledgePlan === undefined ||
+    !id ||
+    !name ||
+    parentId === undefined ||
+    projectMemory === null ||
+    sortOrder === null
+  ) {
     return null;
   }
 
   return {
+    defaultKnowledgePlan,
     id,
     name,
     parentId,

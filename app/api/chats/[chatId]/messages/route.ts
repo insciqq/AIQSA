@@ -3,6 +3,7 @@ import { getAuthConfig } from "@/lib/server/auth/config";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { defaultMcpRunPlan } from "@/lib/server/mcp/defaultRuntime";
+import { knowledgeRunAdmissionService } from "@/lib/server/knowledge/runAdmission";
 import { providerAdmissionService } from "@/lib/server/providerRuntime/defaultAdmission";
 import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
 import { createSendMessageHandler } from "@/lib/server/runs/handlers";
@@ -17,6 +18,7 @@ export const POST = createSendMessageHandler({
   allowFakeProvider: isTestModeAllowedEnv(process.env),
   assistants: defaultAssistantRepository,
   getConfig: () => getAuthConfig(),
+  knowledgeAdmission: knowledgeRunAdmissionService,
   mcp: defaultMcpRunPlan,
   providerAdmission: providerAdmissionService,
   providerRuntime: providerRuntimeResolver,

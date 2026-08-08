@@ -14,6 +14,10 @@ import {
   type ProviderModelConfiguration
 } from "../providers/providerConfiguration";
 import { createProviderSafeFetch } from "../providers/providerSafeFetch";
+import {
+  normalizeProviderExecutionSnapshot,
+  type ProviderExecutionSnapshot
+} from "../providers/runtimeFactory";
 import { ProviderAdmissionError } from "./admission";
 
 export type EmbeddingRuntimeBinding = Readonly<{
@@ -24,10 +28,23 @@ export type EmbeddingRuntimeBinding = Readonly<{
   credentialId: string;
   credentialSource: "default" | "group" | "user";
   credentialVersionId: string;
+  executionSnapshot: ProviderExecutionSnapshot;
   modelVersion: number;
   provider: string;
   providerModelId: string;
 }>;
+
+export type EmbeddingRuntimeStore = Pick<
+  PrismaClient,
+  | "accessGrant"
+  | "providerCredentialVersion"
+  | "providerGroupCredentialAssignment"
+  | "providerModel"
+  | "providerModelCredentialCheck"
+  | "providerUserCredentialAssignment"
+  | "user"
+  | "userGroup"
+>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -38,7 +55,7 @@ function noAuthEvidence(value: unknown): boolean {
 }
 
 export function createPrismaEmbeddingRuntime(
-  prisma: PrismaClient,
+  prisma: EmbeddingRuntimeStore,
   options: Readonly<{
     createFetch?: (configuration: ReturnType<typeof normalizeProviderConnectionConfiguration>) => typeof fetch;
     encryptionKey?: () => Buffer;
@@ -227,6 +244,18 @@ export function createPrismaEmbeddingRuntime(
               return secret;
             })
       });
+      const executionSnapshot = normalizeProviderExecutionSnapshot({
+        connection,
+        connectionDisplayName: model.connection.displayName,
+        connectionId: model.connectionId,
+        credentialId: credential.credentialId,
+        credentialVersionId: credential.credentialVersionId,
+        model: configuration,
+        modelDisplayName: model.displayName,
+        providerFamily: model.connection.family,
+        providerModelId: model.id,
+        version: 1
+      });
 
       return {
         adapter,
@@ -236,6 +265,7 @@ export function createPrismaEmbeddingRuntime(
         credentialId: credential.credentialId,
         credentialSource: credential.source,
         credentialVersionId: credential.credentialVersionId,
+        executionSnapshot,
         modelVersion: model.activeVersion,
         provider: model.provider,
         providerModelId: model.id

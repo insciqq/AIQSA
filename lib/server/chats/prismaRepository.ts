@@ -11,6 +11,7 @@ import {
   projectHostedSearchActivity
 } from "../../domain/searchDisclosure";
 import { decodeAssistantAvatarRecipe } from "../../contracts/assistants";
+import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { persistedToolCallActivity } from "../runs/toolInspection";
@@ -110,6 +111,7 @@ const chatSummarySelect = {
   },
   activeLeafMessageId: true,
   createdAt: true,
+  defaultKnowledgePlan: true,
   defaultProviderModel: {
     select: {
       connectionId: true,
@@ -165,6 +167,19 @@ type UsageStatsMessage = {
   parentMessageId: string | null;
   role: string;
 };
+
+function storedKnowledgeDefault(value: unknown): KnowledgePlan | null {
+  if (value === null || value === undefined) return null;
+  const decoded = decodeKnowledgePlan(value);
+  if (!decoded.ok) throw new Error("knowledge_default_integrity_invalid");
+  return decoded.plan;
+}
+
+function knowledgeDefaultJson(
+  value: KnowledgePlan | null
+): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  return value === null ? Prisma.DbNull : { baseIds: [...value.baseIds] };
+}
 
 function activeBranchPath<TMessage extends { id: string; parentMessageId: string | null }>(
   messages: TMessage[],
@@ -231,6 +246,7 @@ function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
+    defaultKnowledgePlan: storedKnowledgeDefault(chat.defaultKnowledgePlan),
     defaultModelId: chat.defaultProviderModel?.id ?? null,
     defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.folderId,
@@ -289,6 +305,7 @@ function serializeChatSummary(chat: ChatSummaryRow): ChatSummaryRecord {
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
+    defaultKnowledgePlan: storedKnowledgeDefault(chat.defaultKnowledgePlan),
     defaultModelId: chat.defaultProviderModel?.id ?? null,
     defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.folderId,
@@ -742,7 +759,7 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
       });
 
       try {
-        return await prismaClient.folder.create({
+        const folder = await prismaClient.folder.create({
           data: {
             name: trimmed,
             parentId: parentId ?? null,
@@ -750,6 +767,7 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
             userId
           },
           select: {
+            defaultKnowledgePlan: true,
             id: true,
             name: true,
             parentId: true,
@@ -757,6 +775,10 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
             sortOrder: true
           }
         });
+        return {
+          ...folder,
+          defaultKnowledgePlan: storedKnowledgeDefault(folder.defaultKnowledgePlan)
+        };
       } catch (error) {
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
           return null;
@@ -815,7 +837,7 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
         snippet: row.snippet
       }));
     },
-    updateFolder: async ({ folderId, name, parentId, projectMemory, userId }) => {
+    updateFolder: async ({ defaultKnowledgePlan, folderId, name, parentId, projectMemory, userId }) => {
       const trimmed = typeof name === "string" ? name.trim().slice(0, 60) : undefined;
       if (typeof name === "string" && !trimmed) {
         return null;
@@ -848,6 +870,9 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
 
             const result = await tx.folder.updateMany({
               data: {
+                ...(defaultKnowledgePlan !== undefined
+                  ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
+                  : {}),
                 ...(trimmed !== undefined ? { name: trimmed } : {}),
                 ...(parentId !== undefined ? { parentId } : {}),
                 ...(projectMemory !== undefined ? { projectMemory: projectMemory.slice(0, 12000) } : {})
@@ -862,8 +887,9 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
               return null;
             }
 
-            return tx.folder.findFirst({
+            const folder = await tx.folder.findFirst({
               select: {
+                defaultKnowledgePlan: true,
                 id: true,
                 name: true,
                 parentId: true,
@@ -875,6 +901,9 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
                 userId
               }
             });
+            return folder
+              ? { ...folder, defaultKnowledgePlan: storedKnowledgeDefault(folder.defaultKnowledgePlan) }
+              : null;
           },
           {
             isolationLevel: Prisma.TransactionIsolationLevel.Serializable
@@ -916,6 +945,7 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
             }
           ],
           select: {
+            defaultKnowledgePlan: true,
             id: true,
             name: true,
             parentId: true,
@@ -945,10 +975,21 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
 
       return {
         chats: chats.map(serializeChatSummary),
-        folders
+        folders: folders.map((folder) => ({
+          ...folder,
+          defaultKnowledgePlan: storedKnowledgeDefault(folder.defaultKnowledgePlan)
+        }))
       };
     },
-    updateChat: async ({ activeLeafMessageId, chatId, folderId, pinned, title, userId }) =>
+    updateChat: async ({
+      activeLeafMessageId,
+      chatId,
+      defaultKnowledgePlan,
+      folderId,
+      pinned,
+      title,
+      userId
+    }) =>
       prismaClient.$transaction(async (tx) => {
         const chats = await tx.$queryRaw<Array<{ archived: boolean; id: string }>>`
           SELECT "id", "archived"
@@ -1003,6 +1044,9 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
         const updated = await tx.chat.update({
           data: {
             ...(activeLeafMessageId !== undefined ? { activeLeafMessageId } : {}),
+            ...(defaultKnowledgePlan !== undefined
+              ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
+              : {}),
             ...(folderId !== undefined ? { folderId } : {}),
             ...(pinned !== undefined ? { pinned } : {}),
             ...(title ? { title: title.trim().slice(0, 80) } : {})

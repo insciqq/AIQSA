@@ -9,6 +9,7 @@ import {
 const summary = {
   activeLeafMessageId: "message-1",
   createdAt: "2026-07-14T08:00:00.000Z",
+  defaultKnowledgePlan: null,
   defaultModelId: "gpt-5.5",
   defaultProvider: "openai",
   folderId: null,
@@ -142,6 +143,37 @@ describe("chat wire contracts", () => {
         })
       ).toBeNull();
     }
+  });
+
+  it("decodes bounded chat/folder Knowledge defaults and rejects malformed persisted plans", () => {
+    const knowledgePlan = { baseIds: ["base-a", "base-b"] };
+    const folder = {
+      defaultKnowledgePlan: knowledgePlan,
+      id: "folder-1",
+      name: "Research",
+      parentId: null,
+      projectMemory: "",
+      sortOrder: 0
+    };
+    expect(decodeWorkspaceChatsResponse({
+      chats: [{ ...summary, defaultKnowledgePlan: knowledgePlan }],
+      contentMatches: [],
+      folders: [folder]
+    })).toEqual({
+      chats: [{ ...summary, defaultKnowledgePlan: knowledgePlan }],
+      contentMatches: [],
+      folders: [folder]
+    });
+    expect(decodeWorkspaceChatsResponse({
+      chats: [{ ...summary, defaultKnowledgePlan: { baseIds: ["same", "same"] } }],
+      contentMatches: [],
+      folders: []
+    })).toBeNull();
+    expect(decodeWorkspaceChatsResponse({
+      chats: [summary],
+      contentMatches: [],
+      folders: [{ ...folder, defaultKnowledgePlan: { baseIds: ["a", "b", "c", "d"] } }]
+    })).toBeNull();
   });
 
   it("rejects missing or malformed required summary fields", () => {

@@ -64,6 +64,7 @@ function makeDraft(overrides: Partial<AssistantEditorDraftState> = {}): Assistan
     category: null,
     description: "",
     developerPrompt: "",
+    knowledgeBaseIds: [],
     maxOutputTokens: "4096",
     mcpServerIds: [],
     name: "Focused helper",

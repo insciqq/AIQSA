@@ -4,6 +4,7 @@ import {
   MAX_SEARCH_PLAN_OPTIONS,
   type SearchPlan
 } from "./search";
+import { KNOWLEDGE_PLAN_MAX_BASES } from "./knowledge";
 
 export const ASSISTANT_NAME_MAX_LENGTH = 80;
 export const ASSISTANT_DESCRIPTION_MAX_LENGTH = 400;
@@ -269,6 +270,7 @@ export type AssistantDraft = {
   category: AssistantCategory | null;
   description: string;
   developerPrompt: string | null;
+  knowledgeBaseIds: string[];
   mcpServerIds: string[];
   name: string;
   providerModelId: string;
@@ -353,6 +355,19 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
     return { code: "assistant_mcp_servers_invalid", ok: false };
   }
 
+  const knowledgeBaseIds = value.knowledgeBaseIds ?? [];
+  const normalizedKnowledgeBaseIds = Array.isArray(knowledgeBaseIds)
+    ? knowledgeBaseIds.map((id) => typeof id === "string" ? id.trim() : id)
+    : knowledgeBaseIds;
+  if (
+    !Array.isArray(normalizedKnowledgeBaseIds) ||
+    normalizedKnowledgeBaseIds.length > KNOWLEDGE_PLAN_MAX_BASES ||
+    !normalizedKnowledgeBaseIds.every(boundedId) ||
+    new Set(normalizedKnowledgeBaseIds).size !== normalizedKnowledgeBaseIds.length
+  ) {
+    return { code: "assistant_knowledge_bases_invalid", ok: false };
+  }
+
   const starterPromptsInput = value.starterPrompts ?? [];
   if (
     !Array.isArray(starterPromptsInput) ||
@@ -371,6 +386,7 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
       category: (category as AssistantCategory | null) ?? null,
       description,
       developerPrompt: typeof developerPrompt === "string" ? developerPrompt : null,
+      knowledgeBaseIds: normalizedKnowledgeBaseIds as string[],
       mcpServerIds: mcpServerIds.map((id) => (id as string).trim()),
       name,
       providerModelId: (value.providerModelId as string).trim(),
@@ -427,6 +443,7 @@ export type AssistantRevisionContent = {
   createdAt: string;
   description: string;
   developerPrompt: string | null;
+  knowledgeBaseIds: string[];
   mcpServerIds: string[];
   name: string;
   providerModelId: string | null;
@@ -487,6 +504,7 @@ export type AssistantErrorCode =
   | "assistant_description_invalid"
   | "assistant_developer_prompt_invalid"
   | "assistant_draft_invalid"
+  | "assistant_knowledge_bases_invalid"
   | "assistant_mcp_servers_invalid"
   | "assistant_model_invalid"
   | "assistant_model_not_available"
@@ -624,6 +642,7 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
   const category = decodeCategory(value.category);
   const runControls = decodeAssistantRunControls(value.runControls);
   const searchPlan = decodeSearchPlan(value.searchPlan);
+  const knowledgeBaseIds = value.knowledgeBaseIds ?? [];
   if (
     !stringOrNull(value.authorDisplayName) ||
     !avatar ||
@@ -631,6 +650,11 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
     !nonEmptyString(value.createdAt) ||
     typeof value.description !== "string" ||
     !stringOrNull(value.developerPrompt) ||
+    !stringArray(knowledgeBaseIds) ||
+    !knowledgeBaseIds.every(boundedId) ||
+    knowledgeBaseIds.some((id) => id !== id.trim()) ||
+    knowledgeBaseIds.length > KNOWLEDGE_PLAN_MAX_BASES ||
+    new Set(knowledgeBaseIds).size !== knowledgeBaseIds.length ||
     !stringArray(value.mcpServerIds) ||
     !nonEmptyString(value.name) ||
     !stringOrNull(value.providerModelId) ||
@@ -650,6 +674,7 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
     createdAt: value.createdAt,
     description: value.description,
     developerPrompt: value.developerPrompt,
+    knowledgeBaseIds,
     mcpServerIds: value.mcpServerIds,
     name: value.name,
     providerModelId: value.providerModelId,

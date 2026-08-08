@@ -29,6 +29,7 @@ export type AssistantRevisionRow = {
   description: string;
   developerPrompt: string | null;
   id: string;
+  knowledgeBaseIds: string[];
   mcpServerIds: string[];
   name: string;
   providerModelId: string;
@@ -105,6 +106,7 @@ const revisionSelect = {
   description: true,
   developerPrompt: true,
   id: true,
+  knowledgeBaseIds: true,
   mcpServerIds: true,
   name: true,
   providerModelId: true,
@@ -126,6 +128,7 @@ function revisionRow(record: RevisionRecord): AssistantRevisionRow {
     description: record.description,
     developerPrompt: record.developerPrompt,
     id: record.id,
+    knowledgeBaseIds: [...record.knowledgeBaseIds],
     mcpServerIds: [...record.mcpServerIds],
     name: record.name,
     providerModelId: record.providerModelId,
@@ -164,6 +167,7 @@ function revisionDraftData(draft: AssistantDraft): Omit<
     category: draft.category,
     description: draft.description,
     developerPrompt: draft.developerPrompt,
+    knowledgeBaseIds: [...draft.knowledgeBaseIds],
     mcpServerIds: [...draft.mcpServerIds],
     name: draft.name,
     providerModelId: draft.providerModelId,
@@ -457,6 +461,7 @@ export function createPrismaAssistantRepository(
                 category: source.revision.category,
                 description: source.revision.description,
                 developerPrompt: source.revision.developerPrompt,
+                knowledgeBaseIds: [...source.revision.knowledgeBaseIds],
                 mcpServerIds: [...source.revision.mcpServerIds],
                 name: copyName,
                 providerModelId: source.revision.providerModelId,
@@ -932,6 +937,7 @@ export function createPrismaAssistantRepository(
       const assistant: AssistantRunMaterialization = {
         assistantId: entry.id,
         developerPrompt: entry.revision.developerPrompt,
+        knowledgeBaseIds: [...entry.revision.knowledgeBaseIds],
         mcpServerIds: [...entry.revision.mcpServerIds],
         name: entry.revision.name,
         provider: model.connectionId,

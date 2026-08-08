@@ -4,6 +4,7 @@ import {
   decodeAssistantAvatarRecipe,
   decodeAssistantDraft,
   decodeAssistantListResponse,
+  decodeAssistantRevisionContent,
   decodeAssistantRunControls,
   decodeAssistantSummary,
   type AssistantAvatarRecipe
@@ -128,6 +129,7 @@ describe("assistant draft decode", () => {
     const decoded = decodeAssistantDraft({ ...validDraft(), name: "  Code Reviewer  " });
     expect(decoded.ok).toBe(true);
     if (decoded.ok) {
+      expect(decoded.draft.knowledgeBaseIds).toEqual([]);
       expect(decoded.draft.name).toBe("Code Reviewer");
       expect(decoded.draft.searchPlan).toEqual({
         mode: "all_selected",
@@ -148,6 +150,9 @@ describe("assistant draft decode", () => {
       [{ ...validDraft(), developerPrompt: 7 }, "assistant_developer_prompt_invalid"],
       [{ ...validDraft(), runControls: { topP: 1 } }, "assistant_run_controls_invalid"],
       [{ ...validDraft(), searchPlan: { mode: "sometimes", optionIds: [] } }, "assistant_search_plan_invalid"],
+      [{ ...validDraft(), knowledgeBaseIds: ["base", "base"] }, "assistant_knowledge_bases_invalid"],
+      [{ ...validDraft(), knowledgeBaseIds: ["a", "b", "c", "d"] }, "assistant_knowledge_bases_invalid"],
+      [{ ...validDraft(), knowledgeBaseIds: ["  "] }, "assistant_knowledge_bases_invalid"],
       [{ ...validDraft(), mcpServerIds: ["a", "a"] }, "assistant_mcp_servers_invalid"],
       [
         { ...validDraft(), starterPrompts: ["one", "two", "three", "four", "five"] },
@@ -219,5 +224,27 @@ describe("assistant wire decoders", () => {
         viewer: { canPublishInstallation: false }
       })
     ).toBeNull();
+  });
+
+  it("decodes bounded revision Knowledge ids with absent-field compatibility", () => {
+    const revision = {
+      ...validDraft(),
+      authorDisplayName: "Alex",
+      createdAt: "2026-08-08T00:00:00.000Z",
+      revisionNumber: 2
+    };
+    expect(decodeAssistantRevisionContent(revision)?.knowledgeBaseIds).toEqual([]);
+    expect(decodeAssistantRevisionContent({
+      ...revision,
+      knowledgeBaseIds: ["base-a", "base-b"]
+    })?.knowledgeBaseIds).toEqual(["base-a", "base-b"]);
+    expect(decodeAssistantRevisionContent({
+      ...revision,
+      knowledgeBaseIds: ["base-a", "base-a"]
+    })).toBeNull();
+    expect(decodeAssistantRevisionContent({
+      ...revision,
+      knowledgeBaseIds: [" "]
+    })).toBeNull();
   });
 });

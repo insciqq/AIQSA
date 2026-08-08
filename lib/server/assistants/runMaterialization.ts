@@ -10,6 +10,7 @@ import type { SearchPlan } from "../../contracts/search";
 export type AssistantRunMaterialization = {
   assistantId: string;
   developerPrompt: string | null;
+  knowledgeBaseIds: string[];
   mcpServerIds: string[];
   name: string;
   /** The value the run request would carry as `provider` (connection id). */

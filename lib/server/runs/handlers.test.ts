@@ -30,6 +30,7 @@ import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
   AttachmentLinkConflictError,
+  KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   type DurableRunControlRecord,
   type RunRepository
@@ -5930,5 +5931,51 @@ describe("model run route handlers", () => {
     await expect(sendResponse.json()).resolves.toEqual({ error: "mcp_not_ready" });
     expect(regenerateResponse.status).toBe(409);
     await expect(regenerateResponse.json()).resolves.toEqual({ error: "mcp_not_ready" });
+  });
+
+  it("maps send and regeneration Knowledge acceptance races to privacy-neutral conflicts", async () => {
+    const memory = createMemoryRepository();
+    const repository: RunRepository = {
+      ...memory.repository,
+      createRegenerationRun: async () => {
+        throw new KnowledgeRunPlanConflictError();
+      },
+      createRun: async () => {
+        throw new KnowledgeRunPlanConflictError();
+      }
+    };
+    const deps = {
+      ...authDeps,
+      providers: { fake: createFakeProviderAdapter() },
+      repository
+    };
+    const send = createSendMessageHandler(deps);
+    const regenerate = createRegenerateModelRunHandler(deps);
+
+    const sendResponse = await send(
+      new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({ searchStrategy: "search-disabled", text: "Race" }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { chatId: "chat-1" } }
+    );
+    const regenerateResponse = await regenerate(
+      new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+        body: JSON.stringify({ searchStrategy: "search-disabled" }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }),
+      { params: { messageId: "assistant-message-1" } }
+    );
+
+    expect(sendResponse.status).toBe(409);
+    await expect(sendResponse.json()).resolves.toEqual({
+      error: "knowledge_base_not_available"
+    });
+    expect(regenerateResponse.status).toBe(409);
+    await expect(regenerateResponse.json()).resolves.toEqual({
+      error: "knowledge_base_not_available"
+    });
   });
 });

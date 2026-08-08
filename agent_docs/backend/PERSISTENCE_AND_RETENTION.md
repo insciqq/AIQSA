@@ -82,7 +82,25 @@ The Knowledge aggregate starts at `KnowledgeBase`: owner, optimistic version, so
 
 Revision R resolves versions solely with `visibleFromRevision <= R` and no upper bound or `R < visibleUntilRevision`; moving the current pointer cannot rewrite that set. Activation closes the prior exclusive bound, advances the base content revision, and moves the current pointer in one serializable transaction. Reindex creates a shadow generation plus durable `KnowledgeGenerationDocument` work for the exact visible version set. Reconciliation locks the base, catches the shadow up after concurrent content changes, and flips only when every fenced version is complete and source generation/content/version fences still match; it can never activate a mixed set. `KnowledgeChunk` proves that its version and generation belong to the same base, stores bounded text plus an untyped pgvector value, and has a generated multilingual `simple` FTS projection with GIN plus dimension-guarded HNSW indexes. `KnowledgeBasePublication` grants live group or installation access without snapshotting content; archived bases are unavailable to non-owners. Base names, document metadata, content, vectors, normalized objects, and retrieval evidence remain private. Users owning bases and groups holding base publications block admin hard delete.
 
-`AssistantRevision.knowledgeBaseIds` is the inert governed allowlist attach point, while nullable `Folder.defaultKnowledgePlan` and `Chat.defaultKnowledgePlan` reserve ordinary default precedence. Run admission owns their later decoding and immutable binding semantics; schema presence alone grants no base access.
+`AssistantRevision.knowledgeBaseIds` is the exact revision-governed Knowledge
+allowlist. Nullable `Folder.defaultKnowledgePlan` and
+`Chat.defaultKnowledgePlan` own the ordinary project/chat preferences; run
+preparation resolves explicit request > chat > folder > Off, while Assistant
+runs reject overrides and use only the revision list. All plans are ordered,
+duplicate-free, and limited to three bases; an absent historical field decodes
+as Off. For each admitted nonempty plan, `KnowledgeRunBinding` stores one row per
+ordinal atomically with `ModelRun`: base id and accepted content revision, exact
+immutable index generation and indexed revision, vector-space fingerprint and
+dimension, plus the current embedding connection/model/credential-version
+execution snapshot and credential source. Composite and restrictive foreign
+keys keep accepted base, generation, model, credential, and version evidence
+from being deleted independently; deleting the owning run cascades only its
+bindings. Live ownership/publication, active-base/generation state, embedding
+entitlement, vector configuration, and credential/check evidence are reloaded
+inside acceptance, so any drift rolls the complete run graph back with a
+privacy-neutral failure. Later revocation, archive, or reindex never mutates an
+accepted row. A zero-document base is valid and binds the same way; document
+availability belongs to later retrieval evidence rather than admission.
 
 Folder names are unique among siblings for each user. Top-level folders use the partial unique index `Folder_userId_top_level_name_key`; child folders use `Folder_userId_parentId_name_key`.
 

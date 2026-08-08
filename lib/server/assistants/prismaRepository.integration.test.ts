@@ -126,6 +126,7 @@ function draft(overrides: Partial<AssistantDraft> = {}): AssistantDraft {
     category: "coding",
     description: "Integration assistant.",
     developerPrompt: null,
+    knowledgeBaseIds: [],
     mcpServerIds: [],
     name: "Integration Reviewer",
     providerModelId: modelId,

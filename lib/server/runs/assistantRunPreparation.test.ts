@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { textMessageContent } from "../../domain/content";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
+import { KnowledgeRunAdmissionError } from "../knowledge/runAdmission";
 import type { ProviderAdapter } from "../providers/types";
 import { prepareRun, type RunPreparationDeps } from "./runPreparation";
 
@@ -48,6 +50,7 @@ function assistantResolution(
     assistant: {
       assistantId: "assistant-1",
       developerPrompt: "Prefer bullet lists.",
+      knowledgeBaseIds: [],
       mcpServerIds: [],
       name: "Code Reviewer",
       provider: "fake",
@@ -144,6 +147,155 @@ describe("standard-chat baseline admission", () => {
   });
 });
 
+describe("ordinary Knowledge plan resolution", () => {
+  it.each([
+    {
+      body: { knowledgePlan: { baseIds: ["explicit"] }, text: "Hello" },
+      chat: { baseIds: ["chat"] },
+      expected: ["explicit"],
+      folder: { baseIds: ["folder"] },
+      label: "explicit over chat and folder"
+    },
+    {
+      body: { text: "Hello" },
+      chat: { baseIds: ["chat"] },
+      expected: ["chat"],
+      folder: { baseIds: ["folder"] },
+      label: "chat over folder"
+    },
+    {
+      body: { text: "Hello" },
+      chat: null,
+      expected: ["folder"],
+      folder: { baseIds: ["folder"] },
+      label: "folder when chat inherits"
+    }
+  ])("resolves $label", async ({ body, chat, expected, folder }) => {
+    const load = vi.fn(async ({ knowledgePlan, userId }) => ({
+      bindings: [],
+      fingerprint: "b".repeat(64),
+      knowledgePlan,
+      userId
+    }));
+    const source = sendSource();
+    const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
+      body,
+      source: {
+        ...source,
+        chat: {
+          ...source.chat,
+          defaultKnowledgePlan: chat,
+          folderDefaultKnowledgePlan: folder
+        }
+      },
+      userId: "user-1"
+    });
+
+    expect(result.ok).toBe(true);
+    expect(load).toHaveBeenCalledWith({
+      knowledgePlan: { baseIds: expected },
+      userId: "user-1"
+    });
+    if (result.ok) {
+      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual({ baseIds: expected });
+    }
+  });
+
+  it("keeps explicit Off above defaults and absent defaults backward-compatible with Off", async () => {
+    const load = vi.fn();
+    for (const input of [
+      {
+        body: { knowledgePlan: { baseIds: [] }, text: "Hello" },
+        chat: { baseIds: ["chat"] },
+        folder: { baseIds: ["folder"] }
+      },
+      { body: { text: "Hello" }, chat: null, folder: null }
+    ]) {
+      const source = sendSource();
+      const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
+        body: input.body,
+        source: {
+          ...source,
+          chat: {
+            ...source.chat,
+            defaultKnowledgePlan: input.chat,
+            folderDefaultKnowledgePlan: input.folder
+          }
+        },
+        userId: "user-1"
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.prepared.normalizedRequest.knowledgePlan).toEqual({ baseIds: [] });
+      }
+    }
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("applies the same explicit-plan wire contract to regeneration", async () => {
+    const load = vi.fn(async ({ knowledgePlan, userId }) => ({
+      bindings: [],
+      fingerprint: "c".repeat(64),
+      knowledgePlan,
+      userId
+    }));
+    const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
+      body: { knowledgePlan: { baseIds: ["regeneration-base"] } },
+      source: {
+        kind: "regenerate",
+        source: {
+          assistantMessage: { modelId: "fake-model", provider: "fake" },
+          chat: {
+            defaultKnowledgePlan: { baseIds: ["chat-default"] },
+            defaultModelId: "fake-model",
+            defaultProvider: "fake",
+            folderDefaultKnowledgePlan: { baseIds: ["folder-default"] },
+            id: "chat-1",
+            projectMemory: null
+          },
+          userMessage: {
+            content: textMessageContent("Stored question"),
+            id: "user-message-1"
+          }
+        }
+      },
+      userId: "user-1"
+    });
+
+    expect(result.ok).toBe(true);
+    expect(load).toHaveBeenCalledWith({
+      knowledgePlan: { baseIds: ["regeneration-base"] },
+      userId: "user-1"
+    });
+    if (result.ok) {
+      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual({
+        baseIds: ["regeneration-base"]
+      });
+    }
+  });
+
+  it("rejects malformed stored or explicit plans before provider admission", async () => {
+    const source = sendSource();
+    for (const input of [
+      {
+        body: { knowledgePlan: { baseIds: ["a", "a"] }, text: "Hello" },
+        chat: null
+      },
+      { body: { text: "Hello" }, chat: { baseIds: ["a", "b", "c", "d"] } }
+    ]) {
+      const result = await prepareRun(deps(), {
+        body: input.body,
+        source: {
+          ...source,
+          chat: { ...source.chat, defaultKnowledgePlan: input.chat }
+        },
+        userId: "user-1"
+      });
+      expect(result).toMatchObject({ code: "knowledge_plan_invalid", ok: false, status: 400 });
+    }
+  });
+});
+
 describe("assistant run admission", () => {
   it("materializes the resolved revision server-side and skips defaults persistence", async () => {
     const resolveForRun = vi.fn(async () => assistantResolution());
@@ -176,10 +328,44 @@ describe("assistant run admission", () => {
     }
   });
 
+  it("uses the exact revision Knowledge list and admits it server-side", async () => {
+    const load = vi.fn(async ({ knowledgePlan, userId }) => ({
+      bindings: [],
+      fingerprint: "a".repeat(64),
+      knowledgePlan,
+      userId
+    }));
+    const result = await prepareRun(
+      deps({
+        assistants: {
+          resolveForRun: async () => assistantResolution({ knowledgeBaseIds: ["base-a", "base-b"] })
+        },
+        knowledgeAdmission: { load }
+      }),
+      {
+        body: { assistantId: "assistant-1", text: "Review this" },
+        source: sendSource(),
+        userId: "user-1"
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(load).toHaveBeenCalledWith({
+      knowledgePlan: { baseIds: ["base-a", "base-b"] },
+      userId: "user-1"
+    });
+    if (result.ok) {
+      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual({
+        baseIds: ["base-a", "base-b"]
+      });
+    }
+  });
+
   it("rejects assistant requests that carry governed overrides", async () => {
     const resolveForRun = vi.fn(async () => assistantResolution());
     for (const override of [
       { modelId: "other" },
+      { knowledgePlan: { baseIds: [] } },
       { params: { temperature: 1 } },
       { prompt: { system: "spoof" } },
       { provider: "openai" },
@@ -201,6 +387,30 @@ describe("assistant run admission", () => {
       }
     }
     expect(resolveForRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps unavailable Assistant Knowledge dependencies privacy-neutral", async () => {
+    const result = await prepareRun(
+      deps({
+        assistants: {
+          resolveForRun: async () => assistantResolution({ knowledgeBaseIds: ["hidden-base"] })
+        },
+        knowledgeAdmission: {
+          load: async () => { throw new KnowledgeRunAdmissionError(); }
+        }
+      }),
+      {
+        body: { assistantId: "assistant-1", text: "Review this" },
+        source: sendSource(),
+        userId: "user-1"
+      }
+    );
+
+    expect(result).toMatchObject({
+      code: "knowledge_base_not_available",
+      ok: false,
+      status: 404
+    });
   });
 
   it("returns the privacy-neutral failure for unresolved assistants", async () => {
