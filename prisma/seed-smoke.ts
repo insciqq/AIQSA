@@ -66,8 +66,16 @@ async function main() {
   const expectedModelTemplateKeys = defaultProviderModels.map(
     (model) => `${model.provider}:${model.modelId}`
   );
-  const [modelPolicy, providerConnections, providerModels, searchOptions, searchStrategies] = await Promise.all([
+  const [
+    modelPolicy,
+    systemModelPolicy,
+    providerConnections,
+    providerModels,
+    searchOptions,
+    searchStrategies
+  ] = await Promise.all([
     prisma.modelPolicy.findUnique({ where: { id: "installation" } }),
+    prisma.systemModelPolicy.findUnique({ where: { id: "installation" } }),
     prisma.providerConnection.findMany({
       where: {
         templateKey: { in: providerConnectionTemplates.map((template) => template.templateKey) }
@@ -100,6 +108,8 @@ async function main() {
   if (
     !modelPolicy ||
     modelPolicy.version < 1 ||
+    !systemModelPolicy ||
+    systemModelPolicy.version < 1 ||
     providerConnections.length !== providerConnectionTemplates.length ||
     providerModels.length !== defaultProviderModels.length ||
     searchOptions.length !== 5 ||

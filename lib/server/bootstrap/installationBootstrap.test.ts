@@ -80,6 +80,7 @@ function createBootstrapTransaction(input: {
     searchOptionUpsert: record("searchOption.upsert", { id: "search-option-id" }),
     searchStrategyUpdate: record("searchStrategy.update", { id: "strategy-id" }),
     searchStrategyUpsert: record("searchStrategy.upsert", { activeRevisionId: null, id: "strategy-id" }),
+    systemModelPolicyUpsert: record("systemModelPolicy.upsert", { id: "installation" }),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
     userGroupUpsert: record("userGroup.upsert", {}),
@@ -126,6 +127,9 @@ function createBootstrapTransaction(input: {
     searchStrategy: {
       update: spies.searchStrategyUpdate,
       upsert: spies.searchStrategyUpsert
+    },
+    systemModelPolicy: {
+      upsert: spies.systemModelPolicyUpsert
     },
     user: {
       create: spies.userCreate,
@@ -334,6 +338,11 @@ describe("installation bootstrap", () => {
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
     expect(fixture.spies.modelPolicyUpsert).toHaveBeenCalledWith({
       create: { defaultProviderModelId: null, id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
+    expect(fixture.spies.systemModelPolicyUpsert).toHaveBeenCalledWith({
+      create: { id: "installation", providerModelId: null },
       update: {},
       where: { id: "installation" }
     });

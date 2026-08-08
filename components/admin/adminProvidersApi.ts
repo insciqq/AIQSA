@@ -427,7 +427,8 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
   };
   const blockerLabels: Record<string, string> = {
     assistant_revisions: "assistant revisions",
-    installation_default: "installation default"
+    installation_default: "installation default",
+    system_model: "system model role"
   };
   const base = messages[error.code] ?? "The provider action could not be completed. Refresh and try again.";
   if (!error.blockers.length) return base;

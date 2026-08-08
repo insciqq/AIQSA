@@ -255,6 +255,7 @@ describe("AdminProvidersExperience", () => {
     );
     expect(screen.getByRole("tab", { name: "Quick setup" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Connections" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "System model" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Run profiles" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Custom OpenAI-compatible" }));
     expect(screen.getByRole("heading", { name: "Connect a custom endpoint" })).toBeInTheDocument();

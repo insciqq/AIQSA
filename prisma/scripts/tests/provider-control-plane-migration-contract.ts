@@ -10,6 +10,7 @@ const RUN_PROFILE_MIGRATION = "20260724190000_admin_run_profiles";
 const USER_ASSIGNMENT_MIGRATION = "20260726140000_provider_user_credential_assignments";
 const DISABLE_FAKE_MIGRATION = "20260731120000_disable_production_fake_provider";
 const MODEL_POLICY_MIGRATION = "20260808120000_model_default_policy";
+const SYSTEM_MODEL_POLICY_MIGRATION = "20260808130000_system_model_policy";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -649,6 +650,88 @@ function runModelPolicyMigrationChecks(): void {
   }
 }
 
+function runSystemModelPolicyMigrationChecks(): void {
+  const database = `aiqsa_system_model_policy_${runId}`;
+  createDatabase(database);
+  try {
+    applyMigrationsBefore(database, SYSTEM_MODEL_POLICY_MIGRATION);
+    requireSuccess(psql(database, `
+      INSERT INTO "User" ("id", "email", "displayName", "role", "status", "updatedAt")
+      VALUES (
+        'system-policy-admin', 'system-policy@example.test',
+        'System policy admin', 'admin', 'active', CURRENT_TIMESTAMP
+      );
+
+      INSERT INTO "ProviderConnection" (
+        "id", "displayName", "family", "enabled", "draftConfig", "draftVersion",
+        "activeConfig", "activeVersion", "activatedAt", "updatedAt"
+      ) VALUES (
+        'system-policy-connection', 'System policy connection', 'openai_compatible', true,
+        '{}'::jsonb, 1, '{}'::jsonb, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+
+      INSERT INTO "ProviderModel" (
+        "id", "connectionId", "provider", "modelId", "displayName", "contextWindow",
+        "enabled", "draftConfig", "draftVersion", "activeConfig", "activeVersion",
+        "activatedAt", "capabilities", "defaultParams", "updatedAt"
+      ) VALUES (
+        'system-policy-model', 'system-policy-connection', 'openai_compatible',
+        'system-model', 'System model', 128000, true,
+        '{"adapterKind":"openai_responses_compatible","answerSelectable":true}'::jsonb,
+        1,
+        '{"adapterKind":"openai_responses_compatible","answerSelectable":true}'::jsonb,
+        1, CURRENT_TIMESTAMP, '{}'::jsonb, '{}'::jsonb, CURRENT_TIMESTAMP
+      );
+    `), "load system model policy fixture");
+
+    requireSuccess(
+      psql(database, migrationSql(SYSTEM_MODEL_POLICY_MIGRATION)),
+      "apply system model policy migration"
+    );
+    assert.equal(
+      scalar(database, `SELECT concat_ws('|',
+        "id", COALESCE("providerModelId", 'null'), "version"::text
+      ) FROM "SystemModelPolicy" WHERE "id" = 'installation';`),
+      "installation|null|1"
+    );
+    expectDatabaseRejection(
+      database,
+      "second system model policy singleton",
+      `INSERT INTO "SystemModelPolicy" ("id", "providerModelId", "updatedAt")
+       VALUES ('other', NULL, CURRENT_TIMESTAMP);`,
+      /SystemModelPolicy_singleton_check/u
+    );
+    expectDatabaseRejection(
+      database,
+      "invalid system model policy version",
+      `UPDATE "SystemModelPolicy" SET "version" = 0 WHERE "id" = 'installation';`,
+      /SystemModelPolicy_version_check/u
+    );
+    requireSuccess(psql(database, `
+      UPDATE "SystemModelPolicy"
+      SET "providerModelId" = 'system-policy-model',
+          "updatedByUserId" = 'system-policy-admin',
+          "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "id" = 'installation';
+      DELETE FROM "User" WHERE "id" = 'system-policy-admin';
+    `), "set system model target and delete its administrator");
+    assert.equal(
+      scalar(database, `SELECT concat_ws('|',
+        "providerModelId", COALESCE("updatedByUserId", 'null')
+      ) FROM "SystemModelPolicy" WHERE "id" = 'installation';`),
+      "system-policy-model|null"
+    );
+    expectDatabaseRejection(
+      database,
+      "delete selected system model",
+      `DELETE FROM "ProviderModel" WHERE "id" = 'system-policy-model';`,
+      /SystemModelPolicy_providerModelId_fkey/u
+    );
+  } finally {
+    dropDatabase(database);
+  }
+}
+
 function main(): void {
   assert.equal(
     requireSuccess(
@@ -701,6 +784,7 @@ function main(): void {
 
     runValidMigrationAndLineageChecks();
     runModelPolicyMigrationChecks();
+    runSystemModelPolicyMigrationChecks();
   } finally {
     for (const database of [...disposableDatabases].reverse()) {
       dropDatabase(database);
@@ -708,7 +792,7 @@ function main(): void {
   }
 
   process.stdout.write(
-    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, composite lineage, Fake withdrawal, and installation model-policy preservation verified.\n"
+    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, composite lineage, Fake withdrawal, and installation model-policy foundations verified.\n"
   );
 }
 

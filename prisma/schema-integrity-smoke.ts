@@ -19,7 +19,10 @@ const expectedConstraintNames = [
   "SearchOption_kind_check",
   "SearchOption_source_check",
   "SearchOption_sourceConnectionId_fkey",
-  "SearchStrategy_searchOptionId_fkey"
+  "SearchStrategy_searchOptionId_fkey",
+  "SystemModelPolicy_providerModelId_fkey",
+  "SystemModelPolicy_singleton_check",
+  "SystemModelPolicy_version_check"
 ] as const;
 
 class ExpectedRollback extends Error {}
@@ -158,7 +161,10 @@ async function assertConstraintCatalog(): Promise<void> {
       'SearchOption_kind_check',
       'SearchOption_source_check',
       'SearchOption_sourceConnectionId_fkey',
-      'SearchStrategy_searchOptionId_fkey'
+      'SearchStrategy_searchOptionId_fkey',
+      'SystemModelPolicy_providerModelId_fkey',
+      'SystemModelPolicy_singleton_check',
+      'SystemModelPolicy_version_check'
     )
     ORDER BY conname
   `;

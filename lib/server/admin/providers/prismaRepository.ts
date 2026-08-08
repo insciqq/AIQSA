@@ -202,10 +202,16 @@ async function cleanupProviderReferences(
   });
 }
 
-async function lockInstallationModelPolicy(tx: Prisma.TransactionClient): Promise<void> {
+async function lockInstallationModelPolicies(tx: Prisma.TransactionClient): Promise<void> {
   await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT "id"
     FROM "ModelPolicy"
+    WHERE "id" = 'installation'
+    FOR UPDATE
+  `);
+  await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id"
+    FROM "SystemModelPolicy"
     WHERE "id" = 'installation'
     FOR UPDATE
   `);
@@ -1661,11 +1667,12 @@ export function createPrismaAdminProviderRepository(
         // Use the same policy-first lock order as installation-default writes.
         // This closes the check/delete window in which a new restrictive
         // reference could otherwise turn a classified result into an FK error.
-        await lockInstallationModelPolicy(tx);
+        await lockInstallationModelPolicies(tx);
         await cleanupProviderReferences(tx, { providerModelId: modelId });
         const [
           accessGrants,
           installationDefaults,
+          systemModelRoles,
           userDefaults,
           chatDefaults,
           searchReferences,
@@ -1675,6 +1682,7 @@ export function createPrismaAdminProviderRepository(
         ] = await Promise.all([
           tx.accessGrant.count({ where: { providerModelId: modelId } }),
           tx.modelPolicy.count({ where: { defaultProviderModelId: modelId } }),
+          tx.systemModelPolicy.count({ where: { providerModelId: modelId } }),
           tx.userSettings.count({ where: { defaultProviderModelId: modelId } }),
           tx.chat.count({ where: { defaultProviderModelId: modelId } }),
           tx.searchStrategy.count({ where: { providerModelId: modelId } }),
@@ -1689,6 +1697,7 @@ export function createPrismaAdminProviderRepository(
           installationDefaults
             ? { count: installationDefaults, kind: "installation_default" }
             : null,
+          systemModelRoles ? { count: systemModelRoles, kind: "system_model" } : null,
           userDefaults ? { count: userDefaults, kind: "user_defaults" } : null,
           chatDefaults ? { count: chatDefaults, kind: "chat_defaults" } : null,
           searchReferences ? { count: searchReferences, kind: "search_references" } : null,
@@ -1745,7 +1754,7 @@ export function createPrismaAdminProviderRepository(
           where: { id: connectionId }
         });
         if (!connection) return { status: "not_found" } as const;
-        await lockInstallationModelPolicy(tx);
+        await lockInstallationModelPolicies(tx);
         await cleanupProviderReferences(tx, { connectionId });
 
         if (connection.family === "openai_compatible" && !connection.templateKey) {
@@ -1803,6 +1812,14 @@ export function createPrismaAdminProviderRepository(
               version: { increment: 1 }
             },
             where: { defaultProviderModelId: { in: modelIds } }
+          });
+          await tx.systemModelPolicy.updateMany({
+            data: {
+              providerModelId: null,
+              updatedByUserId: null,
+              version: { increment: 1 }
+            },
+            where: { providerModelId: { in: modelIds } }
           });
           await tx.chat.updateMany({
             data: { defaultProviderModelId: null },

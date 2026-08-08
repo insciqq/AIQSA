@@ -214,6 +214,7 @@ export type AdminProviderDeleteBlocker = {
     | "run_bindings"
     | "search_references"
     | "search_revision_references"
+    | "system_model"
     | "user_assignments"
     | "user_defaults";
 };

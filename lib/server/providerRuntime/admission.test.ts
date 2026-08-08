@@ -2,6 +2,8 @@ import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import {
   loadProviderAdmissionPlan,
+  loadUnentitledAnswerProviderRole,
+  ProviderAdmissionError,
   type ProviderAdmissionPlan
 } from "./admission";
 
@@ -179,6 +181,8 @@ function admissionDb(input: Readonly<{
   legacyAliasOptionId?: string;
   options: readonly OptionSpec[];
   technicalModels?: readonly ModelSpec[];
+  unavailableModelIds?: readonly string[];
+  userRole?: "admin" | "user";
 }>) {
   const models = new Map(
     [input.answer, ...(input.technicalModels ?? [])].map((spec) => [spec.id, providerModel(spec)])
@@ -190,8 +194,11 @@ function admissionDb(input: Readonly<{
   }) => args?.where?.searchStrategy
     ? Number(grantedSearchOptionIds.has(args.where.searchStrategy))
     : 1);
-  const providerModelFindFirst = vi.fn(async (args?: { where?: { id?: string } }) =>
-    models.get(args?.where?.id ?? input.answer.id) ?? null);
+  const unavailableModelIds = new Set(input.unavailableModelIds ?? []);
+  const providerModelFindFirst = vi.fn(async (args?: { where?: { id?: string } }) => {
+    const id = args?.where?.id ?? input.answer.id;
+    return unavailableModelIds.has(id) ? null : models.get(id) ?? null;
+  });
   const providerModelFindUnique = vi.fn(async (args?: { where?: { id?: string } }) => {
     const model = models.get(args?.where?.id ?? "");
     return model ? { connectionId: model.connectionId } : null;
@@ -250,7 +257,9 @@ function admissionDb(input: Readonly<{
         } : null;
       })
     },
-    user: { findFirst: vi.fn(async () => ({ id: "user-1" })) },
+    user: {
+      findFirst: vi.fn(async () => ({ id: "user-1", role: input.userRole ?? "admin" }))
+    },
     userGroup: {
       findMany: vi.fn(async () => input.fullAccess === false
         ? []
@@ -402,6 +411,54 @@ function expectSearch(plan: ProviderAdmissionPlan) {
 }
 
 describe("provider admission", () => {
+  it("resolves an unentitled answer role only through an active administrator", async () => {
+    const { accessGrantCount, db } = admissionDb({
+      answer: officialOpenAiModel,
+      fullAccess: false,
+      options: [off]
+    });
+
+    await expect(loadUnentitledAnswerProviderRole(
+      db as unknown as Prisma.TransactionClient,
+      { providerModelId: officialOpenAiModel.id, userId: "admin-1" }
+    )).resolves.toMatchObject({
+      credentialSource: "user",
+      snapshot: { providerModelId: officialOpenAiModel.id }
+    });
+    expect(accessGrantCount).not.toHaveBeenCalled();
+
+    const ordinary = admissionDb({
+      answer: officialOpenAiModel,
+      options: [off],
+      userRole: "user"
+    });
+    await expect(loadUnentitledAnswerProviderRole(
+      ordinary.db as unknown as Prisma.TransactionClient,
+      { providerModelId: officialOpenAiModel.id, userId: "user-1" }
+    )).rejects.toEqual(new ProviderAdmissionError("user_not_available"));
+  });
+
+  it("rejects disabled and technical-only system-role targets", async () => {
+    const disabled = admissionDb({
+      answer: officialOpenAiModel,
+      options: [off],
+      unavailableModelIds: [officialOpenAiModel.id]
+    });
+    await expect(loadUnentitledAnswerProviderRole(
+      disabled.db as unknown as Prisma.TransactionClient,
+      { providerModelId: officialOpenAiModel.id, userId: "admin-1" }
+    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
+
+    const technical = admissionDb({
+      answer: { ...officialOpenAiModel, answerSelectable: false },
+      options: [off]
+    });
+    await expect(loadUnentitledAnswerProviderRole(
+      technical.db as unknown as Prisma.TransactionClient,
+      { providerModelId: officialOpenAiModel.id, userId: "admin-1" }
+    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
+  });
+
   it("resolves a verified model context before snapshotting a new run", async () => {
     const { db } = admissionDb({
       answer: { ...officialOpenAiModel, contextWindow: 1 },

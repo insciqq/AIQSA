@@ -532,6 +532,16 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
     update: {},
     where: { id: "installation" }
   });
+  await tx.systemModelPolicy.upsert({
+    create: {
+      id: "installation",
+      providerModelId: null
+    },
+    // Bootstrap adoption repairs missing code-owned foundation only. It never
+    // replaces an administrator's selected system utility deployment.
+    update: {},
+    where: { id: "installation" }
+  });
 }
 
 async function createInitialAdminFoundation(

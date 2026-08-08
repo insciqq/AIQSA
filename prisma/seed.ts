@@ -503,6 +503,15 @@ async function main() {
     update: {},
     where: { id: "installation" }
   });
+  await prisma.systemModelPolicy.upsert({
+    create: {
+      id: "installation",
+      providerModelId: null
+    },
+    // Local reseeding must not overwrite an administrator's current role.
+    update: {},
+    where: { id: "installation" }
+  });
 
   await prisma.group.upsert({
     create: {

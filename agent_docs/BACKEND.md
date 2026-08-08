@@ -13,4 +13,11 @@ This file is a router, not a second endpoint or schema manifest. Read only the o
 - [Security](SECURITY.md) — threat, privacy, auth, secret, network, and exposure boundaries.
 - [Run pipeline](RUN_PIPELINE.md) — product-level message, optional Search/tool, response, evidence, and sharing semantics.
 
+Installation model-policy ownership crosses three bounded owners: administrator
+set/clear behavior belongs to the provider control plane, durable singleton and
+deletion constraints belong to persistence, and exact credential-bearing
+resolution belongs to provider admission. The installation default remains a
+user recommendation; the system utility role is a separate internal-only
+selection and grants no entitlement.
+
 Executable routes, Prisma schema, and tests remain authoritative for exact code shape. Living backend contracts describe only the current implementation; rationale that must survive belongs beside the current rule in its owner.

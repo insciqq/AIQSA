@@ -3,7 +3,8 @@ import { Prisma } from "@prisma/client";
 import { resolveProviderCredential } from "../../domain/providerCredentialResolution";
 import {
   normalizeProviderConnectionConfiguration,
-  normalizeProviderModelConfiguration
+  normalizeProviderModelConfiguration,
+  ProviderConfigurationError
 } from "../providers/providerConfiguration";
 import { resolveProviderModelCapabilities } from "../providers/providerModelCapabilities";
 import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } from "../providers/runtimeFactory";
@@ -82,7 +83,7 @@ export type ProviderAdmissionPlan = Readonly<{
   userId: string;
 }>;
 
-type AdmissionPrisma = Pick<
+export type AdmissionPrisma = Pick<
   Prisma.TransactionClient,
   | "accessGrant"
   | "providerCredential"
@@ -101,15 +102,21 @@ type ActiveMembership = Readonly<{
   groupId: string;
 }>;
 
-async function activeUserAuthority(db: AdmissionPrisma, userId: string): Promise<{
+async function activeUserAuthority(
+  db: AdmissionPrisma,
+  userId: string,
+  options: Readonly<{ requireAdmin?: boolean }> = {}
+): Promise<{
   fullAccess: boolean;
   groupIds: string[];
 }> {
   const user = await db.user.findFirst({
-    select: { id: true },
+    select: { id: true, role: true },
     where: { id: userId, status: "active" }
   });
-  if (!user) throw new ProviderAdmissionError("user_not_available");
+  if (!user || options.requireAdmin && user.role !== "admin") {
+    throw new ProviderAdmissionError("user_not_available");
+  }
   const memberships: ActiveMembership[] = await db.userGroup.findMany({
     select: {
       group: { select: { systemRole: true } },
@@ -403,6 +410,38 @@ export async function loadTechnicalProviderRole(
     requireEntitlement: false,
     userId: input.userId
   });
+}
+
+/** Resolve an answer-capable deployment through an active administrator's
+ * normal credential precedence without requiring a user entitlement. This is
+ * the credential boundary for installation-owned internal model work. */
+export async function loadUnentitledAnswerProviderRole(
+  db: AdmissionPrisma,
+  input: { providerModelId: string; userId: string }
+): Promise<ProviderAdmissionRole> {
+  const authority = await activeUserAuthority(db, input.userId, { requireAdmin: true });
+  const model = await db.providerModel.findUnique({
+    select: { connectionId: true },
+    where: { id: input.providerModelId }
+  });
+  if (!model) throw new ProviderAdmissionError("model_not_available");
+  try {
+    return await loadRole(db, {
+      connectionId: model.connectionId,
+      fullAccess: authority.fullAccess,
+      groupIds: authority.groupIds,
+      modelId: input.providerModelId,
+      requireAnswerSelectable: true,
+      requireEntitlement: false,
+      userId: input.userId
+    });
+  } catch (error) {
+    if (error instanceof ProviderConfigurationError ||
+      error instanceof Error && error.message === "provider_execution_snapshot_invalid") {
+      throw new ProviderAdmissionError("model_not_available");
+    }
+    throw error;
+  }
 }
 
 async function canonicalSearchOptionId(

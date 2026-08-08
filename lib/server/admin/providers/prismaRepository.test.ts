@@ -258,6 +258,7 @@ describe("Prisma admin provider repository", () => {
       },
       searchIntegrationRevision: { count: vi.fn(async () => 3) },
       searchStrategy: { count: vi.fn(async () => 1) },
+      systemModelPolicy: { count: vi.fn(async () => 1) },
       userSettings: { count: vi.fn(async () => 1) }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
@@ -266,6 +267,7 @@ describe("Prisma admin provider repository", () => {
       blockers: [
         { count: 2, kind: "access_grants" },
         { count: 1, kind: "installation_default" },
+        { count: 1, kind: "system_model" },
         { count: 1, kind: "user_defaults" },
         { count: 1, kind: "chat_defaults" },
         { count: 1, kind: "search_references" },
@@ -296,6 +298,7 @@ describe("Prisma admin provider repository", () => {
       },
       searchIntegrationRevision: { count: vi.fn(async () => 2) },
       searchStrategy: { count: vi.fn(async () => 0) },
+      systemModelPolicy: { count: vi.fn(async () => 0) },
       userSettings: { count: vi.fn(async () => 0) }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
@@ -942,6 +945,7 @@ describe("Prisma admin provider repository", () => {
       searchIntegrationRevision: { count: vi.fn(async () => 0) },
       searchOption: { count: vi.fn(async () => 0) },
       searchStrategy: { count: vi.fn(async () => 0) },
+      systemModelPolicy: { updateMany: vi.fn(async () => ({ count: 1 })) },
       userSettings: { updateMany: vi.fn(async () => ({ count: 1 })) }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
@@ -961,6 +965,14 @@ describe("Prisma admin provider repository", () => {
         version: { increment: 1 }
       },
       where: { defaultProviderModelId: { in: ["model-1"] } }
+    });
+    expect(db.systemModelPolicy.updateMany).toHaveBeenCalledWith({
+      data: {
+        providerModelId: null,
+        updatedByUserId: null,
+        version: { increment: 1 }
+      },
+      where: { providerModelId: { in: ["model-1"] } }
     });
     expect(db.accessGrant.deleteMany).toHaveBeenCalledWith({
       where: {

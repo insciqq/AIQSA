@@ -4,6 +4,7 @@ import { AdminProviderQuickSetup } from "@/components/admin/AdminProviderQuickSe
 import { AdminProviderCustomSetup } from "@/components/admin/AdminProviderCustomSetup";
 import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
 import { AdminProviderModelDefaultTask } from "@/components/admin/AdminProviderModelDefaultTask";
+import { AdminProviderSystemModelTask } from "@/components/admin/AdminProviderSystemModelTask";
 import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { useAdminProviderCustomSetupController } from "@/components/admin/useAdminProviderCustomSetupController";
@@ -16,7 +17,7 @@ import type {
 import type { AdminGroup } from "@/lib/contracts/admin";
 import { useCallback, useEffect, useState } from "react";
 
-type ProviderWorkspaceTask = "connections" | "defaults" | "setup";
+type ProviderWorkspaceTask = "connections" | "defaults" | "setup" | "system";
 
 export type AdminProvidersExperienceProps = Readonly<{
   active: boolean;
@@ -110,7 +111,8 @@ export function AdminProvidersExperience({
         {([
           ["setup", "Quick setup"],
           ["connections", "Connections"],
-          ["defaults", "Default model"]
+          ["defaults", "Default model"],
+          ["system", "System model"]
         ] as const).map(([task, label]) => (
           <button
             aria-selected={workspaceTask === task}
@@ -161,6 +163,12 @@ export function AdminProvidersExperience({
           <div hidden={workspaceTask !== "defaults"}>
             <AdminProviderModelDefaultTask
               active={active && workspaceTask === "defaults"}
+              onMutationCommitted={onMutationCommitted}
+            />
+          </div>
+          <div hidden={workspaceTask !== "system"}>
+            <AdminProviderSystemModelTask
+              active={active && workspaceTask === "system"}
               onMutationCommitted={onMutationCommitted}
             />
           </div>

@@ -158,6 +158,7 @@ model User {
   sharedSnapshots               SharedChatSnapshot[]
   smtpActivations               SmtpControl[]                      @relation("SmtpControlActivator")
   smtpConfigurationEdits        SmtpControl[]                      @relation("SmtpControlUpdater")
+  systemModelPolicyUpdates      SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
   usageEvents                   UsageEvent[]
 }
 
@@ -404,6 +405,20 @@ model ModelPolicy {
   @@index([updatedByUserId])
 }
 
+model SystemModelPolicy {
+  id              String         @id
+  providerModelId String?
+  version         Int            @default(1)
+  updatedByUserId String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  providerModel   ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
+  updatedBy       User?          @relation("SystemModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([providerModelId])
+  @@index([updatedByUserId])
+}
+
 model AccessGrant {
   id                   String              @id @default(uuid())
   userId               String?
@@ -567,6 +582,7 @@ model ProviderModel {
   searchRevisions        SearchIntegrationRevision[]
   chatDefaults           Chat[]                         @relation("ChatDefaultProviderModel")
   installationDefaults   ModelPolicy[]                  @relation("InstallationDefaultProviderModel")
+  systemUtilityRoles     SystemModelPolicy[]            @relation("SystemUtilityProviderModel")
   userDefaults           UserSettings[]                 @relation("UserDefaultProviderModel")
 
   @@unique([connectionId, id])

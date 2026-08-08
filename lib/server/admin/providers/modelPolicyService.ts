@@ -16,7 +16,7 @@ export class AdminModelPolicyServiceError extends Error {
   }
 }
 
-type ModelRow = {
+export type AdminAnswerModelRow = {
   activeConfig: unknown;
   activeVersion: number;
   activatedAt: Date | null;
@@ -42,14 +42,16 @@ function answerSelectable(value: unknown): boolean {
   }
 }
 
-function available(row: ModelRow): boolean {
+export function adminAnswerModelAvailable(row: AdminAnswerModelRow): boolean {
   return row.enabled && row.activeVersion > 0 && row.activatedAt !== null &&
     row.activeConfig !== null && row.connection.enabled && row.connection.activeVersion > 0 &&
     row.connection.activatedAt !== null && row.connection.activeConfig !== null &&
     answerSelectable(row.activeConfig);
 }
 
-function serialize(row: ModelRow): AdminModelDefaultCandidate {
+export function serializeAdminAnswerModel(
+  row: AdminAnswerModelRow
+): AdminModelDefaultCandidate {
   return {
     connectionDisplayName: row.connection.displayName,
     connectionId: row.connectionId,
@@ -98,14 +100,16 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
         })
       ]);
       if (!policy) throw new Error("installation_model_policy_missing");
-      const models = rows as ModelRow[];
+      const models = rows as AdminAnswerModelRow[];
       return {
-        candidates: models.filter(available).map(serialize),
+        candidates: models.filter(adminAnswerModelAvailable).map(serializeAdminAnswerModel),
         policy: {
           defaultModel: policy.defaultProviderModel
             ? {
-                ...serialize(policy.defaultProviderModel as ModelRow),
-                available: available(policy.defaultProviderModel as ModelRow)
+                ...serializeAdminAnswerModel(policy.defaultProviderModel as AdminAnswerModelRow),
+                available: adminAnswerModelAvailable(
+                  policy.defaultProviderModel as AdminAnswerModelRow
+                )
               }
             : null,
           updatedAt: policy.updatedAt.toISOString(),

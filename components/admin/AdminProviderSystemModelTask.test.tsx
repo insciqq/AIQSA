@@ -1,0 +1,117 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AdminProviderSystemModelTask } from "./AdminProviderSystemModelTask";
+
+const candidate = {
+  connectionDisplayName: "Provider A",
+  connectionId: "connection-a",
+  displayName: "Model A",
+  id: "model-a"
+};
+
+const catalog = {
+  candidates: [candidate],
+  policy: {
+    systemModel: null,
+    updatedAt: "2026-08-08T00:00:00.000Z",
+    updatedBy: null,
+    version: 1
+  }
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("administrator provider system model task", () => {
+  it("saves one exact deployment with the observed policy version", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ systemModelPolicy: catalog }),
+        { status: 200 }
+      ))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        systemModelPolicy: {
+          ...catalog,
+          policy: {
+            ...catalog.policy,
+            systemModel: { ...candidate, available: true },
+            updatedBy: { displayName: "Administrator", id: "admin-1" },
+            version: 2
+          }
+        }
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminProviderSystemModelTask active />);
+    const select = await screen.findByLabelText("Active answer model deployment");
+    fireEvent.change(select, { target: { value: "model-a" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save system model" }));
+
+    await screen.findByText("System model updated.");
+    expect(screen.getByText(/Provider access resolves as Administrator/)).toBeVisible();
+    const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      expectedVersion: 1,
+      providerModelId: "model-a"
+    });
+  });
+
+  it("shows retained unavailability and permits re-saving the same deployment", async () => {
+    const unavailable = {
+      candidates: [candidate],
+      policy: {
+        systemModel: { ...candidate, available: false },
+        updatedAt: "2026-08-08T00:00:00.000Z",
+        updatedBy: { displayName: "Former administrator", id: "admin-old" },
+        version: 4
+      }
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ systemModelPolicy: unavailable }),
+        { status: 200 }
+      ))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        systemModelPolicy: {
+          ...unavailable,
+          policy: {
+            ...unavailable.policy,
+            systemModel: { ...candidate, available: true },
+            updatedBy: { displayName: "Current administrator", id: "admin-new" },
+            version: 5
+          }
+        }
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminProviderSystemModelTask active />);
+    expect(await screen.findByText(/Status: Unavailable/)).toBeVisible();
+    const save = screen.getByRole("button", { name: "Save system model" });
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await screen.findByText("System model updated.");
+    expect(screen.getByText(/Provider access resolves as Current administrator/)).toBeVisible();
+  });
+
+  it("keeps a stale edit visible and actionable", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ systemModelPolicy: catalog }),
+        { status: 200 }
+      ))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: "system_model_policy_stale" }),
+        { status: 409 }
+      ));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminProviderSystemModelTask active />);
+    fireEvent.change(await screen.findByLabelText("Active answer model deployment"), {
+      target: { value: "model-a" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save system model" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(
+      "The system model changed elsewhere"
+    ));
+  });
+});
