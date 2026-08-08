@@ -850,8 +850,94 @@ describe("Composer", () => {
     expect(attachment).toHaveAttribute("multiple");
     expect(attachment).toHaveAttribute(
       "accept",
-      ".txt,.md,.markdown,.csv,.json,.html,.htm,text/plain,text/markdown,text/csv,application/json,text/html,application/pdf,image/png,image/jpeg,image/webp,image/gif"
+      ".txt,.md,.markdown,.csv,.json,.html,.htm,.doc,.docx,.xlsx,.pptx,.rtf,.odt,text/plain,text/markdown,text/csv,application/json,text/html,application/msword,application/rtf,text/rtf,application/vnd.oasis.opendocument.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/pdf,image/png,image/jpeg,image/webp,image/gif"
     );
+  });
+
+  it("routes every advertised Office document format to upload", () => {
+    const onUploadFiles = vi.fn();
+    const files = [
+      new File(["doc"], "legacy.doc", { type: "application/msword" }),
+      new File(["docx"], "report.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      }),
+      new File(["xlsx"], "table.xlsx", {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      }),
+      new File(["pptx"], "deck.pptx", {
+        type: "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      }),
+      new File(["rtf"], "notes.rtf", { type: "application/rtf" }),
+      new File(["odt"], "draft.odt", { type: "application/vnd.oasis.opendocument.text" })
+    ];
+
+    render(
+      <Composer
+        attachments={[]}
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        onUploadFiles={onUploadFiles}
+        value=""
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("Attach file"), {
+      target: { files: fileList(files) }
+    });
+
+    expect(onUploadFiles).toHaveBeenCalledWith(files);
+  });
+
+  it("shows truthful processing and failed states with retry/remove actions", () => {
+    const onRetryAttachment = vi.fn();
+    const onRemoveAttachment = vi.fn();
+    const view = render(
+      <Composer
+        attachments={[{
+          fileName: "report.docx",
+          id: "attachment-1",
+          kind: "document",
+          status: "processing"
+        }]}
+        onChange={() => undefined}
+        onRemoveAttachment={onRemoveAttachment}
+        onRetryAttachment={onRetryAttachment}
+        onSend={() => undefined}
+        value="Question"
+      />
+    );
+
+    expect(screen.getByText("Processing…")).toBeVisible();
+    expect(screen.getByTestId("attachment-chip")).toHaveAttribute(
+      "data-attachment-status",
+      "processing"
+    );
+    expect(screen.getByLabelText("Message")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+
+    view.rerender(
+      <Composer
+        attachments={[{
+          fileName: "report.docx",
+          id: "attachment-1",
+          kind: "document",
+          processingErrorCode: "parser_unavailable",
+          status: "failed"
+        }]}
+        onChange={() => undefined}
+        onRemoveAttachment={onRemoveAttachment}
+        onRetryAttachment={onRetryAttachment}
+        onSend={() => undefined}
+        value="Question"
+      />
+    );
+
+    expect(screen.getByText("The required document parser is unavailable.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Retry report.docx" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove report.docx" }));
+    expect(onRetryAttachment).toHaveBeenCalledWith("attachment-1");
+    expect(onRemoveAttachment).toHaveBeenCalledWith("attachment-1");
   });
 
   it("uploads files dropped on the composer and clears the drag-active state", () => {

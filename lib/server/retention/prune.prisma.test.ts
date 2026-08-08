@@ -78,6 +78,52 @@ describe("Prisma attachment retention outbox", () => {
     await prisma.$disconnect();
   });
 
+  it("stages stale failed and processing attachments and cascades durable processing jobs", async () => {
+    const user = await createUser();
+    const failed = await createOldAttachment(user.id);
+    const processing = await createOldAttachment(user.id);
+    await prisma.attachment.update({
+      data: {
+        processingErrorCode: "parser_unavailable",
+        status: "failed"
+      },
+      where: { id: failed.id }
+    });
+    const processingJob = await prisma.attachmentProcessingJob.create({
+      data: {
+        attachmentId: processing.id,
+        nextAttemptAt: new Date("2100-01-01T00:00:00.000Z")
+      }
+    });
+    await prisma.attachment.update({
+      data: { status: "processing" },
+      where: { id: processing.id }
+    });
+    const storageKeys = [failed.storageKey, processing.storageKey];
+
+    try {
+      const staged = await createPrismaRetentionRepository(prisma).stageOrphanedAttachments({
+        cutoff: new Date("2000-01-02T00:00:00.000Z"),
+        limit: 2
+      });
+      const [remainingAttachments, remainingProcessingJob, deletionJobs] = await Promise.all([
+        prisma.attachment.count({ where: { id: { in: [failed.id, processing.id] } } }),
+        prisma.attachmentProcessingJob.findUnique({ where: { id: processingJob.id } }),
+        prisma.attachmentDeletionJob.findMany({
+          select: { storageKey: true },
+          where: { storageKey: { in: storageKeys } }
+        })
+      ]);
+
+      expect(staged).toMatchObject({ jobsStaged: 2, matched: 2, rowsDeleted: 2 });
+      expect(remainingAttachments).toBe(0);
+      expect(remainingProcessingJob).toBeNull();
+      expect(deletionJobs.map((job) => job.storageKey).sort()).toEqual([...storageKeys].sort());
+    } finally {
+      await cleanupUser(user.id, storageKeys);
+    }
+  });
+
   it("settles the run-link versus orphan-stage race with exactly one owner", async () => {
     const user = await createUser();
     const chat = await prisma.chat.create({

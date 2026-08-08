@@ -157,7 +157,7 @@ function buildUserContent(
   request: ProviderRunRequest,
   options: PrivateBuildOptions
 ): string | Record<string, unknown>[] {
-  const maxAttachmentTextChars = options.maxAttachmentTextChars ?? 20000;
+  const maxAttachmentTextChars = options.maxAttachmentTextChars;
   const textParts = [textFromContentBlocks(request.content)].filter((part) => part.trim());
   const contentParts: Record<string, unknown>[] = [];
   let hasImage = false;

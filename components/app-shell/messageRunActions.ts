@@ -454,6 +454,18 @@ export function useMessageRunActions({
     ) {
       return;
     }
+    const unsettledAttachment = sourceSession.attachments.find(
+      (attachment) => attachment.status !== undefined && attachment.status !== "ready"
+    );
+    if (unsettledAttachment) {
+      setNotice({
+        kind: "error",
+        text: unsettledAttachment.status === "failed"
+          ? `Remove or retry ${unsettledAttachment.fileName} before sending.`
+          : `Wait for ${unsettledAttachment.fileName} to finish processing before sending.`
+      });
+      return;
+    }
     const runControlSnapshot = captureRunControlSnapshot();
     const modelForSend = runControlSnapshot.model;
     if (!modelForSend) {

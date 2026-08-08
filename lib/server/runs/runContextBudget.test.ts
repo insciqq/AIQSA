@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderRunRequest } from "../providers/types";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import {
@@ -39,6 +39,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 }
 
 describe("provider request context budget", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
   it("counts the exact serialized provider tool schema", () => {
     const tool = {
       capability: "mcp" as const,
@@ -95,5 +97,93 @@ describe("provider request context budget", () => {
     });
 
     expect(budgeted).toMatchObject({ error: { code: "context_too_large" }, ok: false });
+  });
+
+  it("derives attachment text length from the selected model context window", () => {
+    const attachment = {
+      byteSize: 100_000,
+      extractedText: "a".repeat(30_000),
+      fileName: "long.txt",
+      id: "attachment-1",
+      kind: "document",
+      metadata: {},
+      mimeType: "text/plain",
+      status: "ready"
+    };
+    const small = applyProviderRequestContextBudget({
+      request: request({
+        attachmentIds: [attachment.id],
+        attachments: [attachment],
+        modelCapabilities: {
+          ...request().modelCapabilities,
+          contextWindow: 1_000
+        }
+      })
+    });
+    const large = applyProviderRequestContextBudget({
+      request: request({
+        attachmentIds: [attachment.id],
+        attachments: [attachment],
+        modelCapabilities: {
+          ...request().modelCapabilities,
+          contextWindow: 100_000
+        }
+      })
+    });
+
+    expect(small.ok).toBe(true);
+    expect(large.ok).toBe(true);
+    if (!small.ok || !large.ok) throw new Error("unexpected budget rejection");
+    expect(small.request.attachments[0]!.extractedText!.length).toBeLessThan(30_000);
+    expect(small.request.attachments[0]!.extractedText).toContain("[truncated for model context]");
+    expect(large.request.attachments[0]!.extractedText).toBe(attachment.extractedText);
+  });
+
+  it("fits non-ASCII attachment text by estimated tokens rather than raw characters", () => {
+    const attachment = {
+      byteSize: 10_000,
+      extractedText: "Ж".repeat(2_000),
+      fileName: "notes.txt",
+      id: "attachment-1",
+      kind: "document",
+      metadata: {},
+      mimeType: "text/plain",
+      status: "ready"
+    };
+    const budgeted = applyProviderRequestContextBudget({
+      request: request({
+        attachmentIds: [attachment.id],
+        attachments: [attachment],
+        modelCapabilities: { ...request().modelCapabilities, contextWindow: 1_000 }
+      })
+    });
+
+    expect(budgeted.ok).toBe(true);
+    if (!budgeted.ok) throw new Error("unexpected budget rejection");
+    expect(budgeted.request.attachments[0]!.extractedText!.length).toBeLessThan(1_000);
+  });
+
+  it("honors the reduction-only operator clamp without restoring a fixed provider cap", () => {
+    vi.stubEnv("AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS", "10");
+    const text = "abcdefghijklmnopqrstuvwxyz";
+    const budgeted = applyProviderRequestContextBudget({
+      request: request({
+        attachments: [{
+          byteSize: text.length,
+          extractedText: text,
+          fileName: "notes.txt",
+          id: "attachment-1",
+          kind: "document",
+          metadata: {},
+          mimeType: "text/plain",
+          status: "ready"
+        }],
+        modelCapabilities: { ...request().modelCapabilities, contextWindow: 100_000 }
+      })
+    });
+
+    expect(budgeted.ok).toBe(true);
+    if (!budgeted.ok) throw new Error("unexpected budget rejection");
+    expect(budgeted.request.attachments[0]!.extractedText).toBe("abcdefghij\n[truncated 16 chars]");
   });
 });

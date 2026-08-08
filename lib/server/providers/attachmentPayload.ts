@@ -1,8 +1,6 @@
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ProviderAttachment, ProviderModelCapabilities } from "./types";
 
-export const defaultMaxAttachmentTextChars = 20000;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -17,8 +15,8 @@ function metadataRecord(attachment: ProviderAttachment, key: string): Record<str
     : {};
 }
 
-export function truncateProviderAttachmentText(text: string, maxChars: number): string {
-  if (text.length <= maxChars) {
+export function truncateProviderAttachmentText(text: string, maxChars?: number): string {
+  if (maxChars === undefined || text.length <= maxChars) {
     return text;
   }
 
@@ -35,7 +33,7 @@ export function providerAttachmentTextLabel(attachment: ProviderAttachment): str
 
 export function providerAttachmentText(
   attachment: ProviderAttachment,
-  maxChars = defaultMaxAttachmentTextChars
+  maxChars?: number
 ): string | null {
   if (!attachment.extractedText?.trim()) {
     return null;
@@ -93,8 +91,6 @@ export function providerAttachmentBudgetTokens(input: {
   maxAttachmentTextChars?: number;
   modelCapabilities: ProviderModelCapabilities;
 }): number {
-  const maxChars = input.maxAttachmentTextChars ?? defaultMaxAttachmentTextChars;
-
   return input.attachments.reduce((total, attachment) => {
     if (attachment.kind === "image") {
       return total + imageProxyTokens(attachment);
@@ -105,7 +101,7 @@ export function providerAttachmentBudgetTokens(input: {
     }
 
     if (attachment.kind === "pdf" || attachment.kind === "document") {
-      const text = providerAttachmentText(attachment, maxChars);
+      const text = providerAttachmentText(attachment, input.maxAttachmentTextChars);
       return total + (text ? estimateApproxTokens(text) : 0);
     }
 

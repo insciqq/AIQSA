@@ -717,7 +717,7 @@ export function PowerAppShell({
     refreshActiveChat,
     setNotice
   });
-  const { fetchRun, stopCurrentRun, uploadFiles } = runLifecycleActions;
+  const { fetchRun, retryAttachment, stopCurrentRun, uploadFiles } = runLifecycleActions;
 
   const {
     branchChatFromMessage,
@@ -819,6 +819,9 @@ export function PowerAppShell({
         ),
         operationError: withoutAttachmentLimitFeedbackMessage(session.operationError)
       });
+    },
+    retryAttachment(attachmentId: string) {
+      void retryAttachment(attachmentId);
     }
   };
 

@@ -23,6 +23,21 @@ export const DEFAULT_UPLOAD_MAX_BYTES = 25_000_000;
 export const MAX_UPLOAD_MAX_BYTES = 67_108_864;
 
 const allowedTypes: Record<string, { extensions: string[]; kind: UploadKind }> = {
+  "application/msword": { extensions: [".doc"], kind: "document" },
+  "application/rtf": { extensions: [".rtf"], kind: "document" },
+  "application/vnd.oasis.opendocument.text": { extensions: [".odt"], kind: "document" },
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": {
+    extensions: [".pptx"],
+    kind: "document"
+  },
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+    extensions: [".xlsx"],
+    kind: "document"
+  },
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+    extensions: [".docx"],
+    kind: "document"
+  },
   "application/pdf": { extensions: [".pdf"], kind: "pdf" },
   "application/json": { extensions: [".json"], kind: "document" },
   "image/gif": { extensions: [".gif"], kind: "image" },
@@ -32,11 +47,14 @@ const allowedTypes: Record<string, { extensions: string[]; kind: UploadKind }> =
   "text/csv": { extensions: [".csv"], kind: "document" },
   "text/html": { extensions: [".html", ".htm"], kind: "document" },
   "text/markdown": { extensions: [".md", ".markdown"], kind: "document" },
-  "text/plain": { extensions: [".txt", ".md", ".markdown"], kind: "document" }
+  "text/plain": { extensions: [".txt", ".md", ".markdown"], kind: "document" },
+  "text/rtf": { extensions: [".rtf"], kind: "document" }
 };
 
 const canonicalMimeByExtension: Record<string, string> = {
   ".csv": "text/csv",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".gif": "image/gif",
   ".htm": "text/html",
   ".html": "text/html",
@@ -45,11 +63,23 @@ const canonicalMimeByExtension: Record<string, string> = {
   ".json": "application/json",
   ".markdown": "text/markdown",
   ".md": "text/markdown",
+  ".odt": "application/vnd.oasis.opendocument.text",
   ".pdf": "application/pdf",
   ".png": "image/png",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".rtf": "application/rtf",
   ".txt": "text/plain",
-  ".webp": "image/webp"
+  ".webp": "image/webp",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 };
+
+function looksZipLike(bytes: Buffer | Uint8Array): boolean {
+  return bytesStartWith(bytes, [0x50, 0x4b, 0x03, 0x04]);
+}
+
+function zipContains(bytes: Buffer | Uint8Array, marker: string): boolean {
+  return Buffer.from(bytes).includes(Buffer.from(marker, "utf8"));
+}
 
 function bytesStartWith(bytes: Buffer | Uint8Array, signature: number[]): boolean {
   if (bytes.byteLength < signature.length) {
@@ -81,6 +111,21 @@ function looksTextLike(bytes: Buffer | Uint8Array): boolean {
 
 export function matchesDeclaredUploadType(mimeType: string, bytes: Buffer | Uint8Array): boolean {
   switch (mimeType.toLowerCase()) {
+    case "application/msword":
+      return bytesStartWith(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    case "application/rtf":
+    case "text/rtf":
+      return ascii(bytes, 0, 5) === "{\\rtf";
+    case "application/vnd.oasis.opendocument.text":
+      return looksZipLike(bytes) &&
+        (zipContains(bytes, "application/vnd.oasis.opendocument.text") ||
+          (zipContains(bytes, "content.xml") && zipContains(bytes, "META-INF/manifest.xml")));
+    case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+      return looksZipLike(bytes) && zipContains(bytes, "[Content_Types].xml") && zipContains(bytes, "ppt/");
+    case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+      return looksZipLike(bytes) && zipContains(bytes, "[Content_Types].xml") && zipContains(bytes, "xl/");
+    case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+      return looksZipLike(bytes) && zipContains(bytes, "[Content_Types].xml") && zipContains(bytes, "word/");
     case "application/pdf":
       return ascii(bytes, 0, 5) === "%PDF-";
     case "application/json":

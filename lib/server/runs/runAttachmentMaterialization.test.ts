@@ -56,6 +56,22 @@ function repository(records: readonly RunAttachmentRecord[]) {
 }
 
 describe("run attachment materialization", () => {
+  it.each(["processing", "failed"])("rejects a %s attachment before object reads", async (status) => {
+    const unsettled = { ...attachment("pending", "document", 10), status };
+    const getObject = vi.fn();
+
+    await expect(loadProviderAttachments(
+      { repository: repository([unsettled]), storage: { getObject } },
+      "user-1",
+      [unsettled.id],
+      { capabilities: baseCapabilities, limits: limits() }
+    )).rejects.toMatchObject({
+      code: "attachment_not_ready",
+      status: 409
+    });
+    expect(getObject).not.toHaveBeenCalled();
+  });
+
   it("bounds content blocks and rejects duplicate references as malformed", () => {
     expect(() => attachmentIdsFromContentBlocks(
       Array.from({ length: MAX_RUN_CONTENT_BLOCKS + 1 }, () => ({ text: "x", type: "text" }))

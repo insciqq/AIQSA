@@ -440,6 +440,162 @@ describe("run lifecycle actions", () => {
     expect(surface("chat-1").events).toEqual([]);
   });
 
+  it("polls processing attachments into their source session after navigation", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({
+        attachment: {
+          extractedText: null,
+          fileName: "report.docx",
+          id: "attachment-1",
+          kind: "document",
+          status: "processing"
+        }
+      }))
+      .mockResolvedValueOnce(Response.json({
+        attachment: {
+          extractedText: "Parsed report",
+          fileName: "report.docx",
+          id: "attachment-1",
+          kind: "document",
+          processingErrorCode: null,
+          status: "ready"
+        }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    await actions.uploadFiles([
+      new File(["docx"], "report.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      })
+    ]);
+    expect(composerSession("chat-1").attachments).toEqual([
+      expect.objectContaining({ id: "attachment-1", status: "processing" })
+    ]);
+    useComposerSessionStore.getState().activateSession(composerSessionKey("chat-2"));
+    useComposerSessionStore.getState().setDraft("Other chat draft");
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/uploads/attachment-1");
+    expect(composerSession("chat-1").attachments).toEqual([
+      expect.objectContaining({
+        extractedText: "Parsed report",
+        id: "attachment-1",
+        status: "ready"
+      })
+    ]);
+    expect(composerSession("chat-2")).toMatchObject({
+      attachments: [],
+      draft: "Other chat draft"
+    });
+  });
+
+  it("keeps polling after a malformed successful status response", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({
+        attachment: {
+          extractedText: null,
+          fileName: "report.docx",
+          id: "attachment-1",
+          kind: "document",
+          status: "processing"
+        }
+      }))
+      .mockResolvedValueOnce(
+        new Response("not-json", {
+          headers: { "content-type": "application/json" },
+          status: 200
+        })
+      )
+      .mockResolvedValueOnce(Response.json({
+        attachment: {
+          extractedText: "Parsed after transient failure",
+          fileName: "report.docx",
+          id: "attachment-1",
+          kind: "document",
+          processingErrorCode: null,
+          status: "ready"
+        }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    await actions.uploadFiles([
+      new File(["docx"], "report.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      })
+    ]);
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(composerSession("chat-1").attachments).toEqual([
+      expect.objectContaining({ id: "attachment-1", status: "processing" })
+    ]);
+
+    await vi.advanceTimersByTimeAsync(750);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(composerSession("chat-1").attachments).toEqual([
+      expect.objectContaining({
+        extractedText: "Parsed after transient failure",
+        id: "attachment-1",
+        status: "ready"
+      })
+    ]);
+  });
+
+  it("retries a failed attachment and resumes lifecycle polling", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({
+        attachment: {
+          extractedText: null,
+          fileName: "report.docx",
+          id: "attachment-1",
+          kind: "document",
+          processingErrorCode: null,
+          status: "processing"
+        }
+      }))
+      .mockResolvedValueOnce(Response.json({
+        attachment: {
+          extractedText: "Ready on retry",
+          fileName: "report.docx",
+          id: "attachment-1",
+          kind: "document",
+          processingErrorCode: null,
+          status: "ready"
+        }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+    useComposerSessionStore.getState().setAttachments([{
+      fileName: "report.docx",
+      id: "attachment-1",
+      kind: "document",
+      processingErrorCode: "parser_unavailable",
+      status: "failed"
+    }]);
+
+    await actions.retryAttachment("attachment-1");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/uploads/attachment-1", {
+      method: "POST"
+    });
+    expect(composerSession("chat-1").attachments).toEqual([
+      expect.objectContaining({ id: "attachment-1", status: "processing" })
+    ]);
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(composerSession("chat-1").attachments).toEqual([
+      expect.objectContaining({ extractedText: "Ready on retry", status: "ready" })
+    ]);
+  });
+
   it("continues a multi-file batch after a failed first file", async () => {
     const fetchMock = vi
       .fn()

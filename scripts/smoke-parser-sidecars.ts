@@ -8,6 +8,11 @@ import {
   isDocumentParserError,
   type ParsedDocument
 } from "../lib/server/parsing";
+import {
+  AttachmentProcessingError,
+  createAttachmentProcessor,
+  type AttachmentProcessingRecord
+} from "../lib/server/uploads/processing";
 
 const PDF_MARKER = "AIQSA PDF parser fixture";
 const DOCX_MARKER = "AIQSA DOCX parser fixture";
@@ -141,6 +146,36 @@ function assertOnePage(result: ParsedDocument, engine: "docling" | "tika", marke
   assert(result.text.includes(marker));
 }
 
+function processingRecord(
+  bytes: Buffer,
+  input: Readonly<Pick<AttachmentProcessingRecord, "fileName" | "kind" | "mimeType">>
+): AttachmentProcessingRecord {
+  return {
+    attemptCount: 1,
+    byteSize: bytes.byteLength,
+    checksum: null,
+    claimToken: "parser-smoke-claim",
+    fileName: input.fileName,
+    id: `parser-smoke-${input.kind}`,
+    jobId: `parser-smoke-${input.kind}-job`,
+    kind: input.kind,
+    mimeType: input.mimeType,
+    storageKey: `parser-smoke/${input.fileName}`
+  };
+}
+
+function fixtureProcessor(bytes: Buffer) {
+  return createAttachmentProcessor({
+    storage: {
+      getObject: async (storageKey) => ({
+        body: bytes,
+        contentType: "application/octet-stream",
+        storageKey
+      })
+    }
+  });
+}
+
 async function unavailableSmoke(): Promise<void> {
   const readinessUrl = process.env.AIQSA_PARSER_SMOKE_READINESS_URL?.trim();
   const readiness = readinessUrl
@@ -165,10 +200,42 @@ async function unavailableSmoke(): Promise<void> {
     assert.equal(error.code, "parser_unavailable");
   }
 
+  const pdf = pdfFixture();
+  const pdfResult = await fixtureProcessor(pdf)(processingRecord(pdf, {
+    fileName: "fixture.pdf",
+    kind: "pdf",
+    mimeType: "application/pdf"
+  }));
+  assert(pdfResult.extractedText?.includes(PDF_MARKER));
+  assert.deepEqual(pdfResult.metadata.pdf && {
+    parserEngine: (pdfResult.metadata.pdf as Record<string, unknown>).parserEngine,
+    status: (pdfResult.metadata.pdf as Record<string, unknown>).status
+  }, {
+    parserEngine: "unpdf",
+    status: "complete"
+  });
+
+  const docx = docxFixture();
+  try {
+    await fixtureProcessor(docx)(processingRecord(docx, {
+      fileName: "fixture.docx",
+      kind: "document",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    }));
+    assert.fail("DOCX attachment processing should require a parser sidecar");
+  } catch (error) {
+    assert(error instanceof AttachmentProcessingError);
+    assert.equal(error.code, "parser_unavailable");
+    assert.equal(error.retryable, true);
+  }
+
   process.stdout.write(`${JSON.stringify({
     appReady: true,
+    docxErrorCode: "parser_unavailable",
     mode: "unavailable",
-    parserUnavailable: true
+    parserUnavailable: true,
+    pdfFallbackEngine: "unpdf",
+    pdfReady: true
   })}\n`);
 }
 

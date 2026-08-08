@@ -199,7 +199,7 @@ AIQSA_UPLOAD_MAX_CONCURRENCY=4
 AIQSA_UPLOAD_STORAGE_DIR=.aiqsa/uploads
 AIQSA_PDF_MAX_PAGES=500
 AIQSA_PDF_EXTRACTION_TIMEOUT_MS=20000
-AIQSA_PDF_EXTRACTED_TEXT_MAX_CHARS=20000
+AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS=1000000
 ```
 
 Auth JSON is capped at 64 KiB and other JSON at 1 MiB before parsing. Uploads
@@ -210,11 +210,14 @@ fractional, or excessive values fall back to the safe defaults. Upload file
 size is hard-capped at 64 MiB, multipart overhead at 8 MiB, and
 per-process concurrency at 8; larger configured values fall back to defaults.
 Auth JSON is hard-capped at 1 MiB and other JSON at 16 MiB.
-PDF extraction examines pages sequentially in a terminable worker and stops as
-soon as it proves the configured extracted-text limit was exceeded. The three
-PDF overrides are reduction-only positive integers: page count falls back to
-500, timeout to 20,000 ms, and exposed/persisted text to 20,000 characters
-when a value is invalid, zero, fractional, or above that respective ceiling.
+Async attachment processing uses the configured parser sidecars and a
+terminable local PDF fallback. The fallback examines pages sequentially and
+stops at the page, time, or extracted-text ceiling. All three overrides are
+reduction-only positive integers: page count falls back to 500, local PDF
+timeout to 20,000 ms, and persisted extracted text to 1,000,000 characters
+when a value is invalid, zero, fractional, or above its respective ceiling.
+Provider-bound text is fitted again at run time from the selected model's
+context window; this storage ceiling is not a per-provider request budget.
 Keep an exposed proxy upload limit strictly above `AIQSA_UPLOAD_MAX_BYTES +
 AIQSA_UPLOAD_MULTIPART_OVERHEAD_BYTES`; application enforcement remains
 authoritative. The default Compose stack always supplies private S3/MinIO

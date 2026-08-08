@@ -158,7 +158,7 @@ function combineSystem(request: ProviderRunRequest): string | undefined {
 
 function attachmentTextBlock(
   attachment: ProviderAttachment,
-  maxChars: number,
+  maxChars: number | undefined,
   preview: boolean
 ): Record<string, unknown> | null {
   const text = preview
@@ -278,7 +278,7 @@ function buildUserContent(
     if (attachment.kind === "pdf" || attachment.kind === "document") {
       const block = attachmentTextBlock(
         attachment,
-        options.maxAttachmentTextChars ?? 20000,
+        options.maxAttachmentTextChars,
         options.preview
       );
       if (block) {

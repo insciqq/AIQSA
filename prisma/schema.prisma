@@ -59,7 +59,9 @@ enum SearchRunStatus {
 }
 
 enum AttachmentStatus {
+  processing
   ready
+  failed
 }
 
 enum McpOAuthConnectionState {
@@ -1224,26 +1226,45 @@ model SearchRun {
 }
 
 model Attachment {
-  id            String           @id @default(uuid())
-  userId        String
-  chatId        String?
-  messageId     String?
-  kind          String
-  mimeType      String
-  fileName      String
-  storageKey    String
-  checksum      String?
-  status        AttachmentStatus @default(ready)
-  byteSize      Int
-  extractedText String?
-  metadata      Json
-  createdAt     DateTime         @default(now())
-  chat          Chat?            @relation(fields: [chatId], references: [id], onDelete: SetNull)
-  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                  String                   @id @default(uuid())
+  userId              String
+  chatId              String?
+  messageId           String?
+  kind                String
+  mimeType            String
+  fileName            String
+  storageKey          String
+  checksum            String?
+  status              AttachmentStatus         @default(ready)
+  processingErrorCode String?                  @db.VarChar(64)
+  byteSize            Int
+  extractedText       String?
+  metadata            Json
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @default(now()) @updatedAt
+  chat                Chat?                    @relation(fields: [chatId], references: [id], onDelete: SetNull)
+  processingJob       AttachmentProcessingJob?
+  user                User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
   @@index([messageId])
   @@index([storageKey])
+}
+
+model AttachmentProcessingJob {
+  id            String     @id @default(uuid())
+  attachmentId  String     @unique
+  claimToken    String?
+  claimedAt     DateTime?
+  attemptCount  Int        @default(0)
+  nextAttemptAt DateTime   @default(now())
+  lastAttemptAt DateTime?
+  lastErrorCode String?    @db.VarChar(64)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  attachment    Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+
+  @@index([nextAttemptAt, claimedAt, createdAt])
 }
 
 model AttachmentDeletionJob {

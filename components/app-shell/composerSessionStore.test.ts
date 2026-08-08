@@ -183,6 +183,41 @@ describe("composer session store", () => {
     });
   });
 
+  it("updates lifecycle state only in the source session and blocks send until ready", () => {
+    const source = composerSessionKey("chat-a");
+    const other = composerSessionKey("chat-b");
+    const store = useComposerSessionStore.getState();
+    store.activateSession(source);
+    store.setDraft("Question");
+    store.setAttachments([{ ...attachment("report"), status: "processing" }]);
+    store.activateSession(other);
+    store.setAttachments([attachment("other")]);
+
+    expect(store.beginSend(source)).toBeNull();
+    expect(store.updateUploadedAttachment(source, {
+      ...attachment("report"),
+      processingErrorCode: "parser_unavailable",
+      status: "failed"
+    })).toBe(true);
+    expect(session(other).attachments).toEqual([attachment("other")]);
+    expect(store.beginSend(source)).toBeNull();
+
+    expect(store.updateUploadedAttachment(source, {
+      ...attachment("report"),
+      extractedText: "ready text",
+      processingErrorCode: null,
+      status: "ready"
+    })).toBe(true);
+    expect(store.beginSend(source)).toMatchObject({
+      attachments: [expect.objectContaining({ id: "report", status: "ready" })],
+      draft: "Question"
+    });
+    expect(store.updateUploadedAttachment(source, {
+      ...attachment("report"),
+      status: "failed"
+    })).toBe(false);
+  });
+
   it("owns one pending edit per source while other sessions keep independent send and edit work", () => {
     const chatA = composerSessionKey("chat-a");
     const chatB = composerSessionKey("chat-b");

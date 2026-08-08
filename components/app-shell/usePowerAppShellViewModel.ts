@@ -50,8 +50,6 @@ type PowerAppShellViewModelInput = {
   visibleMessages: ThreadMessage[];
 };
 
-const defaultMaxAttachmentTextChars = 20000;
-
 function metadataRecord(attachment: ComposerAttachment, key: string): Record<string, unknown> {
   const metadata = attachment.metadata;
   if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
@@ -66,14 +64,6 @@ function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
-function truncateProviderAttachmentText(text: string, maxChars = defaultMaxAttachmentTextChars): string {
-  if (text.length <= maxChars) {
-    return text;
-  }
-
-  return `${text.slice(0, maxChars)}\n[truncated ${text.length - maxChars} chars]`;
-}
-
 function providerAttachmentText(attachment: ComposerAttachment): string | null {
   if (!attachment.extractedText?.trim()) {
     return null;
@@ -84,7 +74,7 @@ function providerAttachmentText(attachment: ComposerAttachment): string | null {
       ? `Attached PDF: ${attachment.fileName}`
       : `Attached document: ${attachment.fileName} (${attachment.mimeType || "unknown type"})`;
 
-  return `[${label}]\n${truncateProviderAttachmentText(attachment.extractedText)}`;
+  return `[${label}]\n${attachment.extractedText}`;
 }
 
 function imageProxyTokens(attachment: ComposerAttachment): number {

@@ -130,6 +130,7 @@ Migration contracts create temporary databases or use bounded in-memory fixtures
 
 ```bash
 npm run db:auth-rate-limit:migration:contract
+npm run db:attachment-processing:migration:contract
 npm run db:gemini:migration:contract
 npm run db:provider:migration:contract
 npm run db:full-access:migration:contract
@@ -204,8 +205,8 @@ docker compose -f docker-compose.dev.yml start docling tika
 The smoke creates and removes tiny one-page PDF, OOXML `.docx`, and OLE Word
 `.doc` fixtures inside the app container. It calls the production parser
 boundary and emits only engines, counts, page-anchor/marker booleans, and the
-unavailability/readiness booleans; extracted fixture text and raw sidecar
-responses remain private. Because the dev server deliberately fails readiness
+unavailability/readiness, local-PDF-fallback, and stable DOCX-error evidence;
+extracted fixture text and raw sidecar responses remain private. Because the dev server deliberately fails readiness
 while deterministic test-auth switches are enabled, the stopped-sidecar smoke
 clears those switches only for its exact child process and calls the production
 readiness route directly against the same Postgres and MinIO. An explicit

@@ -22,7 +22,7 @@ describe("PDF extraction configuration", () => {
   it("accepts reduction-only positive integer overrides", () => {
     expect(
       getPdfExtractionConfig({
-        AIQSA_PDF_EXTRACTED_TEXT_MAX_CHARS: "1234",
+        AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: "1234",
         AIQSA_PDF_EXTRACTION_TIMEOUT_MS: "5678",
         AIQSA_PDF_MAX_PAGES: "42"
       })
@@ -38,7 +38,7 @@ describe("PDF extraction configuration", () => {
     (value) => {
       expect(
         getPdfExtractionConfig({
-          AIQSA_PDF_EXTRACTED_TEXT_MAX_CHARS: value,
+          AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: value,
           AIQSA_PDF_EXTRACTION_TIMEOUT_MS: value,
           AIQSA_PDF_MAX_PAGES: value
         })
@@ -53,7 +53,7 @@ describe("PDF extraction configuration", () => {
   it("falls back when an override exceeds its hard ceiling", () => {
     expect(
       getPdfExtractionConfig({
-        AIQSA_PDF_EXTRACTED_TEXT_MAX_CHARS: String(DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS + 1),
+        AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: String(DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS + 1),
         AIQSA_PDF_EXTRACTION_TIMEOUT_MS: String(DEFAULT_PDF_EXTRACTION_TIMEOUT_MS + 1),
         AIQSA_PDF_MAX_PAGES: String(DEFAULT_PDF_MAX_PAGES + 1)
       })

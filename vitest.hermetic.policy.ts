@@ -8,5 +8,6 @@ export const databaseRequiredTestFiles = [
   "lib/server/messages/prismaRepository.test.ts",
   "lib/server/retention/prune.prisma.test.ts",
   "lib/server/runs/prismaRepository.test.ts",
-  "lib/server/settings/prismaRepository.test.ts"
+  "lib/server/settings/prismaRepository.test.ts",
+  "lib/server/uploads/defaultProcessing.prisma.test.ts"
 ] as const;

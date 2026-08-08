@@ -114,7 +114,7 @@ function combineInstructions(request: ProviderRunRequest): string | undefined {
 
 function attachmentTextBlock(
   attachment: ProviderAttachment,
-  maxChars: number,
+  maxChars: number | undefined,
   preview: boolean
 ): OpenAIResponsesTextContentBlock | null {
   const text = preview
@@ -200,7 +200,7 @@ function buildInputContent(
     if (attachment.kind === "pdf" || attachment.kind === "document") {
       const block = attachmentTextBlock(
         attachment,
-        options.maxAttachmentTextChars ?? 20000,
+        options.maxAttachmentTextChars,
         options.preview
       );
       if (block) {

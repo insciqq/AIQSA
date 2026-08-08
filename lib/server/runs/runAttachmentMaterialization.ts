@@ -17,6 +17,7 @@ export type AttachmentMaterializationErrorCode =
   | "attachment_materialization_limit_exceeded"
   | "attachment_object_read_failed"
   | "attachment_object_size_mismatch"
+  | "attachment_not_ready"
   | "attachment_reference_invalid"
   | "content_block_limit_exceeded";
 
@@ -397,6 +398,13 @@ export async function loadProviderAttachments(
   const loadedRecords = await deps.repository.loadAttachments(userId, [...attachmentIds]);
   if (options.signal?.aborted) throw abortReason(options.signal);
   const records = orderedAttachmentRecords(loadedRecords, attachmentIds);
+  if (records.some((record) => record.status !== "ready")) {
+    throw new AttachmentMaterializationError({
+      code: "attachment_not_ready",
+      message: "Every selected attachment must finish processing before a run can start.",
+      status: 409
+    });
+  }
   if (records.length !== attachmentIds.length) {
     return records.map(({ storageKey: _storageKey, ...attachment }) => attachment);
   }

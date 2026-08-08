@@ -1346,6 +1346,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
                 },
                 chatId: null,
                 messageId: null,
+                status: "ready",
                 userId: input.userId
               }
             });

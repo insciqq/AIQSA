@@ -1,5 +1,5 @@
 export const PDF_PROCESSING_MAX_PAGES = 500;
-export const PDF_PROCESSING_MAX_EXTRACTED_TEXT_CHARS = 20_000;
+export const ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS = 1_000_000;
 
 export type PdfProcessingWire = {
   extractedCharacterCount: number;
@@ -18,7 +18,9 @@ export type UploadedAttachmentWire = {
   metadata?: unknown;
   mimeType?: string;
   processing?: PdfProcessingWire;
-  status?: string;
+  processingErrorCode?: string | null;
+  status?: "failed" | "processing" | "ready";
+  updatedAt?: string;
 };
 
 export type UploadAttachmentResponseWire = {
@@ -79,7 +81,7 @@ export function decodePdfProcessing(value: unknown): PdfProcessingWire | null {
   if (
     !isRecord(value) ||
     !isNonNegativeSafeInteger(value.extractedCharacterCount) ||
-    value.extractedCharacterCount > PDF_PROCESSING_MAX_EXTRACTED_TEXT_CHARS ||
+    value.extractedCharacterCount > ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS ||
     !isNonNegativeSafeInteger(value.pageCount) ||
     value.pageCount > PDF_PROCESSING_MAX_PAGES ||
     !isNonNegativeSafeInteger(value.pagesProcessed) ||
@@ -131,7 +133,17 @@ export function decodeUploadAttachmentResponse(value: unknown): UploadAttachment
       attachment.extractedText !== null &&
       typeof attachment.extractedText !== "string") ||
     !optionalString(attachment.mimeType) ||
-    !optionalString(attachment.status)
+    (attachment.status !== undefined &&
+      attachment.status !== "failed" &&
+      attachment.status !== "processing" &&
+      attachment.status !== "ready") ||
+    (attachment.processingErrorCode !== undefined &&
+      attachment.processingErrorCode !== null &&
+      (typeof attachment.processingErrorCode !== "string" ||
+        !/^[a-z][a-z0-9_]{0,63}$/u.test(attachment.processingErrorCode))) ||
+    (attachment.updatedAt !== undefined &&
+      (typeof attachment.updatedAt !== "string" ||
+        !Number.isFinite(Date.parse(attachment.updatedAt))))
   ) {
     return null;
   }
@@ -160,7 +172,11 @@ export function decodeUploadAttachmentResponse(value: unknown): UploadAttachment
         : {}),
       ...(attachment.mimeType === undefined ? {} : { mimeType: attachment.mimeType }),
       ...(processing ? { processing } : {}),
-      ...(attachment.status === undefined ? {} : { status: attachment.status })
+      ...(attachment.processingErrorCode === undefined
+        ? {}
+        : { processingErrorCode: attachment.processingErrorCode }),
+      ...(attachment.status === undefined ? {} : { status: attachment.status }),
+      ...(attachment.updatedAt === undefined ? {} : { updatedAt: attachment.updatedAt })
     }
   };
 }

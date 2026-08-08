@@ -1,10 +1,15 @@
 import {
   applyContextBudget,
+  calculateContextBudgetLimits,
   estimateApproxTokens,
   type ContextTruncationSummary
 } from "../../domain/contextBudget";
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
-import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
+import {
+  providerAttachmentBudgetTokens,
+  providerAttachmentTextLabel,
+  truncateProviderAttachmentText
+} from "../providers/attachmentPayload";
 import type {
   NormalizedRunRequest,
   ProviderConversationMessage,
@@ -12,6 +17,7 @@ import type {
   ProviderRunRequest
 } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
+import { getAttachmentTextConfig } from "../uploads/attachmentTextConfig";
 
 function maxOutputTokensForBudget(
   params: Readonly<Record<string, unknown>>,
@@ -133,6 +139,142 @@ export type ProviderRequestContextBudgetResult =
       status: 400;
     }>;
 
+function textModeAttachment(
+  attachment: ProviderRunRequest["attachments"][number],
+  capabilities: ProviderModelCapabilities
+): boolean {
+  return attachment.kind === "document" ||
+    (attachment.kind === "pdf" && !capabilities.nativePdfInput);
+}
+
+function fitTextToTokenBudget(text: string, tokenBudget: number): string {
+  if (estimateApproxTokens(text) <= tokenBudget) return text;
+  const marker = "\n[truncated for model context]";
+  const firstCharacter = String.fromCodePoint(text.codePointAt(0)!);
+  const safePrefix = (length: number) => {
+    const prefix = text.slice(0, length);
+    return /[\uD800-\uDBFF]$/u.test(prefix) ? prefix.slice(0, -1) : prefix;
+  };
+  const candidate = (length: number, withMarker: boolean) =>
+    `${safePrefix(length)}${withMarker ? marker : ""}`;
+  const useMarker = estimateApproxTokens(`${firstCharacter}${marker}`) <= tokenBudget;
+  let low = firstCharacter.length;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (estimateApproxTokens(candidate(middle, useMarker)) <= tokenBudget) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return candidate(low, useMarker);
+}
+
+type AttachmentTextFitResult =
+  | Readonly<{ attachments: ProviderRunRequest["attachments"]; ok: true }>
+  | Readonly<{ ok: false }>;
+
+function fitProviderAttachmentText(input: Readonly<{
+  fixedExtraTokens: number;
+  request: ProviderRunRequest;
+}>): AttachmentTextFitResult {
+  const operatorMaxChars = getAttachmentTextConfig().extractedTextMaxChars;
+  const attachments = input.request.attachments.map((attachment) => ({
+    ...attachment,
+    extractedText: attachment.extractedText
+      ? truncateProviderAttachmentText(attachment.extractedText, operatorMaxChars)
+      : null
+  }));
+  const textCandidates = attachments.flatMap((attachment, index) => {
+    if (!textModeAttachment(attachment, input.request.modelCapabilities) || !attachment.extractedText?.trim()) {
+      return [];
+    }
+    return [{
+      index,
+      labelTokens: estimateApproxTokens(`[${providerAttachmentTextLabel(attachment)}]\n`),
+      minimumTokens: estimateApproxTokens(String.fromCodePoint(attachment.extractedText.codePointAt(0)!)),
+      source: attachment.extractedText,
+      sourceTokens: estimateApproxTokens(attachment.extractedText)
+    }];
+  });
+  if (textCandidates.length === 0) return { attachments, ok: true };
+
+  const contextWindow = input.request.modelCapabilities.contextWindow ?? 0;
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
+    return { attachments, ok: true };
+  }
+  const limits = calculateContextBudgetLimits({
+    contextWindow,
+    maxOutputTokens: maxOutputTokensForBudget(
+      input.request.params,
+      input.request.modelCapabilities,
+      input.request.provider
+    ),
+    provider: input.request.provider
+  });
+  const currentContent = input.request.context?.messages.at(-1)?.content ?? input.request.content;
+  const promptTokens = estimateApproxTokens(input.request.prompt.system ?? "") +
+    estimateApproxTokens(input.request.prompt.developer ?? "");
+  const fixedAttachments = attachments.map((attachment) =>
+    textModeAttachment(attachment, input.request.modelCapabilities)
+      ? { ...attachment, extractedText: null }
+      : attachment
+  );
+  const fixedTokens = promptTokens +
+    estimateApproxTokens(currentContent) +
+    input.fixedExtraTokens +
+    providerAttachmentBudgetTokens({
+      attachments: fixedAttachments,
+      modelCapabilities: input.request.modelCapabilities
+    });
+  const labelTokens = textCandidates.reduce((total, candidate) => total + candidate.labelTokens, 0);
+  const availableTextTokens = limits.budgetTokens - fixedTokens - labelTokens;
+  const minimumTokens = textCandidates.reduce(
+    (total, candidate) => total + candidate.minimumTokens,
+    0
+  );
+  if (availableTextTokens < minimumTokens) return { ok: false };
+
+  const allocations = new Map(
+    textCandidates.map((candidate) => [candidate.index, candidate.minimumTokens])
+  );
+  let remaining = availableTextTokens - minimumTokens;
+  let active = textCandidates.filter(
+    (candidate) => candidate.sourceTokens > candidate.minimumTokens
+  );
+  while (active.length > 0) {
+    const share = Math.floor(remaining / active.length);
+    if (share <= 0) break;
+    const complete = active.filter(
+      (candidate) => candidate.sourceTokens - allocations.get(candidate.index)! <= share
+    );
+    if (complete.length === 0) {
+      for (const candidate of active) {
+        allocations.set(candidate.index, allocations.get(candidate.index)! + share);
+      }
+      break;
+    }
+    for (const candidate of complete) {
+      const previous = allocations.get(candidate.index)!;
+      allocations.set(candidate.index, candidate.sourceTokens);
+      remaining -= candidate.sourceTokens - previous;
+    }
+    const completedIndexes = new Set(complete.map((candidate) => candidate.index));
+    active = active.filter((candidate) => !completedIndexes.has(candidate.index));
+  }
+
+  return {
+    attachments: attachments.map((attachment, index) => {
+      const allocated = allocations.get(index);
+      return allocated === undefined || !attachment.extractedText
+        ? attachment
+        : { ...attachment, extractedText: fitTextToTokenBudget(attachment.extractedText, allocated) };
+    }),
+    ok: true
+  };
+}
+
 /** Budgets the exact provider-facing client tools and retained tool transcript. */
 export function applyProviderRequestContextBudget(input: Readonly<{
   bridge?: ProviderToolBridge;
@@ -148,28 +290,41 @@ export function applyProviderRequestContextBudget(input: Readonly<{
         role: "user" as const
       }];
   const currentMessageId = budgetMessages.at(-1)?.id;
-  const providerExtras =
-    providerAttachmentBudgetTokens({
-      attachments: input.request.attachments,
-      modelCapabilities: input.request.modelCapabilities
-    }) +
+  const fixedExtraTokens =
     estimateApproxTokens(providerFacingSerializedTools(input.request, input.bridge)) +
     estimateApproxTokens(input.request.providerToolMessages ?? []);
+  const attachmentFit = fitProviderAttachmentText({ fixedExtraTokens, request: input.request });
+  if (!attachmentFit.ok) {
+    return {
+      error: {
+        code: "context_too_large",
+        message: "Prompt, current message, tools, and selected attachments exceed the model context budget."
+      },
+      ok: false,
+      status: 400
+    };
+  }
+  const fittedRequest = { ...input.request, attachments: attachmentFit.attachments };
+  const providerExtras =
+    providerAttachmentBudgetTokens({
+      attachments: fittedRequest.attachments,
+      modelCapabilities: fittedRequest.modelCapabilities
+    }) + fixedExtraTokens;
   const budget = applyRunContextBudget({
     contextMessages: budgetMessages,
     messageExtraTokens:
       currentMessageId && providerExtras > 0
         ? { [currentMessageId]: providerExtras }
         : undefined,
-    modelCapabilities: input.request.modelCapabilities,
-    params: input.request.params,
-    prompt: input.request.prompt,
-    provider: input.request.provider
+    modelCapabilities: fittedRequest.modelCapabilities,
+    params: fittedRequest.params,
+    prompt: fittedRequest.prompt,
+    provider: fittedRequest.provider
   });
   if (!budget.ok) return budget;
 
   if (contextMessages.length === 0) {
-    return { contextTruncation: null, ok: true, request: input.request };
+    return { contextTruncation: null, ok: true, request: fittedRequest };
   }
 
   const previous = input.request.context?.summary?.truncation;
@@ -181,7 +336,7 @@ export function applyProviderRequestContextBudget(input: Readonly<{
     contextTruncation,
     ok: true,
     request: {
-      ...input.request,
+      ...fittedRequest,
       context: {
         ...budget.context,
         ...(effectiveTruncation

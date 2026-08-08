@@ -1292,7 +1292,7 @@ export async function prepareRun(
   };
   const providerRequest: ProviderRunRequest = {
     ...normalizedRequest,
-    attachments,
+    attachments: providerBudget.request.attachments,
     ...(clientTools.length > 0 ? { tools: clientTools } : {})
   };
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);

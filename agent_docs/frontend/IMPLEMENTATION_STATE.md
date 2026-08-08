@@ -70,7 +70,7 @@ Active-chat detail loading is a skeleton, not a blank chat. Detail failure has o
 
 `composerSessionStore` owns keyed sessions for each saved chat plus distinct blank-root and blank-folder destinations. A session contains draft text, edit target, staged attachments, operation generations/tokens, and local feedback.
 
-Async writers capture their source key and token before awaiting. Send snapshots and clears visible input atomically; upload and send exclude each other; a failed send restores captured text only if no newer composer work exists. A successful first send transfers the blank session to the created chat. Deletion/authoritative refresh removes stale sources so late results cannot resurrect them.
+Async writers capture their source key and token before awaiting. Send snapshots and clears visible input atomically; upload and send exclude each other; attachment status polling updates only a still-present id in its captured source and keeps send blocked through `processing`/`failed`; a failed send restores captured text only if no newer composer work exists. A successful first send transfers the blank session to the created chat. Deletion/authoritative refresh removes stale sources so late results cannot resurrect them.
 
 `composerControlStore` separately owns next-run provider/model/Search state,
 visibility toggles, per-model control drafts, selected Assistant identity, and

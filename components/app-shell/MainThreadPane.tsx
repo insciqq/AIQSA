@@ -52,6 +52,7 @@ export type MainThreadPaneComposerActions = {
   }): void;
   rejectAttachments(fileNames: readonly string[]): void;
   removeAttachment(attachmentId: string): void;
+  retryAttachment?(attachmentId: string): void;
 };
 
 export type MainThreadPaneProps = {
@@ -288,6 +289,9 @@ export function MainThreadPane({
   );
   const attachmentWarningBlocksSend = attachmentWarnings.some(
     (warning) => warning.blocking
+  );
+  const attachmentLifecycleBlocksSend = attachments.some(
+    (attachment) => attachment.status !== undefined && attachment.status !== "ready"
   );
   const runWarningsByRunId = useMemo(() => {
     const warnings = new Map<string, string[]>();
@@ -798,6 +802,7 @@ export function MainThreadPane({
           onAttachmentCountLimitExceeded={composerActions.rejectAttachmentCount}
           onCancelEdit={composerActions.cancelMessageEdit}
           onRemoveAttachment={composerActions.removeAttachment}
+          onRetryAttachment={composerActions.retryAttachment}
           onRejectedFiles={(files) =>
             composerActions.rejectAttachments(files.map((file) => file.name))
           }
@@ -810,7 +815,9 @@ export function MainThreadPane({
             creatingChat ||
             editingMessagePending ||
             (!editingMessageId && (
-              attachmentWarningBlocksSend || attachmentLimitUsage.blocking
+              attachmentLifecycleBlocksSend ||
+              attachmentWarningBlocksSend ||
+              attachmentLimitUsage.blocking
             ))
           }
           stopDisabled={!currentRunId}

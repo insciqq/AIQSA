@@ -159,6 +159,7 @@ export type ShellComposerActions = {
   }): void;
   rejectAttachments(fileNames: readonly string[]): void;
   removeAttachment(attachmentId: string): void;
+  retryAttachment?(attachmentId: string): void;
 };
 
 export type ShellComposerView = {

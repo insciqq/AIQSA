@@ -85,7 +85,7 @@ function currentUserContent(
 
     const text = options.preview
       ? providerAttachmentPreviewText(attachment)
-      : providerAttachmentText(attachment, options.maxAttachmentTextChars ?? 20000);
+      : providerAttachmentText(attachment, options.maxAttachmentTextChars);
     if (text) {
       textParts.push(text);
     }

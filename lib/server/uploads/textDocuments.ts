@@ -1,3 +1,5 @@
+import { ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS } from "../../contracts/uploads";
+
 export type TextDocumentKind = "csv" | "html" | "json" | "markdown" | "text";
 
 export type TextDocumentExtractionResult = {
@@ -6,7 +8,7 @@ export type TextDocumentExtractionResult = {
   truncated: boolean;
 };
 
-export const DEFAULT_EXTRACTED_TEXT_MAX_CHARS = 20_000;
+export const DEFAULT_EXTRACTED_TEXT_MAX_CHARS = ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS;
 
 const htmlBlockTags =
   /<\/?(address|article|aside|blockquote|br|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)\b[^>]*>/gi;

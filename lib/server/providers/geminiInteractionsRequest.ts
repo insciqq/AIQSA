@@ -191,7 +191,7 @@ function latestUserContent(
     if (attachment.kind === "pdf" || attachment.kind === "document") {
       const attachmentText = options.preview
         ? providerAttachmentPreviewText(attachment)
-        : providerAttachmentText(attachment, options.maxAttachmentTextChars ?? 20_000);
+        : providerAttachmentText(attachment, options.maxAttachmentTextChars);
       if (attachmentText) {
         content.push({ text: attachmentText, type: "text" });
       }

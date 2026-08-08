@@ -18,6 +18,7 @@ import {
   Info,
   Loader2,
   Paperclip,
+  RotateCcw,
   Send,
   Square,
   TriangleAlert,
@@ -43,7 +44,7 @@ export type ComposerAttachmentWarning = {
 };
 
 const documentAttachmentAccept =
-  ".txt,.md,.markdown,.csv,.json,.html,.htm,text/plain,text/markdown,text/csv,application/json,text/html";
+  ".txt,.md,.markdown,.csv,.json,.html,.htm,.doc,.docx,.xlsx,.pptx,.rtf,.odt,text/plain,text/markdown,text/csv,application/json,text/html,application/msword,application/rtf,text/rtf,application/vnd.oasis.opendocument.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const imageAttachmentAccept = "image/png,image/jpeg,image/webp,image/gif";
 
 export type ComposerAttachmentPolicy = {
@@ -90,6 +91,7 @@ export type ComposerProps = {
   onCancelEdit?(): void;
   onRequestExpanded?(): void;
   onRemoveAttachment(id: string): void;
+  onRetryAttachment?(id: string): void;
   onRejectedFiles?(files: readonly File[]): void;
   onSend(): void;
   onStop?(): void;
@@ -158,6 +160,7 @@ export function Composer({
   onCancelEdit,
   onRequestExpanded,
   onRemoveAttachment,
+  onRetryAttachment,
   onRejectedFiles,
   onSend,
   onStop,
@@ -207,6 +210,9 @@ export function Composer({
     calculateAttachmentLimitUsage(attachments, undefined, undefined);
   const attachmentLimitBlocksSend =
     !editing && resolvedAttachmentLimitUsage.blocking;
+  const attachmentLifecycleBlocksSend = !editing && attachments.some(
+    (attachment) => attachment.status !== undefined && attachment.status !== "ready"
+  );
   const blockingAttachmentWarningIds = editing
     ? []
     : resolvedAttachmentWarnings
@@ -228,7 +234,8 @@ export function Composer({
     !streaming &&
     !uploading &&
     !editPending &&
-    !attachmentLimitBlocksSend;
+    !attachmentLimitBlocksSend &&
+    !attachmentLifecycleBlocksSend;
   const canUploadDroppedFiles =
     Boolean(onUploadFiles) && modelAcceptsAttachments && !disabled && !streaming && !uploading;
   const attachmentDisabled =
@@ -445,8 +452,21 @@ export function Composer({
         /\.(?:gif|jpe?g|png|webp)$/.test(name);
       const isPdf = file.type === "application/pdf" || name.endsWith(".pdf");
       const isDocument =
-        ["application/json", "text/csv", "text/html", "text/markdown", "text/plain"].includes(file.type) ||
-        /\.(?:csv|html?|json|md|markdown|txt)$/.test(name);
+        [
+          "application/json",
+          "application/msword",
+          "application/rtf",
+          "application/vnd.oasis.opendocument.text",
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "text/csv",
+          "text/html",
+          "text/markdown",
+          "text/plain",
+          "text/rtf"
+        ].includes(file.type) ||
+        /\.(?:csv|docx?|html?|json|md|markdown|odt|pptx|rtf|txt|xlsx)$/.test(name);
       const accepted = isImage
         ? attachmentPolicy.images
         : isPdf
@@ -637,14 +657,54 @@ export function Composer({
               >
               {attachments.map((attachment) => {
                 const warningEntry = attachmentWarningsById.get(attachment.id);
+                const lifecycleStatus = attachment.status ?? "ready";
+                const lifecycleMessage = lifecycleStatus === "processing"
+                  ? "Processing…"
+                  : lifecycleStatus === "failed"
+                    ? ({
+                        animated_gif_not_supported: "Animated GIFs are not supported.",
+                        attachment_checksum_mismatch: "The stored file failed its integrity check.",
+                        attachment_object_read_failed: "The stored file could not be read.",
+                        attachment_object_size_mismatch: "The stored file failed its size check.",
+                        attachment_processing_failed: "File processing failed.",
+                        parser_invalid_output: "The document parser returned invalid output.",
+                        parser_output_too_large: "The parsed document is too large.",
+                        parser_rejected: "The document parser rejected this file.",
+                        parser_timeout: "Document processing timed out.",
+                        parser_unavailable: "The required document parser is unavailable.",
+                        pdf_extraction_failed: "PDF text extraction failed.",
+                        pdf_extraction_timeout: "PDF text extraction timed out.",
+                        pdf_invalid: "This PDF is damaged or invalid.",
+                        pdf_page_limit_exceeded: "This PDF exceeds the page limit.",
+                        pdf_password_required: "Password-protected PDFs are not supported."
+                      } as Record<string, string>)[attachment.processingErrorCode ?? ""] ??
+                      "This file could not be processed."
+                    : "Ready";
                 const attachmentSummary = (
                   <>
-                    {attachment.kind === "image" ? (
+                    {lifecycleStatus === "processing" ? (
+                      <Loader2 className="size-3.5 shrink-0 animate-spin text-proof" aria-hidden="true" />
+                    ) : attachment.kind === "image" ? (
                       <ImageIcon className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
                     ) : (
                       <FileText className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
                     )}
-                    <span className="min-w-0 flex-1 truncate">{attachment.fileName}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{attachment.fileName}</span>
+                      <span
+                        className={[
+                          "block truncate text-xs leading-4",
+                          lifecycleStatus === "failed"
+                            ? "text-critical"
+                            : lifecycleStatus === "processing"
+                              ? "text-proof"
+                              : "text-ink-muted"
+                        ].join(" ")}
+                        role={lifecycleStatus === "processing" ? "status" : undefined}
+                      >
+                        {lifecycleMessage}
+                      </span>
+                    </span>
                     {warningEntry ? (
                       <span className="inline-flex shrink-0 items-center gap-1 text-caution">
                         <TriangleAlert className="size-3.5" aria-hidden="true" />
@@ -660,9 +720,19 @@ export function Composer({
                       "grid min-h-control-sm max-w-[min(20rem,100%)] grid-cols-[minmax(0,1fr)_auto] items-start rounded-control text-xs text-ink-secondary [@media(max-height:42rem)]:!min-h-8",
                       warningEntry
                         ? "bg-caution/[0.07] ring-1 ring-inset ring-caution/20"
-                        : "bg-control-selected"
+                        : lifecycleStatus === "failed"
+                          ? "bg-critical/[0.07] ring-1 ring-inset ring-critical/20"
+                          : lifecycleStatus === "processing"
+                            ? "bg-proof/[0.06] ring-1 ring-inset ring-proof/20"
+                            : "bg-control-selected"
                     ].join(" ")}
-                    data-attachment-status={warningEntry?.warning.label === "No text" ? "no_text" : warningEntry ? "partial" : undefined}
+                    data-attachment-status={lifecycleStatus === "ready"
+                      ? warningEntry?.warning.label === "No text"
+                        ? "no_text"
+                        : warningEntry
+                          ? "partial"
+                          : "ready"
+                      : lifecycleStatus}
                     data-testid="attachment-chip"
                     key={attachment.id}
                     title={attachment.fileName}
@@ -688,15 +758,28 @@ export function Composer({
                         {attachmentSummary}
                       </div>
                     )}
-                    <button
-                      className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
-                      type="button"
-                      aria-label={`Remove ${attachment.fileName}`}
-                      title={`Remove ${attachment.fileName}`}
-                      onClick={() => onRemoveAttachment(attachment.id)}
-                    >
-                      <X className="size-3" aria-hidden="true" />
-                    </button>
+                    <div className="flex shrink-0 items-center">
+                      {lifecycleStatus === "failed" && onRetryAttachment ? (
+                        <button
+                          className="inline-flex h-11 items-center gap-1 rounded-control px-2 text-xs font-medium text-critical hover:bg-critical/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:h-8 [@media(hover:none)]:!h-11 [@media(pointer:coarse)]:!h-11"
+                          type="button"
+                          aria-label={`Retry ${attachment.fileName}`}
+                          onClick={() => onRetryAttachment(attachment.id)}
+                        >
+                          <RotateCcw className="size-3" aria-hidden="true" />
+                          Retry
+                        </button>
+                      ) : null}
+                      <button
+                        className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+                        type="button"
+                        aria-label={`Remove ${attachment.fileName}`}
+                        title={`Remove ${attachment.fileName}`}
+                        onClick={() => onRemoveAttachment(attachment.id)}
+                      >
+                        <X className="size-3" aria-hidden="true" />
+                      </button>
+                    </div>
                   </li>
                 );
               })}

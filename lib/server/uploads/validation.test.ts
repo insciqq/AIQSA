@@ -3,6 +3,54 @@ import { defaultUploadMaxBytes, validateUpload } from "./validation";
 
 const magicFixtures = [
   {
+    bytes: Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("[Content_Types].xml word/document.xml")
+    ]),
+    fileName: "notes.docx",
+    kind: "document",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  },
+  {
+    bytes: Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("[Content_Types].xml xl/workbook.xml")
+    ]),
+    fileName: "rows.xlsx",
+    kind: "document",
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  },
+  {
+    bytes: Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("[Content_Types].xml ppt/presentation.xml")
+    ]),
+    fileName: "slides.pptx",
+    kind: "document",
+    mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  },
+  {
+    bytes: Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
+    fileName: "legacy.doc",
+    kind: "document",
+    mimeType: "application/msword"
+  },
+  {
+    bytes: Buffer.from("{\\rtf1 document}"),
+    fileName: "legacy.rtf",
+    kind: "document",
+    mimeType: "application/rtf"
+  },
+  {
+    bytes: Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("application/vnd.oasis.opendocument.text content.xml")
+    ]),
+    fileName: "notes.odt",
+    kind: "document",
+    mimeType: "application/vnd.oasis.opendocument.text"
+  },
+  {
     bytes: Buffer.from("%PDF-1.4\n"),
     fileName: "brief.pdf",
     kind: "pdf",
@@ -74,7 +122,13 @@ describe("upload validation", () => {
       { fileName: "rows.csv", mimeType: "text/csv" },
       { fileName: "payload.json", mimeType: "application/json" },
       { fileName: "page.html", mimeType: "text/html" },
-      { fileName: "page.htm", mimeType: "text/html" }
+      { fileName: "page.htm", mimeType: "text/html" },
+      { fileName: "notes.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+      { fileName: "rows.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+      { fileName: "slides.pptx", mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+      { fileName: "legacy.doc", mimeType: "application/msword" },
+      { fileName: "legacy.rtf", mimeType: "text/rtf" },
+      { fileName: "notes.odt", mimeType: "application/vnd.oasis.opendocument.text" }
     ]) {
       const result = validateUpload({
         byteSize: 128,
@@ -88,14 +142,6 @@ describe("upload validation", () => {
   });
 
   it("rejects unsupported and oversized files", () => {
-    expect(
-      validateUpload({
-        byteSize: 128,
-        fileName: "notes.docx",
-        maxBytes: 1024,
-        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-      })
-    ).toEqual({ code: "unsupported_type", ok: false });
     expect(
       validateUpload({
         byteSize: 128,

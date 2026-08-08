@@ -1,11 +1,11 @@
 import {
-  PDF_PROCESSING_MAX_EXTRACTED_TEXT_CHARS,
+  ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS,
   PDF_PROCESSING_MAX_PAGES
 } from "../../contracts/uploads";
 
 export const DEFAULT_PDF_MAX_PAGES = PDF_PROCESSING_MAX_PAGES;
 export const DEFAULT_PDF_EXTRACTION_TIMEOUT_MS = 20_000;
-export const DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS = PDF_PROCESSING_MAX_EXTRACTED_TEXT_CHARS;
+export const DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS = ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS;
 export const DEFAULT_PDF_CHUNK_MAX_CHARS = 1_200;
 
 export const PDF_WORKER_RESOURCE_LIMITS = Object.freeze({
@@ -40,7 +40,7 @@ export function getPdfExtractionConfig(env: PdfExtractionEnvironment = process.e
   return {
     chunkMaxChars: DEFAULT_PDF_CHUNK_MAX_CHARS,
     extractedTextMaxChars: reductionOnlyPositiveInteger(
-      env.AIQSA_PDF_EXTRACTED_TEXT_MAX_CHARS,
+      env.AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS,
       DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS
     ),
     maxPages: reductionOnlyPositiveInteger(env.AIQSA_PDF_MAX_PAGES, DEFAULT_PDF_MAX_PAGES),

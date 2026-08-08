@@ -90,6 +90,7 @@ type ComposerSessionStore = {
   setEditingMessageId(value: string | null): void;
   startEdit(messageId: string, draft: string): void;
   transferSession(sourceKey: ComposerSessionKey, targetKey: ComposerSessionKey): boolean;
+  updateUploadedAttachment(key: ComposerSessionKey, attachment: ComposerAttachment): boolean;
   updateSession(
     key: ComposerSessionKey,
     update: ComposerSessionPatchUpdate
@@ -286,6 +287,9 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       session.pendingSend ||
       session.pendingUploadGenerations.length > 0 ||
       session.editingMessageId ||
+      session.attachments.some(
+        (attachment) => attachment.status !== undefined && attachment.status !== "ready"
+      ) ||
       (!session.draft.trim() && session.attachments.length === 0)
     ) {
       return null;
@@ -575,6 +579,26 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     set({
       activeSessionKey: state.activeSessionKey === sourceKey ? targetKey : state.activeSessionKey,
       sessionsByKey
+    });
+    return true;
+  },
+  updateUploadedAttachment(key, attachment) {
+    const state = get();
+    const session = state.sessionsByKey[key];
+    if (!session || session.pendingSend) return false;
+    const index = session.attachments.findIndex((candidate) => candidate.id === attachment.id);
+    if (index < 0) return false;
+    const attachments = [...session.attachments];
+    attachments[index] = attachment;
+    set({
+      sessionsByKey: {
+        ...state.sessionsByKey,
+        [key]: {
+          ...session,
+          attachments,
+          revision: session.revision + 1
+        }
+      }
     });
     return true;
   },

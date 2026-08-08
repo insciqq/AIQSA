@@ -1,4 +1,5 @@
 import { createUploadHandler } from "@/lib/server/uploads/handlers";
+import { getDefaultAttachmentProcessingCoordinator } from "@/lib/server/uploads/defaultProcessing";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { prisma } from "@/lib/server/prisma";
@@ -17,6 +18,10 @@ export const POST = createUploadHandler({
         kind: input.kind,
         metadata: input.metadata as Prisma.InputJsonValue,
         mimeType: input.mimeType,
+        processingErrorCode: input.processingErrorCode,
+        processingJob: {
+          create: {}
+        },
         status: input.status,
         storageKey: input.storageKey,
         userId: input.userId
@@ -32,8 +37,10 @@ export const POST = createUploadHandler({
       kind: attachment.kind as "document" | "image" | "pdf",
       metadata: attachment.metadata,
       mimeType: attachment.mimeType,
-      status: attachment.status,
-      storageKey: attachment.storageKey
+      processingErrorCode: null,
+      status: "processing",
+      storageKey: attachment.storageKey,
+      updatedAt: attachment.updatedAt
     };
   },
   deletionOutbox: {
@@ -55,6 +62,9 @@ export const POST = createUploadHandler({
         }
       });
     }
+  },
+  kickProcessing() {
+    getDefaultAttachmentProcessingCoordinator().kick();
   },
   resolveAuth: resolveRequestAuth,
   storage: createS3StorageAdapter()

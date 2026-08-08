@@ -488,7 +488,7 @@ describe("PDF extraction", () => {
       workerData: {
         config: {
           chunkMaxChars: 1_200,
-          extractedTextMaxChars: 20_000,
+          extractedTextMaxChars: 1_000_000,
           maxPages: 500
         },
         unpdfModulePath: expect.stringMatching(/unpdf[/\\]dist[/\\]index\.cjs$/)

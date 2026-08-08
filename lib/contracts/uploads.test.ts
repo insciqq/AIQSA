@@ -78,7 +78,7 @@ describe("upload wire decoders", () => {
     ).toBeNull();
     expect(
       decodePdfProcessing({
-        extractedCharacterCount: 20_001,
+        extractedCharacterCount: 1_000_001,
         pageCount: 1,
         pagesProcessed: 1,
         status: "complete"
@@ -215,6 +215,45 @@ describe("upload wire decoders", () => {
         }
       })
     ).toBeNull();
+  });
+
+  it("accepts only closed lifecycle states and bounded safe processing codes", () => {
+    expect(decodeUploadAttachmentResponse({
+      attachment: {
+        fileName: "report.docx",
+        id: "attachment-1",
+        kind: "document",
+        processingErrorCode: "parser_unavailable",
+        status: "failed",
+        updatedAt: "2026-08-08T00:00:00.000Z"
+      }
+    })).toEqual({
+      attachment: {
+        fileName: "report.docx",
+        id: "attachment-1",
+        kind: "document",
+        processingErrorCode: "parser_unavailable",
+        status: "failed",
+        updatedAt: "2026-08-08T00:00:00.000Z"
+      }
+    });
+    expect(decodeUploadAttachmentResponse({
+      attachment: {
+        fileName: "report.docx",
+        id: "attachment-1",
+        kind: "document",
+        status: "queued"
+      }
+    })).toBeNull();
+    expect(decodeUploadAttachmentResponse({
+      attachment: {
+        fileName: "report.docx",
+        id: "attachment-1",
+        kind: "document",
+        processingErrorCode: "private/path",
+        status: "failed"
+      }
+    })).toBeNull();
   });
 
   it("accepts only known safe upload failures", () => {

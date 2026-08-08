@@ -9,6 +9,15 @@ export async function register(): Promise<void> {
   );
   startDefaultRunRecoveryScheduler();
   try {
+    const { getDefaultAttachmentProcessingCoordinator } = await import(
+      "./lib/server/uploads/defaultProcessing"
+    );
+    getDefaultAttachmentProcessingCoordinator();
+  } catch {
+    // Attachment processing is feature-local. Startup remains available so
+    // status/retry endpoints can expose a durable failure instead of crashing.
+  }
+  try {
     const { getDefaultMcpActivationCoordinator } = await import(
       "./lib/server/mcp/defaultActivation"
     );
