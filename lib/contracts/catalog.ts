@@ -107,11 +107,11 @@ export type CatalogSearchStrategyKind = CatalogSearchStrategy["kind"];
 
 export type CatalogDefaults = {
   controlValues: Record<string, unknown>;
-  hasPersonalModelDefault?: boolean;
+  hasPersonalModelDefault: boolean;
   modelId: string;
-  modelPreferenceSource?: "none" | "organization" | "personal";
-  organizationModelDefault?: { modelId: string; provider: string } | null;
-  personalModelDefault?: { modelId: string; provider: string } | null;
+  modelPreferenceSource: "none" | "organization" | "personal";
+  organizationModelDefault: { modelId: string; provider: string } | null;
+  personalModelDefault: { modelId: string; provider: string } | null;
   organizationSearchPlan?: SearchPlan;
   provider: string;
   searchStrategyId: string;
@@ -421,15 +421,12 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     !isRecord(defaults) ||
     !isRecord(defaults.controlValues) ||
     typeof defaults.modelId !== "string" ||
-    (defaults.hasPersonalModelDefault !== undefined &&
-      typeof defaults.hasPersonalModelDefault !== "boolean") ||
-    (defaults.modelPreferenceSource !== undefined && defaults.modelPreferenceSource !== "none" &&
+    typeof defaults.hasPersonalModelDefault !== "boolean" ||
+    (defaults.modelPreferenceSource !== "none" &&
       defaults.modelPreferenceSource !== "organization" &&
       defaults.modelPreferenceSource !== "personal") ||
-    (defaults.organizationModelDefault !== undefined &&
-      !modelDefaultSelection(defaults.organizationModelDefault)) ||
-    (defaults.personalModelDefault !== undefined &&
-      !modelDefaultSelection(defaults.personalModelDefault)) ||
+    !modelDefaultSelection(defaults.organizationModelDefault) ||
+    !modelDefaultSelection(defaults.personalModelDefault) ||
     typeof defaults.provider !== "string" ||
     !nonEmptyString(defaults.searchStrategyId) ||
     typeof defaults.showCitations !== "boolean" ||
@@ -465,15 +462,11 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     ...(attachmentLimits ? { attachmentLimits } : {}),
     defaults: {
       controlValues: defaults.controlValues,
-      hasPersonalModelDefault: defaults.hasPersonalModelDefault ?? Boolean(defaults.modelId),
+      hasPersonalModelDefault: defaults.hasPersonalModelDefault,
       modelId: defaults.modelId,
-      modelPreferenceSource: defaults.modelPreferenceSource ??
-        (defaults.modelId ? "personal" : "none"),
-      organizationModelDefault: defaults.organizationModelDefault ?? null,
-      personalModelDefault: defaults.personalModelDefault ??
-        (defaults.modelId && defaults.provider
-          ? { modelId: defaults.modelId, provider: defaults.provider }
-          : null),
+      modelPreferenceSource: defaults.modelPreferenceSource,
+      organizationModelDefault: defaults.organizationModelDefault,
+      personalModelDefault: defaults.personalModelDefault,
       organizationSearchPlan: decodedOrganizationSearchPlan.plan,
       provider: defaults.provider,
       searchStrategyId: defaults.searchStrategyId,

@@ -11,9 +11,13 @@ function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
   return {
     defaultControlValues: {},
     defaultModelId: "gpt-5.5",
-    organizationSearchPlan: { mode: "all_selected", optionIds: [] },
     defaultProvider: "openai",
     defaultSearchStrategyId: "search-disabled",
+    hasPersonalModelDefault: true,
+    modelPreferenceSource: "personal",
+    organizationModelDefault: null,
+    organizationSearchPlan: { mode: "all_selected", optionIds: [] },
+    personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
     searchPreferenceSource: "personal",
     showCitations: true,
     showReasoningBlocks: false,
@@ -288,7 +292,11 @@ describe("settings mutation coordinator", () => {
             reasoningEffort: "high"
           }
         },
+        hasPersonalModelDefault: true,
         modelId: "gpt-5.5",
+        modelPreferenceSource: "personal",
+        organizationModelDefault: null,
+        personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,

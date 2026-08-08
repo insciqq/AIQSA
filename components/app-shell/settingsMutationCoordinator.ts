@@ -169,14 +169,10 @@ function reconciledPatch(
   if (Object.prototype.hasOwnProperty.call(sent, "personalModelDefault")) {
     patch.modelId = settings.defaultModelId;
     patch.provider = settings.defaultProvider;
-    patch.hasPersonalModelDefault = settings.hasPersonalModelDefault ??
-      Boolean(settings.personalModelDefault);
-    patch.modelPreferenceSource = settings.modelPreferenceSource ??
-      (settings.personalModelDefault ? "personal" : settings.organizationModelDefault
-        ? "organization"
-        : "none");
-    patch.organizationModelDefault = settings.organizationModelDefault ?? null;
-    patch.personalModelDefault = settings.personalModelDefault ?? null;
+    patch.hasPersonalModelDefault = settings.hasPersonalModelDefault;
+    patch.modelPreferenceSource = settings.modelPreferenceSource;
+    patch.organizationModelDefault = settings.organizationModelDefault;
+    patch.personalModelDefault = settings.personalModelDefault;
   }
   if (Object.prototype.hasOwnProperty.call(sent, "searchStrategyId")) {
     patch.searchStrategyId = settings.defaultSearchStrategyId;

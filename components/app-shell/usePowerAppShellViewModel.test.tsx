@@ -52,7 +52,11 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
 const emptyCatalog: Catalog = {
   defaults: {
     controlValues: {},
+    hasPersonalModelDefault: true,
     modelId: "gpt-5.5",
+    modelPreferenceSource: "personal",
+    organizationModelDefault: null,
+    personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
     provider: "openai",
     searchStrategyId: "search-disabled",
     showCitations: true,
@@ -282,7 +286,11 @@ describe("usePowerAppShellViewModel", () => {
     const catalog: Catalog = {
       defaults: {
         controlValues: {},
+        hasPersonalModelDefault: true,
         modelId: "gpt-5.5",
+        modelPreferenceSource: "personal",
+        organizationModelDefault: null,
+        personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,
@@ -363,7 +371,14 @@ describe("usePowerAppShellViewModel", () => {
     const catalog: Catalog = {
       defaults: {
         controlValues: {},
+        hasPersonalModelDefault: true,
         modelId: "fake-model-id",
+        modelPreferenceSource: "personal",
+        organizationModelDefault: null,
+        personalModelDefault: {
+          modelId: "fake-model-id",
+          provider: "fake-connection-id"
+        },
         provider: "fake-connection-id",
         searchStrategyId: "search-disabled",
         showCitations: true,
@@ -424,7 +439,11 @@ describe("usePowerAppShellViewModel", () => {
     const catalog: Catalog = {
       defaults: {
         controlValues: {},
+        hasPersonalModelDefault: true,
         modelId: "gpt-5.5",
+        modelPreferenceSource: "personal",
+        organizationModelDefault: null,
+        personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,

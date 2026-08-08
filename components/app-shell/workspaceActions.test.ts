@@ -83,7 +83,11 @@ function useWorkspaceActionsForTest(input: {
   const catalog = {
     defaults: {
       controlValues: {},
+      hasPersonalModelDefault: true,
       modelId: "gpt-5.5",
+      modelPreferenceSource: "personal",
+      organizationModelDefault: null,
+      personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
       provider: "openai",
       searchStrategyId: "search-disabled",
       showCitations: true,
@@ -461,7 +465,11 @@ describe("workspace actions", () => {
             temperature: "0.25"
           }
         },
+        hasPersonalModelDefault: true,
         modelId: "catalog-startup",
+        modelPreferenceSource: "personal",
+        organizationModelDefault: null,
+        personalModelDefault: { modelId: "catalog-startup", provider: "openai" },
         provider: "openai",
         searchStrategyId: "search-disabled",
         showCitations: true,

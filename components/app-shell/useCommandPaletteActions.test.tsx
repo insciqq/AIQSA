@@ -105,7 +105,11 @@ describe("useCommandPaletteActions", () => {
     const catalog: Catalog = {
       defaults: {
         controlValues: {},
+        hasPersonalModelDefault: true,
         modelId: "gpt-5.5",
+        modelPreferenceSource: "personal",
+        organizationModelDefault: null,
+        personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
         provider: "openai",
         searchStrategyId: "openai-native-web-search",
         showCitations: true,

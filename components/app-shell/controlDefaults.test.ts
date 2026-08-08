@@ -48,7 +48,11 @@ function catalog(models: CatalogModel[]): Catalog {
   return {
     defaults: {
       controlValues: {},
+      hasPersonalModelDefault: true,
       modelId: "default-model",
+      modelPreferenceSource: "personal",
+      organizationModelDefault: null,
+      personalModelDefault: { modelId: "default-model", provider: "openai" },
       provider: "openai",
       searchStrategyId: "search-disabled",
       showCitations: true,

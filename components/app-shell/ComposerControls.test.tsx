@@ -53,7 +53,11 @@ const deepModel = catalogModel("deep-model", "Deep Research");
 const catalog: Catalog = {
   defaults: {
     controlValues: {},
+    hasPersonalModelDefault: true,
     modelId: balancedModel.modelId,
+    modelPreferenceSource: "personal",
+    organizationModelDefault: null,
+    personalModelDefault: { modelId: balancedModel.modelId, provider: "fake" },
     provider: "fake",
     searchStrategyId: "search-disabled",
     showCitations: true,

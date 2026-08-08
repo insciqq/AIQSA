@@ -108,8 +108,15 @@ function mixedSearchCatalog(
   return {
     defaults: {
       controlValues: {},
+      hasPersonalModelDefault: true,
       modelId: mixedSearchModel.modelId,
+      modelPreferenceSource: "personal",
+      organizationModelDefault: null,
       organizationSearchPlan: retainedPlan,
+      personalModelDefault: {
+        modelId: mixedSearchModel.modelId,
+        provider: mixedSearchModel.provider
+      },
       provider: mixedSearchModel.provider,
       searchPlan: retainedPlan,
       searchPreferenceSource,

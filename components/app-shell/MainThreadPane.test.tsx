@@ -53,7 +53,11 @@ const model: CatalogModel = {
 const catalog: Catalog = {
   defaults: {
     controlValues: {},
+    hasPersonalModelDefault: true,
     modelId: "fake-qsa",
+    modelPreferenceSource: "personal",
+    organizationModelDefault: null,
+    personalModelDefault: { modelId: "fake-qsa", provider: "fake" },
     provider: "fake",
     searchStrategyId: "search-disabled",
     showCitations: true,

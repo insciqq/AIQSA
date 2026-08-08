@@ -10,8 +10,15 @@ function validResponse(): CatalogResponse {
     catalog: {
       defaults: {
         controlValues: {},
+        hasPersonalModelDefault: true,
         modelId: "deployment-test",
+        modelPreferenceSource: "personal",
+        organizationModelDefault: null,
         organizationSearchPlan: { mode: "all_selected", optionIds: [] },
+        personalModelDefault: {
+          modelId: "deployment-test",
+          provider: "connection-test"
+        },
         provider: "connection-test",
         searchStrategyId: "search-disabled",
         searchPreferenceSource: "personal",
@@ -94,6 +101,43 @@ describe("catalog wire contract", () => {
         }
       ]
     });
+  });
+
+  it("preserves a null personal default when the effective model is the organization default", () => {
+    const response = validResponse();
+    response.catalog.defaults.hasPersonalModelDefault = false;
+    response.catalog.defaults.modelPreferenceSource = "organization";
+    response.catalog.defaults.organizationModelDefault = {
+      modelId: "deployment-test",
+      provider: "connection-test"
+    };
+    response.catalog.defaults.personalModelDefault = null;
+
+    expect(decodeCatalogResponse(response)?.defaults).toMatchObject({
+      hasPersonalModelDefault: false,
+      modelId: "deployment-test",
+      modelPreferenceSource: "organization",
+      organizationModelDefault: {
+        modelId: "deployment-test",
+        provider: "connection-test"
+      },
+      personalModelDefault: null,
+      provider: "connection-test"
+    });
+  });
+
+  it.each([
+    "hasPersonalModelDefault",
+    "modelPreferenceSource",
+    "organizationModelDefault",
+    "personalModelDefault"
+  ])("rejects a catalog that omits current model-default provenance: %s", (field) => {
+    const response = validResponse() as unknown as {
+      catalog: { defaults: Record<string, unknown> };
+    };
+    delete response.catalog.defaults[field];
+
+    expect(decodeCatalogResponse(response)).toBeNull();
   });
 
   it("strictly decodes privacy-safe client-tool Search compatibility", () => {

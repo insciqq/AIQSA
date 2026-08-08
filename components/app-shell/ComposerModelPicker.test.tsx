@@ -87,4 +87,54 @@ describe("composer model picker default facts", () => {
     expect(makeDefault).toHaveBeenCalledTimes(1);
     expect(useOrganization).toHaveBeenCalledTimes(1);
   });
+
+  it("offers to make the organization default personal when no personal default exists", () => {
+    const organization = model("model-organization", "Organization model");
+    const catalog: Catalog = {
+      defaults: {
+        controlValues: {},
+        hasPersonalModelDefault: false,
+        modelId: organization.modelId,
+        modelPreferenceSource: "organization",
+        organizationModelDefault: {
+          modelId: organization.modelId,
+          provider: organization.provider
+        },
+        personalModelDefault: null,
+        provider: organization.provider,
+        searchStrategyId: "search-disabled",
+        showCitations: true,
+        showReasoningBlocks: false,
+        showToolActivity: true
+      },
+      models: [organization],
+      providers: [{ id: "connection-a", models: [organization.modelId], name: "Provider A" }],
+      searchStrategies: [{ displayName: "No Search", kind: "none", strategyId: "search-disabled" }]
+    };
+    const makeDefault = vi.fn();
+
+    render(<ComposerModelPicker
+      catalog={catalog}
+      catalogUnavailable={false}
+      currentModel={organization}
+      disabled={false}
+      onMakeCurrentDefault={makeDefault}
+      onOpenChange={vi.fn()}
+      onSelectModel={vi.fn()}
+      onUseOrganizationDefault={vi.fn()}
+      open
+      selectedModelId={organization.modelId}
+      selectedProvider={organization.provider}
+      selectedProviderName="Provider A"
+      streaming={false}
+    />);
+
+    expect(screen.getByText("Current")).toBeInTheDocument();
+    expect(screen.getByText("Organization default")).toBeInTheDocument();
+    expect(screen.queryByText("My default")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use organization default" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Make current my default" }));
+    expect(makeDefault).toHaveBeenCalledTimes(1);
+  });
 });
