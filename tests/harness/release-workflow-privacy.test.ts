@@ -39,6 +39,36 @@ describe("public release privacy contract", () => {
     expect(workflow).toContain("expected_platforms=(linux/amd64 linux/arm64)");
   });
 
+  it("publishes the pgvector Postgres image with separate verified multi-platform digests", () => {
+    const workflow = readFileSync(path.join(root, ".github/workflows/release.yml"), "utf8");
+    const postgresDockerfile = readFileSync(
+      path.join(root, "ops/postgres-pgvector.Dockerfile"),
+      "utf8"
+    );
+
+    expect(workflow).toContain("POSTGRES_IMAGE: ghcr.io/insciqq/aiqsa-postgres");
+    expect(workflow).toContain("POSTGRES_COMPONENT_TAG: 16.14-pgvector0.8.5");
+    expect(workflow).toContain("file: ops/postgres-pgvector.Dockerfile");
+    expect(workflow).toContain("name: postgres-digests-${{ matrix.id }}");
+    expect(workflow).toContain("pattern: postgres-digests-*");
+    expect(workflow).toContain("${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG}-${VERSION}");
+    expect(workflow).toContain("Immutable Postgres digest: ${POSTGRES_IMAGE}@${POSTGRES_DIGEST}");
+    expect(workflow).toContain(
+      "Published Postgres manifest platforms are not exactly linux/amd64 and linux/arm64."
+    );
+
+    expect(postgresDockerfile).toContain(
+      "postgres:16.14-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229"
+    );
+    expect(postgresDockerfile).toContain("ARG PGVECTOR_VERSION=0.8.5");
+    expect(postgresDockerfile).toContain(
+      "ARG PGVECTOR_SOURCE_SHA256=6f88a5cbdde31666f4b6c1a6b75c51dcbeffe58f9a7d2b26e502d5a6e5e14d44"
+    );
+    expect(postgresDockerfile).toContain('echo "${PGVECTOR_SOURCE_SHA256}  pgvector.tar.gz" | sha256sum -c -');
+    expect(postgresDockerfile).toContain('make -C "pgvector-${PGVECTOR_VERSION}" OPTFLAGS=""');
+    expect(postgresDockerfile.match(/^FROM /gmu)).toHaveLength(2);
+  });
+
   it("keeps agent-only files out of every Docker stage context", () => {
     const dockerignore = readFileSync(path.join(root, ".dockerignore"), "utf8");
     const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");

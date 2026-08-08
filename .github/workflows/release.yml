@@ -13,6 +13,8 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/insciqq/aiqsa
+  POSTGRES_IMAGE: ghcr.io/insciqq/aiqsa-postgres
+  POSTGRES_COMPONENT_TAG: 16.14-pgvector0.8.5
 
 jobs:
   prepare:
@@ -130,8 +132,42 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+      - name: Build and publish Postgres platform image by digest
+        id: postgres_image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ops/postgres-pgvector.Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.POSTGRES_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=postgres-release-${{ matrix.id }}
+          cache-to: type=gha,mode=max,scope=postgres-release-${{ matrix.id }}
+
+      - name: Export Postgres platform digest
+        env:
+          DIGEST: ${{ steps.postgres_image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Build returned an invalid Postgres image digest." >&2
+            exit 1
+          fi
+          digest_dir="${RUNNER_TEMP}/postgres-digests"
+          mkdir -p "${digest_dir}"
+          touch "${digest_dir}/${DIGEST#sha256:}"
+
+      - name: Upload Postgres platform digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: postgres-digests-${{ matrix.id }}
+          path: ${{ runner.temp }}/postgres-digests/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
   publish:
-    name: Publish multi-platform image and GitHub Release
+    name: Publish multi-platform images and GitHub Release
     needs:
       - prepare
       - build
@@ -152,6 +188,13 @@ jobs:
         with:
           pattern: digests-*
           path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Download Postgres platform digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: postgres-digests-*
+          path: ${{ runner.temp }}/postgres-digests
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -248,16 +291,74 @@ jobs:
 
           echo "digest=${manifest_digest}" >> "${GITHUB_OUTPUT}"
 
+      - name: Create and verify Postgres multi-platform manifest
+        id: postgres_manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest_dir="${RUNNER_TEMP}/postgres-digests"
+          shopt -s nullglob
+          digest_files=("${digest_dir}"/*)
+          if (( ${#digest_files[@]} != 2 )); then
+            echo "Expected exactly two Postgres platform digests, found ${#digest_files[@]}." >&2
+            exit 1
+          fi
+
+          sources=()
+          for digest_file in "${digest_files[@]}"; do
+            digest="${digest_file##*/}"
+            if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "Downloaded an invalid Postgres platform digest artifact." >&2
+              exit 1
+            fi
+            sources+=("${POSTGRES_IMAGE}@sha256:${digest}")
+          done
+
+          component_ref="${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG}"
+          release_ref="${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG}-${VERSION}"
+          docker buildx imagetools create \
+            --tag "${component_ref}" \
+            --tag "${release_ref}" \
+            "${sources[@]}"
+
+          manifest_json="$(docker buildx imagetools inspect --raw "${release_ref}")"
+          manifest_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${release_ref}" | jq -er '.digest')"
+          if [[ ! "${manifest_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Published Postgres manifest has an invalid digest." >&2
+            exit 1
+          fi
+
+          component_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${component_ref}" | jq -er '.digest')"
+          if [[ "${component_digest}" != "${manifest_digest}" ]]; then
+            echo "Published Postgres tags do not resolve to one manifest digest." >&2
+            exit 1
+          fi
+
+          mapfile -t platforms < <(
+            jq -r '.manifests[] | select(.platform.os != "unknown") | "\(.platform.os)/\(.platform.architecture)"' \
+              <<< "${manifest_json}" | sort
+          )
+          expected_platforms=(linux/amd64 linux/arm64)
+          if [[ "${platforms[*]}" != "${expected_platforms[*]}" ]]; then
+            echo "Published Postgres manifest platforms are not exactly linux/amd64 and linux/arm64." >&2
+            exit 1
+          fi
+
+          echo "digest=${manifest_digest}" >> "${GITHUB_OUTPUT}"
+
       - name: Create GitHub Release
         env:
           DIGEST: ${{ steps.manifest.outputs.digest }}
           GH_TOKEN: ${{ github.token }}
+          POSTGRES_DIGEST: ${{ steps.postgres_manifest.outputs.digest }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.prepare.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          notes="Docker image: ${IMAGE}:${VERSION}"$'\n\n'"Immutable digest: ${IMAGE}@${DIGEST}"
+          notes="Docker image: ${IMAGE}:${VERSION}"$'\n'"Immutable digest: ${IMAGE}@${DIGEST}"$'\n\n'"Postgres image: ${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG}-${VERSION}"$'\n'"Immutable Postgres digest: ${POSTGRES_IMAGE}@${POSTGRES_DIGEST}"
           release_flags=(--verify-tag --generate-notes --title "AIQSA ${TAG}" --notes "${notes}")
           if [[ "${TAG}" == *-* ]]; then
             release_flags+=(--prerelease)
