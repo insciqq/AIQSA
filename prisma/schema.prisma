@@ -153,6 +153,8 @@ model User {
   chats                         Chat[]
   folders                       Folder[]
   groups                        UserGroup[]
+  knowledgeBasePublications     KnowledgeBasePublication[]         @relation("KnowledgeBasePublicationPublisher")
+  knowledgeBases                KnowledgeBase[]                    @relation("KnowledgeBaseOwner")
   mcpGrants                     McpGrant[]
   mcpActivationJobs             McpActivationJob[]
   mcpOAuthConnections           McpOAuthConnection[]
@@ -345,6 +347,7 @@ model Group {
   assistantPublications         AssistantPublication[]
   authAccessRuleDefaults        AuthAccessRuleGroup[]
   authInviteDefaults            AuthInviteGroup[]
+  knowledgeBasePublications     KnowledgeBasePublication[]
   mcpGrants                     McpGrant[]
   providerCredentialAssignments ProviderGroupCredentialAssignment[]
   users                         UserGroup[]
@@ -449,18 +452,19 @@ model AccessGrant {
 }
 
 model Folder {
-  id            String   @id @default(uuid())
-  userId        String
-  parentId      String?
-  name          String
-  projectMemory String   @default("")
-  sortOrder     Int      @default(0)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  chats         Chat[]
-  children      Folder[] @relation("FolderHierarchy")
-  parent        Folder?  @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                   String   @id @default(uuid())
+  userId               String
+  parentId             String?
+  name                 String
+  projectMemory        String   @default("")
+  defaultKnowledgePlan Json?
+  sortOrder            Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  chats                Chat[]
+  children             Folder[] @relation("FolderHierarchy")
+  parent               Folder?  @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, parentId, name])
   @@index([parentId])
@@ -471,6 +475,28 @@ model Folder {
 enum AssistantPublicationScope {
   group
   installation
+}
+
+enum KnowledgeBasePublicationScope {
+  group
+  installation
+}
+
+enum KnowledgeDocumentIngestState {
+  queued
+  parsing
+  chunking
+  embedding
+  ready
+  failed
+}
+
+enum KnowledgeIndexGenerationStatus {
+  building
+  ready
+  active
+  retired
+  failed
 }
 
 model AssistantDefinition {
@@ -493,29 +519,30 @@ model AssistantDefinition {
 }
 
 model AssistantRevision {
-  id              String                 @id @default(uuid())
-  assistantId     String
-  revisionNumber  Int
-  schemaVersion   Int                    @default(1)
-  name            String
-  description     String                 @default("")
-  category        String?
-  avatar          Json
-  providerModelId String
-  systemPrompt    String
-  developerPrompt String?
-  runControls     Json                   @default("{}")
-  searchPlan      Json
-  mcpServerIds    String[]               @default([])
-  starterPrompts  String[]               @default([])
-  authorUserId    String?
-  createdAt       DateTime               @default(now())
-  assistant       AssistantDefinition    @relation("AssistantRevisions", fields: [assistantId], references: [id], onDelete: Restrict)
-  author          User?                  @relation("AssistantRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
-  currentFor      AssistantDefinition?   @relation("AssistantCurrentRevision")
-  modelRuns       ModelRun[]             @relation("ModelRunAssistantRevision")
-  providerModel   ProviderModel          @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
-  publications    AssistantPublication[] @relation("AssistantPublicationRevision")
+  id               String                 @id @default(uuid())
+  assistantId      String
+  revisionNumber   Int
+  schemaVersion    Int                    @default(1)
+  name             String
+  description      String                 @default("")
+  category         String?
+  avatar           Json
+  providerModelId  String
+  systemPrompt     String
+  developerPrompt  String?
+  runControls      Json                   @default("{}")
+  searchPlan       Json
+  mcpServerIds     String[]               @default([])
+  knowledgeBaseIds String[]               @default([])
+  starterPrompts   String[]               @default([])
+  authorUserId     String?
+  createdAt        DateTime               @default(now())
+  assistant        AssistantDefinition    @relation("AssistantRevisions", fields: [assistantId], references: [id], onDelete: Restrict)
+  author           User?                  @relation("AssistantRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  currentFor       AssistantDefinition?   @relation("AssistantCurrentRevision")
+  modelRuns        ModelRun[]             @relation("ModelRunAssistantRevision")
+  providerModel    ProviderModel          @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  publications     AssistantPublication[] @relation("AssistantPublicationRevision")
 
   @@unique([assistantId, revisionNumber])
   @@unique([assistantId, id])
@@ -555,43 +582,184 @@ model AssistantPin {
   @@index([assistantId])
 }
 
+model KnowledgeBase {
+  id                      String                     @id @default(uuid())
+  ownerUserId             String
+  name                    String
+  description             String                     @default("")
+  activeIndexGenerationId String?                    @unique
+  contentRevision         Int                        @default(0)
+  version                 Int                        @default(1)
+  archivedAt              DateTime?
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+  /// The composite relation proves the active generation belongs to this base.
+  activeIndexGeneration   KnowledgeIndexGeneration?  @relation("KnowledgeBaseActiveIndexGeneration", fields: [id, activeIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBase_activeIndexGeneration_fkey")
+  documents               KnowledgeDocument[]
+  indexGenerations        KnowledgeIndexGeneration[] @relation("KnowledgeBaseIndexGenerations")
+  owner                   User                       @relation("KnowledgeBaseOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  publications            KnowledgeBasePublication[]
+
+  @@unique([id, activeIndexGenerationId])
+  @@index([ownerUserId, archivedAt])
+}
+
+model KnowledgeIndexGeneration {
+  id                       String                         @id @default(uuid())
+  knowledgeBaseId          String
+  embeddingProviderModelId String
+  embeddingConfiguration   Json
+  vectorSpaceFingerprint   String                         @db.Char(64)
+  targetDimension          Int
+  chunkingProfileVersion   Int
+  indexedContentRevision   Int                            @default(0)
+  status                   KnowledgeIndexGenerationStatus @default(building)
+  readyAt                  DateTime?
+  activatedAt              DateTime?
+  retiredAt                DateTime?
+  failedAt                 DateTime?
+  createdAt                DateTime                       @default(now())
+  updatedAt                DateTime                       @updatedAt
+  activeFor                KnowledgeBase?                 @relation("KnowledgeBaseActiveIndexGeneration")
+  chunks                   KnowledgeChunk[]
+  embeddingProviderModel   ProviderModel                  @relation(fields: [embeddingProviderModelId], references: [id], onDelete: Restrict)
+  knowledgeBase            KnowledgeBase                  @relation("KnowledgeBaseIndexGenerations", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+
+  @@unique([knowledgeBaseId, id])
+  @@index([embeddingProviderModelId])
+  @@index([knowledgeBaseId, status])
+}
+
+model KnowledgeDocument {
+  id               String                     @id @default(uuid())
+  knowledgeBaseId  String
+  currentVersionId String?                    @unique
+  archivedAt       DateTime?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+  /// The composite relation proves the current pointer targets a version of this document.
+  currentVersion   KnowledgeDocumentVersion?  @relation("KnowledgeDocumentCurrentVersion", fields: [id, currentVersionId], references: [documentId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocument_currentVersion_fkey")
+  knowledgeBase    KnowledgeBase              @relation(fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+  versions         KnowledgeDocumentVersion[] @relation("KnowledgeDocumentVersions")
+
+  @@unique([knowledgeBaseId, id])
+  @@unique([id, currentVersionId])
+  @@index([knowledgeBaseId, archivedAt])
+}
+
+model KnowledgeDocumentVersion {
+  id                       String                       @id @default(uuid())
+  knowledgeBaseId          String
+  documentId               String
+  versionNumber            Int
+  fileName                 String
+  mimeType                 String
+  byteSize                 Int
+  checksum                 String                       @db.Char(64)
+  originalStorageKey       String
+  normalizedTextStorageKey String?
+  pageCount                Int?
+  visibleFromRevision      Int?
+  visibleUntilRevision     Int?
+  ingestState              KnowledgeDocumentIngestState @default(queued)
+  ingestErrorCode          String?                      @db.VarChar(64)
+  ingestClaimToken         String?                      @db.VarChar(128)
+  ingestClaimedAt          DateTime?
+  ingestAttemptCount       Int                          @default(0)
+  ingestNextAttemptAt      DateTime                     @default(now())
+  ingestStartedAt          DateTime?
+  ingestCompletedAt        DateTime?
+  createdAt                DateTime                     @default(now())
+  updatedAt                DateTime                     @updatedAt
+  chunks                   KnowledgeChunk[]
+  currentFor               KnowledgeDocument?           @relation("KnowledgeDocumentCurrentVersion")
+  document                 KnowledgeDocument            @relation("KnowledgeDocumentVersions", fields: [knowledgeBaseId, documentId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_document_fkey")
+
+  @@unique([documentId, versionNumber])
+  @@unique([documentId, id])
+  @@unique([knowledgeBaseId, id])
+  @@index([knowledgeBaseId, ingestState, ingestNextAttemptAt])
+  @@index([originalStorageKey])
+  @@index([normalizedTextStorageKey])
+  @@index([knowledgeBaseId, visibleFromRevision, visibleUntilRevision])
+}
+
+model KnowledgeChunk {
+  id                 String                   @id @default(uuid())
+  knowledgeBaseId    String
+  documentVersionId  String
+  indexGenerationId  String
+  chunkIndex         Int
+  page               Int
+  headingPath        String[]                 @default([])
+  text               String
+  embeddingDimension Int
+  embedding          Unsupported("vector")?
+  searchVector       Unsupported("tsvector")?
+  createdAt          DateTime                 @default(now())
+  documentVersion    KnowledgeDocumentVersion @relation(fields: [knowledgeBaseId, documentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeChunk_documentVersion_fkey")
+  indexGeneration    KnowledgeIndexGeneration @relation(fields: [knowledgeBaseId, indexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeChunk_indexGeneration_fkey")
+
+  @@unique([indexGenerationId, documentVersionId, chunkIndex])
+  @@index([documentVersionId])
+  @@index([knowledgeBaseId, indexGenerationId])
+}
+
+model KnowledgeBasePublication {
+  id                String                        @id @default(uuid())
+  knowledgeBaseId   String
+  scope             KnowledgeBasePublicationScope
+  groupId           String?
+  publishedByUserId String?
+  createdAt         DateTime                      @default(now())
+  updatedAt         DateTime                      @updatedAt
+  group             Group?                        @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  knowledgeBase     KnowledgeBase                 @relation(fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+  publishedBy       User?                         @relation("KnowledgeBasePublicationPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([knowledgeBaseId, groupId])
+  @@index([groupId])
+  @@index([knowledgeBaseId, scope])
+}
+
 model ProviderModel {
-  id                     String                         @id @default(uuid())
-  connectionId           String
-  templateKey            String?                        @unique
-  provider               String
-  modelId                String
-  displayName            String
-  modelClass             ProviderModelClass             @default(answer)
-  contextWindow          Int
-  inputTokenPriceMicros  Int                            @default(0)
-  outputTokenPriceMicros Int                            @default(0)
-  supportsVision         Boolean                        @default(false)
-  supportsPdf            Boolean                        @default(false)
-  supportsReasoning      Boolean                        @default(false)
-  supportsNativeSearch   Boolean                        @default(false)
-  enabled                Boolean                        @default(true)
-  draftConfig            Json                           @default("{}")
-  draftVersion           Int                            @default(1)
-  activeConfig           Json?
-  activeVersion          Int                            @default(0)
-  activatedAt            DateTime?
-  capabilities           Json
-  defaultParams          Json
-  createdAt              DateTime                       @default(now())
-  updatedAt              DateTime                       @updatedAt
-  accessGrants           AccessGrant[]
-  activeCredentialChecks ProviderModelCredentialCheck[]
-  assistantRevisions     AssistantRevision[]
-  connection             ProviderConnection             @relation(fields: [connectionId], references: [id], onDelete: Restrict)
-  draftChecks            ProviderDraftCheck[]
-  providerRunBindings    ProviderRunBinding[]
-  searchStrategies       SearchStrategy[]
-  searchRevisions        SearchIntegrationRevision[]
-  chatDefaults           Chat[]                         @relation("ChatDefaultProviderModel")
-  installationDefaults   ModelPolicy[]                  @relation("InstallationDefaultProviderModel")
-  systemUtilityRoles     SystemModelPolicy[]            @relation("SystemUtilityProviderModel")
-  userDefaults           UserSettings[]                 @relation("UserDefaultProviderModel")
+  id                        String                         @id @default(uuid())
+  connectionId              String
+  templateKey               String?                        @unique
+  provider                  String
+  modelId                   String
+  displayName               String
+  modelClass                ProviderModelClass             @default(answer)
+  contextWindow             Int
+  inputTokenPriceMicros     Int                            @default(0)
+  outputTokenPriceMicros    Int                            @default(0)
+  supportsVision            Boolean                        @default(false)
+  supportsPdf               Boolean                        @default(false)
+  supportsReasoning         Boolean                        @default(false)
+  supportsNativeSearch      Boolean                        @default(false)
+  enabled                   Boolean                        @default(true)
+  draftConfig               Json                           @default("{}")
+  draftVersion              Int                            @default(1)
+  activeConfig              Json?
+  activeVersion             Int                            @default(0)
+  activatedAt               DateTime?
+  capabilities              Json
+  defaultParams             Json
+  createdAt                 DateTime                       @default(now())
+  updatedAt                 DateTime                       @updatedAt
+  accessGrants              AccessGrant[]
+  activeCredentialChecks    ProviderModelCredentialCheck[]
+  assistantRevisions        AssistantRevision[]
+  connection                ProviderConnection             @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  draftChecks               ProviderDraftCheck[]
+  providerRunBindings       ProviderRunBinding[]
+  searchStrategies          SearchStrategy[]
+  searchRevisions           SearchIntegrationRevision[]
+  chatDefaults              Chat[]                         @relation("ChatDefaultProviderModel")
+  installationDefaults      ModelPolicy[]                  @relation("InstallationDefaultProviderModel")
+  knowledgeIndexGenerations KnowledgeIndexGeneration[]
+  systemUtilityRoles        SystemModelPolicy[]            @relation("SystemUtilityProviderModel")
+  userDefaults              UserSettings[]                 @relation("UserDefaultProviderModel")
 
   @@unique([connectionId, id])
   @@index([provider, modelId])
@@ -878,6 +1046,7 @@ model Chat {
   title                  String
   activeLeafMessageId    String?
   defaultProviderModelId String?
+  defaultKnowledgePlan   Json?
   pinned                 Boolean              @default(false)
   archived               Boolean              @default(false)
   totalInputTokens       Int                  @default(0)

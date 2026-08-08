@@ -38,6 +38,11 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   browser replacement, and stores the accepted normalized projection with the
   run graph.
 
+### Knowledge Bases
+
+- `/api/me/knowledge-bases` is the private current-user management family. Reads return owned bases (including archived ones for restore) plus only live installation/group publications visible through active membership. Admin status adds no private-base visibility; unknown and invisible ids both return `knowledge_base_not_available`. Hidden embedding deployment identities are censored for non-owners unless independently entitled.
+- Creation accepts one entitled active embedding deployment only when its normalized target dimension has a committed index profile, then atomically creates the base and immutable active generation pin. Owner-only optimistic updates change metadata or archive state. Publication is live rather than revision-pinned: group publication requires the owner's active membership, installation publication additionally requires admin status, and revoke is owner-or-admin. Archiving immediately removes non-owner catalog/read access without deleting versions or accepted evidence.
+
 ### Send, branch, edit, and regenerate
 
 - Send and regenerate share one server-only preparation boundary for ownership, branch context, entitlement, content/capability, prompt, controls, Search, attachments, MCP, context budget, and redacted preview. The resulting plain-data snapshot is isolated from adapter services and is not rebuilt after validation.

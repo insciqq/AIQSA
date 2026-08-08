@@ -22,6 +22,7 @@ function ownedDataSource(
       attachments: 0,
       chats: 0,
       folders: 0,
+      knowledgeBases: 0,
       mcpGrants: 0,
       mcpOAuthConnections: 0,
       mcpUserServers: 0,
@@ -200,6 +201,19 @@ describe("admin deletion metadata", () => {
 
     expect(
       adminGroupDeletionInfo({
+        _count: { knowledgeBasePublications: 2, users: 0 },
+        accessGrants: [],
+        mcpGrants: [],
+        systemRole: null
+      })
+    ).toEqual({
+      canDelete: false,
+      reason: "group_has_grants",
+      summary: "Remove 2 Knowledge Base publications before deleting this group."
+    });
+
+    expect(
+      adminGroupDeletionInfo({
         _count: { users: 0 },
         accessGrants: [{ enabled: false }],
         mcpGrants: [],
@@ -208,7 +222,7 @@ describe("admin deletion metadata", () => {
     ).toEqual({
       canDelete: true,
       reason: null,
-      summary: "No members, active grants, provider credential assignments, or assistant publications; this group can be deleted."
+      summary: "No members, active grants, provider credential assignments, Assistant publications, or Knowledge Base publications; this group can be deleted."
     });
   });
 
@@ -335,6 +349,7 @@ describe("admin deletion metadata", () => {
       "attachments",
       "chats",
       "folders",
+      "knowledgeBases",
       "mcpGrants",
       "mcpOAuthConnections",
       "mcpUserServers",
@@ -353,6 +368,7 @@ describe("admin deletion metadata", () => {
         attachments: 0,
         chats: 0,
         folders: 0,
+        knowledgeBases: 0,
         mcpGrants: 0,
         mcpOAuthConnections: 0,
         mcpUserServers: 0,
@@ -376,6 +392,7 @@ describe("admin deletion metadata", () => {
             attachments: 2,
             chats: 3,
             folders: 4,
+            knowledgeBases: 13,
             mcpGrants: 5,
             mcpOAuthConnections: 6,
             mcpUserServers: 7,
@@ -387,7 +404,7 @@ describe("admin deletion metadata", () => {
           {}
         )
       )
-    ).toBe(79);
+    ).toBe(92);
     expect(
       adminOwnedAppDataCount({
         accessGrants: 1,
@@ -395,6 +412,7 @@ describe("admin deletion metadata", () => {
         attachments: 2,
         chats: 3,
         folders: 4,
+        knowledgeBases: 14,
         mcpGrants: 5,
         mcpOAuthConnections: 6,
         mcpUserServers: 7,
@@ -404,6 +422,6 @@ describe("admin deletion metadata", () => {
         sharedSnapshots: 11,
         usageEvents: 12
       })
-    ).toBe(91);
+    ).toBe(105);
   });
 });

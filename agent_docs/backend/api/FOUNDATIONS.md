@@ -28,6 +28,7 @@ Stable route families are:
 - current-user identity, catalog, settings, and MCP configuration;
 - administrator users, groups, grants, rules, invites, providers, Search, SMTP, MCP, release awareness, and usage;
 - current-user Assistants: list/detail, create/revise/archive, duplication, revisions, exact-revision publications, and per-user pins;
+- current-user Knowledge Bases: entitled embedding destinations, list/detail, create/update/archive, and live group/installation publication management;
 - folders, chats, messages, model runs, and uploads;
 - private share management plus anonymous public-share reads.
 

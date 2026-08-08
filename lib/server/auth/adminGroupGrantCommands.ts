@@ -134,7 +134,9 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
           activeGrantCount:
             group.accessGrants.filter((grant) => grant.enabled).length +
             group.mcpGrants.filter((grant) => grant.canUse).length +
-            group._count.providerCredentialAssignments,
+            group._count.providerCredentialAssignments +
+            group._count.assistantPublications +
+            group._count.knowledgeBasePublications,
           memberCount: group._count.users
         });
 

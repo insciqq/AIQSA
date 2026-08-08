@@ -30,6 +30,7 @@
     "db:control-plane:migration:contract": "tsx prisma/scripts/tests/control-plane-cutover-contract.ts",
     "db:full-access:migration:contract": "tsx prisma/scripts/tests/full-access-system-group-migration-contract.ts",
     "db:gemini:migration:contract": "tsx prisma/scripts/tests/native-gemini-interactions-migration-contract.ts",
+    "db:knowledge:migration:contract": "tsx prisma/scripts/tests/knowledge-base-foundation-migration-contract.ts",
     "db:provider:migration:contract": "tsx prisma/scripts/tests/provider-control-plane-migration-contract.ts",
     "db:cutover": "tsx prisma/scripts/control-plane-cutover.ts",
     "db:migrate:deploy": "prisma migrate deploy",

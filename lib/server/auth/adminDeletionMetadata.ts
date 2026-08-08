@@ -8,6 +8,7 @@ export type AdminUserDeletionSource = Readonly<{
 export type AdminGroupDeletionSource = Readonly<{
   _count: Readonly<{
     assistantPublications?: number;
+    knowledgeBasePublications?: number;
     providerCredentialAssignments?: number;
     users: number;
   }>;
@@ -33,6 +34,7 @@ export type AdminUserOwnedDataSource = Readonly<{
     attachments: number;
     chats: number;
     folders: number;
+    knowledgeBases: number;
     mcpGrants: number;
     mcpOAuthConnections: number;
     mcpUserServers: number;
@@ -50,6 +52,7 @@ export type AdminOwnedAppDataCounts = Readonly<{
   attachments: number;
   chats: number;
   folders: number;
+  knowledgeBases: number;
   mcpGrants: number;
   mcpOAuthConnections: number;
   mcpUserServers: number;
@@ -134,8 +137,13 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
     group.mcpGrants.filter((grant) => grant.canUse).length;
   const credentialAssignmentCount = group._count.providerCredentialAssignments ?? 0;
   const assistantPublicationCount = group._count.assistantPublications ?? 0;
+  const knowledgeBasePublicationCount = group._count.knowledgeBasePublications ?? 0;
   const block = adminGroupDeletionBlock({
-    activeGrantCount: activeGrantCount + credentialAssignmentCount + assistantPublicationCount,
+    activeGrantCount:
+      activeGrantCount +
+      credentialAssignmentCount +
+      assistantPublicationCount +
+      knowledgeBasePublicationCount,
     memberCount: group._count.users
   });
 
@@ -157,6 +165,9 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
         : null,
       assistantPublicationCount
         ? `${assistantPublicationCount} assistant publication${assistantPublicationCount === 1 ? "" : "s"}`
+        : null,
+      knowledgeBasePublicationCount
+        ? `${knowledgeBasePublicationCount} Knowledge Base publication${knowledgeBasePublicationCount === 1 ? "" : "s"}`
         : null
     ].filter((part): part is string => Boolean(part)).join(" and ");
     return {
@@ -169,7 +180,7 @@ export function adminGroupDeletionInfo(group: AdminGroupDeletionSource): AdminDe
   return {
     canDelete: true,
     reason: null,
-    summary: "No members, active grants, provider credential assignments, or assistant publications; this group can be deleted."
+    summary: "No members, active grants, provider credential assignments, Assistant publications, or Knowledge Base publications; this group can be deleted."
   };
 }
 
@@ -213,6 +224,7 @@ export function adminOwnedAppDataCount(counts: AdminOwnedAppDataCounts): number 
     counts.attachments +
     counts.chats +
     counts.folders +
+    counts.knowledgeBases +
     counts.mcpGrants +
     counts.mcpOAuthConnections +
     counts.mcpUserServers +

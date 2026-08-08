@@ -46,6 +46,7 @@ The dependency rules are executable in `eslint.config.mjs` and `tests/harness/im
 - Search administration exposes one logical source per exact provider connection and owns the source-level lifecycle; physical hosted/query-only routes retain configuration-evidenced immutable revisions and optional non-gating diagnostics below it. Provider-neutral Search owns typed query-only execution, whole-plan physical-route assignment, fan-out merge, and bounded canonical findings/source evidence supplied explicitly by each adapter. Technical-only provider deployments may support Search while remaining absent from answer-model catalogs.
 - MCP owns installation definitions, grants, encrypted configuration/OAuth envelopes, activation jobs, runtime generations, and official SDK/ToolHive adapters. One process-local coordinator advances a database-owned activation job; another reconciles durable desired generations into live sessions. Both fence writes to exact versions/fingerprints. Remote traffic uses the SSRF-safe fetch boundary; local stdio uses ToolHive sibling workloads on the private control network.
 - `lib/server/parsing/` owns the optional file-to-structured-text boundary. Plain text, Markdown, CSV, and JSON remain in-process; structure-aware PDF/OOXML/HTML/image work routes to Docling first with Tika fallback, while Tika owns legacy office/mail/ebook formats. Its ordered page-anchored blocks are a consumer-neutral contract; upload/chat and Knowledge ingestion wire to it only through their own later lifecycle owners.
+- Knowledge owns private publishable bases, append-only document versions, immutable embedding/index generations, and hybrid relational retrieval storage. Object storage holds originals and normalized text; Postgres holds lifecycle metadata, bounded chunks, vectors, FTS projections, and temporal revision authority. Embedding is a separate disclosed provider-egress boundary outside chat runs.
 - A remote MCP server may broker another SaaS authorization flow, but AIQSA authorizes only the reviewed MCP resource and stores only MCP-audienced per-user tokens. It has no provider-specific upstream callback, secret, scope, organization, or persistence authority.
 - SMTP is an independent database-owned draft/test/active control plane with bounded delivery. Release awareness is a separate optional read-only boundary fixed to the official public AIQSA release endpoint; it cannot deploy or mutate installation state.
 
@@ -77,10 +78,11 @@ Postgres/Prisma is authoritative for:
 
 - users, identities, sessions, auth admission, groups, grants, and invitations;
 - folders, chats, message DAGs, settings state, Assistant definitions/revisions/publications/pins, runs, events, usage, and immutable accepted bindings;
+- Knowledge Base ownership/publications, document-version visibility, vector-space generations, chunks, vectors, and retrieval evidence;
 - provider/model/credential, Search, SMTP, and MCP control planes;
 - MCP activation/runtime evidence, upload metadata/cleanup work, and public-share snapshots.
 
-Private objects live in S3/MinIO in the bundled stack. A filesystem fallback exists only when S3 is absent outside that topology.
+Private attachment and Knowledge original/normalized objects live in S3/MinIO in the bundled stack. A filesystem fallback exists only when S3 is absent outside that topology.
 
 At the architecture layer, Postgres owns authenticated relational tenancy,
 mutable control-plane state, conversation/run graphs, and immutable accepted

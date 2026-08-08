@@ -4,6 +4,7 @@ export const adminGroupRecordInclude = {
   _count: {
     select: {
       assistantPublications: true,
+      knowledgeBasePublications: true,
       providerCredentialAssignments: true,
       users: true
     }

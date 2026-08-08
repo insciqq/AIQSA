@@ -218,6 +218,7 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
     attachments,
     chats,
     folders,
+    knowledgeBases,
     mcpGrants,
     mcpOAuthConnections,
     mcpUserServers,
@@ -250,6 +251,11 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
     tx.folder.count({
       where: {
         userId
+      }
+    }),
+    tx.knowledgeBase.count({
+      where: {
+        ownerUserId: userId
       }
     }),
     tx.mcpGrant.count({
@@ -300,6 +306,7 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
     attachments,
     chats,
     folders,
+    knowledgeBases,
     mcpGrants,
     mcpOAuthConnections,
     mcpUserServers,

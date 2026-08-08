@@ -29,6 +29,10 @@ Storage remains private. MinIO has no anonymous access, filesystem fallback is s
 
 Repository-local `.aiqsa/` state is excluded from Git and Docker build context because it may contain user objects or other private runtime data. Do not copy it into images or caches.
 
+## Knowledge Indexing Egress
+
+Knowledge originals and normalized text are private objects; relational rows retain only bounded metadata, chunks, vectors, and lifecycle/evidence state. Indexing may send bounded normalized document text to the base's exact configured embedding connection/model outside a chat run. It never sends storage keys, object credentials, unrelated base content, or another user's documents, and provider failures expose only stable codes. Creation and reindex UX must render this disclosure with the resolved destination: **“Indexing sends this base’s document text to {connection} / {model} for embedding. This happens outside chat runs and repeats when the base is reindexed.”** The server revalidates the owner's entitlement and destination before each admitted indexing operation; browser selection is not egress authority.
+
 Open and archived task instances are local ignored state and are excluded from Git and Docker; `agent_docs/tasks/README.md` owns task guidance and `scripts/task-ledger.mjs new` is the sole executable scaffold source. Release privacy checks the selected tree and post-policy history so a task committed and later removed still blocks publication. Rewriting established public refs is not routine task-cleanup remediation. Docker build context also excludes `agent_docs/` plus every scoped `AGENTS.md` and `CLAUDE.md`; these files have no build-time or runtime authority. Release publication requires the official public GitHub `origin`, while ref rewrites, force pushes, and release tags require explicit operator authorization and fresh target/ref inspection.
 
 ## Provider Catalog Trust

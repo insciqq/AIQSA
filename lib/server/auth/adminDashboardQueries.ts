@@ -23,6 +23,7 @@ const adminDashboardUserSelect = {
       attachments: true,
       chats: true,
       folders: true,
+      knowledgeBases: true,
       mcpGrants: true,
       mcpOAuthConnections: true,
       mcpUserServers: true,

@@ -11,6 +11,12 @@ const expectedConstraintNames = [
   "AuthSession_revocation_attribution_check",
   "AuthSession_revokedByUserId_fkey",
   "Chat_id_activeLeafMessageId_fkey",
+  "KnowledgeBase_activeIndexGeneration_fkey",
+  "KnowledgeBasePublication_scope_group_check",
+  "KnowledgeChunk_dimension_check",
+  "KnowledgeDocument_currentVersion_fkey",
+  "KnowledgeDocumentVersion_visibility_check",
+  "KnowledgeIndexGeneration_dimension_check",
   "Message_chatId_parentMessageId_fkey",
   "ModelPolicy_defaultProviderModelId_fkey",
   "ModelPolicy_singleton_check",
@@ -153,6 +159,12 @@ async function assertConstraintCatalog(): Promise<void> {
       'AuthSession_revocation_attribution_check',
       'AuthSession_revokedByUserId_fkey',
       'Chat_id_activeLeafMessageId_fkey',
+      'KnowledgeBase_activeIndexGeneration_fkey',
+      'KnowledgeBasePublication_scope_group_check',
+      'KnowledgeChunk_dimension_check',
+      'KnowledgeDocument_currentVersion_fkey',
+      'KnowledgeDocumentVersion_visibility_check',
+      'KnowledgeIndexGeneration_dimension_check',
       'Message_chatId_parentMessageId_fkey',
       'ModelPolicy_defaultProviderModelId_fkey',
       'ModelPolicy_singleton_check',
@@ -201,6 +213,20 @@ async function assertConstraintCatalog(): Promise<void> {
     )
   ) {
     throw new Error("Expected one active physical Search route per adapter kind.");
+  }
+  const knowledgeIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND indexname IN (
+        'KnowledgeChunk_embedding_1024_hnsw_idx',
+        'KnowledgeChunk_embedding_1536_hnsw_idx',
+        'KnowledgeChunk_searchVector_gin_idx'
+      )
+    ORDER BY indexname
+  `;
+  if (knowledgeIndexes.length !== 3) {
+    throw new Error("Expected both committed Knowledge HNSW profiles and the FTS index.");
   }
 }
 
@@ -451,7 +477,7 @@ async function main() {
   await assertGrantShapes();
   await assertStatusEnums();
   console.log(
-    "AIQSA schema integrity smoke ok: validated constraints, tenant-safe pointers, six grant shapes, and lifecycle enums."
+    "AIQSA schema integrity smoke ok: validated constraints, tenant-safe pointers, Knowledge indexes, six grant shapes, and lifecycle enums."
   );
 }
 
