@@ -12,14 +12,17 @@ Not owned here: Control Center composition, functional control behavior, data st
 
 The conversation and composer dominate. [Product and layout](../frontend/PRODUCT_AND_LAYOUT.md)
 owns shell breakpoints, action availability, drawer/panel behavior, focus, and
-browser-local visibility. Visually, Workspace remains a quieter rail or drawer;
-the conversation keeps one title-free floating edge-action layer with no
+browser-local pane visibility. Visually, the narrow desktop icon rail and the
+optional Workspace pane read as one quiet navigation region; compact keeps only
+the existing drawer. The conversation keeps one title-free floating edge-action layer with no
 full-width bar or divider. Compact content may pass beneath a restrained
 answer-paper readability veil, while desktop protects only the small action
-footprint needed to avoid text collision. Account is a quiet full-width footer
-row below Workspace history, with contained identity text and a restrained
-overflow continuation cue. No second action bar or replacement title chip may
-compete with the reading plane.
+footprint needed to avoid text collision. The rail uses one quiet current state
+and semantic icons with associated tooltips, never a colorful dock. Account is
+a quiet full-width footer row below Workspace history plus the rail's bottom
+icon; both anchor one upward, locally scrolling surface with contained identity
+text and a restrained overflow continuation cue. No second action bar or
+replacement title chip may compete with the reading plane.
 
 Chat and folder rows use quiet selected/hover states, stable action space, and text labels where consequence matters. Active-run state is a small factual cue. Nested folders must retain readable indentation without causing page-level horizontal overflow.
 

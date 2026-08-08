@@ -24,6 +24,7 @@ export function SettingsDialog({
   onClose,
   onDismissNotice,
   onThemeChange,
+  restoreFocus,
   themeId
 }: {
   initialSection?: GeneralSettingsSection;
@@ -31,6 +32,7 @@ export function SettingsDialog({
   onClose(): void;
   onDismissNotice?(): void;
   onThemeChange(themeId: ThemeId): void;
+  restoreFocus?(): HTMLElement | null;
   themeId: ThemeId;
 }) {
   const [activeSection, setActiveSection] = useState<GeneralSettingsSection>(initialSection);
@@ -55,7 +57,8 @@ export function SettingsDialog({
     autoFocus: false,
     closeOnEscape: !discardConfirmationOpen,
     containFocus: !discardConfirmationOpen,
-    onClose: requestClose
+    onClose: requestClose,
+    restoreFocus
   });
 
   function requestSection(section: GeneralSettingsSection) {

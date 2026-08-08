@@ -474,6 +474,26 @@ function StatefulView({
   );
 }
 
+function StatefulNavigationOverlayView({ adminEntryVisible = true }: { adminEntryVisible?: boolean }) {
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const props = baseProps();
+  return (
+    <PowerAppShellView
+      {...props}
+      session={{ ...props.session, adminEntryVisible }}
+      settings={{
+        ...props.settings,
+        closeSettings: () => setSettingsOpen(false),
+        library: libraryOpen ? minimalLibraryView() : null,
+        open: () => setSettingsOpen(true),
+        openLibrary: () => setLibraryOpen(true),
+        settings: { ...props.settings.settings, open: settingsOpen }
+      }}
+    />
+  );
+}
+
 const mobileProjectFolder: FolderSummary = {
   id: "folder-mobile",
   name: "Mobile project",
@@ -941,28 +961,37 @@ describe("PowerAppShellView run lifecycle announcements", () => {
 });
 
 describe("PowerAppShellView Details composition", () => {
-  it("defaults to navigation plus an unsqueezed conversation with Details absent", () => {
+  it("defaults to the icon rail, expanded Workspace pane, and an unsqueezed conversation", () => {
     render(<StatefulView />);
 
     const shell = screen.getByTestId("app-shell");
     const grid = screen.getByTestId("shell-workspace-grid");
-    const rail = screen.getByTestId("workspace-rail");
+    const rail = screen.getByTestId("workspace-icon-rail");
+    const pane = screen.getByTestId("workspace-pane-desktop");
     const conversation = screen.getByTestId("conversation-column");
 
     expect(shell).toHaveClass("h-dvh", "bg-app-canvas", "text-ink");
-    expect(rail).toHaveClass("bg-workspace-rail", "min-[1281px]:grid");
-    expect(rail).toContainElement(screen.getByTestId("left-chat-pane"));
+    expect(rail).toHaveClass(
+      "bg-workspace-rail",
+      "min-[1281px]:flex",
+      "w-[calc(3rem+env(safe-area-inset-left))]"
+    );
+    expect(pane).toHaveClass("bg-workspace-rail", "min-[1281px]:grid");
+    expect(pane).not.toHaveClass("min-[1281px]:pl-[env(safe-area-inset-left)]");
+    expect(pane).toContainElement(screen.getByTestId("left-chat-pane"));
     expect(conversation).toHaveClass("bg-answer-paper", "flex-col", "relative");
     expect(conversation).toContainElement(screen.getByTestId("top-rail"));
     expect(conversation).toContainElement(screen.getByTestId("main-thread-pane"));
     expect(screen.queryByTestId("details-pane")).not.toBeInTheDocument();
     expect(grid).toHaveAttribute("data-details-presentation", "closed");
-    expect(grid).toHaveClass("min-[1281px]:grid-cols-[16rem_minmax(0,1fr)]");
+    expect(grid).toHaveClass(
+      "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]"
+    );
     expect(grid.className).not.toContain("minmax(480px");
     expect(screen.getByTestId("shell-primary-content")).not.toHaveAttribute("inert");
   });
 
-  it("hides and restores the persistent Workspace without replacing conversation state", async () => {
+  it("hides only the Workspace pane and restores it from current Chats without replacing conversation state", async () => {
     vi.stubGlobal(
       "matchMedia",
       vi.fn((query: string) =>
@@ -983,16 +1012,23 @@ describe("PowerAppShellView Details composition", () => {
     const grid = screen.getByTestId("shell-workspace-grid");
     fireEvent.click(screen.getByRole("button", { name: "Hide workspace" }));
 
-    await waitFor(() => expect(grid).toHaveAttribute("data-workspace-rail-hidden", "true"));
-    expect(grid).not.toHaveClass("min-[1281px]:grid-cols-[16rem_minmax(0,1fr)]");
+    await waitFor(() => expect(grid).toHaveAttribute("data-workspace-pane-hidden", "true"));
+    expect(grid).toHaveClass(
+      "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_minmax(0,1fr)]"
+    );
+    expect(screen.getByTestId("workspace-pane-desktop")).toHaveAttribute("inert");
     expect(window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY)).toBe("hidden");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open workspace" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Chats" })).toHaveFocus());
     expect(screen.getByTestId("main-thread-pane")).toHaveTextContent("Conversation");
+    expect(screen.getByRole("navigation", { name: "Primary navigation" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Workspace controls" })).toHaveClass("min-[1281px]:hidden");
 
-    fireEvent.click(screen.getByRole("button", { name: "Open workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Chats" }));
 
-    await waitFor(() => expect(grid).not.toHaveAttribute("data-workspace-rail-hidden"));
-    expect(grid).toHaveClass("min-[1281px]:grid-cols-[16rem_minmax(0,1fr)]");
+    await waitFor(() => expect(grid).not.toHaveAttribute("data-workspace-pane-hidden"));
+    expect(grid).toHaveClass(
+      "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]"
+    );
     expect(window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY)).toBe("visible");
     await waitFor(() => expect(screen.getByRole("button", { name: "Hide workspace" })).toHaveFocus());
   });
@@ -1003,13 +1039,144 @@ describe("PowerAppShellView Details composition", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("shell-workspace-grid")).toHaveAttribute(
-        "data-workspace-rail-hidden",
+        "data-workspace-pane-hidden",
         "true"
       )
     );
-    expect(screen.getByRole("group", { name: "Workspace controls" })).not.toHaveClass(
-      "min-[1281px]:hidden"
+    expect(screen.getByRole("navigation", { name: "Primary navigation" })).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-pane-desktop")).toHaveAttribute("inert");
+    expect(screen.getByRole("group", { name: "Workspace controls" })).toHaveClass("min-[1281px]:hidden");
+  });
+
+  it("keeps all four icon-track, pane, conversation, and pinned Details grid templates explicit", async () => {
+    render(<StatefulView initialMode="pinned" />);
+    const grid = screen.getByTestId("shell-workspace-grid");
+
+    expect(grid).toHaveClass(
+      "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]",
+      "min-[1440px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)_23rem]"
     );
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide workspace" }));
+    await waitFor(() => expect(grid).toHaveAttribute("data-workspace-pane-hidden", "true"));
+    expect(grid).toHaveClass(
+      "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_minmax(0,1fr)]",
+      "min-[1440px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_minmax(0,1fr)_23rem]"
+    );
+  });
+
+  it("re-anchors an open pane Account surface to the surviving rail before hiding the pane", async () => {
+    render(<StatefulView />);
+    const paneAccount = screen.getByRole("button", { name: /Account menu for/ });
+    fireEvent.click(paneAccount);
+    expect(screen.getByRole("menu", { name: "Account" }).parentElement).toHaveAttribute(
+      "data-account-menu-anchor",
+      "pane"
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide workspace" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("menu", { name: "Account" }).parentElement).toHaveAttribute(
+        "data-account-menu-anchor",
+        "rail"
+      )
+    );
+    expect(screen.getByTestId("shell-workspace-grid")).toHaveAttribute("data-workspace-pane-hidden", "true");
+    expect(screen.getByRole("button", { name: "Account" })).toHaveAttribute("aria-controls", "account-menu");
+    expect(paneAccount).not.toHaveAttribute("aria-controls");
+    expect(screen.getAllByRole("menu", { name: "Account" })).toHaveLength(1);
+  });
+
+  it("opens direct rail destinations with one overlay and restores the exact Settings opener", async () => {
+    render(<StatefulNavigationOverlayView />);
+    const directSettings = screen.getByRole("button", { name: "Settings" });
+    const paneAccount = screen.getByRole("button", { name: /Account menu for/ });
+    fireEvent.click(paneAccount);
+    expect(screen.getByRole("menu", { name: "Account" })).toBeVisible();
+
+    fireEvent.click(directSettings);
+    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeVisible();
+    expect(screen.queryByRole("menu", { name: "Account" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument());
+    expect(directSettings).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Assistants" }));
+    expect(screen.getByTestId("assistant-library")).toBeVisible();
+    expect(screen.queryByRole("menu", { name: "Account" })).not.toBeInTheDocument();
+  });
+
+  it("restores Settings to the invoking pane or rail Account trigger", async () => {
+    render(<StatefulNavigationOverlayView />);
+    const paneAccount = screen.getByRole("button", { name: /Account menu for/ });
+    fireEvent.click(paneAccount);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+    await screen.findByRole("dialog", { name: "Settings" });
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    await waitFor(() => expect(paneAccount).toHaveFocus());
+
+    const railAccount = screen.getByRole("button", { name: "Account" });
+    fireEvent.click(railAccount);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+    await screen.findByRole("dialog", { name: "Settings" });
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    await waitFor(() => expect(railAccount).toHaveFocus());
+  });
+
+  it("transfers focus from controls in either desktop navigation column and restores by source", async () => {
+    let viewportMatches = true;
+    const viewportListeners = new Set<(event: MediaQueryListEvent) => void>();
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) =>
+        ({
+          addEventListener: (_type: "change", listener: (event: MediaQueryListEvent) => void) => {
+            viewportListeners.add(listener);
+          },
+          dispatchEvent: vi.fn(),
+          matches: viewportMatches,
+          media: query,
+          onchange: null,
+          removeEventListener: (_type: "change", listener: (event: MediaQueryListEvent) => void) => {
+            viewportListeners.delete(listener);
+          },
+          addListener: vi.fn(),
+          removeListener: vi.fn()
+        }) as unknown as MediaQueryList
+      )
+    );
+    render(<StatefulView />);
+
+    const railSettings = screen.getByRole("button", { name: "Settings" });
+    railSettings.focus();
+    act(() => {
+      viewportMatches = false;
+      Array.from(viewportListeners).forEach((listener) => listener({ matches: false } as MediaQueryListEvent));
+    });
+    const compactWorkspace = screen.getByRole("button", { name: "Open workspace" });
+    await waitFor(() => expect(compactWorkspace).toHaveFocus());
+    compactWorkspace.blur();
+    expect(compactWorkspace).not.toHaveFocus();
+    act(() => {
+      viewportMatches = true;
+      Array.from(viewportListeners).forEach((listener) => listener({ matches: true } as MediaQueryListEvent));
+    });
+    await waitFor(() => expect(railSettings).toHaveFocus());
+
+    const paneHide = screen.getByRole("button", { name: "Hide workspace" });
+    paneHide.focus();
+    act(() => {
+      viewportMatches = false;
+      Array.from(viewportListeners).forEach((listener) => listener({ matches: false } as MediaQueryListEvent));
+    });
+    await waitFor(() => expect(compactWorkspace).toHaveFocus());
+    act(() => {
+      viewportMatches = true;
+      Array.from(viewportListeners).forEach((listener) => listener({ matches: true } as MediaQueryListEvent));
+    });
+    await waitFor(() => expect(paneHide).toHaveFocus());
   });
 
   it("opens a modal drawer, contains focus, closes with Escape, and restores the trigger", async () => {
@@ -1067,7 +1234,7 @@ describe("PowerAppShellView Details composition", () => {
     expect(screen.queryByTestId("details-pane-backdrop")).not.toBeInTheDocument();
     expect(screen.getByTestId("shell-primary-content")).not.toHaveAttribute("inert");
     expect(screen.getByTestId("shell-workspace-grid")).toHaveClass(
-      "min-[1440px]:grid-cols-[16rem_minmax(0,1fr)_23rem]"
+      "min-[1440px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)_23rem]"
     );
     expect(trigger).not.toHaveFocus();
 
@@ -1351,12 +1518,12 @@ describe("PowerAppShellView mobile Workspace composition", () => {
   });
 
   it("closes and unlocks an open mobile Workspace when the viewport crosses lg", async () => {
-    let viewportListener: ((event: MediaQueryListEvent) => void) | null = null;
+    const viewportListeners: Array<(event: MediaQueryListEvent) => void> = [];
     const removeEventListener = vi.fn();
     const matchMedia = vi.fn((query: string) =>
       ({
         addEventListener: (_type: "change", listener: (event: MediaQueryListEvent) => void) => {
-          viewportListener = listener;
+          viewportListeners.push(listener);
         },
         dispatchEvent: vi.fn(),
         matches: false,
@@ -1374,7 +1541,7 @@ describe("PowerAppShellView mobile Workspace composition", () => {
     expect(screen.getByRole("dialog", { name: "Workspace" })).toBeVisible();
 
     act(() => {
-      viewportListener?.({ matches: true } as MediaQueryListEvent);
+      viewportListeners.forEach((listener) => listener({ matches: true } as MediaQueryListEvent));
     });
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Workspace" })).not.toBeInTheDocument());
@@ -1383,13 +1550,13 @@ describe("PowerAppShellView mobile Workspace composition", () => {
   });
 
   it("cancels a Workspace confirmation before the lg breakpoint unmounts its opener", async () => {
-    let viewportListener: ((event: MediaQueryListEvent) => void) | null = null;
+    const viewportListeners: Array<(event: MediaQueryListEvent) => void> = [];
     vi.stubGlobal(
       "matchMedia",
       vi.fn((query: string) =>
         ({
           addEventListener: (_type: "change", listener: (event: MediaQueryListEvent) => void) => {
-            viewportListener = listener;
+            viewportListeners.push(listener);
           },
           dispatchEvent: vi.fn(),
           matches: false,
@@ -1405,7 +1572,7 @@ describe("PowerAppShellView mobile Workspace composition", () => {
     expect(screen.getByRole("dialog", { name: "Delete chat Mobile delete" })).toBeVisible();
 
     act(() => {
-      viewportListener?.({ matches: true } as MediaQueryListEvent);
+      viewportListeners.forEach((listener) => listener({ matches: true } as MediaQueryListEvent));
     });
 
     expect(screen.queryByRole("dialog", { name: "Delete chat Mobile delete" })).not.toBeInTheDocument();

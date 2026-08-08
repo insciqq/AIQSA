@@ -28,9 +28,12 @@ Composition follows available space, content, and input capability. Media querie
 - At shell, Details, composer, Assistant, and resource split breakpoints owned by
   the routed functional contracts, preserve the same semantic hierarchy rather
   than inventing another control or navigation model.
+- At `>=1281px`, the global icon rail is mandatory while the adjacent Workspace
+  pane may be hidden; at `<=1280px`, both desktop navigation columns leave the
+  layout and accessibility tree and the established drawer remains the owner.
 - Validate at 384/390x844, 844x390, 768x1024, 1024x512, 1024x768,
   1280x500, 1280x800, the compact/desktop shell boundary, and the wide Details
-  boundary, including enlarged root text at each affected edge.
+  boundary, including enlarged root text at the 1281px edge.
 - Use `dvh`, `viewport-fit=cover`, `interactive-widget=resizes-content`, and every relevant safe-area inset.
 - At `(hover: none)` or `(pointer: coarse)`, primary workflow targets are approximately 44x44px so the product remains comfortable on phones and tablets.
 - No primary phone/tablet workflow depends on hover or drag precision.

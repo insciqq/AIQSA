@@ -11,6 +11,13 @@ export async function runAccountMenuAction(
     return desktopTrigger;
   }
 
+  const railTrigger = page.getByTestId("workspace-icon-rail").getByRole("button", { name: "Account" });
+  if (await railTrigger.isVisible()) {
+    await railTrigger.click();
+    await page.getByRole("menu", { name: "Account" }).getByRole("menuitem", { name }).click();
+    return railTrigger;
+  }
+
   const restoreTarget = page.getByRole("button", { name: "Open workspace" });
   const workspace = page.getByTestId("workspace-pane-mobile");
   if (!(await workspace.isVisible())) {

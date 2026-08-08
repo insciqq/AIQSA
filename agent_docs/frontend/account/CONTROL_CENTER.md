@@ -19,7 +19,7 @@ Not owned here: Server authorization/transactions, authentication workspace, Set
   - Safety: `Safety`.
 - Canonical section IDs are `providers`, `search`, `users`, `access`, `invites`, `access-rules`, `usage`, `mcp`, `email`, and `safety`. Legacy `groups` and `model-access` normalize to `access`; bare `/admin` opens Providers.
 - Desktop has a persistent rail. Compact layouts show either the current task or a vertical All sections index with explicit Back navigation and browser-history ownership. There is no compact horizontal tab strip or topology-derived disclosure.
-- Active administrators receive one discreet Account-menu route to Providers. Non-admin sessions get a centered denial state and do not request administrator resources.
+- Active administrators receive a direct desktop icon-rail link plus the existing discreet Account-menu route to Providers. Both are presentation-only entitlement projections; non-admin sessions get a centered denial state, render neither entry, and do not request administrator resources.
 - The header owns identity, administrator email, installed version when available, Return to chat, dashboard refresh, last-update, and global loading state. A strictly newer stable release may add a quiet fixed-repository release-notes link; unavailable/current state stays silent and the UI performs no update. Global session revocation belongs only to Safety.
 - There is no Overview/KPI/attention dashboard. Pending users, missing access, open invites, and setup problems appear in their owning destinations.
 

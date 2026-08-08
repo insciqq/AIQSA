@@ -338,6 +338,7 @@ export function MainThreadPane({
     Boolean(activeChatDetailError) ||
     Boolean(catalogError) ||
     !catalog ||
+    catalog.models.length === 0 ||
     !workspaceReady;
 
   const centeredEmptyConversation =

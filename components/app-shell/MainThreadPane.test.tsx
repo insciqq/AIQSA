@@ -929,6 +929,7 @@ describe("MainThreadPane", () => {
     expect(state).toHaveTextContent("administrator needs to grant model access");
     expect(screen.queryByRole("link", { name: "Set up providers in Control Center" })).not.toBeInTheDocument();
     expect(state).not.toHaveTextContent("Choose the model");
+    expect(screen.getByTestId("composer-run-summary")).toBeDisabled();
   });
 
   it("gives an administrator a direct provider setup recovery path", () => {

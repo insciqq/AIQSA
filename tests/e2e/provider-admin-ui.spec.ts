@@ -19,6 +19,7 @@ import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { encryptProviderCredentialSecret } from "../../lib/server/providers/credentialSecrets";
 import { parseSecretEncryptionKey } from "../../lib/server/secrets/envelope";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
+import { selectModel } from "./shell/composer";
 import { signInWithLocalToken } from "./support/localAuth";
 
 test.describe.configure({ mode: "serial" });
@@ -358,7 +359,7 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
             streamMode: true
           }
         }),
-        defaultProviderModelId: fixture.modelId
+        defaultProviderModelId: settings.defaultProviderModelId
       },
       where: { userId: fixture.userId }
     });
@@ -711,7 +712,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
         contentType: "application/json",
         json: {
           checkedAt: now,
-          defaultChanged: true,
+          defaultChanged: false,
           model: { displayName: "GPT-5.6 Sol" },
           models: [
             { displayName: "GPT-5.6 Terra" },
@@ -797,12 +798,15 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(section.getByRole("heading", { name: "GPT-5.6 Sol" })).toBeVisible();
   const readyReceipt = section.getByTestId("provider-quick-ready-receipt");
   await expect(readyReceipt).toContainText("API key: saved and verified.");
-  await expect(readyReceipt).toContainText("Default model: GPT-5.6 Sol.");
+  await expect(readyReceipt).toContainText("Prepared model: GPT-5.6 Sol.");
   await expect(readyReceipt).toContainText(
     "Available models: GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol."
   );
   await expect(readyReceipt).toContainText("Access: available to this administrator.");
-  await expect(readyReceipt).toContainText("Default selection: updated.");
+  await expect(readyReceipt).toContainText(
+    "Default models: unchanged. Choose one explicitly from the model picker or the Default model task."
+  );
+  await expect(readyReceipt).not.toContainText("Default selection: updated.");
   await expect(readyReceipt).not.toContainText("Run profiles filled");
   await expect(section.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
   await expect(quickFeedback).toHaveText("OpenAI is ready to chat with GPT-5.6 Sol.");
@@ -875,8 +879,12 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(page).toHaveURL(/\/$/);
   const installedFixture = fixtureState.current;
   if (!installedFixture) throw new Error("Quick setup fixture was not installed");
+  await expect(prisma.userSettings.findUniqueOrThrow({
+    select: { defaultProviderModelId: true },
+    where: { userId: installedFixture.userId }
+  })).resolves.toEqual({ defaultProviderModelId: installedFixture.priorDefaultModelId });
   const catalogBody = await realCatalogResponse.json() as QuickCatalogBody;
-  expect(catalogBody.catalog.defaults).toMatchObject({
+  expect(catalogBody.catalog.defaults).not.toMatchObject({
     modelId: installedFixture.modelId,
     provider: installedFixture.connectionId
   });
@@ -897,6 +905,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
       models: [installedFixture.modelId],
       name: "OpenAI"
     }]);
+  await selectModel(page, installedFixture.connectionId, "GPT-5.6 Sol", "OpenAI");
   await expect(page.getByTestId("run-model-summary")).toHaveText("GPT-5.6 Sol");
   const composer = page.getByRole("textbox", { name: "Message" });
   await expect(composer).toBeEnabled();
@@ -1175,6 +1184,7 @@ test("administrator discovers and configures a Custom compatible provider on wid
       allowPrivateNetwork: false,
       apiRoot: "https://llm.fixture.invalid/v1",
       authenticationMode: "bearer",
+      responseTimeoutSeconds: 300,
       secret: `e2e-custom-write-only-key-${index === 0 ? 1440 : 390}`
     });
   }
@@ -1203,6 +1213,7 @@ test("administrator discovers and configures a Custom compatible provider on wid
         effortPath: "reasoning.effort",
         modePath: "reasoning.mode"
       },
+      responseTimeoutSeconds: 300,
       secret: `e2e-custom-write-only-key-${index === 0 ? 1440 : 390}`
     });
   }
@@ -1427,7 +1438,9 @@ test("administrator activates a Custom replacement and deletes its complete conf
   await section.getByLabel("More actions for Lifecycle Custom connection").click();
   await section.getByRole("button", { name: "Delete Lifecycle Custom connection" }).click();
   const confirmation = page.getByTestId("admin-confirm-delete-provider-connection");
-  await expect(confirmation).toContainText("encrypted credentials, assignments, model grants, and model defaults");
+  await expect(confirmation).toContainText(
+    "encrypted credentials, assignments, model grants, and personal, chat, or installation model defaults"
+  );
   await confirmation.getByRole("button", { name: "Delete connection and configuration" }).click();
   await expect(section.getByText("No provider connections")).toBeVisible();
   expect(deletionBodies).toEqual([{ confirmed: true }]);

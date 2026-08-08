@@ -47,7 +47,7 @@ describe("shell storage", () => {
     expect(storedCollapsedFolderIds()).toEqual(new Set(["folder-1"]));
   });
 
-  it("persists the browser-local Workspace rail preference and fails visible", () => {
+  it("carries the legacy Workspace rail key and values into wide-pane visibility", () => {
     expect(storedWorkspaceRailHidden()).toBe(false);
 
     rememberWorkspaceRailHidden(true);

@@ -318,4 +318,21 @@ describe("SettingsDialog", () => {
     expect(trigger).toHaveFocus();
     trigger.remove();
   });
+
+  it("uses the explicit visible fallback when a responsive crossing hides its captured opener", () => {
+    const trigger = document.createElement("button");
+    const compactFallback = document.createElement("button");
+    trigger.textContent = "Rail Settings";
+    compactFallback.textContent = "Open workspace";
+    document.body.append(trigger, compactFallback);
+    trigger.focus();
+
+    const view = renderDialog({ restoreFocus: () => compactFallback });
+    trigger.style.display = "none";
+    view.unmount();
+
+    expect(compactFallback).toHaveFocus();
+    trigger.remove();
+    compactFallback.remove();
+  });
 });

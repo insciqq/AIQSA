@@ -139,7 +139,13 @@ function visibleAssistants(modeAssistants: AssistantSummary[], list: AssistantLi
     );
 }
 
-export function AssistantLibrary({ view }: { view: AssistantLibraryView }) {
+export function AssistantLibrary({
+  restoreFocus,
+  view
+}: {
+  restoreFocus?(): HTMLElement | null;
+  view: AssistantLibraryView;
+}) {
   const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false);
   const taskEntryRef = useRef<HTMLButtonElement>(null);
   const editorMutationLocked =
@@ -167,7 +173,8 @@ export function AssistantLibrary({ view }: { view: AssistantLibraryView }) {
     autoFocus: false,
     closeOnEscape: !discardConfirmationOpen && !libraryNavigationLocked,
     containFocus: !discardConfirmationOpen,
-    onClose: escapeAction
+    onClose: escapeAction,
+    restoreFocus
   });
 
   useEffect(() => {

@@ -465,43 +465,174 @@ test("closes Account and restores compact navigation focus across the desktop br
   await expect(accountTrigger).toBeFocused();
 });
 
-test("keeps 1280 compact and persists the desktop Workspace rail preference", async ({ page }) => {
+test("shares one Account surface between live rail and pane anchors", async ({ page }) => {
+  await page.setViewportSize({ height: 720, width: 1360 });
+  await signIn(page);
+
+  const rail = page.getByTestId("workspace-icon-rail");
+  const railTrigger = rail.getByRole("button", { name: "Account" });
+  const paneTrigger = page.getByTestId("left-chat-pane").getByRole("button", { name: /Account menu/ });
+  const menu = page.getByRole("menu", { name: "Account" });
+  const menuRoot = page.locator('[data-account-menu-root="true"]');
+
+  await paneTrigger.click();
+  await expect(menu).toBeVisible();
+  await expect(menu).toHaveCount(1);
+  await expect(menuRoot).toHaveAttribute("data-account-menu-anchor", "pane");
+  await expect(paneTrigger).toHaveAttribute("aria-controls", "account-menu");
+  await expect(railTrigger).not.toHaveAttribute("aria-controls");
+
+  await railTrigger.click();
+  await expect(menu).toHaveCount(1);
+  await expect(menuRoot).toHaveAttribute("data-account-menu-anchor", "rail");
+  await expect(railTrigger).toHaveAttribute("aria-controls", "account-menu");
+  await expect(paneTrigger).not.toHaveAttribute("aria-controls");
+  const [menuBox, railTriggerBox, paneTriggerBox] = await Promise.all([
+    menu.boundingBox(),
+    railTrigger.boundingBox(),
+    paneTrigger.boundingBox()
+  ]);
+  expect(menuBox).toBeTruthy();
+  expect(railTriggerBox).toBeTruthy();
+  expect(paneTriggerBox).toBeTruthy();
+  expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(railTriggerBox!.y + 1);
+  expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(paneTriggerBox!.y + 1);
+  await expectWithinViewport(page, menu);
+
+  await paneTrigger.click();
+  await expect(menuRoot).toHaveAttribute("data-account-menu-anchor", "pane");
+  await page.getByRole("button", { name: "Hide workspace" }).click();
+  await expect(page.getByTestId("shell-workspace-grid")).toHaveAttribute(
+    "data-workspace-pane-hidden",
+    "true"
+  );
+  await expect(menu).toHaveCount(0);
+  await expect(railTrigger).not.toHaveAttribute("aria-controls");
+  await expect(rail.getByRole("button", { name: "Chats" })).toBeFocused();
+  await rail.getByRole("button", { name: "Chats" }).click();
+  await expect(page.getByRole("button", { name: "Hide workspace" })).toBeFocused();
+});
+
+test("restores Settings and Assistants across direct rail, Account, and responsive origins", async ({ page }) => {
+  await page.setViewportSize({ height: 760, width: 1360 });
+  await signIn(page);
+
+  const rail = page.getByTestId("workspace-icon-rail");
+  const railSettings = rail.getByRole("button", { name: "Settings" });
+  const railAssistants = rail.getByRole("button", { name: "Assistants" });
+
+  await railSettings.click();
+  await page.getByRole("button", { name: "Close settings" }).click();
+  await expect(railSettings).toBeFocused();
+
+  await railAssistants.click();
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  await expect(railAssistants).toBeFocused();
+
+  await railSettings.click();
+  await page.setViewportSize({ height: 760, width: 800 });
+  await page.getByRole("button", { name: "Close settings" }).click();
+  const compactWorkspace = page.getByRole("button", { name: "Open workspace" });
+  await expect(compactWorkspace).toBeFocused();
+  await page.setViewportSize({ height: 760, width: 1360 });
+  await expect(railSettings).toBeFocused();
+
+  await railAssistants.click();
+  await page.setViewportSize({ height: 760, width: 800 });
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  await expect(compactWorkspace).toBeFocused();
+  await page.setViewportSize({ height: 760, width: 1360 });
+  await expect(railAssistants).toBeFocused();
+
+  const paneSettingsOrigin = await runAccountMenuAction(page, "Settings");
+  await page.getByRole("button", { name: "Close settings" }).click();
+  await expect(paneSettingsOrigin).toBeFocused();
+  const paneAssistantsOrigin = await runAccountMenuAction(page, "Assistants");
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  await expect(paneAssistantsOrigin).toBeFocused();
+});
+
+test("keeps 1280 compact and persists the desktop Workspace pane preference with the rail present", async ({ page }) => {
   await page.setViewportSize({ height: 720, width: 1280 });
   await signIn(page);
 
   const workspaceTrigger = page.getByRole("button", { name: "Open workspace" });
   const persistentWorkspace = page.getByTestId("left-chat-pane");
+  const iconRail = page.getByTestId("workspace-icon-rail");
   await expect(workspaceTrigger).toBeVisible();
   await expect(persistentWorkspace).toBeHidden();
+  await expect(iconRail).toBeHidden();
 
-  await page.setViewportSize({ height: 720, width: 1360 });
+  await page.setViewportSize({ height: 720, width: 1281 });
   const hideWorkspace = page.getByRole("button", { name: "Hide workspace" });
+  const chats = iconRail.getByRole("button", { name: "Chats" });
+  await expect(iconRail).toBeVisible();
   await expect(hideWorkspace).toBeVisible();
   await expect(workspaceTrigger).toBeHidden();
   await hideWorkspace.click();
 
   await expect(page.getByTestId("shell-workspace-grid")).toHaveAttribute(
-    "data-workspace-rail-hidden",
+    "data-workspace-pane-hidden",
     "true"
   );
-  await expect(workspaceTrigger).toBeVisible();
-  await expect(workspaceTrigger).toBeFocused();
+  await expect(persistentWorkspace).toBeHidden();
+  await expect(iconRail).toBeVisible();
+  await expect(workspaceTrigger).toBeHidden();
+  await expect(chats).toBeFocused();
   expect(await page.evaluate(() => window.localStorage.getItem("aiqsa.workspaceRail"))).toBe("hidden");
 
   await page.reload();
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await expect(page.getByTestId("shell-workspace-grid")).toHaveAttribute(
-    "data-workspace-rail-hidden",
+    "data-workspace-pane-hidden",
     "true"
   );
-  await expect(workspaceTrigger).toBeVisible();
+  await expect(iconRail).toBeVisible();
+  await expect(persistentWorkspace).toBeHidden();
 
-  await workspaceTrigger.click();
+  await chats.click();
   await expect(page.getByTestId("shell-workspace-grid")).not.toHaveAttribute(
-    "data-workspace-rail-hidden"
+    "data-workspace-pane-hidden"
   );
   await expect(hideWorkspace).toBeFocused();
   expect(await page.evaluate(() => window.localStorage.getItem("aiqsa.workspaceRail"))).toBe("visible");
+
+  const [railBox, paneBox, conversationBox] = await Promise.all([
+    iconRail.boundingBox(),
+    page.getByTestId("workspace-pane-desktop").boundingBox(),
+    page.getByTestId("conversation-column").boundingBox()
+  ]);
+  expect(railBox).toBeTruthy();
+  expect(paneBox).toBeTruthy();
+  expect(conversationBox).toBeTruthy();
+  expect(railBox!.x).toBeGreaterThanOrEqual(0);
+  expect(railBox!.width).toBeGreaterThanOrEqual(48);
+  expect(paneBox!.x).toBeGreaterThanOrEqual(railBox!.x + railBox!.width - 1);
+  expect(conversationBox!.x).toBeGreaterThanOrEqual(paneBox!.x + paneBox!.width - 1);
+  await expectNoHorizontalOverflow(page);
+
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "20px";
+  });
+  await expect.poll(async () => (await iconRail.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(60);
+  for (const name of ["New chat", "Chats", "Assistants", "Settings", "Account"]) {
+    await expectTouchSafe(iconRail.getByRole("button", { name, exact: true }));
+  }
+  const settingsEntry = iconRail.getByRole("button", { name: "Settings" });
+  const settingsTooltipId = await settingsEntry.getAttribute("aria-describedby");
+  expect(settingsTooltipId).toBeTruthy();
+  const settingsTooltip = page.locator(`#${settingsTooltipId}`);
+  await settingsEntry.hover();
+  await expect(settingsTooltip).toBeVisible();
+  await settingsEntry.focus();
+  await page.keyboard.press("Escape");
+  await expect(settingsTooltip).toBeHidden();
+  await iconRail.getByRole("button", { name: "Chats" }).focus();
+  await settingsEntry.focus();
+  await expect(settingsTooltip).toBeVisible();
+  await iconRail.getByRole("button", { name: "Chats" }).focus();
+  await expect(settingsTooltip).toBeHidden();
+  await expectNoHorizontalOverflow(page);
 });
 
 test("adapts the composer to 1280 short-height and enlarged-text content width", async ({ page }) => {
@@ -1316,6 +1447,37 @@ test("keeps direct run choices and one complete More setup inside the thread wor
   await expect(page.getByTestId("details-pane-backdrop")).toHaveCount(0);
   await expect(page.getByTestId("shell-primary-content")).not.toHaveAttribute("inert");
   await expectComposerBeforeDetails(page);
+  const iconRail = page.getByTestId("workspace-icon-rail");
+  const workspacePane = page.getByTestId("workspace-pane-desktop");
+  const conversation = page.getByTestId("conversation-column");
+  const expandedBoxes = await Promise.all([
+    iconRail.boundingBox(),
+    workspacePane.boundingBox(),
+    conversation.boundingBox(),
+    details.boundingBox()
+  ]);
+  expandedBoxes.forEach((box) => expect(box).toBeTruthy());
+  expect(expandedBoxes[1]!.x).toBeGreaterThanOrEqual(expandedBoxes[0]!.x + expandedBoxes[0]!.width - 1);
+  expect(expandedBoxes[2]!.x).toBeGreaterThanOrEqual(expandedBoxes[1]!.x + expandedBoxes[1]!.width - 1);
+  expect(expandedBoxes[3]!.x).toBeGreaterThanOrEqual(expandedBoxes[2]!.x + expandedBoxes[2]!.width - 1);
+
+  await page.getByRole("button", { name: "Hide workspace" }).click();
+  await expect(page.getByTestId("shell-workspace-grid")).toHaveAttribute(
+    "data-workspace-pane-hidden",
+    "true"
+  );
+  await expect(workspacePane).toBeHidden();
+  await expect(details).toHaveAttribute("data-presentation", "pinned");
+  const railOnlyBoxes = await Promise.all([
+    iconRail.boundingBox(),
+    conversation.boundingBox(),
+    details.boundingBox()
+  ]);
+  railOnlyBoxes.forEach((box) => expect(box).toBeTruthy());
+  expect(railOnlyBoxes[1]!.x).toBeGreaterThanOrEqual(railOnlyBoxes[0]!.x + railOnlyBoxes[0]!.width - 1);
+  expect(railOnlyBoxes[2]!.x).toBeGreaterThanOrEqual(railOnlyBoxes[1]!.x + railOnlyBoxes[1]!.width - 1);
+  await iconRail.getByRole("button", { name: "Chats" }).click();
+  await expect(page.getByRole("button", { name: "Hide workspace" })).toBeFocused();
 
   const runSummary = composerRunSummary(page);
   const directControls = page.getByTestId("composer-control-bar");
@@ -2227,7 +2389,7 @@ test("reveals desktop chat row actions on hover and keyboard focus without layou
 
   await signIn(page);
 
-  const workspaceRail = page.getByTestId("workspace-rail");
+  const workspaceRail = page.getByTestId("workspace-pane-desktop");
   const leftChatPane = page.getByTestId("left-chat-pane");
   const newFolderButton = page.getByRole("button", { name: "New folder" });
   const [workspaceRailBox, leftChatPaneBox, newFolderButtonBox] = await Promise.all([
@@ -4098,7 +4260,7 @@ test("supports the default chat and folder workflow", async ({ browser, page }) 
     newChatRowsBeforeBlank
   );
 
-  const workspaceRail = page.getByTestId("workspace-rail");
+  const workspaceRail = page.getByTestId("workspace-pane-desktop");
   const newFolderButton = page.getByRole("button", { name: "New folder" });
   const [workspaceRailBox, newFolderButtonBox] = await Promise.all([
     workspaceRail.boundingBox(),
@@ -4495,6 +4657,42 @@ test("manages left-pane folders", async ({ page }) => {
   await expect(page.getByRole("button", { name: `Folder actions ${renamedFolderName}` })).toHaveCount(0);
 
   await cleanupE2eWorkspace(page);
+});
+
+test("keeps the desktop icon rail contained for coarse-pointer input", async ({ baseURL, browser }) => {
+  expect(baseURL).toBeTruthy();
+  const context = await browser.newContext({
+    baseURL,
+    colorScheme: "dark",
+    hasTouch: true,
+    isMobile: true,
+    reducedMotion: "reduce",
+    viewport: { height: 800, width: 1281 }
+  });
+
+  try {
+    const page = await context.newPage();
+    await signIn(page);
+    expect(await page.evaluate(() => window.matchMedia("(pointer: coarse)").matches)).toBe(true);
+    const rail = page.getByTestId("workspace-icon-rail");
+    await expect(rail).toBeVisible();
+    await expect(page.getByTestId("left-chat-pane")).toBeVisible();
+    for (const name of ["New chat", "Chats", "Assistants", "Settings", "Account"]) {
+      const control = rail.getByRole("button", { name, exact: true });
+      await expectTouchSafe(control);
+      await expectWithinViewport(page, control);
+    }
+
+    await page.getByRole("button", { name: "Hide workspace" }).click();
+    await expect(rail.getByRole("button", { name: "Chats" })).toBeFocused();
+    await rail.getByRole("button", { name: "Account" }).click();
+    const accountMenu = page.getByRole("menu", { name: "Account" });
+    await expectWithinViewport(page, accountMenu);
+    await page.keyboard.press("Escape");
+    await expectNoHorizontalOverflow(page);
+  } finally {
+    await context.close();
+  }
 });
 
 for (const viewport of responsiveTouchViewports) {

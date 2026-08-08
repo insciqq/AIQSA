@@ -41,7 +41,7 @@ Reject these defaults:
 - a card grid around ordinary rows or prose;
 - a permanent toolbar containing every run control;
 - oversized hero copy, decorative gradients, glass effects, and ornamental grain;
-- badge carpets, icon-only critical actions, and pills for ordinary rectangular controls;
+- badge carpets, unlabeled icon-only critical actions, and pills for ordinary rectangular controls; the desktop global rail is the deliberate exception only because every entry has an exact accessible name plus a visible associated hover/focus tooltip and no workflow depends on that tooltip;
 - fake activity, confidence, citations, stages, or completion claims;
 - a shrunken desktop table presented as a mobile workflow.
 
@@ -134,8 +134,11 @@ The answer is a readable document, not a chat bubble stack. Use a 46-48rem answe
 
 Use a 4px base rhythm with primary steps of 4, 8, 12, 16, 24, 32, and 48px. Related controls stay closer than adjacent groups. Large empty areas belong around the answer and composer, not inside padded cards.
 
-- Workspace rail: 16rem when persistent, with one fixed Account footer below
-  the independently scrolling browse region.
+- Desktop icon rail: a 3rem control lane plus `env(safe-area-inset-left)`;
+  the inset is additive and cannot consume the lane's 44px coarse-pointer
+  targets. It is mandatory at `>=1281px` and owns the shell's left safe area.
+- Workspace pane: 16rem when visible, with one fixed Account footer below the
+  independently scrolling browse region; it owns no duplicate left inset.
 - Control Center navigation: 15rem when persistent.
 - Conversation edge-action rail: at most 4rem plus the applicable top safe-area inset on compact input and 3rem plus that inset on desktop. It belongs to the answer-paper column and overlays the scroll plane at every width without a full-width resting fill or separator. Compact actions use one quiet bounded group per side; a token-derived readability veil fades from answer paper to transparent behind them, and initial thread padding scrolls away so later prose can pass beneath without meeting an opaque banner. Desktop keeps the top-right overlay; below a 78rem conversation-column width the thread yields only a 16rem right footprint, while wider centered content clears it naturally. It collapses to the safe-area inset when desktop has no visible conversation action.
 - Pinned Details: 23rem, available only at `>=1440px`.

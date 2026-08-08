@@ -215,7 +215,6 @@ export function TopRail({
   onStartNewChat,
   pipeline,
   workspaceButtonRef,
-  workspaceRailHidden = false,
   workspaceAttention = false
 }: {
   activeChatId: string | null;
@@ -232,7 +231,6 @@ export function TopRail({
   onStartNewChat(): void;
   pipeline: PipelineSnapshot | null;
   workspaceButtonRef?: Ref<HTMLButtonElement>;
-  workspaceRailHidden?: boolean;
   workspaceAttention?: boolean;
 }) {
   const chatTitle = activeChatId ? activeChatTitle : "New chat";
@@ -267,10 +265,7 @@ export function TopRail({
       </h1>
 
       <div
-        className={[
-          "pointer-events-auto relative flex shrink-0 items-center rounded-pill border border-trace-subtle bg-overlay-surface/95 p-0.5 shadow-float",
-          workspaceRailHidden ? "" : "min-[1281px]:hidden"
-        ].join(" ")}
+        className="pointer-events-auto relative flex shrink-0 items-center rounded-pill border border-trace-subtle bg-overlay-surface/95 p-0.5 shadow-float min-[1281px]:hidden"
         role="group"
         aria-label="Workspace controls"
         data-testid="compact-workspace-controls"

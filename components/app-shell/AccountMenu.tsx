@@ -1,73 +1,170 @@
 import { ChevronDown, ChevronUp, Command, LogOut, ScrollText, Settings, Shield, UserRound } from "lucide-react";
 import {
   forwardRef,
-  useCallback,
   useEffect,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject
 } from "react";
 
 const menuItemClass =
   "flex min-h-touch w-full items-center gap-2 rounded-control px-3 text-left text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:bg-control-hover focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-focus min-[1281px]:min-h-9 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
 
-export type AccountMenuProps = {
+export type DesktopAccountMenuAnchor = "pane" | "rail";
+export type AccountMenuAnchor = DesktopAccountMenuAnchor | "mobile";
+export type AccountMenuInitialFocus = "first" | "last";
+
+export type AccountMenuTriggerProps = {
   accountEmail: string | null;
-  adminHref?: string | null;
-  idPrefix?: string;
-  layout?: "desktop" | "mobile";
-  onOpenChange?(open: boolean): void;
-  onOpenPalette(): void;
-  onOpenLibrary(): void;
-  onOpenSettings(): void;
-  onSignOut(): void;
-  open?: boolean;
+  active: boolean;
+  controlsId: string;
+  layout: AccountMenuAnchor;
+  onClose(): void;
+  onOpen(initialFocus: AccountMenuInitialFocus): void;
   signOutError?: string | null;
   signingOut: boolean;
+  tooltipId?: string;
 };
 
-export const AccountMenu = forwardRef<HTMLButtonElement, AccountMenuProps>(function AccountMenu(
-  {
-    accountEmail,
-    adminHref,
-    idPrefix = "",
-    layout = "desktop",
-    onOpenChange,
-    onOpenPalette,
-    onOpenLibrary,
-    onOpenSettings,
-    onSignOut,
-    open: controlledOpen,
-    signOutError,
-    signingOut
-  },
-  forwardedTriggerRef
-) {
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
-  const [initialFocus, setInitialFocus] = useState<"first" | "last">("first");
-  const [menuCanScrollDown, setMenuCanScrollDown] = useState(false);
-  const boundaryRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const accountMenuId = `${idPrefix}account-menu`;
-  const signOutErrorDescriptionId = `${idPrefix}account-sign-out-error-description`;
-  const signOutErrorDetailId = `${idPrefix}account-sign-out-error-detail`;
-  const accountIdentity = accountEmail?.trim() || "Email unavailable";
-  const accountTriggerLabel = `Account menu for ${accountIdentity}`;
-  const open = controlledOpen ?? uncontrolledOpen;
-  const accountFocusClass =
-    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-workspace-rail";
-  const setTriggerRef = useCallback(
-    (node: HTMLButtonElement | null) => {
-      triggerRef.current = node;
-      if (typeof forwardedTriggerRef === "function") {
-        forwardedTriggerRef(node);
-      } else if (forwardedTriggerRef) {
-        forwardedTriggerRef.current = node;
-      }
+export const AccountMenuTrigger = forwardRef<HTMLButtonElement, AccountMenuTriggerProps>(
+  function AccountMenuTrigger(
+    {
+      accountEmail,
+      active,
+      controlsId,
+      layout,
+      onClose,
+      onOpen,
+      signOutError,
+      signingOut,
+      tooltipId
     },
-    [forwardedTriggerRef]
-  );
+    ref
+  ) {
+    const accountIdentity = accountEmail?.trim() || "Email unavailable";
+    const rail = layout === "rail";
+    const errorDescriptionId = `${layout}-account-sign-out-error-description`;
+    const describedBy = [tooltipId, signOutError ? errorDescriptionId : null]
+      .filter((value): value is string => Boolean(value))
+      .join(" ") || undefined;
+    const label = rail ? "Account" : `Account menu for ${accountIdentity}`;
+    const focusClass =
+      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-workspace-rail";
+
+    function handleKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        onOpen("first");
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        onOpen("last");
+      } else if (event.key === "Escape" && active) {
+        event.preventDefault();
+        onClose();
+      }
+    }
+
+    return (
+      <>
+        <button
+          ref={ref}
+          className={
+            rail
+              ? `relative grid size-11 shrink-0 place-items-center rounded-control hover:bg-control-hover ${signOutError ? "bg-critical/10 text-critical" : active ? "bg-control-selected text-ink" : "text-ink-secondary"} ${focusClass}`
+              : `relative flex min-h-11 w-full items-center gap-2 rounded-control px-2 text-left hover:bg-control-hover [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch ${signOutError ? "bg-critical/10 text-critical" : "text-ink-secondary"} ${focusClass}`
+          }
+          type="button"
+          aria-busy={signingOut || undefined}
+          aria-controls={active ? controlsId : undefined}
+          aria-describedby={describedBy}
+          aria-expanded={active}
+          aria-haspopup="menu"
+          aria-label={label}
+          data-account-menu-trigger={layout}
+          data-desktop-navigation-control={layout === "mobile" ? undefined : layout}
+          title={label}
+          onClick={() => (active ? onClose() : onOpen("first"))}
+          onKeyDown={handleKeyDown}
+        >
+          <span className={rail ? "relative grid size-5 place-items-center" : "relative grid size-7 shrink-0 place-items-center"} aria-hidden="true">
+            <UserRound className="size-4" />
+            {signOutError ? (
+              <span
+                className="absolute right-0 top-0 size-2 rounded-full border border-workspace-rail bg-critical"
+                data-testid={rail ? "rail-account-error-cue" : "account-error-cue"}
+              />
+            ) : null}
+          </span>
+          {rail ? null : (
+            <>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium" title={accountIdentity}>
+                {accountIdentity}
+              </span>
+              {active ? (
+                <ChevronDown className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
+              ) : (
+                <ChevronUp className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
+              )}
+            </>
+          )}
+        </button>
+        {signOutError ? (
+          <span className="sr-only" id={errorDescriptionId}>
+            Sign out failed. {signOutError} Open Account to retry.
+          </span>
+        ) : null}
+      </>
+    );
+  }
+);
+
+export type AccountMenuProps = {
+  accountEmail: string | null;
+  activeTriggerRef: RefObject<HTMLButtonElement | null>;
+  adminHref?: string | null;
+  anchor: AccountMenuAnchor;
+  initialFocus?: AccountMenuInitialFocus;
+  menuId: string;
+  onClose(): void;
+  onOpenLibrary(): void;
+  onOpenPalette(): void;
+  onOpenSettings(): void;
+  onSignOut(): void;
+  signOutError?: string | null;
+  signingOut: boolean;
+  triggerRefs: readonly RefObject<HTMLButtonElement | null>[];
+};
+
+function placementClass(anchor: AccountMenuAnchor): string {
+  if (anchor === "mobile") {
+    return "absolute bottom-12 left-0 w-full max-w-64";
+  }
+
+  const width = anchor === "rail" ? "w-64" : "w-[15rem]";
+  return `fixed bottom-[calc(max(0.5rem,env(safe-area-inset-bottom))+3.5rem)] left-[calc(3rem+env(safe-area-inset-left)+0.5rem)] ${width} max-w-[calc(100vw-3.5rem-env(safe-area-inset-left)-env(safe-area-inset-right))]`;
+}
+
+export function AccountMenu({
+  accountEmail,
+  activeTriggerRef,
+  adminHref,
+  anchor,
+  initialFocus = "first",
+  menuId,
+  onClose,
+  onOpenLibrary,
+  onOpenPalette,
+  onOpenSettings,
+  onSignOut,
+  signOutError,
+  signingOut,
+  triggerRefs
+}: AccountMenuProps) {
+  const [menuCanScrollDown, setMenuCanScrollDown] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const accountIdentity = accountEmail?.trim() || "Email unavailable";
+  const signOutErrorDetailId = `${menuId}-sign-out-error-detail`;
 
   function menuItems(): HTMLElement[] {
     const candidates = Array.from(
@@ -93,45 +190,24 @@ export const AccountMenu = forwardRef<HTMLButtonElement, AccountMenuProps>(funct
       setMenuCanScrollDown(false);
       return;
     }
-    // The final 8px is the menu's own bottom padding, not hidden content.
     setMenuCanScrollDown(menu.scrollHeight - menu.scrollTop - menu.clientHeight > 8);
   }
 
-  const updateOpen = useCallback(
-    (nextOpen: boolean) => {
-      if (controlledOpen === undefined) {
-        setUncontrolledOpen(nextOpen);
-      }
-      onOpenChange?.(nextOpen);
-    },
-    [controlledOpen, onOpenChange]
-  );
-
   function closeMenu({ restoreFocus = false } = {}) {
-    updateOpen(false);
+    onClose();
     setMenuCanScrollDown(false);
     if (restoreFocus) {
-      window.setTimeout(() => triggerRef.current?.focus({ preventScroll: true }), 0);
+      window.setTimeout(() => activeTriggerRef.current?.focus({ preventScroll: true }), 0);
     }
   }
 
-  function openMenu(focus: "first" | "last" = "first") {
-    setInitialFocus(focus);
-    setMenuCanScrollDown(false);
-    updateOpen(true);
-  }
-
   function replaceMenuWith(openReplacement: () => void) {
-    triggerRef.current?.focus({ preventScroll: true });
-    updateOpen(false);
+    activeTriggerRef.current?.focus({ preventScroll: true });
+    onClose();
     window.setTimeout(openReplacement, 0);
   }
 
   useEffect(() => {
-    if (!open) {
-      return;
-    }
-
     const timer = window.setTimeout(() => {
       const items = menuItems();
       const target = initialFocus === "last" ? items.at(-1) : items[0];
@@ -140,9 +216,10 @@ export const AccountMenu = forwardRef<HTMLButtonElement, AccountMenuProps>(funct
     }, 0);
 
     function handlePointerDown(event: PointerEvent) {
-      if (!boundaryRef.current?.contains(event.target as Node)) {
-        updateOpen(false);
-        setMenuCanScrollDown(false);
+      const target = event.target as Node;
+      const triggerHit = triggerRefs.some((triggerRef) => triggerRef.current?.contains(target));
+      if (!menuRef.current?.contains(target) && !triggerHit) {
+        closeMenu();
       }
     }
 
@@ -153,20 +230,10 @@ export const AccountMenu = forwardRef<HTMLButtonElement, AccountMenuProps>(funct
       window.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("resize", updateScrollCue);
     };
-  }, [initialFocus, open, updateOpen]);
-
-  function handleTriggerKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      openMenu("first");
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      openMenu("last");
-    } else if (event.key === "Escape" && open) {
-      event.preventDefault();
-      closeMenu({ restoreFocus: true });
-    }
-  }
+    // Trigger refs are stable containers owned by the shell. Re-running for
+    // array identity would move menu focus on every parent render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchor, initialFocus]);
 
   function handleMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
@@ -204,156 +271,109 @@ export const AccountMenu = forwardRef<HTMLButtonElement, AccountMenuProps>(funct
     }
   }
 
+  const desktopMaxHeight =
+    "calc(100dvh - max(0.5rem, env(safe-area-inset-top)) - max(0.5rem, env(safe-area-inset-bottom)) - 4.5rem)";
+  const mobileMaxHeight =
+    "calc(100dvh - max(0.5rem, env(safe-area-inset-top)) - max(0.5rem, env(safe-area-inset-bottom)) - 6.5rem)";
+
   return (
-    <div className="relative w-full" data-account-menu-root="true" ref={boundaryRef}>
-      <button
-        ref={setTriggerRef}
-        className={`relative flex min-h-11 w-full items-center gap-2 rounded-control px-2 text-left hover:bg-control-hover [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch ${signOutError ? "bg-critical/10 text-critical" : "text-ink-secondary"} ${accountFocusClass}`}
-        type="button"
-        aria-busy={signingOut || undefined}
-        aria-controls={open ? accountMenuId : undefined}
-        aria-describedby={signOutError ? signOutErrorDescriptionId : undefined}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        aria-label={accountTriggerLabel}
-        title={accountTriggerLabel}
-        onClick={() => (open ? closeMenu({ restoreFocus: true }) : openMenu())}
-        onKeyDown={handleTriggerKeyDown}
+    <div
+      className={`${placementClass(anchor)} z-[80] min-w-0`}
+      data-account-menu-anchor={anchor}
+      data-account-menu-root="true"
+    >
+      <div
+        ref={menuRef}
+        className="account-menu-scrollbar pop-enter w-full overflow-y-auto overscroll-contain rounded-panel border border-trace-subtle bg-overlay-surface p-2 shadow-overlay"
+        id={menuId}
+        role="menu"
+        aria-label="Account"
+        style={{ maxHeight: anchor === "mobile" ? mobileMaxHeight : desktopMaxHeight }}
+        onScroll={updateScrollCue}
+        onKeyDown={handleMenuKeyDown}
       >
-        <span className="relative grid size-7 shrink-0 place-items-center" aria-hidden="true">
-          <UserRound className="size-4" />
-          {signOutError ? (
-            <span
-              className="absolute right-0 top-0 size-2 rounded-full border border-workspace-rail bg-critical"
-              data-testid="account-error-cue"
-            />
-          ) : null}
-        </span>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium" title={accountIdentity}>
-          {accountIdentity}
-        </span>
-        {open ? (
-          <ChevronDown className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
-        ) : (
-          <ChevronUp className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
-        )}
-      </button>
-
-      {signOutError ? (
-        <span className="sr-only" id={signOutErrorDescriptionId}>
-          Sign out failed. {signOutError} Open Account to retry.
-        </span>
-      ) : null}
-
-      {open ? (
-        <div
-          ref={menuRef}
-          className={`account-menu-scrollbar pop-enter absolute bottom-12 left-0 z-[80] w-full max-w-64 overflow-y-auto overscroll-contain rounded-panel border border-trace-subtle bg-overlay-surface p-2 shadow-overlay ${
-            layout === "mobile" ? "" : "max-h-[calc(100dvh-7.5rem)]"
-          }`}
-          id={accountMenuId}
-          role="menu"
-          aria-label="Account"
-          style={
-            layout === "mobile"
-              ? {
-                  maxHeight:
-                    "calc(100dvh - max(0.5rem, env(safe-area-inset-top)) - max(0.5rem, env(safe-area-inset-bottom)) - 6.5rem)"
-                }
-              : undefined
-          }
-          onScroll={updateScrollCue}
-          onKeyDown={handleMenuKeyDown}
-        >
-          <div className="min-w-0 px-3 pb-2 pt-1" role="presentation">
-            <p className="text-xs font-medium text-ink-muted">Account</p>
-            <p
-              className="mt-0.5 break-words text-sm font-medium leading-5 text-ink [overflow-wrap:anywhere]"
-              title={accountEmail?.trim() || undefined}
-            >
-              {accountIdentity}
-            </p>
-          </div>
-          <button
-            className={menuItemClass}
-            type="button"
-            role="menuitem"
-            disabled={signingOut}
-            onClick={() => {
-              replaceMenuWith(onOpenPalette);
-            }}
+        <div className="min-w-0 px-3 pb-2 pt-1" role="presentation">
+          <p className="text-xs font-medium text-ink-muted">Account</p>
+          <p
+            className="mt-0.5 break-words text-sm font-medium leading-5 text-ink [overflow-wrap:anywhere]"
+            title={accountEmail?.trim() || undefined}
           >
-            <Command className="size-4 text-ink-muted" aria-hidden="true" />
-            Command palette
-          </button>
-          <button
-            className={menuItemClass}
-            type="button"
-            role="menuitem"
-            disabled={signingOut}
-            onClick={() => {
-              replaceMenuWith(onOpenLibrary);
-            }}
-          >
-            <ScrollText className="size-4 text-ink-muted" aria-hidden="true" />
-            Assistants
-          </button>
-          <button
-            className={menuItemClass}
-            type="button"
-            role="menuitem"
-            disabled={signingOut}
-            onClick={() => {
-              replaceMenuWith(onOpenSettings);
-            }}
-          >
-            <Settings className="size-4 text-ink-muted" aria-hidden="true" />
-            Settings
-          </button>
-          {adminHref ? (
-            <a
-              className={`${menuItemClass} ${signingOut ? "pointer-events-none text-ink-disabled opacity-60" : ""}`}
-              href={adminHref}
-              role="menuitem"
-              aria-disabled={signingOut || undefined}
-              tabIndex={signingOut ? -1 : undefined}
-              onClick={(event) => {
-                if (signingOut) {
-                  event.preventDefault();
-                  return;
-                }
-                closeMenu();
-              }}
-            >
-              <Shield className="size-4 text-ink-muted" aria-hidden="true" />
-              Control Center
-            </a>
-          ) : null}
-          <div className="my-1 border-t border-trace-subtle" role="separator" />
-          <button
-            className={`${menuItemClass} text-critical hover:bg-critical/10 hover:text-critical focus-visible:bg-critical/10 focus-visible:text-critical`}
-            type="button"
-            role="menuitem"
-            aria-describedby={signOutError ? signOutErrorDetailId : undefined}
-            disabled={signingOut}
-            onClick={onSignOut}
-          >
-            <LogOut className="size-4" aria-hidden="true" />
-            {signingOut ? "Signing out…" : "Sign out"}
-          </button>
-          {signOutError ? (
-            <p
-              className="mt-1 break-words rounded-control bg-critical/10 px-3 py-2 text-xs leading-5 text-critical [overflow-wrap:anywhere]"
-              id={signOutErrorDetailId}
-            >
-              {signOutError}
-            </p>
-          ) : null}
+            {accountIdentity}
+          </p>
         </div>
-      ) : null}
-      {open && menuCanScrollDown ? (
+        <button
+          className={menuItemClass}
+          type="button"
+          role="menuitem"
+          disabled={signingOut}
+          onClick={() => replaceMenuWith(onOpenPalette)}
+        >
+          <Command className="size-4 text-ink-muted" aria-hidden="true" />
+          Command palette
+        </button>
+        <button
+          className={menuItemClass}
+          type="button"
+          role="menuitem"
+          disabled={signingOut}
+          onClick={() => replaceMenuWith(onOpenLibrary)}
+        >
+          <ScrollText className="size-4 text-ink-muted" aria-hidden="true" />
+          Assistants
+        </button>
+        <button
+          className={menuItemClass}
+          type="button"
+          role="menuitem"
+          disabled={signingOut}
+          onClick={() => replaceMenuWith(onOpenSettings)}
+        >
+          <Settings className="size-4 text-ink-muted" aria-hidden="true" />
+          Settings
+        </button>
+        {adminHref ? (
+          <a
+            className={`${menuItemClass} ${signingOut ? "pointer-events-none text-ink-disabled opacity-60" : ""}`}
+            href={adminHref}
+            role="menuitem"
+            aria-disabled={signingOut || undefined}
+            tabIndex={signingOut ? -1 : undefined}
+            onClick={(event) => {
+              if (signingOut) {
+                event.preventDefault();
+                return;
+              }
+              closeMenu();
+            }}
+          >
+            <Shield className="size-4 text-ink-muted" aria-hidden="true" />
+            Control Center
+          </a>
+        ) : null}
+        <div className="my-1 border-t border-trace-subtle" role="separator" />
+        <button
+          className={`${menuItemClass} text-critical hover:bg-critical/10 hover:text-critical focus-visible:bg-critical/10 focus-visible:text-critical`}
+          type="button"
+          role="menuitem"
+          aria-describedby={signOutError ? signOutErrorDetailId : undefined}
+          disabled={signingOut}
+          onClick={onSignOut}
+        >
+          <LogOut className="size-4" aria-hidden="true" />
+          {signingOut ? "Signing out…" : "Sign out"}
+        </button>
+        {signOutError ? (
+          <p
+            className="mt-1 break-words rounded-control bg-critical/10 px-3 py-2 text-xs leading-5 text-critical [overflow-wrap:anywhere]"
+            id={signOutErrorDetailId}
+          >
+            {signOutError}
+          </p>
+        ) : null}
+      </div>
+      {menuCanScrollDown ? (
         <div
-          className="pointer-events-none absolute bottom-12 left-0 z-[81] flex h-8 w-full max-w-64 items-end justify-center rounded-b-panel bg-gradient-to-t from-overlay-surface via-overlay-surface/90 to-transparent pb-1 text-ink-muted"
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-[81] flex h-8 items-end justify-center rounded-b-panel bg-gradient-to-t from-overlay-surface via-overlay-surface/90 to-transparent pb-1 text-ink-muted"
           data-testid="account-menu-scroll-cue"
           aria-hidden="true"
         >
@@ -362,4 +382,4 @@ export const AccountMenu = forwardRef<HTMLButtonElement, AccountMenuProps>(funct
       ) : null}
     </div>
   );
-});
+}

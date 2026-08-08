@@ -270,12 +270,10 @@ describe("TopRail", () => {
     expect(screen.queryByRole("button", { name: /Account menu/ })).not.toBeInTheDocument();
   });
 
-  it("keeps the Workspace trigger available when the persistent rail is hidden", () => {
-    renderTopRail({ workspaceRailHidden: true });
+  it("keeps compact Workspace controls CSS-hidden on desktop independent of pane preference", () => {
+    renderTopRail();
 
-    expect(screen.getByRole("group", { name: "Workspace controls" })).not.toHaveClass(
-      "min-[1281px]:hidden"
-    );
+    expect(screen.getByRole("group", { name: "Workspace controls" })).toHaveClass("min-[1281px]:hidden");
     expect(screen.getByRole("button", { name: "Open workspace" })).toBeEnabled();
   });
 });

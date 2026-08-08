@@ -357,6 +357,34 @@ describe("AssistantLibrary", () => {
     opener.remove();
   });
 
+  it("restores its captured opener or the explicit compact fallback when that opener becomes hidden", async () => {
+    const opener = document.createElement("button");
+    const compactFallback = document.createElement("button");
+    opener.textContent = "Rail Assistants";
+    compactFallback.textContent = "Open workspace";
+    document.body.append(opener, compactFallback);
+    opener.focus();
+
+    const first = render(
+      <AssistantLibrary restoreFocus={() => compactFallback} view={makeView()} />
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chat" })).toHaveFocus());
+    first.unmount();
+    expect(opener).toHaveFocus();
+
+    opener.focus();
+    const second = render(
+      <AssistantLibrary restoreFocus={() => compactFallback} view={makeView()} />
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chat" })).toHaveFocus());
+    opener.style.display = "none";
+    second.unmount();
+    expect(compactFallback).toHaveFocus();
+
+    opener.remove();
+    compactFallback.remove();
+  });
+
   it("returns focus to the editor after Keep editing and to the list after confirmed discard", async () => {
     const editor = makeEditor({ dirty: true });
     const listView = makeView();

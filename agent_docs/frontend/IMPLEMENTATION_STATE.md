@@ -45,7 +45,7 @@ Exact response decoders run before store mutation. Workspace summaries contain n
 Browser-local state includes:
 
 - auth drafts and the bounded tab-scoped text-only re-authentication handoff;
-- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, browser-local persistent Workspace-rail visibility, and focus restoration;
+- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, browser-local persistent wide Workspace-pane visibility under the legacy `aiqsa.workspaceRail` key, and focus restoration;
 - keyed composer drafts, edit intent, staged attachments, async operation tokens, and local feedback;
 - foreground text buffering and controller ownership;
 - manual Details mode/tab, folder collapse, local notices, and theme choice.
@@ -138,10 +138,18 @@ context disclosure belong to [Messages](MESSAGES_AND_MARKDOWN.md),
 ### Shell and session ownership
 
 - Shell adapters project the action destinations and availability owned by
-  [product and layout](PRODUCT_AND_LAYOUT.md); they do not create a second
-  navigation, Account, conversation-action, or Details owner.
+  [product and layout](PRODUCT_AND_LAYOUT.md). `WorkspaceIconRail` is the narrow
+  desktop presentation owner for those existing global destinations; it does
+  not create a second navigation, Account, conversation-action, or Details
+  state owner.
 - Initial bootstrap has one actionable Retry surface and disables dependent mutations. Blank-chat and zero-model states render only after readiness and distinguish an empty workspace from missing granted access. The zero-model projection also distinguishes admin authority: only an administrator receives the direct Control Center provider-setup action.
-- Above the compact shell threshold, Workspace-rail visibility is one browser-local presentation preference. Hiding closes rail-owned menus and focuses the surviving Workspace trigger; restoring focuses the rail's hide action. At compact widths the same trigger continues to own the modal drawer, and no chat/folder/account state migrates into this preference.
+- Above the compact shell threshold, the icon rail is mandatory and wide
+  Workspace-pane visibility is one browser-local presentation preference.
+  Hiding closes pane-owned menus, re-anchors a pane Account surface to rail
+  Account when necessary, and focuses rail `Chats`; restoring focuses the
+  pane's hide action. The rail and pane Account triggers share one externally
+  anchored surface. At compact widths `Open workspace` continues to own the
+  modal drawer, and no chat/folder/account state migrates into this preference.
 - A persisted chat with no provider/model default is valid. Blank startup uses only the catalog's exact effective personal-or-installation default; when that projection is absent, the shell keeps model selection empty instead of substituting the first visible model. Existing-chat activation preserves its independent saved tuple and established non-persisting visible fallback when that tuple is absent or unavailable. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
 - Any Chat `401` creates one sticky session-expiry transition. Concurrent failures navigate once, store only the active text draft in tab-scoped owner-bound state, and restore it after the same account reauthenticates only into an untouched matching destination. The handoff expires after 30 minutes and never includes attachments.
 - Sign-out failure remains visibly attributable to Account and retryable. Answer completion may use the local audio/favicon alert; hidden-tab signaling stops when the user returns.
@@ -150,7 +158,7 @@ context disclosure belong to [Messages](MESSAGES_AND_MARKDOWN.md),
 
 Theme preference is local, and the palette registry preserves every supported stored theme id. A valid LocalStorage value wins after hydration and repairs the same-site cookie; invalid local state yields to the validated server-rendered theme. First paint and runtime changes set `data-theme` and `data-color-scheme` together. Theme never becomes user/account/conversation data.
 
-Dialog focus is session-scoped: entry, Tab containment, Escape ownership, nested confirmation priority, and opener restoration belong to the focused overlay owner. A drawer becoming a pinned panel releases modal behavior without prematurely restoring focus.
+Dialog focus is session-scoped: entry, Tab containment, Escape ownership, nested confirmation priority, and opener restoration belong to the focused overlay owner. A responsive transition replaces a CSS-hidden desktop-navigation opener with compact `Open workspace`, remembers its exact source, and restores that source on desktop return only while the fallback still owns focus. A drawer becoming a pinned panel releases modal behavior without prematurely restoring focus.
 
 ## Testability Rules
 

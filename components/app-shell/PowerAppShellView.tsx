@@ -6,7 +6,12 @@ import {
   FolderDeleteConfirmationDialog,
   MessageDeleteConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
-import { AccountMenu } from "@/components/app-shell/AccountMenu";
+import {
+  AccountMenu,
+  AccountMenuTrigger,
+  type AccountMenuInitialFocus,
+  type DesktopAccountMenuAnchor
+} from "@/components/app-shell/AccountMenu";
 import { DetailedInspector } from "@/components/app-shell/InspectorPanels";
 import { MainThreadPane } from "@/components/app-shell/MainThreadPane";
 import type {
@@ -20,6 +25,7 @@ import { SettingsDialog } from "@/components/app-shell/SettingsDialog";
 import { ShellLeftPane } from "@/components/app-shell/ShellLeftPane";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
 import { TopRail } from "@/components/app-shell/TopRail";
+import { WorkspaceIconRail } from "@/components/app-shell/WorkspaceIconRail";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import {
@@ -40,6 +46,37 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 export type { PowerAppShellViewProps } from "@/components/app-shell/powerAppShellViewContracts";
 
 export const mobileWorkspaceDesktopMediaQuery = "(min-width: 1281px)";
+
+type ResponsiveNavigationOrigin = {
+  element: HTMLElement;
+  fallback: "account" | "chats";
+};
+
+function elementCanReceiveResponsiveRestore(
+  element: HTMLElement,
+  pane: HTMLElement | null,
+  paneHidden: boolean
+): boolean {
+  if (!element.isConnected || element.getAttribute("aria-disabled") === "true") {
+    return false;
+  }
+  if (paneHidden && pane?.contains(element)) {
+    return false;
+  }
+
+  let current: HTMLElement | null = element;
+  while (current) {
+    if (current.hidden || current.hasAttribute("inert") || current.getAttribute("aria-hidden") === "true") {
+      return false;
+    }
+    const style = window.getComputedStyle(current);
+    if (style.display === "none" || style.visibility === "hidden") {
+      return false;
+    }
+    current = current.parentElement;
+  }
+  return true;
+}
 
 function warningText(event: RunEventView): string | null {
   if (event.type !== "warning" || typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) {
@@ -160,10 +197,12 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   );
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
-  const [desktopAccountMenuOpen, setDesktopAccountMenuOpen] = useState(false);
-  const [accountBreakpointFocusTransferred, setAccountBreakpointFocusTransferred] = useState(false);
+  const [desktopAccountAnchor, setDesktopAccountAnchor] = useState<DesktopAccountMenuAnchor | null>(null);
+  const [desktopAccountInitialFocus, setDesktopAccountInitialFocus] = useState<AccountMenuInitialFocus>("first");
+  const [responsiveNavigationTransferActive, setResponsiveNavigationTransferActive] = useState(false);
   const [mobileAccountMenuOpen, setMobileAccountMenuOpen] = useState(false);
-  const [workspaceRailHidden, setWorkspaceRailHidden] = useState(false);
+  const [mobileAccountInitialFocus, setMobileAccountInitialFocus] = useState<AccountMenuInitialFocus>("first");
+  const [workspacePaneHidden, setWorkspacePaneHidden] = useState(false);
   const runAnnouncerRef = useRef<HTMLParagraphElement>(null);
   const runAnnouncementStateRef = useRef<{
     activeChatId: string | null;
@@ -174,10 +213,21 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     lastPipeline: null,
     observedRunning: false
   });
-  const desktopAccountButtonRef = useRef<HTMLButtonElement>(null);
+  const desktopIconNavigationRef = useRef<HTMLDivElement>(null);
+  const desktopPaneNavigationRef = useRef<HTMLDivElement>(null);
+  const desktopPaneAccountButtonRef = useRef<HTMLButtonElement>(null);
+  const desktopRailAccountButtonRef = useRef<HTMLButtonElement>(null);
+  const desktopRailAssistantsButtonRef = useRef<HTMLButtonElement>(null);
+  const desktopRailSettingsButtonRef = useRef<HTMLButtonElement>(null);
   const desktopWorkspaceToggleRef = useRef<HTMLButtonElement>(null);
+  const mobileAccountButtonRef = useRef<HTMLButtonElement>(null);
   const mobileWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
   const mobileWorkspaceScrollTopRef = useRef<number | undefined>(undefined);
+  const responsiveNavigationOriginRef = useRef<ResponsiveNavigationOrigin | null>(null);
+  const overlayDesktopOpenerRef = useRef<HTMLElement | null>(null);
+  const workspaceChatsButtonRef = useRef<HTMLButtonElement>(null);
+  const workspaceNewChatButtonRef = useRef<HTMLButtonElement>(null);
+  const workspaceControlCenterRef = useRef<HTMLAnchorElement>(null);
   const cancelDeleteChatEvent = useEventCallback(cancelDeleteChat);
   const cancelDeleteFolderEvent = useEventCallback(cancelDeleteFolder);
   useEffect(() => {
@@ -221,7 +271,11 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   }, [activeChatId, activeChatStreaming, pipeline]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setWorkspaceRailHidden(storedWorkspaceRailHidden());
+      const hidden = storedWorkspaceRailHidden();
+      setWorkspacePaneHidden(hidden);
+      if (hidden) {
+        setDesktopAccountAnchor((anchor) => (anchor === "pane" ? "rail" : anchor));
+      }
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -269,73 +323,145 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     return () => desktopViewport.removeEventListener("change", handleDesktopViewport);
   }, [closeMobileWorkspaceForDesktop, mobileWorkspaceOpen]);
   useEffect(() => {
-    if (
-      (!desktopAccountMenuOpen && !accountBreakpointFocusTransferred) ||
-      typeof window.matchMedia !== "function"
-    ) {
+    if (typeof window.matchMedia !== "function") {
       return;
     }
 
     const desktopViewport = window.matchMedia(mobileWorkspaceDesktopMediaQuery);
-    function preserveAccountFocusAcrossBreakpoint(event: Pick<MediaQueryListEvent, "matches">) {
-      const desktopRailVisible = event.matches && !workspaceRailHidden;
-      if (!desktopRailVisible && desktopAccountMenuOpen) {
-        setDesktopAccountMenuOpen(false);
-        setAccountBreakpointFocusTransferred(true);
-        window.setTimeout(() => mobileWorkspaceButtonRef.current?.focus({ preventScroll: true }), 0);
+    function originFor(element: HTMLElement | null): ResponsiveNavigationOrigin | null {
+      if (!element) {
+        return null;
+      }
+      const inRail = desktopIconNavigationRef.current?.contains(element);
+      const inPane = desktopPaneNavigationRef.current?.contains(element);
+      if (!inRail && !inPane) {
+        return null;
+      }
+      return {
+        element,
+        fallback: element === desktopPaneAccountButtonRef.current ? "account" : "chats"
+      };
+    }
+
+    function activeDesktopOrigin(): ResponsiveNavigationOrigin | null {
+      const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const directOrigin = originFor(activeElement);
+      if (directOrigin) {
+        return directOrigin;
+      }
+
+      if (desktopAccountAnchor && activeElement?.closest('[data-account-menu-root="true"]')) {
+        const accountTrigger = desktopAccountAnchor === "rail"
+          ? desktopRailAccountButtonRef.current
+          : desktopPaneAccountButtonRef.current;
+        return originFor(accountTrigger);
+      }
+
+      if (settingsState.open || libraryView) {
+        return originFor(overlayDesktopOpenerRef.current);
+      }
+      return null;
+    }
+
+    function preserveNavigationFocusAcrossBreakpoint(event: Pick<MediaQueryListEvent, "matches">) {
+      if (!event.matches) {
+        const origin = activeDesktopOrigin();
+        const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        const overlayOwnsFocus = Boolean(
+          activeElement?.closest('[data-testid="settings-dialog"], [data-testid="assistant-library"]')
+        );
+        if (origin) {
+          responsiveNavigationOriginRef.current = origin;
+          setResponsiveNavigationTransferActive(true);
+        }
+        if (desktopAccountAnchor) {
+          setDesktopAccountAnchor(null);
+        }
+        if (origin && !overlayOwnsFocus && !settingsState.open && !libraryView) {
+          window.setTimeout(() => mobileWorkspaceButtonRef.current?.focus({ preventScroll: true }), 0);
+        }
         return;
       }
 
-      if (desktopRailVisible && accountBreakpointFocusTransferred) {
-        setAccountBreakpointFocusTransferred(false);
-        window.setTimeout(() => desktopAccountButtonRef.current?.focus({ preventScroll: true }), 0);
+      const transfer = responsiveNavigationOriginRef.current;
+      if (!transfer) {
+        return;
       }
+      const activeElement = document.activeElement;
+      const compactFallbackStillOwnsFocus =
+        activeElement === mobileWorkspaceButtonRef.current ||
+        (responsiveNavigationTransferActive &&
+          (activeElement === document.body || activeElement === document.documentElement));
+      if (!compactFallbackStillOwnsFocus) {
+        if (!settingsState.open && !libraryView) {
+          responsiveNavigationOriginRef.current = null;
+          setResponsiveNavigationTransferActive(false);
+        }
+        return;
+      }
+
+      window.setTimeout(() => {
+        const target = elementCanReceiveResponsiveRestore(
+          transfer.element,
+          desktopPaneNavigationRef.current,
+          workspacePaneHidden
+        )
+          ? transfer.element
+          : transfer.fallback === "account"
+            ? desktopRailAccountButtonRef.current
+            : workspaceChatsButtonRef.current;
+        target?.focus({ preventScroll: true });
+        responsiveNavigationOriginRef.current = null;
+        setResponsiveNavigationTransferActive(false);
+      }, 0);
     }
 
-    preserveAccountFocusAcrossBreakpoint(desktopViewport);
-    desktopViewport.addEventListener("change", preserveAccountFocusAcrossBreakpoint);
-    return () => desktopViewport.removeEventListener("change", preserveAccountFocusAcrossBreakpoint);
-  }, [accountBreakpointFocusTransferred, desktopAccountMenuOpen, workspaceRailHidden]);
+    desktopViewport.addEventListener("change", preserveNavigationFocusAcrossBreakpoint);
+    return () => desktopViewport.removeEventListener("change", preserveNavigationFocusAcrossBreakpoint);
+  }, [
+    desktopAccountAnchor,
+    libraryView,
+    responsiveNavigationTransferActive,
+    settingsState.open,
+    workspacePaneHidden
+  ]);
   useEffect(() => {
-    if (!accountBreakpointFocusTransferred) {
+    if (!responsiveNavigationTransferActive) {
       return;
     }
 
-    function releaseTransferredAccountFocus(event: FocusEvent) {
-      if (event.target !== mobileWorkspaceButtonRef.current) {
-        setAccountBreakpointFocusTransferred(false);
+    function releaseTransferredNavigationFocus(event: FocusEvent) {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (
+        target === mobileWorkspaceButtonRef.current ||
+        target?.closest('[data-testid="settings-dialog"], [data-testid="assistant-library"]')
+      ) {
+        return;
       }
+      responsiveNavigationOriginRef.current = null;
+      setResponsiveNavigationTransferActive(false);
     }
 
-    document.addEventListener("focusin", releaseTransferredAccountFocus);
-    return () => document.removeEventListener("focusin", releaseTransferredAccountFocus);
-  }, [accountBreakpointFocusTransferred]);
+    document.addEventListener("focusin", releaseTransferredNavigationFocus);
+    return () => document.removeEventListener("focusin", releaseTransferredNavigationFocus);
+  }, [responsiveNavigationTransferActive]);
   const closeDetails = useCallback(() => {
     setInspectorMode("closed");
   }, [setInspectorMode]);
-  const hideWorkspaceRail = useCallback(() => {
+  const hideWorkspacePane = useCallback(() => {
     workspace.pane.actions.closeMenus();
-    setDesktopAccountMenuOpen(false);
+    setDesktopAccountAnchor((anchor) => (anchor === "pane" ? "rail" : anchor));
     rememberWorkspaceRailHidden(true);
-    setWorkspaceRailHidden(true);
-    window.setTimeout(() => mobileWorkspaceButtonRef.current?.focus({ preventScroll: true }), 0);
-  }, [workspace.pane.actions]);
-  const showWorkspaceRail = useCallback(() => {
+    setWorkspacePaneHidden(true);
+    if (!desktopAccountAnchor) {
+      window.setTimeout(() => workspaceChatsButtonRef.current?.focus({ preventScroll: true }), 0);
+    }
+  }, [desktopAccountAnchor, workspace.pane.actions]);
+  const showWorkspacePane = useCallback(() => {
     rememberWorkspaceRailHidden(false);
-    setWorkspaceRailHidden(false);
+    setWorkspacePaneHidden(false);
     window.setTimeout(() => desktopWorkspaceToggleRef.current?.focus({ preventScroll: true }), 0);
   }, []);
-  const openWorkspaceFromRail = useCallback(() => {
-    if (
-      workspaceRailHidden &&
-      typeof window.matchMedia === "function" &&
-      window.matchMedia(mobileWorkspaceDesktopMediaQuery).matches
-    ) {
-      showWorkspaceRail();
-      return;
-    }
-    workspace.mobile.show();
-  }, [showWorkspaceRail, workspace.mobile, workspaceRailHidden]);
   const handleSignOut = useCallback(async () => {
     if (signingOut) {
       return;
@@ -350,67 +476,122 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     }
   }, [signingOut]);
   const openPaletteFromMobileAccount = useEventCallback(() => {
+    overlayDesktopOpenerRef.current = null;
     closeMobileWorkspaceEvent();
     window.setTimeout(palette.show, 0);
   });
   const openLibraryFromMobileAccount = useEventCallback(() => {
+    overlayDesktopOpenerRef.current = null;
     closeMobileWorkspaceEvent();
     window.setTimeout(settings.openLibrary, 0);
   });
   const openSettingsFromMobileAccount = useEventCallback(() => {
+    overlayDesktopOpenerRef.current = null;
     closeMobileWorkspaceEvent();
     window.setTimeout(settings.open, 0);
   });
+  const openDesktopAccount = useCallback(
+    (anchor: DesktopAccountMenuAnchor, initialFocus: AccountMenuInitialFocus) => {
+      setDesktopAccountInitialFocus(initialFocus);
+      setDesktopAccountAnchor(anchor);
+    },
+    []
+  );
+  const openPaletteFromDesktopAccount = useEventCallback(() => {
+    overlayDesktopOpenerRef.current = null;
+    palette.show();
+  });
+  const openLibraryFromDesktopAccount = useEventCallback(() => {
+    overlayDesktopOpenerRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : desktopPaneAccountButtonRef.current;
+    settings.openLibrary();
+  });
+  const openSettingsFromDesktopAccount = useEventCallback(() => {
+    overlayDesktopOpenerRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : desktopPaneAccountButtonRef.current;
+    settings.open();
+  });
+  const openLibraryFromRail = useEventCallback(() => {
+    desktopRailAssistantsButtonRef.current?.focus({ preventScroll: true });
+    overlayDesktopOpenerRef.current = desktopRailAssistantsButtonRef.current;
+    setDesktopAccountAnchor(null);
+    settings.openLibrary();
+  });
+  const openSettingsFromRail = useEventCallback(() => {
+    desktopRailSettingsButtonRef.current?.focus({ preventScroll: true });
+    overlayDesktopOpenerRef.current = desktopRailSettingsButtonRef.current;
+    setDesktopAccountAnchor(null);
+    settings.open();
+  });
+  const responsiveOverlayRestoreFocus = useEventCallback(() =>
+    responsiveNavigationOriginRef.current ? mobileWorkspaceButtonRef.current : null
+  );
   const desktopAccountFooter = useMemo(
     () => (
-      <AccountMenu
-        ref={desktopAccountButtonRef}
+      <AccountMenuTrigger
+        ref={desktopPaneAccountButtonRef}
         accountEmail={accountEmail}
-        adminHref={adminEntryVisible ? "/admin" : null}
-        onOpenChange={setDesktopAccountMenuOpen}
-        onOpenLibrary={settings.openLibrary}
-        onOpenPalette={palette.show}
-        onOpenSettings={settings.open}
-        onSignOut={handleSignOut}
-        open={desktopAccountMenuOpen}
+        active={desktopAccountAnchor === "pane"}
+        controlsId="account-menu"
+        layout="pane"
+        onClose={() => setDesktopAccountAnchor(null)}
+        onOpen={(initialFocus) => openDesktopAccount("pane", initialFocus)}
         signOutError={signOutError}
         signingOut={signingOut}
       />
     ),
     [
       accountEmail,
-      adminEntryVisible,
-      desktopAccountMenuOpen,
-      handleSignOut,
-      palette.show,
-      settings.open,
-      settings.openLibrary,
+      desktopAccountAnchor,
+      openDesktopAccount,
       signOutError,
       signingOut
     ]
   );
   const mobileAccountFooter = useMemo(
     () => (
-      <AccountMenu
-        accountEmail={accountEmail}
-        adminHref={adminEntryVisible ? "/admin" : null}
-        idPrefix="mobile-"
-        layout="mobile"
-        onOpenChange={setMobileAccountMenuOpen}
-        onOpenLibrary={openLibraryFromMobileAccount}
-        onOpenPalette={openPaletteFromMobileAccount}
-
-        onOpenSettings={openSettingsFromMobileAccount}
-        onSignOut={handleSignOut}
-        open={mobileAccountMenuOpen}
-        signOutError={signOutError}
-        signingOut={signingOut}
-      />
+      <div className="relative w-full">
+        <AccountMenuTrigger
+          ref={mobileAccountButtonRef}
+          accountEmail={accountEmail}
+          active={mobileAccountMenuOpen}
+          controlsId="mobile-account-menu"
+          layout="mobile"
+          onClose={() => setMobileAccountMenuOpen(false)}
+          onOpen={(initialFocus) => {
+            setMobileAccountInitialFocus(initialFocus);
+            setMobileAccountMenuOpen(true);
+          }}
+          signOutError={signOutError}
+          signingOut={signingOut}
+        />
+        {mobileAccountMenuOpen ? (
+          <AccountMenu
+            accountEmail={accountEmail}
+            activeTriggerRef={mobileAccountButtonRef}
+            adminHref={adminEntryVisible ? "/admin" : null}
+            anchor="mobile"
+            initialFocus={mobileAccountInitialFocus}
+            menuId="mobile-account-menu"
+            onClose={() => setMobileAccountMenuOpen(false)}
+            onOpenLibrary={openLibraryFromMobileAccount}
+            onOpenPalette={openPaletteFromMobileAccount}
+            onOpenSettings={openSettingsFromMobileAccount}
+            onSignOut={handleSignOut}
+            signOutError={signOutError}
+            signingOut={signingOut}
+            triggerRefs={[mobileAccountButtonRef]}
+          />
+        ) : null}
+      </div>
     ),
     [
       accountEmail,
       adminEntryVisible,
       handleSignOut,
+      mobileAccountInitialFocus,
       mobileAccountMenuOpen,
       openPaletteFromMobileAccount,
       openLibraryFromMobileAccount,
@@ -528,32 +709,74 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         <div
           className={[
             "grid h-full min-h-0 grid-cols-1 overflow-hidden bg-app-canvas",
-            workspaceRailHidden ? "" : "min-[1281px]:grid-cols-[16rem_minmax(0,1fr)]",
+            workspacePaneHidden
+              ? "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_minmax(0,1fr)]"
+              : "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]",
             inspectorMode === "pinned"
-              ? workspaceRailHidden
-                ? "min-[1440px]:grid-cols-[minmax(0,1fr)_23rem]"
-                : "min-[1440px]:grid-cols-[16rem_minmax(0,1fr)_23rem]"
+              ? workspacePaneHidden
+                ? "min-[1440px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_minmax(0,1fr)_23rem]"
+                : "min-[1440px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)_23rem]"
               : ""
           ].join(" ")}
           data-details-presentation={inspectorMode}
-          data-workspace-rail-hidden={workspaceRailHidden ? "true" : undefined}
+          data-workspace-pane-hidden={workspacePaneHidden ? "true" : undefined}
           data-testid="shell-workspace-grid"
         >
           <div
+            ref={desktopIconNavigationRef}
+            className="hidden min-h-0 min-w-0 bg-workspace-rail min-[1281px]:block"
+            data-testid="workspace-icon-track"
+          >
+            <WorkspaceIconRail
+              accountTrigger={(tooltipId) => (
+                <AccountMenuTrigger
+                  ref={desktopRailAccountButtonRef}
+                  accountEmail={accountEmail}
+                  active={desktopAccountAnchor === "rail"}
+                  controlsId="account-menu"
+                  layout="rail"
+                  onClose={() => setDesktopAccountAnchor(null)}
+                  onOpen={(initialFocus) => openDesktopAccount("rail", initialFocus)}
+                  signOutError={signOutError}
+                  signingOut={signingOut}
+                  tooltipId={tooltipId}
+                />
+              )}
+              adminHref={adminEntryVisible ? "/admin" : null}
+              assistantsRef={desktopRailAssistantsButtonRef}
+              chatsRef={workspaceChatsButtonRef}
+              controlCenterRef={workspaceControlCenterRef}
+              creatingChat={workspace.pane.state.creatingChat}
+              newChatRef={workspaceNewChatButtonRef}
+              onNewChat={() => void workspace.pane.actions.createChat()}
+              onOpenAssistants={openLibraryFromRail}
+              onOpenSettings={openSettingsFromRail}
+              onRestoreChats={showWorkspacePane}
+              paneHidden={workspacePaneHidden}
+              settingsRef={desktopRailSettingsButtonRef}
+              signingOut={signingOut}
+              workspaceReady={workspace.pane.state.workspaceReady}
+            />
+          </div>
+
+          <div
+            ref={desktopPaneNavigationRef}
             className={[
               "hidden min-h-0 min-w-0 bg-workspace-rail",
-              workspaceRailHidden
+              workspacePaneHidden
                 ? ""
-                : "min-[1281px]:grid min-[1281px]:grid-rows-[minmax(0,1fr)] min-[1281px]:pl-[env(safe-area-inset-left)] min-[1281px]:pt-[env(safe-area-inset-top)]"
+                : "min-[1281px]:grid min-[1281px]:grid-rows-[minmax(0,1fr)] min-[1281px]:pt-[env(safe-area-inset-top)]"
             ].join(" ")}
-            data-testid="workspace-rail"
+            aria-hidden={workspacePaneHidden || undefined}
+            data-testid="workspace-pane-desktop"
+            inert={workspacePaneHidden || undefined}
           >
             <ShellLeftPane
               activeChatId={activeChatId}
               availableChatModelKeys={availableChatModelKeys}
               chatModelLabels={chatModelLabels}
               footer={mobileWorkspaceOpen ? null : desktopAccountFooter}
-              onHideWorkspace={hideWorkspaceRail}
+              onHideWorkspace={hideWorkspacePane}
               pane={workspace.pane}
               workspaceToggleRef={desktopWorkspaceToggleRef}
             />
@@ -585,11 +808,10 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               }}
               onOpenBranches={() => openDetails("branch")}
               onOpenPipeline={() => openDetails("events")}
-              onOpenWorkspace={openWorkspaceFromRail}
+              onOpenWorkspace={workspace.mobile.show}
               onShare={() => void shareActiveBranch()}
               onStartNewChat={() => void workspace.pane.actions.createChat()}
               workspaceButtonRef={mobileWorkspaceButtonRef}
-              workspaceRailHidden={workspaceRailHidden}
               workspaceAttention={Boolean(signOutError)}
             />
 
@@ -625,6 +847,29 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
           ) : null}
         </div>
       </div>
+
+      {desktopAccountAnchor ? (
+        <AccountMenu
+          accountEmail={accountEmail}
+          activeTriggerRef={
+            desktopAccountAnchor === "rail"
+              ? desktopRailAccountButtonRef
+              : desktopPaneAccountButtonRef
+          }
+          adminHref={adminEntryVisible ? "/admin" : null}
+          anchor={desktopAccountAnchor}
+          initialFocus={desktopAccountInitialFocus}
+          menuId="account-menu"
+          onClose={() => setDesktopAccountAnchor(null)}
+          onOpenLibrary={openLibraryFromDesktopAccount}
+          onOpenPalette={openPaletteFromDesktopAccount}
+          onOpenSettings={openSettingsFromDesktopAccount}
+          onSignOut={handleSignOut}
+          signOutError={signOutError}
+          signingOut={signingOut}
+          triggerRefs={[desktopRailAccountButtonRef, desktopPaneAccountButtonRef]}
+        />
+      ) : null}
 
       {shellNotice && !shellNotice.persistent && !settingsState.open && !libraryView ? (
         <div
@@ -731,7 +976,9 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         />
       ) : null}
 
-      {libraryView ? <AssistantLibrary view={libraryView} /> : null}
+      {libraryView ? (
+        <AssistantLibrary restoreFocus={responsiveOverlayRestoreFocus} view={libraryView} />
+      ) : null}
 
       {settingsState.open && !libraryView ? (
         <SettingsDialog
@@ -746,6 +993,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
           }}
           onDismissNotice={settings.dismissNotice}
           onThemeChange={updateTheme}
+          restoreFocus={responsiveOverlayRestoreFocus}
         />
       ) : null}
 
