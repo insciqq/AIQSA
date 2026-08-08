@@ -9,6 +9,10 @@ import {
   calculateAttachmentLimitUsage,
   type AttachmentLimitUsage
 } from "@/components/app-shell/attachmentLimitUsage";
+import {
+  attachmentRetryAvailable,
+  clientAttachmentFailureMessage
+} from "@/components/app-shell/attachmentLifecycle";
 import { isImeCompositionEvent } from "@/components/keyboard";
 import type { PdfProcessingWire, UploadedAttachmentWire } from "@/lib/contracts/uploads";
 import {
@@ -661,7 +665,7 @@ export function Composer({
                 const lifecycleMessage = lifecycleStatus === "processing"
                   ? "Processing…"
                   : lifecycleStatus === "failed"
-                    ? ({
+                    ? clientAttachmentFailureMessage(attachment.processingErrorCode) ?? ({
                         animated_gif_not_supported: "Animated GIFs are not supported.",
                         attachment_checksum_mismatch: "The stored file failed its integrity check.",
                         attachment_object_read_failed: "The stored file could not be read.",
@@ -759,7 +763,9 @@ export function Composer({
                       </div>
                     )}
                     <div className="flex shrink-0 items-center">
-                      {lifecycleStatus === "failed" && onRetryAttachment ? (
+                      {lifecycleStatus === "failed" &&
+                      onRetryAttachment &&
+                      attachmentRetryAvailable(attachment) ? (
                         <button
                           className="inline-flex h-11 items-center gap-1 rounded-control px-2 text-xs font-medium text-critical hover:bg-critical/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus sm:h-8 [@media(hover:none)]:!h-11 [@media(pointer:coarse)]:!h-11"
                           type="button"

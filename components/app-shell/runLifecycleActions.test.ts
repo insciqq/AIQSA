@@ -493,6 +493,129 @@ describe("run lifecycle actions", () => {
     });
   });
 
+  it("fails a missing polled attachment and allows send after removal", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({
+        attachment: {
+          extractedText: null,
+          fileName: "missing.docx",
+          id: "attachment-1",
+          kind: "document",
+          status: "processing"
+        }
+      }))
+      .mockResolvedValueOnce(
+        Response.json({ error: "attachment_not_found" }, { status: 404 })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+    useComposerSessionStore.getState().setDraft("Question");
+
+    await actions.uploadFiles([
+      new File(["docx"], "missing.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      })
+    ]);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(composerSession("chat-1")).toMatchObject({
+      attachments: [{
+        fileName: "missing.docx",
+        id: "attachment-1",
+        kind: "document",
+        processingErrorCode: "attachment_unavailable",
+        status: "failed"
+      }],
+      operationError: "missing.docx: attachment is no longer available."
+    });
+    expect(
+      useComposerSessionStore.getState().beginSend(composerSessionKey("chat-1"))
+    ).toBeNull();
+
+    await actions.retryAttachment("attachment-1");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    useComposerSessionStore.getState().setAttachments([]);
+    expect(
+      useComposerSessionStore.getState().beginSend(composerSessionKey("chat-1"))
+    ).toMatchObject({ draft: "Question" });
+  });
+
+  it("turns poll-horizon expiry into a retryable status check", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-08T00:00:00.000Z"));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({
+        attachment: {
+          extractedText: null,
+          fileName: "slow.docx",
+          id: "attachment-1",
+          kind: "document",
+          status: "processing"
+        }
+      }))
+      .mockResolvedValueOnce(Response.json({
+        attachment: {
+          extractedText: null,
+          fileName: "slow.docx",
+          id: "attachment-1",
+          kind: "document",
+          status: "processing"
+        }
+      }))
+      .mockResolvedValueOnce(Response.json({
+        attachment: {
+          extractedText: "Eventually ready",
+          fileName: "slow.docx",
+          id: "attachment-1",
+          kind: "document",
+          processingErrorCode: null,
+          status: "ready"
+        }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    await actions.uploadFiles([
+      new File(["docx"], "slow.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      })
+    ]);
+    vi.setSystemTime(new Date("2026-08-08T00:15:00.000Z"));
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(composerSession("chat-1").attachments).toEqual([
+      expect.objectContaining({
+        id: "attachment-1",
+        processingErrorCode: "attachment_poll_timeout",
+        status: "failed"
+      })
+    ]);
+
+    await actions.retryAttachment("attachment-1");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(composerSession("chat-1").attachments).toEqual([
+      expect.objectContaining({
+        id: "attachment-1",
+        processingErrorCode: null,
+        status: "processing"
+      })
+    ]);
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/uploads/attachment-1");
+    expect(composerSession("chat-1").attachments).toEqual([
+      expect.objectContaining({
+        extractedText: "Eventually ready",
+        id: "attachment-1",
+        status: "ready"
+      })
+    ]);
+  });
+
   it("keeps polling after a malformed successful status response", async () => {
     vi.useFakeTimers();
     const fetchMock = vi

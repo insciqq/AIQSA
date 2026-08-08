@@ -3,6 +3,11 @@ import {
   selectComposerSession,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
+import {
+  attachmentRetryAvailable,
+  ATTACHMENT_POLL_TIMEOUT_ERROR_CODE,
+  ATTACHMENT_UNAVAILABLE_ERROR_CODE
+} from "@/components/app-shell/attachmentLifecycle";
 import { shellFetch } from "@/components/app-shell/shellApi";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
 import { isRecord } from "@/components/app-shell/shellValues";
@@ -57,6 +62,10 @@ const ATTACHMENT_POLL_HORIZON_MS = 15 * 60_000;
 
 function attachmentPollKey(sourceKey: ComposerSessionKey, attachmentId: string): string {
   return `${sourceKey}\u0000${attachmentId}`;
+}
+
+function attachmentPollTimeoutMessage(fileName: string): string {
+  return `${fileName}: processing is taking longer than expected. Retry status checking or remove the file.`;
 }
 
 async function uploadFailureMessage(response: Response): Promise<string> {
@@ -147,9 +156,16 @@ export function useRunLifecycleActions({
         }
         if (!response.ok) {
           if (response.status === 404) {
-            useComposerSessionStore.getState().updateSession(sourceKey, {
-              operationError: `${staged.fileName}: attachment is no longer available.`
-            });
+            const currentStore = useComposerSessionStore.getState();
+            if (currentStore.updateUploadedAttachment(sourceKey, {
+              ...staged,
+              processingErrorCode: ATTACHMENT_UNAVAILABLE_ERROR_CODE,
+              status: "failed"
+            })) {
+              currentStore.updateSession(sourceKey, {
+                operationError: `${staged.fileName}: attachment is no longer available.`
+              });
+            }
             return;
           }
           delayMs = Math.min(Math.round(delayMs * 1.5), 3_000);
@@ -177,12 +193,24 @@ export function useRunLifecycleActions({
         (attachment) => attachment.id === attachmentId
       );
       if (staged?.status === "processing") {
-        store.updateSession(sourceKey, {
-          operationError: `${staged.fileName}: processing is taking longer than expected. You can remove it and try again.`
-        });
+        if (store.updateUploadedAttachment(sourceKey, {
+          ...staged,
+          processingErrorCode: ATTACHMENT_POLL_TIMEOUT_ERROR_CODE,
+          status: "failed"
+        })) {
+          store.updateSession(sourceKey, {
+            operationError: attachmentPollTimeoutMessage(staged.fileName)
+          });
+        }
       }
-    })().finally(() => attachmentPolls.delete(key));
+    })();
     attachmentPolls.set(key, pending);
+    const releaseOwnership = () => {
+      if (attachmentPolls.get(key) === pending) {
+        attachmentPolls.delete(key);
+      }
+    };
+    void pending.then(releaseOwnership, releaseOwnership);
   }
 
   async function uploadFiles(files: FileList | readonly File[]) {
@@ -243,7 +271,27 @@ export function useRunLifecycleActions({
     const attachment = selectComposerSession(store, sourceSessionKey).attachments.find(
       (candidate) => candidate.id === attachmentId
     );
-    if (!attachment || attachment.status !== "failed") return;
+    if (
+      !attachment ||
+      attachment.status !== "failed" ||
+      !attachmentRetryAvailable(attachment)
+    ) return;
+    if (attachment.processingErrorCode === ATTACHMENT_POLL_TIMEOUT_ERROR_CODE) {
+      attachmentPolls.delete(attachmentPollKey(sourceSessionKey, attachmentId));
+      if (store.updateUploadedAttachment(sourceSessionKey, {
+        ...attachment,
+        processingErrorCode: null,
+        status: "processing"
+      })) {
+        store.updateSession(sourceSessionKey, (current) => ({
+          operationError: current.operationError === attachmentPollTimeoutMessage(attachment.fileName)
+            ? null
+            : current.operationError
+        }));
+        startAttachmentPoll(sourceSessionKey, attachmentId);
+      }
+      return;
+    }
     try {
       const response = await shellFetch(`/api/uploads/${encodeURIComponent(attachmentId)}`, {
         method: "POST"
@@ -254,6 +302,7 @@ export function useRunLifecycleActions({
         throw new Error("attachment_retry_malformed");
       }
       if (useComposerSessionStore.getState().updateUploadedAttachment(sourceSessionKey, body.attachment)) {
+        attachmentPolls.delete(attachmentPollKey(sourceSessionKey, attachmentId));
         startAttachmentPoll(sourceSessionKey, attachmentId);
       }
     } catch (error) {

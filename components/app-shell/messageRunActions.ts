@@ -1,5 +1,6 @@
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { firstBlockingAttachmentWarning } from "@/components/app-shell/attachmentCapabilities";
+import { attachmentRetryAvailable } from "@/components/app-shell/attachmentLifecycle";
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import {
   chatIdFromComposerSessionKey,
@@ -461,7 +462,9 @@ export function useMessageRunActions({
       setNotice({
         kind: "error",
         text: unsettledAttachment.status === "failed"
-          ? `Remove or retry ${unsettledAttachment.fileName} before sending.`
+          ? attachmentRetryAvailable(unsettledAttachment)
+            ? `Remove or retry ${unsettledAttachment.fileName} before sending.`
+            : `Remove ${unsettledAttachment.fileName} before sending.`
           : `Wait for ${unsettledAttachment.fileName} to finish processing before sending.`
       });
       return;

@@ -940,6 +940,66 @@ describe("Composer", () => {
     expect(onRemoveAttachment).toHaveBeenCalledWith("attachment-1");
   });
 
+  it("offers only meaningful recovery actions for client polling failures", () => {
+    const onRetryAttachment = vi.fn();
+    const onRemoveAttachment = vi.fn();
+    const view = render(
+      <Composer
+        attachments={[{
+          fileName: "missing.docx",
+          id: "attachment-1",
+          kind: "document",
+          processingErrorCode: "attachment_unavailable",
+          status: "failed"
+        }]}
+        onChange={() => undefined}
+        onRemoveAttachment={onRemoveAttachment}
+        onRetryAttachment={onRetryAttachment}
+        onSend={() => undefined}
+        value="Question"
+      />
+    );
+
+    expect(screen.getByText("This file is no longer available.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry missing.docx" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Remove missing.docx" }));
+    expect(onRemoveAttachment).toHaveBeenCalledWith("attachment-1");
+
+    view.rerender(
+      <Composer
+        attachments={[]}
+        onChange={() => undefined}
+        onRemoveAttachment={onRemoveAttachment}
+        onRetryAttachment={onRetryAttachment}
+        onSend={() => undefined}
+        value="Question"
+      />
+    );
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+
+    view.rerender(
+      <Composer
+        attachments={[{
+          fileName: "slow.docx",
+          id: "attachment-2",
+          kind: "document",
+          processingErrorCode: "attachment_poll_timeout",
+          status: "failed"
+        }]}
+        onChange={() => undefined}
+        onRemoveAttachment={onRemoveAttachment}
+        onRetryAttachment={onRetryAttachment}
+        onSend={() => undefined}
+        value="Question"
+      />
+    );
+
+    expect(screen.getByText("Processing is taking longer than expected.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Retry slow.docx" }));
+    expect(onRetryAttachment).toHaveBeenCalledWith("attachment-2");
+  });
+
   it("uploads files dropped on the composer and clears the drag-active state", () => {
     const onUploadFiles = vi.fn();
     const pdf = new File(["pdf"], "document.pdf", { type: "application/pdf" });

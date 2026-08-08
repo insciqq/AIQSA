@@ -349,6 +349,34 @@ describe("message run actions", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    ["attachment_unavailable", "Remove report.docx before sending."],
+    ["attachment_poll_timeout", "Remove or retry report.docx before sending."]
+  ])("keeps programmatic send recovery truthful for %s", async (
+    processingErrorCode,
+    expectedNotice
+  ) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [{
+        fileName: "report.docx",
+        id: "attachment-1",
+        kind: "document",
+        processingErrorCode,
+        status: "failed"
+      }]
+    });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(actions.setNotice).toHaveBeenCalledWith({
+      kind: "error",
+      text: expectedNotice
+    });
+  });
+
   it("blocks a programmatic send over projected attachment limits without clearing work", async () => {
     const nativeModel: CatalogModel = {
       ...model,
