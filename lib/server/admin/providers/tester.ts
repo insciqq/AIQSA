@@ -7,6 +7,7 @@ import {
   type OpenRouterDiscoveryClient
 } from "../../providers/openRouterDiscovery";
 import { createProviderSafeFetch } from "../../providers/providerSafeFetch";
+import { createOpenAICompatibleEmbeddingAdapter } from "../../providers/embeddings";
 import type {
   ProviderConnectionConfiguration,
   ProviderModelConfiguration
@@ -107,6 +108,27 @@ async function runTinyGeneration(
   const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
     configuration: input.connection
   });
+  if (input.model.modelClass === "embedding") {
+    await createOpenAICompatibleEmbeddingAdapter({
+      connection: input.connection,
+      model: input.model,
+      network: { fetchFn },
+      secret: input.secret
+    }).embed({
+      mode: "document",
+      signal: input.signal,
+      texts: ["AIQSA provider connectivity check"]
+    });
+    return {
+      evidence: {
+        detail: "ok",
+        method: "tiny_generation",
+        selectedProviders: [],
+        upstreamModelId: input.model.upstreamModelId
+      },
+      status: "available"
+    };
+  }
   const runtime = createProviderRuntimeBinding({
     options: { allowFake: false, fetchFn },
     secret: input.secret,
@@ -133,11 +155,11 @@ async function testOpenRouterCatalog(
   input: AdminProviderDraftTesterInput,
   options: TesterOptions
 ): Promise<AdminProviderDraftTestOutcome> {
-  if (input.model.adapterKind !== "openrouter_chat_completions") {
+  if (input.providerFamily !== "openrouter") {
     throw new Error("provider_account_catalog_test_unsupported");
   }
   const routing = input.model.openRouterRouting;
-  if (!routing) {
+  if (input.model.modelClass === "answer" && !routing) {
     throw new Error("provider_account_catalog_test_unsupported");
   }
   if (input.secret === null) {
@@ -152,22 +174,24 @@ async function testOpenRouterCatalog(
     bearerToken: input.secret,
     responseTimeoutMs: input.connection.responseTimeoutMs
   });
-  const models = await client.listModels({ signal: input.signal });
+  const models = input.model.modelClass === "embedding"
+    ? await client.listEmbeddingModels({ signal: input.signal })
+    : await client.listModels({ signal: input.signal });
   const model = models.find(({ id }) => id === input.model.upstreamModelId);
   if (!model) {
     return {
       evidence: {
         detail: "model_missing",
         method: "openrouter_account_catalog",
-        selectedProviders: input.model.openRouterRouting?.providers ?? [],
+        selectedProviders: routing?.providers ?? [],
         upstreamModelId: input.model.upstreamModelId
       },
       status: "unavailable"
     };
   }
 
-  const selectedProviders = routing.providers;
-  if (routing.mode === "only_selected") {
+  const selectedProviders = routing?.providers ?? [];
+  if (routing?.mode === "only_selected") {
     const endpoints = await client.listModelEndpoints(input.model.upstreamModelId, {
       signal: input.signal
     });

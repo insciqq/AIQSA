@@ -116,6 +116,11 @@ enum ProviderRunRole {
   search
 }
 
+enum ProviderModelClass {
+  answer
+  embedding
+}
+
 enum ProviderCredentialSource {
   default
   group
@@ -555,6 +560,7 @@ model ProviderModel {
   provider               String
   modelId                String
   displayName            String
+  modelClass             ProviderModelClass             @default(answer)
   contextWindow          Int
   inputTokenPriceMicros  Int                            @default(0)
   outputTokenPriceMicros Int                            @default(0)
@@ -587,6 +593,7 @@ model ProviderModel {
 
   @@unique([connectionId, id])
   @@index([provider, modelId])
+  @@index([modelClass, enabled])
   @@index([connectionId, enabled])
   @@index([provider, enabled])
 }

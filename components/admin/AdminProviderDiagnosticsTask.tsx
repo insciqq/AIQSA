@@ -64,6 +64,8 @@ export function AdminProviderDiagnosticsTask({
       ) ?? null
     : null;
   const paid = connection.family !== "openrouter";
+  const draftEmbedding = (draftModel?.modelClass ?? draftModel?.draftConfig.modelClass) === "embedding";
+  const activeEmbedding = (activeModel?.modelClass ?? activeModel?.activeConfig?.modelClass) === "embedding";
 
   const runDraftDiagnostic = () => {
     if (!draftModel || !draftCredential) return;
@@ -77,7 +79,9 @@ export function AdminProviderDiagnosticsTask({
       return;
     }
     requestConfirmation({
-      body: "This diagnostic sends a tiny generation request and may charge the selected provider account for up to 16 output tokens.",
+      body: draftEmbedding
+        ? "This diagnostic sends one small embedding request and may consume provider quota. The returned vector is discarded."
+        : "This diagnostic sends a tiny generation request and may charge the selected provider account for up to 1,000 output tokens.",
       confirmLabel: "Run paid diagnostic",
       dialogLabel: "Run paid provider diagnostic",
       onConfirm: async () => {
@@ -102,7 +106,9 @@ export function AdminProviderDiagnosticsTask({
       return;
     }
     requestConfirmation({
-      body: "Refreshing this exact active model and key performs a tiny generation request and may consume provider quota.",
+      body: activeEmbedding
+        ? "Refreshing this exact active model and key performs one small embedding request and may consume provider quota. The returned vector is discarded."
+        : "Refreshing this exact active model and key performs a tiny generation request and may consume provider quota.",
       confirmLabel: "Refresh active check",
       dialogLabel: "Refresh active provider check",
       onConfirm: async () => {

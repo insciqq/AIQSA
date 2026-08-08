@@ -29,6 +29,7 @@ function input(
         vision: false
       },
       defaultParams: {},
+      modelClass: "answer",
       openRouterRouting: { mode: "automatic", providers: [] },
       upstreamModelId: "vendor/model"
     },
@@ -42,6 +43,7 @@ function input(
 
 function discovery(overrides: Partial<OpenRouterDiscoveryClient> = {}): OpenRouterDiscoveryClient {
   return {
+    async listEmbeddingModels() { return []; },
     async listModelEndpoints() { return []; },
     async listModels() {
       return [{
@@ -58,6 +60,56 @@ function discovery(overrides: Partial<OpenRouterDiscoveryClient> = {}): OpenRout
 }
 
 describe("admin provider draft tester", () => {
+  it("checks embedding deployments against the OpenRouter embedding catalog", async () => {
+    const listModels = vi.fn<OpenRouterDiscoveryClient["listModels"]>(async () => []);
+    const listEmbeddingModels = vi.fn<OpenRouterDiscoveryClient["listEmbeddingModels"]>(async () => [{
+      id: "qwen/qwen3-embedding-8b",
+      inputModalities: [],
+      name: "Qwen3 Embedding 8B",
+      outputModalities: [],
+      pricing: {},
+      supportedParameters: []
+    }]);
+    const tester = createAdminProviderDraftTester({
+      createDiscoveryClient: () => discovery({ listEmbeddingModels, listModels })
+    });
+
+    await expect(tester.test(input({
+      model: {
+        adapterKind: "openai_embeddings_compatible",
+        answerSelectable: false,
+        capabilities: {
+          contextWindow: 32_768,
+          nativePdfInput: false,
+          nativeSearch: false,
+          pdf: false,
+          reasoning: false,
+          vision: false
+        },
+        defaultParams: {},
+        embedding: {
+          nativeDimension: 4_096,
+          providerFamily: "openrouter",
+          queryInstructionTemplate: "Query: {text}",
+          supportsMrl: true,
+          targetDimension: 1_536
+        },
+        modelClass: "embedding",
+        upstreamModelId: "qwen/qwen3-embedding-8b"
+      },
+      modelDisplayName: "Qwen3 Embedding 8B"
+    }))).resolves.toMatchObject({
+      evidence: {
+        detail: "ok",
+        selectedProviders: [],
+        upstreamModelId: "qwen/qwen3-embedding-8b"
+      },
+      status: "available"
+    });
+    expect(listEmbeddingModels).toHaveBeenCalledOnce();
+    expect(listModels).not.toHaveBeenCalled();
+  });
+
   it("uses the credential-specific OpenRouter account catalog", async () => {
     const listModels = vi.fn<OpenRouterDiscoveryClient["listModels"]>(async () => []);
     const createDiscoveryClient = vi.fn(() => discovery({ listModels }));

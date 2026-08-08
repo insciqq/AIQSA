@@ -420,6 +420,7 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_family_adapter_mismatch: "The selected protocol does not match this provider family.",
     provider_group_not_found: "This group no longer exists.",
     provider_model_not_found: "This model deployment no longer exists.",
+    provider_model_class_immutable: "A deployment cannot change between answer and embedding classes; add a new deployment instead.",
     provider_paid_test_confirmation_required: "Confirm the paid tiny-generation request before testing.",
     provider_revoke_confirmation_required: "This destructive credential action requires confirmation.",
     provider_refresh_failed: "The active refresh failed transiently. Prior matching availability was preserved and marked for attention.",

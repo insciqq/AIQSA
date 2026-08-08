@@ -529,6 +529,7 @@ describe("Prisma admin provider repository", () => {
             vision: false
           },
           defaultParams: {},
+          modelClass: "answer",
           upstreamModelId: "vendor/model"
         },
         draftVersion: 4,
@@ -545,6 +546,7 @@ describe("Prisma admin provider repository", () => {
             vision: false
           },
           defaultParams: {},
+          modelClass: "answer",
           upstreamModelId: "vendor/model-2"
         },
         draftVersion: 5,

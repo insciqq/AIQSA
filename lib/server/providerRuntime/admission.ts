@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
+import type { CatalogAdapterKind } from "../../domain/catalog";
 import { resolveProviderCredential } from "../../domain/providerCredentialResolution";
 import {
   normalizeProviderConnectionConfiguration,
@@ -140,12 +141,18 @@ function withResolvedModelCapabilities(
   snapshot: ProviderExecutionSnapshot,
   legacyContextWindow: number | null | undefined
 ): ProviderExecutionSnapshot {
+  if (
+    snapshot.model.adapterKind !== "fake" &&
+    snapshot.model.modelClass !== "answer"
+  ) {
+    throw new ProviderAdmissionError("model_not_available");
+  }
   return normalizeProviderExecutionSnapshot({
     ...snapshot,
     model: {
       ...snapshot.model,
       capabilities: resolveProviderModelCapabilities({
-        adapterKind: snapshot.model.adapterKind,
+        adapterKind: snapshot.model.adapterKind as CatalogAdapterKind,
         capabilities: snapshot.model.capabilities,
         legacyContextWindow,
         providerFamily: snapshot.providerFamily,
@@ -237,6 +244,7 @@ async function loadRole(
       connectionId: input.connectionId,
       enabled: true,
       id: input.modelId,
+      modelClass: "answer",
       connection: {
         activeConfig: { not: Prisma.DbNull },
         activeVersion: { gt: 0 },
@@ -379,7 +387,7 @@ async function loadRole(
     },
     credentialSource: credential.source,
     modelConfiguration: {
-      adapterKind: resolvedModel.adapterKind,
+      adapterKind: resolvedModel.adapterKind as CatalogAdapterKind,
       capabilities: resolvedModel.capabilities,
       defaultParams: resolvedModel.defaultParams
     },

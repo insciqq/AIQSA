@@ -22,7 +22,10 @@ const runtimeDeadlineCases = runtimeAdapterKinds.flatMap((adapterKind) => [
 ]);
 
 function snapshot(
-  adapterKind: Exclude<ProviderExecutionSnapshot["model"]["adapterKind"], "fake">
+  adapterKind: Exclude<
+    ProviderExecutionSnapshot["model"]["adapterKind"],
+    "fake" | "openai_embeddings_compatible"
+  >
 ): ProviderExecutionSnapshot {
   const providerFamily = adapterKind === "gemini_interactions_native"
     ? "gemini"
@@ -56,6 +59,7 @@ function snapshot(
         vision: false
       },
       defaultParams: {},
+      modelClass: "answer",
       ...(adapterKind === "openrouter_chat_completions"
         ? { openRouterRouting: { mode: "automatic" as const, providers: [] as [] } }
         : {}),

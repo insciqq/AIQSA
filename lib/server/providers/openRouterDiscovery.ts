@@ -53,6 +53,9 @@ export type OpenRouterDiscoveredEndpoint = {
 };
 
 export type OpenRouterDiscoveryClient = {
+  listEmbeddingModels(
+    options?: { signal?: AbortSignal }
+  ): Promise<OpenRouterDiscoveredModel[]>;
   listModelEndpoints(
     modelId: string,
     options?: { signal?: AbortSignal }
@@ -355,6 +358,9 @@ export function createOpenRouterDiscoveryClient(input: {
   }
 
   return {
+    async listEmbeddingModels(options) {
+      return normalizeModels(await get("embeddings/models", options?.signal));
+    },
     async listModelEndpoints(modelId, options) {
       return normalizeEndpoints(
         await get(modelEndpointsPath(modelId), options?.signal)

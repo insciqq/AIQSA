@@ -227,6 +227,9 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
     }
     return { adapter: createFakeProviderAdapter() };
   }
+  if (snapshot.model.modelClass === "embedding") {
+    throw new Error("provider_model_class_invalid");
+  }
 
   const authenticationMode = providerAuthenticationMode(snapshot.connection);
   if (authenticationMode === "none") {
@@ -393,6 +396,8 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         toolBridge: openRouterChatToolBridge
       };
     }
+    case "openai_embeddings_compatible":
+      throw new Error("provider_model_class_invalid");
   }
 }
 

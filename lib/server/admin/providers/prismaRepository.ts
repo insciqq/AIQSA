@@ -152,6 +152,7 @@ function modelLegacyFields(configuration: ProviderModelConfiguration) {
       : { contextWindow: configuration.capabilities.contextWindow }),
     defaultParams: json(configuration.defaultParams),
     modelId: configuration.upstreamModelId,
+    modelClass: configuration.modelClass,
     supportsNativeSearch: configuration.capabilities.nativeSearch,
     supportsPdf: configuration.capabilities.pdf,
     supportsReasoning: configuration.capabilities.reasoning,
@@ -794,6 +795,7 @@ export function createPrismaAdminProviderRepository(
           draftVersion: model.draftVersion,
           enabled: model.enabled,
           id: model.id,
+          modelClass: model.modelClass,
           updatedAt: model.updatedAt.toISOString()
         })),
         unassignedPolicy: connection.unassignedPolicy,
@@ -875,11 +877,14 @@ export function createPrismaAdminProviderRepository(
 
     async updateModelDraft(input) {
       const existing = await prisma.providerModel.findUnique({
-        select: { connection: { select: { family: true } }, id: true },
+        select: { connection: { select: { family: true } }, id: true, modelClass: true },
         where: { id: input.modelId }
       });
       if (!existing || existing.connection.family === "fake") return "not_found";
       if (existing.connection.family !== input.family) return "family_mismatch";
+      if (existing.modelClass !== input.configuration.modelClass) {
+        return "model_class_mismatch";
+      }
       const updated = await prisma.providerModel.updateMany({
         data: {
           displayName: input.displayName,

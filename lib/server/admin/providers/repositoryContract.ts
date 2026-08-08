@@ -258,7 +258,7 @@ export type AdminProviderRepository = Readonly<{
     expectedDraftVersion: number;
     family: AdminProviderFamily;
     modelId: string;
-  }): Promise<ProviderDraftMutationResult | "family_mismatch">;
+  }): Promise<ProviderDraftMutationResult | "family_mismatch" | "model_class_mismatch">;
   withLockedCredential<Value>(
     credentialId: string,
     credentialVersionId: string,

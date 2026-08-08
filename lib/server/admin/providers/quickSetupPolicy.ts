@@ -155,6 +155,7 @@ export function providerModelConfigurationFromCatalogEntry(
       contextWindow: model.contextWindow
     },
     defaultParams: model.defaultParams,
+    modelClass: "answer",
     ...(model.provider === "openrouter"
       ? {
           openRouterRouting: selectedProviders.length > 0

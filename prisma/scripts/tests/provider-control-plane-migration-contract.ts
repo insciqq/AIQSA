@@ -11,6 +11,7 @@ const USER_ASSIGNMENT_MIGRATION = "20260726140000_provider_user_credential_assig
 const DISABLE_FAKE_MIGRATION = "20260731120000_disable_production_fake_provider";
 const MODEL_POLICY_MIGRATION = "20260808120000_model_default_policy";
 const SYSTEM_MODEL_POLICY_MIGRATION = "20260808130000_system_model_policy";
+const EMBEDDING_MODEL_CLASS_MIGRATION = "20260808140000_embedding_model_class";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -732,6 +733,72 @@ function runSystemModelPolicyMigrationChecks(): void {
   }
 }
 
+function runEmbeddingModelClassMigrationChecks(): void {
+  const database = `aiqsa_embedding_model_class_${runId}`;
+  createDatabase(database);
+  try {
+    applyMigrationsBefore(database, EMBEDDING_MODEL_CLASS_MIGRATION);
+    requireSuccess(psql(database, `
+      INSERT INTO "ProviderConnection" (
+        "id", "displayName", "family", "draftConfig", "updatedAt"
+      ) VALUES (
+        'embedding-connection', 'Embedding connection', 'openrouter',
+        '{}'::jsonb, CURRENT_TIMESTAMP
+      );
+
+      INSERT INTO "ProviderModel" (
+        "id", "connectionId", "provider", "modelId", "displayName",
+        "contextWindow", "draftConfig", "capabilities", "defaultParams",
+        "updatedAt"
+      ) VALUES (
+        'legacy-answer-model', 'embedding-connection', 'openrouter',
+        'vendor/answer', 'Legacy answer', 8192, '{}'::jsonb, '{}'::jsonb,
+        '{}'::jsonb, CURRENT_TIMESTAMP
+      );
+    `), "load embedding model-class preservation fixture");
+
+    requireSuccess(
+      psql(database, migrationSql(EMBEDDING_MODEL_CLASS_MIGRATION)),
+      "apply embedding model-class migration"
+    );
+    assert.equal(
+      scalar(database, `SELECT concat_ws('|',
+        (SELECT "modelClass"::text FROM "ProviderModel" WHERE "id" = 'legacy-answer-model'),
+        (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+         FROM pg_enum
+         WHERE enumtypid = '"ProviderModelClass"'::regtype),
+        COALESCE(to_regclass('public."ProviderModel_modelClass_enabled_idx"')::text, 'null')
+      );`),
+      'answer|answer,embedding|"ProviderModel_modelClass_enabled_idx"'
+    );
+    requireSuccess(psql(database, `
+      INSERT INTO "ProviderModel" (
+        "id", "connectionId", "provider", "modelId", "displayName",
+        "modelClass", "contextWindow", "draftConfig", "capabilities",
+        "defaultParams", "updatedAt"
+      ) VALUES (
+        'embedding-model', 'embedding-connection', 'openrouter',
+        'qwen/qwen3-embedding-8b', 'Qwen3 Embedding 8B', 'embedding', 32768,
+        '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, CURRENT_TIMESTAMP
+      );
+    `), "insert embedding-class deployment");
+    assert.equal(
+      scalar(database, `SELECT "modelClass"::text FROM "ProviderModel"
+        WHERE "id" = 'embedding-model';`),
+      "embedding"
+    );
+    expectDatabaseRejection(
+      database,
+      "unknown provider model class",
+      `UPDATE "ProviderModel" SET "modelClass" = 'reranker'
+       WHERE "id" = 'embedding-model';`,
+      /invalid input value for enum "ProviderModelClass"/u
+    );
+  } finally {
+    dropDatabase(database);
+  }
+}
+
 function main(): void {
   assert.equal(
     requireSuccess(
@@ -785,6 +852,7 @@ function main(): void {
     runValidMigrationAndLineageChecks();
     runModelPolicyMigrationChecks();
     runSystemModelPolicyMigrationChecks();
+    runEmbeddingModelClassMigrationChecks();
   } finally {
     for (const database of [...disposableDatabases].reverse()) {
       dropDatabase(database);
@@ -792,7 +860,7 @@ function main(): void {
   }
 
   process.stdout.write(
-    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, composite lineage, Fake withdrawal, and installation model-policy foundations verified.\n"
+    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, composite lineage, Fake withdrawal, installation model-policy foundations, and embedding model classes verified.\n"
   );
 }
 

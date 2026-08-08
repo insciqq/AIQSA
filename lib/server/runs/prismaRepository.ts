@@ -2261,6 +2261,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         where: {
           enabled: true,
           modelId,
+          modelClass: "answer",
           provider
         }
       });
@@ -2311,7 +2312,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           outputTokenPriceMicros: true
         },
         take: 2,
-        where: { modelId, provider }
+        where: { modelClass: "answer", modelId, provider }
       });
 
       return models.length === 1

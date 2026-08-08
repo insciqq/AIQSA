@@ -336,6 +336,7 @@ describe("provider model configuration", () => {
       answerSelectable: true,
       capabilities,
       defaultParams: { maxTokens: 2048 },
+      modelClass: "answer",
       reasoningRequestMapping: { effortPath: "reasoning_effort" },
       upstreamModelId: "local-model"
     });

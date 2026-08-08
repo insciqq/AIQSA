@@ -259,6 +259,7 @@ async function main(): Promise<void> {
         answerSelectable: true,
         capabilities: modelCapabilities,
         defaultParams,
+        modelClass: "answer",
         upstreamModelId: modelId
       },
       modelDisplayName: modelId,

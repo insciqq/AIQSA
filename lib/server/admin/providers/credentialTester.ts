@@ -7,7 +7,8 @@ import {
   normalizeProviderConnectionConfiguration,
   providerAuthenticationMode,
   type ProviderConnectionConfiguration,
-  type ProviderFamily
+  type ProviderFamily,
+  type ProviderModelClass
 } from "../../providers/providerConfiguration";
 import {
   resolveProviderCredentialSource,
@@ -30,6 +31,7 @@ export const MAX_PROVIDER_CREDENTIAL_TEST_MODELS = 1_000;
 export type AdminProviderCredentialTesterInput = Readonly<{
   connection: ProviderConnectionConfiguration;
   family: ProviderFamily;
+  modelClasses?: readonly ProviderModelClass[];
   secret: ProviderCredentialSource | null;
   signal?: AbortSignal;
 }>;
@@ -37,6 +39,7 @@ export type AdminProviderCredentialTesterInput = Readonly<{
 export type AdminProviderCredentialTestOutcome = Readonly<{
   method: "models_catalog";
   modelIds: string[];
+  modelIdsByClass?: Readonly<Record<ProviderModelClass, string[]>>;
   models?: AdminCompatibleDiscoveredModel[];
 }>;
 
@@ -197,9 +200,25 @@ function modelsFromCatalog(
   return output;
 }
 
-function catalogPath(family: ProviderFamily): string {
+function answerCatalogPath(family: ProviderFamily): string {
   if (family === "openrouter") return "models/user";
   return family === "gemini" ? "models?pageSize=1000" : "models";
+}
+
+function requestedModelClasses(
+  family: ProviderFamily,
+  value: readonly ProviderModelClass[] | undefined
+): ProviderModelClass[] {
+  const classes = [...new Set(value ?? ["answer"])] as ProviderModelClass[];
+  if (
+    classes.length < 1 ||
+    classes.some((modelClass) => modelClass !== "answer" && modelClass !== "embedding") ||
+    (family !== "openai" && family !== "openai_compatible" && family !== "openrouter") &&
+      classes.includes("embedding")
+  ) {
+    throw new AdminProviderCredentialTestError();
+  }
+  return classes;
 }
 
 function authenticationHeaders(family: ProviderFamily, secret: string | null): Headers {
@@ -240,28 +259,44 @@ export function createAdminProviderCredentialTester(
         });
         const timeout = withTimeoutSignal(input.signal, connection.responseTimeoutMs);
         try {
-          const response = await fetchFn(`${connection.apiRoot}/${catalogPath(input.family)}`, {
-            headers: authenticationHeaders(input.family, secret),
-            method: "GET",
-            redirect: "error",
-            signal: timeout.signal
-          });
-          const text = await readBoundedResponseText(response, {
-            maxBytes: Math.min(providerResponseMaxBytes(), MAX_CREDENTIAL_TEST_BODY_BYTES),
-            signal: timeout.signal
-          });
-          if (!response.ok) throw new AdminProviderCredentialTestError();
-
-          let catalog: unknown;
-          try {
-            catalog = JSON.parse(text) as unknown;
-          } catch {
-            throw new AdminProviderCredentialTestError();
-          }
-          const models = modelsFromCatalog(catalog, input.family);
+          const classes = requestedModelClasses(input.family, input.modelClasses);
+          const load = async (path: string): Promise<AdminCompatibleDiscoveredModel[]> => {
+            const response = await fetchFn(`${connection.apiRoot}/${path}`, {
+              headers: authenticationHeaders(input.family, secret),
+              method: "GET",
+              redirect: "error",
+              signal: timeout.signal
+            });
+            const text = await readBoundedResponseText(response, {
+              maxBytes: Math.min(providerResponseMaxBytes(), MAX_CREDENTIAL_TEST_BODY_BYTES),
+              signal: timeout.signal
+            });
+            if (!response.ok) throw new AdminProviderCredentialTestError();
+            try {
+              return modelsFromCatalog(JSON.parse(text) as unknown, input.family);
+            } catch {
+              throw new AdminProviderCredentialTestError();
+            }
+          };
+          const answerModels = classes.includes("answer")
+            ? await load(answerCatalogPath(input.family))
+            : [];
+          const embeddingModels = classes.includes("embedding")
+            ? input.family === "openrouter"
+              ? await load("embeddings/models")
+              : await load(answerCatalogPath(input.family))
+            : [];
+          const modelIdsByClass = {
+            answer: answerModels.map(({ id }) => id),
+            embedding: embeddingModels.map(({ id }) => id)
+          };
+          const models = [...new Map(
+            [...answerModels, ...embeddingModels].map((model) => [model.id, model])
+          ).values()];
           return {
             method: "models_catalog",
             modelIds: models.map(({ id }) => id),
+            ...(input.modelClasses ? { modelIdsByClass } : {}),
             ...(input.family === "openai_compatible" ? { models } : {})
           };
         } finally {

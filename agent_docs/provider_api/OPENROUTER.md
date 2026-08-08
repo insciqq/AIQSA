@@ -1,14 +1,14 @@
 # OPENROUTER API NOTES
 
 Owner: Provider integration maintainers
-Scope: Externally mutable official constraints and verified caveats for OpenRouter models, routing, Responses, Search, and attachments.
-Read when: Changing OpenRouter catalogs, downstream routing, reasoning, streaming, Perplexity Search, citations, or PDF mapping.
+Scope: Externally mutable official constraints and verified caveats for OpenRouter models, routing, Responses, embeddings, Search, and attachments.
+Read when: Changing OpenRouter catalogs, downstream routing, reasoning, streaming, embeddings, Perplexity Search, citations, or PDF mapping.
 Code owners: `lib/server/providers/openRouter*.ts` and OpenRouter provider setup.
 Not owned here: AIQSA runtime mapping details, normalized Search semantics, or native OpenAI behavior.
 
 ## OpenRouter
 
-Last verified: 2026-08-03.
+Last verified: 2026-08-08.
 
 Primary references:
 
@@ -19,6 +19,8 @@ Primary references:
 - `https://openrouter.ai/docs/provider-routing`
 - `https://openrouter.ai/docs/api/api-reference/models/list-models-user`
 - `https://openrouter.ai/docs/api/api-reference/endpoints/list-endpoints`
+- `https://openrouter.ai/docs/api/api-reference/embeddings/list-embeddings-models`
+- `https://openrouter.ai/docs/api/api-reference/embeddings/create-embeddings`
 - `https://openrouter.ai/docs/api/reference/responses/overview`
 - `https://openrouter.ai/docs/use-cases/reasoning-tokens`
 - `https://openrouter.ai/docs/guides/features/server-tools/web-search`
@@ -29,6 +31,7 @@ Externally constrained facts:
 
 - Chat Completions is OpenAI-compatible but accepts additional provider-routing and model-specific fields. Streaming uses SSE data chunks plus possible comment keepalives; current usage accounting places usage in the final streaming chunk without the deprecated include-usage knobs.
 - Authenticated `GET /api/v1/models/user` filters model results through that OpenRouter account's provider preferences, privacy settings, and guardrails. A catalog observed with one API key is therefore not availability proof for another key.
+- Embedding models use the separate `GET /api/v1/embeddings/models` catalog and batched non-streaming `POST /api/v1/embeddings` endpoint. Answer-catalog membership is not embedding availability evidence.
 - A model result supplies request-facing id, canonical slug, modalities, context/pricing metadata, supported-parameter hints, and optional expiration evidence. Model-specific `GET /api/v1/models/:author/:slug/endpoints` supplies downstream endpoint/provider choices; these remote fields remain mutable and account-dependent.
 - Reasoning controls are model/route specific. OpenRouter Claude effort is represented through Claude-compatible effort/verbosity behavior, Gemini thinking uses mapped effort levels, and OpenAI routes use OpenAI-style effort.
 - OpenRouter documents Gemini thinking levels through `minimal`, `low`, `medium`, and `high`; documented `xhigh` maps down to `high`, so it is not a distinct Gemini capability.

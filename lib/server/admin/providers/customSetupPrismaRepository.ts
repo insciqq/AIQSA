@@ -111,7 +111,7 @@ async function eligibleProviderModelIds(
           }
         }
       },
-      where: { enabled: true, connection: { enabled: true } }
+      where: { enabled: true, modelClass: "answer", connection: { enabled: true } }
     })
   ]);
   const activeMemberships = memberships.filter(

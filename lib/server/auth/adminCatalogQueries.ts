@@ -40,7 +40,8 @@ export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<A
         },
         activeConfig: true,
         displayName: true,
-        id: true
+        id: true,
+        modelClass: true
       },
       where: {
         activeConfig: { not: Prisma.DbNull },
@@ -70,20 +71,21 @@ export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<A
       }
     })
   ]);
-  const answerModels = providerModels.filter((model) =>
-    isAnswerSelectableModel(model.activeConfig)
+  const grantableModels = providerModels.filter((model) =>
+    model.modelClass === "embedding" || isAnswerSelectableModel(model.activeConfig)
   );
   const providers = new Map(
-    answerModels.map((model) => [model.connection.id, model.connection.displayName])
+    grantableModels.map((model) => [model.connection.id, model.connection.displayName])
   );
 
   return {
-    models: answerModels.map((model) => {
+    models: grantableModels.map((model) => {
       const upstreamModelId = configuredUpstreamModelId(model.activeConfig);
 
       return {
         displayName: model.displayName,
         modelId: model.id,
+        modelClass: model.modelClass,
         provider: model.connection.id,
         ...(upstreamModelId
           ? {

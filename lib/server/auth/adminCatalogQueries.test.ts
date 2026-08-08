@@ -16,10 +16,17 @@ function model(input: {
   displayName: string;
   family?: string;
   id: string;
+  modelClass?: "answer" | "embedding";
 }) {
   const fake = input.family === "fake";
   return {
-    activeConfig: fake
+    activeConfig: input.modelClass === "embedding"
+      ? {
+          adapterKind: "openai_embeddings_compatible",
+          answerSelectable: false,
+          upstreamModelId: `${input.id}/upstream`
+        }
+      : fake
       ? {
           adapterKind: "fake",
           capabilities,
@@ -41,12 +48,13 @@ function model(input: {
       id: input.connectionId
     },
     displayName: input.displayName,
-    id: input.id
+    id: input.id,
+    modelClass: input.modelClass ?? "answer"
   };
 }
 
 describe("admin grantable catalog", () => {
-  it("keeps legacy and Fake answer models while excluding technical-only runtimes", async () => {
+  it("keeps answer and embedding grants while excluding technical-only runtimes", async () => {
     const prisma = {
       providerModel: {
         findMany: vi.fn(async () => [
@@ -54,6 +62,12 @@ describe("admin grantable catalog", () => {
             connectionId: "connection-answer",
             displayName: "Answer model",
             id: "model-answer"
+          }),
+          model({
+            connectionId: "connection-embedding",
+            displayName: "Embedding model",
+            id: "model-embedding",
+            modelClass: "embedding"
           }),
           model({
             answerSelectable: false,
@@ -81,10 +95,12 @@ describe("admin grantable catalog", () => {
 
     expect(catalog.models.map(({ modelId }) => modelId)).toEqual([
       "model-answer",
+      "model-embedding",
       "model-fake"
     ]);
     expect(catalog.providers.map(({ id }) => id)).toEqual([
       "connection-answer",
+      "connection-embedding",
       "connection-fake"
     ]);
     expect(catalog.searchStrategies).toEqual([{

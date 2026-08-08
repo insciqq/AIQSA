@@ -96,7 +96,8 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
             { connection: { displayName: "asc" } },
             { displayName: "asc" },
             { id: "asc" }
-          ]
+          ],
+          where: { modelClass: "answer" }
         })
       ]);
       if (!policy) throw new Error("installation_model_policy_missing");
@@ -153,6 +154,7 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
               INNER JOIN "ProviderConnection" AS connection
                 ON connection."id" = model."connectionId"
               WHERE model."id" = ${input.providerModelId}
+                AND model."modelClass" = 'answer'::"ProviderModelClass"
               FOR SHARE OF model, connection
             `);
             if (!models[0] || !lockedModelAvailable(models[0])) {

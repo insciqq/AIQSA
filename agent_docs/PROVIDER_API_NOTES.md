@@ -8,6 +8,7 @@ This file is a routing index, not a contract owner. Do not add provider facts or
 | Read when | Contract owner |
 | --- | --- |
 | Any provider-facing change; cross-provider memory, continuation, attachment, verification, or evidence boundaries | [Ownership and cross-provider boundaries](provider_api/OWNERSHIP_AND_BOUNDARIES.md) |
+| Embedding endpoints, model catalogs, dimensions, MRL shortening, context limits, or query instructions | [Embeddings](provider_api/EMBEDDINGS.md) |
 | Native OpenAI Responses models, lifecycle, Search, reasoning, caching, or attachments | [OpenAI Responses](provider_api/OPENAI_RESPONSES.md) |
 | Compatible OpenAI gateways, codex-lb, discovery, reasoning mappings, or declared hosted Search | [Compatible OpenAI](provider_api/OPENAI_COMPATIBLE.md) |
 | Anthropic Messages models, streaming, thinking, attachments, Search, stop reasons, usage, or retention | [Anthropic](provider_api/ANTHROPIC.md) |

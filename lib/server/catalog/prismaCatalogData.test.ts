@@ -120,6 +120,7 @@ function providerModel(options: ProviderModelFixtureOptions = {}): CatalogProvid
     enabled: true,
     id,
     inputTokenPriceMicros: 0,
+    modelClass: "answer",
     modelId: "legacy-upstream",
     outputTokenPriceMicros: 0,
     provider: "legacy-family",

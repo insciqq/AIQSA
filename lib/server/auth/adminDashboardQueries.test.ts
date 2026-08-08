@@ -575,6 +575,7 @@ describe("admin dashboard queries", () => {
       expect(fixtureModels).toEqual([
         {
           displayName: "Alpha enabled",
+          modelClass: "answer",
           modelId: `${marker}-model-alpha`,
           provider: providerAlpha,
           providerFamily: `${providerAlpha}-family`,
@@ -582,11 +583,13 @@ describe("admin dashboard queries", () => {
         },
         {
           displayName: "Zulu enabled",
+          modelClass: "answer",
           modelId: `${marker}-model-zulu`,
           provider: providerAlpha
         },
         {
           displayName: "Beta enabled",
+          modelClass: "answer",
           modelId: `${marker}-model-beta`,
           provider: providerBeta
         }

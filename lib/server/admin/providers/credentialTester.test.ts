@@ -51,6 +51,36 @@ afterEach(() => {
 });
 
 describe("admin provider credential tester", () => {
+  it("keeps OpenRouter answer and embedding catalogs class-specific", async () => {
+    const requests: McpPinnedHttpRequest[] = [];
+    const tester = createAdminProviderCredentialTester({
+      network: {
+        dispatch: async (request) => {
+          requests.push(request);
+          return request.url.pathname.endsWith("/embeddings/models")
+            ? catalog(["qwen/qwen3-embedding-8b"])
+            : catalog(["openai/gpt-5.6-sol"]);
+        },
+        lookupHostname: publicLookup
+      }
+    });
+
+    await expect(tester.test({
+      ...input("openrouter"),
+      modelClasses: ["answer", "embedding"]
+    })).resolves.toMatchObject({
+      modelIds: ["openai/gpt-5.6-sol", "qwen/qwen3-embedding-8b"],
+      modelIdsByClass: {
+        answer: ["openai/gpt-5.6-sol"],
+        embedding: ["qwen/qwen3-embedding-8b"]
+      }
+    });
+    expect(requests.map(({ url }) => url.pathname)).toEqual([
+      "/v1/models/user",
+      "/v1/embeddings/models"
+    ]);
+  });
+
   it.each([
     {
       family: "openai" as const,

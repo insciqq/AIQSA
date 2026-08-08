@@ -1,4 +1,5 @@
 import type { ProviderModelCapabilities } from "./types";
+import type { EmbeddingProviderFamily } from "../../domain/embeddingModels";
 import {
   compatibleReasoningRequestMappingDefault,
   type ProviderReasoningRequestMapping
@@ -11,6 +12,9 @@ const MAX_REASONING_CONTROL_COUNT = 16;
 const MAX_REASONING_CONTROL_LENGTH = 32;
 const MAX_REASONING_PATH_LENGTH = 128;
 const MAX_REASONING_PATH_DEPTH = 4;
+const MAX_EMBEDDING_NATIVE_DIMENSION = 65_536;
+const MAX_EMBEDDING_TARGET_DIMENSION = 2_000;
+const MAX_EMBEDDING_QUERY_TEMPLATE_LENGTH = 2_048;
 const FORBIDDEN_REASONING_PATH_SEGMENTS = new Set([
   "__proto__",
   "constructor",
@@ -49,6 +53,7 @@ export const providerAdapterKinds = [
   "openai_chat_completions_compatible",
   "openai_responses_compatible",
   "openai_responses_native",
+  "openai_embeddings_compatible",
   "openrouter_chat_completions"
 ] as const;
 
@@ -61,6 +66,15 @@ export type ProviderFamily =
   | "openrouter";
 
 export type ProviderAuthenticationMode = "bearer" | "none";
+export type ProviderModelClass = "answer" | "embedding";
+
+export type EmbeddingModelConfiguration = Readonly<{
+  nativeDimension: number;
+  providerFamily: EmbeddingProviderFamily;
+  queryInstructionTemplate: string | null;
+  supportsMrl: boolean;
+  targetDimension: number;
+}>;
 
 export type ProviderConnectionConfiguration = {
   allowPrivateNetwork: boolean;
@@ -85,6 +99,8 @@ export type ProviderModelConfiguration = {
   answerSelectable: boolean;
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
+  embedding?: EmbeddingModelConfiguration;
+  modelClass: ProviderModelClass;
   openRouterRouting?: OpenRouterRoutingConfiguration;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
   /** Missing means inherit the connection response deadline. */
@@ -98,6 +114,8 @@ export type ProviderConfigurationErrorCode =
   | "provider_api_root_invalid"
   | "provider_authentication_mode_invalid"
   | "provider_default_params_invalid"
+  | "provider_embedding_configuration_invalid"
+  | "provider_model_class_invalid"
   | "provider_model_capabilities_invalid"
   | "provider_reasoning_mapping_invalid"
   | "provider_response_timeout_invalid"
@@ -309,10 +327,77 @@ export function providerRequestEndpoint(
   configuration: ProviderConnectionConfiguration,
   adapterKind: ProviderAdapterKind
 ): string {
-  const terminalPath = adapterKind === "gemini_interactions_native" ? "interactions" :
+  const terminalPath = adapterKind === "openai_embeddings_compatible" ? "embeddings" :
+    adapterKind === "gemini_interactions_native" ? "interactions" :
     adapterKind.includes("responses") ? "responses" :
     adapterKind === "anthropic_messages" ? "messages" : "chat/completions";
   return `${configuration.apiRoot}/${terminalPath}`;
+}
+
+function normalizeEmbeddingModelConfiguration(
+  value: unknown
+): EmbeddingModelConfiguration {
+  if (!isRecord(value)) {
+    throw new ProviderConfigurationError("provider_embedding_configuration_invalid");
+  }
+  const providerFamily = value.providerFamily;
+  const nativeDimension = Number(value.nativeDimension);
+  const targetDimension = Number(value.targetDimension);
+  const supportsMrl = value.supportsMrl;
+  const template = value.queryInstructionTemplate;
+  const templateMatches = typeof template === "string"
+    ? template.match(/\{text\}/gu)?.length ?? 0
+    : 0;
+  if (
+    (providerFamily !== "openai" &&
+      providerFamily !== "openai_compatible" &&
+      providerFamily !== "openrouter") ||
+    !Number.isSafeInteger(nativeDimension) ||
+    nativeDimension < 1 ||
+    nativeDimension > MAX_EMBEDDING_NATIVE_DIMENSION ||
+    !Number.isSafeInteger(targetDimension) ||
+    targetDimension < 1 ||
+    targetDimension > MAX_EMBEDDING_TARGET_DIMENSION ||
+    targetDimension > nativeDimension ||
+    typeof supportsMrl !== "boolean" ||
+    (!supportsMrl && targetDimension !== nativeDimension) ||
+    (template !== null && (
+      typeof template !== "string" ||
+      !template.trim() ||
+      template.length > MAX_EMBEDDING_QUERY_TEMPLATE_LENGTH ||
+      /[\u0000\r\u007f]/u.test(template) ||
+      templateMatches !== 1
+    ))
+  ) {
+    throw new ProviderConfigurationError("provider_embedding_configuration_invalid");
+  }
+  return {
+    nativeDimension,
+    providerFamily,
+    queryInstructionTemplate: template,
+    supportsMrl,
+    targetDimension
+  };
+}
+
+function embeddingCapabilitiesAreInert(capabilities: ProviderModelCapabilities): boolean {
+  return !capabilities.backgroundStreaming &&
+    !capabilities.defaultMaxOutputTokens &&
+    !capabilities.nativeBackground &&
+    !capabilities.nativeImageGeneration &&
+    !capabilities.nativePdfInput &&
+    !capabilities.nativeSearch &&
+    !capabilities.parallelToolCalls &&
+    !capabilities.pdf &&
+    !capabilities.reasoning &&
+    !capabilities.defaultReasoningEffort &&
+    !capabilities.defaultReasoningMode &&
+    !capabilities.reasoningEfforts &&
+    !capabilities.reasoningModes &&
+    !capabilities.streaming &&
+    !capabilities.streamUsage &&
+    !capabilities.toolCalling &&
+    !capabilities.vision;
 }
 
 export function normalizeProviderModelCapabilities(value: unknown): ProviderModelCapabilities {
@@ -470,7 +555,27 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   const rawDefaultParams = normalizeProviderDefaultParams(value.defaultParams);
 
   const adapterKind = value.adapterKind as ProviderAdapterKind;
+  const modelClass = value.modelClass === undefined ? "answer" : value.modelClass;
+  if (modelClass !== "answer" && modelClass !== "embedding") {
+    throw new ProviderConfigurationError("provider_model_class_invalid");
+  }
   const capabilities = normalizeProviderModelCapabilities(value.capabilities);
+  const embedding = value.embedding === undefined
+    ? undefined
+    : normalizeEmbeddingModelConfiguration(value.embedding);
+  if (modelClass === "embedding") {
+    if (
+      adapterKind !== "openai_embeddings_compatible" ||
+      value.answerSelectable !== false ||
+      !embedding ||
+      !embeddingCapabilitiesAreInert(capabilities) ||
+      Object.keys(rawDefaultParams).length > 0
+    ) {
+      throw new ProviderConfigurationError("provider_embedding_configuration_invalid");
+    }
+  } else if (adapterKind === "openai_embeddings_compatible" || embedding) {
+    throw new ProviderConfigurationError("provider_embedding_configuration_invalid");
+  }
   if (
     capabilities.streamUsage !== undefined &&
     adapterKind !== "openai_chat_completions_compatible"
@@ -509,9 +614,11 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
 
   return {
     adapterKind,
-    answerSelectable: value.answerSelectable ?? true,
+    answerSelectable: modelClass === "embedding" ? false : value.answerSelectable ?? true,
     capabilities,
     defaultParams,
+    ...(embedding ? { embedding } : {}),
+    modelClass,
     ...(openRouterRouting ? { openRouterRouting } : {}),
     ...(reasoningRequestMapping ? { reasoningRequestMapping } : {}),
     ...(responseTimeoutMs === undefined ? {} : { responseTimeoutMs }),

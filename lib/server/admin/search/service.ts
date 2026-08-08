@@ -516,7 +516,8 @@ export function createAdminSearchService(input: Readonly<{
           enabled: true
         },
         enabled: true,
-        id: draft.providerModelId
+        id: draft.providerModelId,
+        modelClass: "answer"
       }
     });
     if (!model) throw new AdminSearchServiceError("search_provider_model_not_available");
@@ -672,7 +673,11 @@ export function createAdminSearchService(input: Readonly<{
           }
         },
         orderBy: [{ connectionId: "asc" }, { displayName: "asc" }, { id: "asc" }],
-        where: { activeConfig: { not: Prisma.DbNull }, activeVersion: { gt: 0 } }
+        where: {
+          activeConfig: { not: Prisma.DbNull },
+          activeVersion: { gt: 0 },
+          modelClass: "answer"
+        }
       }),
       policy()
     ]);

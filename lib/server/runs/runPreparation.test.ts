@@ -154,6 +154,7 @@ function compatibleAdmissionPlan(
           answerSelectable: true,
           capabilities,
           defaultParams,
+          modelClass: "answer",
           upstreamModelId: "vendor/model"
         },
         modelDisplayName: "Vendor model",
@@ -228,6 +229,7 @@ function providerNeutralOpenAISearchPlan(
         answerSelectable: false,
         capabilities: technicalCapabilities,
         defaultParams: {},
+        modelClass: "answer",
         upstreamModelId: sourceUpstreamModelId
       },
       modelDisplayName: customSource ? "Custom Search model" : "OpenAI Search model",
@@ -257,6 +259,7 @@ function providerNeutralOpenAISearchPlan(
           answerSelectable: true,
           capabilities,
           defaultParams: {},
+          modelClass: "answer",
           upstreamModelId: modelId
         },
         modelDisplayName: modelId,

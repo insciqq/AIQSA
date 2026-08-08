@@ -923,10 +923,10 @@ export function createPrismaAssistantRepository(
         throw new Error("assistant_revision_integrity_invalid");
       }
       const model = await client.providerModel.findUnique({
-        select: { connectionId: true, id: true },
+        select: { connectionId: true, id: true, modelClass: true },
         where: { id: entry.revision.providerModelId }
       });
-      if (!model) {
+      if (!model || model.modelClass !== "answer") {
         return { code: "assistant_not_available", ok: false, status: 404 };
       }
       const assistant: AssistantRunMaterialization = {

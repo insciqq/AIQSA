@@ -66,6 +66,7 @@ export type AdminProviderServiceErrorCode =
   | "provider_draft_test_failed"
   | "provider_family_adapter_mismatch"
   | "provider_group_not_found"
+  | "provider_model_class_immutable"
   | "provider_model_not_found"
   | "provider_name_invalid"
   | "provider_paid_test_confirmation_required"
@@ -110,6 +111,9 @@ function requireUpdated(result: ProviderDraftMutationResult): void {
 }
 
 function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily {
+  if (model.modelClass === "embedding") {
+    return model.embedding!.providerFamily;
+  }
   switch (model.adapterKind) {
     case "anthropic_messages":
       return "anthropic";
@@ -120,6 +124,8 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
       return "openai_compatible";
     case "openai_responses_native":
       return "openai";
+    case "openai_embeddings_compatible":
+      throw new AdminProviderServiceError("provider_family_adapter_mismatch");
     case "openrouter_chat_completions":
       return "openrouter";
   }
@@ -284,6 +290,7 @@ export function createAdminProviderService(input: Readonly<{
   async function testCredentialCatalog(value: {
     connection: AdminProviderConnectionConfiguration;
     family: string;
+    modelClasses?: readonly ProviderModelConfiguration["modelClass"][];
     secret: ProviderCredentialSource | null;
     signal?: AbortSignal;
   }): Promise<AdminProviderCredentialTestOutcome> {
@@ -291,6 +298,7 @@ export function createAdminProviderService(input: Readonly<{
       return await input.credentialTester.test({
         connection: normalizeAdminProviderConnectionConfiguration(value.connection),
         family: realProviderFamily(value.family),
+        ...(value.modelClasses ? { modelClasses: value.modelClasses } : {}),
         secret: value.secret,
         signal: value.signal
       });
@@ -432,7 +440,7 @@ export function createAdminProviderService(input: Readonly<{
       const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
       const model = normalizeProviderModelConfiguration(candidate.model.configuration);
       validateFamily(candidate.connection.family, model);
-      const mode: AdminProviderDraftTestMode = model.adapterKind === "openrouter_chat_completions"
+      const mode: AdminProviderDraftTestMode = candidate.connection.family === "openrouter"
         ? "account_catalog"
         : "tiny_generation";
       if (mode === "tiny_generation" && value.confirmPaidRequest !== true) {
@@ -564,6 +572,9 @@ export function createAdminProviderService(input: Readonly<{
       });
       if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
       if (result === "not_found") throw new AdminProviderServiceError("provider_model_not_found");
+      if (result === "model_class_mismatch") {
+        throw new AdminProviderServiceError("provider_model_class_immutable");
+      }
       if (result === "family_mismatch") {
         throw new AdminProviderServiceError("provider_family_adapter_mismatch");
       }
@@ -661,7 +672,7 @@ export function createAdminProviderService(input: Readonly<{
       const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
       const model = normalizeProviderModelConfiguration(candidate.model.configuration);
       validateFamily(candidate.connection.family, model);
-      if (value.mode === "account_catalog" && model.adapterKind !== "openrouter_chat_completions") {
+      if (value.mode === "account_catalog" && candidate.connection.family !== "openrouter") {
         throw new AdminProviderServiceError("provider_test_mode_invalid");
       }
       const source = candidate.credential.source;
@@ -763,6 +774,8 @@ export function createAdminProviderService(input: Readonly<{
             outcome: await testCredentialCatalog({
               connection,
               family: candidate.connection.family,
+              modelClasses: [...new Set(models.map(({ configuration }) =>
+                configuration.modelClass))],
               secret: credentialSecretSource(credential.id, source),
               signal: value.signal
             })
@@ -814,7 +827,9 @@ export function createAdminProviderService(input: Readonly<{
       const checks: StoredProviderDraftCheck[] = models.flatMap((model) =>
         testedCredentials.map(({ checkedAt, credential, outcome }) => {
           const write = credentials.find(({ id }) => id === credential.id)!;
-          const available = outcome.modelIds.includes(model.configuration.upstreamModelId);
+          const available = (
+            outcome.modelIdsByClass?.[model.configuration.modelClass] ?? outcome.modelIds
+          ).includes(model.configuration.upstreamModelId);
           const credentialDraftVersion = write.kind === "draft" ? write.draftVersion : null;
           const credentialVersionId = write.kind === "active" ? write.versionId : null;
           return {

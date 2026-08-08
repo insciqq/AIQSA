@@ -237,7 +237,8 @@ describe("admin provider service", () => {
         create,
         findUnique: vi.fn(async () => ({
           connection: { family: "gemini" },
-          id: "gemini-model-1"
+          id: "gemini-model-1",
+          modelClass: "answer"
         })),
         updateMany
       }
@@ -642,7 +643,12 @@ describe("admin provider service", () => {
       supportedParameters: ["tools"],
       tag: "vendor-a"
     }]);
-    const createDiscoveryClient = vi.fn(() => ({ listModelEndpoints, listModels }));
+    const listEmbeddingModels = vi.fn(async () => []);
+    const createDiscoveryClient = vi.fn(() => ({
+      listEmbeddingModels,
+      listModelEndpoints,
+      listModels
+    }));
     const providers = createAdminProviderService({
       credentialTester: credentialTester(),
       createDiscoveryClient,

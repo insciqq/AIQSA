@@ -64,6 +64,8 @@ export function adminProviderModelConfiguration(
     answerSelectable: configuration.answerSelectable,
     capabilities: configuration.capabilities,
     defaultParams: configuration.defaultParams,
+    ...(configuration.embedding ? { embedding: configuration.embedding } : {}),
+    modelClass: configuration.modelClass,
     ...(configuration.openRouterRouting
       ? { openRouterRouting: configuration.openRouterRouting }
       : {}),

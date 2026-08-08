@@ -131,6 +131,7 @@ export type AdminUsageDashboard = {
 export type AdminCatalog = {
   models: {
     displayName: string;
+    modelClass?: "answer" | "embedding";
     modelId: string;
     provider: string;
     providerFamily?: string;

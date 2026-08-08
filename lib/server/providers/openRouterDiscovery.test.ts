@@ -29,6 +29,35 @@ function expectDiscoveryCode(error: unknown, code: OpenRouterDiscoveryError["cod
 }
 
 describe("OpenRouter account-filtered discovery", () => {
+  it("uses the dedicated embedding-model catalog path", async () => {
+    const requests: McpPinnedHttpRequest[] = [];
+    const client = createOpenRouterDiscoveryClient({
+      apiRoot: "https://openrouter.example.test/api/v1",
+      bearerToken: "embedding-key",
+      network: {
+        dispatch: async (request) => {
+          requests.push(request);
+          return responseJson({
+            data: [{ id: "qwen/qwen3-embedding-8b", name: "Qwen3 Embedding 8B" }]
+          });
+        },
+        lookupHostname: publicLookup
+      }
+    });
+
+    await expect(client.listEmbeddingModels()).resolves.toEqual([{
+      id: "qwen/qwen3-embedding-8b",
+      inputModalities: [],
+      name: "Qwen3 Embedding 8B",
+      outputModalities: [],
+      pricing: {},
+      supportedParameters: []
+    }]);
+    expect(requests.map(({ url }) => url.pathname)).toEqual([
+      "/api/v1/embeddings/models"
+    ]);
+  });
+
   it("uses exact draft bearer paths and returns only bounded safe model and endpoint metadata", async () => {
     const requests: McpPinnedHttpRequest[] = [];
     const responses = [

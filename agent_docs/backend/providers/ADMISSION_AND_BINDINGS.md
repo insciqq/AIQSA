@@ -16,6 +16,16 @@ Entitlement and credential assignment remain independent. `ProviderUserCredentia
 
 Answer catalog and admission require an active immutable model configuration declared answer-selectable. A technical-only deployment remains available only to its separate typed Search authority and is invalid for answer grants, profiles, defaults, catalogs, and direct answer admission even through `full_access`.
 
+Provider deployments additionally carry an immutable persisted `answer` or
+`embedding` class. Answer and technical Search reads filter the persisted
+answer class before parsing active configuration. Embedding deployments reuse
+the same connections, credential precedence, exact availability tuples, and
+grant rows, but resolve through the separate embedding boundary; `full_access`
+is still a wildcard and explicit provider/model grants still apply. An
+embedding deployment can never become an answer default, Assistant target, or
+system-model candidate. Embedding dimension and transport rules are owned by
+[provider embeddings](EMBEDDINGS.md).
+
 The installation system model resolver reuses answer admission's exact
 connection/model snapshot, administrator credential precedence, and current
 credential/model check without applying model entitlement. The policy's

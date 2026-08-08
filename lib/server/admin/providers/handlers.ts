@@ -103,6 +103,7 @@ function serviceError(error: AdminProviderServiceError): Response {
     "provider_activation_unavailable_confirmation_required",
     "provider_delete_confirmation_required",
     "provider_draft_stale",
+    "provider_model_class_immutable",
     "provider_revoke_confirmation_required"
   ]);
   const status = notFound.has(error.code)

@@ -98,6 +98,12 @@ Client Search retains its immutable revision-owned end-to-end deadline, also bou
 
 `AIQSA_PROVIDER_RESPONSE_MAX_BYTES` caps buffered success/error bodies. Streaming keeps independent size/retention bounds of 4 MiB per event frame, 64 MiB total raw wire, and 8 Mi characters of retained provider output by default. Size values accept positive safe decimal integers; invalid or out-of-range values fall back to defaults. Hard ceilings are 16 MiB/event, 256 MiB/stream, and 32 Mi characters retained output, and the effective event limit is clamped to the total stream limit. Timing derives only from the accepted Admin configuration.
 
+Embedding calls reuse the same database-owned connection/model deadline and
+`AIQSA_PROVIDER_RESPONSE_MAX_BYTES` buffered ceiling, with an additional fixed
+16 MiB adapter cap. Their batch count, text length, 2 MiB request cap, and
+vector dimensions are code-owned safety/shape contracts; there is no separate
+embedding environment-variable family.
+
 `AIQSA_DEFAULT_MODEL`, `AIQSA_DEFAULT_SEARCH_MODEL`, `GEMINI_API_KEY`,
 `AIQSA_GEMINI_SMOKE_MODEL`, `ANTHROPIC_API_KEY`, and
 `AIQSA_ANTHROPIC_SMOKE_MODEL` are process-local provider-smoke inputs, never

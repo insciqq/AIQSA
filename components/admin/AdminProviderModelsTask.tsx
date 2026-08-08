@@ -18,6 +18,10 @@ import type { AdminConfirmationController } from "@/components/admin/useAdminCon
 import type { AdminOpenRouterDiscoverySession } from "@/components/admin/useAdminOpenRouterDiscovery";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
+import {
+  embeddingPresetsForFamily,
+  type EmbeddingModelPreset
+} from "@/lib/domain/embeddingModels";
 import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 
@@ -36,6 +40,52 @@ export function AdminProviderModelsTask({
   const editing = editingId && editingId !== "new"
     ? connection.models.find(({ id }) => id === editingId) ?? null
     : null;
+  const embeddingPresets = embeddingPresetsForFamily(connection.family);
+
+  function addOrEnableEmbeddingPreset(preset: EmbeddingModelPreset) {
+    const existing = connection.models.find((model) =>
+      (model.modelClass ?? model.draftConfig.modelClass ?? "answer") === "embedding" &&
+      model.draftConfig.upstreamModelId === preset.upstreamModelId
+    );
+    if (existing) {
+      if (!existing.enabled) {
+        void controller.actions.updateModel(
+          connection.id,
+          existing.id,
+          { action: "enable" },
+          `${preset.displayName} embedding deployment enabled.`
+        );
+      }
+      return;
+    }
+    void controller.actions.createModel(connection.id, {
+      configuration: {
+        adapterKind: "openai_embeddings_compatible",
+        answerSelectable: false,
+        capabilities: {
+          contextWindow: preset.contextWindow,
+          nativePdfInput: false,
+          nativeSearch: false,
+          pdf: false,
+          reasoning: false,
+          streaming: false,
+          toolCalling: false,
+          vision: false
+        },
+        defaultParams: {},
+        embedding: {
+          nativeDimension: preset.nativeDimension,
+          providerFamily: preset.providerFamily,
+          queryInstructionTemplate: preset.queryInstructionTemplate,
+          supportsMrl: preset.supportsMrl,
+          targetDimension: preset.targetDimension
+        },
+        modelClass: "embedding",
+        upstreamModelId: preset.upstreamModelId
+      },
+      displayName: preset.displayName
+    });
+  }
 
   return (
     <section
@@ -70,6 +120,49 @@ export function AdminProviderModelsTask({
           </button>
         </div>
 
+        {embeddingPresets.length ? (
+          <div className="border-b border-trace-subtle bg-workspace-rail/35 px-4 py-4">
+            <div className="max-w-3xl">
+              <h4 className="text-sm font-semibold text-ink">Embedding presets</h4>
+              <p className="mt-1 text-xs leading-5 text-ink-muted">
+                Add an exact vector deployment to this connection. AIQSA always requests the native vector, then truncates and normalizes locally.
+              </p>
+            </div>
+            <div className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
+              {embeddingPresets.map((preset) => {
+                const existing = connection.models.find((model) =>
+                  (model.modelClass ?? model.draftConfig.modelClass ?? "answer") === "embedding" &&
+                  model.draftConfig.upstreamModelId === preset.upstreamModelId
+                );
+                return (
+                  <div className="flex min-w-0 flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between" key={preset.id}>
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-medium text-ink">
+                        {preset.displayName}{preset.default ? " · Default" : ""}
+                      </p>
+                      <p className="mt-1 font-mono text-metadata text-proof">
+                        {preset.nativeDimension.toLocaleString()} → {preset.targetDimension.toLocaleString()} dimensions
+                        {preset.queryInstructionTemplate ? " · instructed queries / bare documents" : " · symmetric text input"}
+                      </p>
+                      <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">{preset.description}</p>
+                    </div>
+                    <button
+                      aria-label={`${existing?.enabled ? "Added" : existing ? "Enable" : "Add"} ${preset.displayName} embedding preset`}
+                      className={existing?.enabled ? quietButton : primaryButton}
+                      disabled={controller.state.busy || existing?.enabled === true}
+                      onClick={() => addOrEnableEmbeddingPreset(preset)}
+                      type="button"
+                    >
+                      <Plus aria-hidden="true" className="size-3.5" />
+                      {existing?.enabled ? "Added" : existing ? "Enable" : "Add preset"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
         {editingId ? (
           <div className="border-b border-trace-subtle px-4 py-4">
             <AdminProviderModelEditor
@@ -87,8 +180,12 @@ export function AdminProviderModelsTask({
           <div aria-label="Configured models" className="divide-y divide-trace-subtle" role="list">
             {connection.models.map((model) => {
               const presentation = presentProviderModel(model);
+              const isEmbedding = (model.modelClass ?? model.draftConfig.modelClass ?? "answer") === "embedding";
+              const embedding = model.draftConfig.embedding;
               const routing = model.draftConfig.openRouterRouting;
-              const routingText = routing?.mode === "only_selected"
+              const routingText = isEmbedding && embedding
+                ? `${embedding.nativeDimension.toLocaleString()} → ${embedding.targetDimension.toLocaleString()} dimensions`
+                : routing?.mode === "only_selected"
                 ? `${routing.providers.length} ordered provider${routing.providers.length === 1 ? "" : "s"}`
                 : routing
                   ? "Automatic routing"
@@ -103,7 +200,7 @@ export function AdminProviderModelsTask({
                   <div className="min-w-0">
                     <p className="break-words text-sm font-medium text-ink">{model.displayName}</p>
                     <p className="mt-1 text-xs leading-5 text-ink-muted">
-                      {adminProviderAdapterLabel(model.draftConfig.adapterKind)} · {routingText} · {model.draftConfig.answerSelectable ? "Answer model" : "Technical runtime only"}
+                      {adminProviderAdapterLabel(model.draftConfig.adapterKind)} · {routingText} · {isEmbedding ? "Embedding model" : model.draftConfig.answerSelectable ? "Answer model" : "Technical runtime only"}
                     </p>
                     <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                       <AdminAvailabilityStatus enabled={model.enabled} />
@@ -119,16 +216,18 @@ export function AdminProviderModelsTask({
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-1">
-                    <button
-                      aria-label={`Edit ${model.displayName}`}
-                      className={quietButton}
-                      disabled={controller.state.busy}
-                      onClick={() => setEditingId(model.id)}
-                      type="button"
-                    >
-                      <Pencil aria-hidden="true" className="size-3.5" />
-                      Edit
-                    </button>
+                    {!isEmbedding ? (
+                      <button
+                        aria-label={`Edit ${model.displayName}`}
+                        className={quietButton}
+                        disabled={controller.state.busy}
+                        onClick={() => setEditingId(model.id)}
+                        type="button"
+                      >
+                        <Pencil aria-hidden="true" className="size-3.5" />
+                        Edit
+                      </button>
+                    ) : null}
                     <button
                       aria-label={`${model.enabled ? "Disable" : "Enable"} ${model.displayName} model`}
                       className={model.enabled ? quietButton : enableButton}

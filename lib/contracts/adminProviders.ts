@@ -11,12 +11,14 @@ export type AdminProviderAdapterKind =
   | "anthropic_messages"
   | "gemini_interactions_native"
   | "openai_chat_completions_compatible"
+  | "openai_embeddings_compatible"
   | "openai_responses_compatible"
   | "openai_responses_native"
   | "openrouter_chat_completions";
 
 export type AdminProviderUnassignedPolicy = "require_assignment" | "use_default";
 export type AdminProviderCheckStatus = "available" | "unavailable";
+export type AdminProviderModelClass = "answer" | "embedding";
 
 export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS = 300;
 export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS = 900;
@@ -59,11 +61,22 @@ export type AdminOpenRouterRouting =
   | { mode: "automatic"; providers: [] }
   | { mode: "only_selected"; providers: string[] };
 
+export type AdminEmbeddingModelConfiguration = {
+  nativeDimension: number;
+  providerFamily: "openai" | "openai_compatible" | "openrouter";
+  queryInstructionTemplate: string | null;
+  supportsMrl: boolean;
+  targetDimension: number;
+};
+
 export type AdminProviderModelConfiguration = {
   adapterKind: AdminProviderAdapterKind;
   answerSelectable: boolean;
   capabilities: AdminProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
+  embedding?: AdminEmbeddingModelConfiguration;
+  /** Older cached provider payloads omit this and are answer deployments. */
+  modelClass?: AdminProviderModelClass;
   openRouterRouting?: AdminOpenRouterRouting;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
   /** Whole seconds; omission means inherit the connection value. */
@@ -143,6 +156,8 @@ export type AdminProviderModel = {
   draftVersion: number;
   enabled: boolean;
   id: string;
+  /** Older cached provider payloads omit this and are answer deployments. */
+  modelClass?: AdminProviderModelClass;
   updatedAt: string;
 };
 

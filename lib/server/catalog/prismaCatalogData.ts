@@ -281,6 +281,7 @@ function isProviderModelAvailable(input: {
   if (configuration.adapterKind === "fake") {
     return input.exposeFake;
   }
+  if (configuration.modelClass !== "answer") return false;
 
   return activeProviderAuthority(input) !== null;
 }
@@ -319,12 +320,15 @@ export function providerModelToCatalogEntry(
   model: CatalogProviderModelRow
 ): ProviderModelCatalogEntry | null {
   const configuration = activeModelConfiguration(model);
-  if (!configuration) {
+  if (
+    !configuration ||
+    configuration.adapterKind !== "fake" && configuration.modelClass !== "answer"
+  ) {
     return null;
   }
 
   const resolvedCapabilities = resolveProviderModelCapabilities({
-    adapterKind: configuration.adapterKind,
+    adapterKind: configuration.adapterKind as CatalogAdapterKind,
     capabilities: configuration.capabilities,
     legacyContextWindow: model.contextWindow,
     providerFamily: model.connection.family,
@@ -619,6 +623,7 @@ export function createPrismaCatalogDataLoader({
         orderBy: [{ connectionId: "asc" }, { displayName: "asc" }, { id: "asc" }],
         where: {
           enabled: true,
+          modelClass: "answer",
           connection: {
             enabled: true
           }

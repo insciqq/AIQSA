@@ -862,6 +862,40 @@ describe("AdminProvidersSection", () => {
     ));
   });
 
+  it("adds the default Qwen embedding preset with an explicit vector shape", async () => {
+    const view = controller();
+    mocks.useController.mockReturnValue(view);
+    render(<AdminProvidersSection active groups={[]} />);
+
+    openTask("Models");
+    const modelsRegion = screen.getByTestId("provider-task-models");
+    expect(within(modelsRegion).getByText(/4,096 → 1,536 dimensions/)).toBeVisible();
+    fireEvent.click(within(modelsRegion).getByRole("button", {
+      name: "Add Qwen3 Embedding 8B embedding preset"
+    }));
+
+    await waitFor(() => expect(view.actions.createModel).toHaveBeenCalledWith(
+      "connection-1",
+      {
+        configuration: expect.objectContaining({
+          adapterKind: "openai_embeddings_compatible",
+          answerSelectable: false,
+          defaultParams: {},
+          embedding: {
+            nativeDimension: 4_096,
+            providerFamily: "openrouter",
+            queryInstructionTemplate: expect.stringContaining("Query: {text}"),
+            supportsMrl: true,
+            targetDimension: 1_536
+          },
+          modelClass: "embedding",
+          upstreamModelId: "qwen/qwen3-embedding-8b"
+        }),
+        displayName: "Qwen3 Embedding 8B"
+      }
+    ));
+  });
+
   it("offers the same searchable model picker for a saved custom connection", async () => {
     const customConnection: AdminProviderConnection = {
       ...connection,

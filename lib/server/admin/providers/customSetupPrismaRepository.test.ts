@@ -46,6 +46,7 @@ function plan(
           vision: false
         },
         defaultParams: {},
+        modelClass: "answer",
         upstreamModelId: "vendor/model-1"
       },
       displayName: "Model 1",

@@ -51,7 +51,8 @@ export function createAdminSystemModelPolicyService(
             { connection: { displayName: "asc" } },
             { displayName: "asc" },
             { id: "asc" }
-          ]
+          ],
+          where: { modelClass: "answer" }
         }),
         resolveRole()
       ]);

@@ -81,6 +81,7 @@ export function adminProviderAdapterLabel(kind: AdminProviderAdapterKind): strin
     anthropic_messages: "Anthropic Messages",
     gemini_interactions_native: "Gemini Interactions",
     openai_chat_completions_compatible: "Chat Completions",
+    openai_embeddings_compatible: "Embeddings (OpenAI-compatible)",
     openai_responses_compatible: "Responses (compatible)",
     openai_responses_native: "Responses (native OpenAI)",
     openrouter_chat_completions: "OpenRouter Chat Completions"
@@ -535,6 +536,7 @@ export function AdminProviderModelEditor({
         answerSelectable: form.answerSelectable,
         capabilities: form.capabilities,
         defaultParams,
+        modelClass: "answer" as const,
         ...(connection.family === "openrouter" ? {
           openRouterRouting: form.openRouterRoutingMode === "automatic"
             ? { mode: "automatic" as const, providers: [] as [] }
