@@ -26,7 +26,7 @@ There is no human-review or `done` status in the open queue. `node scripts/task-
 
 Keep current behavior in the owning living document rather than copying it into tasks. Link the relevant owners and describe only the delta. For complex work, make `Plan`, `Progress`, and `Decisions` detailed enough that a fresh agent can continue from the task and current checkout alone.
 
-Task-local decisions remain temporarily inspectable in the bounded local completion archive, but they are not durable or recoverable from public Git history. Any rationale that future work still needs must be incorporated into the owning current contract and attested through `Durable rationale` before completion.
+Task-local decisions remain inspectable in the local completion archive, but they are not durable or recoverable from public Git history. Any rationale that future work still needs must be incorporated into the owning current contract and attested through `Durable rationale` before completion.
 
 ## Commands
 
@@ -47,7 +47,7 @@ Before completion, `Plan` has no unchecked items, `Progress` and `Decisions` no 
 
 ## Completion Archive
 
-`agent_docs/task_archive/` contains at most the ten most recent completed task files and does not participate in queue selection or dependency resolution. `complete` never deletes, rotates, or overwrites archived evidence. When ten files are already present, completion stops without changing the task or archive; cleanup happens only after an explicit operator request, normally by removing the oldest archived files the operator selected. Archived task files remain ignored local state and must not be staged, committed, shipped, or treated as a durable contract.
+`agent_docs/task_archive/` retains completed task files and does not participate in queue selection or dependency resolution. Its size never blocks ledger validation or task completion. `complete` only adds the newly completed task: it never deletes, rotates, or overwrites archived evidence. Cleanup happens only after an explicit operator request and removes only the files the operator selected. Archived task files remain ignored local state and must not be staged, committed, shipped, or treated as a durable contract.
 
 ## Parallel Ownership
 

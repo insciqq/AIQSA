@@ -142,7 +142,7 @@ describe("local unified task ledger", () => {
     expect(result.stdout).toContain("cleared 1 dependency reference");
   });
 
-  it("never prunes a full ten-task archive without an explicit operator cleanup request", () => {
+  it("keeps completing beyond ten archived tasks without pruning existing evidence", () => {
     const root = fixture();
     for (let index = 0; index < 10; index += 1) {
       const id = `20260701120000${String(index).padStart(3, "0")}`;
@@ -154,25 +154,26 @@ describe("local unified task ledger", () => {
 
     const result = run(root, "complete", current);
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("already contains 10 tasks");
-    expect(result.stderr).toContain("explicit operator request");
-    expect(existsSync(path.join(root, "agent_docs/tasks", `${current}.md`))).toBe(true);
-    expect(readdirSync(path.join(root, "agent_docs/task_archive")).sort()).toEqual(before);
+    expect(result.status).toBe(0);
+    expect(existsSync(path.join(root, "agent_docs/tasks", `${current}.md`))).toBe(false);
+    const after = readdirSync(path.join(root, "agent_docs/task_archive")).sort();
+    expect(after).toEqual([...before, `${current}.md`].sort());
+    expect(readFileSync(path.join(root, "agent_docs/task_archive", `${current}.md`), "utf8"))
+      .toContain("Status: completed");
   });
 
-  it("rejects an archive that exceeds the manual retention limit", () => {
+  it("accepts an archive above ten while preserving normal queue validation", () => {
     const root = fixture();
-    for (let index = 0; index < 11; index += 1) {
+    for (let index = 0; index < 25; index += 1) {
       const id = `20260701120000${String(index).padStart(3, "0")}`;
       archivedTask(root, `${id}-archived-${index}`);
     }
+    task(root, "20260801120000001-ready", "ready");
 
     const result = run(root, "list");
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("must contain at most 10 completed tasks");
-    expect(result.stderr).toContain("explicit operator request");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("ready       20260801120000001-ready");
   });
 
   it("allows parallel in_progress tasks and enforces dependency-free executable states", () => {

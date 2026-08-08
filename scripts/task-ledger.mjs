@@ -16,7 +16,6 @@ import { fileURLToPath } from "node:url";
 
 const TASK_DIRECTORY = "agent_docs/tasks";
 const TASK_ARCHIVE_DIRECTORY = "agent_docs/task_archive";
-const TASK_ARCHIVE_LIMIT = 10;
 const TASK_FILE = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const TASK_STEM = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const TASK_ID = /^\d{17}$/;
@@ -382,10 +381,6 @@ export function validateTaskLedger(root = process.cwd()) {
     (filename) => `${filename}: archived task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
   ));
 
-  if (ledger.archive.records.length > TASK_ARCHIVE_LIMIT) {
-    errors.push(`${TASK_ARCHIVE_DIRECTORY}: must contain at most ${TASK_ARCHIVE_LIMIT} completed tasks; cleanup requires an explicit operator request`);
-  }
-
   for (const [stem, matches] of ledger.byStem) {
     if (matches.length > 1) errors.push(`${stem}: duplicate task stem`);
   }
@@ -574,10 +569,6 @@ export function completeTask({ root = process.cwd(), reference }) {
   if (evidence.unavailableOnly) {
     throw new Error("Unavailable-only verification cannot complete a task; block it or add passed evidence");
   }
-  if (ledger.archive.records.length >= TASK_ARCHIVE_LIMIT) {
-    throw new Error(`${TASK_ARCHIVE_DIRECTORY} already contains ${TASK_ARCHIVE_LIMIT} tasks; cleanup requires an explicit operator request before completion`);
-  }
-
   const archivePath = path.join(ledger.archive.directory, record.filename);
   const archiveRelativePath = portable(path.relative(ledger.root, archivePath));
   if (existsSync(archivePath)) {
