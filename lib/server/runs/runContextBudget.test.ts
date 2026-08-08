@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { providerAttachmentBudgetTokens } from "../providers/attachmentPayload";
 import type { ProviderRunRequest } from "../providers/types";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import {
   applyProviderRequestContextBudget,
-  providerFacingSerializedTools
+  providerFacingSerializedTools,
+  UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS
 } from "./runContextBudget";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
@@ -137,6 +139,71 @@ describe("provider request context budget", () => {
     expect(small.request.attachments[0]!.extractedText!.length).toBeLessThan(30_000);
     expect(small.request.attachments[0]!.extractedText).toContain("[truncated for model context]");
     expect(large.request.attachments[0]!.extractedText).toBe(attachment.extractedText);
+  });
+
+  it.each([undefined, 0])(
+    "caps one oversized attachment when contextWindow is %s",
+    (contextWindow) => {
+      const attachment = {
+        byteSize: 1_000_000,
+        extractedText: "a".repeat(100_000),
+        fileName: "unknown-window.txt",
+        id: "attachment-1",
+        kind: "document" as const,
+        metadata: {},
+        mimeType: "text/plain",
+        status: "ready" as const
+      };
+      const capabilities = { ...request().modelCapabilities, contextWindow };
+      const budgeted = applyProviderRequestContextBudget({
+        request: request({
+          attachmentIds: [attachment.id],
+          attachments: [attachment],
+          modelCapabilities: capabilities
+        })
+      });
+
+      expect(budgeted.ok).toBe(true);
+      if (!budgeted.ok) throw new Error("unexpected budget rejection");
+      expect(budgeted.request.attachments[0]!.extractedText).toContain(
+        "[truncated for model context]"
+      );
+      expect(providerAttachmentBudgetTokens({
+        attachments: budgeted.request.attachments,
+        modelCapabilities: capabilities
+      })).toBeLessThanOrEqual(UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS);
+    }
+  );
+
+  it("shares the unknown-window fallback across the full attachment set", () => {
+    const attachments = Array.from({ length: 20 }, (_, index) => ({
+      byteSize: 1_000_000,
+      extractedText: String(index % 10).repeat(100_000),
+      fileName: `unknown-${index}.txt`,
+      id: `attachment-${index}`,
+      kind: "document" as const,
+      metadata: {},
+      mimeType: "text/plain",
+      status: "ready" as const
+    }));
+    const capabilities = { ...request().modelCapabilities, contextWindow: undefined };
+    const budgeted = applyProviderRequestContextBudget({
+      request: request({
+        attachmentIds: attachments.map(({ id }) => id),
+        attachments,
+        modelCapabilities: capabilities
+      })
+    });
+
+    expect(budgeted.ok).toBe(true);
+    if (!budgeted.ok) throw new Error("unexpected budget rejection");
+    expect(budgeted.request.attachments).toHaveLength(20);
+    expect(budgeted.request.attachments.every((attachment) =>
+      Boolean(attachment.extractedText?.length))).toBe(true);
+    expect(providerAttachmentBudgetTokens({
+      attachments: budgeted.request.attachments,
+      modelCapabilities: capabilities
+    })).toBeLessThanOrEqual(UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS);
   });
 
   it("fits non-ASCII attachment text by estimated tokens rather than raw characters", () => {

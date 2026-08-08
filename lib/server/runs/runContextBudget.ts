@@ -19,6 +19,11 @@ import type {
 import type { ProviderToolBridge } from "../tools/types";
 import { getAttachmentTextConfig } from "../uploads/attachmentTextConfig";
 
+// Matches the former 20,000-character ASCII ceiling under the shared
+// estimator, but applies once across every selected text attachment and is
+// therefore conservative for multilingual text and multi-file requests.
+export const UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS = 5_000;
+
 function maxOutputTokensForBudget(
   params: Readonly<Record<string, unknown>>,
   capabilities: ProviderModelCapabilities,
@@ -201,35 +206,37 @@ function fitProviderAttachmentText(input: Readonly<{
   if (textCandidates.length === 0) return { attachments, ok: true };
 
   const contextWindow = input.request.modelCapabilities.contextWindow ?? 0;
-  if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
-    return { attachments, ok: true };
-  }
-  const limits = calculateContextBudgetLimits({
-    contextWindow,
-    maxOutputTokens: maxOutputTokensForBudget(
-      input.request.params,
-      input.request.modelCapabilities,
-      input.request.provider
-    ),
-    provider: input.request.provider
-  });
-  const currentContent = input.request.context?.messages.at(-1)?.content ?? input.request.content;
-  const promptTokens = estimateApproxTokens(input.request.prompt.system ?? "") +
-    estimateApproxTokens(input.request.prompt.developer ?? "");
-  const fixedAttachments = attachments.map((attachment) =>
-    textModeAttachment(attachment, input.request.modelCapabilities)
-      ? { ...attachment, extractedText: null }
-      : attachment
-  );
-  const fixedTokens = promptTokens +
-    estimateApproxTokens(currentContent) +
-    input.fixedExtraTokens +
-    providerAttachmentBudgetTokens({
-      attachments: fixedAttachments,
-      modelCapabilities: input.request.modelCapabilities
-    });
   const labelTokens = textCandidates.reduce((total, candidate) => total + candidate.labelTokens, 0);
-  const availableTextTokens = limits.budgetTokens - fixedTokens - labelTokens;
+  let availableTextTokens: number;
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
+    availableTextTokens = UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS - labelTokens;
+  } else {
+    const limits = calculateContextBudgetLimits({
+      contextWindow,
+      maxOutputTokens: maxOutputTokensForBudget(
+        input.request.params,
+        input.request.modelCapabilities,
+        input.request.provider
+      ),
+      provider: input.request.provider
+    });
+    const currentContent = input.request.context?.messages.at(-1)?.content ?? input.request.content;
+    const promptTokens = estimateApproxTokens(input.request.prompt.system ?? "") +
+      estimateApproxTokens(input.request.prompt.developer ?? "");
+    const fixedAttachments = attachments.map((attachment) =>
+      textModeAttachment(attachment, input.request.modelCapabilities)
+        ? { ...attachment, extractedText: null }
+        : attachment
+    );
+    const fixedTokens = promptTokens +
+      estimateApproxTokens(currentContent) +
+      input.fixedExtraTokens +
+      providerAttachmentBudgetTokens({
+        attachments: fixedAttachments,
+        modelCapabilities: input.request.modelCapabilities
+      });
+    availableTextTokens = limits.budgetTokens - fixedTokens - labelTokens;
+  }
   const minimumTokens = textCandidates.reduce(
     (total, candidate) => total + candidate.minimumTokens,
     0
