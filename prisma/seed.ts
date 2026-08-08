@@ -30,6 +30,7 @@ import {
   LOCAL_SHARED_MCP_DRAFT,
   LOCAL_SHARED_MCP_FIXTURE
 } from "./local-seed-fixtures";
+import { runOptionalLocalDevProfile } from "./local-dev-profile";
 
 const prisma = new PrismaClient();
 
@@ -900,6 +901,12 @@ async function main() {
 }
 
 main()
+  .then(async () => {
+    const profile = await runOptionalLocalDevProfile(prisma);
+    if (profile === "executed") {
+      console.info("Applied the optional local development profile.");
+    }
+  })
   .catch((error) => {
     console.error(error);
     process.exitCode = 1;

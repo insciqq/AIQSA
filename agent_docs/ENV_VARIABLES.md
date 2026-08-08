@@ -357,9 +357,12 @@ Normal operation leaves recovery login disabled. A temporary recovery window req
 AIQSA_TEST_MODE=1
 PLAYWRIGHT_TEST_AUTH=1
 AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS=10
+AIQSA_LOCAL_DEV_PROFILE_DISABLED=1
 ```
 
 Exact `AIQSA_TEST_MODE=1` plus non-production `NODE_ENV` authorizes the deterministic seed and Fake QSA adapter. Deterministic auth additionally requires exact `PLAYWRIGHT_TEST_AUTH=1`. The compiled runtime rejects these switches through readiness, and they are absent from `.env.example`. The seed restores the public fixture `operator@aiqsa.local` / `AIQSA-local-2026!` only inside disposable development volumes.
+
+The repeatable seed has one ignored checkout-local extension point at `.aiqsa/local-dev-profile/post-seed.ts`. It is absent by default and therefore changes nothing for normal checkouts; exact `AIQSA_LOCAL_DEV_PROFILE_DISABLED=1` suppresses even that one file for a seed invocation. This switch is an emergency/testing escape hatch for the development command, not application configuration and not an invitation to pass provider secrets into the long-running runtime.
 
 The dev/test fake adapter paces tokens by 10 ms by default so streaming and cancellation remain observable when Playwright reuses the Compose server. Set `AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS=0` explicitly to disable pacing for a one-off development run.
 

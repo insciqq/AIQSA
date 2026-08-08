@@ -1,0 +1,71 @@
+import { lstat } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { PrismaClient } from "@prisma/client";
+
+const LOCAL_DEV_PROFILE_RELATIVE_PATH = ".aiqsa/local-dev-profile/post-seed.ts";
+
+export type LocalDevProfileContext = Readonly<{
+  prisma: PrismaClient;
+  repositoryRoot: string;
+  version: 1;
+}>;
+
+type LocalDevProfileModule = Readonly<{
+  run?: (context: LocalDevProfileContext) => Promise<void> | void;
+}>;
+
+type LocalDevProfileLoaderOptions = Readonly<{
+  disabled?: boolean;
+  loadModule?: (url: string) => Promise<unknown>;
+  profilePath?: string;
+  repositoryRoot?: string;
+}>;
+
+function defaultRepositoryRoot(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..");
+}
+
+async function defaultModuleLoader(url: string): Promise<unknown> {
+  return import(url);
+}
+
+function profileModule(value: unknown): LocalDevProfileModule | null {
+  return typeof value === "object" && value !== null
+    ? value as LocalDevProfileModule
+    : null;
+}
+
+export async function runOptionalLocalDevProfile(
+  prisma: PrismaClient,
+  options: LocalDevProfileLoaderOptions = {}
+): Promise<"disabled" | "executed" | "missing"> {
+  if (options.disabled ?? process.env.AIQSA_LOCAL_DEV_PROFILE_DISABLED === "1") {
+    return "disabled";
+  }
+
+  const repositoryRoot = options.repositoryRoot ?? defaultRepositoryRoot();
+  const profilePath = options.profilePath ?? resolve(
+    repositoryRoot,
+    LOCAL_DEV_PROFILE_RELATIVE_PATH
+  );
+  let profileStat;
+  try {
+    profileStat = await lstat(profilePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    throw error;
+  }
+  if (!profileStat.isFile()) {
+    throw new Error("local_dev_profile_entrypoint_invalid");
+  }
+
+  const loaded = profileModule(await (options.loadModule ?? defaultModuleLoader)(
+    pathToFileURL(profilePath).href
+  ));
+  if (typeof loaded?.run !== "function") {
+    throw new Error("local_dev_profile_entrypoint_invalid");
+  }
+  await loaded.run({ prisma, repositoryRoot, version: 1 });
+  return "executed";
+}
