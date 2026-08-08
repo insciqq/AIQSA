@@ -68,6 +68,8 @@ export type KnowledgeHybridPassage = Readonly<{
   chunkIndex: number;
   documentId: string;
   documentVersionId: string;
+  /** User-facing immutable revision number; absent only on legacy receipts. */
+  documentVersionNumber?: number;
   fileName: string;
   ftsRank: number | null;
   ftsScore: number | null;

@@ -3,6 +3,7 @@ import {
   composerSessionKey,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
+import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { shellFetch } from "@/components/app-shell/shellApi";
 import type { ChatSummary, FolderSummary, Notice } from "@/components/app-shell/types";
 import type { WorkspaceFolderMutationPort } from "@/components/app-shell/useWorkspaceInteractionController";
@@ -205,7 +206,10 @@ export function createFolderActions({
     folderMutation.beginAction(folder.id);
     try {
       const response = await shellFetch(`/api/folders/${folder.id}`, {
-        body: JSON.stringify({ projectMemory: folderMutation.projectMemoryDraft }),
+        body: JSON.stringify({
+          defaultKnowledgePlan: { baseIds: folderMutation.projectKnowledgeBaseIds },
+          projectMemory: folderMutation.projectMemoryDraft
+        }),
         headers: {
           "content-type": "application/json"
         },
@@ -222,6 +226,21 @@ export function createFolderActions({
         .updateFolders((current) =>
           sortFoldersByOrder(current.map((candidate) => (candidate.id === body.folder.id ? body.folder : candidate)))
         );
+      const workspace = useWorkspaceStore.getState();
+      const currentChat = workspace.activeChatId
+        ? workspace.chats.find((candidate) => candidate.id === workspace.activeChatId) ?? null
+        : null;
+      const currentProjectId = currentChat?.folderId ?? (
+        workspace.activeChatId === null ? workspace.pendingChatFolderId : null
+      );
+      const controls = useComposerControlStore.getState();
+      if (currentProjectId === body.folder.id && controls.knowledgePlanSource === "project") {
+        controls.setSelectedKnowledgePlan(
+          body.folder.defaultKnowledgePlan?.baseIds ?? [],
+          body.folder.defaultKnowledgePlan ? "project" : "off",
+          "system"
+        );
+      }
       folderMutation.completeProjectSave();
       setNotice({
         kind: "success",

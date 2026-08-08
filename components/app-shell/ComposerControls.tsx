@@ -1,6 +1,7 @@
 import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
 import { ComposerAssistantPicker } from "@/components/app-shell/ComposerAssistantPicker";
 import { ComposerModelPicker } from "@/components/app-shell/ComposerModelPicker";
+import { ComposerKnowledgePicker } from "@/components/app-shell/ComposerKnowledgePicker";
 import { ComposerOptionPicker } from "@/components/app-shell/ComposerOptionPicker";
 import { ComposerSearchPicker } from "@/components/app-shell/ComposerSearchPicker";
 import { ComposerReasoningPicker } from "@/components/app-shell/ComposerReasoningPicker";
@@ -38,6 +39,17 @@ const reasoningEffortLabels: Record<string, string> = {
   minimal: "Minimal",
   none: "None",
   xhigh: "Extra high"
+};
+
+const emptyKnowledgeView: ShellComposerView["knowledge"] = {
+  bases: [],
+  dataError: null,
+  dataState: "ready",
+  hasChatDefault: false,
+  retry() {},
+  select() {},
+  selectedBaseIds: [],
+  source: "off"
 };
 
 function reasoningEffortLabel(value: string): string {
@@ -78,6 +90,7 @@ export function ComposerControls({
   currentModel,
   currentParameterControls,
   disabled = false,
+  knowledge = emptyKnowledgeView,
   maxOutputTokens,
   onMakeCurrentModelDefault,
   onBackgroundModeChange,
@@ -126,6 +139,7 @@ export function ComposerControls({
   currentModel?: CatalogModel;
   currentParameterControls: ModelParameterControls;
   disabled?: boolean;
+  knowledge?: ShellComposerView["knowledge"];
   maxOutputTokens: string;
   onMakeCurrentModelDefault?(): void;
   onBackgroundModeChange(value: boolean): void;
@@ -220,6 +234,11 @@ export function ComposerControls({
     : selectedSearchStrategies.length === 1
       ? selectedSearchStrategies[0]!.displayName
       : `${selectedSearchStrategies.length} engines`;
+  const knowledgeSummary = knowledge.selectedBaseIds.length === 0
+    ? "Off"
+    : knowledge.selectedBaseIds.length === 1
+      ? knowledge.bases.find((base) => base.id === knowledge.selectedBaseIds[0])?.name ?? "Unavailable"
+      : `${knowledge.selectedBaseIds.length} bases`;
   const changeSearchPlan = (optionIds: readonly string[], mode: SearchPlanMode) => {
     if (onSearchPlanChange) {
       onSearchPlanChange(optionIds, mode);
@@ -240,7 +259,8 @@ export function ComposerControls({
     `Reasoning ${
       reasoningSupported ? reasoningAccessibleDescription(reasoningEffort, reasoningMode) : "not supported"
     }.`,
-    `Search ${searchSummary}.`
+    `Search ${searchSummary}.`,
+    `Knowledge ${knowledgeSummary}.`
   ].filter((segment): segment is string => segment !== null).join(" ");
 
   const commitNumericDrafts = useCallback(() => {
@@ -361,6 +381,23 @@ export function ComposerControls({
           preferenceSource={searchPreferenceSource}
         />
 
+        <ComposerKnowledgePicker
+          align="right"
+          bases={knowledge.bases}
+          className="min-w-20 max-w-[11rem] flex-[1_1_5rem]"
+          dataError={knowledge.dataError}
+          dataState={knowledge.dataState}
+          disabled={disabled || streaming}
+          hasChatDefault={knowledge.hasChatDefault}
+          id="composer-inline-knowledge"
+          onChange={(baseIds) => knowledge.select(baseIds)}
+          onClearChatDefault={knowledge.clearChatDefault}
+          onRetry={knowledge.retry}
+          onSaveChatDefault={knowledge.saveChatDefault}
+          selectedBaseIds={knowledge.selectedBaseIds}
+          source={knowledge.source}
+        />
+
         <button
           ref={runSetupTriggerRef}
           className="inline-flex min-h-touch min-w-touch shrink-0 items-center justify-center gap-1 rounded-control px-1.5 text-left text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-65 sm:min-h-control [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
@@ -383,7 +420,7 @@ export function ComposerControls({
         >
           <SlidersHorizontal className="size-3.5 shrink-0 text-ink-muted" aria-hidden="true" />
           <span className="sr-only">
-            {modelLabel}. Search: {searchSummary}.
+            {modelLabel}. Search: {searchSummary}. Knowledge: {knowledgeSummary}.
           </span>
           <span className="hidden shrink-0 min-[430px]:inline">More</span>
           <span
@@ -494,6 +531,25 @@ export function ComposerControls({
                     selectedOptionIds={selectedSearchOptionIds}
                     preferenceSource={searchPreferenceSource}
                     setup
+                  />
+
+                  <ComposerKnowledgePicker
+                    align="right"
+                    bases={knowledge.bases}
+                    className="min-w-0"
+                    dataError={knowledge.dataError}
+                    dataState={knowledge.dataState}
+                    disabled={disabled || streaming}
+                    hasChatDefault={knowledge.hasChatDefault}
+                    id="knowledge-select"
+                    onChange={(baseIds) => knowledge.select(baseIds)}
+                    onClearChatDefault={knowledge.clearChatDefault}
+                    onRetry={knowledge.retry}
+                    onSaveChatDefault={knowledge.saveChatDefault}
+                    placement="below"
+                    selectedBaseIds={knowledge.selectedBaseIds}
+                    setup
+                    source={knowledge.source}
                   />
                 </div>
                 <div

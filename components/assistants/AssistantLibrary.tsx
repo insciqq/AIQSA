@@ -23,6 +23,7 @@ import {
   type AssistantCategory,
   type AssistantSummary
 } from "@/lib/contracts/assistants";
+import { KNOWLEDGE_PLAN_MAX_BASES } from "@/lib/contracts/knowledge";
 import { MAX_SEARCH_PLAN_OPTIONS } from "@/lib/domain/search";
 import { ArrowLeft, ChevronDown, LoaderCircle, Plus, RotateCcw, Search } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
@@ -59,6 +60,7 @@ const YOURS_FILTERS: readonly (readonly [LibraryFilter, string])[] = [
 const HISTORY_SECTION_LABELS: Readonly<Record<string, string>> = {
   identity: "Identity",
   instructions: "Instructions",
+  knowledge: "Knowledge",
   model: "Model",
   "run-setup": "Run setup",
   search: "Search",
@@ -872,6 +874,7 @@ function EditorTask({
   const saveDisabled = mutationLocked || !draft.name.trim() || draft.providerModelId === null;
   const title = draft.name.trim() || "New assistant";
   const searchLimitReached = draft.searchOptionIds.length >= MAX_SEARCH_PLAN_OPTIONS;
+  const knowledgeLimitReached = draft.knowledgeBaseIds.length >= KNOWLEDGE_PLAN_MAX_BASES;
   const toolsCaution = selectedModel !== null && !selectedModel.supportsTools && draft.mcpServerIds.length > 0;
 
   const providerGroups: { models: AssistantEditorView["options"]["models"]; providerLabel: string }[] = [];
@@ -899,6 +902,13 @@ function EditorTask({
       mcpServerIds: checked
         ? [...draft.mcpServerIds, serverId]
         : draft.mcpServerIds.filter((id) => id !== serverId)
+    });
+
+  const toggleKnowledgeBase = (baseId: string, checked: boolean) =>
+    editor.onChange({
+      knowledgeBaseIds: checked
+        ? [...draft.knowledgeBaseIds, baseId]
+        : draft.knowledgeBaseIds.filter((id) => id !== baseId)
     });
 
   const updateStarter = (index: number, value: string) => {
@@ -1200,6 +1210,79 @@ function EditorTask({
                   Choose a model to set reasoning, sampling, and delivery controls.
                 </p>
               ) : null}
+            </EditorGroup>
+
+            <EditorGroup
+              id="knowledge"
+              onToggle={() => toggleGroup("knowledge")}
+              open={openGroups.knowledge ?? false}
+              title="Knowledge"
+            >
+              <p className="text-metadata leading-5 text-ink-muted">
+                This ordered list is exact. Chat and project defaults are not merged into Assistant runs.
+              </p>
+              <fieldset>
+                <legend className="mb-1.5 text-xs font-medium text-ink-secondary">Knowledge bases</legend>
+                <div className="space-y-2">
+                  {draft.knowledgeBaseIds
+                    .filter((baseId) => !editor.options.knowledgeBases.some((base) => base.id === baseId))
+                    .map((baseId) => {
+                      const order = draft.knowledgeBaseIds.indexOf(baseId) + 1;
+                      return (
+                        <label className={checkboxRow} key={baseId}>
+                          <input
+                            checked
+                            className="size-4 shrink-0 accent-proof"
+                            disabled={mutationLocked}
+                            type="checkbox"
+                            onChange={(event) => toggleKnowledgeBase(baseId, event.currentTarget.checked)}
+                          />
+                          <span className="min-w-0 break-words text-caution [overflow-wrap:anywhere]">
+                            Unavailable base · selection retained · order {order}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  {editor.options.knowledgeBases.map((base) => {
+                    const checked = draft.knowledgeBaseIds.includes(base.id);
+                    return (
+                      <label className={checkboxRow} key={base.id}>
+                        <input
+                          checked={checked}
+                          className="size-4 shrink-0 accent-proof"
+                          disabled={mutationLocked || (!checked && (!base.available || knowledgeLimitReached))}
+                          type="checkbox"
+                          onChange={(event) => toggleKnowledgeBase(base.id, event.currentTarget.checked)}
+                        />
+                        <span className={`min-w-0 break-words [overflow-wrap:anywhere] ${base.available ? "" : "text-caution"}`}>
+                          {base.name}{base.available ? "" : checked ? " · unavailable, retained" : " · unavailable"}
+                          {checked ? ` · order ${draft.knowledgeBaseIds.indexOf(base.id) + 1}` : ""}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+              {editor.options.knowledgeDataState === "loading" && editor.options.knowledgeBases.length === 0 ? (
+                <p className="text-metadata text-ink-muted" role="status">Loading Knowledge bases…</p>
+              ) : null}
+              {editor.options.knowledgeDataState === "error" ? (
+                <div className="rounded-control border border-critical/30 bg-critical/10 p-3 text-metadata text-critical" role="alert">
+                  <p>{editor.options.knowledgeDataError ?? "Knowledge bases could not be loaded."}</p>
+                  <button
+                    className="mt-2 h-touch rounded-control bg-control-surface px-3 font-semibold text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                    type="button"
+                    disabled={mutationLocked}
+                    onClick={editor.options.onRetryKnowledge}
+                  >
+                    Retry Knowledge
+                  </button>
+                </div>
+              ) : null}
+              {editor.options.knowledgeDataState === "ready" && editor.options.knowledgeBases.length === 0 && draft.knowledgeBaseIds.length === 0 ? (
+                <p className="text-metadata text-ink-muted">No Knowledge bases are available.</p>
+              ) : null}
+              <p className="text-metadata text-ink-muted">Up to {KNOWLEDGE_PLAN_MAX_BASES} bases per Assistant.</p>
             </EditorGroup>
 
             <EditorGroup
@@ -1563,7 +1646,7 @@ function HistoryTask({
                   )}
                 </div>
                 <p className="text-metadata text-ink-muted">
-                  Search sources: {viewed.searchPlan.optionIds.length} · MCP servers: {viewed.mcpServerIds.length}
+                  Search sources: {viewed.searchPlan.optionIds.length} · Knowledge bases: {viewed.knowledgeBaseIds.length} · MCP servers: {viewed.mcpServerIds.length}
                 </p>
               </div>
             </section>

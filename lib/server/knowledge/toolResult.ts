@@ -127,6 +127,9 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
   const chunkIndex = nonNegativeInteger(value.chunkIndex);
   const documentId = boundedString(value.documentId, 512);
   const documentVersionId = boundedString(value.documentVersionId, 512);
+  const documentVersionNumber = value.documentVersionNumber === undefined
+    ? undefined
+    : nonNegativeInteger(value.documentVersionNumber);
   const fileName = boundedString(value.fileName, 1_024);
   const ftsRank = nullablePositiveRank(value.ftsRank);
   const ftsScore = nullableFiniteNumber(value.ftsScore);
@@ -143,7 +146,9 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
     (ftsRank === null || ftsRank === undefined ? 0 : 1 / (60 + ftsRank));
   if (
     annRank === undefined || !baseName || bindingOrdinal === null || bindingOrdinal > 2 ||
-    !chunkId || chunkIndex === null || !documentId || !documentVersionId || !fileName ||
+    !chunkId || chunkIndex === null || !documentId || !documentVersionId ||
+    (documentVersionNumber !== undefined &&
+      (documentVersionNumber === null || documentVersionNumber < 1)) || !fileName ||
     ftsRank === undefined || ftsScore === undefined || fusedScore === null || fusedScore < 0 ||
     !handle || !/^K[1-3]\.[1-8]$/u.test(handle) || includedText === null ||
     includedTextBytes === null || includedTextBytes !== Buffer.byteLength(includedText, "utf8") ||
@@ -168,6 +173,9 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
     chunkIndex,
     documentId,
     documentVersionId,
+    ...(documentVersionNumber !== undefined && documentVersionNumber !== null
+      ? { documentVersionNumber }
+      : {}),
     fileName,
     ftsRank,
     ftsScore,

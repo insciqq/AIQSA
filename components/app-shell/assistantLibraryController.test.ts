@@ -131,7 +131,11 @@ function controllerInput(): AssistantLibraryControllerInput {
     applyAssistantToComposer: vi.fn(() => true),
     catalog: null,
     catalogError: null,
+    knowledgeBases: [],
+    knowledgeDataError: null,
+    knowledgeDataState: "ready",
     retryCatalog: vi.fn(),
+    retryKnowledge: vi.fn(),
     setShellNotice: vi.fn()
   };
 }

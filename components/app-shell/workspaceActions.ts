@@ -25,6 +25,7 @@ import {
   resolvePreferredSearchPlan
 } from "@/components/app-shell/powerAppShellData";
 import type { SearchPlanMode } from "@/lib/domain/search";
+import type { KnowledgePlan } from "@/lib/contracts/knowledge";
 import {
   decodeChatSummaryResponse,
   decodeWorkspaceChatsResponse
@@ -37,6 +38,7 @@ import {
   type ComposerSessionKey,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
+import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import {
   emptyThreadSnapshot,
@@ -67,6 +69,11 @@ type WorkspaceActionsInput = {
   resumeChatRun(chat: ChatSummary): void;
   setNotice(notice: Notice): void;
   setSelectedModelId(value: string, origin?: "assistant" | "system" | "user"): void;
+  setSelectedKnowledgePlan(
+    baseIds: readonly string[],
+    source?: "chat" | "explicit" | "off" | "project",
+    origin?: "assistant" | "system" | "user"
+  ): void;
   setSelectedProvider(value: string, origin?: "assistant" | "system" | "user"): void;
   setSelectedSearchPlan(
     optionIds: readonly string[],
@@ -87,6 +94,7 @@ export function useWorkspaceActions({
   resumeChatRun,
   setNotice,
   setSelectedModelId,
+  setSelectedKnowledgePlan,
   setSelectedProvider,
   setSelectedSearchPlan,
   workspaceRefreshPromiseRef
@@ -95,6 +103,7 @@ export function useWorkspaceActions({
     return {
       activeLeafMessageId: detail.activeLeafMessageId,
       createdAt: detail.createdAt,
+      defaultKnowledgePlan: detail.defaultKnowledgePlan ?? null,
       defaultModelId: detail.defaultModelId,
       defaultProvider: detail.defaultProvider,
       folderId: detail.folderId,
@@ -259,6 +268,20 @@ export function useWorkspaceActions({
       catalogOverride?.searchStrategies
     );
     setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode, "system");
+    const folderDefault = chat.folderId
+      ? useWorkspaceStore.getState().folders.find((folder) => folder.id === chat.folderId)
+          ?.defaultKnowledgePlan ?? null
+      : null;
+    const knowledgePlan = chat.defaultKnowledgePlan ?? folderDefault;
+    setSelectedKnowledgePlan(
+      knowledgePlan?.baseIds ?? [],
+      chat.defaultKnowledgePlan
+        ? "chat"
+        : folderDefault
+          ? "project"
+          : "off",
+      "system"
+    );
     applyModelControlDefaults(model, catalogOverride?.defaults.controlValues);
   }
 
@@ -348,6 +371,58 @@ export function useWorkspaceActions({
     rememberActiveChatId(null);
     useWorkspaceStore.getState().setActiveChatId(null);
     useComposerSessionStore.getState().activateSession(composerSessionKey(null, folderId));
+    if (!useComposerControlStore.getState().selectedAssistant) {
+      const projectPlan = folderId
+        ? useWorkspaceStore.getState().folders.find((folder) => folder.id === folderId)
+            ?.defaultKnowledgePlan ?? null
+        : null;
+      setSelectedKnowledgePlan(
+        projectPlan?.baseIds ?? [],
+        projectPlan ? "project" : "off",
+        "system"
+      );
+    }
+  }
+
+  async function setChatKnowledgeDefault(plan: KnowledgePlan | null): Promise<boolean> {
+    const chatId = activeChatIdRef.current;
+    if (!chatId) return false;
+    try {
+      const response = await shellFetch(`/api/chats/${chatId}`, {
+        body: JSON.stringify({ defaultKnowledgePlan: plan }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      });
+      if (!response.ok) throw new Error(`chat_knowledge_default_failed_${response.status}`);
+      const decoded = decodeChatSummaryResponse(await response.json());
+      if (!decoded || decoded.id !== chatId) throw new Error("chat_knowledge_default_malformed");
+      const chat = chatSummaryFromApi(decoded);
+      useWorkspaceStore.getState().upsertChat(chat);
+      const folderPlan = chat.folderId
+        ? useWorkspaceStore.getState().folders.find((folder) => folder.id === chat.folderId)
+            ?.defaultKnowledgePlan ?? null
+        : null;
+      const effective = chat.defaultKnowledgePlan ?? folderPlan;
+      if (activeChatIdRef.current === chatId) {
+        setSelectedKnowledgePlan(
+          effective?.baseIds ?? [],
+          chat.defaultKnowledgePlan ? "chat" : folderPlan ? "project" : "off",
+          "system"
+        );
+      }
+      setNotice({
+        kind: "success",
+        text: plan === null
+          ? folderPlan
+            ? "This chat now follows its project Knowledge default."
+            : "Chat Knowledge default cleared. Knowledge is Off."
+          : "Chat Knowledge default saved."
+      });
+      return true;
+    } catch (error) {
+      setNotice({ kind: "error", text: errorMessage(error) });
+      return false;
+    }
   }
 
   async function refreshActiveChat(
@@ -754,6 +829,7 @@ export function useWorkspaceActions({
     refreshActiveChat,
     refreshWorkspace,
     renameChat,
+    setChatKnowledgeDefault,
     toggleChatFavorite,
     updateChatFolder
   };

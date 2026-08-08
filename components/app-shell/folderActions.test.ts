@@ -6,6 +6,10 @@ import {
   selectComposerSession,
   useComposerSessionStore
 } from "./composerSessionStore";
+import {
+  resetComposerControlStoreForTest,
+  useComposerControlStore
+} from "./composerControlStore";
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
 import type { ChatSummary, FolderSummary, Notice } from "./types";
 import type { WorkspaceFolderMutationPort } from "./useWorkspaceInteractionController";
@@ -32,13 +36,22 @@ function chat(input: Partial<ChatSummary> & { id: string; title: string }): Chat
   };
 }
 
-function createFolderActionsHarness({ activeBlankFolder = false } = {}) {
+function createFolderActionsHarness({
+  activeBlankFolder = false,
+  projectKnowledgeBaseIds = [],
+  projectMemoryDraft = ""
+}: {
+  activeBlankFolder?: boolean;
+  projectKnowledgeBaseIds?: string[];
+  projectMemoryDraft?: string;
+} = {}) {
   const researchFolder = folder({ id: "folder-research", name: "Research" });
   const chats = [
     chat({ folderId: researchFolder.id, id: "chat-a", title: "Chat A" }),
     chat({ folderId: null, id: "chat-b", title: "Chat B" })
   ];
   resetComposerSessionStoreForTest();
+  resetComposerControlStoreForTest();
   resetWorkspaceStoreForTest();
   useWorkspaceStore.setState({
     activeChatId: activeBlankFolder ? null : "chat-a",
@@ -71,7 +84,8 @@ function createFolderActionsHarness({ activeBlankFolder = false } = {}) {
     endAction: vi.fn(),
     endCreate: vi.fn(),
     newName: "",
-    projectMemoryDraft: ""
+    projectKnowledgeBaseIds,
+    projectMemoryDraft
   };
 
   const actions = createFolderActions({
@@ -100,6 +114,7 @@ function createFolderActionsHarness({ activeBlankFolder = false } = {}) {
 describe("folder actions", () => {
   afterEach(() => {
     resetComposerSessionStoreForTest();
+    resetComposerControlStoreForTest();
     resetWorkspaceStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -164,6 +179,45 @@ describe("folder actions", () => {
     ).toMatchObject({
       draft: "Folder draft",
       pendingUploadGenerations: [state.uploadGeneration]
+    });
+  });
+
+  it("saves project memory and the exact ordered Knowledge default together", async () => {
+    const state = createFolderActionsHarness({
+      projectKnowledgeBaseIds: ["base-policies", "base-release"],
+      projectMemoryDraft: "Prefer the current release policy."
+    });
+    const updated = folder({
+      defaultKnowledgePlan: { baseIds: ["base-policies", "base-release"] },
+      id: state.folder.id,
+      name: state.folder.name,
+      projectMemory: "Prefer the current release policy."
+    });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ folder: updated }));
+    vi.stubGlobal("fetch", fetchMock);
+    useComposerControlStore.getState().setSelectedKnowledgePlan(
+      ["old-project-base"],
+      "project",
+      "system"
+    );
+
+    await state.actions.saveProjectSettings(state.folder);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/folders/folder-research",
+      expect.objectContaining({
+        body: JSON.stringify({
+          defaultKnowledgePlan: { baseIds: ["base-policies", "base-release"] },
+          projectMemory: "Prefer the current release policy."
+        }),
+        method: "PATCH"
+      })
+    );
+    expect(state.folderMutation.completeProjectSave).toHaveBeenCalledOnce();
+    expect(state.folders()).toEqual([updated]);
+    expect(useComposerControlStore.getState()).toMatchObject({
+      knowledgePlanSource: "project",
+      selectedKnowledgeBaseIds: ["base-policies", "base-release"]
     });
   });
 });

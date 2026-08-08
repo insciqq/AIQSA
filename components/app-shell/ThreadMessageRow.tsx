@@ -6,6 +6,7 @@ import {
   ToolActivityBlock
 } from "@/components/app-shell/ThreadArtifacts";
 import { RunReceipt } from "@/components/app-shell/RunReceipt";
+import { KnowledgeEvidenceBlock } from "@/components/app-shell/KnowledgeEvidenceBlock";
 import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
 import {
   deriveRunReceipt,
@@ -66,7 +67,7 @@ type MessageMenuPlacement = Readonly<{
   top: number;
 }>;
 
-type InlineReceiptDisclosure = "citations" | "reasoning" | "search" | "tools";
+type InlineReceiptDisclosure = "citations" | "knowledge" | "reasoning" | "search" | "tools";
 
 function ThreadRunActivity({ pipeline }: { pipeline: PipelineSnapshot }) {
   const label = runActivityLabel(pipeline);
@@ -488,6 +489,8 @@ function ThreadMessageRowComponent({
   onCopyMessage,
   onDeleteMessage,
   onEditMessage,
+  onInspectRun,
+  onOpenKnowledgeEvidence,
   onOpenRunDetails,
   onRegenerateMessage,
   onToggleMobileControls,
@@ -509,6 +512,8 @@ function ThreadMessageRowComponent({
   onCopyMessage(message: ThreadMessage): void;
   onDeleteMessage(messageId: string): void;
   onEditMessage(message: ThreadMessage): void;
+  onInspectRun?(runId: string): Promise<void> | void;
+  onOpenKnowledgeEvidence?(knowledgeBaseId: string): void;
   onOpenRunDetails(): void;
   onRegenerateMessage(messageId: string): void;
   onToggleMobileControls?(messageId: string): void;
@@ -524,6 +529,7 @@ function ThreadMessageRowComponent({
   const editPendingDescriptionId = `message-edit-pending-${message.id}`;
   const targetDescriptionId = `message-actions-target-${message.id}`;
   const [runDetailsOpen, setRunDetailsOpen] = useState(false);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [expandedDisclosures, setExpandedDisclosures] = useState<ReadonlySet<InlineReceiptDisclosure>>(
     () => new Set()
   );
@@ -535,6 +541,7 @@ function ThreadMessageRowComponent({
     artifactSummary?.toolCalls.some((call) => call.capability === "mcp")
   );
   const hasInlineCitations = showCitations && Boolean(artifactSummary?.citationCount);
+  const hasInlineKnowledge = Boolean(artifactSummary?.knowledgeInvocationCount);
   const hasInlineReasoning = showReasoningBlocks && Boolean(artifactSummary?.reasoningCount);
   const hasExactRunEvents = Boolean(
     message.runId &&
@@ -552,6 +559,18 @@ function ThreadMessageRowComponent({
       return next;
     });
   }
+  function changeKnowledgeDisclosure(expanded: boolean) {
+    changeDisclosure("knowledge", expanded);
+    if (
+      !expanded ||
+      !message.runId ||
+      persistedRun?.id === message.runId ||
+      !onInspectRun ||
+      knowledgeLoading
+    ) return;
+    setKnowledgeLoading(true);
+    void Promise.resolve(onInspectRun(message.runId)).finally(() => setKnowledgeLoading(false));
+  }
   function activateReceiptSegment(kind: RunReceiptSegmentKind) {
     if (kind === "search" && hasInlineSearch) {
       changeDisclosure("search", !expandedDisclosures.has("search"));
@@ -559,6 +578,10 @@ function ThreadMessageRowComponent({
     }
     if (kind === "tools" && hasInlineTools) {
       changeDisclosure("tools", !expandedDisclosures.has("tools"));
+      return;
+    }
+    if (kind === "knowledge" && hasInlineKnowledge) {
+      changeKnowledgeDisclosure(!expandedDisclosures.has("knowledge"));
       return;
     }
     if (kind === "citations" && hasInlineCitations) {
@@ -712,11 +735,13 @@ function ThreadMessageRowComponent({
   }
   if (hasInlineSearch) actionableReceiptSegments.add("search");
   if (hasInlineTools) actionableReceiptSegments.add("tools");
+  if (hasInlineKnowledge) actionableReceiptSegments.add("knowledge");
   if (hasInlineCitations) actionableReceiptSegments.add("citations");
   if (hasInlineReasoning) actionableReceiptSegments.add("reasoning");
   const disclosureReceiptSegments = new Set<RunReceiptSegmentKind>();
   if (hasInlineSearch) disclosureReceiptSegments.add("search");
   if (hasInlineTools) disclosureReceiptSegments.add("tools");
+  if (hasInlineKnowledge) disclosureReceiptSegments.add("knowledge");
   if (hasInlineCitations) disclosureReceiptSegments.add("citations");
   if (hasInlineReasoning) disclosureReceiptSegments.add("reasoning");
   const expandedReceiptSegments = new Set<RunReceiptSegmentKind>(expandedDisclosures);
@@ -839,6 +864,19 @@ function ThreadMessageRowComponent({
           ) : null}
           {artifactSummary?.groundingDisplay?.provider === "gemini" ? (
             <GeminiSearchSuggestions html={artifactSummary.groundingDisplay.suggestionsHtml} />
+          ) : null}
+          {hasInlineKnowledge && artifactSummary ? (
+            <div className="mt-5">
+              <KnowledgeEvidenceBlock
+                expanded={expandedDisclosures.has("knowledge")}
+                loading={knowledgeLoading}
+                persistedRun={persistedRun?.id === message.runId ? persistedRun : null}
+                showCitations={showCitations}
+                summary={artifactSummary}
+                onExpandedChange={changeKnowledgeDisclosure}
+                onOpenEvidence={(knowledgeBaseId) => onOpenKnowledgeEvidence?.(knowledgeBaseId)}
+              />
+            </div>
           ) : null}
           {hasInlineTools && artifactSummary ? (
             <div className="mt-5">

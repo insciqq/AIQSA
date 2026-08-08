@@ -141,8 +141,14 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     },
     projectSettings: {
       changeDraft: setProjectMemoryDraft,
+      changeKnowledgeBaseIds: setProjectKnowledgeBaseIds,
       draft: projectMemoryDraft,
       folder: projectSettingsFolder,
+      knowledgeBaseIds: projectKnowledgeBaseIds,
+      knowledgeBases: projectKnowledgeBases,
+      knowledgeDataError: projectKnowledgeDataError,
+      knowledgeDataState: projectKnowledgeDataState,
+      retryKnowledge: retryProjectKnowledge,
       save: saveProjectSettings
     }
   } = workspace;
@@ -992,10 +998,16 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       {projectSettingsFolder ? (
         <ProjectSettingsDialog
           folder={projectSettingsFolder}
+          knowledgeBaseIds={projectKnowledgeBaseIds}
+          knowledgeBases={projectKnowledgeBases}
+          knowledgeDataError={projectKnowledgeDataError}
+          knowledgeDataState={projectKnowledgeDataState}
           memoryDraft={projectMemoryDraft}
           saving={workspace.pane.state.folderActionId === projectSettingsFolder.id}
           onCancel={workspace.projectSettings.close}
+          onKnowledgeBaseIdsChange={setProjectKnowledgeBaseIds}
           onMemoryDraftChange={setProjectMemoryDraft}
+          onRetryKnowledge={retryProjectKnowledge}
           onSave={() => void saveProjectSettings(projectSettingsFolder)}
           restoreFocus={() =>
             document.querySelector<HTMLElement>(

@@ -256,6 +256,60 @@ describe("chat wire contracts", () => {
     ).toEqual(legacyMessage);
   });
 
+  it("requires a complete, sequential Knowledge artifact projection", () => {
+    const knowledgeSummary = {
+      citationCount: 0,
+      citations: [],
+      knowledgeCitations: [{
+        baseName: "Policies",
+        documentVersionNumber: 3,
+        fileName: "handbook.pdf",
+        handle: "K1.1",
+        knowledgeBaseId: "base-policies",
+        page: 12
+      }],
+      knowledgeInvocationCount: 2,
+      knowledgeOutcomes: [
+        { invocationOrdinal: 1, outcome: "complete" },
+        { invocationOrdinal: 2, outcome: "zero_above_threshold" }
+      ],
+      reasoningCount: 0,
+      reasoningText: [],
+      searchCount: 0,
+      searchStrategy: null,
+      toolCallCount: 0,
+      toolCalls: []
+    };
+    const decode = (artifactSummary: unknown) => decodeChatDetailResponse({
+      chat: { ...summary, messages: [{ ...message, artifactSummary }], usageStats }
+    });
+
+    expect(decode(knowledgeSummary)?.messages[0]?.artifactSummary).toEqual(knowledgeSummary);
+    for (const malformed of [
+      { ...knowledgeSummary, knowledgeOutcomes: undefined },
+      {
+        ...knowledgeSummary,
+        knowledgeOutcomes: [
+          { invocationOrdinal: 1, outcome: "complete" },
+          { invocationOrdinal: 3, outcome: "zero_above_threshold" }
+        ]
+      },
+      {
+        ...knowledgeSummary,
+        knowledgeCitations: [
+          knowledgeSummary.knowledgeCitations[0],
+          knowledgeSummary.knowledgeCitations[0]
+        ]
+      },
+      {
+        ...knowledgeSummary,
+        knowledgeCitations: [{ ...knowledgeSummary.knowledgeCitations[0], handle: "K3.1" }]
+      }
+    ]) {
+      expect(decode(malformed)).toBeNull();
+    }
+  });
+
   it("round-trips the snapshot-bound assistant identity and fails closed on malformed identities", () => {
     const assistantIdentity = {
       avatar: {

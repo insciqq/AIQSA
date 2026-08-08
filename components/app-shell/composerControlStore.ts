@@ -1,5 +1,6 @@
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
 import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
+import { KNOWLEDGE_PLAN_MAX_BASES } from "@/lib/contracts/knowledge";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import { create } from "zustand";
 
@@ -20,6 +21,7 @@ export type ComposerModelSelection = {
  * atomic application of a selected revision and keep the identity.
  */
 export type ComposerControlChangeOrigin = "assistant" | "system" | "user";
+export type ComposerKnowledgePlanSource = "assistant" | "chat" | "explicit" | "off" | "project";
 
 export type ComposerAssistantSelection = {
   avatar: AssistantAvatarRecipe;
@@ -34,10 +36,12 @@ export type ComposerAssistantSelection = {
 export type ComposerManualDraftBackup = {
   backgroundMode: boolean;
   maxOutputTokens: string;
+  knowledgePlanSource: Exclude<ComposerKnowledgePlanSource, "assistant">;
   reasoningEffort: string;
   reasoningMode: string;
   searchPlanMode: SearchPlanMode;
   selectedModelId: string;
+  selectedKnowledgeBaseIds: string[];
   selectedProvider: string;
   selectedSearchOptionIds: string[];
   selectedSearchStrategy: string;
@@ -50,9 +54,11 @@ export type ComposerControlSnapshot = {
   assistantRemovedNotice: boolean;
   backgroundMode: boolean;
   maxOutputTokens: string;
+  knowledgePlanSource: ComposerKnowledgePlanSource;
   reasoningEffort: string;
   reasoningMode: string;
   selectedAssistant: ComposerAssistantSelection | null;
+  selectedKnowledgeBaseIds: string[];
   selectedModelId: string;
   selectedProvider: string;
   selectedSearchOptionIds: string[];
@@ -70,6 +76,7 @@ export type ComposerControlStore = ComposerControlSnapshot & {
     assistant: ComposerAssistantSelection;
     controlDefaults: ControlDefaults;
     modelId: string;
+    knowledgeBaseIds: readonly string[];
     provider: string;
     searchOptionIds: readonly string[];
     searchPlanMode: SearchPlanMode;
@@ -83,6 +90,11 @@ export type ComposerControlStore = ComposerControlSnapshot & {
   removeAssistant(): void;
   setBackgroundMode(value: boolean): void;
   setMaxOutputTokens(value: string): void;
+  setSelectedKnowledgePlan(
+    baseIds: readonly string[],
+    source?: Exclude<ComposerKnowledgePlanSource, "assistant">,
+    origin?: ComposerControlChangeOrigin
+  ): void;
   setReasoningEffort(value: string): void;
   setReasoningMode(value: string): void;
   setSelectedModelId(value: string, origin?: ComposerControlChangeOrigin): void;
@@ -105,9 +117,11 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   assistantRemovedNotice: false,
   backgroundMode: true,
   maxOutputTokens: "128000",
+  knowledgePlanSource: "off",
   reasoningEffort: "medium",
   reasoningMode: "standard",
   selectedAssistant: null,
+  selectedKnowledgeBaseIds: [],
   selectedModelId: "gpt-5.5",
   selectedProvider: "openai",
   selectedSearchOptionIds: ["openai-native-web-search"],
@@ -128,10 +142,12 @@ function manualBackupFrom(state: ComposerControlSnapshot): ComposerManualDraftBa
   return {
     backgroundMode: state.backgroundMode,
     maxOutputTokens: state.maxOutputTokens,
+    knowledgePlanSource: state.knowledgePlanSource === "assistant" ? "off" : state.knowledgePlanSource,
     reasoningEffort: state.reasoningEffort,
     reasoningMode: state.reasoningMode,
     searchPlanMode: state.searchPlanMode,
     selectedModelId: state.selectedModelId,
+    selectedKnowledgeBaseIds: [...state.selectedKnowledgeBaseIds],
     selectedProvider: state.selectedProvider,
     selectedSearchOptionIds: [...state.selectedSearchOptionIds],
     selectedSearchStrategy: state.selectedSearchStrategy,
@@ -155,6 +171,7 @@ function droppedAssistantIdentity(
   return {
     assistantManualBackup: null,
     assistantRemovedNotice: origin === "user",
+    ...(state.knowledgePlanSource === "assistant" ? { knowledgePlanSource: "explicit" as const } : {}),
     selectedAssistant: null
   };
 }
@@ -164,6 +181,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
   applyAssistantSelection({
     assistant,
     controlDefaults,
+    knowledgeBaseIds,
     modelId,
     provider,
     searchOptionIds,
@@ -176,12 +194,14 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       assistantRemovedNotice: false,
       backgroundMode: controlDefaults.backgroundMode,
       maxOutputTokens: controlDefaults.maxOutputTokens,
+      knowledgePlanSource: "assistant",
       reasoningEffort: controlDefaults.reasoningEffort,
       reasoningMode: controlDefaults.reasoningMode,
       selectedAssistant: {
         ...assistant,
         starterPrompts: [...assistant.starterPrompts]
       },
+      selectedKnowledgeBaseIds: [...knowledgeBaseIds],
       selectedModelId: modelId,
       selectedProvider: provider,
       selectedSearchOptionIds: [...searchOptionIds],
@@ -231,10 +251,12 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
           ? {
               backgroundMode: backup.backgroundMode,
               maxOutputTokens: backup.maxOutputTokens,
+              knowledgePlanSource: backup.knowledgePlanSource,
               reasoningEffort: backup.reasoningEffort,
               reasoningMode: backup.reasoningMode,
               searchPlanMode: backup.searchPlanMode,
               selectedModelId: backup.selectedModelId,
+              selectedKnowledgeBaseIds: [...backup.selectedKnowledgeBaseIds],
               selectedProvider: backup.selectedProvider,
               selectedSearchOptionIds: [...backup.selectedSearchOptionIds],
               selectedSearchStrategy: backup.selectedSearchStrategy,
@@ -250,6 +272,18 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
   },
   setMaxOutputTokens(value) {
     set((state) => ({ ...droppedAssistantIdentity(state, "user"), maxOutputTokens: value }));
+  },
+  setSelectedKnowledgePlan(baseIds, source = "explicit", origin = "user") {
+    const selectedKnowledgeBaseIds = [...baseIds];
+    if (
+      selectedKnowledgeBaseIds.length > KNOWLEDGE_PLAN_MAX_BASES ||
+      new Set(selectedKnowledgeBaseIds).size !== selectedKnowledgeBaseIds.length
+    ) return;
+    set((state) => ({
+      ...droppedAssistantIdentity(state, origin),
+      knowledgePlanSource: source,
+      selectedKnowledgeBaseIds
+    }));
   },
   setReasoningEffort(value) {
     set((state) => ({ ...droppedAssistantIdentity(state, "user"), reasoningEffort: value }));

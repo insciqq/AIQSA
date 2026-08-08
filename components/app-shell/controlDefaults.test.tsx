@@ -180,6 +180,7 @@ function assistantRevisionFixture(
     createdAt: "2026-08-01T00:00:00.000Z",
     description: "Difficult or open-ended questions",
     developerPrompt: null,
+    knowledgeBaseIds: [],
     mcpServerIds: [],
     name: "Deep helper",
     providerModelId: "gpt-5.6-sol",

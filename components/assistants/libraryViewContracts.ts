@@ -63,8 +63,12 @@ export type AssistantEditorModelOption = {
 };
 
 export type AssistantEditorOptions = {
+  knowledgeBases: { available: boolean; id: string; name: string }[];
+  knowledgeDataError: string | null;
+  knowledgeDataState: "error" | "loading" | "ready";
   mcpServers: { id: string; name: string }[];
   models: AssistantEditorModelOption[];
+  onRetryKnowledge(): void;
   searchOptions: { id: string; label: string }[];
 };
 

@@ -43,6 +43,7 @@ describe("composer control store", () => {
         streamMode: false,
         temperature: "0.9"
       },
+      knowledgeBaseIds: [],
       modelId: "gpt-5.6-sol",
       provider: "openai",
       searchOptionIds: ["perplexity-tool-search"],
@@ -86,6 +87,7 @@ describe("composer control store", () => {
         streamMode: false,
         temperature: "0.9"
       },
+      knowledgeBaseIds: [],
       modelId: "gpt-5.6-sol",
       provider: "openai",
       searchOptionIds: [],
@@ -114,6 +116,7 @@ describe("composer control store", () => {
         streamMode: false,
         temperature: "0.9"
       },
+      knowledgeBaseIds: [],
       modelId: "gpt-5.6-sol",
       provider: "openai",
       searchOptionIds: [],
@@ -140,6 +143,7 @@ describe("composer control store", () => {
         streamMode: false,
         temperature: "0.9"
       },
+      knowledgeBaseIds: [],
       modelId: "gpt-5.6-sol",
       provider: "openai",
       searchOptionIds: [],

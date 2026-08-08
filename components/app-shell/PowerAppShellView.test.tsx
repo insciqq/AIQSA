@@ -236,6 +236,16 @@ function baseProps(): PowerAppShellViewProps {
       },
       draft: "",
       flushPendingModelControlDefaults: noop,
+      knowledge: {
+        bases: [],
+        dataError: null,
+        dataState: "ready",
+        hasChatDefault: false,
+        retry: noop,
+        select: noop,
+        selectedBaseIds: [],
+        source: "off"
+      },
       maxOutputTokens: "1024",
       notificationSoundEnabled: false,
       operationError: null,
@@ -346,9 +356,11 @@ function baseProps(): PowerAppShellViewProps {
       handleEditMessage: noop,
       handleRegenerateMessage: noop,
       handleThreadScroll: noop,
+      inspectRun: noop,
       jumpToLatest: noop,
       lastRun: null,
       liveArtifactSummary: null,
+      openKnowledgeEvidence: noop,
       retryActiveChatDetail: noop,
       showJumpToLatest: false,
       threadScrollRef: { current: null },
@@ -421,9 +433,15 @@ function baseProps(): PowerAppShellViewProps {
       },
       projectSettings: {
         changeDraft: noop,
+        changeKnowledgeBaseIds: noop,
         close: noop,
         draft: "",
         folder: null,
+        knowledgeBaseIds: [],
+        knowledgeBases: [],
+        knowledgeDataError: null,
+        knowledgeDataState: "ready",
+        retryKnowledge: noop,
         save: noop
       }
     }

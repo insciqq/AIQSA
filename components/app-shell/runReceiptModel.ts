@@ -11,6 +11,7 @@ export type RunReceiptFactKind =
   | "assistant"
   | "citations"
   | "context"
+  | "knowledge"
   | "model"
   | "reasoning"
   | "search"
@@ -124,6 +125,14 @@ export function deriveRunReceipt({
   }
 
   if (artifactSummary) {
+    const knowledgeInvocationCount = factualCount(artifactSummary.knowledgeInvocationCount ?? 0);
+    if (knowledgeInvocationCount > 0) {
+      facts.push({
+        kind: "knowledge",
+        label: countLabel(knowledgeInvocationCount, "Knowledge retrieval", "Knowledge retrievals")
+      });
+    }
+
     const searchCount = factualCount(artifactSummary.searchCount);
     if (searchCount > 0) {
       facts.push({

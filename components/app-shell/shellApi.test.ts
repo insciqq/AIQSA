@@ -184,6 +184,7 @@ describe("chat wire mapping", () => {
     expect(chatSummaryFromApi(detail)).toEqual({
       activeLeafMessageId: "message-error",
       createdAt: "2026-07-12T00:00:00.000Z",
+      defaultKnowledgePlan: null,
       defaultModelId: "gpt-5.5",
       defaultProvider: "openai",
       folderId: null,

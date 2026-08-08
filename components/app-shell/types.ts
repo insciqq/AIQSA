@@ -1,4 +1,5 @@
 import type { WorkspaceChatSummary } from "@/lib/contracts/chats";
+import type { KnowledgePlan } from "@/lib/contracts/knowledge";
 
 export type {
   Catalog,
@@ -17,6 +18,8 @@ export type {
   ThreadArtifactSummary,
   ThreadCitation,
   ThreadGroundingDisplay,
+  ThreadKnowledgeCitation,
+  ThreadKnowledgeOutcome,
   ThreadMessage,
   ThreadRunUsage,
   ThreadSearchActivity,
@@ -35,6 +38,7 @@ export type { PersistedRun, RunEventView } from "@/lib/contracts/runs";
 export type InspectorMode = "closed" | "overlay" | "pinned";
 
 export type FolderSummary = {
+  defaultKnowledgePlan?: KnowledgePlan | null;
   id: string;
   name: string;
   parentId: string | null;

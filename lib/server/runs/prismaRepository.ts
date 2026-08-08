@@ -51,6 +51,8 @@ import {
   type AssistantAvatarRecipe
 } from "../../contracts/assistants";
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
+import { decodeKnowledgeRunProjection } from "../../contracts/runs";
+import { projectKnowledgeInspectionEvents } from "./knowledgeInspectionEvents";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
 import {
   KnowledgeRunAdmissionError,
@@ -88,6 +90,13 @@ function knowledgePlanFromNormalizedRequest(value: unknown): KnowledgePlan {
   const candidate = isRecord(value) ? value.knowledgePlan : undefined;
   const decoded = decodeKnowledgePlan(candidate);
   if (!decoded.ok) throw new Error("knowledge_plan_integrity_invalid");
+  return decoded.plan;
+}
+
+function knowledgeDefaultFromJson(value: unknown): KnowledgePlan | null {
+  if (value === null || value === undefined) return null;
+  const decoded = decodeKnowledgePlan(value);
+  if (!decoded.ok) throw new Error("knowledge_default_integrity_invalid");
   return decoded.plan;
 }
 
@@ -2071,7 +2080,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             orderBy: { ordinal: "asc" }
           },
           knowledgeRuns: {
-            orderBy: { createdAt: "asc" }
+            orderBy: { invocationOrdinal: "asc" }
           },
           searchRuns: {
             orderBy: {
@@ -2092,6 +2101,43 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         return null;
       }
 
+      const knowledgeRuns = run.knowledgeRuns.map((receipt) => {
+        const projection = decodeKnowledgeRunProjection({
+          baseEvidence: Array.isArray(receipt.baseEvidence) ? receipt.baseEvidence : [],
+          candidateCount: receipt.candidateCount,
+          candidateLimit: receipt.candidateLimit,
+          createdAt: receipt.createdAt.toISOString(),
+          durationMs: receipt.durationMs,
+          embeddingUsage: Array.isArray(receipt.embeddingUsage) ? receipt.embeddingUsage : [],
+          failureCode: receipt.failureCode,
+          fusion: receipt.fusion,
+          id: receipt.id,
+          invocationOrdinal: receipt.invocationOrdinal,
+          modelRunToolCallId: receipt.modelRunToolCallId,
+          outcome: receipt.outcome,
+          postRerankOrder: receipt.postRerankOrder,
+          preRerankOrder: receipt.preRerankOrder,
+          providerText: receipt.providerText,
+          query: receipt.query,
+          rerankerBinding: receipt.rerankerBinding,
+          resultLimit: receipt.resultLimit,
+          results: Array.isArray(receipt.results) ? receipt.results : [],
+          threshold: receipt.threshold
+        });
+        if (!projection) throw new Error("knowledge_run_receipt_invalid");
+        return projection;
+      });
+      const events = projectKnowledgeInspectionEvents({
+        events: run.events.map((event) => ({
+          createdAt: event.createdAt.toISOString(),
+          eventType: event.eventType,
+          payload: event.payload,
+          sequence: event.sequence
+        })),
+        knowledgeRuns,
+        toolCalls: run.toolCalls
+      });
+
       return {
         assistant: run.assistantId && run.assistantRevision
           ? {
@@ -2105,12 +2151,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         createdAt: run.createdAt.toISOString(),
         errorPayload: run.errorPayload,
         estimatedCostMicros: run.estimatedCostMicros > 0 ? run.estimatedCostMicros : null,
-        events: run.events.map((event) => ({
-          createdAt: event.createdAt.toISOString(),
-          eventType: event.eventType,
-          payload: event.payload,
-          sequence: event.sequence
-        })),
+        events,
         finalProviderResponsePreview: run.finalProviderResponsePreview,
         id: run.id,
         cachedInputTokens: run.cachedInputTokens,
@@ -2129,28 +2170,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           vectorSpaceFingerprint: binding.vectorSpaceFingerprint.trim()
         })),
         knowledgePlan: knowledgePlanFromNormalizedRequest(run.normalizedRequest),
-        knowledgeRuns: run.knowledgeRuns.map((receipt) => ({
-          baseEvidence: Array.isArray(receipt.baseEvidence) ? receipt.baseEvidence : [],
-          candidateCount: receipt.candidateCount,
-          candidateLimit: receipt.candidateLimit,
-          createdAt: receipt.createdAt.toISOString(),
-          durationMs: receipt.durationMs,
-          embeddingUsage: Array.isArray(receipt.embeddingUsage) ? receipt.embeddingUsage : [],
-          failureCode: receipt.failureCode,
-          fusion: receipt.fusion as "rrf_k60",
-          id: receipt.id,
-          invocationOrdinal: receipt.invocationOrdinal,
-          modelRunToolCallId: receipt.modelRunToolCallId,
-          outcome: receipt.outcome,
-          postRerankOrder: receipt.postRerankOrder,
-          preRerankOrder: receipt.preRerankOrder,
-          providerText: receipt.providerText,
-          query: receipt.query,
-          rerankerBinding: receipt.rerankerBinding,
-          resultLimit: receipt.resultLimit,
-          results: Array.isArray(receipt.results) ? receipt.results : [],
-          threshold: receipt.threshold
-        })),
+        knowledgeRuns,
         modelId: run.modelId,
         normalizedRequest: run.normalizedRequest,
         outputTokens: run.outputTokens,
@@ -2194,6 +2214,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           },
           activeLeafMessageId: true,
           createdAt: true,
+          defaultKnowledgePlan: true,
           defaultProviderModel: {
             select: {
               connectionId: true,
@@ -2230,6 +2251,14 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
                   },
                   id: true,
                   inputTokens: true,
+                  knowledgeRuns: {
+                    orderBy: { invocationOrdinal: "asc" },
+                    select: {
+                      invocationOrdinal: true,
+                      outcome: true,
+                      results: true
+                    }
+                  },
                   normalizedRequest: true,
                   outputTokens: true,
                   searchRuns: {
@@ -2297,6 +2326,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         chat: {
           activeLeafMessageId: chat.activeLeafMessageId,
           createdAt: chat.createdAt,
+          defaultKnowledgePlan: knowledgeDefaultFromJson(chat.defaultKnowledgePlan),
           defaultModelId: chat.defaultProviderModel?.id ?? null,
           defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
           folderId: chat.folderId,
@@ -2311,7 +2341,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           const modelRun = message.assistantModelRuns[0];
 
           return {
-            artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun) : null,
+            artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun, message.content) : null,
             assistantIdentity: serializeRunAssistantIdentity(modelRun),
             content: message.content,
             createdAt: message.createdAt,

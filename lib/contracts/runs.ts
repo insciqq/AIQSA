@@ -44,8 +44,33 @@ export type KnowledgeRunBindingProjection = {
   vectorSpaceFingerprint: string;
 };
 
+export type KnowledgeRunBaseEvidenceProjection = {
+  baseContentRevision: number;
+  baseName: string;
+  candidateCount: number;
+  indexedContentRevision: number;
+  knowledgeBaseId: string;
+  ordinal: number;
+  state: "empty" | "indexing" | "ready";
+};
+
+export type KnowledgeRunResultProjection = {
+  baseName: string;
+  bindingOrdinal: number;
+  documentVersionNumber?: number;
+  fileName: string;
+  fusedScore: number;
+  handle: string;
+  includedText: string;
+  includedTextBytes: number;
+  knowledgeBaseId: string;
+  page: number;
+  sourceTextBytes: number;
+  textTruncated: boolean;
+};
+
 export type KnowledgeRunProjection = {
-  baseEvidence: unknown[];
+  baseEvidence: KnowledgeRunBaseEvidenceProjection[];
   candidateCount: number;
   candidateLimit: number;
   createdAt: string;
@@ -68,7 +93,7 @@ export type KnowledgeRunProjection = {
   query: string;
   rerankerBinding: unknown | null;
   resultLimit: number;
-  results: unknown[];
+  results: KnowledgeRunResultProjection[];
   threshold: number;
 };
 
@@ -212,7 +237,79 @@ function decodeKnowledgeRunBinding(value: unknown): KnowledgeRunBindingProjectio
   };
 }
 
-function decodeKnowledgeRun(value: unknown): KnowledgeRunProjection | null {
+function decodeKnowledgeRunBaseEvidence(
+  value: unknown
+): KnowledgeRunBaseEvidenceProjection | null {
+  if (!isRecord(value)) return null;
+  const baseContentRevision = nonNegativeInteger(value.baseContentRevision);
+  const baseName = nonEmptyString(value.baseName);
+  const candidateCount = nonNegativeInteger(value.candidateCount);
+  const indexedContentRevision = nonNegativeInteger(value.indexedContentRevision);
+  const knowledgeBaseId = nonEmptyString(value.knowledgeBaseId);
+  const ordinal = nonNegativeInteger(value.ordinal);
+  const state = value.state === "empty" || value.state === "indexing" || value.state === "ready"
+    ? value.state
+    : null;
+  if (
+    baseContentRevision === null || !baseName || candidateCount === null ||
+    indexedContentRevision === null || !knowledgeBaseId || ordinal === null || ordinal > 2 ||
+    !state
+  ) return null;
+  return {
+    baseContentRevision,
+    baseName,
+    candidateCount,
+    indexedContentRevision,
+    knowledgeBaseId,
+    ordinal,
+    state
+  };
+}
+
+function decodeKnowledgeRunResult(value: unknown): KnowledgeRunResultProjection | null {
+  if (!isRecord(value)) return null;
+  const baseName = nonEmptyString(value.baseName);
+  const bindingOrdinal = nonNegativeInteger(value.bindingOrdinal);
+  const documentVersionNumber = value.documentVersionNumber === undefined
+    ? undefined
+    : nonNegativeInteger(value.documentVersionNumber);
+  const fileName = nonEmptyString(value.fileName);
+  const fusedScore = finiteNumber(value.fusedScore);
+  const handle = nonEmptyString(value.handle);
+  const includedTextBytes = nonNegativeInteger(value.includedTextBytes);
+  const knowledgeBaseId = nonEmptyString(value.knowledgeBaseId);
+  const page = nonNegativeInteger(value.page);
+  const sourceTextBytes = nonNegativeInteger(value.sourceTextBytes);
+  if (
+    !baseName || bindingOrdinal === null || bindingOrdinal > 2 ||
+    (documentVersionNumber !== undefined &&
+      (documentVersionNumber === null || documentVersionNumber < 1)) ||
+    !fileName || fusedScore === null || fusedScore < 0 || !handle ||
+    !/^K[1-3]\.[1-8]$/u.test(handle) || typeof value.includedText !== "string" ||
+    includedTextBytes === null || !knowledgeBaseId || page === null || page < 1 ||
+    sourceTextBytes === null || sourceTextBytes < includedTextBytes ||
+    typeof value.textTruncated !== "boolean" ||
+    value.textTruncated !== (includedTextBytes < sourceTextBytes)
+  ) return null;
+  return {
+    baseName,
+    bindingOrdinal,
+    ...(documentVersionNumber !== undefined && documentVersionNumber !== null
+      ? { documentVersionNumber }
+      : {}),
+    fileName,
+    fusedScore,
+    handle,
+    includedText: value.includedText,
+    includedTextBytes,
+    knowledgeBaseId,
+    page,
+    sourceTextBytes,
+    textTruncated: value.textTruncated
+  };
+}
+
+export function decodeKnowledgeRunProjection(value: unknown): KnowledgeRunProjection | null {
   if (!isRecord(value) || !Array.isArray(value.baseEvidence) ||
     !Array.isArray(value.embeddingUsage) || !Array.isArray(value.results)) return null;
   const candidateCount = nonNegativeInteger(value.candidateCount);
@@ -228,19 +325,57 @@ function decodeKnowledgeRun(value: unknown): KnowledgeRunProjection | null {
     value.outcome === "zero_above_threshold"
     ? value.outcome
     : null;
+  const baseEvidence = value.baseEvidence.map(decodeKnowledgeRunBaseEvidence);
+  const results = value.results.map(decodeKnowledgeRunResult);
   if (
     !id || invocationOrdinal === null || invocationOrdinal < 1 || invocationOrdinal > 3 ||
     !modelRunToolCallId || typeof value.createdAt !== "string" ||
-    candidateCount === null || candidateLimit === null || candidateLimit < 1 ||
+    candidateCount === null || candidateLimit === null || candidateLimit < 1 || candidateLimit > 100 ||
     durationMs === null || value.failureCode !== null && typeof value.failureCode !== "string" ||
     value.fusion !== "rrf_k60" || !outcome || typeof value.providerText !== "string" ||
     !value.providerText || typeof value.query !== "string" || !value.query ||
-    resultLimit === null || resultLimit < 1 || resultLimit > 8 || threshold === null ||
+    resultLimit === null || resultLimit < 1 || resultLimit > 8 ||
+    candidateLimit < resultLimit || threshold === null ||
     threshold < 0 || threshold > 1 || value.baseEvidence.length < 1 ||
-    value.baseEvidence.length > 3 || value.embeddingUsage.length > 3 || value.results.length > 8
+    value.baseEvidence.length > 3 || value.embeddingUsage.length > 3 || value.results.length > 8 ||
+    baseEvidence.some((base) => base === null) || results.some((result) => result === null) ||
+    value.preRerankOrder !== null || value.postRerankOrder !== null || value.rerankerBinding !== null
+  ) return null;
+  const decodedBaseEvidence = baseEvidence.filter(
+    (base): base is KnowledgeRunBaseEvidenceProjection => base !== null
+  );
+  const decodedResults = results.filter(
+    (result): result is KnowledgeRunResultProjection => result !== null
+  );
+  const completed = outcome === "base_empty" || outcome === "complete" ||
+    outcome === "zero_above_threshold";
+  if (
+    decodedBaseEvidence.some((base, index) => base.ordinal !== index) ||
+    decodedBaseEvidence.some((base) => base.state !== (
+      base.indexedContentRevision < base.baseContentRevision
+        ? "indexing"
+        : base.candidateCount === 0 ? "empty" : "ready"
+    )) ||
+    decodedBaseEvidence.reduce((total, base) => total + base.candidateCount, 0) !== candidateCount ||
+    decodedResults.length > resultLimit || candidateCount < decodedResults.length ||
+    decodedResults.some((result, index) => {
+      const base = decodedBaseEvidence[result.bindingOrdinal];
+      return result.handle !== `K${invocationOrdinal}.${index + 1}` ||
+        result.fusedScore < threshold || !base ||
+        base.knowledgeBaseId !== result.knowledgeBaseId || base.baseName !== result.baseName;
+    }) ||
+    (outcome === "complete" && decodedResults.length === 0) ||
+    (outcome !== "complete" && decodedResults.length !== 0) ||
+    (outcome === "base_empty" && candidateCount !== 0) ||
+    (outcome === "base_indexing" && (
+      candidateCount !== 0 || !decodedBaseEvidence.some((base) => base.state === "indexing")
+    )) ||
+    (outcome !== "base_indexing" && decodedBaseEvidence.some((base) => base.state === "indexing")) ||
+    (outcome === "zero_above_threshold" && candidateCount === 0) ||
+    (completed && value.embeddingUsage.length === 0)
   ) return null;
   return {
-    baseEvidence: value.baseEvidence,
+    baseEvidence: decodedBaseEvidence,
     candidateCount,
     candidateLimit,
     createdAt: value.createdAt,
@@ -258,7 +393,7 @@ function decodeKnowledgeRun(value: unknown): KnowledgeRunProjection | null {
     query: value.query,
     rerankerBinding: value.rerankerBinding ?? null,
     resultLimit,
-    results: value.results,
+    results: decodedResults,
     threshold
   };
 }
@@ -363,13 +498,12 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
   }
   const knowledgeRunsInput = run.knowledgeRuns ?? [];
   if (!Array.isArray(knowledgeRunsInput) || knowledgeRunsInput.length > 3) return null;
-  const knowledgeRuns = knowledgeRunsInput.map(decodeKnowledgeRun);
+  const knowledgeRuns = knowledgeRunsInput.map(decodeKnowledgeRunProjection);
   if (knowledgeRuns.some((receipt) => receipt === null)) return null;
   const decodedKnowledgeRuns = knowledgeRuns.filter(
     (receipt): receipt is KnowledgeRunProjection => receipt !== null
   );
-  if (decodedKnowledgeRuns.some((receipt, index) =>
-    index > 0 && receipt.invocationOrdinal <= decodedKnowledgeRuns[index - 1]!.invocationOrdinal)) {
+  if (decodedKnowledgeRuns.some((receipt, index) => receipt.invocationOrdinal !== index + 1)) {
     return null;
   }
 

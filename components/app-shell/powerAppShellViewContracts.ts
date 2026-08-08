@@ -4,7 +4,11 @@ import type { CommandItem } from "@/components/command-palette/commandItems";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
 import type { KnowledgeLibraryView } from "@/components/knowledge/libraryViewContracts";
-import type { ComposerAssistantSelection } from "@/components/app-shell/composerControlStore";
+import type {
+  ComposerAssistantSelection,
+  ComposerKnowledgePlanSource
+} from "@/components/app-shell/composerControlStore";
+import type { KnowledgeBaseSummary } from "@/lib/contracts/knowledge";
 import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import type { ThemeId } from "@/components/app-shell/theme";
 import type { InspectorTabId } from "@/components/inspector/InspectorTabs";
@@ -120,9 +124,15 @@ export type ShellWorkspaceView = {
   pane: ShellWorkspacePaneView;
   projectSettings: {
     changeDraft(value: string): void;
+    changeKnowledgeBaseIds(value: string[]): void;
     close(): void;
     draft: string;
     folder: FolderSummary | null;
+    knowledgeBaseIds: string[];
+    knowledgeBases: KnowledgeBaseSummary[];
+    knowledgeDataError: string | null;
+    knowledgeDataState: "error" | "loading" | "ready";
+    retryKnowledge(): void;
     save(folder: FolderSummary): Promise<void> | void;
   };
 };
@@ -141,9 +151,11 @@ export type ShellThreadView = {
   handleEditMessage(message: ThreadMessage): void;
   handleRegenerateMessage(messageId: string): void;
   handleThreadScroll(): void;
+  inspectRun(runId: string): Promise<void> | void;
   jumpToLatest(): void;
   lastRun: PersistedRun | null;
   liveArtifactSummary: ThreadArtifactSummary | null;
+  openKnowledgeEvidence(knowledgeBaseId: string): void;
   retryActiveChatDetail(): void;
   showJumpToLatest: boolean;
   threadScrollRef: RefObject<HTMLDivElement | null>;
@@ -198,6 +210,18 @@ export type ShellComposerView = {
   currentParameterControls: ModelParameterControls;
   draft: string;
   flushPendingModelControlDefaults(): void;
+  knowledge: {
+    bases: KnowledgeBaseSummary[];
+    clearChatDefault?(): void;
+    dataError: string | null;
+    dataState: "error" | "loading" | "ready";
+    hasChatDefault: boolean;
+    retry(): void;
+    saveChatDefault?(): void;
+    select(baseIds: readonly string[]): void;
+    selectedBaseIds: string[];
+    source: ComposerKnowledgePlanSource;
+  };
   maxOutputTokens: string;
   makeCurrentModelDefault?(): void;
   notificationSoundEnabled: boolean;

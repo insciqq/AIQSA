@@ -142,4 +142,45 @@ describe("share snapshots", () => {
     expect(JSON.stringify(snapshot)).not.toContain("private-file-id");
     expect(JSON.stringify(snapshot)).not.toContain("private-storage-key");
   });
+
+  it("keeps answer text byte-for-byte while stripping every Knowledge evidence surface", () => {
+    const answer = "Exact answer bytes:  α\nsecond line [K1.1]";
+    const privateSentinels = [
+      "private-knowledge-base-id",
+      "private-document-version-id",
+      "private-included-passage",
+      "private-generated-query",
+      "private-vector-fingerprint"
+    ];
+    const snapshot = buildPublicShareSnapshot({
+      activeLeafMessageId: "knowledge-answer",
+      messages: [{
+        content: {
+          blocks: [
+            { text: answer, type: "text" },
+            {
+              includedText: privateSentinels[2],
+              knowledgeBaseId: privateSentinels[0],
+              type: "knowledge_evidence"
+            }
+          ],
+          knowledgeBindings: [{ vectorSpaceFingerprint: privateSentinels[4] }],
+          knowledgeCitations: [{ documentVersionId: privateSentinels[1] }]
+        },
+        groundedAt: null,
+        id: "knowledge-answer",
+        knowledgeEvidence: {
+          query: privateSentinels[3],
+          results: privateSentinels
+        },
+        parentMessageId: null,
+        role: "assistant"
+      }],
+      title: "Knowledge answer"
+    });
+
+    expect(snapshot.messages[0]?.content.blocks).toEqual([{ text: answer, type: "text" }]);
+    const serialized = JSON.stringify(snapshot);
+    for (const privateValue of privateSentinels) expect(serialized).not.toContain(privateValue);
+  });
 });

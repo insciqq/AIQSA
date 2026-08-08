@@ -192,12 +192,20 @@ describe("decodeGetModelRunResponse", () => {
 
   it("decodes bounded ordered Knowledge retrieval receipts", () => {
     const receipt = {
-      baseEvidence: [{ knowledgeBaseId: "base-1", ordinal: 0 }],
+      baseEvidence: [{
+        baseContentRevision: 2,
+        baseName: "Policies",
+        candidateCount: 0,
+        indexedContentRevision: 2,
+        knowledgeBaseId: "base-1",
+        ordinal: 0,
+        state: "empty"
+      }],
       candidateCount: 0,
       candidateLimit: 40,
       createdAt: "2026-08-08T12:00:00.000Z",
       durationMs: 9,
-      embeddingUsage: [],
+      embeddingUsage: [{ inputTokens: 2, totalTokens: 2 }],
       failureCode: null,
       fusion: "rrf_k60",
       id: "knowledge-run-1",
@@ -216,13 +224,32 @@ describe("decodeGetModelRunResponse", () => {
     const run = { ...requiredRunFields(), knowledgeRuns: [receipt] };
 
     expect(decodeGetModelRunResponse({ run })?.knowledgeRuns).toEqual([receipt]);
-    expect(decodeGetModelRunResponse({
-      run: { ...run, knowledgeRuns: [{ ...receipt, invocationOrdinal: 0 }] }
-    })).toBeNull();
+    for (const malformedReceipt of [
+      { ...receipt, invocationOrdinal: 0 },
+      { ...receipt, candidateCount: 1 },
+      { ...receipt, candidateLimit: 7 },
+      { ...receipt, embeddingUsage: [] },
+      { ...receipt, outcome: "zero_above_threshold" },
+      { ...receipt, preRerankOrder: ["K1.1"] },
+      {
+        ...receipt,
+        baseEvidence: [{ ...receipt.baseEvidence[0], state: "ready" }]
+      }
+    ]) {
+      expect(decodeGetModelRunResponse({
+        run: { ...run, knowledgeRuns: [malformedReceipt] }
+      })).toBeNull();
+    }
     expect(decodeGetModelRunResponse({
       run: {
         ...run,
         knowledgeRuns: [receipt, { ...receipt, id: "knowledge-run-2" }]
+      }
+    })).toBeNull();
+    expect(decodeGetModelRunResponse({
+      run: {
+        ...run,
+        knowledgeRuns: [{ ...receipt, invocationOrdinal: 2 }]
       }
     })).toBeNull();
     expect(decodeGetModelRunResponse({

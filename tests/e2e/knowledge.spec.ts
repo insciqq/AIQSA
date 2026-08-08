@@ -281,4 +281,30 @@ test("manages a Knowledge base and stays contained at every contract viewport", 
   await library.getByRole("button", { name: "Restore" }).click();
   await expect(library.getByRole("button", { name: "Archive" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
+
+  await library.getByRole("button", { name: "Back to Knowledge" }).click();
+  await library.getByRole("button", { name: "Back to chat" }).click();
+  await expect(page).toHaveTitle("New chat · AIQSA");
+  for (const viewport of [
+    { height: 844, width: 384 },
+    { height: 390, width: 844 },
+    { height: 1024, width: 768 },
+    { height: 800, width: 1280 }
+  ]) {
+    await page.setViewportSize(viewport);
+    const picker = page.locator("#composer-inline-knowledge");
+    await expect(picker).toBeVisible();
+    await expectWithinViewport(page, picker);
+    await picker.click();
+    const dialog = page.getByTestId("composer-inline-knowledge-options");
+    await expect(dialog).toBeVisible();
+    await expectWithinViewport(page, dialog);
+    await expectNoHorizontalOverflow(page);
+    if (viewport.width === 384) {
+      await dialog.getByRole("button", { name: /E2E runbooks/ }).click();
+      await expect(picker).toHaveAccessibleName(/E2E runbooks.*Next-run plan/);
+    }
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+  }
 });

@@ -128,7 +128,11 @@ export type AssistantLibraryControllerInput = {
   }): boolean;
   catalog: Catalog | null;
   catalogError: string | null;
+  knowledgeBases: { available: boolean; id: string; name: string }[];
+  knowledgeDataError: string | null;
+  knowledgeDataState: "error" | "loading" | "ready";
   retryCatalog(): void;
+  retryKnowledge(): void;
   setShellNotice(notice: { kind: "error"; text: string }): void;
 };
 
@@ -254,6 +258,7 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     const controls = useComposerControlStore.getState();
     openNewAssistantEditor({
       backgroundMode: controls.backgroundMode,
+      knowledgeBaseIds: [...controls.selectedKnowledgeBaseIds],
       maxOutputTokens: controls.maxOutputTokens,
       providerModelId: controls.selectedModelId || null,
       reasoningEffort: controls.reasoningEffort,
@@ -773,8 +778,12 @@ export function buildAssistantLibraryView(
               }
             : null,
           options: {
+            knowledgeBases: input.knowledgeBases,
+            knowledgeDataError: input.knowledgeDataError,
+            knowledgeDataState: input.knowledgeDataState,
             mcpServers: snapshot.mcpOptions,
             models: editorModels,
+            onRetryKnowledge: input.retryKnowledge,
             searchOptions
           },
           publications: editor.publications,

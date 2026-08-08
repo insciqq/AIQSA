@@ -182,6 +182,9 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     ? {
         ...message.artifactSummary,
         citations: message.artifactSummary.citations ?? [],
+        knowledgeCitations: message.artifactSummary.knowledgeCitations ?? [],
+        knowledgeInvocationCount: message.artifactSummary.knowledgeInvocationCount ?? 0,
+        knowledgeOutcomes: message.artifactSummary.knowledgeOutcomes ?? [],
         searchActivity: message.artifactSummary.searchActivity ?? []
       }
     : null;
@@ -210,6 +213,7 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): ChatSummary 
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
+    defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
     defaultModelId: chat.defaultModelId ?? "",
     defaultProvider: chat.defaultProvider ?? "",
     folderId: chat.folderId,

@@ -33,6 +33,7 @@ function applySelection() {
       streamMode: true,
       temperature: "0.3"
     },
+    knowledgeBaseIds: ["knowledge-base-1"],
     modelId: "assistant-model",
     provider: "assistant-provider",
     searchOptionIds: ["openai-native-web-search"],
@@ -54,6 +55,8 @@ describe("composer assistant strict identity", () => {
     const state = useComposerControlStore.getState();
     expect(state.selectedAssistant?.name).toBe("Code Reviewer");
     expect(state.selectedModelId).toBe("assistant-model");
+    expect(state.knowledgePlanSource).toBe("assistant");
+    expect(state.selectedKnowledgeBaseIds).toEqual(["knowledge-base-1"]);
     expect(state.reasoningEffort).toBe("high");
     expect(state.selectedSearchOptionIds).toEqual(["openai-native-web-search"]);
     expect(state.searchPlanMode).toBe("model_choice");
@@ -79,6 +82,7 @@ describe("composer assistant strict identity", () => {
       () => useComposerControlStore.getState().setMaxOutputTokens("64"),
       () => useComposerControlStore.getState().setReasoningEffort("low"),
       () => useComposerControlStore.getState().setReasoningMode("standard"),
+      () => useComposerControlStore.getState().setSelectedKnowledgePlan(["knowledge-base-2"]),
       () => useComposerControlStore.getState().setSelectedModelId("other"),
       () => useComposerControlStore.getState().setSelectedSearchPlan([], "all_selected"),
       () => useComposerControlStore.getState().setSelectedSearchStrategy("search-disabled"),
@@ -91,6 +95,7 @@ describe("composer assistant strict identity", () => {
       change();
       expect(useComposerControlStore.getState().selectedAssistant).toBeNull();
       expect(useComposerControlStore.getState().assistantRemovedNotice).toBe(true);
+      expect(useComposerControlStore.getState().knowledgePlanSource).toBe("explicit");
     }
 
     resetComposerControlStoreForTest();
@@ -128,6 +133,7 @@ describe("composer assistant strict identity", () => {
         streamMode: false,
         temperature: "1"
       },
+      knowledgeBaseIds: [],
       modelId: "second-model",
       provider: "second-provider",
       searchOptionIds: [],

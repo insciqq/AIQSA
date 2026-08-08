@@ -2,6 +2,65 @@ import { describe, expect, it } from "vitest";
 import { summarizeMessageRunArtifacts } from "./prismaRepository";
 
 describe("summarizeMessageRunArtifacts", () => {
+  it("projects cited Knowledge metadata and negative outcomes without passage text", () => {
+    const summary = summarizeMessageRunArtifacts({
+      events: [],
+      knowledgeRuns: [
+        {
+          invocationOrdinal: 1,
+          outcome: "complete",
+          results: [
+            {
+              baseName: "Policies",
+              documentVersionNumber: 3,
+              fileName: "handbook.pdf",
+              handle: "K1.1",
+              includedText: "private-passage-sentinel",
+              knowledgeBaseId: "base-policies",
+              page: 12
+            },
+            {
+              baseName: "Policies",
+              fileName: "unused.pdf",
+              handle: "K1.2",
+              includedText: "unused-private-passage",
+              knowledgeBaseId: "base-policies",
+              page: 4
+            }
+          ]
+        },
+        {
+          invocationOrdinal: 2,
+          outcome: "zero_above_threshold",
+          results: []
+        }
+      ],
+      searchRuns: []
+    }, {
+      blocks: [{ text: "The policy applies [K1.1].", type: "text" }]
+    });
+
+    expect(summary).toMatchObject({
+      knowledgeCitations: [{
+        baseName: "Policies",
+        documentVersionNumber: 3,
+        fileName: "handbook.pdf",
+        handle: "K1.1",
+        knowledgeBaseId: "base-policies",
+        page: 12
+      }],
+      knowledgeInvocationCount: 2,
+      knowledgeOutcomes: [
+        { invocationOrdinal: 1, outcome: "complete" },
+        { invocationOrdinal: 2, outcome: "zero_above_threshold" }
+      ],
+      toolCallCount: 0,
+      toolCalls: []
+    });
+    expect(JSON.stringify(summary)).not.toContain("private-passage-sentinel");
+    expect(JSON.stringify(summary)).not.toContain("unused.pdf");
+  });
+
   it("uses native web search artifacts as safe direct Search facts when search runs are absent", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [

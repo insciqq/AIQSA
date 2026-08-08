@@ -1,6 +1,32 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { KnowledgeBaseSummary } from "@/lib/contracts/knowledge";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
+
+function knowledgeBase(id: string, name: string): KnowledgeBaseSummary {
+  return {
+    activeGeneration: {
+      chunkingProfileVersion: 1,
+      embeddingDeployment: null,
+      embeddingDeploymentId: null,
+      id: `generation-${id}`,
+      indexedContentRevision: 1,
+      targetDimension: 1024,
+      vectorSpaceFingerprint: "a".repeat(64)
+    },
+    archived: false,
+    contentRevision: 1,
+    description: "",
+    id,
+    name,
+    owned: true,
+    ownerDisplayName: "Owner",
+    published: false,
+    scope: { kind: "owner" },
+    updatedAt: "2026-08-08T12:00:00.000Z",
+    version: 1
+  };
+}
 
 describe("ProjectSettingsDialog", () => {
   afterEach(() => {
@@ -211,5 +237,64 @@ describe("ProjectSettingsDialog", () => {
 
     expect(onCancel).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog", { name: "Discard project settings changes" })).not.toBeInTheDocument();
+  });
+
+  it("shows the ordered project Knowledge default and guards it as a dirty edit", () => {
+    const onKnowledgeBaseIdsChange = vi.fn();
+    render(
+      <ProjectSettingsDialog
+        folder={{
+          defaultKnowledgePlan: { baseIds: ["retained"] },
+          id: "folder-1",
+          name: "Research",
+          parentId: null,
+          projectMemory: "",
+          sortOrder: 0
+        }}
+        knowledgeBaseIds={["retained", "active"]}
+        knowledgeBases={[knowledgeBase("active", "Policies")]}
+        memoryDraft=""
+        saving={false}
+        onCancel={vi.fn()}
+        onKnowledgeBaseIdsChange={onKnowledgeBaseIdsChange}
+        onMemoryDraftChange={vi.fn()}
+        onSave={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Unavailable base · selection retained · order 1")).toBeVisible();
+    const activeLabel = screen.getByText(/Policies.*order 2/).closest("label");
+    fireEvent.click(within(activeLabel!).getByRole("checkbox"));
+    expect(onKnowledgeBaseIdsChange).toHaveBeenCalledWith(["retained"]);
+    fireEvent.click(screen.getByRole("button", { name: "Close project settings" }));
+    expect(screen.getByRole("dialog", { name: "Discard project settings changes" })).toBeVisible();
+  });
+
+  it("shows a project Knowledge load error with a retry action", () => {
+    const onRetryKnowledge = vi.fn();
+    render(
+      <ProjectSettingsDialog
+        folder={{
+          id: "folder-1",
+          name: "Research",
+          parentId: null,
+          projectMemory: "",
+          sortOrder: 0
+        }}
+        knowledgeDataError="Knowledge catalog failed."
+        knowledgeDataState="error"
+        memoryDraft=""
+        saving={false}
+        onCancel={vi.fn()}
+        onMemoryDraftChange={vi.fn()}
+        onRetryKnowledge={onRetryKnowledge}
+        onSave={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Knowledge catalog failed.");
+    expect(screen.queryByText(/No Knowledge bases are available/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry Knowledge" }));
+    expect(onRetryKnowledge).toHaveBeenCalledOnce();
   });
 });

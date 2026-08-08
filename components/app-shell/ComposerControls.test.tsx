@@ -198,7 +198,7 @@ describe("ComposerControls", () => {
     expect(screen.getByTestId("run-reasoning-summary")).toHaveTextContent("Reasoning: Standard · Medium");
     expect(screen.getByTestId("run-search-summary")).toHaveTextContent("Search: Off");
     expect(summary).toHaveAccessibleName(
-      "Open more run settings. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off."
+      "Open more run settings. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off. Knowledge Off."
     );
     const model = within(controls).getByRole("button", { name: "Select model" });
     expect(model).toBeVisible();
@@ -272,7 +272,7 @@ describe("ComposerControls", () => {
     expect(assistant.clearRemovedNotice).toHaveBeenCalledOnce();
 
     expect(screen.getByTestId("composer-run-summary")).toHaveAccessibleName(
-      "Open more run settings. Assistant Research Helper. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off."
+      "Open more run settings. Assistant Research Helper. Model Balanced Research. Reasoning Standard mode, Medium effort. Search Off. Knowledge Off."
     );
   });
 

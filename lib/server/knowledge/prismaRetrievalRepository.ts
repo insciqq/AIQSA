@@ -64,6 +64,7 @@ function decodedPassage(value: unknown): KnowledgeHybridPassage | null {
   const annRank = nullableRank(value.annRank);
   const bindingOrdinal = nonNegativeInteger(value.bindingOrdinal);
   const chunkIndex = nonNegativeInteger(value.chunkIndex);
+  const documentVersionNumber = nonNegativeInteger(value.documentVersionNumber);
   const ftsRank = nullableRank(value.ftsRank);
   const ftsScore = nullableFiniteNumber(value.ftsScore);
   const fusedScore = finiteNumber(value.fusedScore);
@@ -74,7 +75,8 @@ function decodedPassage(value: unknown): KnowledgeHybridPassage | null {
     (ftsRank === null || ftsRank === undefined ? 0 : 1 / (60 + ftsRank));
   if (
     annRank === undefined || bindingOrdinal === null || bindingOrdinal > 2 ||
-    chunkIndex === null || ftsRank === undefined || ftsScore === undefined ||
+    chunkIndex === null || documentVersionNumber === null || documentVersionNumber < 1 ||
+    ftsRank === undefined || ftsScore === undefined ||
     fusedScore === null || fusedScore < 0 || page === null || page < 1 ||
     vectorDistance === undefined || vectorScore === undefined ||
     typeof value.baseName !== "string" || !value.baseName ||
@@ -101,6 +103,7 @@ function decodedPassage(value: unknown): KnowledgeHybridPassage | null {
     chunkIndex,
     documentId: value.documentId,
     documentVersionId: value.documentVersionId,
+    documentVersionNumber,
     fileName: value.fileName,
     ftsRank,
     ftsScore,
@@ -213,6 +216,7 @@ export function knowledgeHybridRetrievalSql(input: Readonly<{
           chunk."text",
           version."documentId",
           version."id" AS "documentVersionId",
+          version."versionNumber" AS "documentVersionNumber",
           version."fileName",
           (chunk."embedding"::vector(1024) <=> supplied."queryVector") AS "vectorDistance"
         FROM "KnowledgeChunk" AS chunk
@@ -240,6 +244,7 @@ export function knowledgeHybridRetrievalSql(input: Readonly<{
           chunk."text",
           version."documentId",
           version."id" AS "documentVersionId",
+          version."versionNumber" AS "documentVersionNumber",
           version."fileName",
           (chunk."embedding"::vector(1536) <=> supplied."queryVector") AS "vectorDistance"
         FROM "KnowledgeChunk" AS chunk
@@ -277,6 +282,7 @@ export function knowledgeHybridRetrievalSql(input: Readonly<{
         indexed."text",
         version."documentId",
         version."id" AS "documentVersionId",
+        version."versionNumber" AS "documentVersionNumber",
         version."fileName",
         indexed."ftsScore"
       FROM fts_indexed AS indexed
@@ -311,6 +317,7 @@ export function knowledgeHybridRetrievalSql(input: Readonly<{
         COALESCE(ann."text", fts."text") AS "text",
         COALESCE(ann."documentId", fts."documentId") AS "documentId",
         COALESCE(ann."documentVersionId", fts."documentVersionId") AS "documentVersionId",
+        COALESCE(ann."documentVersionNumber", fts."documentVersionNumber") AS "documentVersionNumber",
         COALESCE(ann."fileName", fts."fileName") AS "fileName",
         ann."vectorDistance",
         CASE WHEN ann."vectorDistance" IS NULL THEN NULL
@@ -357,6 +364,7 @@ export function knowledgeHybridRetrievalSql(input: Readonly<{
           'chunkIndex', selected."chunkIndex",
           'documentId', selected."documentId",
           'documentVersionId', selected."documentVersionId",
+          'documentVersionNumber', selected."documentVersionNumber",
           'fileName', selected."fileName",
           'ftsRank', selected."ftsRank",
           'ftsScore', selected."ftsScore",

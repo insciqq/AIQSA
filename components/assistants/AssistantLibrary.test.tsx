@@ -96,10 +96,14 @@ function makeEditor(overrides: Partial<AssistantEditorView> = {}): AssistantEdit
     onSave: vi.fn(),
     onUseInChat: null,
     options: {
+      knowledgeBases: [],
+      knowledgeDataError: null,
+      knowledgeDataState: "ready",
       mcpServers: [],
       models: [
         { controls: makeControls(), id: "model-1", label: "GPT-5.2", providerLabel: "OpenAI", supportsTools: true }
       ],
+      onRetryKnowledge: vi.fn(),
       searchOptions: []
     },
     publications: null,
@@ -276,6 +280,52 @@ describe("AssistantLibrary", () => {
     expect(save).toHaveTextContent("Create assistant");
     fireEvent.click(save);
     expect(ready.onSave).toHaveBeenCalledOnce();
+  });
+
+  it("edits the Assistant exact Knowledge allowlist with retained order and a hard ceiling", () => {
+    const onChange = vi.fn();
+    const editor = makeEditor({
+      draft: makeDraft({ knowledgeBaseIds: ["missing", "archived", "active"] }),
+      onChange,
+      options: {
+        ...makeEditor().options,
+        knowledgeBases: [
+          { available: false, id: "archived", name: "Archived base" },
+          { available: true, id: "active", name: "Active base" },
+          { available: true, id: "extra", name: "Extra base" }
+        ]
+      }
+    });
+    render(<AssistantLibrary view={makeView({ editor, task: "editor" })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Knowledge" }));
+    expect(screen.getByText(/Unavailable base · selection retained · order 1/)).toBeVisible();
+    expect(screen.getByText(/Archived base.*order 2/)).toBeVisible();
+    const activeLabel = screen.getByText(/Active base.*order 3/).closest("label");
+    expect(activeLabel).not.toBeNull();
+    fireEvent.click(within(activeLabel!).getByRole("checkbox"));
+    expect(onChange).toHaveBeenCalledWith({ knowledgeBaseIds: ["missing", "archived"] });
+    const extraLabel = screen.getByText("Extra base").closest("label");
+    expect(within(extraLabel!).getByRole("checkbox")).toBeDisabled();
+  });
+
+  it("keeps an Assistant Knowledge load failure distinct from an empty catalog", () => {
+    const onRetryKnowledge = vi.fn();
+    const editor = makeEditor({
+      options: {
+        ...makeEditor().options,
+        knowledgeDataError: "Knowledge access failed.",
+        knowledgeDataState: "error",
+        onRetryKnowledge
+      }
+    });
+    render(<AssistantLibrary view={makeView({ editor, task: "editor" })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Knowledge" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Knowledge access failed.");
+    expect(screen.queryByText("No Knowledge bases are available.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry Knowledge" }));
+    expect(onRetryKnowledge).toHaveBeenCalledOnce();
   });
 
   it("guards every dirty editor exit behind one discard confirmation", () => {

@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { safeExternalHref } from "../../domain/links";
 import { normalizeTokenUsage } from "../../domain/usage";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import {
   mergeThreadToolActivity,
   projectThreadToolActivity
@@ -63,6 +64,14 @@ const chatDetailInclude = {
           },
           id: true,
           inputTokens: true,
+          knowledgeRuns: {
+            orderBy: { invocationOrdinal: "asc" },
+            select: {
+              invocationOrdinal: true,
+              outcome: true,
+              results: true
+            }
+          },
           normalizedRequest: true,
           outputTokens: true,
           searchRuns: {
@@ -129,6 +138,11 @@ type ChatDetailRow = Prisma.ChatGetPayload<{ include: typeof chatDetailInclude }
 type ChatSummaryRow = Prisma.ChatGetPayload<{ select: typeof chatSummarySelect }>;
 type ArtifactSummaryRun = {
   events: { payload: unknown }[];
+  knowledgeRuns?: {
+    invocationOrdinal: number;
+    outcome: string;
+    results: unknown;
+  }[];
   normalizedRequest?: unknown;
   searchRuns: {
     artifacts?: unknown;
@@ -256,7 +270,7 @@ function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
       const modelRun = message.assistantModelRuns[0];
 
       return {
-        artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun) : null,
+        artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun, message.content) : null,
         assistantIdentity: serializeAssistantIdentity(modelRun),
         content: message.content,
         createdAt: message.createdAt,
@@ -460,7 +474,46 @@ function contextTruncationFromPayload(payload: unknown): ContextTruncationSummar
   return inner as ContextTruncationSummary;
 }
 
-export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArtifactSummary | null {
+function knowledgeOutcome(value: string): NonNullable<ThreadArtifactSummary["knowledgeOutcomes"]>[number]["outcome"] | null {
+  return value === "base_empty" || value === "base_indexing" || value === "complete" ||
+    value === "embedding_model_unavailable" || value === "zero_above_threshold"
+    ? value
+    : null;
+}
+
+function knowledgeCitation(value: unknown): NonNullable<ThreadArtifactSummary["knowledgeCitations"]>[number] | null {
+  if (!isRecord(value)) return null;
+  const baseName = optionalString(value.baseName);
+  const fileName = optionalString(value.fileName);
+  const handle = optionalString(value.handle);
+  const knowledgeBaseId = optionalString(value.knowledgeBaseId);
+  const page = typeof value.page === "number" && Number.isSafeInteger(value.page) && value.page >= 1
+    ? value.page
+    : null;
+  const documentVersionNumber = value.documentVersionNumber === undefined
+    ? null
+    : typeof value.documentVersionNumber === "number" &&
+        Number.isSafeInteger(value.documentVersionNumber) && value.documentVersionNumber >= 1
+      ? value.documentVersionNumber
+      : undefined;
+  if (
+    !baseName || !fileName || !handle || !/^K[1-3]\.[1-8]$/u.test(handle) ||
+    !knowledgeBaseId || page === null || documentVersionNumber === undefined
+  ) return null;
+  return {
+    baseName,
+    documentVersionNumber,
+    fileName,
+    handle,
+    knowledgeBaseId,
+    page
+  };
+}
+
+export function summarizeMessageRunArtifacts(
+  run: ArtifactSummaryRun,
+  answerContent?: unknown
+): ThreadArtifactSummary | null {
   const artifactPayloads = run.events.map((event) => event.payload);
   const searchPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "search");
   const searchArtifactCount = searchPayloads.length;
@@ -551,8 +604,34 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
   ].slice(0, 12);
   const toolCalls = observedToolCalls.filter((call) => call.capability === "mcp");
   const searchCount = Math.max(searchArtifactCount, run.searchRuns.length, searchActivity.length);
+  const knowledgeRuns = (run.knowledgeRuns ?? [])
+    .map((receipt) => ({
+      invocationOrdinal: receipt.invocationOrdinal,
+      outcome: knowledgeOutcome(receipt.outcome),
+      results: Array.isArray(receipt.results) ? receipt.results : []
+    }))
+    .filter((receipt) =>
+      Number.isSafeInteger(receipt.invocationOrdinal) && receipt.invocationOrdinal >= 1 &&
+      receipt.invocationOrdinal <= 3 && receipt.outcome !== null)
+    .sort((left, right) => left.invocationOrdinal - right.invocationOrdinal)
+    .slice(0, 3);
+  const answerText = isRecord(answerContent)
+    ? textFromContentBlocks(answerContent as { blocks?: unknown[] })
+    : "";
+  const citedHandles = new Set(
+    [...answerText.matchAll(/\[(K[1-3]\.[1-8])\]/gu)].map((match) => match[1]!)
+  );
+  const knowledgeCitations = knowledgeRuns.flatMap((receipt) =>
+    receipt.results
+      .map(knowledgeCitation)
+      .filter((citation): citation is NonNullable<typeof citation> =>
+        citation !== null && citedHandles.has(citation.handle)))
+    .filter((citation, index, citations) =>
+      citations.findIndex((candidate) => candidate.handle === citation.handle) === index)
+    .slice(0, 24);
 
-  if (searchCount === 0 && reasoningPayloads.length === 0 && citationCount === 0 && !contextTruncation && toolCalls.length === 0) {
+  if (searchCount === 0 && reasoningPayloads.length === 0 && citationCount === 0 &&
+    !contextTruncation && toolCalls.length === 0 && knowledgeRuns.length === 0) {
     return null;
   }
 
@@ -560,6 +639,12 @@ export function summarizeMessageRunArtifacts(run: ArtifactSummaryRun): ThreadArt
     citationCount,
     citations,
     contextTruncation,
+    knowledgeCitations,
+    knowledgeInvocationCount: knowledgeRuns.length,
+    knowledgeOutcomes: knowledgeRuns.map((receipt) => ({
+      invocationOrdinal: receipt.invocationOrdinal,
+      outcome: receipt.outcome!
+    })),
     reasoningCount,
     reasoningText: reasoningSnippets,
     searchActivity,

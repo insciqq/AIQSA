@@ -396,6 +396,29 @@ describe("summarizeInspectorEvents", () => {
     expect(JSON.stringify(summaries)).not.toContain("assistant-hidden");
   });
 
+  it("renders chronological passage-free Knowledge receipt digests", () => {
+    const summaries = summarizeInspectorEvents([{
+      data: {
+        candidateCount: 7,
+        durationMs: 31,
+        invocationOrdinal: 2,
+        outcome: "zero_above_threshold",
+        query: "superseded release policy",
+        resultCount: 0
+      },
+      type: "knowledge_retrieval"
+    }]);
+
+    expect(summaries).toEqual([expect.objectContaining({
+      detail: "Query: superseded release policy · 31 ms",
+      label: "Knowledge retrieval 2",
+      stage: "K",
+      tone: "warning",
+      value: "Zero above threshold · 0 passages included"
+    })]);
+    expect(JSON.stringify(summaries)).not.toContain("includedText");
+  });
+
   it("shows reasoning artifacts as neutral summaries instead of warnings or raw JSON", () => {
     const summaries = summarizeInspectorEvents([
       {

@@ -638,6 +638,7 @@ describe("message run actions", () => {
       draft: "Question for the assistant"
     });
     useComposerControlStore.setState({
+      knowledgePlanSource: "assistant",
       selectedAssistant: {
         avatar: {
           accents: [0],
@@ -653,7 +654,8 @@ describe("message run actions", () => {
         name: "Researcher",
         promptCharacterCount: 42,
         starterPrompts: []
-      }
+      },
+      selectedKnowledgeBaseIds: ["assistant-base-private"]
     });
 
     await actions.submitComposer();
@@ -666,6 +668,56 @@ describe("message run actions", () => {
       },
       expectedActiveLeafId: null
     });
+  });
+
+  it("materializes an ordinary explicit Knowledge plan in the run request", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Use policies" });
+    useComposerControlStore.setState({
+      knowledgePlanSource: "explicit",
+      selectedKnowledgeBaseIds: ["base-policies", "base-release"]
+    });
+
+    await actions.submitComposer();
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      knowledgePlan: { baseIds: ["base-policies", "base-release"] }
+    });
+  });
+
+  it.each(["chat", "project", "off"] as const)(
+    "leaves a %s Knowledge default for server-side admission",
+    async (knowledgePlanSource) => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({ attachments: [], draft: "Use defaults" });
+      useComposerControlStore.setState({
+        knowledgePlanSource,
+        selectedKnowledgeBaseIds: knowledgePlanSource === "off" ? [] : ["effective-base"]
+      });
+
+      await actions.submitComposer();
+
+      const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(JSON.parse(String(requestInit.body))).not.toHaveProperty("knowledgePlan");
+    }
+  );
+
+  it("sends an explicit empty Knowledge plan instead of falling back to defaults", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "No Knowledge" });
+    useComposerControlStore.setState({
+      knowledgePlanSource: "explicit",
+      selectedKnowledgeBaseIds: []
+    });
+
+    await actions.submitComposer();
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({ knowledgePlan: { baseIds: [] } });
   });
 
   it.each(["personal", "organization"] as const)(

@@ -93,6 +93,7 @@ function passage(text = "The retained private passage."): KnowledgeHybridPassage
     chunkIndex: 4,
     documentId: "document-id-private-sentinel",
     documentVersionId: "version-id-private-sentinel",
+    documentVersionNumber: 3,
     fileName: "FILE-NAME-PRIVATE-SENTINEL.pdf",
     ftsRank: 1,
     ftsScore: 0.8,
@@ -195,6 +196,7 @@ describe("Knowledge retrieval tool executor", () => {
       results: [{
         baseName: "BASE-NAME-PRIVATE-SENTINEL",
         documentVersionId: "version-id-private-sentinel",
+        documentVersionNumber: 3,
         handle: "K1.1",
         page: 7
       }]

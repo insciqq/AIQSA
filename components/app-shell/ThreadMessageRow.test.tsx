@@ -768,6 +768,26 @@ describe("ThreadMessageRow", () => {
     expect(screen.getAllByRole("button", { name: /Search OpenAI Search/i })).toHaveLength(1);
   });
 
+  it("loads a historical Knowledge receipt independently of generic tool visibility", async () => {
+    const onInspectRun = vi.fn(async () => undefined);
+    renderRow({
+      artifactSummary: artifactSummary({
+        knowledgeInvocationCount: 1,
+        knowledgeOutcomes: [{ invocationOrdinal: 1, outcome: "base_empty" }]
+      }),
+      message: assistantMessage({ runId: "run-historical" }),
+      onInspectRun,
+      persistedRun: persistedRun({ id: "run-latest" }),
+      showToolActivity: false
+    });
+
+    const disclosure = screen.getByRole("button", { name: /Knowledge 1 invocation/ });
+    expect(screen.queryByTestId("thread-tool-activity")).not.toBeInTheDocument();
+    fireEvent.click(disclosure);
+    await waitFor(() => expect(onInspectRun).toHaveBeenCalledWith("run-historical"));
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("renders an honest collapsed Search row when only the historical observation survives", () => {
     renderRow({
       artifactSummary: artifactSummary({

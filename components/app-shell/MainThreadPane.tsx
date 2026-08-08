@@ -91,7 +91,9 @@ export type MainThreadPaneProps = {
   handleEditMessage(message: ThreadMessage): void;
   handleRegenerateMessage(messageId: string): void;
   handleThreadScroll(): void;
+  inspectRun?(runId: string): Promise<void> | void;
   jumpToLatest(): void;
+  knowledge?: ShellComposerView["knowledge"];
   lastRun: PersistedRun | null;
   liveArtifactSummary: ThreadArtifactSummary | null;
   maxOutputTokens: string;
@@ -100,6 +102,7 @@ export type MainThreadPaneProps = {
   operationError: string | null;
   operationErrorLive: boolean;
   openMcpSettings(): void;
+  openKnowledgeEvidence?(knowledgeBaseId: string): void;
   openRunDetails(): void;
   pipeline?: PipelineSnapshot | null;
   reasoningEffort: string;
@@ -179,7 +182,9 @@ export function MainThreadPane({
   handleEditMessage,
   handleRegenerateMessage,
   handleThreadScroll,
+  inspectRun,
   jumpToLatest,
+  knowledge,
   lastRun,
   liveArtifactSummary,
   maxOutputTokens,
@@ -188,6 +193,7 @@ export function MainThreadPane({
   operationError,
   operationErrorLive,
   openMcpSettings,
+  openKnowledgeEvidence,
   openRunDetails,
   pipeline = null,
   reasoningEffort,
@@ -667,6 +673,8 @@ export function MainThreadPane({
                 onDeleteMessage={handleDeleteMessage}
                 onEditMessage={handleEditMessage}
                 onOpenRunDetails={openRunDetails}
+                onInspectRun={inspectRun}
+                onOpenKnowledgeEvidence={openKnowledgeEvidence}
                 onRegenerateMessage={handleRegenerateMessage}
                 onToggleMobileControls={toggleMobileMessageControls}
               />
@@ -743,6 +751,7 @@ export function MainThreadPane({
               currentModel={currentModel}
               currentParameterControls={currentParameterControls}
               disabled={composerControlsUnavailable}
+              knowledge={knowledge}
               maxOutputTokens={maxOutputTokens}
               reasoningEffort={reasoningEffort}
               reasoningMode={reasoningMode}

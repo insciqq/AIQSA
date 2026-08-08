@@ -3,6 +3,8 @@ import { getVisibleMessagePath, type BranchMessage } from "./branching";
 export type ShareSnapshotMessageInput = BranchMessage & {
   content: unknown;
   groundedAt?: Date | string | null;
+  /** Private run inspection fields are accepted only so the sanitizer can explicitly ignore them. */
+  knowledgeEvidence?: unknown;
 };
 
 export class GroundedContentNotShareableError extends Error {
@@ -44,6 +46,8 @@ function sanitizeContent(content: unknown): PublicShareSnapshot["messages"][numb
     };
   }
 
+  // This is a positive public-schema projection. Knowledge receipts, handles,
+  // passages, citations, and future structured blocks are omitted by default.
   return {
     blocks: blocks.flatMap((block) => {
       if (typeof block !== "object" || block === null || !("type" in block)) {

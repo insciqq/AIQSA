@@ -689,6 +689,31 @@ export function summarizeInspectorEvents(
       return;
     }
 
+    if (event.type === "knowledge_retrieval") {
+      const outcome = stringField(event.data, "outcome") ?? "complete";
+      const invocationOrdinal = numberField(event.data, "invocationOrdinal") ?? eventIndex + 1;
+      const candidateCount = numberField(event.data, "candidateCount") ?? 0;
+      const resultCount = numberField(event.data, "resultCount") ?? 0;
+      const durationMs = numberField(event.data, "durationMs");
+      const query = stringField(event.data, "query");
+      const complete = outcome === "complete";
+      summaries.push({
+        detail: [
+          query ? `Query: ${query}` : null,
+          durationMs !== null ? `${durationMs} ms` : null
+        ].filter((part): part is string => Boolean(part)).join(" · ") || undefined,
+        id: `knowledge-${eventIndex}`,
+        label: `Knowledge retrieval ${invocationOrdinal}`,
+        stage: "K",
+        tone: complete ? "success" : "warning",
+        value: complete
+          ? `${resultCount} of ${candidateCount} candidate passages included`
+          : `${readableIdentifier(outcome)} · ${resultCount} passages included`
+      });
+      currentStage = "K";
+      return;
+    }
+
     if (event.type === "usage" && isRecord(event.data)) {
       if (!usageGroup) {
         usageGroup = { count: 1, summaryIndex: summaries.length };

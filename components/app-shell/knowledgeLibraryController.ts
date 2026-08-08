@@ -324,6 +324,13 @@ export function createKnowledgeLibraryActions() {
     void refreshDetail(baseId);
   }
 
+  function openEvidence(baseId: string) {
+    if (store().busy) return;
+    store().patch({ open: true });
+    openDetail(baseId);
+    void refreshList();
+  }
+
   function closeDetail() {
     if (store().busy) return;
     store().patch({ detail: null, notice: null, task: "list" });
@@ -590,6 +597,7 @@ export function createKnowledgeLibraryActions() {
     closeLibrary,
     openCreate,
     openDetail,
+    openEvidence,
     openLibrary,
     publish,
     refreshDetail,

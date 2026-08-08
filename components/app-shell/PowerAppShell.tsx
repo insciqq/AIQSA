@@ -109,9 +109,11 @@ export function workspaceDefaultControlsFingerprint(state: ComposerControlSnapsh
   return JSON.stringify({
     backgroundMode: state.backgroundMode,
     maxOutputTokens: state.maxOutputTokens,
+    knowledgePlanSource: state.knowledgePlanSource,
     reasoningEffort: state.reasoningEffort,
     reasoningMode: state.reasoningMode,
     selectedAssistantId: state.selectedAssistant?.id ?? null,
+    selectedKnowledgeBaseIds: state.selectedKnowledgeBaseIds,
     selectedModelId: state.selectedModelId,
     selectedProvider: state.selectedProvider,
     selectedSearchOptionIds: state.selectedSearchOptionIds,
@@ -190,9 +192,11 @@ export function PowerAppShell({
   const editingMessageId = composerSession.editingMessageId;
   const editingMessagePending = Boolean(composerSession.pendingEdit);
   const maxOutputTokens = useComposerControlStore((state) => state.maxOutputTokens);
+  const knowledgePlanSource = useComposerControlStore((state) => state.knowledgePlanSource);
   const reasoningEffort = useComposerControlStore((state) => state.reasoningEffort);
   const reasoningMode = useComposerControlStore((state) => state.reasoningMode);
   const selectedAssistant = useComposerControlStore((state) => state.selectedAssistant);
+  const selectedKnowledgeBaseIds = useComposerControlStore((state) => state.selectedKnowledgeBaseIds);
   const assistantRemovedNotice = useComposerControlStore((state) => state.assistantRemovedNotice);
   const selectedModelId = useComposerControlStore((state) => state.selectedModelId);
   const selectedProvider = useComposerControlStore((state) => state.selectedProvider);
@@ -208,6 +212,7 @@ export function PowerAppShell({
   const setAttachments = useComposerSessionStore((state) => state.setAttachments);
   const setDraft = useComposerSessionStore((state) => state.setDraft);
   const setSelectedModelId = useComposerControlStore((state) => state.setSelectedModelId);
+  const setSelectedKnowledgePlan = useComposerControlStore((state) => state.setSelectedKnowledgePlan);
   const setSelectedProvider = useComposerControlStore((state) => state.setSelectedProvider);
   const setSelectedSearchPlan = useComposerControlStore((state) => state.setSelectedSearchPlan);
   const setShowCitations = useComposerControlStore((state) => state.setShowCitations);
@@ -232,6 +237,7 @@ export function PowerAppShell({
   const workspaceInteraction = useWorkspaceInteractionController();
   const projectSettingsFolderId = workspaceInteraction.projectSettings.folderId;
   const projectMemoryDraft = workspaceInteraction.projectSettings.draft;
+  const projectKnowledgeBaseIds = workspaceInteraction.projectSettings.knowledgeBaseIds;
   const shellOverlays = useShellOverlayController({
     appearance: {
       changeMode: setInspectorModeManually,
@@ -501,6 +507,7 @@ export function PowerAppShell({
     refreshActiveChat,
     refreshWorkspace,
     renameChat,
+    setChatKnowledgeDefault,
     toggleChatFavorite,
     updateChatFolder
   } = useWorkspaceActions({
@@ -514,6 +521,7 @@ export function PowerAppShell({
     resumeChatRun,
     setNotice,
     setSelectedModelId,
+    setSelectedKnowledgePlan,
     setSelectedProvider,
     setSelectedSearchPlan,
     workspaceRefreshPromiseRef
@@ -612,15 +620,23 @@ export function PowerAppShell({
     }
   });
 
+  const knowledgeLibraryActions = useMemo(() => createKnowledgeLibraryActions(), []);
   const assistantLibraryActions = createAssistantLibraryActions({
     activateBlankWorkspace: () => activateBlankWorkspaceEvent(),
     applyAssistantToComposer,
     catalog,
     catalogError,
+    knowledgeBases: (knowledgeSnapshot.data?.knowledgeBases ?? []).map((base) => ({
+      available: !base.archived,
+      id: base.id,
+      name: base.name
+    })),
+    knowledgeDataError: knowledgeSnapshot.dataError,
+    knowledgeDataState: knowledgeSnapshot.dataState,
     retryCatalog: () => void retryCatalog(),
+    retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
     setShellNotice: setNotice
   });
-  const knowledgeLibraryActions = createKnowledgeLibraryActions();
   const openAssistantLibrary = () => {
     knowledgeLibraryActions.closeLibrary();
     assistantLibraryActions.openLibrary("discover");
@@ -638,6 +654,10 @@ export function PowerAppShell({
       void assistantLibraryActions.refreshList();
     }
   });
+
+  useEffect(() => {
+    void knowledgeLibraryActions.refreshList();
+  }, [knowledgeLibraryActions]);
 
   useEffect(() => {
     shellMountedRef.current = true;
@@ -897,9 +917,15 @@ export function PowerAppShell({
     pane: workspacePaneView,
     projectSettings: {
       changeDraft: workspaceInteraction.projectSettings.changeDraft,
+      changeKnowledgeBaseIds: workspaceInteraction.projectSettings.changeKnowledgeBaseIds,
       close: workspaceInteraction.projectSettings.close,
       draft: projectMemoryDraft,
       folder: projectSettingsFolder,
+      knowledgeBaseIds: projectKnowledgeBaseIds,
+      knowledgeBases: knowledgeSnapshot.data?.knowledgeBases ?? [],
+      knowledgeDataError: knowledgeSnapshot.dataError,
+      knowledgeDataState: knowledgeSnapshot.dataState,
+      retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
       save: saveProjectSettings
     }
   } satisfies ShellWorkspaceView;
@@ -918,9 +944,17 @@ export function PowerAppShell({
     handleEditMessage,
     handleRegenerateMessage,
     handleThreadScroll,
+    inspectRun: async (runId: string) => {
+      if (activeChatId) await fetchRun(runId, activeChatId);
+    },
     jumpToLatest,
     lastRun: activeRunSurface.lastRun,
     liveArtifactSummary,
+    openKnowledgeEvidence: (knowledgeBaseId: string) => {
+      assistantLibraryActions.closeLibrary();
+      closeGeneralSettings();
+      knowledgeLibraryActions.openEvidence(knowledgeBaseId);
+    },
     retryActiveChatDetail,
     showJumpToLatest,
     threadScrollRef,
@@ -968,6 +1002,22 @@ export function PowerAppShell({
     currentParameterControls,
     draft,
     flushPendingModelControlDefaults: flushPendingModelControlDefaultsEvent,
+    knowledge: {
+      bases: knowledgeSnapshot.data?.knowledgeBases ?? [],
+      clearChatDefault: activeChat && knowledgePlanSource !== "assistant"
+        ? () => void setChatKnowledgeDefault(null)
+        : undefined,
+      dataError: knowledgeSnapshot.dataError,
+      dataState: knowledgeSnapshot.dataState,
+      hasChatDefault: activeChat?.defaultKnowledgePlan != null,
+      retry: () => void knowledgeLibraryActions.refreshList(),
+      saveChatDefault: activeChat && knowledgePlanSource !== "assistant"
+        ? () => void setChatKnowledgeDefault({ baseIds: [...selectedKnowledgeBaseIds] })
+        : undefined,
+      select: (baseIds) => setSelectedKnowledgePlan(baseIds, "explicit", "user"),
+      selectedBaseIds: selectedKnowledgeBaseIds,
+      source: knowledgePlanSource
+    },
     maxOutputTokens,
     makeCurrentModelDefault,
     notificationSoundEnabled,
@@ -1028,7 +1078,15 @@ export function PowerAppShell({
         applyAssistantToComposer,
         catalog,
         catalogError,
+        knowledgeBases: (knowledgeSnapshot.data?.knowledgeBases ?? []).map((base) => ({
+          available: !base.archived,
+          id: base.id,
+          name: base.name
+        })),
+        knowledgeDataError: knowledgeSnapshot.dataError,
+        knowledgeDataState: knowledgeSnapshot.dataState,
         retryCatalog: () => void retryCatalog(),
+        retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
         setShellNotice: setNotice
       },
       assistantLibraryActions,

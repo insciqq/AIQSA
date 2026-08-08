@@ -64,6 +64,9 @@ export type ThreadArtifactSummary = {
     droppedMessages: number;
   } | null;
   groundingDisplay?: ThreadGroundingDisplay | null;
+  knowledgeCitations?: ThreadKnowledgeCitation[];
+  knowledgeInvocationCount?: number;
+  knowledgeOutcomes?: ThreadKnowledgeOutcome[];
   reasoningCount: number;
   reasoningText: string[];
   searchActivity?: ThreadSearchActivity[];
@@ -72,6 +75,25 @@ export type ThreadArtifactSummary = {
   searchStrategy: string | null;
   toolCallCount: number;
   toolCalls: ThreadToolActivity[];
+};
+
+export type ThreadKnowledgeCitation = {
+  baseName: string;
+  documentVersionNumber: number | null;
+  fileName: string;
+  handle: string;
+  knowledgeBaseId: string;
+  page: number;
+};
+
+export type ThreadKnowledgeOutcome = {
+  invocationOrdinal: number;
+  outcome:
+    | "base_empty"
+    | "base_indexing"
+    | "complete"
+    | "embedding_model_unavailable"
+    | "zero_above_threshold";
 };
 
 export type ThreadSearchActivityStatus =
@@ -438,6 +460,16 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   const reasoningCount = nonNegativeInteger(value.reasoningCount);
   const searchCount = nonNegativeInteger(value.searchCount);
   const toolCallCount = nonNegativeInteger(value.toolCallCount);
+  const hasKnowledgeProjection = value.knowledgeInvocationCount !== undefined ||
+    value.knowledgeCitations !== undefined || value.knowledgeOutcomes !== undefined;
+  const hasCompleteKnowledgeProjection = !hasKnowledgeProjection || (
+    value.knowledgeInvocationCount !== undefined &&
+    value.knowledgeCitations !== undefined &&
+    value.knowledgeOutcomes !== undefined
+  );
+  const knowledgeInvocationCount = value.knowledgeInvocationCount === undefined
+    ? 0
+    : nonNegativeInteger(value.knowledgeInvocationCount);
   const searchDisplayName = value.searchDisplayName === undefined
     ? undefined
     : nullableString(value.searchDisplayName);
@@ -446,7 +478,8 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     citationCount === null ||
     reasoningCount === null ||
     searchCount === null ||
-    toolCallCount === null ||
+    toolCallCount === null || !hasCompleteKnowledgeProjection ||
+    knowledgeInvocationCount === null || knowledgeInvocationCount > 3 ||
     (value.searchDisplayName !== undefined && searchDisplayName === undefined) ||
     searchStrategy === undefined ||
     !Array.isArray(value.citations) ||
@@ -466,6 +499,29 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   if (toolCalls.some((toolCall) => toolCall === null) || toolCalls.length !== toolCallCount) {
     return null;
   }
+
+  const knowledgeCitationsInput = value.knowledgeCitations ?? [];
+  const knowledgeOutcomesInput = value.knowledgeOutcomes ?? [];
+  if (
+    !Array.isArray(knowledgeCitationsInput) || knowledgeCitationsInput.length > 24 ||
+    !Array.isArray(knowledgeOutcomesInput) || knowledgeOutcomesInput.length > 3
+  ) return null;
+  const knowledgeCitations = knowledgeCitationsInput.map(decodeThreadKnowledgeCitation);
+  const knowledgeOutcomes = knowledgeOutcomesInput.map(decodeThreadKnowledgeOutcome);
+  if (
+    knowledgeCitations.some((citation) => citation === null) ||
+    knowledgeOutcomes.some((outcome) => outcome === null) ||
+    knowledgeOutcomes.length !== knowledgeInvocationCount ||
+    knowledgeOutcomes.some((outcome, index) => outcome?.invocationOrdinal !== index + 1)
+  ) return null;
+  const decodedKnowledgeCitations = knowledgeCitations.filter(
+    (citation): citation is ThreadKnowledgeCitation => citation !== null
+  );
+  if (
+    new Set(decodedKnowledgeCitations.map((citation) => citation.handle)).size !==
+      decodedKnowledgeCitations.length ||
+    decodedKnowledgeCitations.some((citation) => Number(citation.handle[1]) > knowledgeInvocationCount)
+  ) return null;
 
   let contextTruncation: ThreadArtifactSummary["contextTruncation"];
   if (value.contextTruncation === null || value.contextTruncation === undefined) {
@@ -499,6 +555,13 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     citationCount,
     citations: citations.filter((citation): citation is ThreadCitation => citation !== null),
     ...(contextTruncation !== undefined ? { contextTruncation } : {}),
+    ...(hasKnowledgeProjection ? {
+      knowledgeCitations: decodedKnowledgeCitations,
+      knowledgeInvocationCount,
+      knowledgeOutcomes: knowledgeOutcomes.filter(
+        (outcome): outcome is ThreadKnowledgeOutcome => outcome !== null
+      )
+    } : {}),
     reasoningCount,
     reasoningText: value.reasoningText as string[],
     ...(searchActivity !== undefined ? { searchActivity } : {}),
@@ -508,6 +571,44 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     toolCallCount,
     toolCalls: toolCalls.filter((toolCall): toolCall is ThreadToolActivity => toolCall !== null)
   };
+}
+
+function decodeThreadKnowledgeCitation(value: unknown): ThreadKnowledgeCitation | null {
+  if (!isRecord(value)) return null;
+  const baseName = requiredString(value.baseName);
+  const fileName = requiredString(value.fileName);
+  const handle = requiredString(value.handle);
+  const knowledgeBaseId = requiredString(value.knowledgeBaseId);
+  const page = nonNegativeInteger(value.page);
+  const documentVersionNumber = value.documentVersionNumber === null
+    ? null
+    : nonNegativeInteger(value.documentVersionNumber);
+  if (
+    !baseName || !fileName || !handle || !/^K[1-3]\.[1-8]$/u.test(handle) ||
+    !knowledgeBaseId || page === null || page < 1 ||
+    (documentVersionNumber !== null && documentVersionNumber < 1)
+  ) return null;
+  return {
+    baseName,
+    documentVersionNumber,
+    fileName,
+    handle,
+    knowledgeBaseId,
+    page
+  };
+}
+
+function decodeThreadKnowledgeOutcome(value: unknown): ThreadKnowledgeOutcome | null {
+  if (!isRecord(value)) return null;
+  const invocationOrdinal = nonNegativeInteger(value.invocationOrdinal);
+  const outcome = value.outcome === "base_empty" || value.outcome === "base_indexing" ||
+    value.outcome === "complete" || value.outcome === "embedding_model_unavailable" ||
+    value.outcome === "zero_above_threshold"
+    ? value.outcome
+    : null;
+  return invocationOrdinal !== null && invocationOrdinal >= 1 && invocationOrdinal <= 3 && outcome
+    ? { invocationOrdinal, outcome }
+    : null;
 }
 
 function decodeThreadAssistantIdentity(value: unknown): ThreadAssistantIdentity | null {

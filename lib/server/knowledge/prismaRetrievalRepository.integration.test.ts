@@ -514,6 +514,7 @@ integration("Knowledge hybrid retrieval repository", () => {
     });
     expect(evidence.results[0]).toMatchObject({
       documentVersionId: `accepted-version-${suffix}`,
+      documentVersionNumber: 1,
       fileName: fileNameSentinel,
       handle: "K1.1",
       textTruncated: false

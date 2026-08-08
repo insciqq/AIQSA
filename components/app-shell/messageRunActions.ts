@@ -33,6 +33,7 @@ import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData
 import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { SearchPlanMode } from "@/lib/domain/search";
+import type { ComposerKnowledgePlanSource } from "@/components/app-shell/composerControlStore";
 
 type MutableRef<T> = { current: T };
 
@@ -41,6 +42,8 @@ type MessageRunControlSnapshot = {
   controlDefaults: SavedControlDraft;
   model: CatalogModel | undefined;
   modelId: string;
+  knowledgeBaseIds: string[];
+  knowledgePlanSource: ComposerKnowledgePlanSource;
   params: Record<string, unknown>;
   provider: string;
   searchPreferencePlan: {
@@ -125,10 +128,12 @@ export function useMessageRunActions({
   function captureRunControlSnapshot(): MessageRunControlSnapshot {
     const {
       selectedAssistant,
+      selectedKnowledgeBaseIds,
       selectedModelId,
       selectedProvider,
       selectedSearchOptionIds,
-      searchPlanMode
+      searchPlanMode,
+      knowledgePlanSource
     } = useComposerControlStore.getState();
     const catalog = useWorkspaceStore.getState().catalog;
     const selectedModel = modelForCurrentSelection(
@@ -160,6 +165,8 @@ export function useMessageRunActions({
     return {
       assistantId: selectedAssistant?.id ?? null,
       controlDefaults: { ...buildControlDraft() },
+      knowledgeBaseIds: [...selectedKnowledgeBaseIds],
+      knowledgePlanSource,
       model,
       modelId: selectedModelId,
       params: { ...buildParams() },
@@ -207,6 +214,9 @@ export function useMessageRunActions({
     return {
       controlDefaults: snapshot.controlDefaults,
       modelId: snapshot.modelId,
+      ...(snapshot.knowledgePlanSource === "explicit"
+        ? { knowledgePlan: { baseIds: [...snapshot.knowledgeBaseIds] } }
+        : {}),
       params: snapshot.params,
       provider: snapshot.provider,
       searchPlan: effectiveSearchPlan,

@@ -250,6 +250,7 @@ function eventStageLabel(stage: string): string {
     A: "Answer",
     API: "Usage",
     ART: "Evidence",
+    K: "Knowledge",
     Q: "Question",
     RUN: "Run",
     S: "Search",

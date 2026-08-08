@@ -1,22 +1,35 @@
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import type { FolderSummary } from "@/components/app-shell/types";
+import { KNOWLEDGE_PLAN_MAX_BASES, type KnowledgeBaseSummary } from "@/lib/contracts/knowledge";
 import { X } from "lucide-react";
 import { useState } from "react";
 import { useDialogFocus } from "./useDialogFocus";
 
 export function ProjectSettingsDialog({
   folder,
+  knowledgeBaseIds = [],
+  knowledgeBases = [],
+  knowledgeDataError = null,
+  knowledgeDataState = "ready",
   memoryDraft,
   onCancel,
+  onKnowledgeBaseIdsChange = () => {},
   onMemoryDraftChange,
+  onRetryKnowledge = () => {},
   onSave,
   restoreFocus,
   saving
 }: {
   folder: FolderSummary;
+  knowledgeBaseIds?: string[];
+  knowledgeBases?: KnowledgeBaseSummary[];
+  knowledgeDataError?: string | null;
+  knowledgeDataState?: "error" | "loading" | "ready";
   memoryDraft: string;
   onCancel(): void;
+  onKnowledgeBaseIdsChange?(value: string[]): void;
   onMemoryDraftChange(value: string): void;
+  onRetryKnowledge?(): void;
   onSave(): void;
   restoreFocus?(): HTMLElement | null;
   saving: boolean;
@@ -26,7 +39,10 @@ export function ProjectSettingsDialog({
     if (saving) {
       return;
     }
-    if (memoryDraft !== folder.projectMemory) {
+    if (
+      memoryDraft !== folder.projectMemory ||
+      JSON.stringify(knowledgeBaseIds) !== JSON.stringify(folder.defaultKnowledgePlan?.baseIds ?? [])
+    ) {
       setDiscardConfirmationOpen(true);
       return;
     }
@@ -92,6 +108,73 @@ export function ProjectSettingsDialog({
             Sent to the model as context for future messages in every chat in this project. Existing messages and
             replies are unchanged.
           </p>
+          <fieldset className="mt-6 border-t border-trace-subtle pt-5">
+            <legend className="text-xs font-semibold text-ink">Default Knowledge plan</legend>
+            <p className="mt-1 text-xs leading-5 text-ink-muted">
+              Used for future runs in this project unless a chat or explicit next-run plan overrides it. Choose up to three bases.
+            </p>
+            <div className="mt-3 space-y-2">
+              {knowledgeBaseIds
+                .filter((baseId) => !knowledgeBases.some((base) => base.id === baseId))
+                .map((baseId) => {
+                  const order = knowledgeBaseIds.indexOf(baseId) + 1;
+                  return (
+                    <label className="flex min-h-touch items-center gap-2 rounded-control bg-control-selected px-3 text-xs text-caution" key={baseId}>
+                      <input
+                        checked
+                        className="size-4 shrink-0 accent-proof"
+                        disabled={saving}
+                        type="checkbox"
+                        onChange={() => onKnowledgeBaseIdsChange(knowledgeBaseIds.filter((id) => id !== baseId))}
+                      />
+                      <span>Unavailable base · selection retained · order {order}</span>
+                    </label>
+                  );
+                })}
+              {knowledgeBases.map((base) => {
+                const checked = knowledgeBaseIds.includes(base.id);
+                const unavailable = base.archived;
+                return (
+                  <label className={`flex min-h-touch items-center gap-2 rounded-control px-3 text-xs ${checked ? "bg-control-selected" : "bg-control-surface"}`} key={base.id}>
+                    <input
+                      checked={checked}
+                      className="size-4 shrink-0 accent-proof"
+                      disabled={saving || (!checked && (unavailable || knowledgeBaseIds.length >= KNOWLEDGE_PLAN_MAX_BASES))}
+                      type="checkbox"
+                      onChange={(event) => onKnowledgeBaseIdsChange(
+                        event.currentTarget.checked
+                          ? [...knowledgeBaseIds, base.id]
+                          : knowledgeBaseIds.filter((id) => id !== base.id)
+                      )}
+                    />
+                    <span className={`min-w-0 break-words [overflow-wrap:anywhere] ${unavailable ? "text-caution" : "text-ink-secondary"}`}>
+                      {base.name}{unavailable ? checked ? " · unavailable, retained" : " · unavailable" : ""}
+                      {checked ? ` · order ${knowledgeBaseIds.indexOf(base.id) + 1}` : ""}
+                    </span>
+                  </label>
+                );
+              })}
+              {knowledgeDataState === "loading" && knowledgeBases.length === 0 ? (
+                <p className="text-xs text-ink-muted" role="status">Loading Knowledge bases…</p>
+              ) : null}
+              {knowledgeDataState === "error" ? (
+                <div className="rounded-control border border-critical/30 bg-critical/10 p-3 text-xs text-critical" role="alert">
+                  <p>{knowledgeDataError ?? "Knowledge bases could not be loaded."}</p>
+                  <button
+                    className="mt-2 h-touch rounded-control bg-control-surface px-3 font-semibold text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                    type="button"
+                    disabled={saving}
+                    onClick={onRetryKnowledge}
+                  >
+                    Retry Knowledge
+                  </button>
+                </div>
+              ) : null}
+              {knowledgeDataState === "ready" && knowledgeBases.length === 0 && knowledgeBaseIds.length === 0 ? (
+                <p className="text-xs text-ink-muted">No Knowledge bases are available. The project default is Off.</p>
+              ) : null}
+            </div>
+          </fieldset>
         </div>
         <footer className="flex shrink-0 justify-end gap-2 border-t border-trace-subtle px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:pb-3">
           <button
