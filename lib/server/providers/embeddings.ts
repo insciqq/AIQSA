@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   ProviderResponseTooLargeError,
-  isProviderTimeoutError,
+  isProviderDeadlineExceededError,
   providerResponseMaxBytes,
   readBoundedResponseText,
   withTimeoutSignal
@@ -316,7 +316,10 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
         if (error instanceof ProviderResponseTooLargeError) {
           throw new EmbeddingAdapterError("embedding_response_too_large");
         }
-        if (isProviderTimeoutError(error) || timeout.signal.aborted && isProviderTimeoutError(timeout.signal.reason)) {
+        if (
+          isProviderDeadlineExceededError(error) ||
+          timeout.signal.aborted && isProviderDeadlineExceededError(timeout.signal.reason)
+        ) {
           throw new EmbeddingAdapterError("embedding_request_timed_out");
         }
         throw new EmbeddingAdapterError("embedding_provider_request_failed");

@@ -201,9 +201,10 @@ export function timeoutError(message = "Provider request timed out"): Error {
   return error;
 }
 
-export function isProviderTimeoutError(error: unknown): boolean {
-  return error instanceof ProviderRequestTimeoutError ||
-    (error instanceof Error && (error.name === "TimeoutError" || /timed out|timeout/i.test(error.message)));
+export function isProviderDeadlineExceededError(
+  error: unknown
+): error is ProviderRequestTimeoutError {
+  return error instanceof ProviderRequestTimeoutError;
 }
 
 export function withTimeoutSignal(parentSignal?: AbortSignal, timeoutMs = providerTimeoutMs()) {

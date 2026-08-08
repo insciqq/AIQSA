@@ -14,7 +14,7 @@ import {
 } from "../../domain/modelRunEvents";
 import { sumTokenUsage } from "../../domain/usage";
 import { validateRunAccess } from "../auth/entitlements";
-import { isProviderTimeoutError } from "../providers/network";
+import { isProviderDeadlineExceededError } from "../providers/network";
 import {
   isProviderStreamSafetyCode,
   providerStreamSafeMessage,
@@ -1217,7 +1217,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           if (!originalStreamSafetyReport) failure = flushError;
         }
 
-        const timedOut = isProviderTimeoutError(failure);
+        const deadlineExceeded = isProviderDeadlineExceededError(failure);
         const pipelineError = failure instanceof RunPipelineError ? failure : null;
         const streamSafetyReport = providerStreamSafetyReport(failure);
         const safetyCode = streamSafetyReport?.code ??
@@ -1233,7 +1233,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
           : {
               code: pipelineError?.code ??
-                (timedOut ? "provider_request_timed_out" : "provider_stream_failed"),
+                (deadlineExceeded ? "provider_request_timed_out" : "provider_stream_failed"),
               message: failure instanceof Error ? failure.message : "Provider stream failed"
             };
         if (streamSafetyReport) {
@@ -1248,7 +1248,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           runId,
           input.created.assistantMessageId,
           payload,
-          safetyCode || timedOut ? { recoveryTerminal: true } : undefined
+          safetyCode || deadlineExceeded ? { recoveryTerminal: true } : undefined
         );
         await persistReportedUsageForIncompleteRun().catch(() => undefined);
         if (failed) {

@@ -184,6 +184,52 @@ describe("OpenAI-compatible embeddings", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
+  it("does not classify upstream timeout text as the configured deadline", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => {
+      throw new Error("upstream connect error: connection timeout");
+    });
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      model: embeddingModel(),
+      network: { fetchFn },
+      secret: "openrouter-key"
+    });
+
+    await expect(adapter.embed({ mode: "document", texts: ["one"] }))
+      .rejects.toMatchObject({ code: "embedding_provider_request_failed" });
+  });
+
+  it("classifies its own elapsed request deadline explicitly", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+        const signal = init?.signal;
+        if (!signal) throw new Error("missing_signal");
+        return new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      });
+      const adapter = createOpenAICompatibleEmbeddingAdapter({
+        connection: {
+          allowPrivateNetwork: false,
+          apiRoot: "https://openrouter.ai/api/v1",
+          responseTimeoutMs: 5_000
+        },
+        model: embeddingModel(),
+        network: { fetchFn },
+        secret: "openrouter-key"
+      });
+      const timedOut = expect(adapter.embed({ mode: "document", texts: ["one"] }))
+        .rejects.toMatchObject({ code: "embedding_request_timed_out" });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await timedOut;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("enforces bounded batches before the network", async () => {
     const fetchFn = vi.fn<typeof fetch>();
     const adapter = createOpenAICompatibleEmbeddingAdapter({

@@ -1168,6 +1168,43 @@ describe("run execution", () => {
     expect(repository.completeRuns).toEqual([]);
   });
 
+  it("keeps upstream timeout text eligible for outcome-unknown recovery", async () => {
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      yield { data: { delta: "partial" }, type: "token" };
+      yield {
+        data: { artifactType: "summary", payload: { responseId: "response-1" } },
+        type: "artifact"
+      };
+      throw new Error(
+        "upstream connect error or disconnect/reset before headers: connection timeout"
+      );
+    });
+
+    const events = parseSse(
+      await createRunExecutionResponse(
+        executionInput({ adapter, repository: repository.repository })
+      ).text()
+    );
+
+    expect(events.at(-1)).toEqual({
+      data: {
+        code: "provider_stream_failed",
+        message: "upstream connect error or disconnect/reset before headers: connection timeout"
+      },
+      type: "error"
+    });
+    expect(repository.providerResponseIds).toEqual(["response-1"]);
+    expect(repository.failedRuns).toEqual([{
+      assistantMessageId: "assistant-1",
+      error: {
+        code: "provider_stream_failed",
+        message: "upstream connect error or disconnect/reset before headers: connection timeout"
+      },
+      runId: "run-1"
+    }]);
+  });
+
   it("does not execute tools or continue rounds after a tool-enabled stream safety failure", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     let answerRounds = 0;

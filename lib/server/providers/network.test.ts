@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_PROVIDER_STREAM_LIMITS,
   getProviderStreamLimits,
+  isProviderDeadlineExceededError,
   PROVIDER_STREAM_LIMIT_CEILINGS,
   ProviderRequestTimeoutError,
   ProviderResponseTooLargeError,
@@ -141,6 +142,14 @@ describe("provider network response bounds", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("does not infer a configured deadline from names or message text", () => {
+    expect(isProviderDeadlineExceededError(new ProviderRequestTimeoutError(5_000))).toBe(true);
+    expect(isProviderDeadlineExceededError(new Error(
+      "upstream connect error or disconnect/reset before headers: connection timeout"
+    ))).toBe(false);
+    expect(isProviderDeadlineExceededError(timeoutError())).toBe(false);
   });
 
   it("uses the 16 MiB default and accepts a positive environment override", () => {
