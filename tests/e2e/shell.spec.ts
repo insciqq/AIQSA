@@ -615,7 +615,7 @@ test("keeps 1280 compact and persists the desktop Workspace pane preference with
     document.documentElement.style.fontSize = "20px";
   });
   await expect.poll(async () => (await iconRail.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(60);
-  for (const name of ["New chat", "Chats", "Assistants", "Settings", "Account"]) {
+  for (const name of ["New chat", "Chats", "Assistants", "Knowledge", "Settings", "Account"]) {
     await expectTouchSafe(iconRail.getByRole("button", { name, exact: true }));
   }
   const settingsEntry = iconRail.getByRole("button", { name: "Settings" });
@@ -4677,7 +4677,7 @@ test("keeps the desktop icon rail contained for coarse-pointer input", async ({ 
     const rail = page.getByTestId("workspace-icon-rail");
     await expect(rail).toBeVisible();
     await expect(page.getByTestId("left-chat-pane")).toBeVisible();
-    for (const name of ["New chat", "Chats", "Assistants", "Settings", "Account"]) {
+    for (const name of ["New chat", "Chats", "Assistants", "Knowledge", "Settings", "Account"]) {
       const control = rail.getByRole("button", { name, exact: true });
       await expectTouchSafe(control);
       await expectWithinViewport(page, control);

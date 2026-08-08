@@ -14,6 +14,7 @@ function baseProps(): ComponentProps<typeof WorkspaceIconRail> {
     creatingChat: false,
     onNewChat: vi.fn(),
     onOpenAssistants: vi.fn(),
+    onOpenKnowledge: vi.fn(),
     onOpenSettings: vi.fn(),
     onRestoreChats: vi.fn(),
     paneHidden: false,
@@ -38,6 +39,7 @@ describe("WorkspaceIconRail", () => {
       "New chat",
       "Chats",
       "Assistants",
+      "Knowledge",
       "Settings",
       "Control Center",
       "Account"
@@ -117,6 +119,7 @@ describe("WorkspaceIconRail", () => {
     const unavailable = [
       screen.getByRole("button", { name: "New chat" }),
       screen.getByRole("button", { name: "Assistants" }),
+      screen.getByRole("button", { name: "Knowledge" }),
       screen.getByRole("button", { name: "Settings" }),
       screen.getByRole("link", { name: "Control Center" })
     ];
@@ -132,6 +135,7 @@ describe("WorkspaceIconRail", () => {
     }
     expect(props.onNewChat).not.toHaveBeenCalled();
     expect(props.onOpenAssistants).not.toHaveBeenCalled();
+    expect(props.onOpenKnowledge).not.toHaveBeenCalled();
     expect(props.onOpenSettings).not.toHaveBeenCalled();
   });
 
@@ -142,10 +146,12 @@ describe("WorkspaceIconRail", () => {
 
     fireEvent.click(within(navigation).getByRole("button", { name: "New chat" }));
     fireEvent.click(within(navigation).getByRole("button", { name: "Assistants" }));
+    fireEvent.click(within(navigation).getByRole("button", { name: "Knowledge" }));
     fireEvent.click(within(navigation).getByRole("button", { name: "Settings" }));
 
     expect(props.onNewChat).toHaveBeenCalledOnce();
     expect(props.onOpenAssistants).toHaveBeenCalledOnce();
+    expect(props.onOpenKnowledge).toHaveBeenCalledOnce();
     expect(props.onOpenSettings).toHaveBeenCalledOnce();
   });
 });

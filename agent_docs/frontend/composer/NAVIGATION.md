@@ -14,17 +14,17 @@ Not owned here: Composer input, run parameter controls, receipt/details, or visu
 - Arrow up/down wraps through results; Home/End moves to the first/last result.
 - Enter executes selected item.
 - Filtering covers actions, models, Search options, and the full workspace chat inventory, including provider/category aliases and non-presentational catalog ids in the model search index. A sidebar title/content query filters only workspace navigation and cannot remove chats from command-palette search.
-- Results are grouped under readable Actions, Chats, Models, and Search strategies headings with group counts. Current chat/model/search rows use a visible `Current` marker; category and readable provider/capability/search context form the secondary line instead of exposing raw ids. An `Open assistants` action opens the Assistants surface.
+- Results are grouped under readable Actions, Chats, Models, and Search strategies headings with group counts. Current chat/model/search rows use a visible `Current` marker; category and readable provider/capability/search context form the secondary line instead of exposing raw ids. `Open assistants` and `Open Knowledge` actions open their respective full-screen resource surfaces.
 - Long labels wrap, results scroll locally, keyboard movement keeps the active row visible, and an unmatched query replaces stale results with a readable `No matching commands` status. Enter does nothing when there is no result.
 - The palette is viewport bounded. Arrow/Home/End/Enter operate its current option, and Escape or the backdrop closes it.
-- Settings can be opened directly from the desktop icon rail, from either Account presentation, from the compact Workspace drawer, or from the command palette. Assistants is a separate direct rail and Account destination; the composer's Run setup offers the secondary `Use an assistant…` action that opens the quick picker instead.
+- Settings can be opened directly from the desktop icon rail, from either Account presentation, from the compact Workspace drawer, or from the command palette. Assistants and Knowledge are separate direct rail, Account, and command-palette destinations; the composer's Run setup offers the secondary `Use an assistant…` action that opens the quick picker instead.
 - The command palette includes a `New chat` action for keyboard and mobile users.
 
 ## Left pane
 
 - At `>=1281px`, one named `Primary navigation` icon rail always precedes the
   optional wide pane. Its ordered destinations are New chat, current Chats,
-  Assistants, Settings, entitled Control Center, and bottom Account. Every
+  Assistants, Knowledge, Settings, entitled Control Center, and bottom Account. Every
   entry has an exact accessible name and an associated visible hover/focus
   tooltip; unavailable entries remain focusable with guarded `aria-disabled`.
   Chats restores a hidden pane and is a no-op while it is already visible.

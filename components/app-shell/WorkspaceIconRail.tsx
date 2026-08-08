@@ -1,4 +1,4 @@
-import { LoaderCircle, MessageSquareText, ScrollText, Settings, Shield, SquarePen } from "lucide-react";
+import { BookOpen, LoaderCircle, MessageSquareText, ScrollText, Settings, Shield, SquarePen } from "lucide-react";
 import {
   useId,
   useState,
@@ -88,9 +88,11 @@ export type WorkspaceIconRailProps = {
   chatsRef?: Ref<HTMLButtonElement>;
   controlCenterRef?: Ref<HTMLAnchorElement>;
   creatingChat: boolean;
+  knowledgeRef?: Ref<HTMLButtonElement>;
   newChatRef?: Ref<HTMLButtonElement>;
   onNewChat(): void;
   onOpenAssistants(): void;
+  onOpenKnowledge(): void;
   onOpenSettings(): void;
   onRestoreChats(): void;
   paneHidden: boolean;
@@ -106,9 +108,11 @@ export function WorkspaceIconRail({
   chatsRef,
   controlCenterRef,
   creatingChat,
+  knowledgeRef,
   newChatRef,
   onNewChat,
   onOpenAssistants,
+  onOpenKnowledge,
   onOpenSettings,
   onRestoreChats,
   paneHidden,
@@ -201,6 +205,31 @@ export function WorkspaceIconRail({
               onKeyDown={(event) => guardUnavailableKey(event, signingOut)}
             >
               <ScrollText className="size-4" aria-hidden="true" />
+            </button>
+          )}
+        </RailEntry>
+
+        <RailEntry description="Browse and manage Knowledge bases">
+          {(tooltipId) => (
+            <button
+              ref={knowledgeRef}
+              className={actionClass({ unavailable: signingOut })}
+              type="button"
+              aria-disabled={signingOut || undefined}
+              aria-describedby={tooltipId}
+              aria-label="Knowledge"
+              data-desktop-navigation-control="knowledge"
+              title="Knowledge"
+              onClick={(event) => {
+                if (signingOut) {
+                  event.preventDefault();
+                  return;
+                }
+                onOpenKnowledge();
+              }}
+              onKeyDown={(event) => guardUnavailableKey(event, signingOut)}
+            >
+              <BookOpen className="size-4" aria-hidden="true" />
             </button>
           )}
         </RailEntry>

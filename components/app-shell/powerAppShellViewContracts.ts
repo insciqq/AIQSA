@@ -3,6 +3,7 @@ import type { ComposerContextStats } from "@/components/app-shell/composerContex
 import type { CommandItem } from "@/components/command-palette/commandItems";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
+import type { KnowledgeLibraryView } from "@/components/knowledge/libraryViewContracts";
 import type { ComposerAssistantSelection } from "@/components/app-shell/composerControlStore";
 import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import type { ThemeId } from "@/components/app-shell/theme";
@@ -250,9 +251,11 @@ export type ShellDetailsView = {
 export type ShellSettingsView = {
   closeSettings(): void;
   dismissNotice(): void;
+  knowledge: KnowledgeLibraryView | null;
   library: AssistantLibraryView | null;
   notice: Notice | null;
   open(): void;
+  openKnowledge(): void;
   openLibrary(): void;
   openMcp(): void;
   settings: {

@@ -38,6 +38,7 @@ type CommandPaletteActionsInput = {
   activateChat(chat: ChatSummary): void;
   activateBlankWorkspace(folderId?: string | null): void;
   activeChatId: string | null;
+  assistantLibraryOpen: boolean;
   catalog: Catalog | null;
   chatGroups: ChatGroup[];
   chats: ChatSummary[];
@@ -45,6 +46,8 @@ type CommandPaletteActionsInput = {
   closePalette(): void;
   inspectorMode: InspectorMode;
   inspectorPinningAvailable: boolean;
+  knowledgeOpen: boolean;
+  openKnowledge(): void;
   openLibrary(): void;
   openSettings(): void;
   searchOptions: CatalogSearchStrategy[];
@@ -61,6 +64,7 @@ export function useCommandPaletteActions({
   activateChat,
   activateBlankWorkspace,
   activeChatId,
+  assistantLibraryOpen,
   catalog,
   chatGroups,
   chats,
@@ -68,6 +72,8 @@ export function useCommandPaletteActions({
   closePalette,
   inspectorMode,
   inspectorPinningAvailable,
+  knowledgeOpen,
+  openKnowledge,
   openLibrary,
   openSettings,
   searchOptions,
@@ -109,12 +115,20 @@ export function useCommandPaletteActions({
         subtitle: "Settings"
       },
       {
-        current: false,
+        current: assistantLibraryOpen,
         id: "action:open-library",
         kind: "action",
         keywords: ["library", "assistants", "assistant", "use an assistant"],
         label: "Open assistants",
         subtitle: "Reusable run setups"
+      },
+      {
+        current: knowledgeOpen,
+        id: "action:open-knowledge",
+        kind: "action",
+        keywords: ["knowledge", "bases", "documents", "retrieval", "library"],
+        label: "Open Knowledge",
+        subtitle: "Retrieval bases and documents"
       }
     );
 
@@ -179,13 +193,15 @@ export function useCommandPaletteActions({
     return items;
   }, [
     activeChatId,
+    assistantLibraryOpen,
     catalog,
     chatGroups,
     inspectorMode,
     inspectorPinningAvailable,
+    knowledgeOpen,
     searchOptions,
     selectedModelId,
-      selectedProvider,
+    selectedProvider,
     selectedSearchStrategy,
     settingsOpen,
     workspaceReady
@@ -242,6 +258,12 @@ export function useCommandPaletteActions({
     if (item.id === "action:open-library") {
       closePalette();
       window.setTimeout(openLibrary, 0);
+      return;
+    }
+
+    if (item.id === "action:open-knowledge") {
+      closePalette();
+      window.setTimeout(openKnowledge, 0);
       return;
     }
 

@@ -13,6 +13,7 @@ import type {
 } from "./powerAppShellViewContracts";
 import type { ShellLeftPaneProps } from "./ShellLeftPane";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
+import type { KnowledgeLibraryView } from "@/components/knowledge/libraryViewContracts";
 import type { ChatSummary, FolderSummary, InspectorMode, ThreadMessage } from "./types";
 import { AIQSA_WORKSPACE_RAIL_STORAGE_KEY } from "./shellStorage";
 import {
@@ -63,6 +64,10 @@ vi.mock("@/components/app-shell/McpSettingsSection", () => ({
 
 vi.mock("@/components/assistants/AssistantLibrary", () => ({
   AssistantLibrary: () => <section data-testid="assistant-library">Assistant library</section>
+}));
+
+vi.mock("@/components/knowledge/KnowledgeLibrary", () => ({
+  KnowledgeLibrary: () => <section data-testid="knowledge-library">Knowledge library</section>
 }));
 
 vi.mock("@/components/app-shell/ShellLeftPane", () => ({
@@ -313,9 +318,11 @@ function baseProps(): PowerAppShellViewProps {
     settings: {
       closeSettings: noop,
       dismissNotice: noop,
+      knowledge: null,
       library: null,
       notice: null,
       open: noop,
+      openKnowledge: noop,
       openLibrary: noop,
       openMcp: noop,
       settings: {
@@ -437,6 +444,14 @@ const detailsTestMessage: ThreadMessage = {
  */
 function minimalLibraryView(): AssistantLibraryView {
   return { close: vi.fn() } as unknown as AssistantLibraryView;
+}
+
+/**
+ * KnowledgeLibrary is mocked in this file; the shell only needs a non-null
+ * view value to route to the standalone Knowledge surface.
+ */
+function minimalKnowledgeView(): KnowledgeLibraryView {
+  return { onBackToChat: vi.fn() } as unknown as KnowledgeLibraryView;
 }
 
 function StatefulView({
@@ -670,6 +685,17 @@ describe("PowerAppShellView document title", () => {
       />
     );
     await waitFor(() => expect(document.title).toBe("Assistants · AIQSA"));
+
+    rerender(
+      <PowerAppShellView
+        {...props}
+        settings={{
+          ...props.settings,
+          knowledge: minimalKnowledgeView()
+        }}
+      />
+    );
+    await waitFor(() => expect(document.title).toBe("Knowledge · AIQSA"));
 
     rerender(
       <PowerAppShellView
@@ -1266,6 +1292,33 @@ describe("PowerAppShellView Details composition", () => {
     expect(screen.getByTestId("assistant-library")).toBeVisible();
     expect(screen.queryByTestId("settings-dialog")).not.toBeInTheDocument();
     expect(screen.queryByTestId("settings-notice-region")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("shell-notice-layer")).not.toBeInTheDocument();
+  });
+
+  it("renders the Knowledge surface standalone and suppresses competing shell overlays", () => {
+    const props = baseProps();
+    render(
+      <PowerAppShellView
+        {...props}
+        session={{
+          ...props.session,
+          notice: { kind: "success", text: "Copied" }
+        }}
+        settings={{
+          ...props.settings,
+          knowledge: minimalKnowledgeView(),
+          library: minimalLibraryView(),
+          settings: { ...props.settings.settings, open: true, section: "appearance" }
+        }}
+      />
+    );
+
+    const primaryContent = screen.getByTestId("shell-primary-content");
+    expect(primaryContent).toHaveAttribute("inert");
+    expect(primaryContent).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByTestId("knowledge-library")).toBeVisible();
+    expect(screen.queryByTestId("assistant-library")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-dialog")).not.toBeInTheDocument();
     expect(screen.queryByTestId("shell-notice-layer")).not.toBeInTheDocument();
   });
 

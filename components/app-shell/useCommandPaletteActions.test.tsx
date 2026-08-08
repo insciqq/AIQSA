@@ -3,9 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import type { Catalog, ChatSummary, InspectorMode } from "./types";
 import { useCommandPaletteActions } from "./useCommandPaletteActions";
 
-function renderActions(mode: InspectorMode, pinningAvailable = false, workspaceReady = true) {
+function renderActions(
+  mode: InspectorMode,
+  pinningAvailable = false,
+  workspaceReady = true,
+  surface: "assistants" | "knowledge" | "settings" | null = null
+) {
   const setInspectorMode = vi.fn();
   const closePalette = vi.fn();
+  const openKnowledge = vi.fn();
   const openLibrary = vi.fn();
   const openSettings = vi.fn();
   const { result } = renderHook(() =>
@@ -13,6 +19,7 @@ function renderActions(mode: InspectorMode, pinningAvailable = false, workspaceR
       activateChat: vi.fn(),
       activateBlankWorkspace: vi.fn(),
       activeChatId: null,
+      assistantLibraryOpen: surface === "assistants",
       catalog: null,
       chatGroups: [],
       chats: [],
@@ -20,6 +27,8 @@ function renderActions(mode: InspectorMode, pinningAvailable = false, workspaceR
       closePalette,
       inspectorMode: mode,
       inspectorPinningAvailable: pinningAvailable,
+      knowledgeOpen: surface === "knowledge",
+      openKnowledge,
       openLibrary,
       openSettings,
       searchOptions: [],
@@ -28,12 +37,12 @@ function renderActions(mode: InspectorMode, pinningAvailable = false, workspaceR
       selectedModelId: "test-model",
       selectedProvider: "test-provider",
       selectedSearchStrategy: "search-disabled",
-      settingsOpen: false,
+      settingsOpen: surface === "settings",
       workspaceReady
     })
   );
 
-  return { closePalette, openLibrary, openSettings, result, setInspectorMode };
+  return { closePalette, openKnowledge, openLibrary, openSettings, result, setInspectorMode };
 }
 
 describe("useCommandPaletteActions", () => {
@@ -88,6 +97,17 @@ describe("useCommandPaletteActions", () => {
     expect(renderActions("closed").result.current.commandItems).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: "action:new-chat" })])
     );
+  });
+
+  it.each([
+    ["assistants", "action:open-library"],
+    ["knowledge", "action:open-knowledge"],
+    ["settings", "action:open-settings"]
+  ] as const)("marks only the active %s workspace destination current", (surface, currentId) => {
+    const current = renderActions("closed", false, true, surface).result.current.commandItems
+      .filter((item) => item.current && item.id.startsWith("action:open-"))
+      .map((item) => item.id);
+    expect(current).toEqual([currentId]);
   });
 
   it("builds and dispatches every searchable category with readable non-id subtitles", async () => {
@@ -156,6 +176,7 @@ describe("useCommandPaletteActions", () => {
     const activateChat = vi.fn();
     const selectModel = vi.fn();
     const openLibrary = vi.fn();
+    const openKnowledge = vi.fn();
     const selectSearchStrategy = vi.fn();
     const closePalette = vi.fn();
     const { result } = renderHook(() =>
@@ -163,6 +184,7 @@ describe("useCommandPaletteActions", () => {
         activateChat,
         activateBlankWorkspace: vi.fn(),
         activeChatId: chat.id,
+        assistantLibraryOpen: false,
         catalog,
         chatGroups: [{ chats: [chat], depth: 0, folder: null, name: "No folder" }],
         chats: [chat],
@@ -170,6 +192,8 @@ describe("useCommandPaletteActions", () => {
         closePalette,
         inspectorMode: "closed",
         inspectorPinningAvailable: false,
+        knowledgeOpen: false,
+        openKnowledge,
         openLibrary,
         openSettings: vi.fn(),
         searchOptions: catalog.searchStrategies,
@@ -217,5 +241,14 @@ describe("useCommandPaletteActions", () => {
     expect(closePalette).toHaveBeenCalledTimes(4);
     expect(openLibrary).not.toHaveBeenCalled();
     await waitFor(() => expect(openLibrary).toHaveBeenCalledOnce());
+
+    const knowledgeCommand = result.current.commandItems.find(
+      (item) => item.id === "action:open-knowledge"
+    );
+    expect(knowledgeCommand?.label).toBe("Open Knowledge");
+    act(() => result.current.runCommand(knowledgeCommand!));
+    expect(closePalette).toHaveBeenCalledTimes(5);
+    expect(openKnowledge).not.toHaveBeenCalled();
+    await waitFor(() => expect(openKnowledge).toHaveBeenCalledOnce());
   });
 });

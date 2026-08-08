@@ -37,6 +37,11 @@ import {
   readRecentAssistantIds
 } from "@/components/app-shell/assistantLibraryController";
 import { useAssistantLibraryStore } from "@/components/app-shell/assistantLibraryStore";
+import {
+  buildKnowledgeLibraryView,
+  createKnowledgeLibraryActions
+} from "@/components/app-shell/knowledgeLibraryController";
+import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import { consumeMcpOAuthReturn, refreshMcpSettings } from "@/components/app-shell/mcpSettingsStore";
 import { useRunControlsActions } from "@/components/app-shell/runControlsActions";
@@ -214,6 +219,7 @@ export function PowerAppShell({
   const openGeneralSettings = useSettingsDestinationStore((state) => state.openSettings);
   const closeGeneralSettings = useSettingsDestinationStore((state) => state.closeSettings);
   const librarySnapshot = useAssistantLibraryStore();
+  const knowledgeSnapshot = useKnowledgeLibraryStore();
   const appearance = useShellAppearanceController();
   const {
     activeTab: inspectorActiveTab,
@@ -233,7 +239,7 @@ export function PowerAppShell({
     },
     blockers: {
       projectSettingsOpen: Boolean(projectSettingsFolderId),
-      settingsOpen: settingsOpen || librarySnapshot.open
+      settingsOpen: settingsOpen || librarySnapshot.open || knowledgeSnapshot.open
     },
     onMobileWorkspaceClosed: workspaceInteraction.mobileWorkspaceClosed
   });
@@ -614,6 +620,15 @@ export function PowerAppShell({
     retryCatalog: () => void retryCatalog(),
     setShellNotice: setNotice
   });
+  const knowledgeLibraryActions = createKnowledgeLibraryActions();
+  const openAssistantLibrary = () => {
+    knowledgeLibraryActions.closeLibrary();
+    assistantLibraryActions.openLibrary("discover");
+  };
+  const openKnowledgeLibrary = () => {
+    assistantLibraryActions.closeLibrary();
+    knowledgeLibraryActions.openLibrary();
+  };
   const [assistantPickerOpen, setAssistantPickerOpen] = useState(false);
   const [recentAssistantIds, setRecentAssistantIds] = useState<string[]>([]);
   const setAssistantPickerOpenEvent = useEventCallback((open: boolean) => {
@@ -686,6 +701,7 @@ export function PowerAppShell({
     activateChat,
     activateBlankWorkspace,
     activeChatId,
+    assistantLibraryOpen: librarySnapshot.open,
     catalog,
     chatGroups: commandChatGroups,
     chats,
@@ -693,7 +709,9 @@ export function PowerAppShell({
     closePalette: shellOverlays.palette.close,
     inspectorMode,
     inspectorPinningAvailable,
-    openLibrary: () => assistantLibraryActions.openLibrary("discover"),
+    knowledgeOpen: knowledgeSnapshot.open,
+    openKnowledge: openKnowledgeLibrary,
+    openLibrary: openAssistantLibrary,
     openSettings: openGeneralSettings,
     searchOptions,
     selectModel,
@@ -701,7 +719,7 @@ export function PowerAppShell({
     selectedModelId,
     selectedProvider,
     selectedSearchStrategy,
-    settingsOpen: settingsOpen || librarySnapshot.open,
+    settingsOpen,
     workspaceReady
   });
 
@@ -924,7 +942,7 @@ export function PowerAppShell({
     composerActions,
     assistant: {
       clearRemovedNotice: () => useComposerControlStore.getState().clearAssistantRemovedNotice(),
-      openLibrary: () => assistantLibraryActions.openLibrary("discover"),
+      openLibrary: openAssistantLibrary,
       openPicker: assistantPickerOpen,
       pickerItems: librarySnapshot.data?.assistants ?? [],
       pickerLoading: librarySnapshot.dataState === "loading" && !librarySnapshot.data,
@@ -1003,6 +1021,7 @@ export function PowerAppShell({
   const settingsView = {
     closeSettings: closeGeneralSettings,
     dismissNotice: () => setSettingsNotice(null),
+    knowledge: buildKnowledgeLibraryView(knowledgeLibraryActions, knowledgeSnapshot),
     library: buildAssistantLibraryView(
       {
         activateBlankWorkspace: () => activateBlankWorkspaceEvent(),
@@ -1017,7 +1036,8 @@ export function PowerAppShell({
     ),
     notice: settingsNotice,
     open: openGeneralSettings,
-    openLibrary: () => assistantLibraryActions.openLibrary("discover"),
+    openKnowledge: openKnowledgeLibrary,
+    openLibrary: openAssistantLibrary,
     openMcp: openMcpSettings,
     settings: {
       open: settingsOpen,

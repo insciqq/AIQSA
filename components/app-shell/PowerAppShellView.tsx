@@ -21,6 +21,7 @@ import type {
 import { ProjectSettingsDialog } from "@/components/app-shell/ProjectSettingsDialog";
 import { ShareDialog } from "@/components/app-shell/ShareDialog";
 import { AssistantLibrary } from "@/components/assistants/AssistantLibrary";
+import { KnowledgeLibrary } from "@/components/knowledge/KnowledgeLibrary";
 import { SettingsDialog } from "@/components/app-shell/SettingsDialog";
 import { ShellLeftPane } from "@/components/app-shell/ShellLeftPane";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
@@ -126,6 +127,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     message: deleteMessageConfirmation
   } = confirmations;
   const {
+    knowledge: knowledgeView,
     library: libraryView,
     notice: settingsNotice,
     settings: settingsState,
@@ -218,6 +220,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const desktopPaneAccountButtonRef = useRef<HTMLButtonElement>(null);
   const desktopRailAccountButtonRef = useRef<HTMLButtonElement>(null);
   const desktopRailAssistantsButtonRef = useRef<HTMLButtonElement>(null);
+  const desktopRailKnowledgeButtonRef = useRef<HTMLButtonElement>(null);
   const desktopRailSettingsButtonRef = useRef<HTMLButtonElement>(null);
   const desktopWorkspaceToggleRef = useRef<HTMLButtonElement>(null);
   const mobileAccountButtonRef = useRef<HTMLButtonElement>(null);
@@ -357,7 +360,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         return originFor(accountTrigger);
       }
 
-      if (settingsState.open || libraryView) {
+      if (settingsState.open || libraryView || knowledgeView) {
         return originFor(overlayDesktopOpenerRef.current);
       }
       return null;
@@ -368,7 +371,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         const origin = activeDesktopOrigin();
         const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         const overlayOwnsFocus = Boolean(
-          activeElement?.closest('[data-testid="settings-dialog"], [data-testid="assistant-library"]')
+          activeElement?.closest('[data-testid="settings-dialog"], [data-testid="assistant-library"], [data-testid="knowledge-library"]')
         );
         if (origin) {
           responsiveNavigationOriginRef.current = origin;
@@ -377,7 +380,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         if (desktopAccountAnchor) {
           setDesktopAccountAnchor(null);
         }
-        if (origin && !overlayOwnsFocus && !settingsState.open && !libraryView) {
+        if (origin && !overlayOwnsFocus && !settingsState.open && !libraryView && !knowledgeView) {
           window.setTimeout(() => mobileWorkspaceButtonRef.current?.focus({ preventScroll: true }), 0);
         }
         return;
@@ -393,7 +396,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         (responsiveNavigationTransferActive &&
           (activeElement === document.body || activeElement === document.documentElement));
       if (!compactFallbackStillOwnsFocus) {
-        if (!settingsState.open && !libraryView) {
+        if (!settingsState.open && !libraryView && !knowledgeView) {
           responsiveNavigationOriginRef.current = null;
           setResponsiveNavigationTransferActive(false);
         }
@@ -420,6 +423,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     return () => desktopViewport.removeEventListener("change", preserveNavigationFocusAcrossBreakpoint);
   }, [
     desktopAccountAnchor,
+    knowledgeView,
     libraryView,
     responsiveNavigationTransferActive,
     settingsState.open,
@@ -434,7 +438,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       const target = event.target instanceof HTMLElement ? event.target : null;
       if (
         target === mobileWorkspaceButtonRef.current ||
-        target?.closest('[data-testid="settings-dialog"], [data-testid="assistant-library"]')
+        target?.closest('[data-testid="settings-dialog"], [data-testid="assistant-library"], [data-testid="knowledge-library"]')
       ) {
         return;
       }
@@ -485,6 +489,11 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     closeMobileWorkspaceEvent();
     window.setTimeout(settings.openLibrary, 0);
   });
+  const openKnowledgeFromMobileAccount = useEventCallback(() => {
+    overlayDesktopOpenerRef.current = null;
+    closeMobileWorkspaceEvent();
+    window.setTimeout(settings.openKnowledge, 0);
+  });
   const openSettingsFromMobileAccount = useEventCallback(() => {
     overlayDesktopOpenerRef.current = null;
     closeMobileWorkspaceEvent();
@@ -507,6 +516,12 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       : desktopPaneAccountButtonRef.current;
     settings.openLibrary();
   });
+  const openKnowledgeFromDesktopAccount = useEventCallback(() => {
+    overlayDesktopOpenerRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : desktopPaneAccountButtonRef.current;
+    settings.openKnowledge();
+  });
   const openSettingsFromDesktopAccount = useEventCallback(() => {
     overlayDesktopOpenerRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -518,6 +533,12 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     overlayDesktopOpenerRef.current = desktopRailAssistantsButtonRef.current;
     setDesktopAccountAnchor(null);
     settings.openLibrary();
+  });
+  const openKnowledgeFromRail = useEventCallback(() => {
+    desktopRailKnowledgeButtonRef.current?.focus({ preventScroll: true });
+    overlayDesktopOpenerRef.current = desktopRailKnowledgeButtonRef.current;
+    setDesktopAccountAnchor(null);
+    settings.openKnowledge();
   });
   const openSettingsFromRail = useEventCallback(() => {
     desktopRailSettingsButtonRef.current?.focus({ preventScroll: true });
@@ -576,6 +597,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
             initialFocus={mobileAccountInitialFocus}
             menuId="mobile-account-menu"
             onClose={() => setMobileAccountMenuOpen(false)}
+            onOpenKnowledge={openKnowledgeFromMobileAccount}
             onOpenLibrary={openLibraryFromMobileAccount}
             onOpenPalette={openPaletteFromMobileAccount}
             onOpenSettings={openSettingsFromMobileAccount}
@@ -593,6 +615,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       handleSignOut,
       mobileAccountInitialFocus,
       mobileAccountMenuOpen,
+      openKnowledgeFromMobileAccount,
       openPaletteFromMobileAccount,
       openLibraryFromMobileAccount,
       openSettingsFromMobileAccount,
@@ -632,6 +655,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     Boolean(share.target) ||
     settingsState.open ||
     Boolean(libraryView) ||
+    Boolean(knowledgeView) ||
     palette.open ||
     Boolean(deleteChatConfirmation) ||
     Boolean(deleteFolderConfirmation) ||
@@ -641,11 +665,13 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     : workspace.pane.state.workspaceLoading
       ? "Chat"
       : "New chat";
-  const documentTitle = libraryView
-    ? "Assistants · AIQSA"
-    : settingsState.open
-      ? "Settings · AIQSA"
-      : `${activeDocumentTitle} · AIQSA`;
+  const documentTitle = knowledgeView
+    ? "Knowledge · AIQSA"
+    : libraryView
+      ? "Assistants · AIQSA"
+      : settingsState.open
+        ? "Settings · AIQSA"
+        : `${activeDocumentTitle} · AIQSA`;
   useEffect(() => {
     document.title = documentTitle;
   }, [documentTitle]);
@@ -747,9 +773,11 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               chatsRef={workspaceChatsButtonRef}
               controlCenterRef={workspaceControlCenterRef}
               creatingChat={workspace.pane.state.creatingChat}
+              knowledgeRef={desktopRailKnowledgeButtonRef}
               newChatRef={workspaceNewChatButtonRef}
               onNewChat={() => void workspace.pane.actions.createChat()}
               onOpenAssistants={openLibraryFromRail}
+              onOpenKnowledge={openKnowledgeFromRail}
               onOpenSettings={openSettingsFromRail}
               onRestoreChats={showWorkspacePane}
               paneHidden={workspacePaneHidden}
@@ -861,6 +889,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
           initialFocus={desktopAccountInitialFocus}
           menuId="account-menu"
           onClose={() => setDesktopAccountAnchor(null)}
+          onOpenKnowledge={openKnowledgeFromDesktopAccount}
           onOpenLibrary={openLibraryFromDesktopAccount}
           onOpenPalette={openPaletteFromDesktopAccount}
           onOpenSettings={openSettingsFromDesktopAccount}
@@ -871,7 +900,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         />
       ) : null}
 
-      {shellNotice && !shellNotice.persistent && !settingsState.open && !libraryView ? (
+      {shellNotice && !shellNotice.persistent && !settingsState.open && !libraryView && !knowledgeView ? (
         <div
           className="pointer-events-none absolute inset-x-3 top-32 z-[70] flex justify-center sm:top-16"
           data-testid="shell-notice-layer"
@@ -976,11 +1005,15 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         />
       ) : null}
 
-      {libraryView ? (
+      {libraryView && !knowledgeView ? (
         <AssistantLibrary restoreFocus={responsiveOverlayRestoreFocus} view={libraryView} />
       ) : null}
 
-      {settingsState.open && !libraryView ? (
+      {knowledgeView ? (
+        <KnowledgeLibrary restoreFocus={responsiveOverlayRestoreFocus} view={knowledgeView} />
+      ) : null}
+
+      {settingsState.open && !libraryView && !knowledgeView ? (
         <SettingsDialog
           initialSection={settingsState.section}
           notice={settingsNotice}

@@ -1,12 +1,12 @@
-# FRONTEND SETTINGS AND ASSISTANTS
+# FRONTEND SETTINGS, ASSISTANTS, AND KNOWLEDGE
 
 Owner: Account and Control Center UI maintainers
-Scope: Settings, MCP tools, Assistant discovery/editing/publication, focus, appearance, and project-setting interaction contracts.
-Read when: Changing Settings, user MCP tools, Assistants surfaces, Assistant editing/publication, focus, appearance, or project settings.
-Code owners: Settings and Assistant components, routes, stores, and client-side reconciliation.
-Not owned here: Server Assistant authorization, Control Center administration, authentication, public sharing, or visual recipes.
+Scope: Settings, MCP tools, Assistant and Knowledge resource management/publication, focus, appearance, and project-setting interaction contracts.
+Read when: Changing Settings, user MCP tools, Assistants or Knowledge surfaces, resource publication, focus, appearance, or project settings.
+Code owners: Settings, Assistant, and Knowledge components, routes, stores, and client-side reconciliation.
+Not owned here: Server resource authorization/retrieval, Control Center administration, authentication, public sharing, or visual recipes.
 
-## Settings And Assistants
+## Settings, Assistants, And Knowledge
 
 ### Settings and MCP tools
 
@@ -25,9 +25,19 @@ Not owned here: Server Assistant authorization, Control Center administration, a
 - Sharing pins exact revisions: any active user may publish an owned Assistant to groups with active membership, installation-wide publication is admin-curated, saving never advances a publication, `Publish update` moves it explicitly, and revoke neither archives the Assistant nor changes accepted runs. Version history is read-only with author, time, and changed sections; Restore creates a new revision from old content and never rewrites history.
 - Loading, resource failure, no matches, and a true empty library are distinct. Editor validation attaches to its field with the stable server code; a CAS conflict reports that the Assistant changed in another session. Mutation failure preserves the list and dirty draft with readable retry/dismiss feedback.
 
+### Knowledge
+
+- Knowledge is an authenticated full-screen base and document management surface reached from the desktop icon rail, Account, or the Command palette alongside Assistants. It has one explicit Back to chat exit, no backdrop dismissal, and Active/Yours/Shared/Archived list filters plus text search. Owned bases expose lifecycle actions; shared bases are read-only and receive only the server-projected identity and retrieval-safe metadata, never a private indexing deployment.
+- Creating a base requires its name and one entitled indexing deployment. Before creation, the surface names the exact embedding connection/model and explains that document text leaves the chat-run boundary for indexing and will be sent again on reindex. Missing eligible deployment access is a blocked state, never an inferred fallback.
+- Drag/drop and file selection share one multi-file upload owner. Each document exposes its current file/version and the truthful queued, parsing, chunking, embedding, ready, or failed state; known totals render exact embedded/total chunk counts and no manufactured percentage. Retry addresses the failed current version, replacement creates a new current version, and removal closes current visibility while explicitly retaining immutable historical version identity and accepted-run evidence. Version history is metadata/status only; no document reader is implied.
+- Base name/description drafts use optimistic-version/CAS save and dirty-exit confirmation. Background status refresh may advance ingestion and reindex projections but cannot overwrite a dirty base draft. Archive removes the base from active selection without deleting its documents or history; Restore reverses that lifecycle state.
+- Reindex chooses only an entitled embedding deployment and repeats the egress disclosure. The UI reports shadow-generation state, exact completed/failed/total document counts, target content revision, and stable failure code; `ready` means the server is finalizing the generation switch until the active generation projection actually changes.
+- Publication grants the selected group or installation live current-and-future access. Revoke stops future run admission while accepted runs retain frozen evidence. Current publications remain explicit and independently revocable; publishing does not grant hidden provider, model, Search, MCP, or private-base access beyond the server-authorized base projection.
+- Initial load failure, mutation failure, no matches, and a true empty library remain distinct. Background refresh failure preserves the last useful projection; client decoders reject malformed projections before store mutation, stale requests cannot replace newer navigation/drafts, and readable stable error text never exposes a raw server message.
+
 ### Focus, appearance, and project settings
 
-- Settings uses dialog focus containment, Escape/backdrop close, opener restoration, and an inert shell. Assistants exits only through Back to chat and keeps the covered shell inert without a scrim. Both capture the exact direct-rail or Account invoker; if a responsive crossing hides that desktop-navigation opener, exit uses visible compact `Open workspace` and conditionally returns to the remembered desktop source under the shell focus-transfer rule. Nested confirmations own focus/Escape before returning to their surviving invoker.
+- Settings uses dialog focus containment, Escape/backdrop close, opener restoration, and an inert shell. Assistants and Knowledge exit only through Back to chat and keep the covered shell inert without a scrim. Each captures the exact direct-rail or Account invoker; if a responsive crossing hides that desktop-navigation opener, exit uses visible compact `Open workspace` and conditionally returns to the remembered desktop source under the shell focus-transfer rule. Nested confirmations own focus/Escape before returning to their surviving invoker.
 - Appearance presents the palette registry in stable order: AIQSA, Graphite, Verdant, Classic Dark, Classic Light, Paper. It is a calm divided comparison list at every width. Selection applies immediately.
 - Appearance selection delegates to the browser-local theme owner in
   [frontend implementation state](../IMPLEMENTATION_STATE.md); Settings neither

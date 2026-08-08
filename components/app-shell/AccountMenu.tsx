@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Command, LogOut, ScrollText, Settings, Shield, UserRound } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronUp, Command, LogOut, ScrollText, Settings, Shield, UserRound } from "lucide-react";
 import {
   forwardRef,
   useEffect,
@@ -127,6 +127,7 @@ export type AccountMenuProps = {
   initialFocus?: AccountMenuInitialFocus;
   menuId: string;
   onClose(): void;
+  onOpenKnowledge(): void;
   onOpenLibrary(): void;
   onOpenPalette(): void;
   onOpenSettings(): void;
@@ -153,6 +154,7 @@ export function AccountMenu({
   initialFocus = "first",
   menuId,
   onClose,
+  onOpenKnowledge,
   onOpenLibrary,
   onOpenPalette,
   onOpenSettings,
@@ -320,6 +322,16 @@ export function AccountMenu({
         >
           <ScrollText className="size-4 text-ink-muted" aria-hidden="true" />
           Assistants
+        </button>
+        <button
+          className={menuItemClass}
+          type="button"
+          role="menuitem"
+          disabled={signingOut}
+          onClick={() => replaceMenuWith(onOpenKnowledge)}
+        >
+          <BookOpen className="size-4 text-ink-muted" aria-hidden="true" />
+          Knowledge
         </button>
         <button
           className={menuItemClass}

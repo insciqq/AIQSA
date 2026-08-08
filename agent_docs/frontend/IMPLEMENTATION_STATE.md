@@ -16,6 +16,7 @@ This document is a semantic ownership map, not a file inventory. Exact modules r
 | Shell actions/controllers | focused app-shell action and controller modules | Async mutation coordination, navigation/focus lifetimes, reconciliation, and semantic feature ports. |
 | Conversation presentation | app-shell and `components/chat/` leaves | Thread rows, artifacts, receipts, Markdown, composer, Details, rails, menus, and dialogs. |
 | Account and public share | `components/auth/` and `components/share/` | Mode-driven authentication and sanitized anonymous read-only rendering. |
+| Reusable resource workspaces | `components/assistants/` and `components/knowledge/` plus focused app-shell stores/controllers | Full-screen Assistant and Knowledge list/detail workflows, decoded API projections, lifecycle mutations, and navigation-safe reconciliation. |
 | Control Center | `components/admin/` | Administrator shell, resource controllers, index/detail tasks, write-only configuration UI, and decoded admin API clients. |
 | Resource availability | `components/resource-lifecycle/` | Neutral shared Enabled/Disabled presentation and restoration-action tone across app and admin features. |
 | Theme | app-shell theme owner plus root layout | Browser-local palette registry, cookie-backed first paint, and synchronized theme/color-scheme attributes. |
@@ -35,7 +36,7 @@ Server-backed state includes:
 - the effective personal-or-installation model-default source, saved Search preferences, presentation toggles, and per-model run-control drafts;
 - lightweight chat summaries, nested folders/projects, and project instructions;
 - lazily loaded keyed thread snapshots with messages, branch state, usage, and safe artifacts;
-- Assistant summaries, details, revisions, publications, and per-user pins plus current-user MCP catalog/readiness;
+- Assistant summaries, details, revisions, publications, and per-user pins; Knowledge base summaries/details, document-version ingestion status, reindex progress, publication projections, and entitled embedding choices; plus current-user MCP catalog/readiness;
 - persisted model-run inspection and usage evidence.
 
 Exact response decoders run before store mutation. Workspace summaries contain no messages or usage graph, even if a future server response carries unknown fields. Thread data enters only the thread owner; run inspection enters only the run-surface owner.
@@ -45,7 +46,7 @@ Exact response decoders run before store mutation. Workspace summaries contain n
 Browser-local state includes:
 
 - auth drafts and the bounded tab-scoped text-only re-authentication handoff;
-- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, browser-local persistent wide Workspace-pane visibility under the legacy `aiqsa.workspaceRail` key, and focus restoration;
+- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, Assistant/Knowledge surface navigation and dirty resource drafts, browser-local persistent wide Workspace-pane visibility under the legacy `aiqsa.workspaceRail` key, and focus restoration;
 - keyed composer drafts, edit intent, staged attachments, async operation tokens, and local feedback;
 - foreground text buffering and controller ownership;
 - manual Details mode/tab, folder collapse, local notices, and theme choice.
@@ -95,9 +96,11 @@ owns the visible action and branch outcome.
 
 Foreground token deltas are buffered for React updates and adjacent event aggregation. Historical rows, Markdown/artifacts, and workspace summaries do not repaint for token-only changes. Malformed SSE frames are skipped, later frames continue, and one readable warning appears in the UI/Details.
 
-### Assistants, Settings, and MCP workflows
+### Assistants, Knowledge, Settings, and MCP workflows
 
 `settingsDestinationStore` owns the bounded Settings destination (Appearance, MCP & tools). The Assistants surface owns its own focused state: `assistantLibraryStore` holds the open full-screen task (list, editor, history), Discover/Yours mode, filter/category/query, fetched list data, and editor/history drafts, while `assistantLibraryController` owns every surface mutation (create, revise with CAS, archive/restore, duplicate, publish/revoke, pin, restore-as-new-revision) and `Use` application into the composer owner. Editor avatar generation happens exactly once per new draft plus once per explicit `Generate another`, entirely in the browser. Current-composer Assistant selection remains with composer controls; the surface never mutates next-run state except through the atomic apply/remove actions.
+
+Knowledge follows the same focused-owner boundary without sharing Assistant or composer state. `knowledgeLibraryStore` owns its open list/create/detail task, filter/query, decoded list/detail/ingestion projections, dirty drafts, action identity, and bounded notice; `knowledgeLibraryController` owns loading, CAS save, sequential multi-file upload, retry/replace/remove, archive/restore, reindex, publish/revoke, and stale-response fencing. Lifecycle polling refreshes only transient work, preserves the last useful projection on background failure, and cannot replace a dirty base draft. The Knowledge management surface does not select next-run retrieval; composer binding and persisted run evidence remain with their dedicated run task and owners.
 
 MCP settings owns its coalesced catalog refresh, mutation replacement, OAuth outcome, readiness polling, and last ready/error presentation. Personal input values remain leaf-local and write-only. Background reads do not flash an empty catalog over last-known useful state.
 

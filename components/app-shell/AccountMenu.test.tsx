@@ -12,6 +12,7 @@ import {
 type HarnessProps = {
   accountEmail?: string | null;
   adminHref?: string | null;
+  onOpenKnowledge?(): void;
   onOpenLibrary?(): void;
   onOpenPalette?(): void;
   onOpenSettings?(): void;
@@ -23,6 +24,7 @@ type HarnessProps = {
 function DesktopAccountHarness({
   accountEmail = "operator@aiqsa.local",
   adminHref = null,
+  onOpenKnowledge = () => undefined,
   onOpenLibrary = () => undefined,
   onOpenPalette = () => undefined,
   onOpenSettings = () => undefined,
@@ -75,6 +77,7 @@ function DesktopAccountHarness({
           initialFocus={initialFocus}
           menuId="account-menu"
           onClose={() => setAnchor(null)}
+          onOpenKnowledge={onOpenKnowledge}
           onOpenLibrary={onOpenLibrary}
           onOpenPalette={onOpenPalette}
           onOpenSettings={onOpenSettings}
@@ -117,6 +120,7 @@ function MobileAccountHarness({ signingOut = false }: { signingOut?: boolean }) 
           initialFocus={initialFocus}
           menuId="mobile-account-menu"
           onClose={() => setOpen(false)}
+          onOpenKnowledge={() => undefined}
           onOpenLibrary={() => undefined}
           onOpenPalette={() => undefined}
           onOpenSettings={() => undefined}
@@ -178,10 +182,12 @@ describe("AccountMenu", () => {
 
   it("runs replacement destinations from the invoking trigger and closes the menu", async () => {
     const onOpenLibrary = vi.fn();
+    const onOpenKnowledge = vi.fn();
     const onOpenPalette = vi.fn();
     const onOpenSettings = vi.fn();
     render(
       <DesktopAccountHarness
+        onOpenKnowledge={onOpenKnowledge}
         onOpenLibrary={onOpenLibrary}
         onOpenPalette={onOpenPalette}
         onOpenSettings={onOpenSettings}
@@ -198,6 +204,10 @@ describe("AccountMenu", () => {
     fireEvent.click(railTrigger);
     fireEvent.click(screen.getByRole("menuitem", { name: "Assistants" }));
     await waitFor(() => expect(onOpenLibrary).toHaveBeenCalledOnce());
+
+    fireEvent.click(railTrigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Knowledge" }));
+    await waitFor(() => expect(onOpenKnowledge).toHaveBeenCalledOnce());
 
     fireEvent.click(railTrigger);
     fireEvent.click(screen.getByRole("menuitem", { name: "Command palette" }));

@@ -1,11 +1,75 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeKnowledgeBaseDetailResponse,
+  decodeKnowledgeBaseListResponse,
   decodeKnowledgeBaseCreate,
   decodeKnowledgeBasePublication,
   decodeKnowledgeBaseUpdate,
+  decodeKnowledgeDocumentMutationResponse,
+  decodeKnowledgeIngestionStatusResponse,
   decodeKnowledgePlan,
-  decodeKnowledgeReindex
+  decodeKnowledgeReindex,
+  decodeKnowledgeReindexResponse
 } from "./knowledge";
+
+function baseSummary() {
+  return {
+    activeGeneration: {
+      chunkingProfileVersion: 1,
+      embeddingDeployment: {
+        connectionDisplayName: "Embedding connection",
+        id: "embedding-1",
+        indexSupported: true,
+        modelDisplayName: "Embed model",
+        provider: "openai",
+        targetDimension: 1536
+      },
+      embeddingDeploymentId: "embedding-1",
+      id: "generation-1",
+      indexedContentRevision: 2,
+      targetDimension: 1536,
+      vectorSpaceFingerprint: "vector-space-1"
+    },
+    archived: false,
+    contentRevision: 2,
+    description: "Product references",
+    id: "base-1",
+    name: "Product docs",
+    owned: true,
+    ownerDisplayName: "Owner",
+    published: false,
+    scope: { kind: "owner" },
+    updatedAt: "2026-08-08T00:00:00.000Z",
+    version: 1
+  };
+}
+
+function documentStatus() {
+  return {
+    archived: false,
+    currentVersionId: "version-1",
+    id: "document-1",
+    versions: [{
+      byteSize: 12,
+      completedAt: "2026-08-08T00:01:00.000Z",
+      createdAt: "2026-08-08T00:00:00.000Z",
+      current: true,
+      embeddedChunks: 2,
+      errorCode: null,
+      fileName: "guide.md",
+      id: "version-1",
+      mimeType: "text/markdown",
+      pageCount: null,
+      payloadAvailable: true,
+      state: "ready",
+      totalChunks: 2,
+      updatedAt: "2026-08-08T00:01:00.000Z",
+      versionNumber: 1,
+      visibleFromRevision: 2,
+      visibleUntilRevision: null
+    }]
+  };
+}
 
 describe("Knowledge Base contracts", () => {
   it("decodes an ordered three-base plan and keeps absent input backward-compatible with Off", () => {
@@ -92,5 +156,122 @@ describe("Knowledge Base contracts", () => {
     expect(decodeKnowledgeReindex({ embeddingDeploymentId: "embedding 2" })).toMatchObject({ ok: false });
     expect(decodeKnowledgeReindex({ embeddingDeploymentId: "embedding-2", userId: "other" }))
       .toMatchObject({ ok: false });
+  });
+
+  it("decodes list and owner detail projections for the browser", () => {
+    const summary = baseSummary();
+    expect(decodeKnowledgeBaseListResponse({
+      embeddingDeployments: [summary.activeGeneration.embeddingDeployment],
+      knowledgeBases: [summary],
+      publishableGroups: [{ id: "group-1", name: "Product" }],
+      viewer: { canPublishInstallation: true }
+    })).toMatchObject({
+      knowledgeBases: [{ id: "base-1", name: "Product docs" }],
+      viewer: { canPublishInstallation: true }
+    });
+    expect(decodeKnowledgeBaseDetailResponse({
+      knowledgeBase: {
+        ...summary,
+        documentCount: 1,
+        published: true,
+        publications: [{
+          groupId: "group-1",
+          groupName: "Product",
+          id: "publication-1",
+          scope: "group",
+          updatedAt: "2026-08-08T00:02:00.000Z"
+        }]
+      }
+    })).toMatchObject({ knowledgeBase: { documentCount: 1, id: "base-1" } });
+  });
+
+  it("decodes document lifecycle and reindex projections", () => {
+    const document = documentStatus();
+    expect(decodeKnowledgeIngestionStatusResponse({
+      documents: [document],
+      owned: true,
+      reindex: {
+        completedDocuments: 1,
+        createdAt: "2026-08-08T00:00:00.000Z",
+        errorCode: null,
+        failedDocuments: 0,
+        generationId: "generation-2",
+        status: "building",
+        targetContentRevision: 2,
+        totalDocuments: 1
+      }
+    })).toMatchObject({ documents: [{ id: "document-1" }], owned: true });
+    expect(decodeKnowledgeDocumentMutationResponse({ document })).toMatchObject({
+      document: { currentVersionId: "version-1" }
+    });
+    expect(decodeKnowledgeReindexResponse({
+      reindex: {
+        completedDocuments: 0,
+        createdAt: "2026-08-08T00:00:00.000Z",
+        errorCode: null,
+        failedDocuments: 0,
+        generationId: "generation-2",
+        status: "building",
+        targetContentRevision: 2,
+        totalDocuments: 1
+      }
+    })).toMatchObject({ reindex: { generationId: "generation-2" } });
+  });
+
+  it("rejects inconsistent browser projections instead of trusting server-shaped JSON", () => {
+    const summary = baseSummary();
+    expect(decodeKnowledgeBaseListResponse({
+      embeddingDeployments: [],
+      knowledgeBases: [{
+        ...summary,
+        activeGeneration: {
+          ...summary.activeGeneration,
+          embeddingDeploymentId: "different-deployment"
+        }
+      }],
+      publishableGroups: [],
+      viewer: { canPublishInstallation: false }
+    })).toBeNull();
+    expect(decodeKnowledgeIngestionStatusResponse({
+      documents: [{
+        ...documentStatus(),
+        versions: [{
+          ...documentStatus().versions[0],
+          embeddedChunks: 3,
+          totalChunks: 2
+        }]
+      }],
+      owned: true,
+      reindex: null
+    })).toBeNull();
+    expect(decodeKnowledgeIngestionStatusResponse({
+      documents: [{
+        ...documentStatus(),
+        currentVersionId: "missing-version"
+      }],
+      owned: true,
+      reindex: null
+    })).toBeNull();
+    expect(decodeKnowledgeBaseListResponse({
+      embeddingDeployments: [summary.activeGeneration.embeddingDeployment],
+      knowledgeBases: [{
+        ...summary,
+        owned: false
+      }],
+      publishableGroups: [],
+      viewer: { canPublishInstallation: false }
+    })).toBeNull();
+    expect(decodeKnowledgeReindexResponse({
+      reindex: {
+        completedDocuments: 2,
+        createdAt: "now",
+        errorCode: null,
+        failedDocuments: 1,
+        generationId: "generation-2",
+        status: "building",
+        targetContentRevision: 2,
+        totalDocuments: 2
+      }
+    })).toBeNull();
   });
 });
