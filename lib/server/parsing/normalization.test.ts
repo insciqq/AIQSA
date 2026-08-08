@@ -92,6 +92,69 @@ describe("Docling normalization", () => {
       status: "success"
     }, "application/pdf")).toThrow(expect.objectContaining({ code: "parser_invalid_output" }));
   });
+
+  it("accepts every reference collection emitted by pinned Docling documents", () => {
+    const parsed = normalizeDoclingResponse({
+      document: {
+        json_content: {
+          body: {
+            children: [
+              { $ref: "#/texts/0" },
+              { $ref: "#/key_value_items/0" },
+              { $ref: "#/form_items/0" },
+              { $ref: "#/field_regions/0" }
+            ]
+          },
+          field_items: [{
+            children: [{ $ref: "#/texts/1" }],
+            content_layer: "body"
+          }],
+          field_regions: [{
+            children: [{ $ref: "#/field_items/0" }],
+            content_layer: "body"
+          }],
+          form_items: [{
+            content_layer: "body",
+            graph: { cells: [], links: [] },
+            prov: [{ page_no: 2 }]
+          }],
+          groups: [],
+          key_value_items: [{
+            content_layer: "body",
+            graph: { cells: [], links: [] },
+            prov: [{ page_no: 1 }]
+          }],
+          pictures: [],
+          schema_name: "DoclingDocument",
+          tables: [],
+          texts: [
+            { content_layer: "body", label: "paragraph", prov: [{ page_no: 1 }], text: "Opening" },
+            { content_layer: "body", label: "field_value", prov: [{ page_no: 2 }], text: "Field value" }
+          ]
+        }
+      },
+      status: "success"
+    }, "application/pdf");
+
+    expect(parsed.text).toBe("Opening\n\nField value");
+    expect(parsed.blocks).toHaveLength(2);
+  });
+
+  it.each([
+    "#/unknown_items/0",
+    "#/form_items/1"
+  ])("rejects malformed Docling reference %s", ($ref) => {
+    expect(() => normalizeDoclingResponse({
+      document: {
+        json_content: {
+          body: { children: [{ $ref }] },
+          form_items: [{ graph: { cells: [], links: [] } }],
+          schema_name: "DoclingDocument"
+        }
+      },
+      status: "success"
+    }, "application/pdf")).toThrow(expect.objectContaining({ code: "parser_invalid_output" }));
+  });
 });
 
 describe("Tika normalization", () => {

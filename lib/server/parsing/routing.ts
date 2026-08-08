@@ -72,7 +72,7 @@ function normalizedMimeType(value: string): string | undefined {
     : undefined;
 }
 
-function extensionOf(fileName: string): string | undefined {
+export function normalizedFileExtension(fileName: string): string | undefined {
   if (
     !fileName
     || Buffer.byteLength(fileName, "utf8") > 255
@@ -89,7 +89,7 @@ export function resolveDocumentParserRoute(
   fileName: string,
   mimeType: string
 ): DocumentParserRoute | undefined {
-  const extension = extensionOf(fileName);
+  const extension = normalizedFileExtension(fileName);
   const declaredMimeType = normalizedMimeType(mimeType);
   if (!extension || !declaredMimeType) return undefined;
 

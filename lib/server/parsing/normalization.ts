@@ -161,14 +161,19 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
   if (!isRecord(document.body) || !Array.isArray(document.body.children)) invalid("docling");
 
   const collections = {
+    field_items: Array.isArray(document.field_items) ? document.field_items : [],
+    field_regions: Array.isArray(document.field_regions) ? document.field_regions : [],
+    form_items: Array.isArray(document.form_items) ? document.form_items : [],
     groups: Array.isArray(document.groups) ? document.groups : [],
+    key_value_items: Array.isArray(document.key_value_items) ? document.key_value_items : [],
+    pictures: Array.isArray(document.pictures) ? document.pictures : [],
     tables: Array.isArray(document.tables) ? document.tables : [],
     texts: Array.isArray(document.texts) ? document.texts : []
   };
   const blocks: MutableBlock[] = [];
   const headingPath: string[] = [];
   let hasTitle = false;
-  const visitedGroups = new Set<number>();
+  const visitedContainers = new Set<string>();
 
   function updateHeading(item: Record<string, unknown>, text: string): void {
     if (item.label === "title") {
@@ -187,26 +192,43 @@ export function normalizeDoclingResponse(value: unknown, mediaType: string): Par
 
   function visit(reference: unknown): void {
     if (!isRecord(reference) || typeof reference.$ref !== "string") invalid("docling");
-    const match = /^#\/(groups|pictures|tables|texts)\/(0|[1-9]\d*)$/u.exec(reference.$ref);
+    const match = /^#\/(field_items|field_regions|form_items|groups|key_value_items|pictures|tables|texts)\/(0|[1-9]\d*)$/u.exec(reference.$ref);
     if (!match) invalid("docling");
-    if (match[1] === "pictures") return;
 
     const index = Number(match[2]);
     if (!Number.isSafeInteger(index)) invalid("docling");
-    const collection = collections[match[1] as keyof typeof collections];
+    const collectionName = match[1] as keyof typeof collections;
+    const collection = collections[collectionName];
     const item = collection[index];
     if (!isRecord(item)) invalid("docling");
     if (item.content_layer === "furniture") return;
 
-    if (match[1] === "groups") {
-      if (visitedGroups.has(index)) return;
-      visitedGroups.add(index);
+    if (["field_items", "field_regions", "groups"].includes(collectionName)) {
+      const visitKey = `${collectionName}/${index}`;
+      if (visitedContainers.has(visitKey)) return;
+      visitedContainers.add(visitKey);
       if (!Array.isArray(item.children)) invalid("docling");
       for (const child of item.children) visit(child);
       return;
     }
 
-    if (match[1] === "tables") {
+    if (collectionName === "pictures") return;
+
+    if (collectionName === "form_items" || collectionName === "key_value_items") {
+      // Docling graph regions are valid body nodes but do not define a stable
+      // linear reading order. Validate their reviewed shape and omit them from
+      // the ordered text projection, as we already do for pictures.
+      if (
+        !isRecord(item.graph)
+        || !Array.isArray(item.graph.cells)
+        || !Array.isArray(item.graph.links)
+      ) {
+        invalid("docling");
+      }
+      return;
+    }
+
+    if (collectionName === "tables") {
       addBlock(blocks, {
         headingPath,
         isTable: true,

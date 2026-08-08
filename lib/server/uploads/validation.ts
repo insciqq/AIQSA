@@ -1,3 +1,5 @@
+import { normalizedFileExtension } from "../parsing/routing";
+
 export type UploadKind = "document" | "image" | "pdf";
 
 export type UploadValidationInput = {
@@ -165,8 +167,8 @@ export function validateUpload(input: UploadValidationInput): UploadValidationRe
   }
 
   const rule = allowedTypes[input.mimeType.toLowerCase()];
-  const lowerName = input.fileName.toLowerCase();
-  const extension = rule?.extensions.find((item) => lowerName.endsWith(item));
+  const fileExtension = normalizedFileExtension(input.fileName);
+  const extension = rule?.extensions.find((item) => item === fileExtension);
 
   if (!rule || !extension) {
     return { code: "unsupported_type", ok: false };

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolveDocumentParserRoute } from "../parsing/routing";
 import { defaultUploadMaxBytes, validateUpload } from "./validation";
 
 const magicFixtures = [
@@ -158,6 +159,38 @@ describe("upload validation", () => {
         mimeType: "application/pdf"
       })
     ).toEqual({ code: "file_too_large", ok: false });
+  });
+
+  it.each([
+    [".txt", "text/plain"],
+    [".pdf", "application/pdf"],
+    ["folder/notes.txt", "text/plain"],
+    ["folder\\notes.txt", "text/plain"],
+    ["notes\0.txt", "text/plain"],
+    [`${"a".repeat(252)}.txt`, "text/plain"]
+  ])("rejects parser-ineligible document name %s before storage", (fileName, mimeType) => {
+    expect(resolveDocumentParserRoute(fileName, mimeType)).toBeUndefined();
+    expect(validateUpload({
+      byteSize: 128,
+      fileName,
+      maxBytes: 1024,
+      mimeType
+    })).toEqual({ code: "unsupported_type", ok: false });
+  });
+
+  it("keeps a hidden document with a real basename parser-eligible", () => {
+    const validation = validateUpload({
+      byteSize: 128,
+      fileName: ".notes.txt",
+      maxBytes: 1024,
+      mimeType: "text/plain"
+    });
+
+    expect(validation).toEqual({ kind: "document", mimeType: "text/plain", ok: true });
+    expect(resolveDocumentParserRoute(".notes.txt", "text/plain")).toMatchObject({
+      format: "text",
+      kind: "inline"
+    });
   });
 
   it("accepts allowed types only when magic bytes match", () => {
