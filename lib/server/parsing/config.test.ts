@@ -36,6 +36,37 @@ describe("document parser configuration", () => {
     expect(config.tika).toMatchObject(DEFAULT_DOCUMENT_PARSER_LIMITS.tika);
     expect(config.tika?.baseUrl.toString()).toBe("https://parsers.example/tika/");
   });
+
+  it("inherits the effective upload cap unless an engine override is explicit", () => {
+    const inherited = getDocumentParserConfig({
+      AIQSA_DOCLING_URL: "http://docling:5001",
+      AIQSA_TIKA_URL: "http://tika:9998",
+      AIQSA_UPLOAD_MAX_BYTES: "50000000"
+    });
+
+    expect(inherited.docling?.requestMaxBytes).toBe(50_000_000);
+    expect(inherited.tika?.requestMaxBytes).toBe(50_000_000);
+
+    const overridden = getDocumentParserConfig({
+      AIQSA_DOCLING_REQUEST_MAX_BYTES: "30000000",
+      AIQSA_DOCLING_URL: "http://docling:5001",
+      AIQSA_TIKA_REQUEST_MAX_BYTES: "40000000",
+      AIQSA_TIKA_URL: "http://tika:9998",
+      AIQSA_UPLOAD_MAX_BYTES: "50000000"
+    });
+
+    expect(overridden.docling?.requestMaxBytes).toBe(30_000_000);
+    expect(overridden.tika?.requestMaxBytes).toBe(40_000_000);
+
+    const consumerSpecific = getDocumentParserConfig({
+      AIQSA_DOCLING_URL: "http://docling:5001",
+      AIQSA_TIKA_URL: "http://tika:9998",
+      AIQSA_UPLOAD_MAX_BYTES: "25000000"
+    }, { requestMaxBytesDefault: 60_000_000 });
+
+    expect(consumerSpecific.docling?.requestMaxBytes).toBe(60_000_000);
+    expect(consumerSpecific.tika?.requestMaxBytes).toBe(60_000_000);
+  });
 });
 
 describe("document parser routing", () => {

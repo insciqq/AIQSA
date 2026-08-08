@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   createDocumentParserBoundary,
+  getDocumentParserConfig,
   isDocumentParserError,
   type DocumentParserBoundary
 } from "../parsing";
@@ -155,6 +156,9 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
 }>) {
   const config = input.config ?? getKnowledgeExtractionConfig();
   const parser = input.parser ?? createDocumentParserBoundary({
+    config: getDocumentParserConfig(process.env, {
+      requestMaxBytesDefault: config.maxFileBytes
+    }),
     inlineMaxChars: config.maxNormalizedChars + 1,
     sidecarFallback: false
   });

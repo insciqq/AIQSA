@@ -1,5 +1,5 @@
 import { createDocumentParserBoundary } from "./boundary";
-import type { ParserEngineConfig } from "./config";
+import { getDocumentParserConfig, type ParserEngineConfig } from "./config";
 import { DocumentParserError } from "./errors";
 import type {
   DocumentParserEngineAdapter,
@@ -175,6 +175,29 @@ describe("document parser boundary", () => {
       mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     })).rejects.toMatchObject({ code: "parser_rejected" });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("passes accepted input above the legacy cap when the upload cap is raised", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify(doclingEnvelope),
+      { headers: { "content-type": "application/json" } }
+    ));
+    const boundary = createDocumentParserBoundary({
+      config: getDocumentParserConfig({
+        AIQSA_DOCLING_URL: "http://docling:5001",
+        AIQSA_UPLOAD_MAX_BYTES: "50000000"
+      }),
+      fetch: fetchImpl
+    });
+    const bytes = Buffer.alloc(30_000_000);
+    bytes.write("%PDF-");
+
+    await expect(boundary.parse({
+      bytes,
+      fileName: "large.pdf",
+      mimeType: "application/pdf"
+    })).resolves.toMatchObject({ engine: "docling", text: "fixture text" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("stops reading an oversized response", async () => {

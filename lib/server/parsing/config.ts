@@ -1,4 +1,8 @@
-import { DEFAULT_UPLOAD_MAX_BYTES, MAX_UPLOAD_MAX_BYTES } from "../uploads/validation";
+import {
+  DEFAULT_UPLOAD_MAX_BYTES,
+  defaultUploadMaxBytes,
+  MAX_UPLOAD_MAX_BYTES
+} from "../uploads/validation";
 import type { SidecarParserEngine } from "./types";
 
 export const PARSER_RESPONSE_MAX_BYTES_CEILING = 64 * 1_024 * 1_024;
@@ -14,6 +18,10 @@ export type ParserEngineConfig = Readonly<{
 export type DocumentParserConfig = Readonly<{
   docling?: ParserEngineConfig;
   tika?: ParserEngineConfig;
+}>;
+
+type DocumentParserConfigOptions = Readonly<{
+  requestMaxBytesDefault?: number;
 }>;
 
 const defaults = Object.freeze({
@@ -90,7 +98,8 @@ function parserBaseUrl(value: string | undefined): URL | undefined {
 
 function engineConfig(
   engine: SidecarParserEngine,
-  environment: Readonly<Record<string, string | undefined>>
+  environment: Readonly<Record<string, string | undefined>>,
+  requestMaxBytesDefault: number
 ): ParserEngineConfig | undefined {
   const names = environmentNames[engine];
   const baseUrl = parserBaseUrl(environment[names.baseUrl]);
@@ -100,7 +109,7 @@ function engineConfig(
     baseUrl,
     requestMaxBytes: boundedPositiveInteger(
       environment[names.requestMaxBytes],
-      defaults[engine].requestMaxBytes,
+      requestMaxBytesDefault,
       MAX_UPLOAD_MAX_BYTES
     ),
     responseMaxBytes: boundedPositiveInteger(
@@ -117,10 +126,18 @@ function engineConfig(
 }
 
 export function getDocumentParserConfig(
-  environment: Readonly<Record<string, string | undefined>> = process.env
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  options: DocumentParserConfigOptions = {}
 ): DocumentParserConfig {
+  const configuredRequestDefault = options.requestMaxBytesDefault;
+  const requestMaxBytesDefault = typeof configuredRequestDefault === "number" &&
+    Number.isSafeInteger(configuredRequestDefault) &&
+    configuredRequestDefault > 0 &&
+    configuredRequestDefault <= MAX_UPLOAD_MAX_BYTES
+    ? configuredRequestDefault
+    : defaultUploadMaxBytes(environment);
   return Object.freeze({
-    docling: engineConfig("docling", environment),
-    tika: engineConfig("tika", environment)
+    docling: engineConfig("docling", environment, requestMaxBytesDefault),
+    tika: engineConfig("tika", environment, requestMaxBytesDefault)
   });
 }

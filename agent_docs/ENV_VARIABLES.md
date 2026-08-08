@@ -243,11 +243,11 @@ headroom and process-local upload concurrency controls.
 
 ```text
 AIQSA_DOCLING_URL=http://docling:5001
-AIQSA_DOCLING_REQUEST_MAX_BYTES=25000000
+AIQSA_DOCLING_REQUEST_MAX_BYTES=
 AIQSA_DOCLING_RESPONSE_MAX_BYTES=33554432
 AIQSA_DOCLING_TIMEOUT_MS=300000
 AIQSA_TIKA_URL=http://tika:9998
-AIQSA_TIKA_REQUEST_MAX_BYTES=25000000
+AIQSA_TIKA_REQUEST_MAX_BYTES=
 AIQSA_TIKA_RESPONSE_MAX_BYTES=16777216
 AIQSA_TIKA_TIMEOUT_MS=120000
 ```
@@ -261,8 +261,14 @@ leaves that engine disabled without affecting app readiness. HTTP is accepted
 for the private sibling network and HTTPS for an operator-supplied external
 deployment. Parsed file bytes cross only the configured server boundary.
 
-Request caps apply to the raw file before any sidecar call. They default to the
-25,000,000-byte upload limit and may not exceed 67,108,864 bytes. Response
+Request caps apply to the raw file before any sidecar call. When unset or
+invalid, each inherits its caller's effective accepted-file cap:
+`AIQSA_UPLOAD_MAX_BYTES` for Chat attachments and
+`AIQSA_KNOWLEDGE_MAX_FILE_BYTES` for Knowledge ingestion (both normally
+25,000,000 bytes). An explicit valid engine override wins globally, and no
+request cap may exceed 67,108,864 bytes. Leave the engine values blank to keep
+parser admission aligned automatically; a lower explicit value deliberately
+rejects larger otherwise-accepted files for that engine. Response
 bodies are streamed and capped before JSON decoding: Docling defaults to 32
 MiB and Tika to 16 MiB, each with a 64 MiB hard ceiling. Client deadlines
 default to five minutes for Docling and two minutes for Tika and have a
