@@ -1,4 +1,5 @@
 import { ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS } from "../../contracts/uploads";
+import { takeUtf16SafePrefix } from "../../domain/utf16";
 
 export type TextDocumentKind = "csv" | "html" | "json" | "markdown" | "text";
 
@@ -101,7 +102,7 @@ export function extractTextDocument(
   function capText(text: string): TextDocumentExtractionResult {
     return {
       kind,
-      text: text.length > maxChars ? text.slice(0, maxChars) : text,
+      text: text.length > maxChars ? takeUtf16SafePrefix(text, maxChars) : text,
       truncated: text.length > maxChars
     };
   }

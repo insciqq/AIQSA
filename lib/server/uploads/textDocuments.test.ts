@@ -61,6 +61,32 @@ describe("text document extraction", () => {
     });
   });
 
+  it("caps text at a complete UTF-16 character and leaves exact-limit text unchanged", () => {
+    expect(
+      extractTextDocument(Buffer.from("ab😀cd"), {
+        fileName: "notes.txt",
+        maxChars: 3,
+        mimeType: "text/plain"
+      })
+    ).toEqual({
+      kind: "text",
+      text: "ab",
+      truncated: true
+    });
+
+    expect(
+      extractTextDocument(Buffer.from("ab😀"), {
+        fileName: "notes.txt",
+        maxChars: 4,
+        mimeType: "text/plain"
+      })
+    ).toEqual({
+      kind: "text",
+      text: "ab😀",
+      truncated: false
+    });
+  });
+
   it("extracts readable HTML text without scripts or styles", () => {
     expect(
       extractTextDocument(

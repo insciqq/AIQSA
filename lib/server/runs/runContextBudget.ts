@@ -5,6 +5,7 @@ import {
   type ContextTruncationSummary
 } from "../../domain/contextBudget";
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
+import { takeUtf16SafePrefix } from "../../domain/utf16";
 import {
   providerAttachmentBudgetTokens,
   providerAttachmentTextLabel,
@@ -156,12 +157,8 @@ function fitTextToTokenBudget(text: string, tokenBudget: number): string {
   if (estimateApproxTokens(text) <= tokenBudget) return text;
   const marker = "\n[truncated for model context]";
   const firstCharacter = String.fromCodePoint(text.codePointAt(0)!);
-  const safePrefix = (length: number) => {
-    const prefix = text.slice(0, length);
-    return /[\uD800-\uDBFF]$/u.test(prefix) ? prefix.slice(0, -1) : prefix;
-  };
   const candidate = (length: number, withMarker: boolean) =>
-    `${safePrefix(length)}${withMarker ? marker : ""}`;
+    `${takeUtf16SafePrefix(text, length)}${withMarker ? marker : ""}`;
   const useMarker = estimateApproxTokens(`${firstCharacter}${marker}`) <= tokenBudget;
   let low = firstCharacter.length;
   let high = text.length;

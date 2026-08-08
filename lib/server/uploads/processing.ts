@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { takeUtf16SafePrefix } from "../../domain/utf16";
 import {
   createDocumentParserBoundary,
   isDocumentParserError,
@@ -64,7 +65,7 @@ function checksum(bytes: Buffer): string {
 
 function capText(text: string, maxChars: number): { text: string; truncated: boolean } {
   return text.length > maxChars
-    ? { text: text.slice(0, maxChars), truncated: true }
+    ? { text: takeUtf16SafePrefix(text, maxChars), truncated: true }
     : { text, truncated: false };
 }
 

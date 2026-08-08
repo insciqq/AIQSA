@@ -1,12 +1,16 @@
 // @vitest-environment node
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DocumentParserError } from "../parsing";
 import {
   AttachmentProcessingError,
   createAttachmentProcessor,
   type AttachmentProcessingRecord
 } from "./processing";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 function createTinyPdf(text: string): Buffer {
   const objects = [
@@ -108,6 +112,42 @@ describe("attachment processor", () => {
           pageCount: 2,
           parserStatus: "complete",
           status: "complete"
+        }
+      }
+    });
+  });
+
+  it("caps sidecar text without persisting half of an astral character", async () => {
+    vi.stubEnv("AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS", "3");
+    const bytes = Buffer.from("PK\u0003\u0004docx");
+    const parser = {
+      parse: vi.fn(async () => ({
+        blocks: [],
+        engine: "docling" as const,
+        mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        pageCount: 1,
+        status: "complete" as const,
+        text: "ab😀cd"
+      }))
+    };
+    const process = createAttachmentProcessor({ parser, storage: storage(bytes) });
+
+    const result = await process(record(bytes, {
+      fileName: "report.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    }));
+
+    expect(result).toEqual({
+      extractedText: "ab",
+      metadata: {
+        document: {
+          characterCount: 2,
+          engine: "docling",
+          extractedTextMaxChars: 3,
+          pageCount: 1,
+          parserStatus: "complete",
+          status: "partial",
+          truncated: true
         }
       }
     });
