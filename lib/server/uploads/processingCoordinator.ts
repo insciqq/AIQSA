@@ -38,6 +38,24 @@ const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_MAX_PARALLEL = 2;
 const RETRY_DELAYS_MS = [1_000, 5_000] as const;
+const DEFAULT_SETTLE_RETRY_DELAYS_MS = [100, 500] as const;
+
+function waitForSettleRetry(delayMs: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  if (delayMs <= 0) return Promise.resolve(true);
+
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timeout);
+      resolve(false);
+    };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 export class AttachmentProcessingCoordinator {
   readonly #heartbeatMs: number;
@@ -51,6 +69,7 @@ export class AttachmentProcessingCoordinator {
     signal?: AbortSignal
   ) => Promise<AttachmentProcessingResult>;
   readonly #repository: AttachmentProcessingRepository;
+  readonly #settleRetryDelaysMs: readonly number[];
   #pending: Promise<void> | null = null;
   #rerun = false;
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -67,6 +86,7 @@ export class AttachmentProcessingCoordinator {
       signal?: AbortSignal
     ) => Promise<AttachmentProcessingResult>;
     repository: AttachmentProcessingRepository;
+    settleRetryDelaysMs?: readonly number[];
   }>) {
     this.#heartbeatMs = input.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
     this.#intervalMs = input.intervalMs ?? DEFAULT_INTERVAL_MS;
@@ -76,6 +96,7 @@ export class AttachmentProcessingCoordinator {
     this.#now = input.now ?? (() => new Date());
     this.#process = input.process;
     this.#repository = input.repository;
+    this.#settleRetryDelaysMs = input.settleRetryDelaysMs ?? DEFAULT_SETTLE_RETRY_DELAYS_MS;
   }
 
   start(): void {
@@ -148,42 +169,72 @@ export class AttachmentProcessingCoordinator {
     heartbeat.unref?.();
 
     try {
-      const result = await this.#process(claim, controller.signal);
-      if (leaseLost) return;
-      await this.#repository.settleReady({
-        attachmentId: claim.id,
-        claimToken: claim.claimToken,
-        jobId: claim.jobId,
-        now: this.#now(),
-        result
-      });
-    } catch (error) {
-      if (leaseLost) return;
-      const failure = error instanceof AttachmentProcessingError
-        ? error
-        : new AttachmentProcessingError("attachment_processing_failed", true);
-      if (failure.retryable && claim.attemptCount < this.#maxAttempts) {
-        const delay = RETRY_DELAYS_MS[Math.min(claim.attemptCount - 1, RETRY_DELAYS_MS.length - 1)] ??
-          RETRY_DELAYS_MS.at(-1)!;
-        const now = this.#now();
-        await this.#repository.retryLater({
-          claimToken: claim.claimToken,
-          errorCode: failure.code,
-          jobId: claim.jobId,
-          nextAttemptAt: new Date(now.getTime() + delay),
-          now
-        }).catch(() => undefined);
+      let result: AttachmentProcessingResult;
+      try {
+        result = await this.#process(claim, controller.signal);
+      } catch (error) {
+        if (!leaseLost) await this.#settleProcessingFailure(claim, error);
         return;
       }
-      await this.#repository.settleFailed({
-        attachmentId: claim.id,
+
+      if (leaseLost) return;
+      await this.#settleReady(claim, result, controller.signal);
+    } finally {
+      clearInterval(heartbeat);
+    }
+  }
+
+  async #settleProcessingFailure(
+    claim: AttachmentProcessingRecord,
+    error: unknown
+  ): Promise<void> {
+    const failure = error instanceof AttachmentProcessingError
+      ? error
+      : new AttachmentProcessingError("attachment_processing_failed", true);
+    if (failure.retryable && claim.attemptCount < this.#maxAttempts) {
+      const delay = RETRY_DELAYS_MS[Math.min(claim.attemptCount - 1, RETRY_DELAYS_MS.length - 1)] ??
+        RETRY_DELAYS_MS.at(-1)!;
+      const now = this.#now();
+      await this.#repository.retryLater({
         claimToken: claim.claimToken,
         errorCode: failure.code,
         jobId: claim.jobId,
-        now: this.#now()
+        nextAttemptAt: new Date(now.getTime() + delay),
+        now
       }).catch(() => undefined);
-    } finally {
-      clearInterval(heartbeat);
+      return;
+    }
+    await this.#repository.settleFailed({
+      attachmentId: claim.id,
+      claimToken: claim.claimToken,
+      errorCode: failure.code,
+      jobId: claim.jobId,
+      now: this.#now()
+    }).catch(() => undefined);
+  }
+
+  async #settleReady(
+    claim: AttachmentProcessingRecord,
+    result: AttachmentProcessingResult,
+    signal: AbortSignal
+  ): Promise<void> {
+    let retryIndex = 0;
+    while (!signal.aborted) {
+      try {
+        await this.#repository.settleReady({
+          attachmentId: claim.id,
+          claimToken: claim.claimToken,
+          jobId: claim.jobId,
+          now: this.#now(),
+          result
+        });
+        return;
+      } catch {
+        const delayMs = this.#settleRetryDelaysMs[retryIndex];
+        if (typeof delayMs !== "number") return;
+        retryIndex += 1;
+        if (!await waitForSettleRetry(delayMs, signal)) return;
+      }
     }
   }
 }

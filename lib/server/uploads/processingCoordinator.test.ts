@@ -103,4 +103,85 @@ describe("attachment processing coordinator", () => {
       result
     });
   });
+
+  it.each([1, 3])(
+    "retries a transient ready-write without reprocessing or failing attempt %i",
+    async (attemptCount) => {
+      const repo = repository(claim(attemptCount));
+      const result = { extractedText: "ready", metadata: { document: { engine: "docling" } } };
+      const process = vi.fn(async () => result);
+      repo.settleReady
+        .mockRejectedValueOnce(new Error("transient_database_failure"))
+        .mockResolvedValueOnce(true);
+      const coordinator = new AttachmentProcessingCoordinator({
+        maxParallel: 1,
+        now: () => now,
+        process,
+        repository: repo,
+        settleRetryDelaysMs: [0]
+      });
+
+      await coordinator.reconcileNow();
+
+      expect(process).toHaveBeenCalledOnce();
+      expect(repo.settleReady).toHaveBeenCalledTimes(2);
+      expect(repo.settleReady).toHaveBeenLastCalledWith({
+        attachmentId: "attachment-1",
+        claimToken: "claim-1",
+        jobId: "job-1",
+        now,
+        result
+      });
+      expect(repo.retryLater).not.toHaveBeenCalled();
+      expect(repo.settleFailed).not.toHaveBeenCalled();
+    }
+  );
+
+  it("leaves the claimed job recoverable after bounded ready-write retries are exhausted", async () => {
+    const repo = repository(claim(3));
+    const process = vi.fn(async () => ({ extractedText: "ready", metadata: {} }));
+    repo.settleReady.mockRejectedValue(new Error("database_unavailable"));
+    const coordinator = new AttachmentProcessingCoordinator({
+      maxParallel: 1,
+      now: () => now,
+      process,
+      repository: repo,
+      settleRetryDelaysMs: [0, 0]
+    });
+
+    await coordinator.reconcileNow();
+
+    expect(process).toHaveBeenCalledOnce();
+    expect(repo.settleReady).toHaveBeenCalledTimes(3);
+    expect(repo.retryLater).not.toHaveBeenCalled();
+    expect(repo.settleFailed).not.toHaveBeenCalled();
+  });
+
+  it("stops ready-write retries when the heartbeat loses the claim", async () => {
+    vi.useFakeTimers();
+    try {
+      const repo = repository(claim(1));
+      repo.heartbeat.mockResolvedValue(false);
+      repo.settleReady.mockRejectedValue(new Error("database_unavailable"));
+      const coordinator = new AttachmentProcessingCoordinator({
+        heartbeatMs: 10,
+        maxParallel: 1,
+        now: () => now,
+        process: async () => ({ extractedText: "ready", metadata: {} }),
+        repository: repo,
+        settleRetryDelaysMs: [100]
+      });
+
+      const reconciliation = coordinator.reconcileNow();
+      await vi.advanceTimersByTimeAsync(10);
+      await reconciliation;
+
+      expect(repo.heartbeat).toHaveBeenCalledOnce();
+      expect(repo.settleReady).toHaveBeenCalledOnce();
+      expect(repo.retryLater).not.toHaveBeenCalled();
+      expect(repo.settleFailed).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
