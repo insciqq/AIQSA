@@ -60,20 +60,19 @@ incrementing its version; disablement or readiness loss never retargets it.
 optimistic-versioned system utility role. Its nullable restrictive foreign key
 stores one exact answer-selectable `ProviderModel`; migration, bootstrap, and
 the development seed create an empty foundation and never infer a target. The
-row's `updatedByUserId` is also the credential principal: resolving the role
-requires that last-saving principal to remain an active administrator, then
-uses that administrator's ordinary direct-user, non-archived-group, and
-permitted connection-default credential precedence plus the exact current
-availability check. It does not require or grant model entitlement. A null
-target returns `system_model_absent`; a disabled/deleted target, invalid
-configuration, missing check or credential, ambiguous assignment, or
-missing/inactive/demoted saving administrator returns
-`system_model_unavailable`. Resolution never chooses another model or
-administrator. Deleting that administrator sets the principal null and leaves
-the exact role visibly selected but unavailable. Individual model deletion is
-blocked by the restrictive role reference; confirmed non-template connection
-graph deletion may clear a child role and advance its version inside the same
-guarded transaction.
+row's `updatedByUserId` is audit metadata only. Resolution uses the selected
+model's explicit installation default credential plus the exact current
+availability check, regardless of ordinary unassigned-user policy, and does not
+consult direct-user or group assignments. It does not require or grant model
+entitlement. A null target returns `system_model_absent`; a disabled/deleted
+target, invalid configuration, or missing/unusable default credential or exact
+check returns `system_model_unavailable`. Resolution never chooses another
+model, administrator, or credential tier. Deactivating, demoting, or deleting
+the saving administrator may change or null the audit reference but cannot
+change role availability. Individual model deletion is blocked by the
+restrictive role reference; confirmed non-template connection graph deletion
+may clear a child role and advance its version inside the same guarded
+transaction.
 
 `SearchOption` is the stable user-visible Search source and, except for the connectionless `search-disabled` Off sentinel, owns display/lifecycle state plus one exact source `ProviderConnection`; user settings, organization policy, grants, and new run requests retain its logical id. `SearchStrategy` is a physical execution route below that parent. It owns a typed mutable draft, optional diagnostic evidence, enabled/archive state, and a pointer to an immutable configuration-evidenced `SearchIntegrationRevision`; hosted and query-only routes never become separate user choices. Revisions never authorize one user's credential. Obsolete credential-bound probe evidence may remain immutable archaeology, but catalog/admission ignore it and resolve the current user/model/credential/check instead. Append-only repair migrations may deterministically create or reactivate a missing same-connection query-only route from an eligible active Responses or native Gemini Search model without network or credential access; they preserve option ids, grants, preferences, hosted routes, revisions, accepted run bindings, and provider models and are idempotent. `SearchRunBinding` snapshots every accepted logical option in plan order together with its exact physical strategy/revision, mode, and optional technical provider binding key. `ProviderRunBinding` is unique by `(modelRunId, bindingKey)`, so one run can retain `answer` plus one exact credential/model snapshot per client engine. `SearchRun` is one actual invocation and keeps exact revision/invocation/query, bounded preview/artifacts, duration, status, usage-bearing evidence, canonical grounded findings, explicit normalized citation sources, and optional bounded provider-operation facts; no invocation row is created merely because an option was selected. The settled owning `ModelRunToolCall` stores the per-engine findings, sources, warnings, operations, and usage once in a versioned canonical execution projection; its compact persisted content marker is rehydrated deterministically into provider-facing text for foreground reuse or recovery without a provider replay. Legacy ordinary tool-result checkpoints retain their existing decoder, while a malformed canonical marker or execution fails with `tool_call_result_invalid`. Per-engine findings are bounded by both characters and 48 KiB of UTF-8, and the complete serialized result remains within the shared 256 KiB tool-result ceiling; overflow is settled as bounded attributable Search error evidence rather than a run-level snapshot failure. Raw provider bodies, Gemini Suggestions/signatures/steps, and recursively discovered preview fields are not storage authority. The exact parent tool relation remains that owning tool call rather than a parsed provider invocation id.
 
