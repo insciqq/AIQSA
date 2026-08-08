@@ -71,7 +71,8 @@ function callActivity(value: unknown): ThreadToolActivity | null {
   }
 
   const snapshot = payload.snapshot;
-  const capability = snapshot.capability === "mcp" || snapshot.capability === "web_search"
+  const capability = snapshot.capability === "knowledge" || snapshot.capability === "mcp" ||
+    snapshot.capability === "web_search"
     ? snapshot.capability
     : null;
   const sources = credentialSources(snapshot.credentialSources ?? []);

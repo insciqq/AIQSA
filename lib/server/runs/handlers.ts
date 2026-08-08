@@ -15,6 +15,7 @@ import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ProviderAdapter, ProviderSearchAdapter } from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
+import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
 import {
   materializePreparedRunData,
@@ -55,6 +56,7 @@ export type RunHandlerDeps = {
   getAttachmentLimits?: RunPreparationDeps["getAttachmentLimits"];
   getConfig?: () => AuthConfig;
   knowledgeAdmission?: RunPreparationDeps["knowledgeAdmission"];
+  knowledgeExecutor?: KnowledgeToolExecutor;
   mcp?: RunPreparationDeps["mcp"];
   providerAdmission?: RunPreparationDeps["providerAdmission"];
   providerRuntime?: ProviderRuntimeResolver;
@@ -101,6 +103,7 @@ function recoveryDeps(
   deps: Pick<
     RunHandlerDeps,
     | "getAttachmentLimits"
+    | "knowledgeExecutor"
     | "providerRuntime"
     | "providers"
     | "repository"
@@ -110,6 +113,7 @@ function recoveryDeps(
 ) {
   return {
     ...(deps.getAttachmentLimits ? { getAttachmentLimits: deps.getAttachmentLimits } : {}),
+    ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
     ...(deps.providerRuntime ? { providerRuntime: deps.providerRuntime } : {}),
     providers: deps.providers,
     registry: activeRunControllerRegistry,
@@ -380,6 +384,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       created,
       prepared: preparedData,
       repository: deps.repository,
+      ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
       searchAdapter: runtime?.searchAdapter ?? preparation.searchAdapter,
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
@@ -509,6 +514,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       created,
       prepared: preparedData,
       repository: deps.repository,
+      ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
       searchAdapter: runtime?.searchAdapter ?? preparation.searchAdapter,
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
@@ -522,6 +528,7 @@ export function createGetModelRunHandler(
     RunHandlerDeps,
     | "getConfig"
     | "getAttachmentLimits"
+    | "knowledgeExecutor"
     | "providerRuntime"
     | "providers"
     | "repository"
@@ -548,7 +555,7 @@ export function createGetModelRunHandler(
     // The installation scheduler is the primary recovery owner. A GET may provide
     // a low-latency assist only when it has the complete provider-neutral adapter
     // set; otherwise it must remain a read and leave the checkpoint untouched.
-    if (deps.providerRuntime || deps.searchProviders) {
+    if (deps.providerRuntime || deps.searchProviders || deps.knowledgeExecutor) {
       const recovery = recoveryDeps(deps);
       await refreshProviderRunIfNeeded(recovery, params.runId, auth.userId).catch(() => undefined);
       await reconcileStaleRuns(recovery, {

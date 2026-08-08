@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import {
@@ -33,6 +33,12 @@ import type { MaterializedPreparedRunData } from "./runPreparation";
 import type { RunChatUpdateRecord, RunRepository } from "./runRepositoryContract";
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
+import { knowledgeRetrievalTool, type KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import {
+  KNOWLEDGE_RESULT_VERSION,
+  type KnowledgeRetrievalEvidence
+} from "../knowledge/retrievalTypes";
+import { knowledgeToolResultContent, knowledgeToolResultText } from "../knowledge/toolResult";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
@@ -74,13 +80,80 @@ function providerResult(overrides: Partial<ProviderRunResult> = {}): ProviderRun
   };
 }
 
+function knowledgeEvidence(): KnowledgeRetrievalEvidence {
+  const draft: KnowledgeRetrievalEvidence = {
+    bases: [{
+      baseContentRevision: 1,
+      baseName: "Private base",
+      candidateCount: 1,
+      indexedContentRevision: 1,
+      indexGenerationId: "generation-1",
+      knowledgeBaseId: "base-1",
+      ordinal: 0,
+      state: "ready",
+      targetDimension: 1024,
+      vectorSpaceFingerprint: "a".repeat(64)
+    }],
+    candidateCount: 1,
+    candidateLimit: 40,
+    durationMs: 12,
+    embeddingExecutions: [{
+      bindingOrdinals: [0],
+      durationMs: 4,
+      inputTokens: 7,
+      modelId: "embedding-v1",
+      provider: "openai_compatible",
+      providerModelId: "embedding-deployment-1",
+      requestId: null,
+      status: "complete",
+      totalTokens: 7
+    }],
+    fusion: "rrf_k60",
+    invocationOrdinal: 1,
+    outcome: "complete",
+    postRerankOrder: null,
+    preRerankOrder: null,
+    providerText: "pending",
+    query: "private corpus query",
+    rerankerBinding: null,
+    resultLimit: 8,
+    results: [{
+      annRank: 1,
+      baseName: "Private base",
+      bindingOrdinal: 0,
+      chunkId: "chunk-1",
+      chunkIndex: 0,
+      documentId: "document-1",
+      documentVersionId: "version-1",
+      fileName: "private.pdf",
+      ftsRank: 1,
+      ftsScore: 0.5,
+      fusedScore: 2 / 61,
+      handle: "K1.1",
+      includedText: "Bounded private passage",
+      includedTextBytes: Buffer.byteLength("Bounded private passage", "utf8"),
+      knowledgeBaseId: "base-1",
+      page: 2,
+      sourceTextBytes: Buffer.byteLength("Bounded private passage", "utf8"),
+      textTruncated: false,
+      vectorDistance: 0.1,
+      vectorScore: 0.9
+    }],
+    threshold: 0.01,
+    version: KNOWLEDGE_RESULT_VERSION
+  };
+  return { ...draft, providerText: knowledgeToolResultText(draft) };
+}
+
 function preparedData(input: Readonly<{
   chatId?: string;
   contextTruncation?: ContextTruncationSummary | null;
+  knowledgeBaseIds?: string[];
   mcp?: McpRunPlanSnapshot;
   modelId?: string;
   provider?: string;
   searchStrategy?: string | null;
+  toolMode?: "auto" | "none";
 }> = {}): MaterializedPreparedRunData {
   const provider = input.provider ?? "fake";
   const modelId = input.modelId ?? "fake-qsa";
@@ -153,6 +226,7 @@ function preparedData(input: Readonly<{
       toolCalling: true,
       vision: true
     },
+    knowledgePlan: { baseIds: input.knowledgeBaseIds ?? [] },
     ...(input.mcp ? { mcp: input.mcp } : {}),
     modelId,
     params: {},
@@ -162,7 +236,8 @@ function preparedData(input: Readonly<{
     },
     provider,
     ...(searchPolicy ? { searchPolicy } : {}),
-    searchStrategy
+    searchStrategy,
+    ...(input.toolMode ? { toolMode: input.toolMode } : {})
   };
 
   return {
@@ -471,6 +546,7 @@ function createRepository(options: RepositoryOptions = {}) {
 
 function executionInput(input: Readonly<{
   adapter: ProviderAdapter;
+  knowledgeExecutor?: KnowledgeToolExecutor;
   mcpRuntime?: RunExecutionInput["mcpRuntime"];
   prepared?: MaterializedPreparedRunData;
   repository: RunExecutionRepository;
@@ -487,6 +563,7 @@ function executionInput(input: Readonly<{
     },
     prepared: input.prepared ?? preparedData(),
     repository: input.repository,
+    ...(input.knowledgeExecutor ? { knowledgeExecutor: input.knowledgeExecutor } : {}),
     ...(input.mcpRuntime ? { mcpRuntime: input.mcpRuntime } : {}),
     ...(input.searchAdapter ? { searchAdapter: input.searchAdapter } : {}),
     ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
@@ -1505,6 +1582,239 @@ describe("run execution", () => {
     expect(repository.providerRequestPreviews).toHaveLength(1);
     expect(repository.searchRuns).toEqual([]);
     expect(searches).toBe(0);
+  });
+
+  it("streams directly when tools none preserves an accepted MCP plan", async () => {
+    const mcp: McpRunPlanSnapshot = {
+      servers: [{
+        fingerprint: "fingerprint-suppressed",
+        revisionId: "revision-suppressed",
+        serverId: "server-suppressed",
+        serverName: "Suppressed"
+      }],
+      tools: [{
+        definitionHash: "d".repeat(64),
+        description: "A retained but suppressed tool",
+        inputSchema: { type: "object" },
+        name: "lookup",
+        namespacedName: "mcp_suppressed_lookup_a",
+        originalName: "lookup",
+        serverId: "server-suppressed",
+        serverName: "Suppressed"
+      }],
+      version: 1
+    };
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return providerResult({ finalText: "Direct answer with tools suppressed" });
+    });
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      prepared: preparedData({ mcp, toolMode: "none" }),
+      repository: repository.repository
+    })).text();
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.mcp).toEqual(mcp);
+    expect(requests[0]?.tools).toBeUndefined();
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(repository.failedRuns).toHaveLength(0);
+  });
+
+  it("wires accepted Knowledge retrieval through the durable tool loop and usage ledger", async () => {
+    const repository = createRepository();
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { query: "private corpus query" },
+            id: "knowledge-call-1",
+            name: "retrieve_knowledge"
+          }],
+          usage: usage(2, 1, 0)
+        });
+      }
+      return providerResult({ finalText: "Knowledge-backed answer", usage: usage(3, 2, 0) });
+    });
+    const evidence = knowledgeEvidence();
+    const execute = vi.fn<KnowledgeToolExecutor["execute"]>(async (_call, context) => {
+      expect(context).toMatchObject({
+        persistedToolCallId: "persisted-tool-call-1",
+        runId: "run-1",
+        userId: "user-1"
+      });
+      return {
+        callId: "knowledge-call-1",
+        content: knowledgeToolResultContent(evidence),
+        name: "retrieve_knowledge",
+        rawPreview: {
+          finalProviderResponsePreview: { knowledgeRetrieval: evidence },
+          knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
+          providerCall: true,
+          requestPreview: { queryCharacters: evidence.query.length }
+        },
+        status: "complete",
+        usage: usage(7, 0, 0)
+      };
+    });
+    const knowledgeExecutor: KnowledgeToolExecutor = {
+      accepts: (name) => name === "retrieve_knowledge",
+      capability: "knowledge",
+      execute,
+      tool: knowledgeRetrievalTool
+    };
+    const prepared = preparedData({
+      knowledgeBaseIds: ["base-1"],
+      modelId: "openai-answer-model",
+      provider: "openai"
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeExecutor,
+      prepared,
+      repository: repository.repository
+    })).text());
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(providerRequests).toHaveLength(2);
+    expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["retrieve_knowledge"]);
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
+      .toContain("[K1.1] page 2");
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          artifactType: "tool_call",
+          payload: expect.objectContaining({
+            snapshot: { capability: "knowledge", toolName: "retrieve_knowledge" }
+          })
+        })
+      })
+    ]));
+    expect(repository.completeRuns[0]?.usageAttributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+      modelId: "embedding-v1",
+      provider: "openai_compatible",
+      usage: expect.objectContaining({ inputTokens: 7, totalTokens: 7 })
+      })
+    ]));
+    const stored = [...repository.toolCalls.values()][0];
+    expect(stored?.state).toBe("complete");
+    expect(parsePersistedToolExecutionResult(
+      { id: "knowledge-call-1", name: "retrieve_knowledge" },
+      stored?.result ?? null
+    )?.content).toEqual(knowledgeToolResultContent(evidence));
+  });
+
+  it("returns a settled Knowledge tool error to the provider without requiring a receipt", async () => {
+    const repository = createRepository();
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { query: "one call too many" },
+            id: "knowledge-call-limit",
+            name: "retrieve_knowledge"
+          }]
+        });
+      }
+      return providerResult({ finalText: "Continued without another retrieval" });
+    });
+    const execute = vi.fn<KnowledgeToolExecutor["execute"]>(async (call) => ({
+      callId: call.id,
+      content: [{
+        text: "Knowledge retrieval limit reached. Continue with the evidence already returned.",
+        type: "text"
+      }],
+      name: call.name,
+      rawPreview: {
+        finalProviderResponsePreview: { error: "knowledge_invocation_limit_reached" },
+        providerCall: false,
+        requestPreview: { queryCharacters: 17 }
+      },
+      status: "error",
+      usage: usage(0, 0, 0)
+    }));
+    const knowledgeExecutor: KnowledgeToolExecutor = {
+      accepts: (name) => name === "retrieve_knowledge",
+      capability: "knowledge",
+      execute,
+      tool: knowledgeRetrievalTool
+    };
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeExecutor,
+      prepared: preparedData({
+        knowledgeBaseIds: ["base-1"],
+        modelId: "openai-answer-model",
+        provider: "openai"
+      }),
+      repository: repository.repository
+    })).text();
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(providerRequests).toHaveLength(2);
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
+      .toContain("Knowledge retrieval limit reached");
+    expect(repository.completeRuns).toHaveLength(1);
+    expect([...repository.toolCalls.values()][0]?.state).toBe("error");
+  });
+
+  it("redacts an unexpected Knowledge execution failure before provider continuation", async () => {
+    const privateFailure = "PRIVATE-BASE-ID database failure";
+    const repository = createRepository();
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { query: "private query" },
+            id: "knowledge-call-failure",
+            name: "retrieve_knowledge"
+          }]
+        });
+      }
+      return providerResult({ finalText: "Continued after a safe Knowledge failure" });
+    });
+    const knowledgeExecutor: KnowledgeToolExecutor = {
+      accepts: (name) => name === "retrieve_knowledge",
+      capability: "knowledge",
+      execute: vi.fn(async () => {
+        throw new Error(privateFailure);
+      }),
+      tool: knowledgeRetrievalTool
+    };
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeExecutor,
+      prepared: preparedData({
+        knowledgeBaseIds: ["base-1"],
+        modelId: "openai-answer-model",
+        provider: "openai"
+      }),
+      repository: repository.repository
+    })).text();
+
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
+      .toContain("knowledge_retrieval_failed");
+    expect(JSON.stringify({
+      providerRequests,
+      toolCalls: [...repository.toolCalls.values()]
+    })).not.toContain(privateFailure);
+    expect(repository.completeRuns).toHaveLength(1);
   });
 
   it("executes a Perplexity tool call, persists search evidence, and synthesizes with aggregate usage", async () => {

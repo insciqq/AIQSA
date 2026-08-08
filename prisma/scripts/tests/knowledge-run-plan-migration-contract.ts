@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const TARGET_MIGRATION = "20260808180000_knowledge_run_plan";
+const TARGET_MIGRATION = "20260808190000_knowledge_retrieval_executor";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -120,6 +120,28 @@ function main(): void {
     );
   `), `"KnowledgeRunBinding"|12|5`, "Knowledge run constraints or indexes are missing");
 
+  assert.equal(scalar(`
+    SELECT concat_ws('|',
+      to_regclass('public."KnowledgeRun"')::text,
+      (SELECT count(*) FROM pg_constraint WHERE conname IN (
+        'KnowledgeRun_query_check',
+        'KnowledgeRun_limits_check',
+        'KnowledgeRun_evidence_shape_check',
+        'KnowledgeRun_outcome_shape_check',
+        'KnowledgeRun_negative_outcome_check',
+        'KnowledgeRun_failure_code_check',
+        'KnowledgeRun_modelRunId_fkey',
+        'KnowledgeRun_toolCall_fkey'
+      )),
+      (SELECT count(*) FROM pg_indexes WHERE indexname IN (
+        'ModelRunToolCall_modelRunId_id_key',
+        'KnowledgeRun_modelRunToolCallId_key',
+        'KnowledgeRun_modelRunId_modelRunToolCallId_key',
+        'KnowledgeRun_modelRunId_createdAt_idx'
+      ))
+    );
+  `), `"KnowledgeRun"|8|4`, "Knowledge retrieval receipt constraints or indexes are missing");
+
   requireSuccess(psql(`
     INSERT INTO "User" ("id", "email", "displayName", "status", "updatedAt")
     VALUES ('knowledge-run-user', 'knowledge-run@contract.test', 'Knowledge run user', 'active', CURRENT_TIMESTAMP);
@@ -196,6 +218,27 @@ function main(): void {
       'knowledge-run-connection', 'knowledge-run-model', 'knowledge-run-credential',
       'knowledge-run-credential-version', 'default', '{"version":1}'::jsonb
     );
+    INSERT INTO "ModelRunToolCall" (
+      "id", "modelRunId", "roundIndex", "ordinal", "providerCallId", "toolName",
+      "arguments", "state", "startedAt", "completedAt", "updatedAt"
+    ) VALUES (
+      'knowledge-tool-call', 'knowledge-run-one', 1, 0, 'provider-knowledge-call',
+      'retrieve_knowledge', '{"query":"contract query"}'::jsonb, 'complete',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    ), (
+      'knowledge-tool-call-two', 'knowledge-run-two', 1, 0, 'provider-knowledge-call-two',
+      'retrieve_knowledge', '{"query":"contract query"}'::jsonb, 'complete',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "KnowledgeRun" (
+      "id", "modelRunId", "modelRunToolCallId", "invocationOrdinal", "query", "outcome", "fusion",
+      "candidateLimit", "resultLimit", "candidateCount", "threshold", "baseEvidence",
+      "results", "providerText", "embeddingUsage", "durationMs", "updatedAt"
+    ) VALUES (
+      'knowledge-receipt', 'knowledge-run-one', 'knowledge-tool-call', 1, 'contract query',
+      'complete', 'rrf_k60', 40, 8, 1, 0.01, '[{}]'::jsonb, '[{}]'::jsonb,
+      '[K1.1] page 1 contract passage', '[]'::jsonb, 12, CURRENT_TIMESTAMP
+    );
   `), "seed valid immutable Knowledge run evidence");
 
   assert.equal(scalar(`
@@ -203,6 +246,34 @@ function main(): void {
       "targetDimension", jsonb_typeof("embeddingExecutionSnapshot"))
     FROM "KnowledgeRunBinding" WHERE "id" = 'knowledge-run-binding';
   `), "0|3|2|1536|object", "valid Knowledge run evidence did not round-trip");
+  assert.equal(scalar(`
+    SELECT concat_ws('|', "invocationOrdinal", "outcome", "fusion", "candidateCount", jsonb_array_length("results"))
+    FROM "KnowledgeRun" WHERE "id" = 'knowledge-receipt';
+  `), "1|complete|rrf_k60|1|1", "valid Knowledge retrieval receipt did not round-trip");
+
+  expectRejected(`
+    INSERT INTO "KnowledgeRun" (
+      "id", "modelRunId", "modelRunToolCallId", "invocationOrdinal", "query", "outcome", "fusion",
+      "candidateLimit", "resultLimit", "candidateCount", "threshold", "baseEvidence",
+      "results", "providerText", "embeddingUsage", "durationMs", "updatedAt"
+    ) VALUES (
+      'knowledge-receipt-invalid', 'knowledge-run-two', 'knowledge-tool-call-two', 2, 'query',
+      'zero_above_threshold', 'rrf_k60', 40, 8, 0, 0.01, '[{}]'::jsonb, '[]'::jsonb,
+      'empty', '[]'::jsonb, 1, CURRENT_TIMESTAMP
+    );
+  `, /KnowledgeRun_negative_outcome_check/u,
+  "invalid negative retrieval receipt");
+  expectRejected(`
+    INSERT INTO "KnowledgeRun" (
+      "id", "modelRunId", "modelRunToolCallId", "invocationOrdinal", "query", "outcome", "fusion",
+      "candidateLimit", "resultLimit", "candidateCount", "threshold", "baseEvidence",
+      "results", "providerText", "embeddingUsage", "durationMs", "updatedAt"
+    ) VALUES (
+      'knowledge-receipt-ordinal-invalid', 'knowledge-run-two', 'knowledge-tool-call-two', 4,
+      'query', 'base_empty', 'rrf_k60', 40, 8, 0, 0.01, '[{}]'::jsonb, '[]'::jsonb,
+      'empty', '[]'::jsonb, 1, CURRENT_TIMESTAMP
+    );
+  `, /KnowledgeRun_limits_check/u, "invalid Knowledge retrieval invocation ordinal");
 
   const bindingColumns = `
     "id", "modelRunId", "knowledgeBaseId", "ordinal", "baseContentRevision",
@@ -249,6 +320,8 @@ function main(): void {
     "delete accepted run");
   assert.equal(scalar(`SELECT count(*) FROM "KnowledgeRunBinding";`), "0",
     "run deletion must cascade only its owned Knowledge bindings");
+  assert.equal(scalar(`SELECT count(*) FROM "KnowledgeRun";`), "0",
+    "run deletion must cascade its owned Knowledge receipts");
 }
 
 try {

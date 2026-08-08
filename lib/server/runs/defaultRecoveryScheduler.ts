@@ -1,4 +1,5 @@
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
+import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { activeRunControllerRegistry } from "./runExecution";
 import { createPrismaRunRepository } from "./prismaRepository";
@@ -12,6 +13,7 @@ const globalForRecoveryScheduler = globalThis as unknown as {
 export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
   if (!globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler) {
     const deps = {
+      knowledgeExecutor: knowledgeToolExecutor,
       providerRuntime: providerRuntimeResolver,
       providers: {},
       registry: activeRunControllerRegistry,

@@ -2070,6 +2070,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           knowledgeRunBindings: {
             orderBy: { ordinal: "asc" }
           },
+          knowledgeRuns: {
+            orderBy: { createdAt: "asc" }
+          },
           searchRuns: {
             orderBy: {
               createdAt: "asc"
@@ -2126,6 +2129,28 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           vectorSpaceFingerprint: binding.vectorSpaceFingerprint.trim()
         })),
         knowledgePlan: knowledgePlanFromNormalizedRequest(run.normalizedRequest),
+        knowledgeRuns: run.knowledgeRuns.map((receipt) => ({
+          baseEvidence: Array.isArray(receipt.baseEvidence) ? receipt.baseEvidence : [],
+          candidateCount: receipt.candidateCount,
+          candidateLimit: receipt.candidateLimit,
+          createdAt: receipt.createdAt.toISOString(),
+          durationMs: receipt.durationMs,
+          embeddingUsage: Array.isArray(receipt.embeddingUsage) ? receipt.embeddingUsage : [],
+          failureCode: receipt.failureCode,
+          fusion: receipt.fusion as "rrf_k60",
+          id: receipt.id,
+          invocationOrdinal: receipt.invocationOrdinal,
+          modelRunToolCallId: receipt.modelRunToolCallId,
+          outcome: receipt.outcome,
+          postRerankOrder: receipt.postRerankOrder,
+          preRerankOrder: receipt.preRerankOrder,
+          providerText: receipt.providerText,
+          query: receipt.query,
+          rerankerBinding: receipt.rerankerBinding,
+          resultLimit: receipt.resultLimit,
+          results: Array.isArray(receipt.results) ? receipt.results : [],
+          threshold: receipt.threshold
+        })),
         modelId: run.modelId,
         normalizedRequest: run.normalizedRequest,
         outputTokens: run.outputTokens,

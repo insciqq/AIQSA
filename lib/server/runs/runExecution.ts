@@ -44,6 +44,11 @@ import {
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
+import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import {
+  knowledgeEvidenceFromToolResult,
+  knowledgeUsageAttributionsFromToolResult
+} from "../knowledge/toolResult";
 import {
   hasInvalidProviderToolArguments,
   type ModelToolCall,
@@ -176,6 +181,7 @@ export type RunExecutionInput = Readonly<{
   }>;
   prepared: MaterializedPreparedRunData;
   repository: RunExecutionRepository;
+  knowledgeExecutor?: KnowledgeToolExecutor;
   mcpRuntime?: Readonly<{
     callTool(input: {
       arguments: Record<string, unknown>;
@@ -380,12 +386,16 @@ function hasReportedUsage(usage: ModelRunUsage | undefined): usage is ModelRunUs
 function toolExecutionErrorResult(
   call: ModelToolCall,
   error: unknown,
-  label: "Search" | "Tool" = "Tool"
+  label: "Knowledge" | "Search" | "Tool" = "Tool"
 ): ToolExecutionResult {
-  const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
+  const overflowResult = label === "Knowledge"
+    ? null
+    : mcpResponseOverflowToolExecutionResult(call, error, label);
   if (overflowResult) return overflowResult;
 
-  const message = error instanceof Error ? error.message : `${label} execution failed`;
+  const message = label === "Knowledge"
+    ? "knowledge_retrieval_failed"
+    : error instanceof Error ? error.message : `${label} execution failed`;
 
   return {
     callId: call.id,
@@ -503,6 +513,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const abortController = new AbortController();
   const runId = input.created.runId;
   const normalizedRequest = input.prepared.normalizedRequest;
+  const clientToolsEnabled = normalizedRequest.toolMode !== "none";
+  const knowledgeEnabled = clientToolsEnabled &&
+    normalizedRequest.modelCapabilities.toolCalling === true &&
+    (normalizedRequest.knowledgePlan?.baseIds.length ?? 0) > 0;
   activeRunControllers.set(runId, abortController);
 
   const stream = new ReadableStream<Uint8Array>({
@@ -654,7 +668,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         const searchPolicy = normalizedRequest.searchPolicy;
-        const searchEnabled = !normalizedRequest.searchPlan &&
+        const searchEnabled = clientToolsEnabled && !normalizedRequest.searchPlan &&
           normalizedRequest.searchStrategy === "perplexity-tool-search";
         if (searchEnabled && (!input.searchAdapter || !searchPolicy ||
           searchPolicy.strategyId !== normalizedRequest.searchStrategy)) {
@@ -666,18 +680,27 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               searchPolicy: searchPolicy!
             })
           : null;
-        const searchPlanRouter = normalizedRequest.searchPlan
+        const searchPlanRouter = clientToolsEnabled && normalizedRequest.searchPlan
           ? createSearchPlanToolRouter({
               plan: normalizedRequest.searchPlan,
               runtimes: input.searchRuntimes ?? {}
             })
           : null;
+        if (knowledgeEnabled && !input.knowledgeExecutor) {
+          throw new RunPipelineError(
+            "knowledge_policy_not_available",
+            "Knowledge retrieval is not available"
+          );
+        }
+        const knowledgeExecutor = knowledgeEnabled ? input.knowledgeExecutor ?? null : null;
         const isSearchCall = (name: string) =>
           (searchExecutor !== null && name === searchExecutor.tool.name) ||
           searchPlanRouter?.accepts(name) === true;
+        const isKnowledgeCall = (name: string) => knowledgeExecutor?.accepts(name) === true;
         const tools: RunTool[] = [
+          ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
           ...(searchPlanRouter?.tools ?? (searchExecutor ? [perplexityWebSearchTool] : [])),
-          ...mcpRunTools(normalizedRequest.mcp)
+          ...(clientToolsEnabled ? mcpRunTools(normalizedRequest.mcp) : [])
         ];
         if (tools.length === 0) {
           throw new RunPipelineError("tool_configuration_empty", "No run tools are configured");
@@ -740,6 +763,19 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     modelRunId: runId,
                     repository: input.repository
                   });
+                }
+              } else if (isKnowledgeCall(call.name)) {
+                const evidence = knowledgeEvidenceFromToolResult(result);
+                if (result.status === "complete" && !evidence) {
+                  throw new RunPipelineError(
+                    "tool_call_result_invalid",
+                    "Persisted Knowledge result evidence is invalid"
+                  );
+                }
+                if (evidence) {
+                  for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
+                    rememberReportedUsage(attribution.provider, attribution.modelId, attribution.usage);
+                  }
                 }
               }
               for (const artifact of result.artifacts ?? []) {
@@ -864,7 +900,14 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 if (hasInvalidProviderToolArguments(call.arguments)) {
                   throw new Error("provider_tool_arguments_invalid");
                 }
-                if (searchPlanRouter?.accepts(call.name)) {
+                if (isKnowledgeCall(call.name)) {
+                  result = await knowledgeExecutor!.execute(call, {
+                    persistedToolCallId: claim.call.id,
+                    request,
+                    runId,
+                    userId: input.userId
+                  }, { signal: context.signal });
+                } else if (searchPlanRouter?.accepts(call.name)) {
                   result = await searchPlanRouter.execute(call, request, { signal: context.signal });
                 } else if (searchExecutor && call.name === searchExecutor.tool.name) {
                   result = await searchExecutor.execute(call, { request, runId }, { signal: context.signal });
@@ -892,7 +935,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 result = toolExecutionErrorResult(
                   call,
                   error,
-                  isSearchCall(call.name) ? "Search" : "Tool"
+                  isKnowledgeCall(call.name)
+                    ? "Knowledge"
+                    : isSearchCall(call.name) ? "Search" : "Tool"
                 );
               }
               const storedResult = snapshotToolExecutionResult(
@@ -963,7 +1008,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
-                if (!route && !isSearchCall(call.name)) {
+                if (!route && !isSearchCall(call.name) && !isKnowledgeCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -1131,11 +1176,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           }
         }
 
-        const hasClientSearch = (normalizedRequest.searchPlan?.options.some((option) =>
+        const hasClientSearch = clientToolsEnabled && ((normalizedRequest.searchPlan?.options.some((option) =>
           option.adapterKind === "provider_model_client") ?? false) ||
-          (!normalizedRequest.searchPlan && normalizedRequest.searchStrategy === "perplexity-tool-search");
+          (!normalizedRequest.searchPlan &&
+            normalizedRequest.searchStrategy === "perplexity-tool-search"));
         const hasClientTools = hasClientSearch ||
-          (normalizedRequest.mcp?.tools.length ?? 0) > 0;
+          (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) || knowledgeEnabled;
         const providerResult = hasClientTools
           ? await runProviderToolLoop(input.prepared.providerRequest)
           : await streamProviderRequest(input.prepared.providerRequest);

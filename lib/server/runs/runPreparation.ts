@@ -51,6 +51,7 @@ import { providerToolBridges } from "../tools/bridges";
 import type { ProviderToolBridge } from "../tools/types";
 import { perplexityWebSearchTool } from "../tools/perplexitySearch";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
+import { knowledgeRetrievalTool } from "../knowledge/toolExecutor";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import {
   getRunAttachmentLimits,
@@ -1326,7 +1327,8 @@ export async function prepareRun(
           }
         }
       : {}),
-    searchStrategy
+    searchStrategy,
+    toolMode: body?.tools === "none" ? "none" : "auto"
   };
   const plannedSearchTools = unbudgetedNormalizedRequest.searchPlan
     ? createSearchPlanToolRouter({
@@ -1334,14 +1336,22 @@ export async function prepareRun(
         runtimes: {}
       })?.tools ?? []
     : [];
-  const clientTools = [
-    ...(plannedSearchTools.length
-      ? plannedSearchTools
-      : searchStrategy === perplexityToolSearchStrategyId
-        ? [perplexityWebSearchTool]
-        : []),
-    ...mcpRunTools(unbudgetedNormalizedRequest.mcp)
-  ];
+  const clientTools = unbudgetedNormalizedRequest.toolMode === "none"
+    ? []
+    : [
+        ...(
+          modelCapabilities.toolCalling === true &&
+          unbudgetedNormalizedRequest.knowledgePlan!.baseIds.length > 0
+            ? [knowledgeRetrievalTool]
+            : []
+        ),
+        ...(plannedSearchTools.length
+          ? plannedSearchTools
+          : searchStrategy === perplexityToolSearchStrategyId
+            ? [perplexityWebSearchTool]
+            : []),
+        ...mcpRunTools(unbudgetedNormalizedRequest.mcp)
+      ];
   const unbudgetedProviderRequest: ProviderRunRequest = {
     ...unbudgetedNormalizedRequest,
     attachments,

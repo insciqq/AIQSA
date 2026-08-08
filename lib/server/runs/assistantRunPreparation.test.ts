@@ -232,6 +232,71 @@ describe("ordinary Knowledge plan resolution", () => {
     expect(load).not.toHaveBeenCalled();
   });
 
+  it("retains the accepted plan while explicit tool suppression skips Knowledge execution", async () => {
+    const load = vi.fn(async ({ knowledgePlan, userId }) => ({
+      bindings: [],
+      fingerprint: "c".repeat(64),
+      knowledgePlan,
+      userId
+    }));
+    const result = await prepareRun(deps({ knowledgeAdmission: { load } }), {
+      body: {
+        knowledgePlan: { baseIds: ["base-1"] },
+        text: "Hello",
+        tools: "none"
+      },
+      source: sendSource(),
+      userId: "user-1"
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.prepared.normalizedRequest).toMatchObject({
+        knowledgePlan: { baseIds: ["base-1"] },
+        toolMode: "none"
+      });
+      expect(result.prepared.providerRequest.tools).toBeUndefined();
+    }
+  });
+
+  it("retains the accepted plan but skips Knowledge for a non-tool model", async () => {
+    const runRepository = repository();
+    runRepository.loadModelConfiguration.mockResolvedValue({
+      capabilities: {
+        contextWindow: 128_000,
+        maxOutputTokens: 8_192,
+        nativeSearch: false,
+        pdf: false,
+        reasoning: true,
+        reasoningEfforts: ["low", "medium", "high"],
+        streaming: true,
+        toolCalling: false,
+        vision: false
+      },
+      defaultParams: {}
+    });
+    const load = vi.fn(async ({ knowledgePlan, userId }) => ({
+      bindings: [],
+      fingerprint: "d".repeat(64),
+      knowledgePlan,
+      userId
+    }));
+    const result = await prepareRun(deps({
+      knowledgeAdmission: { load },
+      repository: runRepository as unknown as RunPreparationDeps["repository"]
+    }), {
+      body: { knowledgePlan: { baseIds: ["base-1"] }, text: "Hello" },
+      source: sendSource(),
+      userId: "user-1"
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.prepared.normalizedRequest.knowledgePlan).toEqual({ baseIds: ["base-1"] });
+      expect(result.prepared.providerRequest.tools).toBeUndefined();
+    }
+  });
+
   it("applies the same explicit-plan wire contract to regeneration", async () => {
     const load = vi.fn(async ({ knowledgePlan, userId }) => ({
       bindings: [],

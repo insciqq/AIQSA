@@ -36,7 +36,7 @@ export type ThreadSearchExecution = {
 export type ThreadToolActivity = {
   argumentsPreview: unknown;
   callId: string;
-  capability: "mcp" | "web_search";
+  capability: "knowledge" | "mcp" | "web_search";
   credentialSources: ("oauth" | "personal" | "shared")[];
   durationMs: number | null;
   errorMessage: string | null;
@@ -299,7 +299,8 @@ export function decodeThreadToolActivity(value: unknown): ThreadToolActivity | n
   }
 
   const callId = boundedString(value.callId, 256);
-  const capability = value.capability === "mcp" || value.capability === "web_search"
+  const capability = value.capability === "knowledge" || value.capability === "mcp" ||
+    value.capability === "web_search"
     ? value.capability
     : null;
   const sources = credentialSources(value.credentialSources);

@@ -9,6 +9,10 @@ import {
   compactSearchToolExecutionResult,
   rehydratePersistedSearchToolExecutionResult
 } from "../search/toolResult";
+import {
+  compactKnowledgeToolExecutionResult,
+  rehydratePersistedKnowledgeToolExecutionResult
+} from "../knowledge/toolResult";
 
 const artifactTypes = new Set([
   "citation",
@@ -150,7 +154,7 @@ export function parsePersistedToolExecutionResult(
   if (value.usage !== undefined && !usage) return null;
   if (value.rawPreview !== undefined && !isRecord(value.rawPreview)) return null;
 
-  return rehydratePersistedSearchToolExecutionResult({
+  const searchResult = rehydratePersistedSearchToolExecutionResult({
     ...(artifacts ? { artifacts } : {}),
     callId: call.id,
     content,
@@ -161,13 +165,17 @@ export function parsePersistedToolExecutionResult(
     status: value.status,
     ...(usage ? { usage } : {})
   });
+  return searchResult ? rehydratePersistedKnowledgeToolExecutionResult(searchResult) : null;
 }
 
 export function snapshotToolExecutionResult(
   result: ToolExecutionResult,
   maxBytes: number
 ): ToolLoopJsonValue | null {
-  const durableResult = compactSearchToolExecutionResult(result);
+  const knowledgeResult = compactKnowledgeToolExecutionResult(result);
+  const durableResult = knowledgeResult
+    ? compactSearchToolExecutionResult(knowledgeResult)
+    : null;
   if (!durableResult) return null;
   const snapshot = snapshotToolLoopJson(durableResult, maxBytes);
   return snapshot && parsePersistedToolExecutionResult(

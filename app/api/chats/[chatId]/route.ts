@@ -2,6 +2,7 @@ import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { createArchiveChatHandler, createGetChatHandler, createUpdateChatHandler } from "@/lib/server/chats/handlers";
 import { createPrismaChatRepository } from "@/lib/server/chats/prismaRepository";
 import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
+import { knowledgeToolExecutor } from "@/lib/server/knowledge/defaultRetrieval";
 import { activeRunControllerRegistry } from "@/lib/server/runs/runExecution";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 import { reconcileStaleRuns } from "@/lib/server/runs/runRecovery";
@@ -16,6 +17,7 @@ const storage = createS3StorageAdapter();
 export const GET = createGetChatHandler({
   reconcileRuns: (input) =>
     reconcileStaleRuns({
+      knowledgeExecutor: knowledgeToolExecutor,
       providerRuntime: providerRuntimeResolver,
       providers: {},
       registry: activeRunControllerRegistry,

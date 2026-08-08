@@ -143,6 +143,7 @@ describe("decodeGetModelRunResponse", () => {
       inputTokens: 12,
       knowledgeBindings: [],
       knowledgePlan: { baseIds: [] },
+      knowledgeRuns: [],
       modelId: "gpt-5",
       outputTokens: 8,
       provider: "openai",
@@ -189,6 +190,46 @@ describe("decodeGetModelRunResponse", () => {
     }
   });
 
+  it("decodes bounded ordered Knowledge retrieval receipts", () => {
+    const receipt = {
+      baseEvidence: [{ knowledgeBaseId: "base-1", ordinal: 0 }],
+      candidateCount: 0,
+      candidateLimit: 40,
+      createdAt: "2026-08-08T12:00:00.000Z",
+      durationMs: 9,
+      embeddingUsage: [],
+      failureCode: null,
+      fusion: "rrf_k60",
+      id: "knowledge-run-1",
+      invocationOrdinal: 1,
+      modelRunToolCallId: "tool-call-row-1",
+      outcome: "base_empty",
+      postRerankOrder: null,
+      preRerankOrder: null,
+      providerText: "Knowledge retrieval returned no indexed passages: base_empty.",
+      query: "retained contract",
+      rerankerBinding: null,
+      resultLimit: 8,
+      results: [],
+      threshold: 0.01
+    };
+    const run = { ...requiredRunFields(), knowledgeRuns: [receipt] };
+
+    expect(decodeGetModelRunResponse({ run })?.knowledgeRuns).toEqual([receipt]);
+    expect(decodeGetModelRunResponse({
+      run: { ...run, knowledgeRuns: [{ ...receipt, invocationOrdinal: 0 }] }
+    })).toBeNull();
+    expect(decodeGetModelRunResponse({
+      run: {
+        ...run,
+        knowledgeRuns: [receipt, { ...receipt, id: "knowledge-run-2" }]
+      }
+    })).toBeNull();
+    expect(decodeGetModelRunResponse({
+      run: { ...run, knowledgeRuns: Array.from({ length: 4 }, () => receipt) }
+    })).toBeNull();
+  });
+
   it("rejects a malformed assistant provenance", () => {
     for (const assistant of [
       { assistantId: "", name: "Docs helper", revisionNumber: 2 },
@@ -227,6 +268,7 @@ describe("decodeGetModelRunResponse", () => {
       inputTokens: 12,
       knowledgeBindings: [],
       knowledgePlan: { baseIds: [] },
+      knowledgeRuns: [],
       modelId: "gpt-5",
       outputTokens: 0,
       provider: "openai",

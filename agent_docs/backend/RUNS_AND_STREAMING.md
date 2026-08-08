@@ -83,13 +83,33 @@ The first send in a blank/new chat derives a short deterministic title from loca
 - stop persisting provider stream events promptly after explicit cancellation;
 - close with `done`.
 
+## Knowledge Tool Evidence And Recovery
+
+Every requested Knowledge invocation is first a durable `ModelRunToolCall`.
+Execution writes one matching `KnowledgeRun` receipt containing the generated
+query, accepted per-base revision/generation evidence, candidate counts and
+threshold, real ANN/FTS/RRF scores, exact private chunk/version/page mapping,
+the exact included text and truncation facts, embedding usage, duration, and
+the explicit positive or negative outcome. Thread tool activity uses capability
+`knowledge`, and authenticated run inspection returns the complete receipt;
+provider continuation receives only its opaque citation handles, pages, and
+bounded passage text.
+
+The settled tool call keeps a versioned canonical projection. Persistence may
+compact its repeated provider text to a marker, but foreground reuse and
+recovery rehydrate that text deterministically from the stored receipt
+evidence. A settled call is therefore replayed verbatim without another query
+embedding or retrieval. A call left `running` across a crash remains
+outcome-ambiguous and is never repeated. A malformed marker/receipt fails
+recovery with `tool_call_result_invalid` rather than reconstructing evidence.
+
 ## Cost And Usage
 
 Token/cost math belongs in `lib/domain/usage.ts` with unit tests.
 
 Completed runs persist provider-reported `inputTokens`, `cachedInputTokens`, `cacheWriteInputTokens`, `outputTokens`, `reasoningTokens`, and `totalTokens`, while preserving the older coarse fields. Normalized `reasoningTokens` are treated as a subset of `outputTokens`, matching OpenAI/OpenRouter usage-detail semantics. `totalTokens` prefers provider-reported totals and falls back to `inputTokens + outputTokens` for providers and old rows that omit totals. `cachedInputTokens` is provider-reported only; do not infer cache hits from repeated text. Anthropic input normalization sums uncached, cache-creation, and cache-read fields, while thinking usage comes from current output-token details.
 
-Search-tool `ModelRun` fields and completed lifetime `Chat.total*` counters keep the end-to-end sum across answer-model rounds plus every client-engine execution. Each `SearchRun` retains its reported usage evidence, while `UsageEvent` stores one grouped attribution per actual provider/model instead of pricing or reporting the entire run as the answer model. If a later provider/tool round fails or is cancelled, only usage already reported by a completed round or usage event is persisted; AIQSA does not estimate unreported failed-request usage. A later successful recovery replaces incomplete attribution rows with the final completed breakdown.
+Search/Knowledge-tool `ModelRun` fields and completed lifetime `Chat.total*` counters keep the end-to-end sum across answer-model rounds plus every client-engine or query-embedding execution. Each `SearchRun` and `KnowledgeRun` retains its reported usage evidence, while `UsageEvent` stores one grouped attribution per actual provider/model instead of pricing or reporting the entire run as the answer model. If a later provider/tool round fails or is cancelled, only usage already reported by a completed round or usage event is persisted; AIQSA does not estimate unreported failed-request usage. A later successful recovery replaces incomplete attribution rows with the final completed breakdown.
 
 `Chat.totalInputTokens`, `Chat.totalOutputTokens`, and `Chat.totalReasoningTokens` are lifetime completed-run counters for operational accounting. They intentionally count completed sibling/regenerated runs and are not the user-facing active-branch usage number. The shell's circular context indicator derives its arc from approximate current input divided by the conservative safe input budget; its branch-aware detail disclosure uses `summarizeChatUsageStats` over the active visible branch for provider-reported usage.
 

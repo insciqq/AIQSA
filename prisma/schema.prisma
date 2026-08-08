@@ -58,6 +58,14 @@ enum SearchRunStatus {
   error
 }
 
+enum KnowledgeRunOutcome {
+  complete
+  zero_above_threshold
+  base_empty
+  base_indexing
+  embedding_model_unavailable
+}
+
 enum AttachmentStatus {
   processing
   ready
@@ -1213,6 +1221,7 @@ model ModelRun {
   events                       ModelRunEvent[]
   mcpRunBindings               McpRunBinding[]
   knowledgeRunBindings         KnowledgeRunBinding[]
+  knowledgeRuns                KnowledgeRun[]
   providerRunBindings          ProviderRunBinding[]
   searchRuns                   SearchRun[]
   searchRunBindings            SearchRunBinding[]
@@ -1445,11 +1454,43 @@ model ModelRunToolCall {
   updatedAt       DateTime              @updatedAt
   mcpRunBinding   McpRunBinding?        @relation(fields: [mcpRunBindingId], references: [id], onDelete: SetNull)
   modelRun        ModelRun              @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  knowledgeRun    KnowledgeRun?
 
   @@unique([modelRunId, roundIndex, providerCallId])
   @@unique([modelRunId, roundIndex, ordinal])
+  @@unique([modelRunId, id])
   @@index([mcpRunBindingId])
   @@index([modelRunId, state])
+}
+
+model KnowledgeRun {
+  id                 String              @id @default(uuid())
+  modelRunId         String
+  modelRunToolCallId String              @unique
+  invocationOrdinal  Int
+  query              String              @db.VarChar(500)
+  outcome            KnowledgeRunOutcome
+  fusion             String              @db.VarChar(32)
+  candidateLimit     Int
+  resultLimit        Int
+  candidateCount     Int
+  threshold          Float
+  baseEvidence       Json
+  results            Json
+  providerText       String
+  embeddingUsage     Json
+  durationMs         Int
+  failureCode        String?             @db.VarChar(128)
+  rerankerBinding    Json?
+  preRerankOrder     Json?
+  postRerankOrder    Json?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  modelRun           ModelRun            @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  modelRunToolCall   ModelRunToolCall    @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeRun_toolCall_fkey")
+
+  @@unique([modelRunId, modelRunToolCallId])
+  @@index([modelRunId, createdAt])
 }
 
 model SearchRun {

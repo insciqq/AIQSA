@@ -32,6 +32,11 @@ import {
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
+import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import {
+  knowledgeEvidenceFromToolResult,
+  knowledgeUsageAttributionsFromToolResult
+} from "../knowledge/toolResult";
 import {
   hasInvalidProviderToolArguments,
   type ModelToolCall,
@@ -135,6 +140,7 @@ export type RunRecoveryMcpRuntime = Readonly<{
 
 export type RunRecoveryDeps = Readonly<{
   getAttachmentLimits?: () => RunAttachmentLimits;
+  knowledgeExecutor?: KnowledgeToolExecutor;
   mcpRuntime?: RunRecoveryMcpRuntime;
   providerRuntime?: ProviderRuntimeResolver;
   providers: Readonly<Record<string, ProviderAdapter>>;
@@ -278,13 +284,17 @@ function toolLoopJson(value: unknown, maxBytes: number, code: string): ToolLoopJ
 function toolExecutionErrorResult(
   call: ModelToolCall,
   error: unknown,
-  label: "Search" | "Tool" = "Tool"
+  label: "Knowledge" | "Search" | "Tool" = "Tool"
 ): ToolExecutionResult {
-  const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
+  const overflowResult = label === "Knowledge"
+    ? null
+    : mcpResponseOverflowToolExecutionResult(call, error, label);
   if (overflowResult) return overflowResult;
 
   const rawMessage = error instanceof Error ? error.message : `${label} execution failed`;
-  const message = rawMessage.slice(0, 512);
+  const message = label === "Knowledge"
+    ? "knowledge_retrieval_failed"
+    : rawMessage.slice(0, 512);
   return {
     callId: call.id,
     content: [{ text: `${label} failed: ${message}`, type: "text" }],
@@ -485,12 +495,17 @@ type RecoveryToolContext = Readonly<{
   providerRequest: ProviderRunRequest;
   run: CheckpointedToolLoopRun;
   runtime(): RunRecoveryMcpRuntime;
+  knowledgeExecutor: KnowledgeToolExecutor | null;
   searchExecutor: RecoverySearchExecutor | null;
   usageAttributions: RunUsageAttribution[];
 }>;
 
 function isRecoveredSearchCall(context: RecoveryToolContext, name: string): boolean {
   return context.searchExecutor?.accepts(name) === true;
+}
+
+function isRecoveredKnowledgeCall(context: RecoveryToolContext, name: string): boolean {
+  return context.knowledgeExecutor?.accepts(name) === true;
 }
 
 function settledSearchUsageNeedsRecovery(
@@ -598,6 +613,17 @@ async function executePersistedToolCall(
         ),
         result
       });
+    } else if (isRecoveredKnowledgeCall(context, call.name)) {
+      const evidence = knowledgeEvidenceFromToolResult(result);
+      if (result.status === "complete" && !evidence) {
+        throw new ToolLoopRecoveryError(
+          "tool_call_result_invalid",
+          "Persisted Knowledge result evidence is invalid and cannot be replayed safely."
+        );
+      }
+      if (evidence && settledSearchUsageNeedsRecovery(claim.call, context.persistedUsageRecordedAt)) {
+        context.usageAttributions.push(...knowledgeUsageAttributionsFromToolResult(result));
+      }
     }
     return {
       call,
@@ -612,7 +638,24 @@ async function executePersistedToolCall(
     if (hasInvalidProviderToolArguments(call.arguments)) {
       throw new Error("provider_tool_arguments_invalid");
     }
-    if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
+    if (isRecoveredKnowledgeCall(context, call.name)) {
+      result = await context.knowledgeExecutor!.execute(call, {
+        persistedToolCallId: claim.call.id,
+        request: context.providerRequest,
+        runId: context.run.id,
+        userId: context.run.userId
+      }, { signal });
+      const evidence = knowledgeEvidenceFromToolResult(result);
+      if (result.status === "complete" && !evidence) {
+        throw new ToolLoopRecoveryError(
+          "tool_call_result_invalid",
+          "Knowledge result evidence is invalid and cannot be persisted safely."
+        );
+      }
+      if (evidence) {
+        context.usageAttributions.push(...knowledgeUsageAttributionsFromToolResult(result));
+      }
+    } else if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       result = await context.searchExecutor.execute(
         call,
         context.providerRequest,
@@ -644,7 +687,9 @@ async function executePersistedToolCall(
     result = toolExecutionErrorResult(
       call,
       error,
-      context.searchExecutor && isRecoveredSearchCall(context, call.name) ? "Search" : "Tool"
+      isRecoveredKnowledgeCall(context, call.name)
+        ? "Knowledge"
+        : context.searchExecutor && isRecoveredSearchCall(context, call.name) ? "Search" : "Tool"
     );
   }
   if (signal.aborted) throw new ToolLoopRecoveryStopped();
@@ -798,7 +843,8 @@ async function recoverCheckpointedToolLoop(
       ...run.normalizedRequest,
       attachments
     };
-    const searchEnabled = !run.normalizedRequest.searchPlan &&
+    const clientToolsEnabled = run.normalizedRequest.toolMode !== "none";
+    const searchEnabled = clientToolsEnabled && !run.normalizedRequest.searchPlan &&
       run.normalizedRequest.searchStrategy === "perplexity-tool-search";
     const searchPolicy = run.normalizedRequest.searchPolicy;
     const searchAdapter = searchPolicy
@@ -814,7 +860,9 @@ async function recoverCheckpointedToolLoop(
       ? createPerplexitySearchToolExecutor({ searchAdapter: searchAdapter!, searchPolicy: searchPolicy! })
       : null;
     const planRuntimes: Record<string, ProviderRuntimeBinding> = {};
-    for (const option of run.normalizedRequest.searchPlan?.options ?? []) {
+    for (const option of clientToolsEnabled
+      ? run.normalizedRequest.searchPlan?.options ?? []
+      : []) {
       if (option.adapterKind !== "provider_model_client") continue;
       const optionRuntime = await resolvePlanSearchRuntime(deps, run.id, option);
       if (!optionRuntime) {
@@ -825,7 +873,7 @@ async function recoverCheckpointedToolLoop(
       }
       planRuntimes[option.optionId] = optionRuntime;
     }
-    const candidatePlanSearchRouter = run.normalizedRequest.searchPlan
+    const candidatePlanSearchRouter = clientToolsEnabled && run.normalizedRequest.searchPlan
       ? createSearchPlanToolRouter({
           acceptLegacyToolNames: true,
           plan: run.normalizedRequest.searchPlan,
@@ -849,7 +897,7 @@ async function recoverCheckpointedToolLoop(
         }
       }
     }
-    const planSearchRouter = run.normalizedRequest.searchPlan
+    const planSearchRouter = clientToolsEnabled && run.normalizedRequest.searchPlan
       ? createSearchPlanToolRouter({
           acceptLegacyToolNames: true,
           initialInvocationCounts: settledSearchInvocationCounts,
@@ -881,9 +929,20 @@ async function recoverCheckpointedToolLoop(
             tools: [perplexityWebSearchTool]
           }
         : null;
+    const knowledgeEnabled = clientToolsEnabled &&
+      run.normalizedRequest.modelCapabilities.toolCalling === true &&
+      (run.normalizedRequest.knowledgePlan?.baseIds.length ?? 0) > 0;
+    if (knowledgeEnabled && !deps.knowledgeExecutor) {
+      throw new ToolLoopRecoveryError(
+        "knowledge_policy_not_available",
+        "The saved Knowledge retrieval policy is no longer available."
+      );
+    }
+    const knowledgeExecutor = knowledgeEnabled ? deps.knowledgeExecutor ?? null : null;
     const tools: RunTool[] = [
+      ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
       ...(searchExecutor?.tools ?? []),
-      ...mcpRunTools(run.normalizedRequest.mcp)
+      ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : [])
     ];
     if (tools.length === 0) {
       throw new ToolLoopRecoveryError(
@@ -900,6 +959,7 @@ async function recoverCheckpointedToolLoop(
       persistedUsageRecordedAt,
       providerRequest,
       run,
+      knowledgeExecutor,
       runtime() {
         runtime ??= getDefaultMcpRuntimeCoordinator();
         return runtime;
@@ -1007,7 +1067,8 @@ async function recoverCheckpointedToolLoop(
       const persisted = await deps.repository.persistToolLoopCallBatch({
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(run.normalizedRequest.mcp, call.name);
-          if (!route && searchExecutor?.accepts(call.name) !== true) {
+          if (!route && searchExecutor?.accepts(call.name) !== true &&
+            knowledgeExecutor?.accepts(call.name) !== true) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`

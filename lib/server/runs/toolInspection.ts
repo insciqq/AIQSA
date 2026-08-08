@@ -7,6 +7,7 @@ import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import { isToolLoopJsonValue } from "./toolLoopPersistence";
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";
+import { KNOWLEDGE_TOOL_NAME } from "../knowledge/retrievalTypes";
 
 const sensitiveKey = /(?:api.?key|(?:access|private|ssh|signing|encryption).?key|(?:^|[_.-])key(?:$|[_.-]|id$)|token|auth(?:orization)?|bearer|client.?secret|cookie|credential|passphrase|password|secret|verifier)/iu;
 const bearerValue = /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu;
@@ -68,7 +69,10 @@ export function boundedRedactedToolPreview(value: unknown): unknown {
 function toolSnapshot(mcp: McpRunPlanSnapshot | undefined, name: string) {
   const route = resolveMcpRunTool(mcp, name);
   if (!route) {
-    return { capability: "web_search", toolName: name };
+    return {
+      capability: name === KNOWLEDGE_TOOL_NAME ? "knowledge" : "web_search",
+      toolName: name
+    };
   }
   const server = mcp?.servers.find((candidate) => candidate.serverId === route.serverId);
   return {

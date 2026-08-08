@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { encryptProviderCredentialSecret } from "../providers/credentialSecrets";
-import { createPrismaEmbeddingRuntime } from "./embeddingRuntime";
+import { createAcceptedEmbeddingRuntime, createPrismaEmbeddingRuntime } from "./embeddingRuntime";
 
 const KEY = Buffer.alloc(32, 23);
 const configuration = {
@@ -202,5 +202,59 @@ describe("embedding runtime admission", () => {
       providerModelId: "embedding-1",
       userId: "user-1"
     })).rejects.toMatchObject({ code });
+  });
+
+  it("reuses an accepted snapshot without live catalog admission and guards its exact credential", async () => {
+    const prisma = store();
+    const admitted = await createPrismaEmbeddingRuntime(
+      prisma as unknown as PrismaClient,
+      { createFetch: () => vi.fn<typeof fetch>(), encryptionKey: () => KEY }
+    ).resolveForUser({ providerModelId: "embedding-1", userId: "user-1" });
+    for (const delegate of [
+      prisma.accessGrant.count,
+      prisma.providerCredential.findMany,
+      prisma.providerModel.findFirst,
+      prisma.providerModel.findUnique,
+      prisma.providerModelCredentialCheck.findFirst,
+      prisma.providerGroupCredentialAssignment.findMany,
+      prisma.providerUserCredentialAssignment.findUnique,
+      prisma.user.findFirst,
+      prisma.userGroup.findMany
+    ]) delegate.mockClear();
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => new Response(JSON.stringify({
+      data: [{ embedding: Array.from({ length: 4_096 }, () => 1), index: 0 }],
+      model: "qwen/qwen3-embedding-8b",
+      usage: { prompt_tokens: 5, total_tokens: 5 }
+    }), { status: 200 }));
+    const accepted = createAcceptedEmbeddingRuntime(
+      prisma as unknown as PrismaClient,
+      { createFetch: () => fetchFn, encryptionKey: () => KEY }
+    );
+
+    const runtime = await accepted.resolve({
+      connectionId: admitted.connectionId,
+      credentialId: admitted.credentialId,
+      credentialVersionId: admitted.credentialVersionId,
+      executionSnapshot: admitted.executionSnapshot,
+      providerModelId: admitted.providerModelId
+    });
+    await runtime.adapter.embed({ mode: "query", texts: ["literal query"] });
+
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toMatchObject({
+      input: ["Query: literal query"]
+    });
+    expect(prisma.providerCredentialVersion.findFirst).toHaveBeenCalledOnce();
+    for (const delegate of [
+      prisma.accessGrant.count,
+      prisma.providerCredential.findMany,
+      prisma.providerModel.findFirst,
+      prisma.providerModel.findUnique,
+      prisma.providerModelCredentialCheck.findFirst,
+      prisma.providerGroupCredentialAssignment.findMany,
+      prisma.providerUserCredentialAssignment.findUnique,
+      prisma.user.findFirst,
+      prisma.userGroup.findMany
+    ]) expect(delegate).not.toHaveBeenCalled();
   });
 });

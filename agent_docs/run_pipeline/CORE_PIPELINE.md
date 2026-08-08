@@ -8,7 +8,7 @@ Not owned here: Search integration policy, UI transparency presentation, sharing
 
 ## Product Thesis
 
-The core product is a provider-neutral model run. A run starts from a user message, may use web search and MCP tools, and produces a model response plus inspectable execution evidence. Search is optional rather than the identity of the product, and future agent orchestration should extend the same run, entitlement, and transparency contracts.
+The core product is a provider-neutral model run. A run starts from a user message, may use private Knowledge retrieval, web search, and MCP tools, and produces a model response plus inspectable execution evidence. Search is optional rather than the identity of the product, and future agent orchestration should extend the same run, entitlement, and transparency contracts.
 
 ```text
 Message -> optional search and tools -> model response
@@ -31,9 +31,9 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
    - admitted user-owned attachments. [Provider admission](../backend/providers/ADMISSION_AND_BINDINGS.md) owns capability and PDF-route selection; [Runs and streaming](../backend/RUNS_AND_STREAMING.md) owns private materialization, replay, and context-budget mechanics.
 
 2. Optional search and tools
-   - optional but first-class Search and model-requested MCP tools remain inside the same run;
+   - optional but first-class Knowledge retrieval, Search, and model-requested MCP tools remain inside the same run;
    - [Search plans and integrations](SEARCH_PLANS.md) owns preference, compatibility, route selection, invocation, evidence, and publication semantics;
-   - the MCP paragraphs below own effective inventory, tool-loop, and accepted-run behavior; [Messages and Markdown](../frontend/MESSAGES_AND_MARKDOWN.md) owns their thread disclosure.
+   - the Knowledge paragraphs below own retrieval admission/execution semantics, while the MCP paragraphs own effective inventory, tool-loop, and accepted-run behavior; [Messages and Markdown](../frontend/MESSAGES_AND_MARKDOWN.md) owns their thread disclosure.
 
 3. Model response
    - normalized visible answer, reasoning, citations, artifacts, usage, and an inspectable redacted provider preview;
@@ -71,3 +71,21 @@ affect future admission only. [Provider admission](../backend/providers/ADMISSIO
 owns credential resolution, the admission transaction, and revocation guards;
 [runs and streaming](../backend/RUNS_AND_STREAMING.md) owns continuation,
 cancellation, and recovery behavior over the frozen input.
+
+For a nonempty accepted plan, `toolMode = auto` exposes the strict
+`retrieve_knowledge({ query })` client tool only to a tool-capable answer model;
+`tools: "none"` and non-tool models preserve the admitted plan/bindings but do
+not expose or execute the tool. The query is one normalized string of at most
+500 characters and a run may invoke retrieval at most three times. Each exact
+accepted vector-space/snapshot group embeds the query once in query mode, with
+the accepted credential version checked again before provider I/O. One
+parameterized SQL statement then joins the run/user-owned immutable binding,
+pins its generation and cumulative `visibleFromRevision <= R` document set,
+and fuses dimension-specific cosine HNSW candidates with `simple` FTS GIN
+candidates using RRF k=60. The defaults are 40 candidates per ANN/FTS branch
+per base, threshold 0.01, and eight final passages. Provider-facing results are capped at 48 KiB
+and contain only opaque per-invocation handles, page numbers, bounded passage
+text, and honest truncation markers; base/document labels, storage facts, and
+database identities remain private receipt evidence. Empty, indexing,
+threshold-empty, and embedding-unavailable outcomes are explicit settled
+receipts rather than invented success.

@@ -33,6 +33,16 @@ import {
   searchToolResultContent,
   type SearchExecutionEvidence
 } from "../search/toolResult";
+import { knowledgeRetrievalTool } from "../knowledge/toolExecutor";
+import {
+  knowledgeToolResultContent,
+  knowledgeToolResultText
+} from "../knowledge/toolResult";
+import {
+  KNOWLEDGE_RESULT_VERSION,
+  KNOWLEDGE_TOOL_NAME,
+  type KnowledgeRetrievalEvidence
+} from "../knowledge/retrievalTypes";
 import {
   activeRunStaleMs,
   reconcileInstallationRuns,
@@ -147,6 +157,7 @@ function createHarness(options: Readonly<{
   controls?: readonly (RunControlRecord | null)[];
   failRun?: boolean;
   liveRunIds?: readonly string[];
+  knowledgeExecutor?: RunRecoveryDeps["knowledgeExecutor"];
   mcpRuntime?: RunRecoveryDeps["mcpRuntime"];
   pricing?: {
     inputTokenPriceMicros: number;
@@ -347,6 +358,7 @@ function createHarness(options: Readonly<{
     ...(options.attachmentLimits
       ? { getAttachmentLimits: () => options.attachmentLimits! }
       : {}),
+    ...(options.knowledgeExecutor ? { knowledgeExecutor: options.knowledgeExecutor } : {}),
     ...(options.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
     providers: options.providers ?? {},
     registry: options.registry ?? registry(options.liveRunIds),
@@ -449,6 +461,19 @@ function normalizedLegacySearchRequest(): NormalizedRunRequest {
       }]
     },
     searchStrategy: "openai-native-web-search"
+  };
+}
+
+function normalizedKnowledgeRequest(): NormalizedRunRequest {
+  const { mcp: _mcp, ...request } = normalizedToolRequest();
+  return {
+    ...request,
+    knowledgePlan: { baseIds: ["knowledge-base-1"] },
+    modelCapabilities: {
+      ...request.modelCapabilities,
+      toolCalling: true
+    },
+    toolMode: "auto"
   };
 }
 
@@ -2477,6 +2502,213 @@ describe("run recovery", () => {
         usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3 })
       })])
     });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("rehydrates settled Knowledge evidence and usage without repeating retrieval", async () => {
+    const draft: KnowledgeRetrievalEvidence = {
+      bases: [{
+        baseContentRevision: 2,
+        baseName: "PRIVATE-BASE-NAME",
+        candidateCount: 1,
+        indexedContentRevision: 2,
+        indexGenerationId: "private-generation-id",
+        knowledgeBaseId: "knowledge-base-1",
+        ordinal: 0,
+        state: "ready",
+        targetDimension: 1024,
+        vectorSpaceFingerprint: "c".repeat(64)
+      }],
+      candidateCount: 1,
+      candidateLimit: 40,
+      durationMs: 15,
+      embeddingExecutions: [{
+        bindingOrdinals: [0],
+        durationMs: 4,
+        inputTokens: 3,
+        modelId: "embedding-v1",
+        provider: "openai_compatible",
+        providerModelId: "private-embedding-deployment",
+        requestId: "embedding-request-1",
+        status: "complete",
+        totalTokens: 3
+      }],
+      fusion: "rrf_k60",
+      invocationOrdinal: 1,
+      outcome: "complete",
+      postRerankOrder: null,
+      preRerankOrder: null,
+      providerText: "pending",
+      query: "accepted recovery passage",
+      rerankerBinding: null,
+      resultLimit: 8,
+      results: [{
+        annRank: 1,
+        baseName: "PRIVATE-BASE-NAME",
+        bindingOrdinal: 0,
+        chunkId: "private-chunk-id",
+        chunkIndex: 0,
+        documentId: "private-document-id",
+        documentVersionId: "private-document-version-id",
+        fileName: "PRIVATE-FILE-NAME.pdf",
+        ftsRank: 1,
+        ftsScore: 0.1,
+        fusedScore: 2 / 61,
+        handle: "K1.1",
+        includedText: "already persisted Knowledge passage",
+        includedTextBytes: 35,
+        knowledgeBaseId: "knowledge-base-1",
+        page: 3,
+        sourceTextBytes: 35,
+        textTruncated: false,
+        vectorDistance: 0,
+        vectorScore: 1
+      }],
+      threshold: 0.01,
+      version: KNOWLEDGE_RESULT_VERSION
+    };
+    const evidence: KnowledgeRetrievalEvidence = {
+      ...draft,
+      providerText: knowledgeToolResultText(draft)
+    };
+    const settledResult = snapshotToolExecutionResult({
+      callId: "provider-call-1",
+      content: knowledgeToolResultContent(evidence),
+      name: KNOWLEDGE_TOOL_NAME,
+      rawPreview: {
+        finalProviderResponsePreview: { knowledgeRetrieval: evidence },
+        knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
+        providerCall: true,
+        requestPreview: {}
+      },
+      status: "complete",
+      usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
+    }, 32_000);
+    if (!settledResult) throw new Error("invalid_settled_knowledge_fixture");
+    const settledCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall("complete"),
+      arguments: { query: evidence.query },
+      mcpBinding: null,
+      result: settledResult,
+      toolName: KNOWLEDGE_TOOL_NAME
+    };
+    const execute = vi.fn<NonNullable<RunRecoveryDeps["knowledgeExecutor"]>["execute"]>();
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        tool: knowledgeRetrievalTool
+      },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered with Knowledge",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [settledCall],
+        phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: JSON.stringify({ query: evidence.query }),
+          call_id: "provider-call-1",
+          name: KNOWLEDGE_TOOL_NAME,
+          type: "function_call"
+        }]
+      }),
+      normalizedRequest: normalizedKnowledgeRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(JSON.stringify(requests)).toContain("already persisted Knowledge passage");
+    expect(JSON.stringify(requests)).not.toContain("PRIVATE-BASE-NAME");
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered with Knowledge",
+      usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+      usageAttributions: expect.arrayContaining([expect.objectContaining({
+        modelId: "embedding-v1",
+        provider: "openai_compatible",
+        usage: expect.objectContaining({ inputTokens: 3, totalTokens: 3 })
+      })])
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("replays a settled Knowledge tool error without inventing receipt evidence", async () => {
+    const settledResult = snapshotToolExecutionResult({
+      callId: "provider-call-1",
+      content: [{ text: "Knowledge retrieval limit reached.", type: "text" }],
+      name: KNOWLEDGE_TOOL_NAME,
+      rawPreview: {
+        finalProviderResponsePreview: { error: "knowledge_invocation_limit_reached" },
+        providerCall: false,
+        requestPreview: { queryCharacters: 14 }
+      },
+      status: "error",
+      usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }
+    }, 32_000);
+    if (!settledResult) throw new Error("invalid_settled_knowledge_error_fixture");
+    const settledCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall("error"),
+      arguments: { query: "one call too many" },
+      mcpBinding: null,
+      result: settledResult,
+      toolName: KNOWLEDGE_TOOL_NAME
+    };
+    const execute = vi.fn<NonNullable<RunRecoveryDeps["knowledgeExecutor"]>["execute"]>();
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        tool: knowledgeRetrievalTool
+      },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered after Knowledge limit",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [settledCall],
+        phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: JSON.stringify({ query: "one call too many" }),
+          call_id: "provider-call-1",
+          name: KNOWLEDGE_TOOL_NAME,
+          type: "function_call"
+        }]
+      }),
+      normalizedRequest: normalizedKnowledgeRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(JSON.stringify(requests)).toContain("Knowledge retrieval limit reached");
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered after Knowledge limit" });
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 

@@ -21,10 +21,14 @@ For every model run, the app can show:
 - the accepted compatible-provider reasoning effort/mode request mapping, when applicable;
 - selected ordered Search plan and orchestration mode, with accepted bindings
   and actual engine/provider operations remaining separately attributable;
+- the ordered accepted Knowledge plan/bindings and every actual retrieval
+  receipt, including generated query, revision/generation fence, explicit
+  negative outcome, candidate/threshold facts, real scores, exact private
+  source mapping, included-text truncation, embedding usage, and duration;
 - attachment references and preprocessing summaries;
 - streamed event log;
 - final response preview;
-- normalized token usage metadata, including cached/total token fields when providers report them; tool-search `ModelRun` and chat counters keep end-to-end aggregate usage while `UsageEvent` attribution separates answer-model usage from OpenRouter/Perplexity usage; provider-reported usage already observed before a later failure remains operationally attributable; estimated-cost compatibility data stays out of the user-facing shell and is not billing truth;
+- normalized token usage metadata, including cached/total token fields when providers report them; tool-search/Knowledge `ModelRun` and chat counters keep end-to-end aggregate usage while `UsageEvent` attribution separates answer-model usage from Search and Knowledge embedding usage; provider-reported usage already observed before a later failure remains operationally attributable; estimated-cost compatibility data stays out of the user-facing shell and is not billing truth;
 - tool-call and tool-result artifacts when an answer model actually invokes a backend tool, with client Search evidence nested under that exact originating call rather than inferred from opaque invocation ids;
 - accepted MCP server/revision/tool snapshots, runtime-generation fingerprints, safe credential-source tags, and optional external account/workspace labels without endpoints or credential values;
 - errors and retry/cancel state.
@@ -32,6 +36,9 @@ For every model run, the app can show:
 The UI can keep the common path clean, but the API surface must remain
 inspectable. [Search plans and integrations](SEARCH_PLANS.md) owns the exact
 execution and evidence records behind its Search projection.
+Knowledge provider text contains only opaque citation handles, pages, and
+bounded passages; private base/document labels and database/storage identities
+remain authenticated inspection evidence.
 
 Details Events reduces the already-consumed normalized event stream into a chronological digest without changing the event schema or persistence contract. Repeated provider/search/tool/artifact/token/usage categories update the row created at their first occurrence; raw token deltas and internal message ids stay hidden, while counts, latest meaningful status, long failures, cancellation, and successful completion remain inspectable. Historical request/response payloads continue to live in the model-run APIs.
 

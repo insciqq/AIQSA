@@ -105,6 +105,8 @@ export type NormalizedRunRequest = {
   searchPolicy?: ProviderSearchPolicy;
   searchPlan?: NormalizedSearchPlan;
   searchStrategy: string | null;
+  /** Durable operator/client suppression for all client-side run tools. */
+  toolMode?: "auto" | "none";
 };
 
 export type ProviderSearchReasoningPolicy =

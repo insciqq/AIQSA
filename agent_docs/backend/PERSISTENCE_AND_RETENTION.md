@@ -102,6 +102,21 @@ privacy-neutral failure. Later revocation, archive, or reindex never mutates an
 accepted row. A zero-document base is valid and binds the same way; document
 availability belongs to later retrieval evidence rather than admission.
 
+`KnowledgeRun` is the one-to-one retrieval receipt owned by an actual
+`ModelRunToolCall`; a composite foreign key proves that both rows belong to the
+same run, and deleting the run cascades the receipt with its call. It stores the
+bounded query, explicit outcome, RRF/candidate/result limits and threshold,
+per-base revision/candidate evidence, exact scored private result mapping and
+included-text truncation, canonical provider text, embedding usage, duration,
+stable failure code, and nullable reranker binding/pre/post-order fields
+reserved for a later reranking stage. The owning settled tool call stores the
+same versioned canonical execution projection with compact-marker rehydration,
+so inspection and recovery never reconstruct a receipt from provider text or
+repeat a completed retrieval. `complete`, `zero_above_threshold`,
+`base_empty`, `base_indexing`, and `embedding_model_unavailable` are closed
+persisted outcomes. Query-embedding `UsageEvent` rows remain distinct from
+answer-model usage.
+
 Folder names are unique among siblings for each user. Top-level folders use the partial unique index `Folder_userId_top_level_name_key`; child folders use `Folder_userId_parentId_name_key`.
 
 `Group.archivedAt` is the soft-disable flag for ordinary group entitlement administration. Archived groups remain visible to admins for audit/history, but they are excluded from effective entitlement resolution and cannot receive new grants or membership replacement targets. Exactly one non-archived group may have `systemRole = full_access`; database and service guards keep its exact name/lifecycle immutable while membership remains explicit. It cannot be renamed, archived, or deleted, so the ordinary empty-group deletion rule never applies to it. Bootstrap/adoption preserves an ordinary legacy group that already owns the reserved name by moving it to the first available `Full access (custom)` or numbered variant; it never promotes that group to the system role. An active member receives semantic wildcard entitlement to every current/future active provider connection/model and enabled Search option without materializing `AccessGrant` rows, but that wildcard never chooses a provider credential. `AccessGrant` continues to support direct user grants and ordinary group grants for connection-wide, stable model-deployment, and stable Search-option access; its database column remains `searchStrategy` for migration compatibility. Current admin workflows edit ordinary group grants only. PostgreSQL checks require exactly one `userId`/`groupId` principal and exactly one non-empty provider connection/model/Search target. The repeatable seed writes only those stable targets so an existing fixed-id grant cannot retain a stale principal or target.

@@ -44,6 +44,34 @@ export type KnowledgeRunBindingProjection = {
   vectorSpaceFingerprint: string;
 };
 
+export type KnowledgeRunProjection = {
+  baseEvidence: unknown[];
+  candidateCount: number;
+  candidateLimit: number;
+  createdAt: string;
+  durationMs: number;
+  embeddingUsage: unknown[];
+  failureCode: string | null;
+  fusion: "rrf_k60";
+  id: string;
+  invocationOrdinal: number;
+  modelRunToolCallId: string;
+  outcome:
+    | "base_empty"
+    | "base_indexing"
+    | "complete"
+    | "embedding_model_unavailable"
+    | "zero_above_threshold";
+  postRerankOrder: unknown | null;
+  preRerankOrder: unknown | null;
+  providerText: string;
+  query: string;
+  rerankerBinding: unknown | null;
+  resultLimit: number;
+  results: unknown[];
+  threshold: number;
+};
+
 export type ModelRunResponseProjection = {
   assistant?: ModelRunAssistantProvenance | null;
   cachedInputTokens: number;
@@ -55,6 +83,7 @@ export type ModelRunResponseProjection = {
   inputTokens: number;
   knowledgeBindings?: KnowledgeRunBindingProjection[];
   knowledgePlan?: KnowledgePlan;
+  knowledgeRuns?: KnowledgeRunProjection[];
   modelId: string;
   outputTokens: number;
   provider: string;
@@ -183,6 +212,57 @@ function decodeKnowledgeRunBinding(value: unknown): KnowledgeRunBindingProjectio
   };
 }
 
+function decodeKnowledgeRun(value: unknown): KnowledgeRunProjection | null {
+  if (!isRecord(value) || !Array.isArray(value.baseEvidence) ||
+    !Array.isArray(value.embeddingUsage) || !Array.isArray(value.results)) return null;
+  const candidateCount = nonNegativeInteger(value.candidateCount);
+  const candidateLimit = nonNegativeInteger(value.candidateLimit);
+  const durationMs = nonNegativeInteger(value.durationMs);
+  const id = nonEmptyString(value.id);
+  const invocationOrdinal = nonNegativeInteger(value.invocationOrdinal);
+  const modelRunToolCallId = nonEmptyString(value.modelRunToolCallId);
+  const resultLimit = nonNegativeInteger(value.resultLimit);
+  const threshold = finiteNumber(value.threshold);
+  const outcome = value.outcome === "base_empty" || value.outcome === "base_indexing" ||
+    value.outcome === "complete" || value.outcome === "embedding_model_unavailable" ||
+    value.outcome === "zero_above_threshold"
+    ? value.outcome
+    : null;
+  if (
+    !id || invocationOrdinal === null || invocationOrdinal < 1 || invocationOrdinal > 3 ||
+    !modelRunToolCallId || typeof value.createdAt !== "string" ||
+    candidateCount === null || candidateLimit === null || candidateLimit < 1 ||
+    durationMs === null || value.failureCode !== null && typeof value.failureCode !== "string" ||
+    value.fusion !== "rrf_k60" || !outcome || typeof value.providerText !== "string" ||
+    !value.providerText || typeof value.query !== "string" || !value.query ||
+    resultLimit === null || resultLimit < 1 || resultLimit > 8 || threshold === null ||
+    threshold < 0 || threshold > 1 || value.baseEvidence.length < 1 ||
+    value.baseEvidence.length > 3 || value.embeddingUsage.length > 3 || value.results.length > 8
+  ) return null;
+  return {
+    baseEvidence: value.baseEvidence,
+    candidateCount,
+    candidateLimit,
+    createdAt: value.createdAt,
+    durationMs,
+    embeddingUsage: value.embeddingUsage,
+    failureCode: value.failureCode as string | null,
+    fusion: "rrf_k60",
+    id,
+    invocationOrdinal,
+    modelRunToolCallId,
+    outcome,
+    postRerankOrder: value.postRerankOrder ?? null,
+    preRerankOrder: value.preRerankOrder ?? null,
+    providerText: value.providerText,
+    query: value.query,
+    rerankerBinding: value.rerankerBinding ?? null,
+    resultLimit,
+    results: value.results,
+    threshold
+  };
+}
+
 export function decodeCancelModelRunResponse(
   value: unknown
 ): DecodedCancelModelRunResponse | null {
@@ -281,6 +361,17 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
   ) {
     return null;
   }
+  const knowledgeRunsInput = run.knowledgeRuns ?? [];
+  if (!Array.isArray(knowledgeRunsInput) || knowledgeRunsInput.length > 3) return null;
+  const knowledgeRuns = knowledgeRunsInput.map(decodeKnowledgeRun);
+  if (knowledgeRuns.some((receipt) => receipt === null)) return null;
+  const decodedKnowledgeRuns = knowledgeRuns.filter(
+    (receipt): receipt is KnowledgeRunProjection => receipt !== null
+  );
+  if (decodedKnowledgeRuns.some((receipt, index) =>
+    index > 0 && receipt.invocationOrdinal <= decodedKnowledgeRuns[index - 1]!.invocationOrdinal)) {
+    return null;
+  }
 
   let assistant: ModelRunAssistantProvenance | null = null;
   if (run.assistant !== undefined && run.assistant !== null) {
@@ -325,6 +416,7 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
       (binding): binding is KnowledgeRunBindingProjection => binding !== null
     ),
     knowledgePlan: decodedKnowledgePlan.plan,
+    knowledgeRuns: decodedKnowledgeRuns,
     modelId,
     outputTokens,
     provider,

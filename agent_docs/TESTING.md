@@ -183,6 +183,15 @@ docker compose -f docker-compose.dev.yml exec -T \
   npx vitest run lib/server/runs/knowledgeRunBindingsPrismaRepository.integration.test.ts
 ```
 
+Knowledge retrieval execution, immutable revision/generation filtering,
+private receipts, negative outcomes, and EXPLAIN-backed HNSW/GIN paths:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e AIQSA_KNOWLEDGE_RETRIEVAL_INTEGRATION_TEST=1 app \
+  npx vitest run lib/server/knowledge/prismaRetrievalRepository.integration.test.ts
+```
+
 MCP protocol, database, and ToolHive boundaries:
 
 ```bash
