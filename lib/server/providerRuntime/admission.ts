@@ -103,6 +103,15 @@ type ActiveMembership = Readonly<{
   groupId: string;
 }>;
 
+type RoleCredentialAuthority =
+  | Readonly<{ kind: "installation" }>
+  | Readonly<{
+      fullAccess: boolean;
+      groupIds: string[];
+      kind: "user";
+      userId: string;
+    }>;
+
 async function activeUserAuthority(
   db: AdmissionPrisma,
   userId: string,
@@ -226,12 +235,10 @@ async function loadRole(
   db: AdmissionPrisma,
   input: {
     connectionId: string;
-    fullAccess: boolean;
-    groupIds: string[];
+    credentialAuthority: RoleCredentialAuthority;
     modelId: string;
     requireAnswerSelectable: boolean;
     requireEntitlement: boolean;
-    userId: string;
   }
 ): Promise<ProviderAdmissionRole> {
   const model = await db.providerModel.findFirst({
@@ -254,8 +261,16 @@ async function loadRole(
   });
   if (!model) throw new ProviderAdmissionError("model_not_available");
 
-  if (input.requireEntitlement && !(await hasModelEntitlement(db, input))) {
-    throw new ProviderAdmissionError("model_not_available");
+  if (input.requireEntitlement) {
+    if (input.credentialAuthority.kind !== "user" || !(await hasModelEntitlement(db, {
+      connectionId: input.connectionId,
+      fullAccess: input.credentialAuthority.fullAccess,
+      groupIds: input.credentialAuthority.groupIds,
+      modelId: input.modelId,
+      userId: input.credentialAuthority.userId
+    }))) {
+      throw new ProviderAdmissionError("model_not_available");
+    }
   }
 
   const connectionConfig = normalizeProviderConnectionConfiguration(model.connection.activeConfig);
@@ -297,6 +312,9 @@ async function loadRole(
     throw new ProviderAdmissionError("model_not_available");
   }
 
+  const userAuthority = input.credentialAuthority.kind === "user"
+    ? input.credentialAuthority
+    : null;
   const [credentials, assignments, directAssignment] = await Promise.all([
     db.providerCredential.findMany({
       include: {
@@ -309,22 +327,26 @@ async function loadRole(
       },
       where: { connectionId: model.connectionId }
     }),
-    db.providerGroupCredentialAssignment.findMany({
-      select: { credentialId: true, groupId: true },
-      where: {
-        connectionId: model.connectionId,
-        groupId: { in: input.groupIds }
-      }
-    }),
-    db.providerUserCredentialAssignment.findUnique({
-      select: { credentialId: true },
-      where: {
-        connectionId_userId: {
-          connectionId: model.connectionId,
-          userId: input.userId
-        }
-      }
-    })
+    userAuthority
+      ? db.providerGroupCredentialAssignment.findMany({
+          select: { credentialId: true, groupId: true },
+          where: {
+            connectionId: model.connectionId,
+            groupId: { in: userAuthority.groupIds }
+          }
+        })
+      : Promise.resolve([]),
+    userAuthority
+      ? db.providerUserCredentialAssignment.findUnique({
+          select: { credentialId: true },
+          where: {
+            connectionId_userId: {
+              connectionId: model.connectionId,
+              userId: userAuthority.userId
+            }
+          }
+        })
+      : Promise.resolve(null)
   ]);
   const credential = resolveProviderCredential({
     assignments,
@@ -337,8 +359,11 @@ async function loadRole(
     })),
     defaultCredentialId: model.connection.defaultCredentialId,
     directAssignmentCredentialId: directAssignment?.credentialId ?? null,
-    memberships: input.groupIds.map((groupId) => ({ archived: false, groupId })),
-    policy: model.connection.unassignedPolicy
+    memberships: (userAuthority?.groupIds ?? []).map((groupId) => ({
+      archived: false,
+      groupId
+    })),
+    policy: userAuthority ? model.connection.unassignedPolicy : "use_default"
   });
   if (!credential.ok) throw new ProviderAdmissionError(credential.code);
 
@@ -411,18 +436,21 @@ export async function loadTechnicalProviderRole(
   if (!model) throw new ProviderAdmissionError("model_not_available");
   return loadRole(db, {
     connectionId: model.connectionId,
-    fullAccess: authority.fullAccess,
-    groupIds: authority.groupIds,
+    credentialAuthority: {
+      fullAccess: authority.fullAccess,
+      groupIds: authority.groupIds,
+      kind: "user",
+      userId: input.userId
+    },
     modelId: input.providerModelId,
     requireAnswerSelectable: false,
-    requireEntitlement: false,
-    userId: input.userId
+    requireEntitlement: false
   });
 }
 
 /** Resolve an answer-capable deployment through an active administrator's
- * normal credential precedence without requiring a user entitlement. This is
- * the credential boundary for installation-owned internal model work. */
+ * normal credential precedence without requiring a user entitlement. This
+ * remains available for explicitly actor-scoped administrative work. */
 export async function loadUnentitledAnswerProviderRole(
   db: AdmissionPrisma,
   input: { providerModelId: string; userId: string }
@@ -436,12 +464,44 @@ export async function loadUnentitledAnswerProviderRole(
   try {
     return await loadRole(db, {
       connectionId: model.connectionId,
-      fullAccess: authority.fullAccess,
-      groupIds: authority.groupIds,
+      credentialAuthority: {
+        fullAccess: authority.fullAccess,
+        groupIds: authority.groupIds,
+        kind: "user",
+        userId: input.userId
+      },
       modelId: input.providerModelId,
       requireAnswerSelectable: true,
-      requireEntitlement: false,
-      userId: input.userId
+      requireEntitlement: false
+    });
+  } catch (error) {
+    if (error instanceof ProviderConfigurationError ||
+      error instanceof Error && error.message === "provider_execution_snapshot_invalid") {
+      throw new ProviderAdmissionError("model_not_available");
+    }
+    throw error;
+  }
+}
+
+/** Resolve installation-owned internal answer work through the connection's
+ * explicit default credential. The policy author is audit metadata only, and
+ * ordinary user/group credential precedence is intentionally not consulted. */
+export async function loadInstallationAnswerProviderRole(
+  db: AdmissionPrisma,
+  input: { providerModelId: string }
+): Promise<ProviderAdmissionRole> {
+  const model = await db.providerModel.findUnique({
+    select: { connectionId: true },
+    where: { id: input.providerModelId }
+  });
+  if (!model) throw new ProviderAdmissionError("model_not_available");
+  try {
+    return await loadRole(db, {
+      connectionId: model.connectionId,
+      credentialAuthority: { kind: "installation" },
+      modelId: input.providerModelId,
+      requireAnswerSelectable: true,
+      requireEntitlement: false
     });
   } catch (error) {
     if (error instanceof ProviderConfigurationError ||
@@ -747,12 +807,15 @@ async function loadClientRouteRole(
   }
   const role = await loadRole(db, {
     connectionId: technicalModel.connectionId,
-    fullAccess: input.fullAccess,
-    groupIds: input.groupIds,
+    credentialAuthority: {
+      fullAccess: input.fullAccess,
+      groupIds: input.groupIds,
+      kind: "user",
+      userId: input.userId
+    },
     modelId: providerModelId,
     requireAnswerSelectable: false,
-    requireEntitlement: false,
-    userId: input.userId
+    requireEntitlement: false
   });
   return role.authority &&
     role.snapshot.connectionId === input.option.sourceConnectionId &&
@@ -928,12 +991,15 @@ export async function loadProviderAdmissionPlan(
   }
   const answer = await loadRole(db, {
     connectionId: input.providerConnectionId,
-    fullAccess,
-    groupIds,
+    credentialAuthority: {
+      fullAccess,
+      groupIds,
+      kind: "user",
+      userId: input.userId
+    },
     modelId: input.providerModelId,
     requireAnswerSelectable: true,
-    requireEntitlement: true,
-    userId: input.userId
+    requireEntitlement: true
   });
 
   const decodedPlan = decodeSearchPlan(input.searchPlan, input.searchStrategyId);

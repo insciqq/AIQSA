@@ -8,7 +8,7 @@ import {
 } from "./systemModelRole";
 
 const role = {
-  credentialSource: "user",
+  credentialSource: "default",
   modelConfiguration: {
     adapterKind: "openai_responses_compatible",
     capabilities: {},
@@ -38,21 +38,39 @@ describe("system model role resolver", () => {
     expect(loadRole).not.toHaveBeenCalled();
   });
 
-  it("fails closed when the credential administrator is gone or inactive", async () => {
-    const loadRole = vi.fn();
-    await expect(createSystemModelRoleResolver(database({
-      providerModelId: "model-1",
-      updatedByUserId: null,
-      version: 2
-    }), { loadRole }).resolve()).resolves.toEqual({ code: SYSTEM_MODEL_UNAVAILABLE, ok: false });
-    expect(loadRole).not.toHaveBeenCalled();
-  });
+  it.each([
+    { authorState: "inactive", updatedByUserId: "admin-inactive" },
+    { authorState: "demoted", updatedByUserId: "admin-demoted" },
+    { authorState: "deleted", updatedByUserId: null }
+  ])(
+    "resolves through installation authority when the policy author is $authorState",
+    async ({ updatedByUserId }) => {
+      const loadRole = vi.fn().mockResolvedValue(role);
+      await expect(createSystemModelRoleResolver(database({
+        providerModelId: "model-1",
+        updatedByUserId,
+        version: 2
+      }), { loadRole }).resolve()).resolves.toEqual({
+        credentialScope: "installation",
+        ok: true,
+        policyVersion: 2,
+        providerModelId: "model-1",
+        role
+      });
+      expect(loadRole).toHaveBeenCalledWith(expect.anything(), {
+        providerModelId: "model-1"
+      });
+    }
+  );
 
-  it.each(["disabled", "deleted"])(
-    "normalizes an unavailable %s target without substituting",
-    async () => {
+  it.each([
+    ["target", "model_not_available"],
+    ["installation credential", "credential_default_missing"]
+  ] as const)(
+    "normalizes an unavailable %s without substituting",
+    async (_subject, code) => {
       const loadRole = vi.fn().mockRejectedValue(
-        new ProviderAdmissionError("model_not_available")
+        new ProviderAdmissionError(code)
       );
       await expect(createSystemModelRoleResolver(database({
         providerModelId: "model-1",
@@ -63,20 +81,19 @@ describe("system model role resolver", () => {
         ok: false
       });
       expect(loadRole).toHaveBeenCalledWith(expect.anything(), {
-        providerModelId: "model-1",
-        userId: "admin-1"
+        providerModelId: "model-1"
       });
     }
   );
 
-  it("returns the exact deployment role and credential principal", async () => {
+  it("returns the exact deployment role and installation credential scope", async () => {
     const loadRole = vi.fn().mockResolvedValue(role);
     await expect(createSystemModelRoleResolver(database({
       providerModelId: "model-1",
       updatedByUserId: "admin-1",
       version: 7
     }), { loadRole }).resolve()).resolves.toEqual({
-      credentialOwnerUserId: "admin-1",
+      credentialScope: "installation",
       ok: true,
       policyVersion: 7,
       providerModelId: "model-1",

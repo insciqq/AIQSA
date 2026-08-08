@@ -109,7 +109,7 @@ describe("administrator system model policy service", () => {
 
     await expect(createAdminSystemModelPolicyService(prisma, {
       resolveRole: vi.fn().mockResolvedValue({
-        credentialOwnerUserId: "admin-1",
+        credentialScope: "installation",
         ok: true,
         policyVersion: 5,
         providerModelId: "model-1",
@@ -120,7 +120,7 @@ describe("administrator system model policy service", () => {
     });
   });
 
-  it("locks, revalidates administrator access, and binds the saving principal", async () => {
+  it("locks, revalidates administrator access, and validates installation authority", async () => {
     const loadRole = vi.fn().mockResolvedValue({});
     const update = vi.fn().mockResolvedValue({});
     const tx = {
@@ -139,8 +139,7 @@ describe("administrator system model policy service", () => {
     });
 
     expect(loadRole).toHaveBeenCalledWith(tx, {
-      providerModelId: "model-1",
-      userId: "admin-1"
+      providerModelId: "model-1"
     });
     expect(update).toHaveBeenCalledWith({
       data: {

@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import {
   type AdmissionPrisma,
-  loadUnentitledAnswerProviderRole,
+  loadInstallationAnswerProviderRole,
   ProviderAdmissionError,
   type ProviderAdmissionRole
 } from "./admission";
@@ -15,7 +15,7 @@ export type SystemModelRoleResolution =
       ok: false;
     }>
   | Readonly<{
-      credentialOwnerUserId: string;
+      credentialScope: "installation";
       ok: true;
       policyVersion: number;
       providerModelId: string;
@@ -27,19 +27,18 @@ type SystemModelRolePrisma = AdmissionPrisma & Pick<
   "systemModelPolicy"
 >;
 
-type RoleLoader = typeof loadUnentitledAnswerProviderRole;
+type RoleLoader = typeof loadInstallationAnswerProviderRole;
 
 export function createSystemModelRoleResolver(
   db: SystemModelRolePrisma,
   dependencies: Readonly<{ loadRole?: RoleLoader }> = {}
 ) {
-  const loadRole = dependencies.loadRole ?? loadUnentitledAnswerProviderRole;
+  const loadRole = dependencies.loadRole ?? loadInstallationAnswerProviderRole;
   return {
     async resolve(): Promise<SystemModelRoleResolution> {
       const policy = await db.systemModelPolicy.findUnique({
         select: {
           providerModelId: true,
-          updatedByUserId: true,
           version: true
         },
         where: { id: "installation" }
@@ -47,17 +46,12 @@ export function createSystemModelRoleResolver(
       if (!policy?.providerModelId) {
         return { code: SYSTEM_MODEL_ABSENT, ok: false };
       }
-      if (!policy.updatedByUserId) {
-        return { code: SYSTEM_MODEL_UNAVAILABLE, ok: false };
-      }
-
       try {
         const role = await loadRole(db, {
-          providerModelId: policy.providerModelId,
-          userId: policy.updatedByUserId
+          providerModelId: policy.providerModelId
         });
         return {
-          credentialOwnerUserId: policy.updatedByUserId,
+          credentialScope: "installation",
           ok: true,
           policyVersion: policy.version,
           providerModelId: policy.providerModelId,

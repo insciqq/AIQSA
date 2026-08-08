@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import {
+  loadInstallationAnswerProviderRole,
   loadProviderAdmissionPlan,
   loadUnentitledAnswerProviderRole,
   ProviderAdmissionError,
@@ -69,7 +70,11 @@ function apiRoot(family: ModelSpec["family"]): string {
   return "https://api.openai.com/v1";
 }
 
-function providerModel(spec: ModelSpec) {
+function providerModel(
+  spec: ModelSpec,
+  defaultCredentialId: string | null = null,
+  unassignedPolicy: "require_assignment" | "use_default" = "use_default"
+) {
   return {
     activeConfig: {
       adapterKind: spec.adapterKind,
@@ -97,12 +102,12 @@ function providerModel(spec: ModelSpec) {
           : { responseTimeoutMs: spec.connectionResponseTimeoutMs })
       },
       activeVersion: 1,
-      defaultCredentialId: null,
+      defaultCredentialId,
       displayName: `${spec.displayName ?? spec.upstreamModelId} provider`,
       enabled: true,
       family: spec.family,
       id: spec.connectionId,
-      unassignedPolicy: "use_default"
+      unassignedPolicy
     },
     connectionId: spec.connectionId,
     contextWindow: spec.contextWindow ?? 128_000,
@@ -175,17 +180,26 @@ function admissionDb(input: Readonly<{
   answer: ModelSpec;
   credentialIdByConnection?: Readonly<Record<string, string>>;
   credentialVersionIdByConnection?: Readonly<Record<string, string>>;
+  defaultCredentialIdByConnection?: Readonly<Record<string, string>>;
   directCredential?: boolean;
   fullAccess?: boolean;
   grantedSearchOptionIds?: readonly string[];
   legacyAliasOptionId?: string;
   options: readonly OptionSpec[];
   technicalModels?: readonly ModelSpec[];
+  unassignedPolicy?: "require_assignment" | "use_default";
   unavailableModelIds?: readonly string[];
   userRole?: "admin" | "user";
 }>) {
   const models = new Map(
-    [input.answer, ...(input.technicalModels ?? [])].map((spec) => [spec.id, providerModel(spec)])
+    [input.answer, ...(input.technicalModels ?? [])].map((spec) => [
+      spec.id,
+      providerModel(
+        spec,
+        input.defaultCredentialIdByConnection?.[spec.connectionId] ?? null,
+        input.unassignedPolicy
+      )
+    ])
   );
   const options = new Map(input.options.map((spec) => [spec.optionId, logicalOption(spec)]));
   const grantedSearchOptionIds = new Set(input.grantedSearchOptionIds ?? []);
@@ -411,6 +425,67 @@ function expectSearch(plan: ProviderAdmissionPlan) {
 }
 
 describe("provider admission", () => {
+  it("resolves installation answer work through only the explicit default credential", async () => {
+    const credentialId = `credential:${officialOpenAiModel.connectionId}`;
+    const { db } = admissionDb({
+      answer: officialOpenAiModel,
+      defaultCredentialIdByConnection: {
+        [officialOpenAiModel.connectionId]: credentialId
+      },
+      directCredential: false,
+      options: [off],
+      unassignedPolicy: "require_assignment",
+      userRole: "user"
+    });
+
+    await expect(loadInstallationAnswerProviderRole(
+      db as unknown as Prisma.TransactionClient,
+      { providerModelId: officialOpenAiModel.id }
+    )).resolves.toMatchObject({
+      authority: { credentialId },
+      credentialSource: "default",
+      snapshot: { providerModelId: officialOpenAiModel.id }
+    });
+    expect(db.user.findFirst).not.toHaveBeenCalled();
+    expect(db.userGroup.findMany).not.toHaveBeenCalled();
+    expect(db.providerGroupCredentialAssignment.findMany).not.toHaveBeenCalled();
+    expect(db.providerUserCredentialAssignment.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("fails installation answer work closed without an explicit default credential", async () => {
+    const { db } = admissionDb({
+      answer: officialOpenAiModel,
+      directCredential: false,
+      options: [off]
+    });
+
+    await expect(loadInstallationAnswerProviderRole(
+      db as unknown as Prisma.TransactionClient,
+      { providerModelId: officialOpenAiModel.id }
+    )).rejects.toEqual(new ProviderAdmissionError("credential_default_missing"));
+  });
+
+  it("rejects unavailable and technical-only installation answer targets", async () => {
+    const unavailable = admissionDb({
+      answer: officialOpenAiModel,
+      options: [off],
+      unavailableModelIds: [officialOpenAiModel.id]
+    });
+    await expect(loadInstallationAnswerProviderRole(
+      unavailable.db as unknown as Prisma.TransactionClient,
+      { providerModelId: officialOpenAiModel.id }
+    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
+
+    const technical = admissionDb({
+      answer: { ...officialOpenAiModel, answerSelectable: false },
+      options: [off]
+    });
+    await expect(loadInstallationAnswerProviderRole(
+      technical.db as unknown as Prisma.TransactionClient,
+      { providerModelId: officialOpenAiModel.id }
+    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
+  });
+
   it("resolves an unentitled answer role only through an active administrator", async () => {
     const { accessGrantCount, db } = admissionDb({
       answer: officialOpenAiModel,

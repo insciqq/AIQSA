@@ -195,7 +195,7 @@ test.describe("system model policy", () => {
     }
   });
 
-  test("pins exact administrator authority and fails closed without substitution", async () => {
+  test("pins exact installation authority and fails closed without substitution", async () => {
     const service = createAdminSystemModelPolicyService(prisma);
     const resolver = createSystemModelRoleResolver(prisma);
     const initial = await service.list();
@@ -209,7 +209,7 @@ test.describe("system model policy", () => {
     });
     const resolved = await resolver.resolve();
     expect(resolved).toMatchObject({
-      credentialOwnerUserId: fixture.adminId,
+      credentialScope: "installation",
       ok: true,
       providerModelId: fixture.modelId,
       role: {
@@ -240,9 +240,10 @@ test.describe("system model policy", () => {
       data: { status: "disabled" },
       where: { id: fixture.adminId }
     });
-    await expect(resolver.resolve()).resolves.toEqual({
-      code: SYSTEM_MODEL_UNAVAILABLE,
-      ok: false
+    await expect(resolver.resolve()).resolves.toMatchObject({
+      credentialScope: "installation",
+      ok: true,
+      providerModelId: fixture.modelId
     });
     await prisma.user.update({
       data: { status: "active" },

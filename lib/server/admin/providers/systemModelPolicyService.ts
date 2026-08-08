@@ -1,7 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
 import {
-  loadUnentitledAnswerProviderRole,
+  loadInstallationAnswerProviderRole,
   ProviderAdmissionError
 } from "../../providerRuntime/admission";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
@@ -22,7 +22,7 @@ export class AdminSystemModelPolicyServiceError extends Error {
   }
 }
 
-type RoleLoader = typeof loadUnentitledAnswerProviderRole;
+type RoleLoader = typeof loadInstallationAnswerProviderRole;
 
 export function createAdminSystemModelPolicyService(
   prisma: PrismaClient,
@@ -31,7 +31,7 @@ export function createAdminSystemModelPolicyService(
     resolveRole?: ReturnType<typeof createSystemModelRoleResolver>["resolve"];
   }> = {}
 ) {
-  const loadRole = dependencies.loadRole ?? loadUnentitledAnswerProviderRole;
+  const loadRole = dependencies.loadRole ?? loadInstallationAnswerProviderRole;
   const resolveRole = dependencies.resolveRole ??
     createSystemModelRoleResolver(prisma, { loadRole }).resolve;
 
@@ -111,8 +111,7 @@ export function createAdminSystemModelPolicyService(
           if (input.providerModelId !== null) {
             try {
               await loadRole(tx, {
-                providerModelId: input.providerModelId,
-                userId: input.userId
+                providerModelId: input.providerModelId
               });
             } catch (error) {
               if (error instanceof ProviderAdmissionError) {

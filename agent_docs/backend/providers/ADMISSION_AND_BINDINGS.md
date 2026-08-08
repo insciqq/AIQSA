@@ -27,15 +27,16 @@ system-model candidate. Embedding dimension and transport rules are owned by
 [provider embeddings](EMBEDDINGS.md).
 
 The installation system model resolver reuses answer admission's exact
-connection/model snapshot, administrator credential precedence, and current
-credential/model check without applying model entitlement. The policy's
-last-saving administrator is the sole credential principal and must still be
-active with the administrator role. An empty selection reports
-`system_model_absent`; any unusable exact target or principal reports
-`system_model_unavailable`. No fallback model, administrator, credential tier,
-or catalog disclosure is allowed. This boundary exposes a resolved role for
-future internal consumers but does not itself create a run or define usage
-attribution.
+connection/model snapshot and current credential/model check without applying
+model entitlement. It resolves only the connection's explicit installation
+default credential, regardless of ordinary unassigned-user policy; direct-user
+and group assignments are never considered. The policy updater is audit
+metadata and need not remain active, an administrator, or present. An empty
+selection reports `system_model_absent`; any unusable exact target, default
+credential, or check reports `system_model_unavailable`. No fallback model,
+administrator, or credential tier and no catalog disclosure are allowed. This
+boundary exposes a resolved role for future internal consumers but does not
+itself create a run or define usage attribution.
 
 The secret-free administrator projection includes safe direct-user assignment identity and display facts alongside group assignments, so readiness and activation blockers cover the same referenced-credential set as the activation service. A tested replacement remains a credential draft until the administrator activates its connection; **Activate replacement** is the contextual UI action for that existing exact activation, not a key-only protocol. Confirmed deletion of a non-template `openai_compatible` connection runs as one retry-bounded serializable graph mutation: it clears user/chat model defaults, child installation-default and system-model policies with optimistic version advances, model grants, connection defaults, direct/group credential assignments, checks, versions, credentials, and models before the connection. Live/recoverable bindings, Assistant-revision targets, provider-model-backed Search integrations, and code-owned templates remain hard blockers. Other provider families retain conservative explicit child/reference removal.
 
