@@ -78,14 +78,21 @@ function filesystemFiles(root) {
 }
 
 function repositoryFiles(root) {
-  const inside = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: root, encoding: "utf8" });
+  const inside = spawnSync("git", ["--work-tree", root, "rev-parse", "--is-inside-work-tree"], {
+    cwd: root,
+    encoding: "utf8"
+  });
   if (inside.status !== 0) return filesystemFiles(root);
 
-  const listed = spawnSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 16 * 1_024 * 1_024
-  });
+  const listed = spawnSync(
+    "git",
+    ["--work-tree", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 16 * 1_024 * 1_024
+    }
+  );
   if (listed.status !== 0) {
     throw new Error(`git ls-files failed during documentation discovery: ${listed.stderr.trim() || "unknown error"}`);
   }
@@ -226,7 +233,7 @@ function taskPrivacyErrors(root) {
   }
 
   if (existsSync(path.join(root, ".git"))) {
-    const tracked = spawnSync("git", ["ls-files", "--", "agent_docs/tasks/*.md"], {
+    const tracked = spawnSync("git", ["--work-tree", root, "ls-files", "--", "agent_docs/tasks/*.md"], {
       cwd: root,
       encoding: "utf8"
     });

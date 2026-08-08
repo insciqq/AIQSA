@@ -113,7 +113,7 @@ function isGitRepository(root) {
 
 function isIgnoredTask(root, relativePath) {
   if (!isGitRepository(root)) return true;
-  const result = spawnSync("git", ["check-ignore", "-q", "--", portable(relativePath)], {
+  const result = spawnSync("git", ["--work-tree", root, "check-ignore", "-q", "--", portable(relativePath)], {
     cwd: root,
     encoding: "utf8"
   });

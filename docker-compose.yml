@@ -239,7 +239,7 @@ services:
     restart: "no"
 
   postgres:
-    image: postgres:16.14-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+    image: ghcr.io/insciqq/aiqsa-postgres:16.14-pgvector0.8.5@sha256:db8f80686e188be2abf9507d6a20d1cb230d47b1a4c8334cc7f076610b1d20ee
     environment:
       POSTGRES_DB: ${AIQSA_POSTGRES_DB:-aiqsa}
       POSTGRES_PASSWORD: ${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}

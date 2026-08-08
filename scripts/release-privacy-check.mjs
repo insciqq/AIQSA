@@ -24,7 +24,7 @@ const DEFAULT_HISTORY_BASE = "233b7494c00adde46c12e9d49f29676bf52c0f6a";
 const PUBLIC_REPOSITORY = /^(?:git@github\.com:|https:\/\/github\.com\/)insciqq\/AIQSA(?:\.git)?$/u;
 
 function git(root, arguments_) {
-  const result = spawnSync("git", arguments_, { cwd: root, encoding: "utf8" });
+  const result = spawnSync("git", ["--work-tree", root, ...arguments_], { cwd: root, encoding: "utf8" });
   if (result.status !== 0) {
     throw new Error(`git ${arguments_.join(" ")} failed: ${result.stderr.trim() || "unknown error"}`);
   }
@@ -148,7 +148,7 @@ function refTreeErrors(root, refs) {
 }
 
 function isAncestor(root, ancestor, descendant) {
-  const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+  const result = spawnSync("git", ["--work-tree", root, "merge-base", "--is-ancestor", ancestor, descendant], {
     cwd: root,
     encoding: "utf8"
   });

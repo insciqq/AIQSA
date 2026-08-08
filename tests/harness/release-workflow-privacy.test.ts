@@ -45,6 +45,11 @@ describe("public release privacy contract", () => {
       path.join(root, "ops/postgres-pgvector.Dockerfile"),
       "utf8"
     );
+    const composeFiles = ["docker-compose.yml", "docker-compose.dev.yml"].map((filename) =>
+      readFileSync(path.join(root, filename), "utf8")
+    );
+    const publishedReference =
+      "ghcr.io/insciqq/aiqsa-postgres:16.14-pgvector0.8.5@sha256:db8f80686e188be2abf9507d6a20d1cb230d47b1a4c8334cc7f076610b1d20ee";
 
     expect(workflow).toContain("POSTGRES_IMAGE: ghcr.io/insciqq/aiqsa-postgres");
     expect(workflow).toContain("POSTGRES_COMPONENT_TAG: 16.14-pgvector0.8.5");
@@ -67,6 +72,9 @@ describe("public release privacy contract", () => {
     expect(postgresDockerfile).toContain('echo "${PGVECTOR_SOURCE_SHA256}  pgvector.tar.gz" | sha256sum -c -');
     expect(postgresDockerfile).toContain('make -C "pgvector-${PGVECTOR_VERSION}" OPTFLAGS=""');
     expect(postgresDockerfile.match(/^FROM /gmu)).toHaveLength(2);
+    for (const composeFile of composeFiles) expect(composeFile).toContain(`image: ${publishedReference}`);
+    expect(composeFiles[1]).toContain('GIT_CONFIG_KEY_0: safe.directory');
+    expect(composeFiles[1]).toContain('GIT_CONFIG_VALUE_0: /app');
   });
 
   it("can publish only the exact Postgres component without creating an app release", () => {

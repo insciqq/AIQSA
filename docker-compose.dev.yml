@@ -72,6 +72,10 @@ services:
       AIQSA_YANDEX_OAUTH_CLIENT_ID: ""
       AIQSA_YANDEX_OAUTH_CLIENT_SECRET: ""
       DATABASE_URL: postgresql://aiqsa:aiqsa-dev-password@postgres:5432/aiqsa?schema=public
+      # Fresh dev containers run as root against the host-owned bind mount.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /app
       NEXT_TELEMETRY_DISABLED: "1"
       PLAYWRIGHT_TEST_AUTH: "1"
       S3_ACCESS_KEY_ID: aiqsa
@@ -176,7 +180,7 @@ services:
       - toolhive_dev_data:/var/lib/toolhive
 
   postgres:
-    image: postgres:16.14-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+    image: ghcr.io/insciqq/aiqsa-postgres:16.14-pgvector0.8.5@sha256:db8f80686e188be2abf9507d6a20d1cb230d47b1a4c8334cc7f076610b1d20ee
     environment:
       POSTGRES_DB: aiqsa
       POSTGRES_PASSWORD: aiqsa-dev-password
