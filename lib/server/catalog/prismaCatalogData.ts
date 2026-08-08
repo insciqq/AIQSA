@@ -119,6 +119,51 @@ export type CatalogDataLoaderDeps = {
   prisma: CatalogPrismaClient;
 };
 
+export function providerModelCatalogAuthorityInclude(userId: string) {
+  return {
+    activeCredentialChecks: {
+      select: {
+        connectionId: true,
+        connectionVersion: true,
+        credentialId: true,
+        credentialVersionId: true,
+        modelVersion: true,
+        providerModelId: true,
+        status: true
+      }
+    },
+    connection: {
+      include: {
+        credentials: {
+          select: {
+            activeVersion: {
+              select: {
+                id: true,
+                revokedAt: true
+              }
+            },
+            enabled: true,
+            groupAssignments: {
+              select: {
+                credentialId: true,
+                groupId: true
+              }
+            },
+            id: true,
+            userAssignments: {
+              select: {
+                credentialId: true,
+                userId: true
+              },
+              where: { userId }
+            }
+          }
+        }
+      }
+    }
+  };
+}
+
 const supportedSearchOptionKinds = new Map<string, SearchStrategyCatalogEntry["kind"]>([
   ["gemini_google_search", "gemini_google_search"],
   ["none", "none"],
@@ -578,48 +623,7 @@ export function createPrismaCatalogDataLoader({
 
     const [models, searchOptions, entitlements, modelPolicy, searchPolicy] = await Promise.all([
       prisma.providerModel.findMany({
-        include: {
-          activeCredentialChecks: {
-            select: {
-              connectionId: true,
-              connectionVersion: true,
-              credentialId: true,
-              credentialVersionId: true,
-              modelVersion: true,
-              providerModelId: true,
-              status: true
-            }
-          },
-          connection: {
-            include: {
-              credentials: {
-                select: {
-                  activeVersion: {
-                    select: {
-                      id: true,
-                      revokedAt: true
-                    }
-                  },
-                  enabled: true,
-                  groupAssignments: {
-                    select: {
-                      credentialId: true,
-                      groupId: true
-                    }
-                  },
-                  id: true,
-                  userAssignments: {
-                    select: {
-                      credentialId: true,
-                      userId: true
-                    },
-                    where: { userId }
-                  }
-                }
-              }
-            }
-          }
-        },
+        include: providerModelCatalogAuthorityInclude(userId),
         orderBy: [{ connectionId: "asc" }, { displayName: "asc" }, { id: "asc" }],
         where: {
           enabled: true,

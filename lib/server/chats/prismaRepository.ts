@@ -12,9 +12,6 @@ import {
 } from "../../domain/searchDisclosure";
 import { decodeAssistantAvatarRecipe } from "../../contracts/assistants";
 import { prisma } from "../prisma";
-import { loadEntitlementsForUser } from "../auth/dbEntitlements";
-import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
-import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { persistedToolCallActivity } from "../runs/toolInspection";
 import type {
@@ -25,6 +22,7 @@ import type {
   ThreadArtifactSummary,
   ThreadCitation
 } from "./handlers";
+import { loadChatCreationDefaults } from "./chatCreationDefaults";
 import { defaultChatTitle } from "./titlePolicy";
 
 const chatDetailInclude = {
@@ -695,37 +693,22 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
       });
     },
     createChat: async ({ folderId, title, userId }) => {
+      const defaults = await loadChatCreationDefaults(prismaClient, userId);
+      if (!defaults) return null;
+
       return prismaClient.$transaction(async (tx) => {
-        const loadCatalogData = createPrismaCatalogDataLoader({
-          loadEntitlements: (targetUserId) => loadEntitlementsForUser(targetUserId, tx),
-          prisma: tx
-        });
-        const [settings, folder, catalogData] = await Promise.all([
-          tx.userSettings.findUnique({
-            select: {
-              defaultFolderId: true
-            },
-            where: {
-              userId
-            }
-          }),
-          findOwnedFolder(tx, folderId, userId),
-          loadCatalogData(userId)
-        ]);
+        const folder = await findOwnedFolder(tx, folderId, userId);
 
-        if (!settings || !catalogData) {
-          return null;
-        }
-        const effectiveDefault = resolveCurrentUserCatalogSelection(catalogData).defaultModel;
-
-        const resolvedFolderId = folderId === undefined ? settings.defaultFolderId : folder?.id ?? null;
+        const resolvedFolderId = folderId === undefined
+          ? defaults.defaultFolderId
+          : folder?.id ?? null;
         if (folderId && !folder) {
           return null;
         }
 
         const chat = await tx.chat.create({
           data: {
-            defaultProviderModelId: effectiveDefault?.modelId ?? null,
+            defaultProviderModelId: defaults.defaultProviderModelId,
             folderId: resolvedFolderId,
             title: title?.trim() || defaultChatTitle,
             userId

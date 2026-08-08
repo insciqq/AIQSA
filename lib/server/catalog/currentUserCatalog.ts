@@ -64,6 +64,15 @@ export type CurrentUserCatalogSelection = {
   personalModelDefault: ModelDefaultSelection | null;
 };
 
+export function resolveEffectiveModelDefaultId(input: Readonly<{
+  organizationModelId: string | null;
+  personalModelId: string | null;
+}>): string | null {
+  return input.personalModelId !== null
+    ? input.personalModelId
+    : input.organizationModelId;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -85,11 +94,18 @@ export function resolveCurrentUserCatalogSelection(
   const personalModel = personalModelId
     ? models.find((model) => model.modelId === personalModelId) ?? null
     : null;
-  const organizationModel = input.modelPolicy?.defaultProviderModelId
-    ? models.find((model) => model.modelId === input.modelPolicy?.defaultProviderModelId) ?? null
+  const organizationModelId = input.modelPolicy?.defaultProviderModelId ?? null;
+  const organizationModel = organizationModelId
+    ? models.find((model) => model.modelId === organizationModelId) ?? null
     : null;
   const hasPersonalModelDefault = personalModelId !== null;
-  const defaultModel = hasPersonalModelDefault ? personalModel : organizationModel;
+  const effectiveModelId = resolveEffectiveModelDefaultId({
+    organizationModelId,
+    personalModelId
+  });
+  const defaultModel = effectiveModelId
+    ? models.find((model) => model.modelId === effectiveModelId) ?? null
+    : null;
   const selection = (model: CatalogWireModel | null): ModelDefaultSelection | null =>
     model ? { modelId: model.modelId, provider: model.provider } : null;
 
