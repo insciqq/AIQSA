@@ -200,6 +200,10 @@ AIQSA_UPLOAD_STORAGE_DIR=.aiqsa/uploads
 AIQSA_PDF_MAX_PAGES=500
 AIQSA_PDF_EXTRACTION_TIMEOUT_MS=20000
 AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS=1000000
+AIQSA_KNOWLEDGE_MAX_FILE_BYTES=25000000
+AIQSA_KNOWLEDGE_MAX_PAGES=2000
+AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS=5000000
+AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT=10000
 ```
 
 Auth JSON is capped at 64 KiB and other JSON at 1 MiB before parsing. Uploads
@@ -223,6 +227,17 @@ AIQSA_UPLOAD_MULTIPART_OVERHEAD_BYTES`; application enforcement remains
 authoritative. The default Compose stack always supplies private S3/MinIO
 storage. `AIQSA_UPLOAD_STORAGE_DIR` controls the server-only filesystem
 fallback when S3 variables are absent outside that stack.
+
+Knowledge ingestion uses its own whole-library limits rather than the chat
+attachment extraction profile. File bytes default to 25,000,000 and may not
+exceed 67,108,864; pages default to 2,000 with a 10,000 ceiling; normalized
+text defaults to 5,000,000 characters with an 8,000,000 ceiling; and one
+document defaults to 10,000 chunks with a 50,000 ceiling. Every override must
+be a positive whole decimal integer within its ceiling or the corresponding
+default is used. The normalized private JSON object has no independent
+operator control: its byte cap is derived from the text limit and remains at
+or below 64 MiB. Knowledge upload envelopes still use the shared multipart
+headroom and process-local upload concurrency controls.
 
 ## Document Parser Sidecars
 

@@ -5,6 +5,7 @@ import type { StorageAdapter } from "@/lib/server/uploads/storage";
 export const DEFAULT_EVENT_RETENTION_DAYS = 30;
 export const DEFAULT_ORPHAN_ATTACHMENT_RETENTION_DAYS = 7;
 export const DEFAULT_AUTH_RETENTION_DAYS = 30;
+export const DEFAULT_KNOWLEDGE_PAYLOAD_RETENTION_DAYS = 30;
 export const DEFAULT_PRUNE_BATCH_SIZE = 1000;
 export const DEFAULT_DELETION_JOB_LEASE_MINUTES = 15;
 
@@ -38,6 +39,19 @@ export type AttachmentStageResult = {
   sharedRowsDeleted: number;
 };
 
+export type KnowledgePayloadInspection = {
+  matched: number;
+  objects: number;
+};
+
+export type KnowledgePayloadStageResult = {
+  jobsStaged: number;
+  matched: number;
+  objectsReleased: number;
+  sharedObjects: number;
+  versionsPurged: number;
+};
+
 export type RetentionRepository = {
   claimAttachmentDeletionJobs(input: {
     claimableBefore: Date;
@@ -56,6 +70,10 @@ export type RetentionRepository = {
   findPrunableAuthSessionIds(input: { cutoff: Date; limit: number }): Promise<string[]>;
   findPrunableModelRunEventIds(input: { cutoff: Date; limit: number }): Promise<string[]>;
   inspectOrphanedAttachments(input: { cutoff: Date; limit: number }): Promise<AttachmentInspection>;
+  inspectStaleKnowledgePayloads(input: {
+    cutoff: Date;
+    limit: number;
+  }): Promise<KnowledgePayloadInspection>;
   releaseAttachmentDeletionJob(input: {
     claimToken: string;
     errorCode: "object_delete_failed";
@@ -66,6 +84,11 @@ export type RetentionRepository = {
     cutoff: Date;
     limit: number;
   }): Promise<AttachmentStageResult>;
+  stageStaleKnowledgePayloads(input: {
+    cutoff: Date;
+    limit: number;
+    now: Date;
+  }): Promise<KnowledgePayloadStageResult>;
 };
 
 export type PruneRetentionOptions = {
@@ -74,6 +97,7 @@ export type PruneRetentionOptions = {
   deletionJobLeaseMinutes?: number;
   dryRun?: boolean;
   eventRetentionDays?: number;
+  knowledgePayloadRetentionDays?: number;
   now?: Date;
   orphanAttachmentRetentionDays?: number;
   repository: RetentionRepository;
@@ -101,6 +125,15 @@ export type PruneRetentionSummary = {
   authSessions: RetentionCount;
   dryRun: boolean;
   eventCutoff: string;
+  knowledgePayloadCutoff: string;
+  knowledgePayloads: {
+    jobsStaged: number;
+    matched: number;
+    objects: number;
+    objectsReleased: number;
+    sharedObjects: number;
+    versionsPurged: number;
+  };
   modelRunEvents: RetentionCount;
   orphanAttachmentCutoff: string;
   orphanedAttachments: {
@@ -165,6 +198,17 @@ function prunableAuthFlowTokenWhere(cutoff: Date): Prisma.AuthFlowTokenWhereInpu
   };
 }
 
+function staleKnowledgePayloadWhere(cutoff: Date): Prisma.KnowledgeDocumentVersionWhereInput {
+  return {
+    currentFor: null,
+    ingestCompletedAt: { lt: cutoff },
+    ingestState: "failed",
+    originalStorageKey: { not: null },
+    payloadPurgedAt: null,
+    visibleFromRevision: null
+  };
+}
+
 export function shouldPruneModelRunEvent(candidate: ModelRunEventPruneCandidate, cutoff: Date): boolean {
   return (
     candidate.createdAt < cutoff &&
@@ -183,10 +227,19 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
       const rows = await prisma.$transaction((tx) =>
         tx.$queryRaw<Array<{ id: string; storageKey: string }>>`
           WITH candidates AS (
-            SELECT "id"
-            FROM "AttachmentDeletionJob"
-            WHERE "claimedAt" IS NULL OR "claimedAt" < ${claimableBefore}
-            ORDER BY "createdAt", "id"
+            SELECT job."id"
+            FROM "AttachmentDeletionJob" AS job
+            WHERE (job."claimedAt" IS NULL OR job."claimedAt" < ${claimableBefore})
+              AND NOT EXISTS (
+                SELECT 1 FROM "Attachment" AS attachment
+                WHERE attachment."storageKey" = job."storageKey"
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM "KnowledgeDocumentVersion" AS version
+                WHERE version."originalStorageKey" = job."storageKey"
+                  OR version."normalizedTextStorageKey" = job."storageKey"
+              )
+            ORDER BY job."createdAt", job."id"
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
           )
@@ -273,25 +326,22 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
       return result.count;
     },
     async findClaimableAttachmentDeletionJobIds({ claimableBefore, limit }) {
-      const rows = await prisma.attachmentDeletionJob.findMany({
-        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        select: {
-          id: true
-        },
-        take: limit,
-        where: {
-          OR: [
-            {
-              claimedAt: null
-            },
-            {
-              claimedAt: {
-                lt: claimableBefore
-              }
-            }
-          ]
-        }
-      });
+      const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT job."id"
+        FROM "AttachmentDeletionJob" AS job
+        WHERE (job."claimedAt" IS NULL OR job."claimedAt" < ${claimableBefore})
+          AND NOT EXISTS (
+            SELECT 1 FROM "Attachment" AS attachment
+            WHERE attachment."storageKey" = job."storageKey"
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "KnowledgeDocumentVersion" AS version
+            WHERE version."originalStorageKey" = job."storageKey"
+              OR version."normalizedTextStorageKey" = job."storageKey"
+          )
+        ORDER BY job."createdAt", job."id"
+        LIMIT ${limit}
+      `;
 
       return rows.map((row) => row.id);
     },
@@ -376,10 +426,38 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
       const sharedKeys = new Set(
         references.filter((reference) => !candidateIds.has(reference.id)).map((reference) => reference.storageKey)
       );
+      const knowledgeReferences = await prisma.knowledgeDocumentVersion.findMany({
+        select: { normalizedTextStorageKey: true, originalStorageKey: true },
+        where: {
+          OR: [
+            { normalizedTextStorageKey: { in: storageKeys } },
+            { originalStorageKey: { in: storageKeys } }
+          ]
+        }
+      });
+      for (const reference of knowledgeReferences) {
+        if (reference.originalStorageKey) sharedKeys.add(reference.originalStorageKey);
+        if (reference.normalizedTextStorageKey) sharedKeys.add(reference.normalizedTextStorageKey);
+      }
 
       return {
         matched: candidates.length,
         shared: candidates.filter((candidate) => sharedKeys.has(candidate.storageKey)).length
+      };
+    },
+    async inspectStaleKnowledgePayloads({ cutoff, limit }) {
+      const candidates = await prisma.knowledgeDocumentVersion.findMany({
+        orderBy: [{ ingestCompletedAt: "asc" }, { id: "asc" }],
+        select: { normalizedTextStorageKey: true, originalStorageKey: true },
+        take: limit,
+        where: staleKnowledgePayloadWhere(cutoff)
+      });
+      return {
+        matched: candidates.length,
+        objects: new Set(candidates.flatMap((candidate) => [
+          ...(candidate.originalStorageKey ? [candidate.originalStorageKey] : []),
+          ...(candidate.normalizedTextStorageKey ? [candidate.normalizedTextStorageKey] : [])
+        ])).size
       };
     },
     async releaseAttachmentDeletionJob(input) {
@@ -451,7 +529,14 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           }
 
           const remainingReferenceCount = references.length - deletableIds.length;
-          if (remainingReferenceCount === 0) {
+          const knowledgeReferences = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM "KnowledgeDocumentVersion"
+            WHERE "originalStorageKey" = ${storageKey}
+              OR "normalizedTextStorageKey" = ${storageKey}
+            FOR SHARE
+          `;
+          if (remainingReferenceCount === 0 && knowledgeReferences.length === 0) {
             const existing = await tx.attachmentDeletionJob.findUnique({
               select: { id: true },
               where: { storageKey }
@@ -487,6 +572,120 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           sharedRowsDeleted
         };
       });
+    },
+    async stageStaleKnowledgePayloads({ cutoff, limit, now }) {
+      return prisma.$transaction(async (tx) => {
+        const candidates = await tx.knowledgeDocumentVersion.findMany({
+          orderBy: [{ ingestCompletedAt: "asc" }, { id: "asc" }],
+          select: {
+            id: true,
+            normalizedTextStorageKey: true,
+            originalStorageKey: true
+          },
+          take: limit,
+          where: staleKnowledgePayloadWhere(cutoff)
+        });
+        let jobsStaged = 0;
+        let objectsReleased = 0;
+        let sharedObjects = 0;
+        let versionsPurged = 0;
+
+        const candidateStorageKeys = [...new Set(candidates.flatMap((candidate) => [
+          ...(candidate.originalStorageKey ? [candidate.originalStorageKey] : []),
+          ...(candidate.normalizedTextStorageKey ? [candidate.normalizedTextStorageKey] : [])
+        ]))].sort();
+        for (const storageKey of candidateStorageKeys) {
+          await tx.$queryRaw<Array<{ lock: string }>>`
+            SELECT pg_advisory_xact_lock(hashtextextended(${storageKey}, 260))::text AS "lock"
+          `;
+        }
+
+        for (const candidate of candidates) {
+          const rows = await tx.$queryRaw<Array<{
+            normalizedTextStorageKey: string | null;
+            originalStorageKey: string | null;
+          }>>`
+            SELECT "originalStorageKey", "normalizedTextStorageKey"
+            FROM "KnowledgeDocumentVersion"
+            WHERE "id" = ${candidate.id}
+              AND "ingestState" = 'failed'::"KnowledgeDocumentIngestState"
+              AND "ingestCompletedAt" < ${cutoff}
+              AND "visibleFromRevision" IS NULL
+              AND "payloadPurgedAt" IS NULL
+              AND "originalStorageKey" IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM "KnowledgeDocument" AS document
+                WHERE document."currentVersionId" = "KnowledgeDocumentVersion"."id"
+              )
+            FOR UPDATE
+          `;
+          const version = rows[0];
+          if (!version?.originalStorageKey) continue;
+          const storageKeys = [...new Set([
+            version.originalStorageKey,
+            ...(version.normalizedTextStorageKey ? [version.normalizedTextStorageKey] : [])
+          ])].sort();
+
+          await tx.usageEvent.deleteMany({
+            where: { knowledgeDocumentVersionId: candidate.id }
+          });
+          await tx.knowledgeChunk.deleteMany({
+            where: { documentVersionId: candidate.id }
+          });
+
+          for (const storageKey of storageKeys) {
+            const attachmentReferences = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT "id"
+              FROM "Attachment"
+              WHERE "storageKey" = ${storageKey}
+              FOR SHARE
+            `;
+            const knowledgeReferences = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT "id"
+              FROM "KnowledgeDocumentVersion"
+              WHERE "id" <> ${candidate.id}
+                AND ("originalStorageKey" = ${storageKey}
+                  OR "normalizedTextStorageKey" = ${storageKey})
+              FOR SHARE
+            `;
+            if (attachmentReferences.length === 0 && knowledgeReferences.length === 0) {
+              const existing = await tx.attachmentDeletionJob.findUnique({
+                select: { id: true },
+                where: { storageKey }
+              });
+              if (!existing) {
+                await tx.attachmentDeletionJob.create({ data: { storageKey } });
+                jobsStaged += 1;
+              }
+            } else {
+              sharedObjects += 1;
+            }
+            objectsReleased += 1;
+          }
+
+          await tx.knowledgeDocumentVersion.update({
+            data: {
+              ingestChunkCount: null,
+              ingestEmbeddedChunkCount: 0,
+              normalizedTextByteSize: null,
+              normalizedTextChecksum: null,
+              normalizedTextStorageKey: null,
+              originalStorageKey: null,
+              payloadPurgedAt: now
+            },
+            where: { id: candidate.id }
+          });
+          versionsPurged += 1;
+        }
+
+        return {
+          jobsStaged,
+          matched: candidates.length,
+          objectsReleased,
+          sharedObjects,
+          versionsPurged
+        };
+      });
     }
   };
 }
@@ -499,6 +698,8 @@ function emptySummary(input: {
   dryRun: boolean;
   eventCutoff: Date;
   eventIds: string[];
+  knowledgePayloadCutoff: Date;
+  knowledgePayloadInspection: KnowledgePayloadInspection;
   orphanAttachmentCutoff: Date;
   orphanInspection: AttachmentInspection;
 }): PruneRetentionSummary {
@@ -521,6 +722,15 @@ function emptySummary(input: {
     },
     dryRun: input.dryRun,
     eventCutoff: input.eventCutoff.toISOString(),
+    knowledgePayloadCutoff: input.knowledgePayloadCutoff.toISOString(),
+    knowledgePayloads: {
+      jobsStaged: 0,
+      matched: input.knowledgePayloadInspection.matched,
+      objects: input.knowledgePayloadInspection.objects,
+      objectsReleased: 0,
+      sharedObjects: 0,
+      versionsPurged: 0
+    },
     modelRunEvents: {
       deleted: 0,
       matched: input.eventIds.length
@@ -544,6 +754,10 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     DEFAULT_ORPHAN_ATTACHMENT_RETENTION_DAYS
   );
   const authRetentionDays = positiveInteger(options.authRetentionDays, DEFAULT_AUTH_RETENTION_DAYS);
+  const knowledgePayloadRetentionDays = positiveInteger(
+    options.knowledgePayloadRetentionDays,
+    DEFAULT_KNOWLEDGE_PAYLOAD_RETENTION_DAYS
+  );
   const deletionJobLeaseMinutes = positiveInteger(
     options.deletionJobLeaseMinutes,
     DEFAULT_DELETION_JOB_LEASE_MINUTES
@@ -552,10 +766,19 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
   const eventCutoff = cutoffDate(now, eventRetentionDays);
   const orphanAttachmentCutoff = cutoffDate(now, orphanAttachmentRetentionDays);
   const authCutoff = cutoffDate(now, authRetentionDays);
+  const knowledgePayloadCutoff = cutoffDate(now, knowledgePayloadRetentionDays);
   const claimableBefore = deletionJobClaimableBefore(now, deletionJobLeaseMinutes);
-  const [eventIds, orphanInspection, authSessionIds, authFlowTokenIds, initialDeletionJobIds] = await Promise.all([
+  const [
+    eventIds,
+    orphanInspection,
+    knowledgePayloadInspection,
+    authSessionIds,
+    authFlowTokenIds,
+    initialDeletionJobIds
+  ] = await Promise.all([
     options.repository.findPrunableModelRunEventIds({ cutoff: eventCutoff, limit: batchSize }),
     options.repository.inspectOrphanedAttachments({ cutoff: orphanAttachmentCutoff, limit: batchSize }),
+    options.repository.inspectStaleKnowledgePayloads({ cutoff: knowledgePayloadCutoff, limit: batchSize }),
     options.repository.findPrunableAuthSessionIds({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findPrunableAuthFlowTokenIds({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findClaimableAttachmentDeletionJobIds({ claimableBefore, limit: batchSize })
@@ -568,6 +791,8 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     dryRun,
     eventCutoff,
     eventIds,
+    knowledgePayloadCutoff,
+    knowledgePayloadInspection,
     orphanAttachmentCutoff,
     orphanInspection
   });
@@ -576,12 +801,23 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     return summary;
   }
 
-  const [deletedEvents, deletedSessions, deletedFlowTokens, stagedAttachments] = await Promise.all([
+  const [deletedEvents, deletedSessions, deletedFlowTokens] = await Promise.all([
     options.repository.deleteModelRunEvents(eventIds),
     options.repository.deleteAuthSessions({ cutoff: authCutoff, ids: authSessionIds }),
-    options.repository.deleteAuthFlowTokens({ cutoff: authCutoff, ids: authFlowTokenIds }),
-    options.repository.stageOrphanedAttachments({ cutoff: orphanAttachmentCutoff, limit: batchSize })
+    options.repository.deleteAuthFlowTokens({ cutoff: authCutoff, ids: authFlowTokenIds })
   ]);
+  // Both stages can touch the same private object key. Keep them sequential so
+  // advisory-lock ordering cannot deadlock and the second stage observes the
+  // first stage's released reference before deciding whether to queue deletion.
+  const stagedAttachments = await options.repository.stageOrphanedAttachments({
+    cutoff: orphanAttachmentCutoff,
+    limit: batchSize
+  });
+  const stagedKnowledgePayloads = await options.repository.stageStaleKnowledgePayloads({
+    cutoff: knowledgePayloadCutoff,
+    limit: batchSize,
+    now
+  });
   const claimableDeletionJobIds = await options.repository.findClaimableAttachmentDeletionJobIds({
     claimableBefore,
     limit: batchSize
@@ -595,6 +831,14 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
   summary.modelRunEvents.deleted = deletedEvents;
   summary.authSessions.deleted = deletedSessions;
   summary.authFlowTokens.deleted = deletedFlowTokens;
+  summary.knowledgePayloads = {
+    jobsStaged: stagedKnowledgePayloads.jobsStaged,
+    matched: stagedKnowledgePayloads.matched,
+    objects: knowledgePayloadInspection.objects,
+    objectsReleased: stagedKnowledgePayloads.objectsReleased,
+    sharedObjects: stagedKnowledgePayloads.sharedObjects,
+    versionsPurged: stagedKnowledgePayloads.versionsPurged
+  };
   summary.orphanedAttachments = {
     jobsStaged: stagedAttachments.jobsStaged,
     matched: stagedAttachments.matched,

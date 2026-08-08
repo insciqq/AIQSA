@@ -127,6 +127,28 @@ describe("document parser boundary", () => {
     expect(tikaParse).toHaveBeenCalledOnce();
   });
 
+  it("can pin Knowledge parsing to the first code-owned engine without fallback", async () => {
+    const doclingParse = vi.fn<DocumentParserEngineAdapter["parse"]>(async () => {
+      throw new DocumentParserError("parser_unavailable", "docling");
+    });
+    const tikaParse = vi.fn<DocumentParserEngineAdapter["parse"]>(async () => parsed("tika", "fallback"));
+    const boundary = createDocumentParserBoundary({
+      adapters: {
+        docling: fakeAdapter({ engine: "docling", parse: doclingParse }),
+        tika: fakeAdapter({ engine: "tika", parse: tikaParse })
+      },
+      sidecarFallback: false
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("%PDF-fixture"),
+      fileName: "fixture.pdf",
+      mimeType: "application/pdf"
+    })).rejects.toMatchObject({ code: "parser_unavailable", engine: "docling" });
+    expect(doclingParse).toHaveBeenCalledOnce();
+    expect(tikaParse).not.toHaveBeenCalled();
+  });
+
   it("returns stable unavailable and rejection errors without configured parsers", async () => {
     const boundary = createDocumentParserBoundary({ config: {} });
     await expect(boundary.parse({

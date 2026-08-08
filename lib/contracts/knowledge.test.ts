@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   decodeKnowledgeBaseCreate,
   decodeKnowledgeBasePublication,
-  decodeKnowledgeBaseUpdate
+  decodeKnowledgeBaseUpdate,
+  decodeKnowledgeReindex
 } from "./knowledge";
 
 describe("Knowledge Base contracts", () => {
@@ -57,6 +58,16 @@ describe("Knowledge Base contracts", () => {
     expect(decodeKnowledgeBasePublication({ groupId: "group-1", scope: "installation" }))
       .toMatchObject({ ok: false });
     expect(decodeKnowledgeBasePublication({ groupId: null, scope: "group" }))
+      .toMatchObject({ ok: false });
+  });
+
+  it("accepts only an exact bounded embedding deployment for reindex", () => {
+    expect(decodeKnowledgeReindex({ embeddingDeploymentId: "embedding-2" })).toEqual({
+      ok: true,
+      value: { embeddingDeploymentId: "embedding-2" }
+    });
+    expect(decodeKnowledgeReindex({ embeddingDeploymentId: "embedding 2" })).toMatchObject({ ok: false });
+    expect(decodeKnowledgeReindex({ embeddingDeploymentId: "embedding-2", userId: "other" }))
       .toMatchObject({ ok: false });
   });
 });

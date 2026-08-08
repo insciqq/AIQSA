@@ -21,15 +21,22 @@ export type DocumentParserBoundaryOptions = Readonly<{
   adapters?: Partial<Record<SidecarParserEngine, DocumentParserEngineAdapter>>;
   config?: DocumentParserConfig;
   fetch?: typeof fetch;
+  inlineMaxChars?: number;
+  sidecarFallback?: boolean;
 }>;
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 }
 
-function inlineDocument(input: DocumentParseInput, mediaType: string): ParsedDocument {
+function inlineDocument(
+  input: DocumentParseInput,
+  mediaType: string,
+  maxChars: number | undefined
+): ParsedDocument {
   const extracted = extractTextDocument(input.bytes, {
     fileName: input.fileName,
+    ...(maxChars === undefined ? {} : { maxChars }),
     mimeType: mediaType
   });
   const blocks: ParsedDocumentBlock[] = extracted.text
@@ -74,6 +81,8 @@ function terminalError(errors: DocumentParserError[]): DocumentParserError {
 
 export class DocumentParserBoundary {
   readonly #adapters: Partial<Record<SidecarParserEngine, DocumentParserEngineAdapter>>;
+  readonly #inlineMaxChars: number | undefined;
+  readonly #sidecarFallback: boolean;
 
   constructor(options: DocumentParserBoundaryOptions = {}) {
     const config = options.config ?? getDocumentParserConfig();
@@ -94,6 +103,8 @@ export class DocumentParserBoundary {
       } : {}),
       ...options.adapters
     };
+    this.#inlineMaxChars = options.inlineMaxChars;
+    this.#sidecarFallback = options.sidecarFallback ?? true;
   }
 
   async parse(input: DocumentParseInput): Promise<ParsedDocument> {
@@ -102,10 +113,13 @@ export class DocumentParserBoundary {
 
     const route = resolveDocumentParserRoute(input.fileName, input.mimeType);
     if (!route) throw new DocumentParserError("parser_rejected");
-    if (route.kind === "inline") return inlineDocument(input, route.mediaType);
+    if (route.kind === "inline") {
+      return inlineDocument(input, route.mediaType, this.#inlineMaxChars);
+    }
 
     const errors: DocumentParserError[] = [];
-    for (const engine of route.engines) {
+    const engines = this.#sidecarFallback ? route.engines : route.engines.slice(0, 1);
+    for (const engine of engines) {
       if (input.signal?.aborted) throw abortReason(input.signal);
       const adapter = this.#adapters[engine];
       if (!adapter) {

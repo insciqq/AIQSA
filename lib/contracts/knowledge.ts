@@ -83,6 +83,62 @@ export type KnowledgeBasePublicationResponse = Readonly<{
   publication: KnowledgeBasePublication;
 }>;
 
+export type KnowledgeDocumentVersionStatus = Readonly<{
+  byteSize: number;
+  completedAt: string | null;
+  createdAt: string;
+  current: boolean;
+  embeddedChunks: number;
+  errorCode: string | null;
+  fileName: string;
+  id: string;
+  mimeType: string;
+  pageCount: number | null;
+  payloadAvailable: boolean;
+  state: "chunking" | "embedding" | "failed" | "parsing" | "queued" | "ready";
+  totalChunks: number | null;
+  updatedAt: string;
+  versionNumber: number;
+  visibleFromRevision: number | null;
+  visibleUntilRevision: number | null;
+}>;
+
+export type KnowledgeDocumentStatus = Readonly<{
+  archived: boolean;
+  currentVersionId: string | null;
+  id: string;
+  versions: KnowledgeDocumentVersionStatus[];
+}>;
+
+export type KnowledgeReindexProgress = Readonly<{
+  completedDocuments: number;
+  createdAt: string;
+  errorCode: string | null;
+  failedDocuments: number;
+  generationId: string;
+  status: "active" | "building" | "failed" | "ready" | "retired";
+  targetContentRevision: number;
+  totalDocuments: number;
+}>;
+
+export type KnowledgeIngestionStatusResponse = Readonly<{
+  documents: KnowledgeDocumentStatus[];
+  owned: boolean;
+  reindex: KnowledgeReindexProgress | null;
+}>;
+
+export type KnowledgeDocumentMutationResponse = Readonly<{
+  document: KnowledgeDocumentStatus;
+}>;
+
+export type KnowledgeReindexInput = Readonly<{
+  embeddingDeploymentId: string;
+}>;
+
+export type KnowledgeReindexResponse = Readonly<{
+  reindex: KnowledgeReindexProgress;
+}>;
+
 type DecodeResult<T> =
   | Readonly<{ ok: true; value: T }>
   | Readonly<{ code: "knowledge_base_input_invalid"; ok: false }>;
@@ -185,5 +241,15 @@ export function decodeKnowledgeBasePublication(
   const groupId = boundedId(value.groupId);
   return value.scope === "group" && groupId
     ? { ok: true, value: { groupId, scope: "group" } }
+    : { code: "knowledge_base_input_invalid", ok: false };
+}
+
+export function decodeKnowledgeReindex(value: unknown): DecodeResult<KnowledgeReindexInput> {
+  if (!isRecord(value) || !allowedKeys(value, ["embeddingDeploymentId"])) {
+    return { code: "knowledge_base_input_invalid", ok: false };
+  }
+  const embeddingDeploymentId = boundedId(value.embeddingDeploymentId);
+  return embeddingDeploymentId
+    ? { ok: true, value: { embeddingDeploymentId } }
     : { code: "knowledge_base_input_invalid", ok: false };
 }

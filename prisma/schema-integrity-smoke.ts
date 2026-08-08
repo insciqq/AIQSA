@@ -15,8 +15,18 @@ const expectedConstraintNames = [
   "KnowledgeBasePublication_scope_group_check",
   "KnowledgeChunk_dimension_check",
   "KnowledgeDocument_currentVersion_fkey",
+  "KnowledgeDocumentVersion_ingestGeneration_fkey",
+  "KnowledgeDocumentVersion_ingest_progress_check",
+  "KnowledgeDocumentVersion_normalized_object_check",
+  "KnowledgeDocumentVersion_storage_key_check",
   "KnowledgeDocumentVersion_visibility_check",
+  "KnowledgeGenerationDocument_error_check",
+  "KnowledgeGenerationDocument_generation_fkey",
+  "KnowledgeGenerationDocument_progress_check",
+  "KnowledgeGenerationDocument_state_check",
+  "KnowledgeGenerationDocument_version_fkey",
   "KnowledgeIndexGeneration_dimension_check",
+  "KnowledgeIndexGeneration_reindex_source_check",
   "Message_chatId_parentMessageId_fkey",
   "ModelPolicy_defaultProviderModelId_fkey",
   "ModelPolicy_singleton_check",
@@ -28,7 +38,8 @@ const expectedConstraintNames = [
   "SearchStrategy_searchOptionId_fkey",
   "SystemModelPolicy_providerModelId_fkey",
   "SystemModelPolicy_singleton_check",
-  "SystemModelPolicy_version_check"
+  "SystemModelPolicy_version_check",
+  "UsageEvent_knowledge_shape_check"
 ] as const;
 
 class ExpectedRollback extends Error {}
@@ -163,8 +174,18 @@ async function assertConstraintCatalog(): Promise<void> {
       'KnowledgeBasePublication_scope_group_check',
       'KnowledgeChunk_dimension_check',
       'KnowledgeDocument_currentVersion_fkey',
+      'KnowledgeDocumentVersion_ingestGeneration_fkey',
+      'KnowledgeDocumentVersion_ingest_progress_check',
+      'KnowledgeDocumentVersion_normalized_object_check',
+      'KnowledgeDocumentVersion_storage_key_check',
       'KnowledgeDocumentVersion_visibility_check',
+      'KnowledgeGenerationDocument_error_check',
+      'KnowledgeGenerationDocument_generation_fkey',
+      'KnowledgeGenerationDocument_progress_check',
+      'KnowledgeGenerationDocument_state_check',
+      'KnowledgeGenerationDocument_version_fkey',
       'KnowledgeIndexGeneration_dimension_check',
+      'KnowledgeIndexGeneration_reindex_source_check',
       'Message_chatId_parentMessageId_fkey',
       'ModelPolicy_defaultProviderModelId_fkey',
       'ModelPolicy_singleton_check',
@@ -176,7 +197,8 @@ async function assertConstraintCatalog(): Promise<void> {
       'SearchStrategy_searchOptionId_fkey',
       'SystemModelPolicy_providerModelId_fkey',
       'SystemModelPolicy_singleton_check',
-      'SystemModelPolicy_version_check'
+      'SystemModelPolicy_version_check',
+      'UsageEvent_knowledge_shape_check'
     )
     ORDER BY conname
   `;
@@ -227,6 +249,21 @@ async function assertConstraintCatalog(): Promise<void> {
   `;
   if (knowledgeIndexes.length !== 3) {
     throw new Error("Expected both committed Knowledge HNSW profiles and the FTS index.");
+  }
+  const knowledgeIngestionIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND indexname IN (
+        'KnowledgeGenerationDocument_state_nextAttemptAt_claimedAt_createdAt_idx',
+        'KnowledgeIndexGeneration_one_building_reindex_idx',
+        'KnowledgeDocumentVersion_one_active_ingest_idx',
+        'UsageEvent_knowledge_batch_key'
+      )
+    ORDER BY indexname
+  `;
+  if (knowledgeIngestionIndexes.length !== 4) {
+    throw new Error("Expected Knowledge ingestion queue and idempotency indexes.");
   }
 }
 
@@ -477,7 +514,7 @@ async function main() {
   await assertGrantShapes();
   await assertStatusEnums();
   console.log(
-    "AIQSA schema integrity smoke ok: validated constraints, tenant-safe pointers, Knowledge indexes, six grant shapes, and lifecycle enums."
+    "AIQSA schema integrity smoke ok: validated constraints, tenant-safe pointers, Knowledge ingestion/indexes, six grant shapes, and lifecycle enums."
   );
 }
 

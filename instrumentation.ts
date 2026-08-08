@@ -18,6 +18,15 @@ export async function register(): Promise<void> {
     // status/retry endpoints can expose a durable failure instead of crashing.
   }
   try {
+    const { getDefaultKnowledgeIngestionCoordinator } = await import(
+      "./lib/server/knowledge/defaultIngestion"
+    );
+    getDefaultKnowledgeIngestionCoordinator();
+  } catch {
+    // Knowledge ingestion is feature-local. Durable per-document state remains
+    // inspectable and retryable when its parser/provider/storage boundary is unavailable.
+  }
+  try {
     const { getDefaultMcpActivationCoordinator } = await import(
       "./lib/server/mcp/defaultActivation"
     );

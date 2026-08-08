@@ -69,7 +69,7 @@ export type KnowledgeBaseRevokeResult =
   | Readonly<{ kind: "not_found" }>
   | Readonly<{ kind: "ok" }>;
 
-type EmbeddingDeploymentResolution = Readonly<{
+export type KnowledgeEmbeddingDeploymentResolution = Readonly<{
   public: KnowledgeEmbeddingDeployment;
   pin: KnowledgeVectorSpacePin;
 }>;
@@ -162,10 +162,10 @@ async function activeMemberGroupIds(
   return memberships.map((membership) => membership.groupId);
 }
 
-async function embeddingDeployments(
+export async function resolveKnowledgeEmbeddingDeployments(
   client: Pick<PrismaClient, "accessGrant" | "providerModel" | "userGroup">,
   userId: string
-): Promise<EmbeddingDeploymentResolution[]> {
+): Promise<KnowledgeEmbeddingDeploymentResolution[]> {
   const [entitlements, models] = await Promise.all([
     loadEntitlementsForUser(userId, client),
     client.providerModel.findMany({
@@ -188,7 +188,7 @@ async function embeddingDeployments(
       }
     })
   ]);
-  const resolved: EmbeddingDeploymentResolution[] = [];
+  const resolved: KnowledgeEmbeddingDeploymentResolution[] = [];
   for (const model of models) {
     if (!canAccessModel(entitlements, model.connectionId, model.id) || model.activeConfig === null) {
       continue;
@@ -229,7 +229,7 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
           return await client.$transaction(async (tx) => {
-            const deployment = (await embeddingDeployments(tx, userId)).find(
+            const deployment = (await resolveKnowledgeEmbeddingDeployments(tx, userId)).find(
               (candidate) => candidate.public.id === input.embeddingDeploymentId
             );
             if (!deployment) return { kind: "embedding_not_available" } as const;
@@ -313,7 +313,7 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
     },
 
     async listEmbeddingDeployments(userId: string): Promise<KnowledgeEmbeddingDeployment[]> {
-      return (await embeddingDeployments(client, userId)).map((deployment) => deployment.public);
+      return (await resolveKnowledgeEmbeddingDeployments(client, userId)).map((deployment) => deployment.public);
     },
 
     async listForUser(userId: string): Promise<KnowledgeBaseAccessEntry[]> {

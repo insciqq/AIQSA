@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
+import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { createMemoryStorageAdapter, createS3StorageAdapter } from "../uploads/storage";
 import {
@@ -73,6 +74,83 @@ async function cleanupUser(userId: string, storageKeys: string[]) {
   await prisma.user.deleteMany({ where: { id: userId } });
 }
 
+async function createKnowledgePayloadFixture(
+  userId: string,
+  originalStorageKey: string,
+  normalizedTextStorageKey: string
+) {
+  const base = await prisma.knowledgeBase.create({
+    data: {
+      description: "Retention fixture",
+      name: `Retention Knowledge ${randomUUID()}`,
+      ownerUserId: userId
+    }
+  });
+  const generation = await prisma.knowledgeIndexGeneration.create({
+    data: {
+      activatedAt: oldDate,
+      chunkingProfileVersion: 1,
+      embeddingConfiguration: {},
+      embeddingProviderModelId: providerTemplateIds.fakeModel,
+      indexedContentRevision: 0,
+      knowledgeBaseId: base.id,
+      readyAt: oldDate,
+      status: "active",
+      targetDimension: 1536,
+      vectorSpaceFingerprint: "a".repeat(64)
+    }
+  });
+  await prisma.knowledgeBase.update({
+    data: { activeIndexGenerationId: generation.id },
+    where: { id: base.id }
+  });
+  const document = await prisma.knowledgeDocument.create({
+    data: { knowledgeBaseId: base.id }
+  });
+  const version = await prisma.knowledgeDocumentVersion.create({
+    data: {
+      byteSize: 7,
+      checksum: "b".repeat(64),
+      documentId: document.id,
+      fileName: "failed.txt",
+      ingestCompletedAt: oldDate,
+      ingestErrorCode: "parser_rejected",
+      ingestGenerationId: generation.id,
+      ingestState: "failed",
+      knowledgeBaseId: base.id,
+      mimeType: "text/plain",
+      normalizedTextByteSize: 10,
+      normalizedTextChecksum: "c".repeat(64),
+      normalizedTextStorageKey,
+      originalStorageKey,
+      versionNumber: 1
+    }
+  });
+  return { base, document, generation, version };
+}
+
+async function cleanupKnowledgePayloadFixture(input: Awaited<ReturnType<typeof createKnowledgePayloadFixture>>) {
+  await prisma.usageEvent.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+  await prisma.knowledgeGenerationDocument.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+  await prisma.knowledgeChunk.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+  await prisma.knowledgeBase.update({
+    data: { activeIndexGenerationId: null },
+    where: { id: input.base.id }
+  });
+  await prisma.knowledgeDocument.update({
+    data: { currentVersionId: null },
+    where: { id: input.document.id }
+  });
+  await prisma.knowledgeDocumentVersion.updateMany({
+    data: { ingestGenerationId: null },
+    where: { knowledgeBaseId: input.base.id }
+  });
+  await prisma.knowledgeDocumentVersion.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+  await prisma.knowledgeDocument.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+  await prisma.knowledgeIndexGeneration.deleteMany({ where: { knowledgeBaseId: input.base.id } });
+  await prisma.knowledgeBase.delete({ where: { id: input.base.id } });
+}
+
 describe("Prisma attachment retention outbox", () => {
   afterAll(async () => {
     await prisma.$disconnect();
@@ -121,6 +199,112 @@ describe("Prisma attachment retention outbox", () => {
       expect(deletionJobs.map((job) => job.storageKey).sort()).toEqual([...storageKeys].sort());
     } finally {
       await cleanupUser(user.id, storageKeys);
+    }
+  });
+
+  it("keeps an existing deletion job unclaimable while any Knowledge row references its object", async () => {
+    const user = await createUser();
+    const sharedKey = `retention/knowledge-shared-${randomUUID()}`;
+    const normalizedKey = `retention/knowledge-normalized-${randomUUID()}`;
+    const fixture = await createKnowledgePayloadFixture(user.id, sharedKey, normalizedKey);
+    const attachment = await createOldAttachment(user.id, sharedKey);
+    const job = await prisma.attachmentDeletionJob.create({ data: { storageKey: sharedKey } });
+    const repository = createPrismaRetentionRepository(prisma);
+
+    try {
+      const claimable = await repository.findClaimableAttachmentDeletionJobIds({
+        claimableBefore: retentionNow,
+        limit: 1_000
+      });
+      expect(claimable).not.toContain(job.id);
+
+      await expect(repository.stageOrphanedAttachments({
+        cutoff: new Date("2000-01-02T00:00:00.000Z"),
+        limit: 10
+      })).resolves.toMatchObject({
+        jobsStaged: 0,
+        rowsDeleted: 1,
+        sharedRowsDeleted: 1
+      });
+      await expect(prisma.attachment.findUnique({ where: { id: attachment.id } })).resolves.toBeNull();
+      await expect(prisma.attachmentDeletionJob.findUnique({ where: { id: job.id } })).resolves.not.toBeNull();
+    } finally {
+      await prisma.attachmentDeletionJob.deleteMany({
+        where: { storageKey: { in: [sharedKey, normalizedKey] } }
+      });
+      await cleanupKnowledgePayloadFixture(fixture);
+      await cleanupUser(user.id, [sharedKey, normalizedKey]);
+    }
+  });
+
+  it("purges only stale failed never-visible Knowledge payloads and rechecks shared object keys", async () => {
+    const user = await createUser();
+    const originalKey = `retention/knowledge-original-${randomUUID()}`;
+    const normalizedKey = `retention/knowledge-normalized-${randomUUID()}`;
+    const fixture = await createKnowledgePayloadFixture(user.id, originalKey, normalizedKey);
+    const sharedAttachment = await createOldAttachment(user.id, normalizedKey);
+    await prisma.usageEvent.create({
+      data: {
+        inputTokens: 3,
+        knowledgeBaseId: fixture.base.id,
+        knowledgeBatchIndex: 0,
+        knowledgeDocumentVersionId: fixture.version.id,
+        knowledgeIndexGenerationId: fixture.generation.id,
+        modelId: "fake-qsa",
+        provider: "fake",
+        providerModelId: providerTemplateIds.fakeModel,
+        totalTokens: 3,
+        userId: user.id
+      }
+    });
+    const repository = createPrismaRetentionRepository(prisma);
+    const cutoff = new Date("2000-02-01T00:00:00.000Z");
+
+    try {
+      await expect(repository.inspectStaleKnowledgePayloads({ cutoff, limit: 10 })).resolves.toEqual({
+        matched: 1,
+        objects: 2
+      });
+      await expect(repository.stageStaleKnowledgePayloads({
+        cutoff,
+        limit: 10,
+        now: retentionNow
+      })).resolves.toEqual({
+        jobsStaged: 1,
+        matched: 1,
+        objectsReleased: 2,
+        sharedObjects: 1,
+        versionsPurged: 1
+      });
+
+      await expect(prisma.knowledgeDocumentVersion.findUnique({
+        select: {
+          normalizedTextStorageKey: true,
+          originalStorageKey: true,
+          payloadPurgedAt: true
+        },
+        where: { id: fixture.version.id }
+      })).resolves.toEqual({
+        normalizedTextStorageKey: null,
+        originalStorageKey: null,
+        payloadPurgedAt: retentionNow
+      });
+      await expect(prisma.usageEvent.count({
+        where: { knowledgeDocumentVersionId: fixture.version.id }
+      })).resolves.toBe(0);
+      await expect(prisma.attachmentDeletionJob.findUnique({
+        where: { storageKey: originalKey }
+      })).resolves.not.toBeNull();
+      await expect(prisma.attachmentDeletionJob.findUnique({
+        where: { storageKey: normalizedKey }
+      })).resolves.toBeNull();
+    } finally {
+      await prisma.attachmentDeletionJob.deleteMany({
+        where: { storageKey: { in: [originalKey, normalizedKey] } }
+      });
+      await prisma.attachment.deleteMany({ where: { id: sharedAttachment.id } });
+      await cleanupKnowledgePayloadFixture(fixture);
+      await cleanupUser(user.id, [originalKey, normalizedKey]);
     }
   });
 

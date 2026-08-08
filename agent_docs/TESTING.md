@@ -133,6 +133,7 @@ npm run db:auth-rate-limit:migration:contract
 npm run db:attachment-processing:migration:contract
 npm run db:gemini:migration:contract
 npm run db:knowledge:migration:contract
+npm run db:knowledge-ingestion:migration:contract
 npm run db:provider:migration:contract
 npm run db:full-access:migration:contract
 npm run db:control-plane:migration:contract

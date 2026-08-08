@@ -599,6 +599,7 @@ model KnowledgeBase {
   indexGenerations        KnowledgeIndexGeneration[] @relation("KnowledgeBaseIndexGenerations")
   owner                   User                       @relation("KnowledgeBaseOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   publications            KnowledgeBasePublication[]
+  usageEvents             UsageEvent[]               @relation("KnowledgeUsageBase")
 
   @@unique([id, activeIndexGenerationId])
   @@index([ownerUserId, archivedAt])
@@ -608,12 +609,16 @@ model KnowledgeIndexGeneration {
   id                       String                         @id @default(uuid())
   knowledgeBaseId          String
   embeddingProviderModelId String
+  sourceIndexGenerationId  String?
+  sourceBaseVersion        Int?
+  targetContentRevision    Int?
   embeddingConfiguration   Json
   vectorSpaceFingerprint   String                         @db.Char(64)
   targetDimension          Int
   chunkingProfileVersion   Int
   indexedContentRevision   Int                            @default(0)
   status                   KnowledgeIndexGenerationStatus @default(building)
+  lastErrorCode            String?                        @db.VarChar(64)
   readyAt                  DateTime?
   activatedAt              DateTime?
   retiredAt                DateTime?
@@ -622,12 +627,18 @@ model KnowledgeIndexGeneration {
   updatedAt                DateTime                       @updatedAt
   activeFor                KnowledgeBase?                 @relation("KnowledgeBaseActiveIndexGeneration")
   chunks                   KnowledgeChunk[]
+  derivedIndexGenerations  KnowledgeIndexGeneration[]     @relation("KnowledgeIndexGenerationSource")
   embeddingProviderModel   ProviderModel                  @relation(fields: [embeddingProviderModelId], references: [id], onDelete: Restrict)
+  generationDocuments      KnowledgeGenerationDocument[]
+  ingestDocumentVersions   KnowledgeDocumentVersion[]     @relation("KnowledgeDocumentVersionIngestGeneration")
   knowledgeBase            KnowledgeBase                  @relation("KnowledgeBaseIndexGenerations", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+  sourceIndexGeneration    KnowledgeIndexGeneration?      @relation("KnowledgeIndexGenerationSource", fields: [knowledgeBaseId, sourceIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeIndexGeneration_source_fkey")
+  usageEvents              UsageEvent[]                   @relation("KnowledgeUsageGeneration")
 
   @@unique([knowledgeBaseId, id])
   @@index([embeddingProviderModelId])
   @@index([knowledgeBaseId, status])
+  @@index([sourceIndexGenerationId])
 }
 
 model KnowledgeDocument {
@@ -648,40 +659,73 @@ model KnowledgeDocument {
 }
 
 model KnowledgeDocumentVersion {
-  id                       String                       @id @default(uuid())
+  id                       String                        @id @default(uuid())
   knowledgeBaseId          String
   documentId               String
+  ingestGenerationId       String?
   versionNumber            Int
   fileName                 String
   mimeType                 String
   byteSize                 Int
-  checksum                 String                       @db.Char(64)
-  originalStorageKey       String
+  checksum                 String                        @db.Char(64)
+  originalStorageKey       String?
   normalizedTextStorageKey String?
+  normalizedTextByteSize   Int?
+  normalizedTextChecksum   String?                       @db.Char(64)
   pageCount                Int?
   visibleFromRevision      Int?
   visibleUntilRevision     Int?
-  ingestState              KnowledgeDocumentIngestState @default(queued)
-  ingestErrorCode          String?                      @db.VarChar(64)
-  ingestClaimToken         String?                      @db.VarChar(128)
+  ingestState              KnowledgeDocumentIngestState  @default(queued)
+  ingestErrorCode          String?                       @db.VarChar(64)
+  ingestClaimToken         String?                       @db.VarChar(128)
   ingestClaimedAt          DateTime?
-  ingestAttemptCount       Int                          @default(0)
-  ingestNextAttemptAt      DateTime                     @default(now())
+  ingestAttemptCount       Int                           @default(0)
+  ingestNextAttemptAt      DateTime                      @default(now())
+  ingestChunkCount         Int?
+  ingestEmbeddedChunkCount Int                           @default(0)
   ingestStartedAt          DateTime?
   ingestCompletedAt        DateTime?
-  createdAt                DateTime                     @default(now())
-  updatedAt                DateTime                     @updatedAt
+  payloadPurgedAt          DateTime?
+  createdAt                DateTime                      @default(now())
+  updatedAt                DateTime                      @updatedAt
   chunks                   KnowledgeChunk[]
-  currentFor               KnowledgeDocument?           @relation("KnowledgeDocumentCurrentVersion")
-  document                 KnowledgeDocument            @relation("KnowledgeDocumentVersions", fields: [knowledgeBaseId, documentId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_document_fkey")
+  currentFor               KnowledgeDocument?            @relation("KnowledgeDocumentCurrentVersion")
+  document                 KnowledgeDocument             @relation("KnowledgeDocumentVersions", fields: [knowledgeBaseId, documentId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_document_fkey")
+  generationDocuments      KnowledgeGenerationDocument[]
+  ingestGeneration         KnowledgeIndexGeneration?     @relation("KnowledgeDocumentVersionIngestGeneration", fields: [knowledgeBaseId, ingestGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_ingestGeneration_fkey")
+  usageEvents              UsageEvent[]                  @relation("KnowledgeUsageDocumentVersion")
 
   @@unique([documentId, versionNumber])
   @@unique([documentId, id])
   @@unique([knowledgeBaseId, id])
   @@index([knowledgeBaseId, ingestState, ingestNextAttemptAt])
+  @@index([ingestGenerationId])
   @@index([originalStorageKey])
   @@index([normalizedTextStorageKey])
   @@index([knowledgeBaseId, visibleFromRevision, visibleUntilRevision])
+}
+
+model KnowledgeGenerationDocument {
+  knowledgeBaseId    String
+  indexGenerationId  String
+  documentVersionId  String
+  state              KnowledgeDocumentIngestState @default(queued)
+  errorCode          String?                      @db.VarChar(64)
+  claimToken         String?                      @db.VarChar(128)
+  claimedAt          DateTime?
+  attemptCount       Int                          @default(0)
+  nextAttemptAt      DateTime                     @default(now())
+  lastAttemptAt      DateTime?
+  chunkCount         Int?
+  embeddedChunkCount Int                          @default(0)
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  documentVersion    KnowledgeDocumentVersion     @relation(fields: [knowledgeBaseId, documentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeGenerationDocument_version_fkey")
+  indexGeneration    KnowledgeIndexGeneration     @relation(fields: [knowledgeBaseId, indexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeGenerationDocument_generation_fkey")
+
+  @@id([indexGenerationId, documentVersionId])
+  @@index([state, nextAttemptAt, claimedAt, createdAt])
+  @@index([knowledgeBaseId, documentVersionId])
 }
 
 model KnowledgeChunk {
@@ -1468,23 +1512,33 @@ model SharedChatSnapshot {
 }
 
 model UsageEvent {
-  id                    String    @id @default(uuid())
-  userId                String
-  chatId                String?
-  modelRunId            String?
-  provider              String
-  modelId               String
-  inputTokens           Int       @default(0)
-  cachedInputTokens     Int       @default(0)
-  cacheWriteInputTokens Int       @default(0)
-  outputTokens          Int       @default(0)
-  reasoningTokens       Int       @default(0)
-  totalTokens           Int       @default(0)
-  estimatedCostMicros   Int       @default(0)
-  createdAt             DateTime  @default(now())
-  modelRun              ModelRun? @relation(fields: [modelRunId], references: [id], onDelete: SetNull)
-  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                         String                    @id @default(uuid())
+  userId                     String
+  chatId                     String?
+  modelRunId                 String?
+  provider                   String
+  modelId                    String
+  providerModelId            String?
+  knowledgeBaseId            String?
+  knowledgeIndexGenerationId String?
+  knowledgeDocumentVersionId String?
+  knowledgeBatchIndex        Int?
+  inputTokens                Int                       @default(0)
+  cachedInputTokens          Int                       @default(0)
+  cacheWriteInputTokens      Int                       @default(0)
+  outputTokens               Int                       @default(0)
+  reasoningTokens            Int                       @default(0)
+  totalTokens                Int                       @default(0)
+  estimatedCostMicros        Int                       @default(0)
+  createdAt                  DateTime                  @default(now())
+  knowledgeBase              KnowledgeBase?            @relation("KnowledgeUsageBase", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
+  knowledgeDocumentVersion   KnowledgeDocumentVersion? @relation("KnowledgeUsageDocumentVersion", fields: [knowledgeBaseId, knowledgeDocumentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeDocumentVersion_fkey")
+  knowledgeIndexGeneration   KnowledgeIndexGeneration? @relation("KnowledgeUsageGeneration", fields: [knowledgeBaseId, knowledgeIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeIndexGeneration_fkey")
+  modelRun                   ModelRun?                 @relation(fields: [modelRunId], references: [id], onDelete: SetNull)
+  user                       User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([knowledgeIndexGenerationId, knowledgeDocumentVersionId, knowledgeBatchIndex])
   @@index([userId, createdAt])
   @@index([provider, modelId])
+  @@index([knowledgeBaseId, createdAt])
 }

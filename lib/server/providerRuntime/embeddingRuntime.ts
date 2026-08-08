@@ -10,19 +10,22 @@ import {
 import {
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration,
-  providerAuthenticationMode
+  providerAuthenticationMode,
+  type ProviderModelConfiguration
 } from "../providers/providerConfiguration";
 import { createProviderSafeFetch } from "../providers/providerSafeFetch";
 import { ProviderAdmissionError } from "./admission";
 
 export type EmbeddingRuntimeBinding = Readonly<{
   adapter: EmbeddingAdapter;
+  configuration: ProviderModelConfiguration;
   connectionId: string;
   connectionVersion: number;
   credentialId: string;
   credentialSource: "default" | "group" | "user";
   credentialVersionId: string;
   modelVersion: number;
+  provider: string;
   providerModelId: string;
 }>;
 
@@ -227,12 +230,14 @@ export function createPrismaEmbeddingRuntime(
 
       return {
         adapter,
+        configuration,
         connectionId: model.connectionId,
         connectionVersion: model.connection.activeVersion,
         credentialId: credential.credentialId,
         credentialSource: credential.source,
         credentialVersionId: credential.credentialVersionId,
         modelVersion: model.activeVersion,
+        provider: model.provider,
         providerModelId: model.id
       };
     }

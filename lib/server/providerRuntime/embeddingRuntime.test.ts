@@ -47,7 +47,8 @@ function model() {
       unassignedPolicy: "use_default"
     },
     connectionId: "connection-1",
-    id: "embedding-1"
+    id: "embedding-1",
+    provider: "openrouter"
   };
 }
 
@@ -118,9 +119,11 @@ describe("embedding runtime admission", () => {
 
     expect(prisma.accessGrant.count).not.toHaveBeenCalled();
     expect(binding).toMatchObject({
+      configuration,
       connectionId: "connection-1",
       credentialId: "credential-1",
       credentialSource: "default",
+      provider: "openrouter",
       providerModelId: "embedding-1"
     });
     expect(result.vectors[0]).toHaveLength(1_536);

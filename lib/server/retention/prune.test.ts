@@ -13,6 +13,10 @@ function fakeRepository(input: {
   claims?: AttachmentDeletionClaim[];
   deletionJobIds?: string[];
   eventIds?: string[];
+  knowledgeMatched?: number;
+  knowledgeObjects?: number;
+  knowledgeStageJobs?: number;
+  knowledgeVersionsPurged?: number;
   orphanMatched?: number;
   orphanShared?: number;
   stageJobs?: number;
@@ -57,6 +61,12 @@ function fakeRepository(input: {
         shared: input.orphanShared ?? 0
       };
     },
+    async inspectStaleKnowledgePayloads() {
+      return {
+        matched: input.knowledgeMatched ?? 0,
+        objects: input.knowledgeObjects ?? 0
+      };
+    },
     async releaseAttachmentDeletionJob({ id }) {
       mutations.push(`release-job:${id}`);
       return true;
@@ -68,6 +78,16 @@ function fakeRepository(input: {
         matched: input.orphanMatched ?? 0,
         rowsDeleted: input.orphanMatched ?? 0,
         sharedRowsDeleted: input.orphanShared ?? 0
+      };
+    },
+    async stageStaleKnowledgePayloads() {
+      mutations.push("stage-knowledge-payloads");
+      return {
+        jobsStaged: input.knowledgeStageJobs ?? 0,
+        matched: input.knowledgeMatched ?? 0,
+        objectsReleased: input.knowledgeObjects ?? 0,
+        sharedObjects: 0,
+        versionsPurged: input.knowledgeVersionsPurged ?? 0
       };
     }
   };
@@ -130,6 +150,8 @@ describe("retention prune rules", () => {
       authSessionIds: ["session-1"],
       deletionJobIds: ["job-1"],
       eventIds: ["event-1", "event-2"],
+      knowledgeMatched: 1,
+      knowledgeObjects: 2,
       orphanMatched: 2,
       orphanShared: 1
     });
@@ -151,6 +173,13 @@ describe("retention prune rules", () => {
       authFlowTokens: { deleted: 0, matched: 1 },
       authSessions: { deleted: 0, matched: 1 },
       dryRun: true,
+      knowledgePayloads: {
+        jobsStaged: 0,
+        matched: 1,
+        objects: 2,
+        objectsReleased: 0,
+        versionsPurged: 0
+      },
       modelRunEvents: { deleted: 0, matched: 2 },
       orphanedAttachments: { jobsStaged: 0, matched: 2, rowsDeleted: 0, shared: 1 }
     });
@@ -168,6 +197,10 @@ describe("retention prune rules", () => {
       ],
       deletionJobIds: ["job-ok", "job-fail"],
       eventIds: ["event-1"],
+      knowledgeMatched: 1,
+      knowledgeObjects: 2,
+      knowledgeStageJobs: 2,
+      knowledgeVersionsPurged: 1,
       orphanMatched: 2,
       stageJobs: 2
     });
@@ -196,6 +229,13 @@ describe("retention prune rules", () => {
       authFlowTokens: { deleted: 1, matched: 1 },
       authSessions: { deleted: 1, matched: 1 },
       modelRunEvents: { deleted: 1, matched: 1 },
+      knowledgePayloads: {
+        jobsStaged: 2,
+        matched: 1,
+        objects: 2,
+        objectsReleased: 2,
+        versionsPurged: 1
+      },
       orphanedAttachments: { jobsStaged: 2, matched: 2, rowsDeleted: 2 }
     });
     expect(JSON.stringify(summary)).not.toContain("private/user");
