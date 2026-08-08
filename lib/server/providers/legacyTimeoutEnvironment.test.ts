@@ -40,4 +40,14 @@ describe("removed provider timeout environment controls", () => {
 
     expect(warn).not.toHaveBeenCalled();
   });
+
+  it("does not warn for the supported OpenAI background poll control", () => {
+    const warn = vi.fn();
+
+    warnIgnoredProviderTimeoutEnvironmentOnce({
+      AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS: "1200000"
+    }, warn);
+
+    expect(warn).not.toHaveBeenCalled();
+  });
 });

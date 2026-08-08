@@ -1,5 +1,5 @@
 import { ProviderRequestTimeoutError } from "./network";
-import { DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS } from "./providerConfiguration";
+import { DEFAULT_OPENAI_BACKGROUND_POLL_TIMEOUT_MS } from "./openaiBackgroundPolling";
 import {
   isTerminalOpenAIResponse,
   resolveOpenAIResponseIdentity,
@@ -208,7 +208,7 @@ class OpenAIBackgroundDeadline {
 
 export function createOpenAIResponsesLifecycle(options: OpenAIResponsesLifecycleOptions): OpenAIResponsesLifecycle {
   const pollIntervalMs = options.pollIntervalMs ?? defaultPollIntervalMs;
-  const pollTimeoutMs = options.pollTimeoutMs ?? DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS;
+  const pollTimeoutMs = options.pollTimeoutMs ?? DEFAULT_OPENAI_BACKGROUND_POLL_TIMEOUT_MS;
   const maxRetryableRetrieveErrors = options.maxRetryableRetrieveErrors ?? 5;
 
   return {

@@ -32,6 +32,7 @@ import {
   type ProviderModelConfiguration
 } from "./providerConfiguration";
 import { withTimeoutSignal } from "./network";
+import { effectiveOpenAIBackgroundPollTimeoutMs } from "./openaiBackgroundPolling";
 import type { ProviderAdapter, ProviderSearchAdapter } from "./types";
 import { warnProviderStreamSafetyOnce } from "./streamSafetyObservability";
 import {
@@ -77,6 +78,7 @@ export type ProviderRuntimeFactoryOptions = Readonly<{
 
 type ProviderRuntimeComponents = Readonly<{
   adapter: ProviderAdapter;
+  backgroundPollTimeoutMs?: number;
   searchAdapter?: ProviderSearchAdapter;
   toolBridge?: ProviderToolBridge;
 }>;
@@ -309,6 +311,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       };
     }
     case "openai_responses_native": {
+      const backgroundPollTimeoutMs = effectiveOpenAIBackgroundPollTimeoutMs(responseTimeoutMs);
       const client = createFetchOpenAIResponsesClient({
         apiKey: clientSecret,
         baseUrl,
@@ -316,7 +319,8 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         fetchFn
       });
       return {
-        adapter: createOpenAIResponsesAdapter({ client, pollTimeoutMs: responseTimeoutMs }),
+        adapter: createOpenAIResponsesAdapter({ client, pollTimeoutMs: backgroundPollTimeoutMs }),
+        backgroundPollTimeoutMs,
         ...(snapshot.model.capabilities.nativeSearch
           ? {
               searchAdapter: createOpenAIResponsesSearchAdapter({
@@ -427,7 +431,16 @@ function withProviderStreamSafetyObservability(
       : {}),
     async *stream(request, options) {
       const timeoutMs = operationTimeoutMs(options?.timeoutMs);
-      const timeout = withTimeoutSignal(options?.signal, timeoutMs);
+      const useBackgroundPollTimeout = typeof options?.timeoutMs !== "number" &&
+        typeof binding.backgroundPollTimeoutMs === "number" &&
+        (request.forceNonStreaming === true || request.params.stream !== true);
+      const runTimeoutMs = useBackgroundPollTimeout
+        ? binding.backgroundPollTimeoutMs ?? timeoutMs
+        : timeoutMs;
+      const timeout = withTimeoutSignal(
+        options?.signal,
+        runTimeoutMs
+      );
       try {
         return yield* adapter.stream(request, {
           ...options,

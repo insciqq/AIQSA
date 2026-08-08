@@ -192,6 +192,35 @@ describe("OpenAI Responses lifecycle", () => {
     await expect(generator.next()).rejects.toBe(retryable);
   });
 
+  it("defaults the complete background lifecycle to the previous eleven-minute window", async () => {
+    vi.useFakeTimers();
+    const lifecycle = createOpenAIResponsesLifecycle({
+      client: client({
+        create: async () => ({ id: "resp-default-window", status: "queued" }),
+        retrieve: async () => new Promise<OpenAIResponseObject>(() => undefined)
+      }),
+      pollIntervalMs: 0
+    });
+    const generator = lifecycle.createAndPoll({});
+
+    await expect(generator.next()).resolves.toMatchObject({ value: { kind: "created" } });
+    let outcome: unknown = "pending";
+    const pending = generator.next().then(
+      (value) => { outcome = value; },
+      (error: unknown) => { outcome = error; }
+    );
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(outcome).toBe("pending");
+
+    await vi.advanceTimersByTimeAsync(360_000);
+    await pending;
+    expect(outcome).toMatchObject({
+      code: "provider_request_timed_out",
+      timeoutMs: 660_000
+    });
+  });
+
   it("uses one captured deadline across slow create, waits, retry, and retrieve work", async () => {
     const retryable = await transportError(503);
     let retrieveCalls = 0;

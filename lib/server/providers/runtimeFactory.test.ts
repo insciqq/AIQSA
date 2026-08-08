@@ -211,6 +211,56 @@ describe("provider runtime factory", () => {
     }
   );
 
+  it("keeps native OpenAI polling alive beyond the connection response deadline", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS", "12000");
+    try {
+      const configured = snapshot("openai_responses_native");
+      const fetchFn = vi.fn<typeof fetch>(async (_request, init) =>
+        new Response(JSON.stringify({
+          id: "resp-background-window",
+          status: init?.method === "POST" ? "queued" : "in_progress"
+        }), { status: 200 })
+      );
+      const runtime = createProviderRuntimeBinding({
+        options: { allowFake: false, fetchFn },
+        secret: "secret",
+        snapshot: {
+          ...configured,
+          connection: { ...configured.connection, responseTimeoutMs: 5_000 }
+        }
+      });
+      const request: ProviderRunRequest = {
+        ...compatibleRequest(),
+        modelCapabilities: {
+          ...compatibleRequest().modelCapabilities,
+          nativeBackground: true
+        },
+        params: { background: true, stream: false },
+        provider: "openai"
+      };
+      let outcome: unknown = "pending";
+      const pending = collect(runtime.adapter.stream(request)).then(
+        (value) => { outcome = value; },
+        (error: unknown) => { outcome = error; }
+      );
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(outcome).toBe("pending");
+
+      await vi.advanceTimersByTimeAsync(7_000);
+      await pending;
+      expect(outcome).toMatchObject({
+        code: "provider_request_timed_out",
+        timeoutMs: 12_000
+      });
+      expect(fetchFn.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+    }
+  });
+
   it("never falls back to global fetch", () => {
     expect(() => createProviderRuntimeBinding({
       options: { allowFake: false },
