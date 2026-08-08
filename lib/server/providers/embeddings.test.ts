@@ -140,6 +140,26 @@ describe("OpenAI-compatible embeddings", () => {
     ]);
   });
 
+  it("inserts every native replacement-token sequence as literal query text", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([vector(4_096)]));
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      model: embeddingModel(),
+      network: { fetchFn },
+      secret: "openrouter-key"
+    });
+    const text = "price $$; match $&; prefix $`; suffix $'";
+
+    await adapter.embed({ mode: "query", texts: [text] });
+
+    const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)) as {
+      input: string[];
+    };
+    expect(body.input).toEqual([
+      `Instruct: retrieve relevant passages\nQuery: ${text}`
+    ]);
+  });
+
   it.each([
     {
       code: "embedding_response_count_mismatch",

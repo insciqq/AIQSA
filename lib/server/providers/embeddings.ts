@@ -115,7 +115,7 @@ function requestInputs(
       throw new EmbeddingAdapterError("embedding_input_invalid");
     }
     return mode === "query" && configuration.queryInstructionTemplate
-      ? configuration.queryInstructionTemplate.replace("{text}", text)
+      ? configuration.queryInstructionTemplate.replace("{text}", () => text)
       : text;
   });
   if (Buffer.byteLength(JSON.stringify(prepared), "utf8") > MAX_EMBEDDING_REQUEST_BYTES) {

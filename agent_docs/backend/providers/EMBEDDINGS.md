@@ -60,8 +60,10 @@ edited into an answer class or vice versa.
 ## Request And Response Contract
 
 One adapter call accepts 1–128 non-empty texts, at most 131,072 characters per
-text and 2 MiB of serialized request data. Query mode expands the configured
-template; document mode sends each original text unchanged. The adapter posts
+text and 2 MiB of serialized request data. Query mode replaces the configured
+template's single `{text}` slot once and inserts the source text literally,
+including dollar sequences. Document mode sends each original text unchanged.
+The adapter posts
 one JSON request to the configured origin's exact `/embeddings` path with the
 exact model id and `encoding_format: "float"`. It never sends a provider
 `dimensions` value and never retries another endpoint or model. OpenRouter
