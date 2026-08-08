@@ -150,6 +150,7 @@ model User {
   mcpActivationJobs             McpActivationJob[]
   mcpOAuthConnections           McpOAuthConnection[]
   mcpUserServers                McpUserServer[]
+  modelPolicyUpdates            ModelPolicy[]                      @relation("ModelPolicyUpdater")
   modelRuns                     ModelRun[]
   providerCredentialAssignments ProviderUserCredentialAssignment[]
   searchPolicyUpdates           SearchPolicy[]                     @relation("SearchPolicyUpdater")
@@ -389,6 +390,20 @@ model SearchPolicy {
   @@index([updatedByUserId])
 }
 
+model ModelPolicy {
+  id                     String         @id
+  defaultProviderModelId String?
+  version                Int            @default(1)
+  updatedByUserId        String?
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+  defaultProviderModel   ProviderModel? @relation("InstallationDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
+  updatedBy              User?          @relation("ModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([defaultProviderModelId])
+  @@index([updatedByUserId])
+}
+
 model AccessGrant {
   id                   String              @id @default(uuid())
   userId               String?
@@ -551,6 +566,7 @@ model ProviderModel {
   searchStrategies       SearchStrategy[]
   searchRevisions        SearchIntegrationRevision[]
   chatDefaults           Chat[]                         @relation("ChatDefaultProviderModel")
+  installationDefaults   ModelPolicy[]                  @relation("InstallationDefaultProviderModel")
   userDefaults           UserSettings[]                 @relation("UserDefaultProviderModel")
 
   @@unique([connectionId, id])
@@ -787,22 +803,22 @@ model SearchStrategy {
 }
 
 model SearchIntegrationRevision {
-  id                 String             @id @default(uuid())
-  searchStrategyId   String
-  revisionNumber     Int
-  adapterKind        String
-  credentialMode     String
-  configuration      Json
-  providerModelId    String?
-  validationEvidence Json
-  draftHash          String
-  validationFingerprint String              @default("legacy")
-  createdAt          DateTime           @default(now())
-  activeFor          SearchStrategy?    @relation("ActiveSearchRevision")
-  providerModel      ProviderModel?     @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
-  searchStrategy     SearchStrategy     @relation("SearchIntegrationRevisions", fields: [searchStrategyId], references: [id], onDelete: Restrict)
-  runBindings        SearchRunBinding[]
-  searchRuns         SearchRun[]
+  id                    String             @id @default(uuid())
+  searchStrategyId      String
+  revisionNumber        Int
+  adapterKind           String
+  credentialMode        String
+  configuration         Json
+  providerModelId       String?
+  validationEvidence    Json
+  draftHash             String
+  validationFingerprint String             @default("legacy")
+  createdAt             DateTime           @default(now())
+  activeFor             SearchStrategy?    @relation("ActiveSearchRevision")
+  providerModel         ProviderModel?     @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  searchStrategy        SearchStrategy     @relation("SearchIntegrationRevisions", fields: [searchStrategyId], references: [id], onDelete: Restrict)
+  runBindings           SearchRunBinding[]
+  searchRuns            SearchRun[]
 
   @@unique([searchStrategyId, revisionNumber])
   @@unique([searchStrategyId, draftHash, validationFingerprint], map: "SearchIntegrationRevision_strategy_draft_validation_key")

@@ -1550,19 +1550,8 @@ async function applyQuickSetupPlan(
   ) === false) {
     throw new QuickSetupCatalogUnavailableError();
   }
-  const priorDefault = current.settings?.defaultProviderModelId ?? null;
-  const priorDefaultUsable = Boolean(priorDefault && eligibleModelIds.has(priorDefault));
-  const defaultChanged = plan.mode !== "replacement" &&
-    !priorDefaultUsable && priorDefault !== selectedCandidate.modelId;
-  if (plan.mode !== "replacement" && !priorDefaultUsable) {
-    await tx.userSettings.update({
-      data: { defaultProviderModelId: selectedCandidate.modelId },
-      where: { userId: plan.actor.userId }
-    });
-  }
-
   return {
-    defaultChanged,
+    defaultChanged: false,
     ...(plan.search ? { search } : {}),
     status: "ready"
   };

@@ -197,6 +197,7 @@ export type ShellComposerView = {
   draft: string;
   flushPendingModelControlDefaults(): void;
   maxOutputTokens: string;
+  makeCurrentModelDefault?(): void;
   notificationSoundEnabled: boolean;
   operationError: string | null;
   operationErrorLive: boolean;
@@ -226,6 +227,7 @@ export type ShellComposerView = {
   toggleReasoningBlockVisibility(): void;
   toggleToolActivityVisibility(): void;
   useOrganizationSearchDefault(): void;
+  useOrganizationModelDefault?(): void;
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
   uploading: boolean;
 };

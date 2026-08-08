@@ -521,6 +521,17 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
       }
     }
   }
+
+  await tx.modelPolicy.upsert({
+    create: {
+      defaultProviderModelId: null,
+      id: "installation"
+    },
+    // Bootstrap adoption repairs missing code-owned foundation only. It never
+    // replaces an operator's installation-default choice.
+    update: {},
+    where: { id: "installation" }
+  });
 }
 
 async function createInitialAdminFoundation(

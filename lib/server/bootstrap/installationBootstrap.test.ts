@@ -73,6 +73,7 @@ function createBootstrapTransaction(input: {
     groupUpdate: record("group.update", { id: "group-id" }),
     mcpGrantUpsert: record("mcpGrant.upsert", { id: "mcp-grant-id" }),
     mcpServerFindMany: record("mcpServer.findMany", []),
+    modelPolicyUpsert: record("modelPolicy.upsert", { id: "installation" }),
     providerConnectionUpsert: record("providerConnection.upsert", { id: "connection-id" }),
     providerModelUpsert: record("providerModel.upsert", { id: "model-id" }),
     searchIntegrationRevisionCreate: record("searchIntegrationRevision.create", { id: "search-revision-id" }),
@@ -106,6 +107,9 @@ function createBootstrapTransaction(input: {
     },
     mcpServer: {
       findMany: spies.mcpServerFindMany
+    },
+    modelPolicy: {
+      upsert: spies.modelPolicyUpsert
     },
     providerConnection: {
       upsert: spies.providerConnectionUpsert
@@ -328,6 +332,11 @@ describe("installation bootstrap", () => {
       providerConnectionTemplates.length
     );
     expect(fixture.spies.providerModelUpsert).toHaveBeenCalledOnce();
+    expect(fixture.spies.modelPolicyUpsert).toHaveBeenCalledWith({
+      create: { defaultProviderModelId: null, id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
     expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledTimes(
       defaultSearchStrategies.length
     );

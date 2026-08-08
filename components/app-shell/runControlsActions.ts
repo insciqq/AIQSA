@@ -444,9 +444,46 @@ export function useRunControlsActions({
       modelId: model.modelId,
       provider: model.provider
     });
-    void persistUserDefaults({
+  }
+
+  function makeCurrentModelDefault() {
+    const model = selectedModelFromStore();
+    if (!model) return;
+    const personalModelDefault = {
       modelId: model.modelId,
       provider: model.provider
+    };
+    void persistUserDefaults({
+      hasPersonalModelDefault: true,
+      modelId: model.modelId,
+      modelPreferenceSource: "personal",
+      personalModelDefault,
+      provider: model.provider
+    }).then((saved) => {
+      if (saved) setNotice({ kind: "success", text: "Personal default model updated." });
+    });
+  }
+
+  function useOrganizationModelDefault() {
+    const currentCatalog = currentCatalogFromStore();
+    if (!currentCatalog) return;
+    const organizationDefault = currentCatalog.defaults.organizationModelDefault;
+    updateLocalCatalogDefaults({
+      hasPersonalModelDefault: false,
+      modelId: organizationDefault?.modelId ?? "",
+      modelPreferenceSource: organizationDefault ? "organization" : "none",
+      personalModelDefault: null,
+      provider: organizationDefault?.provider ?? ""
+    });
+    void settingsMutationCoordinator.enqueue({ personalModelDefault: null }).then((saved) => {
+      if (saved) {
+        setNotice({
+          kind: "success",
+          text: organizationDefault
+            ? "Using the organization default model."
+            : "Personal default cleared. No organization default is available."
+        });
+      }
     });
   }
 
@@ -676,6 +713,7 @@ export function useRunControlsActions({
     changeStreamMode,
     changeTemperature,
     flushPendingModelControlDefaults,
+    makeCurrentModelDefault,
     persistUserDefaults,
     removeAssistantFromComposer,
     selectModel,
@@ -684,6 +722,7 @@ export function useRunControlsActions({
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
     toggleToolActivityVisibility,
+    useOrganizationModelDefault,
     useOrganizationSearchDefault
   };
 }

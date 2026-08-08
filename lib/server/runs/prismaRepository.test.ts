@@ -1839,6 +1839,18 @@ describe("Prisma run repository", () => {
           WHERE "userId" = ${userId}
           FOR UPDATE
         `;
+        patchPromise = settingsRepository.updateSettings(
+          userId,
+          {
+            defaultControlValues: {
+              "other:model": {
+                reasoningEffort: "low"
+              }
+            },
+            defaultProviderModelId: null
+          },
+          []
+        );
         createPromise = runRepository.createRun(
           createRunInput({
             chatId: chat.id,
@@ -1850,17 +1862,6 @@ describe("Prisma run repository", () => {
             question: "Serialize these defaults",
             userId
           })
-        );
-        patchPromise = settingsRepository.updateSettings(
-          userId,
-          {
-            defaultControlValues: {
-              "other:model": {
-                reasoningEffort: "low"
-              }
-            }
-          },
-          []
         );
       });
 
@@ -1883,7 +1884,8 @@ describe("Prisma run repository", () => {
           "other:model": {
             reasoningEffort: "low"
           }
-        }
+        },
+        defaultProviderModelId: null
       });
     });
   });

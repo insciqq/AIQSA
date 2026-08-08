@@ -3,6 +3,7 @@
 import { AdminProviderQuickSetup } from "@/components/admin/AdminProviderQuickSetup";
 import { AdminProviderCustomSetup } from "@/components/admin/AdminProviderCustomSetup";
 import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
+import { AdminProviderModelDefaultTask } from "@/components/admin/AdminProviderModelDefaultTask";
 import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { useAdminProviderCustomSetupController } from "@/components/admin/useAdminProviderCustomSetupController";
@@ -15,7 +16,7 @@ import type {
 import type { AdminGroup } from "@/lib/contracts/admin";
 import { useCallback, useEffect, useState } from "react";
 
-type ProviderWorkspaceTask = "connections" | "setup";
+type ProviderWorkspaceTask = "connections" | "defaults" | "setup";
 
 export type AdminProvidersExperienceProps = Readonly<{
   active: boolean;
@@ -108,7 +109,8 @@ export function AdminProvidersExperience({
       >
         {([
           ["setup", "Quick setup"],
-          ["connections", "Connections"]
+          ["connections", "Connections"],
+          ["defaults", "Default model"]
         ] as const).map(([task, label]) => (
           <button
             aria-selected={workspaceTask === task}
@@ -154,6 +156,12 @@ export function AdminProvidersExperience({
               groups={groups}
               onMutationCommitted={onMutationCommitted}
               requestConfirmation={requestProviderConfirmation}
+            />
+          </div>
+          <div hidden={workspaceTask !== "defaults"}>
+            <AdminProviderModelDefaultTask
+              active={active && workspaceTask === "defaults"}
+              onMutationCommitted={onMutationCommitted}
             />
           </div>
         </div>

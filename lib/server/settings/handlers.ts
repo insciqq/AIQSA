@@ -38,7 +38,7 @@ export type SettingsValidationModel = Pick<
 export type UserSettingsUpdateResult =
   | {
       kind: "invalid";
-      error: "default_search_unavailable";
+      error: "default_model_unavailable" | "default_search_unavailable";
     }
   | {
       kind: "not_found";
@@ -168,10 +168,16 @@ function buildSettingsUpdate(
     return { error: "settings_update_required" };
   }
 
-  const { defaultModel: selectedDefaultModel, models } =
-    resolveCurrentUserCatalogSelection(data);
+  const { models } = resolveCurrentUserCatalogSelection(data);
   const update: UserSettingsUpdate = {};
-  let defaultModel = selectedDefaultModel;
+
+  if ("defaultProviderModelId" in body) {
+    if (body.defaultProviderModelId !== null || "defaultProvider" in body ||
+      "defaultModelId" in body) {
+      return { error: "default_model_required" };
+    }
+    update.defaultProviderModelId = null;
+  }
 
   if ("defaultProvider" in body || "defaultModelId" in body) {
     if (typeof body.defaultProvider !== "string" || typeof body.defaultModelId !== "string") {
@@ -185,7 +191,6 @@ function buildSettingsUpdate(
       return { error: "default_model_unavailable" };
     }
 
-    defaultModel = model;
     update.defaultProviderModelId = model.modelId;
   }
 
@@ -265,7 +270,7 @@ function serializeSettings(
   settings: UserSettingsRecord,
   data: SettingsHandlerData
 ): UserSettingsWire {
-  const selection = resolveCurrentUserCatalogSelection(data);
+  const selection = resolveCurrentUserCatalogSelection({ ...data, settings });
   const searchPreference = resolveSearchPreference({
     organizationPlan: data.searchPolicy?.defaultPlan,
     settings,
@@ -273,8 +278,12 @@ function serializeSettings(
   });
   return {
     defaultControlValues: isRecord(settings.defaultControlValues) ? settings.defaultControlValues : {},
-    defaultModelId: settings.defaultModelId,
-    defaultProvider: settings.defaultProvider,
+    defaultModelId: selection.defaultModel?.modelId ?? "",
+    defaultProvider: selection.defaultModel?.provider ?? "",
+    hasPersonalModelDefault: selection.hasPersonalModelDefault,
+    modelPreferenceSource: selection.modelPreferenceSource,
+    organizationModelDefault: selection.organizationModelDefault,
+    personalModelDefault: selection.personalModelDefault,
     defaultSearchStrategyId: settings.defaultSearchStrategyId,
     defaultSearchPlan: searchPreference.preferredPlan,
     organizationSearchPlan: searchPreference.organizationPlan,

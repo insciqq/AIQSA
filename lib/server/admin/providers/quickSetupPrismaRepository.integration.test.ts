@@ -50,8 +50,7 @@ const INITIAL_WRITE_BOUNDARIES = [
   "providerCredential.update#1",
   "providerUserCredentialAssignment.upsert#1",
   "providerModelCredentialCheck.create#1",
-  "accessGrant.create#1",
-  "userSettings.update#1"
+  "accessGrant.create#1"
 ] as const;
 
 const REPLACEMENT_WRITE_BOUNDARIES = [
@@ -664,6 +663,7 @@ const ISOLATED_TABLES = [
   "AccessGrant",
   "AuthSession",
   "Group",
+  "ModelPolicy",
   "ProviderConnection",
   "ProviderCredential",
   "ProviderCredentialVersion",
@@ -752,6 +752,12 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
     );
     await administrationDatabase.$executeRawUnsafe(
       `INSERT INTO ${schema}."SearchPolicy" SELECT * FROM ${sourceSchema}."SearchPolicy"`
+    );
+    await administrationDatabase.$executeRawUnsafe(
+      `INSERT INTO ${schema}."ModelPolicy" (` +
+      `"id", "defaultProviderModelId", "version", "updatedByUserId", "createdAt", "updatedAt"` +
+      `) SELECT "id", NULL, "version", NULL, "createdAt", "updatedAt" ` +
+      `FROM ${sourceSchema}."ModelPolicy" WHERE "id" = 'installation'`
     );
     await administrationDatabase.$executeRawUnsafe(
       `CREATE TYPE ${schema}."UserRole" AS ENUM ('admin', 'user')`
@@ -1489,7 +1495,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         preservedModels: initial.preservedModels,
         versionId: firstVersionId
       }))).resolves.toEqual({
-        defaultChanged: true,
+        defaultChanged: false,
         status: "ready"
       });
 
@@ -1996,7 +2002,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         preservedModels: recovery.preservedModels,
         versionId: secondVersionId
       }))).resolves.toEqual({
-        defaultChanged: true,
+        defaultChanged: false,
         status: "ready"
       });
 
@@ -2104,7 +2110,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
     );
   }, 60_000);
 
-  it("rolls a recovery graph back at its late default boundary", async () => {
+  it("commits a recovery graph without touching the personal model default", async () => {
     await expect(database.$transaction(async (transaction) => {
       await resetOpenAiToInitial(transaction);
       const suffix = randomUUID();
@@ -2156,24 +2162,23 @@ integration("Prisma provider Quick setup atomic graph", () => {
       });
       const graphBefore = await quickGraphSnapshot(transaction, actor.userId);
       const trace: string[] = [];
-      const failingRepository = createPrismaAdminProviderQuickSetupRepository(
-        transactionBackedClient(transaction, instrumentWrites(transaction, {
-          failAfter: "userSettings.update#1",
-          trace
-        }))
+      const tracedRepository = createPrismaAdminProviderQuickSetupRepository(
+        transactionBackedClient(transaction, instrumentWrites(transaction, { trace }))
       );
-      await expect(failingRepository.commit(recoveryPlan)).rejects.toMatchObject({
-        message: "userSettings.update#1"
+      await expect(tracedRepository.commit(recoveryPlan)).resolves.toEqual({
+        defaultChanged: false,
+        status: "ready"
       });
       expect(trace).toEqual([
         "providerConnection.update#1",
         "providerCredentialVersion.create#1",
         "providerCredential.update#1",
         "providerUserCredentialAssignment.upsert#1",
-        "providerModelCredentialCheck.create#1",
-        "userSettings.update#1"
+        "providerModelCredentialCheck.create#1"
       ]);
-      expect(await quickGraphSnapshot(transaction, actor.userId)).toEqual(graphBefore);
+      expect((await quickGraphSnapshot(transaction, actor.userId)).settings).toEqual(
+        graphBefore.settings
+      );
       throw new RollbackFixture("recovery_rollback_fixture_complete");
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
       RollbackFixture

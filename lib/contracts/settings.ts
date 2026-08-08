@@ -2,7 +2,11 @@ import { decodeSearchPlan, type SearchPlan } from "./search";
 
 export type UserSettingsWire = {
   defaultControlValues: Record<string, unknown>;
+  hasPersonalModelDefault?: boolean;
   defaultModelId: string;
+  modelPreferenceSource?: "none" | "organization" | "personal";
+  organizationModelDefault?: { modelId: string; provider: string } | null;
+  personalModelDefault?: { modelId: string; provider: string } | null;
   defaultProvider: string;
   defaultSearchStrategyId: string;
   defaultSearchPlan?: SearchPlan;
@@ -33,6 +37,13 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || isNonEmptyString(value);
 }
 
+function modelDefaultSelection(
+  value: unknown
+): value is { modelId: string; provider: string } | null {
+  return value === null || (isRecord(value) && isNonEmptyString(value.modelId) &&
+    isNonEmptyString(value.provider));
+}
+
 export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResponse | null {
   if (!isRecord(value) || !isRecord(value.settings)) {
     return null;
@@ -46,6 +57,15 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   if (
     !isRecord(settings.defaultControlValues) ||
     !isString(settings.defaultModelId) ||
+    (settings.hasPersonalModelDefault !== undefined &&
+      typeof settings.hasPersonalModelDefault !== "boolean") ||
+    (settings.modelPreferenceSource !== undefined && settings.modelPreferenceSource !== "none" &&
+      settings.modelPreferenceSource !== "organization" &&
+      settings.modelPreferenceSource !== "personal") ||
+    (settings.organizationModelDefault !== undefined &&
+      !modelDefaultSelection(settings.organizationModelDefault)) ||
+    (settings.personalModelDefault !== undefined &&
+      !modelDefaultSelection(settings.personalModelDefault)) ||
     !isString(settings.defaultProvider) ||
     !isNonEmptyString(settings.defaultSearchStrategyId) ||
     typeof settings.showCitations !== "boolean" ||
@@ -61,7 +81,15 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   return {
     settings: {
       defaultControlValues: { ...settings.defaultControlValues },
+      hasPersonalModelDefault: settings.hasPersonalModelDefault ?? Boolean(settings.defaultModelId),
       defaultModelId: settings.defaultModelId,
+      modelPreferenceSource: settings.modelPreferenceSource ??
+        (settings.defaultModelId ? "personal" : "none"),
+      organizationModelDefault: settings.organizationModelDefault ?? null,
+      personalModelDefault: settings.personalModelDefault ??
+        (settings.defaultModelId && settings.defaultProvider
+          ? { modelId: settings.defaultModelId, provider: settings.defaultProvider }
+          : null),
       defaultProvider: settings.defaultProvider,
       defaultSearchStrategyId: settings.defaultSearchStrategyId,
       ...(defaultSearchPlan?.ok

@@ -210,6 +210,7 @@ const blockerLabels: Record<AdminProviderDeleteBlocker["kind"], string> = {
   assistant_revisions: "assistant revisions",
   credentials: "credentials",
   group_assignments: "group assignments",
+  installation_default: "installation default",
   models: "models",
   resource_enabled: "enabled resource",
   run_bindings: "active or recoverable runs",

@@ -42,7 +42,10 @@ import type {
   SearchStrategy
 } from "@prisma/client";
 
-type CatalogPrismaClient = Pick<PrismaClient, "providerModel" | "searchOption" | "searchPolicy" | "user">;
+type CatalogPrismaClient = Pick<
+  PrismaClient,
+  "modelPolicy" | "providerModel" | "searchOption" | "searchPolicy" | "user"
+>;
 
 type UserSettingsRow = {
   defaultControlValues: unknown;
@@ -569,7 +572,7 @@ export function createPrismaCatalogDataLoader({
       return null;
     }
 
-    const [models, searchOptions, entitlements, searchPolicy] = await Promise.all([
+    const [models, searchOptions, entitlements, modelPolicy, searchPolicy] = await Promise.all([
       prisma.providerModel.findMany({
         include: {
           activeCredentialChecks: {
@@ -659,6 +662,10 @@ export function createPrismaCatalogDataLoader({
         }
       }),
       loadEntitlements(userId),
+      prisma.modelPolicy?.findUnique({
+        select: { defaultProviderModelId: true },
+        where: { id: "installation" }
+      }) ?? Promise.resolve(null),
       prisma.searchPolicy?.findUnique({
         select: { defaultPlan: true },
         where: { id: "installation" }
@@ -685,6 +692,7 @@ export function createPrismaCatalogDataLoader({
 
     return {
       entitlements,
+      modelPolicy,
       models: exposedModels
         .map(providerModelToCatalogEntry)
         .filter((model): model is ProviderModelCatalogEntry => model !== null),

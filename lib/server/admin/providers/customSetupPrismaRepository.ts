@@ -275,8 +275,7 @@ async function applyCustomSetupPlan(
 ): Promise<Exclude<AdminProviderCustomSetupCommitResult, "catalog_unavailable">> {
   await lockActorState(tx, plan);
   validateSearchPlan(plan);
-  const primaryModel = plan.models[0];
-  if (!primaryModel) throw new CustomSetupCatalogUnavailableError();
+  if (plan.models.length === 0) throw new CustomSetupCatalogUnavailableError();
   const [actor, session, settings] = await Promise.all([
     tx.user.findUnique({
       select: { id: true, role: true, status: true },
@@ -287,7 +286,7 @@ async function applyCustomSetupPlan(
       where: { id: plan.actor.sessionId }
     }),
     tx.userSettings.findUnique({
-      select: { defaultProviderModelId: true },
+      select: { id: true },
       where: { userId: plan.actor.userId }
     })
   ]);
@@ -408,19 +407,8 @@ async function applyCustomSetupPlan(
   if (plan.models.some((model) => !eligibleModelIds.has(model.id))) {
     throw new CustomSetupCatalogUnavailableError();
   }
-  const priorDefaultUsable = Boolean(
-    settings.defaultProviderModelId && eligibleModelIds.has(settings.defaultProviderModelId)
-  );
-  const defaultChanged = !priorDefaultUsable &&
-    settings.defaultProviderModelId !== primaryModel.id;
-  if (!priorDefaultUsable) {
-    await tx.userSettings.update({
-      data: { defaultProviderModelId: primaryModel.id },
-      where: { userId: plan.actor.userId }
-    });
-  }
   return {
-    defaultChanged,
+    defaultChanged: false,
     ...(plan.search ? { search } : {}),
     status: "ready"
   };

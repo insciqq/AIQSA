@@ -404,9 +404,7 @@ function ReadyProvider({
         {provider.model?.displayName}
       </h3>
       <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
-        {confirmation?.defaultChanged === false
-          ? "Available in chat. Your existing default model remained unchanged."
-          : "This provider is configured and available in chat."}
+        This provider is configured and available in chat. Default models remain unchanged.
       </p>
       {confirmation ? (
         <div
@@ -414,12 +412,12 @@ function ReadyProvider({
           data-testid="provider-quick-ready-receipt"
         >
           <p>API key: saved and verified.</p>
-          <p>Default model: {confirmation.model.displayName}.</p>
+          <p>Prepared model: {confirmation.model.displayName}.</p>
           <p>
             Available models: {confirmation.models.map(({ displayName }) => displayName).join(", ")}.
           </p>
           <p>Access: available to this administrator.</p>
-          <p>Default selection: {confirmation.defaultChanged ? "updated" : "unchanged"}.</p>
+          <p>Default models: unchanged. Choose one explicitly from the model picker or the Default model task.</p>
           {search ? (
             <p>
               {search.displayName}: {search.status === "ready"
@@ -569,7 +567,7 @@ function SetupGuide() {
       title: "Verify the key"
     },
     {
-      detail: "AIQSA activates the current supported answer models available to your key and chooses a sensible default.",
+      detail: "AIQSA activates the current supported answer models available to your key without changing any default.",
       Icon: CheckCircle2,
       title: "Prepare a model"
     },

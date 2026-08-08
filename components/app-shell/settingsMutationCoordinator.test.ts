@@ -240,6 +240,42 @@ describe("settings mutation coordinator", () => {
     expect(JSON.parse(String(request?.body))).toEqual({ showToolActivity: false });
   });
 
+  it("uses dedicated explicit payloads for setting and clearing the personal model default", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      return Response.json({
+        settings: settings(body.defaultProviderModelId === null
+          ? {
+              defaultModelId: "gpt-5.5",
+              defaultProvider: "openai",
+              hasPersonalModelDefault: false,
+              modelPreferenceSource: "organization",
+              organizationModelDefault: { modelId: "gpt-5.5", provider: "openai" },
+              personalModelDefault: null
+            }
+          : {
+              defaultModelId: "model-b",
+              defaultProvider: "openrouter",
+              hasPersonalModelDefault: true,
+              modelPreferenceSource: "personal",
+              organizationModelDefault: { modelId: "gpt-5.5", provider: "openai" },
+              personalModelDefault: { modelId: "model-b", provider: "openrouter" }
+            })
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendSettingsDefaultsPatch({
+      personalModelDefault: { modelId: "model-b", provider: "openrouter" }
+    });
+    await sendSettingsDefaultsPatch({ personalModelDefault: null });
+
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { defaultModelId: "model-b", defaultProvider: "openrouter" },
+      { defaultProviderModelId: null }
+    ]);
+  });
+
   it("replaces a server-confirmed model draft before preserving unrelated keys", () => {
     const result = applySettingsDefaultsReconciliation(
       {

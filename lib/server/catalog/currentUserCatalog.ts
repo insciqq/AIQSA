@@ -31,6 +31,7 @@ export type CatalogSettingsRecord = {
 
 export type CatalogData = {
   entitlements: ResolvedEntitlements;
+  modelPolicy?: { defaultProviderModelId: string | null } | null;
   models: ProviderModelCatalogEntry[];
   searchPolicy?: { defaultPlan: unknown } | null;
   searchStrategies: SearchStrategyCatalogEntry[];
@@ -45,13 +46,22 @@ export type ResolvedSearchPreference = {
 
 export type CatalogSelectionData = Pick<
   CatalogData,
-  "entitlements" | "models" | "searchStrategies" | "settings"
+  "entitlements" | "modelPolicy" | "models" | "searchStrategies" | "settings"
 >;
+
+export type ModelDefaultSelection = {
+  modelId: string;
+  provider: string;
+};
 
 export type CurrentUserCatalogSelection = {
   defaultModel: CatalogWireModel | null;
   entitledStrategies: SearchStrategyCatalogEntry[];
+  hasPersonalModelDefault: boolean;
+  modelPreferenceSource: "none" | "organization" | "personal";
   models: CatalogWireModel[];
+  organizationModelDefault: ModelDefaultSelection | null;
+  personalModelDefault: ModelDefaultSelection | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -67,18 +77,34 @@ export function resolveCurrentUserCatalogSelection(
   const models = input.models
     .filter((model) => canAccessModel(input.entitlements, model.provider, model.modelId))
     .map((model) => buildCatalogModel(model, entitledStrategies));
-  const defaultModel =
-    models.find(
-      (model) =>
-        model.modelId === input.settings.defaultProviderModelId &&
-        (!input.settings.defaultProviderConnectionId ||
-          model.provider === input.settings.defaultProviderConnectionId)
-    ) ?? null;
+  // Undefined is the legacy test/pre-column shape. SQL NULL is the durable
+  // meaning "inherit the installation policy".
+  const personalModelId = input.settings.defaultProviderModelId === undefined
+    ? input.settings.defaultModelId || null
+    : input.settings.defaultProviderModelId;
+  const personalModel = personalModelId
+    ? models.find((model) => model.modelId === personalModelId) ?? null
+    : null;
+  const organizationModel = input.modelPolicy?.defaultProviderModelId
+    ? models.find((model) => model.modelId === input.modelPolicy?.defaultProviderModelId) ?? null
+    : null;
+  const hasPersonalModelDefault = personalModelId !== null;
+  const defaultModel = hasPersonalModelDefault ? personalModel : organizationModel;
+  const selection = (model: CatalogWireModel | null): ModelDefaultSelection | null =>
+    model ? { modelId: model.modelId, provider: model.provider } : null;
 
   return {
     defaultModel,
     entitledStrategies,
-    models
+    hasPersonalModelDefault,
+    modelPreferenceSource: hasPersonalModelDefault
+      ? "personal"
+      : organizationModel
+        ? "organization"
+        : "none",
+    models,
+    organizationModelDefault: selection(organizationModel),
+    personalModelDefault: selection(personalModel)
   };
 }
 
@@ -114,7 +140,15 @@ export function resolveSearchPreference(input: Readonly<{
 }
 
 export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogWire {
-  const { defaultModel, entitledStrategies, models } = resolveCurrentUserCatalogSelection(input);
+  const {
+    defaultModel,
+    entitledStrategies,
+    hasPersonalModelDefault,
+    modelPreferenceSource,
+    models,
+    organizationModelDefault,
+    personalModelDefault
+  } = resolveCurrentUserCatalogSelection(input);
   const providers = Array.from(new Set(models.map((model) => model.provider))).map((provider) => {
     const providerModels = models.filter((model) => model.provider === provider);
     const source = input.models.find((model) => model.provider === provider);
@@ -138,6 +172,10 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
         ? input.settings.defaultControlValues
         : {},
       modelId: defaultModel?.modelId ?? "",
+      hasPersonalModelDefault,
+      modelPreferenceSource,
+      organizationModelDefault,
+      personalModelDefault,
       provider: defaultModel?.provider ?? "",
       searchStrategyId: resolveSearchStrategyId(
         defaultModel,

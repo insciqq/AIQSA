@@ -146,6 +146,10 @@ describe("settings handler", () => {
       "defaultControlValues",
       "defaultModelId",
       "defaultProvider",
+      "hasPersonalModelDefault",
+      "modelPreferenceSource",
+      "organizationModelDefault",
+      "personalModelDefault",
       "defaultSearchStrategyId",
       "defaultSearchPlan",
       "organizationSearchPlan",
@@ -353,6 +357,48 @@ describe("settings handler", () => {
           optionIds: ["openai-native-web-search"]
         },
         searchPreferenceSource: "organization"
+      }
+    });
+  });
+
+  it("clears a personal model override and projects the entitled organization default", async () => {
+    const data = baseSettingsData();
+    data.entitlements.modelKeys.add("openai:gpt-5.6-sol");
+    data.modelPolicy = { defaultProviderModelId: "gpt-5.5" };
+    data.settings.defaultModelId = "gpt-5.6-sol";
+    data.settings.defaultProviderModelId = "gpt-5.6-sol";
+    let captured: UserSettingsUpdate | null = null;
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (_userId, update) => {
+        captured = update;
+        return updated({
+          ...data.settings,
+          defaultModelId: "",
+          defaultProvider: "",
+          defaultProviderConnectionId: null,
+          defaultProviderModelId: null
+        });
+      }
+    });
+
+    const response = await PATCH(new Request("http://app.local/api/me/settings", {
+      body: JSON.stringify({ defaultProviderModelId: null }),
+      headers: { cookie: authCookie() },
+      method: "PATCH"
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured).toEqual({ defaultProviderModelId: null });
+    await expect(response.json()).resolves.toMatchObject({
+      settings: {
+        defaultModelId: "gpt-5.5",
+        defaultProvider: "openai",
+        hasPersonalModelDefault: false,
+        modelPreferenceSource: "organization",
+        organizationModelDefault: { modelId: "gpt-5.5", provider: "openai" },
+        personalModelDefault: null
       }
     });
   });

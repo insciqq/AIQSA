@@ -103,12 +103,18 @@ export function applySettingsDefaultsReconciliation(
 }
 
 function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
+  const updatesPersonalModel = Object.prototype.hasOwnProperty.call(
+    patch,
+    "personalModelDefault"
+  );
   return {
-    ...(Object.prototype.hasOwnProperty.call(patch, "provider")
-      ? { defaultProvider: patch.provider }
-      : {}),
-    ...(Object.prototype.hasOwnProperty.call(patch, "modelId")
-      ? { defaultModelId: patch.modelId }
+    ...(updatesPersonalModel
+      ? patch.personalModelDefault
+        ? {
+            defaultModelId: patch.personalModelDefault.modelId,
+            defaultProvider: patch.personalModelDefault.provider
+          }
+        : { defaultProviderModelId: null }
       : {}),
     ...(Object.prototype.hasOwnProperty.call(patch, "searchStrategyId") &&
       !Object.prototype.hasOwnProperty.call(patch, "searchPlan")
@@ -160,11 +166,17 @@ function reconciledPatch(
 ): SettingsDefaultsPatch {
   const patch: SettingsDefaultsPatch = {};
 
-  if (Object.prototype.hasOwnProperty.call(sent, "provider")) {
-    patch.provider = settings.defaultProvider;
-  }
-  if (Object.prototype.hasOwnProperty.call(sent, "modelId")) {
+  if (Object.prototype.hasOwnProperty.call(sent, "personalModelDefault")) {
     patch.modelId = settings.defaultModelId;
+    patch.provider = settings.defaultProvider;
+    patch.hasPersonalModelDefault = settings.hasPersonalModelDefault ??
+      Boolean(settings.personalModelDefault);
+    patch.modelPreferenceSource = settings.modelPreferenceSource ??
+      (settings.personalModelDefault ? "personal" : settings.organizationModelDefault
+        ? "organization"
+        : "none");
+    patch.organizationModelDefault = settings.organizationModelDefault ?? null;
+    patch.personalModelDefault = settings.personalModelDefault ?? null;
   }
   if (Object.prototype.hasOwnProperty.call(sent, "searchStrategyId")) {
     patch.searchStrategyId = settings.defaultSearchStrategyId;

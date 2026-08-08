@@ -66,7 +66,8 @@ async function main() {
   const expectedModelTemplateKeys = defaultProviderModels.map(
     (model) => `${model.provider}:${model.modelId}`
   );
-  const [providerConnections, providerModels, searchOptions, searchStrategies] = await Promise.all([
+  const [modelPolicy, providerConnections, providerModels, searchOptions, searchStrategies] = await Promise.all([
+    prisma.modelPolicy.findUnique({ where: { id: "installation" } }),
     prisma.providerConnection.findMany({
       where: {
         templateKey: { in: providerConnectionTemplates.map((template) => template.templateKey) }
@@ -97,6 +98,8 @@ async function main() {
   const fakeModel = providerModels.find((model) => model.templateKey === "fake:fake-qsa");
 
   if (
+    !modelPolicy ||
+    modelPolicy.version < 1 ||
     providerConnections.length !== providerConnectionTemplates.length ||
     providerModels.length !== defaultProviderModels.length ||
     searchOptions.length !== 5 ||

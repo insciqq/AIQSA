@@ -76,6 +76,10 @@ describe("catalog handler", () => {
     expect(Object.keys(body.catalog.defaults)).toEqual([
       "controlValues",
       "modelId",
+      "hasPersonalModelDefault",
+      "modelPreferenceSource",
+      "organizationModelDefault",
+      "personalModelDefault",
       "provider",
       "searchStrategyId",
       "organizationSearchPlan",
@@ -235,9 +239,65 @@ describe("catalog handler", () => {
     });
 
     expect(catalog.defaults).toMatchObject({
+      hasPersonalModelDefault: true,
       modelId: "",
+      modelPreferenceSource: "personal",
+      organizationModelDefault: null,
+      personalModelDefault: null,
       provider: "",
       searchStrategyId: "search-disabled"
+    });
+  });
+
+  it("inherits only an entitled organization model and never falls through an unavailable personal choice", () => {
+    const base = {
+      entitlements: {
+        modelKeys: new Set(["openai:gpt-5.5"]),
+        providerKeys: new Set<string>(),
+        searchStrategies: new Set<string>()
+      },
+      modelPolicy: { defaultProviderModelId: "gpt-5.5" },
+      models: defaultProviderModels,
+      searchStrategies: defaultSearchStrategies,
+      settings: {
+        defaultControlValues: {},
+        defaultModelId: "",
+        defaultProviderConnectionId: null,
+        defaultProviderModelId: null,
+        defaultProvider: "",
+        defaultSearchStrategyId: "search-disabled",
+        showCitations: true,
+        showReasoningBlocks: false,
+        showToolActivity: true
+      }
+    };
+    const inherited = buildCurrentUserCatalog(base);
+    expect(inherited.defaults).toMatchObject({
+      hasPersonalModelDefault: false,
+      modelId: "gpt-5.5",
+      modelPreferenceSource: "organization",
+      organizationModelDefault: { modelId: "gpt-5.5", provider: "openai" },
+      personalModelDefault: null,
+      provider: "openai"
+    });
+
+    const unavailablePersonal = buildCurrentUserCatalog({
+      ...base,
+      settings: {
+        ...base.settings,
+        defaultModelId: "claude-opus-4-8",
+        defaultProviderConnectionId: "anthropic",
+        defaultProviderModelId: "claude-opus-4-8",
+        defaultProvider: "anthropic"
+      }
+    });
+    expect(unavailablePersonal.defaults).toMatchObject({
+      hasPersonalModelDefault: true,
+      modelId: "",
+      modelPreferenceSource: "personal",
+      organizationModelDefault: { modelId: "gpt-5.5", provider: "openai" },
+      personalModelDefault: null,
+      provider: ""
     });
   });
 

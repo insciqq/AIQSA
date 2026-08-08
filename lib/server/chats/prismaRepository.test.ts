@@ -37,6 +37,13 @@ async function withFolderUser<T>(run: (input: FolderUserFixture) => Promise<T>):
       }
     }
   });
+  await prisma.accessGrant.create({
+    data: {
+      enabled: true,
+      providerModelId: fakeModel.id,
+      userId
+    }
+  });
 
   try {
     return await run({
@@ -172,6 +179,48 @@ describe("Prisma chat repository", () => {
         defaultProvider: null,
         id: created?.id
       });
+    });
+  });
+
+  it("seeds a new chat from an entitled installation default without copying it personally", async () => {
+    await withFolderUser(async ({ fakeProviderConnectionId, fakeProviderModelId, userId }) => {
+      const priorPolicy = await prisma.modelPolicy.findUniqueOrThrow({
+        select: { defaultProviderModelId: true },
+        where: { id: "installation" }
+      });
+      try {
+        await Promise.all([
+          prisma.modelPolicy.update({
+            data: {
+              defaultProviderModelId: fakeProviderModelId,
+              version: { increment: 1 }
+            },
+            where: { id: "installation" }
+          }),
+          prisma.userSettings.update({
+            data: { defaultProviderModelId: null },
+            where: { userId }
+          })
+        ]);
+
+        const created = await createPrismaChatRepository(prisma).createChat({ userId });
+        expect(created).toMatchObject({
+          defaultModelId: fakeProviderModelId,
+          defaultProvider: fakeProviderConnectionId
+        });
+        await expect(prisma.userSettings.findUniqueOrThrow({
+          select: { defaultProviderModelId: true },
+          where: { userId }
+        })).resolves.toEqual({ defaultProviderModelId: null });
+      } finally {
+        await prisma.modelPolicy.update({
+          data: {
+            defaultProviderModelId: priorPolicy.defaultProviderModelId,
+            version: { increment: 1 }
+          },
+          where: { id: "installation" }
+        });
+      }
     });
   });
 

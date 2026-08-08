@@ -12,6 +12,9 @@ import {
 } from "../../domain/searchDisclosure";
 import { decodeAssistantAvatarRecipe } from "../../contracts/assistants";
 import { prisma } from "../prisma";
+import { loadEntitlementsForUser } from "../auth/dbEntitlements";
+import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
+import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { persistedToolCallActivity } from "../runs/toolInspection";
 import type {
@@ -693,26 +696,27 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
     },
     createChat: async ({ folderId, title, userId }) => {
       return prismaClient.$transaction(async (tx) => {
-        const [settings, folder] = await Promise.all([
+        const loadCatalogData = createPrismaCatalogDataLoader({
+          loadEntitlements: (targetUserId) => loadEntitlementsForUser(targetUserId, tx),
+          prisma: tx
+        });
+        const [settings, folder, catalogData] = await Promise.all([
           tx.userSettings.findUnique({
             select: {
-              defaultFolderId: true,
-              defaultProviderModel: {
-                select: {
-                  id: true
-                }
-              }
+              defaultFolderId: true
             },
             where: {
               userId
             }
           }),
-          findOwnedFolder(tx, folderId, userId)
+          findOwnedFolder(tx, folderId, userId),
+          loadCatalogData(userId)
         ]);
 
-        if (!settings) {
+        if (!settings || !catalogData) {
           return null;
         }
+        const effectiveDefault = resolveCurrentUserCatalogSelection(catalogData).defaultModel;
 
         const resolvedFolderId = folderId === undefined ? settings.defaultFolderId : folder?.id ?? null;
         if (folderId && !folder) {
@@ -721,7 +725,7 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
 
         const chat = await tx.chat.create({
           data: {
-            defaultProviderModelId: settings.defaultProviderModel?.id ?? null,
+            defaultProviderModelId: effectiveDefault?.modelId ?? null,
             folderId: resolvedFolderId,
             title: title?.trim() || defaultChatTitle,
             userId

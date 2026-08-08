@@ -243,7 +243,7 @@ describe("Prisma custom provider setup repository", () => {
     const { commitPlan, repository, transaction, tx } = harness();
 
     await expect(repository.commit(commitPlan)).resolves.toEqual({
-      defaultChanged: true,
+      defaultChanged: false,
       status: "ready"
     });
 
@@ -287,10 +287,7 @@ describe("Prisma custom provider setup repository", () => {
       })
     });
     expect(tx.providerGroupCredentialAssignment.create).not.toHaveBeenCalled();
-    expect(tx.userSettings.update).toHaveBeenCalledWith({
-      data: { defaultProviderModelId: "model-1" },
-      where: { userId: "admin" }
-    });
+    expect(tx.userSettings.update).not.toHaveBeenCalled();
   });
 
   it("persists null secret material only for an explicit no-auth connection", async () => {
@@ -348,10 +345,7 @@ describe("Prisma custom provider setup repository", () => {
     expect(tx.providerModel.create).toHaveBeenCalledTimes(2);
     expect(tx.providerModelCredentialCheck.create).toHaveBeenCalledTimes(2);
     expect(tx.accessGrant.create).toHaveBeenCalledTimes(2);
-    expect(tx.userSettings.update).toHaveBeenCalledWith({
-      data: { defaultProviderModelId: "model-1" },
-      where: { userId: "admin" }
-    });
+    expect(tx.userSettings.update).not.toHaveBeenCalled();
   });
 
   it("publishes tested hosted and client routes behind one connection-scoped Search option", async () => {
@@ -480,6 +474,15 @@ describe("Prisma custom provider setup repository", () => {
   it("refuses a stale actor before creating provider state", async () => {
     const { commitPlan, repository, tx } = harness({ sessionRevoked: true });
     await expect(repository.commit(commitPlan)).resolves.toBe("forbidden");
+    expect(tx.providerConnection.create).not.toHaveBeenCalled();
+    expect(tx.providerModel.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses an empty commit plan before creating provider state", async () => {
+    const { commitPlan, repository, tx } = harness();
+    await expect(repository.commit({ ...commitPlan, models: [] })).resolves.toBe(
+      "catalog_unavailable"
+    );
     expect(tx.providerConnection.create).not.toHaveBeenCalled();
     expect(tx.providerModel.create).not.toHaveBeenCalled();
   });

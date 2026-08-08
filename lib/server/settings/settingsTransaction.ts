@@ -113,16 +113,16 @@ function changesDefaultSelection(update: UserSettingsUpdate): boolean {
   );
 }
 
-function validDefaultSelection(
+function invalidDefaultSelection(
   current: LockedSettingsRow,
   update: UserSettingsUpdate,
   validationModels: SettingsValidationModel[]
-): boolean {
+): "default_model_unavailable" | "default_search_unavailable" | null {
   const updatesModel = Object.prototype.hasOwnProperty.call(update, "defaultProviderModelId");
   if (updatesModel && update.defaultProviderModelId !== null) {
     const model = validationModels.find((candidate) =>
       candidate.modelId === update.defaultProviderModelId);
-    if (!model) return false;
+    if (!model) return "default_model_unavailable";
   }
 
   const updatesLegacySearch = Object.prototype.hasOwnProperty.call(
@@ -130,17 +130,19 @@ function validDefaultSelection(
     "defaultSearchStrategyId"
   );
   const updatesSearchPlan = Object.prototype.hasOwnProperty.call(update, "defaultSearchPlan");
-  if (!updatesLegacySearch && !updatesSearchPlan) return true;
-  if (updatesSearchPlan && update.defaultSearchPlan === null) return true;
+  if (!updatesLegacySearch && !updatesSearchPlan) return null;
+  if (updatesSearchPlan && update.defaultSearchPlan === null) return null;
   const decodedPlan = decodeSearchPlan(
     updatesSearchPlan ? update.defaultSearchPlan : undefined,
     update.defaultSearchStrategyId ?? current.defaultSearchStrategyId
   );
-  if (!decodedPlan.ok) return false;
+  if (!decodedPlan.ok) return "default_search_unavailable";
   const availableSearchStrategyIds = new Set(validationModels.flatMap((model) =>
     model.searchStrategyIds));
   return decodedPlan.plan.optionIds.every((searchStrategyId) =>
-    availableSearchStrategyIds.has(searchStrategyId));
+    availableSearchStrategyIds.has(searchStrategyId))
+    ? null
+    : "default_search_unavailable";
 }
 
 export async function applySettingsUpdateInTransaction(
@@ -167,12 +169,12 @@ export async function applySettingsUpdateInTransaction(
     return { kind: "not_found" };
   }
 
-  if (
-    changesDefaultSelection(update) &&
-    !validDefaultSelection(lockedSettings, update, validationModels)
-  ) {
+  const invalidSelection = changesDefaultSelection(update)
+    ? invalidDefaultSelection(lockedSettings, update, validationModels)
+    : null;
+  if (invalidSelection) {
     return {
-      error: "default_search_unavailable",
+      error: invalidSelection,
       kind: "invalid"
     };
   }

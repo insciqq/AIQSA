@@ -32,7 +32,7 @@ coordinates it.
 Server-backed state includes:
 
 - current user/session and the entitlement-filtered provider/model/Search catalog;
-- saved provider/model/Search/prompt defaults, presentation toggles, and per-model run-control drafts;
+- the effective personal-or-installation model-default source, saved Search preferences, presentation toggles, and per-model run-control drafts;
 - lightweight chat summaries, nested folders/projects, and project instructions;
 - lazily loaded keyed thread snapshots with messages, branch state, usage, and safe artifacts;
 - Assistant summaries, details, revisions, publications, and per-user pins plus current-user MCP catalog/readiness;
@@ -142,7 +142,7 @@ context disclosure belong to [Messages](MESSAGES_AND_MARKDOWN.md),
   navigation, Account, conversation-action, or Details owner.
 - Initial bootstrap has one actionable Retry surface and disables dependent mutations. Blank-chat and zero-model states render only after readiness and distinguish an empty workspace from missing granted access. The zero-model projection also distinguishes admin authority: only an administrator receives the direct Control Center provider-setup action.
 - Above the compact shell threshold, Workspace-rail visibility is one browser-local presentation preference. Hiding closes rail-owned menus and focuses the surviving Workspace trigger; restoring focuses the rail's hide action. At compact widths the same trigger continues to own the modal drawer, and no chat/folder/account state migrates into this preference.
-- A persisted chat with no provider/model default is valid. The shell may show a visible catalog fallback without persisting it. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
+- A persisted chat with no provider/model default is valid. Blank startup uses only the catalog's exact effective personal-or-installation default; when that projection is absent, the shell keeps model selection empty instead of substituting the first visible model. Existing-chat activation preserves its independent saved tuple and established non-persisting visible fallback when that tuple is absent or unavailable. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
 - Any Chat `401` creates one sticky session-expiry transition. Concurrent failures navigate once, store only the active text draft in tab-scoped owner-bound state, and restore it after the same account reauthenticates only into an untouched matching destination. The handoff expires after 30 minutes and never includes attachments.
 - Sign-out failure remains visibly attributable to Account and retryable. Answer completion may use the local audio/favicon alert; hidden-tab signaling stops when the user returns.
 

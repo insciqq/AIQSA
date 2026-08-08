@@ -80,6 +80,7 @@ export function ComposerControls({
   disabled = false,
   hasAttachments = false,
   maxOutputTokens,
+  onMakeCurrentModelDefault,
   onBackgroundModeChange,
   onMaxOutputTokensChange,
   onMaxOutputTokensCommit,
@@ -88,6 +89,7 @@ export function ComposerControls({
   onSearchPlanChange,
   onSearchStrategyChange,
   onUseOrganizationSearchDefault,
+  onUseOrganizationModelDefault,
   onSelectModel,
   onStreamModeChange,
   onTemperatureChange,
@@ -127,6 +129,7 @@ export function ComposerControls({
   disabled?: boolean;
   hasAttachments?: boolean;
   maxOutputTokens: string;
+  onMakeCurrentModelDefault?(): void;
   onBackgroundModeChange(value: boolean): void;
   onMaxOutputTokensChange(value: string): void;
   onMaxOutputTokensCommit?(): void;
@@ -135,6 +138,7 @@ export function ComposerControls({
   onSearchPlanChange?(optionIds: readonly string[], mode: SearchPlanMode): void;
   onSearchStrategyChange(strategyId: string): void;
   onUseOrganizationSearchDefault?(): void;
+  onUseOrganizationModelDefault?(): void;
   onSelectModel(model: CatalogModel): void;
   onStreamModeChange(value: boolean): void;
   onTemperatureChange(value: string): void;
@@ -331,7 +335,9 @@ export function ComposerControls({
         streaming={streaming}
         valueTestId="run-model-summary"
         onOpenChange={setInlineModelPickerOpen}
+        onMakeCurrentDefault={onMakeCurrentModelDefault}
         onSelectModel={onSelectModel}
+        onUseOrganizationDefault={onUseOrganizationModelDefault}
       />
 
       <div
@@ -465,7 +471,9 @@ export function ComposerControls({
                     selectedProviderName={selectedProviderName}
                     streaming={streaming}
                     onOpenChange={setSetupModelPickerOpen}
+                    onMakeCurrentDefault={onMakeCurrentModelDefault}
                     onSelectModel={onSelectModel}
+                    onUseOrganizationDefault={onUseOrganizationModelDefault}
                   />
 
                   <ComposerOptionPicker

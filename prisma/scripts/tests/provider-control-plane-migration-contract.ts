@@ -9,6 +9,7 @@ const CONTEXT_REPAIR_MIGRATION = "20260724120000_repair_provider_model_context_w
 const RUN_PROFILE_MIGRATION = "20260724190000_admin_run_profiles";
 const USER_ASSIGNMENT_MIGRATION = "20260726140000_provider_user_credential_assignments";
 const DISABLE_FAKE_MIGRATION = "20260731120000_disable_production_fake_provider";
+const MODEL_POLICY_MIGRATION = "20260808120000_model_default_policy";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -127,6 +128,16 @@ function applyPreTargetMigrations(database: string): void {
   assert(migrations.length > 0, "expected migrations before provider foundation");
   for (const migration of migrations) {
     requireSuccess(psql(database, migrationSql(migration)), `apply pre-target migration ${migration}`);
+  }
+}
+
+function applyMigrationsBefore(database: string, target: string): void {
+  const migrations = readdirSync(migrationsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name < target)
+    .map((entry) => entry.name)
+    .sort();
+  for (const migration of migrations) {
+    requireSuccess(psql(database, migrationSql(migration)), `apply pre-${target} migration ${migration}`);
   }
 }
 
@@ -538,6 +549,106 @@ function runValidMigrationAndLineageChecks(): void {
   }
 }
 
+function runModelPolicyMigrationChecks(): void {
+  const database = `aiqsa_model_policy_${runId}`;
+  createDatabase(database);
+  try {
+    applyMigrationsBefore(database, MODEL_POLICY_MIGRATION);
+    requireSuccess(psql(database, `
+      INSERT INTO "User" ("id", "email", "displayName", "role", "status", "updatedAt")
+      VALUES ('model-policy-user', 'model-policy@example.test', 'Policy user', 'admin', 'active', CURRENT_TIMESTAMP);
+
+      INSERT INTO "ProviderConnection" (
+        "id", "displayName", "family", "enabled", "draftConfig", "draftVersion",
+        "activeConfig", "activeVersion", "activatedAt", "updatedAt"
+      ) VALUES (
+        'model-policy-connection', 'Policy connection', 'openai_compatible', true,
+        '{}'::jsonb, 1, '{}'::jsonb, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+
+      INSERT INTO "ProviderModel" (
+        "id", "connectionId", "provider", "modelId", "displayName", "contextWindow",
+        "enabled", "draftConfig", "draftVersion", "activeConfig", "activeVersion",
+        "activatedAt", "capabilities", "defaultParams", "updatedAt"
+      ) VALUES (
+        'model-policy-model', 'model-policy-connection', 'openai_compatible',
+        'policy-model', 'Policy model', 128000, true,
+        '{"adapterKind":"openai_responses_compatible","answerSelectable":true}'::jsonb,
+        1,
+        '{"adapterKind":"openai_responses_compatible","answerSelectable":true}'::jsonb,
+        1, CURRENT_TIMESTAMP, '{}'::jsonb, '{}'::jsonb, CURRENT_TIMESTAMP
+      );
+
+      INSERT INTO "UserSettings" (
+        "id", "userId", "defaultProviderModelId", "defaultSearchStrategyId",
+        "defaultControlValues", "updatedAt"
+      ) VALUES (
+        'model-policy-settings', 'model-policy-user', 'model-policy-model',
+        'search-disabled', '{}'::jsonb, CURRENT_TIMESTAMP
+      );
+
+      INSERT INTO "Chat" (
+        "id", "userId", "title", "defaultProviderModelId", "updatedAt"
+      ) VALUES (
+        'model-policy-chat', 'model-policy-user', 'Policy chat',
+        'model-policy-model', CURRENT_TIMESTAMP
+      );
+    `), "load model policy preservation fixture");
+
+    requireSuccess(
+      psql(database, migrationSql(MODEL_POLICY_MIGRATION)),
+      "apply model policy migration"
+    );
+    assert.equal(
+      scalar(database, `SELECT concat_ws('|',
+        policy."id",
+        COALESCE(policy."defaultProviderModelId", 'null'),
+        policy."version"::text,
+        settings."defaultProviderModelId",
+        chat."defaultProviderModelId"
+      )
+      FROM "ModelPolicy" policy
+      JOIN "UserSettings" settings ON settings."id" = 'model-policy-settings'
+      JOIN "Chat" chat ON chat."id" = 'model-policy-chat'
+      WHERE policy."id" = 'installation';`),
+      "installation|null|1|model-policy-model|model-policy-model"
+    );
+
+    expectDatabaseRejection(
+      database,
+      "second model policy singleton",
+      `INSERT INTO "ModelPolicy" ("id", "defaultProviderModelId", "updatedAt")
+       VALUES ('other', NULL, CURRENT_TIMESTAMP);`,
+      /ModelPolicy_singleton_check/u
+    );
+    expectDatabaseRejection(
+      database,
+      "invalid model policy version",
+      `UPDATE "ModelPolicy" SET "version" = 0 WHERE "id" = 'installation';`,
+      /ModelPolicy_version_check/u
+    );
+    requireSuccess(psql(database, `
+      UPDATE "ModelPolicy"
+      SET "defaultProviderModelId" = 'model-policy-model', "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "id" = 'installation';
+      UPDATE "UserSettings"
+      SET "defaultProviderModelId" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "id" = 'model-policy-settings';
+      UPDATE "Chat"
+      SET "defaultProviderModelId" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "id" = 'model-policy-chat';
+    `), "set model policy target");
+    expectDatabaseRejection(
+      database,
+      "delete installation default model",
+      `DELETE FROM "ProviderModel" WHERE "id" = 'model-policy-model';`,
+      /ModelPolicy_defaultProviderModelId_fkey/u
+    );
+  } finally {
+    dropDatabase(database);
+  }
+}
+
 function main(): void {
   assert.equal(
     requireSuccess(
@@ -589,6 +700,7 @@ function main(): void {
     );
 
     runValidMigrationAndLineageChecks();
+    runModelPolicyMigrationChecks();
   } finally {
     for (const database of [...disposableDatabases].reverse()) {
       dropDatabase(database);
@@ -596,7 +708,7 @@ function main(): void {
   }
 
   process.stdout.write(
-    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, composite lineage, and Fake withdrawal verified.\n"
+    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, composite lineage, Fake withdrawal, and installation model-policy preservation verified.\n"
   );
 }
 

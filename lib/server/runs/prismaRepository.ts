@@ -212,7 +212,6 @@ async function persistAcceptedRunDefaults(
       defaultControlValues: {
         [modelControlKey(defaults)]: { ...defaults.controlDefaults }
       },
-      defaultProviderModelId: defaults.modelId,
       ...(updatesSearchPreference
         ? {
             defaultSearchPlan: defaults.searchPreferencePlan ?? null,

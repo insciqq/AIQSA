@@ -225,7 +225,7 @@ export function useAdminProvidersController(
       deleteConnection: (connectionId: string) =>
         runCatalog(
           () => deleteAdminProviderConnection(connectionId),
-          "Provider connection deleted.",
+          "Provider connection deleted. Any child personal, chat, and installation defaults were cleared.",
           false,
           connectionId
         ),

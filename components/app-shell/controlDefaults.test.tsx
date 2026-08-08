@@ -199,8 +199,12 @@ function catalog(
   return {
     defaults: {
       controlValues,
+      hasPersonalModelDefault: true,
       modelId: model.modelId,
+      modelPreferenceSource: "personal",
+      organizationModelDefault: { modelId: model.modelId, provider: model.provider },
       organizationSearchPlan: { mode: "all_selected", optionIds: [] },
+      personalModelDefault: { modelId: model.modelId, provider: model.provider },
       provider: model.provider,
       searchStrategyId: "openai-native-web-search",
       searchPreferenceSource: "personal",
@@ -247,7 +251,14 @@ function requestInits(fetchMock: ReturnType<typeof vi.fn>): RequestInit[] {
 function settingsFetchMock() {
   const saved = {
     defaultControlValues: {} as Record<string, unknown>,
+    hasPersonalModelDefault: true,
     defaultModelId: model.modelId,
+    modelPreferenceSource: "personal" as "none" | "organization" | "personal",
+    organizationModelDefault: { modelId: model.modelId, provider: model.provider },
+    personalModelDefault: { modelId: model.modelId, provider: model.provider } as {
+      modelId: string;
+      provider: string;
+    } | null,
     defaultSearchPlan: { mode: "all_selected", optionIds: ["openai-native-web-search"] },
     organizationSearchPlan: { mode: "all_selected", optionIds: [] },
     defaultProvider: model.provider,
@@ -262,9 +273,22 @@ function settingsFetchMock() {
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     if (typeof body.defaultModelId === "string") {
       saved.defaultModelId = body.defaultModelId;
+      saved.hasPersonalModelDefault = true;
+      saved.modelPreferenceSource = "personal";
     }
     if (typeof body.defaultProvider === "string") {
       saved.defaultProvider = body.defaultProvider;
+      saved.personalModelDefault = {
+        modelId: saved.defaultModelId,
+        provider: saved.defaultProvider
+      };
+    }
+    if (body.defaultProviderModelId === null) {
+      saved.defaultModelId = saved.organizationModelDefault.modelId;
+      saved.defaultProvider = saved.organizationModelDefault.provider;
+      saved.hasPersonalModelDefault = false;
+      saved.modelPreferenceSource = "organization";
+      saved.personalModelDefault = null;
     }
     if (typeof body.defaultSearchStrategyId === "string") {
       saved.defaultSearchStrategyId = body.defaultSearchStrategyId;
@@ -837,6 +861,66 @@ describe("control default freshness", () => {
     expect(useComposerControlStore.getState()).toMatchObject({
       reasoningEffort: "max",
       reasoningMode: "pro"
+    });
+  });
+
+  it("keeps ordinary model selection local and persists only explicit default actions", async () => {
+    const fetchMock = settingsFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    const harness = createRunControlsHarness(model, catalog({}, [model, fakeModel]));
+
+    harness.actions().selectModel(fakeModel);
+    expect(useComposerControlStore.getState()).toMatchObject({
+      selectedModelId: "fake-qsa",
+      selectedProvider: "fake"
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    harness.actions().makeCurrentModelDefault();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(jsonBodies(fetchMock)[0]).toEqual({
+      defaultModelId: "fake-qsa",
+      defaultProvider: "fake"
+    });
+    expect(harness.catalog().defaults).toMatchObject({
+      modelId: "fake-qsa",
+      modelPreferenceSource: "personal",
+      personalModelDefault: { modelId: "fake-qsa", provider: "fake" },
+      provider: "fake"
+    });
+  });
+
+  it("clears a personal default without changing the current next-run model", async () => {
+    const fetchMock = settingsFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    const initialCatalog = catalog({}, [model, fakeModel]);
+    const harness = createRunControlsHarness(fakeModel, initialCatalog);
+    useComposerControlStore.getState().applyModelSelection({
+      controlDefaults: {
+        backgroundMode: false,
+        maxOutputTokens: "8192",
+        reasoningEffort: "medium",
+        reasoningMode: "standard",
+        streamMode: true,
+        temperature: "1"
+      },
+      modelId: fakeModel.modelId,
+      provider: fakeModel.provider
+    });
+
+    harness.actions().useOrganizationModelDefault();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(jsonBodies(fetchMock)[0]).toEqual({ defaultProviderModelId: null });
+    expect(useComposerControlStore.getState()).toMatchObject({
+      selectedModelId: "fake-qsa",
+      selectedProvider: "fake"
+    });
+    expect(harness.catalog().defaults).toMatchObject({
+      hasPersonalModelDefault: false,
+      modelId: "gpt-5.5",
+      modelPreferenceSource: "organization",
+      personalModelDefault: null,
+      provider: "openai"
     });
   });
 

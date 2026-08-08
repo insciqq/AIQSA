@@ -18,7 +18,6 @@ import {
   selectComposerSession,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
-import { fallbackCatalogModel } from "@/components/app-shell/controlDefaults";
 import { createFolderActions } from "@/components/app-shell/folderActions";
 import { useMessageRunActions } from "@/components/app-shell/messageRunActions";
 import { PowerAppShellView } from "@/components/app-shell/PowerAppShellView";
@@ -394,34 +393,6 @@ export function PowerAppShell({
     );
   }, [activeComposerSessionKey, attachments, catalog?.attachmentLimits, currentModel, uploading]);
 
-  useEffect(() => {
-    if (!catalog || currentModel || catalog.models.length === 0) {
-      return;
-    }
-
-    const fallback = fallbackCatalogModel(catalog);
-    if (!fallback) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      setSelectedProvider(fallback.provider, "system");
-      setSelectedModelId(fallback.modelId, "system");
-      const plan = resolvePreferredSearchPlan(
-        catalog.defaults.searchPlan,
-        catalog.defaults.searchStrategyId,
-        catalog.searchStrategies
-      );
-      setSelectedSearchPlan(plan.optionIds, plan.mode, "system");
-      const defaults = resolveModelControlDefaults(fallback, catalog.defaults.controlValues);
-      applyControlDefaults(defaults);
-    }, 0);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [applyControlDefaults, catalog, currentModel, setSelectedModelId, setSelectedProvider, setSelectedSearchPlan]);
-
   const {
     containerRef: threadScrollRef,
     handleScroll: handleThreadScroll,
@@ -446,6 +417,7 @@ export function PowerAppShell({
     changeStreamMode,
     changeTemperature,
     flushPendingModelControlDefaults,
+    makeCurrentModelDefault,
     removeAssistantFromComposer,
     selectModel,
     selectSearchPlan,
@@ -453,6 +425,7 @@ export function PowerAppShell({
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
     toggleToolActivityVisibility,
+    useOrganizationModelDefault,
     useOrganizationSearchDefault
   } = useRunControlsActions({
     catalog,
@@ -571,9 +544,7 @@ export function PowerAppShell({
             nextCatalog.models.find(
               (model) =>
                 model.provider === nextCatalog.defaults.provider && model.modelId === nextCatalog.defaults.modelId
-            ) ??
-            nextCatalog.models.find((model) => model.provider !== "fake") ??
-            nextCatalog.models[0];
+            );
           setCatalog(nextCatalog);
           setCatalogError(null);
           setSelectedProvider(defaultModel?.provider ?? "", "system");
@@ -977,6 +948,7 @@ export function PowerAppShell({
     draft,
     flushPendingModelControlDefaults: flushPendingModelControlDefaultsEvent,
     maxOutputTokens,
+    makeCurrentModelDefault,
     notificationSoundEnabled,
     operationError: composerSession.operationError,
     operationErrorLive: composerSession.operationErrorLive,
@@ -1006,6 +978,7 @@ export function PowerAppShell({
     toggleReasoningBlockVisibility,
     toggleToolActivityVisibility,
     useOrganizationSearchDefault,
+    useOrganizationModelDefault,
     uploadFiles,
     uploading
   } satisfies ShellComposerView;

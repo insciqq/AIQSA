@@ -9,22 +9,27 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
 ## Current-User Catalog And Settings
 
 - The catalog returns the client-safe entitled answer and Search projection
-  produced by provider admission, together with saved defaults and presentation
-  preferences. Technical-only deployments remain a server-side Search
+  produced by provider admission, together with personal/installation default
+  source facts and presentation preferences. A non-null personal exact
+  deployment has precedence; null dynamically inherits the installation
+  policy. The chosen source becomes effective only when that exact deployment
+  is in the user's filtered runnable catalog. An unavailable personal choice
+  suppresses installation fallback, and either unavailable source projects as
+  no default without exposing its hidden identity or selecting the first
+  visible model. Technical-only deployments remain a server-side Search
   dependency and never enter the answer projection; [provider admission](../providers/ADMISSION_AND_BINDINGS.md)
   owns their exact grant/default/admission exclusions.
-- An unavailable saved model remains persisted but projects as no default; the server never leaks its hidden identity or silently selects the first visible model.
 - Catalog and settings reads preserve the preferred-versus-effective Search
   distinction owned by [Search plans](../../run_pipeline/SEARCH_PLANS.md).
   Settings writes never replace the durable preference with the current
   model-compatible execution subset.
-- Settings updates validate providers, models, prompts, Search, and per-model control drafts against the same filtered catalog. The transaction locks the latest settings row and merges independent model keys, so concurrent accepted patches cannot overwrite unrelated drafts. Presentation toggles never enter normalized provider requests.
+- Settings updates validate explicit personal model-default set/clear, Search, and per-model control drafts against the same filtered catalog. Set stores one exact entitled runnable deployment; clear stores null and restores dynamic installation inheritance. Ordinary current-model selection is not a settings mutation. The transaction locks the latest settings row and merges independent model keys, so concurrent accepted patches cannot overwrite unrelated drafts. Presentation toggles never enter normalized provider requests.
 
 ## Chats, Messages, And Runs
 
 ### Workspace and Assistants
 
-- Chat list/create/update/branch mutations return lightweight summaries with `messageCount` and `pinned`, not messages or usage. Detail reads own the message DAG, active leaf, safe artifacts, and latest assistant run IDs. Archived chats are hidden and non-operational; unarchive is not exposed.
+- Chat list/create/update/branch mutations return lightweight summaries with `messageCount` and `pinned`, not messages or usage. Server-side new-chat creation snapshots the caller's current effective personal-or-installation model default, or null when none is safely runnable; later default changes never retarget that chat. Detail reads own the message DAG, active leaf, safe artifacts, and latest assistant run IDs. Archived chats are hidden and non-operational; unarchive is not exposed.
 - Folder operations are current-user scoped. Moves validate ownership and cycles in the same serializable transaction; deleting a folder promotes child folders and unsets chat folders through database relations.
 - `/api/me/assistants` is the concrete Assistant-specific family. Reads project runner-safe summaries and authorized detail: instructions stay inspectable for anyone entitled to run the Assistant, while hidden dependency identities are censored (a model outside the runner's catalog projects as null, MCP ids narrow to the runner's grants) and availability carries only coarse privacy-neutral reasons. Invisible and nonexistent ids share one `assistant_not_available` response. Writes are owner-only with optimistic-version CAS: revise appends an immutable revision and moves the current pointer, archive/restore toggles soft state, duplicate creates a private copy from the caller's authorized revision, and drafts are strictly bounded and validated against the owner's current catalog. Publications pin exact revisions per active group (publisher needs active membership) or installation-wide (active admin); publish-update moves them explicitly, revoke is owner-or-admin, and pins are per-user preference rows granting no access. Saving never advances a publication.
 - Assistant runs resolve server-side at admission: the request carries only the Assistant identity and user content, override fields are rejected, the currently authorized revision (owner current, or the highest active publication pinned revision) is materialized into model, prompts, controls, Search intent, and the exact MCP allowlist, and the run-creation transaction rechecks access and archive state before atomically persisting `ModelRun.assistantId`/`assistantRevisionId`. Access, archive, and revocation races return a stable privacy-safe conflict; a concurrent revision advance is not a conflict. Assistant runs skip accepted-defaults persistence so saved manual preferences never change.
@@ -36,7 +41,7 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
 ### Send, branch, edit, and regenerate
 
 - Send and regenerate share one server-only preparation boundary for ownership, branch context, entitlement, content/capability, prompt, controls, Search, attachments, MCP, context budget, and redacted preview. The resulting plain-data snapshot is isolated from adapter services and is not rebuilt after validation.
-- Run creation locks and rechecks the chat, archive state, expected active leaf, active-run gate, settings, prompt, Search/provider configuration, credentials, and MCP generations before atomically creating messages, attachment links, run bindings, active leaf, and accepted defaults. Stale leaf or active-run races return stable conflicts without partial graph creation. External execution starts only after commit.
+- Run creation locks and rechecks the chat, archive state, expected active leaf, active-run gate, settings, prompt, Search/provider configuration, credentials, and MCP generations before atomically creating messages, attachment links, run bindings, active leaf, and accepted Search/control preferences. Accepted runs never write the personal or installation model default. Stale leaf or active-run races return stable conflicts without partial graph creation. External execution starts only after commit.
 - Exactly one active run is allowed per chat; different chats remain independent. Edit, subtree delete, branch-chat, send, and regenerate use the same chat-first lock order and reject same-chat active-run conflicts.
 - Editing creates a same-role branch fork. Subtree deletion moves the active leaf to a valid ancestor. Branch-chat clones the selected ancestor path and attachment rows while reusing protected private object bytes. Regenerate creates a sibling assistant branch from an assistant or unanswered user source and follows the same preparation/execution path as send.
 

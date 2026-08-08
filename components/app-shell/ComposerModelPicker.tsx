@@ -27,8 +27,10 @@ export function ComposerModelPicker({
   idPrefix = "composer-model",
   disabled,
   nestedInRunSetup = false,
+  onMakeCurrentDefault,
   onOpenChange,
   onSelectModel,
+  onUseOrganizationDefault,
   open,
   pickerTestId = "model-picker",
   selectedModelId,
@@ -44,8 +46,10 @@ export function ComposerModelPicker({
   disabled: boolean;
   idPrefix?: string;
   nestedInRunSetup?: boolean;
+  onMakeCurrentDefault?(): void;
   onOpenChange(open: boolean): void;
   onSelectModel(model: CatalogModel): void;
+  onUseOrganizationDefault?(): void;
   open: boolean;
   pickerTestId?: string;
   selectedModelId: string;
@@ -326,7 +330,10 @@ export function ComposerModelPicker({
                   <div className="space-y-1">
                     {provider.models.map((model) => {
                       const active = model.provider === selectedProvider && model.modelId === selectedModelId;
-                      const isDefault = model.provider === catalog?.defaults.provider && model.modelId === catalog.defaults.modelId;
+                      const isPersonalDefault = model.provider === catalog?.defaults.personalModelDefault?.provider &&
+                        model.modelId === catalog.defaults.personalModelDefault.modelId;
+                      const isOrganizationDefault = model.provider === catalog?.defaults.organizationModelDefault?.provider &&
+                        model.modelId === catalog.defaults.organizationModelDefault.modelId;
                       const capabilityLabels = modelCapabilityLabels(model);
                       const differentiatingLabels = modelDifferentiatingCapabilityLabels(
                         model,
@@ -357,7 +364,8 @@ export function ComposerModelPicker({
                           aria-describedby={[
                             `${idPrefix}-picker-model-${actionIndex}-capabilities`,
                             active ? `${idPrefix}-picker-model-${actionIndex}-current` : null,
-                            isDefault ? `${idPrefix}-picker-model-${actionIndex}-default` : null
+                            isPersonalDefault ? `${idPrefix}-picker-model-${actionIndex}-personal-default` : null,
+                            isOrganizationDefault ? `${idPrefix}-picker-model-${actionIndex}-organization-default` : null
                           ]
                             .filter((id): id is string => Boolean(id))
                             .join(" ")}
@@ -395,12 +403,20 @@ export function ComposerModelPicker({
                                 Current
                               </span>
                             ) : null}
-                            {isDefault ? (
+                            {isPersonalDefault ? (
                               <span
                                 className="text-ink-muted"
-                                id={`${idPrefix}-picker-model-${actionIndex}-default`}
+                                id={`${idPrefix}-picker-model-${actionIndex}-personal-default`}
                               >
-                                Default
+                                My default
+                              </span>
+                            ) : null}
+                            {isOrganizationDefault ? (
+                              <span
+                                className="text-ink-muted"
+                                id={`${idPrefix}-picker-model-${actionIndex}-organization-default`}
+                              >
+                                Organization default
                               </span>
                             ) : null}
                             {active ? <Check className="size-4 text-proof" aria-hidden="true" /> : null}
@@ -413,6 +429,36 @@ export function ComposerModelPicker({
               );
             })}
           </div>
+          {onMakeCurrentDefault || onUseOrganizationDefault ? (
+            <div className="mt-3 flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-trace-subtle pt-3">
+              <p className="text-xs text-ink-muted">
+                Choosing a model changes only the next run.
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {currentModel && onMakeCurrentDefault && !(
+                  currentModel.provider === catalog?.defaults.personalModelDefault?.provider &&
+                  currentModel.modelId === catalog.defaults.personalModelDefault.modelId
+                ) ? (
+                  <button
+                    className="inline-flex min-h-touch items-center rounded-control px-2.5 text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus sm:min-h-control"
+                    onClick={onMakeCurrentDefault}
+                    type="button"
+                  >
+                    Make current my default
+                  </button>
+                ) : null}
+                {catalog?.defaults.hasPersonalModelDefault && onUseOrganizationDefault ? (
+                  <button
+                    className="inline-flex min-h-touch items-center rounded-control px-2.5 text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus sm:min-h-control"
+                    onClick={onUseOrganizationDefault}
+                    type="button"
+                  >
+                    Use organization default
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
         </>
       ) : null}

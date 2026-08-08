@@ -387,15 +387,15 @@ describe("AdminProvidersExperience", () => {
     });
     expect(screen.queryByDisplayValue("browser-only-key")).not.toBeInTheDocument();
     expect(screen.getByText("GPT-5.6 Terra")).toBeInTheDocument();
-    expect(screen.getByText("Available in chat. Your existing default model remained unchanged.")).toBeInTheDocument();
+    expect(screen.getByText("This provider is configured and available in chat. Default models remain unchanged.")).toBeInTheDocument();
     const receipt = screen.getByTestId("provider-quick-ready-receipt");
     expect(receipt).toHaveTextContent("API key: saved and verified.");
-    expect(receipt).toHaveTextContent("Default model: GPT-5.6 Terra.");
+    expect(receipt).toHaveTextContent("Prepared model: GPT-5.6 Terra.");
     expect(receipt).toHaveTextContent(
       "Available models: GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol."
     );
     expect(receipt).toHaveTextContent("Access: available to this administrator.");
-    expect(screen.getByText("Default selection: unchanged.")).toBeInTheDocument();
+    expect(screen.getByText(/Default models: unchanged\./)).toBeInTheDocument();
     expect(receipt).not.toHaveTextContent("Run profiles");
     const feedback = screen.getByTestId("provider-quick-feedback");
     expect(feedback).toHaveAttribute("role", "status");
@@ -558,7 +558,7 @@ describe("AdminProvidersExperience", () => {
       await finalCheck.promise;
     });
     const receipt = await screen.findByTestId("provider-quick-ready-receipt");
-    expect(receipt).toHaveTextContent("Default model: GPT-5.6 Sol.");
+    expect(receipt).toHaveTextContent("Prepared model: GPT-5.6 Sol.");
     expect(receipt).not.toHaveTextContent("Run profiles");
   });
 
@@ -854,12 +854,12 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByText("Ready to chat")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Start chatting" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace API key" })).toBeDisabled();
-    expect(screen.getByText("Default selection: unchanged.")).toBeInTheDocument();
+    expect(screen.getByText(/Default models: unchanged\./)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Retry status refresh" }));
     expect(await screen.findByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
     expect(screen.getByRole("button", { name: "Replace API key" })).toBeEnabled();
-    expect(screen.getByText("Default selection: unchanged.")).toBeInTheDocument();
+    expect(screen.getByText(/Default models: unchanged\./)).toBeInTheDocument();
   });
 
   it("activates only the selected lazy task and mounts a fresh Connections projection after a Quick commit", async () => {

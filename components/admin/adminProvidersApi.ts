@@ -426,7 +426,8 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   const blockerLabels: Record<string, string> = {
-    assistant_revisions: "assistant revisions"
+    assistant_revisions: "assistant revisions",
+    installation_default: "installation default"
   };
   const base = messages[error.code] ?? "The provider action could not be completed. Refresh and try again.";
   if (!error.blockers.length) return base;

@@ -76,7 +76,7 @@ export function AdminProviderCustomSetup({
             <p>
               Models: {ready.models.map(({ modelDisplayName }) => modelDisplayName).join(", ")}.
             </p>
-            <p>Default selection: {ready.defaultChanged ? "updated" : "unchanged"}.</p>
+            <p>Default models: unchanged. Choose one explicitly in chat or the Default model task.</p>
             {ready.search ? (
               <p>
                 {ready.search.displayName}: {ready.search.status === "ready"
@@ -226,7 +226,7 @@ export function AdminProviderCustomSetup({
                   <div className="min-w-0">
                     <p className={fieldLabel}>Selected models</p>
                     <p className="text-metadata text-ink-muted">
-                      {form.selectedModelIds.length} of {discoveredModels.length} selected · up to {MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS}. The first selection has default preference when your current default is unusable.
+                      {form.selectedModelIds.length} of {discoveredModels.length} selected · up to {MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS}. The first selection is used as the primary setup model.
                     </p>
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-1">
@@ -284,7 +284,7 @@ export function AdminProviderCustomSetup({
                         <span className="min-w-0">
                           <span className="block break-all font-mono text-xs text-ink">{modelId}</span>
                           {index === 0 ? (
-                            <span className="mt-0.5 block text-metadata text-ink-muted">First/default candidate</span>
+                            <span className="mt-0.5 block text-metadata text-ink-muted">Primary setup model</span>
                           ) : null}
                         </span>
                         <button

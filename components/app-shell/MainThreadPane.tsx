@@ -94,6 +94,7 @@ export type MainThreadPaneProps = {
   lastRun: PersistedRun | null;
   liveArtifactSummary: ThreadArtifactSummary | null;
   maxOutputTokens: string;
+  makeCurrentModelDefault?(): void;
   notificationSoundEnabled: boolean;
   operationError: string | null;
   operationErrorLive: boolean;
@@ -132,6 +133,7 @@ export type MainThreadPaneProps = {
   toggleReasoningBlockVisibility(): void;
   toggleToolActivityVisibility(): void;
   useOrganizationSearchDefault?(): void;
+  useOrganizationModelDefault?(): void;
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
   uploading: boolean;
   visibleMessages: ThreadMessage[];
@@ -180,6 +182,7 @@ export function MainThreadPane({
   lastRun,
   liveArtifactSummary,
   maxOutputTokens,
+  makeCurrentModelDefault,
   notificationSoundEnabled,
   operationError,
   operationErrorLive,
@@ -218,6 +221,7 @@ export function MainThreadPane({
   toggleReasoningBlockVisibility,
   toggleToolActivityVisibility,
   useOrganizationSearchDefault,
+  useOrganizationModelDefault,
   uploadFiles,
   uploading,
   visibleMessages,
@@ -328,6 +332,13 @@ export function MainThreadPane({
     !catalog ||
     !workspaceReady ||
     !currentModel;
+  const composerControlsUnavailable =
+    creatingChat ||
+    activeChatDetailLoading ||
+    Boolean(activeChatDetailError) ||
+    Boolean(catalogError) ||
+    !catalog ||
+    !workspaceReady;
 
   const centeredEmptyConversation =
     activeChatId === null &&
@@ -726,7 +737,7 @@ export function MainThreadPane({
               contextLine={composerContextStats ? formatComposerContextStats(composerContextStats) : null}
               currentModel={currentModel}
               currentParameterControls={currentParameterControls}
-              disabled={composerUnavailable}
+              disabled={composerControlsUnavailable}
               hasAttachments={attachments.length > 0}
               maxOutputTokens={maxOutputTokens}
               reasoningEffort={reasoningEffort}
@@ -747,11 +758,13 @@ export function MainThreadPane({
               onBackgroundModeChange={changeBackgroundMode}
               onMaxOutputTokensChange={changeMaxOutputTokens}
               onMaxOutputTokensCommit={flushPendingModelControlDefaults}
+              onMakeCurrentModelDefault={makeCurrentModelDefault}
               onReasoningEffortChange={changeReasoningEffort}
               onReasoningModeChange={changeReasoningMode}
               onSearchPlanChange={selectSearchPlan}
               onSearchStrategyChange={selectSearchStrategy}
               onUseOrganizationSearchDefault={useOrganizationSearchDefault}
+              onUseOrganizationModelDefault={useOrganizationModelDefault}
               onSelectModel={selectModel}
               onStreamModeChange={changeStreamMode}
               onTemperatureChange={changeTemperature}

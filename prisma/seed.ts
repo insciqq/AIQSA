@@ -494,6 +494,16 @@ async function main() {
     throw new Error("Fake provider model template was not seeded");
   }
 
+  await prisma.modelPolicy.upsert({
+    create: {
+      defaultProviderModelId: null,
+      id: "installation"
+    },
+    // Local reseeding must not overwrite an administrator's current policy.
+    update: {},
+    where: { id: "installation" }
+  });
+
   await prisma.group.upsert({
     create: {
       id: ids.group,

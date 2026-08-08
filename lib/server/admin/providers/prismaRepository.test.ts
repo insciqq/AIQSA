@@ -12,10 +12,15 @@ const KEY = Buffer.alloc(32, 20);
 const NOW = new Date("2026-07-23T14:00:00.000Z");
 
 function transactional<T extends Record<string, unknown>>(db: T): T & {
+  $queryRaw: ReturnType<typeof vi.fn>;
   $transaction: (operation: (tx: T) => Promise<unknown>) => Promise<unknown>;
 } {
-  return Object.assign(db, {
-    $transaction: vi.fn(async (operation: (tx: T) => Promise<unknown>) => operation(db))
+  const transaction = Object.assign({
+    $queryRaw: vi.fn(async () => [{ id: "installation" }])
+  }, db);
+  return Object.assign(transaction, {
+    $transaction: vi.fn(async (operation: (tx: T) => Promise<unknown>) =>
+      operation(transaction as T))
   });
 }
 
@@ -241,6 +246,7 @@ describe("Prisma admin provider repository", () => {
       accessGrant: { count: vi.fn(async () => 2) },
       assistantRevision: { count: vi.fn(async () => 1) },
       chat: { count: vi.fn(async () => 1) },
+      modelPolicy: { count: vi.fn(async () => 1) },
       providerModel: {
         delete: remove,
         findUnique: vi.fn(async () => ({ enabled: false, templateKey: null }))
@@ -259,6 +265,7 @@ describe("Prisma admin provider repository", () => {
     await expect(repository.deleteModel("model-1")).resolves.toEqual({
       blockers: [
         { count: 2, kind: "access_grants" },
+        { count: 1, kind: "installation_default" },
         { count: 1, kind: "user_defaults" },
         { count: 1, kind: "chat_defaults" },
         { count: 1, kind: "search_references" },
@@ -277,6 +284,7 @@ describe("Prisma admin provider repository", () => {
       accessGrant: { count: vi.fn(async () => 0) },
       assistantRevision: { count: vi.fn(async () => 0) },
       chat: { count: vi.fn(async () => 0) },
+      modelPolicy: { count: vi.fn(async () => 0) },
       providerModel: {
         delete: remove,
         findUnique: vi.fn(async () => ({ enabled: false, templateKey: null }))
@@ -894,6 +902,7 @@ describe("Prisma admin provider repository", () => {
     const db = transactional({
       accessGrant: { deleteMany: vi.fn(async () => ({ count: 1 })) },
       chat: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      modelPolicy: { updateMany: vi.fn(async () => ({ count: 1 })) },
       providerConnection: {
         delete: deleteConnection,
         findUnique: vi.fn(async () => ({
@@ -943,6 +952,14 @@ describe("Prisma admin provider repository", () => {
     expect(deleteConnection).toHaveBeenCalledWith({ where: { id: "connection-1" } });
     expect(db.userSettings.updateMany).toHaveBeenCalledWith({
       data: { defaultProviderModelId: null },
+      where: { defaultProviderModelId: { in: ["model-1"] } }
+    });
+    expect(db.modelPolicy.updateMany).toHaveBeenCalledWith({
+      data: {
+        defaultProviderModelId: null,
+        updatedByUserId: null,
+        version: { increment: 1 }
+      },
       where: { defaultProviderModelId: { in: ["model-1"] } }
     });
     expect(db.accessGrant.deleteMany).toHaveBeenCalledWith({
