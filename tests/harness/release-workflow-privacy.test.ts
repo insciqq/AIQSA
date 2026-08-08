@@ -69,6 +69,27 @@ describe("public release privacy contract", () => {
     expect(postgresDockerfile.match(/^FROM /gmu)).toHaveLength(2);
   });
 
+  it("can publish only the exact Postgres component without creating an app release", () => {
+    const workflow = readFileSync(
+      path.join(root, ".github/workflows/postgres-image.yml"),
+      "utf8"
+    );
+    const privacy = workflow.indexOf("node scripts/release-privacy-check.mjs --ref HEAD --require-origin");
+    const build = workflow.indexOf("docker/build-push-action@");
+
+    expect(workflow).toContain('- "postgres-16.14-pgvector0.8.5"');
+    expect(workflow).toContain("expected_tag=\"postgres-${POSTGRES_COMPONENT_TAG}\"");
+    expect(privacy).toBeGreaterThan(0);
+    expect(build).toBeGreaterThan(privacy);
+    expect(workflow).toContain("platform: linux/amd64\n            runner: ubuntu-24.04");
+    expect(workflow).toContain("platform: linux/arm64\n            runner: ubuntu-24.04-arm");
+    expect(workflow).not.toContain("docker/setup-qemu-action@");
+    expect(workflow).toContain("push-by-digest=true,name-canonical=true,push=true");
+    expect(workflow).toContain('${POSTGRES_COMPONENT_TAG}-sha-${GITHUB_SHA:0:12}');
+    expect(workflow).toContain("expected_platforms=(linux/amd64 linux/arm64)");
+    expect(workflow).not.toContain("gh release create");
+  });
+
   it("keeps agent-only files out of every Docker stage context", () => {
     const dockerignore = readFileSync(path.join(root, ".dockerignore"), "utf8");
     const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");
