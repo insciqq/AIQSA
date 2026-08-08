@@ -77,6 +77,13 @@ function store(options: StoreOptions = {}) {
     providerCredentialVersion: {
       findFirst: vi.fn()
     },
+    providerCredential: {
+      findMany: vi.fn(async () => [{
+        activeVersion: { id: "credential-version-1", revokedAt: null },
+        enabled: true,
+        id: "credential-1"
+      }])
+    },
     providerGroupCredentialAssignment: {
       findMany: vi.fn(async () => [])
     },
@@ -104,7 +111,8 @@ function store(options: StoreOptions = {}) {
         displayName: "Embedding model",
         id: "embedding-model-1",
         provider: "openai_compatible"
-      }))
+      })),
+      findUnique: vi.fn(async () => ({ connectionId: "embedding-connection-1" }))
     },
     providerModelCredentialCheck: {
       findFirst: vi.fn(async () =>

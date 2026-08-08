@@ -37,11 +37,6 @@ function model() {
         apiRoot: "https://openrouter.ai/api/v1"
       },
       activeVersion: 3,
-      credentials: [{
-        activeVersion: { id: "credential-version-1", revokedAt: null },
-        enabled: true,
-        id: "credential-1"
-      }],
       defaultCredentialId: "credential-1",
       displayName: "OpenRouter",
       family: "openrouter",
@@ -54,10 +49,16 @@ function model() {
   };
 }
 
-function store(input: Readonly<{
-  fullAccess: boolean;
+type StoreOptions = Readonly<{
+  checkAvailable?: boolean;
+  credentialRevoked?: boolean;
+  fullAccess?: boolean;
   grantCount?: number;
-}> = { fullAccess: true }) {
+  modelAvailable?: boolean;
+  userActive?: boolean;
+}>;
+
+function store(input: StoreOptions = {}) {
   const envelope = encryptProviderCredentialSecret({
     credentialId: "credential-1",
     key: KEY,
@@ -68,14 +69,32 @@ function store(input: Readonly<{
     accessGrant: {
       count: vi.fn(async () => input.grantCount ?? 0)
     },
+    providerCredential: {
+      findMany: vi.fn(async () => [{
+        activeVersion: {
+          id: "credential-version-1",
+          revokedAt: input.credentialRevoked
+            ? new Date("2026-08-08T00:00:00.000Z")
+            : null
+        },
+        enabled: true,
+        id: "credential-1"
+      }])
+    },
     providerGroupCredentialAssignment: {
       findMany: vi.fn(async () => [])
     },
     providerModel: {
-      findFirst: vi.fn(async () => model())
+      findFirst: vi.fn(async () =>
+        input.modelAvailable === false
+          ? null
+          : model()),
+      findUnique: vi.fn(async () =>
+        input.modelAvailable === false ? null : { connectionId: "connection-1" })
     },
     providerModelCredentialCheck: {
-      findFirst: vi.fn(async () => ({ id: "check-1" }))
+      findFirst: vi.fn(async () =>
+        input.checkAvailable === false ? null : { id: "check-1" })
     },
     providerCredentialVersion: {
       findFirst: vi.fn(async () => ({
@@ -90,10 +109,11 @@ function store(input: Readonly<{
       findUnique: vi.fn(async () => null)
     },
     user: {
-      findFirst: vi.fn(async () => ({ id: "user-1" }))
+      findFirst: vi.fn(async () =>
+        input.userActive === false ? null : { id: "user-1" })
     },
     userGroup: {
-      findMany: vi.fn(async () => input.fullAccess
+      findMany: vi.fn(async () => (input.fullAccess ?? true)
         ? [{ group: { systemRole: "full_access" }, groupId: "full-access" }]
         : [])
     }
@@ -120,11 +140,28 @@ describe("embedding runtime admission", () => {
     const result = await binding.adapter.embed({ mode: "document", texts: ["document"] });
 
     expect(prisma.accessGrant.count).not.toHaveBeenCalled();
+    expect(prisma.providerCredential.findMany).toHaveBeenCalledOnce();
+    expect(prisma.providerModel.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ modelClass: "embedding" })
+      })
+    );
     expect(binding).toMatchObject({
       configuration,
       connectionId: "connection-1",
+      connectionVersion: 3,
       credentialId: "credential-1",
       credentialSource: "default",
+      credentialVersionId: "credential-version-1",
+      executionSnapshot: {
+        connectionId: "connection-1",
+        credentialId: "credential-1",
+        credentialVersionId: "credential-version-1",
+        model: configuration,
+        providerModelId: "embedding-1",
+        version: 1
+      },
+      modelVersion: 4,
       provider: "openrouter",
       providerModelId: "embedding-1"
     });
@@ -147,5 +184,23 @@ describe("embedding runtime admission", () => {
     })).rejects.toMatchObject({ code: "model_not_available" });
     expect(prisma.accessGrant.count).toHaveBeenCalledOnce();
     expect(prisma.providerModelCredentialCheck.findFirst).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["inactive user", { userActive: false }, "user_not_available"],
+    ["unavailable embedding model", { modelAvailable: false }, "model_not_available"],
+    ["revoked effective credential", { credentialRevoked: true }, "credential_revoked"],
+    ["missing exact availability check", { checkAvailable: false }, "model_not_available"]
+  ] as const)("fails closed for %s", async (_label, options, code) => {
+    const prisma = store(options);
+    const runtime = createPrismaEmbeddingRuntime(
+      prisma as unknown as PrismaClient,
+      { createFetch: () => vi.fn<typeof fetch>(), encryptionKey: () => KEY }
+    );
+
+    await expect(runtime.resolveForUser({
+      providerModelId: "embedding-1",
+      userId: "user-1"
+    })).rejects.toMatchObject({ code });
   });
 });

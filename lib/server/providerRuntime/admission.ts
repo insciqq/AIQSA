@@ -5,7 +5,8 @@ import { resolveProviderCredential } from "../../domain/providerCredentialResolu
 import {
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration,
-  ProviderConfigurationError
+  ProviderConfigurationError,
+  type ProviderModelConfiguration
 } from "../providers/providerConfiguration";
 import { resolveProviderModelCapabilities } from "../providers/providerModelCapabilities";
 import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } from "../providers/runtimeFactory";
@@ -55,6 +56,14 @@ export type ProviderAdmissionRole = Readonly<{
   authority?: SearchProbeBinding | null;
   credentialSource: "default" | "group" | "user";
   modelConfiguration: RunModelConfiguration;
+  snapshot: ProviderExecutionSnapshot;
+}>;
+
+export type EmbeddingProviderAdmissionRole = Readonly<{
+  authority: SearchProbeBinding;
+  configuration: ProviderModelConfiguration;
+  credentialSource: "default" | "group" | "user";
+  provider: string;
   snapshot: ProviderExecutionSnapshot;
 }>;
 
@@ -111,6 +120,22 @@ type RoleCredentialAuthority =
       kind: "user";
       userId: string;
     }>;
+
+type SharedRoleInput = Readonly<{
+  connectionId: string;
+  credentialAuthority: RoleCredentialAuthority;
+  modelId: string;
+  requireEntitlement: boolean;
+}>;
+
+type AnswerRoleInput = SharedRoleInput & Readonly<{
+  modelClass: "answer";
+  requireAnswerSelectable: boolean;
+}>;
+
+type EmbeddingRoleInput = SharedRoleInput & Readonly<{
+  modelClass: "embedding";
+}>;
 
 async function activeUserAuthority(
   db: AdmissionPrisma,
@@ -233,14 +258,16 @@ async function hasSearchEntitlement(
 
 async function loadRole(
   db: AdmissionPrisma,
-  input: {
-    connectionId: string;
-    credentialAuthority: RoleCredentialAuthority;
-    modelId: string;
-    requireAnswerSelectable: boolean;
-    requireEntitlement: boolean;
-  }
-): Promise<ProviderAdmissionRole> {
+  input: AnswerRoleInput
+): Promise<ProviderAdmissionRole>;
+async function loadRole(
+  db: AdmissionPrisma,
+  input: EmbeddingRoleInput
+): Promise<EmbeddingProviderAdmissionRole>;
+async function loadRole(
+  db: AdmissionPrisma,
+  input: AnswerRoleInput | EmbeddingRoleInput
+): Promise<ProviderAdmissionRole | EmbeddingProviderAdmissionRole> {
   const model = await db.providerModel.findFirst({
     include: {
       connection: true
@@ -251,7 +278,7 @@ async function loadRole(
       connectionId: input.connectionId,
       enabled: true,
       id: input.modelId,
-      modelClass: "answer",
+      modelClass: input.modelClass,
       connection: {
         activeConfig: { not: Prisma.DbNull },
         activeVersion: { gt: 0 },
@@ -275,7 +302,11 @@ async function loadRole(
 
   const connectionConfig = normalizeProviderConnectionConfiguration(model.connection.activeConfig);
   if (model.connection.family === "fake") {
-    if (!isRecord(model.activeConfig) || model.activeConfig.adapterKind !== "fake") {
+    if (
+      input.modelClass !== "answer" ||
+      !isRecord(model.activeConfig) ||
+      model.activeConfig.adapterKind !== "fake"
+    ) {
       throw new ProviderAdmissionError("model_not_available");
     }
     const snapshot = withResolvedModelCapabilities(
@@ -308,7 +339,16 @@ async function loadRole(
   }
 
   const modelConfig = normalizeProviderModelConfiguration(model.activeConfig);
-  if (input.requireAnswerSelectable && !modelConfig.answerSelectable) {
+  if (
+    modelConfig.modelClass !== input.modelClass ||
+    (input.modelClass === "answer" &&
+      input.requireAnswerSelectable &&
+      !modelConfig.answerSelectable) ||
+    (input.modelClass === "embedding" &&
+      (modelConfig.adapterKind !== "openai_embeddings_compatible" ||
+        !modelConfig.embedding ||
+        modelConfig.embedding.providerFamily !== model.connection.family))
+  ) {
     throw new ProviderAdmissionError("model_not_available");
   }
 
@@ -381,35 +421,56 @@ async function loadRole(
   });
   if (!check) throw new ProviderAdmissionError("model_not_available");
 
-  const snapshot = withResolvedModelCapabilities(
-    normalizeProviderExecutionSnapshot({
-      connection: connectionConfig,
-      connectionDisplayName: model.connection.displayName,
-      connectionId: model.connectionId,
-      credentialId: credential.credentialId,
-      credentialVersionId: credential.credentialVersionId,
-      model: modelConfig,
-      modelDisplayName: model.displayName,
-      providerFamily: model.connection.family,
-      providerModelId: model.id,
-      version: 1
-    }),
-    model.contextWindow
-  );
+  const normalizedSnapshot = normalizeProviderExecutionSnapshot({
+    connection: connectionConfig,
+    connectionDisplayName: model.connection.displayName,
+    connectionId: model.connectionId,
+    credentialId: credential.credentialId,
+    credentialVersionId: credential.credentialVersionId,
+    model: modelConfig,
+    modelDisplayName: model.displayName,
+    providerFamily: model.connection.family,
+    providerModelId: model.id,
+    version: 1
+  });
+  const snapshot = input.modelClass === "answer"
+    ? withResolvedModelCapabilities(normalizedSnapshot, model.contextWindow)
+    : normalizedSnapshot;
   const resolvedModel = snapshot.model;
-  if (resolvedModel.adapterKind === "fake") {
+  const authority = {
+    connectionId: model.connectionId,
+    connectionVersion: model.connection.activeVersion,
+    credentialId: credential.credentialId,
+    credentialVersionId: credential.credentialVersionId,
+    modelVersion: model.activeVersion,
+    providerModelId: model.id
+  } satisfies SearchProbeBinding;
+  if (input.modelClass === "embedding") {
+    if (
+      resolvedModel.adapterKind === "fake" ||
+      resolvedModel.modelClass !== "embedding" ||
+      resolvedModel.adapterKind !== "openai_embeddings_compatible" ||
+      !resolvedModel.embedding
+    ) {
+      throw new ProviderAdmissionError("model_not_available");
+    }
+    return {
+      authority,
+      configuration: resolvedModel,
+      credentialSource: credential.source,
+      provider: model.provider,
+      snapshot
+    };
+  }
+  if (
+    resolvedModel.adapterKind === "fake" ||
+    resolvedModel.modelClass !== "answer"
+  ) {
     throw new ProviderAdmissionError("model_not_available");
   }
 
   return {
-    authority: {
-      connectionId: model.connectionId,
-      connectionVersion: model.connection.activeVersion,
-      credentialId: credential.credentialId,
-      credentialVersionId: credential.credentialVersionId,
-      modelVersion: model.activeVersion,
-      providerModelId: model.id
-    },
+    authority,
     credentialSource: credential.source,
     modelConfiguration: {
       adapterKind: resolvedModel.adapterKind as CatalogAdapterKind,
@@ -442,9 +503,38 @@ export async function loadTechnicalProviderRole(
       kind: "user",
       userId: input.userId
     },
+    modelClass: "answer",
     modelId: input.providerModelId,
     requireAnswerSelectable: false,
     requireEntitlement: false
+  });
+}
+
+/** Resolve an entitled embedding deployment through the exact same active
+ * user, grant, credential-precedence, and availability tuple as answer
+ * admission. Adapter construction and per-request secret use remain in the
+ * embedding runtime. */
+export async function loadEmbeddingProviderRole(
+  db: AdmissionPrisma,
+  input: { providerModelId: string; userId: string }
+): Promise<EmbeddingProviderAdmissionRole> {
+  const authority = await activeUserAuthority(db, input.userId);
+  const model = await db.providerModel.findUnique({
+    select: { connectionId: true },
+    where: { id: input.providerModelId }
+  });
+  if (!model) throw new ProviderAdmissionError("model_not_available");
+  return loadRole(db, {
+    connectionId: model.connectionId,
+    credentialAuthority: {
+      fullAccess: authority.fullAccess,
+      groupIds: authority.groupIds,
+      kind: "user",
+      userId: input.userId
+    },
+    modelClass: "embedding",
+    modelId: input.providerModelId,
+    requireEntitlement: true
   });
 }
 
@@ -470,6 +560,7 @@ export async function loadUnentitledAnswerProviderRole(
         kind: "user",
         userId: input.userId
       },
+      modelClass: "answer",
       modelId: input.providerModelId,
       requireAnswerSelectable: true,
       requireEntitlement: false
@@ -499,6 +590,7 @@ export async function loadInstallationAnswerProviderRole(
     return await loadRole(db, {
       connectionId: model.connectionId,
       credentialAuthority: { kind: "installation" },
+      modelClass: "answer",
       modelId: input.providerModelId,
       requireAnswerSelectable: true,
       requireEntitlement: false
@@ -813,6 +905,7 @@ async function loadClientRouteRole(
       kind: "user",
       userId: input.userId
     },
+    modelClass: "answer",
     modelId: providerModelId,
     requireAnswerSelectable: false,
     requireEntitlement: false
@@ -997,6 +1090,7 @@ export async function loadProviderAdmissionPlan(
       kind: "user",
       userId: input.userId
     },
+    modelClass: "answer",
     modelId: input.providerModelId,
     requireAnswerSelectable: true,
     requireEntitlement: true

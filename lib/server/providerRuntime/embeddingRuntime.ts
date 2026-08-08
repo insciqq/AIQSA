@@ -1,6 +1,4 @@
-import { Prisma, type PrismaClient } from "@prisma/client";
-import { resolveProviderCredential } from "../../domain/providerCredentialResolution";
-import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "../auth/fullAccessGroup";
+import type { PrismaClient } from "@prisma/client";
 import { getSecretEncryptionKey } from "../secrets/envelope";
 import { decryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import {
@@ -8,17 +6,17 @@ import {
   type EmbeddingAdapter
 } from "../providers/embeddings";
 import {
-  normalizeProviderConnectionConfiguration,
-  normalizeProviderModelConfiguration,
   providerAuthenticationMode,
+  type ProviderConnectionConfiguration,
   type ProviderModelConfiguration
 } from "../providers/providerConfiguration";
 import { createProviderSafeFetch } from "../providers/providerSafeFetch";
+import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import {
-  normalizeProviderExecutionSnapshot,
-  type ProviderExecutionSnapshot
-} from "../providers/runtimeFactory";
-import { ProviderAdmissionError } from "./admission";
+  loadEmbeddingProviderRole,
+  type AdmissionPrisma,
+  ProviderAdmissionError
+} from "./admission";
 
 export type EmbeddingRuntimeBinding = Readonly<{
   adapter: EmbeddingAdapter;
@@ -34,16 +32,9 @@ export type EmbeddingRuntimeBinding = Readonly<{
   providerModelId: string;
 }>;
 
-export type EmbeddingRuntimeStore = Pick<
+export type EmbeddingRuntimeStore = AdmissionPrisma & Pick<
   PrismaClient,
-  | "accessGrant"
-  | "providerCredentialVersion"
-  | "providerGroupCredentialAssignment"
-  | "providerModel"
-  | "providerModelCredentialCheck"
-  | "providerUserCredentialAssignment"
-  | "user"
-  | "userGroup"
+  "providerCredentialVersion"
 >;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -57,7 +48,7 @@ function noAuthEvidence(value: unknown): boolean {
 export function createPrismaEmbeddingRuntime(
   prisma: EmbeddingRuntimeStore,
   options: Readonly<{
-    createFetch?: (configuration: ReturnType<typeof normalizeProviderConnectionConfiguration>) => typeof fetch;
+    createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
     encryptionKey?: () => Buffer;
   }> = {}
 ) {
@@ -68,126 +59,10 @@ export function createPrismaEmbeddingRuntime(
       providerModelId: string;
       userId: string;
     }>): Promise<EmbeddingRuntimeBinding> {
-      const [user, memberships, model] = await Promise.all([
-        prisma.user.findFirst({
-          select: { id: true },
-          where: { id: input.userId, status: "active" }
-        }),
-        prisma.userGroup.findMany({
-          select: { group: { select: { systemRole: true } }, groupId: true },
-          where: { group: { archivedAt: null }, userId: input.userId }
-        }),
-        prisma.providerModel.findFirst({
-          include: {
-            connection: {
-              include: {
-                credentials: {
-                  include: {
-                    activeVersion: {
-                      select: { id: true, revokedAt: true }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          where: {
-            activeConfig: { not: Prisma.DbNull },
-            activeVersion: { gt: 0 },
-            connection: {
-              activeConfig: { not: Prisma.DbNull },
-              activeVersion: { gt: 0 },
-              enabled: true
-            },
-            enabled: true,
-            id: input.providerModelId,
-            modelClass: "embedding"
-          }
-        })
-      ]);
-      if (!user) throw new ProviderAdmissionError("user_not_available");
-      if (!model) throw new ProviderAdmissionError("model_not_available");
-
-      const groupIds = memberships.map(({ groupId }) => groupId);
-      const fullAccess = memberships.some(
-        ({ group }) => group.systemRole === FULL_ACCESS_GROUP_SYSTEM_ROLE
-      );
-      if (!fullAccess) {
-        const grantCount = await prisma.accessGrant.count({
-          where: {
-            AND: [{
-              OR: [
-                { providerModelId: model.id },
-                { providerConnectionId: model.connectionId }
-              ]
-            }],
-            enabled: true,
-            OR: [
-              { userId: input.userId },
-              ...(groupIds.length ? [{ groupId: { in: groupIds } }] : [])
-            ]
-          }
-        });
-        if (grantCount === 0) throw new ProviderAdmissionError("model_not_available");
-      }
-
-      const connection = normalizeProviderConnectionConfiguration(model.connection.activeConfig);
-      const configuration = normalizeProviderModelConfiguration(model.activeConfig);
-      if (
-        configuration.modelClass !== "embedding" ||
-        !configuration.embedding ||
-        configuration.embedding.providerFamily !== model.connection.family
-      ) {
-        throw new ProviderAdmissionError("model_not_available");
-      }
-
-      const [assignments, directAssignment] = await Promise.all([
-        prisma.providerGroupCredentialAssignment.findMany({
-          select: { credentialId: true, groupId: true },
-          where: { connectionId: model.connectionId, groupId: { in: groupIds } }
-        }),
-        prisma.providerUserCredentialAssignment.findUnique({
-          select: { credentialId: true },
-          where: {
-            connectionId_userId: {
-              connectionId: model.connectionId,
-              userId: input.userId
-            }
-          }
-        })
-      ]);
-      const credential = resolveProviderCredential({
-        assignments,
-        credentials: model.connection.credentials.map((candidate) => ({
-          activeVersion: candidate.activeVersion
-            ? {
-                id: candidate.activeVersion.id,
-                revoked: candidate.activeVersion.revokedAt !== null
-              }
-            : null,
-          enabled: candidate.enabled,
-          id: candidate.id
-        })),
-        defaultCredentialId: model.connection.defaultCredentialId,
-        directAssignmentCredentialId: directAssignment?.credentialId ?? null,
-        memberships: groupIds.map((groupId) => ({ archived: false, groupId })),
-        policy: model.connection.unassignedPolicy
-      });
-      if (!credential.ok) throw new ProviderAdmissionError(credential.code);
-
-      const check = await prisma.providerModelCredentialCheck.findFirst({
-        select: { id: true },
-        where: {
-          connectionId: model.connectionId,
-          connectionVersion: model.connection.activeVersion,
-          credentialId: credential.credentialId,
-          credentialVersionId: credential.credentialVersionId,
-          modelVersion: model.activeVersion,
-          providerModelId: model.id,
-          status: "available"
-        }
-      });
-      if (!check) throw new ProviderAdmissionError("model_not_available");
+      const admitted = await loadEmbeddingProviderRole(prisma, input);
+      const credential = admitted.authority;
+      const connection = admitted.snapshot.connection;
+      const configuration = admitted.configuration;
 
       const assertCredentialVersion = async (expectNoAuth: boolean): Promise<string | null> => {
         const version = await prisma.providerCredentialVersion.findFirst({
@@ -244,31 +119,18 @@ export function createPrismaEmbeddingRuntime(
               return secret;
             })
       });
-      const executionSnapshot = normalizeProviderExecutionSnapshot({
-        connection,
-        connectionDisplayName: model.connection.displayName,
-        connectionId: model.connectionId,
-        credentialId: credential.credentialId,
-        credentialVersionId: credential.credentialVersionId,
-        model: configuration,
-        modelDisplayName: model.displayName,
-        providerFamily: model.connection.family,
-        providerModelId: model.id,
-        version: 1
-      });
-
       return {
         adapter,
         configuration,
-        connectionId: model.connectionId,
-        connectionVersion: model.connection.activeVersion,
+        connectionId: credential.connectionId,
+        connectionVersion: credential.connectionVersion,
         credentialId: credential.credentialId,
-        credentialSource: credential.source,
+        credentialSource: admitted.credentialSource,
         credentialVersionId: credential.credentialVersionId,
-        executionSnapshot,
-        modelVersion: model.activeVersion,
-        provider: model.provider,
-        providerModelId: model.id
+        executionSnapshot: admitted.snapshot,
+        modelVersion: credential.modelVersion,
+        provider: admitted.provider,
+        providerModelId: credential.providerModelId
       };
     }
   };
