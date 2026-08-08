@@ -2423,7 +2423,7 @@ describe("run execution", () => {
     }
   });
 
-  it("fails a legacy attachment-bearing Perplexity tool call closed without a SearchRun", async () => {
+  it("executes a legacy attachment-bearing Perplexity tool call without disclosing attachment data", async () => {
     const providerRequests: ProviderRunRequest[] = [];
     const repository = createRepository();
     const adapter = createAdapter(async function* (request) {
@@ -2445,7 +2445,18 @@ describe("run execution", () => {
       yield { data: { delta: "Final" }, type: "token" };
       return providerResult({ finalText: "Final", usage: usage(4, 2, 0) });
     });
-    const search = vi.fn<ProviderSearchAdapter["search"]>();
+    const searchRequests: ProviderSearchRequest[] = [];
+    const search = vi.fn<ProviderSearchAdapter["search"]>(async (request) => {
+      searchRequests.push(request);
+      return {
+        artifacts: [],
+        finalProviderResponsePreview: {},
+        findings: "Search findings for the generated query",
+        requestPreview: { queryCharacters: request.query.length },
+        sources: [{ rank: 1, title: "Search source", url: "https://example.com/search" }],
+        usage: usage(3, 4, 0)
+      };
+    });
     const searchAdapter: ProviderSearchAdapter = {
       buildRequestPreview: () => ({}),
       search
@@ -2532,8 +2543,18 @@ describe("run execution", () => {
     );
 
     expect(providerRequests).toHaveLength(2);
-    expect(search).not.toHaveBeenCalled();
-    expect(repository.searchRuns).toEqual([]);
+    expect(search).toHaveBeenCalledOnce();
+    expect(searchRequests).toEqual([
+      expect.objectContaining({ query: "current sources" })
+    ]);
+    expect(JSON.stringify(searchRequests)).not.toContain("ATTACHMENT_FILENAME_CANARY");
+    expect(repository.searchRuns).toEqual([
+      expect.objectContaining({
+        modelRunId: "run-1",
+        status: "complete",
+        strategyId: "perplexity-tool-search"
+      })
+    ]);
     expect(truncations).toHaveLength(1);
     const toolResult = events.find((event) =>
       event.type === "artifact" && event.data.artifactType === "tool_result"
@@ -2544,7 +2565,7 @@ describe("run execution", () => {
           resultPreview: expect.objectContaining({
             content: expect.arrayContaining([
               expect.objectContaining({
-                text: "Search failed: client_search_with_attachments_not_supported"
+                text: expect.stringContaining("Search findings for the generated query")
               })
             ])
           })

@@ -1025,20 +1025,6 @@ export async function prepareRun(
           input.userId,
           input.source.source.userMessage.id
         );
-  const clientSearchSelected = (
-    !admissionPlan && requestedSearchStrategy === perplexityToolSearchStrategyId
-  ) || Boolean(
-    admissionPlan?.searches?.some((candidate) =>
-      candidate.configuration.adapterKind === "provider_model_client"
-    )
-  );
-  if (attachmentIds.length > 0 && clientSearchSelected) {
-    return failure(
-      "client_search_with_attachments_not_supported",
-      400,
-      "Client Search cannot be combined with attachments without separate disclosure consent."
-    );
-  }
   const parameterControls = parameterControlsForModel({
     adapterKind: executionAdapterKind,
     defaultParams,
@@ -1206,17 +1192,6 @@ export async function prepareRun(
       throw error;
     }
     requestedSearchPlan = admissionPlan.requestedSearchPlan ?? requestedSearchPlan;
-    if (
-      attachmentIds.length > 0 &&
-      admissionPlan.searches?.some((candidate) =>
-        candidate.configuration.adapterKind === "provider_model_client")
-    ) {
-      return failure(
-        "client_search_with_attachments_not_supported",
-        400,
-        "Client Search cannot be combined with attachments without separate disclosure consent."
-      );
-    }
   }
 
   let attachments: ProviderAttachment[];

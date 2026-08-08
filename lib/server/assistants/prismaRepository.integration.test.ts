@@ -679,7 +679,6 @@ integration("assistant repository integration", () => {
     const compatibleModel = catalogModel();
     compatibleModel.searchOptionCompatibility = {
       "hidden-search": {
-        attachments: false,
         clientToolCompatible: true,
         executionModes: ["all_selected", "model_choice"]
       }

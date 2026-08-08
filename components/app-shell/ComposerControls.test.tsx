@@ -332,7 +332,7 @@ describe("ComposerControls", () => {
     expect(search).toHaveAttribute("title", "0 active · 1 unavailable");
   });
 
-  it("marks client Search unavailable with attachments while retaining the selection", () => {
+  it("keeps client Search active without an attachment-specific compatibility path", () => {
     const perplexity = {
       adapterKind: "provider_model_client" as const,
       displayName: "Perplexity tool",
@@ -342,25 +342,22 @@ describe("ComposerControls", () => {
     };
     renderControls({
       compatibleSearchOptionIds: [perplexity.strategyId],
-      hasAttachments: true,
       searchOptions: [perplexity],
       selectedSearchOptionIds: [perplexity.strategyId],
       selectedSearchStrategy: perplexity.strategyId
     });
 
     const trigger = screen.getByRole("button", { name: "Search strategy" });
-    expect(trigger).toHaveAttribute("title", "0 active · 1 unavailable");
+    expect(trigger).toHaveAttribute("title", "Perplexity tool");
     fireEvent.click(trigger);
-    expect(screen.getByText(
-      "This Search source is unavailable while this message has attachments · preference retained"
-    )).toBeVisible();
+    expect(within(screen.getByRole("dialog", { name: "Choose Search engines" }))
+      .getByRole("button", { name: /Perplexity tool/ })).toBeEnabled();
+    expect(screen.queryByText(/attachments/u)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close Search picker" }));
-    expect(openRunSetup()).toHaveTextContent(
-      "Unavailable with attachments for this model"
-    );
+    expect(openRunSetup()).toHaveTextContent("Available for this model");
   });
 
-  it("keeps provider-hosted Search compatible with attachments", () => {
+  it("keeps provider-hosted Search compatible", () => {
     const hosted = {
       adapterKind: "answer_provider_hosted" as const,
       displayName: "OpenAI Web Search",
@@ -370,7 +367,6 @@ describe("ComposerControls", () => {
     };
     renderControls({
       compatibleSearchOptionIds: [hosted.strategyId],
-      hasAttachments: true,
       searchOptions: [hosted],
       selectedSearchOptionIds: [hosted.strategyId],
       selectedSearchStrategy: hosted.strategyId
@@ -382,7 +378,7 @@ describe("ComposerControls", () => {
     );
   });
 
-  it("projects mixed attachment capabilities without dropping the retained client choice", () => {
+  it("projects mixed route capabilities without dropping either retained choice", () => {
     const clientId = "client-search";
     const hostedId = "hosted-search";
     const searchOptions = [
@@ -401,14 +397,12 @@ describe("ComposerControls", () => {
       ...balancedModel,
       searchOptionCompatibility: {
         [clientId]: {
-          attachments: false,
           clientToolCompatible: true,
           executionModes: ["all_selected", "model_choice"] as Array<
             "all_selected" | "model_choice"
           >
         },
         [hostedId]: {
-          attachments: true,
           clientToolCompatible: false,
           executionModes: ["model_choice"] as Array<"model_choice">
         }
@@ -417,18 +411,17 @@ describe("ComposerControls", () => {
     };
     renderControls({
       currentModel,
-      hasAttachments: true,
       searchOptions,
       selectedSearchOptionIds: [hostedId, clientId],
       selectedSearchStrategy: hostedId
     });
 
     const trigger = screen.getByRole("button", { name: "Search strategy" });
-    expect(trigger).toHaveAttribute("title", "1 active · 1 unavailable");
+    expect(trigger).toHaveAttribute("title", "2 engines");
     fireEvent.click(trigger);
-    expect(screen.getByText(
-      "This Search source is unavailable while this message has attachments · preference retained"
-    )).toBeVisible();
+    expect(screen.getByRole("button", { name: /Hosted Search/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Client Search/ })).toBeEnabled();
+    expect(screen.queryByText(/attachments/u)).not.toBeInTheDocument();
   });
 
   it("keeps the full model identity available while containing a long direct-control label", () => {

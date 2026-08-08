@@ -82,12 +82,10 @@ const mixedSearchModel: CatalogModel = {
   ...model,
   searchOptionCompatibility: {
     [clientSearchOptionId]: {
-      attachments: false,
       clientToolCompatible: true,
       executionModes: ["all_selected", "model_choice"]
     },
     [hostedSearchOptionId]: {
-      attachments: true,
       clientToolCompatible: false,
       executionModes: ["model_choice"]
     }
@@ -678,9 +676,9 @@ describe("message run actions", () => {
   it.each([
     {
       expectedMode: "all_selected" as const,
-      expectedOptionIds: [] as string[],
-      expectedSearchStrategy: "search-disabled",
-      label: "filters a client-only plan",
+      expectedOptionIds: [clientSearchOptionId],
+      expectedSearchStrategy: clientSearchOptionId,
+      label: "keeps a client-only plan",
       selectedOptionIds: [clientSearchOptionId]
     },
     {
@@ -691,10 +689,10 @@ describe("message run actions", () => {
       selectedOptionIds: [hostedSearchOptionId]
     },
     {
-      expectedMode: "all_selected" as const,
-      expectedOptionIds: [hostedSearchOptionId],
+      expectedMode: "model_choice" as const,
+      expectedOptionIds: [hostedSearchOptionId, clientSearchOptionId],
       expectedSearchStrategy: hostedSearchOptionId,
-      label: "filters and reconciles a mixed plan",
+      label: "keeps and reconciles a mixed plan",
       selectedOptionIds: [hostedSearchOptionId, clientSearchOptionId]
     }
   ])("$label for a send with attachments", async ({
@@ -734,7 +732,7 @@ describe("message run actions", () => {
     });
   });
 
-  it("keeps attachment Search filtering bound to the send token across deferred leaf persistence", async () => {
+  it("keeps client Search active while sending captured attachments across deferred leaf persistence", async () => {
     let markPersistStarted!: () => void;
     let resolvePersist!: () => void;
     const persistStarted = new Promise<void>((resolve) => {
@@ -782,13 +780,13 @@ describe("message run actions", () => {
       },
       searchPlan: {
         mode: "all_selected",
-        optionIds: []
+        optionIds: [clientSearchOptionId]
       },
       searchPreferencePlan: {
         mode: "all_selected",
         optionIds: [clientSearchOptionId]
       },
-      searchStrategy: "search-disabled"
+      searchStrategy: clientSearchOptionId
     });
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       attachments: [newerSearchAttachment],
@@ -2307,7 +2305,7 @@ describe("message run actions", () => {
   });
 
   it.each(["assistant-original", "user-original"])(
-    "filters client Search when regenerating %s from an attachment-bearing source user",
+    "keeps client Search when regenerating %s from an attachment-bearing source user",
     async (messageId) => {
       const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
       vi.stubGlobal("fetch", fetchMock);
@@ -2337,19 +2335,19 @@ describe("message run actions", () => {
       const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
       expect(JSON.parse(String(requestInit.body))).toMatchObject({
         searchPlan: {
-          mode: "all_selected",
-          optionIds: []
+          mode: "model_choice",
+          optionIds: [clientSearchOptionId]
         },
         searchPreferencePlan: {
           mode: "model_choice",
           optionIds: [clientSearchOptionId]
         },
-        searchStrategy: "search-disabled"
+        searchStrategy: clientSearchOptionId
       });
     }
   );
 
-  it("uses only the regenerate source user content for attachment compatibility", async () => {
+  it("keeps client Search regardless of staged or historical assistant attachments", async () => {
     const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const actions = useMessageRunActionsForTest({

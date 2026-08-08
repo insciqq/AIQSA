@@ -383,7 +383,7 @@ describe("Search plan tool router", () => {
     expect(serialized).not.toContain("private system prompt");
   });
 
-  it("rejects attachment-bearing client Search before every provider runtime", async () => {
+  it("executes attachment-bearing client Search without disclosing attachment material", async () => {
     const onRequest = vi.fn();
     const selected = option("selected");
     const router = createSearchPlanToolRouter({
@@ -396,13 +396,19 @@ describe("Search plan tool router", () => {
       answerRequestWithAttachment()
     );
 
-    expect(result).toMatchObject({
-      content: [{ text: "Search failed: client_search_with_attachments_not_supported" }],
-      status: "error"
-    });
-    expect(onRequest).not.toHaveBeenCalled();
-    expect(searchExecutionsFromToolResult(result)).toEqual([]);
-    const serialized = JSON.stringify(result);
+    expect(result).toMatchObject({ status: "complete" });
+    expect(onRequest).toHaveBeenCalledOnce();
+    expect(onRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: "bounded query"
+    }));
+    expect(searchExecutionsFromToolResult(result)).toEqual([
+      expect.objectContaining({
+        findings: "Finding from model-selected",
+        optionId: "selected",
+        status: "complete"
+      })
+    ]);
+    const serialized = JSON.stringify({ request: onRequest.mock.calls, result });
     for (const canary of [
       "ATTACHMENT_ID_CANARY",
       "ATTACHMENT_BYTES_CANARY",

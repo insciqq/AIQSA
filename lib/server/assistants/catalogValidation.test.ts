@@ -86,7 +86,6 @@ describe("Assistant catalog validation", () => {
   it("rejects Search plus MCP when the selected option has no client-tool-compatible route", () => {
     const catalogModel = model({
       "hosted-only": {
-        attachments: true,
         clientToolCompatible: false,
         executionModes: ["model_choice"]
       }
@@ -116,12 +115,10 @@ describe("Assistant catalog validation", () => {
   it("rejects a multi-source model-choice plan without a complete route assignment", () => {
     const catalogModel = model({
       "hosted-a": {
-        attachments: true,
         clientToolCompatible: false,
         executionModes: ["model_choice"]
       },
       "hosted-b": {
-        attachments: true,
         clientToolCompatible: false,
         executionModes: ["model_choice"]
       }
@@ -151,12 +148,10 @@ describe("Assistant catalog validation", () => {
 
     const completeModel = model({
       "hosted-a": {
-        attachments: true,
         clientToolCompatible: false,
         executionModes: ["model_choice"]
       },
       "client-b": {
-        attachments: false,
         clientToolCompatible: true,
         executionModes: ["model_choice"]
       }

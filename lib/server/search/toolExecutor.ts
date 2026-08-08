@@ -589,20 +589,14 @@ export function createSearchPlanToolRouter(input: Readonly<{
     accepts(name) {
       return routeForName(name) !== undefined;
     },
-    async execute(call, request, options) {
+    async execute(call, _request, options) {
       const route = routeForName(call.name);
       if (!route) throw new Error("search_tool_not_selected");
       const queryLimit = Math.min(
         ...route.options.map((option) => configuration(option).queryMaxCharacters)
       );
       const validation = validateSearchToolArguments(call.arguments, queryLimit);
-      const attachmentDisclosureBlocked =
-        request.attachmentIds.length > 0 || request.attachments.length > 0;
-      const code = attachmentDisclosureBlocked
-        ? "client_search_with_attachments_not_supported"
-        : validation.ok
-          ? null
-          : validation.code;
+      const code = validation.ok ? null : validation.code;
       if (code) {
         return {
           callId: call.id,

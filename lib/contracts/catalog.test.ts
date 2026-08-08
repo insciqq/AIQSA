@@ -100,7 +100,6 @@ describe("catalog wire contract", () => {
     const response = validResponse();
     response.catalog.models[0]!.searchOptionCompatibility = {
       "company-search": {
-        attachments: false,
         clientToolCompatible: true,
         executionModes: ["all_selected", "model_choice"]
       }
@@ -114,7 +113,6 @@ describe("catalog wire contract", () => {
       catalog: { models: Array<{ searchOptionCompatibility: Record<string, object> }> };
     };
     missingCompatibilityBit.catalog.models[0]!.searchOptionCompatibility["company-search"] = {
-      attachments: false,
       executionModes: ["all_selected", "model_choice"]
     };
     expect(decodeCatalogResponse(missingCompatibilityBit)).toBeNull();

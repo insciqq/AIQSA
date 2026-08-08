@@ -739,7 +739,6 @@ export function MainThreadPane({
               currentModel={currentModel}
               currentParameterControls={currentParameterControls}
               disabled={composerControlsUnavailable}
-              hasAttachments={attachments.length > 0}
               maxOutputTokens={maxOutputTokens}
               reasoningEffort={reasoningEffort}
               reasoningMode={reasoningMode}

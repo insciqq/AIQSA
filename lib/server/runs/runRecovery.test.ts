@@ -2117,8 +2117,19 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
-  it("rechecks the Anthropic client Search attachment fence during recovery", async () => {
-    const search = vi.fn<ProviderSearchAdapter["search"]>();
+  it("recovers attachment-bearing Anthropic client Search without disclosing the attachment", async () => {
+    const search = vi.fn<ProviderSearchAdapter["search"]>(async (request) => ({
+      artifacts: [],
+      finalProviderResponsePreview: {},
+      findings: "Recovered attachment-safe findings",
+      requestPreview: { queryCharacters: request.query.length },
+      sources: [{
+        rank: 1,
+        title: "Recovered source",
+        url: "https://example.test/recovered-attachment-search"
+      }],
+      usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 }
+    }));
     const answerRequests: ProviderRunRequest[] = [];
     const adapter: ProviderAdapter = {
       buildRequestPreview: () => ({}),
@@ -2126,7 +2137,7 @@ describe("run recovery", () => {
         answerRequests.push(request);
         return {
           finalProviderResponsePreview: {},
-          finalText: "Recovered without disclosing the attachment to Search",
+          finalText: "Recovered with Search and a private attachment",
           usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
         };
       }
@@ -2141,7 +2152,7 @@ describe("run recovery", () => {
     harness.repository.createSearchRun = createSearchRun;
     const storedCall: PersistedToolLoopCall = {
       ...persistedRecoveryCall(),
-      arguments: { query: "do not send with attachment" },
+      arguments: { query: "public query with attachment" },
       mcpBinding: null,
       toolName: "search_engine_1"
     };
@@ -2149,7 +2160,7 @@ describe("run recovery", () => {
       calls: [storedCall],
       phase: "tools_pending",
       providerToolMessages: [{
-        arguments: "{\"query\":\"do not send with attachment\"}",
+        arguments: "{\"query\":\"public query with attachment\"}",
         call_id: "provider-call-1",
         name: "search_engine_1",
         type: "function_call"
@@ -2183,13 +2194,27 @@ describe("run recovery", () => {
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
-    expect(search).not.toHaveBeenCalled();
-    expect(createSearchRun).not.toHaveBeenCalled();
+    expect(search).toHaveBeenCalledOnce();
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ query: "public query with attachment" }),
+      expect.anything()
+    );
+    expect(JSON.stringify(search.mock.calls)).not.toContain("Private attachment evidence");
+    expect(createSearchRun).toHaveBeenCalledWith(expect.objectContaining({
+      artifacts: expect.objectContaining({
+        findings: "Recovered attachment-safe findings"
+      }),
+      query: "public query with attachment",
+      status: "complete",
+      strategyId: "anthropic-web-search"
+    }));
     expect(answerRequests).toHaveLength(1);
     expect(JSON.stringify(answerRequests[0]?.providerToolMessages))
-      .toContain("client_search_with_attachments_not_supported");
+      .toContain("Recovered attachment-safe findings");
+    expect(JSON.stringify(answerRequests[0]?.providerToolMessages))
+      .not.toContain("Private attachment evidence");
     expect(harness.state.completed).toMatchObject({
-      finalText: "Recovered without disclosing the attachment to Search"
+      finalText: "Recovered with Search and a private attachment"
     });
     expect(harness.state.recoveredErrors).toEqual([]);
   });

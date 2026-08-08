@@ -65,9 +65,6 @@ function friendlySearchFailureReason(
   if (code === "search_runtime_not_available") {
     return "This Search source was unavailable for this attempt.";
   }
-  if (code === "client_search_with_attachments_not_supported") {
-    return "This Search source could not run with attachments.";
-  }
   if (code === "search_query_too_long") {
     return "The generated Search query exceeded this source's limit.";
   }

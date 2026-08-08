@@ -78,7 +78,6 @@ export function ComposerControls({
   currentModel,
   currentParameterControls,
   disabled = false,
-  hasAttachments = false,
   maxOutputTokens,
   onMakeCurrentModelDefault,
   onBackgroundModeChange,
@@ -127,7 +126,6 @@ export function ComposerControls({
   currentModel?: CatalogModel;
   currentParameterControls: ModelParameterControls;
   disabled?: boolean;
-  hasAttachments?: boolean;
   maxOutputTokens: string;
   onMakeCurrentModelDefault?(): void;
   onBackgroundModeChange(value: boolean): void;
@@ -170,7 +168,6 @@ export function ComposerControls({
     currentModel?.searchStrategyIds.filter((strategyId) => strategyId !== "search-disabled") ??
     searchOptions.filter((strategy) => strategy.kind !== "none").map((strategy) => strategy.strategyId);
   const searchPlanProjection = projectSearchPlanCompatibility({
-    hasAttachments,
     mode: searchPlanMode,
     model: currentModel,
     modelCompatibleOptionIds: modelCompatibleSearchOptionIds,
@@ -178,15 +175,7 @@ export function ComposerControls({
     selectedOptionIds: selectedSearchOptionIds
   });
   const searchExecutionModesByOptionId = searchPlanProjection.executionModesByOptionId;
-  const attachmentBlockedSearchOptionIds = searchPlanProjection.attachmentBlockedOptionIds;
-  const attachmentBlockedSearchOptionIdSet = new Set(attachmentBlockedSearchOptionIds);
   const resolvedCompatibleSearchOptionIds = searchPlanProjection.compatibleOptionIds;
-  const attachmentUnavailableReasons = Object.fromEntries(
-    attachmentBlockedSearchOptionIds.map((optionId) => [
-      optionId,
-      "This Search source is unavailable while this message has attachments"
-    ])
-  );
   const runSetupTriggerRef = useRef<HTMLButtonElement>(null);
   const [inlineModelPickerOpen, setInlineModelPickerOpen] = useState(false);
   const [setupModelPickerOpen, setSetupModelPickerOpen] = useState(false);
@@ -370,7 +359,6 @@ export function ComposerControls({
           options={searchOptions}
           selectedOptionIds={selectedSearchOptionIds}
           preferenceSource={searchPreferenceSource}
-          unavailableReasons={attachmentUnavailableReasons}
         />
 
         <button
@@ -506,7 +494,6 @@ export function ComposerControls({
                     selectedOptionIds={selectedSearchOptionIds}
                     preferenceSource={searchPreferenceSource}
                     setup
-                    unavailableReasons={attachmentUnavailableReasons}
                   />
                 </div>
                 <div
@@ -533,9 +520,7 @@ export function ComposerControls({
                           <span className="min-w-0 flex-1">
                             <span className="block break-words font-medium">{strategy.displayName}</span>
                             <span className="mt-0.5 block text-metadata text-ink-muted">
-                              {attachmentBlockedSearchOptionIdSet.has(strategy.strategyId)
-                                ? "Unavailable with attachments for this model"
-                                : strategy.description ?? "Available for this model"}
+                              {strategy.description ?? "Available for this model"}
                             </span>
                           </span>
                         </li>

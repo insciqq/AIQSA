@@ -73,7 +73,6 @@ export type CatalogWireModel = {
   provider: string;
   providerFamily: string;
   searchOptionCompatibility?: Record<string, {
-    attachments: boolean;
     clientToolCompatible: boolean;
     executionModes: SearchPlanMode[];
   }>;
@@ -270,7 +269,6 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
       !isRecord(searchOptionCompatibility) ||
       Object.values(searchOptionCompatibility).some((candidate) =>
         !isRecord(candidate) ||
-        typeof candidate.attachments !== "boolean" ||
         typeof candidate.clientToolCompatible !== "boolean" ||
         !Array.isArray(candidate.executionModes) ||
         candidate.executionModes.some((mode) => mode !== "all_selected" && mode !== "model_choice")
@@ -305,7 +303,6 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
             Object.entries(searchOptionCompatibility).map(([optionId, candidate]) => [
               optionId,
               {
-                attachments: (candidate as Record<string, unknown>).attachments as boolean,
                 clientToolCompatible: (candidate as Record<string, unknown>)
                   .clientToolCompatible as boolean,
                 executionModes: (candidate as Record<string, unknown>).executionModes as SearchPlanMode[]

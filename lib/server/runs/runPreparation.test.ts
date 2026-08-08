@@ -1411,13 +1411,30 @@ describe("run preparation", () => {
     const admissionLoad = vi.fn(async (input: {
       requiresClientToolCoexistence?: boolean;
     }) => input.requiresClientToolCoexistence ? client : hosted);
+    const attachment = runAttachment({
+      extractedText: "Private MCP coexistence evidence",
+      id: "document-mcp-search",
+      kind: "document",
+      mimeType: "text/plain",
+      storageKey: "private/document-mcp-search"
+    });
+    const harness = createHarness({
+      attachments: [attachment],
+      mcpPlan: readyMcpPlan()
+    });
     const result = await prepareRun(
       {
-        ...createHarness({ mcpPlan: readyMcpPlan() }).deps,
+        ...harness.deps,
         allowFakeProvider: false,
         providerAdmission: { load: admissionLoad }
       },
       sendInput(successBody({
+        content: {
+          blocks: [
+            { text: "Question with private evidence", type: "text" },
+            { attachmentId: attachment.id, type: "attachment" }
+          ]
+        },
         modelId: base.selection.providerModelId,
         params: {},
         provider: base.selection.providerConnectionId,
@@ -1452,6 +1469,10 @@ describe("run preparation", () => {
       "search_engine_1",
       "mcp_team_lookup_1"
     ]);
+    expect(harness.attachmentLoads).toEqual([{
+      attachmentIds: [attachment.id],
+      userId: "user-1"
+    }]);
   });
 
   it("routes a provider-admitted multi-engine plan without requiring the legacy Perplexity service", async () => {
@@ -1614,7 +1635,7 @@ describe("run preparation", () => {
     expect(prepared.defaults?.searchPlan).toEqual({ mode: "model_choice", optionIds: [optionId] });
   });
 
-  it("rejects attachment-bearing client Search before attachment loading", async () => {
+  it("admits attachment-bearing client Search and loads the attachment for the answer request", async () => {
     const base = compatibleAdmissionPlan("openai_responses_compatible");
     const optionId = "perplexity-tool-search";
     const plan: ProviderAdmissionPlan = {
@@ -1650,7 +1671,14 @@ describe("run preparation", () => {
         role: base.answer
       }]
     };
-    const harness = createHarness();
+    const attachment = runAttachment({
+      extractedText: "Private attachment evidence",
+      id: "document-1",
+      kind: "document",
+      mimeType: "text/plain",
+      storageKey: "private/document-1"
+    });
+    const harness = createHarness({ attachments: [attachment] });
     const result = await prepareRun(
       {
         ...harness.deps,
@@ -1661,7 +1689,7 @@ describe("run preparation", () => {
         content: {
           blocks: [
             { text: "Question with private evidence", type: "text" },
-            { attachmentId: "ATTACHMENT_ID_CANARY", type: "attachment" }
+            { attachmentId: attachment.id, type: "attachment" }
           ]
         },
         modelId: plan.selection.providerModelId,
@@ -1670,13 +1698,26 @@ describe("run preparation", () => {
       }))
     );
 
-    expect(result).toEqual({
-      code: "client_search_with_attachments_not_supported",
-      message: "Client Search cannot be combined with attachments without separate disclosure consent.",
-      ok: false,
-      status: 400
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(harness.attachmentLoads).toEqual([{
+      attachmentIds: [attachment.id],
+      userId: "user-1"
+    }]);
+    expect(prepared.providerRequest.attachments).toEqual([
+      expect.objectContaining({
+        extractedText: "Private attachment evidence",
+        id: attachment.id
+      })
+    ]);
+    expect(prepared.normalizedRequest.searchPlan).toMatchObject({
+      mode: "all_selected",
+      options: [expect.objectContaining({
+        adapterKind: "provider_model_client",
+        optionId
+      })]
     });
-    expect(harness.attachmentLoads).toEqual([]);
   });
 
   it("keeps provider-hosted native Search available with attachments", async () => {

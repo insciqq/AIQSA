@@ -45,13 +45,7 @@ export function createPerplexitySearchToolExecutor(input: {
     capability: "web_search",
     async execute(call, context, options) {
       const validation = validateSearchToolArguments(call.arguments);
-      const attachmentDisclosureBlocked =
-        context.request.attachmentIds.length > 0 || context.request.attachments.length > 0;
-      const code = attachmentDisclosureBlocked
-        ? "client_search_with_attachments_not_supported"
-        : validation.ok
-          ? null
-          : validation.code;
+      const code = validation.ok ? null : validation.code;
       if (code) {
         return {
           callId: call.id,

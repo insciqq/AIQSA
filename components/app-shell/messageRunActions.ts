@@ -20,7 +20,6 @@ import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { mergeThreadMessages } from "@/components/app-shell/runState";
 import { projectSearchPlanCompatibility } from "@/components/app-shell/searchPlanCompatibility";
 import { effectiveActiveLeafId } from "@/components/app-shell/threadPath";
-import { attachmentBlocksFromThreadContent } from "@/components/app-shell/threadContent";
 import { selectThreadSnapshot, useThreadStore } from "@/components/app-shell/threadStore";
 import type {
   Catalog,
@@ -188,10 +187,7 @@ export function useMessageRunActions({
     }
   }
 
-  function runControlPayload(
-    snapshot: MessageRunControlSnapshot,
-    hasAttachments: boolean
-  ) {
+  function runControlPayload(snapshot: MessageRunControlSnapshot) {
     if (snapshot.assistantId) {
       // The server resolves the currently authorized revision at admission;
       // the request carries only the Assistant identity plus user content and
@@ -200,7 +196,6 @@ export function useMessageRunActions({
     }
 
     const effectiveSearchPlan = projectSearchPlanCompatibility({
-      hasAttachments,
       mode: snapshot.searchPreferencePlan.mode,
       model: snapshot.model,
       searchOptions: snapshot.searchOptions,
@@ -310,7 +305,7 @@ export function useMessageRunActions({
       request(signal) {
         return shellFetch(`/api/messages/${editedUserMessageId}/regenerate`, {
           body: JSON.stringify({
-            ...runControlPayload(runControlSnapshot, false)
+            ...runControlPayload(runControlSnapshot)
           }),
           headers: {
             "content-type": "application/json"
@@ -521,10 +516,7 @@ export function useMessageRunActions({
           : { attachmentId: attachment.id, fileName: attachment.fileName, type: "file" as const }
       )
     ];
-    const sendControlPayload = runControlPayload(
-      runControlSnapshot,
-      sendToken.attachments.length > 0
-    );
+    const sendControlPayload = runControlPayload(runControlSnapshot);
 
     let sendOutcome: "cancelled" | "failed" | "succeeded" = "failed";
     let sendFailureMessage: string | null = null;
@@ -747,7 +739,7 @@ export function useMessageRunActions({
     }
 
     const contentBlocks = [{ text, type: "text" as const }];
-    const starterControlPayload = runControlPayload(runControlSnapshot, false);
+    const starterControlPayload = runControlPayload(runControlSnapshot);
 
     try {
       let chatIdForSend = sourceComposerChatId;
@@ -915,16 +907,7 @@ export function useMessageRunActions({
     }
     const regenerationParentMessageId =
       original.role === "assistant" ? original.parentMessageId : original.id;
-    const sourceUserMessage = original.role === "user"
-      ? original
-      : threadBeforeRegenerate.messages.find(
-          (message) =>
-            message.id === original.parentMessageId && message.role === "user"
-        );
-    const regenerateControlPayload = runControlPayload(
-      runControlSnapshot,
-      attachmentBlocksFromThreadContent(sourceUserMessage?.content).length > 0
-    );
+    const regenerateControlPayload = runControlPayload(runControlSnapshot);
 
     const assistantId = `assistant-regen-${Date.now()}`;
     const assistantMessage: ThreadMessage = {

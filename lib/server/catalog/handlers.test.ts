@@ -121,7 +121,6 @@ describe("catalog handler", () => {
     expect(
       catalog?.models[0].searchOptionCompatibility?.["openai-native-web-search"]
     ).toEqual({
-      attachments: true,
       clientToolCompatible: false,
       executionModes: ["model_choice"]
     });

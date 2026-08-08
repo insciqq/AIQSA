@@ -207,8 +207,19 @@ describe("legacy Perplexity tool executor privacy boundary", () => {
     expect(search).not.toHaveBeenCalled();
   });
 
-  it("blocks prompt-injection attachments before the search adapter", async () => {
-    const search = vi.fn<ProviderSearchAdapter["search"]>();
+  it("executes with attachments while keeping the adapter request query-only", async () => {
+    const requests: ProviderSearchRequest[] = [];
+    const search = vi.fn<ProviderSearchAdapter["search"]>(async (providerRequest) => {
+      requests.push(providerRequest);
+      return {
+        artifacts: [],
+        finalProviderResponsePreview: {},
+        findings: "Search findings",
+        requestPreview: { queryCharacters: providerRequest.query.length },
+        sources: [{ rank: 1, title: "Source", url: "https://example.com/source" }],
+        usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 }
+      };
+    });
     const executor = createPerplexitySearchToolExecutor({ searchAdapter: adapter(search), searchPolicy: policy() });
     const request = answerRequest({
       attachmentIds: ["ATTACHMENT_ID_CANARY"],
@@ -230,11 +241,15 @@ describe("legacy Perplexity tool executor privacy boundary", () => {
       { request, runId: "run-attachment" }
     );
 
-    expect(result).toMatchObject({
-      content: [{ text: "Search failed: client_search_with_attachments_not_supported" }],
-      status: "error"
+    expect(result).toMatchObject({ status: "complete" });
+    expect(search).toHaveBeenCalledOnce();
+    expect(requests[0]).toEqual({
+      correlationId: "run-attachment",
+      query: "benign public query",
+      searchControls: { maxOutputTokens: 128, temperature: 0 },
+      searchPolicy: policy(),
+      strategyId: "perplexity-tool-search"
     });
-    expect(search).not.toHaveBeenCalled();
-    expect(JSON.stringify(result)).not.toContain("ATTACHMENT_");
+    expect(JSON.stringify({ request: requests[0], result })).not.toContain("ATTACHMENT_");
   });
 });
