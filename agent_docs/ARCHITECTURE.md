@@ -19,6 +19,7 @@ browser
      -> auth + domain/handler boundaries
      -> repositories -> Prisma -> Postgres
      -> uploads -> private S3/MinIO (filesystem fallback outside bundled stack)
+     -> bounded document parser adapter -> private Docling/Tika sidecars
      -> provider/Search adapters -> external APIs
      -> remote MCP or private ToolHive proxy -> sibling stdio MCP workload
 ```
@@ -44,6 +45,7 @@ The dependency rules are executable in `eslint.config.mjs` and `tests/harness/im
 - Administrator provider owners manage mutable connection/model/credential configuration. Provider runtime owns transactional run admission, immutable accepted bindings, credential-version/revocation guards, and adapter construction. Browser contracts expose only write actions and safe metadata.
 - Search administration exposes one logical source per exact provider connection and owns the source-level lifecycle; physical hosted/query-only routes retain configuration-evidenced immutable revisions and optional non-gating diagnostics below it. Provider-neutral Search owns typed query-only execution, whole-plan physical-route assignment, fan-out merge, and bounded canonical findings/source evidence supplied explicitly by each adapter. Technical-only provider deployments may support Search while remaining absent from answer-model catalogs.
 - MCP owns installation definitions, grants, encrypted configuration/OAuth envelopes, activation jobs, runtime generations, and official SDK/ToolHive adapters. One process-local coordinator advances a database-owned activation job; another reconciles durable desired generations into live sessions. Both fence writes to exact versions/fingerprints. Remote traffic uses the SSRF-safe fetch boundary; local stdio uses ToolHive sibling workloads on the private control network.
+- `lib/server/parsing/` owns the optional file-to-structured-text boundary. Plain text, Markdown, CSV, and JSON remain in-process; structure-aware PDF/OOXML/HTML/image work routes to Docling first with Tika fallback, while Tika owns legacy office/mail/ebook formats. Its ordered page-anchored blocks are a consumer-neutral contract; upload/chat and Knowledge ingestion wire to it only through their own later lifecycle owners.
 - A remote MCP server may broker another SaaS authorization flow, but AIQSA authorizes only the reviewed MCP resource and stores only MCP-audienced per-user tokens. It has no provider-specific upstream callback, secret, scope, organization, or persistence authority.
 - SMTP is an independent database-owned draft/test/active control plane with bounded delivery. Release awareness is a separate optional read-only boundary fixed to the official public AIQSA release endpoint; it cannot deploy or mutate installation state.
 
@@ -53,15 +55,16 @@ Exact handler, repository, and adapter names remain discoverable from source and
 
 Docker Compose is the supported local and single-host topology:
 
-- `docker-compose.yml` owns the persistent operator installation. One published non-root image supplies the standalone app, one-shot migration/bootstrap, and profiled maintenance commands alongside internal Postgres, MinIO/bucket initialization, and pinned ToolHive control. The app role starts the generated Next standalone server through a repository-owned one-shot launcher that authenticates the immediate TCP peer before framework request conversion; other image roles override that command.
+- `docker-compose.yml` owns the persistent operator installation. One published non-root image supplies the standalone app, one-shot migration/bootstrap, and profiled maintenance commands alongside internal Postgres, MinIO/bucket initialization, pinned ToolHive control, and digest-pinned stateless Docling/Tika parsers. The app role starts the generated Next standalone server through a repository-owned one-shot launcher that authenticates the immediate TCP peer before framework request conversion; other image roles override that command.
 - Migration/bootstrap applies committed migrations and the idempotent fail-closed installation bootstrap before app readiness. Retention and other maintenance roles use explicit command overrides and role-specific environment.
 - Named Postgres, MinIO, and ToolHive volumes preserve relational data, private objects, and disposable MCP runtime state across normal image updates.
 - `docker-compose.dev.yml` owns bind-mounted deterministic development/test execution and separate disposable volumes. Development verification may mutate only this named stack and has no preservation, crash-recovery, or parallel-run guarantee.
 - Only ToolHive mounts the host Docker socket. The app reaches its control/proxy endpoints on a private network; a profiled cleanup role may manage only exact AIQSA-owned workloads.
+- Docling and Tika share only the private `parser-control` network with the app, receive no storage/database credentials or volumes, and have explicit CPU, memory, temporary-filesystem, health, restart, and log bounds. They are not app startup dependencies and own no document or tenancy state.
 
-The default app publication is loopback HTTP and requires no domain, active provider, SMTP, OAuth, reverse proxy, or reachable GitHub API. Direct non-loopback HTTP is also supported for an operator-selected trusted LAN/VPN: the release launcher authenticates the immediate socket peer with process-local material and forwarding headers remain untrusted. HTTPS requires the supported loopback-reached TLS proxy declaration; contradictory identity topology fails both readiness and auth admission. Postgres, MinIO, ToolHive, and MCP proxies have no host publication.
+The default app publication is loopback HTTP and requires no domain, active provider, SMTP, OAuth, reverse proxy, or reachable GitHub API. Direct non-loopback HTTP is also supported for an operator-selected trusted LAN/VPN: the release launcher authenticates the immediate socket peer with process-local material and forwarding headers remain untrusted. HTTPS requires the supported loopback-reached TLS proxy declaration; contradictory identity topology fails both readiness and auth admission. Postgres, MinIO, ToolHive, parser sidecars, and MCP proxies have no host publication.
 
-Process liveness is separate from readiness. Readiness checks explicit runtime security configuration, Postgres, and private object storage; provider, SMTP, MCP/ToolHive, and release-awareness failures remain feature-local.
+Process liveness is separate from readiness. Readiness checks explicit runtime security configuration, Postgres, and private object storage; provider, SMTP, MCP/ToolHive, parser-sidecar, and release-awareness failures remain feature-local.
 
 Installation state relies on stable volumes, coordinated pre-migration backup, committed `prisma migrate deploy` migrations, guarded restore, and versioned/commit-tagged unified images. `ops/backup/` owns the write-quiesced database/object backup and disposable-target restore verification; `ops/nginx/` owns the optional SSE/upload-aware TLS proxy template.
 

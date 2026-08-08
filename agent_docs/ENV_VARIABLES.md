@@ -215,6 +215,39 @@ authoritative. The default Compose stack always supplies private S3/MinIO
 storage. `AIQSA_UPLOAD_STORAGE_DIR` controls the server-only filesystem
 fallback when S3 variables are absent outside that stack.
 
+## Document Parser Sidecars
+
+```text
+AIQSA_DOCLING_URL=http://docling:5001
+AIQSA_DOCLING_REQUEST_MAX_BYTES=25000000
+AIQSA_DOCLING_RESPONSE_MAX_BYTES=33554432
+AIQSA_DOCLING_TIMEOUT_MS=300000
+AIQSA_TIKA_URL=http://tika:9998
+AIQSA_TIKA_REQUEST_MAX_BYTES=25000000
+AIQSA_TIKA_RESPONSE_MAX_BYTES=16777216
+AIQSA_TIKA_TIMEOUT_MS=120000
+```
+
+The two URLs are server-only parser base endpoints. Both Compose files hardcode
+them to the digest-pinned services on the internal `parser-control` network;
+they are not browser-visible or ordinary `.env` overrides. A process launched
+outside Compose configures either engine by supplying its URL; an absent,
+blank, malformed, credential-bearing, query-bearing, or fragment-bearing URL
+leaves that engine disabled without affecting app readiness. HTTP is accepted
+for the private sibling network and HTTPS for an operator-supplied external
+deployment. Parsed file bytes cross only the configured server boundary.
+
+Request caps apply to the raw file before any sidecar call. They default to the
+25,000,000-byte upload limit and may not exceed 67,108,864 bytes. Response
+bodies are streamed and capped before JSON decoding: Docling defaults to 32
+MiB and Tika to 16 MiB, each with a 64 MiB hard ceiling. Client deadlines
+default to five minutes for Docling and two minutes for Tika and have a
+15-minute ceiling. Every numeric override must be a positive whole decimal
+integer within its ceiling; otherwise that engine's safe default applies.
+Docling's bundled synchronous worker wait is 290 seconds, slightly below the
+default client deadline. A sidecar failure stays feature-local and surfaces
+only the stable parser error taxonomy.
+
 Internal storage variables are `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`. Compose generates them from the canonical `AIQSA_S3_*` values. The bucket must remain private.
 
 The repository `ops/backup/create.sh` helper deliberately supports only the bundled `http://minio:9000` endpoint and fails closed for external S3. External storage needs the provider's consistent backup/versioning process coordinated with the PostgreSQL backup.
@@ -257,6 +290,10 @@ AIQSA_POSTGRES_CPU_LIMIT=1.0
 AIQSA_POSTGRES_MEMORY_LIMIT=1g
 AIQSA_MINIO_CPU_LIMIT=1.0
 AIQSA_MINIO_MEMORY_LIMIT=1g
+AIQSA_DOCLING_CPU_LIMIT=2.0
+AIQSA_DOCLING_MEMORY_LIMIT=4g
+AIQSA_TIKA_CPU_LIMIT=1.0
+AIQSA_TIKA_MEMORY_LIMIT=1g
 AIQSA_LOG_MAX_FILES=5
 AIQSA_LOG_MAX_SIZE=10m
 AIQSA_POSTGRES_VOLUME_NAME=aiqsa_postgres_data
@@ -264,7 +301,7 @@ AIQSA_MINIO_VOLUME_NAME=aiqsa_minio_data
 AIQSA_TOOLHIVE_VOLUME_NAME=aiqsa_toolhive_data
 ```
 
-The app, migration/bootstrap, and maintenance services share `AIQSA_IMAGE`. Its default is the public `latest` release; one SemVer or `sha-...` tag in the same `.env` pins every role to one immutable build. `AIQSA_APP_REVISION` is privacy-safe backup metadata for release trees without `.git`; it is not passed to the web runtime. CPU/memory values are hard container limits and JSON-file logs rotate at the documented bounds.
+The app, migration/bootstrap, and maintenance services share `AIQSA_IMAGE`. Its default is the public `latest` release; one SemVer or `sha-...` tag in the same `.env` pins every role to one immutable build. `AIQSA_APP_REVISION` is privacy-safe backup metadata for release trees without `.git`; it is not passed to the web runtime. CPU/memory values, including the independent Docling and Tika budgets, are hard container limits and JSON-file logs rotate at the documented bounds.
 
 Stable explicit volume names make normal rebuild/update operations independent of checkout-directory naming. The volume-name overrides exist only to adopt already-existing Docker volumes. ToolHive state is sensitive, disposable observed state and is never authoritative for MCP definitions or encrypted credentials. Because explicit volume names do not follow `docker compose -p`, every disposable installation smoke that starts this topology must set unique PostgreSQL, MinIO, and ToolHive volume overrides; routine checks instead use the separate dev Compose file.
 

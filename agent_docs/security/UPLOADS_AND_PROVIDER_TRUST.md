@@ -3,12 +3,27 @@
 Owner: Security and privacy maintainers
 Scope: Private upload storage/processing and untrusted provider catalog, transport, Search, and input boundaries.
 Read when: Changing uploads, attachments, object storage, extraction, provider discovery, catalogs, provider transport/Search evidence, or provider-controlled input.
-Code owners: `lib/server/uploads/`, object-storage integration, `lib/server/providers/`, `lib/server/search/`, and provider catalog/discovery owners.
+Code owners: `lib/server/uploads/`, `lib/server/parsing/`, object-storage integration, `lib/server/providers/`, `lib/server/search/`, and provider catalog/discovery owners.
 Not owned here: HTTP authentication, MCP runtime trust, Compose exposure, or dependency policy.
 
 ## Upload Storage And Processing
 
 Upload security is server-owned: authenticate before acquiring a process-local non-queueing permit, bound the complete multipart envelope before parsing, derive accepted kind from extension/MIME/magic validation rather than client `File.type`, reject SVG, and enforce processing bounds. Default uploads are full-buffered under a 25,000,000-byte file limit plus 1 MiB multipart headroom with four concurrent upload processors per application process. PDF.js runs in a terminable worker with V8 limits of 256 MiB old generation, 64 MiB young generation, and an 8 MiB stack; it validates the 500-page ceiling before extraction, processes pages sequentially for at most 20 seconds, and stops after proving that the bounded 20,000-character result is partial. Worker messages and persisted derived text contain only that bounded result. V8 resource limits do not completely bound native/PDF.js memory, so the request, page, time, incremental-text, and parent-message boundaries remain authoritative. Parser diagnostics, raw errors, filenames, bytes, and extracted text do not escape through worker output or client errors. Later run materialization independently preflights unique count plus source/encoded bytes, streams at most the configured number of private objects concurrently, caps each accepted object at both its settled metadata size and the remaining per-run source budget, aborts sibling reads on failure/cancellation, and never exposes object identity or content in its stable limit errors. Metadata is only the early boundary: filesystem and S3 adapters may read at most one sentinel byte beyond the accepted cap to prove overflow, then reject every actual-versus-settled size mismatch; arbitrary storage failures normalize before response or recovery persistence so paths, keys, and raw adapter errors remain private. Exposed deployments use a 2 MiB ordinary proxy limit, an explicit larger upload location, and an HTTP-context per-client connection zone; application enforcement remains authoritative.
+
+The optional structure-aware parser boundary validates the closed
+extension/MIME route before transport, bounds raw request bytes, deadlines,
+streamed response bytes, normalized block count, and table geometry, then
+accepts only the reviewed Docling or Tika response shape. In the supported
+Compose topology, original bytes leave the app only for digest-pinned stateless
+siblings on the internal `parser-control` network; neither parser has a host
+port, object/database credentials, durable volume, or document ownership.
+Embedded Tika resources are disabled. Normalized results carry ordered text,
+page anchors, heading paths, and table flags; upstream bodies, diagnostics,
+filenames, and extracted content never enter parser errors or probe output.
+Absent, stopped, timed-out, or malformed sidecars produce only stable
+feature-local codes and cannot affect core readiness. An operator who supplies
+an endpoint outside Compose becomes responsible for that endpoint's transport
+and data-processing trust boundary.
 
 Storage remains private. MinIO has no anonymous access, filesystem fallback is server-only, provider payloads resolve objects only after ownership/capability checks, and previews redact original bytes. Newly created public snapshots replace image/file/PDF/document blocks with neutral omission text and include no filename, alt text, attachment id, storage key, URL, or object metadata; already-stored immutable snapshots are not rewritten. UUID-bearing keys prevent a later upload from reusing deletion work. Message deletion only detaches rows; retention locks and rechecks every same-key row, atomically removes the final orphan rows with one durable deletion job, and claims that job through a bounded lease. Run linking uses the opposite unattached-row compare-and-set, so prune/run races cannot delete a provider-bound object. Object deletion and retry summaries expose stable job ids/codes only, never private keys, filenames, content, or raw storage errors.
 

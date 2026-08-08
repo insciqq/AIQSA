@@ -47,6 +47,14 @@ services:
       AIQSA_PDF_EXTRACTED_TEXT_MAX_CHARS: ${AIQSA_PDF_EXTRACTED_TEXT_MAX_CHARS:-20000}
       AIQSA_PDF_EXTRACTION_TIMEOUT_MS: ${AIQSA_PDF_EXTRACTION_TIMEOUT_MS:-20000}
       AIQSA_PDF_MAX_PAGES: ${AIQSA_PDF_MAX_PAGES:-500}
+      AIQSA_DOCLING_REQUEST_MAX_BYTES: ${AIQSA_DOCLING_REQUEST_MAX_BYTES:-25000000}
+      AIQSA_DOCLING_RESPONSE_MAX_BYTES: ${AIQSA_DOCLING_RESPONSE_MAX_BYTES:-33554432}
+      AIQSA_DOCLING_TIMEOUT_MS: ${AIQSA_DOCLING_TIMEOUT_MS:-300000}
+      AIQSA_DOCLING_URL: http://docling:5001
+      AIQSA_TIKA_REQUEST_MAX_BYTES: ${AIQSA_TIKA_REQUEST_MAX_BYTES:-25000000}
+      AIQSA_TIKA_RESPONSE_MAX_BYTES: ${AIQSA_TIKA_RESPONSE_MAX_BYTES:-16777216}
+      AIQSA_TIKA_TIMEOUT_MS: ${AIQSA_TIKA_TIMEOUT_MS:-120000}
+      AIQSA_TIKA_URL: http://tika:9998
       AIQSA_RUN_ATTACHMENT_MAX_COUNT: ${AIQSA_RUN_ATTACHMENT_MAX_COUNT:-20}
       AIQSA_RUN_ATTACHMENT_MAX_ENCODED_BYTES: ${AIQSA_RUN_ATTACHMENT_MAX_ENCODED_BYTES:-100663296}
       AIQSA_RUN_ATTACHMENT_MAX_MATERIALIZED_BYTES: ${AIQSA_RUN_ATTACHMENT_MAX_MATERIALIZED_BYTES:-67108864}
@@ -78,6 +86,7 @@ services:
     networks:
       - default
       - mcp-control
+      - parser-control
     ports:
       - "${AIQSA_BIND_ADDRESS:-127.0.0.1}:${AIQSA_PORT:-3000}:3000"
     restart: unless-stopped
@@ -91,6 +100,58 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+
+  docling:
+    image: quay.io/docling-project/docling-serve-cpu:v1.21.0@sha256:c7d56cf78c45ab61406bc2dfebbac562c16e38538393f838991a949577cd3d0a
+    cap_drop:
+      - ALL
+    cpus: ${AIQSA_DOCLING_CPU_LIMIT:-2.0}
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "false"
+      DOCLING_SERVE_MAX_SYNC_WAIT: "290"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health', timeout=3).read(1024)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_DOCLING_MEMORY_LIMIT:-4g}
+    networks:
+      - parser-control
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=1g
+
+  tika:
+    image: apache/tika:3.3.0.0-full@sha256:ecdd37e204308266b1f8e28569f8516ebd5b96d7a4518a71d3904710b20c03b3
+    cap_drop:
+      - ALL
+    cpus: ${AIQSA_TIKA_CPU_LIMIT:-1.0}
+    environment:
+      JAVA_TOOL_OPTIONS: -Xms128m -Xmx768m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9998/tika"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_TIKA_MEMORY_LIMIT:-1g}
+    networks:
+      - parser-control
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=512m
 
   toolhive-runtime:
     image: ghcr.io/stacklok/toolhive:v0.40.1@sha256:677dff9d73b33681f3d2c9b3c0b187e3210dc5ca3b8b326590d8db975f155578
@@ -238,6 +299,8 @@ services:
 
 networks:
   mcp-control:
+    internal: true
+  parser-control:
     internal: true
 
 volumes:

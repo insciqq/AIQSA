@@ -116,6 +116,7 @@ Add only evidence justified by the changed boundary:
 | Provider adapter | Run deterministic adapter/fake tests first. A real-provider smoke is optional evidence only under the permission and data limits below. |
 | Retention or destructive data behavior | Run the focused migration contract and dry run first; execute deletion only when the requested scope explicitly authorizes it and only against the intended target. |
 | MCP, ToolHive, or auth durability | Run focused deterministic tests first, then only the relevant opt-in integration command below against the disposable stack. External package pulls, hosted consent, and live OAuth require their own authority. |
+| Document parser protocol or sidecar topology | Run deterministic routing/bounds/decoder fakes first, then the parser smoke against digest-pinned Docling/Tika in the disposable dev stack. Stop both parsers and prove feature-local unavailability while app readiness remains healthy. |
 
 These rows are routing rules, not a cumulative release matrix. A change does not inherit unrelated checks because an earlier feature once used them.
 
@@ -185,6 +186,32 @@ docker compose -f docker-compose.dev.yml exec -T \
 ```
 
 The ToolHive case controls sibling Docker resources and may pull only its reviewed digest-pinned fixture. Live package-registry materialization, hosted consent, or brokered SaaS evidence remains separately authorized and sanitized; local metadata discovery alone is not end-to-end proof.
+
+Document parser sidecars and feature-local failure:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --wait --wait-timeout 300
+docker compose -f docker-compose.dev.yml exec -T app npm run smoke:parsers
+docker compose -f docker-compose.dev.yml stop docling tika
+docker compose -f docker-compose.dev.yml exec -T \
+  -e AIQSA_TEST_MODE= \
+  -e PLAYWRIGHT_TEST_AUTH= \
+  -e AIQSA_BOOTSTRAP_LOGIN_ENABLED= \
+  -e AIQSA_PARSER_SMOKE_EXPECT_UNAVAILABLE=1 app npm run smoke:parsers
+docker compose -f docker-compose.dev.yml start docling tika
+```
+
+The smoke creates and removes tiny one-page PDF, OOXML `.docx`, and OLE Word
+`.doc` fixtures inside the app container. It calls the production parser
+boundary and emits only engines, counts, page-anchor/marker booleans, and the
+unavailability/readiness booleans; extracted fixture text and raw sidecar
+responses remain private. Because the dev server deliberately fails readiness
+while deterministic test-auth switches are enabled, the stopped-sidecar smoke
+clears those switches only for its exact child process and calls the production
+readiness route directly against the same Postgres and MinIO. An explicit
+`AIQSA_PARSER_SMOKE_READINESS_URL` instead checks a running deployment over
+HTTP. The stopped-sidecar step is valid only in the disposable dev topology
+and must restore both services afterward.
 
 ### Provider smokes
 
