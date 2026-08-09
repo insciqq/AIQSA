@@ -9,10 +9,14 @@ Native Memory is an approved target capability. The current baseline implements
 only the feature-dark Phase 0 contract and evaluation foundation: strict wire
 decoders, pure state/counter/safety validators, RU/EN copy parity, a
 provider-neutral aggregate evaluator, frozen scorers, qualification decisions,
-and a development-only reference boundary. There are no production Memory
-settings, scopes, facts, indexes, jobs, run bindings, APIs, UI surfaces, or
-provider calls yet. Existing chat context and folder/project prompt memory keep
-their current behavior and are not this feature.
+a development-only reference boundary, and a hash-frozen synthetic RU/EN
+tuning/holdout corpus with adjudication and no-Memory baselines. Offline
+LongMemEval-, LoCoMo-, and MINJA-shaped checks use original behavior-only probes
+with pinned provenance and separate sanitized evidence; they contain no
+upstream benchmark text and are not official benchmark scores. There are no
+production Memory settings, scopes, facts, indexes, jobs, run bindings, APIs,
+UI surfaces, or provider calls yet. Existing chat context and folder/project
+prompt memory keep their current behavior and are not this feature.
 
 This document owns the durable target contract while implementation lands in
 ordered slices. Executable code, migrations, and tests remain authoritative for

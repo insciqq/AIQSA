@@ -1,0 +1,24 @@
+{
+  "adapter": "NO_MEMORY_BASELINE",
+  "benchmarkCounts": {
+    "LONGMEMEVAL": {
+      "denied": 0,
+      "probes": 5,
+      "recalled": 0
+    },
+    "LOCOMO": {
+      "denied": 0,
+      "probes": 5,
+      "recalled": 0
+    },
+    "MINJA_LIKE": {
+      "denied": 5,
+      "probes": 5,
+      "recalled": 0
+    }
+  },
+  "evidenceVersion": "memory-benchmark-evidence-v1",
+  "officialLeaderboardComparable": false,
+  "provenanceManifestHash": "e9556a696fdbfb46c6343faf3da6bc9066a096ec6a9e549e0580271e5c30ec42",
+  "sanitizedAggregatesOnly": true
+}

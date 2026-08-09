@@ -1,0 +1,138 @@
+{
+  "combinedContentHash": "c3dedd70a5a7d05038e08d02fc7aaf189a6c8f612b91ba57389b8426d2258b9d",
+  "corpusVersion": "memory-corpus-v1",
+  "frozenAt": "2026-08-09T00:00:00.000Z",
+  "generatorVersion": "memory-corpus-generator-v1",
+  "manifestVersion": "memory-corpus-manifest-v1",
+  "schemaVersion": "memory-corpus-schema-v1",
+  "splits": {
+    "HOLDOUT": {
+      "contentHash": "afd722efd83ca63474118c6fe61e77691635b0d49a43627648294d5bf5c47862",
+      "criticalCohorts": {
+        "RU": {
+          "explicit-lifecycle": 20,
+          "yo-e-equivalence": 20,
+          "russian-cases": 20,
+          "mixed-language-terms": 20,
+          "negation": 20,
+          "consideration-vs-purchase": 20,
+          "temporary-vs-residence": 20,
+          "temporal-correction": 20,
+          "relative-date-timezone": 20,
+          "expired-plan": 20,
+          "ambiguous-pronoun": 20,
+          "slang-typo": 20,
+          "scoped-project-preference": 20,
+          "branch-edit-stale-job": 20,
+          "forget-rebuild": 20,
+          "prompt-injection-secret": 20,
+          "sensitive-inference": 20,
+          "irrelevant-memory": 20,
+          "cross-language-query": 20,
+          "cross-user-isolation": 20
+        },
+        "EN": {
+          "explicit-lifecycle": 20,
+          "yo-e-equivalence": 20,
+          "russian-cases": 20,
+          "mixed-language-terms": 20,
+          "negation": 20,
+          "consideration-vs-purchase": 20,
+          "temporary-vs-residence": 20,
+          "temporal-correction": 20,
+          "relative-date-timezone": 20,
+          "expired-plan": 20,
+          "ambiguous-pronoun": 20,
+          "slang-typo": 20,
+          "scoped-project-preference": 20,
+          "branch-edit-stale-job": 20,
+          "forget-rebuild": 20,
+          "prompt-injection-secret": 20,
+          "sensitive-inference": 20,
+          "irrelevant-memory": 20,
+          "cross-language-query": 20,
+          "cross-user-isolation": 20
+        }
+      },
+      "languages": {
+        "EN": {
+          "adversarialCases": 140,
+          "factScenarios": 412,
+          "fixtures": 412,
+          "judgedRetrievalQueries": 412
+        },
+        "RU": {
+          "adversarialCases": 140,
+          "factScenarios": 412,
+          "fixtures": 412,
+          "judgedRetrievalQueries": 412
+        }
+      },
+      "split": "HOLDOUT"
+    },
+    "TUNING": {
+      "contentHash": "c20aaf8a1396c107d9f88cecb3dee36aa9b238fbd9403318c338bfa6df308a44",
+      "criticalCohorts": {
+        "RU": {
+          "explicit-lifecycle": 20,
+          "yo-e-equivalence": 20,
+          "russian-cases": 20,
+          "mixed-language-terms": 20,
+          "negation": 20,
+          "consideration-vs-purchase": 20,
+          "temporary-vs-residence": 20,
+          "temporal-correction": 20,
+          "relative-date-timezone": 20,
+          "expired-plan": 20,
+          "ambiguous-pronoun": 20,
+          "slang-typo": 20,
+          "scoped-project-preference": 20,
+          "branch-edit-stale-job": 20,
+          "forget-rebuild": 20,
+          "prompt-injection-secret": 20,
+          "sensitive-inference": 20,
+          "irrelevant-memory": 20,
+          "cross-language-query": 20,
+          "cross-user-isolation": 20
+        },
+        "EN": {
+          "explicit-lifecycle": 20,
+          "yo-e-equivalence": 20,
+          "russian-cases": 20,
+          "mixed-language-terms": 20,
+          "negation": 20,
+          "consideration-vs-purchase": 20,
+          "temporary-vs-residence": 20,
+          "temporal-correction": 20,
+          "relative-date-timezone": 20,
+          "expired-plan": 20,
+          "ambiguous-pronoun": 20,
+          "slang-typo": 20,
+          "scoped-project-preference": 20,
+          "branch-edit-stale-job": 20,
+          "forget-rebuild": 20,
+          "prompt-injection-secret": 20,
+          "sensitive-inference": 20,
+          "irrelevant-memory": 20,
+          "cross-language-query": 20,
+          "cross-user-isolation": 20
+        }
+      },
+      "languages": {
+        "EN": {
+          "adversarialCases": 140,
+          "factScenarios": 412,
+          "fixtures": 412,
+          "judgedRetrievalQueries": 412
+        },
+        "RU": {
+          "adversarialCases": 140,
+          "factScenarios": 412,
+          "fixtures": 412,
+          "judgedRetrievalQueries": 412
+        }
+      },
+      "split": "TUNING"
+    }
+  }
+}
