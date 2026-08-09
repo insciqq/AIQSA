@@ -2782,6 +2782,7 @@ describe("Prisma run repository", () => {
           "modelId",
           "status",
           "normalizedRequest",
+          "providerRequestPreview",
           "providerResponseId",
           "createdAt",
           "updatedAt"
@@ -2795,6 +2796,7 @@ describe("Prisma run repository", () => {
           ${"fake"},
           ${"fake-qsa"},
           ${"streaming"}::"ModelRunStatus",
+          ${JSON.stringify({})}::jsonb,
           ${JSON.stringify({})}::jsonb,
           ${"resp-existing"},
           now(),

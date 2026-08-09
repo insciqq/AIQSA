@@ -7,10 +7,28 @@ import {
 const prisma = new PrismaClient();
 
 async function main(): Promise<void> {
+  const input = installationBootstrapInputFromEnv();
   const result = await bootstrapInstallationDatabase(
     prisma,
-    installationBootstrapInputFromEnv()
+    input
   );
+  const adoptedUser = await prisma.user.findFirst({
+    select: { id: true },
+    where: {
+      email: {
+        equals: input.email,
+        mode: "insensitive"
+      }
+    }
+  });
+  if (!adoptedUser) {
+    throw new Error("Installation bootstrap could not resolve the adopted initial admin.");
+  }
+  await prisma.userMemorySettings.upsert({
+    create: { userId: adoptedUser.id },
+    update: {},
+    where: { userId: adoptedUser.id }
+  });
 
   console.log(
     `AIQSA installation bootstrap ${result.status}: catalog models=${result.catalogModelCount}, search strategies=${result.catalogSearchStrategyCount}`

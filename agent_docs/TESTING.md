@@ -136,6 +136,7 @@ npm run db:knowledge:migration:contract
 npm run db:knowledge-ingestion:migration:contract
 npm run db:knowledge-run:migration:contract
 npm run db:knowledge-policy:migration:contract
+npm run db:memory:migration:contract
 npm run db:provider:migration:contract
 npm run db:full-access:migration:contract
 npm run db:control-plane:migration:contract

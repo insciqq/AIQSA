@@ -144,6 +144,7 @@ describe("Prisma message branch repository", () => {
           modelId: "fake-qsa",
           normalizedRequest: {},
           provider: "fake",
+          providerRequestPreview: {},
           status: "streaming",
           userId,
           userMessageId: userMessage.id
@@ -291,6 +292,7 @@ describe("Prisma message branch repository", () => {
             modelId: "fake-qsa",
             normalizedRequest: {},
             provider: "fake",
+            providerRequestPreview: {},
             status: "streaming",
             userId,
             userMessageId: runUserMessage.id
@@ -523,6 +525,7 @@ describe("Prisma message branch repository", () => {
           modelId: "fake-qsa",
           normalizedRequest: {},
           provider: "fake",
+          providerRequestPreview: {},
           status,
           userId,
           userMessageId: userMessage.id
@@ -596,6 +599,7 @@ describe("Prisma message branch repository", () => {
           modelId: "fake-qsa",
           normalizedRequest: {},
           provider: "fake",
+          providerRequestPreview: {},
           status: "error",
           userId,
           userMessageId: userMessage.id

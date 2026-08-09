@@ -489,6 +489,11 @@ async function main() {
     await seedLocalOrdinaryUser(user);
   }
 
+  await prisma.userMemorySettings.createMany({
+    data: [ids.user, ...LOCAL_ORDINARY_USERS.map((user) => user.id)].map((userId) => ({ userId })),
+    skipDuplicates: true
+  });
+
   const providerModelIds = await synchronizeLocalProviderTemplates();
   const fakeProviderModelId = providerModelIds.get("fake:fake-qsa");
   if (!fakeProviderModelId) {

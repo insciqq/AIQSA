@@ -199,6 +199,13 @@ function modelControlKey(input: { modelId: string; provider: string }): string {
   return `${input.provider}:${input.modelId}`;
 }
 
+function acceptedRunStatus(status: ModelRunStatus): DurableRunControlRecord["status"] {
+  if (status === "preparing") {
+    throw new Error("memory_preparing_run_not_finalized");
+  }
+  return status;
+}
+
 function runControlRecord(run: {
   assistantMessageId: string | null;
   chatId: string;
@@ -206,7 +213,7 @@ function runControlRecord(run: {
   modelId: string;
   provider: string;
   providerResponseId: string | null;
-  status: DurableRunControlRecord["status"];
+  status: ModelRunStatus;
 }): DurableRunControlRecord {
   return {
     assistantMessageId: run.assistantMessageId,
@@ -215,7 +222,7 @@ function runControlRecord(run: {
     modelId: run.modelId,
     provider: run.provider,
     providerResponseId: run.providerResponseId,
-    status: run.status
+    status: acceptedRunStatus(run.status)
   };
 }
 
@@ -2063,7 +2070,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             provider: run.provider,
             providerResponseId: run.providerResponseId,
             recoverySettled: isRecoveredRunTerminalPayload(run.errorPayload),
-            status: run.status
+            status: acceptedRunStatus(run.status)
           }
         : null;
     },
@@ -2105,6 +2112,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       if (!run) {
         return null;
       }
+      const publicRunStatus = acceptedRunStatus(run.status);
 
       const knowledgeRuns = run.knowledgeRuns.map((receipt) => {
         const projection = decodeKnowledgeRunProjection({
@@ -2196,12 +2204,12 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           strategyId: searchRun.strategyId,
           updatedAt: searchRun.updatedAt.toISOString()
         })),
-        status: run.status,
+        status: publicRunStatus,
         toolCalls: run.toolCalls.flatMap((call) => {
           const activity = persistedToolCallActivity({
             call,
             normalizedRequest: run.normalizedRequest,
-            runStatus: run.status
+            runStatus: publicRunStatus
           });
           return activity ? [activity] : [];
         }),

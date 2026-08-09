@@ -45,6 +45,7 @@ enum MessageStatus {
 }
 
 enum ModelRunStatus {
+  preparing
   queued
   streaming
   in_progress
@@ -135,6 +136,272 @@ enum ProviderCredentialSource {
   default
   group
   user
+}
+
+enum MemorySensitiveAutomaticPolicy {
+  EXPLICIT_ONLY
+}
+
+enum MemoryUiLocale {
+  RU
+  EN
+}
+
+enum MemoryScopeType {
+  GLOBAL_USER
+  FOLDER
+  ASSISTANT
+  CHAT
+}
+
+enum MemoryScopeState {
+  ACTIVE
+  ORPHANED
+  RETRACTED
+}
+
+enum MemoryFactState {
+  ACTIVE
+  CONFLICTED
+  ORPHANED
+  EXPIRED
+  RETRACTED
+  FORGOTTEN
+}
+
+enum MemoryTemperatureClass {
+  HOT
+  WARM
+  COLD
+}
+
+enum MemoryFactVersionState {
+  ACTIVE
+  CONFLICTING
+  ORPHANED
+  SUPERSEDED
+  EXPIRED
+  RETRACTED
+  FORGOTTEN
+}
+
+enum MemoryFactModality {
+  STATE
+  PREFERENCE
+  CONSTRAINT
+  CONSIDERATION
+  INTENTION
+  PLAN
+  EVENT
+  HABIT
+  WORKFLOW
+}
+
+enum MemoryFactSourceMode {
+  EXPLICIT
+  AUTOMATIC
+}
+
+enum MemoryDirectness {
+  DIRECT
+  PARAPHRASED
+  INFERRED
+}
+
+enum MemorySensitivityClass {
+  NORMAL
+  SENSITIVE
+  HIGHLY_SENSITIVE
+  SECRET
+}
+
+enum MemoryEvidenceStance {
+  SUPPORTS
+  CONTRADICTS
+}
+
+enum MemoryEvidenceSourceType {
+  MESSAGE
+  EXPLICIT_ACTION
+  EPISODE
+}
+
+enum MemoryActorType {
+  USER
+  SYSTEM
+  JOB
+}
+
+enum MemoryEventOperation {
+  EXPLICIT_SAVE
+  AUTO_PROPOSE
+  PROMOTE
+  REINFORCE
+  EDIT
+  SUPERSEDE
+  CONFLICT
+  EXPIRE
+  RETRACT
+  FORGET
+  SOURCE_INVALIDATE
+  SCOPE_CHANGE
+  PIN
+  UNPIN
+  USER_FEEDBACK
+  INDEX_SWITCH
+  REBUILD
+}
+
+enum MemorySuppressionScope {
+  FACT
+  VALUE
+  SOURCE_MESSAGE
+  SOURCE_EPISODE
+  CATEGORY
+  ALL
+}
+
+enum MemorySourceBarrierKind {
+  AUTOMATIC_FACTS
+  HISTORY_INDEX
+  ALL_REUSABLE
+}
+
+enum MemoryJobKind {
+  INDEX_HISTORY
+  EXTRACT_EPISODE
+  EXTRACT_FACTS
+  CONSOLIDATE_CANDIDATE
+  VERIFY_CANDIDATE
+  EMBED_ITEMS
+  RECONCILE_BRANCH
+  RECONCILE_SOURCE
+  GLOBAL_DREAM
+  RECALCULATE_WORKING_SET
+  REBUILD_INDEX
+}
+
+enum MemoryJobState {
+  QUEUED
+  WAITING_FOR_EGRESS_CONSENT
+  CLAIMED
+  RETRYABLE_FAILED
+  SUCCEEDED
+  TERMINAL_FAILED
+  STALE
+  CANCELLED
+}
+
+enum MemoryExecutionOwnerType {
+  JOB
+  RETRIEVAL_ATTEMPT
+  MODEL_RUN_TOOL_CALL
+}
+
+enum MemoryExecutionState {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  OUTCOME_UNKNOWN
+}
+
+enum MemoryUsageCompleteness {
+  UNAVAILABLE
+  PARTIAL
+  COMPLETE
+}
+
+enum MemoryRetrievalAdmissionKind {
+  NORMAL_SEND
+  REGENERATE
+}
+
+enum MemoryUtilityEgressMode {
+  LOCAL_ONLY
+  CONSENTED_EXTERNAL
+}
+
+enum MemoryChatMode {
+  NORMAL
+  EXCLUDED
+  TEMPORARY
+}
+
+enum MemoryRetrievalAttemptState {
+  PENDING
+  EXECUTING
+  READY
+  CONSUMED
+  STALE
+  FAILED
+  CANCELLED
+  EXPIRED
+}
+
+enum MemoryReceiptOutcome {
+  USED
+  EMPTY
+  DISABLED
+  DEGRADED
+  FAILED_SAFE
+}
+
+enum MemorySearchItemType {
+  FACT_VERSION
+}
+
+enum MemoryDeletionOperation {
+  FORGET_PURGE
+  SOURCE_PURGE
+  TEMPORARY_DELETE
+  BULK_CLEAR
+  ACCOUNT_MEMORY_DELETE
+}
+
+enum MemoryDeletionState {
+  PENDING
+  RUNNING
+  RETRY_WAIT
+  BLOCKED_REQUIRES_ADMIN
+  SUCCEEDED
+}
+
+enum MemoryMutationAction {
+  SAVE
+  EDIT
+  MOVE_SCOPE
+  FORGET
+  BULK_DELETE
+}
+
+enum MemoryOperationOutcome {
+  APPLIED
+  NO_OP
+  REJECTED
+}
+
+enum MemoryIndexGenerationState {
+  BUILDING
+  CATCHING_UP
+  READY
+  ACTIVE
+  SUPERSEDED
+  FAILED
+  CANCELLED
+}
+
+enum MemoryIndexMode {
+  LEXICAL_ONLY
+  HYBRID
+}
+
+enum MemoryEmbeddingState {
+  NOT_APPLICABLE
+  PENDING
+  READY
+  FAILED
 }
 
 model User {
@@ -490,6 +757,7 @@ model Folder {
   user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, parentId, name])
+  @@unique([userId, id])
   @@index([parentId])
   @@index([userId, sortOrder])
   @@index([userId, parentId, sortOrder])
@@ -1176,6 +1444,7 @@ model Chat {
   sharedSnapshots        SharedChatSnapshot[]
   user                   User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, id])
   @@index([activeLeafMessageId])
   @@index([defaultProviderModelId])
   @@index([userId, archived, updatedAt])
@@ -1223,7 +1492,7 @@ model ModelRun {
   provider                     String
   modelId                      String
   status                       ModelRunStatus
-  normalizedRequest            Json
+  normalizedRequest            Json?
   providerRequestPreview       Json?
   providerResponseId           String?
   finalProviderResponsePreview Json?
@@ -1254,6 +1523,8 @@ model ModelRun {
   userMessage                  Message               @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents                  UsageEvent[]
 
+  @@unique([userId, id])
+  @@unique([userId, chatId, id])
   @@index([assistantId, assistantRevisionId])
   @@index([chatId, createdAt])
   @@index([provider, modelId])
@@ -1637,6 +1908,7 @@ model UsageEvent {
   knowledgeIndexGenerationId String?
   knowledgeDocumentVersionId String?
   knowledgeBatchIndex        Int?
+  memoryExecutionBindingId   String?                   @unique
   inputTokens                Int                       @default(0)
   cachedInputTokens          Int                       @default(0)
   cacheWriteInputTokens      Int                       @default(0)
@@ -1655,4 +1927,521 @@ model UsageEvent {
   @@index([userId, createdAt])
   @@index([provider, modelId])
   @@index([knowledgeBaseId, createdAt])
+}
+
+model UserMemorySettings {
+  userId                           String                         @id
+  useMemoryFacts                   Boolean                        @default(false)
+  referenceChatHistory             Boolean                        @default(false)
+  learnAutomatically               Boolean                        @default(false)
+  memoryGeneration                 Int                            @default(0)
+  memoryRevision                   Int                            @default(0)
+  activeIndexGenerationId          String?
+  embeddingProviderModelId         String?
+  sensitiveAutomaticPolicy         MemorySensitiveAutomaticPolicy @default(EXPLICIT_ONLY)
+  memoryUiLocale                   MemoryUiLocale                 @default(RU)
+  preferredProfileLanguage         String                         @default("AUTO") @db.VarChar(35)
+  memoryConsentRevision            Int                            @default(0)
+  settingsRevision                 Int                            @default(0)
+  acceptedUtilityEgressFingerprint String?                        @db.VarChar(128)
+  acceptedUtilityPolicyVersion     String?                        @db.VarChar(64)
+  acceptedUtilityEgressAt          DateTime?
+  lastGlobalDreamAt                DateTime?
+  createdAt                        DateTime                       @default(now())
+  updatedAt                        DateTime                       @default(now()) @updatedAt
+
+  @@index([activeIndexGenerationId])
+  @@index([embeddingProviderModelId])
+}
+
+model MemoryScope {
+  id                    String           @id @default(uuid())
+  userId                String
+  scopeType             MemoryScopeType
+  targetIdSnapshot      String?
+  targetDisplaySnapshot String?          @db.VarChar(256)
+  folderId              String?
+  assistantId           String?
+  chatId                String?
+  state                 MemoryScopeState @default(ACTIVE)
+  orphanedAt            DateTime?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @default(now()) @updatedAt
+
+  @@unique([userId, id])
+  @@index([userId, state, scopeType])
+  @@index([userId, folderId])
+  @@index([userId, assistantId])
+  @@index([userId, chatId])
+}
+
+model MemoryFact {
+  id               String                 @id @default(uuid())
+  userId           String
+  scopeId          String
+  canonicalKey     String                 @db.VarChar(256)
+  category         String                 @db.VarChar(64)
+  state            MemoryFactState        @default(ACTIVE)
+  pinned           Boolean                @default(false)
+  currentVersionId String?
+  movedToFactId    String?
+  temperatureClass MemoryTemperatureClass @default(WARM)
+  temperatureScore Float                  @default(0)
+  lastUsedAt       DateTime?
+  lastConfirmedAt  DateTime?
+  createdAt        DateTime               @default(now())
+  forgottenAt      DateTime?
+  updatedAt        DateTime               @default(now()) @updatedAt
+
+  @@unique([userId, id])
+  @@unique([userId, scopeId, canonicalKey])
+  @@unique([userId, id, currentVersionId])
+  @@index([userId, scopeId, state])
+  @@index([userId, currentVersionId])
+  @@index([userId, movedToFactId])
+}
+
+model MemoryFactVersion {
+  id                         String                 @id @default(uuid())
+  userId                     String
+  factId                     String
+  displayText                String?
+  normalizedSearchText       String?
+  languageCode               String                 @db.VarChar(35)
+  structuredValue            Json?
+  category                   String                 @db.VarChar(64)
+  modality                   MemoryFactModality
+  sourceMode                 MemoryFactSourceMode
+  state                      MemoryFactVersionState @default(ACTIVE)
+  validFrom                  DateTime?
+  validTo                    DateTime?
+  systemFrom                 DateTime               @default(now())
+  systemTo                   DateTime?
+  rawTemporalExpression      String?                @db.VarChar(512)
+  sourceTimezone             String?                @db.VarChar(64)
+  temporalResolverVersion    String?                @db.VarChar(64)
+  temporalResolutionEvidence Json?
+  confidence                 Float
+  importance                 Float
+  directness                 MemoryDirectness
+  sensitivityClass           MemorySensitivityClass
+  supersedesVersionId        String?
+  movedFromVersionId         String?
+  createdByEventId           String
+  pipelineVersion            String                 @db.VarChar(64)
+  contentPurgedAt            DateTime?
+  createdAt                  DateTime               @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, factId, id])
+  @@index([userId, factId, state])
+  @@index([userId, supersedesVersionId])
+  @@index([userId, movedFromVersionId])
+  @@index([userId, createdByEventId])
+}
+
+model MemoryEvidence {
+  id                      String                   @id @default(uuid())
+  userId                  String
+  factVersionId           String
+  stance                  MemoryEvidenceStance
+  sourceType              MemoryEvidenceSourceType
+  chatId                  String?
+  messageId               String?
+  episodeId               String?
+  memoryEventId           String?
+  branchGeneration        Int?
+  sourceRole              String?                  @db.VarChar(32)
+  safeExcerpt             String
+  safeSourceHash          String                   @db.VarChar(128)
+  sourceProjectionVersion String                   @db.VarChar(64)
+  safetyClass             MemorySensitivityClass
+  observedAt              DateTime
+  createdAt               DateTime                 @default(now())
+
+  @@unique([userId, id])
+  @@index([userId, factVersionId, stance])
+  @@index([userId, chatId, messageId])
+  @@index([userId, memoryEventId])
+}
+
+model MemoryEvent {
+  id               String               @id @default(uuid())
+  userId           String
+  operation        MemoryEventOperation
+  actorType        MemoryActorType
+  actorUserId      String?
+  factId           String?
+  factVersionId    String?
+  sourceChatId     String?
+  sourceGeneration Int?
+  metadata         Json                 @default("{}")
+  createdAt        DateTime             @default(now())
+
+  @@unique([userId, id])
+  @@index([userId, factId, createdAt])
+  @@index([userId, factVersionId])
+  @@index([userId, sourceChatId, createdAt])
+}
+
+model MemorySuppression {
+  id                      String                 @id @default(uuid())
+  userId                  String
+  scope                   MemorySuppressionScope
+  canonicalKeyHash        String?                @db.VarChar(128)
+  normalizedValueHash     String?                @db.VarChar(128)
+  sourceChatId            String?
+  sourceMessageId         String?
+  sourceEpisodeId         String?
+  sourceBranchGeneration  Int?
+  deletionGeneration      Int
+  fingerprintKeyVersion   String                 @db.VarChar(64)
+  normalizationVersion    String                 @db.VarChar(64)
+  explicitOverrideAllowed Boolean                @default(false)
+  createdAt               DateTime               @default(now())
+  expiresAt               DateTime?
+
+  @@unique([userId, id])
+  @@index([userId, scope, expiresAt])
+  @@index([userId, canonicalKeyHash])
+  @@index([userId, normalizedValueHash])
+  @@index([userId, sourceChatId, sourceMessageId])
+}
+
+model MemorySourceBarrier {
+  id                      String                  @id @default(uuid())
+  userId                  String
+  kind                    MemorySourceBarrierKind
+  sourceCreatedAtCutoff   DateTime
+  memoryGeneration        Int
+  explicitOverrideAllowed Boolean                 @default(false)
+  createdAt               DateTime                @default(now())
+
+  @@unique([userId, id])
+  @@index([userId, kind, sourceCreatedAtCutoff])
+}
+
+model MemoryMutationAuthorization {
+  id                      String               @id @default(uuid())
+  userId                  String
+  nonceHash               String               @db.VarChar(128)
+  action                  MemoryMutationAction
+  authorizedPayloadHash   String               @db.VarChar(128)
+  confirmationCopyVersion String               @db.VarChar(64)
+  requestId               String               @db.VarChar(256)
+  modelRunId              String?
+  persistedToolCallId     String?
+  sourceChatId            String?
+  sourceMessageId         String?
+  exactSourceStart        Int?
+  exactSourceEnd          Int?
+  targetFactId            String?
+  expectedTargetVersionId String?
+  expiresAt               DateTime
+  consumedAt              DateTime?
+  createdAt               DateTime             @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, nonceHash])
+  @@index([userId, expiresAt, consumedAt])
+  @@index([userId, modelRunId, persistedToolCallId])
+  @@index([userId, targetFactId])
+}
+
+model MemoryOperationReceipt {
+  id                     String                 @id @default(uuid())
+  userId                 String
+  idempotencyFingerprint String                 @db.VarChar(128)
+  operation              MemoryMutationAction
+  requestId              String                 @db.VarChar(256)
+  modelRunId             String?
+  persistedToolCallId    String?
+  targetFactId           String?
+  targetVersionId        String?
+  outcome                MemoryOperationOutcome
+  resultCode             String                 @db.VarChar(64)
+  resultSnapshot         Json                   @default("{}")
+  createdAt              DateTime               @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, idempotencyFingerprint])
+  @@index([userId, modelRunId, persistedToolCallId])
+  @@index([userId, targetFactId, targetVersionId])
+}
+
+model MemoryIndexGeneration {
+  id                                String                     @id @default(uuid())
+  userId                            String
+  generation                        Int
+  state                             MemoryIndexGenerationState
+  indexMode                         MemoryIndexMode
+  sourceIndexGenerationId           String?
+  targetMemoryRevision              Int
+  indexedThroughMemoryRevision      Int
+  embeddingConnectionId             String?
+  embeddingProviderModelId          String?
+  embeddingConfigurationFingerprint String?                    @db.VarChar(128)
+  embeddingDimension                Int?
+  vectorSpaceFingerprint            String?                    @db.VarChar(128)
+  languageProfile                   String                     @db.VarChar(64)
+  normalizationVersion              String                     @db.VarChar(64)
+  chunkingVersion                   String                     @db.VarChar(64)
+  retrievalPipelineVersion          String                     @db.VarChar(64)
+  createdAt                         DateTime                   @default(now())
+  readyAt                           DateTime?
+  activatedAt                       DateTime?
+  supersededAt                      DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, generation])
+  @@index([userId, state, generation])
+  @@index([userId, sourceIndexGenerationId])
+  @@index([embeddingConnectionId, embeddingProviderModelId])
+}
+
+model MemorySearchEntry {
+  id                          String                   @id @default(uuid())
+  userId                      String
+  indexGenerationId           String
+  itemType                    MemorySearchItemType
+  factVersionId               String
+  safeSearchText              String
+  safeSearchTextYoNormalized  String
+  safeContentHash             String                   @db.VarChar(128)
+  languageCode                String                   @db.VarChar(35)
+  safetyIdentitySnapshot      String                   @db.VarChar(128)
+  sourceIdentitySnapshot      String                   @db.VarChar(128)
+  suppressionIdentitySnapshot String                   @db.VarChar(128)
+  embedding                   Unsupported("vector")?
+  embeddingDimension          Int?
+  embeddingState              MemoryEmbeddingState     @default(NOT_APPLICABLE)
+  searchVectorSimple          Unsupported("tsvector")?
+  searchVectorRussian         Unsupported("tsvector")?
+  searchVectorEnglish         Unsupported("tsvector")?
+  createdAt                   DateTime                 @default(now())
+  updatedAt                   DateTime                 @default(now()) @updatedAt
+
+  @@unique([userId, id])
+  @@unique([userId, indexGenerationId, itemType, factVersionId])
+  @@index([userId, indexGenerationId, embeddingState])
+  @@index([userId, factVersionId])
+}
+
+model MemoryJob {
+  id                       String         @id @default(uuid())
+  userId                   String
+  chatId                   String?
+  activeLeafMessageId      String?
+  branchGeneration         Int?
+  sourceRevision           Int?
+  sourceHash               String?        @db.VarChar(128)
+  kind                     MemoryJobKind
+  state                    MemoryJobState @default(QUEUED)
+  stage                    String?        @db.VarChar(64)
+  attemptCount             Int            @default(0)
+  leaseToken               String?        @db.VarChar(128)
+  leaseExpiresAt           DateTime?
+  nextAttemptAt            DateTime?
+  errorCode                String?        @db.VarChar(64)
+  errorMessage             String?        @db.VarChar(512)
+  pipelineVersion          String         @db.VarChar(64)
+  memoryGenerationSnapshot Int
+  memoryRevisionSnapshot   Int
+  idempotencyFingerprint   String         @db.VarChar(128)
+  acceptedResultHash       String?        @db.VarChar(128)
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @default(now()) @updatedAt
+  completedAt              DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, idempotencyFingerprint])
+  @@index([userId, state, nextAttemptAt, createdAt])
+  @@index([userId, chatId, branchGeneration, sourceRevision])
+}
+
+model MemoryDeletionOutbox {
+  id               String                  @id @default(uuid())
+  userId           String
+  operation        MemoryDeletionOperation
+  targetType       String                  @db.VarChar(64)
+  targetId         String
+  memoryGeneration Int
+  state            MemoryDeletionState     @default(PENDING)
+  attemptCount     Int                     @default(0)
+  nextAttemptAt    DateTime?
+  leaseToken       String?                 @db.VarChar(128)
+  leaseExpiresAt   DateTime?
+  lastAuditAt      DateTime?
+  completedAt      DateTime?
+  errorCode        String?                 @db.VarChar(64)
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @default(now()) @updatedAt
+
+  @@unique([userId, id])
+  @@unique([userId, operation, targetType, targetId, memoryGeneration])
+  @@index([userId, state, nextAttemptAt, createdAt])
+}
+
+model MemoryRetrievalAttempt {
+  id                                String                       @id @default(uuid())
+  userId                            String
+  modelRunId                        String
+  attemptOrdinal                    Int
+  chatId                            String
+  admissionKind                     MemoryRetrievalAdmissionKind
+  preSendActiveLeafMessageId        String?
+  admittedUserMessageId             String
+  admittedAssistantLeafMessageId    String
+  folderIdSnapshot                  String?
+  assistantIdSnapshot               String?
+  chatMemoryModeSnapshot            MemoryChatMode
+  settingsSnapshot                  Json
+  memoryGenerationSnapshot          Int
+  retrievalRevisionSnapshot         Int
+  indexGenerationIdSnapshot         String?
+  utilityEgressMode                 MemoryUtilityEgressMode
+  acceptedUtilityEgressFingerprint  String?                      @db.VarChar(128)
+  externalRolesUsed                 String[]                     @default([])
+  boundedSafeQuerySnapshot          String?
+  queryHash                         String                       @db.VarChar(128)
+  boundedPrivateBaseRequestSnapshot Json?
+  baseRequestHash                   String                       @db.VarChar(128)
+  state                             MemoryRetrievalAttemptState  @default(PENDING)
+  outcome                           MemoryReceiptOutcome?
+  preparedContextText               String?
+  preparedContextHash               String?                      @db.VarChar(128)
+  preparedContextTokenCount         Int?
+  budgetSnapshot                    Json?
+  degradationCode                   String?                      @db.VarChar(64)
+  errorCode                         String?                      @db.VarChar(64)
+  expiresAt                         DateTime
+  createdAt                         DateTime                     @default(now())
+  updatedAt                         DateTime                     @default(now()) @updatedAt
+  consumedAt                        DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, modelRunId, id])
+  @@unique([modelRunId, attemptOrdinal])
+  @@index([userId, state, expiresAt])
+  @@index([userId, chatId, createdAt])
+  @@index([userId, indexGenerationIdSnapshot])
+}
+
+model MemoryRetrievalAttemptItem {
+  id              String               @id @default(uuid())
+  userId          String
+  attemptId       String
+  ordinal         Int
+  itemType        MemorySearchItemType
+  exactItemId     String
+  factVersionId   String
+  exactSafeText   String
+  textHash        String               @db.VarChar(128)
+  sourceSnapshot  Json                 @default("{}")
+  versionSnapshot Json                 @default("{}")
+  laneRanks       Json                 @default("{}")
+  featureSnapshot Json                 @default("{}")
+  selectionReason String               @db.VarChar(128)
+  createdAt       DateTime             @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, attemptId, ordinal])
+  @@index([userId, factVersionId])
+}
+
+model MemoryExecutionBinding {
+  id                          String                   @id @default(uuid())
+  userId                      String
+  ownerType                   MemoryExecutionOwnerType
+  memoryJobId                 String?
+  retrievalAttemptId          String?
+  modelRunId                  String?
+  modelRunToolCallId          String?
+  logicalRole                 String                   @db.VarChar(64)
+  ordinal                     Int
+  state                       MemoryExecutionState     @default(PENDING)
+  connectionId                String?
+  providerId                  String?                  @db.VarChar(64)
+  providerModelId             String?
+  credentialId                String?
+  credentialVersionId         String?
+  destinationFingerprint      String                   @db.VarChar(128)
+  policyVersion               String                   @db.VarChar(64)
+  promptVersion               String                   @db.VarChar(64)
+  schemaVersion               String                   @db.VarChar(64)
+  pipelineVersion             String                   @db.VarChar(64)
+  secretFreeExecutionSnapshot Json
+  inputHash                   String                   @db.VarChar(128)
+  acceptedOutputHash          String?                  @db.VarChar(128)
+  providerResponseId          String?                  @db.VarChar(256)
+  usageCompleteness           MemoryUsageCompleteness  @default(UNAVAILABLE)
+  inputTokens                 Int?
+  cachedInputTokens           Int?
+  outputTokens                Int?
+  reasoningTokens             Int?
+  totalTokens                 Int?
+  estimatedCostMicros         Int?
+  recoverableUntil            DateTime?
+  relationsDetachedAt         DateTime?
+  errorCode                   String?                  @db.VarChar(64)
+  createdAt                   DateTime                 @default(now())
+  startedAt                   DateTime?
+  completedAt                 DateTime?
+
+  @@unique([userId, id])
+  @@index([userId, memoryJobId, ordinal])
+  @@index([userId, retrievalAttemptId, ordinal])
+  @@index([userId, modelRunId, modelRunToolCallId, ordinal])
+  @@index([connectionId, providerModelId])
+  @@index([credentialId, credentialVersionId])
+}
+
+model ModelRunMemoryBinding {
+  id                        String               @id @default(uuid())
+  userId                    String
+  modelRunId                String               @unique
+  retrievalAttemptId        String               @unique
+  memoryGenerationSnapshot  Int
+  retrievalRevisionSnapshot Int
+  finalizedRevisionSnapshot Int
+  settingsSnapshot          Json
+  indexGenerationId         String?
+  boundedSafeQuerySnapshot  String?
+  queryHash                 String               @db.VarChar(128)
+  queryPlannerVersion       String               @db.VarChar(64)
+  retrievalPipelineVersion  String               @db.VarChar(64)
+  contextTextHash           String               @db.VarChar(128)
+  contextTokenCount         Int
+  outcome                   MemoryReceiptOutcome
+  degradationCode           String?              @db.VarChar(64)
+  finalizedAt               DateTime
+  createdAt                 DateTime             @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, modelRunId])
+  @@unique([userId, retrievalAttemptId])
+  @@index([userId, indexGenerationId])
+}
+
+model ModelRunMemoryItem {
+  id                       String               @id @default(uuid())
+  userId                   String
+  bindingId                String
+  ordinal                  Int
+  itemType                 MemorySearchItemType
+  factVersionId            String?
+  sourceChatIdSnapshot     String?
+  sourceMessageIdsSnapshot String[]             @default([])
+  includedText             String
+  includedTextHash         String               @db.VarChar(128)
+  itemStateAtAdmission     String               @db.VarChar(64)
+  laneRanks                Json                 @default("{}")
+  featureSnapshot          Json                 @default("{}")
+  finalScore               Float
+  selectionReason          String               @db.VarChar(128)
+  createdAt                DateTime             @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, bindingId, ordinal])
+  @@index([userId, factVersionId])
 }

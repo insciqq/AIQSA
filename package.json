@@ -36,6 +36,7 @@
     "db:knowledge-ingestion:migration:contract": "tsx prisma/scripts/tests/knowledge-ingestion-migration-contract.ts",
     "db:knowledge-run:migration:contract": "tsx prisma/scripts/tests/knowledge-run-plan-migration-contract.ts",
     "db:knowledge-policy:migration:contract": "tsx prisma/scripts/tests/knowledge-policy-migration-contract.ts",
+    "db:memory:migration:contract": "tsx prisma/scripts/tests/memory-foundation-migration-contract.ts",
     "db:provider:migration:contract": "tsx prisma/scripts/tests/provider-control-plane-migration-contract.ts",
     "db:cutover": "tsx prisma/scripts/control-plane-cutover.ts",
     "db:migrate:deploy": "prisma migrate deploy",

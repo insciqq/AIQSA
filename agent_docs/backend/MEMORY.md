@@ -6,17 +6,38 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 ## Implementation Status And Authority
 
 Native Memory is an approved target capability. The current baseline implements
-only the feature-dark Phase 0 contract and evaluation foundation: strict wire
-decoders, pure state/counter/safety validators, RU/EN copy parity, a
-provider-neutral aggregate evaluator, frozen scorers, qualification decisions,
-a development-only reference boundary, and a hash-frozen synthetic RU/EN
-tuning/holdout corpus with adjudication and no-Memory baselines. Offline
-LongMemEval-, LoCoMo-, and MINJA-shaped checks use original behavior-only probes
-with pinned provenance and separate sanitized evidence; they contain no
-upstream benchmark text and are not official benchmark scores. There are no
-production Memory settings, scopes, facts, indexes, jobs, run bindings, APIs,
-UI surfaces, or provider calls yet. Existing chat context and folder/project
-prompt memory keep their current behavior and are not this feature.
+the feature-dark Phase 0 contract/evaluation foundation and the Phase 1
+persistence foundation. Phase 0 includes strict wire decoders, pure
+state/counter/safety validators, RU/EN copy parity, a provider-neutral aggregate
+evaluator, frozen scorers, qualification decisions, a development-only
+reference boundary, and a hash-frozen synthetic RU/EN tuning/holdout corpus
+with adjudication and no-Memory baselines. Offline LongMemEval-, LoCoMo-, and
+MINJA-shaped checks use original behavior-only probes with pinned provenance
+and separate sanitized evidence; they contain no upstream benchmark text and
+are not official benchmark scores.
+
+Phase 1 adds inert per-user settings, typed dormant scopes, fact/version/event
+and evidence ledgers, keyed suppressions/source barriers, mutation authority
+and idempotency evidence, immutable lexical/hybrid generation shape, generated
+RU/EN/simple FTS rows, jobs/deletion obligations, per-call execution evidence,
+two-phase retrieval attempts/staging, final run bindings/items, and the private
+`ModelRun.preparing` state. Composite owner foreign keys, partial uniqueness,
+deferrable fact/current-version and settings/active-generation checks, request
+shape, execution/vector shape, and account-deletion restriction are enforced by
+the database. Every new user receives a default-off settings row; upgrades,
+bootstrap, and the local seed are inert and schedule no work. Non-global scope
+activation is rejected by a temporary database guard until the Phase 3 runtime
+authorization migration owns that cutover. The installation-only suppression
+HMAC keyring and restore/automatic-work preflights are implemented separately;
+keys never enter the database.
+
+There are still no production Memory repositories, APIs, coordinator/worker,
+retrieval integration, UI surfaces, or Memory provider calls. The current run
+adapter refuses to project a `preparing` row through the accepted-run wire
+contract, so the new state cannot dispatch or leak before the two-phase runtime
+slice lands. No non-default Memory content is created by ordinary application
+behavior. Existing chat context and folder/project prompt memory keep their
+current behavior and are not this feature.
 
 This document owns the durable target contract while implementation lands in
 ordered slices. Executable code, migrations, and tests remain authoritative for
