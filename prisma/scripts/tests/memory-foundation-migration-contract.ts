@@ -5,9 +5,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TARGET_MIGRATION = "20260810100000_memory_engine_phase1_foundation";
-const EXECUTION_USAGE_MIGRATIONS = [
+const MEMORY_FOLLOWUP_MIGRATIONS = [
   "20260810160000_memory_execution_usage_evidence",
-  "20260810161000_memory_execution_usage_shape"
+  "20260810161000_memory_execution_usage_shape",
+  "20260810170000_memory_coordinator_fairness"
 ] as const;
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
@@ -669,6 +670,35 @@ function assertExecutionUsageContracts(database: string): void {
   `, /UsageEvent_knowledge_shape_check/u, "ordinary usage impersonating bound utility usage");
 }
 
+function assertCoordinatorFairnessContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT string_agg("pipeline", ',' ORDER BY "pipeline")
+      FROM "DocumentProcessingFairnessCursor"
+      WHERE "pipeline" LIKE 'memory-%';
+    `),
+    "memory-delete,memory-job",
+    "Memory coordinator fairness lanes were not seeded independently"
+  );
+
+  requireSuccess(psql(database, `
+    INSERT INTO "DocumentProcessingFairnessCursor" (
+      "pipeline", "lastGrantedOwnerUserId", "updatedAt"
+    ) VALUES
+      ('memory-job', 'memory-owner-a', CURRENT_TIMESTAMP),
+      ('memory-delete', 'memory-owner-b', CURRENT_TIMESTAMP)
+    ON CONFLICT ("pipeline") DO UPDATE SET
+      "lastGrantedOwnerUserId" = EXCLUDED."lastGrantedOwnerUserId",
+      "updatedAt" = EXCLUDED."updatedAt";
+  `), "update Memory coordinator fairness lanes");
+
+  expectRejected(database, `
+    INSERT INTO "DocumentProcessingFairnessCursor" (
+      "pipeline", "lastGrantedOwnerUserId", "updatedAt"
+    ) VALUES ('memory-unsupported', NULL, CURRENT_TIMESTAMP);
+  `, /DocumentProcessingFairnessCursor_pipeline_check/u, "unsupported fairness lane");
+}
+
 function main(): void {
   requireSuccess(compose(["up", "-d", POSTGRES_SERVICE]), "start disposable PostgreSQL service");
   try {
@@ -681,16 +711,18 @@ function main(): void {
     assertGenerationAndSearchContracts(upgradeDatabase);
     assertPreparingAndOutboxContracts(upgradeDatabase);
     seedExecutionUsageUpgradeFixture(upgradeDatabase);
-    applyMigrations(upgradeDatabase, EXECUTION_USAGE_MIGRATIONS);
+    applyMigrations(upgradeDatabase, MEMORY_FOLLOWUP_MIGRATIONS);
     assertExecutionUsageContracts(upgradeDatabase);
+    assertCoordinatorFairnessContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
     assertFreshContracts(freshDatabase);
     seedExecutionUsageFreshOwner(freshDatabase);
     seedExecutionUsageUpgradeFixture(freshDatabase);
-    applyMigrations(freshDatabase, EXECUTION_USAGE_MIGRATIONS);
+    applyMigrations(freshDatabase, MEMORY_FOLLOWUP_MIGRATIONS);
     assertExecutionUsageContracts(freshDatabase);
+    assertCoordinatorFairnessContracts(freshDatabase);
   } finally {
     dropDatabases();
   }

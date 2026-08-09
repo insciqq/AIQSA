@@ -8,6 +8,7 @@ export const databaseRequiredTestFiles = [
   "lib/server/messages/prismaRepository.test.ts",
   "lib/server/memory/persistence/prismaPersistence.prisma.test.ts",
   "lib/server/memory/execution/prismaExecution.prisma.test.ts",
+  "lib/server/memory/coordinator/prismaRepository.prisma.test.ts",
   "lib/server/retention/prune.prisma.test.ts",
   "lib/server/runs/prismaRepository.test.ts",
   "lib/server/settings/prismaRepository.test.ts",

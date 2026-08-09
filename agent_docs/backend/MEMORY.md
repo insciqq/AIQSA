@@ -27,15 +27,23 @@ shape, execution/vector shape, and account-deletion restriction are enforced by
 the database. Bounded production repositories now implement settings CAS,
 global scopes, explicit fact/version/evidence/receipt writes, suppressions,
 lexical projection, jobs/deletion obligations, and per-call execution
-admission/lifecycle. Every new user receives a default-off settings row;
+admission/lifecycle. A feature-local process coordinator now claims only
+explicitly registered job kinds and deletion operations, applies independent
+durable owner rotation, renews bounded leases, reconciles consent waiting and
+retryable work, and fences authoritative apply to the exact unexpired claim.
+Its one deletion claimant never terminally abandons an obligation: exhausted
+fast retries become visible blocked state and continue on the slow schedule.
+Every new user receives a default-off settings row;
 upgrades, bootstrap, and the local seed are inert and schedule no work.
 Non-global scope activation is rejected by a temporary database guard until the
 Phase 3 runtime authorization migration owns that cutover. The
 installation-only suppression HMAC keyring and restore/automatic-work
 preflights are implemented separately; keys never enter the database.
 
-There are still no Memory APIs, coordinator/worker, retrieval integration, UI
-surfaces, or live Memory provider calls. The execution boundary is feature-dark:
+There are still no Memory APIs, registered phase handlers, automatic
+coordinator startup or standalone role, retrieval integration, UI surfaces, or
+live Memory provider calls. The default registry is empty, so the coordinator
+boundary remains feature-dark:
 it resolves current installation utility or entitled embedding authority,
 accepted egress, exact signed role qualification, immutable provider and
 credential evidence, single-winner start, exactly-once nullable usage,
@@ -462,8 +470,10 @@ excerpts, tool queries/results, embeddings, raw provider bodies, or secrets.
 
 ## Runtime, Backup, And Recovery
 
-The coordinator uses the same code/image and shared PostgreSQL schema. It may
-run process-locally for development/small installations or as a private
+The implemented coordinator library uses the same code/image and shared
+PostgreSQL schema and exposes a process-local startup seam, but nothing starts
+it while the handler registry is feature-dark. A future supported deployment
+may run it process-locally for development/small installations or as a private
 standalone Compose role for isolation; this is not a microservice and exposes
 no public API. Database-owned jobs use skip-locked claims, leases, heartbeat,
 bounded retry, and idempotency. Memory startup failure does not fail core web

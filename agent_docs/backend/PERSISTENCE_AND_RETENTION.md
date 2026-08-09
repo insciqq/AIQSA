@@ -25,29 +25,44 @@ Dry-run performs only bounded reads. Execute mode deletes old events only for te
 
 The executable model inventory is `prisma/schema.prisma`. Its current categories are identity/session/approval, users/groups/settings/grants, folders/chats/message DAGs, Assistant definitions/revisions/publications/pins, provider/search catalog, runs/events/usage, MCP definitions/revisions/grants/user state/runtime evidence/tool calls, attachments plus their durable processing queue and purpose-built deletion outbox, per-pipeline document-processing fairness cursors, feature-dark Native Memory settings/authority/derivative/operational evidence, and immutable share snapshots. Living prose records only cross-table constraints that affect behavior.
 
-`DocumentProcessingFairnessCursor` has exactly the independent `attachment` and
-`knowledge` rows. Its nullable last-owner value intentionally has no user
-foreign key: a deleted previous owner remains only the lexical position from
-which the next live rotation continues. Each successful claim locks its one
-pipeline row, chooses the first eligible owner lexicographically after the last
-grant with wraparound, and advances only after atomically claiming work. An
-empty cursor starts from the globally oldest eligible owner head, breaking a
-tie by owner id. Thus, while `K` owners stay eligible in one pipeline, every
-window of the next `K` successful grants contains each owner once; a newly
-eligible owner joins within at most `K` subsequent successful grants. The
-guarantee is per pipeline and non-preemptive: already running work still has to
-release a slot, and a sole eligible owner may use every available worker. This
-is scheduling fairness, not a per-user quota or admission limit. Each physical
-queue row copies its immutable owning user id and proves that copy against its
-parent with a composite foreign key. Owner-first due indexes let the steady
-state claim use separate after-cursor and wraparound range seeks while holding
-the short cursor lock; the empty-cursor path alone selects the globally oldest
-eligible owner head. Terminal history is excluded from the partial Knowledge
-queue indexes so backlog size does not turn a grant into a full eligible-set
-sort. Prisma owns the ordinary Attachment indexes; the forward migration owns
-the two exact partial Knowledge predicates because the supported Prisma version
-cannot represent partial-index conditions. The focused migration contract pins
-those predicates and proves their bounded owner-range query plans.
+`DocumentProcessingFairnessCursor` has exactly the independent `attachment`,
+`knowledge`, `memory-job`, and `memory-delete` rows. Its nullable last-owner
+value intentionally has no user foreign key: a deleted previous owner remains
+only the lexical position from which the next live rotation continues. Each
+successful claim locks its one pipeline row, chooses the first eligible owner
+lexicographically after the last grant with wraparound, and advances only after
+atomically claiming work. An empty cursor starts from the globally oldest
+eligible owner head, breaking a tie by owner id. Thus, while `K` owners stay
+eligible in one pipeline, every window of the next `K` successful grants
+contains each owner once; a newly eligible owner joins within at most `K`
+subsequent successful grants. The guarantee is per pipeline and non-preemptive:
+already running work still has to release a slot, and a sole eligible owner may
+use every available worker. This is scheduling fairness, not a per-user quota
+or admission limit. Each physical document queue row copies its immutable
+owning user id and proves that copy against its parent with a composite foreign
+key. Owner-first due indexes let the document steady-state claim use separate
+after-cursor and wraparound range seeks while holding the short cursor lock;
+the empty-cursor path alone selects the globally oldest eligible owner head.
+Terminal history is excluded from the partial Knowledge queue indexes so
+backlog size does not turn a grant into a full eligible-set sort. Prisma owns
+the ordinary Attachment indexes; the forward migration owns the two exact
+partial Knowledge predicates because the supported Prisma version cannot
+represent partial-index conditions. The focused migration contract pins those
+predicates and proves their bounded owner-range query plans.
+
+The feature-dark Memory coordinator uses the same short cursor transaction for
+registered `MemoryJob` kinds and registered `MemoryDeletionOutbox` operations.
+Jobs require a currently active owner; queued, retryable, waiting, or
+expired-claimed work for an unavailable owner is cancelled with a stable code.
+Deletion obligations deliberately remain claimable after owner disablement or
+account teardown. Claims increment attempts and carry random lease tokens;
+heartbeat, stage, retry, gate settlement, and final apply compare the exact
+owner, state, token, and unexpired lease. Consent waiting carries neither lease
+nor fallback authority. Job apply and success settle in one transaction.
+Deletion apply and success do likewise; failures release to bounded retry and
+then `BLOCKED_REQUIRES_ADMIN` with a slow due time and audit timestamp, never a
+terminal abandoned state. The default registry is empty and startup is not yet
+wired, so these rows remain dormant until a later handler-owning slice opts in.
 
 `User.role`/`User.status`, identity/session/token/rule/invite relations, and exact normalized email/domain matching implement the auth state machine. The schema owns field/enumeration shape; the bounded owners routed by `SECURITY.md` own the threat and session contract.
 
