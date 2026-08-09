@@ -1,0 +1,875 @@
+import { z } from "zod";
+
+export const MEMORY_CONFIRMATION_COPY_VERSION = "memory-confirmation-v1" as const;
+export const MEMORY_TEMPORARY_RETENTION_POLICY_VERSION = "temporary-24h-v1" as const;
+export const MEMORY_STATEMENT_MAX_LENGTH = 2_000;
+export const MEMORY_QUERY_MAX_LENGTH = 500;
+export const MEMORY_CURSOR_MAX_LENGTH = 2_048;
+export const MEMORY_PAGE_SIZE_MAX = 20;
+export const MEMORY_RECEIPT_ITEM_TEXT_MAX_LENGTH = 4_000;
+export const MEMORY_SEARCH_SNIPPET_MAX_LENGTH = 1_000;
+
+export const MEMORY_UI_LOCALES = ["RU", "EN"] as const;
+export type MemoryUiLocale = (typeof MEMORY_UI_LOCALES)[number];
+
+export const MEMORY_CHAT_MODES = ["NORMAL", "EXCLUDED", "TEMPORARY"] as const;
+export type MemoryChatMode = (typeof MEMORY_CHAT_MODES)[number];
+
+export const MEMORY_SCOPE_TYPES = ["GLOBAL_USER", "FOLDER", "ASSISTANT", "CHAT"] as const;
+export type MemoryScopeType = (typeof MEMORY_SCOPE_TYPES)[number];
+
+export const MEMORY_SCOPE_STATES = ["ACTIVE", "ORPHANED", "RETRACTED"] as const;
+export type MemoryScopeState = (typeof MEMORY_SCOPE_STATES)[number];
+
+export const MEMORY_CANDIDATE_STATES = [
+  "PENDING",
+  "DEFERRED",
+  "PROMOTED",
+  "REJECTED",
+  "STALE"
+] as const;
+export type MemoryCandidateState = (typeof MEMORY_CANDIDATE_STATES)[number];
+
+export const MEMORY_FACT_STATES = [
+  "ACTIVE",
+  "CONFLICTED",
+  "ORPHANED",
+  "EXPIRED",
+  "RETRACTED",
+  "FORGOTTEN"
+] as const;
+export type MemoryFactState = (typeof MEMORY_FACT_STATES)[number];
+
+export const MEMORY_FACT_VERSION_STATES = [
+  "ACTIVE",
+  "CONFLICTING",
+  "ORPHANED",
+  "SUPERSEDED",
+  "EXPIRED",
+  "RETRACTED",
+  "FORGOTTEN"
+] as const;
+export type MemoryFactVersionState = (typeof MEMORY_FACT_VERSION_STATES)[number];
+
+export const MEMORY_SOURCE_MODES = ["EXPLICIT", "AUTOMATIC"] as const;
+export type MemorySourceMode = (typeof MEMORY_SOURCE_MODES)[number];
+
+export const MEMORY_MODALITIES = [
+  "STATE",
+  "PREFERENCE",
+  "CONSTRAINT",
+  "CONSIDERATION",
+  "INTENTION",
+  "PLAN",
+  "EVENT",
+  "HABIT",
+  "WORKFLOW"
+] as const;
+export type MemoryModality = (typeof MEMORY_MODALITIES)[number];
+
+export const MEMORY_SENSITIVITY_CLASSES = [
+  "NORMAL",
+  "SENSITIVE",
+  "HIGHLY_SENSITIVE",
+  "SECRET"
+] as const;
+export type MemorySensitivityClass = (typeof MEMORY_SENSITIVITY_CLASSES)[number];
+
+export const MEMORY_JOB_STATES = [
+  "QUEUED",
+  "CLAIMED",
+  "WAITING_FOR_EGRESS_CONSENT",
+  "SUCCEEDED",
+  "RETRYABLE_FAILED",
+  "TERMINAL_FAILED",
+  "STALE",
+  "CANCELLED"
+] as const;
+export type MemoryJobState = (typeof MEMORY_JOB_STATES)[number];
+
+export const MEMORY_RETRIEVAL_ATTEMPT_STATES = [
+  "PENDING",
+  "EXECUTING",
+  "READY",
+  "CONSUMED",
+  "STALE",
+  "FAILED",
+  "CANCELLED",
+  "EXPIRED"
+] as const;
+export type MemoryRetrievalAttemptState = (typeof MEMORY_RETRIEVAL_ATTEMPT_STATES)[number];
+
+export const MEMORY_EXECUTION_STATES = [
+  "PENDING",
+  "RUNNING",
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELLED",
+  "OUTCOME_UNKNOWN"
+] as const;
+export type MemoryExecutionState = (typeof MEMORY_EXECUTION_STATES)[number];
+
+export const MEMORY_INDEX_GENERATION_STATES = [
+  "BUILDING",
+  "CATCHING_UP",
+  "READY",
+  "ACTIVE",
+  "SUPERSEDED",
+  "FAILED",
+  "CANCELLED"
+] as const;
+export type MemoryIndexGenerationState = (typeof MEMORY_INDEX_GENERATION_STATES)[number];
+
+export const MEMORY_DELETION_STATES = [
+  "PENDING",
+  "RUNNING",
+  "RETRY_WAIT",
+  "BLOCKED_REQUIRES_ADMIN",
+  "SUCCEEDED"
+] as const;
+export type MemoryDeletionState = (typeof MEMORY_DELETION_STATES)[number];
+
+export const MEMORY_BULK_DELETE_OPERATIONS = [
+  "DELETE_EXPLICIT",
+  "DELETE_LEARNED",
+  "CLEAR_HISTORY_INDEX",
+  "DELETE_ALL_REUSABLE"
+] as const;
+export type MemoryBulkDeleteOperation = (typeof MEMORY_BULK_DELETE_OPERATIONS)[number];
+
+export const MEMORY_REBUILD_OPERATIONS = [
+  "REBUILD_SEARCH_INDEX",
+  "REEMBED",
+  "REDREAM_EXISTING_CHATS"
+] as const;
+export type MemoryRebuildOperation = (typeof MEMORY_REBUILD_OPERATIONS)[number];
+
+export const MEMORY_REBUILD_STATES = [
+  "QUEUED",
+  "RUNNING",
+  "WAITING_FOR_EGRESS_CONSENT",
+  "CATCHING_UP",
+  "READY",
+  "SUCCEEDED",
+  "FAILED",
+  "STALE",
+  "CANCELLED"
+] as const;
+export type MemoryRebuildState = (typeof MEMORY_REBUILD_STATES)[number];
+
+export const MEMORY_RECEIPT_OUTCOMES = [
+  "USED",
+  "EMPTY",
+  "DISABLED",
+  "DEGRADED",
+  "FAILED_SAFE"
+] as const;
+export type MemoryReceiptOutcome = (typeof MEMORY_RECEIPT_OUTCOMES)[number];
+
+export const MEMORY_RECEIPT_ITEM_TYPES = [
+  "FACT_VERSION",
+  "EPISODE",
+  "RECALL_CHUNK",
+  "PROFILE"
+] as const;
+export type MemoryReceiptItemType = (typeof MEMORY_RECEIPT_ITEM_TYPES)[number];
+
+export const MEMORY_RECEIPT_LIFECYCLE_STATES = [
+  "CURRENT",
+  "LATER_FORGOTTEN",
+  "SOURCE_DELETED"
+] as const;
+export type MemoryReceiptLifecycleState = (typeof MEMORY_RECEIPT_LIFECYCLE_STATES)[number];
+
+export const MEMORY_ERROR_CODES = [
+  "memory_not_enabled",
+  "memory_not_found",
+  "memory_target_unavailable",
+  "memory_target_ambiguous",
+  "memory_version_stale",
+  "memory_scope_invalid",
+  "memory_scope_unavailable",
+  "memory_statement_invalid",
+  "memory_secret_rejected",
+  "memory_sensitive_requires_explicit",
+  "memory_temporary_chat_forbidden",
+  "memory_generation_changed",
+  "memory_source_stale",
+  "memory_index_unavailable",
+  "memory_embedding_unavailable",
+  "memory_model_unavailable",
+  "memory_rebuild_in_progress",
+  "memory_rebuild_not_found",
+  "memory_action_failed",
+  "memory_intent_confirmation_required",
+  "memory_egress_consent_required",
+  "memory_tool_egress_forbidden",
+  "memory_purge_blocked_requires_admin"
+] as const;
+export type MemoryErrorCode = (typeof MEMORY_ERROR_CODES)[number];
+
+export type MemoryContractDecodeResult<T> =
+  | Readonly<{ ok: true; value: T }>
+  | Readonly<{ code: "memory_contract_invalid"; ok: false }>;
+
+const safeInteger = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+const positiveInteger = safeInteger.min(1);
+const idSchema = z.string().trim().min(1).max(256).refine(
+  (value) => !/[\u0000-\u0020\u007f]/u.test(value),
+  "invalid opaque id"
+);
+const cursorSchema = z.string().min(1).max(MEMORY_CURSOR_MAX_LENGTH).refine(
+  (value) => !/[\u0000-\u001f\u007f]/u.test(value),
+  "invalid opaque cursor"
+).nullable();
+const hashSchema = z.string().trim().min(16).max(512).refine(
+  (value) => !/[\u0000-\u0020\u007f]/u.test(value),
+  "invalid hash"
+);
+const safeText = (maxLength: number) => z.string().min(1).max(maxLength)
+  .refine((value) => value.trim().length > 0, "text is blank")
+  .refine((value) => !/\u0000/u.test(value), "text contains a null byte");
+const isoTimestampSchema = z.string().max(64).refine((value) => {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value)) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(value));
+}, "invalid ISO timestamp");
+const nullableTimestampSchema = isoTimestampSchema.nullable();
+const categorySchema = z.string().trim().min(1).max(64).regex(/^[a-z][a-z0-9_-]*$/u);
+const preferredLanguageSchema = z.union([
+  z.literal("AUTO"),
+  z.string().trim().min(2).max(35).regex(/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/u)
+]);
+
+const memoryScopeSelectionSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("GLOBAL_USER") }),
+  z.strictObject({ targetId: idSchema, type: z.literal("FOLDER") }),
+  z.strictObject({ targetId: idSchema, type: z.literal("ASSISTANT") }),
+  z.strictObject({ targetId: idSchema, type: z.literal("CHAT") })
+]);
+
+export type MemoryScopeSelection = z.infer<typeof memoryScopeSelectionSchema>;
+
+function decode<T>(schema: z.ZodType<T>, value: unknown): MemoryContractDecodeResult<T> {
+  const result = schema.safeParse(value);
+  return result.success
+    ? { ok: true, value: result.data }
+    : { code: "memory_contract_invalid", ok: false };
+}
+
+export function decodeMemoryScopeSelection(
+  value: unknown
+): MemoryContractDecodeResult<MemoryScopeSelection> {
+  return decode(memoryScopeSelectionSchema, value);
+}
+
+const memorySettingsPatchSchema = z.strictObject({
+  embeddingDeploymentId: idSchema.nullable().optional(),
+  expectedMemoryRevision: safeInteger.optional(),
+  expectedSettingsRevision: safeInteger,
+  learnAutomatically: z.boolean().optional(),
+  memoryUiLocale: z.enum(MEMORY_UI_LOCALES).optional(),
+  preferredProfileLanguage: preferredLanguageSchema.optional(),
+  referenceChatHistory: z.boolean().optional(),
+  sensitiveAutomaticPolicy: z.literal("EXPLICIT_ONLY").optional(),
+  useMemoryFacts: z.boolean().optional()
+}).superRefine((value, context) => {
+  const mutationKeys = [
+    "embeddingDeploymentId",
+    "learnAutomatically",
+    "memoryUiLocale",
+    "preferredProfileLanguage",
+    "referenceChatHistory",
+    "sensitiveAutomaticPolicy",
+    "useMemoryFacts"
+  ] as const;
+  const changed = mutationKeys.filter((key) => Object.hasOwn(value, key));
+  if (changed.length === 0) {
+    context.addIssue({ code: "custom", message: "empty settings patch" });
+  }
+  const memoryVisible = changed.some((key) => key !== "memoryUiLocale");
+  if (memoryVisible && value.expectedMemoryRevision === undefined) {
+    context.addIssue({ code: "custom", message: "memory-visible patch requires revision" });
+  }
+  if (!memoryVisible && value.expectedMemoryRevision !== undefined) {
+    context.addIssue({ code: "custom", message: "locale-only patch must not claim a memory revision" });
+  }
+});
+
+export type MemorySettingsPatch = z.infer<typeof memorySettingsPatchSchema>;
+
+export function decodeMemorySettingsPatch(
+  value: unknown
+): MemoryContractDecodeResult<MemorySettingsPatch> {
+  return decode(memorySettingsPatchSchema, value);
+}
+
+const memoryConsentInputSchema = z.strictObject({
+  confirmationCopyVersion: z.literal(MEMORY_CONFIRMATION_COPY_VERSION),
+  currentUtilityEgressFingerprint: hashSchema,
+  currentUtilityPolicyVersion: z.string().trim().min(1).max(128),
+  expectedMemoryConsentRevision: safeInteger,
+  expectedMemoryRevision: safeInteger,
+  expectedSettingsRevision: safeInteger
+});
+
+export type MemoryConsentInput = z.infer<typeof memoryConsentInputSchema>;
+
+export function decodeMemoryConsentInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryConsentInput> {
+  return decode(memoryConsentInputSchema, value);
+}
+
+const mutationAuthorizationCommonSchema = z.strictObject({
+  confirmationCopyVersion: z.literal(MEMORY_CONFIRMATION_COPY_VERSION),
+  requestNonce: idSchema
+});
+
+const memoryMutationAuthorizationInputSchema = z.discriminatedUnion("action", [
+  mutationAuthorizationCommonSchema.extend({
+    action: z.literal("SAVE"),
+    exactStatementHash: hashSchema
+  }),
+  mutationAuthorizationCommonSchema.extend({
+    action: z.literal("EDIT"),
+    expectedTargetVersionId: idSchema,
+    targetFactId: idSchema
+  }),
+  mutationAuthorizationCommonSchema.extend({
+    action: z.literal("MOVE_SCOPE"),
+    expectedTargetVersionId: idSchema,
+    targetFactId: idSchema
+  }),
+  mutationAuthorizationCommonSchema.extend({
+    action: z.literal("FORGET"),
+    expectedTargetVersionId: idSchema,
+    targetFactId: idSchema
+  }),
+  mutationAuthorizationCommonSchema.extend({
+    action: z.literal("BULK_DELETE"),
+    operation: z.enum(MEMORY_BULK_DELETE_OPERATIONS)
+  })
+]);
+
+export type MemoryMutationAuthorizationInput = z.infer<
+  typeof memoryMutationAuthorizationInputSchema
+>;
+
+export function decodeMemoryMutationAuthorizationInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryMutationAuthorizationInput> {
+  return decode(memoryMutationAuthorizationInputSchema, value);
+}
+
+const memoryMutationAuthorizationResponseSchema = z.strictObject({
+  expiresAt: isoTimestampSchema,
+  mutationAuthorizationId: idSchema
+});
+
+export type MemoryMutationAuthorizationResponse = z.infer<
+  typeof memoryMutationAuthorizationResponseSchema
+>;
+
+export function decodeMemoryMutationAuthorizationResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemoryMutationAuthorizationResponse> {
+  return decode(memoryMutationAuthorizationResponseSchema, value);
+}
+
+const memoryCreateInputSchema = z.strictObject({
+  category: categorySchema.nullable().optional(),
+  modality: z.enum(MEMORY_MODALITIES).nullable().optional(),
+  mutationAuthorizationId: idSchema,
+  scope: memoryScopeSelectionSchema,
+  statement: safeText(MEMORY_STATEMENT_MAX_LENGTH),
+  validFrom: nullableTimestampSchema.optional(),
+  validTo: nullableTimestampSchema.optional()
+}).superRefine((value, context) => {
+  if (value.validFrom && value.validTo && Date.parse(value.validFrom) >= Date.parse(value.validTo)) {
+    context.addIssue({ code: "custom", message: "valid interval must be half-open and non-empty" });
+  }
+});
+
+export type MemoryCreateInput = z.infer<typeof memoryCreateInputSchema>;
+
+export function decodeMemoryCreateInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryCreateInput> {
+  return decode(memoryCreateInputSchema, value);
+}
+
+const memoryListSearchInputSchema = z.strictObject({
+  cursor: cursorSchema.optional(),
+  pageSize: positiveInteger.max(MEMORY_PAGE_SIZE_MAX).optional(),
+  query: safeText(MEMORY_QUERY_MAX_LENGTH),
+  scope: memoryScopeSelectionSchema.optional(),
+  sourceMode: z.enum(MEMORY_SOURCE_MODES).optional(),
+  state: z.enum(MEMORY_FACT_STATES).optional()
+});
+
+const memoryListInputSchema = z.strictObject({
+  cursor: cursorSchema.optional(),
+  pageSize: positiveInteger.max(MEMORY_PAGE_SIZE_MAX).optional(),
+  scope: memoryScopeSelectionSchema.optional(),
+  sourceMode: z.enum(MEMORY_SOURCE_MODES).optional(),
+  state: z.enum(MEMORY_FACT_STATES).optional()
+});
+
+export type MemoryListInput = z.infer<typeof memoryListInputSchema>;
+
+export function decodeMemoryListInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryListInput> {
+  return decode(memoryListInputSchema, value);
+}
+
+export type MemoryListSearchInput = z.infer<typeof memoryListSearchInputSchema>;
+
+export function decodeMemoryListSearchInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryListSearchInput> {
+  return decode(memoryListSearchInputSchema, value);
+}
+
+const memoryUpdateInputSchema = z.strictObject({
+  category: categorySchema.optional(),
+  expectedVersionId: idSchema,
+  modality: z.enum(MEMORY_MODALITIES).optional(),
+  mutationAuthorizationId: idSchema,
+  pinned: z.boolean().optional(),
+  scope: memoryScopeSelectionSchema.optional(),
+  statement: safeText(MEMORY_STATEMENT_MAX_LENGTH).optional(),
+  validFrom: nullableTimestampSchema.optional(),
+  validTo: nullableTimestampSchema.optional()
+}).superRefine((value, context) => {
+  const patchKeys = ["category", "modality", "pinned", "scope", "statement", "validFrom", "validTo"] as const;
+  if (!patchKeys.some((key) => Object.hasOwn(value, key))) {
+    context.addIssue({ code: "custom", message: "empty memory patch" });
+  }
+  if (value.validFrom && value.validTo && Date.parse(value.validFrom) >= Date.parse(value.validTo)) {
+    context.addIssue({ code: "custom", message: "valid interval must be half-open and non-empty" });
+  }
+});
+
+export type MemoryUpdateInput = z.infer<typeof memoryUpdateInputSchema>;
+
+export function decodeMemoryUpdateInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryUpdateInput> {
+  return decode(memoryUpdateInputSchema, value);
+}
+
+const memoryForgetInputSchema = z.strictObject({
+  expectedVersionId: idSchema,
+  mutationAuthorizationId: idSchema
+});
+
+export type MemoryForgetInput = z.infer<typeof memoryForgetInputSchema>;
+
+export function decodeMemoryForgetInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryForgetInput> {
+  return decode(memoryForgetInputSchema, value);
+}
+
+const memoryBulkDeleteInputSchema = z.strictObject({
+  expectedMemoryRevision: safeInteger,
+  expectedSettingsRevision: safeInteger,
+  mutationAuthorizationId: idSchema,
+  operation: z.enum(MEMORY_BULK_DELETE_OPERATIONS)
+});
+
+export type MemoryBulkDeleteInput = z.infer<typeof memoryBulkDeleteInputSchema>;
+
+export function decodeMemoryBulkDeleteInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryBulkDeleteInput> {
+  return decode(memoryBulkDeleteInputSchema, value);
+}
+
+const memoryHistorySearchInputSchema = z.strictObject({
+  chatIds: z.array(idSchema).max(20).refine(
+    (values) => new Set(values).size === values.length,
+    "duplicate chat id"
+  ),
+  cursor: cursorSchema,
+  folderId: idSchema.nullable(),
+  from: nullableTimestampSchema,
+  pageSize: positiveInteger.max(MEMORY_PAGE_SIZE_MAX),
+  query: safeText(MEMORY_QUERY_MAX_LENGTH),
+  to: nullableTimestampSchema
+}).superRefine((value, context) => {
+  if (value.from && value.to && Date.parse(value.from) >= Date.parse(value.to)) {
+    context.addIssue({ code: "custom", message: "history interval must be half-open and non-empty" });
+  }
+});
+
+export type MemoryHistorySearchInput = z.infer<typeof memoryHistorySearchInputSchema>;
+
+export function decodeMemoryHistorySearchInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryHistorySearchInput> {
+  return decode(memoryHistorySearchInputSchema, value);
+}
+
+const memoryRebuildInputSchema = z.strictObject({
+  embeddingDeploymentId: idSchema.nullable().optional(),
+  expectedMemoryRevision: safeInteger,
+  expectedSettingsRevision: safeInteger,
+  mutationAuthorizationId: idSchema.optional(),
+  operation: z.enum(MEMORY_REBUILD_OPERATIONS)
+}).superRefine((value, context) => {
+  if (value.operation === "REEMBED" && !value.embeddingDeploymentId) {
+    context.addIssue({ code: "custom", message: "re-embedding requires a deployment" });
+  }
+  if (value.operation === "REDREAM_EXISTING_CHATS" && !value.mutationAuthorizationId) {
+    context.addIssue({ code: "custom", message: "redream requires explicit authorization" });
+  }
+  if (value.operation !== "REEMBED" && Object.hasOwn(value, "embeddingDeploymentId")) {
+    context.addIssue({ code: "custom", message: "deployment is valid only for re-embedding" });
+  }
+});
+
+export type MemoryRebuildInput = z.infer<typeof memoryRebuildInputSchema>;
+
+export function decodeMemoryRebuildInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryRebuildInput> {
+  return decode(memoryRebuildInputSchema, value);
+}
+
+const memoryChatModePatchSchema = z.strictObject({
+  expectedChatRevision: safeInteger,
+  expectedMemoryRevision: safeInteger,
+  mode: z.enum(["NORMAL", "EXCLUDED"]),
+  resumeDisclosureCopyVersion: z.literal(MEMORY_CONFIRMATION_COPY_VERSION).optional()
+}).superRefine((value, context) => {
+  if (value.mode === "NORMAL" && !value.resumeDisclosureCopyVersion) {
+    context.addIssue({ code: "custom", message: "resume requires current disclosure" });
+  }
+  if (value.mode === "EXCLUDED" && value.resumeDisclosureCopyVersion) {
+    context.addIssue({ code: "custom", message: "exclude does not accept resume disclosure" });
+  }
+});
+
+export type MemoryChatModePatch = z.infer<typeof memoryChatModePatchSchema>;
+
+export function decodeMemoryChatModePatch(
+  value: unknown
+): MemoryContractDecodeResult<MemoryChatModePatch> {
+  return decode(memoryChatModePatchSchema, value);
+}
+
+const memoryInitialChatModeSchema = z.discriminatedUnion("chatMode", [
+  z.strictObject({ chatMode: z.literal("NORMAL") }),
+  z.strictObject({
+    chatMode: z.literal("TEMPORARY"),
+    temporaryRetentionPolicyVersion: z.literal(MEMORY_TEMPORARY_RETENTION_POLICY_VERSION)
+  })
+]);
+
+export type MemoryInitialChatMode = z.infer<typeof memoryInitialChatModeSchema>;
+
+export function decodeMemoryInitialChatMode(
+  value: unknown
+): MemoryContractDecodeResult<MemoryInitialChatMode> {
+  return decode(memoryInitialChatModeSchema, value);
+}
+
+const memorySettingsResponseSchema = z.strictObject({
+  capabilities: z.strictObject({
+    automaticLearning: z.boolean(),
+    explicitMemory: z.boolean(),
+    historyRecall: z.boolean(),
+    russianQualified: z.boolean()
+  }),
+  egress: z.strictObject({
+    acceptedAt: nullableTimestampSchema,
+    acceptedUtilityEgressFingerprint: hashSchema.nullable(),
+    acceptedUtilityPolicyVersion: z.string().trim().min(1).max(128).nullable(),
+    currentUtilityEgressFingerprint: hashSchema,
+    embeddingDestination: safeText(256).nullable(),
+    remoteRerankerDestination: safeText(256).nullable(),
+    reviewRequired: z.boolean(),
+    systemModelDestination: safeText(256).nullable()
+  }),
+  settings: z.strictObject({
+    embeddingDeployment: z.strictObject({
+      connectionDisplayName: safeText(128),
+      id: idSchema,
+      modelDisplayName: safeText(128)
+    }).nullable(),
+    learnAutomatically: z.boolean(),
+    memoryConsentRevision: safeInteger,
+    memoryGeneration: safeInteger,
+    memoryRevision: safeInteger,
+    memoryUiLocale: z.enum(MEMORY_UI_LOCALES),
+    preferredProfileLanguage: preferredLanguageSchema,
+    referenceChatHistory: z.boolean(),
+    sensitiveAutomaticPolicy: z.literal("EXPLICIT_ONLY"),
+    settingsRevision: safeInteger,
+    updatedAt: isoTimestampSchema,
+    useMemoryFacts: z.boolean()
+  })
+}).superRefine((value, context) => {
+  const accepted = value.egress.acceptedUtilityEgressFingerprint;
+  const policy = value.egress.acceptedUtilityPolicyVersion;
+  const acceptedAt = value.egress.acceptedAt;
+  if ((accepted === null) !== (policy === null) || (accepted === null) !== (acceptedAt === null)) {
+    context.addIssue({ code: "custom", message: "accepted egress evidence is all-or-none" });
+  }
+  if (!value.egress.reviewRequired && accepted !== value.egress.currentUtilityEgressFingerprint) {
+    context.addIssue({ code: "custom", message: "unreviewed destination drift" });
+  }
+});
+
+export type MemorySettingsResponse = z.infer<typeof memorySettingsResponseSchema>;
+
+export function decodeMemorySettingsResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemorySettingsResponse> {
+  return decode(memorySettingsResponseSchema, value);
+}
+
+const memorySummarySchema = z.strictObject({
+  category: categorySchema,
+  createdAt: isoTimestampSchema,
+  currentVersionId: idSchema.nullable(),
+  displayText: safeText(MEMORY_STATEMENT_MAX_LENGTH).nullable(),
+  factState: z.enum(MEMORY_FACT_STATES),
+  id: idSchema,
+  indexingState: z.enum(["LEXICAL_READY", "VECTOR_PENDING", "HYBRID_READY", "DEGRADED"]),
+  lastConfirmedAt: nullableTimestampSchema,
+  lastUsedAt: nullableTimestampSchema,
+  modality: z.enum(MEMORY_MODALITIES),
+  pinned: z.boolean(),
+  scope: memoryScopeSelectionSchema,
+  sensitivityClass: z.enum(MEMORY_SENSITIVITY_CLASSES),
+  sourceCount: safeInteger,
+  sourceMode: z.enum(MEMORY_SOURCE_MODES),
+  updatedAt: isoTimestampSchema,
+  validFrom: nullableTimestampSchema,
+  validTo: nullableTimestampSchema,
+  versionState: z.enum(MEMORY_FACT_VERSION_STATES)
+}).superRefine((value, context) => {
+  const expectedVersionState: Record<MemoryFactState, MemoryFactVersionState> = {
+    ACTIVE: "ACTIVE",
+    CONFLICTED: "CONFLICTING",
+    EXPIRED: "EXPIRED",
+    FORGOTTEN: "FORGOTTEN",
+    ORPHANED: "ORPHANED",
+    RETRACTED: "RETRACTED"
+  };
+  if (value.versionState !== expectedVersionState[value.factState]) {
+    context.addIssue({ code: "custom", message: "fact/version state mismatch" });
+  }
+  if (value.factState === "ACTIVE") {
+    if (value.currentVersionId === null || value.displayText === null) {
+      context.addIssue({ code: "custom", message: "active fact requires current visible version" });
+    }
+  } else if (value.currentVersionId !== null) {
+    context.addIssue({ code: "custom", message: "non-active fact cannot have a current version" });
+  }
+  if (value.validFrom && value.validTo && Date.parse(value.validFrom) >= Date.parse(value.validTo)) {
+    context.addIssue({ code: "custom", message: "invalid fact validity interval" });
+  }
+});
+
+export type MemorySummary = z.infer<typeof memorySummarySchema>;
+
+const memoryListResponseSchema = z.strictObject({
+  memories: z.array(memorySummarySchema).max(100),
+  nextCursor: cursorSchema
+});
+
+export type MemoryListResponse = z.infer<typeof memoryListResponseSchema>;
+
+export function decodeMemoryListResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemoryListResponse> {
+  return decode(memoryListResponseSchema, value);
+}
+
+const memoryMutationResponseSchema = z.strictObject({ memory: memorySummarySchema });
+export type MemoryMutationResponse = z.infer<typeof memoryMutationResponseSchema>;
+
+export function decodeMemoryMutationResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemoryMutationResponse> {
+  return decode(memoryMutationResponseSchema, value);
+}
+
+const memoryDeletionStatusSchema = z.strictObject({
+  completedUnits: safeInteger,
+  deletionId: idSchema,
+  lastAuditAt: nullableTimestampSchema,
+  memoryGeneration: safeInteger,
+  memoryRevision: safeInteger,
+  operation: z.enum(MEMORY_BULK_DELETE_OPERATIONS),
+  settingsRevision: safeInteger,
+  state: z.enum(MEMORY_DELETION_STATES),
+  totalUnits: safeInteger.nullable(),
+  updatedAt: isoTimestampSchema
+}).superRefine((value, context) => {
+  if (value.totalUnits !== null && value.completedUnits > value.totalUnits) {
+    context.addIssue({ code: "custom", message: "deletion progress exceeds total" });
+  }
+  if (value.state === "SUCCEEDED" && value.lastAuditAt === null) {
+    context.addIssue({ code: "custom", message: "completed deletion requires audit evidence" });
+  }
+});
+
+export type MemoryDeletionStatus = z.infer<typeof memoryDeletionStatusSchema>;
+
+export function decodeMemoryDeletionStatus(
+  value: unknown
+): MemoryContractDecodeResult<MemoryDeletionStatus> {
+  return decode(memoryDeletionStatusSchema, value);
+}
+
+const memoryReceiptItemSchema = z.strictObject({
+  includedText: safeText(MEMORY_RECEIPT_ITEM_TEXT_MAX_LENGTH),
+  itemType: z.enum(MEMORY_RECEIPT_ITEM_TYPES),
+  lifecycleState: z.enum(MEMORY_RECEIPT_LIFECYCLE_STATES),
+  ordinal: safeInteger,
+  scopeType: z.enum(MEMORY_SCOPE_TYPES).nullable(),
+  selectionReason: z.string().trim().min(1).max(128),
+  sourceChatId: idSchema.nullable(),
+  sourceMessageIds: z.array(idSchema).max(50),
+  sourceMode: z.enum(["EXPLICIT", "AUTOMATIC", "HISTORY", "PROFILE"]),
+  versionId: idSchema.nullable()
+}).superRefine((value, context) => {
+  if (value.lifecycleState === "SOURCE_DELETED" && value.sourceChatId !== null) {
+    context.addIssue({ code: "custom", message: "deleted source cannot retain a live link" });
+  }
+  if (value.itemType === "FACT_VERSION" && value.versionId === null) {
+    context.addIssue({ code: "custom", message: "fact receipt requires a frozen version id" });
+  }
+});
+
+export type MemoryReceiptItem = z.infer<typeof memoryReceiptItemSchema>;
+
+const memoryReceiptSchema = z.strictObject({
+  degradationCode: z.string().trim().min(1).max(128).nullable(),
+  itemCount: safeInteger,
+  items: z.array(memoryReceiptItemSchema).max(50),
+  outcome: z.enum(MEMORY_RECEIPT_OUTCOMES),
+  summary: safeText(500)
+}).superRefine((value, context) => {
+  if (value.itemCount !== value.items.length) {
+    context.addIssue({ code: "custom", message: "receipt item count mismatch" });
+  }
+  if (!value.items.every((item, index) => item.ordinal === index)) {
+    context.addIssue({ code: "custom", message: "receipt ordinals must be contiguous and ordered" });
+  }
+  if (value.items.some((item) => new Set(item.sourceMessageIds).size !== item.sourceMessageIds.length)) {
+    context.addIssue({ code: "custom", message: "duplicate receipt source message" });
+  }
+  if ((value.outcome === "USED" || value.outcome === "DEGRADED") && value.items.length === 0) {
+    context.addIssue({ code: "custom", message: "visible receipt outcome requires items" });
+  }
+  if (value.outcome !== "USED" && value.outcome !== "DEGRADED" && value.items.length !== 0) {
+    context.addIssue({ code: "custom", message: "non-visible receipt outcome cannot carry items" });
+  }
+  if (value.outcome === "DEGRADED" && value.degradationCode === null) {
+    context.addIssue({ code: "custom", message: "degraded receipt requires a code" });
+  }
+  if (value.outcome !== "DEGRADED" && value.degradationCode !== null) {
+    context.addIssue({ code: "custom", message: "only degraded receipt carries a degradation code" });
+  }
+});
+
+export type MemoryReceipt = z.infer<typeof memoryReceiptSchema>;
+
+export function decodeMemoryReceipt(
+  value: unknown
+): MemoryContractDecodeResult<MemoryReceipt> {
+  return decode(memoryReceiptSchema, value);
+}
+
+const memoryHistorySearchResponseSchema = z.strictObject({
+  nextCursor: cursorSchema,
+  results: z.array(z.strictObject({
+    occurredAt: isoTimestampSchema,
+    sourceChatId: idSchema.nullable(),
+    sourceChatTitle: safeText(200),
+    sourceMessageIds: z.array(idSchema).min(1).max(50),
+    sourceState: z.enum(["AVAILABLE", "ARCHIVED", "SOURCE_DELETED"]),
+    snippet: safeText(MEMORY_SEARCH_SNIPPET_MAX_LENGTH)
+  })).max(MEMORY_PAGE_SIZE_MAX)
+}).superRefine((value, context) => {
+  for (const result of value.results) {
+    if (result.sourceState === "SOURCE_DELETED" && result.sourceChatId !== null) {
+      context.addIssue({ code: "custom", message: "deleted history source cannot remain linked" });
+    }
+    if (result.sourceState !== "SOURCE_DELETED" && result.sourceChatId === null) {
+      context.addIssue({ code: "custom", message: "available history source requires a link" });
+    }
+    if (new Set(result.sourceMessageIds).size !== result.sourceMessageIds.length) {
+      context.addIssue({ code: "custom", message: "duplicate history source message" });
+    }
+  }
+});
+
+export type MemoryHistorySearchResponse = z.infer<typeof memoryHistorySearchResponseSchema>;
+
+export function decodeMemoryHistorySearchResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemoryHistorySearchResponse> {
+  return decode(memoryHistorySearchResponseSchema, value);
+}
+
+const memoryRebuildStatusSchema = z.strictObject({
+  completedUnits: safeInteger,
+  createdAt: isoTimestampSchema,
+  errorCode: z.enum(MEMORY_ERROR_CODES).nullable(),
+  jobId: idSchema,
+  operation: z.enum(MEMORY_REBUILD_OPERATIONS),
+  state: z.enum(MEMORY_REBUILD_STATES),
+  totalUnits: safeInteger.nullable(),
+  updatedAt: isoTimestampSchema
+}).superRefine((value, context) => {
+  if (value.totalUnits !== null && value.completedUnits > value.totalUnits) {
+    context.addIssue({ code: "custom", message: "rebuild progress exceeds total" });
+  }
+  if (value.state === "FAILED" && value.errorCode === null) {
+    context.addIssue({ code: "custom", message: "failed rebuild requires a stable error" });
+  }
+  if (value.state !== "FAILED" && value.errorCode !== null) {
+    context.addIssue({ code: "custom", message: "non-failed rebuild cannot carry an error" });
+  }
+});
+
+export type MemoryRebuildStatus = z.infer<typeof memoryRebuildStatusSchema>;
+
+export function decodeMemoryRebuildStatus(
+  value: unknown
+): MemoryContractDecodeResult<MemoryRebuildStatus> {
+  return decode(memoryRebuildStatusSchema, value);
+}
+
+const memoryChatModeResponseSchema = z.strictObject({
+  chatId: idSchema,
+  memoryGeneration: safeInteger,
+  memoryRevision: safeInteger,
+  mode: z.enum(MEMORY_CHAT_MODES),
+  sourceRevision: safeInteger
+});
+
+export type MemoryChatModeResponse = z.infer<typeof memoryChatModeResponseSchema>;
+
+export function decodeMemoryChatModeResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemoryChatModeResponse> {
+  return decode(memoryChatModeResponseSchema, value);
+}
+
+const memoryErrorResponseSchema = z.strictObject({ error: z.enum(MEMORY_ERROR_CODES) });
+export type MemoryErrorResponse = z.infer<typeof memoryErrorResponseSchema>;
+
+export function decodeMemoryErrorResponse(value: unknown): MemoryErrorResponse | null {
+  const result = memoryErrorResponseSchema.safeParse(value);
+  return result.success ? result.data : null;
+}
