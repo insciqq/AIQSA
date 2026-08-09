@@ -30,6 +30,11 @@ import type {
   ProviderDraftTestCandidate,
   StoredProviderDraftCheck
 } from "./repositoryContract";
+import {
+  countBlockingMemoryExecutionBindings,
+  detachExpiredMemoryExecutionBindings,
+  type MemoryExecutionDetachTarget
+} from "../../memory/execution/lifecycle";
 
 class ProviderActivationStaleError extends Error {}
 
@@ -172,7 +177,10 @@ const activeRunStatuses = ["in_progress", "queued", "streaming"] as const;
 
 async function cleanupProviderReferences(
   tx: Prisma.TransactionClient,
-  target: Prisma.ProviderRunBindingWhereInput,
+  target: Extract<
+    MemoryExecutionDetachTarget,
+    { connectionId: string } | { credentialId: string } | { providerModelId: string }
+  >,
   now = new Date()
 ): Promise<void> {
   await tx.providerRunBinding.updateMany({
@@ -195,12 +203,25 @@ async function cleanupProviderReferences(
       ]
     }
   });
-  await tx.providerCredentialVersion.deleteMany({
-    where: {
-      activeFor: null,
-      providerRunBindings: { none: {} }
-    }
-  });
+  await detachExpiredMemoryExecutionBindings(tx, target, now);
+  await tx.$executeRaw(Prisma.sql`
+    DELETE FROM "ProviderCredentialVersion" AS version
+    WHERE NOT EXISTS (
+      SELECT 1 FROM "ProviderCredential" AS credential
+      WHERE credential."id" = version."credentialId"
+        AND credential."activeVersionId" = version."id"
+    )
+      AND NOT EXISTS (
+        SELECT 1 FROM "ProviderRunBinding" AS binding
+        WHERE binding."credentialId" = version."credentialId"
+          AND binding."credentialVersionId" = version."id"
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemoryExecutionBinding" AS binding
+        WHERE binding."credentialId" = version."credentialId"
+          AND binding."credentialVersionId" = version."id"
+      )
+  `);
 }
 
 async function lockInstallationModelPolicies(tx: Prisma.TransactionClient): Promise<void> {
@@ -1683,7 +1704,8 @@ export function createPrismaAdminProviderRepository(
           searchReferences,
           searchRevisionReferences,
           assistantRevisions,
-          runBindings
+          runBindings,
+          memoryBindings
         ] = await Promise.all([
           tx.accessGrant.count({ where: { providerModelId: modelId } }),
           tx.modelPolicy.count({ where: { defaultProviderModelId: modelId } }),
@@ -1693,7 +1715,8 @@ export function createPrismaAdminProviderRepository(
           tx.searchStrategy.count({ where: { providerModelId: modelId } }),
           tx.searchIntegrationRevision.count({ where: { providerModelId: modelId } }),
           tx.assistantRevision.count({ where: { providerModelId: modelId } }),
-          tx.providerRunBinding.count({ where: { providerModelId: modelId } })
+          tx.providerRunBinding.count({ where: { providerModelId: modelId } }),
+          countBlockingMemoryExecutionBindings(tx, { providerModelId: modelId })
         ]);
         const blocked = blockers([
           model.enabled ? { count: 1, kind: "resource_enabled" } : null,
@@ -1710,7 +1733,8 @@ export function createPrismaAdminProviderRepository(
             ? { count: searchRevisionReferences, kind: "search_revision_references" }
             : null,
           assistantRevisions ? { count: assistantRevisions, kind: "assistant_revisions" } : null,
-          runBindings ? { count: runBindings, kind: "run_bindings" } : null
+          runBindings ? { count: runBindings, kind: "run_bindings" } : null,
+          memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null
         ]);
         const blockedResult = conflict(blocked);
         if (blockedResult) return blockedResult;
@@ -1727,18 +1751,26 @@ export function createPrismaAdminProviderRepository(
         });
         if (!credential) return { status: "not_found" } as const;
         await cleanupProviderReferences(tx, { credentialId });
-        const [connectionDefault, groupAssignments, userAssignments, runBindings] = await Promise.all([
+        const [
+          connectionDefault,
+          groupAssignments,
+          userAssignments,
+          runBindings,
+          memoryBindings
+        ] = await Promise.all([
           tx.providerConnection.count({ where: { defaultCredentialId: credentialId } }),
           tx.providerGroupCredentialAssignment.count({ where: { credentialId } }),
           tx.providerUserCredentialAssignment.count({ where: { credentialId } }),
-          tx.providerRunBinding.count({ where: { credentialId } })
+          tx.providerRunBinding.count({ where: { credentialId } }),
+          countBlockingMemoryExecutionBindings(tx, { credentialId })
         ]);
         const blocked = blockers([
           credential.enabled ? { count: 1, kind: "resource_enabled" } : null,
           connectionDefault ? { count: connectionDefault, kind: "connection_default" } : null,
           groupAssignments ? { count: groupAssignments, kind: "group_assignments" } : null,
           userAssignments ? { count: userAssignments, kind: "user_assignments" } : null,
-          runBindings ? { count: runBindings, kind: "run_bindings" } : null
+          runBindings ? { count: runBindings, kind: "run_bindings" } : null,
+          memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null
         ]);
         const blockedResult = conflict(blocked);
         if (blockedResult) return blockedResult;
@@ -1763,7 +1795,13 @@ export function createPrismaAdminProviderRepository(
         await cleanupProviderReferences(tx, { connectionId });
 
         if (connection.family === "openai_compatible" && !connection.templateKey) {
-          const [models, credentials, logicalSearchReferences, runBindings] = await Promise.all([
+          const [
+            models,
+            credentials,
+            logicalSearchReferences,
+            runBindings,
+            memoryBindings
+          ] = await Promise.all([
             tx.providerModel.findMany({
               select: { id: true },
               where: { connectionId }
@@ -1775,7 +1813,8 @@ export function createPrismaAdminProviderRepository(
             tx.searchOption.count({
               where: { sourceConnectionId: connectionId }
             }),
-            tx.providerRunBinding.count({ where: { connectionId } })
+            tx.providerRunBinding.count({ where: { connectionId } }),
+            countBlockingMemoryExecutionBindings(tx, { connectionId })
           ]);
           const modelIds = models.map(({ id }) => id);
           const credentialIds = credentials.map(({ id }) => id);
@@ -1801,7 +1840,8 @@ export function createPrismaAdminProviderRepository(
             assistantRevisions
               ? { count: assistantRevisions, kind: "assistant_revisions" }
               : null,
-            runBindings ? { count: runBindings, kind: "run_bindings" } : null
+            runBindings ? { count: runBindings, kind: "run_bindings" } : null,
+            memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null
           ]);
           const hardConflict = conflict(hardBlockers);
           if (hardConflict) return hardConflict;
@@ -1865,14 +1905,16 @@ export function createPrismaAdminProviderRepository(
           accessGrants,
           activeChildren,
           searchReferences,
-          runBindings
+          runBindings,
+          memoryBindings
         ] = await Promise.all([
           tx.providerModel.count({ where: { connectionId } }),
           tx.providerCredential.count({ where: { connectionId } }),
           tx.accessGrant.count({ where: { providerConnectionId: connectionId } }),
           tx.providerModel.count({ where: { activeVersion: { gt: 0 }, connectionId } }),
           tx.searchOption.count({ where: { sourceConnectionId: connectionId } }),
-          tx.providerRunBinding.count({ where: { connectionId } })
+          tx.providerRunBinding.count({ where: { connectionId } }),
+          countBlockingMemoryExecutionBindings(tx, { connectionId })
         ]);
         const blocked = blockers([
           connection.enabled ? { count: 1, kind: "resource_enabled" } : null,
@@ -1882,7 +1924,8 @@ export function createPrismaAdminProviderRepository(
           accessGrants ? { count: accessGrants, kind: "access_grants" } : null,
           activeChildren ? { count: activeChildren, kind: "active_child_configuration" } : null,
           searchReferences ? { count: searchReferences, kind: "search_references" } : null,
-          runBindings ? { count: runBindings, kind: "run_bindings" } : null
+          runBindings ? { count: runBindings, kind: "run_bindings" } : null,
+          memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null
         ]);
         const blockedResult = conflict(blocked);
         if (blockedResult) return blockedResult;

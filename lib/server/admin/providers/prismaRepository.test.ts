@@ -16,7 +16,9 @@ function transactional<T extends Record<string, unknown>>(db: T): T & {
   $transaction: (operation: (tx: T) => Promise<unknown>) => Promise<unknown>;
 } {
   const transaction = Object.assign({
-    $queryRaw: vi.fn(async () => [{ id: "installation" }])
+    $executeRaw: vi.fn(async () => 0),
+    $queryRaw: vi.fn(async () => [{ id: "installation" }]),
+    memoryExecutionBinding: { count: vi.fn(async () => 0) }
   }, db);
   return Object.assign(transaction, {
     $transaction: vi.fn(async (operation: (tx: T) => Promise<unknown>) =>
@@ -310,6 +312,38 @@ describe("Prisma admin provider repository", () => {
     expect(db.searchIntegrationRevision.count).toHaveBeenCalledWith({
       where: { providerModelId: "model-1" }
     });
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("blocks provider model deletion while a live or recoverable Memory call retains it", async () => {
+    const remove = vi.fn(async () => ({}));
+    const countMemory = vi.fn(async () => 2);
+    const db = transactional({
+      accessGrant: { count: vi.fn(async () => 0) },
+      assistantRevision: { count: vi.fn(async () => 0) },
+      chat: { count: vi.fn(async () => 0) },
+      memoryExecutionBinding: { count: countMemory },
+      modelPolicy: { count: vi.fn(async () => 0) },
+      providerModel: {
+        delete: remove,
+        findUnique: vi.fn(async () => ({ enabled: false, templateKey: null }))
+      },
+      providerRunBinding: {
+        count: vi.fn(async () => 0),
+        updateMany: vi.fn(async () => ({ count: 0 }))
+      },
+      searchIntegrationRevision: { count: vi.fn(async () => 0) },
+      searchStrategy: { count: vi.fn(async () => 0) },
+      systemModelPolicy: { count: vi.fn(async () => 0) },
+      userSettings: { count: vi.fn(async () => 0) }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+
+    await expect(repository.deleteModel("model-1")).resolves.toEqual({
+      blockers: [{ count: 2, kind: "memory_bindings" }],
+      status: "conflict"
+    });
+    expect(countMemory).toHaveBeenCalledWith({ where: { providerModelId: "model-1" } });
     expect(remove).not.toHaveBeenCalled();
   });
 
@@ -702,7 +736,7 @@ describe("Prisma admin provider repository", () => {
     await expect(repository.deleteCredential("credential-1")).resolves.toEqual({
       status: "deleted"
     });
-    expect(operations).toEqual(["versions", "pointer", "versions", "credential"]);
+    expect(operations).toEqual(["pointer", "versions", "credential"]);
     expect(detach).toHaveBeenCalledWith({
       data: {
         connectionId: null,

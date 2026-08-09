@@ -5,6 +5,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TARGET_MIGRATION = "20260810100000_memory_engine_phase1_foundation";
+const EXECUTION_USAGE_MIGRATIONS = [
+  "20260810160000_memory_execution_usage_evidence",
+  "20260810161000_memory_execution_usage_shape"
+] as const;
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -547,6 +551,124 @@ function assertFreshContracts(database: string): void {
   );
 }
 
+function seedExecutionUsageUpgradeFixture(database: string): void {
+  requireSuccess(psql(database, `
+    INSERT INTO "UsageEvent" (
+      "id", "userId", "modelRunId", "provider", "modelId"
+    ) VALUES (
+      'memory-legacy-usage', 'memory-owner-a', 'memory-legacy-run', 'fake', 'fake-qsa'
+    );
+
+    INSERT INTO "MemoryJob" (
+      "id", "userId", "kind", "state", "pipelineVersion",
+      "memoryGenerationSnapshot", "memoryRevisionSnapshot", "idempotencyFingerprint",
+      "completedAt"
+    ) VALUES (
+      'memory-execution-usage-job', 'memory-owner-a', 'EXTRACT_FACTS', 'SUCCEEDED',
+      'memory-pipeline-v1', 0, 0, repeat('u', 64), CURRENT_TIMESTAMP
+    );
+    INSERT INTO "MemoryExecutionBinding" (
+      "id", "userId", "ownerType", "memoryJobId", "logicalRole", "ordinal",
+      "state", "providerId", "destinationFingerprint", "policyVersion",
+      "promptVersion", "schemaVersion", "pipelineVersion", "secretFreeExecutionSnapshot",
+      "inputHash", "usageCompleteness", "recoverableUntil", "relationsDetachedAt",
+      "completedAt"
+    ) VALUES (
+      'memory-execution-usage-binding', 'memory-owner-a', 'JOB',
+      'memory-execution-usage-job', 'MEMORY_FACT_EXTRACT', 0, 'SUCCEEDED',
+      'openai_compatible', repeat('v', 64), 'policy-v1', 'prompt-v1', 'schema-v1',
+      'memory-pipeline-v1', '{}'::jsonb, repeat('w', 64), 'UNAVAILABLE',
+      CURRENT_TIMESTAMP - interval '1 second', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+  `), "seed Memory execution usage upgrade fixture");
+}
+
+function seedExecutionUsageFreshOwner(database: string): void {
+  requireSuccess(psql(database, `
+    INSERT INTO "User" ("id", "email", "displayName", "role", "status", "updatedAt")
+    VALUES (
+      'memory-owner-a', 'memory-fresh-a@example.test', 'Memory fresh A',
+      'user', 'active', CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Chat" ("id", "userId", "title", "updatedAt")
+    VALUES ('memory-chat-a', 'memory-owner-a', 'Memory fresh chat', CURRENT_TIMESTAMP);
+    INSERT INTO "Message" ("id", "chatId", "role", "content", "status", "updatedAt") VALUES
+      ('memory-user-message-a', 'memory-chat-a', 'user', '[]'::jsonb, 'complete', CURRENT_TIMESTAMP),
+      ('memory-assistant-message-a', 'memory-chat-a', 'assistant', '[]'::jsonb, 'complete', CURRENT_TIMESTAMP);
+    INSERT INTO "ModelRun" (
+      "id", "chatId", "userId", "userMessageId", "assistantMessageId",
+      "provider", "modelId", "status", "normalizedRequest", "providerRequestPreview",
+      "updatedAt"
+    ) VALUES (
+      'memory-legacy-run', 'memory-chat-a', 'memory-owner-a', 'memory-user-message-a',
+      'memory-assistant-message-a', 'fake', 'fake-qsa', 'complete', '{}'::jsonb,
+      '{}'::jsonb, CURRENT_TIMESTAMP
+    );
+  `), "seed fresh Memory execution usage owner");
+}
+
+function assertExecutionUsageContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT count(*)
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'UsageEvent'
+        AND column_name IN (
+          'inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens',
+          'reasoningTokens', 'totalTokens', 'estimatedCostMicros'
+        )
+        AND is_nullable = 'YES'
+        AND column_default IS NULL;
+    `),
+    "7",
+    "Memory usage evidence columns are not nullable and default-free"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|', "inputTokens", "cachedInputTokens", "cacheWriteInputTokens",
+        "outputTokens", "reasoningTokens", "totalTokens", "estimatedCostMicros")
+      FROM "UsageEvent" WHERE "id" = 'memory-legacy-usage';
+    `),
+    "0|0|0|0|0|0|0",
+    "nullable migration changed existing ordinary usage evidence"
+  );
+
+  requireSuccess(psql(database, `
+    INSERT INTO "UsageEvent" (
+      "id", "userId", "provider", "modelId", "providerModelId",
+      "memoryExecutionBindingId"
+    ) VALUES (
+      'memory-execution-usage', 'memory-owner-a', 'openai_compatible',
+      'memory-upstream-model', 'memory-provider-model-snapshot',
+      'memory-execution-usage-binding'
+    );
+  `), "create nullable Memory execution usage evidence");
+  assert.equal(
+    scalar(database, `
+      SELECT num_nonnulls(
+        "inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens",
+        "reasoningTokens", "totalTokens", "estimatedCostMicros"
+      ) FROM "UsageEvent" WHERE "id" = 'memory-execution-usage';
+    `),
+    "0",
+    "Memory usage synthesized unreported categories"
+  );
+
+  expectRejected(database, `
+    UPDATE "UsageEvent" SET "providerModelId" = NULL
+    WHERE "id" = 'memory-execution-usage';
+  `, /UsageEvent_knowledge_shape_check/u, "Memory usage without deployment evidence");
+  expectRejected(database, `
+    UPDATE "UsageEvent" SET "modelRunId" = 'memory-legacy-run'
+    WHERE "id" = 'memory-execution-usage';
+  `, /UsageEvent_knowledge_shape_check/u, "Memory usage copied into answer-run accounting");
+  expectRejected(database, `
+    UPDATE "UsageEvent" SET "providerModelId" = 'forbidden-provider-model'
+    WHERE "id" = 'memory-legacy-usage';
+  `, /UsageEvent_knowledge_shape_check/u, "ordinary usage impersonating bound utility usage");
+}
+
 function main(): void {
   requireSuccess(compose(["up", "-d", POSTGRES_SERVICE]), "start disposable PostgreSQL service");
   try {
@@ -558,10 +680,17 @@ function main(): void {
     assertScopeAndFactContracts(upgradeDatabase);
     assertGenerationAndSearchContracts(upgradeDatabase);
     assertPreparingAndOutboxContracts(upgradeDatabase);
+    seedExecutionUsageUpgradeFixture(upgradeDatabase);
+    applyMigrations(upgradeDatabase, EXECUTION_USAGE_MIGRATIONS);
+    assertExecutionUsageContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
     assertFreshContracts(freshDatabase);
+    seedExecutionUsageFreshOwner(freshDatabase);
+    seedExecutionUsageUpgradeFixture(freshDatabase);
+    applyMigrations(freshDatabase, EXECUTION_USAGE_MIGRATIONS);
+    assertExecutionUsageContracts(freshDatabase);
   } finally {
     dropDatabases();
   }

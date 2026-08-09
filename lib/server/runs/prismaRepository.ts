@@ -2577,12 +2577,12 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         provider: row.provider,
         recordedAt: row.createdAt.toISOString(),
         usage: {
-          cachedInputTokens: row.cachedInputTokens,
-          cacheWriteInputTokens: row.cacheWriteInputTokens,
-          inputTokens: row.inputTokens,
-          outputTokens: row.outputTokens,
-          reasoningTokens: row.reasoningTokens,
-          totalTokens: row.totalTokens
+          cachedInputTokens: row.cachedInputTokens ?? 0,
+          cacheWriteInputTokens: row.cacheWriteInputTokens ?? 0,
+          inputTokens: row.inputTokens ?? 0,
+          outputTokens: row.outputTokens ?? 0,
+          reasoningTokens: row.reasoningTokens ?? 0,
+          totalTokens: row.totalTokens ?? 0
         }
       }));
     },

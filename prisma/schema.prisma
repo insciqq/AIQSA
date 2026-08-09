@@ -1909,13 +1909,13 @@ model UsageEvent {
   knowledgeDocumentVersionId String?
   knowledgeBatchIndex        Int?
   memoryExecutionBindingId   String?                   @unique
-  inputTokens                Int                       @default(0)
-  cachedInputTokens          Int                       @default(0)
-  cacheWriteInputTokens      Int                       @default(0)
-  outputTokens               Int                       @default(0)
-  reasoningTokens            Int                       @default(0)
-  totalTokens                Int                       @default(0)
-  estimatedCostMicros        Int                       @default(0)
+  inputTokens                Int?
+  cachedInputTokens          Int?
+  cacheWriteInputTokens      Int?
+  outputTokens               Int?
+  reasoningTokens            Int?
+  totalTokens                Int?
+  estimatedCostMicros        Int?
   createdAt                  DateTime                  @default(now())
   knowledgeBase              KnowledgeBase?            @relation("KnowledgeUsageBase", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
   knowledgeDocumentVersion   KnowledgeDocumentVersion? @relation("KnowledgeUsageDocumentVersion", fields: [knowledgeBaseId, knowledgeDocumentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeDocumentVersion_fkey")

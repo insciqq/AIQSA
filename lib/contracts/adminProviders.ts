@@ -224,6 +224,7 @@ export type AdminProviderDeleteBlocker = {
     | "credentials"
     | "group_assignments"
     | "installation_default"
+    | "memory_bindings"
     | "models"
     | "resource_enabled"
     | "run_bindings"

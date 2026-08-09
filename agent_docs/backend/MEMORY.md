@@ -24,20 +24,28 @@ two-phase retrieval attempts/staging, final run bindings/items, and the private
 `ModelRun.preparing` state. Composite owner foreign keys, partial uniqueness,
 deferrable fact/current-version and settings/active-generation checks, request
 shape, execution/vector shape, and account-deletion restriction are enforced by
-the database. Every new user receives a default-off settings row; upgrades,
-bootstrap, and the local seed are inert and schedule no work. Non-global scope
-activation is rejected by a temporary database guard until the Phase 3 runtime
-authorization migration owns that cutover. The installation-only suppression
-HMAC keyring and restore/automatic-work preflights are implemented separately;
-keys never enter the database.
+the database. Bounded production repositories now implement settings CAS,
+global scopes, explicit fact/version/evidence/receipt writes, suppressions,
+lexical projection, jobs/deletion obligations, and per-call execution
+admission/lifecycle. Every new user receives a default-off settings row;
+upgrades, bootstrap, and the local seed are inert and schedule no work.
+Non-global scope activation is rejected by a temporary database guard until the
+Phase 3 runtime authorization migration owns that cutover. The
+installation-only suppression HMAC keyring and restore/automatic-work
+preflights are implemented separately; keys never enter the database.
 
-There are still no production Memory repositories, APIs, coordinator/worker,
-retrieval integration, UI surfaces, or Memory provider calls. The current run
-adapter refuses to project a `preparing` row through the accepted-run wire
-contract, so the new state cannot dispatch or leak before the two-phase runtime
-slice lands. No non-default Memory content is created by ordinary application
-behavior. Existing chat context and folder/project prompt memory keep their
-current behavior and are not this feature.
+There are still no Memory APIs, coordinator/worker, retrieval integration, UI
+surfaces, or live Memory provider calls. The execution boundary is feature-dark:
+it resolves current installation utility or entitled embedding authority,
+accepted egress, exact signed role qualification, immutable provider and
+credential evidence, single-winner start, exactly-once nullable usage,
+outcome-unknown recovery, and post-horizon detach, but no shipped caller can
+dispatch it. The current run adapter refuses to project a `preparing` row
+through the accepted-run wire contract, so the new state cannot dispatch or
+leak before the two-phase runtime slice lands. No non-default Memory content is
+created by ordinary application behavior. Existing chat context and
+folder/project prompt memory keep their current behavior and are not this
+feature.
 
 This document owns the durable target contract while implementation lands in
 ordered slices. Executable code, migrations, and tests remain authoritative for
@@ -256,6 +264,7 @@ RetrievalAttempt:
 ExecutionBinding:
   PENDING -> RUNNING -> SUCCEEDED | FAILED | CANCELLED | OUTCOME_UNKNOWN
   PENDING -> FAILED | CANCELLED before network I/O
+  OUTCOME_UNKNOWN -> SUCCEEDED | FAILED | CANCELLED by bounded recovery only
 
 IndexGeneration:
   first empty LEXICAL_ONLY -> ACTIVE
@@ -277,6 +286,21 @@ Only non-deletion work may become terminally failed. A deletion obligation may
 be visibly blocked and retried slowly, but it is never abandoned. A WAITING job
 holds no live lease and cannot select a fallback destination. An uncertain
 external outcome is never replayed blindly.
+
+Every external Memory operation first commits one owner-bound `PENDING`
+execution row, then wins one `PENDING -> RUNNING` transition after re-resolving
+the accepted aggregate egress fingerprint, exact credential version, provider
+configuration, role capability, and signed unexpired qualification. A second
+starter receives no execution authority. Settlement creates exactly one
+independent `UsageEvent`; unreported token categories and ambiguous cost remain
+null, and the row is never linked into answer-run replacement accounting.
+Provider-specific recovery may monotonically enrich an `OUTCOME_UNKNOWN` row
+without another call. Only honestly terminal, usage-backed rows detach their
+live provider/model/credential relations after the 24-hour recovery horizon;
+provider deletion reports every remaining live or recoverable Memory binding as
+an explicit blocker. Authoritative result application must run through the
+same locked current-policy recheck, so an in-flight result cannot cross a
+changed consent fence.
 
 ## Two-Phase Run Boundary
 

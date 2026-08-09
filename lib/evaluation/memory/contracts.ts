@@ -56,7 +56,8 @@ export const MEMORY_CAPABILITY_ROLES = [
   "MEMORY_DOCUMENT_EMBED",
   "MEMORY_QUERY_EMBED",
   "MEMORY_QUERY_EXPAND",
-  "MEMORY_RERANK"
+  "MEMORY_RERANK",
+  "MEMORY_PROFILE"
 ] as const;
 export type MemoryCapabilityRole = (typeof MEMORY_CAPABILITY_ROLES)[number];
 
