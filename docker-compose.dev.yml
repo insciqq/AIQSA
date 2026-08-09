@@ -53,7 +53,7 @@ services:
       AIQSA_AUTH_REQUEST_BODY_MAX_BYTES: ${AIQSA_AUTH_REQUEST_BODY_MAX_BYTES:-65536}
       AIQSA_JSON_REQUEST_BODY_MAX_BYTES: ${AIQSA_JSON_REQUEST_BODY_MAX_BYTES:-1048576}
       AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: ${AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS:-1000000}
-      AIQSA_KNOWLEDGE_MAX_FILE_BYTES: ${AIQSA_KNOWLEDGE_MAX_FILE_BYTES:-25000000}
+      AIQSA_KNOWLEDGE_MAX_FILE_BYTES: ${AIQSA_KNOWLEDGE_MAX_FILE_BYTES:-50000000}
       AIQSA_KNOWLEDGE_MAX_PAGES: ${AIQSA_KNOWLEDGE_MAX_PAGES:-2000}
       AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS: ${AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS:-5000000}
       AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT: ${AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT:-10000}
@@ -108,13 +108,27 @@ services:
         condition: service_healthy
 
   docling:
-    image: quay.io/docling-project/docling-serve-cpu:v1.21.0@sha256:c7d56cf78c45ab61406bc2dfebbac562c16e38538393f838991a949577cd3d0a
+    build:
+      context: ./ops/docling
+    image: aiqsa-docling:v1.21.0-easyocr-ru-en-1
+    pull_policy: build
     cap_drop:
       - ALL
     cpus: ${AIQSA_DOCLING_CPU_LIMIT:-2.0}
     environment:
+      DOCLING_NUM_THREADS: "2"
       DOCLING_SERVE_ENABLE_UI: "false"
+      DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "1"
+      DOCLING_SERVE_LAYOUT_BATCH_SIZE: "4"
+      DOCLING_SERVE_LOAD_MODELS_AT_BOOT: "false"
       DOCLING_SERVE_MAX_SYNC_WAIT: "290"
+      DOCLING_SERVE_OCR_BATCH_SIZE: "4"
+      DOCLING_SERVE_OPTIONS_CACHE_SIZE: "1"
+      DOCLING_SERVE_QUEUE_MAX_SIZE: "4"
+      DOCLING_SERVE_TABLE_BATCH_SIZE: "4"
+      HF_HUB_OFFLINE: "1"
+      OMP_NUM_THREADS: "2"
+      TRANSFORMERS_OFFLINE: "1"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health', timeout=3).read(1024)"]
       interval: 10s
@@ -123,7 +137,7 @@ services:
       start_period: 120s
     init: true
     logging: *default-logging
-    mem_limit: ${AIQSA_DOCLING_MEMORY_LIMIT:-4g}
+    mem_limit: ${AIQSA_DOCLING_MEMORY_LIMIT:-10g}
     networks:
       - parser-control
     restart: unless-stopped

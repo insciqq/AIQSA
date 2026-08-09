@@ -13,10 +13,15 @@ import {
   createAttachmentProcessor,
   type AttachmentProcessingRecord
 } from "../lib/server/uploads/processing";
+import {
+  createKnowledgeOcrFixtures,
+  knowledgeOcrTextEvidence
+} from "./knowledge-ocr-fixtures";
 
 const PDF_MARKER = "AIQSA PDF parser fixture";
 const DOCX_MARKER = "AIQSA DOCX parser fixture";
 const DOC_MARKER = "AIQSA legacy parser fixture";
+let smokeStage = "startup";
 
 // A tiny one-page OLE Compound File produced as Word 97 format from the marker
 // text above. The deterministic gzip wrapper keeps the opt-in smoke self-contained
@@ -177,6 +182,7 @@ function fixtureProcessor(bytes: Buffer) {
 }
 
 async function unavailableSmoke(): Promise<void> {
+  smokeStage = "unavailable-readiness";
   const readinessUrl = process.env.AIQSA_PARSER_SMOKE_READINESS_URL?.trim();
   const readiness = readinessUrl
     ? await fetch(readinessUrl, {
@@ -242,6 +248,15 @@ async function unavailableSmoke(): Promise<void> {
 async function availableSmoke(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "aiqsa-parser-smoke-"));
   try {
+    smokeStage = "ocr-fixture-generation";
+    const ocrFixtures = await createKnowledgeOcrFixtures({
+      directory,
+      includeJpeg: true,
+      includeWebp: true,
+      pageCount: 1
+    });
+    assert(ocrFixtures.jpeg);
+    assert(ocrFixtures.webp);
     const fixtures = [
       {
         bytes: pdfFixture(),
@@ -266,6 +281,7 @@ async function availableSmoke(): Promise<void> {
       }
     ];
     const boundary = createDocumentParserBoundary();
+    smokeStage = "sidecar-probe";
     const probe = await boundary.probe();
     assert.equal(probe.docling.available, true);
     assert.equal(probe.tika.available, true);
@@ -274,6 +290,7 @@ async function availableSmoke(): Promise<void> {
     };
 
     for (const fixture of fixtures) {
+      smokeStage = `native-${fixture.fileName.split(".").at(-1) ?? "document"}`;
       const path = join(directory, fixture.fileName);
       await writeFile(path, fixture.bytes, { flag: "wx" });
       const result = await boundary.parse({
@@ -288,6 +305,77 @@ async function availableSmoke(): Promise<void> {
         markerPresent: true,
         pageAnchorsValid: true,
         pageCount: result.pageCount
+      };
+    }
+
+    // Knowledge ingestion deliberately pins OCR-capable inputs to Docling and
+    // fails closed instead of accepting a text-only Tika fallback. Keep this
+    // smoke on the same boundary so a Docling failure cannot be hidden behind
+    // a successful fallback response.
+    const knowledgeBoundary = createDocumentParserBoundary({ sidecarFallback: false });
+    const ocrInputs = [
+      {
+        bytes: ocrFixtures.imageOnlyPdf,
+        evidenceKey: "ocrImageOnlyPdf",
+        fileName: "knowledge-ocr-scan.pdf",
+        mimeType: "application/pdf"
+      },
+      {
+        bytes: ocrFixtures.png,
+        evidenceKey: "ocrPng",
+        fileName: "knowledge-ocr-scan.png",
+        mimeType: "image/png"
+      },
+      {
+        bytes: ocrFixtures.jpeg,
+        evidenceKey: "ocrJpeg",
+        fileName: "knowledge-ocr-scan.jpg",
+        mimeType: "image/jpeg"
+      },
+      {
+        bytes: ocrFixtures.webp,
+        evidenceKey: "ocrWebp",
+        fileName: "knowledge-ocr-scan.webp",
+        mimeType: "image/webp"
+      }
+    ];
+
+    for (const fixture of ocrInputs) {
+      smokeStage = fixture.evidenceKey;
+      const result = await knowledgeBoundary.parse({
+        bytes: fixture.bytes,
+        fileName: fixture.fileName,
+        mimeType: fixture.mimeType
+      });
+      const textEvidence = knowledgeOcrTextEvidence(result.text);
+      if (result.engine !== "docling") smokeStage = `${fixture.evidenceKey}-engine`;
+      assert.equal(result.engine, "docling");
+      if (result.pageCount !== 1) smokeStage = `${fixture.evidenceKey}-page-count`;
+      assert.equal(result.pageCount, 1);
+      if (result.blocks.length === 0) smokeStage = `${fixture.evidenceKey}-empty-blocks`;
+      assert(result.blocks.length > 0);
+      if (!result.blocks.every((block) => block.page === 1)) {
+        smokeStage = `${fixture.evidenceKey}-page-anchors`;
+      }
+      assert(result.blocks.every((block) => block.page === 1));
+      if (!textEvidence.useful) {
+        const missing = [
+          ...(textEvidence.russianTokenCount >= 2 ? [] : ["russian"]),
+          ...(textEvidence.englishTokenCount >= 2 ? [] : ["english"]),
+          ...(textEvidence.numberMarkerPresent ? [] : ["number"]),
+          ...(textEvidence.tableEvidence.russianHeadersPresent ? [] : ["table-ru"]),
+          ...(textEvidence.tableEvidence.englishHeadersPresent ? [] : ["table-en"]),
+          ...(textEvidence.tableEvidence.numericValuesPresent ? [] : ["table-number"])
+        ];
+        smokeStage = `${fixture.evidenceKey}-evidence-${missing.join("-")}`;
+      }
+      assert.equal(textEvidence.useful, true);
+      evidence[fixture.evidenceKey] = {
+        blocks: result.blocks.length,
+        engine: result.engine,
+        pageAnchorsValid: true,
+        pageCount: result.pageCount,
+        ...textEvidence
       };
     }
 
@@ -306,6 +394,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${isDocumentParserError(error) ? error.code : "parser_smoke_failed"}\n`);
+  process.stderr.write(`${
+    isDocumentParserError(error) ? error.code : `parser_smoke_failed_${smokeStage}`
+  }\n`);
   process.exitCode = 1;
 });

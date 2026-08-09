@@ -122,6 +122,7 @@ async function createKnowledgePayloadFixture(
       normalizedTextByteSize: 10,
       normalizedTextChecksum: "c".repeat(64),
       normalizedTextStorageKey,
+      ownerUserId: userId,
       originalStorageKey,
       versionNumber: 1
     }
@@ -170,7 +171,8 @@ describe("Prisma attachment retention outbox", () => {
     const processingJob = await prisma.attachmentProcessingJob.create({
       data: {
         attachmentId: processing.id,
-        nextAttemptAt: new Date("2100-01-01T00:00:00.000Z")
+        nextAttemptAt: new Date("2100-01-01T00:00:00.000Z"),
+        ownerUserId: user.id
       }
     });
     await prisma.attachment.update({

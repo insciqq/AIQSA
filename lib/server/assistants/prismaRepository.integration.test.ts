@@ -5,6 +5,7 @@ import type { AssistantDraft } from "../../contracts/assistants";
 import type { CatalogWireModel } from "../../contracts/catalog";
 import type { AssistantCatalogView } from "./catalogValidation";
 import { createPrismaAssistantRepository } from "./prismaRepository";
+import { createPrismaKnowledgeRepository } from "../knowledge/prismaRepository";
 
 const enabled = process.env.AIQSA_ASSISTANTS_INTEGRATION_TEST === "1";
 const integration = enabled ? describe : describe.skip;
@@ -27,6 +28,7 @@ const mcpServerId = `assistant-mcp-${suffix}`;
 const mcpRevisionId = `assistant-mcp-revision-${suffix}`;
 const mcpUserServerId = `assistant-mcp-user-${suffix}`;
 const mcpGenerationId = `assistant-mcp-generation-${suffix}`;
+const knowledgeBaseIds: string[] = [];
 
 function catalogModel(): CatalogWireModel {
   return {
@@ -138,6 +140,53 @@ function draft(overrides: Partial<AssistantDraft> = {}): AssistantDraft {
   };
 }
 
+async function createKnowledgeBase(ownerUserId: string, name: string): Promise<string> {
+  const base = await database.knowledgeBase.create({
+    data: { name: `${name} ${suffix}`, ownerUserId }
+  });
+  knowledgeBaseIds.push(base.id);
+  return base.id;
+}
+
+async function duplicateAfterCommittedMutation(
+  assistantId: string,
+  mutate: () => Promise<unknown>
+) {
+  const blocker = new PrismaClient();
+  const lockReady = deferred<number>();
+  const releaseLock = deferred<void>();
+  const blockingTransaction = blocker.$transaction(async (tx) => {
+    const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`
+      SELECT pg_backend_pid() AS "pid"
+    `;
+    await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "AssistantDefinition"
+      WHERE "id" = ${assistantId}
+      FOR UPDATE
+    `;
+    lockReady.resolve(backend!.pid);
+    await releaseLock.promise;
+  }, { timeout: 10_000 });
+
+  let duplicatePromise: ReturnType<typeof repository.duplicate> | null = null;
+  try {
+    const blockerPid = await lockReady.promise;
+    duplicatePromise = repository.duplicate(memberId, assistantId);
+    await waitForBlockedBy(blockerPid);
+    await mutate();
+    releaseLock.resolve();
+    return await duplicatePromise;
+  } finally {
+    releaseLock.resolve();
+    await Promise.allSettled([
+      blockingTransaction,
+      ...(duplicatePromise ? [duplicatePromise] : [])
+    ]);
+    await blocker.$disconnect();
+  }
+}
+
 integration("assistant repository integration", () => {
   beforeAll(async () => {
     await database.user.createMany({
@@ -207,6 +256,10 @@ integration("assistant repository integration", () => {
     });
     await database.mcpRevision.deleteMany({ where: { serverId: mcpServerId } });
     await database.mcpServer.deleteMany({ where: { id: mcpServerId } });
+    await database.knowledgeBasePublication.deleteMany({
+      where: { knowledgeBaseId: { in: knowledgeBaseIds } }
+    });
+    await database.knowledgeBase.deleteMany({ where: { id: { in: knowledgeBaseIds } } });
     await database.providerModel.deleteMany({ where: { id: modelId } });
     await database.providerConnection.deleteMany({ where: { id: connectionId } });
     await database.userGroup.deleteMany({ where: { groupId: { in: [groupId, otherGroupId] } } });
@@ -697,6 +750,246 @@ integration("assistant repository integration", () => {
     expect(
       await database.assistantDefinition.count({ where: { ownerUserId: memberId } })
     ).toBe(before);
+  });
+
+  it("copies Knowledge ids exactly only when every dependency is independently visible", async () => {
+    const publishedBaseId = await createKnowledgeBase(ownerId, "Published knowledge");
+    const callerOwnedBaseId = await createKnowledgeBase(memberId, "Caller-owned knowledge");
+    const hiddenBaseId = await createKnowledgeBase(ownerId, "Hidden knowledge");
+    await database.knowledgeBasePublication.create({
+      data: {
+        groupId,
+        knowledgeBaseId: publishedBaseId,
+        publishedByUserId: ownerId,
+        scope: "group"
+      }
+    });
+
+    const sourceId = await repository.create(ownerId, draft({
+      knowledgeBaseIds: [callerOwnedBaseId, publishedBaseId],
+      name: "Visible Knowledge source"
+    }));
+    await repository.publish({
+      actorIsAdmin: false,
+      assistantId: sourceId,
+      groupId,
+      revisionNumber: null,
+      scope: "group",
+      userId: ownerId
+    });
+
+    const copied = await repository.duplicate(memberId, sourceId);
+    expect(copied.kind).toBe("ok");
+    if (copied.kind !== "ok") throw new Error("knowledge_duplicate_not_created");
+    expect((await repository.getDetail(memberId, copied.assistantId))?.revision.knowledgeBaseIds)
+      .toEqual([callerOwnedBaseId, publishedBaseId]);
+
+    const hiddenSourceId = await repository.create(ownerId, draft({
+      knowledgeBaseIds: [publishedBaseId, hiddenBaseId],
+      name: "Mixed Knowledge source"
+    }));
+    await repository.publish({
+      actorIsAdmin: false,
+      assistantId: hiddenSourceId,
+      groupId,
+      revisionNumber: null,
+      scope: "group",
+      userId: ownerId
+    });
+    const beforeDefinitions = await database.assistantDefinition.count({
+      where: { ownerUserId: memberId }
+    });
+    const beforeRevisions = await database.assistantRevision.count({
+      where: { assistant: { ownerUserId: memberId } }
+    });
+
+    await expect(repository.duplicate(memberId, hiddenSourceId)).resolves.toEqual({
+      kind: "knowledge_not_available"
+    });
+    expect(await database.assistantDefinition.count({ where: { ownerUserId: memberId } }))
+      .toBe(beforeDefinitions);
+    expect(await database.assistantRevision.count({
+      where: { assistant: { ownerUserId: memberId } }
+    })).toBe(beforeRevisions);
+
+    const missingSourceId = await repository.create(ownerId, draft({
+      knowledgeBaseIds: [publishedBaseId, randomUUID()],
+      name: "Missing Knowledge source"
+    }));
+    await repository.publish({
+      actorIsAdmin: false,
+      assistantId: missingSourceId,
+      groupId,
+      revisionNumber: null,
+      scope: "group",
+      userId: ownerId
+    });
+    await expect(repository.duplicate(memberId, missingSourceId)).resolves.toEqual({
+      kind: "knowledge_not_available"
+    });
+    expect(await database.assistantDefinition.count({ where: { ownerUserId: memberId } }))
+      .toBe(beforeDefinitions);
+    expect(await database.assistantRevision.count({
+      where: { assistant: { ownerUserId: memberId } }
+    })).toBe(beforeRevisions);
+  });
+
+  it("fails atomically when Knowledge publication, membership, or archive access wins the race", async () => {
+    const baseId = await createKnowledgeBase(ownerId, "Racing knowledge");
+    let publication = await database.knowledgeBasePublication.create({
+      data: {
+        groupId,
+        knowledgeBaseId: baseId,
+        publishedByUserId: ownerId,
+        scope: "group"
+      }
+    });
+    const sourceId = await repository.create(ownerId, draft({
+      knowledgeBaseIds: [baseId],
+      name: "Racing Knowledge source"
+    }));
+    await repository.publish({
+      actorIsAdmin: true,
+      assistantId: sourceId,
+      groupId: null,
+      revisionNumber: null,
+      scope: "installation",
+      userId: ownerId
+    });
+    const before = await database.assistantDefinition.count({ where: { ownerUserId: memberId } });
+    const knowledgeRepository = createPrismaKnowledgeRepository(database);
+
+    const afterRevoke = await duplicateAfterCommittedMutation(sourceId, async () => {
+      await knowledgeRepository.revokePublication({
+        actorIsAdmin: false,
+        knowledgeBaseId: baseId,
+        publicationId: publication.id,
+        userId: ownerId
+      });
+    });
+    expect(afterRevoke.kind).toBe("knowledge_not_available");
+    expect(await database.assistantDefinition.count({ where: { ownerUserId: memberId } }))
+      .toBe(before);
+    publication = await database.knowledgeBasePublication.create({
+      data: {
+        groupId,
+        knowledgeBaseId: baseId,
+        publishedByUserId: ownerId,
+        scope: "group"
+      }
+    });
+
+    const afterMembershipLoss = await duplicateAfterCommittedMutation(sourceId, async () => {
+      await database.userGroup.delete({
+        where: { userId_groupId: { groupId, userId: memberId } }
+      });
+    });
+    expect(afterMembershipLoss.kind).toBe("knowledge_not_available");
+    expect(await database.assistantDefinition.count({ where: { ownerUserId: memberId } }))
+      .toBe(before);
+    await database.userGroup.create({ data: { groupId, userId: memberId } });
+
+    const afterGroupArchive = await duplicateAfterCommittedMutation(sourceId, async () => {
+      await database.group.update({ data: { archivedAt: new Date() }, where: { id: groupId } });
+    });
+    expect(afterGroupArchive.kind).toBe("knowledge_not_available");
+    expect(await database.assistantDefinition.count({ where: { ownerUserId: memberId } }))
+      .toBe(before);
+    await database.group.update({ data: { archivedAt: null }, where: { id: groupId } });
+
+    const afterArchive = await duplicateAfterCommittedMutation(sourceId, async () => {
+      await database.knowledgeBase.update({ data: { archivedAt: new Date() }, where: { id: baseId } });
+    });
+    expect(afterArchive.kind).toBe("knowledge_not_available");
+    expect(await database.assistantDefinition.count({ where: { ownerUserId: memberId } }))
+      .toBe(before);
+    await database.knowledgeBase.update({ data: { archivedAt: null }, where: { id: baseId } });
+  });
+
+  it("takes Knowledge bases before groups so concurrent publication cannot deadlock", async () => {
+    const baseId = await createKnowledgeBase(memberId, "Lock-order knowledge");
+    const sourceId = await repository.create(ownerId, draft({
+      knowledgeBaseIds: [baseId],
+      name: "Lock-order source"
+    }));
+    await repository.publish({
+      actorIsAdmin: false,
+      assistantId: sourceId,
+      groupId,
+      revisionNumber: null,
+      scope: "group",
+      userId: ownerId
+    });
+
+    const blocker = new PrismaClient();
+    const publisherClient = new PrismaClient();
+    const duplicateClient = new PrismaClient();
+    const probe = new PrismaClient();
+    const publisher = createPrismaKnowledgeRepository(publisherClient);
+    const duplicateRepository = createPrismaAssistantRepository(duplicateClient, {
+      isMcpGenerationLive: (generationId) => liveMcpGenerations.has(generationId),
+      loadCatalogView: async () => duplicateCatalogView()
+    });
+    const lockReady = deferred<number>();
+    const releaseLock = deferred<void>();
+    const blockingTransaction = blocker.$transaction(async (tx) => {
+      const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`
+        SELECT pg_backend_pid() AS "pid"
+      `;
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "KnowledgeBase"
+        WHERE "id" = ${baseId}
+        FOR UPDATE
+      `;
+      lockReady.resolve(backend!.pid);
+      await releaseLock.promise;
+    }, { timeout: 10_000 });
+
+    let publishPromise: ReturnType<typeof publisher.publish> | null = null;
+    let duplicatePromise: ReturnType<typeof duplicateRepository.duplicate> | null = null;
+    try {
+      const blockerPid = await lockReady.promise;
+      publishPromise = publisher.publish({
+        actorIsAdmin: false,
+        groupId,
+        knowledgeBaseId: baseId,
+        scope: "group",
+        userId: memberId
+      });
+      const [blockedPublisher] = await waitForBlockedBy(blockerPid);
+      duplicatePromise = duplicateRepository.duplicate(memberId, sourceId);
+      await waitForBlockedBy(blockedPublisher!.pid);
+
+      // While both operations wait on the base, duplication must not already
+      // own the shared Group row. This is the deterministic regression proof
+      // for the former group -> base inversion.
+      await probe.$transaction((tx) => tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "Group"
+        WHERE "id" = ${groupId}
+        FOR UPDATE NOWAIT
+      `);
+
+      releaseLock.resolve();
+      const [published, duplicated] = await Promise.all([
+        publishPromise,
+        duplicatePromise
+      ]);
+      expect(published.kind).toBe("ok");
+      expect(duplicated.kind).toBe("ok");
+    } finally {
+      releaseLock.resolve();
+      await Promise.allSettled([
+        blockingTransaction,
+        ...(publishPromise ? [publishPromise] : []),
+        ...(duplicatePromise ? [duplicatePromise] : [])
+      ]);
+      await blocker.$disconnect();
+      await publisherClient.$disconnect();
+      await duplicateClient.$disconnect();
+      await probe.$disconnect();
+    }
   });
 
   it("does not combine stale dependency entitlement with later source access", async () => {

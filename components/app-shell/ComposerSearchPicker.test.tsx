@@ -140,6 +140,38 @@ describe("ComposerSearchPicker", () => {
     expect(mode).toHaveFocus();
   });
 
+  it("keeps non-modal outside dismissal and the compact safe-area touch recipe", async () => {
+    render(
+      <div>
+        <ControlledPicker />
+        <button type="button">Outside Search picker</button>
+      </div>
+    );
+    const trigger = screen.getByRole("button", { name: "Search strategy" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "Choose Search engines" });
+    const close = within(dialog).getByRole("button", { name: "Close Search picker" });
+
+    expect(dialog).not.toHaveAttribute("aria-modal");
+    expect(dialog.className).toContain("--composer-picker-safe-area-inset-left");
+    expect(dialog.className).toContain("--composer-picker-safe-area-inset-right");
+    expect(dialog.className).toContain("--composer-picker-safe-area-inset-top");
+    expect(dialog.className).toContain("--composer-picker-safe-area-inset-bottom");
+    expect(close).toHaveClass(
+      "size-11",
+      "sm:size-8",
+      "[@media(hover:none)]:!size-11",
+      "[@media(pointer:coarse)]:!size-11"
+    );
+    await waitFor(() => expect(close).toHaveFocus());
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Outside Search picker" }));
+
+    expect(screen.queryByRole("dialog", { name: "Choose Search engines" })).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
   it("owns an ordered zero-to-three selection and exposes both orchestration modes", () => {
     const onChange = vi.fn();
     render(<ControlledPicker onChange={onChange} />);

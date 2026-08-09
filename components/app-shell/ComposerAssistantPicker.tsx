@@ -1,6 +1,7 @@
 import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import type { AssistantSummary } from "@/lib/contracts/assistants";
+import { X } from "lucide-react";
 import { useMemo, useState } from "react";
 
 type PickerGroup = {
@@ -103,17 +104,16 @@ export function ComposerAssistantPicker({
       />
       <div
         ref={dialogRef}
-        className="pop-enter fixed inset-x-0 bottom-0 z-[70] flex max-h-[calc(100dvh_-_max(.5rem,env(safe-area-inset-top)))] flex-col overflow-hidden rounded-t-panel border-t border-trace-subtle bg-overlay-surface pb-[env(safe-area-inset-bottom)] shadow-overlay sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-h-[min(34rem,calc(100dvh_-_2rem))] sm:w-[min(26rem,calc(100vw-2rem))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-panel sm:border"
+        className="pop-enter fixed bottom-0 left-[var(--composer-picker-safe-area-inset-left,env(safe-area-inset-left))] right-[var(--composer-picker-safe-area-inset-right,env(safe-area-inset-right))] z-[70] flex max-h-[calc(100dvh_-_max(.5rem,var(--composer-picker-safe-area-inset-top,env(safe-area-inset-top))))] flex-col overflow-hidden rounded-t-panel border-t border-trace-subtle bg-overlay-surface pb-[var(--composer-picker-safe-area-inset-bottom,env(safe-area-inset-bottom))] shadow-overlay sm:bottom-auto sm:left-1/2 sm:right-auto sm:top-1/2 sm:max-h-[min(34rem,calc(100dvh_-_2rem))] sm:w-[min(26rem,calc(100vw-2rem))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-panel sm:border [@media(max-height:32rem)]:!bottom-0 [@media(max-height:32rem)]:!left-[var(--composer-picker-safe-area-inset-left,env(safe-area-inset-left))] [@media(max-height:32rem)]:!right-[var(--composer-picker-safe-area-inset-right,env(safe-area-inset-right))] [@media(max-height:32rem)]:!top-auto [@media(max-height:32rem)]:!max-h-[calc(100dvh_-_max(.5rem,var(--composer-picker-safe-area-inset-top,env(safe-area-inset-top))))] [@media(max-height:32rem)]:!w-auto [@media(max-height:32rem)]:!translate-x-0 [@media(max-height:32rem)]:!translate-y-0"
         data-testid="assistant-picker"
         role="dialog"
         aria-modal="true"
         aria-label="Use an assistant"
       >
-        <div className="shrink-0 border-b border-trace-subtle p-3">
-          <label className="block">
+        <div className="flex shrink-0 items-center gap-2 border-b border-trace-subtle p-3">
+          <label className="min-w-0 flex-1">
             <span className="sr-only">Search assistants</span>
             <input
-              autoFocus
               className="h-touch w-full rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink outline-none placeholder:text-ink-muted focus-visible:ring-2 focus-visible:ring-focus sm:h-control"
               placeholder="Search assistants…"
               type="search"
@@ -121,6 +121,14 @@ export function ComposerAssistantPicker({
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
+          <button
+            aria-label="Close assistant picker"
+            className="grid size-11 shrink-0 place-items-center rounded-control text-ink-muted outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus sm:size-8 [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11"
+            type="button"
+            onClick={onClose}
+          >
+            <X aria-hidden="true" className="size-4" />
+          </button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2" data-testid="assistant-picker-list">
@@ -181,7 +189,7 @@ export function ComposerAssistantPicker({
           )}
         </div>
 
-        <div className="shrink-0 border-t border-trace-subtle p-2">
+        <div className="shrink-0 border-t border-trace-subtle p-2" data-testid="assistant-picker-actions">
           <button
             className="flex min-h-touch w-full items-center rounded-control px-2 text-left text-sm text-ink-secondary hover:bg-control-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
             type="button"

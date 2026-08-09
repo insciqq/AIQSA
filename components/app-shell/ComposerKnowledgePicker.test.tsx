@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { KnowledgeBaseSummary } from "@/lib/contracts/knowledge";
@@ -116,5 +116,47 @@ describe("ComposerKnowledgePicker", () => {
     expect(screen.queryByText("No Knowledge bases are available.")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("keeps non-modal outside dismissal and the compact safe-area touch recipe", async () => {
+    render(
+      <div>
+        <ComposerKnowledgePicker
+          bases={[base("active", "Policies")]}
+          dataError={null}
+          dataState="ready"
+          disabled={false}
+          id="knowledge-geometry"
+          onChange={vi.fn()}
+          onRetry={vi.fn()}
+          selectedBaseIds={[]}
+          source="off"
+        />
+        <button type="button">Outside Knowledge picker</button>
+      </div>
+    );
+    const trigger = screen.getByRole("button", { name: /Knowledge off/ });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "Choose Knowledge bases" });
+    const close = within(dialog).getByRole("button", { name: "Close Knowledge picker" });
+
+    expect(dialog).not.toHaveAttribute("aria-modal");
+    expect(dialog.className).toContain("--composer-picker-safe-area-inset-left");
+    expect(dialog.className).toContain("--composer-picker-safe-area-inset-right");
+    expect(dialog.className).toContain("--composer-picker-safe-area-inset-top");
+    expect(dialog.className).toContain("--composer-picker-safe-area-inset-bottom");
+    expect(close).toHaveClass(
+      "size-11",
+      "sm:size-8",
+      "[@media(hover:none)]:!size-11",
+      "[@media(pointer:coarse)]:!size-11"
+    );
+    await waitFor(() => expect(close).toHaveFocus());
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Outside Knowledge picker" }));
+
+    expect(screen.queryByRole("dialog", { name: "Choose Knowledge bases" })).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 });

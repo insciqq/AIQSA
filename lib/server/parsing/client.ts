@@ -1,6 +1,7 @@
 import type { ParserEngineConfig } from "./config";
 import { DocumentParserError, isDocumentParserError } from "./errors";
 import { normalizeDoclingResponse, normalizeTikaResponse } from "./normalization";
+import { normalizedFileExtension } from "./routing";
 import type {
   DocumentParserEngineAdapter,
   ParsedDocument,
@@ -103,17 +104,22 @@ function requestBody(input: SidecarParseInput, engine: SidecarParserEngine): Bod
   if (engine === "tika") return new Blob([bytes], { type: input.mediaType });
 
   const form = new FormData();
-  form.append("files", new Blob([bytes], { type: input.mediaType }), input.fileName);
+  form.append("files", new Blob([bytes], { type: input.mediaType }), sidecarFileName(input.fileName));
   form.append("to_formats", "json");
   form.append("image_export_mode", "placeholder");
   form.append("table_mode", "fast");
   form.append("abort_on_error", "true");
+  form.append("do_ocr", "true");
+  form.append("force_ocr", "false");
+  form.append("ocr_preset", "easyocr");
+  form.append("ocr_lang", "ru");
+  form.append("ocr_lang", "en");
   return form;
 }
 
-function tikaFileName(fileName: string): string {
-  const sanitized = fileName.replace(/[^A-Za-z0-9._-]/gu, "_").slice(0, 200);
-  return sanitized || "document";
+function sidecarFileName(fileName: string): string {
+  const extension = normalizedFileExtension(fileName);
+  return `document${extension ?? ""}`;
 }
 
 function parseRequest(input: SidecarParseInput, engine: SidecarParserEngine, signal: AbortSignal): RequestInit {
@@ -133,7 +139,7 @@ function parseRequest(input: SidecarParseInput, engine: SidecarParserEngine, sig
     cache: "no-store",
     headers: {
       accept: "application/json",
-      "content-disposition": `attachment; filename="${tikaFileName(input.fileName)}"`,
+      "content-disposition": `attachment; filename="${sidecarFileName(input.fileName)}"`,
       "content-type": input.mediaType,
       maxEmbeddedResources: "0",
       "x-tika-skip-embedded": "true"

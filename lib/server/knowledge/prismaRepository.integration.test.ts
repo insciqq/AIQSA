@@ -347,6 +347,7 @@ integration("Knowledge Base Prisma repository", () => {
         ingestState: "ready",
         knowledgeBaseId: baseId,
         mimeType: "text/plain",
+        ownerUserId: ownerId,
         originalStorageKey: `knowledge/${suffix}/a-v1`,
         versionNumber: 1,
         visibleFromRevision: 1,
@@ -363,6 +364,7 @@ integration("Knowledge Base Prisma repository", () => {
         ingestState: "ready",
         knowledgeBaseId: baseId,
         mimeType: "text/plain",
+        ownerUserId: ownerId,
         originalStorageKey: `knowledge/${suffix}/a-v2`,
         versionNumber: 2,
         visibleFromRevision: 2
@@ -378,6 +380,7 @@ integration("Knowledge Base Prisma repository", () => {
         ingestState: "ready",
         knowledgeBaseId: baseId,
         mimeType: "text/plain",
+        ownerUserId: ownerId,
         originalStorageKey: `knowledge/${suffix}/b-v1`,
         versionNumber: 1,
         visibleFromRevision: 1

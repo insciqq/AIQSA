@@ -7,6 +7,7 @@ import type { ProviderModelConfiguration } from "../providers/providerConfigurat
 import { createMemoryStorageAdapter } from "../uploads/storage";
 import { KnowledgeIngestionCoordinator } from "./ingestionCoordinator";
 import { createKnowledgeIngestionProcessor } from "./ingestionProcessor";
+import type { KnowledgeWorkClaim } from "./ingestionTypes";
 import { createPrismaKnowledgeIngestionRepository } from "./prismaIngestionRepository";
 import { createPrismaKnowledgeRepository } from "./prismaRepository";
 
@@ -512,5 +513,261 @@ integration("Knowledge ingestion Prisma repository", () => {
       ingestState: "failed"
     });
     await database.knowledgeBase.update({ data: { archivedAt: null }, where: { id: baseId } });
+  });
+
+  it("rotates durable owner grants across document and reindex work without serializing processing", async () => {
+    const fairnessSuffix = randomUUID();
+    const now = new Date("2200-01-01T00:00:00.000Z");
+    const staleBefore = new Date("2100-01-01T00:00:00.000Z");
+    const ownerIds = ["a", "b", "c"].map((label) =>
+      `knowledge-fairness-${label}-${fairnessSuffix}`);
+    const baseIds = ownerIds.map((ownerId) => `${ownerId}-base`);
+    const generationIds = ownerIds.map((ownerId) => `${ownerId}-generation`);
+
+    async function createOwnerFoundation(index: number): Promise<void> {
+      const ownerId = ownerIds[index];
+      const baseId = baseIds[index];
+      const generationId = generationIds[index];
+      await database.user.create({
+        data: {
+          displayName: `Knowledge fairness ${index}`,
+          email: `${ownerId}@example.test`,
+          id: ownerId,
+          status: "active"
+        }
+      });
+      await database.knowledgeBase.create({
+        data: {
+          description: "Fairness fixture",
+          id: baseId,
+          name: `Fairness ${index}`,
+          ownerUserId: ownerId
+        }
+      });
+      await database.knowledgeIndexGeneration.create({
+        data: {
+          activatedAt: new Date("2190-01-01T00:00:00.000Z"),
+          chunkingProfileVersion: 1,
+          embeddingConfiguration: embeddingConfiguration("embedding-a") as unknown as Prisma.InputJsonValue,
+          embeddingProviderModelId: firstModelId,
+          id: generationId,
+          indexedContentRevision: 0,
+          knowledgeBaseId: baseId,
+          readyAt: new Date("2190-01-01T00:00:00.000Z"),
+          status: "active",
+          targetDimension: 1536,
+          vectorSpaceFingerprint: "a".repeat(64)
+        }
+      });
+      await database.knowledgeBase.update({
+        data: { activeIndexGenerationId: generationId },
+        where: { id: baseId }
+      });
+    }
+
+    async function createDocumentWork(input: {
+      count: number;
+      createdAtOffset: number;
+      ownerIndex: number;
+    }): Promise<void> {
+      for (let index = 0; index < input.count; index += 1) {
+        const documentId = randomUUID();
+        const versionId = randomUUID();
+        await database.knowledgeDocument.create({
+          data: {
+            createdAt: new Date(input.createdAtOffset + index),
+            id: documentId,
+            knowledgeBaseId: baseIds[input.ownerIndex]
+          }
+        });
+        await database.knowledgeDocumentVersion.create({
+          data: {
+            byteSize: 1,
+            checksum: "b".repeat(64),
+            createdAt: new Date(input.createdAtOffset + index),
+            documentId,
+            fileName: `${versionId}.txt`,
+            id: versionId,
+            ingestGenerationId: generationIds[input.ownerIndex],
+            ingestNextAttemptAt: new Date("2199-01-01T00:00:00.000Z"),
+            knowledgeBaseId: baseIds[input.ownerIndex],
+            mimeType: "text/plain",
+            ownerUserId: ownerIds[input.ownerIndex],
+            originalStorageKey: `knowledge-fairness/${fairnessSuffix}/${versionId}`,
+            versionNumber: 1
+          }
+        });
+      }
+    }
+
+    async function createOlderReindexWork(ownerIndex: number, count: number): Promise<void> {
+      const shadowGenerationId = `${ownerIds[ownerIndex]}-shadow`;
+      await database.knowledgeIndexGeneration.create({
+        data: {
+          chunkingProfileVersion: 1,
+          embeddingConfiguration: embeddingConfiguration("embedding-a") as unknown as Prisma.InputJsonValue,
+          embeddingProviderModelId: firstModelId,
+          id: shadowGenerationId,
+          knowledgeBaseId: baseIds[ownerIndex],
+          sourceBaseVersion: 1,
+          sourceIndexGenerationId: generationIds[ownerIndex],
+          status: "building",
+          targetContentRevision: 0,
+          targetDimension: 1536,
+          vectorSpaceFingerprint: "d".repeat(64)
+        }
+      });
+      for (let index = 0; index < count; index += 1) {
+        const documentId = randomUUID();
+        const versionId = randomUUID();
+        const createdAt = new Date(Date.parse("2180-01-01T00:00:00.000Z") + index);
+        await database.knowledgeDocument.create({
+          data: {
+            createdAt,
+            id: documentId,
+            knowledgeBaseId: baseIds[ownerIndex]
+          }
+        });
+        await database.knowledgeDocumentVersion.create({
+          data: {
+            byteSize: 1,
+            checksum: "c".repeat(64),
+            createdAt,
+            documentId,
+            fileName: `${versionId}.txt`,
+            id: versionId,
+            ingestCompletedAt: new Date(createdAt.getTime() + 1),
+            ingestState: "ready",
+            knowledgeBaseId: baseIds[ownerIndex],
+            mimeType: "text/plain",
+            ownerUserId: ownerIds[ownerIndex],
+            originalStorageKey: `knowledge-fairness/${fairnessSuffix}/${versionId}`,
+            versionNumber: 1
+          }
+        });
+        await database.knowledgeGenerationDocument.create({
+          data: {
+            createdAt,
+            documentVersionId: versionId,
+            indexGenerationId: shadowGenerationId,
+            knowledgeBaseId: baseIds[ownerIndex],
+            nextAttemptAt: createdAt,
+            ownerUserId: ownerIds[ownerIndex]
+          }
+        });
+      }
+    }
+
+    async function cleanupFairnessFixtures(): Promise<void> {
+      await database.knowledgeGenerationDocument.deleteMany({
+        where: { knowledgeBaseId: { in: baseIds } }
+      });
+      await database.knowledgeDocument.updateMany({
+        data: { currentVersionId: null },
+        where: { knowledgeBaseId: { in: baseIds } }
+      });
+      await database.knowledgeDocumentVersion.deleteMany({
+        where: { knowledgeBaseId: { in: baseIds } }
+      });
+      await database.knowledgeDocument.deleteMany({
+        where: { knowledgeBaseId: { in: baseIds } }
+      });
+      await database.knowledgeBase.updateMany({
+        data: { activeIndexGenerationId: null },
+        where: { id: { in: baseIds } }
+      });
+      await database.knowledgeIndexGeneration.deleteMany({
+        where: {
+          knowledgeBaseId: { in: baseIds },
+          sourceIndexGenerationId: { not: null }
+        }
+      });
+      await database.knowledgeIndexGeneration.deleteMany({
+        where: { knowledgeBaseId: { in: baseIds } }
+      });
+      await database.knowledgeBase.deleteMany({ where: { id: { in: baseIds } } });
+      await database.user.deleteMany({ where: { id: { in: ownerIds } } });
+      await database.documentProcessingFairnessCursor.upsert({
+        create: { pipeline: "knowledge" },
+        update: { lastGrantedOwnerUserId: null },
+        where: { pipeline: "knowledge" }
+      });
+    }
+
+    try {
+      for (let index = 0; index < ownerIds.length; index += 1) {
+        await createOwnerFoundation(index);
+      }
+      await database.documentProcessingFairnessCursor.upsert({
+        create: { pipeline: "knowledge" },
+        update: { lastGrantedOwnerUserId: null },
+        where: { pipeline: "knowledge" }
+      });
+
+      await createDocumentWork({
+        count: 6,
+        createdAtOffset: Date.parse("2190-01-01T00:00:00.000Z"),
+        ownerIndex: 0
+      });
+      const initial = await ingestion.claim({ claimToken: randomUUID(), now, staleBefore });
+      expect(initial).toMatchObject({ kind: "document", ownerUserId: ownerIds[0] });
+
+      await createOlderReindexWork(1, 3);
+      await createDocumentWork({
+        count: 1,
+        createdAtOffset: Date.parse("2191-01-01T00:00:00.000Z"),
+        ownerIndex: 1
+      });
+      await createDocumentWork({
+        count: 3,
+        createdAtOffset: Date.parse("2192-01-01T00:00:00.000Z"),
+        ownerIndex: 2
+      });
+
+      const grants: KnowledgeWorkClaim[] = [];
+      for (let index = 0; index < 6; index += 1) {
+        const claim = await ingestion.claim({ claimToken: randomUUID(), now, staleBefore });
+        expect(claim).not.toBeNull();
+        grants.push(claim!);
+      }
+      expect(grants.map(({ ownerUserId }) => ownerUserId)).toEqual([
+        ownerIds[1],
+        ownerIds[2],
+        ownerIds[0],
+        ownerIds[1],
+        ownerIds[2],
+        ownerIds[0]
+      ]);
+      expect(grants.filter(({ ownerUserId }) => ownerUserId === ownerIds[1])
+        .map(({ kind }) => kind)).toEqual(["document", "reindex"]);
+
+      const restartedRepository = createPrismaKnowledgeIngestionRepository(database);
+      const raced = await Promise.all([0, 1].map(() => restartedRepository.claim({
+        claimToken: randomUUID(),
+        now,
+        staleBefore
+      })));
+      expect(new Set(raced.map((claim) => claim?.documentVersionId)).size).toBe(2);
+      expect(new Set(raced.map((claim) => claim?.ownerUserId))).toEqual(
+        new Set([ownerIds[1], ownerIds[2]])
+      );
+
+      await database.knowledgeBase.updateMany({
+        data: { archivedAt: now },
+        where: { id: { in: [baseIds[1], baseIds[2]] } }
+      });
+      const soleOwnerClaims = await Promise.all([0, 1].map(() =>
+        restartedRepository.claim({ claimToken: randomUUID(), now, staleBefore })
+      ));
+      expect(soleOwnerClaims.every((claim) =>
+        claim?.kind === "document" && claim.ownerUserId === ownerIds[0])).toBe(true);
+      expect(new Set(soleOwnerClaims.map((claim) => claim?.documentVersionId)).size).toBe(2);
+      await expect(database.documentProcessingFairnessCursor.findUnique({
+        select: { lastGrantedOwnerUserId: true },
+        where: { pipeline: "knowledge" }
+      })).resolves.toEqual({ lastGrantedOwnerUserId: ownerIds[0] });
+    } finally {
+      await cleanupFairnessFixtures();
+    }
   });
 });

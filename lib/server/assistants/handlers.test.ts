@@ -333,6 +333,20 @@ describe("assistant duplicate handler", () => {
     expect(duplicate).toHaveBeenCalledWith("user-1", "assistant-1");
     expect(getDetail).not.toHaveBeenCalled();
   });
+
+  it("returns one privacy-neutral response for an unavailable Knowledge dependency", async () => {
+    const duplicate = vi.fn(async () => ({ kind: "knowledge_not_available" as const }));
+    const getDetail = vi.fn();
+    const response = await createDuplicateAssistantHandler(handlerDeps({ duplicate, getDetail }))(
+      new Request("http://test/api/me/assistants/assistant-1/duplicate", { method: "POST" }),
+      { params: { assistantId: "assistant-1" } }
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "assistant_not_available" });
+    expect(duplicate).toHaveBeenCalledWith("user-1", "assistant-1");
+    expect(getDetail).not.toHaveBeenCalled();
+  });
 });
 
 describe("assistant create handler", () => {

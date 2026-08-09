@@ -68,6 +68,14 @@ type ReindexClaimRow = Readonly<{
   vectorSpaceFingerprint: string;
 }>;
 
+type FairnessCursorRow = Readonly<{
+  lastGrantedOwnerUserId: string | null;
+}>;
+
+type EligibleKnowledgeOwnerRow = Readonly<{
+  ownerUserId: string;
+}>;
+
 type LockedBase = Readonly<{
   activeIndexGenerationId: string | null;
   archivedAt: Date | null;
@@ -181,16 +189,21 @@ function reindexClaim(row: ReindexClaimRow, claimToken: string): KnowledgeReinde
 }
 
 async function claimDocument(
-  client: PrismaClient,
-  input: { claimToken: string; now: Date; staleBefore: Date }
+  client: Prisma.TransactionClient,
+  input: { claimToken: string; now: Date; staleBefore: Date },
+  ownerUserId: string
 ): Promise<KnowledgeDocumentWorkClaim | null> {
-  const rows = await client.$transaction((tx) => tx.$queryRaw<DocumentClaimRow[]>(Prisma.sql`
+  const rows = await client.$queryRaw<DocumentClaimRow[]>(Prisma.sql`
     WITH candidate AS (
       SELECT version."id"
       FROM "KnowledgeDocumentVersion" AS version
-      INNER JOIN "KnowledgeDocument" AS document ON document."id" = version."documentId"
-      INNER JOIN "KnowledgeBase" AS base ON base."id" = version."knowledgeBaseId"
-      INNER JOIN "User" AS owner_user ON owner_user."id" = base."ownerUserId"
+      INNER JOIN "KnowledgeDocument" AS document
+        ON document."id" = version."documentId"
+        AND document."knowledgeBaseId" = version."knowledgeBaseId"
+      INNER JOIN "KnowledgeBase" AS base
+        ON base."id" = version."knowledgeBaseId"
+        AND base."ownerUserId" = version."ownerUserId"
+      INNER JOIN "User" AS owner_user ON owner_user."id" = version."ownerUserId"
       WHERE version."ingestState" IN (
           'queued'::"KnowledgeDocumentIngestState",
           'parsing'::"KnowledgeDocumentIngestState",
@@ -202,6 +215,7 @@ async function claimDocument(
         AND (version."ingestClaimedAt" IS NULL OR version."ingestClaimedAt" < ${input.staleBefore})
         AND document."archivedAt" IS NULL
         AND base."archivedAt" IS NULL
+        AND version."ownerUserId" = ${ownerUserId}
         AND owner_user."status" = 'active'::"UserStatus"
       ORDER BY version."ingestNextAttemptAt", version."createdAt", version."id"
       LIMIT 1
@@ -231,7 +245,7 @@ async function claimDocument(
       claimed."normalizedTextByteSize",
       claimed."normalizedTextChecksum",
       claimed."ingestChunkCount",
-      base."ownerUserId",
+      claimed."ownerUserId",
       generation."id" AS "generationId",
       generation."embeddingProviderModelId",
       generation."embeddingConfiguration",
@@ -239,37 +253,42 @@ async function claimDocument(
       generation."targetDimension",
       generation."chunkingProfileVersion"
     FROM claimed
-    INNER JOIN "KnowledgeBase" AS base ON base."id" = claimed."knowledgeBaseId"
     INNER JOIN "KnowledgeIndexGeneration" AS generation
       ON generation."knowledgeBaseId" = claimed."knowledgeBaseId"
       AND generation."id" = claimed."ingestGenerationId"
-  `));
+  `);
   return rows[0] ? documentClaim(rows[0], input.claimToken) : null;
 }
 
 async function claimReindex(
-  client: PrismaClient,
-  input: { claimToken: string; now: Date; staleBefore: Date }
+  client: Prisma.TransactionClient,
+  input: { claimToken: string; now: Date; staleBefore: Date },
+  ownerUserId: string
 ): Promise<KnowledgeReindexWorkClaim | null> {
-  const rows = await client.$transaction((tx) => tx.$queryRaw<ReindexClaimRow[]>(Prisma.sql`
+  const rows = await client.$queryRaw<ReindexClaimRow[]>(Prisma.sql`
     WITH candidate AS (
       SELECT work."indexGenerationId", work."documentVersionId"
       FROM "KnowledgeGenerationDocument" AS work
       INNER JOIN "KnowledgeIndexGeneration" AS generation
         ON generation."id" = work."indexGenerationId"
         AND generation."knowledgeBaseId" = work."knowledgeBaseId"
-      INNER JOIN "KnowledgeBase" AS base ON base."id" = work."knowledgeBaseId"
+      INNER JOIN "KnowledgeBase" AS base
+        ON base."id" = work."knowledgeBaseId"
+        AND base."ownerUserId" = work."ownerUserId"
       INNER JOIN "KnowledgeDocumentVersion" AS version
         ON version."id" = work."documentVersionId"
         AND version."knowledgeBaseId" = work."knowledgeBaseId"
-      INNER JOIN "KnowledgeDocument" AS document ON document."id" = version."documentId"
-      INNER JOIN "User" AS owner_user ON owner_user."id" = base."ownerUserId"
+      INNER JOIN "KnowledgeDocument" AS document
+        ON document."id" = version."documentId"
+        AND document."knowledgeBaseId" = version."knowledgeBaseId"
+      INNER JOIN "User" AS owner_user ON owner_user."id" = work."ownerUserId"
       WHERE generation."status" = 'building'::"KnowledgeIndexGenerationStatus"
         AND work."state" IN ('queued'::"KnowledgeDocumentIngestState", 'embedding'::"KnowledgeDocumentIngestState")
         AND work."nextAttemptAt" <= ${input.now}
         AND (work."claimedAt" IS NULL OR work."claimedAt" < ${input.staleBefore})
         AND document."archivedAt" IS NULL
         AND base."archivedAt" IS NULL
+        AND work."ownerUserId" = ${ownerUserId}
         AND owner_user."status" = 'active'::"UserStatus"
       ORDER BY work."nextAttemptAt", work."createdAt", work."indexGenerationId", work."documentVersionId"
       LIMIT 1
@@ -296,7 +315,7 @@ async function claimReindex(
       version."normalizedTextStorageKey",
       version."normalizedTextByteSize",
       version."normalizedTextChecksum",
-      base."ownerUserId",
+      claimed."ownerUserId",
       generation."id" AS "generationId",
       generation."embeddingProviderModelId",
       generation."embeddingConfiguration",
@@ -307,12 +326,273 @@ async function claimReindex(
     INNER JOIN "KnowledgeDocumentVersion" AS version
       ON version."knowledgeBaseId" = claimed."knowledgeBaseId"
       AND version."id" = claimed."documentVersionId"
-    INNER JOIN "KnowledgeBase" AS base ON base."id" = claimed."knowledgeBaseId"
     INNER JOIN "KnowledgeIndexGeneration" AS generation
       ON generation."knowledgeBaseId" = claimed."knowledgeBaseId"
       AND generation."id" = claimed."indexGenerationId"
-  `));
+  `);
   return rows[0] ? reindexClaim(rows[0], input.claimToken) : null;
+}
+
+async function lockKnowledgeFairnessCursor(
+  tx: Prisma.TransactionClient
+): Promise<string | null> {
+  await tx.$executeRaw(Prisma.sql`
+    INSERT INTO "DocumentProcessingFairnessCursor" (
+      "pipeline", "lastGrantedOwnerUserId", "updatedAt"
+    ) VALUES ('knowledge', NULL, CURRENT_TIMESTAMP)
+    ON CONFLICT ("pipeline") DO NOTHING
+  `);
+  const rows = await tx.$queryRaw<FairnessCursorRow[]>(Prisma.sql`
+    SELECT "lastGrantedOwnerUserId"
+    FROM "DocumentProcessingFairnessCursor"
+    WHERE "pipeline" = 'knowledge'
+    FOR UPDATE
+  `);
+  if (!rows[0]) throw new Error("knowledge_fairness_cursor_unavailable");
+  return rows[0].lastGrantedOwnerUserId;
+}
+
+function documentOwnerHeadSql(
+  input: { now: Date; staleBefore: Date },
+  guard: Prisma.Sql,
+  ownerRange: Prisma.Sql
+): Prisma.Sql {
+  return Prisma.sql`
+    SELECT version."ownerUserId"
+    FROM "KnowledgeDocumentVersion" AS version
+    INNER JOIN "KnowledgeDocument" AS document
+      ON document."id" = version."documentId"
+      AND document."knowledgeBaseId" = version."knowledgeBaseId"
+    INNER JOIN "KnowledgeBase" AS base
+      ON base."id" = version."knowledgeBaseId"
+      AND base."ownerUserId" = version."ownerUserId"
+    INNER JOIN "User" AS owner_user ON owner_user."id" = version."ownerUserId"
+    WHERE ${guard}
+      AND ${ownerRange}
+      AND version."ingestState" IN (
+        'queued'::"KnowledgeDocumentIngestState",
+        'parsing'::"KnowledgeDocumentIngestState",
+        'chunking'::"KnowledgeDocumentIngestState",
+        'embedding'::"KnowledgeDocumentIngestState"
+      )
+      AND version."ingestGenerationId" IS NOT NULL
+      AND version."ingestNextAttemptAt" <= ${input.now}
+      AND (version."ingestClaimedAt" IS NULL OR version."ingestClaimedAt" < ${input.staleBefore})
+      AND document."archivedAt" IS NULL
+      AND base."archivedAt" IS NULL
+      AND owner_user."status" = 'active'::"UserStatus"
+    ORDER BY
+      version."ownerUserId",
+      version."ingestNextAttemptAt",
+      version."createdAt",
+      version."id"
+    LIMIT 1
+  `;
+}
+
+function reindexOwnerHeadSql(
+  input: { now: Date; staleBefore: Date },
+  guard: Prisma.Sql,
+  ownerRange: Prisma.Sql
+): Prisma.Sql {
+  return Prisma.sql`
+    SELECT work."ownerUserId"
+    FROM "KnowledgeGenerationDocument" AS work
+    INNER JOIN "KnowledgeIndexGeneration" AS generation
+      ON generation."id" = work."indexGenerationId"
+      AND generation."knowledgeBaseId" = work."knowledgeBaseId"
+    INNER JOIN "KnowledgeBase" AS base
+      ON base."id" = work."knowledgeBaseId"
+      AND base."ownerUserId" = work."ownerUserId"
+    INNER JOIN "KnowledgeDocumentVersion" AS version
+      ON version."id" = work."documentVersionId"
+      AND version."knowledgeBaseId" = work."knowledgeBaseId"
+      AND version."ownerUserId" = work."ownerUserId"
+    INNER JOIN "KnowledgeDocument" AS document
+      ON document."id" = version."documentId"
+      AND document."knowledgeBaseId" = version."knowledgeBaseId"
+    INNER JOIN "User" AS owner_user ON owner_user."id" = work."ownerUserId"
+    WHERE ${guard}
+      AND ${ownerRange}
+      AND generation."status" = 'building'::"KnowledgeIndexGenerationStatus"
+      AND work."state" IN (
+        'queued'::"KnowledgeDocumentIngestState",
+        'embedding'::"KnowledgeDocumentIngestState"
+      )
+      AND work."nextAttemptAt" <= ${input.now}
+      AND (work."claimedAt" IS NULL OR work."claimedAt" < ${input.staleBefore})
+      AND document."archivedAt" IS NULL
+      AND base."archivedAt" IS NULL
+      AND owner_user."status" = 'active'::"UserStatus"
+    ORDER BY
+      work."ownerUserId",
+      work."nextAttemptAt",
+      work."createdAt",
+      work."indexGenerationId",
+      work."documentVersionId"
+    LIMIT 1
+  `;
+}
+
+async function selectInitialEligibleKnowledgeOwner(
+  tx: Prisma.TransactionClient,
+  input: { now: Date; staleBefore: Date }
+): Promise<string | null> {
+  const rows = await tx.$queryRaw<EligibleKnowledgeOwnerRow[]>(Prisma.sql`
+    WITH document_heads AS (
+      SELECT DISTINCT ON (version."ownerUserId")
+        version."ownerUserId",
+        version."ingestNextAttemptAt" AS "nextAttemptAt",
+        version."createdAt",
+        version."id" AS "workKey",
+        0 AS "kindPriority"
+      FROM "KnowledgeDocumentVersion" AS version
+      INNER JOIN "KnowledgeDocument" AS document
+        ON document."id" = version."documentId"
+        AND document."knowledgeBaseId" = version."knowledgeBaseId"
+      INNER JOIN "KnowledgeBase" AS base
+        ON base."id" = version."knowledgeBaseId"
+        AND base."ownerUserId" = version."ownerUserId"
+      INNER JOIN "User" AS owner_user ON owner_user."id" = version."ownerUserId"
+      WHERE version."ingestState" IN (
+          'queued'::"KnowledgeDocumentIngestState",
+          'parsing'::"KnowledgeDocumentIngestState",
+          'chunking'::"KnowledgeDocumentIngestState",
+          'embedding'::"KnowledgeDocumentIngestState"
+        )
+        AND version."ingestGenerationId" IS NOT NULL
+        AND version."ingestNextAttemptAt" <= ${input.now}
+        AND (version."ingestClaimedAt" IS NULL OR version."ingestClaimedAt" < ${input.staleBefore})
+        AND document."archivedAt" IS NULL
+        AND base."archivedAt" IS NULL
+        AND owner_user."status" = 'active'::"UserStatus"
+      ORDER BY
+        version."ownerUserId",
+        version."ingestNextAttemptAt",
+        version."createdAt",
+        version."id"
+    ), reindex_heads AS (
+      SELECT DISTINCT ON (work."ownerUserId")
+        work."ownerUserId",
+        work."nextAttemptAt",
+        work."createdAt",
+        concat(work."indexGenerationId", ':', work."documentVersionId") AS "workKey",
+        1 AS "kindPriority"
+      FROM "KnowledgeGenerationDocument" AS work
+      INNER JOIN "KnowledgeIndexGeneration" AS generation
+        ON generation."id" = work."indexGenerationId"
+        AND generation."knowledgeBaseId" = work."knowledgeBaseId"
+      INNER JOIN "KnowledgeBase" AS base
+        ON base."id" = work."knowledgeBaseId"
+        AND base."ownerUserId" = work."ownerUserId"
+      INNER JOIN "KnowledgeDocumentVersion" AS version
+        ON version."id" = work."documentVersionId"
+        AND version."knowledgeBaseId" = work."knowledgeBaseId"
+        AND version."ownerUserId" = work."ownerUserId"
+      INNER JOIN "KnowledgeDocument" AS document
+        ON document."id" = version."documentId"
+        AND document."knowledgeBaseId" = version."knowledgeBaseId"
+      INNER JOIN "User" AS owner_user ON owner_user."id" = work."ownerUserId"
+      WHERE generation."status" = 'building'::"KnowledgeIndexGenerationStatus"
+        AND work."state" IN (
+          'queued'::"KnowledgeDocumentIngestState",
+          'embedding'::"KnowledgeDocumentIngestState"
+        )
+        AND work."nextAttemptAt" <= ${input.now}
+        AND (work."claimedAt" IS NULL OR work."claimedAt" < ${input.staleBefore})
+        AND document."archivedAt" IS NULL
+        AND base."archivedAt" IS NULL
+        AND owner_user."status" = 'active'::"UserStatus"
+      ORDER BY
+        work."ownerUserId",
+        work."nextAttemptAt",
+        work."createdAt",
+        work."indexGenerationId",
+        work."documentVersionId"
+    ), owner_heads AS (
+      SELECT DISTINCT ON (heads."ownerUserId")
+        heads."ownerUserId",
+        heads."nextAttemptAt",
+        heads."createdAt",
+        heads."workKey"
+      FROM (
+        SELECT * FROM document_heads
+        UNION ALL
+        SELECT * FROM reindex_heads
+      ) AS heads
+      ORDER BY
+        heads."ownerUserId",
+        heads."kindPriority",
+        heads."nextAttemptAt",
+        heads."createdAt",
+        heads."workKey"
+    )
+    SELECT "ownerUserId"
+    FROM owner_heads
+    ORDER BY "nextAttemptAt", "createdAt", "ownerUserId", "workKey"
+    LIMIT 1
+  `);
+  return rows[0]?.ownerUserId ?? null;
+}
+
+async function selectEligibleKnowledgeOwner(
+  tx: Prisma.TransactionClient,
+  input: { now: Date; staleBefore: Date },
+  lastGrantedOwnerUserId: string | null
+): Promise<string | null> {
+  if (lastGrantedOwnerUserId === null) {
+    return selectInitialEligibleKnowledgeOwner(tx, input);
+  }
+  const afterGuard = Prisma.sql`TRUE`;
+  const wrapGuard = Prisma.sql`NOT EXISTS (SELECT 1 FROM after_owner)`;
+  const rows = await tx.$queryRaw<EligibleKnowledgeOwnerRow[]>(Prisma.sql`
+    WITH after_document AS MATERIALIZED (
+      ${documentOwnerHeadSql(
+        input,
+        afterGuard,
+        Prisma.sql`version."ownerUserId" > ${lastGrantedOwnerUserId}`
+      )}
+    ), after_reindex AS MATERIALIZED (
+      ${reindexOwnerHeadSql(
+        input,
+        afterGuard,
+        Prisma.sql`work."ownerUserId" > ${lastGrantedOwnerUserId}`
+      )}
+    ), after_owner AS MATERIALIZED (
+      SELECT min(candidate."ownerUserId") AS "ownerUserId"
+      FROM (
+        SELECT "ownerUserId" FROM after_document
+        UNION ALL
+        SELECT "ownerUserId" FROM after_reindex
+      ) AS candidate
+      HAVING count(*) > 0
+    ), wrapped_document AS MATERIALIZED (
+      ${documentOwnerHeadSql(
+        input,
+        wrapGuard,
+        Prisma.sql`version."ownerUserId" <= ${lastGrantedOwnerUserId}`
+      )}
+    ), wrapped_reindex AS MATERIALIZED (
+      ${reindexOwnerHeadSql(
+        input,
+        wrapGuard,
+        Prisma.sql`work."ownerUserId" <= ${lastGrantedOwnerUserId}`
+      )}
+    ), wrapped_owner AS MATERIALIZED (
+      SELECT min(candidate."ownerUserId") AS "ownerUserId"
+      FROM (
+        SELECT "ownerUserId" FROM wrapped_document
+        UNION ALL
+        SELECT "ownerUserId" FROM wrapped_reindex
+      ) AS candidate
+      HAVING count(*) > 0
+    )
+    SELECT "ownerUserId" FROM after_owner
+    UNION ALL
+    SELECT "ownerUserId" FROM wrapped_owner
+    LIMIT 1
+  `);
+  return rows[0]?.ownerUserId ?? null;
 }
 
 function identityWhere(identity: KnowledgeWorkIdentity) {
@@ -425,6 +705,7 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
         archivedAt: Date | null;
         contentRevision: number;
         generationStatus: string;
+        ownerUserId: string;
         sourceBaseVersion: number | null;
         sourceIndexGenerationId: string | null;
         targetContentRevision: number | null;
@@ -434,6 +715,7 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
           base."activeIndexGenerationId",
           base."archivedAt",
           base."contentRevision",
+          base."ownerUserId",
           base."version",
           generation."status"::text AS "generationStatus",
           generation."sourceBaseVersion",
@@ -552,7 +834,8 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
             documentVersionId,
             indexGenerationId: generationId,
             knowledgeBaseId: generationLookup.knowledgeBaseId,
-            nextAttemptAt: now
+            nextAttemptAt: now,
+            ownerUserId: state.ownerUserId
           }))
         });
       }
@@ -633,7 +916,26 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
       now: Date;
       staleBefore: Date;
     }): Promise<KnowledgeWorkClaim | null> {
-      return await claimDocument(client, input) ?? claimReindex(client, input);
+      return client.$transaction(async (tx) => {
+        const lastGrantedOwnerUserId = await lockKnowledgeFairnessCursor(tx);
+        const ownerUserId = await selectEligibleKnowledgeOwner(
+          tx,
+          input,
+          lastGrantedOwnerUserId
+        );
+        if (!ownerUserId) return null;
+        const claim = await claimDocument(tx, input, ownerUserId) ??
+          await claimReindex(tx, input, ownerUserId);
+        if (!claim) return null;
+        const advanced = await tx.$executeRaw(Prisma.sql`
+          UPDATE "DocumentProcessingFairnessCursor"
+          SET "lastGrantedOwnerUserId" = ${ownerUserId},
+              "updatedAt" = ${input.now}
+          WHERE "pipeline" = 'knowledge'
+        `);
+        if (advanced !== 1) throw new Error("knowledge_fairness_cursor_lost");
+        return claim;
+      });
     },
 
     completedBatchIndexes,
@@ -806,6 +1108,7 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
               knowledgeBaseId: input.knowledgeBaseId,
               mimeType: input.mimeType,
               normalizedTextStorageKey: input.normalizedTextStorageKey,
+              ownerUserId: base.ownerUserId,
               originalStorageKey: input.originalStorageKey,
               versionNumber: (latest._max.versionNumber ?? 0) + 1
             }
@@ -1644,7 +1947,8 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
                 documentVersionId: version.id,
                 indexGenerationId: generation.id,
                 knowledgeBaseId: input.knowledgeBaseId,
-                nextAttemptAt: input.now
+                nextAttemptAt: input.now,
+                ownerUserId: base.ownerUserId
               }))
             });
           } else {

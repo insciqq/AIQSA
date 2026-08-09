@@ -130,6 +130,10 @@ async function insertChunk(input: Readonly<{
   visibleFromRevision: number;
   visibleUntilRevision?: number | null;
 }>): Promise<void> {
+  const { ownerUserId } = await database.knowledgeBase.findUniqueOrThrow({
+    select: { ownerUserId: true },
+    where: { id: input.base }
+  });
   await database.knowledgeDocument.create({
     data: { id: input.documentId, knowledgeBaseId: input.base }
   });
@@ -144,6 +148,7 @@ async function insertChunk(input: Readonly<{
       ingestState: "ready",
       knowledgeBaseId: input.base,
       mimeType: "application/pdf",
+      ownerUserId,
       originalStorageKey: input.storageKey,
       versionNumber: input.versionNumber,
       visibleFromRevision: input.visibleFromRevision,

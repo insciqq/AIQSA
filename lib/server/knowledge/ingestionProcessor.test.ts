@@ -222,6 +222,128 @@ describe("Knowledge ingestion processor", () => {
     }));
   });
 
+  it("preserves extracted Cyrillic text through normalization, chunking, and embedding input", async () => {
+    const cyrillicText = "Русский текст для поиска. English scan 2026.";
+    const original = Buffer.from("image-only-pdf-fixture");
+    const storage = createMemoryStorageAdapter();
+    await storage.putObject({
+      body: original,
+      contentType: "application/pdf",
+      storageKey: "original.txt"
+    });
+    const embed = vi.fn<EmbeddingRuntimeBinding["adapter"]["embed"]>(async (request) => ({
+      model: "embed-v1",
+      requestId: "request-cyrillic",
+      usage: { inputTokens: 8, totalTokens: 8 },
+      vectors: request.texts.map(() => Array.from({ length: 1024 }, () => 0.01))
+    }));
+    const repo = repository();
+    const parser = {
+      parse: vi.fn(async (): Promise<ParsedDocument> => ({
+        blocks: [{
+          headingPath: ["Скан"],
+          index: 0,
+          isTable: false,
+          page: 1,
+          text: cyrillicText
+        }],
+        engine: "docling",
+        mediaType: "application/pdf",
+        pageCount: 1,
+        status: "complete",
+        text: cyrillicText
+      }))
+    };
+    const process = createKnowledgeIngestionProcessor({
+      config,
+      embeddingRuntime: { resolveForUser: vi.fn(async () => binding(embed)) },
+      parser,
+      repository: repo,
+      storage
+    });
+    const source = claim("parsing", {
+      byteSize: original.byteLength,
+      checksum: digest(original),
+      fileName: "scan.pdf",
+      mimeType: "application/pdf"
+    });
+
+    await process(source);
+
+    const normalized = storage.objects.get("normalized.json")!;
+    expect(normalized).toBeDefined();
+    expect(parser.parse).toHaveBeenCalledWith(expect.objectContaining({
+      bytes: original,
+      fileName: "scan.pdf",
+      mimeType: "application/pdf"
+    }));
+    expect(JSON.parse(normalized.body.toString("utf8"))).toMatchObject({
+      blocks: [{ headingPath: ["Скан"], page: 1, text: cyrillicText }],
+      parserEngine: "docling"
+    });
+
+    await process(claim("embedding", {
+      ingestChunkCount: 1,
+      normalizedTextByteSize: normalized.body.byteLength,
+      normalizedTextChecksum: digest(normalized.body)
+    }));
+
+    expect(embed).toHaveBeenCalledOnce();
+    expect(embed).toHaveBeenCalledWith({
+      mode: "document",
+      texts: [cyrillicText]
+    });
+    expect(repo.persistEmbeddingBatch).toHaveBeenCalledWith(expect.objectContaining({
+      batch: expect.objectContaining({
+        chunks: [expect.objectContaining({ page: 1, text: cyrillicText })]
+      })
+    }));
+    expect(repo.activateDocumentVersion).toHaveBeenCalledWith(expect.objectContaining({
+      expectedChunkCount: 1
+    }));
+  });
+
+  it("fails closed before normalization when OCR returns no text blocks", async () => {
+    const original = Buffer.from("blank-image-only-pdf");
+    const storage = createMemoryStorageAdapter();
+    await storage.putObject({
+      body: original,
+      contentType: "application/pdf",
+      storageKey: "original.txt"
+    });
+    const repo = repository();
+    const resolveForUser = vi.fn();
+    const process = createKnowledgeIngestionProcessor({
+      config,
+      embeddingRuntime: { resolveForUser },
+      parser: {
+        parse: vi.fn(async (): Promise<ParsedDocument> => ({
+          blocks: [],
+          engine: "docling",
+          mediaType: "application/pdf",
+          pageCount: 1,
+          status: "complete",
+          text: ""
+        }))
+      },
+      repository: repo,
+      storage
+    });
+
+    await expect(process(claim("parsing", {
+      byteSize: original.byteLength,
+      checksum: digest(original),
+      fileName: "blank-scan.pdf",
+      mimeType: "application/pdf"
+    }))).rejects.toMatchObject({
+      code: "parser_rejected",
+      retryable: false
+    });
+    expect(storage.objects.has("normalized.json")).toBe(false);
+    expect(repo.completeParsing).not.toHaveBeenCalled();
+    expect(resolveForUser).not.toHaveBeenCalled();
+  });
+
   it("resumes from the durable batch marker and embeds documents without a query instruction", async () => {
     const storage = createMemoryStorageAdapter();
     const encoded = encodeKnowledgeNormalizedDocument(parsed(65), config);

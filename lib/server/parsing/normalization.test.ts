@@ -1,6 +1,42 @@
 import { normalizeDoclingResponse, normalizeTikaResponse } from "./normalization";
 
 describe("Docling normalization", () => {
+  it("preserves Cyrillic OCR text and its page attribution", () => {
+    const parsed = normalizeDoclingResponse({
+      document: {
+        json_content: {
+          body: { children: [{ $ref: "#/texts/0" }, { $ref: "#/texts/1" }] },
+          pages: {
+            "1": { page_no: 1 },
+            "2": { page_no: 2 }
+          },
+          schema_name: "DoclingDocument",
+          texts: [
+            {
+              content_layer: "body",
+              label: "paragraph",
+              prov: [{ page_no: 1 }],
+              text: "Русский текст для поиска"
+            },
+            {
+              content_layer: "body",
+              label: "paragraph",
+              prov: [{ page_no: 2 }],
+              text: "English text and номер 2026"
+            }
+          ]
+        }
+      },
+      status: "success"
+    }, "application/pdf");
+
+    expect(parsed.text).toBe("Русский текст для поиска\n\nEnglish text and номер 2026");
+    expect(parsed.blocks).toMatchObject([
+      { page: 1, text: "Русский текст для поиска" },
+      { page: 2, text: "English text and номер 2026" }
+    ]);
+  });
+
   it("preserves reading order, page anchors, heading paths, and tables", () => {
     const parsed = normalizeDoclingResponse({
       document: {

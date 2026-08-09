@@ -39,15 +39,48 @@ method, status, and timings: no IP address, query string, share/reset token,
 message content, or header value. `X-Request-ID` lets an operator correlate a
 failed response with that privacy-safe record.
 
+Keep Nginx error logs restricted to trusted operators with minimal retention.
+Unlike the supported structured access log, exceptional Nginx diagnostics may
+include the original `/s/<token>` public-share path; that file is therefore
+capability-bearing sensitive material even when normal access records are safe.
+Do not forward proxy error logs to third-party aggregation by default or attach
+them to support/report artifacts without redacting share paths. If such a log
+crossed the trusted operator boundary, revoke or rotate the affected share.
+This accepted exception covers only proxy-internal public-share diagnostics and
+does not permit credentials, authorization headers, reset/invite URLs, or other
+tokens in application or access logs.
+
 The ordinary site limit is 2 MiB. The exact `/api/uploads` location permits a
 32 MiB multipart envelope and consumes the `aiqsa_upload_per_client` zone from
-the separately installed HTTP-context include. Application limits remain
-authoritative when Nginx is absent. If `AIQSA_UPLOAD_MAX_BYTES` or
+the separately installed HTTP-context include. Only `POST` on the exact
+Knowledge initial-document and replacement-version URI shapes receives an
+`80m` envelope, streaming request bodies, and the same connection protection;
+other methods and Knowledge routes remain on the ordinary boundary. The
+Knowledge product default is 50,000,000 decimal bytes, while Nginx `m` is a
+binary MiB-style unit. `80m` intentionally exceeds the unchanged 64 MiB
+application hard ceiling plus maximum multipart framing, so the application
+remains authoritative for every supported configured Knowledge limit.
+Application limits remain authoritative when Nginx is absent. If `AIQSA_UPLOAD_MAX_BYTES` or
 `AIQSA_UPLOAD_MULTIPART_OVERHEAD_BYTES` increases, keep the upload location
 strictly above their sum and validate both files with `nginx -t` before reload.
-Nginx-generated ordinary/upload overflows retain the application's JSON error
-codes, and upload connection saturation returns `upload_busy` with a bounded
-`Retry-After` value rather than an HTML proxy error.
+If the Knowledge hard ceiling or maximum multipart framing changes, re-evaluate
+the separate `80m` envelope. Nginx-generated ordinary/upload overflows retain
+the application's JSON error codes, and upload connection saturation returns
+`upload_busy` with a bounded `Retry-After` value rather than an HTML proxy error.
+
+After changing the route shapes or any body envelope, run the real method/body
+admission smoke before reloading an operator proxy:
+
+```bash
+npm run smoke:nginx-upload-envelope
+```
+
+It uses digest-pinned, disposable Nginx and Node containers on a private
+temporary network and removes them afterward; it does not start or mutate either
+Compose installation. The matrix covers declared and chunked exact POST uploads,
+ordinary non-POST and lookalike overflows, the 80 MiB edge, internal-route
+isolation, and upstream method/URI/query/body preservation. Keep `nginx -t` as
+the separate syntax proof for the rendered operator configuration.
 
 ## Add TLS
 

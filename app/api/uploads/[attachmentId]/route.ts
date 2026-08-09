@@ -61,7 +61,8 @@ const repository: AttachmentLifecycleRepository = {
       await tx.attachmentProcessingJob.upsert({
         create: {
           attachmentId: input.attachmentId,
-          nextAttemptAt: input.now
+          nextAttemptAt: input.now,
+          ownerUserId: input.userId
         },
         update: {
           attemptCount: 0,

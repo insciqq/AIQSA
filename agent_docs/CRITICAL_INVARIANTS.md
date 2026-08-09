@@ -24,7 +24,7 @@ This is the mandatory short safety read. Scoped contracts retain the same normat
 3. Raw user/provider request or response bodies are not ordinary logs and are not durably persisted unless a narrower reviewed contract explicitly allows a redacted projection.
 4. Upload handling validates size, extension/type, magic bytes or text shape, processing bounds, ownership, and storage settlement server-side.
 5. Public snapshots strip raw provider payloads, private attachment data, secrets, internal run ids, and private user/group metadata.
-6. Secrets, credential envelopes, password/database URLs, OAuth material, bearer tokens, and private operator notes never enter source control, ordinary logs, client contracts, previews, events, analytics, or public shares.
+6. Secrets, credential envelopes, password/database URLs, OAuth material, bearer tokens, and private operator notes never enter source control, AIQSA application logs, the supported structured access log, client contracts, previews, events, analytics, or public shares. One accepted deployment exception is limited to exceptional operator-controlled Nginx error diagnostics, where a public-share request path may contain its bearer token; those diagnostics are sensitive capability-bearing material and grant no exception for normal access logs, application logs, authorization headers, provider/MCP/session credentials, or any other token surface.
 
 ## Repository And Verification Safety
 

@@ -10,16 +10,34 @@ Not owned here: HTTP authentication, MCP runtime trust, Compose exposure, or dep
 
 Upload security is server-owned: authenticate before acquiring a process-local non-queueing permit, bound the complete multipart envelope before parsing, derive accepted kind from extension/MIME/magic validation rather than client `File.type`, reject SVG, and enforce processing bounds. Default uploads are full-buffered under a 25,000,000-byte file limit plus 1 MiB multipart headroom with four concurrent upload processors per application process. PDF.js runs in a terminable worker with V8 limits of 256 MiB old generation, 64 MiB young generation, and an 8 MiB stack; it validates the 500-page ceiling before extraction, processes pages sequentially for at most 20 seconds, and stops after proving that its bounded result is partial. The reduction-only `AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS` setting defaults to 1,000,000 UTF-16 code units and bounds every persisted inline, sidecar, and PDF-derived text result; truncation never retains half of an astral character. Worker messages and persisted derived text contain only that bounded projection. V8 resource limits do not completely bound native/PDF.js memory, so the request, page, time, incremental-text, and parent-message boundaries remain authoritative. Parser diagnostics, raw errors, filenames, bytes, and extracted text do not escape through worker output or client errors. Later run materialization independently preflights unique count plus source/encoded bytes, streams at most the configured number of private objects concurrently, caps each accepted object at both its settled metadata size and the remaining per-run source budget, aborts sibling reads on failure/cancellation, and never exposes object identity or content in its stable limit errors. Metadata is only the early boundary: filesystem and S3 adapters may read at most one sentinel byte beyond the accepted cap to prove overflow, then reject every actual-versus-settled size mismatch; arbitrary storage failures normalize before response or recovery persistence so paths, keys, and raw adapter errors remain private. Exposed deployments use a 2 MiB ordinary proxy limit, an explicit larger upload location, and an HTTP-context per-client connection zone; application enforcement remains authoritative.
 
+Knowledge documents have a separate 50,000,000-byte default and retain the
+shared 67,108,864-byte hard file ceiling, multipart headroom, and upload permit.
+The supported proxy gives only the initial-document and replacement-version
+POST shapes an 80 MiB envelope; ordinary Knowledge JSON and Chat attachment
+limits remain independent and smaller. Application validation is authoritative
+inside that transport envelope.
+
 The optional structure-aware parser boundary validates the closed
 extension/MIME route before transport, bounds raw request bytes, deadlines,
 streamed response bytes, normalized block count, and table geometry, then
 accepts only the reviewed Docling or Tika response shape. In the supported
-Compose topology, original bytes leave the app only for digest-pinned stateless
-siblings on the internal `parser-control` network; neither parser has a host
+Compose topology, original bytes leave the app only for stateless siblings on
+the internal `parser-control` network. Sidecar request metadata replaces the
+private user basename with the code-owned `document.<validated-extension>`
+transport name, so request logging cannot acquire the original upload filename
+from transport metadata. Tika is digest-pinned; Docling is locally
+derived from a digest-pinned base with checksum-pinned EasyOCR Russian/English
+assets that are verified and sealed before runtime, so document requests never
+download a model. Compose's `pull_policy: build` makes that checked-in context
+authoritative instead of resolving the local Docling tag from a registry.
+Neither parser has a host
 port, object/database credentials, durable volume, or document ownership.
 Embedded Tika resources are disabled. Normalized results carry ordered text,
 page anchors, heading paths, and table flags; upstream bodies, diagnostics,
 filenames, and extracted content never enter parser errors or probe output.
+OCR makes printed Russian/English text searchable but grants no semantic
+understanding of handwriting, photographs, charts, plots, or diagrams; empty
+OCR/normalization remains a failed version and never reaches embedding.
 Absent, stopped, timed-out, or malformed sidecars produce only stable
 feature-local codes and cannot affect core readiness. An operator who supplies
 an endpoint outside Compose becomes responsible for that endpoint's transport

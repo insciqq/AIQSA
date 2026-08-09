@@ -145,7 +145,7 @@ and bounded request-id classification. [MCP runtime security](security/MCP_RUNTI
 owns overflow transport and redaction behavior; [runs and streaming](backend/RUNS_AND_STREAMING.md)
 owns its run-visible error and continuation effects.
 
-`AIQSA_TOOLHIVE_URL` is internal Compose wiring, not a normal operator endpoint override and not a browser-visible variable. Both Compose files hardcode it to the pinned ToolHive service on the private `mcp-control` network. ToolHive and its dynamic proxy endpoints are not published to the host. MCP server endpoints, source selectors, OAuth policy, shared values, and user values live in the administrator/user persistence model rather than `.env`.
+`AIQSA_TOOLHIVE_URL` is internal Compose wiring, not a normal operator endpoint override and not a browser-visible variable. Both Compose files hardcode it to the pinned ToolHive service on the private `mcp-control` network. ToolHive and its dynamic proxy endpoints are not published to the host. Pointing this value at another machine is not a supported remote deployment: the controller API has full unauthenticated Docker authority, workload proxies use dynamic ports, and plain HTTP would expose tool inputs, results, and effective environment values. A future off-host slice requires a dedicated host without AIQSA application data, encrypted private L3 connectivity, strict app-host firewall access to an authenticated controller and controlled proxy range or gateway, encryption for both controller and tool traffic, migration or deterministic rebuild of ToolHive state and generated npm/PyPI images, coordinated maintenance/cleanup, and the same deployment encryption key for the ownership marker. Individually hosted Streamable HTTP MCP servers are the supported remote alternative today. MCP server endpoints, source selectors, OAuth policy, shared values, and user values live in the administrator/user persistence model rather than `.env`.
 
 Brokered upstream SaaS configuration also does not add AIQSA environment
 variables. Its OAuth client id/secret, upstream callback, organization routing,
@@ -203,7 +203,7 @@ AIQSA_UPLOAD_STORAGE_DIR=.aiqsa/uploads
 AIQSA_PDF_MAX_PAGES=500
 AIQSA_PDF_EXTRACTION_TIMEOUT_MS=20000
 AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS=1000000
-AIQSA_KNOWLEDGE_MAX_FILE_BYTES=25000000
+AIQSA_KNOWLEDGE_MAX_FILE_BYTES=50000000
 AIQSA_KNOWLEDGE_MAX_PAGES=2000
 AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS=5000000
 AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT=10000
@@ -232,7 +232,7 @@ storage. `AIQSA_UPLOAD_STORAGE_DIR` controls the server-only filesystem
 fallback when S3 variables are absent outside that stack.
 
 Knowledge ingestion uses its own whole-library limits rather than the chat
-attachment extraction profile. File bytes default to 25,000,000 and may not
+attachment extraction profile. File bytes default to 50,000,000 and may not
 exceed 67,108,864; pages default to 2,000 with a 10,000 ceiling; normalized
 text defaults to 5,000,000 characters with an 8,000,000 ceiling; and one
 document defaults to 10,000 chunks with a 50,000 ceiling. Every override must
@@ -240,7 +240,12 @@ be a positive whole decimal integer within its ceiling or the corresponding
 default is used. The normalized private JSON object has no independent
 operator control: its byte cap is derived from the text limit and remains at
 or below 64 MiB. Knowledge upload envelopes still use the shared multipart
-headroom and process-local upload concurrency controls.
+headroom and process-local upload concurrency controls. The shipped Nginx
+template keeps ordinary requests at 2 MiB, Chat attachment multipart at 32 MiB,
+and only the two Knowledge document POST shapes at an 80 MiB envelope. Nginx
+`m` values are binary MiB-style units; the larger proxy envelope covers the
+67,108,864-byte application hard ceiling plus framing and is not the product
+default.
 
 ## Document Parser Sidecars
 
@@ -256,7 +261,9 @@ AIQSA_TIKA_TIMEOUT_MS=120000
 ```
 
 The two URLs are server-only parser base endpoints. Both Compose files hardcode
-them to the digest-pinned services on the internal `parser-control` network;
+them to services on the internal `parser-control` network: Tika is directly
+digest-pinned, while Docling is built locally from the exact digest-pinned
+v1.21.0 base and checksum-pinned EasyOCR English/Cyrillic model assets;
 they are not browser-visible or ordinary `.env` overrides. A process launched
 outside Compose configures either engine by supplying its URL; an absent,
 blank, malformed, credential-bearing, query-bearing, or fragment-bearing URL
@@ -266,9 +273,9 @@ deployment. Parsed file bytes cross only the configured server boundary.
 
 Request caps apply to the raw file before any sidecar call. When unset or
 invalid, each inherits its caller's effective accepted-file cap:
-`AIQSA_UPLOAD_MAX_BYTES` for Chat attachments and
-`AIQSA_KNOWLEDGE_MAX_FILE_BYTES` for Knowledge ingestion (both normally
-25,000,000 bytes). An explicit valid engine override wins globally, and no
+`AIQSA_UPLOAD_MAX_BYTES` for Chat attachments (normally 25,000,000 bytes) and
+`AIQSA_KNOWLEDGE_MAX_FILE_BYTES` for Knowledge ingestion (normally 50,000,000
+bytes). An explicit valid engine override wins globally, and no
 request cap may exceed 67,108,864 bytes. Leave the engine values blank to keep
 parser admission aligned automatically; a lower explicit value deliberately
 rejects larger otherwise-accepted files for that engine. Response
@@ -281,7 +288,44 @@ Docling's bundled synchronous worker wait is 290 seconds, slightly below the
 default client deadline. A sidecar failure stays feature-local and surfaces
 only the stable parser error taxonomy.
 
+AIQSA's Docling multipart contract always sends `do_ocr=true`,
+`force_ocr=false`, `ocr_preset=easyocr`, and ordered `ru`, `en` languages.
+`force_ocr=false` preserves usable native PDF text while OCR handles bitmap
+regions and image-only pages. The derived image verifies and preloads every OCR
+asset at build time and runs with model-download paths offline. This guarantees
+searchable printed Russian/English text, not handwriting or the meaning of
+photographs, charts, and diagrams. Empty or unusable OCR output fails Knowledge
+ingestion instead of creating an empty ready version. The 50,000,000-byte
+admission default is not a latency SLA: high-resolution or high-page scans may
+reach the existing 290/300-second synchronous boundary and fail visibly.
+
+The supported Compose profile gives Docling 2 CPUs and 10 GiB, disables eager
+model warm-up, keeps one local conversion worker and one cached option profile,
+caps each threaded pipeline queue at one explicit four-page batch, and pins
+Docling/OMP inference threads to the two-CPU cgroup. One worker is an
+intentional memory-safety boundary: two concurrent EasyOCR/table pipelines
+exceeded even a 10 GiB container in verification, while two clients queued
+through this profile completed with bounded memory. Database owner rotation
+still prevents one bulk import from monopolizing later claims; a second parser
+request may wait for the one already in flight. Lowering the 10 GiB default is
+unsupported for the Russian/English OCR contract, and raising memory alone does
+not authorize more conversion workers.
+
 Internal storage variables are `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`. Compose generates them from the canonical `AIQSA_S3_*` values. The bucket must remain private.
+
+Core readiness uses non-mutating `HeadBucket` and therefore certifies only
+endpoint/bucket reachability plus that operation's authorization. Before using
+external S3-compatible storage, and again after changing its endpoint, bucket,
+region/path-style behavior, credentials or role, encryption settings, or IAM
+policy, the operator must use provider-native tooling with AIQSA's exact
+effective configuration to write fresh unique tiny bytes under an
+AIQSA-reserved smoke prefix, read the object back and compare the bytes exactly,
+delete it, and verify that it is absent. This is a one-time/reconfiguration
+deployment proof, not a write added to the recurring readiness loop. Evidence
+may record only sanitized success/failure and must not contain credentials,
+signed URLs, bearer tokens, reusable object capabilities, or private document
+content. Normal integration covers the bundled MinIO service; compatibility and
+cleanup evidence for an external backend remain operator-owned.
 
 The repository `ops/backup/create.sh` helper deliberately supports only the bundled `http://minio:9000` endpoint and fails closed for external S3. External storage needs the provider's consistent backup/versioning process coordinated with the PostgreSQL backup.
 
@@ -324,7 +368,7 @@ AIQSA_POSTGRES_MEMORY_LIMIT=1g
 AIQSA_MINIO_CPU_LIMIT=1.0
 AIQSA_MINIO_MEMORY_LIMIT=1g
 AIQSA_DOCLING_CPU_LIMIT=2.0
-AIQSA_DOCLING_MEMORY_LIMIT=4g
+AIQSA_DOCLING_MEMORY_LIMIT=10g
 AIQSA_TIKA_CPU_LIMIT=1.0
 AIQSA_TIKA_MEMORY_LIMIT=1g
 AIQSA_LOG_MAX_FILES=5
@@ -334,7 +378,7 @@ AIQSA_MINIO_VOLUME_NAME=aiqsa_minio_data
 AIQSA_TOOLHIVE_VOLUME_NAME=aiqsa_toolhive_data
 ```
 
-The app, migration/bootstrap, and maintenance services share `AIQSA_IMAGE`. Its default is the public `latest` release; one SemVer or `sha-...` tag in the same `.env` pins every role to one immutable build. `AIQSA_APP_REVISION` is privacy-safe backup metadata for release trees without `.git`; it is not passed to the web runtime. CPU/memory values, including the independent Docling and Tika budgets, are hard container limits and JSON-file logs rotate at the documented bounds.
+The app, migration/bootstrap, and maintenance services share `AIQSA_IMAGE`. Its default is the public `latest` release; one SemVer or `sha-...` tag in the same `.env` pins every role to one immutable build. `AIQSA_APP_REVISION` is privacy-safe backup metadata for release trees without `.git`; it is not passed to the web runtime. CPU/memory values, including the independent Docling and Tika budgets, are hard container limits and JSON-file logs rotate at the documented bounds. The checked-in Docling worker/thread profile remains authoritative when memory is overridden.
 
 Stable explicit volume names make normal rebuild/update operations independent of checkout-directory naming. The volume-name overrides exist only to adopt already-existing Docker volumes. ToolHive state is sensitive, disposable observed state and is never authoritative for MCP definitions or encrypted credentials. Because explicit volume names do not follow `docker compose -p`, every disposable installation smoke that starts this topology must set unique PostgreSQL, MinIO, and ToolHive volume overrides; routine checks instead use the separate dev Compose file.
 

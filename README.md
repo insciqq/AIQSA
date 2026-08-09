@@ -25,6 +25,7 @@ Workspace state is stored in PostgreSQL and private S3-compatible storage. Conte
 ## Current capabilities
 
 - Branchable conversations, projects and nested folders, private attachments, and sanitized read-only share links.
+- Private Knowledge bases with hybrid retrieval over native document text and printed Russian/English text recognized from scanned PDFs and raster images.
 - Reusable versioned Assistants: save a model, instructions, run controls, Search plan, MCP tool allowlist, and starter prompts as one shareable object in the internal Assistants surface, with exact revision provenance on every accepted run.
 - Exact model selection with per-model controls and optional reasoning or streaming settings where supported.
 - Ordered web-search plans with up to three entitled sources, compatibility checks, normalized citations, and per-source evidence.
@@ -40,9 +41,15 @@ You need Docker Engine with the Docker Compose plugin and OpenSSL.
 git clone https://github.com/insciqq/AIQSA.git aiqsa
 cd aiqsa
 bash prepare-secrets.sh
-docker compose pull
+docker compose pull --ignore-buildable
+docker compose build docling
 docker compose up -d
 ```
+
+The Docling parser image is built locally from a digest-pinned upstream image
+and checksum-pinned English/Cyrillic OCR assets. The build needs registry/model
+download access, but document conversion uses the sealed local assets and does
+not download a model on first request.
 
 The setup helper asks only for the initial administrator email, generates the initial password and infrastructure secrets, writes `.env` with mode `0600`, and prints the administrator password once. Save that password in a password manager. For unattended setup:
 
@@ -89,7 +96,8 @@ Update an existing checkout with:
 
 ```bash
 git pull --ff-only
-docker compose pull
+docker compose pull --ignore-buildable
+docker compose build docling
 docker compose up -d
 docker compose ps
 curl -fsS http://127.0.0.1:3000/api/health/ready
@@ -111,7 +119,7 @@ npm run check:hermetic
 Container parity uses only the separate disposable development topology:
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d
+docker compose -f docker-compose.dev.yml up -d --build
 npm run check:container
 ```
 

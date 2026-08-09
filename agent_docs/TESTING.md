@@ -52,7 +52,7 @@ Choose the cheapest command that proves the current increment, then run the prop
 Use the disposable development topology when behavior needs PostgreSQL, process/container topology, migrations, or another service boundary:
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d
+docker compose -f docker-compose.dev.yml up -d --build
 npm run check:container
 ```
 
@@ -116,7 +116,7 @@ Add only evidence justified by the changed boundary:
 | Provider adapter | Run deterministic adapter/fake tests first. A real-provider smoke is optional evidence only under the permission and data limits below. |
 | Retention or destructive data behavior | Run the focused migration contract and dry run first; execute deletion only when the requested scope explicitly authorizes it and only against the intended target. |
 | MCP, ToolHive, or auth durability | Run focused deterministic tests first, then only the relevant opt-in integration command below against the disposable stack. External package pulls, hosted consent, and live OAuth require their own authority. |
-| Document parser protocol or sidecar topology | Run deterministic routing/bounds/decoder fakes first, then the parser smoke against digest-pinned Docling/Tika in the disposable dev stack. Stop both parsers and prove feature-local unavailability while app readiness remains healthy. |
+| Document parser protocol or sidecar topology | Run deterministic routing/bounds/decoder fakes first, build the locally derived Docling image from its digest/checksum-pinned inputs, then run the parser smoke against that image and digest-pinned Tika in the disposable dev stack. Stop both parsers and prove feature-local unavailability while app readiness remains healthy. |
 
 These rows are routing rules, not a cumulative release matrix. A change does not inherit unrelated checks because an earlier feature once used them.
 
@@ -142,6 +142,7 @@ npm run db:control-plane:migration:contract
 npm run db:retention:migration:contract
 npm run db:search:migration:contract
 npm run db:assistants:migration:contract
+npm run db:document-processing-fairness:migration:contract
 ```
 
 Select the script owned by the migration; do not run this list as a generic release suite.
@@ -213,7 +214,7 @@ The ToolHive case controls sibling Docker resources and may pull only its review
 Document parser sidecars and feature-local failure:
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d --wait --wait-timeout 300
+docker compose -f docker-compose.dev.yml up -d --build --wait --wait-timeout 300
 docker compose -f docker-compose.dev.yml exec -T app npm run smoke:parsers
 docker compose -f docker-compose.dev.yml stop docling tika
 docker compose -f docker-compose.dev.yml exec -T \
@@ -224,9 +225,13 @@ docker compose -f docker-compose.dev.yml exec -T \
 docker compose -f docker-compose.dev.yml start docling tika
 ```
 
-The smoke creates and removes tiny one-page PDF, OOXML `.docx`, and OLE Word
-`.doc` fixtures inside the app container. It calls the production parser
-boundary and emits only engines, counts, page-anchor/marker booleans, and the
+The smoke creates and removes tiny one-page native PDF, OOXML `.docx`, OLE Word
+`.doc`, image-only PDF, PNG, JPEG, and WebP fixtures inside the app container. The
+OCR fixtures contain printed Russian/English text, digits, and a simple table;
+useful evidence requires stable prose, order-number, and table-only markers.
+The exact built Docling image first verifies its offline EasyOCR assets. The
+smoke calls the production parser boundary and emits only engines, counts,
+page-anchor/marker and bounded OCR-evidence booleans, plus the
 unavailability/readiness, local-PDF-fallback, and stable DOCX-error evidence;
 extracted fixture text and raw sidecar responses remain private. Because the dev server deliberately fails readiness
 while deterministic test-auth switches are enabled, the stopped-sidecar smoke
@@ -235,6 +240,39 @@ readiness route directly against the same Postgres and MinIO. An explicit
 `AIQSA_PARSER_SMOKE_READINESS_URL` instead checks a running deployment over
 HTTP. The stopped-sidecar step is valid only in the disposable dev topology
 and must restore both services afterward.
+
+The host-owned OCR benchmark reuses the same deterministic open-font,
+300-DPI A4 grayscale fixture at 10, 50, and 100 image-only PDF pages:
+
+```bash
+npm run benchmark:knowledge-ocr
+```
+
+Run it only while the exact disposable Docling service is healthy. Before the
+matrix it force-recreates only that disposable service with dependencies,
+image builds, and pulls disabled, then fails closed unless the replacement has
+the expected local tag, base-
+digest and version labels, 2 CPU/10 GiB limits, one local worker, disabled boot
+warm-up, one options-cache entry, matched four-page pipeline queues/batches, two inference
+threads, a 290-second server wait, and the app has the 300-second client timeout;
+it also executes the sealed offline asset verifier in the running container. It
+records
+fixture dimensions/bytes, wall time, peak container memory, normalized output
+size, page/text evidence, and whether the current 290/300-second synchronous
+boundary was reached. A recorded large-case timeout or Docker-event-verified
+container OOM is evidence for a later async/page-slicing or resource decision,
+not permission to raise the timeout/memory limit or a failure of the
+small-document OCR contract. Any 10-page resource/deadline failure is recorded
+and recovered but then fails the command; only measured 50/100-page limits are
+accepted as large-case benchmark results. After either recoverable outcome, the benchmark
+force-recreates only the disposable `docker-compose.dev.yml` `docling` service
+with `--no-deps --no-build --pull never`, waits for health, and re-verifies the
+exact tag/base/version identity, canonical resource/timing profile, and offline
+OCR assets before continuing; the same recovery is performed after a final
+large-case failure. Its JSON evidence records that replacement, health, and image
+verification so one still-running conversion cannot contaminate the next matrix
+item. A recovery failure is emitted beside the already measured case before the
+remaining matrix stops.
 
 ### Provider smokes
 

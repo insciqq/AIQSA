@@ -77,7 +77,7 @@ describe("document parser boundary", () => {
     expect(doclingParse).not.toHaveBeenCalled();
   });
 
-  it("calls Docling with bounded multipart JSON output", async () => {
+  it("replaces a hostile private basename in the Docling multipart filename", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
       expect(String(url)).toBe("http://docling:5001/v1/convert/file");
       expect(init?.method).toBe("POST");
@@ -86,7 +86,13 @@ describe("document parser boundary", () => {
       const form = init?.body as FormData;
       expect(form.get("to_formats")).toBe("json");
       expect(form.get("table_mode")).toBe("fast");
-      expect(form.get("files")).toBeInstanceOf(Blob);
+      expect(form.get("do_ocr")).toBe("true");
+      expect(form.get("force_ocr")).toBe("false");
+      expect(form.get("ocr_preset")).toBe("easyocr");
+      expect(form.getAll("ocr_lang")).toEqual(["ru", "en"]);
+      const file = form.get("files");
+      expect(file).toBeInstanceOf(File);
+      expect((file as File).name).toBe("document.pdf");
       return new Response(JSON.stringify(doclingEnvelope), {
         headers: { "content-type": "application/json" }
       });
@@ -98,12 +104,40 @@ describe("document parser boundary", () => {
 
     await expect(boundary.parse({
       bytes: Buffer.from("%PDF-fixture"),
-      fileName: "fixture.pdf",
+      fileName: 'SYNTHETIC_PRIVATE"; filename="leak.PDF',
       mimeType: "application/pdf"
     })).resolves.toMatchObject({
       blocks: [{ page: 1, text: "fixture text" }],
       engine: "docling"
     });
+  });
+
+  it("does not send Docling OCR fields or a private basename to Tika", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+      expect(String(url)).toBe("http://tika:9998/rmeta");
+      expect(init?.method).toBe("PUT");
+      expect(init?.body).toBeInstanceOf(Blob);
+      expect(init?.body).not.toBeInstanceOf(FormData);
+      expect(new Headers(init?.headers).get("content-disposition")).toBe(
+        'attachment; filename="document.doc"'
+      );
+      return new Response(JSON.stringify([{
+        "Content-Type": "application/msword",
+        "X-TIKA:content": "<html><body><p>legacy fixture</p></body></html>"
+      }]), {
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const boundary = createDocumentParserBoundary({
+      config: { tika: engineConfig("http://tika:9998/") },
+      fetch: fetchImpl
+    });
+
+    await expect(boundary.parse({
+      bytes: Buffer.from("legacy"),
+      fileName: 'SYNTHETIC_PRIVATE"; filename="leak.DOC',
+      mimeType: "application/msword"
+    })).resolves.toMatchObject({ engine: "tika", text: "legacy fixture" });
   });
 
   it("falls back from a rejected Docling parse to Tika", async () => {

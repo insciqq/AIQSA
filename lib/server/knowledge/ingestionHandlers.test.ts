@@ -8,6 +8,7 @@ import { createMemoryStorageAdapter } from "../uploads/storage";
 import {
   createArchiveKnowledgeDocumentHandler,
   createListKnowledgeDocumentsHandler,
+  createReplaceKnowledgeDocumentHandler,
   createRetryKnowledgeDocumentVersionHandler,
   createStartKnowledgeReindexHandler,
   createUploadKnowledgeDocumentHandler,
@@ -163,6 +164,38 @@ describe("Knowledge ingestion handlers", () => {
     }));
     expect(storage.objects.size).toBe(1);
     expect(input.kickProcessing).toHaveBeenCalledOnce();
+  });
+
+  it("derives both upload envelopes from the 50,000,000-byte Knowledge limit", async () => {
+    const getBodyConfig = vi.fn(() => ({
+      uploadMaxConcurrency: 1,
+      uploadMultipartMaxBytes: 51_048_576
+    }));
+    const input: KnowledgeIngestionHandlerDeps = {
+      ...deps(),
+      getBodyConfig,
+      getConfig: () => ({
+        maxChunksPerDocument: 10_000,
+        maxFileBytes: 50_000_000,
+        maxNormalizedChars: 5_000_000,
+        maxNormalizedObjectBytes: 24_194_304,
+        maxPages: 2_000
+      })
+    };
+
+    const created = await createUploadKnowledgeDocumentHandler(input)(
+      uploadRequest(),
+      { params: { baseId: "base-1" } }
+    );
+    const replaced = await createReplaceKnowledgeDocumentHandler(input)(
+      uploadRequest(),
+      { params: { baseId: "base-1", documentId: "document-1" } }
+    );
+
+    expect(created.status).toBe(202);
+    expect(replaced.status).toBe(202);
+    expect(getBodyConfig).toHaveBeenNthCalledWith(1, 50_000_000);
+    expect(getBodyConfig).toHaveBeenNthCalledWith(2, 50_000_000);
   });
 
   it("releases a stored object through the durable outbox when queue creation loses a race", async () => {

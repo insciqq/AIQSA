@@ -427,6 +427,9 @@ export function createDuplicateAssistantHandler(deps: AssistantHandlerDeps) {
       assistantId
     );
     if (result.kind === "not_found") return errorJson("assistant_not_available", 404);
+    if (result.kind === "knowledge_not_available") {
+      return errorJson("assistant_not_available", 404);
+    }
     if (result.kind === "model_not_available") {
       return errorJson("assistant_model_not_available", 400);
     }

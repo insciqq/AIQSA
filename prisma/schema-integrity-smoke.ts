@@ -10,18 +10,22 @@ const expectedConstraintNames = [
   "AuthRateLimitBucket_attemptCount_check",
   "AuthSession_revocation_attribution_check",
   "AuthSession_revokedByUserId_fkey",
+  "AttachmentProcessingJob_attachment_owner_fkey",
   "Chat_id_activeLeafMessageId_fkey",
+  "DocumentProcessingFairnessCursor_pipeline_check",
   "KnowledgeBase_activeIndexGeneration_fkey",
   "KnowledgeBasePublication_scope_group_check",
   "KnowledgeChunk_dimension_check",
   "KnowledgeDocument_currentVersion_fkey",
   "KnowledgeDocumentVersion_ingestGeneration_fkey",
+  "KnowledgeDocumentVersion_knowledgeBase_owner_fkey",
   "KnowledgeDocumentVersion_ingest_progress_check",
   "KnowledgeDocumentVersion_normalized_object_check",
   "KnowledgeDocumentVersion_storage_key_check",
   "KnowledgeDocumentVersion_visibility_check",
   "KnowledgeGenerationDocument_error_check",
   "KnowledgeGenerationDocument_generation_fkey",
+  "KnowledgeGenerationDocument_knowledgeBase_owner_fkey",
   "KnowledgeGenerationDocument_progress_check",
   "KnowledgeGenerationDocument_state_check",
   "KnowledgeGenerationDocument_version_fkey",
@@ -174,18 +178,22 @@ async function assertConstraintCatalog(): Promise<void> {
       'AuthRateLimitBucket_attemptCount_check',
       'AuthSession_revocation_attribution_check',
       'AuthSession_revokedByUserId_fkey',
+      'AttachmentProcessingJob_attachment_owner_fkey',
       'Chat_id_activeLeafMessageId_fkey',
+      'DocumentProcessingFairnessCursor_pipeline_check',
       'KnowledgeBase_activeIndexGeneration_fkey',
       'KnowledgeBasePublication_scope_group_check',
       'KnowledgeChunk_dimension_check',
       'KnowledgeDocument_currentVersion_fkey',
       'KnowledgeDocumentVersion_ingestGeneration_fkey',
+      'KnowledgeDocumentVersion_knowledgeBase_owner_fkey',
       'KnowledgeDocumentVersion_ingest_progress_check',
       'KnowledgeDocumentVersion_normalized_object_check',
       'KnowledgeDocumentVersion_storage_key_check',
       'KnowledgeDocumentVersion_visibility_check',
       'KnowledgeGenerationDocument_error_check',
       'KnowledgeGenerationDocument_generation_fkey',
+      'KnowledgeGenerationDocument_knowledgeBase_owner_fkey',
       'KnowledgeGenerationDocument_progress_check',
       'KnowledgeGenerationDocument_state_check',
       'KnowledgeGenerationDocument_version_fkey',
@@ -274,6 +282,21 @@ async function assertConstraintCatalog(): Promise<void> {
   `;
   if (knowledgeIngestionIndexes.length !== 4) {
     throw new Error("Expected Knowledge ingestion queue and idempotency indexes.");
+  }
+  const fairnessQueueIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND indexname IN (
+        'AttachmentProcessingJob_owner_due_idx',
+        'AttachmentProcessingJob_due_owner_idx',
+        'KnowledgeDocumentVersion_owner_due_active_idx',
+        'KnowledgeGenerationDocument_owner_due_active_idx'
+      )
+    ORDER BY indexname
+  `;
+  if (fairnessQueueIndexes.length !== 4) {
+    throw new Error("Expected tenant-fair document-processing queue indexes.");
   }
 }
 

@@ -606,26 +606,29 @@ model AssistantPin {
 }
 
 model KnowledgeBase {
-  id                      String                     @id @default(uuid())
+  id                      String                        @id @default(uuid())
   ownerUserId             String
   name                    String
-  description             String                     @default("")
-  activeIndexGenerationId String?                    @unique
-  contentRevision         Int                        @default(0)
-  version                 Int                        @default(1)
+  description             String                        @default("")
+  activeIndexGenerationId String?                       @unique
+  contentRevision         Int                           @default(0)
+  version                 Int                           @default(1)
   archivedAt              DateTime?
-  createdAt               DateTime                   @default(now())
-  updatedAt               DateTime                   @updatedAt
+  createdAt               DateTime                      @default(now())
+  updatedAt               DateTime                      @updatedAt
   /// The composite relation proves the active generation belongs to this base.
-  activeIndexGeneration   KnowledgeIndexGeneration?  @relation("KnowledgeBaseActiveIndexGeneration", fields: [id, activeIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBase_activeIndexGeneration_fkey")
+  activeIndexGeneration   KnowledgeIndexGeneration?     @relation("KnowledgeBaseActiveIndexGeneration", fields: [id, activeIndexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeBase_activeIndexGeneration_fkey")
   documents               KnowledgeDocument[]
-  indexGenerations        KnowledgeIndexGeneration[] @relation("KnowledgeBaseIndexGenerations")
+  documentVersions        KnowledgeDocumentVersion[]    @relation("KnowledgeDocumentVersionOwner")
+  generationDocuments     KnowledgeGenerationDocument[] @relation("KnowledgeGenerationDocumentOwner")
+  indexGenerations        KnowledgeIndexGeneration[]    @relation("KnowledgeBaseIndexGenerations")
   runBindings             KnowledgeRunBinding[]
-  owner                   User                       @relation("KnowledgeBaseOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  owner                   User                          @relation("KnowledgeBaseOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   publications            KnowledgeBasePublication[]
-  usageEvents             UsageEvent[]               @relation("KnowledgeUsageBase")
+  usageEvents             UsageEvent[]                  @relation("KnowledgeUsageBase")
 
   @@unique([id, activeIndexGenerationId])
+  @@unique([id, ownerUserId])
   @@index([ownerUserId, archivedAt])
 }
 
@@ -688,6 +691,7 @@ model KnowledgeDocumentVersion {
   knowledgeBaseId          String
   documentId               String
   ingestGenerationId       String?
+  ownerUserId              String
   versionNumber            Int
   fileName                 String
   mimeType                 String
@@ -718,6 +722,8 @@ model KnowledgeDocumentVersion {
   document                 KnowledgeDocument             @relation("KnowledgeDocumentVersions", fields: [knowledgeBaseId, documentId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_document_fkey")
   generationDocuments      KnowledgeGenerationDocument[]
   ingestGeneration         KnowledgeIndexGeneration?     @relation("KnowledgeDocumentVersionIngestGeneration", fields: [knowledgeBaseId, ingestGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_ingestGeneration_fkey")
+  /// The composite relation makes the denormalized queue owner immutable and proves it matches the owning base.
+  knowledgeBase            KnowledgeBase                 @relation("KnowledgeDocumentVersionOwner", fields: [knowledgeBaseId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeDocumentVersion_knowledgeBase_owner_fkey")
   usageEvents              UsageEvent[]                  @relation("KnowledgeUsageDocumentVersion")
 
   @@unique([documentId, versionNumber])
@@ -734,6 +740,7 @@ model KnowledgeGenerationDocument {
   knowledgeBaseId    String
   indexGenerationId  String
   documentVersionId  String
+  ownerUserId        String
   state              KnowledgeDocumentIngestState @default(queued)
   errorCode          String?                      @db.VarChar(64)
   claimToken         String?                      @db.VarChar(128)
@@ -747,6 +754,8 @@ model KnowledgeGenerationDocument {
   updatedAt          DateTime                     @updatedAt
   documentVersion    KnowledgeDocumentVersion     @relation(fields: [knowledgeBaseId, documentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeGenerationDocument_version_fkey")
   indexGeneration    KnowledgeIndexGeneration     @relation(fields: [knowledgeBaseId, indexGenerationId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeGenerationDocument_generation_fkey")
+  /// The composite relation makes the denormalized queue owner immutable and proves it matches the owning base.
+  knowledgeBase      KnowledgeBase                @relation("KnowledgeGenerationDocumentOwner", fields: [knowledgeBaseId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict, map: "KnowledgeGenerationDocument_knowledgeBase_owner_fkey")
 
   @@id([indexGenerationId, documentVersionId])
   @@index([state, nextAttemptAt, claimedAt, createdAt])
@@ -1531,6 +1540,12 @@ model SearchRun {
   @@index([searchRevisionId])
 }
 
+model DocumentProcessingFairnessCursor {
+  pipeline               String   @id @db.VarChar(32)
+  lastGrantedOwnerUserId String?
+  updatedAt              DateTime @default(now()) @updatedAt
+}
+
 model Attachment {
   id                  String                   @id @default(uuid())
   userId              String
@@ -1552,6 +1567,7 @@ model Attachment {
   processingJob       AttachmentProcessingJob?
   user                User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([id, userId])
   @@index([userId, createdAt])
   @@index([messageId])
   @@index([storageKey])
@@ -1560,6 +1576,7 @@ model Attachment {
 model AttachmentProcessingJob {
   id            String     @id @default(uuid())
   attachmentId  String     @unique
+  ownerUserId   String
   claimToken    String?
   claimedAt     DateTime?
   attemptCount  Int        @default(0)
@@ -1568,8 +1585,12 @@ model AttachmentProcessingJob {
   lastErrorCode String?    @db.VarChar(64)
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
-  attachment    Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+  /// The composite relation makes the denormalized queue owner immutable and proves it matches the attachment owner.
+  attachment    Attachment @relation(fields: [attachmentId, ownerUserId], references: [id, userId], onDelete: Cascade, onUpdate: Restrict, map: "AttachmentProcessingJob_attachment_owner_fkey")
 
+  @@unique([attachmentId, ownerUserId])
+  @@index([ownerUserId, nextAttemptAt, createdAt, id], map: "AttachmentProcessingJob_owner_due_idx")
+  @@index([nextAttemptAt, createdAt, ownerUserId, id], map: "AttachmentProcessingJob_due_owner_idx")
   @@index([nextAttemptAt, claimedAt, createdAt])
 }
 

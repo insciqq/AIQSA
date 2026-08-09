@@ -34,6 +34,17 @@ A brokered remote MCP is two trusted OAuth domains, not token passthrough. AIQSA
 
 Local npm, PyPI, and digest-pinned OCI stdio MCPs run in separate ToolHive-created sibling containers. The pinned ToolHive controller alone mounts `/var/run/docker.sock`; neither the app nor an MCP workload receives it, and the controller/proxy APIs are confined to the private `mcp-control` network. Docker socket authority is nevertheless effectively root authority over the host. The application can reach ToolHive's full unauthenticated private API, so application compromise is transitively host compromise. Dropped capabilities, a read-only controller filesystem, opaque ownership names, and sibling workload isolation reduce accidental exposure but do not change that accepted trust boundary.
 
+Generated ToolHive workloads are not subject to a per-user/server-count quota or
+a steady-state per-container CPU/memory limit in the supported single-host
+topology; bounded concurrent starts do not bound the number or aggregate cost of
+already-running workloads. This capacity exposure is explicitly accepted for
+the current trusted-user, administrator-reviewed installation and is not an
+exception to the Docker-socket/root-equivalent compromise boundary above.
+Reassess workload quotas, resource controllers, or isolation before admitting
+untrusted users, allowing self-service arbitrary MCP installation, requiring
+CPU/memory guarantees or application-data separation, or after measured host
+contention, abandoned-workload growth, or cleanup pressure.
+
 Local MCP workloads have ordinary outbound network access. They do not join the application data network and receive no AIQSA database/session/provider/SMTP/storage credential by design, but a malicious workload can use or exfiltrate any explicit value it receives and any tool input the model supplies. Install only reviewed MCP servers and treat their output/stderr as untrusted. After a failed draft startup AIQSA may read only a bounded ToolHive log response, recognize a narrow safe pattern such as a missing uppercase environment-variable name, and discard the text; raw or unclassified workload output is never persisted or returned to a user/admin response.
 
 AIQSA encrypts administrator/shared values, personal values, OAuth tokens, and effective runtime snapshots at rest with `AIQSA_ENCRYPTION_KEY`; secret API fields are write-only. Removed or unknown slot keys are never selected for effective configuration or returned to the browser, although the initial release does not rewrite existing envelopes solely to erase those inactive encrypted entries. For local environment bindings, the selected plaintext is then sent as ordinary ToolHive `env_vars` and is visible in ToolHive state plus Docker container metadata to the application, controller, Docker daemon, and host administrators. Docker does not encrypt environment variables. Draft validation and live reconciliation reject a complete serialized tool inventory if it contains an exact known static, personal, or OAuth credential. Runtime/run evidence may retain only the source category (`oauth`, `personal`, or `shared`) and a bounded provider-supplied account/workspace label, never the value. Logs and user/admin responses must not contain workload requests, process environments, OAuth material, or known secret values; ToolHive state, Docker diagnostics, and backups are sensitive installation data.

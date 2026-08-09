@@ -92,6 +92,7 @@ export type AssistantPublishResult =
 
 export type AssistantDuplicateResult =
   | { assistantId: string; kind: "ok" }
+  | { kind: "knowledge_not_available" }
   | { kind: "model_not_available" }
   | { kind: "not_found" }
   | { kind: "run_controls_invalid" }
@@ -244,29 +245,115 @@ async function lockAssistantPublicationRows(
     SELECT publication."id"
     FROM "AssistantPublication" AS publication
     WHERE publication."assistantId" = ${assistantId}
+    ORDER BY publication."id"
     FOR UPDATE OF publication
   `;
 }
 
-async function lockAssistantAccessRows(
+async function lockAssistantPublicationRowsForDuplicate(
   tx: Prisma.TransactionClient,
-  userId: string,
   assistantId: string
 ): Promise<void> {
-  // Serialize duplication with publication moves/revocation and with the
-  // group membership/archive rows that grant the caller access. A mutation
-  // that committed first is observed by the following access read; a
-  // duplicate that acquired these locks first completes from that exact
-  // authorized revision before the access mutation proceeds.
-  await lockAssistantPublicationRows(tx, assistantId);
+  await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT publication."id"
+    FROM "AssistantPublication" AS publication
+    WHERE publication."assistantId" = ${assistantId}
+    ORDER BY publication."id"
+    FOR SHARE OF publication
+  `;
+}
+
+async function lockActiveMemberGroupRows(
+  tx: Prisma.TransactionClient,
+  userId: string
+): Promise<void> {
+  // Knowledge publish takes its base before the authorizing group rows. Keep
+  // duplication on that same order and use shared locks: writers serialize,
+  // while independent readers and run admission remain compatible.
   await tx.$queryRaw<Array<{ groupId: string }>>`
     SELECT membership."groupId"
     FROM "UserGroup" AS membership
     INNER JOIN "Group" AS team ON team."id" = membership."groupId"
     WHERE membership."userId" = ${userId}
       AND team."archivedAt" IS NULL
-    FOR UPDATE OF membership, team
+    ORDER BY membership."groupId"
+    FOR SHARE OF membership, team
   `;
+}
+
+function distinctKnowledgeBaseIds(knowledgeBaseIds: readonly string[]): string[] {
+  return [...new Set(knowledgeBaseIds)].sort((left, right) => left.localeCompare(right));
+}
+
+async function lockKnowledgeBaseRowsForDuplicate(
+  tx: Prisma.TransactionClient,
+  knowledgeBaseIds: readonly string[]
+): Promise<boolean> {
+  if (knowledgeBaseIds.length === 0) return true;
+
+  const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT base."id"
+    FROM "KnowledgeBase" AS base
+    WHERE base."id" IN (${Prisma.join(knowledgeBaseIds)})
+    ORDER BY base."id"
+    FOR SHARE OF base
+  `);
+  return locked.length === knowledgeBaseIds.length;
+}
+
+async function lockKnowledgePublicationRowsForDuplicate(
+  tx: Prisma.TransactionClient,
+  knowledgeBaseIds: readonly string[]
+): Promise<void> {
+  if (knowledgeBaseIds.length === 0) return;
+
+  // A revoke deletes only the child after locking its base. Locking the child
+  // after bases and groups makes a revoke that won against this repeatable-read
+  // snapshot surface as a serialization retry instead of stale authorization.
+  await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT publication."id"
+    FROM "KnowledgeBasePublication" AS publication
+    WHERE publication."knowledgeBaseId" IN (${Prisma.join(knowledgeBaseIds)})
+    ORDER BY publication."knowledgeBaseId", publication."id"
+    FOR SHARE OF publication
+  `);
+}
+
+async function allKnowledgeDependenciesAvailable(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  knowledgeBaseIds: readonly string[]
+): Promise<boolean> {
+  if (knowledgeBaseIds.length === 0) return true;
+
+  const groupIds = await activeMemberGroupIds(tx, userId);
+  const accessible = await tx.knowledgeBase.findMany({
+    select: { id: true },
+    where: {
+      archivedAt: null,
+      id: { in: [...knowledgeBaseIds] },
+      OR: [
+        { ownerUserId: userId },
+        {
+          publications: {
+            some: {
+              OR: [
+                { scope: "installation" },
+                ...(groupIds.length > 0
+                  ? [{
+                      group: { archivedAt: null },
+                      groupId: { in: groupIds },
+                      scope: "group" as const
+                    }]
+                  : [])
+              ]
+            }
+          }
+        }
+      ]
+    }
+  });
+  return accessible.length === knowledgeBaseIds.length;
 }
 
 export function createPrismaAssistantRepository(
@@ -423,14 +510,37 @@ export function createPrismaAssistantRepository(
               WHERE "id" = ${assistantId}
               FOR UPDATE
             `;
-            await lockAssistantAccessRows(tx, userId, assistantId);
+            // Keep every shared dependency reader on the same global order as
+            // Knowledge publication: source, bases, membership/groups, then
+            // Knowledge publications. The provisional source read discovers
+            // the exact dependency ids; the locked re-read below is authority.
+            await lockAssistantPublicationRowsForDuplicate(tx, assistantId);
+            const provisionalSource = await loadAccessEntryWith(tx, userId, assistantId);
+            if (!provisionalSource) return { kind: "not_found" as const };
+            const knowledgeBaseIds = distinctKnowledgeBaseIds(
+              provisionalSource.revision.knowledgeBaseIds
+            );
+            if (!await lockKnowledgeBaseRowsForDuplicate(tx, knowledgeBaseIds)) {
+              return { kind: "knowledge_not_available" as const };
+            }
+            await lockActiveMemberGroupRows(tx, userId);
+            await lockKnowledgePublicationRowsForDuplicate(tx, knowledgeBaseIds);
             const source = await loadAccessEntryWith(tx, userId, assistantId);
-            if (!source) return { kind: "not_found" as const };
+            if (!source || source.revision.id !== provisionalSource.revision.id) {
+              return { kind: "not_found" as const };
+            }
             if (!catalogView) return { kind: "model_not_available" as const };
             const runControls = decodeAssistantRunControls(source.revision.runControls ?? {});
             const searchPlan = decodeSearchPlan(source.revision.searchPlan);
             if (!runControls || !searchPlan.ok) {
               throw new Error("assistant_revision_integrity_invalid");
+            }
+            if (!await allKnowledgeDependenciesAvailable(
+              tx,
+              userId,
+              knowledgeBaseIds
+            )) {
+              return { kind: "knowledge_not_available" as const };
             }
             const invalid = validateAssistantConfigurationAgainstCatalog(
               {

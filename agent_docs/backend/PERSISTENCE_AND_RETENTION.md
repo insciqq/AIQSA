@@ -23,7 +23,31 @@ Dry-run performs only bounded reads. Execute mode deletes old events only for te
 
 ## Core Tables
 
-The executable model inventory is `prisma/schema.prisma`. Its current categories are identity/session/approval, users/groups/settings/grants, folders/chats/message DAGs, Assistant definitions/revisions/publications/pins, provider/search catalog, runs/events/usage, MCP definitions/revisions/grants/user state/runtime evidence/tool calls, attachments plus their durable processing queue and purpose-built deletion outbox, and immutable share snapshots. Living prose records only cross-table constraints that affect behavior.
+The executable model inventory is `prisma/schema.prisma`. Its current categories are identity/session/approval, users/groups/settings/grants, folders/chats/message DAGs, Assistant definitions/revisions/publications/pins, provider/search catalog, runs/events/usage, MCP definitions/revisions/grants/user state/runtime evidence/tool calls, attachments plus their durable processing queue and purpose-built deletion outbox, per-pipeline document-processing fairness cursors, and immutable share snapshots. Living prose records only cross-table constraints that affect behavior.
+
+`DocumentProcessingFairnessCursor` has exactly the independent `attachment` and
+`knowledge` rows. Its nullable last-owner value intentionally has no user
+foreign key: a deleted previous owner remains only the lexical position from
+which the next live rotation continues. Each successful claim locks its one
+pipeline row, chooses the first eligible owner lexicographically after the last
+grant with wraparound, and advances only after atomically claiming work. An
+empty cursor starts from the globally oldest eligible owner head, breaking a
+tie by owner id. Thus, while `K` owners stay eligible in one pipeline, every
+window of the next `K` successful grants contains each owner once; a newly
+eligible owner joins within at most `K` subsequent successful grants. The
+guarantee is per pipeline and non-preemptive: already running work still has to
+release a slot, and a sole eligible owner may use every available worker. This
+is scheduling fairness, not a per-user quota or admission limit. Each physical
+queue row copies its immutable owning user id and proves that copy against its
+parent with a composite foreign key. Owner-first due indexes let the steady
+state claim use separate after-cursor and wraparound range seeks while holding
+the short cursor lock; the empty-cursor path alone selects the globally oldest
+eligible owner head. Terminal history is excluded from the partial Knowledge
+queue indexes so backlog size does not turn a grant into a full eligible-set
+sort. Prisma owns the ordinary Attachment indexes; the forward migration owns
+the two exact partial Knowledge predicates because the supported Prisma version
+cannot represent partial-index conditions. The focused migration contract pins
+those predicates and proves their bounded owner-range query plans.
 
 `User.role`/`User.status`, identity/session/token/rule/invite relations, and exact normalized email/domain matching implement the auth state machine. The schema owns field/enumeration shape; the bounded owners routed by `SECURITY.md` own the threat and session contract.
 
@@ -78,7 +102,7 @@ transaction.
 
 The Assistant aggregate is `AssistantDefinition` (stable identity, owner, optimistic version, current-revision pointer, soft archive), append-only `AssistantRevision` rows (revision number, schema version, name/description/bounded category, exact generated-avatar recipe JSON, restrictive `ProviderModel` foreign key, system/developer prompts, provider-neutral run controls, logical Search plan, logical MCP server ids, up to four starter prompts, author), `AssistantPublication` rows pinning one exact revision per active group or installation-wide (a check ties scope to group presence and a partial unique index allows one installation row per definition), and per-user `AssistantPin` preference rows that grant no access and never enter run evidence. `ModelRun.assistantId`/`assistantRevisionId` carry accepted provenance through a composite foreign key proving lineage plus a check keeping both columns present or absent together; both relations are restrictive so accepted history cannot be stranded. The restrictive `AssistantRevision.providerModelId` reference is the provider-model deletion guard that replaced the retired run-profile guard, and admin deletion eligibility counts owned Assistant definitions (users) and Assistant publications (groups). Assistants are archived, never hard-deleted.
 
-The Knowledge aggregate starts at `KnowledgeBase`: owner, optimistic version, soft archive, monotonic content revision, and a composite-proved active `KnowledgeIndexGeneration`. Each immutable generation pins one embedding deployment's normalized vector-space configuration/fingerprint, supported dimension, chunking profile, and indexed content revision; only committed 1024/1536 cosine HNSW profiles are accepted. `KnowledgeDocument` is stable identity with a composite-proved current pointer, while append-only `KnowledgeDocumentVersion` rows keep private object integrity metadata, generation-pinned ingest state/progress, and inclusive/exclusive visibility bounds. A process-local coordinator only wakes database-owned work; bounded skip-locked leases, heartbeats, stage fencing, and stable failures drive `queued -> parsing -> chunking -> embedding -> ready | failed`. Knowledge parsing uses only the first code-owned parser for a routed format and never degrades through the attachment fallback chain. Embedding always uses document mode in fixed 64-input batches; the unique generation/version/batch `UsageEvent` tuple commits both owner-attributed usage evidence and crash-resume idempotency.
+The Knowledge aggregate starts at `KnowledgeBase`: owner, optimistic version, soft archive, monotonic content revision, and a composite-proved active `KnowledgeIndexGeneration`. Each immutable generation pins one embedding deployment's normalized vector-space configuration/fingerprint, supported dimension, chunking profile, and indexed content revision; only committed 1024/1536 cosine HNSW profiles are accepted. `KnowledgeDocument` is stable identity with a composite-proved current pointer, while append-only `KnowledgeDocumentVersion` rows keep private object integrity metadata, generation-pinned ingest state/progress, and inclusive/exclusive visibility bounds. A process-local coordinator only wakes database-owned work; each atomic claim applies the shared durable owner rotation using the composite-proved immutable queue copy of `KnowledgeBase.ownerUserId`, with initial document work and reindex work participating in the same owner cycle. Within the selected owner, an eligible document remains ahead of reindex work and each class retains its oldest-eligible ordering. Bounded skip-locked leases, heartbeats, stage fencing, and stable failures drive `queued -> parsing -> chunking -> embedding -> ready | failed`; the short cursor lock and its indexed owner-head seeks never cover parsing or embedding. Knowledge parsing uses only the first code-owned parser for a routed format and never degrades through the attachment fallback chain. Docling OCR supplies printed Russian/English Unicode text and page anchors through the same normalized block contract as native text; pictures or diagrams without printed text create no semantic content, and an empty normalized result fails rather than activating an empty version. Embedding always uses document mode in fixed 64-input batches; the unique generation/version/batch `UsageEvent` tuple commits both owner-attributed usage evidence and crash-resume idempotency.
 
 `KnowledgePolicy` is the one-row `installation` retrieval policy with optimistic version, updater audit reference, candidate/result limits, and fused-score threshold protected by database checks. It grants no resource access and owns no relation to private bases. Migration, seed, and bootstrap insert only a missing default row; every retrieval invocation snapshots the resolved values into its immutable `KnowledgeRun` receipt.
 
