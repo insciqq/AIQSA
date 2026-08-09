@@ -16,6 +16,7 @@ import type { RunSurfaceSnapshot } from "@/components/app-shell/runSurfaceStore"
 import type {
   Catalog,
   CatalogSearchStrategy,
+  ChatContextStats,
   ChatUsageStats,
   ChatSummary,
   CatalogModel,
@@ -30,6 +31,7 @@ import { useMemo } from "react";
 type PowerAppShellViewModelInput = {
   activeChatId: string | null;
   activeChatStreaming: boolean;
+  activeThreadContextStats?: ChatContextStats | null;
   activeThreadUsageStats: ChatUsageStats | null;
   attachments: ComposerAttachment[];
   catalog: Catalog | null;
@@ -123,6 +125,7 @@ function stagedAttachmentTokens(attachments: ComposerAttachment[], model?: Catal
 export function usePowerAppShellViewModel({
   activeChatId,
   activeChatStreaming,
+  activeThreadContextStats = null,
   activeThreadUsageStats,
   attachments,
   catalog,
@@ -247,7 +250,8 @@ export function usePowerAppShellViewModel({
       (selectedAssistantPromptCharacterCount !== null
         ? Math.ceil(selectedAssistantPromptCharacterCount / 4)
         : 0);
-    const branchTokens = visibleMessages.reduce((total, message) => total + estimateApproxTokens(message.content), 0);
+    const branchTokens = activeThreadContextStats?.approximateActiveBranchInputTokens ??
+      visibleMessages.reduce((total, message) => total + estimateApproxTokens(message.content), 0);
     const draftTokens = estimateApproxTokens({
       blocks: draft.trim()
         ? [
@@ -266,7 +270,7 @@ export function usePowerAppShellViewModel({
       safeInputBudgetTokens: currentContextWindow ? safeInputBudget : null,
       totalContextTokens: currentContextWindow || null
     };
-  }, [attachments, currentContextWindow, currentModel, draft, projectMemory, safeInputBudget, selectedAssistantPromptCharacterCount, visibleMessages]);
+  }, [activeThreadContextStats, attachments, currentContextWindow, currentModel, draft, projectMemory, safeInputBudget, selectedAssistantPromptCharacterCount, visibleMessages]);
   const composerUsageStats = activeThreadUsageStats ?? {
     activeBranchMessageCount: visibleMessages.length,
     cachedInputTokens: 0,

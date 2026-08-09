@@ -1,6 +1,5 @@
 import type { ThreadMessage } from "@/components/app-shell/types";
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
-import { getVisibleMessagePath } from "@/lib/domain/branching";
 
 export type BranchTreeNode = {
   active: boolean;
@@ -28,18 +27,26 @@ export function visibleMessagePath(messages: ThreadMessage[], activeLeafId: stri
     return [];
   }
 
-  try {
-    return getVisibleMessagePath(messages, leafId);
-  } catch {
-    return [];
+  const messagesById = new Map(messages.map((message) => [message.id, message]));
+  const reversePath: ThreadMessage[] = [];
+  const visited = new Set<string>();
+  let current = messagesById.get(leafId);
+  while (current) {
+    if (visited.has(current.id)) return [];
+    visited.add(current.id);
+    reversePath.push(current);
+    current = current.parentMessageId
+      ? messagesById.get(current.parentMessageId)
+      : undefined;
   }
+  return reversePath.reverse();
 }
 
 export function latestResumableRunId(thread: {
   activeLeafId: string | null;
   messages: ThreadMessage[];
 }): string | null {
-  const visible = getVisibleMessagePath(thread.messages, thread.activeLeafId);
+  const visible = visibleMessagePath(thread.messages, thread.activeLeafId);
   const message = visible
     .filter(
       (candidate) =>

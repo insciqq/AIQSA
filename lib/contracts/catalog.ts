@@ -6,6 +6,7 @@ import {
   type SearchPlanMode,
   type SearchProtocol
 } from "./search";
+import { resolveProviderConnectionLabels } from "./providerConnectionLabels";
 
 export type ReasoningEffort = string;
 export type ReasoningMode = string;
@@ -458,6 +459,11 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     return null;
   }
 
+  const decodedProviders = providers.filter(
+    (provider): provider is CatalogProvider => provider !== null
+  );
+  const providerLabels = resolveProviderConnectionLabels(decodedProviders);
+
   return {
     ...(attachmentLimits ? { attachmentLimits } : {}),
     defaults: {
@@ -477,7 +483,10 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       showToolActivity: defaults.showToolActivity
     },
     models: models.filter((model): model is CatalogModel => model !== null),
-    providers: providers.filter((provider): provider is CatalogProvider => provider !== null),
+    providers: decodedProviders.map((provider) => ({
+      ...provider,
+      name: providerLabels.get(provider.id) ?? provider.name
+    })),
     searchStrategies: searchStrategies.filter(
       (strategy): strategy is CatalogSearchStrategy => strategy !== null
     )

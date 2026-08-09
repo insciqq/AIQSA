@@ -282,6 +282,23 @@ describe("AssistantLibrary", () => {
     expect(ready.onSave).toHaveBeenCalledOnce();
   });
 
+  it("protects only a dirty Assistant editor from document unload", () => {
+    const dirty = makeEditor({ dirty: true });
+    const { rerender } = render(
+      <AssistantLibrary view={makeView({ editor: dirty, task: "editor" })} />
+    );
+    const blocked = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(blocked);
+    expect(blocked.defaultPrevented).toBe(true);
+
+    rerender(
+      <AssistantLibrary view={makeView({ editor: makeEditor(), task: "editor" })} />
+    );
+    const clean = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(clean);
+    expect(clean.defaultPrevented).toBe(false);
+  });
+
   it("edits the Assistant exact Knowledge allowlist with retained order and a hard ceiling", () => {
     const onChange = vi.fn();
     const editor = makeEditor({

@@ -12,7 +12,7 @@ import {
   type ModelRunSseEvent,
   type ModelRunUsage
 } from "../../domain/modelRunEvents";
-import { sumTokenUsage } from "../../domain/usage";
+import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import { validateRunAccess } from "../auth/entitlements";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import {
@@ -78,6 +78,7 @@ import {
 import {
   snapshotToolLoopJson,
   toolLoopPersistenceLimits,
+  type PersistedAnswerRoundUsage,
   type PersistedToolLoopCall,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
@@ -235,6 +236,7 @@ function serializeChatUpdate(
   return {
     chat: {
       activeLeafMessageId: update.chat.activeLeafMessageId,
+      contextStats: update.chat.contextStats,
       createdAt: iso(update.chat.createdAt),
       defaultModelId: update.chat.defaultModelId,
       defaultProvider: update.chat.defaultProvider,
@@ -544,19 +546,28 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         });
       }
 
-      async function persistReportedUsageForIncompleteRun(): Promise<void> {
+      async function persistReportedUsageForIncompleteRun(
+        answerRoundUsage?: PersistedAnswerRoundUsage
+      ): Promise<void> {
         const grouped = groupedUsageAttributions(reportedUsageAttributions);
-        if (grouped.length === 0) {
+        if (grouped.length === 0 && !answerRoundUsage) {
           return;
         }
 
         const usageAttributions = await usageAttributionsWithEstimatedCost(input.repository, grouped);
-        await input.repository.recordRunUsageEvents({
+        const recorded = await input.repository.recordRunUsageEvents({
+          ...(answerRoundUsage ? { answerRoundUsage } : {}),
           chatId: normalizedRequest.chatId,
           runId,
           usageAttributions,
           userId: input.userId
         });
+        if (answerRoundUsage && !recorded) {
+          throw new RunPipelineError(
+            "tool_loop_usage_checkpoint_conflict",
+            "Provider-round usage could not be checkpointed"
+          );
+        }
       }
 
       async function applyProviderEvent(
@@ -999,9 +1010,13 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               type: "message_reset"
             });
           },
-          onUsage: async (usage, roundRequest) => {
+          onUsage: async (usage, roundRequest, context) => {
             rememberReportedUsage(roundRequest.provider, roundRequest.modelId, usage);
-            await persistReportedUsageForIncompleteRun();
+            await persistReportedUsageForIncompleteRun({
+              completeness: context.completeness,
+              roundIndex: context.round,
+              usage: normalizeTokenUsage(usage)
+            });
           },
           parallelToolCalls: normalizedRequest.modelCapabilities.parallelToolCalls === true,
           persistToolBatch: async ({ calls, continuation, round }) => {

@@ -185,7 +185,12 @@ describe("ThreadMessageRow", () => {
       const message = assistantMessage({ id: "assistant-touch" });
       const onCopyMessage = vi.fn();
       const onToggleMobileControls = vi.fn();
-      renderRow({ message, onCopyMessage, onToggleMobileControls });
+      renderRow({
+        compactControls: true,
+        message,
+        onCopyMessage,
+        onToggleMobileControls
+      });
 
       fireEvent.click(screen.getByRole("article", { name: "Answer" }));
       expect(onToggleMobileControls).not.toHaveBeenCalled();
@@ -196,6 +201,123 @@ describe("ThreadMessageRow", () => {
       fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
       expect(onCopyMessage).toHaveBeenCalledWith(message);
       expect(onToggleMobileControls).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ["assistant", assistantMessage({ id: "assistant-keyboard" }), "Enter"],
+    [
+      "user",
+      {
+        content: "Question",
+        id: "user-keyboard",
+        parentMessageId: null,
+        role: "user" as const,
+        status: "complete" as const
+      },
+      " "
+    ]
+  ])("reveals compact %s message actions from the keyboard", (_role, message, key) => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: true }))
+    );
+    try {
+      const onToggleMobileControls = vi.fn();
+      renderRow({ compactControls: true, message, onToggleMobileControls });
+
+      const article = screen.getByRole("article");
+      article.focus();
+      fireEvent.keyDown(article, { key });
+
+      expect(onToggleMobileControls).toHaveBeenCalledOnce();
+      expect(onToggleMobileControls).toHaveBeenCalledWith(message.id);
+      expect(article).toHaveFocus();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("closes compact message actions with Escape while retaining message focus", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: true }))
+    );
+    try {
+      const onToggleMobileControls = vi.fn();
+      renderRow({
+        compactControls: true,
+        message: assistantMessage({ id: "assistant-keyboard-close" }),
+        mobileControlsOpen: true,
+        onToggleMobileControls
+      });
+
+      const article = screen.getByRole("article", { name: "Answer" });
+      article.focus();
+      fireEvent.keyDown(article, { key: "Escape" });
+
+      expect(onToggleMobileControls).toHaveBeenCalledOnce();
+      expect(onToggleMobileControls).toHaveBeenCalledWith("assistant-keyboard-close");
+      expect(article).toHaveFocus();
+
+      fireEvent.keyDown(screen.getByRole("button", { name: "Copy message" }), {
+        key: "Enter"
+      });
+      expect(onToggleMobileControls).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("relates a compact message article to its toolbar without changing article semantics", () => {
+    const message = assistantMessage({ id: "assistant-disclosure" });
+    const view = renderRow({
+      compactControls: true,
+      message,
+      mobileControlsOpen: false
+    });
+
+    const article = screen.getByRole("article", { name: "Answer" });
+    const toolbar = screen.getByRole("toolbar", { name: "Assistant message actions" });
+    expect(article).toHaveAttribute("aria-controls", toolbar.id);
+    expect(article).toHaveAttribute("aria-keyshortcuts", "Enter Space Escape");
+    expect(article).toHaveAccessibleDescription(
+      "Message actions are hidden. Press Enter or Space to show them."
+    );
+    expect(article).not.toHaveAttribute("aria-expanded");
+
+    view.rerender(
+      <ThreadMessageRow {...view.props} compactControls mobileControlsOpen />
+    );
+    expect(screen.getByRole("article", { name: "Answer" })).toHaveAccessibleDescription(
+      "Message actions are shown. Press Escape to hide them."
+    );
+
+    view.rerender(
+      <ThreadMessageRow {...view.props} compactControls={false} mobileControlsOpen={false} />
+    );
+    expect(screen.getByRole("article", { name: "Answer" })).not.toHaveAttribute(
+      "aria-controls"
+    );
+    expect(screen.getByRole("article", { name: "Answer" })).not.toHaveAttribute(
+      "aria-describedby"
+    );
+  });
+
+  it("does not toggle message actions from the keyboard outside compact layouts", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: false }))
+    );
+    try {
+      const onToggleMobileControls = vi.fn();
+      renderRow({ onToggleMobileControls });
+
+      fireEvent.keyDown(screen.getByRole("article", { name: "Answer" }), { key: "Enter" });
+
+      expect(onToggleMobileControls).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }

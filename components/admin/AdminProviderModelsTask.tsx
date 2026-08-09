@@ -4,6 +4,7 @@ import {
   AdminProviderModelEditor,
   adminProviderAdapterLabel
 } from "@/components/admin/AdminProviderModelEditor";
+import { useAdminDiscardAction } from "@/components/admin/AdminDraftProtection";
 import {
   AdminAvailabilityStatus,
   adminAvailabilityRowClass,
@@ -37,6 +38,7 @@ export function AdminProviderModelsTask({
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }>) {
   const [editingId, setEditingId] = useState<string | "new" | null>(null);
+  const requestDraftDiscard = useAdminDiscardAction();
   const editing = editingId && editingId !== "new"
     ? connection.models.find(({ id }) => id === editingId) ?? null
     : null;
@@ -112,7 +114,9 @@ export function AdminProviderModelsTask({
             className={editingId === "new" ? quietButton : primaryButton}
             data-provider-action="add-model"
             disabled={controller.state.busy}
-            onClick={() => setEditingId((current) => current === "new" ? null : "new")}
+            onClick={() => requestDraftDiscard(() => {
+              setEditingId((current) => current === "new" ? null : "new");
+            }, ["provider-model-editor"])}
             type="button"
           >
             <Plus aria-hidden="true" className="size-3.5" />
@@ -221,7 +225,10 @@ export function AdminProviderModelsTask({
                         aria-label={`Edit ${model.displayName}`}
                         className={quietButton}
                         disabled={controller.state.busy}
-                        onClick={() => setEditingId(model.id)}
+                        onClick={() => requestDraftDiscard(
+                          () => setEditingId(model.id),
+                          ["provider-model-editor"]
+                        )}
                         type="button"
                       >
                         <Pencil aria-hidden="true" className="size-3.5" />

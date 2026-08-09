@@ -128,8 +128,12 @@ function matrixModel(input: {
 export const matrixCatalog = {
   defaults: {
     controlValues: {},
+    hasPersonalModelDefault: true,
     modelId: "gpt-5.5",
+    modelPreferenceSource: "personal" as const,
+    organizationModelDefault: null,
     organizationSearchPlan: { mode: "all_selected", optionIds: [] },
+    personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
     provider: "openai",
     searchPlan: { mode: "all_selected", optionIds: [] },
     searchPreferenceSource: "personal",

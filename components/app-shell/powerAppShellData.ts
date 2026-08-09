@@ -50,7 +50,12 @@ function chatDetailBodyFromUnknown(value: unknown): ApiChatDetail | null {
 
 function chatUpdateFromEvent(
   event: RunEventView
-): { chat: ChatSummary; messages: ThreadMessage[]; usageStats: ApiChatDetail["usageStats"] } | null {
+): {
+  chat: ChatSummary;
+  contextStats: ApiChatDetail["contextStats"];
+  messages: ThreadMessage[];
+  usageStats: ApiChatDetail["usageStats"];
+} | null {
   if (event.type !== "chat_update") {
     return null;
   }
@@ -62,6 +67,7 @@ function chatUpdateFromEvent(
 
   return {
     chat: chatSummaryFromApi(decoded.chat),
+    contextStats: decoded.chat.contextStats,
     messages: decoded.messages.map(messageFromApi),
     usageStats: decoded.chat.usageStats
   };

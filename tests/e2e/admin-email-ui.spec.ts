@@ -283,6 +283,58 @@ test("admin saves, tests, and activates a write-only SMTP draft without network 
   await expect(section.getByTestId("email-task-index")).toBeVisible();
 });
 
+test("guards a dirty Control Center form across section navigation and native reload", async ({ page }) => {
+  const email = emptyEmailState();
+  await page.route("**/api/admin", async (route) => {
+    await route.fulfill({ contentType: "application/json", json: emptyAdminDashboard() });
+  });
+  await page.route("**/api/admin/email", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fulfill({
+        contentType: "application/json",
+        json: { error: "unexpected_dirty_navigation_email_request" },
+        status: 400
+      });
+      return;
+    }
+    await route.fulfill({ contentType: "application/json", json: { email } });
+  });
+
+  await signInWithLocalToken(page);
+  await page.goto("/admin");
+  const section = await openEmailDelivery(page);
+  await section.getByRole("button", { name: /Draft configuration/u }).click();
+  const host = section.getByLabel("SMTP host");
+  const dirtyHost = "dirty-navigation.smtp.example.test";
+  await host.fill(dirtyHost);
+  const originalUrl = page.url();
+
+  const usageTab = page.getByRole("tab", { exact: true, name: "Usage" });
+  await usageTab.click();
+  const discard = page.getByTestId("admin-discard-unsaved-confirmation");
+  await expect(discard.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
+  await expect(page).toHaveURL(originalUrl);
+  await discard.getByRole("button", { name: "Cancel" }).click();
+  await expect(host).toHaveValue(dirtyHost);
+  await expect(section).toBeVisible();
+  await expect(usageTab).toBeFocused();
+
+  const nativeDialogPromise = page.waitForEvent("dialog");
+  const reloadPromise = page.reload({ timeout: 1_000, waitUntil: "domcontentloaded" }).catch(() => null);
+  const nativeDialog = await nativeDialogPromise;
+  expect(nativeDialog.type()).toBe("beforeunload");
+  await nativeDialog.dismiss();
+  await reloadPromise;
+  await expect(page).toHaveURL(originalUrl);
+  await expect(host).toHaveValue(dirtyHost);
+
+  await usageTab.click();
+  await expect(discard.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
+  await discard.getByRole("button", { name: "Confirm discard changes" }).click();
+  await expect(page.getByTestId("admin-section-usage")).toBeVisible();
+  await expect(page).toHaveURL(/\/admin\?section=usage$/);
+});
+
 test("ordinary user receives real active-admin denial for email configuration", async ({ page }) => {
   await signInOrdinaryUser(page);
 

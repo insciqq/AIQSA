@@ -57,6 +57,37 @@ describe("administrator provider system model task", () => {
     });
   });
 
+  it("distinguishes an unavailable current connection from a same-name candidate", async () => {
+    const unavailableCurrent = { ...candidate, available: false };
+    const duplicateCatalog = {
+      candidates: [{
+        ...candidate,
+        connectionDisplayName: " provider a ",
+        connectionId: "connection-b",
+        id: "model-b"
+      }],
+      policy: {
+        ...catalog.policy,
+        systemModel: unavailableCurrent
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ systemModelPolicy: duplicateCatalog }), { status: 200 })
+    ));
+
+    render(<AdminProviderSystemModelTask active />);
+    const select = await screen.findByLabelText("Active answer model deployment");
+    const optionLabels = Array.from((select as HTMLSelectElement).options)
+      .map(({ textContent }) => textContent ?? "")
+      .filter((label) => label.includes("Model A"));
+
+    expect(optionLabels).toEqual([
+      expect.stringMatching(/^Unavailable — Provider A · ref [0-9A-Z]{6,} \/ Model A$/u),
+      expect.stringMatching(/^ provider a  · ref [0-9A-Z]{6,} \/ Model A$/u)
+    ]);
+    expect(optionLabels[0]).not.toBe(optionLabels[1]);
+  });
+
   it("shows retained unavailability and permits re-saving the same deployment", async () => {
     const unavailable = {
       candidates: [candidate],

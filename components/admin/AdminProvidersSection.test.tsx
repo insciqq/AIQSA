@@ -4,8 +4,14 @@ import type {
   AdminProviderModel
 } from "@/lib/contracts/adminProviders";
 import { providerTemplateIds } from "@/lib/domain/providerTemplates";
+import {
+  AdminDraftProtectionProvider,
+  type AdminDraftOwner,
+  useAdminDraftRegistry
+} from "./AdminDraftProtection";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminProvidersSection } from "./AdminProvidersSection";
+import { useCallback, useState, type ReactNode } from "react";
 
 const mocks = vi.hoisted(() => ({
   useController: vi.fn()
@@ -160,6 +166,53 @@ function openConnection(name = "OpenRouter") {
 function openTask(name: "Authentication" | "Credentials" | "Diagnostics" | "Models") {
   openConnection();
   fireEvent.click(screen.getByRole("tab", { name }));
+}
+
+function DraftProtectionHarness({ children }: Readonly<{ children: ReactNode }>) {
+  const registry = useAdminDraftRegistry();
+  const { hasDirty, hasPending } = registry;
+  const [pending, setPending] = useState<{
+    action(): void;
+    owners?: readonly AdminDraftOwner[];
+  } | null>(null);
+  const requestDiscardAction = useCallback((
+    action: () => void,
+    owners?: readonly AdminDraftOwner[]
+  ) => {
+    if (hasPending(owners)) return false;
+    if (!hasDirty(owners)) {
+      action();
+      return true;
+    }
+    setPending({ action, owners });
+    return false;
+  }, [hasDirty, hasPending]);
+
+  return (
+    <AdminDraftProtectionProvider
+      registry={registry}
+      requestDiscardAction={requestDiscardAction}
+    >
+      {children}
+      {pending ? (
+        <div role="dialog">
+          <p>Discard unsaved changes?</p>
+          <button onClick={() => setPending(null)} type="button">Cancel test discard</button>
+          <button
+            onClick={() => {
+              const deferred = pending;
+              setPending(null);
+              registry.discard(deferred.owners);
+              deferred.action();
+            }}
+            type="button"
+          >
+            Confirm test discard
+          </button>
+        </div>
+      ) : null}
+    </AdminDraftProtectionProvider>
+  );
 }
 
 describe("AdminProvidersSection", () => {
@@ -343,6 +396,41 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByRole("button", { name: "Save key" })).toBeDisabled();
   });
 
+  it("defers a connection-task switch until its write-only key draft is discarded", () => {
+    const view = controller();
+    mocks.useController.mockReturnValue(view);
+    render(
+      <DraftProtectionHarness>
+        <AdminProvidersSection active groups={[]} />
+      </DraftProtectionHarness>
+    );
+
+    openTask("Credentials");
+    fireEvent.click(screen.getByRole("button", { name: "Add key" }));
+    const key = screen.getByLabelText("API key");
+    fireEvent.change(key, { target: { value: "write-only-draft" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Models" }));
+
+    expect(screen.getByText("Discard unsaved changes?")).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Credentials" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(key).toHaveValue("write-only-draft");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel test discard" }));
+    expect(key).toHaveValue("write-only-draft");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Models" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm test discard" }));
+    expect(screen.getByRole("tab", { name: "Models" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Credentials" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add key" }));
+    expect(screen.getByLabelText("API key")).toHaveValue("");
+  });
+
   it("opens the model editor from the contextual readiness action", async () => {
     const view = controller();
     mocks.useController.mockReturnValue(view);
@@ -385,6 +473,51 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back to connections" }));
     expect(screen.getByTestId("provider-connection-index")).toBeInTheDocument();
     expect(screen.queryByTestId("provider-connection-task-detail")).not.toBeInTheDocument();
+  });
+
+  it("keeps duplicate connection names distinct in the index, detail, and confirmations", () => {
+    const duplicateConnection: AdminProviderConnection = {
+      ...connection,
+      id: "connection-2"
+    };
+    const view = controller();
+    view.state.connections = [connection, duplicateConnection];
+    view.state.selectedConnection = connection;
+    const requestConfirmation = vi.fn();
+    mocks.useController.mockReturnValue(view);
+    render(
+      <AdminProvidersSection
+        active
+        groups={[]}
+        requestConfirmation={requestConfirmation}
+      />
+    );
+
+    const index = screen.getByTestId("provider-connection-index");
+    const connectionActions = within(index).getAllByRole("button", {
+      name: /^Open OpenRouter · ref [0-9A-Z]{6,} connection ·/u
+    });
+    expect(connectionActions).toHaveLength(2);
+    expect(connectionActions[0]).not.toHaveAccessibleName(
+      connectionActions[1]!.getAttribute("aria-label")!
+    );
+
+    fireEvent.click(connectionActions[0]!);
+    const heading = screen.getByRole("heading", {
+      level: 2,
+      name: /^OpenRouter · ref [0-9A-Z]{6,}$/u
+    });
+    const resolvedLabel = heading.textContent!;
+    fireEvent.click(screen.getByLabelText(`More actions for ${resolvedLabel} connection`));
+    fireEvent.click(screen.getByRole("button", {
+      name: `Delete ${resolvedLabel} connection`
+    }));
+
+    expect(requestConfirmation).toHaveBeenCalledWith(expect.objectContaining({
+      dialogLabel: `Delete ${resolvedLabel} connection`,
+      title: `Delete “${resolvedLabel}”?`
+    }));
+    expect(view.actions.select).toHaveBeenCalledWith(connection.id);
   });
 
   it("prioritizes the exact custom connection over a Quick provider family hint", async () => {
@@ -622,6 +755,32 @@ describe("AdminProvidersSection", () => {
         unassignedPolicy: "use_default"
       })
     );
+  });
+
+  it("unregisters a saved connection draft before later navigation", async () => {
+    const view = controller();
+    mocks.useController.mockReturnValue(view);
+    render(
+      <DraftProtectionHarness>
+        <AdminProvidersSection active groups={[]} />
+      </DraftProtectionHarness>
+    );
+
+    openConnection();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Edited OpenRouter" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
+
+    await waitFor(() => expect(view.actions.updateConnection).toHaveBeenCalledOnce());
+    await waitFor(() => {
+      expect(screen.queryByTestId("provider-connection-editor")).not.toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Back to connections" }));
+
+    expect(screen.queryByText("Discard unsaved changes?")).not.toBeInTheDocument();
+    expect(screen.getByTestId("provider-connection-index")).toBeInTheDocument();
   });
 
   it("preserves explicit no-auth mode when a Custom connection is edited", async () => {

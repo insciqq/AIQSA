@@ -103,6 +103,9 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const {
     activeLeafId: renderActiveLeafId,
     activeTab: inspectorActiveTab,
+    branchError,
+    branchLoading,
+    branchMessages,
     changeActiveTab: setInspectorActiveTab,
     changeMode: setInspectorMode,
     checkoutBranch,
@@ -111,7 +114,8 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     messages,
     mode: inspectorMode,
     open: openDetails,
-    pinningAvailable: inspectorPinningAvailable
+    pinningAvailable: inspectorPinningAvailable,
+    retryBranches
   } = details;
   const openRunDetails = useEventCallback(() => openDetails("events"));
   const { confirmations, palette, share } = overlays;
@@ -608,6 +612,9 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     <DetailedInspector
       activeLeafId={renderActiveLeafId}
       activeTab={inspectorActiveTab}
+      branchError={branchError}
+      branchLoading={branchLoading}
+      branchMessages={branchMessages}
       catalog={composer.catalog}
       errorText={currentErrorText}
       events={runEvents}
@@ -619,6 +626,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       onActiveTabChange={setInspectorActiveTab}
       onClose={closeDetails}
       onPinToggle={() => setInspectorMode(pinned ? "overlay" : "pinned")}
+      onRetryBranches={retryBranches}
       onSelectBranch={(messageId) => void checkoutBranch(messageId)}
     />
   );

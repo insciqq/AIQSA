@@ -10,6 +10,7 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { useAdminDiscardAction } from "@/components/admin/AdminDraftProtection";
 import {
   inviteDeletionInfo,
   inviteStatus,
@@ -230,6 +231,15 @@ function InviteDetail({ actions, invite, nowMs, status }: Readonly<{
 
 export function AdminInvitesSection(props: AdminInvitesSectionProps) {
   const { actions, data, state, status } = props;
+  const requestDiscardAction = useAdminDiscardAction();
+  const protectedActions = {
+    ...actions,
+    backToList: () => requestDiscardAction(actions.backToList, ["invite-form"]),
+    selectInvite: (inviteId: string) => requestDiscardAction(
+      () => actions.selectInvite(inviteId),
+      ["invite-form"]
+    )
+  };
   return (
     <AdminTaskWorkspace detailOpen={state.compactDetailOpen} indexWidth="22rem">
       <AdminTaskIndexPane compactDetailOpen={state.compactDetailOpen} testId="admin-invites-index">
@@ -281,7 +291,7 @@ export function AdminInvitesSection(props: AdminInvitesSectionProps) {
                   <p className="text-metadata text-ink-muted">
                     {invite.acceptedAt ? `Accepted ${formatDate(invite.acceptedAt)}` : invite.revokedAt ? `Revoked ${formatDate(invite.revokedAt)}` : `Expires ${formatDate(invite.expiresAt)}`}
                   </p>
-                  <button className={quietButton} data-admin-task-opener="true" onClick={() => actions.selectInvite(invite.id)} type="button">Details</button>
+                  <button className={quietButton} data-admin-task-opener="true" onClick={() => protectedActions.selectInvite(invite.id)} type="button">Details</button>
                 </div>
               </article>
             );
@@ -295,7 +305,9 @@ export function AdminInvitesSection(props: AdminInvitesSectionProps) {
       </AdminTaskIndexPane>
 
       <AdminTaskDetailPane compactDetailOpen={state.compactDetailOpen} testId="admin-invites-detail-pane">
-        {state.formOpen ? <InviteCreateTask {...props} /> : <InviteDetail actions={actions} invite={data.selectedInvite} nowMs={data.nowMs} status={status} />}
+        {state.formOpen
+          ? <InviteCreateTask {...props} actions={protectedActions} />
+          : <InviteDetail actions={protectedActions} invite={data.selectedInvite} nowMs={data.nowMs} status={status} />}
       </AdminTaskDetailPane>
     </AdminTaskWorkspace>
   );

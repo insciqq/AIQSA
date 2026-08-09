@@ -14,7 +14,10 @@ import {
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import { ComposerControls } from "@/components/app-shell/ComposerControls";
 import { McpComposerSummary } from "@/components/app-shell/McpComposerSummary";
-import { ThreadMessageRow } from "@/components/app-shell/ThreadMessageRow";
+import {
+  compactMessageControlsQuery,
+  ThreadMessageRow
+} from "@/components/app-shell/ThreadMessageRow";
 import { useCompactComposerReadingMode } from "@/components/app-shell/useCompactComposerReadingMode";
 import type { PipelineSnapshot } from "@/components/app-shell/runState";
 import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
@@ -33,9 +36,15 @@ import { ArrowDown, CircleAlert, LoaderCircle, RotateCcw } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode, RefObject } from "react";
 import type { SearchPlanMode } from "@/lib/domain/search";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 const noRunWarnings: string[] = [];
+
+function currentCompactMessageControlsMatch(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(compactMessageControlsQuery).matches
+    : false;
+}
 
 export type RunWarning = {
   runId: string;
@@ -92,6 +101,8 @@ export type MainThreadPaneProps = {
   handleRegenerateMessage(messageId: string): void;
   handleThreadScroll(): void;
   loadRunReceipt?(runId: string): Promise<void> | void;
+  loadEarlierMessages?(): Promise<void> | void;
+  loadingOlderMessages?: boolean;
   jumpToLatest(): void;
   knowledge?: ShellComposerView["knowledge"];
   lastRun: PersistedRun | null;
@@ -102,6 +113,7 @@ export type MainThreadPaneProps = {
   notificationSoundEnabled: boolean;
   operationError: string | null;
   operationErrorLive: boolean;
+  olderMessagesError?: string | null;
   openMcpSettings(): void;
   openKnowledgeEvidence?(knowledgeBaseId: string): void;
   openRunDetails(): void;
@@ -125,6 +137,7 @@ export type MainThreadPaneProps = {
   selectedSearchStrategy: string;
   showCitations: boolean;
   showJumpToLatest: boolean;
+  hasOlderMessages?: boolean;
   showReasoningBlocks: boolean;
   showToolActivity: boolean;
   stopCurrentRun(): Promise<void> | void;
@@ -184,6 +197,8 @@ export function MainThreadPane({
   handleRegenerateMessage,
   handleThreadScroll,
   loadRunReceipt,
+  loadEarlierMessages,
+  loadingOlderMessages = false,
   jumpToLatest,
   knowledge,
   lastRun,
@@ -194,6 +209,7 @@ export function MainThreadPane({
   notificationSoundEnabled,
   operationError,
   operationErrorLive,
+  olderMessagesError = null,
   openMcpSettings,
   openKnowledgeEvidence,
   openRunDetails,
@@ -217,6 +233,7 @@ export function MainThreadPane({
   selectedSearchStrategy,
   showCitations,
   showJumpToLatest,
+  hasOlderMessages = false,
   showReasoningBlocks,
   showToolActivity,
   stopCurrentRun,
@@ -244,6 +261,24 @@ export function MainThreadPane({
   }>(() => ({ chatId: activeChatId, messageId: null }));
   const mobileControlsMessageId =
     mobileControlsState.chatId === activeChatId ? mobileControlsState.messageId : null;
+  const [compactMessageControls, setCompactMessageControls] = useState(
+    currentCompactMessageControlsMatch
+  );
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(compactMessageControlsQuery);
+
+    function handleCompactControlsChange(event: MediaQueryListEvent) {
+      setCompactMessageControls(event.matches);
+      if (!event.matches) {
+        setMobileControlsState((current) => ({ ...current, messageId: null }));
+      }
+    }
+
+    media.addEventListener("change", handleCompactControlsChange);
+    return () => media.removeEventListener("change", handleCompactControlsChange);
+  }, []);
 
   const toggleMobileMessageControls = useCallback((messageId: string) => {
     setMobileControlsState((current) => ({
@@ -624,7 +659,46 @@ export function MainThreadPane({
           !activeChatDetailError &&
           !catalogError &&
           !workspaceError
-            ? visibleMessages.map((message) => {
+            ? (
+              <>
+                {hasOlderMessages || olderMessagesError ? (
+                  <div
+                    className="mx-auto flex w-full max-w-reading flex-col items-center px-4 pb-2 pt-4 text-center"
+                    data-testid="older-messages-control"
+                  >
+                    <button
+                      className="inline-flex h-control items-center gap-2 rounded-control border border-trace-subtle bg-control-surface px-3 text-xs font-semibold text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-wait disabled:opacity-60 [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                      type="button"
+                      aria-busy={loadingOlderMessages || undefined}
+                      aria-label={
+                        loadingOlderMessages
+                          ? "Loading earlier messages"
+                          : olderMessagesError
+                            ? "Retry loading earlier messages"
+                            : "Load earlier messages"
+                      }
+                      disabled={loadingOlderMessages || !loadEarlierMessages}
+                      onClick={() => void loadEarlierMessages?.()}
+                    >
+                      {loadingOlderMessages ? (
+                        <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+                      ) : olderMessagesError ? (
+                        <RotateCcw className="size-3.5" aria-hidden="true" />
+                      ) : null}
+                      {loadingOlderMessages
+                        ? "Loading earlier messages…"
+                        : olderMessagesError
+                          ? "Retry"
+                          : "Load earlier messages"}
+                    </button>
+                    {olderMessagesError ? (
+                      <p className="mt-2 max-w-md text-xs leading-5 text-critical" role="alert">
+                        Earlier messages didn&apos;t load. Your current conversation is unchanged.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {visibleMessages.map((message) => {
             const liveSummary =
               message.role === "assistant" && message.runId && message.runId === currentRunId
                 ? liveArtifactSummary
@@ -658,6 +732,7 @@ export function MainThreadPane({
               <ThreadMessageRow
                 answerModelLabel={answerModelLabel}
                 artifactSummary={artifactSummary}
+                compactControls={compactMessageControls}
                 editPending={editingMessagePending}
                 justCompleted={justCompleted}
                 key={message.id}
@@ -684,7 +759,9 @@ export function MainThreadPane({
                 onToggleMobileControls={toggleMobileMessageControls}
               />
             );
-              })
+                })}
+              </>
+            )
             : null}
           {visibleMessages.at(-1)?.role === "assistant" && visibleMessages.at(-1)?.status === "streaming" ? (
             <div

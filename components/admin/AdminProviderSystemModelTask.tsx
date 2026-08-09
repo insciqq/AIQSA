@@ -10,9 +10,11 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
+import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export function AdminProviderSystemModelTask({
   active,
@@ -28,6 +30,25 @@ export function AdminProviderSystemModelTask({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const autoLoadAttemptedRef = useRef(false);
+  const connectionLabels = useMemo(() => resolveProviderConnectionLabels([
+    ...(catalog?.candidates ?? []).map(({ connectionDisplayName: name, connectionId: id }) => ({ id, name })),
+    ...(catalog?.policy.systemModel
+      ? [{
+          id: catalog.policy.systemModel.connectionId,
+          name: catalog.policy.systemModel.connectionDisplayName
+        }]
+      : [])
+  ]), [catalog]);
+  const deploymentLabel = (deployment: AdminSystemModelPolicyCatalog["candidates"][number]) =>
+    `${connectionLabels.get(deployment.connectionId) ?? deployment.connectionDisplayName} / ${deployment.displayName}`;
+  const currentId = catalog?.policy.systemModel?.id ?? "";
+  const draftDirty = Boolean(catalog) && selectedId !== currentId;
+  const requestDraftDiscard = useAdminDraftProtection({
+    dirty: draftDirty,
+    onDiscard: () => setSelectedId(currentId),
+    owner: "provider-system-model-policy",
+    pending: draftDirty && busy
+  });
 
   const apply = useCallback((next: AdminSystemModelPolicyCatalog) => {
     setCatalog(next);
@@ -82,7 +103,6 @@ export function AdminProviderSystemModelTask({
     void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
   };
 
-  const currentId = catalog?.policy.systemModel?.id ?? "";
   const canSave = Boolean(catalog) && (
     selectedId !== currentId || Boolean(catalog?.policy.systemModel?.available === false)
   );
@@ -101,7 +121,14 @@ export function AdminProviderSystemModelTask({
               Internal utility work uses this exact deployment. The role grants no user access and never falls back to another model.
             </p>
           </div>
-          <button className={quietButton} disabled={loading || busy} onClick={() => void refresh()} type="button">
+          <button
+            className={quietButton}
+            disabled={loading || busy}
+            onClick={() => requestDraftDiscard(() => {
+              void refresh();
+            })}
+            type="button"
+          >
             <RefreshCw aria-hidden="true" className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </button>
@@ -115,7 +142,7 @@ export function AdminProviderSystemModelTask({
             <div className="border-l-2 border-proof/60 pl-3 text-xs leading-5 text-ink-secondary">
               <p>
                 Current: {catalog.policy.systemModel
-                  ? `${catalog.policy.systemModel.connectionDisplayName} / ${catalog.policy.systemModel.displayName}`
+                  ? deploymentLabel(catalog.policy.systemModel)
                   : "None"}.
               </p>
               {catalog.policy.systemModel ? (
@@ -147,12 +174,12 @@ export function AdminProviderSystemModelTask({
                 {catalog.policy.systemModel &&
                   !catalog.candidates.some((candidate) => candidate.id === catalog.policy.systemModel?.id) ? (
                     <option disabled value={catalog.policy.systemModel.id}>
-                      Unavailable — {catalog.policy.systemModel.connectionDisplayName} / {catalog.policy.systemModel.displayName}
+                      Unavailable — {deploymentLabel(catalog.policy.systemModel)}
                     </option>
                   ) : null}
                 {catalog.candidates.map((candidate) => (
                   <option key={candidate.id} value={candidate.id}>
-                    {candidate.connectionDisplayName} / {candidate.displayName}
+                    {deploymentLabel(candidate)}
                   </option>
                 ))}
               </select>

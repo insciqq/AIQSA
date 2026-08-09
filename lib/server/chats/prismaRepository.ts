@@ -1,5 +1,9 @@
 import { Prisma } from "@prisma/client";
-import type { ContextTruncationSummary } from "../../domain/contextBudget";
+import {
+  estimateApproxTokensFromProjectedParts,
+  type ApproxTokenProjectedPart,
+  type ContextTruncationSummary
+} from "../../domain/contextBudget";
 import { safeExternalHref } from "../../domain/links";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
@@ -12,11 +16,19 @@ import {
   projectHostedSearchActivity
 } from "../../domain/searchDisclosure";
 import { decodeAssistantAvatarRecipe } from "../../contracts/assistants";
+import {
+  CHAT_BRANCH_PREVIEW_MAX_LENGTH,
+  CHAT_HISTORY_CURSOR_MAX_LENGTH,
+  CHAT_HISTORY_PAGE_SIZE,
+  boundedChatBranchPreview,
+  type ChatContextStats
+} from "../../contracts/chats";
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { persistedToolCallActivity } from "../runs/toolInspection";
 import type {
+  ChatBranchGraphRecord,
   ChatDetailRecord,
   ChatRepository,
   ChatSummaryRecord,
@@ -27,90 +39,106 @@ import type {
 import { loadChatCreationDefaults } from "./chatCreationDefaults";
 import { defaultChatTitle } from "./titlePolicy";
 
-const chatDetailInclude = {
-  defaultProviderModel: {
+const assistantRunDetailSelect = {
+  assistantId: true,
+  assistantRevision: {
     select: {
-      connectionId: true,
-      id: true
+      avatar: true,
+      name: true,
+      revisionNumber: true
     }
   },
-  messages: {
-    include: {
-      assistantModelRuns: {
-        orderBy: {
-          createdAt: "desc"
-        },
-        select: {
-          assistantId: true,
-          assistantRevision: {
-            select: {
-              avatar: true,
-              name: true,
-              revisionNumber: true
-            }
-          },
-          cachedInputTokens: true,
-          cacheWriteInputTokens: true,
-          events: {
-            orderBy: {
-              sequence: "asc"
-            },
-            select: {
-              payload: true
-            },
-            where: {
-              eventType: "artifact"
-            }
-          },
-          id: true,
-          inputTokens: true,
-          knowledgeRuns: {
-            orderBy: { invocationOrdinal: "asc" },
-            select: {
-              invocationOrdinal: true,
-              outcome: true,
-              results: true
-            }
-          },
-          normalizedRequest: true,
-          outputTokens: true,
-          searchRuns: {
-            orderBy: {
-              createdAt: "asc"
-            },
-            select: {
-              artifacts: true,
-              query: true,
-              status: true,
-              strategyId: true
-            }
-          },
-          status: true,
-          toolCalls: {
-            orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
-            select: {
-              arguments: true,
-              completedAt: true,
-              mcpRunBindingId: true,
-              ordinal: true,
-              providerCallId: true,
-              result: true,
-              roundIndex: true,
-              startedAt: true,
-              state: true,
-              toolName: true
-            }
-          },
-          totalTokens: true
-        },
-        take: 1
-      }
+  cachedInputTokens: true,
+  cacheWriteInputTokens: true,
+  events: {
+    orderBy: {
+      sequence: "asc"
     },
+    select: {
+      payload: true
+    },
+    where: {
+      eventType: "artifact"
+    }
+  },
+  id: true,
+  inputTokens: true,
+  knowledgeRuns: {
+    orderBy: { invocationOrdinal: "asc" },
+    select: {
+      invocationOrdinal: true,
+      outcome: true,
+      results: true
+    }
+  },
+  normalizedRequest: true,
+  outputTokens: true,
+  searchRuns: {
     orderBy: {
       createdAt: "asc"
+    },
+    select: {
+      artifacts: true,
+      query: true,
+      status: true,
+      strategyId: true
     }
-  }
-} satisfies Prisma.ChatInclude;
+  },
+  status: true,
+  toolCalls: {
+    orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
+    select: {
+      arguments: true,
+      completedAt: true,
+      mcpRunBindingId: true,
+      ordinal: true,
+      providerCallId: true,
+      result: true,
+      roundIndex: true,
+      startedAt: true,
+      state: true,
+      toolName: true
+    }
+  },
+  totalTokens: true
+} satisfies Prisma.ModelRunSelect;
+
+const hydratedMessageSelect = {
+  assistantModelRuns: {
+    orderBy: {
+      createdAt: "desc"
+    },
+    select: assistantRunDetailSelect,
+    take: 1
+  },
+  content: true,
+  createdAt: true,
+  errorMessage: true,
+  id: true,
+  modelId: true,
+  parentMessageId: true,
+  provider: true,
+  role: true,
+  status: true
+} satisfies Prisma.MessageSelect;
+
+const lightweightMessageSelect = {
+  assistantModelRuns: {
+    orderBy: { createdAt: "desc" },
+    select: {
+      cachedInputTokens: true,
+      cacheWriteInputTokens: true,
+      inputTokens: true,
+      outputTokens: true,
+      status: true,
+      totalTokens: true
+    },
+    take: 1
+  },
+  id: true,
+  parentMessageId: true,
+  role: true
+} satisfies Prisma.MessageSelect;
 
 const chatSummarySelect = {
   _count: {
@@ -134,8 +162,9 @@ const chatSummarySelect = {
   updatedAt: true
 } satisfies Prisma.ChatSelect;
 
-type ChatDetailRow = Prisma.ChatGetPayload<{ include: typeof chatDetailInclude }>;
 type ChatSummaryRow = Prisma.ChatGetPayload<{ select: typeof chatSummarySelect }>;
+type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }>;
+type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
 type ArtifactSummaryRun = {
   events: { payload: unknown }[];
   knowledgeRuns?: {
@@ -226,6 +255,190 @@ function activeBranchPath<TMessage extends { id: string; parentMessageId: string
   return path.reverse();
 }
 
+type ChatHistoryCursor = {
+  activeLeafMessageId: string;
+  beforeMessageId: string;
+  chatId: string;
+  snapshotUpdatedAt: string;
+  v: 1;
+};
+
+function encodeHistoryCursor(cursor: ChatHistoryCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeHistoryCursor(value: string): ChatHistoryCursor | null {
+  if (
+    !value ||
+    value.length > CHAT_HISTORY_CURSOR_MAX_LENGTH ||
+    !/^[A-Za-z0-9_-]+$/u.test(value)
+  ) return null;
+  try {
+    const decoded = Buffer.from(value, "base64url").toString("utf8");
+    if (Buffer.from(decoded, "utf8").toString("base64url") !== value) return null;
+    const parsed: unknown = JSON.parse(decoded);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    if (
+      Object.keys(record).sort().join("|") !==
+        "activeLeafMessageId|beforeMessageId|chatId|snapshotUpdatedAt|v" ||
+      record.v !== 1 ||
+      typeof record.activeLeafMessageId !== "string" || !record.activeLeafMessageId ||
+      typeof record.beforeMessageId !== "string" || !record.beforeMessageId ||
+      typeof record.chatId !== "string" || !record.chatId ||
+      typeof record.snapshotUpdatedAt !== "string" ||
+      new Date(record.snapshotUpdatedAt).toISOString() !== record.snapshotUpdatedAt
+    ) return null;
+    return record as ChatHistoryCursor;
+  } catch {
+    return null;
+  }
+}
+
+function pageCursor(input: {
+  chatId: string;
+  chatUpdatedAt: Date;
+  activeLeafMessageId: string | null;
+  beforeMessageId: string | undefined;
+  hasOlder: boolean;
+}): string | null {
+  if (!input.hasOlder || !input.activeLeafMessageId || !input.beforeMessageId) return null;
+  return encodeHistoryCursor({
+    activeLeafMessageId: input.activeLeafMessageId,
+    beforeMessageId: input.beforeMessageId,
+    chatId: input.chatId,
+    snapshotUpdatedAt: input.chatUpdatedAt.toISOString(),
+    v: 1
+  });
+}
+
+async function hydrateMessagePath(
+  tx: Prisma.TransactionClient,
+  chatId: string,
+  messages: Array<{ id: string }>
+): Promise<HydratedMessageRow[]> {
+  if (messages.length === 0) return [];
+  const hydrated = await tx.message.findMany({
+    select: hydratedMessageSelect,
+    where: {
+      chatId,
+      id: { in: messages.map((message) => message.id) }
+    }
+  });
+  const byId = new Map(hydrated.map((message) => [message.id, message]));
+  return messages.flatMap((message) => {
+    const found = byId.get(message.id);
+    return found ? [found] : [];
+  });
+}
+
+async function approximateActiveBranchInputTokens(
+  tx: Prisma.TransactionClient,
+  activeMessages: Array<{ id: string }>
+): Promise<number> {
+  if (activeMessages.length === 0) return 0;
+  // Keep off-page text bodies in PostgreSQL while preserving the shared
+  // estimator exactly: text becomes code-point counts, while bounded
+  // non-text blocks retain the JSON.stringify semantics used by the client.
+  const ids = activeMessages.map((message) => message.id);
+  const rows = await tx.$queryRaw<Array<{
+    blockOrdinal: number;
+    blockValue: unknown;
+    codePoint: number | null;
+    kind: "code_points" | "value";
+    messageId: string;
+    occurrences: number | null;
+  }>>(Prisma.sql`
+    WITH "message_blocks" AS (
+      SELECT
+        message."id" AS "messageId",
+        block.ordinality::int AS "blockOrdinal",
+        block.value AS "blockValue",
+        COALESCE(
+          jsonb_typeof(block.value) = 'object'
+            AND block.value->>'type' = 'text'
+            AND jsonb_typeof(block.value->'text') = 'string',
+          false
+        ) AS "isText"
+      FROM "Message" AS message
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE
+          WHEN jsonb_typeof(message."content"->'blocks') = 'array'
+            THEN message."content"->'blocks'
+          ELSE '[]'::jsonb
+        END
+      ) WITH ORDINALITY AS block(value, ordinality)
+      WHERE message."id" IN (${Prisma.join(ids)})
+    ),
+    "projected_parts" AS (
+      SELECT
+        message_blocks."blockOrdinal",
+        message_blocks."blockValue",
+        NULL::int AS "codePoint",
+        'value'::text AS "kind",
+        message_blocks."messageId",
+        NULL::int AS "occurrences"
+      FROM "message_blocks" AS message_blocks
+      WHERE NOT message_blocks."isText"
+
+      UNION ALL
+
+      SELECT
+        message_blocks."blockOrdinal",
+        NULL::jsonb AS "blockValue",
+        ascii(split_character.value)::int AS "codePoint",
+        'code_points'::text AS "kind",
+        message_blocks."messageId",
+        count(*)::int AS "occurrences"
+      FROM "message_blocks" AS message_blocks
+      CROSS JOIN LATERAL regexp_split_to_table(
+        message_blocks."blockValue"->>'text',
+        ''
+      ) AS split_character(value)
+      WHERE message_blocks."isText"
+        AND message_blocks."blockValue"->>'text' <> ''
+      GROUP BY
+        message_blocks."blockOrdinal",
+        message_blocks."messageId",
+        ascii(split_character.value)
+    )
+    SELECT
+      "blockOrdinal",
+      "blockValue",
+      "codePoint",
+      "kind",
+      "messageId",
+      "occurrences"
+    FROM "projected_parts"
+    ORDER BY "messageId", "blockOrdinal", "kind", "codePoint"
+  `);
+  const partsByMessage = new Map<string, Map<number, ApproxTokenProjectedPart>>();
+  for (const row of rows) {
+    const parts = partsByMessage.get(row.messageId) ?? new Map<number, ApproxTokenProjectedPart>();
+    if (row.kind === "value") {
+      parts.set(row.blockOrdinal, { kind: "value", value: row.blockValue });
+    } else if (row.codePoint !== null && row.occurrences !== null) {
+      const existing = parts.get(row.blockOrdinal);
+      const counts = existing?.kind === "code_points" ? [...existing.counts] : [];
+      counts.push({
+        codePoint: Number(row.codePoint),
+        occurrences: Number(row.occurrences)
+      });
+      parts.set(row.blockOrdinal, { counts, kind: "code_points" });
+    }
+    partsByMessage.set(row.messageId, parts);
+  }
+  return activeMessages.reduce(
+    (total, message) => {
+      const parts = [...(partsByMessage.get(message.id)?.entries() ?? [])]
+        .sort(([left], [right]) => left - right)
+        .map(([, part]) => part);
+      return total + estimateApproxTokensFromProjectedParts(parts);
+    },
+    0
+  );
+}
+
 function summarizeChatUsageStats(input: {
   activeLeafMessageId: string | null;
   messages: UsageStatsMessage[];
@@ -256,7 +469,42 @@ function summarizeChatUsageStats(input: {
   );
 }
 
-function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
+function serializeHydratedMessage(message: HydratedMessageRow): ChatDetailRecord["messages"][number] {
+  const modelRun = message.assistantModelRuns[0];
+  return {
+    artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun, message.content) : null,
+    assistantIdentity: serializeAssistantIdentity(modelRun),
+    content: message.content,
+    createdAt: message.createdAt,
+    errorMessage: message.errorMessage,
+    id: message.id,
+    modelId: message.modelId,
+    modelRunId: modelRun?.id ?? null,
+    parentMessageId: message.parentMessageId,
+    provider: message.provider,
+    role: message.role,
+    runUsage: modelRun
+      ? {
+          totalTokens: normalizeTokenUsage({
+            inputTokens: modelRun.inputTokens,
+            outputTokens: modelRun.outputTokens,
+            reasoningTokens: 0,
+            totalTokens: modelRun.totalTokens
+          }).totalTokens
+        }
+      : null,
+    status: message.status
+  };
+}
+
+function serializeChatDetail(input: {
+  chat: ChatSummaryRow;
+  contextInputTokens: number;
+  hasOlder: boolean;
+  lightweightMessages: LightweightMessageRow[];
+  messages: HydratedMessageRow[];
+}): ChatDetailRecord {
+  const chat = input.chat;
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,
@@ -265,39 +513,30 @@ function serializeChatDetail(chat: ChatDetailRow): ChatDetailRecord {
     defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.folderId,
     id: chat.id,
-    messageCount: chat.messages.length,
-    messages: chat.messages.map((message) => {
-      const modelRun = message.assistantModelRuns[0];
-
-      return {
-        artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun, message.content) : null,
-        assistantIdentity: serializeAssistantIdentity(modelRun),
-        content: message.content,
-        createdAt: message.createdAt,
-        errorMessage: message.errorMessage,
-        id: message.id,
-        modelId: message.modelId,
-        modelRunId: modelRun?.id ?? null,
-        parentMessageId: message.parentMessageId,
-        provider: message.provider,
-        role: message.role,
-        runUsage: modelRun
-          ? {
-              totalTokens: normalizeTokenUsage({
-                inputTokens: modelRun.inputTokens,
-                outputTokens: modelRun.outputTokens,
-                reasoningTokens: 0,
-                totalTokens: modelRun.totalTokens
-              }).totalTokens
-            }
-          : null,
-        status: message.status
-      };
-    }),
+    contextStats: {
+      approximateActiveBranchInputTokens: input.contextInputTokens
+    },
+    messageCount: chat._count.messages,
+    messages: input.messages.map(serializeHydratedMessage),
+    pageInfo: {
+      activeLeafMessageId: chat.activeLeafMessageId,
+      beforeCursor: pageCursor({
+        activeLeafMessageId: chat.activeLeafMessageId,
+        beforeMessageId: input.messages[0]?.id,
+        chatId: chat.id,
+        chatUpdatedAt: chat.updatedAt,
+        hasOlder: input.hasOlder
+      }),
+      hasOlder: input.hasOlder,
+      snapshotUpdatedAt: chat.updatedAt
+    },
     pinned: chat.pinned,
     title: chat.title,
     updatedAt: chat.updatedAt,
-    usageStats: summarizeChatUsageStats(chat)
+    usageStats: summarizeChatUsageStats({
+      activeLeafMessageId: chat.activeLeafMessageId,
+      messages: input.lightweightMessages
+    })
   };
 }
 
@@ -714,6 +953,34 @@ async function wouldCreateFolderCycle(input: {
   return false;
 }
 
+export async function loadChatBranchSnapshotStats(
+  tx: Prisma.TransactionClient,
+  input: { activeLeafMessageId: string | null; chatId: string }
+): Promise<Readonly<{
+  contextStats: ChatContextStats;
+  usageStats: ChatUsageStats;
+}>> {
+  // The caller supplies the leaf read in this same transaction so both
+  // summaries remain fenced to the exact chat snapshot being serialized.
+  const messages = await tx.message.findMany({
+    select: lightweightMessageSelect,
+    where: { chatId: input.chatId }
+  });
+  const activeMessages = activeBranchPath(messages, input.activeLeafMessageId);
+  return {
+    contextStats: {
+      approximateActiveBranchInputTokens: await approximateActiveBranchInputTokens(
+        tx,
+        activeMessages
+      )
+    },
+    usageStats: summarizeChatUsageStats({
+      activeLeafMessageId: input.activeLeafMessageId,
+      messages
+    })
+  };
+}
+
 export async function loadChatUsageStats(
   prismaClient: typeof prisma,
   input: { chatId: string; userId: string }
@@ -751,6 +1018,34 @@ export async function loadChatUsageStats(
   });
 
   return chat ? summarizeChatUsageStats(chat) : null;
+}
+
+export async function loadChatContextStats(
+  prismaClient: typeof prisma,
+  input: { chatId: string; userId: string }
+): Promise<ChatContextStats | null> {
+  return prismaClient.$transaction(async (tx) => {
+    const chat = await tx.chat.findFirst({
+      select: { activeLeafMessageId: true },
+      where: {
+        archived: false,
+        id: input.chatId,
+        userId: input.userId
+      }
+    });
+    if (!chat) return null;
+    const messages = await tx.message.findMany({
+      select: { id: true, parentMessageId: true },
+      where: { chatId: input.chatId }
+    });
+    const activeMessages = activeBranchPath(messages, chat.activeLeafMessageId);
+    return {
+      approximateActiveBranchInputTokens: await approximateActiveBranchInputTokens(
+        tx,
+        activeMessages
+      )
+    };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }
 
 export function createPrismaChatRepository(prismaClient = prisma): ChatRepository {
@@ -883,16 +1178,134 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
       return result.count > 0;
     },
     getChat: async ({ chatId, userId }) => {
-      const chat = await prismaClient.chat.findFirst({
-        include: chatDetailInclude,
-        where: {
-          archived: false,
-          id: chatId,
-          userId
-        }
-      });
-
-      return chat ? serializeChatDetail(chat) : null;
+      return prismaClient.$transaction(async (tx) => {
+        const chat = await tx.chat.findFirst({
+          select: chatSummarySelect,
+          where: {
+            archived: false,
+            id: chatId,
+            userId
+          }
+        });
+        if (!chat) return null;
+        const lightweightMessages = await tx.message.findMany({
+          select: lightweightMessageSelect,
+          where: { chatId }
+        });
+        const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
+        const pageMessages = activeMessages.slice(-CHAT_HISTORY_PAGE_SIZE);
+        const [messages, contextInputTokens] = await Promise.all([
+          hydrateMessagePath(tx, chatId, pageMessages),
+          approximateActiveBranchInputTokens(tx, activeMessages)
+        ]);
+        return serializeChatDetail({
+          chat,
+          contextInputTokens,
+          hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
+          lightweightMessages,
+          messages
+        });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    },
+    getMessagesPage: async ({ before, chatId, userId }) => {
+      return prismaClient.$transaction(async (tx) => {
+        const chat = await tx.chat.findFirst({
+          select: {
+            activeLeafMessageId: true,
+            id: true,
+            updatedAt: true
+          },
+          where: { archived: false, id: chatId, userId }
+        });
+        if (!chat) return { kind: "not_found" as const };
+        const cursor = decodeHistoryCursor(before);
+        if (!cursor || cursor.chatId !== chatId) return { kind: "cursor_invalid" as const };
+        if (
+          !chat.activeLeafMessageId ||
+          cursor.activeLeafMessageId !== chat.activeLeafMessageId ||
+          cursor.snapshotUpdatedAt !== chat.updatedAt.toISOString()
+        ) return { kind: "stale" as const };
+        const lightweightMessages = await tx.message.findMany({
+          select: {
+            id: true,
+            parentMessageId: true
+          },
+          where: { chatId }
+        });
+        const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
+        const boundary = activeMessages.findIndex(
+          (message) => message.id === cursor.beforeMessageId
+        );
+        if (boundary <= 0) return { kind: "stale" as const };
+        const start = Math.max(0, boundary - CHAT_HISTORY_PAGE_SIZE);
+        const pagePath = activeMessages.slice(start, boundary);
+        const messages = await hydrateMessagePath(tx, chatId, pagePath);
+        const hasOlder = start > 0;
+        return {
+          kind: "ok" as const,
+          page: {
+            messages: messages.map(serializeHydratedMessage),
+            pageInfo: {
+              activeLeafMessageId: chat.activeLeafMessageId,
+              beforeCursor: pageCursor({
+                activeLeafMessageId: chat.activeLeafMessageId,
+                beforeMessageId: messages[0]?.id,
+                chatId,
+                chatUpdatedAt: chat.updatedAt,
+                hasOlder
+              }),
+              hasOlder,
+              snapshotUpdatedAt: chat.updatedAt
+            }
+          }
+        };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    },
+    getBranches: async ({ chatId, userId }) => {
+      return prismaClient.$transaction(async (tx) => {
+        const chat = await tx.chat.findFirst({
+          select: { activeLeafMessageId: true, updatedAt: true },
+          where: { archived: false, id: chatId, userId }
+        });
+        if (!chat) return null;
+        const rows = await tx.$queryRaw<Array<{
+          id: string;
+          parentMessageId: string | null;
+          preview: string;
+          role: "assistant" | "user";
+          status: "cancelled" | "complete" | "error" | "queued" | "streaming";
+        }>>(Prisma.sql`
+          SELECT
+            m."id",
+            m."parentMessageId",
+            LEFT(regexp_replace(COALESCE((
+              SELECT string_agg(CASE
+                WHEN block->>'type' IN ('text', 'input_text', 'output_text')
+                  THEN COALESCE(block->>'text', '')
+                ELSE ''
+              END, ' ')
+              FROM jsonb_array_elements(CASE
+                WHEN jsonb_typeof(m."content"->'blocks') = 'array'
+                  THEN m."content"->'blocks'
+                ELSE '[]'::jsonb
+              END) AS block
+            ), ''), '\\s+', ' ', 'g'), CAST(${CHAT_BRANCH_PREVIEW_MAX_LENGTH} AS integer)) AS "preview",
+            m."role",
+            m."status"::text AS "status"
+          FROM "Message" m
+          WHERE m."chatId" = ${chatId}
+          ORDER BY m."createdAt" ASC, m."id" ASC
+        `);
+        const graph: ChatBranchGraphRecord = {
+          activeLeafMessageId: chat.activeLeafMessageId,
+          nodes: rows.map((row) => ({
+            ...row,
+            preview: boundedChatBranchPreview(row.preview)
+          })),
+          snapshotUpdatedAt: chat.updatedAt
+        };
+        return graph;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
     searchChatContent: async ({ limit, query, userId }) => {
       const trimmed = query.trim();

@@ -228,6 +228,8 @@ export function knowledgeHybridRetrievalSql(input: Readonly<{
           AND chunk."embeddingDimension" = 1024
           AND version."visibleFromRevision" IS NOT NULL
           AND version."visibleFromRevision" <= binding."baseContentRevision"
+          AND (version."visibleUntilRevision" IS NULL
+            OR binding."baseContentRevision" < version."visibleUntilRevision")
         ORDER BY chunk."embedding"::vector(1024) <=> supplied."queryVector"
         LIMIT ${input.candidateLimit}
       ) AS hit
@@ -256,6 +258,8 @@ export function knowledgeHybridRetrievalSql(input: Readonly<{
           AND chunk."embeddingDimension" = 1536
           AND version."visibleFromRevision" IS NOT NULL
           AND version."visibleFromRevision" <= binding."baseContentRevision"
+          AND (version."visibleUntilRevision" IS NULL
+            OR binding."baseContentRevision" < version."visibleUntilRevision")
         ORDER BY chunk."embedding"::vector(1536) <=> supplied."queryVector"
         LIMIT ${input.candidateLimit}
       ) AS hit
@@ -294,6 +298,8 @@ export function knowledgeHybridRetrievalSql(input: Readonly<{
        AND version."id" = indexed."documentVersionId"
       WHERE version."visibleFromRevision" IS NOT NULL
         AND version."visibleFromRevision" <= binding."baseContentRevision"
+        AND (version."visibleUntilRevision" IS NULL
+          OR binding."baseContentRevision" < version."visibleUntilRevision")
     ),
     fts_ranked_all AS (
       SELECT fts.*,

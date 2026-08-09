@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
+import { boundedChatBranchPreview } from "../../contracts/chats";
 import { textMessageContent } from "../../domain/content";
+import { estimateApproxTokens } from "../../domain/contextBudget";
 import { prisma } from "../prisma";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ActiveLeafConflictError, ActiveRunConflictError } from "../runs/runRepositoryContract";
@@ -132,6 +134,147 @@ describe("Prisma chat repository", () => {
           activeBranchMessageCount: 2
         }
       });
+    });
+  });
+
+  it("bounds active history pages while retaining full-DAG counts, context, and branches", async () => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
+      const repository = createPrismaChatRepository(prisma);
+      const chat = await prisma.chat.create({
+        data: {
+          defaultProviderModelId: fakeProviderModelId,
+          title: "Long branch",
+          userId
+        }
+      });
+      const ids = Array.from({ length: 55 }, (_, index) => `history-${randomUUID()}-${index}`);
+      await prisma.message.createMany({
+        data: ids.map((id, index) => ({
+          chatId: chat.id,
+          content: textMessageContent(`Message ${index}`),
+          id,
+          parentMessageId: index === 0 ? null : ids[index - 1],
+          role: index % 2 === 0 ? "user" : "assistant",
+          status: "complete" as const
+        }))
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: ids.at(-1) },
+        where: { id: chat.id }
+      });
+
+      const detail = await repository.getChat({ chatId: chat.id, userId });
+      expect(detail).toMatchObject({
+        contextStats: { approximateActiveBranchInputTokens: expect.any(Number) },
+        messageCount: 55,
+        pageInfo: {
+          activeLeafMessageId: ids.at(-1),
+          beforeCursor: expect.any(String),
+          hasOlder: true
+        },
+        usageStats: { activeBranchMessageCount: 55 }
+      });
+      expect(detail?.contextStats.approximateActiveBranchInputTokens).toBeGreaterThan(0);
+      expect(detail?.messages.map(({ id }) => id)).toEqual(ids.slice(5));
+
+      const older = await repository.getMessagesPage({
+        before: detail?.pageInfo.beforeCursor ?? "",
+        chatId: chat.id,
+        userId
+      });
+      expect(older).toMatchObject({
+        kind: "ok",
+        page: { pageInfo: { beforeCursor: null, hasOlder: false } }
+      });
+      if (older.kind === "ok") {
+        expect(older.page.messages.map(({ id }) => id)).toEqual(ids.slice(0, 5));
+      }
+      await expect(repository.getMessagesPage({
+        before: detail?.pageInfo.beforeCursor ?? "",
+        chatId: chat.id,
+        userId: `foreign-${userId}`
+      })).resolves.toEqual({ kind: "not_found" });
+      await expect(repository.getBranches({
+        chatId: chat.id,
+        userId: `foreign-${userId}`
+      })).resolves.toBeNull();
+      await expect(repository.getMessagesPage({
+        before: "malformed!",
+        chatId: chat.id,
+        userId
+      })).resolves.toEqual({ kind: "cursor_invalid" });
+
+      const sibling = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Sibling plaintext preview"),
+          parentMessageId: ids[0],
+          role: "assistant",
+          status: "error"
+        }
+      });
+      const graph = await repository.getBranches({ chatId: chat.id, userId });
+      expect(graph?.nodes).toHaveLength(56);
+      expect(graph?.nodes).toContainEqual(expect.objectContaining({
+        id: sibling.id,
+        parentMessageId: ids[0],
+        preview: "Sibling plaintext preview"
+      }));
+
+      await prisma.chat.update({
+        data: { updatedAt: new Date(Date.now() + 60_000) },
+        where: { id: chat.id }
+      });
+      await expect(repository.getMessagesPage({
+        before: detail?.pageInfo.beforeCursor ?? "",
+        chatId: chat.id,
+        userId
+      })).resolves.toEqual({ kind: "stale" });
+    });
+  });
+
+  it("matches the shared estimator across text and non-text blocks and bounds emoji previews", async () => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
+      const repository = createPrismaChatRepository(prisma);
+      const chat = await prisma.chat.create({
+        data: {
+          defaultProviderModelId: fakeProviderModelId,
+          title: "Projected context estimator",
+          userId
+        }
+      });
+      const text = `Привет ${"😀".repeat(100)}`;
+      const content = {
+        blocks: [
+          { text, type: "text" },
+          {
+            attachmentId: `attachment-${"ascii".repeat(80)}`,
+            type: "attachment"
+          }
+        ]
+      };
+      const message = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content,
+          role: "user"
+        }
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: message.id },
+        where: { id: chat.id }
+      });
+
+      const detail = await repository.getChat({ chatId: chat.id, userId });
+      const graph = await repository.getBranches({ chatId: chat.id, userId });
+      const preview = graph?.nodes.find((node) => node.id === message.id)?.preview;
+
+      expect(detail?.contextStats.approximateActiveBranchInputTokens).toBe(
+        estimateApproxTokens(content)
+      );
+      expect(preview).toBe(boundedChatBranchPreview(text));
+      expect(preview?.length).toBeLessThanOrEqual(160);
+      expect(preview?.endsWith("\ud83d")).toBe(false);
     });
   });
 
@@ -467,12 +610,16 @@ describe("Prisma chat repository", () => {
         expect.objectContaining({
           id: activeAssistant.id,
           runUsage: { totalTokens: 12 }
-        }),
-        expect.objectContaining({
-          id: siblingAssistant.id,
-          runUsage: { totalTokens: 999 }
         })
       ]));
+      expect(detail?.messages).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: siblingAssistant.id })
+      ]));
+      await expect(repository.getBranches({ chatId: chat.id, userId })).resolves.toMatchObject({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({ id: siblingAssistant.id, preview: "Sibling answer" })
+        ])
+      });
     });
   });
 

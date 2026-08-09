@@ -3,6 +3,7 @@ import {
   DiscardChangesConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
+import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import type {
   KnowledgeCreateView,
   KnowledgeDetailView,
@@ -105,6 +106,7 @@ export function KnowledgeLibrary({
   const taskEntryRef = useRef<HTMLButtonElement>(null);
   const childDialogOpen = discardConfirmationOpen || removeTarget !== null;
   const dirty = view.task === "create" ? view.create?.dirty : view.task === "detail" ? view.detail?.dirty : false;
+  useBeforeUnloadGuard(Boolean(dirty));
   const closeTask = view.task === "create"
     ? view.create?.onCancel
     : view.task === "detail"

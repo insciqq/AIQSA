@@ -34,6 +34,11 @@ export type AdminNavigationTarget =
       href: string;
       kind: "section";
       section: AdminSectionId;
+    }>
+  | Readonly<{
+      href: string;
+      kind: "section-index";
+      open: boolean;
     }>;
 
 export type AdminBlockedNavigation = Readonly<{
@@ -44,6 +49,7 @@ export type AdminBlockedNavigation = Readonly<{
 export type AdminSectionNavigationOptions = Readonly<{
   canExitAdmin?(href: string): boolean;
   canSelectSection?(section: AdminSectionId): boolean;
+  canToggleSectionIndex?(open: boolean): boolean;
   onNavigationBlocked?(navigation: AdminBlockedNavigation): void;
 }>;
 
@@ -189,6 +195,7 @@ function hasStableDocumentFocus(): boolean {
 export function useAdminSectionNavigation({
   canExitAdmin,
   canSelectSection,
+  canToggleSectionIndex,
   onNavigationBlocked
 }: AdminSectionNavigationOptions = {}): AdminSectionNavigation {
   const [activeSection, setActiveSection] = useState<AdminSectionId>(defaultAdminSection);
@@ -212,6 +219,7 @@ export function useAdminSectionNavigation({
   }>>(null);
   const canExitAdminRef = useRef(canExitAdmin);
   const canSelectSectionRef = useRef(canSelectSection);
+  const canToggleSectionIndexRef = useRef(canToggleSectionIndex);
   const onNavigationBlockedRef = useRef(onNavigationBlocked);
 
   useEffect(() => {
@@ -221,6 +229,10 @@ export function useAdminSectionNavigation({
   useEffect(() => {
     canSelectSectionRef.current = canSelectSection;
   }, [canSelectSection]);
+
+  useEffect(() => {
+    canToggleSectionIndexRef.current = canToggleSectionIndex;
+  }, [canToggleSectionIndex]);
 
   useEffect(() => {
     onNavigationBlockedRef.current = onNavigationBlocked;
@@ -350,11 +362,12 @@ export function useAdminSectionNavigation({
     return true;
   }, []);
 
-  const openSectionIndex = useCallback(() => {
+  const commitOpenSectionIndex = useCallback(() => {
     if (sectionIndexOpenRef.current) {
       return;
     }
 
+    sectionIndexOpenRef.current = true;
     setSectionIndexOpen(true);
     if (typeof window === "undefined") {
       return;
@@ -383,7 +396,19 @@ export function useAdminSectionNavigation({
     currentPathRef.current = href;
   }, [ensureOwnedCurrentEntry]);
 
-  const closeSectionIndex = useCallback(() => {
+  const openSectionIndex = useCallback(() => {
+    if (!sectionIndexOpenRef.current && canToggleSectionIndexRef.current?.(true) === false) {
+      onNavigationBlockedRef.current?.({
+        proceed: commitOpenSectionIndex,
+        target: { href: currentPath(), kind: "section-index", open: true }
+      });
+      return;
+    }
+
+    commitOpenSectionIndex();
+  }, [commitOpenSectionIndex]);
+
+  const commitCloseSectionIndex = useCallback(() => {
     if (!sectionIndexOpenRef.current) {
       return;
     }
@@ -392,12 +417,27 @@ export function useAdminSectionNavigation({
       typeof window !== "undefined" &&
       adminHistoryView(window.history.state)?.view === "section-index"
     ) {
+      sectionIndexOpenRef.current = false;
+      setSectionIndexOpen(false);
       window.history.back();
       return;
     }
 
+    sectionIndexOpenRef.current = false;
     setSectionIndexOpen(false);
   }, []);
+
+  const closeSectionIndex = useCallback(() => {
+    if (sectionIndexOpenRef.current && canToggleSectionIndexRef.current?.(false) === false) {
+      onNavigationBlockedRef.current?.({
+        proceed: commitCloseSectionIndex,
+        target: { href: currentPath(), kind: "section-index", open: false }
+      });
+      return;
+    }
+
+    commitCloseSectionIndex();
+  }, [commitCloseSectionIndex]);
 
   const focusTab = useCallback((section: AdminSectionId) => {
     if (typeof window === "undefined") {
@@ -574,13 +614,19 @@ export function useAdminSectionNavigation({
       }
 
       const nextSection = parseAdminSection(window.location.search);
+      const nextIndexOpen = current.adminView?.view === "section-index";
+      const indexViewChanged = nextIndexOpen !== sectionIndexOpenRef.current;
       if (
-        nextSection !== activeSectionRef.current &&
-        canSelectSectionRef.current?.(nextSection) === false &&
+        ((nextSection !== activeSectionRef.current &&
+          canSelectSectionRef.current?.(nextSection) === false) ||
+          (nextSection === activeSectionRef.current && indexViewChanged &&
+            canToggleSectionIndexRef.current?.(nextIndexOpen) === false)) &&
         replayDelta !== null && replayDelta !== 0
       ) {
         rollbackBlockedTraversal(
-          { href: targetPath, kind: "section", section: nextSection },
+          nextSection !== activeSectionRef.current
+            ? { href: targetPath, kind: "section", section: nextSection }
+            : { href: targetPath, kind: "section-index", open: nextIndexOpen },
           origin,
           current,
           replayDelta

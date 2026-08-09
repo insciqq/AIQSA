@@ -204,6 +204,43 @@ describe("AdminProvidersExperience", () => {
     expect(connections.props?.entryProvider).toBeNull();
   });
 
+  it("disambiguates duplicate configured connections and keeps exact navigation ids", async () => {
+    api.get.mockResolvedValue({
+      data: snapshot({
+        configuredConnections: [
+          {
+            activeModelCount: 1,
+            displayName: "Shared gateway",
+            enabled: true,
+            family: "openai_compatible",
+            id: "custom-gateway-a"
+          },
+          {
+            activeModelCount: 2,
+            displayName: " shared   gateway ",
+            enabled: true,
+            family: "openai_compatible",
+            id: "custom-gateway-b"
+          }
+        ]
+      }),
+      ok: true
+    });
+    render(<AdminProvidersExperience active groups={[]} />);
+
+    const connectionActions = await screen.findAllByRole("button", {
+      name: /^Open .* · ref [0-9A-Z]{6,} connection ·/u
+    });
+    expect(connectionActions).toHaveLength(2);
+    expect(connectionActions[0]).not.toHaveAccessibleName(
+      connectionActions[1]!.getAttribute("aria-label")!
+    );
+
+    fireEvent.click(connectionActions[1]!);
+    expect(await screen.findByText("Entry connection: custom-gateway-b")).toBeVisible();
+    expect(connections.props?.entryConnectionId).toBe("custom-gateway-b");
+  });
+
   it("keeps custom OpenAI-compatible setup separate and deep-links its Ready connection", async () => {
     customApi.discover.mockResolvedValue({
       data: {

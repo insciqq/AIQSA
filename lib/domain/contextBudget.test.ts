@@ -3,6 +3,8 @@ import {
   applyContextBudget,
   calculateContextBudgetLimits,
   estimateApproxTokens,
+  estimateApproxTokensFromCodePointCounts,
+  estimateApproxTokensFromProjectedParts,
   type ContextBudgetMessage
 } from "./contextBudget";
 
@@ -22,6 +24,45 @@ describe("context budget", () => {
     expect(estimateApproxTokens("я".repeat(8))).toBe(8);
     expect(estimateApproxTokens("界".repeat(8))).toBe(8);
     expect(estimateApproxTokens("😀".repeat(8))).toBe(16);
+  });
+
+  it("applies the same estimator to database-projected code-point counts", () => {
+    const text = "ASCII\nПривет 😀😀";
+    const occurrences = new Map<number, number>();
+    for (const character of text) {
+      const codePoint = character.codePointAt(0)!;
+      occurrences.set(codePoint, (occurrences.get(codePoint) ?? 0) + 1);
+    }
+
+    expect(estimateApproxTokensFromCodePointCounts(
+      [...occurrences].map(([codePoint, count]) => ({
+        codePoint,
+        occurrences: count
+      }))
+    )).toBe(estimateApproxTokens(text));
+  });
+
+  it("preserves text, non-text block, separator, Cyrillic, and emoji semantics in projections", () => {
+    const text = "ASCII Привет 😀😀";
+    const attachment = { attachmentId: "attachment-1", type: "attachment" };
+    const occurrences = new Map<number, number>();
+    for (const character of text) {
+      const codePoint = character.codePointAt(0)!;
+      occurrences.set(codePoint, (occurrences.get(codePoint) ?? 0) + 1);
+    }
+
+    expect(estimateApproxTokensFromProjectedParts([
+      {
+        counts: [...occurrences].map(([codePoint, count]) => ({
+          codePoint,
+          occurrences: count
+        })),
+        kind: "code_points"
+      },
+      { kind: "value", value: attachment }
+    ])).toBe(estimateApproxTokens({
+      blocks: [{ text, type: "text" }, attachment]
+    }));
   });
 
   it("calculates the safe input budget after output reserve and margin", () => {

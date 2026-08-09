@@ -35,7 +35,7 @@ Server-backed state includes:
 - current user/session and the entitlement-filtered provider/model/Search catalog;
 - the effective personal-or-installation model-default source, saved Search preferences, presentation toggles, and per-model run-control drafts;
 - lightweight chat summaries, nested folders/projects, and project instructions;
-- lazily loaded keyed thread snapshots with messages, branch state, usage, and safe artifacts;
+- lazily loaded keyed thread snapshots with a bounded active-branch page, older-page state, full-branch usage/context facts, and safe artifacts; plus an explicit lazy compact branch-graph projection outside the thread store;
 - Assistant summaries, details, revisions, publications, and per-user pins; Knowledge base summaries/details, document-version ingestion status, reindex progress, publication projections, and entitled embedding choices; plus current-user MCP catalog/readiness;
 - persisted model-run inspection and usage evidence.
 
@@ -49,7 +49,7 @@ Browser-local state includes:
 - open menus, popovers, drawers, dialogs, confirmations, palette query/selection, Assistant/Knowledge surface navigation and dirty resource drafts, browser-local persistent wide Workspace-pane visibility under the legacy `aiqsa.workspaceRail` key, and focus restoration;
 - keyed composer drafts, edit intent, staged attachments, async operation tokens, and local feedback;
 - foreground text buffering and controller ownership;
-- manual Details mode/tab, folder collapse, local notices, and theme choice.
+- manual Details mode/tab, its current-chat compact branch projection, folder collapse, local notices, and theme choice.
 
 Do not persist UI ephemera to the server or expand a global store merely because several leaves render it. Cross-component workflow sessions belong to a focused controller/store; hover, focus, and one-shot presentation state stays local.
 
@@ -63,9 +63,9 @@ Startup loads the filtered catalog before activating a remembered chat so chat d
 
 ### Threads and branches
 
-`threadStore` owns one `ThreadSnapshot` per saved chat: messages, active leaf, usage, visible branch derivation, and repair after checkout/edit/delete/regenerate. Cached inactive threads survive navigation and blank-workspace transitions. Chat deletion evicts only that chat; stale detail responses merge without replacing newer optimistic/token state or summary metadata.
+`threadStore` owns each retained `ThreadSnapshot`: the bounded loaded active-path segment, active leaf, authoritative full-branch usage/context facts, older-page cursor/fence/generation/error state, visible partial-path derivation, and repair after checkout/edit/delete/regenerate. Prepend merges by message id without replacing newer optimistic/token state. Normal navigation retains the active snapshot plus at most two least-recently-used inactive snapshots; live streams, pending detail reads, and owned pending thread mutations are temporary safety exceptions. Safe eviction also removes the matching run-surface receipt cache while composer sessions remain under their separate owner. Chat deletion evicts only that chat.
 
-Active-chat detail loading is a skeleton, not a blank chat. Detail failure has one in-thread Retry owner and disables the composer without creating a duplicate global notice. Returning to a complete cached chat does not refetch it merely because navigation changed.
+Active-chat detail loading is a skeleton, not a blank chat. Detail failure has one in-thread Retry owner and disables the composer without creating a duplicate global notice. Returning to a current retained tail does not refetch it merely because navigation changed; reopening an evicted or snapshot-stale chat performs another bounded detail read. Older pages are fenced to the active leaf and authoritative revision, and stale settlement explicitly resets to the latest tail. Complete Copy/Export loops over remaining pages only in operation-local memory. Details owns the separately fetched compact branch graph for its current chat and never promotes it into rich message state.
 
 ### Composer sessions and controls
 

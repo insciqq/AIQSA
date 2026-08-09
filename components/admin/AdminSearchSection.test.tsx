@@ -1,6 +1,11 @@
 import type { AdminSearchCatalog } from "@/lib/contracts/adminSearch";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useCallback, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  AdminDraftProtectionProvider,
+  useAdminDraftRegistry
+} from "./AdminDraftProtection";
 import { AdminSearchSection } from "./AdminSearchSection";
 
 const api = vi.hoisted(() => ({
@@ -83,6 +88,28 @@ const catalog: AdminSearchCatalog = {
   }]
 };
 
+function DraftProtectionHarness({ children }: Readonly<{ children: ReactNode }>) {
+  const registry = useAdminDraftRegistry();
+  const hasDirty = registry.hasDirty;
+  const requestDiscardAction = useCallback((
+    action: () => void,
+    owners?: readonly string[]
+  ) => {
+    if (hasDirty(owners)) return false;
+    action();
+    return true;
+  }, [hasDirty]);
+
+  return (
+    <AdminDraftProtectionProvider
+      registry={registry}
+      requestDiscardAction={requestDiscardAction}
+    >
+      {children}
+    </AdminDraftProtectionProvider>
+  );
+}
+
 describe("AdminSearchSection", () => {
   beforeEach(() => {
     api.create.mockReset();
@@ -100,6 +127,196 @@ describe("AdminSearchSection", () => {
       "aria-current"
     );
     expect(screen.getByText("Select or add a Search source.")).toBeInTheDocument();
+  });
+
+  it("keeps a dirty editor on its original CAS version after a remote refresh", async () => {
+    const remoteCatalog: AdminSearchCatalog = {
+      ...catalog,
+      integrations: [{
+        ...catalog.integrations[0]!,
+        description: "Remote administrator purpose",
+        draftVersion: 2
+      }]
+    };
+    api.list.mockReset()
+      .mockResolvedValueOnce({ ok: true, search: catalog })
+      .mockResolvedValueOnce({ ok: true, search: remoteCatalog });
+    api.update.mockResolvedValue({ error: "search_draft_conflict", ok: false });
+    render(
+      <DraftProtectionHarness>
+        <AdminSearchSection active />
+      </DraftProtectionHarness>
+    );
+
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
+    fireEvent.click(within(index).getByRole("button", { name: /Company Search/i }));
+    fireEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Purpose" }), {
+      target: { value: "Local administrator purpose" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Search sources" }));
+
+    expect(await screen.findByTestId("search-editor-stale")).toHaveTextContent(
+      "cannot overwrite those newer settings"
+    );
+    expect(screen.getByRole("textbox", { name: "Purpose" })).toHaveValue(
+      "Local administrator purpose"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(api.update).toHaveBeenCalledWith(expect.objectContaining({
+      description: "Local administrator purpose",
+      expectedDraftVersion: 1,
+      id: "source-1"
+    })));
+    expect(await screen.findByText("search_draft_conflict")).toBeVisible();
+  });
+
+  it("rebases a clean refresh and an explicit dirty discard to the latest source", async () => {
+    const remoteCatalog: AdminSearchCatalog = {
+      ...catalog,
+      integrations: [{
+        ...catalog.integrations[0]!,
+        description: "Remote version two purpose",
+        draftVersion: 2
+      }]
+    };
+    const laterCatalog: AdminSearchCatalog = {
+      ...remoteCatalog,
+      integrations: [{
+        ...remoteCatalog.integrations[0]!,
+        description: "Remote version three purpose",
+        draftVersion: 3
+      }]
+    };
+    api.list.mockReset()
+      .mockResolvedValueOnce({ ok: true, search: catalog })
+      .mockResolvedValueOnce({ ok: true, search: remoteCatalog })
+      .mockResolvedValueOnce({ ok: true, search: laterCatalog });
+    render(<AdminSearchSection active />);
+
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
+    fireEvent.click(within(index).getByRole("button", { name: /Company Search/i }));
+    fireEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Search sources" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Purpose" })).toHaveValue(
+      "Remote version two purpose"
+    ));
+    expect(screen.queryByTestId("search-editor-stale")).toBeNull();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Purpose" }), {
+      target: { value: "New local purpose" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Search sources" }));
+    await screen.findByTestId("search-editor-stale");
+    fireEvent.click(screen.getByRole("button", {
+      name: "Discard local changes and load latest"
+    }));
+
+    expect(screen.getByRole("textbox", { name: "Purpose" })).toHaveValue(
+      "Remote version three purpose"
+    );
+    expect(screen.queryByTestId("search-editor-stale")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(api.update).toHaveBeenCalledWith(expect.objectContaining({
+      expectedDraftVersion: 3
+    })));
+  });
+
+  it("leaves a removed refreshed source without applying its form to another row", async () => {
+    api.list.mockReset()
+      .mockResolvedValueOnce({ ok: true, search: catalog })
+      .mockResolvedValueOnce({
+        ok: true,
+        search: { ...catalog, integrations: [] }
+      });
+    render(<AdminSearchSection active />);
+
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
+    fireEvent.click(within(index).getByRole("button", { name: /Company Search/i }));
+    fireEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Purpose" }), {
+      target: { value: "Unsaved local purpose" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Search sources" }));
+
+    expect(await screen.findByText(
+      "The selected Search source is no longer available. Local changes were not sent."
+    )).toBeVisible();
+    expect(screen.getByText("Select or add a Search source.")).toBeVisible();
+    expect(api.update).not.toHaveBeenCalled();
+  });
+
+  it("rebases the editor baseline only after a successful save", async () => {
+    const savedCatalog: AdminSearchCatalog = {
+      ...catalog,
+      integrations: [{
+        ...catalog.integrations[0]!,
+        description: "First saved purpose",
+        draftVersion: 2
+      }]
+    };
+    api.update.mockResolvedValue({ ok: true, search: savedCatalog });
+    render(<AdminSearchSection active />);
+
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
+    fireEvent.click(within(index).getByRole("button", { name: /Company Search/i }));
+    fireEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Purpose" }), {
+      target: { value: "First saved purpose" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(api.update).toHaveBeenCalledWith(expect.objectContaining({
+      expectedDraftVersion: 1
+    })));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Purpose" })).toHaveValue(
+      "First saved purpose"
+    ));
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Purpose" }), {
+      target: { value: "Second local purpose" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(api.update).toHaveBeenCalledTimes(2));
+    expect(api.update.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      description: "Second local purpose",
+      expectedDraftVersion: 2
+    }));
+  });
+
+  it("preserves a dirty configuration when a diagnostic action refreshes the catalog", async () => {
+    api.run.mockResolvedValue({
+      ok: true,
+      search: {
+        ...catalog,
+        integrations: [{
+          ...catalog.integrations[0]!,
+          draftTestEvidence: {
+            checkedAt: "2026-08-09T08:00:00.000Z",
+            method: "provider_search",
+            normalizedSourceCount: 3,
+            protocol: "openai_responses_web_search",
+            status: "available"
+          }
+        }]
+      }
+    });
+    render(<AdminSearchSection active />);
+
+    const index = await screen.findByRole("list", { name: "Search source catalog" });
+    fireEvent.click(within(index).getByRole("button", { name: /Company Search/i }));
+    fireEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Purpose" }), {
+      target: { value: "Unsaved purpose across diagnostics" }
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Diagnostics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run live check" }));
+    await screen.findByText("Live Search check completed.");
+    fireEvent.click(screen.getByRole("tab", { name: "Configuration" }));
+
+    expect(screen.getByRole("textbox", { name: "Purpose" })).toHaveValue(
+      "Unsaved purpose across diagnostics"
+    );
   });
 
   it("presents one friendly Search source with configuration and diagnostics", async () => {

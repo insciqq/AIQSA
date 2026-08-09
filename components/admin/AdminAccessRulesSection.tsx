@@ -12,6 +12,7 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { useAdminDiscardAction } from "@/components/admin/AdminDraftProtection";
 import { groupLabel } from "@/components/admin/adminViewUtils";
 import type { AdminAccessRuleKind, AdminAccessRuleRecord, AdminGroup } from "@/lib/contracts/admin";
 import { Check, Globe2, Mail, Search, Trash2 } from "lucide-react";
@@ -176,6 +177,15 @@ function RuleDetail({ actions, rule, status }: Readonly<{
 
 export function AdminAccessRulesSection(props: AdminAccessRulesSectionProps) {
   const { actions, data, state, status } = props;
+  const requestDiscardAction = useAdminDiscardAction();
+  const protectedActions = {
+    ...actions,
+    backToList: () => requestDiscardAction(actions.backToList, ["access-rule-form"]),
+    selectRule: (ruleId: string) => requestDiscardAction(
+      () => actions.selectRule(ruleId),
+      ["access-rule-form"]
+    )
+  };
   return (
     <AdminTaskWorkspace detailOpen={state.compactDetailOpen} indexWidth="22rem">
       <AdminTaskIndexPane compactDetailOpen={state.compactDetailOpen} testId="admin-access-rules-index">
@@ -211,7 +221,7 @@ export function AdminAccessRulesSection(props: AdminAccessRulesSectionProps) {
                 <AdminAvailabilityStatus enabled={rule.enabled} />
               </div>
               <div className="mt-2 flex justify-end">
-                <button className={quietButton} data-admin-task-opener="true" onClick={() => actions.selectRule(rule.id)} type="button">Details</button>
+                  <button className={quietButton} data-admin-task-opener="true" onClick={() => protectedActions.selectRule(rule.id)} type="button">Details</button>
               </div>
             </article>
           )) : (
@@ -224,7 +234,9 @@ export function AdminAccessRulesSection(props: AdminAccessRulesSectionProps) {
       </AdminTaskIndexPane>
 
       <AdminTaskDetailPane compactDetailOpen={state.compactDetailOpen} testId="admin-access-rules-detail-pane">
-        {state.formOpen ? <CreateRuleTask {...props} /> : <RuleDetail actions={actions} rule={data.selectedRule} status={status} />}
+        {state.formOpen
+          ? <CreateRuleTask {...props} actions={protectedActions} />
+          : <RuleDetail actions={protectedActions} rule={data.selectedRule} status={status} />}
       </AdminTaskDetailPane>
     </AdminTaskWorkspace>
   );

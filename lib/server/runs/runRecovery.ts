@@ -3,7 +3,11 @@ import {
   type ModelRunSseEvent,
   type ModelRunUsage
 } from "../../domain/modelRunEvents";
-import { sumTokenUsage } from "../../domain/usage";
+import {
+  normalizeTokenUsage,
+  subtractTokenUsage,
+  sumTokenUsage
+} from "../../domain/usage";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import { mcpRunTools, mcpToolExecutionResult, resolveMcpRunTool } from "../mcp/toolExecutor";
@@ -74,9 +78,11 @@ import {
   snapshotToolExecutionResult
 } from "./toolExecutionPersistence";
 import {
+  mergeAnswerRoundUsage,
   snapshotToolLoopJson,
   toolLoopPersistenceLimits,
   type CheckpointedToolLoopRun,
+  type PersistedAnswerRoundUsage,
   type PersistedToolLoopCall,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
@@ -450,6 +456,53 @@ function groupedUsageAttributions(
   }));
 }
 
+function hasTokenUsage(usage: ModelRunUsage): boolean {
+  const normalized = normalizeTokenUsage(usage);
+  return normalized.cachedInputTokens > 0 || normalized.cacheWriteInputTokens > 0 ||
+    normalized.inputTokens > 0 || normalized.outputTokens > 0 ||
+    normalized.reasoningTokens > 0 || normalized.totalTokens > 0;
+}
+
+function hasValidUsageEvidence(usage: ModelRunUsage): boolean {
+  const required = [usage.inputTokens, usage.outputTokens, usage.reasoningTokens];
+  const optional = [
+    usage.cachedInputTokens,
+    usage.cacheWriteInputTokens,
+    usage.totalTokens
+  ];
+  return required.every((value) => Number.isSafeInteger(value) && value >= 0) &&
+    optional.every((value) => value === undefined || Number.isSafeInteger(value) && value >= 0);
+}
+
+function usageAttributionsWithoutAnswerRounds(
+  persisted: readonly RunUsageAttribution[],
+  answer: Readonly<{ modelId: string; provider: string }>,
+  answerRoundUsage: readonly PersistedAnswerRoundUsage[]
+): RunUsageAttribution[] | null {
+  if (persisted.some((attribution) => !hasValidUsageEvidence(attribution.usage))) return null;
+  const grouped = groupedUsageAttributions(persisted);
+  if (grouped.some((attribution) => !hasValidUsageEvidence(attribution.usage))) return null;
+  if (answerRoundUsage.length === 0) return grouped;
+
+  const answerKey = `${answer.provider}\u0000${answer.modelId}`;
+  const answerAttribution = grouped.find((attribution) =>
+    `${attribution.provider}\u0000${attribution.modelId}` === answerKey);
+  const answerTotal = sumTokenUsage(answerRoundUsage.map((entry) => entry.usage));
+  const remainder = subtractTokenUsage(
+    answerAttribution?.usage ?? sumTokenUsage([]),
+    answerTotal
+  );
+  if (!remainder) return null;
+
+  return [
+    ...grouped.filter((attribution) =>
+      `${attribution.provider}\u0000${attribution.modelId}` !== answerKey),
+    ...(hasTokenUsage(remainder)
+      ? [{ modelId: answer.modelId, provider: answer.provider, usage: remainder }]
+      : [])
+  ];
+}
+
 async function settleToolLoopRecoveryError(
   deps: RunRecoveryDeps,
   run: CheckpointedToolLoopRun,
@@ -780,9 +833,24 @@ async function recoverCheckpointedToolLoop(
   if (signal.aborted || run.status === "cancelled" || !run.assistantMessageId) return;
 
   const usageAttributions: RunUsageAttribution[] = [];
-  const persistedUsageKeys = new Set<string>();
+  let answerRoundUsage = run.checkpoint.version === 2
+    ? [...run.checkpoint.answerRoundUsage]
+    : [];
+  const legacyPersistedUsageKeys = new Set<string>();
+  let usageEvidenceTrusted = true;
   let currentProviderResponseId = run.providerResponseId;
   let tokenBuffer: ReturnType<typeof createRunTokenPersistenceBuffer> | null = null;
+
+  function allUsageAttributions(): RunUsageAttribution[] {
+    return [
+      ...usageAttributions,
+      ...answerRoundUsage.map((entry) => ({
+        modelId: run.modelId,
+        provider: run.provider,
+        usage: entry.usage
+      }))
+    ];
+  }
 
   try {
     if (run.assistantText === null) {
@@ -810,11 +878,26 @@ async function recoverCheckpointedToolLoop(
       if (!Number.isFinite(recordedAt)) return latest;
       return latest === null ? recordedAt : Math.max(latest, recordedAt);
     }, null);
-    usageAttributions.push(...persistedUsage.map(({ recordedAt: _recordedAt, ...attribution }) =>
-      attribution
-    ));
-    for (const attribution of persistedUsage) {
-      persistedUsageKeys.add(`${attribution.provider}\u0000${attribution.modelId}`);
+    const persistedAttributions = persistedUsage.map(
+      ({ recordedAt: _recordedAt, ...attribution }) => attribution
+    );
+    const nonAnswerAttributions = usageAttributionsWithoutAnswerRounds(
+      persistedAttributions,
+      run,
+      answerRoundUsage
+    );
+    if (!nonAnswerAttributions) {
+      usageEvidenceTrusted = false;
+      throw new ToolLoopRecoveryError(
+        "tool_loop_usage_evidence_invalid",
+        "Saved provider-round usage is inconsistent with the persisted run totals."
+      );
+    }
+    usageAttributions.push(...nonAnswerAttributions);
+    if (run.checkpoint.version === 1) {
+      for (const attribution of persistedUsage) {
+        legacyPersistedUsageKeys.add(`${attribution.provider}\u0000${attribution.modelId}`);
+      }
     }
     if (!adapter || !bridge?.supportsToolCalling({ modelId: run.modelId, provider: run.provider })) {
       throw new ToolLoopRecoveryError(
@@ -977,15 +1060,53 @@ async function recoverCheckpointedToolLoop(
       sequence
     });
 
-    async function persistCumulativeUsage(): Promise<void> {
-      const grouped = groupedUsageAttributions(usageAttributions);
-      if (grouped.length === 0) return;
-      await deps.repository.recordRunUsageEvents({
+    async function persistCumulativeUsage(
+      answerRoundEntry?: PersistedAnswerRoundUsage
+    ): Promise<void> {
+      const grouped = groupedUsageAttributions(allUsageAttributions());
+      if (grouped.length === 0 && !answerRoundEntry) return;
+      const recorded = await deps.repository.recordRunUsageEvents({
+        ...(answerRoundEntry ? { answerRoundUsage: answerRoundEntry } : {}),
         chatId: run.chatId,
         runId: run.id,
         usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, grouped),
         userId: run.userId
       });
+      if (answerRoundEntry && !recorded) {
+        usageEvidenceTrusted = false;
+        throw new ToolLoopRecoveryError(
+          "tool_loop_usage_checkpoint_conflict",
+          "Recovered provider-round usage could not be checkpointed."
+        );
+      }
+    }
+
+    async function recordAnswerRoundUsage(
+      usage: ModelRunUsage,
+      request: Readonly<{ modelId: string; provider: string }>,
+      completeness: PersistedAnswerRoundUsage["completeness"],
+      round: number
+    ): Promise<void> {
+      if (request.modelId !== run.modelId || request.provider !== run.provider) {
+        throw new ToolLoopRecoveryError(
+          "tool_loop_usage_evidence_invalid",
+          "Recovered provider-round usage does not match the saved answer model."
+        );
+      }
+      const entry: PersistedAnswerRoundUsage = {
+        completeness,
+        roundIndex: round,
+        usage: normalizeTokenUsage(usage)
+      };
+      const merged = mergeAnswerRoundUsage(answerRoundUsage, entry, round);
+      if (!merged) {
+        throw new ToolLoopRecoveryError(
+          "tool_loop_usage_evidence_invalid",
+          "Recovered provider-round usage conflicts with saved terminal evidence."
+        );
+      }
+      answerRoundUsage = [...merged];
+      await persistCumulativeUsage(entry);
     }
 
     async function publishProviderResponseId(providerResponseId: string | undefined): Promise<void> {
@@ -1167,23 +1288,23 @@ async function recoverCheckpointedToolLoop(
             code: "provider_terminal_response_invalid",
             message: "The provider returned a terminal response without a final result."
           },
-          usageAttributions,
+          allUsageAttributions(),
           refreshed.events,
           currentProviderResponseId
         );
         return;
       }
       const providerUsageKey = `${run.provider}\u0000${run.modelId}`;
-      if (!persistedUsageKeys.has(providerUsageKey)) {
-        usageAttributions.push({
-          modelId: run.modelId,
-          provider: run.provider,
-          usage: refreshed.result.usage
-        });
+      if (run.checkpoint.version === 2 || !legacyPersistedUsageKeys.has(providerUsageKey)) {
+        await recordAnswerRoundUsage(
+          refreshed.result.usage,
+          run,
+          "terminal",
+          run.checkpoint.roundIndex
+        );
       }
-      await persistCumulativeUsage();
       if ((refreshed.result.toolCalls?.length ?? 0) === 0) {
-        const groupedAttributions = groupedUsageAttributions(usageAttributions);
+        const groupedAttributions = groupedUsageAttributions(allUsageAttributions());
         const completion = await finalizeRunCompletion({
           eventsBeforeTerminal: refreshed.events,
           repository: deps.repository,
@@ -1231,15 +1352,38 @@ async function recoverCheckpointedToolLoop(
       }
       const usageResponseId = currentProviderResponseId ?? continuation.providerResponseId;
       const providerUsageKey = `${run.provider}\u0000${run.modelId}`;
-      if (usageResponseId && adapter.refresh && !persistedUsageKeys.has(providerUsageKey)) {
+      const currentAnswerEvidence = answerRoundUsage.find((entry) =>
+        entry.roundIndex === run.checkpoint.roundIndex);
+      if (run.checkpoint.version === 2 && currentAnswerEvidence?.completeness !== "terminal") {
+        if (!usageResponseId || !adapter.refresh) {
+          throw new ToolLoopRecoveryError(
+            "tool_loop_usage_evidence_invalid",
+            "The saved tool batch is missing terminal provider-round usage evidence."
+          );
+        }
+        const currentRound = await adapter.refresh(usageResponseId).catch(() => null);
+        if (!currentRound?.terminal || !currentRound.result) {
+          throw new ToolLoopRecoveryError(
+            "tool_loop_usage_evidence_invalid",
+            "Terminal provider-round usage could not be recovered for the saved tool batch."
+          );
+        }
+        await recordAnswerRoundUsage(
+          currentRound.result.usage,
+          run,
+          "terminal",
+          run.checkpoint.roundIndex
+        );
+      } else if (run.checkpoint.version === 1 && usageResponseId && adapter.refresh &&
+        !legacyPersistedUsageKeys.has(providerUsageKey)) {
         const currentRound = await adapter.refresh(usageResponseId).catch(() => null);
         if (currentRound?.terminal && currentRound.result) {
-          usageAttributions.push({
-            modelId: run.modelId,
-            provider: run.provider,
-            usage: currentRound.result.usage
-          });
-          await persistCumulativeUsage();
+          await recordAnswerRoundUsage(
+            currentRound.result.usage,
+            run,
+            "terminal",
+            run.checkpoint.roundIndex
+          );
         }
       }
     }
@@ -1380,9 +1524,13 @@ async function recoverCheckpointedToolLoop(
         await appendToolResults(results, round);
         await persistCumulativeUsage();
       },
-      onUsage: async (usage, request) => {
-        usageAttributions.push({ modelId: request.modelId, provider: request.provider, usage });
-        await persistCumulativeUsage();
+      onUsage: async (usage, request, usageContext) => {
+        await recordAnswerRoundUsage(
+          usage,
+          request,
+          usageContext.completeness,
+          usageContext.round
+        );
       },
       parallelToolCalls: run.normalizedRequest.modelCapabilities.parallelToolCalls === true,
       persistToolBatch: async ({ calls, continuation: nextContinuation, round }) => {
@@ -1438,7 +1586,7 @@ async function recoverCheckpointedToolLoop(
       );
     }
     await tokenBuffer.flush();
-    const groupedAttributions = groupedUsageAttributions(usageAttributions);
+    const groupedAttributions = groupedUsageAttributions(allUsageAttributions());
     const usage = sumTokenUsage(groupedAttributions.map((attribution) => attribution.usage));
     const completion = await finalizeRunCompletion({
       repository: deps.repository,
@@ -1515,7 +1663,7 @@ async function recoverCheckpointedToolLoop(
       deps,
       run,
       { code: failure.code, message: failure.message },
-      usageAttributions,
+      usageEvidenceTrusted ? allUsageAttributions() : [],
       [],
       currentProviderResponseId
     );

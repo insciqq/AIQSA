@@ -7,6 +7,11 @@ import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import type {
   ChatDetailResponseWire,
   ChatDetailWire,
+  ChatBranchesResponseWire,
+  ChatBranchNodeWire,
+  ChatContextStats,
+  ChatMessagePageInfo,
+  ChatMessagesPageWire,
   ChatRouteErrorResponse,
   ChatMessageWire,
   ChatUsageStats,
@@ -60,8 +65,31 @@ export type ChatSummaryRecord = {
 };
 
 export type ChatDetailRecord = ChatSummaryRecord & {
+  contextStats: ChatContextStats;
   messages: ChatMessageRecord[];
+  pageInfo: Omit<ChatMessagePageInfo, "snapshotUpdatedAt"> & {
+    snapshotUpdatedAt: Date | string;
+  };
   usageStats: ChatUsageStats | null;
+};
+
+export type ChatMessagesPageRecord = {
+  messages: ChatMessageRecord[];
+  pageInfo: Omit<ChatMessagePageInfo, "snapshotUpdatedAt"> & {
+    snapshotUpdatedAt: Date | string;
+  };
+};
+
+export type ChatMessagesPageResult =
+  | { kind: "cursor_invalid" }
+  | { kind: "not_found" }
+  | { kind: "ok"; page: ChatMessagesPageRecord }
+  | { kind: "stale" };
+
+export type ChatBranchGraphRecord = {
+  activeLeafMessageId: string | null;
+  nodes: ChatBranchNodeWire[];
+  snapshotUpdatedAt: Date | string;
 };
 
 export type FolderRecord = {
@@ -88,7 +116,13 @@ export type ChatRepository = {
   createFolder(input: { name: string; parentId?: string | null; userId: string }): Promise<FolderRecord | null>;
   deleteFolder(input: { folderId: string; userId: string }): Promise<boolean>;
   archiveChat(input: { chatId: string; userId: string }): Promise<boolean>;
+  getBranches(input: { chatId: string; userId: string }): Promise<ChatBranchGraphRecord | null>;
   getChat(input: { chatId: string; userId: string }): Promise<ChatDetailRecord | null>;
+  getMessagesPage(input: {
+    before: string;
+    chatId: string;
+    userId: string;
+  }): Promise<ChatMessagesPageResult>;
   listWorkspace(userId: string): Promise<ChatWorkspace | null>;
   searchChatContent(input: { limit: number; query: string; userId: string }): Promise<ChatContentMatchRecord[]>;
   updateFolder(input: {
@@ -230,8 +264,23 @@ function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSummaryWire
 function serializeChatDetail(chat: ChatDetailRecord): ChatDetailWire {
   return {
     ...serializeChatSummary(chat),
+    contextStats: chat.contextStats,
     messages: chat.messages.map(serializeMessage),
+    pageInfo: {
+      ...chat.pageInfo,
+      snapshotUpdatedAt: iso(chat.pageInfo.snapshotUpdatedAt)
+    },
     usageStats: chat.usageStats
+  };
+}
+
+function serializeMessagesPage(page: ChatMessagesPageRecord): ChatMessagesPageWire {
+  return {
+    messages: page.messages.map(serializeMessage),
+    pageInfo: {
+      ...page.pageInfo,
+      snapshotUpdatedAt: iso(page.pageInfo.snapshotUpdatedAt)
+    }
   };
 }
 
@@ -334,6 +383,63 @@ export function createGetChatHandler(deps: ChatHandlerDeps) {
     }
 
     return chatDetailJson({ chat: serializeChatDetail(chat) });
+  };
+}
+
+export function createGetChatMessagesPageHandler(deps: ChatHandlerDeps) {
+  return async function GET(
+    request: Request,
+    context: { params: Promise<{ chatId: string }> | { chatId: string } }
+  ): Promise<Response> {
+    const result = await auth(request, deps);
+    if (!result.session) return result.response;
+    const beforeValues = new URL(request.url).searchParams.getAll("before");
+    const before = beforeValues.length === 1 ? beforeValues[0]?.trim() ?? "" : "";
+    if (!before) {
+      return chatRouteErrorJson({ error: "chat_page_cursor_invalid" }, { status: 400 });
+    }
+    const params = await context.params;
+    const page = await deps.repository.getMessagesPage({
+      before,
+      chatId: params.chatId,
+      userId: result.session.userId
+    });
+    if (page.kind === "not_found") {
+      return chatRouteErrorJson({ error: "chat_not_found" }, { status: 404 });
+    }
+    if (page.kind === "cursor_invalid") {
+      return chatRouteErrorJson({ error: "chat_page_cursor_invalid" }, { status: 400 });
+    }
+    if (page.kind === "stale") {
+      return chatRouteErrorJson({ error: "chat_page_stale" }, { status: 409 });
+    }
+    return Response.json(serializeMessagesPage(page.page));
+  };
+}
+
+export function createGetChatBranchesHandler(deps: ChatHandlerDeps) {
+  return async function GET(
+    request: Request,
+    context: { params: Promise<{ chatId: string }> | { chatId: string } }
+  ): Promise<Response> {
+    const result = await auth(request, deps);
+    if (!result.session) return result.response;
+    const params = await context.params;
+    const graph = await deps.repository.getBranches({
+      chatId: params.chatId,
+      userId: result.session.userId
+    });
+    if (!graph) {
+      return chatRouteErrorJson({ error: "chat_not_found" }, { status: 404 });
+    }
+    const response: ChatBranchesResponseWire = {
+      branchGraph: {
+        activeLeafMessageId: graph.activeLeafMessageId,
+        nodes: graph.nodes,
+        snapshotUpdatedAt: iso(graph.snapshotUpdatedAt)
+      }
+    };
+    return Response.json(response);
   };
 }
 

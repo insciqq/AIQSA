@@ -5,6 +5,7 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import {
   providerFamilyLabel,
   providerFamilyRoot,
@@ -74,9 +75,17 @@ export function AdminProviderConnectionEditor({
   const [form, setForm] = useState<ConnectionForm>(() =>
     connection ? connectionForm(connection) : blankConnection(initialFamily ?? null)
   );
+  const [baseline] = useState(form);
   const expectedDraftVersionRef = useRef(connection?.draftVersion);
   const unassignedPolicyRef = useRef(connection?.unassignedPolicy ?? "use_default");
   const editing = Boolean(connection);
+  const draftDirty = JSON.stringify(form) !== JSON.stringify(baseline);
+  const requestDraftDiscard = useAdminDraftProtection({
+    dirty: draftDirty,
+    onDiscard: () => setForm(baseline),
+    owner: "provider-connection-editor",
+    pending: draftDirty && controller.state.busy
+  });
 
   return (
     <form
@@ -213,7 +222,12 @@ export function AdminProviderConnectionEditor({
         <button className={primaryButton} disabled={controller.state.busy} type="submit">
           {controller.state.busy ? "Saving…" : "Save connection"}
         </button>
-        <button className={quietButton} disabled={controller.state.busy} onClick={onClose} type="button">
+        <button
+          className={quietButton}
+          disabled={controller.state.busy}
+          onClick={() => requestDraftDiscard(onClose)}
+          type="button"
+        >
           Cancel
         </button>
       </div>

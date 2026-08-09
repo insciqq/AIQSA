@@ -6,6 +6,7 @@ import {
   updateAdminKnowledgePolicy
 } from "@/components/admin/adminKnowledgeApi";
 import { inputClass, primaryButton, quietButton } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import type { AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
 import { RefreshCw, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -93,6 +94,14 @@ export function AdminKnowledgeSection({
     values.resultLimit !== settings.policy.resultLimit ||
     values.scoreThreshold !== settings.policy.scoreThreshold
   ));
+  const requestDiscard = useAdminDraftProtection({
+    dirty,
+    onDiscard: () => {
+      if (settings) setDraft(draftFrom(settings));
+    },
+    owner: "knowledge-retrieval-policy",
+    pending: dirty && busy
+  });
 
   const save = async () => {
     if (!settings || !values || !valid || !dirty || busy) return;
@@ -124,7 +133,12 @@ export function AdminKnowledgeSection({
               Tune how many passages are considered and returned by future Knowledge invocations. Existing run receipts keep the exact policy they used.
             </p>
           </div>
-          <button className={quietButton} disabled={loading || busy} onClick={() => void refresh()} type="button">
+          <button
+            className={quietButton}
+            disabled={loading || busy}
+            onClick={() => requestDiscard(() => void refresh())}
+            type="button"
+          >
             <RefreshCw aria-hidden="true" className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </button>

@@ -16,7 +16,8 @@ import {
   folderIdFromComposerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
-  useComposerSessionStore
+  useComposerSessionStore,
+  type ComposerSessionKey
 } from "@/components/app-shell/composerSessionStore";
 import { createFolderActions } from "@/components/app-shell/folderActions";
 import { useMessageRunActions } from "@/components/app-shell/messageRunActions";
@@ -55,11 +56,12 @@ import {
   useRunSurfaceStore
 } from "@/components/app-shell/runSurfaceStore";
 import {
+  normalizeThreadStatus,
   sessionExpiredLoginHref,
   shellFetch,
   subscribeToSessionExpired
 } from "@/components/app-shell/shellApi";
-import { errorMessage } from "@/components/app-shell/shellFormatting";
+import { errorMessage, responseErrorMessage } from "@/components/app-shell/shellFormatting";
 import {
   clearSessionExpiredDraft,
   rememberSessionExpiredDraft,
@@ -88,6 +90,7 @@ import {
   selectThreadRenderActiveLeafId,
   selectThreadSnapshot,
   selectThreadVisibleMessages,
+  threadHistoryState,
   useThreadStore
 } from "@/components/app-shell/threadStore";
 import type {
@@ -95,9 +98,11 @@ import type {
   CatalogModel,
   ChatDetail,
   ChatSummary,
-  Notice
+  Notice,
+  ThreadMessage
 } from "@/components/app-shell/types";
 import { decodeCatalogResponse } from "@/lib/contracts/catalog";
+import { decodeChatBranchesResponse } from "@/lib/contracts/chats";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   resolveModelControlDefaults,
@@ -123,6 +128,15 @@ export function workspaceDefaultControlsFingerprint(state: ComposerControlSnapsh
     temperature: state.temperature
   });
 }
+
+type BranchGraphState = {
+  activeLeafId: string | null;
+  chatId: string;
+  error: string | null;
+  loading: boolean;
+  messages: ThreadMessage[] | null;
+  snapshotUpdatedAt: string | null;
+};
 
 export function runCatalogLoadDeduped<T>({
   getLoadedCatalog,
@@ -174,8 +188,11 @@ export function PowerAppShell({
   const setCatalog = useWorkspaceStore((state) => state.setCatalog);
   const setCatalogError = useWorkspaceStore((state) => state.setCatalogError);
   const activeThread = useThreadStore((state) => selectThreadSnapshot(state, activeChatId));
+  const [branchGraph, setBranchGraph] = useState<BranchGraphState | null>(null);
+  const branchGraphRequestRef = useRef(0);
   const activeRunSurface = useRunSurfaceStore((state) => selectRunSurface(state, activeChatId));
   const messages = activeThread.messages;
+  const activeThreadHistory = threadHistoryState(activeThread);
   const renderActiveLeafId = useMemo(
     () => selectThreadRenderActiveLeafId(activeThread),
     [activeThread]
@@ -186,6 +203,21 @@ export function PowerAppShell({
   );
   const composerSession = useComposerSessionStore(selectActiveComposerSession);
   const activeComposerSessionKey = useComposerSessionStore((state) => state.activeSessionKey);
+  const pendingComposerChatIdsKey = useComposerSessionStore((state) =>
+    (Object.keys(state.sessionsByKey) as ComposerSessionKey[])
+      .flatMap((sessionKey) => {
+        const session = state.sessionsByKey[sessionKey];
+        const chatId = chatIdFromComposerSessionKey(sessionKey);
+        return chatId &&
+          (session?.pendingEdit ||
+            session?.pendingSend ||
+            (session?.pendingUploadGenerations.length ?? 0) > 0)
+          ? [chatId]
+          : [];
+      })
+      .sort()
+      .join("\u0000")
+  );
   const attachments = composerSession.attachments;
   const backgroundMode = useComposerControlStore((state) => state.backgroundMode);
   const draft = composerSession.draft;
@@ -283,6 +315,7 @@ export function PowerAppShell({
   const [pendingBranchCheckouts] = useState(
     () => new Map<string, Promise<BranchCheckoutSettlement>>()
   );
+  const [pendingThreadMutations] = useState(() => new Set<string>());
   const pendingControlDefaultsRef = useRef<{ draft: SavedControlDraft; model: CatalogModel } | null>(null);
   const pendingControlDefaultsTimerRef = useRef<number | null>(null);
   const settingsMutationCoordinatorRef = useRef<SettingsMutationCoordinator | null>(null);
@@ -349,6 +382,7 @@ export function PowerAppShell({
   } = usePowerAppShellViewModel({
     activeChatId,
     activeChatStreaming: Boolean(activeChatStream),
+    activeThreadContextStats: activeThread.contextStats ?? null,
     activeThreadUsageStats: activeThread.usageStats,
     attachments,
     catalog,
@@ -409,6 +443,7 @@ export function PowerAppShell({
     containerRef: threadScrollRef,
     handleScroll: handleThreadScroll,
     jumpToLatest,
+    preserveViewportWhile,
     resetToLatest: resetThreadToLatest,
     showJumpToLatest
   } = usePinnedScroll<HTMLDivElement>({
@@ -503,6 +538,9 @@ export function PowerAppShell({
     createChat,
     deleteChat,
     exportChat,
+    loadCompleteActiveBranch,
+    loadEarlierMessages: loadEarlierMessagesPage,
+    pruneThreadCache,
     reapplyActiveChatDefaults,
     refreshActiveChat,
     refreshWorkspace,
@@ -515,6 +553,8 @@ export function PowerAppShell({
     applyModelControlDefaults,
     chatDetailRequestsRef,
     chatHasActiveStream: (chatId) => Boolean(useRunLifecycleStore.getState().activeStreams[chatId]),
+    chatHasPendingThreadMutation: (chatId) =>
+      pendingBranchCheckouts.has(chatId) || pendingThreadMutations.has(chatId),
     chatMutation: workspaceInteraction.chatMutation,
     confirmDeleteChat: shellOverlays.confirmations.chat.request,
     loadingChatDetailIdRef,
@@ -526,6 +566,98 @@ export function PowerAppShell({
     setSelectedSearchPlan,
     workspaceRefreshPromiseRef
   });
+  const pruneThreadCacheEvent = useEventCallback(pruneThreadCache);
+
+  useEffect(() => {
+    pruneThreadCacheEvent();
+  }, [activeRunChatIdsKey, pendingComposerChatIdsKey, pruneThreadCacheEvent]);
+
+  const loadEarlierMessages = useEventCallback(async () => {
+    const sourceChatId = activeChatId;
+    if (!sourceChatId) return;
+    const outcome = await preserveViewportWhile(
+      () => loadEarlierMessagesPage(sourceChatId),
+      () => useWorkspaceStore.getState().activeChatId === sourceChatId
+    );
+    if (
+      outcome === "reset" &&
+      useWorkspaceStore.getState().activeChatId === sourceChatId
+    ) {
+      resetThreadToLatest();
+    }
+  });
+
+  const loadBranchGraph = useEventCallback(async () => {
+    const chatId = activeChatId;
+    if (!chatId) return;
+    const requestGeneration = ++branchGraphRequestRef.current;
+    setBranchGraph({
+      activeLeafId: null,
+      chatId,
+      error: null,
+      loading: true,
+      messages: null,
+      snapshotUpdatedAt: null
+    });
+    try {
+      const response = await shellFetch(`/api/chats/${chatId}/branches`);
+      if (!response.ok) {
+        throw new Error(
+          await responseErrorMessage(response, `chat_branches_failed_${response.status}`)
+        );
+      }
+      const decoded = decodeChatBranchesResponse(await response.json());
+      if (!decoded) throw new Error("chat_branches_malformed");
+      if (
+        branchGraphRequestRef.current !== requestGeneration ||
+        useWorkspaceStore.getState().activeChatId !== chatId
+      ) return;
+      setBranchGraph({
+        activeLeafId: decoded.branchGraph.activeLeafMessageId,
+        chatId,
+        error: null,
+        loading: false,
+        messages: decoded.branchGraph.nodes.map((node) => ({
+          content: node.preview,
+          id: node.id,
+          parentMessageId: node.parentMessageId,
+          role: node.role,
+          status: normalizeThreadStatus(node.status)
+        })),
+        snapshotUpdatedAt: decoded.branchGraph.snapshotUpdatedAt
+      });
+    } catch (error) {
+      if (
+        branchGraphRequestRef.current === requestGeneration &&
+        useWorkspaceStore.getState().activeChatId === chatId
+      ) {
+        setBranchGraph({
+          activeLeafId: null,
+          chatId,
+          error: errorMessage(error),
+          loading: false,
+          messages: null,
+          snapshotUpdatedAt: null
+        });
+      }
+    }
+  });
+
+  useEffect(() => {
+    if (inspectorMode === "closed" || inspectorActiveTab !== "branch" || !activeChatId) {
+      return;
+    }
+    const summary = chats.find((chat) => chat.id === activeChatId);
+    if (!summary) return;
+    const current = branchGraph?.chatId === activeChatId ? branchGraph : null;
+    if (current?.loading || current?.error || (
+      current?.messages &&
+      current.snapshotUpdatedAt === summary?.updatedAt
+    )) {
+      return;
+    }
+    void loadBranchGraph();
+  }, [activeChatId, branchGraph, chats, inspectorActiveTab, inspectorMode, loadBranchGraph]);
 
   const retryActiveChatDetail = useEventCallback(() => {
     const chat = chats.find((candidate) => candidate.id === activeChatId);
@@ -773,11 +905,14 @@ export function PowerAppShell({
     activateChat,
     closeChatActions: workspaceInteraction.chatMutation.closeActions,
     confirmDeleteMessage: shellOverlays.confirmations.message.request,
+    loadCompleteActiveBranch,
     openShareDialog(target) {
       shellOverlays.mobileWorkspace.close();
       setShareDialogTarget(target);
     },
+    onThreadMutationSettled: pruneThreadCacheEvent,
     pendingBranchCheckouts,
+    pendingThreadMutations,
     refreshActiveChat,
     resetThreadToLatest,
     setNotice,
@@ -948,9 +1083,13 @@ export function PowerAppShell({
       if (activeChatId) await fetchRunReceipt(runId, activeChatId);
     },
     jumpToLatest,
+    hasOlderMessages: activeThreadHistory.hasOlder,
     lastRun: activeRunSurface.lastRun,
     persistedRunsById: activeRunSurface.runsById,
     liveArtifactSummary,
+    loadEarlierMessages,
+    loadingOlderMessages: activeThreadHistory.loading,
+    olderMessagesError: activeThreadHistory.error,
     openKnowledgeEvidence: (knowledgeBaseId: string) => {
       assistantLibraryActions.closeLibrary();
       closeGeneralSettings();
@@ -1056,8 +1195,17 @@ export function PowerAppShell({
   } satisfies ShellComposerView;
 
   const detailsView = {
-    activeLeafId: renderActiveLeafId,
+    activeLeafId:
+      inspectorActiveTab === "branch" && branchGraph?.chatId === activeChatId
+        ? branchGraph.activeLeafId
+        : renderActiveLeafId,
     activeTab: inspectorActiveTab,
+    branchError: branchGraph?.chatId === activeChatId ? branchGraph.error : null,
+    branchLoading:
+      inspectorActiveTab === "branch" &&
+      Boolean(activeChatId) &&
+      (branchGraph?.chatId !== activeChatId || branchGraph.loading),
+    branchMessages: branchGraph?.chatId === activeChatId ? branchGraph.messages : null,
     changeActiveTab: setInspectorActiveTabManually,
     changeMode: setInspectorModeManually,
     checkoutBranch,
@@ -1066,7 +1214,8 @@ export function PowerAppShell({
     messages,
     mode: inspectorMode,
     open: openDetails,
-    pinningAvailable: inspectorPinningAvailable
+    pinningAvailable: inspectorPinningAvailable,
+    retryBranches: loadBranchGraph
   } satisfies ShellDetailsView;
 
   const settingsView = {

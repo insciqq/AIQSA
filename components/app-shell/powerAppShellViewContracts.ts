@@ -151,11 +151,15 @@ export type ShellThreadView = {
   handleEditMessage(message: ThreadMessage): void;
   handleRegenerateMessage(messageId: string): void;
   handleThreadScroll(): void;
+  hasOlderMessages: boolean;
   loadRunReceipt(runId: string): Promise<void> | void;
+  loadEarlierMessages(): Promise<void> | void;
+  loadingOlderMessages: boolean;
   jumpToLatest(): void;
   lastRun: PersistedRun | null;
   persistedRunsById: Readonly<Record<string, PersistedRun>>;
   liveArtifactSummary: ThreadArtifactSummary | null;
+  olderMessagesError: string | null;
   openKnowledgeEvidence(knowledgeBaseId: string): void;
   retryActiveChatDetail(): void;
   showJumpToLatest: boolean;
@@ -262,6 +266,9 @@ export type ShellComposerView = {
 export type ShellDetailsView = {
   activeLeafId: string | null;
   activeTab: InspectorTabId;
+  branchError: string | null;
+  branchLoading: boolean;
+  branchMessages: ThreadMessage[] | null;
   changeActiveTab(value: InspectorTabId): void;
   changeMode(mode: InspectorMode): void;
   checkoutBranch(messageId: string): void;
@@ -271,6 +278,7 @@ export type ShellDetailsView = {
   mode: InspectorMode;
   open(tab?: InspectorTabId): void;
   pinningAvailable: boolean;
+  retryBranches(): void;
 };
 
 export type ShellSettingsView = {

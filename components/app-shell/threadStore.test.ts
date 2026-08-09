@@ -4,6 +4,7 @@ import {
   selectThreadRenderActiveLeafId,
   selectThreadSnapshot,
   selectThreadVisibleMessages,
+  threadHistoryState,
   useThreadStore
 } from "./threadStore";
 import { appendAssistantDelta } from "./runState";
@@ -209,5 +210,115 @@ describe("thread store", () => {
 
     expect(useThreadStore.getState().threadsByChatId).not.toHaveProperty("chat-a");
     expect(thread("chat-b")).toBe(chatBBefore);
+  });
+
+  it("prepends a fenced older page without overwriting newer message state", () => {
+    useThreadStore.getState().replaceThread("chat-a", {
+      activeLeafId: "a3",
+      history: {
+        beforeCursor: "cursor-2",
+        error: null,
+        hasOlder: true,
+        loading: false,
+        requestGeneration: 0,
+        snapshotActiveLeafId: "a3",
+        snapshotUpdatedAt: "2026-08-09T08:00:00.000Z"
+      },
+      messages: [
+        message({ id: "q2", parentMessageId: "a1", role: "user" }),
+        message({ content: "newer state", id: "a3", parentMessageId: "q2", role: "assistant" })
+      ],
+      usageStats: null
+    });
+    const requestGeneration = useThreadStore.getState().beginOlderPage("chat-a");
+
+    expect(useThreadStore.getState().prependOlderPage("chat-a", {
+      beforeCursor: null,
+      hasOlder: false,
+      messages: [
+        message({ id: "q1", parentMessageId: null, role: "user" }),
+        message({ id: "a1", parentMessageId: "q1", role: "assistant" }),
+        message({ content: "stale duplicate", id: "a3", parentMessageId: "q2", role: "assistant" })
+      ],
+      requestGeneration,
+      snapshotActiveLeafId: "a3",
+      snapshotUpdatedAt: "2026-08-09T08:00:00.000Z"
+    })).toBe(true);
+
+    expect(thread().messages.map((candidate) => candidate.id)).toEqual(["q1", "a1", "q2", "a3"]);
+    expect(thread().messages.at(-1)?.content).toBe("newer state");
+    expect(threadHistoryState(thread())).toMatchObject({
+      beforeCursor: null,
+      error: null,
+      hasOlder: false,
+      loading: false,
+      requestGeneration
+    });
+  });
+
+  it("ignores an older page from a superseded snapshot generation", () => {
+    useThreadStore.getState().replaceThread("chat-a", {
+      activeLeafId: "a2",
+      history: {
+        beforeCursor: "old-cursor",
+        error: null,
+        hasOlder: true,
+        loading: false,
+        requestGeneration: 4,
+        snapshotActiveLeafId: "a2",
+        snapshotUpdatedAt: "old-snapshot"
+      },
+      messages: [message({ id: "a2", parentMessageId: null, role: "assistant" })],
+      usageStats: null
+    });
+    const requestGeneration = useThreadStore.getState().beginOlderPage("chat-a");
+    useThreadStore.getState().replaceThread("chat-a", {
+      activeLeafId: "a3",
+      history: {
+        beforeCursor: "new-cursor",
+        error: null,
+        hasOlder: true,
+        loading: false,
+        requestGeneration: requestGeneration + 1,
+        snapshotActiveLeafId: "a3",
+        snapshotUpdatedAt: "new-snapshot"
+      },
+      messages: [message({ id: "a3", parentMessageId: null, role: "assistant" })],
+      usageStats: null
+    });
+
+    expect(useThreadStore.getState().prependOlderPage("chat-a", {
+      beforeCursor: null,
+      hasOlder: false,
+      messages: [message({ id: "a1", parentMessageId: null, role: "assistant" })],
+      requestGeneration,
+      snapshotActiveLeafId: "a2",
+      snapshotUpdatedAt: "old-snapshot"
+    })).toBe(false);
+    expect(thread().messages.map((candidate) => candidate.id)).toEqual(["a3"]);
+  });
+
+  it("retains the active plus two recent inactive threads and explicit live exceptions", () => {
+    for (const chatId of ["chat-a", "chat-b", "chat-c", "chat-d", "chat-live"]) {
+      useThreadStore.getState().replaceThread(chatId, {
+        activeLeafId: `${chatId}-message`,
+        messages: [message({ id: `${chatId}-message`, parentMessageId: null, role: "assistant" })],
+        usageStats: null
+      });
+      useThreadStore.getState().touchThread(chatId);
+    }
+
+    const removed = useThreadStore.getState().pruneInactiveThreads({
+      activeChatId: "chat-d",
+      protectedChatIds: new Set(["chat-live"])
+    });
+
+    expect(removed).toEqual(["chat-a"]);
+    expect(Object.keys(useThreadStore.getState().threadsByChatId).sort()).toEqual([
+      "chat-b",
+      "chat-c",
+      "chat-d",
+      "chat-live"
+    ]);
   });
 });

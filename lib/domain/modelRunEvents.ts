@@ -7,6 +7,9 @@ export type ModelRunUsage = {
 export type ModelRunChatUpdateData = {
   chat: {
     activeLeafMessageId: string | null;
+    contextStats: {
+      approximateActiveBranchInputTokens: number;
+    };
     createdAt: string;
     defaultModelId: string | null;
     defaultProvider: string | null;

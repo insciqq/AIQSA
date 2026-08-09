@@ -43,6 +43,27 @@ function threadMessages(): ThreadMessage[] {
   ];
 }
 
+function chatDetail(
+  summary: ChatSummary,
+  messages: ThreadMessage[],
+  usageStats: ChatDetail["usageStats"] = null
+): ChatDetail {
+  return {
+    ...summary,
+    contextStats: {
+      approximateActiveBranchInputTokens: 24
+    },
+    messages,
+    pageInfo: {
+      activeLeafMessageId: summary.activeLeafMessageId,
+      beforeCursor: null,
+      hasOlder: false,
+      snapshotUpdatedAt: summary.updatedAt
+    },
+    usageStats
+  };
+}
+
 function apiChat(overrides: Partial<ChatSummary> = {}) {
   const chat = chatSummary(overrides);
 
@@ -60,7 +81,10 @@ function apiChat(overrides: Partial<ChatSummary> = {}) {
   };
 }
 
-function createActionsForTest(input: { activeChatStreaming?: boolean } = {}) {
+function createActionsForTest(input: {
+  activeChatStreaming?: boolean;
+  loadCompleteActiveBranch?: (chatId: string) => Promise<ThreadMessage[]>;
+} = {}) {
   const activeChat = chatSummary();
   const messages = threadMessages();
   resetComposerControlStoreForTest();
@@ -78,17 +102,19 @@ function createActionsForTest(input: { activeChatStreaming?: boolean } = {}) {
   const notices: Notice[] = [];
   const activateChat = vi.fn();
   const confirmDeleteMessage = vi.fn(async () => true);
-  const refreshActiveChat = vi.fn(async (): Promise<ChatDetail> => ({
-    ...activeChat,
-    messages,
-    usageStats: null
-  }));
+  const loadCompleteActiveBranch = vi.fn(
+    input.loadCompleteActiveBranch ?? (async () => messages)
+  );
+  const refreshActiveChat = vi.fn(async (): Promise<ChatDetail | null> =>
+    chatDetail(activeChat, messages.slice(0, 1))
+  );
   const pendingBranchCheckouts = new Map<
     string,
     Promise<BranchCheckoutSettlement>
   >();
   const closeChatActions = vi.fn();
   const openShareDialog = vi.fn<(target: ShareDialogTarget) => void>();
+  const resetThreadToLatest = vi.fn();
 
   return {
     actions: createThreadActions({
@@ -99,10 +125,11 @@ function createActionsForTest(input: { activeChatStreaming?: boolean } = {}) {
       activateChat,
       closeChatActions,
       confirmDeleteMessage,
+      loadCompleteActiveBranch,
       openShareDialog,
       pendingBranchCheckouts,
       refreshActiveChat,
-      resetThreadToLatest: vi.fn(),
+      resetThreadToLatest,
       setNotice: (notice) => {
         notices.push(notice);
       }
@@ -111,11 +138,13 @@ function createActionsForTest(input: { activeChatStreaming?: boolean } = {}) {
     chats: () => useWorkspaceStore.getState().chats,
     closeChatActions,
     confirmDeleteMessage,
+    loadCompleteActiveBranch,
     messages: () => selectThreadSnapshot(useThreadStore.getState(), activeChat.id).messages,
     notices,
     openShareDialog,
     pendingBranchCheckouts,
     refreshActiveChat,
+    resetThreadToLatest,
     thread: () => selectThreadSnapshot(useThreadStore.getState(), activeChat.id)
   };
 }
@@ -230,11 +259,11 @@ describe("thread actions", () => {
         messages,
         usageStats
       });
-      return {
-        ...chatSummary({ activeLeafMessageId: "message-2" }),
+      return chatDetail(
+        chatSummary({ activeLeafMessageId: "message-2" }),
         messages,
         usageStats
-      };
+      );
     });
 
     await actions.checkoutBranch("message-2");
@@ -251,6 +280,90 @@ describe("thread actions", () => {
       preserveControls: true,
       resumeRuns: false
     });
+  });
+
+  it("waits for canonical detail instead of deriving an unloaded branch locally", async () => {
+    let resolveCheckout!: (response: Response) => void;
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveCheckout = resolve;
+        })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, refreshActiveChat, resetThreadToLatest, thread } =
+      createActionsForTest();
+    const unloadedMessages: ThreadMessage[] = [
+      {
+        content: "Alternate question",
+        id: "message-unloaded",
+        parentMessageId: null,
+        role: "user",
+        status: "complete"
+      }
+    ];
+    refreshActiveChat.mockImplementationOnce(async () => {
+      useThreadStore.getState().replaceThread("chat-b", {
+        activeLeafId: "message-unloaded",
+        messages: unloadedMessages,
+        usageStats: null
+      });
+      return chatDetail(
+        chatSummary({ activeLeafMessageId: "message-unloaded" }),
+        unloadedMessages
+      );
+    });
+
+    const checkout = actions.checkoutBranch("message-unloaded");
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+
+    expect(thread().activeLeafId).toBe("message-1");
+    expect(resetThreadToLatest).not.toHaveBeenCalled();
+
+    resolveCheckout(
+      Response.json({
+        chat: apiChat({ activeLeafMessageId: "message-unloaded" })
+      })
+    );
+    await checkout;
+
+    expect(refreshActiveChat).toHaveBeenCalledWith("chat-b", {
+      forceDetail: true,
+      preserveControls: true,
+      resumeRuns: false
+    });
+    expect(thread().activeLeafId).toBe("message-unloaded");
+  });
+
+  it("restores the previous leaf when an unloaded checkout cannot load canonical detail", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { activeLeafMessageId: string | null };
+      return Response.json({
+        chat: apiChat({ activeLeafMessageId: body.activeLeafMessageId })
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, chats, notices, refreshActiveChat, thread } = createActionsForTest();
+    refreshActiveChat.mockResolvedValueOnce(null);
+
+    await actions.checkoutBranch("message-unloaded");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { activeLeafMessageId: "message-unloaded" },
+      { activeLeafMessageId: "message-1" }
+    ]);
+    expect(thread().activeLeafId).toBe("message-1");
+    expect(chats().find((candidate) => candidate.id === "chat-b")?.activeLeafMessageId).toBe(
+      "message-1"
+    );
+    expect(notices.at(-1)).toEqual({
+      kind: "error",
+      text: "The selected version could not be loaded. The previous version is still open."
+    });
+
+    await actions.persistActiveLeaf("chat-b", "message-1");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("persists checkout when the previously stored leaf is explicitly null", async () => {
@@ -373,6 +486,38 @@ describe("thread actions", () => {
     await actions.deleteMessage("message-1");
 
     await vi.waitFor(() => expect(composer).toHaveFocus());
+  });
+
+  it("copies the complete branch supplied by the paged-history owner", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    const completeMessages = [
+      ...threadMessages(),
+      {
+        content: "Follow-up",
+        id: "message-3",
+        parentMessageId: "message-2",
+        role: "user" as const,
+        status: "complete" as const
+      }
+    ];
+    const { actions, loadCompleteActiveBranch, notices } = createActionsForTest({
+      loadCompleteActiveBranch: async () => completeMessages
+    });
+
+    await actions.copyVisibleThread();
+
+    expect(loadCompleteActiveBranch).toHaveBeenCalledWith("chat-b");
+    expect(writeText).toHaveBeenCalledWith(
+      "# Chat B\n\nUser:\nQuestion\n\nAssistant:\nAnswer\n\nUser:\nFollow-up"
+    );
+    expect(notices).toEqual([
+      { kind: "success", text: "Preparing the complete thread…" },
+      { kind: "success", text: "Thread copied" }
+    ]);
   });
 
   it("opens the share dialog for the visible branch leaf instead of publishing", () => {

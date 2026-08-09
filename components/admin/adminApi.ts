@@ -7,6 +7,7 @@ import type {
   AdminInviteEmailDelivery
 } from "@/lib/contracts/admin";
 import { isAdminDashboard } from "@/lib/contracts/admin";
+import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 
 type PartialAdminActionResponse<Response extends AdminActionResponse = AdminActionResponse> =
   Response extends AdminActionResponse ? Partial<Response> : never;
@@ -43,6 +44,22 @@ type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respons
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function withProviderConnectionLabels(dashboard: AdminDashboard): AdminDashboard {
+  const labels = resolveProviderConnectionLabels(
+    dashboard.catalog.providers.map(({ id, name }) => ({ id, name }))
+  );
+  return {
+    ...dashboard,
+    catalog: {
+      ...dashboard.catalog,
+      providers: dashboard.catalog.providers.map((provider) => ({
+        ...provider,
+        name: labels.get(provider.id) ?? provider.name
+      }))
+    }
+  };
 }
 
 export async function readAdminActionResult(response: Response): Promise<AdminActionResult> {
@@ -91,7 +108,7 @@ export async function requestAdminDashboard(fetcher: Fetcher = fetch): Promise<A
     }
 
     return {
-      dashboard: data,
+      dashboard: withProviderConnectionLabels(data),
       ok: true
     };
   } catch {

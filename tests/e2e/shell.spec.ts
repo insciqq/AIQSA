@@ -355,6 +355,321 @@ test("anchors explicit mobile sends on the user turn and keeps long answers stab
   await expectNoHorizontalOverflow(page);
 });
 
+test("bounds long-chat opening, preserves prepend position, lazy-loads branches, and refetches an evicted chat", async ({ page }) => {
+  await page.setViewportSize({ height: 820, width: 1440 });
+  const initialUpdatedAt = "2026-08-09T08:00:00.000Z";
+  const branchUpdatedAt = "2026-08-09T08:01:00.000Z";
+  const longText = (label: string, index: number) =>
+    `${label} marker ${index} ${"bounded-browser-evidence ".repeat(68)}`;
+  const historyMessages = Array.from({ length: 120 }, (_, index) =>
+    scrollMessage(
+      `long-history-${index}`,
+      index % 2 === 0 ? "user" : "assistant",
+      longText("Long history", index),
+      index === 0 ? null : `long-history-${index - 1}`
+    )
+  );
+  const alternateMessage = scrollMessage(
+    "long-alternate",
+    "assistant",
+    "Lazy branch alternate answer",
+    "long-history-0"
+  );
+  const longSummary = {
+    activeLeafMessageId: "long-history-119",
+    createdAt: initialUpdatedAt,
+    defaultModelId: "gpt-5.5",
+    defaultProvider: "openai",
+    folderId: null,
+    id: "chat-long-bounded",
+    messageCount: 121,
+    pinned: false,
+    title: "Bounded long chat",
+    updatedAt: initialUpdatedAt
+  };
+  const compactSummaries = ["B", "C", "D"].map((label, index) => ({
+    ...longSummary,
+    activeLeafMessageId: `cache-${label.toLowerCase()}-119`,
+    id: `chat-cache-${label.toLowerCase()}`,
+    messageCount: 120,
+    title: `Cache chat ${label}`,
+    updatedAt: `2026-08-09T08:0${index + 2}:00.000Z`
+  }));
+  const compactMessages = new Map(compactSummaries.map((summary) => {
+    const suffix = summary.id.at(-1)!;
+    const messages = Array.from({ length: 120 }, (_, index) =>
+      scrollMessage(
+        `cache-${suffix}-${index}`,
+        index % 2 === 0 ? "user" : "assistant",
+        longText(`Cache ${suffix}`, index),
+        index === 0 ? null : `cache-${suffix}-${index - 1}`
+      )
+    );
+    return [summary.id, messages] as const;
+  }));
+  const detail = (
+    summary: typeof longSummary,
+    messages: ReturnType<typeof scrollMessage>[],
+    pageInfo: { beforeCursor: string | null; hasOlder: boolean }
+  ) => ({
+    ...summary,
+    contextStats: { approximateActiveBranchInputTokens: 12_345 },
+    messages,
+    pageInfo: {
+      activeLeafMessageId: summary.activeLeafMessageId,
+      snapshotUpdatedAt: summary.updatedAt,
+      ...pageInfo
+    },
+    usageStats: {
+      activeBranchMessageCount: summary.id === longSummary.id ? 120 : summary.messageCount,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      totalTokens: 0
+    }
+  });
+
+  let selectedLongLeafId = longSummary.activeLeafMessageId;
+  let currentLongUpdatedAt = initialUpdatedAt;
+  let longDetailReads = 0;
+  let olderPageReads = 0;
+  let branchGraphReads = 0;
+  let checkoutBody: Record<string, unknown> | null = null;
+  let initialDetailResponseBytes: number | null = null;
+  const compactDetailResponseBytes = new Map<string, number>();
+  const fullActiveBranchCharacters = historyMessages.reduce(
+    (total, message) => total + (message.content.blocks[0]?.text?.length ?? 0),
+    0
+  );
+
+  await page.addInitScript(() => {
+    type MeasurementWindow = Window & {
+      __aiqsaLongChatDetailStartedAt?: number;
+      __aiqsaLongTasks?: Array<{ duration: number; startTime: number }>;
+    };
+    const measurementWindow = window as MeasurementWindow;
+    window.localStorage.setItem("aiqsa.activeChatId", "chat-long-bounded");
+    measurementWindow.__aiqsaLongTasks = [];
+    try {
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          measurementWindow.__aiqsaLongTasks?.push({
+            duration: entry.duration,
+            startTime: entry.startTime
+          });
+        }
+      }).observe({ buffered: true, type: "longtask" });
+    } catch {
+      // Older browser projects may not expose the Long Tasks API; Chromium evidence does.
+    }
+    const browserFetch = window.fetch.bind(window);
+    window.fetch = async (...args: Parameters<typeof window.fetch>) => {
+      const [input, init] = args;
+      const request = input instanceof Request ? input : null;
+      const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
+      const url = request?.url ?? String(input);
+      if (method === "GET" && new URL(url, window.location.href).pathname === "/api/chats/chat-long-bounded") {
+        measurementWindow.__aiqsaLongChatDetailStartedAt = performance.now();
+      }
+      return browserFetch(...args);
+    };
+  });
+  await installMatrixCatalogFixture(page, {
+    chats: [longSummary, ...compactSummaries],
+    folders: []
+  });
+  await page.route("**/api/chats/chat-long-bounded/messages?*", async (route) => {
+    olderPageReads += 1;
+    expect(new URL(route.request().url()).searchParams.get("before")).toBe("cursor-70");
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        messages: historyMessages.slice(20, 70),
+        pageInfo: {
+          activeLeafMessageId: "long-history-119",
+          beforeCursor: "cursor-20",
+          hasOlder: true,
+          snapshotUpdatedAt: initialUpdatedAt
+        }
+      }
+    });
+  });
+  await page.route("**/api/chats/chat-long-bounded/branches", async (route) => {
+    branchGraphReads += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        branchGraph: {
+          activeLeafMessageId: selectedLongLeafId,
+          nodes: [...historyMessages, alternateMessage].map((message) => ({
+            id: message.id,
+            parentMessageId: message.parentMessageId,
+            preview: (message.content.blocks[0]?.text ?? "").slice(0, 160),
+            role: message.role,
+            status: message.status
+          })),
+          snapshotUpdatedAt: currentLongUpdatedAt
+        }
+      }
+    });
+  });
+  await page.route("**/api/chats/chat-long-bounded", async (route) => {
+    if (route.request().method() === "PATCH") {
+      checkoutBody = JSON.parse(route.request().postData() ?? "{}") as Record<string, unknown>;
+      selectedLongLeafId = String(checkoutBody.activeLeafMessageId ?? "");
+      currentLongUpdatedAt = branchUpdatedAt;
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          chat: {
+            ...longSummary,
+            activeLeafMessageId: selectedLongLeafId,
+            updatedAt: currentLongUpdatedAt
+          }
+        }
+      });
+      return;
+    }
+    longDetailReads += 1;
+    const summary = {
+      ...longSummary,
+      activeLeafMessageId: selectedLongLeafId,
+      updatedAt: currentLongUpdatedAt
+    };
+    const chat = selectedLongLeafId === alternateMessage.id
+      ? detail(summary, [historyMessages[0]!, alternateMessage], {
+          beforeCursor: null,
+          hasOlder: false
+        })
+      : detail(summary, historyMessages.slice(70), {
+          beforeCursor: "cursor-70",
+          hasOlder: true
+        });
+    const body = { chat };
+    if (initialDetailResponseBytes === null && selectedLongLeafId === longSummary.activeLeafMessageId) {
+      initialDetailResponseBytes = Buffer.byteLength(JSON.stringify(body), "utf8");
+    }
+    await route.fulfill({ contentType: "application/json", json: body });
+  });
+  for (const summary of compactSummaries) {
+    await page.route(`**/api/chats/${summary.id}`, async (route) => {
+      const body = {
+        chat: detail(
+          summary,
+          [...(compactMessages.get(summary.id) ?? [])].slice(70),
+          { beforeCursor: `cursor-${summary.id.at(-1)}-70`, hasOlder: true }
+        )
+      };
+      compactDetailResponseBytes.set(
+        summary.id,
+        Buffer.byteLength(JSON.stringify(body), "utf8")
+      );
+      await route.fulfill({
+        contentType: "application/json",
+        json: body
+      });
+    });
+  }
+
+  const settlePaint = () => page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  const captureBrowserMeasurement = (explicitStartTime?: number) => page.evaluate((startTime) => {
+    type MeasurementWindow = Window & {
+      __aiqsaLongChatDetailStartedAt?: number;
+      __aiqsaLongTasks?: Array<{ duration: number; startTime: number }>;
+    };
+    type PerformanceWithMemory = Performance & {
+      memory?: { usedJSHeapSize: number };
+    };
+    const measurementWindow = window as MeasurementWindow;
+    const measuredAt = performance.now();
+    const startedAt = startTime ?? measurementWindow.__aiqsaLongChatDetailStartedAt ?? measuredAt;
+    const longTasks = (measurementWindow.__aiqsaLongTasks ?? []).filter(
+      (entry) => entry.startTime >= startedAt && entry.startTime <= measuredAt
+    );
+    return {
+      domNodes: document.querySelectorAll("*").length,
+      heapBytes: (performance as PerformanceWithMemory).memory?.usedJSHeapSize ?? null,
+      longTaskCount: longTasks.length,
+      longTaskDurationMs: Math.round(
+        longTasks.reduce((total, entry) => total + entry.duration, 0) * 10
+      ) / 10,
+      timeToVisibleMs: Math.round((measuredAt - startedAt) * 10) / 10
+    };
+  }, explicitStartTime);
+
+  await signIn(page);
+  const thread = page.getByTestId("thread");
+  const renderedMessages = thread.locator("article[data-message-id]");
+  await expect(renderedMessages).toHaveCount(50);
+  await expect(thread).toContainText("Long history marker 70");
+  await expect(thread).not.toContainText("Long history marker 69 ");
+  await expect(page.getByRole("button", { name: "Load earlier messages" })).toBeVisible();
+  expect(longDetailReads).toBe(1);
+  expect(branchGraphReads).toBe(0);
+  await settlePaint();
+  const initialMeasurement = await captureBrowserMeasurement();
+  expect(fullActiveBranchCharacters).toBeGreaterThanOrEqual(192_000);
+  expect(initialDetailResponseBytes).not.toBeNull();
+  expect(initialDetailResponseBytes!).toBeLessThan(200_000);
+
+  await thread.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  const priorFirstMessage = thread.locator('[data-message-id="long-history-70"]');
+  const anchorOffset = async () => priorFirstMessage.evaluate((element) => {
+    const container = document.querySelector<HTMLElement>('[data-testid="thread"]')!;
+    return element.getBoundingClientRect().top - container.getBoundingClientRect().top;
+  });
+  const offsetBefore = await anchorOffset();
+  await page.getByRole("button", { name: "Load earlier messages" }).click();
+  await expect(renderedMessages).toHaveCount(100);
+  await expect(thread).toContainText("Long history marker 20 ");
+  await expect(page.getByRole("button", { name: "Load earlier messages" })).toBeVisible();
+  const offsetAfter = await anchorOffset();
+  expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThanOrEqual(3);
+  expect(olderPageReads).toBe(1);
+
+  const chatList = page.getByTestId("left-chat-pane");
+  const switchMeasurements = [];
+  for (const summary of compactSummaries) {
+    const switchStartedAt = await page.evaluate(() => performance.now());
+    await chatList.getByRole("button", { exact: true, name: summary.title }).click();
+    await expect(thread).toContainText(`Cache ${summary.id.at(-1)} marker 119`);
+    await settlePaint();
+    switchMeasurements.push({
+      chatId: summary.id,
+      ...(await captureBrowserMeasurement(switchStartedAt))
+    });
+  }
+  const reopenStartedAt = await page.evaluate(() => performance.now());
+  await chatList.getByRole("button", { exact: true, name: longSummary.title }).click();
+  await expect(renderedMessages).toHaveCount(50);
+  await expect(thread).toContainText("Long history marker 70");
+  await expect(thread).not.toContainText("Long history marker 20 ");
+  await settlePaint();
+  const reopenMeasurement = await captureBrowserMeasurement(reopenStartedAt);
+  expect(longDetailReads).toBe(2);
+
+  await page.getByRole("button", { name: "Open details" }).click();
+  await expect(page.getByTestId("branch-tree")).toBeVisible();
+  expect(branchGraphReads).toBe(1);
+  await page.getByRole("button", { name: /^Open alternate version, assistant \d+$/ }).click();
+  await expect.poll(() => checkoutBody?.activeLeafMessageId).toBe(alternateMessage.id);
+  await expect(thread).toContainText("Lazy branch alternate answer");
+  await expect(thread).not.toContainText("Long history marker 119");
+  expect(longDetailReads).toBe(3);
+  console.info("long-chat-browser-measurement", JSON.stringify({
+    compactDetailResponseBytes: Object.fromEntries(compactDetailResponseBytes),
+    fullActiveBranchCharacters,
+    initial: initialMeasurement,
+    initialDetailResponseBytes,
+    reopen: reopenMeasurement,
+    switches: switchMeasurements
+  }));
+});
+
 test("signs out from the authenticated account menu and clears the session", async ({ page }) => {
   await signIn(page);
 
@@ -1025,6 +1340,104 @@ test("verifies provider controls, Gemini preview, and hidden unavailable provide
   await page.keyboard.press("Escape");
   await closeRunSetup(page);
   await expectRunSummary(page, { model: "Gemini Pro Latest" });
+});
+
+test("disambiguates identical provider connections in the desktop and compact model picker", async ({ page }) => {
+  const sourceModel = matrixCatalog.models.find((model) => model.modelId === "gpt-5.6-sol");
+  const uniqueModel = matrixCatalog.models.find((model) => model.modelId === "claude-opus-4-8");
+  if (!sourceModel || !uniqueModel) {
+    throw new Error("The model-picker identity fixture requires its source models");
+  }
+
+  const firstConnectionId = "provider-connection-alpha-7f31";
+  const secondConnectionId = "provider-connection-beta-9c42";
+  const collisionCatalog: typeof matrixCatalog = {
+    ...matrixCatalog,
+    defaults: {
+      ...matrixCatalog.defaults,
+      modelId: sourceModel.modelId,
+      personalModelDefault: { modelId: sourceModel.modelId, provider: firstConnectionId },
+      provider: firstConnectionId
+    },
+    models: [
+      { ...sourceModel, provider: firstConnectionId, providerFamily: "openai" },
+      { ...sourceModel, provider: secondConnectionId, providerFamily: "openai" },
+      uniqueModel
+    ],
+    providers: [
+      {
+        family: "openai",
+        id: firstConnectionId,
+        models: [sourceModel.modelId],
+        name: "OpenAI"
+      },
+      {
+        family: "openai",
+        id: secondConnectionId,
+        models: [sourceModel.modelId],
+        name: "OpenAI"
+      },
+      {
+        family: "anthropic",
+        id: "anthropic",
+        models: [uniqueModel.modelId],
+        name: "Anthropic"
+      }
+    ]
+  };
+
+  await page.setViewportSize({ height: 820, width: 1440 });
+  await installMatrixCatalogFixture(page, undefined, { catalog: collisionCatalog });
+  await signIn(page);
+
+  const runSetup = await openRunSetup(page);
+  const modelTrigger = runSetup.getByRole("button", { name: "Select model" });
+  await modelTrigger.click();
+  let modelPicker = page.getByTestId("model-picker");
+  const firstRowSelector = `[data-model-picker-row="${firstConnectionId}:${sourceModel.modelId}"]`;
+  const secondRowSelector = `[data-model-picker-row="${secondConnectionId}:${sourceModel.modelId}"]`;
+  const providerLabelFor = async (rowSelector: string) => {
+    const section = modelPicker.locator("section").filter({ has: page.locator(rowSelector) });
+    await expect(section).toHaveCount(1);
+    return (await section.getByRole("heading", { level: 3 }).innerText()).trim();
+  };
+  const firstLabel = await providerLabelFor(firstRowSelector);
+  const secondLabel = await providerLabelFor(secondRowSelector);
+  expect(firstLabel).toMatch(/^OpenAI · ref [A-Z0-9]{6,}$/);
+  expect(secondLabel).toMatch(/^OpenAI · ref [A-Z0-9]{6,}$/);
+  expect(firstLabel).not.toBe(secondLabel);
+  await expect(modelPicker.getByRole("heading", { exact: true, name: "Anthropic" })).toBeVisible();
+  await expect(modelPicker.getByText(/Anthropic · ref/)).toHaveCount(0);
+
+  const firstActionName = `Select model ${firstLabel} ${sourceModel.displayName}`;
+  const secondActionName = `Select model ${secondLabel} ${sourceModel.displayName}`;
+  const firstAction = modelPicker.locator(firstRowSelector).getByRole("button", { name: firstActionName });
+  const secondAction = modelPicker.locator(secondRowSelector).getByRole("button", { name: secondActionName });
+  await expect(firstAction).toBeVisible();
+  await expect(secondAction).toBeVisible();
+  await secondAction.click();
+  await expect(modelTrigger).toHaveAttribute("title", `${secondLabel} / ${sourceModel.displayName}`);
+  await expect(modelTrigger.locator(".truncate").first()).toHaveText(secondLabel);
+
+  await page.setViewportSize({ height: 844, width: 390 });
+  await modelTrigger.click();
+  modelPicker = page.getByTestId("model-picker");
+  await expectWithinViewport(page, modelPicker);
+  await expectTouchSafe(modelPicker.locator(firstRowSelector).getByRole("button", { name: firstActionName }));
+  await expectTouchSafe(modelPicker.locator(secondRowSelector).getByRole("button", { name: secondActionName }));
+  await expect(modelPicker.getByRole("heading", { exact: true, name: firstLabel })).toBeVisible();
+  await expect(modelPicker.getByRole("heading", { exact: true, name: secondLabel })).toBeVisible();
+  await expect(modelPicker).not.toContainText(firstConnectionId);
+  await expect(modelPicker).not.toContainText(secondConnectionId);
+  const compactFirstAction = modelPicker.locator(firstRowSelector).getByRole("button", {
+    name: firstActionName
+  });
+  await compactFirstAction.focus();
+  await expect(compactFirstAction).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(modelTrigger).toHaveAttribute("title", `${firstLabel} / ${sourceModel.displayName}`);
+  await expect(modelTrigger.locator(".truncate").first()).toHaveText(firstLabel);
+  await expectNoHorizontalOverflow(page);
 });
 
 test("keeps searchable pickers and command palette keyboard-safe in the narrow sheet layout", async ({ page }) => {
@@ -3016,6 +3429,16 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
     ],
     folders: []
   };
+  const delayedUserMessage = {
+    ...oldMessage("user-a-new", "user", "Slow question A", "assistant-a-old"),
+    createdAt: "2026-06-08T10:02:00.000Z"
+  };
+  const delayedAssistantMessage = {
+    ...oldMessage("assistant-a-new", "assistant", "Answer A after switch", "user-a-new"),
+    createdAt: "2026-06-08T10:02:00.000Z",
+    modelRunId: "run-a-delayed"
+  };
+  let chatAAnswered = false;
   let releaseSend!: () => void;
   let releaseUpload!: () => void;
   let runFetches = 0;
@@ -3037,6 +3460,7 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
   await page.route("**/api/chats/chat-a/messages", async (route) => {
     markSendStarted();
     await sendCanFinish;
+    chatAAnswered = true;
     await route.fulfill({
       body: [
         sseEvent("run_start", { runId: "run-a-delayed" }),
@@ -3047,6 +3471,7 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
         sseEvent("chat_update", {
           chat: {
             activeLeafMessageId: "assistant-a-new",
+            contextStats: { approximateActiveBranchInputTokens: 37 },
             createdAt: "2026-06-08T10:00:00.000Z",
             defaultModelId: "gpt-5.5",
             defaultProvider: "openai",
@@ -3058,38 +3483,7 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
             updatedAt: "2026-06-08T10:02:00.000Z",
             usageStats: null
           },
-          messages: [
-            {
-              artifactSummary: null,
-              content: {
-                blocks: [{ text: "Slow question A", type: "text" }]
-              },
-              createdAt: "2026-06-08T10:02:00.000Z",
-              errorMessage: null,
-              id: "user-a-new",
-              modelId: "gpt-5.5",
-              modelRunId: null,
-              parentMessageId: "assistant-a-old",
-              provider: "openai",
-              role: "user",
-              status: "complete"
-            },
-            {
-              artifactSummary: null,
-              content: {
-                blocks: [{ text: "Answer A after switch", type: "text" }]
-              },
-              createdAt: "2026-06-08T10:02:00.000Z",
-              errorMessage: null,
-              id: "assistant-a-new",
-              modelId: "gpt-5.5",
-              modelRunId: "run-a-delayed",
-              parentMessageId: "user-a-new",
-              provider: "openai",
-              role: "assistant",
-              status: "complete"
-            }
-          ]
+          messages: [delayedUserMessage, delayedAssistantMessage]
         }),
         sseEvent("done", { runId: "run-a-delayed", status: "complete" })
       ].join(""),
@@ -3100,6 +3494,43 @@ test("keeps delayed chat_update scoped to its source chat after switching chats"
 
   await page.addInitScript(() => window.localStorage.setItem("aiqsa.activeChatId", "chat-a"));
   await installMatrixCatalogFixture(page, workspace);
+  await page.route("**/api/chats/chat-a", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    const initial = workspace.chats[0]!;
+    const messages = chatAAnswered
+      ? [...initial.messages, delayedUserMessage, delayedAssistantMessage]
+      : initial.messages;
+    const updatedAt = chatAAnswered
+      ? "2026-06-08T10:02:00.000Z"
+      : initial.updatedAt;
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        chat: {
+          ...initial,
+          activeLeafMessageId: chatAAnswered ? delayedAssistantMessage.id : initial.activeLeafMessageId,
+          contextStats: { approximateActiveBranchInputTokens: chatAAnswered ? 37 : 21 },
+          messageCount: messages.length,
+          messages,
+          pageInfo: {
+            activeLeafMessageId: chatAAnswered
+              ? delayedAssistantMessage.id
+              : initial.activeLeafMessageId,
+            beforeCursor: null,
+            hasOlder: false,
+            snapshotUpdatedAt: updatedAt
+          },
+          pinned: false,
+          title: chatAAnswered ? "Chat A answered" : initial.title,
+          updatedAt,
+          usageStats: null
+        }
+      }
+    });
+  });
   await page.route("**/api/model-runs/run-a-delayed", async (route) => {
     runFetches += 1;
     await route.fulfill({
@@ -3284,6 +3715,7 @@ test("recovers a rejected send by preserving the draft and retrying from the sam
           chat: {
             ...chat,
             activeLeafMessageId: retryAssistant.id,
+            contextStats: { approximateActiveBranchInputTokens: 42 },
             messageCount: 4,
             messages: [parentUser, parentAssistant, retryUser, retryAssistant],
             updatedAt: "2026-06-08T12:01:00.000Z"
@@ -3463,6 +3895,7 @@ test("keeps successful attachments and the draft after a mixed upload failure", 
           chat: {
             ...chat,
             activeLeafMessageId: sentAssistant.id,
+            contextStats: { approximateActiveBranchInputTokens: 44 },
             messageCount: 4,
             messages: [parentUser, parentAssistant, sentUser, sentAssistant],
             updatedAt: "2026-06-08T13:01:00.000Z"
@@ -4791,6 +5224,7 @@ for (const viewport of responsiveTouchViewports) {
       ];
       const chat = {
         activeLeafMessageId: "responsive-assistant-3",
+        contextStats: { approximateActiveBranchInputTokens: 12_800 },
         createdAt: "2026-07-11T10:00:00.000Z",
         defaultModelId: "gpt-5.5",
         defaultProvider: "openai",
@@ -4798,6 +5232,12 @@ for (const viewport of responsiveTouchViewports) {
         id: chatId,
         messageCount: messages.length,
         messages,
+        pageInfo: {
+          activeLeafMessageId: "responsive-assistant-3",
+          beforeCursor: null,
+          hasOlder: false,
+          snapshotUpdatedAt: "2026-07-11T10:01:00.000Z"
+        },
         pinned: false,
         title,
         updatedAt: "2026-07-11T10:01:00.000Z",
@@ -5131,6 +5571,20 @@ for (const viewport of responsiveTouchViewports) {
       await expect(lastAssistant.getByTestId("assistant-message-content")).toContainText(
         "Responsive latest bottom marker"
       );
+      await lastAssistant.focus();
+      await page.keyboard.press("Enter");
+      await expect(lastAssistant).toHaveAttribute("data-mobile-controls-open", "true");
+      await expect(touchActions).toBeVisible();
+      for (const name of ["Regenerate message", "Edit message", "Copy message", "More message actions"]) {
+        await page.keyboard.press("Tab");
+        await expect(touchActions.getByRole("button", { name })).toBeFocused();
+      }
+      await lastAssistant.focus();
+      await page.keyboard.press("Escape");
+      await expect(lastAssistant).not.toHaveAttribute("data-mobile-controls-open", "true");
+      await expect(touchActions).toBeHidden();
+      await expect(lastAssistant).toBeFocused();
+
       await lastAssistant.getByTestId("assistant-message-content").click();
       await expect(lastAssistant).toHaveAttribute("data-mobile-controls-open", "true");
       await expect(touchActions).toBeVisible();
@@ -5323,6 +5777,14 @@ for (const viewport of responsiveTouchViewports) {
       const firstUserMessage = page.locator('article[data-role="user"]').first();
       const firstUserActions = firstUserMessage.getByRole("toolbar", { name: "User message actions" });
       await expect(firstUserActions).toBeHidden();
+      await firstUserMessage.focus();
+      await page.keyboard.press("Space");
+      await expect(firstUserMessage).toHaveAttribute("data-mobile-controls-open", "true");
+      await expect(firstUserActions).toBeVisible();
+      await firstUserMessage.focus();
+      await page.keyboard.press("Escape");
+      await expect(firstUserActions).toBeHidden();
+      await expect(firstUserMessage).toBeFocused();
       await firstUserMessage.click();
       for (const name of ["Regenerate message", "Edit message", "Copy message", "More message actions"]) {
         const action = firstUserActions.getByRole("button", { name });

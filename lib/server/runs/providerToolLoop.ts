@@ -52,7 +52,11 @@ export type ProviderToolLoopInput = Readonly<{
     round: number;
     toolRound: number;
   }>): Promise<void> | void;
-  onUsage?(usage: ModelRunUsage, request: ProviderRunRequest): Promise<void> | void;
+  onUsage?(
+    usage: ModelRunUsage,
+    request: ProviderRunRequest,
+    context: Readonly<{ completeness: "partial" | "terminal"; round: number }>
+  ): Promise<void> | void;
   parallelToolCalls: boolean;
   prepareRequest?(request: ProviderRunRequest, round: number): Promise<ProviderRunRequest> | ProviderRunRequest;
   beforeProviderRound?(input: Readonly<{
@@ -206,7 +210,10 @@ export async function runProviderToolLoop(
       } catch (error) {
         if (lastReportedUsage) {
           try {
-            await input.onUsage?.(lastReportedUsage, roundRequest);
+            await input.onUsage?.(lastReportedUsage, roundRequest, {
+              completeness: "partial",
+              round
+            });
           } catch {
             // Usage persistence is secondary once the provider round has
             // already failed and must not replace its causal classification.
@@ -224,7 +231,10 @@ export async function runProviderToolLoop(
         publicationError = error;
       }
       try {
-        await input.onUsage?.(result.usage, roundRequest);
+        await input.onUsage?.(result.usage, roundRequest, {
+          completeness: "terminal",
+          round
+        });
       } catch (error) {
         if (!publicationFailed) throw error;
         // Preserve the publication failure as the causal stop after making the

@@ -6,6 +6,7 @@ import {
   inputClass,
   primaryButton
 } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import { providerCredentialUsable } from "@/components/admin/providerAdvancedView";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import type { AdminGroup } from "@/lib/contracts/admin";
@@ -29,12 +30,35 @@ export function AdminProviderAuthenticationTask({
   const [credentialId, setCredentialId] = useState(
     usableCredentials[0]?.id ?? connection.credentials[0]?.id ?? ""
   );
+  const [selectionBaseline, setSelectionBaseline] = useState(() => ({
+    credentialId: usableCredentials[0]?.id ?? connection.credentials[0]?.id ?? "",
+    groupId: activeGroups[0]?.id ?? ""
+  }));
   const effectiveGroupId = activeGroups.some(({ id }) => id === groupId)
     ? groupId
     : activeGroups[0]?.id ?? "";
   const effectiveCredentialId = usableCredentials.some(({ id }) => id === credentialId)
     ? credentialId
     : usableCredentials[0]?.id ?? "";
+  const baselineGroupId = activeGroups.some(({ id }) => id === selectionBaseline.groupId)
+    ? selectionBaseline.groupId
+    : activeGroups[0]?.id ?? "";
+  const baselineCredentialId = usableCredentials.some(
+    ({ id }) => id === selectionBaseline.credentialId
+  )
+    ? selectionBaseline.credentialId
+    : usableCredentials[0]?.id ?? "";
+  const draftDirty = effectiveGroupId !== baselineGroupId ||
+    effectiveCredentialId !== baselineCredentialId;
+  useAdminDraftProtection({
+    dirty: draftDirty,
+    onDiscard: () => {
+      setGroupId(baselineGroupId);
+      setCredentialId(baselineCredentialId);
+    },
+    owner: "provider-auth-assignment",
+    pending: draftDirty && controller.state.busy
+  });
 
   return (
     <section className="min-w-0" data-testid="provider-task-authentication">
@@ -121,7 +145,14 @@ export function AdminProviderAuthenticationTask({
                   groupId: effectiveGroupId
                 },
                 "Group credential assignment saved; it does not grant model access."
-              );
+              ).then((ok) => {
+                if (ok) {
+                  setSelectionBaseline({
+                    credentialId: effectiveCredentialId,
+                    groupId: effectiveGroupId
+                  });
+                }
+              });
             }}
           >
             <label>

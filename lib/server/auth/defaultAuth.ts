@@ -7,6 +7,11 @@ import { createPrismaLoginRateLimiter } from "./prismaRateLimit";
 import { createPrismaAuthRegistrationRepository } from "./registrationRepository";
 import { createPrismaAuthSessionStore } from "./prismaSessions";
 import { createRequestAuthResolver } from "./requestAuth";
+import {
+  OAUTH_FLOW_MAX_AGE_SECONDS,
+  OAUTH_PROVIDER_ADMISSION_MAX_ATTEMPTS,
+  OAUTH_PROVIDER_ADMISSION_WINDOW_MS
+} from "./oauthHandlers";
 import { prisma } from "../prisma";
 import { kickDefaultMcpRuntime } from "../mcp/defaultRuntime";
 import { emailDispatcher } from "../email/defaultEmail";
@@ -20,6 +25,18 @@ export const authSessionStore = createPrismaAuthSessionStore(prisma);
 export const authRateLimiter = createPrismaLoginRateLimiter({
   keySecret: () => getAuthConfig().sessionSecret,
   prisma
+});
+export const oauthCallbackFlowRateLimiter = createPrismaLoginRateLimiter({
+  keySecret: () => getAuthConfig().sessionSecret,
+  maxAttempts: 1,
+  prisma,
+  windowMs: OAUTH_FLOW_MAX_AGE_SECONDS * 1000
+});
+export const oauthCallbackProviderRateLimiter = createPrismaLoginRateLimiter({
+  keySecret: () => getAuthConfig().sessionSecret,
+  maxAttempts: OAUTH_PROVIDER_ADMISSION_MAX_ATTEMPTS,
+  prisma,
+  windowMs: OAUTH_PROVIDER_ADMISSION_WINDOW_MS
 });
 
 export const resolveRequestAuth = createRequestAuthResolver({

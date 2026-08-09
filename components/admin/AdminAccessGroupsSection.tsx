@@ -17,6 +17,10 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import {
+  useAdminDiscardAction,
+  useAdminDraftProtection
+} from "@/components/admin/AdminDraftProtection";
 import { AdminUserStatus } from "@/components/admin/AdminUserStatus";
 import { userStatusRowClass } from "@/components/admin/adminUserView";
 import { formatDate } from "@/components/admin/adminViewUtils";
@@ -57,7 +61,7 @@ export type AdminAccessGroupsSectionRefs = Readonly<{
 }>;
 
 export type AdminAccessGroupsSectionActions = Readonly<{
-  onAddMember(group: AdminGroup, user: AdminUserRecord): Promise<void> | void;
+  onAddMember(group: AdminGroup, user: AdminUserRecord): Promise<boolean> | void;
   onBackToList(): void;
   onCreateNameChange(value: string): void;
   onCreateSubmit(): Promise<void> | void;
@@ -319,6 +323,12 @@ function GroupMembers({ actions, data, status }: Readonly<{
   );
   const selectedCandidate = candidates.find((user) => user.id === candidateId) ?? null;
   const archived = Boolean(data.selectedGroup.archivedAt);
+  useAdminDraftProtection({
+    dirty: Boolean(selectedCandidate),
+    onDiscard: () => setCandidateId(""),
+    owner: "access-group-member-form",
+    pending: Boolean(selectedCandidate) && status.actionsDisabled
+  });
 
   return (
     <div className="py-5">
@@ -337,8 +347,10 @@ function GroupMembers({ actions, data, status }: Readonly<{
           onSubmit={(event) => {
             event.preventDefault();
             if (!selectedCandidate) return;
-            setCandidateId("");
-            void actions.onAddMember(data.selectedGroup, selectedCandidate);
+            const candidate = selectedCandidate;
+            void Promise.resolve(actions.onAddMember(data.selectedGroup, candidate)).then((ok) => {
+              if (ok !== false) setCandidateId("");
+            });
           }}
         >
           <label className="sr-only" htmlFor={`add-group-member-${data.selectedGroup.id}`}>Add member</label>
@@ -616,13 +628,25 @@ function GroupDetail({
 
 export function AdminAccessGroupsSection(props: AdminAccessGroupsSectionProps) {
   const { actions, data, draft } = props;
+  const requestDiscardAction = useAdminDiscardAction();
+  const protectedActions = {
+    ...actions,
+    onBackToList: () => requestDiscardAction(
+      actions.onBackToList,
+      ["access-groups-form", "access-group-member-form"]
+    ),
+    onSelectView: (view: AdminAccessGroupView) => requestDiscardAction(
+      () => actions.onSelectView(view),
+      ["access-group-member-form"]
+    )
+  };
 
   if (draft.createFormOpen) {
-    return <CreateGroupTask actions={actions} draft={draft} status={props.status} />;
+    return <CreateGroupTask actions={protectedActions} draft={draft} status={props.status} />;
   }
 
   if (draft.detailOpen) {
-    return <GroupDetail {...props} />;
+    return <GroupDetail {...props} actions={protectedActions} />;
   }
 
   return (

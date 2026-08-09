@@ -24,6 +24,7 @@ import {
   type AcceptedRunDefaults,
   type RunRepository
 } from "./runRepositoryContract";
+import { parseToolLoopCheckpoint } from "./toolLoopPersistence";
 
 const TEST_MCP_KEY = Buffer.alloc(32, 0x61);
 const fakeControlKey = `${providerTemplateIds.fakeConnection}:${providerTemplateIds.fakeModel}`;
@@ -475,11 +476,15 @@ describe("Prisma run repository", () => {
       });
 
       expect(update?.chat).toMatchObject({
+        contextStats: {
+          approximateActiveBranchInputTokens: expect.any(Number)
+        },
         defaultModelId: null,
         defaultProvider: null,
         id: chat.id,
         messageCount: 2
       });
+      expect(update?.chat.contextStats.approximateActiveBranchInputTokens).toBeGreaterThan(0);
       expect(update?.messages).toEqual(expect.arrayContaining([
         expect.objectContaining({
           id: assistantMessage.id,
@@ -624,7 +629,7 @@ describe("Prisma run repository", () => {
             providerContinuation: { responseId: "response-1" },
             providerCursor: "cursor-1",
             roundIndex: 1,
-            version: 1
+            version: 2
           }
         });
         await expect(prisma.modelRunEvent.findMany({
@@ -2392,6 +2397,98 @@ describe("Prisma run repository", () => {
           .filter((row) => row.userId === userId)
           .map((row) => row._count._all)
       ).toEqual([0, 0]);
+    });
+  });
+
+  it("atomically replaces partial answer-round usage and rejects terminal conflicts", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Answer usage checkpoint");
+      await expect(repository.beginToolLoopProviderRound({
+        providerContinuation: { providerResponseId: null, providerToolMessages: [] },
+        roundIndex: 1,
+        runId: active.runId,
+        userId
+      })).resolves.toBe("started");
+
+      const partialUsage = {
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        inputTokens: 2,
+        outputTokens: 1,
+        reasoningTokens: 0,
+        totalTokens: 3
+      };
+      const terminalUsage = { ...partialUsage, outputTokens: 3, totalTokens: 5 };
+      await expect(repository.recordRunUsageEvents({
+        answerRoundUsage: { completeness: "partial", roundIndex: 1, usage: partialUsage },
+        chatId: active.chatId,
+        runId: active.runId,
+        usageAttributions: [{
+          modelId: "gpt-test",
+          provider: "openai",
+          usage: { inputTokens: 12, outputTokens: 6, reasoningTokens: 0, totalTokens: 18 }
+        }],
+        userId
+      })).resolves.toBe(true);
+      await expect(repository.recordRunUsageEvents({
+        answerRoundUsage: { completeness: "terminal", roundIndex: 1, usage: terminalUsage },
+        chatId: active.chatId,
+        runId: active.runId,
+        usageAttributions: [{
+          modelId: "gpt-test",
+          provider: "openai",
+          usage: { inputTokens: 12, outputTokens: 8, reasoningTokens: 0, totalTokens: 20 }
+        }],
+        userId
+      })).resolves.toBe(true);
+      await expect(repository.recordRunUsageEvents({
+        answerRoundUsage: { completeness: "terminal", roundIndex: 1, usage: terminalUsage },
+        chatId: active.chatId,
+        runId: active.runId,
+        usageAttributions: [{
+          modelId: "gpt-test",
+          provider: "openai",
+          usage: { inputTokens: 12, outputTokens: 8, reasoningTokens: 0, totalTokens: 20 }
+        }],
+        userId
+      })).resolves.toBe(true);
+      await expect(repository.recordRunUsageEvents({
+        answerRoundUsage: {
+          completeness: "terminal",
+          roundIndex: 1,
+          usage: { ...terminalUsage, outputTokens: 4, totalTokens: 6 }
+        },
+        chatId: active.chatId,
+        runId: active.runId,
+        usageAttributions: [{
+          modelId: "gpt-test",
+          provider: "openai",
+          usage: { inputTokens: 12, outputTokens: 9, reasoningTokens: 0, totalTokens: 21 }
+        }],
+        userId
+      })).resolves.toBe(false);
+
+      const [storedRun, events] = await Promise.all([
+        prisma.modelRun.findUniqueOrThrow({
+          select: { inputTokens: true, outputTokens: true, toolLoopState: true, totalTokens: true },
+          where: { id: active.runId }
+        }),
+        prisma.usageEvent.findMany({
+          select: { inputTokens: true, outputTokens: true, totalTokens: true },
+          where: { modelRunId: active.runId }
+        })
+      ]);
+      expect(storedRun).toMatchObject({ inputTokens: 12, outputTokens: 8, totalTokens: 20 });
+      expect(parseToolLoopCheckpoint(storedRun.toolLoopState)).toMatchObject({
+        answerRoundUsage: [{
+          completeness: "terminal",
+          roundIndex: 1,
+          usage: terminalUsage
+        }],
+        version: 2
+      });
+      expect(events).toEqual([{ inputTokens: 12, outputTokens: 8, totalTokens: 20 }]);
     });
   });
 

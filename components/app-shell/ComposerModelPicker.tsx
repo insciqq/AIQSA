@@ -6,6 +6,7 @@ import {
   modelDifferentiatingCapabilityLabels
 } from "@/components/app-shell/shellFormatting";
 import type { Catalog, CatalogModel } from "@/components/app-shell/types";
+import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import { ArrowLeft, Check, ChevronDown, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -62,6 +63,13 @@ export function ComposerModelPicker({
   const selectionKey = `${selectedProvider}\u0000${selectedModelId}`;
   const previousSelectionKeyRef = useRef(selectionKey);
   const hasEntitledModels = Boolean(catalog?.models.length);
+  const providerLabels = useMemo(
+    () => resolveProviderConnectionLabels(
+      catalog?.providers.map(({ id, name }) => ({ id, name })) ?? []
+    ),
+    [catalog?.providers]
+  );
+  const selectedProviderLabel = providerLabels.get(selectedProvider) ?? selectedProviderName;
   const filteredModelGroups = useMemo<ModelGroup[]>(() => {
     if (!catalog) {
       return [];
@@ -71,7 +79,7 @@ export function ComposerModelPicker({
     return catalog.providers
       .map((provider) => ({
         id: provider.id,
-        name: provider.name,
+        name: providerLabels.get(provider.id) ?? provider.name,
         models: catalog.models.filter((candidate) => {
           if (candidate.provider !== provider.id) {
             return false;
@@ -82,7 +90,7 @@ export function ComposerModelPicker({
 
           return [
             provider.family ?? provider.id,
-            provider.name,
+            providerLabels.get(provider.id) ?? provider.name,
             candidate.providerFamily ?? "",
             candidate.modelId,
             candidate.upstreamModelId ?? "",
@@ -96,7 +104,7 @@ export function ComposerModelPicker({
         })
       }))
       .filter((provider) => provider.models.length > 0);
-  }, [catalog, query]);
+  }, [catalog, providerLabels, query]);
   const actions = useMemo<ModelPickerAction[]>(
     () =>
       filteredModelGroups.flatMap((provider) =>
@@ -114,7 +122,7 @@ export function ComposerModelPicker({
   );
   const fullModelSummary = (() => {
     if (currentModel) {
-      return `${selectedProviderName} / ${currentModel.displayName}`;
+      return `${selectedProviderLabel} / ${currentModel.displayName}`;
     }
     if (catalogUnavailable) {
       return "Models unavailable";
@@ -193,7 +201,7 @@ export function ComposerModelPicker({
                 className="max-w-[35%] shrink-0 truncate text-xs font-medium text-ink-secondary"
                 data-testid={valueTestId ? `${valueTestId}-provider` : undefined}
               >
-                {selectedProviderName}
+                {selectedProviderLabel}
               </span>
               <span className="shrink-0 text-ink-muted" aria-hidden="true">/</span>
             </>

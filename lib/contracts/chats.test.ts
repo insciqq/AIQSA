@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHAT_BRANCH_PREVIEW_MAX_LENGTH,
+  CHAT_HISTORY_PAGE_SIZE,
+  boundedChatBranchPreview,
+  decodeChatBranchesResponse,
   decodeChatDetailResponse,
+  decodeChatMessagesPageResponse,
   decodeChatSummaryResponse,
   decodeChatUpdateData,
   decodeWorkspaceChatsResponse
@@ -49,6 +54,18 @@ const usageStats = {
   cacheWriteInputTokens: 3,
   totalTokens: 10
 };
+
+const contextStats = { approximateActiveBranchInputTokens: 7 };
+const pageInfo = {
+  activeLeafMessageId: summary.activeLeafMessageId,
+  beforeCursor: null,
+  hasOlder: false,
+  snapshotUpdatedAt: summary.updatedAt
+};
+
+function detailChat(overrides: Record<string, unknown> = {}) {
+  return { ...summary, contextStats, pageInfo, ...overrides };
+}
 
 const toolActivity = {
   argumentsPreview: { query: "memory" },
@@ -104,16 +121,16 @@ describe("chat wire contracts", () => {
     );
     expect(
       decodeChatDetailResponse({
-        chat: { ...nullDefaultSummary, messages: [message], usageStats: null }
+        chat: detailChat({ ...nullDefaultSummary, messages: [message], usageStats: null })
       })
-    ).toEqual({ ...nullDefaultSummary, messages: [message], usageStats: null });
+    ).toEqual(detailChat({ ...nullDefaultSummary, messages: [message], usageStats: null }));
     expect(
       decodeChatUpdateData({
-        chat: { ...nullDefaultSummary, usageStats: null },
+        chat: { ...nullDefaultSummary, contextStats, usageStats: null },
         messages: [message]
       })
     ).toEqual({
-      chat: { ...nullDefaultSummary, usageStats: null },
+      chat: { ...nullDefaultSummary, contextStats, usageStats: null },
       messages: [message]
     });
   });
@@ -209,26 +226,26 @@ describe("chat wire contracts", () => {
     expect(
       decodeChatDetailResponse({
         chat: {
-          ...summary,
+          ...detailChat(),
           messages: [{ ...message, artifactSummary }],
           usageStats
         }
       })
     ).toEqual({
-      ...summary,
+      ...detailChat(),
       messages: [{ ...message, artifactSummary }],
       usageStats
     });
     expect(
-      decodeChatDetailResponse({ chat: { ...summary, messages: [message], usageStats: null } })
-    ).toEqual({ ...summary, messages: [message], usageStats: null });
-    expect(decodeChatDetailResponse({ chat: { ...summary, usageStats } })).toBeNull();
+      decodeChatDetailResponse({ chat: detailChat({ messages: [message], usageStats: null }) })
+    ).toEqual(detailChat({ messages: [message], usageStats: null }));
+    expect(decodeChatDetailResponse({ chat: detailChat({ usageStats }) })).toBeNull();
     expect(
-      decodeChatDetailResponse({ chat: { ...summary, messages: [message] } })
+      decodeChatDetailResponse({ chat: detailChat({ messages: [message] }) })
     ).toBeNull();
     expect(
       decodeChatDetailResponse({
-        chat: { ...summary, messages: [{ ...message, createdAt: undefined }], usageStats }
+        chat: detailChat({ messages: [{ ...message, createdAt: undefined }], usageStats })
       })
     ).toBeNull();
     for (const malformedMessage of [
@@ -240,7 +257,7 @@ describe("chat wire contracts", () => {
     ]) {
       expect(
         decodeChatDetailResponse({
-          chat: { ...summary, messages: [malformedMessage], usageStats }
+          chat: detailChat({ messages: [malformedMessage], usageStats })
         })
       ).toBeNull();
     }
@@ -251,7 +268,7 @@ describe("chat wire contracts", () => {
 
     expect(
       decodeChatDetailResponse({
-        chat: { ...summary, messages: [legacyMessage], usageStats: null }
+        chat: detailChat({ messages: [legacyMessage], usageStats: null })
       })?.messages[0]
     ).toEqual(legacyMessage);
   });
@@ -281,7 +298,7 @@ describe("chat wire contracts", () => {
       toolCalls: []
     };
     const decode = (artifactSummary: unknown) => decodeChatDetailResponse({
-      chat: { ...summary, messages: [{ ...message, artifactSummary }], usageStats }
+      chat: detailChat({ messages: [{ ...message, artifactSummary }], usageStats })
     });
 
     expect(decode(knowledgeSummary)?.messages[0]?.artifactSummary).toEqual(knowledgeSummary);
@@ -328,7 +345,7 @@ describe("chat wire contracts", () => {
     expect(
       decodeChatDetailResponse({
         chat: {
-          ...summary,
+          ...detailChat(),
           messages: [{ ...message, assistantIdentity }],
           usageStats: null
         }
@@ -337,7 +354,7 @@ describe("chat wire contracts", () => {
     expect(
       decodeChatDetailResponse({
         chat: {
-          ...summary,
+          ...detailChat(),
           messages: [{ ...message, assistantIdentity: null }],
           usageStats: null
         }
@@ -351,7 +368,7 @@ describe("chat wire contracts", () => {
       expect(
         decodeChatDetailResponse({
           chat: {
-            ...summary,
+            ...detailChat(),
             messages: [{ ...message, assistantIdentity: malformedIdentity }],
             usageStats: null
           }
@@ -363,19 +380,117 @@ describe("chat wire contracts", () => {
   it("decodes terminal updates only when both owners are complete", () => {
     expect(
       decodeChatUpdateData({
-        chat: { ...summary, usageStats },
+        chat: { ...summary, contextStats, usageStats },
         messages: [message]
       })
     ).toEqual({
-      chat: { ...summary, usageStats },
+      chat: { ...summary, contextStats, usageStats },
       messages: [message]
     });
     expect(
-      decodeChatUpdateData({ chat: { ...summary, usageStats }, messages: {} })
+      decodeChatUpdateData({ chat: { ...summary, contextStats, usageStats }, messages: {} })
     ).toBeNull();
     expect(
       decodeChatUpdateData({ chat: summary, messages: [message] })
     ).toBeNull();
+  });
+
+  it("exact-decodes snapshot-bound forward message pages and enforces the fixed cap", () => {
+    const rootMessage = { ...message, id: "message-root", modelRunId: null };
+    const childMessage = {
+      ...message,
+      id: "message-child",
+      parentMessageId: rootMessage.id
+    };
+    const value = {
+      messages: [rootMessage, childMessage],
+      pageInfo: {
+        activeLeafMessageId: "message-leaf",
+        beforeCursor: null,
+        hasOlder: false,
+        snapshotUpdatedAt: summary.updatedAt
+      }
+    };
+    expect(decodeChatMessagesPageResponse(value)).toEqual(value);
+    expect(decodeChatMessagesPageResponse({ ...value, extra: true })).toBeNull();
+    expect(decodeChatMessagesPageResponse({
+      ...value,
+      messages: [childMessage, rootMessage]
+    })).toBeNull();
+    expect(decodeChatMessagesPageResponse({
+      ...value,
+      messages: Array.from({ length: CHAT_HISTORY_PAGE_SIZE + 1 }, (_, index) => ({
+        ...message,
+        id: `message-${index}`,
+        parentMessageId: index === 0 ? null : `message-${index - 1}`
+      }))
+    })).toBeNull();
+    expect(decodeChatMessagesPageResponse({
+      ...value,
+      pageInfo: { ...value.pageInfo, unknown: true }
+    })).toBeNull();
+  });
+
+  it("exact-decodes a bounded-plaintext full branch graph and rejects broken DAGs", () => {
+    const value = {
+      branchGraph: {
+        activeLeafMessageId: "assistant-a",
+        nodes: [
+          {
+            id: "user-root",
+            parentMessageId: null,
+            preview: "Question",
+            role: "user" as const,
+            status: "complete" as const
+          },
+          {
+            id: "assistant-a",
+            parentMessageId: "user-root",
+            preview: "Answer A",
+            role: "assistant" as const,
+            status: "complete" as const
+          },
+          {
+            id: "assistant-b",
+            parentMessageId: "user-root",
+            preview: "Answer B",
+            role: "assistant" as const,
+            status: "error" as const
+          }
+        ],
+        snapshotUpdatedAt: summary.updatedAt
+      }
+    };
+    expect(decodeChatBranchesResponse(value)).toEqual(value);
+    expect(decodeChatBranchesResponse({ ...value, extra: true })).toBeNull();
+    expect(decodeChatBranchesResponse({
+      branchGraph: {
+        ...value.branchGraph,
+        nodes: [{
+          ...value.branchGraph.nodes[0],
+          preview: "x".repeat(CHAT_BRANCH_PREVIEW_MAX_LENGTH + 1)
+        }]
+      }
+    })).toBeNull();
+    expect(decodeChatBranchesResponse({
+      branchGraph: {
+        ...value.branchGraph,
+        nodes: [
+          { ...value.branchGraph.nodes[0], parentMessageId: "assistant-a" },
+          value.branchGraph.nodes[1]
+        ]
+      }
+    })).toBeNull();
+  });
+
+  it("bounds branch previews by UTF-16 units without splitting a surrogate pair", () => {
+    const preview = boundedChatBranchPreview(
+      `${"x".repeat(CHAT_BRANCH_PREVIEW_MAX_LENGTH - 1)}😀trailing`
+    );
+
+    expect(preview).toBe("x".repeat(CHAT_BRANCH_PREVIEW_MAX_LENGTH - 1));
+    expect(preview.length).toBeLessThanOrEqual(CHAT_BRANCH_PREVIEW_MAX_LENGTH);
+    expect(preview.charCodeAt(preview.length - 1)).not.toBeGreaterThanOrEqual(0xd800);
   });
 
   it("decodes complete tool activity summaries and fails closed on inconsistent counts", () => {
@@ -393,7 +508,7 @@ describe("chat wire contracts", () => {
     expect(
       decodeChatDetailResponse({
         chat: {
-          ...summary,
+          ...detailChat(),
           messages: [{ ...message, artifactSummary }],
           usageStats
         }
@@ -403,7 +518,7 @@ describe("chat wire contracts", () => {
     expect(
       decodeChatDetailResponse({
         chat: {
-          ...summary,
+          ...detailChat(),
           messages: [{
             ...message,
             artifactSummary: { ...artifactSummary, toolCallCount: 0 }
@@ -458,7 +573,7 @@ describe("chat wire contracts", () => {
 
     const decoded = decodeChatDetailResponse({
       chat: {
-        ...summary,
+        ...detailChat(),
         messages: [{ ...message, artifactSummary }],
         usageStats
       }
@@ -513,7 +628,7 @@ describe("chat wire contracts", () => {
 
     expect(decodeChatDetailResponse({
       chat: {
-        ...summary,
+        ...detailChat(),
         messages: [{ ...message, artifactSummary }],
         usageStats
       }
@@ -551,7 +666,7 @@ describe("chat wire contracts", () => {
 
     expect(decodeChatDetailResponse({
       chat: {
-        ...summary,
+        ...detailChat(),
         messages: [{ ...message, artifactSummary }],
         usageStats
       }

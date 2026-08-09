@@ -450,6 +450,7 @@ function mockAdminFetch() {
 
     if (url === "/api/admin/providers/quick-setup" && (init?.method ?? "GET") === "GET") {
       return dashboardResponse({
+        configuredConnections: [],
         providers: [
           { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
           { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
@@ -802,86 +803,59 @@ describe("AdminPanel", () => {
     expect(await within(providers).findByRole("alert")).toHaveTextContent("Provider connections could not be loaded");
   });
 
-  it("preserves operational drafts, filters, and selections across section round trips", async () => {
+  it("guards dirty section and compact-index navigation while cancel preserves exact state and focus", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const users = await screen.findByTestId("admin-section-users");
-    fireEvent.change(within(users).getByLabelText("Search users"), { target: { value: "user" } });
-    fireEvent.click(within(users).getByRole("button", { name: "active" }));
     const activeUserRow = findResourceListItem(users, "active@example.com");
     fireEvent.click(activeUserRow);
+    const reviewers = within(await screen.findByTestId("admin-user-detail"))
+      .getByRole("checkbox", { name: "reviewers" });
+    fireEvent.click(reviewers);
+    reviewers.focus();
+    const originalPath = `${window.location.pathname}${window.location.search}`;
+    const originalHistoryState = structuredClone(window.history.state);
 
-    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
-    const access = await screen.findByTestId("admin-section-access");
-    fireEvent.change(within(access).getByLabelText("Search access groups"), { target: { value: "er" } });
-    fireEvent.click(within(access).getByRole("button", { name: "all" }));
-    const reviewersRow = findResourceListItem(access, "reviewers");
-    fireEvent.click(reviewersRow);
-    const accessDetail = await screen.findByTestId("admin-access-group-detail");
-    fireEvent.click(within(accessDetail).getByRole("button", { name: "Rename group" }));
-    fireEvent.change(within(accessDetail).getByLabelText("Rename group"), { target: { value: "Operators draft" } });
-    fireEvent.click(within(accessDetail).getByRole("button", { name: "Models & search" }));
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+
+    fireEvent.click(within(users).getByRole("button", { name: "All sections" }));
+    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
+    expect(window.location.pathname + window.location.search).toBe(originalPath);
+    expect(window.history.state).toEqual(originalHistoryState);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(reviewers).toHaveFocus());
+    expect(reviewers).toBeChecked();
+    expect(screen.getByTestId("admin-section-users")).toBeVisible();
+
+    const returnToChat = screen.getByRole("link", { name: "Return to chat" });
+    returnToChat.focus();
+    fireEvent.click(returnToChat);
+    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
+    expect(window.location.pathname + window.location.search).toBe(originalPath);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(returnToChat).toHaveFocus());
+    expect(reviewers).toBeChecked();
 
     fireEvent.click(screen.getByRole("tab", { name: "Usage" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
-    expect(screen.getByRole("button", { name: "Models & search" })).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(screen.getByRole("button", { name: "Overview" }));
-    expect(screen.getByLabelText("Rename group")).toHaveValue("Operators draft");
-    fireEvent.click(within(screen.getByTestId("admin-section-access")).getByRole("button", { name: "Back to access groups" }));
-    fireEvent.click(within(screen.getByTestId("admin-section-access")).getByRole("button", { name: "New group" }));
-    fireEvent.change(screen.getByLabelText("Group name"), { target: { value: "Draft group" } });
-
-    fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
-    const invites = await screen.findByTestId("admin-section-invites");
-    fireEvent.click(within(invites).getByRole("button", { name: "New invite" }));
-    fireEvent.change(within(invites).getByLabelText("Email"), { target: { value: "draft@example.com" } });
-    fireEvent.click(within(invites).getByRole("checkbox", { name: "reviewers" }));
-    fireEvent.change(within(invites).getByLabelText("Search invites"), { target: { value: "open" } });
-    fireEvent.click(within(invites).getByRole("button", { name: "Open" }));
-
-    fireEvent.click(screen.getByRole("tab", { name: "Access rules" }));
-    const rules = await screen.findByTestId("admin-section-access-rules");
-    fireEvent.click(within(rules).getByRole("button", { name: "New rule" }));
-    fireEvent.change(within(rules).getByLabelText("Kind"), { target: { value: "domain" } });
-    fireEvent.change(within(rules).getByLabelText("Value"), { target: { value: "@Example.com" } });
-    fireEvent.click(within(rules).getByRole("checkbox", { name: "reviewers" }));
-    fireEvent.change(within(rules).getByLabelText("Search access rules"), { target: { value: "allowed" } });
-
-    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
-    expect(within(screen.getByTestId("admin-user-detail")).getByText("active@example.com")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Back to users" }));
-    expect(screen.getByLabelText("Search users")).toHaveValue("user");
-    expect(screen.getByRole("button", { name: "active" })).toHaveAttribute("aria-pressed", "true");
-
-    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
-    expect(screen.getByLabelText("Group name")).toHaveValue("Draft group");
-    fireEvent.click(screen.getByRole("button", { name: "Back to access groups" }));
-    expect(screen.getByLabelText("Search access groups")).toHaveValue("er");
-    expect(screen.getByRole("button", { name: "all" })).toHaveAttribute("aria-pressed", "true");
-
-    fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
-    expect(screen.getByLabelText("Email")).toHaveValue("draft@example.com");
-    expect(screen.getByRole("checkbox", { name: "reviewers" })).toBeChecked();
-    expect(screen.getByLabelText("Search invites")).toHaveValue("open");
-    expect(screen.getByRole("button", { name: "Open" })).toHaveAttribute("aria-pressed", "true");
-
-    fireEvent.click(screen.getByRole("tab", { name: "Access rules" }));
-    expect(screen.getByLabelText("Kind")).toHaveValue("domain");
-    expect(screen.getByLabelText("Value")).toHaveValue("@Example.com");
-    expect(screen.getByText("example.com", { selector: "span" })).toBeVisible();
-    expect(screen.getByRole("checkbox", { name: "reviewers" })).toBeChecked();
-    expect(screen.getByLabelText("Search access rules")).toHaveValue("allowed");
+    expect(screen.getByTestId("admin-section-users")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
+    await screen.findByTestId("admin-section-usage");
+    expect(window.location.search).toBe("?section=usage");
+    const cleanUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(cleanUnload);
+    expect(cleanUnload.defaultPrevented).toBe(false);
   });
 
-  it("drops draft group ids that become archived before approval, invite, or rule submission", async () => {
+  it("guards global refresh and discards the active form only after confirmation", async () => {
     const refreshedDashboard = structuredClone(dashboard);
     const reviewers = must(
       refreshedDashboard.groups.find((group) => group.id === "group-2"),
       "reviewers group"
     );
     reviewers.archivedAt = "2026-07-12T00:00:00.000Z";
-    const posts: Record<string, unknown>[] = [];
     let dashboardRequests = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -892,74 +866,185 @@ describe("AdminPanel", () => {
         return dashboardResponse(value);
       }
 
-      if (url === "/api/admin/action" && init?.body && typeof init.body === "string") {
-        const body = parseRequestRecord(init.body);
-        posts.push(body);
-        return dashboardResponse(
-          body.action === "create_invite"
-            ? { emailDelivery: "sent", inviteUrl: "https://aiqsa.local/invite/new" }
-            : { ok: true }
-        );
-      }
-
       return dashboardResponse({ error: "unexpected_request" }, 500);
     });
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const pendingRow = await findUserListItem("Pending User");
-    fireEvent.click(pendingRow);
-    fireEvent.click(screen.getByRole("checkbox", { name: "reviewers" }));
-
-    fireEvent.click(screen.getByRole("tab", { name: "Invites" }));
-    fireEvent.click(screen.getByRole("button", { name: "New invite" }));
-    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "draft@example.com" } });
-    fireEvent.click(screen.getByRole("checkbox", { name: "reviewers" }));
-
+    await screen.findByTestId("admin-section-users");
     fireEvent.click(screen.getByRole("tab", { name: "Access rules" }));
     fireEvent.click(screen.getByRole("button", { name: "New rule" }));
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "allowed-2@example.com" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "reviewers" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh Control Center dashboard" }));
-    await waitFor(() => expect(screen.queryByRole("checkbox", { name: "reviewers" })).not.toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
+    expect(dashboardRequests).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByLabelText("Value")).toHaveValue("allowed-2@example.com");
+    expect(screen.getByRole("checkbox", { name: "reviewers" })).toBeChecked();
 
-    fireEvent.click(screen.getByRole("button", { name: "Save rule" }));
-    await waitFor(() =>
-      expect(posts).toContainEqual({
-        action: "create_access_rule",
-        groupIds: [],
-        kind: "email",
-        value: "allowed-2@example.com"
-      })
-    );
-
-    const invitesTab = screen.getByRole("tab", { name: "Invites" });
-    await waitFor(() => expect(invitesTab).toBeEnabled());
-    fireEvent.click(invitesTab);
-    expect(screen.getByLabelText("Email")).toHaveValue("draft@example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Control Center dashboard" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
+    await waitFor(() => expect(dashboardRequests).toBe(2));
+    expect(screen.queryByLabelText("Value")).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "reviewers" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Create invite" }));
-    await waitFor(() =>
-      expect(posts).toContainEqual({
-        action: "create_invite",
-        email: "draft@example.com",
-        groupIds: [],
-        sendEmail: true
-      })
-    );
+  });
 
-    const usersTab = screen.getByRole("tab", { name: "Users" });
-    await waitFor(() => expect(usersTab).toBeEnabled());
-    fireEvent.click(usersTab);
-    expect(screen.queryByRole("checkbox", { name: "reviewers" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Approve user" }));
-    await waitFor(() =>
-      expect(posts).toContainEqual({
-        action: "approve_user",
-        groupIds: [],
-        userId: "pending-1"
-      })
-    );
+  it("guards a form-local Cancel action with the same deferred confirmation", async () => {
+    mockAdminFetch();
+    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
+
+    await screen.findByTestId("admin-section-users");
+    fireEvent.click(screen.getByRole("tab", { name: "Access rules" }));
+    const rules = await screen.findByTestId("admin-section-access-rules");
+    fireEvent.click(within(rules).getByRole("button", { name: "New rule" }));
+    const value = within(rules).getByLabelText("Value");
+    fireEvent.change(value, { target: { value: "cancel@example.com" } });
+    fireEvent.click(within(rules).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
+    expect(value).toHaveValue("cancel@example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(value).toHaveValue("cancel@example.com");
+
+    fireEvent.click(within(rules).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
+    expect(within(rules).queryByLabelText("Value")).not.toBeInTheDocument();
+  });
+
+  it("guards provider setup secrets before leaving the Providers workspace", async () => {
+    mockAdminFetch();
+    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
+
+    await screen.findByTestId("admin-section-users");
+    fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
+    const providers = await screen.findByTestId("admin-section-providers");
+    fireEvent.click(within(providers).getByRole("button", { name: /OpenAI Not configured/ }));
+    const secret = within(providers).getByLabelText(/^API key/);
+    fireEvent.change(secret, { target: { value: "provider-secret-draft" } });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Usage" }));
+    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
+    expect(secret).toHaveValue("provider-secret-draft");
+    expect(screen.getByTestId("admin-section-providers")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(secret).toHaveValue("provider-secret-draft");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Usage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
+    await screen.findByTestId("admin-section-usage");
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
+  });
+
+  it("rolls back dirty browser history and replays it once after discard", async () => {
+    mockAdminFetch();
+    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
+
+    await screen.findByTestId("admin-section-users");
+    fireEvent.click(screen.getByRole("tab", { name: "Access rules" }));
+    await screen.findByTestId("admin-section-access-rules");
+    fireEvent.click(screen.getByRole("button", { name: "New rule" }));
+    fireEvent.change(screen.getByLabelText("Value"), {
+      target: { value: "history@example.com" }
+    });
+
+    act(() => window.history.back());
+    await screen.findByRole("heading", { name: "Discard unsaved changes?" });
+    expect(window.location.search).toBe("?section=access-rules");
+    expect(screen.getByLabelText("Value")).toHaveValue("history@example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(window.location.search).toBe("?section=access-rules");
+
+    act(() => window.history.back());
+    await screen.findByRole("heading", { name: "Discard unsaved changes?" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
+    await screen.findByTestId("admin-section-users");
+    expect(window.location.search).toBe("?section=users");
+  });
+
+  it("guards Knowledge refresh and keeps failed saves dirty until a canonical save succeeds", async () => {
+    window.history.replaceState(null, "", "/admin?section=knowledge");
+    const knowledge = {
+      ingestionLimits: {
+        maxChunksPerDocument: 10_000,
+        maxFileBytes: 25_000_000,
+        maxNormalizedChars: 5_000_000,
+        maxPages: 2_000
+      },
+      policy: {
+        candidateLimit: 40,
+        resultLimit: 8,
+        scoreThreshold: 0.01,
+        updatedAt: "2026-08-09T00:00:00.000Z",
+        updatedBy: null,
+        version: 1
+      },
+      retrievalBounds: {
+        candidateLimit: { max: 100, min: 1 },
+        resultLimit: { max: 8, min: 1 },
+        scoreThreshold: { max: 1, min: 0 }
+      }
+    };
+    const failedSave = deferred<Response>();
+    let knowledgeGets = 0;
+    let knowledgePatches = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "/api/admin") return dashboardResponse();
+      if (url === "/api/admin/knowledge" && (init?.method ?? "GET") === "GET") {
+        knowledgeGets += 1;
+        return dashboardResponse({ knowledge });
+      }
+      if (url === "/api/admin/knowledge" && init?.method === "PATCH") {
+        knowledgePatches += 1;
+        if (knowledgePatches === 1) return failedSave.promise;
+        return dashboardResponse({
+          knowledge: {
+            ...knowledge,
+            policy: { ...knowledge.policy, candidateLimit: 24, version: 2 }
+          }
+        });
+      }
+      return dashboardResponse({ error: "unexpected_request" }, 500);
+    });
+    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
+
+    const candidates = await screen.findByLabelText(/Candidate passages/);
+    fireEvent.change(candidates, { target: { value: "24" } });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
+    expect(knowledgeGets).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(candidates).toHaveValue(24);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
+    await waitFor(() => expect(knowledgeGets).toBe(2));
+    expect(candidates).toHaveValue(40);
+    fireEvent.change(candidates, { target: { value: "24" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save retrieval policy" }));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Providers" })).toBeDisabled());
+    expect(screen.getByRole("link", { name: "Return to chat" })).toHaveAttribute("aria-disabled", "true");
+    const pendingUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(pendingUnload);
+    expect(pendingUnload.defaultPrevented).toBe(true);
+
+    failedSave.resolve(dashboardResponse({ error: "knowledge_policy_stale" }, 409));
+    await screen.findByText("Knowledge settings changed elsewhere. Refresh before saving again.");
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Providers" })).toBeEnabled());
+    expect(candidates).toHaveValue(24);
+    const failedUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(failedUnload);
+    expect(failedUnload.defaultPrevented).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save retrieval policy" }));
+    await screen.findByText("Knowledge retrieval policy updated.");
+    const savedUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(savedUnload);
+    expect(savedUnload.defaultPrevented).toBe(false);
   });
 
   it("keeps global session reset scoped to Safety", async () => {
@@ -1580,6 +1665,7 @@ describe("AdminPanel", () => {
         value: "person@example.com"
       });
     });
+    await waitFor(() => expect(within(rules).queryByLabelText("Value")).not.toBeInTheDocument());
 
     const ruleItem = findResourceListItem(rules, "allowed@example.com");
     fireEvent.click(within(ruleItem).getByRole("button", { name: "Details" }));

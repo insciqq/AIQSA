@@ -10,6 +10,7 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import { presentProviderCredential } from "@/components/admin/providerAdvancedView";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
@@ -69,9 +70,33 @@ export function AdminProviderCredentialsTask({
 
   const closeAddForm = () => {
     setAddOpen(false);
+    setLabel("Primary");
     setSecret("");
     setTestedSecret(null);
   };
+  const renamedCredential = connection.credentials.find(({ id }) => id === renameId);
+  const draftDirty = (
+    addOpen && (label !== "Primary" || secret.length > 0)
+  ) || Boolean(
+    renamedCredential && renamedLabel !== renamedCredential.label
+  ) || Boolean(rotateTarget && rotatedSecret.length > 0);
+  const discardDraft = () => {
+    setAddOpen(connection.credentials.length === 0);
+    setLabel("Primary");
+    setSecret("");
+    setTestedSecret(null);
+    setRenameId(null);
+    setRenamedLabel("");
+    setRotateTarget(null);
+    setRotatedSecret("");
+    setTestedRotatedSecret(null);
+  };
+  const requestDraftDiscard = useAdminDraftProtection({
+    dirty: draftDirty,
+    onDiscard: discardDraft,
+    owner: "provider-credential-form",
+    pending: draftDirty && controller.state.busy
+  });
 
   return (
     <section
@@ -91,10 +116,10 @@ export function AdminProviderCredentialsTask({
             className={quietButton}
             data-provider-action="add-key"
             disabled={controller.state.busy}
-            onClick={() => {
+            onClick={() => requestDraftDiscard(() => {
               if (addOpen) closeAddForm();
               else setAddOpen(true);
-            }}
+            })}
             type="button"
           >
             <Plus aria-hidden="true" className="size-3.5" />
@@ -203,11 +228,11 @@ export function AdminProviderCredentialsTask({
                         aria-label={`Rename ${credential.label} credential`}
                         className={quietButton}
                         disabled={controller.state.busy}
-                        onClick={() => {
+                        onClick={() => requestDraftDiscard(() => {
                           setRenameId(credential.id);
                           setRotateTarget(null);
                           setRenamedLabel(credential.label);
-                        }}
+                        })}
                         type="button"
                       >
                         Rename
@@ -216,7 +241,7 @@ export function AdminProviderCredentialsTask({
                         aria-label={`Rotate ${credential.label} credential`}
                         className={quietButton}
                         disabled={controller.state.busy}
-                        onClick={() => {
+                        onClick={() => requestDraftDiscard(() => {
                           setRotateTarget({
                             credentialId: credential.id,
                             expectedDraftVersion: credential.draftVersion
@@ -224,7 +249,7 @@ export function AdminProviderCredentialsTask({
                           setRenameId(null);
                           setRotatedSecret("");
                           setTestedRotatedSecret(null);
-                        }}
+                        })}
                         type="button"
                       >
                         Rotate
@@ -392,7 +417,12 @@ export function AdminProviderCredentialsTask({
                       <button className={primaryButton} disabled={controller.state.busy || !renamedLabel.trim()} type="submit">
                         Save label
                       </button>
-                      <button className={quietButton} disabled={controller.state.busy} onClick={() => setRenameId(null)} type="button">
+                      <button
+                        className={quietButton}
+                        disabled={controller.state.busy}
+                        onClick={() => requestDraftDiscard(() => setRenameId(null))}
+                        type="button"
+                      >
                         Cancel
                       </button>
                     </form>
@@ -466,11 +496,11 @@ export function AdminProviderCredentialsTask({
                       <button
                         className={quietButton}
                         disabled={controller.state.busy}
-                        onClick={() => {
+                        onClick={() => requestDraftDiscard(() => {
                           setRotateTarget(null);
                           setRotatedSecret("");
                           setTestedRotatedSecret(null);
-                        }}
+                        })}
                         type="button"
                       >
                         Cancel

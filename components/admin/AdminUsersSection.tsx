@@ -9,6 +9,7 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { useAdminDiscardAction } from "@/components/admin/AdminDraftProtection";
 import { AdminUserStatus } from "@/components/admin/AdminUserStatus";
 import { activeDraftGroupIds } from "@/components/admin/adminDraftGroups";
 import {
@@ -397,11 +398,16 @@ function AdminUserDetail({ actions, data, detailRef, groupsEditorRef, mcpAccess,
 }
 
 export function AdminUsersSection({ actions, data, focus, mcpAccess, status, view }: AdminUsersSectionProps) {
+  const requestDiscardAction = useAdminDiscardAction();
+  const protectedActions = {
+    ...actions,
+    onBackToList: () => requestDiscardAction(actions.onBackToList, ["user-membership-form"])
+  };
   if (view.compactDetailOpen) {
     return (
       <div data-testid="admin-users-detail-pane">
         <AdminUserDetail
-          actions={actions}
+          actions={protectedActions}
           data={data}
           detailRef={focus.detail}
           groupsEditorRef={focus.groupsEditor}

@@ -22,6 +22,7 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import {
   adminSearchExecutionDefaults,
   adminSearchExecutionLimits,
@@ -50,7 +51,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
 type SearchTask = "configuration" | "diagnostics" | "overview";
 type EditorMode = "create" | "detail" | "index";
@@ -64,6 +65,16 @@ type SearchForm = {
     maxSearchCallsPerAnswer: string;
   };
 };
+
+type SearchEditorBaseline = Readonly<{
+  draftVersion: number;
+  form: SearchForm;
+  sourceId: string;
+}>;
+
+function searchFormsEqual(left: SearchForm, right: SearchForm): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 const tasks: ReadonlyArray<Readonly<{
   Icon: typeof Gauge;
@@ -200,6 +211,15 @@ function SearchDefaultPolicyEditor({
 
   const dirty = planMode !== catalog.policy.defaultPlan.mode ||
     optionIds.join("\u0000") !== catalog.policy.defaultPlan.optionIds.join("\u0000");
+  useAdminDraftProtection({
+    dirty,
+    onDiscard: () => {
+      setOptionIds([...catalog.policy.defaultPlan.optionIds]);
+      setPlanMode(catalog.policy.defaultPlan.mode);
+    },
+    owner: "search-default-policy",
+    pending: dirty && busy
+  });
   const allSelectedAvailable = optionIds.length > 0 &&
     planCompatible(optionIds, options, "all_selected");
 
@@ -801,6 +821,7 @@ function TaskTabs({ onSelect, selected }: Readonly<{
 
 function DetailTask({
   busy,
+  canSave,
   catalog,
   form,
   integration,
@@ -810,6 +831,7 @@ function DetailTask({
   task
 }: Readonly<{
   busy: boolean;
+  canSave: boolean;
   catalog: AdminSearchCatalog;
   form: SearchForm;
   integration: AdminSearchIntegration;
@@ -835,7 +857,7 @@ function DetailTask({
               setForm={setForm}
               sourceConnectionId={integration.sourceConnectionId}
             />
-            <div><button className={primaryButton} disabled={busy || !searchExecutionValidation(form).valid} onClick={onSave} type="button"><Save aria-hidden="true" className="size-3.5" />Save changes</button></div>
+            <div><button className={primaryButton} disabled={busy || !canSave || !searchExecutionValidation(form).valid} onClick={onSave} type="button"><Save aria-hidden="true" className="size-3.5" />Save changes</button></div>
           </>
         ) : (
           <p className="border-l-2 border-trace-strong pl-3 text-sm leading-6 text-ink-secondary">This built-in source is managed with its provider connection.</p>
@@ -907,10 +929,48 @@ export function AdminSearchSection({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [task, setTask] = useState<SearchTask>("overview");
   const [form, setForm] = useState<SearchForm>(emptyForm);
+  const [editorBaseline, setEditorBaseline] = useState<SearchEditorBaseline | null>(null);
   const [archiveCandidate, setArchiveCandidate] = useState<AdminSearchIntegration | null>(null);
   const selected = catalog?.integrations.find((integration) => integration.id === selectedId) ?? null;
+  const editorDirty = mode === "create"
+    ? !searchFormsEqual(form, emptyForm())
+    : editorBaseline !== null && !searchFormsEqual(form, editorBaseline.form);
+  const editorStale = mode === "detail" && selected !== null && editorDirty &&
+    editorBaseline?.sourceId === selected.id &&
+    editorBaseline.draftVersion !== selected.draftVersion;
+  const requestEditorDiscard = useAdminDraftProtection({
+    dirty: editorDirty,
+    onDiscard: () => {
+      if (mode === "detail" && selected) {
+        rebaseEditor(selected);
+      } else if (mode === "create") {
+        setForm(emptyForm());
+      }
+    },
+    owner: "search-editor",
+    pending: editorDirty && busy
+  });
 
-  const load = useCallback(async () => {
+  function rebaseEditor(integration: AdminSearchIntegration) {
+    const nextForm = formFrom(integration);
+    setForm(nextForm);
+    setEditorBaseline({
+      draftVersion: integration.draftVersion,
+      form: nextForm,
+      sourceId: integration.id
+    });
+  }
+
+  function reconcileEditor(integration: AdminSearchIntegration) {
+    if (
+      editorBaseline?.sourceId !== integration.id ||
+      !editorDirty
+    ) {
+      rebaseEditor(integration);
+    }
+  }
+
+  async function load() {
     if (!active) return;
     setBusy(true);
     setError(null);
@@ -921,10 +981,17 @@ export function AdminSearchSection({
       return;
     }
     setCatalog(result.search);
-    setSelectedId((current) => current && result.search.integrations.some((item) => item.id === current)
-      ? current
-      : null);
-  }, [active]);
+    if (!selectedId) return;
+    const refreshed = result.search.integrations.find((item) => item.id === selectedId);
+    if (!refreshed) {
+      setSelectedId(null);
+      setEditorBaseline(null);
+      setMode("index");
+      setNotice("The selected Search source is no longer available. Local changes were not sent.");
+      return;
+    }
+    if (mode === "detail") reconcileEditor(refreshed);
+  }
 
   useEffect(() => {
     if (!active) return;
@@ -938,6 +1005,8 @@ export function AdminSearchSection({
       }
       setCatalog(result.search);
       setSelectedId(null);
+      setEditorBaseline(null);
+      setMode("index");
     });
     return () => {
       cancelled = true;
@@ -972,6 +1041,8 @@ export function AdminSearchSection({
   function openCreate() {
     if (!catalog) return;
     setForm(emptyForm());
+    setEditorBaseline(null);
+    setSelectedId(null);
     setMode("create");
     setTask("configuration");
   }
@@ -980,7 +1051,7 @@ export function AdminSearchSection({
     const integration = catalog?.integrations.find((candidate) => candidate.id === id);
     if (!integration || !catalog) return;
     setSelectedId(id);
-    setForm(formFrom(integration));
+    rebaseEditor(integration);
     setTask("overview");
     setMode("detail");
   }
@@ -1001,10 +1072,11 @@ export function AdminSearchSection({
       success,
       (next) => {
         const updated = next.integrations.find((item) => item.id === target.id);
-        if (updated) setForm(formFrom(updated));
+        if (updated) reconcileEditor(updated);
         else {
           setMode("index");
           setSelectedId(null);
+          setEditorBaseline(null);
         }
       }
     );
@@ -1051,12 +1123,26 @@ export function AdminSearchSection({
         />
         <AdminTaskWorkspace className="mt-2" detailOpen={mode !== "index"} indexWidth="20rem">
         <AdminTaskIndexPane compactDetailOpen={mode !== "index"} testId="admin-search-index-pane">
-          <SearchCatalogIndex busy={busy} canCreate={addableModels.length > 0} integrations={search.integrations} onCreate={openCreate} onRefresh={() => void load()} onSelect={openIntegration} selectedId={selectedId} />
+          <SearchCatalogIndex
+            busy={busy}
+            canCreate={addableModels.length > 0}
+            integrations={search.integrations}
+            onCreate={() => requestEditorDiscard(openCreate)}
+            onRefresh={() => requestEditorDiscard(
+              () => void load(),
+              ["search-default-policy"]
+            )}
+            onSelect={(id) => requestEditorDiscard(() => openIntegration(id))}
+            selectedId={selectedId}
+          />
         </AdminTaskIndexPane>
         <AdminTaskDetailPane compactDetailOpen={mode !== "index"} testId="admin-search-detail-pane">
           {mode === "create" ? (
             <section className="grid gap-5 p-4 sm:p-6">
-              <AdminTaskBackButton label="Back to Search" onClick={() => setMode("index")} />
+              <AdminTaskBackButton
+                label="Back to Search"
+                onClick={() => requestEditorDiscard(() => setMode("index"))}
+              />
               <div>
                 <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">New Search source</p>
                 <h3 className="mt-1 text-lg font-semibold text-ink">Add Search source</h3>
@@ -1078,7 +1164,7 @@ export function AdminSearchSection({
                         next.integrations.find((item) => !previousIds.has(item.id));
                       if (created) {
                         setSelectedId(created.id);
-                        setForm(formFrom(created));
+                        rebaseEditor(created);
                         setMode("detail");
                         setTask("overview");
                       }
@@ -1088,39 +1174,79 @@ export function AdminSearchSection({
                 >
                   <Plus aria-hidden="true" className="size-3.5" />Add source
                 </button>
-                <button className={quietButton} disabled={busy} onClick={() => setMode("index")} type="button">Cancel</button>
+                <button
+                  className={quietButton}
+                  disabled={busy}
+                  onClick={() => requestEditorDiscard(() => setMode("index"))}
+                  type="button"
+                >
+                  Cancel
+                </button>
               </div>
             </section>
           ) : selected ? (
             <div className="min-w-0">
               <div className="flex flex-col gap-3 border-b border-trace-subtle px-4 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-6">
                 <div className="min-w-0">
-                  <AdminTaskBackButton label="Back to Search" onClick={() => setMode("index")} />
+                  <AdminTaskBackButton
+                    label="Back to Search"
+                    onClick={() => requestEditorDiscard(() => setMode("index"))}
+                  />
                   <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Search source</p>
                   <h3 className="mt-1 break-words text-lg font-semibold text-ink">{selected.displayName}</h3>
                   <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">{selected.description}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2"><AdminAvailabilityStatus enabled={selected.enabled} /><span className={selected.ready ? "text-xs text-positive" : "text-xs text-caution"}>{readinessLabel(selected)}</span></div>
               </div>
+              {editorStale ? (
+                <div
+                  className="mx-4 mt-4 border-l-2 border-caution bg-caution/[0.06] px-4 py-3 text-sm leading-6 text-ink-secondary sm:mx-6"
+                  data-testid="search-editor-stale"
+                  role="status"
+                >
+                  <p>Another administrator or session saved a newer configuration. Your local changes are preserved and cannot overwrite those newer settings.</p>
+                  <button
+                    className={`${quietButton} mt-3`}
+                    onClick={() => requestEditorDiscard(() => {
+                      rebaseEditor(selected);
+                      setError(null);
+                      setNotice("Latest Search configuration loaded; local changes were discarded.");
+                    })}
+                    type="button"
+                  >
+                    Discard local changes and load latest
+                  </button>
+                </div>
+              ) : null}
               <TaskTabs onSelect={setTask} selected={task} />
               <DetailTask
                 busy={busy}
+                canSave={editorBaseline?.sourceId === selected.id}
                 catalog={search}
                 form={form}
                 integration={selected}
-                onAction={runAction}
-                onSave={() => void commit(
-                  updateAdminSearchIntegration({
-                    ...searchMutationInput(form),
-                    expectedDraftVersion: selected.draftVersion,
-                    id: selected.id
-                  }),
-                  "Search configuration saved.",
-                  (next) => {
-                    const updated = next.integrations.find((item) => item.id === selected.id);
-                    if (updated) setForm(formFrom(updated));
+                onAction={(action) => {
+                  if (action === "archive") {
+                    requestEditorDiscard(() => runAction(action));
+                    return;
                   }
-                )}
+                  runAction(action);
+                }}
+                onSave={() => {
+                  if (editorBaseline?.sourceId !== selected.id) return;
+                  void commit(
+                    updateAdminSearchIntegration({
+                      ...searchMutationInput(form),
+                      expectedDraftVersion: editorBaseline.draftVersion,
+                      id: selected.id
+                    }),
+                    "Search configuration saved.",
+                    (next) => {
+                      const updated = next.integrations.find((item) => item.id === selected.id);
+                      if (updated) rebaseEditor(updated);
+                    }
+                  );
+                }}
                 setForm={setForm}
                 task={task}
               />

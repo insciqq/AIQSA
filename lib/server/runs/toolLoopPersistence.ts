@@ -1,4 +1,5 @@
 import type { ModelRunStatus } from "@prisma/client";
+import type { NormalizedTokenUsage } from "../../domain/usage";
 import type { NormalizedRunRequest } from "../providers/types";
 
 export type ToolLoopJsonValue =
@@ -18,6 +19,23 @@ export type ToolLoopCheckpointV1 = Readonly<{
   roundIndex: number;
   version: 1;
 }>;
+
+export type PersistedAnswerRoundUsage = Readonly<{
+  completeness: "partial" | "terminal";
+  roundIndex: number;
+  usage: NormalizedTokenUsage;
+}>;
+
+export type ToolLoopCheckpointV2 = Readonly<{
+  answerRoundUsage: readonly PersistedAnswerRoundUsage[];
+  phase: ToolLoopCheckpointPhase;
+  providerContinuation: ToolLoopJsonValue | null;
+  providerCursor: number | string | null;
+  roundIndex: number;
+  version: 2;
+}>;
+
+export type ToolLoopCheckpoint = ToolLoopCheckpointV1 | ToolLoopCheckpointV2;
 
 export type PersistedToolLoopCallState = "pending" | "running" | "complete" | "error" | "cancelled";
 
@@ -44,7 +62,7 @@ export type CheckpointedToolLoopRun = Readonly<{
   assistantText: string | null;
   calls: readonly PersistedToolLoopCall[];
   chatId: string;
-  checkpoint: ToolLoopCheckpointV1;
+  checkpoint: ToolLoopCheckpoint;
   id: string;
   modelId: string;
   normalizedRequest: NormalizedRunRequest;
@@ -99,6 +117,7 @@ export type AdvanceToolLoopCallBatchResult =
   | "not_found";
 
 export const toolLoopPersistenceLimits = Object.freeze({
+  answerRounds: 4,
   argumentsBytes: 64 * 1_024,
   batchCalls: 64,
   checkpointBytes: 4 * 1_024 * 1_024,
@@ -108,6 +127,15 @@ export const toolLoopPersistenceLimits = Object.freeze({
   roundIndex: 2_147_483_647,
   toolNameLength: 256
 });
+
+const normalizedUsageFields = [
+  "cachedInputTokens",
+  "cacheWriteInputTokens",
+  "inputTokens",
+  "outputTokens",
+  "reasoningTokens",
+  "totalTokens"
+] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -135,10 +163,57 @@ export function snapshotToolLoopJson(value: unknown, maxBytes: number): ToolLoop
   return jsonSnapshot(value, maxBytes);
 }
 
-export function parseToolLoopCheckpoint(value: unknown): ToolLoopCheckpointV1 | null {
-  if (!isRecord(value) || Object.keys(value).length !== 5 ||
+function normalizedUsage(value: unknown): NormalizedTokenUsage | null {
+  if (!isRecord(value) || Object.keys(value).length !== 6) return null;
+  if (!normalizedUsageFields.every((field) =>
+    Object.hasOwn(value, field) && Number.isSafeInteger(value[field]) && Number(value[field]) >= 0)) {
+    return null;
+  }
+  return Object.fromEntries(
+    normalizedUsageFields.map((field) => [field, Number(value[field])])
+  ) as NormalizedTokenUsage;
+}
+
+function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAnswerRoundUsage[] | null {
+  if (!Array.isArray(value) || value.length > toolLoopPersistenceLimits.answerRounds) return null;
+  const entries: PersistedAnswerRoundUsage[] = [];
+  const cumulativeUsage = Object.fromEntries(
+    normalizedUsageFields.map((field) => [field, 0])
+  ) as NormalizedTokenUsage;
+  let previousRound = 0;
+  for (const candidate of value) {
+    if (!isRecord(candidate) || Object.keys(candidate).length !== 3 ||
+      !["completeness", "roundIndex", "usage"].every((key) => Object.hasOwn(candidate, key)) ||
+      (candidate.completeness !== "partial" && candidate.completeness !== "terminal") ||
+      !Number.isSafeInteger(candidate.roundIndex) || Number(candidate.roundIndex) <= previousRound ||
+      Number(candidate.roundIndex) > toolLoopPersistenceLimits.answerRounds ||
+      Number(candidate.roundIndex) > checkpointRound) {
+      return null;
+    }
+    const usage = normalizedUsage(candidate.usage);
+    if (!usage) return null;
+    for (const field of normalizedUsageFields) {
+      const next = cumulativeUsage[field] + usage[field];
+      if (!Number.isSafeInteger(next)) return null;
+      cumulativeUsage[field] = next;
+    }
+    previousRound = Number(candidate.roundIndex);
+    entries.push({
+      completeness: candidate.completeness,
+      roundIndex: previousRound,
+      usage
+    });
+  }
+  return entries;
+}
+
+export function parseToolLoopCheckpoint(value: unknown): ToolLoopCheckpoint | null {
+  if (!isRecord(value) ||
     !["phase", "providerContinuation", "providerCursor", "roundIndex", "version"]
-      .every((key) => Object.hasOwn(value, key)) || value.version !== 1 ||
+      .every((key) => Object.hasOwn(value, key)) ||
+    (value.version !== 1 && value.version !== 2) ||
+    Object.keys(value).length !== (value.version === 1 ? 5 : 6) ||
+    (value.version === 2 && !Object.hasOwn(value, "answerRoundUsage")) ||
     !["provider_running", "tools_pending", "tools_running"].includes(String(value.phase)) ||
     !Number.isSafeInteger(value.roundIndex) || (value.roundIndex as number) < 0 ||
     (value.roundIndex as number) > toolLoopPersistenceLimits.roundIndex ||
@@ -150,22 +225,82 @@ export function parseToolLoopCheckpoint(value: unknown): ToolLoopCheckpointV1 | 
     !isToolLoopJsonValue(value.providerContinuation)) {
     return null;
   }
+  const parsedAnswerRoundUsage = value.version === 2
+    ? answerRoundUsage(value.answerRoundUsage, Number(value.roundIndex))
+    : null;
+  if (value.version === 2 && parsedAnswerRoundUsage === null) return null;
   const snapshot = jsonSnapshot(value, toolLoopPersistenceLimits.checkpointBytes);
   if (!snapshot || !isRecord(snapshot)) return null;
-  return snapshot as ToolLoopCheckpointV1;
+  return snapshot as ToolLoopCheckpoint;
 }
 
 export function toolLoopCheckpoint(input: Readonly<{
+  answerRoundUsage?: readonly PersistedAnswerRoundUsage[];
   phase: ToolLoopCheckpointPhase;
   providerContinuation: ToolLoopJsonValue | null;
   providerCursor?: number | string | null;
   roundIndex: number;
-}>): ToolLoopCheckpointV1 | null {
+}>): ToolLoopCheckpointV2 | null {
   return parseToolLoopCheckpoint({
+    answerRoundUsage: input.answerRoundUsage ?? [],
     phase: input.phase,
     providerContinuation: input.providerContinuation,
     providerCursor: input.providerCursor ?? null,
     roundIndex: input.roundIndex,
-    version: 1
+    version: 2
+  }) as ToolLoopCheckpointV2 | null;
+}
+
+function sameUsage(left: NormalizedTokenUsage, right: NormalizedTokenUsage): boolean {
+  return left.cachedInputTokens === right.cachedInputTokens &&
+    left.cacheWriteInputTokens === right.cacheWriteInputTokens &&
+    left.inputTokens === right.inputTokens && left.outputTokens === right.outputTokens &&
+    left.reasoningTokens === right.reasoningTokens && left.totalTokens === right.totalTokens;
+}
+
+export function mergeAnswerRoundUsage(
+  currentEntries: readonly PersistedAnswerRoundUsage[],
+  entry: PersistedAnswerRoundUsage,
+  checkpointRound: number
+): readonly PersistedAnswerRoundUsage[] | null {
+  const current = answerRoundUsage(currentEntries, checkpointRound);
+  if (!current || entry.completeness !== "partial" && entry.completeness !== "terminal" ||
+    !Number.isSafeInteger(entry.roundIndex) || entry.roundIndex < 1 ||
+    entry.roundIndex > checkpointRound ||
+    entry.roundIndex > toolLoopPersistenceLimits.answerRounds || !normalizedUsage(entry.usage)) {
+    return null;
+  }
+  const index = current.findIndex((candidate) => candidate.roundIndex === entry.roundIndex);
+  if (index >= 0) {
+    const existing = current[index]!;
+    if (existing.completeness === "terminal") {
+      return entry.completeness === "terminal" && sameUsage(existing.usage, entry.usage)
+        ? current
+        : null;
+    }
+    current[index] = entry;
+  } else {
+    current.push(entry);
+    current.sort((left, right) => left.roundIndex - right.roundIndex);
+  }
+  return answerRoundUsage(current, checkpointRound);
+}
+
+export function upsertAnswerRoundUsage(
+  checkpoint: ToolLoopCheckpoint,
+  entry: PersistedAnswerRoundUsage
+): ToolLoopCheckpointV2 | null {
+  const current = mergeAnswerRoundUsage(
+    checkpoint.version === 2 ? checkpoint.answerRoundUsage : [],
+    entry,
+    checkpoint.roundIndex
+  );
+  if (!current) return null;
+  return toolLoopCheckpoint({
+    answerRoundUsage: current,
+    phase: checkpoint.phase,
+    providerContinuation: checkpoint.providerContinuation,
+    providerCursor: checkpoint.providerCursor,
+    roundIndex: checkpoint.roundIndex
   });
 }

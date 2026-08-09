@@ -2,6 +2,8 @@ import { getAuthConfig } from "@/lib/server/auth/config";
 import {
   authRateLimiter,
   authSessionStore,
+  oauthCallbackFlowRateLimiter,
+  oauthCallbackProviderRateLimiter,
   oauthIdentityRepository
 } from "@/lib/server/auth/defaultAuth";
 import { createOAuthCallbackHandler } from "@/lib/server/auth/oauthHandlers";
@@ -11,6 +13,8 @@ export const runtime = "nodejs";
 export const GET = createOAuthCallbackHandler({
   getConfig: () => getAuthConfig(),
   loginRateLimiter: authRateLimiter,
+  oauthFlowRateLimiter: oauthCallbackFlowRateLimiter,
+  oauthProviderRateLimiter: oauthCallbackProviderRateLimiter,
   repository: oauthIdentityRepository,
   sessions: authSessionStore
 });

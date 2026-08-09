@@ -26,6 +26,7 @@ import {
   quietButton,
   touchTarget
 } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import type { AdminMcpTask } from "@/components/admin/useAdminMcpSectionState";
 import type {
@@ -864,11 +865,23 @@ export function AdminMcpServerWorkspace({
 }>) {
   const [oneTimeValues, setOneTimeValues] = useState<Record<string, string>>({});
   const [rebuildRevisionId, setRebuildRevisionId] = useState<string | null>(null);
-
-  const openTask = (nextTask: AdminMcpTask) => {
+  const oneTimeValuesDirty = Object.values(oneTimeValues).some((value) => value.length > 0);
+  const clearOneTimeDraft = () => {
     setOneTimeValues({});
     setRebuildRevisionId(null);
-    onOpenTask(nextTask);
+  };
+  const requestDiscard = useAdminDraftProtection({
+    dirty: oneTimeValuesDirty,
+    onDiscard: clearOneTimeDraft,
+    owner: "mcp-one-time-values",
+    pending: oneTimeValuesDirty && controller.state.busy
+  });
+
+  const openTask = (nextTask: AdminMcpTask) => {
+    requestDiscard(() => {
+      clearOneTimeDraft();
+      onOpenTask(nextTask);
+    });
   };
 
   const current = tasks.find((item) => item.id === task) ?? tasks[0];
@@ -876,7 +889,10 @@ export function AdminMcpServerWorkspace({
   return (
     <article className="min-h-[34rem] min-w-0" data-testid="mcp-server-task-detail">
       <div className="px-4 pt-4 sm:px-5 sm:pt-5 lg:px-6 lg:pt-6">
-        <AdminTaskBackButton label="Back to MCP servers" onClick={onBackToCatalog} />
+        <AdminTaskBackButton
+          label="Back to MCP servers"
+          onClick={() => requestDiscard(onBackToCatalog)}
+        />
         <header className="pb-5">
           <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Selected server</p>
           <h3 className="mt-1 break-words text-lg font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">{server.name}</h3>
@@ -916,7 +932,7 @@ export function AdminMcpServerWorkspace({
         <ActivationReceipt controller={controller} onReviewDefinition={() => openTask("definition")} server={server} />
         <TaskBody
           controller={controller}
-          onEdit={onEdit}
+          onEdit={() => requestDiscard(onEdit)}
           onOpenTask={openTask}
           oneTimeValues={oneTimeValues}
           rebuildRevisionId={rebuildRevisionId}

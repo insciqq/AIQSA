@@ -1,4 +1,5 @@
 import type {
+  ChatContextStats,
   ChatUsageStats,
   ThreadArtifactSummary,
   ThreadAssistantIdentity,
@@ -24,6 +25,7 @@ import type {
   BeginToolLoopProviderRoundResult,
   CheckpointedToolLoopRun,
   ClaimToolLoopCallResult,
+  PersistedAnswerRoundUsage,
   PersistToolLoopCallBatchInput,
   PersistToolLoopCallBatchResult,
   SettleToolLoopCallResult,
@@ -90,6 +92,7 @@ export type InstallationRecoverableRunRecord = StaleRunControlRecord & {
 export type RunChatUpdateRecord = {
   chat: {
     activeLeafMessageId: string | null;
+    contextStats: ChatContextStats;
     createdAt: Date | string;
     defaultModelId: string | null;
     defaultProvider: string | null;
@@ -401,6 +404,7 @@ export type RunRepository = {
   nextRunEventSequence(runId: string): Promise<number>;
   persistToolLoopCallBatch(input: PersistToolLoopCallBatchInput): Promise<PersistToolLoopCallBatchResult>;
   recordRunUsageEvents(input: {
+    answerRoundUsage?: PersistedAnswerRoundUsage;
     chatId: string;
     runId: string;
     usageAttributions: RunUsageAttribution[];

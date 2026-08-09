@@ -26,6 +26,10 @@ export type UseAdminAccessRulesControllerOptions = Readonly<{
 }>;
 
 export type AdminAccessRulesController = Readonly<{
+  draftProtection: Readonly<{
+    dirty: boolean;
+    discard(): void;
+  }>;
   headerForm: AdminAccessRulesHeaderForm;
   sectionProps: AdminAccessRulesSectionProps | null;
 }>;
@@ -46,6 +50,15 @@ export function useAdminAccessRulesController({
   const [query, setQuery] = useState("");
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
   const [value, setValue] = useState("");
+  const draftDirty = value.length > 0 || groupIds.length > 0 || kind !== "email";
+  const discardDraft = useCallback(() => {
+    setValue("");
+    setGroupIds([]);
+    setKind("email");
+    setFormOpen(false);
+    setCompactDetailOpen(false);
+    clearFieldError("rule-value");
+  }, [clearFieldError]);
   const normalizedPreview = normalizedRuleValue(kind, value);
   const projectedGroupIds = useMemo(
     () => activeDraftGroupIds(dashboard?.groups ?? [], groupIds),
@@ -201,12 +214,16 @@ export function useAdminAccessRulesController({
 
   return useMemo(
     () => ({
+      draftProtection: {
+        dirty: draftDirty,
+        discard: discardDraft
+      },
       headerForm: {
         formOpen,
         toggleForm
       },
       sectionProps
     }),
-    [formOpen, sectionProps, toggleForm]
+    [discardDraft, draftDirty, formOpen, sectionProps, toggleForm]
   );
 }

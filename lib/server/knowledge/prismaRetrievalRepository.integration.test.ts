@@ -39,6 +39,10 @@ let acceptedGenerationId = "";
 let replacementGenerationId = "";
 let runId = "";
 let chatId = "";
+let closedRevisionRunId = "";
+let closedRevisionChatId = "";
+let laterRevisionRunId = "";
+let laterRevisionChatId = "";
 let firstToolCallId = "";
 
 function embeddingConfiguration() {
@@ -68,17 +72,20 @@ function embeddingConfiguration() {
   } as const;
 }
 
-function runInput(plan: KnowledgeRunAdmissionPlan): Parameters<RunRepository["createRun"]>[0] {
+function runInput(
+  plan: KnowledgeRunAdmissionPlan,
+  targetChatId = chatId
+): Parameters<RunRepository["createRun"]>[0] {
   const content = textMessageContent("Use private Knowledge");
   return {
-    chatId,
+    chatId: targetChatId,
     content,
     expectedActiveLeafId: null,
     knowledgeAdmissionPlan: plan,
     modelId: "fake-answer",
     normalizedRequest: {
       attachmentIds: [],
-      chatId,
+      chatId: targetChatId,
       content,
       knowledgePlan: { baseIds: [baseId] },
       modelCapabilities: {
@@ -121,6 +128,7 @@ async function insertChunk(input: Readonly<{
   versionId: string;
   versionNumber: number;
   visibleFromRevision: number;
+  visibleUntilRevision?: number | null;
 }>): Promise<void> {
   await database.knowledgeDocument.create({
     data: { id: input.documentId, knowledgeBaseId: input.base }
@@ -138,7 +146,8 @@ async function insertChunk(input: Readonly<{
       mimeType: "application/pdf",
       originalStorageKey: input.storageKey,
       versionNumber: input.versionNumber,
-      visibleFromRevision: input.visibleFromRevision
+      visibleFromRevision: input.visibleFromRevision,
+      visibleUntilRevision: input.visibleUntilRevision ?? null
     }
   });
   await database.knowledgeDocument.update({
@@ -335,7 +344,8 @@ integration("Knowledge hybrid retrieval repository", () => {
       text: "contract passage retained from the accepted revision",
       versionId: `accepted-version-${suffix}`,
       versionNumber: 1,
-      visibleFromRevision: 1
+      visibleFromRevision: 1,
+      visibleUntilRevision: 2
     });
     await insertRetrievalDistractors({
       base: baseId,
@@ -366,10 +376,13 @@ integration("Knowledge hybrid retrieval repository", () => {
       select: { id: true }
     })).id;
     runId = (await runs.createRun(runInput(plan))).runId;
-    await database.knowledgeBasePublication.delete({ where: { id: publication.id } });
 
     // Later content and active-generation changes must not rewrite the accepted tuple.
     await database.knowledgeBase.update({ data: { contentRevision: 2 }, where: { id: baseId } });
+    await database.knowledgeIndexGeneration.update({
+      data: { indexedContentRevision: 2 },
+      where: { id: acceptedGenerationId }
+    });
     await insertChunk({
       base: baseId,
       chunkId: `future-revision-chunk-${suffix}`,
@@ -382,6 +395,34 @@ integration("Knowledge hybrid retrieval repository", () => {
       versionNumber: 1,
       visibleFromRevision: 2
     });
+    const closedRevisionPlan = await loadKnowledgeRunAdmissionPlan(database, {
+      knowledgePlan: { baseIds: [baseId] },
+      userId: memberId
+    });
+    closedRevisionChatId = (await database.chat.create({
+      data: { title: "Closed revision retrieval integration", userId: memberId },
+      select: { id: true }
+    })).id;
+    closedRevisionRunId = (await runs.createRun(
+      runInput(closedRevisionPlan, closedRevisionChatId)
+    )).runId;
+    await database.knowledgeBase.update({ data: { contentRevision: 3 }, where: { id: baseId } });
+    await database.knowledgeIndexGeneration.update({
+      data: { indexedContentRevision: 3 },
+      where: { id: acceptedGenerationId }
+    });
+    const laterRevisionPlan = await loadKnowledgeRunAdmissionPlan(database, {
+      knowledgePlan: { baseIds: [baseId] },
+      userId: memberId
+    });
+    laterRevisionChatId = (await database.chat.create({
+      data: { title: "Later revision retrieval integration", userId: memberId },
+      select: { id: true }
+    })).id;
+    laterRevisionRunId = (await runs.createRun(
+      runInput(laterRevisionPlan, laterRevisionChatId)
+    )).runId;
+    await database.knowledgeBasePublication.delete({ where: { id: publication.id } });
     const acceptedGeneration = await database.knowledgeIndexGeneration.findUniqueOrThrow({
       where: { id: acceptedGenerationId }
     });
@@ -434,7 +475,9 @@ integration("Knowledge hybrid retrieval repository", () => {
   }, 30_000);
 
   afterAll(async () => {
-    if (chatId) await database.chat.deleteMany({ where: { id: chatId } });
+    await database.chat.deleteMany({
+      where: { id: { in: [chatId, closedRevisionChatId, laterRevisionChatId].filter(Boolean) } }
+    });
     await database.knowledgeChunk.deleteMany({
       where: { knowledgeBaseId: { in: [baseId, outsideBaseId].filter(Boolean) } }
     });
@@ -630,5 +673,58 @@ integration("Knowledge hybrid retrieval repository", () => {
     });
     expect(JSON.stringify(annPlan)).toContain("KnowledgeChunk_embedding_1024_hnsw_idx");
     expect(JSON.stringify(ftsPlan)).toContain("KnowledgeChunk_searchVector_gin_idx");
+  });
+
+  it("keeps the prior version at revision one and excludes it at its exclusive revision-two bound", async () => {
+    const vectorOnly = await database.$queryRaw<unknown[]>(knowledgeHybridRetrievalSql({
+      candidateLimit: 40,
+      query: `no-lexical-match-${suffix}`,
+      resultLimit: 40,
+      runId: closedRevisionRunId,
+      threshold: 0,
+      userId: memberId,
+      vectors: [{
+        bindingOrdinal: 0,
+        indexGenerationId: acceptedGenerationId,
+        knowledgeBaseId: baseId,
+        targetDimension: 1024,
+        vector: unitVector()
+      }]
+    }));
+    const lexicalOnly = await database.$queryRaw<unknown[]>(knowledgeHybridRetrievalSql({
+      candidateLimit: 40,
+      query: "retained accepted revision",
+      resultLimit: 40,
+      runId: closedRevisionRunId,
+      threshold: 0,
+      userId: memberId,
+      vectors: [{
+        bindingOrdinal: 0,
+        indexGenerationId: acceptedGenerationId,
+        knowledgeBaseId: baseId,
+        targetDimension: 1024,
+        vector: orthogonalVector()
+      }]
+    }));
+
+    expect(JSON.stringify(vectorOnly)).not.toContain(`accepted-version-${suffix}`);
+    expect(JSON.stringify(lexicalOnly)).not.toContain(`accepted-version-${suffix}`);
+
+    const laterRevision = await database.$queryRaw<unknown[]>(knowledgeHybridRetrievalSql({
+      candidateLimit: 40,
+      query: "retained accepted revision",
+      resultLimit: 40,
+      runId: laterRevisionRunId,
+      threshold: 0,
+      userId: memberId,
+      vectors: [{
+        bindingOrdinal: 0,
+        indexGenerationId: acceptedGenerationId,
+        knowledgeBaseId: baseId,
+        targetDimension: 1024,
+        vector: unitVector()
+      }]
+    }));
+    expect(JSON.stringify(laterRevision)).not.toContain(`accepted-version-${suffix}`);
   });
 });

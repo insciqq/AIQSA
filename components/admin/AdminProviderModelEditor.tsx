@@ -12,6 +12,7 @@ import {
   quietButton,
   touchTarget
 } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import {
   applyReasoningCapabilities,
@@ -402,6 +403,7 @@ export function AdminProviderModelEditor({
   const [form, setForm] = useState<ModelForm>(() =>
     editing ? existingModel(editing) : blankModel(connection)
   );
+  const [baseline] = useState(form);
   const [credentialId, setCredentialId] = useState(() => {
     const defaultCredential = connection.credentials.find(
       ({ id }) => id === connection.defaultCredentialId
@@ -411,6 +413,16 @@ export function AdminProviderModelEditor({
       : connection.credentials.find(credentialCanDiscover)?.id ?? "";
   });
   const [formError, setFormError] = useState<string | null>(null);
+  const draftDirty = JSON.stringify(form) !== JSON.stringify(baseline);
+  const requestDraftDiscard = useAdminDraftProtection({
+    dirty: draftDirty,
+    onDiscard: () => {
+      setForm(baseline);
+      setFormError(null);
+    },
+    owner: "provider-model-editor",
+    pending: draftDirty && controller.state.busy
+  });
   const advancedRef = useRef<HTMLDetailsElement>(null);
   const reasoningControlId = useId();
   const reasoningHelpId = useId();
@@ -1020,7 +1032,14 @@ export function AdminProviderModelEditor({
       {formError ? <p className="text-xs text-critical" role="alert">{formError}</p> : null}
       <div className="flex flex-wrap gap-2">
         <button className={primaryButton} disabled={controller.state.busy || !form.displayName.trim() || !form.upstreamModelId.trim()} type="submit">Save model</button>
-        <button className={quietButton} disabled={controller.state.busy} onClick={onClose} type="button">Cancel</button>
+        <button
+          className={quietButton}
+          disabled={controller.state.busy}
+          onClick={() => requestDraftDiscard(onClose)}
+          type="button"
+        >
+          Cancel
+        </button>
       </div>
     </form>
   );

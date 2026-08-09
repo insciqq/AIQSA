@@ -20,8 +20,11 @@ import type {
 import {
   toolLoopCheckpoint,
   toolLoopPersistenceLimits,
+  upsertAnswerRoundUsage,
   type CheckpointedToolLoopRun,
+  type PersistedAnswerRoundUsage,
   type PersistedToolLoopCall,
+  type ToolLoopCheckpoint,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
 import {
@@ -519,9 +522,20 @@ function normalizedAnthropicSearchRequest(): NormalizedRunRequest {
 function checkpoint(
   phase: "provider_running" | "tools_pending" | "tools_running",
   roundIndex: number,
-  continuation: ToolLoopJsonValue
-) {
+  continuation: ToolLoopJsonValue,
+  answerRoundUsage?: readonly PersistedAnswerRoundUsage[]
+): ToolLoopCheckpoint {
+  if (answerRoundUsage === undefined) {
+    return {
+      phase,
+      providerContinuation: continuation,
+      providerCursor: null,
+      roundIndex,
+      version: 1
+    };
+  }
   const value = toolLoopCheckpoint({
+    answerRoundUsage,
     phase,
     providerContinuation: continuation,
     roundIndex
@@ -553,10 +567,12 @@ function persistedRecoveryCall(
 }
 
 function checkpointedRun(input: Readonly<{
+  answerRoundUsage?: readonly PersistedAnswerRoundUsage[];
   calls?: readonly PersistedToolLoopCall[];
   phase: "provider_running" | "tools_pending" | "tools_running";
   providerResponseId?: string | null;
   providerToolMessages?: ToolLoopJsonValue[];
+  roundIndex?: number;
 }>): CheckpointedToolLoopRun {
   const continuation = {
     providerResponseId: input.providerResponseId ?? "response-tool-1",
@@ -572,7 +588,12 @@ function checkpointedRun(input: Readonly<{
     assistantText: "",
     calls: [...(input.calls ?? [])],
     chatId: "chat-1",
-    checkpoint: checkpoint(input.phase, 1, continuation),
+    checkpoint: checkpoint(
+      input.phase,
+      input.roundIndex ?? 1,
+      continuation,
+      input.answerRoundUsage
+    ),
     id: runId,
     modelId: "gpt-test",
     normalizedRequest: normalizedToolRequest(),
@@ -601,6 +622,15 @@ function installCheckpointState(
     checkpoint: currentCheckpoint
   });
   harness.repository.loadRunUsageAttributions = async () => persistedUsage;
+  const recordRunUsageEvents = harness.repository.recordRunUsageEvents;
+  harness.repository.recordRunUsageEvents = async (input) => {
+    if (input.answerRoundUsage) {
+      const next = upsertAnswerRoundUsage(currentCheckpoint, input.answerRoundUsage);
+      if (!next) return false;
+      currentCheckpoint = next;
+    }
+    return recordRunUsageEvents(input);
+  };
   harness.repository.loadAttachments = async () => [];
   harness.repository.claimToolLoopCall = async ({ callId }) => {
     const call = calls.find((candidate) => candidate.id === callId);
@@ -616,7 +646,12 @@ function installCheckpointState(
       state: "running" as const
     };
     calls = calls.map((candidate) => candidate.id === call.id ? claimed : candidate);
-    currentCheckpoint = checkpoint("tools_running", currentCheckpoint.roundIndex, currentCheckpoint.providerContinuation);
+    currentCheckpoint = checkpoint(
+      "tools_running",
+      currentCheckpoint.roundIndex,
+      currentCheckpoint.providerContinuation,
+      currentCheckpoint.version === 2 ? currentCheckpoint.answerRoundUsage : undefined
+    );
     return { call: claimed, kind: "claimed" };
   };
   harness.repository.settleToolLoopCall = async ({ callId, result, state }) => {
@@ -655,7 +690,12 @@ function installCheckpointState(
       toolName: call.toolName
     }));
     calls = [...calls, ...created];
-    currentCheckpoint = checkpoint("tools_pending", input.roundIndex, input.providerContinuation);
+    currentCheckpoint = checkpoint(
+      "tools_pending",
+      input.roundIndex,
+      input.providerContinuation,
+      currentCheckpoint.version === 2 ? currentCheckpoint.answerRoundUsage : undefined
+    );
     return { calls: created, kind: "persisted" };
   };
   harness.repository.resetToolLoopAssistantDraft = async () => true;
@@ -667,7 +707,8 @@ function installCheckpointState(
     currentCheckpoint = checkpoint(
       "provider_running",
       roundIndex + 1,
-      currentCheckpoint.providerContinuation
+      currentCheckpoint.providerContinuation,
+      currentCheckpoint.version === 2 ? currentCheckpoint.answerRoundUsage : undefined
     );
     harness.setStoredRun({ providerResponseId: null });
     return "advanced";
@@ -3426,9 +3467,24 @@ describe("run recovery", () => {
       },
       providers: { openai: adapter }
     });
-    installCheckpointState(
+    const checkpointState = installCheckpointState(
       harness,
-      checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" }),
+      checkpointedRun({
+        answerRoundUsage: [{
+          completeness: "terminal",
+          roundIndex: 1,
+          usage: {
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            inputTokens: 7,
+            outputTokens: 1,
+            reasoningTokens: 0,
+            totalTokens: 8
+          }
+        }],
+        calls: [persistedRecoveryCall()],
+        phase: "tools_pending"
+      }),
       [{
         modelId: "gpt-test",
         provider: "openai",
@@ -3450,6 +3506,144 @@ describe("run recovery", () => {
         usage: expect.objectContaining({ inputTokens: 9, outputTokens: 4 })
       }]
     });
+    expect(checkpointState.checkpoint()).toMatchObject({
+      answerRoundUsage: [
+        expect.objectContaining({ completeness: "terminal", roundIndex: 1 }),
+        expect.objectContaining({ completeness: "terminal", roundIndex: 2 })
+      ],
+      phase: "provider_running",
+      roundIndex: 2,
+      version: 2
+    });
+  });
+
+  it("replaces partial later-round usage without dropping same-model tool usage", async () => {
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [],
+      result: {
+        finalProviderResponsePreview: {},
+        finalText: "Recovered after round two",
+        providerResponseId: "response-round-2",
+        usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0, totalTokens: 5 }
+      },
+      status: "completed",
+      terminal: true
+    }));
+    const harness = createHarness({
+      providers: { openai: providerWithRefresh(refresh) }
+    });
+    const checkpointState = installCheckpointState(harness, checkpointedRun({
+      answerRoundUsage: [
+        {
+          completeness: "terminal",
+          roundIndex: 1,
+          usage: {
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            inputTokens: 7,
+            outputTokens: 1,
+            reasoningTokens: 0,
+            totalTokens: 8
+          }
+        },
+        {
+          completeness: "partial",
+          roundIndex: 2,
+          usage: {
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            inputTokens: 2,
+            outputTokens: 1,
+            reasoningTokens: 0,
+            totalTokens: 3
+          }
+        }
+      ],
+      phase: "provider_running",
+      providerResponseId: "response-round-2",
+      providerToolMessages: [],
+      roundIndex: 2
+    }), [{
+      // The grouped row also includes 3 input and 4 output tokens consumed by
+      // a tool which intentionally uses the same provider/model as the answer.
+      modelId: "gpt-test",
+      provider: "openai",
+      recordedAt: "2026-07-12T09:00:00.000Z",
+      usage: { inputTokens: 12, outputTokens: 6, reasoningTokens: 0, totalTokens: 18 }
+    }]);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(harness.state.completed).toMatchObject({
+      estimatedCostMicros: 280,
+      finalText: "Recovered after round two",
+      usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+      usageAttributions: [{
+        modelId: "gpt-test",
+        provider: "openai",
+        estimatedCostMicros: 280,
+        usage: expect.objectContaining({ inputTokens: 12, outputTokens: 8, totalTokens: 20 })
+      }]
+    });
+    expect(checkpointState.checkpoint()).toMatchObject({
+      answerRoundUsage: [
+        expect.objectContaining({ completeness: "terminal", roundIndex: 1 }),
+        expect.objectContaining({
+          completeness: "terminal",
+          roundIndex: 2,
+          usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3, totalTokens: 5 })
+        })
+      ],
+      version: 2
+    });
+  });
+
+  it("fails closed when answer-round usage exceeds the persisted aggregate", async () => {
+    const refresh = vi.fn();
+    const harness = createHarness({
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          refresh,
+          async *stream() {
+            return providerResult;
+          }
+        }
+      }
+    });
+    installCheckpointState(harness, checkpointedRun({
+      answerRoundUsage: [{
+        completeness: "partial",
+        roundIndex: 1,
+        usage: {
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          inputTokens: 9,
+          outputTokens: 3,
+          reasoningTokens: 0,
+          totalTokens: 12
+        }
+      }],
+      phase: "provider_running",
+      providerResponseId: "response-tool-1"
+    }), [{
+      modelId: "gpt-test",
+      provider: "openai",
+      recordedAt: "2026-07-12T09:00:00.000Z",
+      usage: { inputTokens: 4, outputTokens: 2, reasoningTokens: 0, totalTokens: 6 }
+    }]);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(harness.state.completed).toBeNull();
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_usage_evidence_invalid" }),
+        usageAttributions: []
+      })
+    ]);
   });
 
   it("never repeats a call left running across a process crash", async () => {

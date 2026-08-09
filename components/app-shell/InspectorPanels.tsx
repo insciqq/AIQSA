@@ -24,6 +24,9 @@ import {
 export function DetailedInspector({
   activeLeafId,
   activeTab,
+  branchError = null,
+  branchLoading = false,
+  branchMessages,
   catalog = null,
   errorText,
   events,
@@ -31,6 +34,7 @@ export function DetailedInspector({
   onActiveTabChange,
   onClose,
   onPinToggle,
+  onRetryBranches,
   onSelectBranch,
   pinned,
   pinningAvailable,
@@ -39,6 +43,9 @@ export function DetailedInspector({
 }: {
   activeLeafId: string | null;
   activeTab: InspectorTabId;
+  branchError?: string | null;
+  branchLoading?: boolean;
+  branchMessages?: ThreadMessage[] | null;
   catalog?: Catalog | null;
   errorText: string | null;
   events: RunEventView[];
@@ -46,6 +53,7 @@ export function DetailedInspector({
   onActiveTabChange(tab: InspectorTabId): void;
   onClose(): void;
   onPinToggle(): void;
+  onRetryBranches?(): void;
   onSelectBranch(messageId: string): void;
   pinned: boolean;
   pinningAvailable: boolean;
@@ -128,12 +136,34 @@ export function DetailedInspector({
           ) : null}
 
           {activeTab === "branch" ? (
-            <BranchTree
-              messages={messages}
-              activeLeafId={activeLeafId}
-              streaming={streaming}
-              onSelect={onSelectBranch}
-            />
+            branchLoading ? (
+              <div className="grid min-h-48 place-items-center text-center" role="status">
+                <div>
+                  <Circle className="mx-auto size-4 animate-pulse text-proof" aria-hidden="true" />
+                  <p className="mt-3 text-xs font-medium text-ink-secondary">Loading conversation branches…</p>
+                </div>
+              </div>
+            ) : branchError ? (
+              <div className="border-y border-critical/25 bg-critical/[0.055] px-3 py-5 text-sm text-ink" role="alert">
+                <p>Conversation branches didn&apos;t load. The current version is unchanged.</p>
+                {onRetryBranches ? (
+                  <button
+                    className="mt-3 inline-flex h-control items-center rounded-control border border-trace-subtle bg-control-surface px-3 text-xs font-semibold text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus"
+                    type="button"
+                    onClick={onRetryBranches}
+                  >
+                    Retry
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <BranchTree
+                messages={branchMessages ?? messages}
+                activeLeafId={activeLeafId}
+                streaming={streaming}
+                onSelect={onSelectBranch}
+              />
+            )
           ) : null}
 
         </div>

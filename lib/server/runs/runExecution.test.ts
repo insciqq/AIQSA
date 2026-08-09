@@ -281,6 +281,7 @@ function chatUpdate(): RunChatUpdateRecord {
   return {
     chat: {
       activeLeafMessageId: "assistant-1",
+      contextStats: { approximateActiveBranchInputTokens: 37 },
       createdAt: new Date("2026-07-12T10:00:00.000Z"),
       defaultModelId: "fake-qsa",
       defaultProvider: "fake",
@@ -837,6 +838,9 @@ describe("run execution", () => {
     expect(repository.chatUpdateLoads).toBe(1);
     expect(events.find((event) => event.type === "chat_update")).toMatchObject({
       data: {
+        chat: {
+          contextStats: { approximateActiveBranchInputTokens: 37 }
+        },
         messages: expect.arrayContaining([
           expect.objectContaining({ id: "assistant-1", runUsage: { totalTokens: 5 } })
         ])
@@ -2921,7 +2925,7 @@ describe("run execution", () => {
     });
   });
 
-  it("retains completed answer and Perplexity usage when a later tool round fails", async () => {
+  it("retains completed and partial answer usage with Search when a later tool round fails", async () => {
     let answerRounds = 0;
     const repository = createRepository();
     const adapter = createAdapter(async function* () {
@@ -2940,6 +2944,7 @@ describe("run execution", () => {
         });
       }
 
+      yield { data: usage(4, 1, 0), type: "usage" };
       throw new Error("later_answer_round_failed");
     });
     const searchAdapter: ProviderSearchAdapter = {
@@ -2975,7 +2980,31 @@ describe("run execution", () => {
       type: "error"
     });
     expect(repository.completeRuns).toEqual([]);
-    expect(repository.recordedRunUsageEvents).toHaveLength(3);
+    expect(repository.recordedRunUsageEvents).toHaveLength(4);
+    expect(repository.recordedRunUsageEvents[0]?.answerRoundUsage).toEqual({
+      completeness: "terminal",
+      roundIndex: 1,
+      usage: {
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        inputTokens: 2,
+        outputTokens: 1,
+        reasoningTokens: 0,
+        totalTokens: 3
+      }
+    });
+    expect(repository.recordedRunUsageEvents[2]?.answerRoundUsage).toEqual({
+      completeness: "partial",
+      roundIndex: 2,
+      usage: {
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        inputTokens: 4,
+        outputTokens: 1,
+        reasoningTokens: 0,
+        totalTokens: 5
+      }
+    });
     expect(repository.recordedRunUsageEvents[0]?.usageAttributions).toHaveLength(1);
     expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual([
       {
@@ -2985,10 +3014,10 @@ describe("run execution", () => {
         usage: {
           cachedInputTokens: 0,
           cacheWriteInputTokens: 0,
-          inputTokens: 2,
-          outputTokens: 1,
+          inputTokens: 6,
+          outputTokens: 2,
           reasoningTokens: 0,
-          totalTokens: 3
+          totalTokens: 8
         }
       },
       {

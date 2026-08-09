@@ -274,6 +274,24 @@ describe("KnowledgeLibrary", () => {
     expect(detailView.onBack).toHaveBeenCalledOnce();
   });
 
+  it("protects dirty Knowledge create/detail drafts from document unload", () => {
+    const create = creation({ dirty: true });
+    const { rerender } = render(<KnowledgeLibrary view={view({ create, task: "create" })} />);
+    const createUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(createUnload);
+    expect(createUnload.defaultPrevented).toBe(true);
+
+    rerender(<KnowledgeLibrary view={view({ detail: detail({ dirty: true }), task: "detail" })} />);
+    const detailUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(detailUnload);
+    expect(detailUnload.defaultPrevented).toBe(true);
+
+    rerender(<KnowledgeLibrary view={view()} />);
+    const cleanUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(cleanUnload);
+    expect(cleanUnload.defaultPrevented).toBe(false);
+  });
+
   it("shows exact document stages, versions, drag/drop upload, retry, replacement, and logical removal", () => {
     const failed = knowledgeDocument({
       currentVersionId: "failed-version",

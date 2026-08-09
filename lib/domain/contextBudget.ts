@@ -2,6 +2,21 @@ export const DEFAULT_CONTEXT_SAFETY_MARGIN_RATIO = 0.1;
 
 const EXTENDED_PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
 
+export type ApproxTokenCodePointCount = Readonly<{
+  codePoint: number;
+  occurrences: number;
+}>;
+
+export type ApproxTokenProjectedPart =
+  | Readonly<{
+      counts: readonly ApproxTokenCodePointCount[];
+      kind: "code_points";
+    }>
+  | Readonly<{
+      kind: "value";
+      value: unknown;
+    }>;
+
 export type ContextBudgetMessage = {
   content: {
     blocks: unknown[];
@@ -87,25 +102,68 @@ function stringifyForEstimate(value: unknown): string {
 
 export function estimateApproxTokens(value: unknown): number {
   const text = stringifyForEstimate(value);
+  return text ? Math.ceil(approximateTokenUnits(text)) : 0;
+}
 
-  if (!text) {
-    return 0;
-  }
+function approximateTokenWeight(codePoint: number): number {
+  if (codePoint <= 0x7f) return 0.25;
+  return EXTENDED_PICTOGRAPHIC.test(String.fromCodePoint(codePoint)) ? 2 : 1;
+}
 
+function approximateTokenUnits(text: string): number {
   let estimatedTokens = 0;
-
   for (const character of text) {
-    const codePoint = character.codePointAt(0) ?? 0;
-
-    if (codePoint <= 0x7f) {
-      estimatedTokens += 0.25;
-    } else if (EXTENDED_PICTOGRAPHIC.test(character)) {
-      estimatedTokens += 2;
-    } else {
-      estimatedTokens += 1;
-    }
+    estimatedTokens += approximateTokenWeight(character.codePointAt(0) ?? 0);
   }
+  return estimatedTokens;
+}
 
+function approximateTokenUnitsFromCodePointCounts(
+  counts: readonly ApproxTokenCodePointCount[]
+): Readonly<{ occurrences: number; units: number }> {
+  let occurrences = 0;
+  let units = 0;
+  for (const count of counts) {
+    if (
+      !Number.isSafeInteger(count.codePoint) ||
+      count.codePoint < 0 ||
+      count.codePoint > 0x10ffff ||
+      !Number.isSafeInteger(count.occurrences) ||
+      count.occurrences <= 0
+    ) {
+      continue;
+    }
+    occurrences += count.occurrences;
+    units += approximateTokenWeight(count.codePoint) * count.occurrences;
+  }
+  return { occurrences, units };
+}
+
+export function estimateApproxTokensFromCodePointCounts(
+  counts: readonly ApproxTokenCodePointCount[]
+): number {
+  return Math.ceil(approximateTokenUnitsFromCodePointCounts(counts).units);
+}
+
+export function estimateApproxTokensFromProjectedParts(
+  parts: readonly ApproxTokenProjectedPart[]
+): number {
+  let estimatedTokens = 0;
+  let projectedParts = 0;
+  for (const part of parts) {
+    const projection = part.kind === "code_points"
+      ? approximateTokenUnitsFromCodePointCounts(part.counts)
+      : (() => {
+          const text = JSON.stringify(part.value) ?? "";
+          return { occurrences: text ? 1 : 0, units: approximateTokenUnits(text) };
+        })();
+    if (projection.occurrences === 0) continue;
+    if (projectedParts > 0) {
+      estimatedTokens += approximateTokenWeight("\n".codePointAt(0)!);
+    }
+    estimatedTokens += projection.units;
+    projectedParts += 1;
+  }
   return Math.ceil(estimatedTokens);
 }
 

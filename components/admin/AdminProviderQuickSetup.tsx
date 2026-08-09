@@ -14,6 +14,7 @@ import type {
   AdminProviderQuickSetupProvider
 } from "@/components/admin/adminProviderQuickSetupApi";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
+import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import Link from "next/link";
 import { CheckCircle2, ChevronRight, KeyRound, ShieldCheck, UserRound } from "lucide-react";
 import { useEffect, useRef } from "react";
@@ -46,6 +47,9 @@ function ConfiguredConnections({
   onManageConnection(connectionId?: string): void;
 }>) {
   if (!connections.length) return null;
+  const connectionLabels = resolveProviderConnectionLabels(
+    connections.map(({ displayName: name, id }) => ({ id, name }))
+  );
   return (
     <section className="mt-6" aria-labelledby="provider-configured-connections-title">
       <div className="flex items-baseline justify-between gap-3 border-b border-trace-subtle pb-2">
@@ -55,26 +59,30 @@ function ConfiguredConnections({
         <span className="text-metadata text-ink-muted">{connections.length} total</span>
       </div>
       <div className="divide-y divide-trace-subtle">
-        {connections.map((connection) => (
-          <button
-            className={`flex min-h-touch w-full min-w-0 items-center gap-3 px-1 py-3 text-left hover:bg-control-hover ${focusRing} ${touchTarget}`}
-            data-testid={`provider-configured-connection-${connection.id}`}
-            key={connection.id}
-            onClick={() => onManageConnection(connection.id)}
-            type="button"
-          >
-            <span className="min-w-0 flex-1">
-              <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
-                {connection.displayName}
+        {connections.map((connection) => {
+          const connectionLabel = connectionLabels.get(connection.id) ?? connection.displayName;
+          return (
+            <button
+              aria-label={`Open ${connectionLabel} connection · ${familyLabel(connection.family)} · ${connection.enabled ? "Enabled" : "Disabled"} · ${connection.activeModelCount} active models`}
+              className={`flex min-h-touch w-full min-w-0 items-center gap-3 px-1 py-3 text-left hover:bg-control-hover ${focusRing} ${touchTarget}`}
+              data-testid={`provider-configured-connection-${connection.id}`}
+              key={connection.id}
+              onClick={() => onManageConnection(connection.id)}
+              type="button"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
+                  {connectionLabel}
+                </span>
+                <span className="mt-0.5 block text-xs text-ink-muted">
+                  {familyLabel(connection.family)} · {connection.activeModelCount} active model{connection.activeModelCount === 1 ? "" : "s"}
+                </span>
               </span>
-              <span className="mt-0.5 block text-xs text-ink-muted">
-                {familyLabel(connection.family)} · {connection.activeModelCount} active model{connection.activeModelCount === 1 ? "" : "s"}
-              </span>
-            </span>
-            <AdminAvailabilityStatus enabled={connection.enabled} />
-            <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />
-          </button>
-        ))}
+              <AdminAvailabilityStatus enabled={connection.enabled} />
+              <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />
+            </button>
+          );
+        })}
       </div>
     </section>
   );

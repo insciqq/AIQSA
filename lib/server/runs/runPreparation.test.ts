@@ -4,7 +4,10 @@ import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import { invalidRunParamsError } from "../../domain/runParams";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
-import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
+import {
+  ProviderAdmissionError,
+  type ProviderAdmissionPlan
+} from "../providerRuntime/admission";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -305,6 +308,91 @@ function providerNeutralOpenAISearchPlan(
     selection: { providerConnectionId, providerModelId },
     userId: "user-1"
   };
+}
+
+function nativeSearchCoexistencePlans(
+  adapterKind: "anthropic_messages" | "gemini_interactions_native"
+): Readonly<{
+  client: ProviderAdmissionPlan;
+  hosted: ProviderAdmissionPlan;
+  optionId: string;
+}> {
+  const base = providerNeutralOpenAISearchPlan(adapterKind);
+  const anthropic = adapterKind === "anthropic_messages";
+  const optionId = anthropic ? "anthropic-web-search" : "gemini-google-search";
+  const provider = anthropic ? "anthropic" : "gemini";
+  const protocol = anthropic ? "anthropic_web_search" : "gemini_google_search";
+  const kind = anthropic ? "web_search" : "gemini_google_search";
+  const displayName = anthropic ? "Anthropic Search" : "Google Search";
+  const modelId = anthropic ? "claude-opus-5" : "gemini-3.6-flash";
+  const requestedSearchPlan = { mode: "model_choice" as const, optionIds: [optionId] };
+  const hosted: ProviderAdmissionPlan = {
+    ...base,
+    requestedSearchPlan,
+    requestedSearchStrategyId: optionId,
+    searches: [{
+      bindingKey: null,
+      configuration: {
+        adapterKind: "answer_provider_hosted",
+        config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 300_000 },
+        credentialMode: "answer_provider",
+        displayName,
+        executionModes: ["model_choice"],
+        kind,
+        modelId: null,
+        protocol,
+        provider,
+        providerModelId: null,
+        revisionId: `revision-${provider}-hosted`,
+        searchStrategyRowId: `integration-${provider}-hosted`,
+        strategyId: optionId
+      },
+      integrationId: `integration-${provider}-hosted`,
+      optionId,
+      ordinal: 0,
+      revisionId: `revision-${provider}-hosted`
+    }]
+  };
+  const client: ProviderAdmissionPlan = {
+    ...base,
+    requiresClientToolCoexistence: true,
+    requestedSearchPlan,
+    requestedSearchStrategyId: optionId,
+    searches: [{
+      bindingKey: `search:${optionId}`,
+      configuration: {
+        adapterKind: "provider_model_client",
+        config: {
+          maxOutputTokens: 4_096,
+          maxResults: 8,
+          maxSearchCallsPerAnswer: 2,
+          modelCapabilities: { ...baseCapabilities, nativeSearch: true },
+          modelDefaultParams: {},
+          queryMaxCharacters: 500,
+          reasoningPolicy: "lowest_supported",
+          timeoutMs: 300_000
+        },
+        credentialMode: "provider_model",
+        displayName,
+        executionModes: ["all_selected", "model_choice"],
+        kind,
+        modelId,
+        protocol,
+        provider,
+        providerModelId: base.selection.providerModelId,
+        revisionId: `revision-${provider}-client`,
+        searchStrategyRowId: `integration-${provider}-client`,
+        strategyId: optionId
+      },
+      integrationId: `integration-${provider}-client`,
+      optionId,
+      ordinal: 0,
+      revisionId: `revision-${provider}-client`,
+      role: base.answer
+    }]
+  };
+
+  return { client, hosted, optionId };
 }
 
 function runAttachment(input: {
@@ -1344,73 +1432,9 @@ describe("run preparation", () => {
   });
 
   it("re-admits hosted Gemini Search as a client route when MCP tools must coexist", async () => {
-    const base = providerNeutralOpenAISearchPlan("gemini_interactions_native");
-    const optionId = "gemini-google-search";
-    const hosted: ProviderAdmissionPlan = {
-      ...base,
-      requestedSearchPlan: { mode: "model_choice", optionIds: [optionId] },
-      requestedSearchStrategyId: optionId,
-      searches: [{
-        bindingKey: null,
-        configuration: {
-          adapterKind: "answer_provider_hosted",
-          config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 300_000 },
-          credentialMode: "answer_provider",
-          displayName: "Google Search",
-          executionModes: ["model_choice"],
-          kind: "gemini_google_search",
-          modelId: null,
-          protocol: "gemini_google_search",
-          provider: "gemini",
-          providerModelId: null,
-          revisionId: "revision-gemini-hosted",
-          searchStrategyRowId: "integration-gemini-hosted",
-          strategyId: optionId
-        },
-        integrationId: "integration-gemini-hosted",
-        optionId,
-        ordinal: 0,
-        revisionId: "revision-gemini-hosted"
-      }]
-    };
-    const client: ProviderAdmissionPlan = {
-      ...base,
-      requiresClientToolCoexistence: true,
-      requestedSearchPlan: { mode: "model_choice", optionIds: [optionId] },
-      requestedSearchStrategyId: optionId,
-      searches: [{
-        bindingKey: `search:${optionId}`,
-        configuration: {
-          adapterKind: "provider_model_client",
-          config: {
-            maxOutputTokens: 4_096,
-            maxResults: 8,
-            maxSearchCallsPerAnswer: 2,
-            modelCapabilities: { ...baseCapabilities, nativeSearch: true },
-            modelDefaultParams: {},
-            queryMaxCharacters: 500,
-            reasoningPolicy: "lowest_supported",
-            timeoutMs: 300_000
-          },
-          credentialMode: "provider_model",
-          displayName: "Google Search",
-          executionModes: ["all_selected", "model_choice"],
-          kind: "gemini_google_search",
-          modelId: "gemini-3.6-flash",
-          protocol: "gemini_google_search",
-          provider: "gemini",
-          providerModelId: base.selection.providerModelId,
-          revisionId: "revision-gemini-client",
-          searchStrategyRowId: "integration-gemini-client",
-          strategyId: optionId
-        },
-        integrationId: "integration-gemini-client",
-        optionId,
-        ordinal: 0,
-        revisionId: "revision-gemini-client",
-        role: base.answer
-      }]
-    };
+    const { client, hosted, optionId } = nativeSearchCoexistencePlans(
+      "gemini_interactions_native"
+    );
     const admissionLoad = vi.fn(async (input: {
       requiresClientToolCoexistence?: boolean;
     }) => input.requiresClientToolCoexistence ? client : hosted);
@@ -1438,9 +1462,9 @@ describe("run preparation", () => {
             { attachmentId: attachment.id, type: "attachment" }
           ]
         },
-        modelId: base.selection.providerModelId,
+        modelId: hosted.selection.providerModelId,
         params: {},
-        provider: base.selection.providerConnectionId,
+        provider: hosted.selection.providerConnectionId,
         searchPlan: { mode: "model_choice", optionIds: [optionId] }
       }))
     );
@@ -1463,7 +1487,7 @@ describe("run preparation", () => {
         optionId,
         protocol: "gemini_google_search",
         provider: "gemini",
-        providerModelId: base.selection.providerModelId
+        providerModelId: hosted.selection.providerModelId
       })]
     });
     expect(prepared.providerRequest.searchStrategy).toBe(optionId);
@@ -1476,6 +1500,409 @@ describe("run preparation", () => {
       attachmentIds: [attachment.id],
       userId: "user-1"
     }]);
+  });
+
+  it("materializes request runtime only from the final coexistence admission binding", async () => {
+    const { client, hosted, optionId } = nativeSearchCoexistencePlans(
+      "gemini_interactions_native"
+    );
+    const finalModelId = "gemini-3.6-flash-final-binding";
+    const finalCapabilities = {
+      ...client.answer.modelConfiguration.capabilities,
+      contextWindow: 65_536
+    };
+    const finalAnswer: ProviderAdmissionPlan["answer"] = {
+      ...client.answer,
+      modelConfiguration: {
+        ...client.answer.modelConfiguration,
+        capabilities: finalCapabilities
+      },
+      snapshot: {
+        ...client.answer.snapshot,
+        credentialVersionId: "credential-version-gemini-final",
+        model: {
+          ...client.answer.snapshot.model,
+          capabilities: finalCapabilities,
+          upstreamModelId: finalModelId
+        }
+      }
+    };
+    const finalClient: ProviderAdmissionPlan = {
+      ...client,
+      answer: finalAnswer,
+      fingerprint: "9".repeat(64),
+      searches: client.searches?.map((candidate) => ({
+        ...candidate,
+        ...(candidate.role ? { role: finalAnswer } : {})
+      }))
+    };
+    const admissionLoad = vi.fn(async (input: {
+      requiresClientToolCoexistence?: boolean;
+    }) => input.requiresClientToolCoexistence ? finalClient : hosted);
+    const harness = createHarness();
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        allowFakeProvider: false,
+        knowledgeAdmission: {
+          async load({ knowledgePlan, userId }) {
+            return {
+              bindings: [],
+              fingerprint: "8".repeat(64),
+              knowledgePlan,
+              userId
+            };
+          }
+        },
+        providerAdmission: { load: admissionLoad }
+      },
+      sendInput(successBody({
+        knowledgePlan: { baseIds: ["knowledge-base-1"] },
+        modelId: hosted.selection.providerModelId,
+        params: {},
+        provider: hosted.selection.providerConnectionId,
+        searchPlan: { mode: "model_choice", optionIds: [optionId] }
+      }))
+    );
+
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(admissionLoad).toHaveBeenCalledTimes(2);
+    expect(prepared.providerAdmissionPlan).toEqual(finalClient);
+    expect(prepared.normalizedRequest).toMatchObject({
+      modelCapabilities: { contextWindow: 65_536 },
+      modelId: finalModelId,
+      provider: "gemini"
+    });
+    expect(prepared.providerRequest).toMatchObject({
+      modelCapabilities: { contextWindow: 65_536 },
+      modelId: finalModelId,
+      provider: "gemini"
+    });
+    expect(prepared.providerRequestPreview).toMatchObject({
+      body: { model: finalModelId },
+      provider: "gemini"
+    });
+    expect(result.toolBridge?.provider).toBe("gemini");
+  });
+
+  it.each([
+    {
+      adapterKind: "gemini_interactions_native" as const,
+      hostedPreviewMarker: '"google_search"',
+      provider: "gemini",
+      protocol: "gemini_google_search"
+    },
+    {
+      adapterKind: "anthropic_messages" as const,
+      hostedPreviewMarker: '"web_search_20250305"',
+      provider: "anthropic",
+      protocol: "anthropic_web_search"
+    }
+  ])(
+    "re-admits hosted $provider Search as a query-only route when Knowledge must coexist",
+    async ({ adapterKind, hostedPreviewMarker, protocol, provider }) => {
+      const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
+      const admissionLoad = vi.fn(async (input: {
+        requiresClientToolCoexistence?: boolean;
+      }) => input.requiresClientToolCoexistence ? client : hosted);
+      const knowledgeLoad = vi.fn(async ({ knowledgePlan, userId }) => ({
+        bindings: [],
+        fingerprint: "c".repeat(64),
+        knowledgePlan,
+        userId
+      }));
+      const harness = createHarness();
+      const result = await prepareRun(
+        {
+          ...harness.deps,
+          allowFakeProvider: false,
+          knowledgeAdmission: { load: knowledgeLoad },
+          providerAdmission: { load: admissionLoad }
+        },
+        sendInput(successBody({
+          knowledgePlan: { baseIds: ["knowledge-base-1"] },
+          modelId: hosted.selection.providerModelId,
+          params: {},
+          provider: hosted.selection.providerConnectionId,
+          searchPlan: { mode: "model_choice", optionIds: [optionId] }
+        }))
+      );
+
+      if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+      const prepared = materializePreparedRunData(result.prepared);
+      expect(admissionLoad).toHaveBeenCalledTimes(2);
+      expect(admissionLoad.mock.calls[0]?.[0]).not.toHaveProperty(
+        "requiresClientToolCoexistence"
+      );
+      expect(admissionLoad.mock.calls[1]?.[0]).toMatchObject({
+        requiresClientToolCoexistence: true,
+        searchPlan: { mode: "model_choice", optionIds: [optionId] }
+      });
+      expect(knowledgeLoad).toHaveBeenCalledWith({
+        knowledgePlan: { baseIds: ["knowledge-base-1"] },
+        userId: "user-1"
+      });
+      expect(prepared.normalizedRequest.searchPlan).toMatchObject({
+        mode: "model_choice",
+        options: [expect.objectContaining({
+          adapterKind: "provider_model_client",
+          optionId,
+          protocol,
+          provider,
+          providerModelId: hosted.selection.providerModelId
+        })]
+      });
+      expect(prepared.providerAdmissionPlan).toEqual(client);
+      expect(prepared.providerRequest.searchStrategy).toBe(optionId);
+      expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+        "retrieve_knowledge",
+        "search_engine_1"
+      ]);
+      expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain(
+        hostedPreviewMarker
+      );
+      expect(prepared.defaults?.searchPlan).toEqual({
+        mode: "model_choice",
+        optionIds: [optionId]
+      });
+    }
+  );
+
+  it("re-admits hosted Search once when Knowledge and MCP tools both coexist", async () => {
+    const { client, hosted, optionId } = nativeSearchCoexistencePlans(
+      "gemini_interactions_native"
+    );
+    const admissionLoad = vi.fn(async (input: {
+      requiresClientToolCoexistence?: boolean;
+    }) => input.requiresClientToolCoexistence ? client : hosted);
+    const harness = createHarness({ mcpPlan: readyMcpPlan() });
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        allowFakeProvider: false,
+        knowledgeAdmission: {
+          async load({ knowledgePlan, userId }) {
+            return {
+              bindings: [],
+              fingerprint: "f".repeat(64),
+              knowledgePlan,
+              userId
+            };
+          }
+        },
+        providerAdmission: { load: admissionLoad }
+      },
+      sendInput(successBody({
+        knowledgePlan: { baseIds: ["knowledge-base-1"] },
+        modelId: hosted.selection.providerModelId,
+        params: {},
+        provider: hosted.selection.providerConnectionId,
+        searchPlan: { mode: "model_choice", optionIds: [optionId] }
+      }))
+    );
+
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(admissionLoad).toHaveBeenCalledTimes(2);
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      "retrieve_knowledge",
+      "search_engine_1",
+      "mcp_team_lookup_1"
+    ]);
+  });
+
+  it("uses the same query-only coexistence path for Assistant-owned Knowledge", async () => {
+    const { client, hosted, optionId } = nativeSearchCoexistencePlans(
+      "anthropic_messages"
+    );
+    const admissionLoad = vi.fn(async (input: {
+      requiresClientToolCoexistence?: boolean;
+    }) => input.requiresClientToolCoexistence ? client : hosted);
+    const harness = createHarness();
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        allowFakeProvider: false,
+        assistants: {
+          async resolveForRun() {
+            return {
+              assistant: {
+                assistantId: "assistant-1",
+                developerPrompt: "Use the selected private Knowledge.",
+                knowledgeBaseIds: ["knowledge-base-1"],
+                mcpServerIds: [],
+                name: "Knowledge Assistant",
+                provider: hosted.selection.providerConnectionId,
+                providerModelId: hosted.selection.providerModelId,
+                revisionId: "assistant-revision-1",
+                revisionNumber: 1,
+                runControls: { maxOutputTokens: 512 },
+                searchPlan: { mode: "model_choice" as const, optionIds: [optionId] },
+                systemPrompt: "Answer from admitted evidence."
+              },
+              ok: true as const
+            };
+          }
+        },
+        knowledgeAdmission: {
+          async load({ knowledgePlan, userId }) {
+            return {
+              bindings: [],
+              fingerprint: "1".repeat(64),
+              knowledgePlan,
+              userId
+            };
+          }
+        },
+        providerAdmission: { load: admissionLoad }
+      },
+      sendInput({
+        assistantId: "assistant-1",
+        content: textMessageContent("Use my Knowledge"),
+        timeZone: "Europe/Berlin"
+      })
+    );
+
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(admissionLoad).toHaveBeenCalledTimes(2);
+    expect(prepared.assistant).toEqual({
+      assistantId: "assistant-1",
+      revisionId: "assistant-revision-1"
+    });
+    expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
+      "provider_model_client"
+    );
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      "retrieve_knowledge",
+      "search_engine_1"
+    ]);
+  });
+
+  it.each([
+    "gemini_interactions_native" as const,
+    "anthropic_messages" as const
+  ])(
+    "returns a typed failure when $0 hosted Search has no Knowledge-compatible route",
+    async (adapterKind) => {
+      const { hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
+      const admissionLoad = vi.fn(async (input: {
+        requiresClientToolCoexistence?: boolean;
+      }) => {
+        if (input.requiresClientToolCoexistence) {
+          throw new ProviderAdmissionError("search_strategy_not_available");
+        }
+        return hosted;
+      });
+      const harness = createHarness();
+      const result = await prepareRun(
+        {
+          ...harness.deps,
+          allowFakeProvider: false,
+          knowledgeAdmission: {
+            async load({ knowledgePlan, userId }) {
+              return {
+                bindings: [],
+                fingerprint: "d".repeat(64),
+                knowledgePlan,
+                userId
+              };
+            }
+          },
+          providerAdmission: { load: admissionLoad }
+        },
+        sendInput(successBody({
+          knowledgePlan: { baseIds: ["knowledge-base-1"] },
+          modelId: hosted.selection.providerModelId,
+          params: {},
+          provider: hosted.selection.providerConnectionId,
+          searchPlan: { mode: "model_choice", optionIds: [optionId] }
+        }))
+      );
+
+      expect(result).toMatchObject({
+        code: "search_strategy_not_available",
+        ok: false,
+        status: 403
+      });
+      expect(admissionLoad).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it.each([
+    "gemini_interactions_native" as const,
+    "anthropic_messages" as const
+  ])(
+    "keeps $0 hosted Search when an admitted Knowledge plan is suppressed by tools none",
+    async (adapterKind) => {
+      const { hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
+      const admissionLoad = vi.fn(async () => hosted);
+      const harness = createHarness();
+      const result = await prepareRun(
+        {
+          ...harness.deps,
+          allowFakeProvider: false,
+          knowledgeAdmission: {
+            async load({ knowledgePlan, userId }) {
+              return {
+                bindings: [],
+                fingerprint: "e".repeat(64),
+                knowledgePlan,
+                userId
+              };
+            }
+          },
+          providerAdmission: { load: admissionLoad }
+        },
+        sendInput(successBody({
+          knowledgePlan: { baseIds: ["knowledge-base-1"] },
+          modelId: hosted.selection.providerModelId,
+          params: {},
+          provider: hosted.selection.providerConnectionId,
+          searchPlan: { mode: "model_choice", optionIds: [optionId] },
+          tools: "none"
+        }))
+      );
+
+      if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+      const prepared = materializePreparedRunData(result.prepared);
+      expect(admissionLoad).toHaveBeenCalledTimes(1);
+      expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
+        "answer_provider_hosted"
+      );
+      expect(prepared.providerRequest.tools).toBeUndefined();
+    }
+  );
+
+  it.each([
+    "gemini_interactions_native" as const,
+    "anthropic_messages" as const
+  ])("keeps singleton $0 Search hosted when no client tools are planned", async (adapterKind) => {
+    const { hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
+    const admissionLoad = vi.fn(async () => hosted);
+    const harness = createHarness();
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        allowFakeProvider: false,
+        providerAdmission: { load: admissionLoad }
+      },
+      sendInput(successBody({
+        modelId: hosted.selection.providerModelId,
+        params: {},
+        provider: hosted.selection.providerConnectionId,
+        searchPlan: { mode: "model_choice", optionIds: [optionId] }
+      }))
+    );
+
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(admissionLoad).toHaveBeenCalledTimes(1);
+    expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
+      "answer_provider_hosted"
+    );
+    expect(prepared.providerRequest.tools).toBeUndefined();
   });
 
   it("routes a provider-admitted multi-engine plan without requiring the legacy Perplexity service", async () => {

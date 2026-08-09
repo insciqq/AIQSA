@@ -12,6 +12,7 @@ export type {
 
 export type {
   ChatDetail,
+  ChatContextStats,
   ChatSummary,
   ThreadAssistantIdentity,
   ChatUsageStats,

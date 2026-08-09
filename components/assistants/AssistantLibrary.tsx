@@ -1,5 +1,6 @@
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
+import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
 import type {
   AssistantEditorView,
@@ -150,6 +151,10 @@ export function AssistantLibrary({
 }) {
   const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false);
   const taskEntryRef = useRef<HTMLButtonElement>(null);
+  const editorDirty = Boolean(
+    view.task === "editor" && view.editor?.dirty
+  );
+  useBeforeUnloadGuard(editorDirty);
   const editorMutationLocked =
     view.task === "editor" && view.editor !== null && (view.busy || view.editor.saving);
   const historyMutationLocked =

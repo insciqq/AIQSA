@@ -948,11 +948,13 @@ export async function prepareRun(
         : input.source.source.assistantMessage?.modelId ?? chat.defaultModelId;
   let requestedSearchStrategy = legacySearchStrategyFromPlan(requestedSearchPlan);
   let admissionPlan: ProviderAdmissionPlan | undefined;
-  let adapter: ProviderAdapter;
   let executionProvider = selectedProvider;
   let executionModelId = selectedModelId;
   let modelConfiguration: RunModelConfiguration | null;
-  let toolBridge: ProviderToolBridge | undefined;
+  let previewRuntime: Readonly<{
+    adapter: ProviderAdapter;
+    toolBridge?: ProviderToolBridge;
+  }> | undefined;
 
   if (deps.providerAdmission) {
     try {
@@ -978,15 +980,7 @@ export async function prepareRun(
       }
       throw error;
     }
-    const answerPreview = createProviderPreviewRuntimeBinding(
-      admissionPlan.answer.snapshot,
-      deps.allowFakeProvider === true
-    );
-    adapter = answerPreview.adapter;
-    toolBridge = answerPreview.toolBridge;
     modelConfiguration = admissionPlan.answer.modelConfiguration;
-    executionProvider = admissionPlan.answer.snapshot.providerFamily;
-    executionModelId = admissionPlan.answer.snapshot.model.upstreamModelId;
     requestedSearchPlan = admissionPlan.requestedSearchPlan ?? requestedSearchPlan;
     requestedSearchStrategy = admissionPlan.requestedSearchStrategyId;
     if (requestedSearchPreference) {
@@ -1002,8 +996,13 @@ export async function prepareRun(
     if (!selectedAdapter) {
       return failure("provider_not_available", 400);
     }
-    adapter = selectedAdapter;
-    toolBridge = providerToolBridges[selectedProvider as keyof typeof providerToolBridges];
+    const legacyToolBridge = providerToolBridges[
+      selectedProvider as keyof typeof providerToolBridges
+    ];
+    previewRuntime = {
+      adapter: selectedAdapter,
+      ...(legacyToolBridge ? { toolBridge: legacyToolBridge } : {})
+    };
     const entitlements = await deps.repository.loadEntitlements(input.userId);
     for (const searchStrategy of requestedSearchPlan.optionIds.length
       ? requestedSearchPlan.optionIds
@@ -1048,7 +1047,95 @@ export async function prepareRun(
     return failure("model_not_available", 403);
   }
 
+  const assistantMcpUnavailable = Boolean(
+    assistantRun && assistantRun.mcpServerIds.length > 0 && !deps.mcp
+  );
+  const mcpPlan = assistantRun
+    ? assistantRun.mcpServerIds.length > 0 && deps.mcp
+      ? await deps.mcp.prepare(input.userId, {
+          allowedServerIds: assistantRun.mcpServerIds
+        })
+      : null
+    : deps.mcp && body?.tools !== "none"
+      ? await deps.mcp.prepare(input.userId)
+      : null;
+
+  const admittedKnowledgeToolsEnabled =
+    body?.tools !== "none" &&
+    modelConfiguration.capabilities.toolCalling === true &&
+    Boolean(knowledgeAdmissionPlan);
+  const mcpToolsEnabled = Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
+  const requiresClientToolCoexistence = admittedKnowledgeToolsEnabled || mcpToolsEnabled;
+  if (
+    admissionPlan &&
+    deps.providerAdmission &&
+    requiresClientToolCoexistence &&
+    admissionPlan.searches?.some((candidate) =>
+      candidate.configuration.adapterKind === "answer_provider_hosted")
+  ) {
+    try {
+      admissionPlan = await deps.providerAdmission.load({
+        providerConnectionId: selectedProvider,
+        providerModelId: selectedModelId,
+        requiresClientToolCoexistence: true,
+        searchPlan: requestedSearchPlan,
+        ...(requestedSearchPreference
+          ? {
+              searchPreferencePlan: requestedSearchPreference.plan,
+              searchPreferenceSource: requestedSearchPreference.source
+            }
+          : {}),
+        searchStrategyId: requestedSearchStrategy,
+        userId: input.userId
+      });
+    } catch (error) {
+      if (error instanceof ProviderAdmissionError) {
+        return failure(
+          error.code,
+          error.code === "credential_assignment_ambiguous" ? 409 : 403
+        );
+      }
+      throw error;
+    }
+    requestedSearchPlan = admissionPlan.requestedSearchPlan ?? requestedSearchPlan;
+    requestedSearchStrategy = admissionPlan.requestedSearchStrategyId;
+    if (requestedSearchPreference) {
+      requestedSearchPreference = {
+        plan: admissionPlan.requestedSearchPreferencePlan !== undefined
+          ? admissionPlan.requestedSearchPreferencePlan
+          : requestedSearchPreference.plan,
+        source: requestedSearchPreference.source
+      };
+    }
+    modelConfiguration = admissionPlan.answer.modelConfiguration;
+  }
+
+  // The first plan may only establish that hosted Search conflicts with the
+  // admitted client tools. Derive every runtime field once, from the final
+  // plan whose exact answer binding will be persisted and revalidated.
+  if (admissionPlan) {
+    const answerPreview = createProviderPreviewRuntimeBinding(
+      admissionPlan.answer.snapshot,
+      deps.allowFakeProvider === true
+    );
+    previewRuntime = {
+      adapter: answerPreview.adapter,
+      ...(answerPreview.toolBridge ? { toolBridge: answerPreview.toolBridge } : {})
+    };
+    executionProvider = admissionPlan.answer.snapshot.providerFamily;
+    executionModelId = admissionPlan.answer.snapshot.model.upstreamModelId;
+    modelConfiguration = admissionPlan.answer.modelConfiguration;
+  }
+  if (!previewRuntime) {
+    return failure("provider_not_available", 400);
+  }
+
+  const { adapter, toolBridge } = previewRuntime;
   const { capabilities: modelCapabilities, defaultParams } = modelConfiguration;
+  const knowledgeToolsEnabled =
+    body?.tools !== "none" &&
+    modelCapabilities.toolCalling === true &&
+    Boolean(knowledgeAdmissionPlan);
   const executionAdapterKind =
     modelConfiguration.adapterKind ?? legacyAdapterKind(executionProvider);
   const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
@@ -1193,18 +1280,9 @@ export async function prepareRun(
     return failure("search_provider_not_available", 400);
   }
 
-  if (assistantRun && assistantRun.mcpServerIds.length > 0 && !deps.mcp) {
+  if (assistantMcpUnavailable) {
     return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
   }
-  const mcpPlan = assistantRun
-    ? assistantRun.mcpServerIds.length > 0 && deps.mcp
-      ? await deps.mcp.prepare(input.userId, {
-          allowedServerIds: assistantRun.mcpServerIds
-        })
-      : null
-    : deps.mcp && body?.tools !== "none"
-      ? await deps.mcp.prepare(input.userId)
-      : null;
   if (mcpPlan && !mcpPlan.ok) {
     if (assistantRun) {
       // Consumers may lack visibility into a required server, so the failure
@@ -1227,40 +1305,6 @@ export async function prepareRun(
     provider: executionProvider
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
-  if (
-    admissionPlan &&
-    deps.providerAdmission &&
-    mcpPlan?.ok &&
-    mcpPlan.snapshot.tools.length > 0 &&
-    admissionPlan.searches?.some((candidate) =>
-      candidate.configuration.adapterKind === "answer_provider_hosted")
-  ) {
-    try {
-      admissionPlan = await deps.providerAdmission.load({
-        providerConnectionId: selectedProvider,
-        providerModelId: selectedModelId,
-        requiresClientToolCoexistence: true,
-        searchPlan: requestedSearchPlan,
-        ...(requestedSearchPreference
-          ? {
-              searchPreferencePlan: requestedSearchPreference.plan,
-              searchPreferenceSource: requestedSearchPreference.source
-            }
-          : {}),
-        searchStrategyId: requestedSearchStrategy,
-        userId: input.userId
-      });
-    } catch (error) {
-      if (error instanceof ProviderAdmissionError) {
-        return failure(
-          error.code,
-          error.code === "credential_assignment_ambiguous" ? 409 : 403
-        );
-      }
-      throw error;
-    }
-    requestedSearchPlan = admissionPlan.requestedSearchPlan ?? requestedSearchPlan;
-  }
 
   let attachments: ProviderAttachment[];
   try {
@@ -1340,8 +1384,7 @@ export async function prepareRun(
     ? []
     : [
         ...(
-          modelCapabilities.toolCalling === true &&
-          unbudgetedNormalizedRequest.knowledgePlan!.baseIds.length > 0
+          knowledgeToolsEnabled
             ? [knowledgeRetrievalTool]
             : []
         ),

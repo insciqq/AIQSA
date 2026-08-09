@@ -413,6 +413,47 @@ describe("MainThreadPane", () => {
     expect(screen.queryByText("long-upstream-model-id-that-is-no-longer-available")).not.toBeInTheDocument();
   });
 
+  it("loads earlier messages from a keyboard-accessible local control and exposes retry state", () => {
+    const loadEarlierMessages = vi.fn();
+    const { rerender, props } = renderPane({
+      ...readyComposerOverrides,
+      hasOlderMessages: true,
+      loadEarlierMessages,
+      visibleMessages: [userMessage("question-51")]
+    });
+
+    const load = screen.getByRole("button", { name: "Load earlier messages" });
+    load.focus();
+    fireEvent.keyDown(load, { key: "Enter" });
+    fireEvent.click(load);
+    expect(loadEarlierMessages).toHaveBeenCalledOnce();
+
+    rerender(
+      <MainThreadPane
+        {...props}
+        hasOlderMessages
+        loadEarlierMessages={loadEarlierMessages}
+        loadingOlderMessages
+        visibleMessages={[userMessage("question-51")]}
+      />
+    );
+    const loading = screen.getByRole("button", { name: "Loading earlier messages" });
+    expect(loading).toBeDisabled();
+    expect(loading).toHaveAttribute("aria-busy", "true");
+
+    rerender(
+      <MainThreadPane
+        {...props}
+        hasOlderMessages
+        loadEarlierMessages={loadEarlierMessages}
+        olderMessagesError="older_page_failed"
+        visibleMessages={[userMessage("question-51")]}
+      />
+    );
+    expect(screen.getByRole("button", { name: "Retry loading earlier messages" })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("current conversation is unchanged");
+  });
+
   it.each([
     {
       hint: "Loading models…",
@@ -1555,9 +1596,21 @@ describe("MainThreadPane", () => {
 
       expect(question).not.toHaveAttribute("data-mobile-controls-open");
       expect(answer).not.toHaveAttribute("data-mobile-controls-open");
+      expect(answer).toHaveAttribute(
+        "aria-controls",
+        within(answer as HTMLElement).getByRole("toolbar", {
+          name: "Assistant message actions"
+        }).id
+      );
+      expect(answer).toHaveAccessibleDescription(
+        "Message actions are hidden. Press Enter or Space to show them."
+      );
 
       fireEvent.click(within(answer as HTMLElement).getByTestId("assistant-message-content"));
       expect(answer).toHaveAttribute("data-mobile-controls-open", "true");
+      expect(answer).toHaveAccessibleDescription(
+        "Message actions are shown. Press Escape to hide them."
+      );
       expect(question).not.toHaveAttribute("data-mobile-controls-open");
 
       fireEvent.click(

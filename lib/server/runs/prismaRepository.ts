@@ -17,7 +17,10 @@ import {
   type ModelRunSseEvent
 } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
-import { loadChatUsageStats, summarizeMessageRunArtifacts } from "../chats/prismaRepository";
+import {
+  loadChatBranchSnapshotStats,
+  summarizeMessageRunArtifacts
+} from "../chats/prismaRepository";
 import { titleFromMessageContent } from "../chats/titlePolicy";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import {
@@ -67,10 +70,11 @@ import {
   snapshotToolLoopJson,
   toolLoopCheckpoint,
   toolLoopPersistenceLimits,
+  upsertAnswerRoundUsage,
   type CheckpointedToolLoopRun,
   type PersistedToolLoopCall,
   type PersistToolLoopCallBatchInput,
-  type ToolLoopCheckpointV1,
+  type ToolLoopCheckpoint,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
 
@@ -167,7 +171,7 @@ function persistedToolLoopCall(call: ToolLoopCallRecord): PersistedToolLoopCall 
   };
 }
 
-function sameCheckpoint(left: ToolLoopCheckpointV1, right: ToolLoopCheckpointV1): boolean {
+function sameCheckpoint(left: ToolLoopCheckpoint, right: ToolLoopCheckpoint): boolean {
   return canonicalJson(left as unknown as ToolLoopJsonValue) ===
     canonicalJson(right as unknown as ToolLoopJsonValue);
 }
@@ -900,6 +904,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           return "incomplete" as const;
         }
         const next = toolLoopCheckpoint({
+          answerRoundUsage: checkpoint.version === 2 ? checkpoint.answerRoundUsage : [],
           phase: "provider_running",
           providerContinuation: checkpoint.providerContinuation,
           providerCursor: checkpoint.providerCursor,
@@ -2205,7 +2210,8 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       };
     },
     getChatUpdateForRun: async ({ assistantMessageId, chatId, userId, userMessageId }) => {
-      const chat = await prismaClient.chat.findFirst({
+      return prismaClient.$transaction(async (tx) => {
+        const chat = await tx.chat.findFirst({
         select: {
           _count: {
             select: {
@@ -2314,58 +2320,63 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           id: chatId,
           userId
         }
-      });
+        });
 
-      if (!chat) {
-        return null;
-      }
+        if (!chat) {
+          return null;
+        }
 
-      const usageStats = await loadChatUsageStats(prismaClient, { chatId, userId });
-
-      return {
-        chat: {
+        const { contextStats, usageStats } = await loadChatBranchSnapshotStats(tx, {
           activeLeafMessageId: chat.activeLeafMessageId,
-          createdAt: chat.createdAt,
-          defaultKnowledgePlan: knowledgeDefaultFromJson(chat.defaultKnowledgePlan),
-          defaultModelId: chat.defaultProviderModel?.id ?? null,
-          defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
-          folderId: chat.folderId,
-          id: chat.id,
-          messageCount: chat._count.messages,
-          pinned: chat.pinned,
-          title: chat.title,
-          updatedAt: chat.updatedAt,
-          usageStats
-        },
-        messages: chat.messages.map((message) => {
-          const modelRun = message.assistantModelRuns[0];
+          chatId
+        });
 
-          return {
-            artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun, message.content) : null,
-            assistantIdentity: serializeRunAssistantIdentity(modelRun),
-            content: message.content,
-            createdAt: message.createdAt,
-            errorMessage: message.errorMessage,
-            id: message.id,
-            modelId: message.modelId,
-            modelRunId: modelRun?.id ?? null,
-            parentMessageId: message.parentMessageId,
-            provider: message.provider,
-            role: message.role,
-            runUsage: modelRun
-              ? {
-                  totalTokens: normalizeTokenUsage({
-                    inputTokens: modelRun.inputTokens,
-                    outputTokens: modelRun.outputTokens,
-                    reasoningTokens: 0,
-                    totalTokens: modelRun.totalTokens
-                  }).totalTokens
-                }
-              : null,
-            status: message.status
-          };
-        })
-      };
+        return {
+          chat: {
+            activeLeafMessageId: chat.activeLeafMessageId,
+            contextStats,
+            createdAt: chat.createdAt,
+            defaultKnowledgePlan: knowledgeDefaultFromJson(chat.defaultKnowledgePlan),
+            defaultModelId: chat.defaultProviderModel?.id ?? null,
+            defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
+            folderId: chat.folderId,
+            id: chat.id,
+            messageCount: chat._count.messages,
+            pinned: chat.pinned,
+            title: chat.title,
+            updatedAt: chat.updatedAt,
+            usageStats
+          },
+          messages: chat.messages.map((message) => {
+            const modelRun = message.assistantModelRuns[0];
+
+            return {
+              artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun, message.content) : null,
+              assistantIdentity: serializeRunAssistantIdentity(modelRun),
+              content: message.content,
+              createdAt: message.createdAt,
+              errorMessage: message.errorMessage,
+              id: message.id,
+              modelId: message.modelId,
+              modelRunId: modelRun?.id ?? null,
+              parentMessageId: message.parentMessageId,
+              provider: message.provider,
+              role: message.role,
+              runUsage: modelRun
+                ? {
+                    totalTokens: normalizeTokenUsage({
+                      inputTokens: modelRun.inputTokens,
+                      outputTokens: modelRun.outputTokens,
+                      reasoningTokens: 0,
+                      totalTokens: modelRun.totalTokens
+                    }).totalTokens
+                  }
+                : null,
+              status: message.status
+            };
+          })
+        };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
     isSearchStrategyEnabled: async (searchStrategyId) => {
       const strategy = await prismaClient.searchStrategy.findFirst({
@@ -2638,14 +2649,6 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           toolName: call.toolName
         });
       }
-      const pendingCheckpoint = toolLoopCheckpoint({
-        phase: "tools_pending",
-        providerContinuation: input.providerContinuation,
-        providerCursor: input.providerCursor,
-        roundIndex: input.roundIndex
-      });
-      if (!pendingCheckpoint) return { kind: "conflict" as const };
-
       return prismaClient.$transaction(async (tx) => {
         const run = await lockToolLoopRun(tx, input);
         if (!run) return { kind: "not_found" as const };
@@ -2653,6 +2656,14 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         if (!activeToolLoopRun(run)) return { kind: "conflict" as const };
         const current = parseToolLoopCheckpoint(run.toolLoopState);
         if (!current) return { kind: "conflict" as const };
+        const pendingCheckpoint = toolLoopCheckpoint({
+          answerRoundUsage: current.version === 2 ? current.answerRoundUsage : [],
+          phase: "tools_pending",
+          providerContinuation: input.providerContinuation,
+          providerCursor: input.providerCursor,
+          roundIndex: input.roundIndex
+        });
+        if (!pendingCheckpoint) return { kind: "conflict" as const };
 
         const existing = await tx.modelRunToolCall.findMany({
           include: toolLoopCallInclude,
@@ -2728,7 +2739,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       });
     },
     recordRunUsageEvents: async (input) => {
-      if (input.usageAttributions.length === 0) {
+      if (input.usageAttributions.length === 0 && !input.answerRoundUsage) {
         return false;
       }
 
@@ -2743,6 +2754,18 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       );
 
       return prismaClient.$transaction(async (tx) => {
+        const run = await lockToolLoopRun(tx, input);
+        if (!run) return false;
+        const nextCheckpoint = input.answerRoundUsage
+          ? (() => {
+              const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
+              return checkpoint
+                ? upsertAnswerRoundUsage(checkpoint, input.answerRoundUsage)
+                : null;
+            })()
+          : undefined;
+        if (input.answerRoundUsage && !nextCheckpoint) return false;
+
         const updatedRun = await tx.modelRun.updateMany({
           data: {
             cachedInputTokens: usage.cachedInputTokens,
@@ -2751,6 +2774,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
             reasoningTokens: usage.reasoningTokens,
+            ...(nextCheckpoint ? { toolLoopState: json(nextCheckpoint) } : {}),
             totalTokens: usage.totalTokens
           },
           where: {
@@ -2771,22 +2795,24 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             modelRunId: input.runId
           }
         });
-        await tx.usageEvent.createMany({
-          data: usageAttributions.map((attribution) => ({
-            chatId: input.chatId,
-            cachedInputTokens: attribution.usage.cachedInputTokens,
-            cacheWriteInputTokens: attribution.usage.cacheWriteInputTokens,
-            estimatedCostMicros: attribution.estimatedCostMicros ?? 0,
-            inputTokens: attribution.usage.inputTokens,
-            modelId: attribution.modelId,
-            modelRunId: input.runId,
-            outputTokens: attribution.usage.outputTokens,
-            provider: attribution.provider,
-            reasoningTokens: attribution.usage.reasoningTokens,
-            totalTokens: attribution.usage.totalTokens,
-            userId: input.userId
-          }))
-        });
+        if (usageAttributions.length > 0) {
+          await tx.usageEvent.createMany({
+            data: usageAttributions.map((attribution) => ({
+              chatId: input.chatId,
+              cachedInputTokens: attribution.usage.cachedInputTokens,
+              cacheWriteInputTokens: attribution.usage.cacheWriteInputTokens,
+              estimatedCostMicros: attribution.estimatedCostMicros ?? 0,
+              inputTokens: attribution.usage.inputTokens,
+              modelId: attribution.modelId,
+              modelRunId: input.runId,
+              outputTokens: attribution.usage.outputTokens,
+              provider: attribution.provider,
+              reasoningTokens: attribution.usage.reasoningTokens,
+              totalTokens: attribution.usage.totalTokens,
+              userId: input.userId
+            }))
+          });
+        }
         return true;
       });
     },

@@ -6,6 +6,10 @@ import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection"
 import { AdminProviderModelDefaultTask } from "@/components/admin/AdminProviderModelDefaultTask";
 import { AdminProviderSystemModelTask } from "@/components/admin/AdminProviderSystemModelTask";
 import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
+import {
+  useAdminDiscardAction,
+  useAdminDraftProtection
+} from "@/components/admin/AdminDraftProtection";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { useAdminProviderCustomSetupController } from "@/components/admin/useAdminProviderCustomSetupController";
 import { useAdminProviderQuickSetupController } from "@/components/admin/useAdminProviderQuickSetupController";
@@ -57,24 +61,42 @@ export function AdminProvidersExperience({
     quick.actions.leaveQuickSetup();
     custom.actions.leave();
   };
+  const setupDirty = setupTask === "quick"
+    ? quick.state.secret.length > 0
+    : custom.state.dirty;
+  const requestSetupDiscard = useAdminDraftProtection({
+    dirty: setupDirty,
+    onDiscard: leaveSetup,
+    owner: "provider-setup-draft",
+    pending: setupDirty && (
+      setupTask === "quick" ? quick.state.formLocked : custom.state.formLocked
+    )
+  });
+  const requestProviderDiscard = useAdminDiscardAction();
 
   const openConnection = (connectionId: string | null = null) => {
-    setConnectionEntryProvider(connectionId ? null : quick.state.selectedProviderId);
-    setConnectionEntryId(connectionId);
-    leaveSetup();
-    setWorkspaceTask("connections");
+    requestSetupDiscard(() => {
+      setConnectionEntryProvider(connectionId ? null : quick.state.selectedProviderId);
+      setConnectionEntryId(connectionId);
+      leaveSetup();
+      setWorkspaceTask("connections");
+    });
   };
 
   const openCustom = () => {
-    setConnectionEntryProvider(null);
-    setConnectionEntryId(null);
-    quick.actions.leaveQuickSetup();
-    setSetupTask("custom");
+    requestSetupDiscard(() => {
+      setConnectionEntryProvider(null);
+      setConnectionEntryId(null);
+      quick.actions.leaveQuickSetup();
+      setSetupTask("custom");
+    });
   };
 
   const backToSetup = () => {
-    custom.actions.leave();
-    setSetupTask("quick");
+    requestSetupDiscard(() => {
+      custom.actions.leave();
+      setSetupTask("quick");
+    });
   };
 
   const commitWorkspaceTask = (nextTask: ProviderWorkspaceTask) => {
@@ -97,7 +119,7 @@ export function AdminProvidersExperience({
   const selectWorkspaceTask = (nextTask: ProviderWorkspaceTask) => {
     if (nextTask === workspaceTask) return;
 
-    commitWorkspaceTask(nextTask);
+    requestProviderDiscard(() => commitWorkspaceTask(nextTask));
   };
 
   return (

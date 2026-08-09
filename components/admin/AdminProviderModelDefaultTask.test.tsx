@@ -50,6 +50,40 @@ describe("administrator provider model default task", () => {
     });
   });
 
+  it("keeps duplicate connection/model candidates visibly distinct", async () => {
+    const duplicateCatalog = {
+      candidates: [
+        catalog.candidates[0],
+        {
+          ...catalog.candidates[0],
+          connectionDisplayName: " provider a ",
+          connectionId: "connection-b",
+          id: "model-b"
+        }
+      ],
+      policy: {
+        ...catalog.policy,
+        defaultModel: { ...catalog.candidates[0], available: true }
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ modelPolicy: duplicateCatalog }), { status: 200 })
+    ));
+
+    render(<AdminProviderModelDefaultTask active />);
+    const select = await screen.findByLabelText("Active answer model deployment");
+    const optionLabels = Array.from((select as HTMLSelectElement).options)
+      .map(({ textContent }) => textContent ?? "")
+      .filter((label) => label.includes("Model A"));
+
+    expect(optionLabels).toHaveLength(2);
+    expect(optionLabels[0]).toMatch(/^Provider A · ref [0-9A-Z]{6,} \/ Model A$/u);
+    expect(optionLabels[1]).toMatch(/^ provider a  · ref [0-9A-Z]{6,} \/ Model A$/u);
+    expect(optionLabels[0]).not.toBe(optionLabels[1]);
+    expect(screen.getByText(/^Current: Provider A · ref [0-9A-Z]{6,} \/ Model A\.$/u))
+      .toBeVisible();
+  });
+
   it("keeps a stale edit visible and actionable", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ modelPolicy: catalog }), { status: 200 }))

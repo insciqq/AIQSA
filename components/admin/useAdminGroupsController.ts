@@ -39,6 +39,10 @@ export type UseAdminGroupsControllerOptions = Readonly<{
 
 export type AdminGroupsController = Readonly<{
   access: Readonly<{
+    draftProtection: Readonly<{
+      dirty: boolean;
+      discard(): void;
+    }>;
     sectionProps: AdminAccessGroupsSectionProps | null;
     toggleCreateForm(): void;
   }>;
@@ -90,6 +94,18 @@ export function useAdminGroupsController({
       : [],
     [dashboard?.users, selectedGroup]
   );
+  const draftDirty = createName.length > 0 || Boolean(
+    renamingGroupId &&
+    selectedGroup?.id === renamingGroupId &&
+    renameName !== selectedGroup.name
+  );
+
+  const discardDraft = useCallback(() => {
+    setCreateName("");
+    setCreateFormOpen(false);
+    setRenameName("");
+    setRenamingGroupId(null);
+  }, []);
 
   const selectGroup = useCallback((groupId: string) => {
     setRequestedSelectedGroupId(groupId);
@@ -249,15 +265,16 @@ export function useAdminGroupsController({
     enabled: boolean
   ) => {
     const user = dashboard?.users.find((candidate) => candidate.id === userId);
-    if (!user || group.archivedAt) return;
+    if (!user || group.archivedAt) return false;
     const currentGroupIds = activeGroupIdsForUser(user, dashboard?.groups ?? []);
     const nextGroupIds = enabled
       ? [...new Set([...currentGroupIds, group.id])]
       : currentGroupIds.filter((groupId) => groupId !== group.id);
-    await runAction(
+    const result = await runAction(
       { action: "set_user_groups", groupIds: nextGroupIds, userId },
       enabled ? "Member added to group." : "Member removed from group."
     );
+    return !result.error;
   }, [dashboard?.groups, dashboard?.users, runAction]);
 
   const startRenaming = useCallback((group: AdminGroup) => {
@@ -279,7 +296,9 @@ export function useAdminGroupsController({
         onQueryChange: setGroupQuery,
         onRenameNameChange: changeRenameName,
         onRenameSubmit: renameGroup,
-        onRemoveMember: (group, user) => setGroupMembership(group, user.id, false),
+        onRemoveMember: (group, user) => {
+          void setGroupMembership(group, user.id, false);
+        },
         onRequestArchive: requestArchiveGroup,
         onRequestDelete: requestDeleteGroup,
         onSelectGroup: selectGroup,
@@ -347,8 +366,12 @@ export function useAdminGroupsController({
 
   return useMemo(() => ({
     access: {
+      draftProtection: {
+        dirty: draftDirty,
+        discard: discardDraft
+      },
       sectionProps,
       toggleCreateForm
     }
-  }), [sectionProps, toggleCreateForm]);
+  }), [discardDraft, draftDirty, sectionProps, toggleCreateForm]);
 }

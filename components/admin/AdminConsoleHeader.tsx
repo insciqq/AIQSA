@@ -9,6 +9,7 @@ export type AdminConsoleHeaderProps = Readonly<{
   adminEmail: string;
   lastLoadedAt: Date | null;
   loading: boolean;
+  navigationDisabled?: boolean;
   onReturnToChatClick?(event: MouseEvent<HTMLAnchorElement>): void;
   onRefresh(): void;
   releaseStatus?: AdminReleaseStatus | null;
@@ -27,6 +28,7 @@ export function AdminConsoleHeader({
   adminEmail,
   lastLoadedAt,
   loading,
+  navigationDisabled = false,
   onReturnToChatClick,
   onRefresh,
   releaseStatus,
@@ -83,21 +85,21 @@ export function AdminConsoleHeader({
       </div>
       <div className="flex flex-wrap items-center gap-2 sm:[@media(max-height:32rem)]:!flex-nowrap sm:[@media(max-height:32rem)]:!gap-1">
         <a
-          aria-disabled={submitting || undefined}
+          aria-disabled={submitting || navigationDisabled || undefined}
           className={`${quietButton} ${
-            submitting
+            submitting || navigationDisabled
               ? "cursor-not-allowed bg-control-surface text-ink-disabled opacity-60 hover:bg-control-surface hover:text-ink-disabled active:bg-control-surface"
               : ""
           }`}
           href="/"
           onClick={(event) => {
-            if (submitting) {
+            if (submitting || navigationDisabled) {
               event.preventDefault();
               return;
             }
             onReturnToChatClick?.(event);
           }}
-          tabIndex={submitting ? -1 : undefined}
+          tabIndex={submitting || navigationDisabled ? -1 : undefined}
         >
           <ArrowLeft className="size-3.5" aria-hidden="true" />
           Return to chat
@@ -117,7 +119,7 @@ export function AdminConsoleHeader({
         <button
           aria-label="Refresh Control Center dashboard"
           className={quietButton}
-          disabled={loading || submitting}
+          disabled={loading || submitting || navigationDisabled}
           onClick={() => onRefresh()}
           type="button"
         >

@@ -441,6 +441,7 @@ function createMemoryRepository(
         ? {
             chat: {
               activeLeafMessageId: assistantMessageId,
+              contextStats: { approximateActiveBranchInputTokens: 23 },
               createdAt: "2026-06-08T00:00:00.000Z",
               defaultModelId: "fake-qsa",
               defaultProvider: "fake",

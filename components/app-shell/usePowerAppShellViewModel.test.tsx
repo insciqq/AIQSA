@@ -283,6 +283,23 @@ describe("usePowerAppShellViewModel", () => {
     );
   });
 
+  it("uses the server-owned full active-branch estimate when the browser holds only a page", () => {
+    const { result } = renderViewModel({
+      activeThreadContextStats: { approximateActiveBranchInputTokens: 12_345 },
+      visibleMessages: [{
+        content: "only the loaded tail",
+        id: "tail",
+        parentMessageId: "unloaded-parent",
+        role: "assistant",
+        status: "complete"
+      }]
+    });
+
+    expect(result.current.composerContextStats.approximateInputTokens).toBe(
+      estimateApproxTokens(STANDARD_CHAT_BASELINE_TEMPLATE) + 12_345
+    );
+  });
+
   it("derives current context and active-chat usage stats", () => {
     const catalog: Catalog = {
       defaults: {

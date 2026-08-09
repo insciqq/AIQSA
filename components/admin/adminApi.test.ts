@@ -117,6 +117,23 @@ describe("admin API client", () => {
     expect(fetcher).toHaveBeenCalledWith("/api/admin");
   });
 
+  it("disambiguates duplicate dashboard connection names at the client boundary", async () => {
+    const dashboard = emptyDashboard();
+    dashboard.catalog.providers = [
+      { id: "connection-a", name: "Shared gateway" },
+      { id: "connection-b", name: " shared   gateway " }
+    ];
+
+    const result = await requestAdminDashboard(async () => Response.json(dashboard));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.dashboard.catalog.providers.map(({ name }) => name)).toEqual([
+      expect.stringMatching(/^Shared gateway · ref [0-9A-Z]{6,}$/u),
+      expect.stringMatching(/^ shared   gateway  · ref [0-9A-Z]{6,}$/u)
+    ]);
+  });
+
   it.each([
     ["invalid JSON", invalidJsonResponse()],
     ["an empty response", new Response(null, { status: 200 })],

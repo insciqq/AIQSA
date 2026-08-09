@@ -15,7 +15,6 @@ import type {
 } from "@/components/app-shell/types";
 import {
   selectThreadSnapshot,
-  selectThreadVisibleMessages,
   useThreadStore
 } from "@/components/app-shell/threadStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
@@ -29,8 +28,11 @@ type ThreadActionsInput = {
   activateChat(chat: ChatSummary): void;
   closeChatActions(): void;
   confirmDeleteMessage(messageId: string): Promise<boolean>;
+  loadCompleteActiveBranch(chatId: string): Promise<ThreadMessage[]>;
   openShareDialog(target: ShareDialogTarget): void;
+  onThreadMutationSettled?(): void;
   pendingBranchCheckouts: Map<string, Promise<BranchCheckoutSettlement>>;
+  pendingThreadMutations?: Set<string>;
   refreshActiveChat(
     chatId: string | null,
     options?: {
@@ -84,31 +86,26 @@ export function createThreadActions({
   activateChat,
   closeChatActions,
   confirmDeleteMessage,
+  loadCompleteActiveBranch,
   openShareDialog,
+  onThreadMutationSettled = () => undefined,
   pendingBranchCheckouts,
+  pendingThreadMutations = new Set(),
   refreshActiveChat,
   resetThreadToLatest,
   setNotice
 }: ThreadActionsInput) {
   async function copyVisibleThread() {
-    const thread = selectThreadVisibleMessages(
-      selectThreadSnapshot(useThreadStore.getState(), activeChatId)
-    )
-      .map(
-        (message) =>
-          `${message.role === "assistant" ? "Assistant" : "User"}:\n${textFromThreadContent(message.content).trim()}`
-      )
-      .join("\n\n");
-
-    if (!thread.trim()) {
-      setNotice({
-        kind: "error",
-        text: "Nothing to copy yet."
-      });
-      return;
-    }
-
     try {
+      if (!activeChatId) throw new Error("Nothing to copy yet.");
+      setNotice({ kind: "success", text: "Preparing the complete thread…" });
+      const thread = (await loadCompleteActiveBranch(activeChatId))
+        .map(
+          (message) =>
+            `${message.role === "assistant" ? "Assistant" : "User"}:\n${textFromThreadContent(message.content).trim()}`
+        )
+        .join("\n\n");
+      if (!thread.trim()) throw new Error("Nothing to copy yet.");
       await writeClipboardText(`# ${activeChatTitle}\n\n${thread}`);
       setNotice({
         kind: "success",
@@ -117,7 +114,7 @@ export function createThreadActions({
     } catch (error) {
       setNotice({
         kind: "error",
-        text: errorMessage(error)
+        text: `The complete thread could not be copied: ${errorMessage(error)}`
       });
     }
   }
@@ -261,34 +258,39 @@ export function createThreadActions({
         return { leafId: messageId, succeeded: false };
       }
 
-      const previousLeafId = selectThreadSnapshot(
-        useThreadStore.getState(),
-        chatId
-      ).activeLeafId;
+      const threadBeforeCheckout = selectThreadSnapshot(useThreadStore.getState(), chatId);
+      const previousLeafId = threadBeforeCheckout.activeLeafId;
+      const selectedLeafIsLoaded = threadBeforeCheckout.messages.some(
+        (message) => message.id === messageId
+      );
       const previousStoredLeafId = useWorkspaceStore
         .getState()
         .chats.find((chat) => chat.id === chatId)?.activeLeafMessageId;
-      useThreadStore.getState().checkoutBranch(chatId, messageId);
-      resetThreadToLatest();
-      useWorkspaceStore.getState().updateChats((current) =>
-        current.map((chat) => (chat.id === chatId ? { ...chat, activeLeafMessageId: messageId } : chat))
-      );
+      if (selectedLeafIsLoaded) {
+        useThreadStore.getState().checkoutBranch(chatId, messageId);
+        resetThreadToLatest();
+        useWorkspaceStore.getState().updateChats((current) =>
+          current.map((chat) => (chat.id === chatId ? { ...chat, activeLeafMessageId: messageId } : chat))
+        );
+      }
 
       try {
         await persistActiveLeafRequest(chatId, messageId, previousStoredLeafId);
       } catch (error) {
-        useThreadStore.getState().checkoutBranch(chatId, previousLeafId);
-        useWorkspaceStore.getState().updateChats((current) =>
-          current.map((chat) =>
-            chat.id === chatId
-              ? {
-                  ...chat,
-                  activeLeafMessageId:
-                    previousStoredLeafId !== undefined ? previousStoredLeafId : previousLeafId
-                }
-              : chat
-          )
-        );
+        if (selectedLeafIsLoaded) {
+          useThreadStore.getState().checkoutBranch(chatId, previousLeafId);
+          useWorkspaceStore.getState().updateChats((current) =>
+            current.map((chat) =>
+              chat.id === chatId
+                ? {
+                    ...chat,
+                    activeLeafMessageId:
+                      previousStoredLeafId !== undefined ? previousStoredLeafId : previousLeafId
+                  }
+                : chat
+            )
+          );
+        }
         setNotice({
           kind: "error",
           text: errorMessage(error)
@@ -301,11 +303,29 @@ export function createThreadActions({
         return { leafId: messageId, succeeded: false };
       }
 
-      await refreshActiveChat(chatId, {
+      const refreshed = await refreshActiveChat(chatId, {
         forceDetail: true,
         preserveControls: true,
         resumeRuns: false
       });
+      if (!refreshed && !selectedLeafIsLoaded) {
+        const rollbackLeafId =
+          previousStoredLeafId !== undefined ? previousStoredLeafId : previousLeafId;
+        try {
+          await persistActiveLeafRequest(chatId, rollbackLeafId, messageId);
+          useThreadStore.getState().checkoutBranch(chatId, previousLeafId);
+          setNotice({
+            kind: "error",
+            text: "The selected version could not be loaded. The previous version is still open."
+          });
+        } catch (rollbackError) {
+          setNotice({
+            kind: "error",
+            text: `The selected version could not be loaded or restored: ${errorMessage(rollbackError)}`
+          });
+        }
+        return { leafId: messageId, succeeded: false };
+      }
       return { leafId: messageId, succeeded: true };
     })();
     pendingBranchCheckouts.set(chatId, operation);
@@ -315,12 +335,13 @@ export function createThreadActions({
     } finally {
       if (pendingBranchCheckouts.get(chatId) === operation) {
         pendingBranchCheckouts.delete(chatId);
+        onThreadMutationSettled();
       }
     }
   }
 
   async function deleteMessage(messageId: string) {
-    if (activeChatStreaming) {
+    if (!activeChatId || activeChatStreaming) {
       return;
     }
 
@@ -328,6 +349,11 @@ export function createThreadActions({
       return;
     }
 
+    const chatId = activeChatId;
+    if (pendingThreadMutations.has(chatId)) {
+      return;
+    }
+    pendingThreadMutations.add(chatId);
     try {
       const response = await shellFetch(`/api/messages/${messageId}`, {
         method: "DELETE"
@@ -374,13 +400,16 @@ export function createThreadActions({
         kind: "success",
         text: "Message deleted"
       });
-      await refreshActiveChat(activeChatId, { preserveControls: true, resumeRuns: false });
+      await refreshActiveChat(chatId, { preserveControls: true, resumeRuns: false });
       restoreFocusAfterRemoval("#composer");
     } catch (error) {
       setNotice({
         kind: "error",
         text: errorMessage(error)
       });
+    } finally {
+      pendingThreadMutations.delete(chatId);
+      onThreadMutationSettled();
     }
   }
 

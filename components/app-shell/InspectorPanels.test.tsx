@@ -34,6 +34,37 @@ function message(
 }
 
 describe("DetailedInspector", () => {
+  it("owns lazy branch loading, retry, and the compact projection independently of rich messages", () => {
+    const retry = vi.fn();
+    const { rerender } = render(
+      <DetailedInspector {...inspectorProps({ branchLoading: true })} />
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Loading conversation branches");
+
+    rerender(
+      <DetailedInspector
+        {...inspectorProps({ branchError: "failed", onRetryBranches: retry })}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retry).toHaveBeenCalledOnce();
+
+    rerender(
+      <DetailedInspector
+        {...inspectorProps({
+          activeLeafId: "compact-answer",
+          branchMessages: [
+            message("compact-question", null, "user", "Compact preview"),
+            message("compact-answer", "compact-question", "assistant", "Compact answer")
+          ],
+          messages: [message("rich-tail", null, "assistant", "Rich loaded tail")]
+        })}
+      />
+    );
+    expect(screen.getByTestId("branch-tree")).toHaveTextContent("Compact preview");
+    expect(screen.getByTestId("branch-tree")).not.toHaveTextContent("Rich loaded tail");
+  });
+
   it("disables only a real alternate version with explicit guidance while streaming", () => {
     render(
       <DetailedInspector

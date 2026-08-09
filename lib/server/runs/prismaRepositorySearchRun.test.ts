@@ -76,4 +76,100 @@ describe("Prisma run repository search evidence", () => {
       })
     }));
   });
+
+  it("projects terminal chat data and active-branch stats from one fenced snapshot", async () => {
+    const now = new Date("2026-08-09T10:00:00.000Z");
+    const directChatRead = vi.fn(() => {
+      throw new Error("chat update escaped its transaction snapshot");
+    });
+    const transactionChatRead = vi.fn().mockResolvedValue({
+      _count: { messages: 2 },
+      activeLeafMessageId: "assistant-active",
+      createdAt: now,
+      defaultKnowledgePlan: null,
+      defaultProviderModel: null,
+      folderId: null,
+      id: "chat-1",
+      messages: [],
+      pinned: false,
+      title: "Atomic update",
+      updatedAt: now
+    });
+    const transactionMessagesRead = vi.fn().mockResolvedValue([
+      {
+        assistantModelRuns: [],
+        id: "user-root",
+        parentMessageId: null,
+        role: "user"
+      },
+      {
+        assistantModelRuns: [{
+          cachedInputTokens: 1,
+          cacheWriteInputTokens: 2,
+          inputTokens: 3,
+          outputTokens: 4,
+          status: "complete",
+          totalTokens: 7
+        }],
+        id: "assistant-active",
+        parentMessageId: "user-root",
+        role: "assistant"
+      }
+    ]);
+    const transactionRawRead = vi.fn().mockResolvedValue([
+      {
+        blockOrdinal: 1,
+        blockValue: null,
+        codePoint: 65,
+        kind: "code_points",
+        messageId: "user-root",
+        occurrences: 4
+      },
+      {
+        blockOrdinal: 1,
+        blockValue: null,
+        codePoint: 0x1f600,
+        kind: "code_points",
+        messageId: "assistant-active",
+        occurrences: 1
+      }
+    ]);
+    const tx = {
+      $queryRaw: transactionRawRead,
+      chat: { findFirst: transactionChatRead },
+      message: { findMany: transactionMessagesRead }
+    };
+    const transaction = vi.fn(async (run: (client: typeof tx) => Promise<unknown>) => run(tx));
+    const repository = createPrismaRunRepository({
+      $transaction: transaction,
+      chat: { findFirst: directChatRead }
+    } as never);
+
+    const update = await repository.getChatUpdateForRun({
+      assistantMessageId: "assistant-active",
+      chatId: "chat-1",
+      userId: "user-1",
+      userMessageId: "user-root"
+    });
+
+    expect(directChatRead).not.toHaveBeenCalled();
+    expect(transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { isolationLevel: "RepeatableRead" }
+    );
+    expect(transactionChatRead).toHaveBeenCalledOnce();
+    expect(transactionMessagesRead).toHaveBeenCalledWith(expect.objectContaining({
+      where: { chatId: "chat-1" }
+    }));
+    expect(update?.chat).toMatchObject({
+      activeLeafMessageId: "assistant-active",
+      contextStats: { approximateActiveBranchInputTokens: 3 },
+      usageStats: {
+        activeBranchMessageCount: 2,
+        cachedInputTokens: 1,
+        cacheWriteInputTokens: 2,
+        totalTokens: 7
+      }
+    });
+  });
 });

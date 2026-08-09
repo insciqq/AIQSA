@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { estimateCostMicros, normalizeTokenUsage, sumTokenUsage } from "./usage";
+import {
+  estimateCostMicros,
+  normalizeTokenUsage,
+  subtractTokenUsage,
+  sumTokenUsage
+} from "./usage";
 
 describe("usage helpers", () => {
   it("sums token usage from final usage events", () => {
@@ -27,6 +32,35 @@ describe("usage helpers", () => {
       reasoningTokens: 2,
       totalTokens: 12
     });
+  });
+
+  it("subtracts every normalized usage field without permitting underflow", () => {
+    expect(subtractTokenUsage({
+      cachedInputTokens: 4,
+      cacheWriteInputTokens: 3,
+      inputTokens: 10,
+      outputTokens: 8,
+      reasoningTokens: 5,
+      totalTokens: 21
+    }, {
+      cachedInputTokens: 1,
+      cacheWriteInputTokens: 2,
+      inputTokens: 4,
+      outputTokens: 3,
+      reasoningTokens: 2,
+      totalTokens: 8
+    })).toEqual({
+      cachedInputTokens: 3,
+      cacheWriteInputTokens: 1,
+      inputTokens: 6,
+      outputTokens: 5,
+      reasoningTokens: 3,
+      totalTokens: 13
+    });
+    expect(subtractTokenUsage(
+      { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
+      { inputTokens: 2, outputTokens: 0, reasoningTokens: 0 }
+    )).toBeNull();
   });
 
   it("estimates micros using explicit pricing metadata", () => {

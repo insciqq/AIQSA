@@ -208,7 +208,8 @@ describe("provider tool loop", () => {
     expect(operations).toEqual(["publication", "usage"]);
     expect(onUsage).toHaveBeenCalledWith(
       { inputTokens: 7, outputTokens: 3, reasoningTokens: 1 },
-      expect.objectContaining({ modelId: "gpt-test", provider: "openai" })
+      expect.objectContaining({ modelId: "gpt-test", provider: "openai" }),
+      { completeness: "terminal", round: 1 }
     );
     expect(outcome).toMatchObject({
       failure: {
@@ -216,6 +217,41 @@ describe("provider tool loop", () => {
         message: "publication stopped",
         stage: "provider"
       },
+      status: "failed"
+    });
+  });
+
+  it("labels the latest streamed usage as partial when a provider round fails", async () => {
+    const onUsage = vi.fn();
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream() {
+        yield {
+          data: { inputTokens: 5, outputTokens: 2, reasoningTokens: 1, totalTokens: 7 },
+          type: "usage" as const
+        };
+        throw new Error("provider disconnected");
+      }
+    };
+
+    const outcome = await runProviderToolLoop({
+      adapter,
+      bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 1 },
+      executeTool: vi.fn(),
+      initialRequest: request(),
+      onUsage,
+      parallelToolCalls: false,
+      tools: []
+    });
+
+    expect(onUsage).toHaveBeenCalledWith(
+      { inputTokens: 5, outputTokens: 2, reasoningTokens: 1, totalTokens: 7 },
+      expect.objectContaining({ modelId: "gpt-test", provider: "openai" }),
+      { completeness: "partial", round: 1 }
+    );
+    expect(outcome).toMatchObject({
+      failure: { message: "provider disconnected", stage: "provider" },
       status: "failed"
     });
   });

@@ -36,6 +36,10 @@ export type UseAdminInvitesControllerOptions = Readonly<{
 }>;
 
 export type AdminInvitesController = Readonly<{
+  draftProtection: Readonly<{
+    dirty: boolean;
+    discard(): void;
+  }>;
   headerForm: AdminInvitesHeaderForm;
   sectionProps: AdminInvitesSectionProps | null;
 }>;
@@ -68,6 +72,16 @@ export function useAdminInvitesController({
   const [selectedInviteId, setSelectedInviteId] = useState<string | null>(null);
   const [sendEmail, setSendEmail] = useState(true);
   const [statusFilter, setStatusFilter] = useState<AdminInviteStatusFilter>("all");
+  const draftDirty = email.length > 0 || groupIds.length > 0 || !sendEmail;
+
+  const discardDraft = useCallback(() => {
+    setEmail("");
+    setGroupIds([]);
+    setSendEmail(true);
+    setFormOpen(false);
+    setCompactDetailOpen(false);
+    clearFieldError("invite-email");
+  }, [clearFieldError]);
   const inviteLink = useAdminOneTimeInviteLink({ feedback, writeText });
   const projectedGroupIds = useMemo(
     () => activeDraftGroupIds(dashboard?.groups ?? [], groupIds),
@@ -278,12 +292,16 @@ export function useAdminInvitesController({
 
   return useMemo(
     () => ({
+      draftProtection: {
+        dirty: draftDirty,
+        discard: discardDraft
+      },
       headerForm: {
         formOpen,
         toggleForm
       },
       sectionProps
     }),
-    [formOpen, sectionProps, toggleForm]
+    [discardDraft, draftDirty, formOpen, sectionProps, toggleForm]
   );
 }

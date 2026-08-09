@@ -154,7 +154,10 @@ describe("shell SSE protocol", () => {
 
 describe("chat wire mapping", () => {
   const detail: ChatDetailWire = {
-    activeLeafMessageId: "message-error",
+    activeLeafMessageId: "message-cancelled",
+    contextStats: {
+      approximateActiveBranchInputTokens: 144
+    },
     createdAt: "2026-07-12T00:00:00.000Z",
     defaultModelId: "gpt-5.5",
     defaultProvider: "openai",
@@ -171,9 +174,16 @@ describe("chat wire mapping", () => {
       message({
         content: { blocks: [] },
         id: "message-cancelled",
+        parentMessageId: "message-error",
         status: "cancelled"
       })
     ],
+    pageInfo: {
+      activeLeafMessageId: "message-cancelled",
+      beforeCursor: null,
+      hasOlder: false,
+      snapshotUpdatedAt: "2026-07-12T00:01:00.000Z"
+    },
     pinned: false,
     title: "Mapped chat",
     updatedAt: "2026-07-12T00:01:00.000Z",
@@ -182,7 +192,7 @@ describe("chat wire mapping", () => {
 
   it("keeps workspace summaries message-free", () => {
     expect(chatSummaryFromApi(detail)).toEqual({
-      activeLeafMessageId: "message-error",
+      activeLeafMessageId: "message-cancelled",
       createdAt: "2026-07-12T00:00:00.000Z",
       defaultKnowledgePlan: null,
       defaultModelId: "gpt-5.5",
@@ -212,12 +222,31 @@ describe("chat wire mapping", () => {
     ]);
   });
 
+  it("preserves the server-owned context estimate and page fence", () => {
+    expect(chatDetailFromApi(detail)).toMatchObject({
+      contextStats: {
+        approximateActiveBranchInputTokens: 144
+      },
+      pageInfo: {
+        activeLeafMessageId: "message-cancelled",
+        beforeCursor: null,
+        hasOlder: false,
+        snapshotUpdatedAt: detail.updatedAt
+      }
+    });
+  });
+
   it("keeps a persisted queued message non-terminal", () => {
     expect(
       chatDetailFromApi({
         ...detail,
+        activeLeafMessageId: "message-queued",
         messageCount: 1,
-        messages: [message({ id: "message-queued", status: "queued" })]
+        messages: [message({ id: "message-queued", status: "queued" })],
+        pageInfo: {
+          ...detail.pageInfo,
+          activeLeafMessageId: "message-queued"
+        }
       }).messages[0]?.status
     ).toBe("streaming");
   });

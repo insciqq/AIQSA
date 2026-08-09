@@ -60,6 +60,8 @@ const actionStripClass =
 
 const messageMenuViewportGutter = 8;
 const messageMenuTriggerGap = 8;
+export const compactMessageControlsQuery =
+  "(max-width: 639px), (max-height: 32rem), (hover: none), (pointer: coarse)";
 
 type MessageMenuPlacement = Readonly<{
   left: number;
@@ -481,6 +483,7 @@ function TurnActions({
 function ThreadMessageRowComponent({
   answerModelLabel,
   artifactSummary,
+  compactControls = false,
   editPending = false,
   justCompleted = false,
   message,
@@ -504,6 +507,7 @@ function ThreadMessageRowComponent({
 }: {
   answerModelLabel: string | null;
   artifactSummary?: ThreadArtifactSummary | null;
+  compactControls?: boolean;
   editPending?: boolean;
   justCompleted?: boolean;
   message: ThreadMessage;
@@ -526,7 +530,9 @@ function ThreadMessageRowComponent({
   streaming: boolean;
 }) {
   const disabledDescriptionId = `message-actions-disabled-${message.id}`;
+  const compactControlsDescriptionId = `message-actions-disclosure-${message.id}`;
   const editPendingDescriptionId = `message-edit-pending-${message.id}`;
+  const messageActionsId = `message-actions-${message.id}`;
   const targetDescriptionId = `message-actions-target-${message.id}`;
   const [runDetailsOpen, setRunDetailsOpen] = useState(false);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
@@ -604,6 +610,9 @@ function ThreadMessageRowComponent({
     }
   }
   const actionTargetDescription = turnActionDescription(message);
+  const compactControlsDescription = mobileControlsOpen
+    ? "Message actions are shown. Press Escape to hide them."
+    : "Message actions are hidden. Press Enter or Space to show them.";
   const actions = (
     <TurnActions
       disabledDescriptionId={disabledDescriptionId}
@@ -636,11 +645,7 @@ function ThreadMessageRowComponent({
   function handleMobileMessageClick(event: ReactMouseEvent<HTMLElement>) {
     if (
       !onToggleMobileControls ||
-      typeof window === "undefined" ||
-      typeof window.matchMedia !== "function" ||
-      !window.matchMedia(
-        "(max-width: 639px), (max-height: 32rem), (hover: none), (pointer: coarse)"
-      ).matches
+      !compactControls
     ) {
       return;
     }
@@ -660,6 +665,26 @@ function ThreadMessageRowComponent({
     onToggleMobileControls(message.id);
   }
 
+  function handleMobileMessageKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (
+      !onToggleMobileControls ||
+      event.repeat ||
+      event.target !== event.currentTarget ||
+      !compactControls
+    ) {
+      return;
+    }
+
+    const shouldToggle = event.key === "Enter" || event.key === " ";
+    const shouldClose = event.key === "Escape" && mobileControlsOpen;
+    if (!shouldToggle && !shouldClose) {
+      return;
+    }
+
+    event.preventDefault();
+    onToggleMobileControls(message.id);
+  }
+
   if (message.role === "user") {
     return (
       <article
@@ -669,9 +694,18 @@ function ThreadMessageRowComponent({
         data-role="user"
         data-status={message.status}
         aria-label="Question"
+        aria-controls={compactControls ? messageActionsId : undefined}
+        aria-describedby={compactControls ? compactControlsDescriptionId : undefined}
+        aria-keyshortcuts={compactControls ? "Enter Space Escape" : undefined}
         tabIndex={0}
         onClick={handleMobileMessageClick}
+        onKeyDown={handleMobileMessageKeyDown}
       >
+        {compactControls ? (
+          <span className="sr-only" id={compactControlsDescriptionId}>
+            {compactControlsDescription}
+          </span>
+        ) : null}
         <div
           className="relative mx-auto w-full max-w-reading rounded-panel px-2 py-2"
           data-message-interaction-surface="true"
@@ -708,6 +742,7 @@ function ThreadMessageRowComponent({
             data-message-controls-kind="actions"
             data-message-controls-surface="true"
             data-testid="message-actions"
+            id={messageActionsId}
             role="toolbar"
             aria-label="User message actions"
             aria-describedby={targetDescriptionId}
@@ -762,9 +797,18 @@ function ThreadMessageRowComponent({
       data-status={message.status}
       aria-label={message.assistantIdentity ? `Answer · ${message.assistantIdentity.name}` : "Answer"}
       aria-busy={message.status === "streaming" || undefined}
+      aria-controls={compactControls ? messageActionsId : undefined}
+      aria-describedby={compactControls ? compactControlsDescriptionId : undefined}
+      aria-keyshortcuts={compactControls ? "Enter Space Escape" : undefined}
       tabIndex={0}
       onClick={handleMobileMessageClick}
+      onKeyDown={handleMobileMessageKeyDown}
     >
+      {compactControls ? (
+        <span className="sr-only" id={compactControlsDescriptionId}>
+          {compactControlsDescription}
+        </span>
+      ) : null}
       <div
         className="relative mx-auto w-full max-w-reading rounded-panel px-3 py-3 sm:px-4"
         data-message-interaction-surface="true"
@@ -962,6 +1006,7 @@ function ThreadMessageRowComponent({
           data-message-controls-kind="actions"
           data-message-controls-surface="true"
           data-testid="message-actions"
+          id={messageActionsId}
           role="toolbar"
           aria-label="Assistant message actions"
           aria-describedby={targetDescriptionId}

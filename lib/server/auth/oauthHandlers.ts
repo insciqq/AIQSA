@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import { safeInternalPath } from "../../auth/internalPath";
 import {
@@ -25,6 +25,8 @@ import { readCookie } from "./session";
 
 export const OAUTH_FLOW_COOKIE_NAME = "aiqsa_oauth_flow";
 export const OAUTH_FLOW_MAX_AGE_SECONDS = 10 * 60;
+export const OAUTH_PROVIDER_ADMISSION_MAX_ATTEMPTS = 60;
+export const OAUTH_PROVIDER_ADMISSION_WINDOW_MS = 10 * 60 * 1000;
 
 type OAuthFlow = {
   codeVerifier: string;
@@ -51,11 +53,14 @@ type OAuthCallbackHandlerDeps = {
   googleIdTokenVerifier?: GoogleIdTokenVerifier;
   loginRateLimiter?: LoginRateLimiter;
   now?: () => Date;
+  oauthFlowRateLimiter?: LoginRateLimiter;
+  oauthProviderRateLimiter?: LoginRateLimiter;
   repository: OAuthIdentityRepository;
   sessions: AuthSessionStore;
 };
 
 const defaultOAuthLoginRateLimiter = createFixedWindowLoginRateLimiter();
+const OAUTH_FLOW_ADMISSION_KEY_DOMAIN = "aiqsa:oauth-flow-admission:v1\0";
 
 function randomToken(): string {
   return randomBytes(32).toString("base64url");
@@ -130,6 +135,28 @@ function exactMatch(actual: string, expected: string): boolean {
   const expectedBytes = Buffer.from(expected);
 
   return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
+
+function oauthFlowAdmissionKey(input: {
+  flowToken: string;
+  provider: OAuthProviderId;
+  secret: string;
+  state: string;
+}): string {
+  const proofDigest = createHmac("sha256", input.secret)
+    .update(OAUTH_FLOW_ADMISSION_KEY_DOMAIN, "utf8")
+    .update(input.provider, "utf8")
+    .update("\0", "utf8")
+    .update(input.flowToken, "utf8")
+    .update("\0", "utf8")
+    .update(input.state, "utf8")
+    .digest("hex");
+
+  return `oauth-callback:${input.provider}:flow:${proofDigest}`;
+}
+
+function oauthProviderAdmissionKey(provider: OAuthProviderId): string {
+  return `oauth-callback:${provider}:installation`;
 }
 
 function singleQueryValue(params: URLSearchParams, key: string): string | null {
@@ -241,6 +268,15 @@ export function createOAuthStartHandler(deps: OAuthStartHandlerDeps) {
 }
 
 export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
+  const testFlowRateLimiter = createFixedWindowLoginRateLimiter({
+    maxAttempts: 1,
+    windowMs: OAUTH_FLOW_MAX_AGE_SECONDS * 1000
+  });
+  const testProviderRateLimiter = createFixedWindowLoginRateLimiter({
+    maxAttempts: OAUTH_PROVIDER_ADMISSION_MAX_ATTEMPTS,
+    windowMs: OAUTH_PROVIDER_ADMISSION_WINDOW_MS
+  });
+
   return async function GET(request: Request, context: OAuthRouteContext): Promise<Response> {
     const { provider: rawProvider } = await context.params;
     const config = deps.getConfig();
@@ -321,6 +357,14 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
       deps.loginRateLimiter,
       defaultOAuthLoginRateLimiter
     );
+    const oauthFlowRateLimiter = resolveLoginRateLimiter(
+      deps.oauthFlowRateLimiter,
+      testFlowRateLimiter
+    );
+    const oauthProviderRateLimiter = resolveLoginRateLimiter(
+      deps.oauthProviderRateLimiter,
+      testProviderRateLimiter
+    );
     const clientIdentity = resolveLoginRateLimitIdentity(request, config);
 
     if (clientIdentity.status === "unavailable") {
@@ -355,6 +399,45 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
         response.headers.set("retry-after", String(rateLimit.retryAfterSeconds));
         return response;
       }
+    }
+
+    const flowRateLimit = await oauthFlowRateLimiter.check(oauthFlowAdmissionKey({
+      flowToken: flowToken!,
+      provider: rawProvider,
+      secret: config.sessionSecret,
+      state: flow.state
+    }));
+
+    if (!flowRateLimit.allowed) {
+      const response = redirect(
+        outcomeUrl({
+          appBaseUrl: config.appBaseUrl,
+          nextPath: flow.nextPath,
+          outcome: "failed",
+          provider: rawProvider
+        }),
+        [clearCookie]
+      );
+      response.headers.set("retry-after", String(flowRateLimit.retryAfterSeconds));
+      return response;
+    }
+
+    const providerRateLimit = await oauthProviderRateLimiter.check(
+      oauthProviderAdmissionKey(rawProvider)
+    );
+
+    if (!providerRateLimit.allowed) {
+      const response = redirect(
+        outcomeUrl({
+          appBaseUrl: config.appBaseUrl,
+          nextPath: flow.nextPath,
+          outcome: "failed",
+          provider: rawProvider
+        }),
+        [clearCookie]
+      );
+      response.headers.set("retry-after", String(providerRateLimit.retryAfterSeconds));
+      return response;
     }
 
     try {

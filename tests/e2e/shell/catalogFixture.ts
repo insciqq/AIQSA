@@ -17,6 +17,23 @@ function normalizeFixtureChat(value: unknown): unknown {
         ? { createdAt: "2026-06-10T00:00:00.000Z", ...message }
         : message
     );
+    if (value.contextStats === undefined) {
+      chat.contextStats = { approximateActiveBranchInputTokens: 0 };
+    }
+    if (value.pageInfo === undefined) {
+      const firstMessage = value.messages[0];
+      const firstParentId = isRecord(firstMessage) && typeof firstMessage.parentMessageId === "string"
+        ? firstMessage.parentMessageId
+        : null;
+      chat.pageInfo = {
+        activeLeafMessageId:
+          typeof value.activeLeafMessageId === "string" ? value.activeLeafMessageId : null,
+        beforeCursor: firstParentId ? "fixture-before" : null,
+        hasOlder: Boolean(firstParentId),
+        snapshotUpdatedAt:
+          typeof value.updatedAt === "string" ? value.updatedAt : "2026-06-10T00:00:00.000Z"
+      };
+    }
     if (value.usageStats === undefined) {
       chat.usageStats = null;
     }

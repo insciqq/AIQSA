@@ -390,6 +390,7 @@ export function useAdminProviderCustomSetupController(
       update
     },
     state: {
+      dirty: ready === null && JSON.stringify(form) !== JSON.stringify(initialForm()),
       error,
       errorCode,
       discoveredModels,

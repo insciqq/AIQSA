@@ -63,6 +63,8 @@ export function usePinnedScroll<T extends HTMLElement>({
   const showJumpToLatestRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const visibilityRafRef = useRef<number | null>(null);
+  const viewportRestoreRafRef = useRef<number | null>(null);
+  const viewportRestoreResolveRef = useRef<(() => void) | null>(null);
 
   const setJumpToLatestState = useCallback((visible: boolean) => {
     showJumpToLatestRef.current = visible;
@@ -193,6 +195,71 @@ export function usePinnedScroll<T extends HTMLElement>({
     });
   }, [scheduleFrame, setPinnedState]);
 
+  const preserveViewportWhile = useCallback(async <Result>(
+    operation: () => Promise<Result>,
+    shouldRestore: () => boolean = () => true
+  ): Promise<Result> => {
+    const element = containerRef.current;
+    if (!element) {
+      return operation();
+    }
+
+    const containerTop = element.getBoundingClientRect().top;
+    const visibleAnchor = Array.from(
+      element.querySelectorAll<HTMLElement>(threadMessageSelector)
+    ).find((candidate) => candidate.getBoundingClientRect().bottom > containerTop);
+    const anchorId = visibleAnchor?.dataset.messageId ?? null;
+    const anchorOffset = visibleAnchor
+      ? visibleAnchor.getBoundingClientRect().top - containerTop
+      : null;
+    const previousScrollHeight = element.scrollHeight;
+    const previousScrollTop = element.scrollTop;
+
+    readingAnchorPendingRef.current = true;
+    readingAnchorActiveRef.current = false;
+    pinnedRef.current = false;
+    setPinnedState(false);
+
+    let result: Result;
+    try {
+      result = await operation();
+    } finally {
+      await new Promise<void>((resolve) => {
+        if (viewportRestoreRafRef.current !== null) {
+          window.cancelAnimationFrame(viewportRestoreRafRef.current);
+          viewportRestoreResolveRef.current?.();
+        }
+        viewportRestoreResolveRef.current = resolve;
+        viewportRestoreRafRef.current = window.requestAnimationFrame(() => {
+          viewportRestoreRafRef.current = null;
+          viewportRestoreResolveRef.current = null;
+          const current = shouldRestore() ? containerRef.current : null;
+          if (current) {
+            const anchor = anchorId
+              ? Array.from(
+                  current.querySelectorAll<HTMLElement>(threadMessageSelector)
+                ).find((candidate) => candidate.dataset.messageId === anchorId)
+              : null;
+            if (anchor && anchorOffset !== null) {
+              const currentTop = current.getBoundingClientRect().top;
+              current.scrollTop +=
+                anchor.getBoundingClientRect().top - currentTop - anchorOffset;
+            } else {
+              current.scrollTop = Math.max(
+                0,
+                previousScrollTop + current.scrollHeight - previousScrollHeight
+              );
+            }
+            scheduleJumpVisibility(hasUnseenLatestMessageContent(current));
+          }
+          readingAnchorPendingRef.current = false;
+          resolve();
+        });
+      });
+    }
+    return result;
+  }, [scheduleJumpVisibility, setPinnedState]);
+
   const handleScroll = useCallback(() => {
     const element = containerRef.current;
     if (!element) {
@@ -292,6 +359,11 @@ export function usePinnedScroll<T extends HTMLElement>({
       if (visibilityRafRef.current !== null) {
         window.cancelAnimationFrame(visibilityRafRef.current);
       }
+      if (viewportRestoreRafRef.current !== null) {
+        window.cancelAnimationFrame(viewportRestoreRafRef.current);
+        viewportRestoreResolveRef.current?.();
+        viewportRestoreResolveRef.current = null;
+      }
     };
   }, []);
 
@@ -300,6 +372,7 @@ export function usePinnedScroll<T extends HTMLElement>({
     handleScroll,
     isPinned,
     jumpToLatest: scheduleScrollToBottom,
+    preserveViewportWhile,
     resetToLatest: scheduleScrollToBottom,
     showJumpToLatest
   };

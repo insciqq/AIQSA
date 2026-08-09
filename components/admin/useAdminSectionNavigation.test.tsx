@@ -166,6 +166,37 @@ describe("useAdminSectionNavigation", () => {
     expect(onNavigationBlocked).toHaveBeenCalledTimes(2);
   });
 
+  it("guards compact All sections and Back without changing history until approval", async () => {
+    window.history.replaceState(null, "", "/admin?section=users");
+    let allowed = false;
+    const blocked: Parameters<NonNullable<AdminSectionNavigationOptions["onNavigationBlocked"]>>[0][] = [];
+    renderNavigation({
+      canToggleSectionIndex: () => allowed,
+      onNavigationBlocked: (navigation) => blocked.push(navigation)
+    });
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Users"));
+    const originalState = structuredClone(window.history.state);
+
+    fireEvent.click(screen.getByTestId("open-section-index"));
+    expect(screen.getByTestId("section-index-state")).toHaveTextContent("closed");
+    expect(window.history.state).toEqual(originalState);
+    expect(blocked[0]?.target).toMatchObject({ kind: "section-index", open: true });
+
+    act(() => blocked[0]!.proceed());
+    expect(screen.getByTestId("section-index-state")).toHaveTextContent("open");
+    const indexState = structuredClone(window.history.state);
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByTestId("section-index-state")).toHaveTextContent("open");
+    expect(window.history.state).toEqual(indexState);
+    expect(blocked[1]?.target).toMatchObject({ kind: "section-index", open: false });
+
+    allowed = true;
+    act(() => blocked[1]!.proceed());
+    await waitFor(() => expect(screen.getByTestId("section-index-state")).toHaveTextContent("closed"));
+    expect(window.location.search).toBe("?section=users");
+  });
+
   it("rolls a refused Back traversal to its origin and replays the same entry after approval", async () => {
     window.history.replaceState(null, "", "/admin");
     let guarded = false;

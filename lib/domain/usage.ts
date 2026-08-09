@@ -69,6 +69,34 @@ export function sumTokenUsage(usages: TokenUsage[]): NormalizedTokenUsage {
   );
 }
 
+export function subtractTokenUsage(
+  total: TokenUsage,
+  subtrahend: TokenUsage
+): NormalizedTokenUsage | null {
+  const normalizedTotal = normalizeTokenUsage(total);
+  const normalizedSubtrahend = normalizeTokenUsage(subtrahend);
+  const fields = [
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "inputTokens",
+    "outputTokens",
+    "reasoningTokens",
+    "totalTokens"
+  ] as const;
+  if (fields.some((field) => normalizedSubtrahend[field] > normalizedTotal[field])) {
+    return null;
+  }
+  return {
+    cachedInputTokens: normalizedTotal.cachedInputTokens - normalizedSubtrahend.cachedInputTokens,
+    cacheWriteInputTokens:
+      normalizedTotal.cacheWriteInputTokens - normalizedSubtrahend.cacheWriteInputTokens,
+    inputTokens: normalizedTotal.inputTokens - normalizedSubtrahend.inputTokens,
+    outputTokens: normalizedTotal.outputTokens - normalizedSubtrahend.outputTokens,
+    reasoningTokens: normalizedTotal.reasoningTokens - normalizedSubtrahend.reasoningTokens,
+    totalTokens: normalizedTotal.totalTokens - normalizedSubtrahend.totalTokens
+  };
+}
+
 export function estimateCostMicros(usage: TokenUsage, pricing: ModelTokenPricing): number {
   const normalized = normalizeTokenUsage(usage);
   const reasoningPrice = pricing.reasoningTokenPriceMicros ?? pricing.outputTokenPriceMicros;

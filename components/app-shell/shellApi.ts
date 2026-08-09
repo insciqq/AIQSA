@@ -228,7 +228,9 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): ChatSummary 
 export function chatDetailFromApi(chat: ChatDetailWire): ChatDetail {
   return {
     ...chatSummaryFromApi(chat),
+    contextStats: chat.contextStats,
     messages: chat.messages.map(messageFromApi),
+    pageInfo: chat.pageInfo,
     usageStats: chat.usageStats
   };
 }

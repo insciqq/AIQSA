@@ -14,6 +14,10 @@ const usageStats = {
   totalTokens: 13
 };
 
+const contextStats = {
+  approximateActiveBranchInputTokens: 37
+};
+
 const assistantMessage = {
   artifactSummary: null,
   content: {
@@ -45,7 +49,20 @@ const summaryWire = {
 
 const detailWire = {
   ...summaryWire,
+  contextStats,
   messages: [assistantMessage],
+  pageInfo: {
+    activeLeafMessageId: "assistant-1",
+    beforeCursor: null,
+    hasOlder: false,
+    snapshotUpdatedAt: summaryWire.updatedAt
+  },
+  usageStats
+};
+
+const updateWire = {
+  ...summaryWire,
+  contextStats,
   usageStats
 };
 
@@ -113,6 +130,7 @@ describe("chat wire decoding", () => {
     const detail = chatDetailFromApi(decodedDetail!);
     expect(detail).toMatchObject({
       activeLeafMessageId: "assistant-1",
+      contextStats,
       id: "chat-1",
       messages: [
         {
@@ -131,8 +149,7 @@ describe("chat wire decoding", () => {
     const event = {
       data: {
         chat: {
-          ...summaryWire,
-          usageStats
+          ...updateWire
         },
         messages: [assistantMessage]
       },
@@ -160,13 +177,13 @@ describe("chat wire decoding", () => {
       })
     ]);
     expect(update!.usageStats).toEqual(usageStats);
+    expect(update!.contextStats).toEqual(contextStats);
 
     expect(
       chatUpdateFromEvent({
         data: {
           chat: {
-            ...summaryWire,
-            usageStats
+            ...updateWire
           },
           messages: [{ ...assistantMessage, role: undefined }]
         },
@@ -177,8 +194,7 @@ describe("chat wire decoding", () => {
       chatUpdateFromEvent({
         data: {
           chat: {
-            ...summaryWire,
-            usageStats
+            ...updateWire
           }
         },
         type: "chat_update"
@@ -188,8 +204,7 @@ describe("chat wire decoding", () => {
       chatUpdateFromEvent({
         data: {
           chat: {
-            ...summaryWire,
-            usageStats
+            ...updateWire
           },
           messages: {}
         },

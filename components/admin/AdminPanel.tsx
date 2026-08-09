@@ -5,6 +5,13 @@ import { AdminAccessGroupsSection } from "@/components/admin/AdminAccessGroupsSe
 import { AdminConfirmationHost } from "@/components/admin/AdminConfirmationHost";
 import { AdminConsoleHeader } from "@/components/admin/AdminConsoleHeader";
 import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnavailable";
+import {
+  AdminDraftProtectionProvider,
+  AdminDraftRegistration,
+  useAdminDiscardAction,
+  useAdminDraftRegistry,
+  type AdminDraftOwner
+} from "@/components/admin/AdminDraftProtection";
 import { AdminFeedbackMessages } from "@/components/admin/AdminFeedbackMessages";
 import { AdminEmailSection } from "@/components/admin/AdminEmailSection";
 import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
@@ -45,6 +52,7 @@ import {
   type AdminBlockedNavigation
 } from "@/components/admin/useAdminSectionNavigation";
 import { useAdminUsersController, type AdminUsersController } from "@/components/admin/useAdminUsersController";
+import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import { Link2, Plus } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
@@ -69,12 +77,14 @@ function AdminHeaderAction({
   groups: AdminGroupsController;
   invites: AdminInvitesController;
 }>) {
+  const requestDiscardAction = useAdminDiscardAction();
   const form =
     activeSection === "access" && !groups.access.sectionProps?.draft.detailOpen
       ? {
           Icon: Plus,
           label: "group",
           open: groups.access.sectionProps?.draft.createFormOpen ?? false,
+          owners: ["access-groups-form", "access-group-member-form"],
           toggle: groups.access.toggleCreateForm
         }
       : activeSection === "invites"
@@ -82,6 +92,7 @@ function AdminHeaderAction({
             Icon: Link2,
             label: "invite",
             open: invites.headerForm.formOpen,
+            owners: ["invite-form"],
             toggle: invites.headerForm.toggleForm
           }
         : activeSection === "access-rules"
@@ -89,6 +100,7 @@ function AdminHeaderAction({
               Icon: Plus,
               label: "rule",
               open: accessRules.headerForm.formOpen,
+              owners: ["access-rule-form"],
               toggle: accessRules.headerForm.toggleForm
             }
           : null;
@@ -99,7 +111,12 @@ function AdminHeaderAction({
 
   const FormIcon = form.Icon;
   return (
-    <button className={primaryButton} data-admin-task-opener="true" onClick={form.toggle} type="button">
+    <button
+      className={primaryButton}
+      data-admin-task-opener="true"
+      onClick={() => requestDiscardAction(form.toggle, form.owners)}
+      type="button"
+    >
       <FormIcon aria-hidden="true" className="size-3.5" />
       {form.open ? "Hide form" : `New ${form.label}`}
     </button>
@@ -211,12 +228,14 @@ function AdminSectionContent({
 }
 
 export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
+  const drafts = useAdminDraftRegistry();
   const navigationBlockedRef = useRef(false);
   const requestNavigationConfirmationRef = useRef<(
     (navigation: AdminBlockedNavigation) => void
   ) | null>(null);
   const canSelectSection = useCallback(() => !navigationBlockedRef.current, []);
   const canExitAdmin = useCallback(() => !navigationBlockedRef.current, []);
+  const canToggleSectionIndex = useCallback(() => !navigationBlockedRef.current, []);
   const onNavigationBlocked = useCallback((navigation: AdminBlockedNavigation) => {
     requestNavigationConfirmationRef.current?.(navigation);
   }, []);
@@ -224,6 +243,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   const navigation = useAdminSectionNavigation({
     canExitAdmin,
     canSelectSection,
+    canToggleSectionIndex,
     onNavigationBlocked
   });
   const resource = useAdminDashboardResource({ feedback });
@@ -238,12 +258,14 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   const operationalFocus = useAdminOperationalFocus();
   const nowMs = resource.lastLoadedAt?.getTime() ?? 0;
   const actionsDisabled = Boolean(actionRunner.submitting);
+  const navigationLocked = actionsDisabled || drafts.pending;
   const allowReturnToChatRef = useRef(false);
   const returnToChatLinkRef = useRef<HTMLAnchorElement | null>(null);
 
   useEffect(() => {
-    navigationBlockedRef.current = actionsDisabled;
-  }, [actionsDisabled]);
+    navigationBlockedRef.current = navigationLocked || drafts.dirty;
+  }, [drafts.dirty, navigationLocked]);
+  useBeforeUnloadGuard(drafts.dirty, drafts.hasDirty);
 
   const documentTitle = resource.dashboard
     ? `${navigation.activeSectionConfig.label} · Control Center · AIQSA`
@@ -252,24 +274,47 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     document.title = documentTitle;
   }, [documentTitle]);
 
+  const requestDiscardAction = useCallback((
+    action: () => void,
+    owners?: readonly AdminDraftOwner[]
+  ) => {
+    if (actionsDisabled || drafts.hasPending(owners)) return false;
+    if (!drafts.hasDirty(owners)) {
+      action();
+      return true;
+    }
+
+    confirmation.requestConfirmation({
+      body: "Unsaved edits in this Control Center task will be lost.",
+      confirmLabel: "Discard changes",
+      dialogLabel: "Discard unsaved changes",
+      icon: "x",
+      onConfirm: () => {
+        drafts.discard(owners);
+        action();
+      },
+      testId: "admin-discard-unsaved-confirmation",
+      title: "Discard unsaved changes?",
+      tone: "warning"
+    });
+    return false;
+  }, [actionsDisabled, confirmation, drafts]);
+
   useEffect(() => {
     requestNavigationConfirmationRef.current = (blockedNavigation) => {
-      if (navigationBlockedRef.current) {
-        return;
-      }
-      blockedNavigation.proceed();
+      requestDiscardAction(blockedNavigation.proceed);
     };
     return () => {
       requestNavigationConfirmationRef.current = null;
     };
-  }, [confirmation]);
+  }, [requestDiscardAction]);
 
   const requestReturnToChat = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
     if (allowReturnToChatRef.current) {
       allowReturnToChatRef.current = false;
       return;
     }
-    if (actionsDisabled) {
+    if (navigationLocked) {
       event.preventDefault();
       return;
     }
@@ -283,7 +328,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     })) {
       event.preventDefault();
     }
-  }, [actionsDisabled, navigation]);
+  }, [navigation, navigationLocked]);
 
   const users = useAdminUsersController({
     actionsDisabled,
@@ -345,12 +390,33 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     });
   }, [requestConfirmedAction]);
 
-  const isBusy = resource.loading || actionsDisabled;
+  const isBusy = resource.loading || navigationLocked;
   return (
+    <AdminDraftProtectionProvider registry={drafts} requestDiscardAction={requestDiscardAction}>
     <main
       aria-busy={isBusy}
       className="min-h-[100dvh] overflow-x-hidden bg-app-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
     >
+      <AdminDraftRegistration
+        dirty={navigation.activeSection === "access" && groups.access.draftProtection.dirty}
+        onDiscard={groups.access.draftProtection.discard}
+        owner="access-groups-form"
+      />
+      <AdminDraftRegistration
+        dirty={navigation.activeSection === "invites" && invites.draftProtection.dirty}
+        onDiscard={invites.draftProtection.discard}
+        owner="invite-form"
+      />
+      <AdminDraftRegistration
+        dirty={navigation.activeSection === "access-rules" && accessRules.draftProtection.dirty}
+        onDiscard={accessRules.draftProtection.discard}
+        owner="access-rule-form"
+      />
+      <AdminDraftRegistration
+        dirty={navigation.activeSection === "users" && users.draftProtection.dirty}
+        onDiscard={users.draftProtection.discard}
+        owner="user-membership-form"
+      />
       <div
         aria-hidden={confirmation.confirmation ? true : undefined}
         className="mx-auto grid min-h-[100dvh] min-w-0 max-w-[1680px] grid-rows-[auto_minmax(0,1fr)] bg-answer-paper lg:grid-cols-[15rem_minmax(0,1fr)]"
@@ -362,8 +428,9 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
             adminEmail={adminEmail}
             lastLoadedAt={resource.lastLoadedAt}
             loading={resource.loading}
+            navigationDisabled={drafts.pending}
             onReturnToChatClick={requestReturnToChat}
-            onRefresh={() => void resource.refresh()}
+            onRefresh={() => requestDiscardAction(() => void resource.refresh())}
             releaseStatus={releaseStatus}
             submitting={actionsDisabled}
           />
@@ -375,7 +442,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
         >
           <AdminSectionTabs
             navigation={navigation}
-            navigationBlocked={actionsDisabled}
+            navigationBlocked={navigationLocked}
             summary={resource.dashboard?.navigation ?? null}
           />
         </AdminResourceIndexPane>
@@ -399,7 +466,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                 />
               }
               navigation={navigation}
-              navigationBlocked={actionsDisabled}
+              navigationBlocked={navigationLocked}
             >
               <div>
                 <AdminSectionContent
@@ -429,5 +496,6 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
       </div>
       <AdminConfirmationHost controller={confirmation} onClosed={navigation.restoreFocusAfterMutation} />
     </main>
+    </AdminDraftProtectionProvider>
   );
 }

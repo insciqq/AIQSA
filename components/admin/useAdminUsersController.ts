@@ -29,8 +29,16 @@ export type UseAdminUsersControllerOptions = Readonly<{
 }>;
 
 export type AdminUsersController = Readonly<{
+  draftProtection: Readonly<{
+    dirty: boolean;
+    discard(): void;
+  }>;
   sectionProps: AdminUsersSectionProps | null;
 }>;
+
+function sameGroupIds(left: readonly string[], right: readonly string[]): boolean {
+  return [...left].sort().join("\u0000") === [...right].sort().join("\u0000");
+}
 
 export function useAdminUsersController({
   actionsDisabled,
@@ -64,6 +72,18 @@ export function useAdminUsersController({
       }),
     [dashboard?.users, pageIndex, query, requestedSelectedUserId, sortDirection, sortKey, statusFilter]
   );
+  const draftDirty = useMemo(() => Object.entries(selectedGroupIdsByUser).some(([userId, groupIds]) => {
+    const user = dashboard?.users.find((candidate) => candidate.id === userId);
+    if (!user) return false;
+    const current = user.status === "pending"
+      ? []
+      : activeGroupIdsForUser(user, dashboard?.groups ?? []);
+    return !sameGroupIds(
+      activeDraftGroupIds(dashboard?.groups ?? [], groupIds),
+      current
+    );
+  }), [dashboard?.groups, dashboard?.users, selectedGroupIdsByUser]);
+  const discardDraft = useCallback(() => setSelectedGroupIdsByUser({}), []);
 
   const selectUser = useCallback((userId: string) => {
     requestFocus("user-detail");
@@ -99,7 +119,7 @@ export function useAdminUsersController({
 
   const approveUser = useCallback(
     async (user: AdminUserRecord) => {
-      await runAction(
+      const result = await runAction(
         {
           action: "approve_user",
           groupIds: activeDraftGroupIds(dashboard?.groups ?? [], selectedGroupIdsByUser[user.id] ?? []),
@@ -107,13 +127,20 @@ export function useAdminUsersController({
         },
         "User approved."
       );
+      if (!result.error) {
+        setSelectedGroupIdsByUser((current) => {
+          const next = { ...current };
+          delete next[user.id];
+          return next;
+        });
+      }
     },
     [dashboard?.groups, runAction, selectedGroupIdsByUser]
   );
 
   const saveUserGroups = useCallback(
     async (user: AdminUserRecord) => {
-      await runAction(
+      const result = await runAction(
         {
           action: "set_user_groups",
           groupIds: activeDraftGroupIds(
@@ -124,6 +151,13 @@ export function useAdminUsersController({
         },
         "User groups saved."
       );
+      if (!result.error) {
+        setSelectedGroupIdsByUser((current) => {
+          const next = { ...current };
+          delete next[user.id];
+          return next;
+        });
+      }
     },
     [dashboard?.groups, runAction, selectedGroupIdsByUser]
   );
@@ -301,8 +335,12 @@ export function useAdminUsersController({
 
   return useMemo(
     () => ({
+      draftProtection: {
+        dirty: draftDirty,
+        discard: discardDraft
+      },
       sectionProps
     }),
-    [sectionProps]
+    [discardDraft, draftDirty, sectionProps]
   );
 }

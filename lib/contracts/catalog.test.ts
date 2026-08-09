@@ -103,6 +103,30 @@ describe("catalog wire contract", () => {
     });
   });
 
+  it("resolves duplicate connection names without changing provider/model bindings", () => {
+    const response = validResponse();
+    const duplicate = structuredClone(response.catalog.providers[0]!);
+    duplicate.id = "connection-duplicate";
+    duplicate.name = "  openai  ";
+    response.catalog.providers.push(duplicate);
+
+    const decoded = decodeCatalogResponse(response);
+    const firstLabel = decoded?.providers.find(({ id }) => id === "connection-test")?.name;
+    const duplicateLabel = decoded?.providers.find(({ id }) => id === duplicate.id)?.name;
+
+    expect(firstLabel).toMatch(/^OpenAI · ref [0-9A-Z]{6,}$/u);
+    expect(duplicateLabel).toMatch(/^  openai   · ref [0-9A-Z]{6,}$/u);
+    expect(firstLabel).not.toBe(duplicateLabel);
+    expect(decoded?.models[0]).toMatchObject({
+      modelId: "deployment-test",
+      provider: "connection-test"
+    });
+    expect(decoded?.defaults).toMatchObject({
+      modelId: "deployment-test",
+      provider: "connection-test"
+    });
+  });
+
   it("preserves a null personal default when the effective model is the organization default", () => {
     const response = validResponse();
     response.catalog.defaults.hasPersonalModelDefault = false;

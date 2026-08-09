@@ -32,6 +32,55 @@ function model(id: string, displayName: string): CatalogModel {
 }
 
 describe("composer model picker default facts", () => {
+  it("uses stable distinct labels for duplicate provider and model names", () => {
+    const first = model("model-a", "Shared model");
+    const second = { ...model("model-b", "Shared model"), provider: "connection-b" };
+    const catalog: Catalog = {
+      defaults: {
+        controlValues: {},
+        hasPersonalModelDefault: false,
+        modelId: first.modelId,
+        modelPreferenceSource: "organization",
+        organizationModelDefault: { modelId: first.modelId, provider: first.provider },
+        personalModelDefault: null,
+        provider: first.provider,
+        searchStrategyId: "search-disabled",
+        showCitations: true,
+        showReasoningBlocks: false,
+        showToolActivity: true
+      },
+      models: [first, second],
+      providers: [
+        { id: first.provider, models: [first.modelId], name: "OpenAI" },
+        { id: second.provider, models: [second.modelId], name: " openai " }
+      ],
+      searchStrategies: [{ displayName: "No Search", kind: "none", strategyId: "search-disabled" }]
+    };
+
+    render(<ComposerModelPicker
+      catalog={catalog}
+      catalogUnavailable={false}
+      currentModel={first}
+      disabled={false}
+      onOpenChange={vi.fn()}
+      onSelectModel={vi.fn()}
+      open
+      selectedModelId={first.modelId}
+      selectedProvider={first.provider}
+      selectedProviderName="OpenAI"
+      streaming={false}
+    />);
+
+    const modelActions = screen.getAllByRole("button", { name: /Select model .* Shared model/u });
+    expect(modelActions).toHaveLength(2);
+    expect(modelActions[0]).not.toHaveAccessibleName(modelActions[1]!.getAttribute("aria-label")!);
+    expect(modelActions.map((action) => action.getAttribute("aria-label"))).toEqual([
+      expect.stringMatching(/^Select model OpenAI · ref [0-9A-Z]{6,} Shared model$/u),
+      expect.stringMatching(/^Select model  openai  · ref [0-9A-Z]{6,} Shared model$/u)
+    ]);
+    expect(screen.getByTitle(/^OpenAI · ref [0-9A-Z]{6,} \/ Shared model$/u)).toBeInTheDocument();
+  });
+
   it("separates Current, My default, and Organization default with peer actions", () => {
     const personal = model("model-personal", "Personal model");
     const current = model("model-current", "Current model");

@@ -2,6 +2,8 @@ import { defaultAssistantRepository } from "@/lib/server/assistants/defaultAssis
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
+import { createGetChatMessagesPageHandler } from "@/lib/server/chats/handlers";
+import { createPrismaChatRepository } from "@/lib/server/chats/prismaRepository";
 import { defaultMcpRunPlan } from "@/lib/server/mcp/defaultRuntime";
 import { knowledgeRunAdmissionService } from "@/lib/server/knowledge/runAdmission";
 import { knowledgeToolExecutor } from "@/lib/server/knowledge/defaultRetrieval";
@@ -14,6 +16,12 @@ import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
 export const runtime = "nodejs";
 
 const repository = createPrismaRunRepository();
+const chatRepository = createPrismaChatRepository();
+
+export const GET = createGetChatMessagesPageHandler({
+  repository: chatRepository,
+  resolveAuth: resolveRequestAuth
+});
 
 export const POST = createSendMessageHandler({
   allowFakeProvider: isTestModeAllowedEnv(process.env),

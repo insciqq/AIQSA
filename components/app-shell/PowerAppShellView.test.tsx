@@ -282,6 +282,9 @@ function baseProps(): PowerAppShellViewProps {
     details: {
       activeLeafId: null,
       activeTab: "branch",
+      branchError: null,
+      branchLoading: false,
+      branchMessages: [],
       changeActiveTab: noop,
       changeMode: noop,
       checkoutBranch: noop,
@@ -290,7 +293,8 @@ function baseProps(): PowerAppShellViewProps {
       messages: [],
       mode: "closed",
       open: noop,
-      pinningAvailable: false
+      pinningAvailable: false,
+      retryBranches: noop
     },
     overlays: {
       confirmations: {
@@ -356,10 +360,14 @@ function baseProps(): PowerAppShellViewProps {
       handleEditMessage: noop,
       handleRegenerateMessage: noop,
       handleThreadScroll: noop,
+      hasOlderMessages: false,
+      loadEarlierMessages: noop,
+      loadingOlderMessages: false,
       loadRunReceipt: noop,
       jumpToLatest: noop,
       lastRun: null,
       liveArtifactSummary: null,
+      olderMessagesError: null,
       openKnowledgeEvidence: noop,
       persistedRunsById: {},
       retryActiveChatDetail: noop,

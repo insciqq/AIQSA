@@ -125,6 +125,76 @@ describe("usePinnedScroll", () => {
     expect(result.current.showJumpToLatest).toBe(false);
   });
 
+  it("keeps the first visible message anchored while older messages are prepended", async () => {
+    let scrollHeight = 1_000;
+    let anchorDocumentTop = 100;
+    const element = scrollElement({ clientHeight: 300, scrollHeight, scrollTop: 100 });
+    Object.defineProperty(element, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight
+    });
+    element.getBoundingClientRect = () => ({ bottom: 300, top: 0 } as DOMRect);
+    const anchor = document.createElement("article");
+    anchor.dataset.messageId = "message-51";
+    anchor.getBoundingClientRect = () => ({
+      bottom: anchorDocumentTop - element.scrollTop + 50,
+      top: anchorDocumentTop - element.scrollTop
+    } as DOMRect);
+    element.append(anchor);
+
+    const { result } = renderHook(() =>
+      usePinnedScroll<HTMLDivElement>({ followKey: "initial", resetKey: "chat-1" })
+    );
+    act(() => {
+      result.current.containerRef.current = element;
+    });
+    await waitForAnimationFrame();
+    act(() => {
+      element.scrollTop = 100;
+      result.current.handleScroll();
+    });
+
+    await act(async () => {
+      await result.current.preserveViewportWhile(async () => {
+        anchorDocumentTop += 200;
+        scrollHeight += 200;
+      });
+    });
+
+    expect(element.scrollTop).toBe(300);
+    expect(anchor.getBoundingClientRect().top).toBe(0);
+    expect(result.current.isPinned).toBe(false);
+  });
+
+  it("does not restore an old chat anchor after the source view changes", async () => {
+    let scrollHeight = 1_000;
+    const element = scrollElement({ clientHeight: 300, scrollHeight, scrollTop: 100 });
+    Object.defineProperty(element, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight
+    });
+    element.getBoundingClientRect = () => ({ bottom: 300, top: 0 } as DOMRect);
+    const { result } = renderHook(() =>
+      usePinnedScroll<HTMLDivElement>({ followKey: "initial", resetKey: "chat-1" })
+    );
+    act(() => {
+      result.current.containerRef.current = element;
+    });
+    await waitForAnimationFrame();
+    act(() => {
+      element.scrollTop = 100;
+      result.current.handleScroll();
+    });
+
+    await act(async () => {
+      await result.current.preserveViewportWhile(async () => {
+        scrollHeight = 1_200;
+      }, () => false);
+    });
+
+    expect(element.scrollTop).toBe(100);
+  });
+
   it("shows the jump control when content changes while unpinned", async () => {
     const { rerender, result } = renderHook(
       ({ followKey, resetKey }) => usePinnedScroll<HTMLDivElement>({ followKey, resetKey }),

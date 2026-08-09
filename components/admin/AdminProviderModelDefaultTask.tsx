@@ -10,9 +10,11 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import type { AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
+import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export function AdminProviderModelDefaultTask({
   active,
@@ -28,6 +30,25 @@ export function AdminProviderModelDefaultTask({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const autoLoadAttemptedRef = useRef(false);
+  const connectionLabels = useMemo(() => resolveProviderConnectionLabels([
+    ...(catalog?.candidates ?? []).map(({ connectionDisplayName: name, connectionId: id }) => ({ id, name })),
+    ...(catalog?.policy.defaultModel
+      ? [{
+          id: catalog.policy.defaultModel.connectionId,
+          name: catalog.policy.defaultModel.connectionDisplayName
+        }]
+      : [])
+  ]), [catalog]);
+  const deploymentLabel = (deployment: AdminModelPolicyCatalog["candidates"][number]) =>
+    `${connectionLabels.get(deployment.connectionId) ?? deployment.connectionDisplayName} / ${deployment.displayName}`;
+  const currentId = catalog?.policy.defaultModel?.id ?? "";
+  const draftDirty = Boolean(catalog) && selectedId !== currentId;
+  const requestDraftDiscard = useAdminDraftProtection({
+    dirty: draftDirty,
+    onDiscard: () => setSelectedId(currentId),
+    owner: "provider-default-model-policy",
+    pending: draftDirty && busy
+  });
 
   const apply = useCallback((next: AdminModelPolicyCatalog) => {
     setCatalog(next);
@@ -93,7 +114,14 @@ export function AdminProviderModelDefaultTask({
               New chats inherit this deployment when a person has not chosen a personal default and already has access to it. This policy never grants access.
             </p>
           </div>
-          <button className={quietButton} disabled={loading || busy} onClick={() => void refresh()} type="button">
+          <button
+            className={quietButton}
+            disabled={loading || busy}
+            onClick={() => requestDraftDiscard(() => {
+              void refresh();
+            })}
+            type="button"
+          >
             <RefreshCw aria-hidden="true" className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </button>
@@ -107,7 +135,7 @@ export function AdminProviderModelDefaultTask({
             <div className="border-l-2 border-proof/60 pl-3 text-xs leading-5 text-ink-secondary">
               <p>
                 Current: {catalog.policy.defaultModel
-                  ? `${catalog.policy.defaultModel.connectionDisplayName} / ${catalog.policy.defaultModel.displayName}`
+                  ? deploymentLabel(catalog.policy.defaultModel)
                   : "None"}.
               </p>
               {catalog.policy.defaultModel && !catalog.policy.defaultModel.available ? (
@@ -130,12 +158,12 @@ export function AdminProviderModelDefaultTask({
                 {catalog.policy.defaultModel
                   && !catalog.candidates.some((candidate) => candidate.id === catalog.policy.defaultModel?.id) ? (
                     <option disabled value={catalog.policy.defaultModel.id}>
-                      Unavailable — {catalog.policy.defaultModel.connectionDisplayName} / {catalog.policy.defaultModel.displayName}
+                      Unavailable — {deploymentLabel(catalog.policy.defaultModel)}
                     </option>
                   ) : null}
                 {catalog.candidates.map((candidate) => (
                   <option key={candidate.id} value={candidate.id}>
-                    {candidate.connectionDisplayName} / {candidate.displayName}
+                    {deploymentLabel(candidate)}
                   </option>
                 ))}
               </select>

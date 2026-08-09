@@ -1,10 +1,15 @@
 import {
   chatDetailFromApi,
   chatSummaryFromApi,
+  messageFromApi,
   shellFetch
 } from "@/components/app-shell/shellApi";
 import { fallbackCatalogModel } from "@/components/app-shell/controlDefaults";
-import { errorMessage, safeDownloadName } from "@/components/app-shell/shellFormatting";
+import {
+  errorMessage,
+  responseErrorMessage,
+  safeDownloadName
+} from "@/components/app-shell/shellFormatting";
 import {
   rememberActiveChatId,
   storedActiveChatId
@@ -16,7 +21,8 @@ import type {
   ChatSummary,
   FolderSummary,
   Notice,
-  RunEventView
+  RunEventView,
+  ThreadMessage
 } from "@/components/app-shell/types";
 import { visibleMessagePath } from "@/components/app-shell/threadPath";
 import {
@@ -27,6 +33,7 @@ import {
 import type { SearchPlanMode } from "@/lib/domain/search";
 import type { KnowledgePlan } from "@/lib/contracts/knowledge";
 import {
+  decodeChatMessagesPageResponse,
   decodeChatSummaryResponse,
   decodeWorkspaceChatsResponse
 } from "@/lib/contracts/chats";
@@ -41,7 +48,9 @@ import {
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import {
+  emptyThreadHistoryState,
   emptyThreadSnapshot,
+  threadHistoryState,
   useThreadStore,
   type ThreadSnapshot
 } from "@/components/app-shell/threadStore";
@@ -58,11 +67,14 @@ type ActivateChatOptions = {
   resumeRuns?: boolean;
 };
 
+export type OlderPageLoadOutcome = "failed" | "prepended" | "reset";
+
 type WorkspaceActionsInput = {
   activeChatIdRef: MutableRef<string | null>;
   applyModelControlDefaults(model?: CatalogModel | null, controlValues?: Record<string, unknown>): void;
   chatDetailRequestsRef: MutableRef<Map<string, Promise<ChatDetail | null>>>;
   chatHasActiveStream(chatId: string): boolean;
+  chatHasPendingThreadMutation?(chatId: string): boolean;
   chatMutation: WorkspaceChatMutationPort;
   confirmDeleteChat(chat: ChatSummary): Promise<boolean>;
   loadingChatDetailIdRef: MutableRef<string | null>;
@@ -88,6 +100,7 @@ export function useWorkspaceActions({
   applyModelControlDefaults,
   chatDetailRequestsRef,
   chatHasActiveStream,
+  chatHasPendingThreadMutation = () => false,
   chatMutation,
   confirmDeleteChat,
   loadingChatDetailIdRef,
@@ -116,9 +129,17 @@ export function useWorkspaceActions({
   }
 
   function detailFromOwners(summary: ChatSummary, thread: ThreadSnapshot): ChatDetail {
+    const history = threadHistoryState(thread);
     return {
       ...summary,
+      contextStats: thread.contextStats ?? { approximateActiveBranchInputTokens: 0 },
       messages: thread.messages,
+      pageInfo: {
+        activeLeafMessageId: history.snapshotActiveLeafId,
+        beforeCursor: history.beforeCursor,
+        hasOlder: history.hasOlder,
+        snapshotUpdatedAt: history.snapshotUpdatedAt ?? summary.updatedAt
+      },
       usageStats: thread.usageStats
     };
   }
@@ -145,6 +166,17 @@ export function useWorkspaceActions({
     const threadStore = useThreadStore.getState();
     const current = threadStore.threadsByChatId[detail.id];
     const changedDuringRequest = requestContext !== undefined && current !== requestContext.thread;
+    const serverHistory = {
+      beforeCursor: detail.pageInfo.beforeCursor,
+      error: null,
+      hasOlder: detail.pageInfo.hasOlder,
+      loading: false,
+      requestGeneration: (requestContext?.thread
+        ? threadHistoryState(requestContext.thread).requestGeneration
+        : 0) + 1,
+      snapshotActiveLeafId: detail.pageInfo.activeLeafMessageId,
+      snapshotUpdatedAt: detail.pageInfo.snapshotUpdatedAt
+    };
     const snapshot: ThreadSnapshot =
       changedDuringRequest && current
         ? {
@@ -152,6 +184,14 @@ export function useWorkspaceActions({
               current.activeLeafId !== (requestContext.thread?.activeLeafId ?? null)
                 ? current.activeLeafId
                 : detail.activeLeafMessageId,
+            contextStats:
+              current.contextStats !== (requestContext.thread?.contextStats ?? null)
+                ? current.contextStats ?? null
+                : detail.contextStats,
+            history:
+              current.history !== requestContext.thread?.history
+                ? current.history
+                : serverHistory,
             messages:
               current.messages !== requestContext.thread?.messages
                 ? mergeThreadMessages(detail.messages, current.messages)
@@ -167,6 +207,8 @@ export function useWorkspaceActions({
           }
         : {
             activeLeafId: detail.activeLeafMessageId,
+            contextStats: detail.contextStats,
+            history: serverHistory,
             messages: detail.messages,
             sourceUpdatedAt: detail.updatedAt,
             usageStats: detail.usageStats
@@ -194,6 +236,7 @@ export function useWorkspaceActions({
     mergeChatIntoList(update.chat);
     useThreadStore.getState().mergeMessages(update.chat.id, update.messages, {
       activeLeafId: update.chat.activeLeafMessageId,
+      contextStats: update.contextStats,
       sourceUpdatedAt: update.chat.updatedAt,
       usageStats: update.usageStats
     });
@@ -249,9 +292,174 @@ export function useWorkspaceActions({
     void request.finally(() => {
       if (chatDetailRequestsRef.current.get(chatId) === request) {
         chatDetailRequestsRef.current.delete(chatId);
+        queueMicrotask(pruneThreadCache);
       }
     });
     return request;
+  }
+
+  async function loadEarlierMessages(chatId: string): Promise<OlderPageLoadOutcome> {
+    const initial = useThreadStore.getState().threadsByChatId[chatId];
+    const initialHistory = initial ? threadHistoryState(initial) : emptyThreadHistoryState;
+    if (
+      !initial ||
+      initialHistory.loading ||
+      !initialHistory.hasOlder ||
+      !initialHistory.beforeCursor ||
+      !initialHistory.snapshotUpdatedAt
+    ) {
+      return "failed";
+    }
+
+    const requestGeneration = useThreadStore.getState().beginOlderPage(chatId);
+    try {
+      const query = new URLSearchParams({ before: initialHistory.beforeCursor });
+      const response = await shellFetch(`/api/chats/${chatId}/messages?${query.toString()}`);
+      if (response.status === 409) {
+        const reset = await fetchChatDetail(chatId, { force: true });
+        if (!reset) {
+          useThreadStore.getState().failOlderPage(
+            chatId,
+            requestGeneration,
+            "Conversation changed, but its latest messages did not reload."
+          );
+          return "failed";
+        }
+        setNotice({
+          kind: "success",
+          text: "Conversation changed. Reloaded its latest messages."
+        });
+        return "reset";
+      }
+      if (!response.ok) {
+        throw new Error(
+          await responseErrorMessage(response, `chat_page_failed_${response.status}`)
+        );
+      }
+
+      const page = decodeChatMessagesPageResponse(await response.json());
+      const current = useThreadStore.getState().threadsByChatId[chatId];
+      const expectedParentId = current?.messages[0]?.parentMessageId ?? null;
+      const pageIds = new Set(page?.messages.map((message) => message.id) ?? []);
+      if (
+        !page ||
+        page.pageInfo.activeLeafMessageId !== initialHistory.snapshotActiveLeafId ||
+        page.pageInfo.snapshotUpdatedAt !== initialHistory.snapshotUpdatedAt ||
+        page.messages.length === 0 ||
+        page.messages.at(-1)?.id !== expectedParentId ||
+        current?.messages.some((message) => pageIds.has(message.id))
+      ) {
+        throw new Error("chat_page_malformed");
+      }
+
+      const applied = useThreadStore.getState().prependOlderPage(chatId, {
+        beforeCursor: page.pageInfo.beforeCursor,
+        hasOlder: page.pageInfo.hasOlder,
+        messages: page.messages.map(messageFromApi),
+        requestGeneration,
+        snapshotActiveLeafId: page.pageInfo.activeLeafMessageId,
+        snapshotUpdatedAt: page.pageInfo.snapshotUpdatedAt
+      });
+      return applied ? "prepended" : "failed";
+    } catch (error) {
+      useThreadStore.getState().failOlderPage(chatId, requestGeneration, errorMessage(error));
+      return "failed";
+    }
+  }
+
+  async function loadCompleteActiveBranch(chatId: string): Promise<ThreadMessage[]> {
+    let summary = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
+    if (!summary) throw new Error("chat_not_found");
+    let thread = useThreadStore.getState().threadsByChatId[chatId];
+    if (
+      !thread ||
+      threadHistoryState(thread).snapshotUpdatedAt === null ||
+      (!chatHasActiveStream(chatId) &&
+        threadHistoryState(thread).snapshotUpdatedAt !== summary.updatedAt) ||
+      (!chatHasActiveStream(chatId) && thread.sourceUpdatedAt !== summary.updatedAt)
+    ) {
+      const detail = await fetchChatDetail(chatId, { force: Boolean(thread) });
+      if (!detail) throw new Error("chat_detail_failed");
+      summary = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId) ?? summary;
+      thread = useThreadStore.getState().threadsByChatId[chatId];
+    }
+    if (!thread) throw new Error("chat_detail_missing");
+
+    const history = threadHistoryState(thread);
+    if (!history.snapshotUpdatedAt) throw new Error("chat_page_snapshot_missing");
+    let messages = visibleMessagePath(thread.messages, thread.activeLeafId);
+    let beforeCursor = history.beforeCursor;
+    const seenMessageIds = new Set(messages.map((message) => message.id));
+    const seenCursors = new Set<string>();
+    while (beforeCursor) {
+      if (seenCursors.has(beforeCursor) || messages.length > summary.messageCount + 4) {
+        throw new Error("chat_page_cycle");
+      }
+      seenCursors.add(beforeCursor);
+      const query = new URLSearchParams({ before: beforeCursor });
+      const response = await shellFetch(`/api/chats/${chatId}/messages?${query.toString()}`);
+      if (response.status === 409) throw new Error("chat_page_stale");
+      if (!response.ok) {
+        throw new Error(
+          await responseErrorMessage(response, `chat_page_failed_${response.status}`)
+        );
+      }
+      const page = decodeChatMessagesPageResponse(await response.json());
+      const expectedParentId = messages[0]?.parentMessageId ?? null;
+      if (
+        !page ||
+        page.pageInfo.activeLeafMessageId !== history.snapshotActiveLeafId ||
+        page.pageInfo.snapshotUpdatedAt !== history.snapshotUpdatedAt ||
+        page.messages.length === 0 ||
+        page.messages.at(-1)?.id !== expectedParentId ||
+        page.messages.some((message) => seenMessageIds.has(message.id))
+      ) {
+        throw new Error("chat_page_malformed");
+      }
+      const older = page.messages.map(messageFromApi);
+      for (const message of older) seenMessageIds.add(message.id);
+      messages = [...older, ...messages];
+      beforeCursor = page.pageInfo.beforeCursor;
+    }
+
+    if (messages.length > 0 && messages[0]?.parentMessageId !== null) {
+      throw new Error("chat_history_incomplete");
+    }
+    return messages;
+  }
+
+  function protectedThreadChatIds(): Set<string> {
+    const protectedChatIds = new Set(chatDetailRequestsRef.current.keys());
+    const composerState = useComposerSessionStore.getState();
+    for (const sessionKey of Object.keys(composerState.sessionsByKey) as ComposerSessionKey[]) {
+      const session = composerState.sessionsByKey[sessionKey];
+      const sessionChatId = chatIdFromComposerSessionKey(sessionKey);
+      if (
+        sessionChatId &&
+        (session?.pendingEdit ||
+          session?.pendingSend ||
+          (session?.pendingUploadGenerations.length ?? 0) > 0)
+      ) {
+        protectedChatIds.add(sessionChatId);
+      }
+    }
+    for (const cachedChatId of Object.keys(useThreadStore.getState().threadsByChatId)) {
+      if (chatHasActiveStream(cachedChatId) || chatHasPendingThreadMutation(cachedChatId)) {
+        protectedChatIds.add(cachedChatId);
+      }
+    }
+    return protectedChatIds;
+  }
+
+  function pruneThreadCache(): string[] {
+    const removedChatIds = useThreadStore.getState().pruneInactiveThreads({
+      activeChatId: useWorkspaceStore.getState().activeChatId,
+      protectedChatIds: protectedThreadChatIds()
+    });
+    for (const removedChatId of removedChatIds) {
+      useRunSurfaceStore.getState().removeSurface(removedChatId);
+    }
+    return removedChatIds;
   }
 
   function applyChatDefaults(chat: ChatSummary, catalogOverride: Catalog | null | undefined = useWorkspaceStore.getState().catalog) {
@@ -303,6 +511,8 @@ export function useWorkspaceActions({
     useWorkspaceStore.getState().setPendingChatFolderId(null);
     rememberActiveChatId(chat.id);
     useWorkspaceStore.getState().setActiveChatId(chat.id);
+    useThreadStore.getState().touchThread(chat.id);
+    pruneThreadCache();
     useComposerSessionStore.getState().activateSession(composerSessionKey(chat.id));
     if (!options.preserveControls) {
       applyChatDefaults(chat, options.catalogOverride);
@@ -318,13 +528,20 @@ export function useWorkspaceActions({
       cachedThread = {
         ...emptyThreadSnapshot,
         activeLeafId: chat.activeLeafMessageId,
+        history: {
+          ...emptyThreadHistoryState,
+          snapshotActiveLeafId: chat.activeLeafMessageId,
+          snapshotUpdatedAt: chat.updatedAt
+        },
         sourceUpdatedAt: chat.updatedAt
       };
       useThreadStore.getState().replaceThread(chat.id, cachedThread);
     }
     const needsDetail =
       !cachedThread ||
-      chat.messageCount > cachedThread.messages.length ||
+      threadHistoryState(cachedThread).snapshotUpdatedAt === null ||
+      (!chatHasActiveStream(chat.id) &&
+        threadHistoryState(cachedThread).snapshotUpdatedAt !== chat.updatedAt) ||
       (!chatHasActiveStream(chat.id) && cachedThread.sourceUpdatedAt !== chat.updatedAt);
     loadingChatDetailIdRef.current = needsDetail ? chat.id : null;
     useWorkspaceStore.getState().setActiveChatDetailError(null);
@@ -371,6 +588,7 @@ export function useWorkspaceActions({
     rememberActiveChatId(null);
     useWorkspaceStore.getState().setActiveChatId(null);
     useComposerSessionStore.getState().activateSession(composerSessionKey(null, folderId));
+    pruneThreadCache();
     if (!useComposerControlStore.getState().selectedAssistant) {
       const catalog = useWorkspaceStore.getState().catalog;
       const defaultModel = catalog?.models.find(
@@ -748,46 +966,41 @@ export function useWorkspaceActions({
   }
 
   async function exportChat(chat: ChatSummary) {
-    let summary =
-      useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chat.id) ?? chat;
-    let thread = useThreadStore.getState().threadsByChatId[chat.id];
-    if (
-      !thread ||
-      summary.messageCount > thread.messages.length ||
-      (!chatHasActiveStream(chat.id) && thread.sourceUpdatedAt !== summary.updatedAt)
-    ) {
-      await fetchChatDetail(chat.id);
-      thread = useThreadStore.getState().threadsByChatId[chat.id];
-      summary =
-        useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chat.id) ?? summary;
+    setNotice({ kind: "success", text: "Preparing the complete chat export…" });
+    try {
+      const visible = await loadCompleteActiveBranch(chat.id);
+      const summary =
+        useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chat.id) ?? chat;
+      const payload = {
+        defaultModelId: summary.defaultModelId,
+        defaultProvider: summary.defaultProvider,
+        exportedAt: new Date().toISOString(),
+        messages: visible.map((message) => ({
+          content: message.content,
+          modelId: message.modelId ?? null,
+          provider: message.provider ?? null,
+          role: message.role,
+          status: message.status
+        })),
+        title: summary.title
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: "application/json"
+      });
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = `${safeDownloadName(summary.title)}.json`;
+      link.click();
+      URL.revokeObjectURL(href);
+      chatMutation.closeActions();
+      setNotice({ kind: "success", text: "Chat exported" });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `The complete chat could not be exported: ${errorMessage(error)}`
+      });
     }
-    const visible = visibleMessagePath(
-      thread?.messages ?? emptyThreadSnapshot.messages,
-      thread?.activeLeafId ?? summary.activeLeafMessageId
-    );
-    const payload = {
-      defaultModelId: summary.defaultModelId,
-      defaultProvider: summary.defaultProvider,
-      exportedAt: new Date().toISOString(),
-      messages: visible.map((message) => ({
-        content: message.content,
-        modelId: message.modelId ?? null,
-        provider: message.provider ?? null,
-        role: message.role,
-        status: message.status
-      })),
-      title: summary.title
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: "application/json"
-    });
-    const href = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = href;
-    link.download = `${safeDownloadName(summary.title)}.json`;
-    link.click();
-    URL.revokeObjectURL(href);
-    chatMutation.closeActions();
   }
 
   async function toggleChatFavorite(chat: ChatSummary) {
@@ -834,6 +1047,9 @@ export function useWorkspaceActions({
     deleteChat,
     exportChat,
     fetchChatDetail,
+    loadCompleteActiveBranch,
+    loadEarlierMessages,
+    pruneThreadCache,
     reapplyActiveChatDefaults,
     refreshActiveChat,
     refreshWorkspace,

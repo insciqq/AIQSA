@@ -5,7 +5,9 @@ import {
   createArchiveChatHandler,
   createCreateChatHandler,
   createDeleteFolderHandler,
+  createGetChatBranchesHandler,
   createGetChatHandler,
+  createGetChatMessagesPageHandler,
   createListChatsHandler,
   createUpdateChatHandler,
   createUpdateFolderHandler,
@@ -27,10 +29,19 @@ function authCookie() {
   return auth.cookie;
 }
 
+const historyRepositoryMethods: Pick<
+  ChatRepository,
+  "getBranches" | "getMessagesPage"
+> = {
+  getBranches: async () => null,
+  getMessagesPage: async () => ({ kind: "not_found" })
+};
+
 describe("chat route handlers", () => {
   it("creates generic new chats unfiled unless a folder is explicitly provided", async () => {
     const createInputs: Parameters<ChatRepository["createChat"]>[0][] = [];
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => false,
       createChat: async (input) => {
         createInputs.push(input);
@@ -96,6 +107,7 @@ describe("chat route handlers", () => {
 
   it("keeps the workspace list lightweight without message payloads", async () => {
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => false,
       createChat: async () => null,
       createFolder: async () => null,
@@ -152,6 +164,7 @@ describe("chat route handlers", () => {
   it("returns capped current-user content match ids for workspace search", async () => {
     let searchInput: Parameters<ChatRepository["searchChatContent"]>[0] | null = null;
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => false,
       createChat: async () => null,
       createFolder: async () => null,
@@ -225,12 +238,14 @@ describe("chat route handlers", () => {
 
   it("includes the latest assistant model run id in chat details", async () => {
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => false,
       createChat: async () => null,
       createFolder: async () => null,
       deleteFolder: async () => false,
       getChat: async () => ({
         activeLeafMessageId: "assistant-message-1",
+        contextStats: { approximateActiveBranchInputTokens: 11 },
         createdAt: "2026-06-07T09:00:00.000Z",
         defaultModelId: "google/gemini-3.5-flash",
         defaultProvider: "openrouter",
@@ -254,6 +269,12 @@ describe("chat route handlers", () => {
             status: "error"
           }
         ],
+        pageInfo: {
+          activeLeafMessageId: "assistant-message-1",
+          beforeCursor: "opaque-cursor",
+          hasOlder: true,
+          snapshotUpdatedAt: "2026-06-07T09:00:02.000Z"
+        },
         pinned: false,
         title: "Provider error",
         updatedAt: "2026-06-07T09:00:02.000Z",
@@ -308,9 +329,136 @@ describe("chat route handlers", () => {
     });
   });
 
+  it("loads an owned older page by opaque cursor and preserves forward order", async () => {
+    let received: Parameters<ChatRepository["getMessagesPage"]>[0] | null = null;
+    const repository: ChatRepository = {
+      ...historyRepositoryMethods,
+      archiveChat: async () => false,
+      createChat: async () => null,
+      createFolder: async () => null,
+      deleteFolder: async () => false,
+      getChat: async () => null,
+      getMessagesPage: async (input) => {
+        received = input;
+        return {
+          kind: "ok",
+          page: {
+            messages: [
+              {
+                content: { blocks: [{ text: "Older", type: "text" }] },
+                createdAt: "2026-06-07T08:00:00.000Z",
+                id: "message-older",
+                modelId: null,
+                parentMessageId: null,
+                provider: null,
+                role: "user",
+                status: "complete"
+              }
+            ],
+            pageInfo: {
+              activeLeafMessageId: "message-newest",
+              beforeCursor: null,
+              hasOlder: false,
+              snapshotUpdatedAt: "2026-06-07T09:00:02.000Z"
+            }
+          }
+        };
+      },
+      listWorkspace: async () => null,
+      searchChatContent: async () => [],
+      updateChat: async () => null,
+      updateFolder: async () => null
+    };
+    const GET = createGetChatMessagesPageHandler({ repository, resolveAuth: auth.resolveAuth });
+    const response = await GET(new Request(
+      "http://app.local/api/chats/chat-1/messages?before=opaque-cursor",
+      { headers: { cookie: authCookie() } }
+    ), { params: { chatId: "chat-1" } });
+
+    expect(response.status).toBe(200);
+    expect(received).toEqual({
+      before: "opaque-cursor",
+      chatId: "chat-1",
+      userId: config.bootstrapUserId
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      messages: [{ id: "message-older" }],
+      pageInfo: { hasOlder: false }
+    });
+  });
+
+  it("types missing, invalid, and stale older-page cursors", async () => {
+    const repository: ChatRepository = {
+      ...historyRepositoryMethods,
+      archiveChat: async () => false,
+      createChat: async () => null,
+      createFolder: async () => null,
+      deleteFolder: async () => false,
+      getChat: async () => null,
+      getMessagesPage: async ({ before }) => ({ kind: before === "stale" ? "stale" : "cursor_invalid" }),
+      listWorkspace: async () => null,
+      searchChatContent: async () => [],
+      updateChat: async () => null,
+      updateFolder: async () => null
+    };
+    const GET = createGetChatMessagesPageHandler({ repository, resolveAuth: auth.resolveAuth });
+    for (const [url, status, error] of [
+      ["http://app.local/api/chats/chat-1/messages", 400, "chat_page_cursor_invalid"],
+      ["http://app.local/api/chats/chat-1/messages?before=bad", 400, "chat_page_cursor_invalid"],
+      ["http://app.local/api/chats/chat-1/messages?before=stale", 409, "chat_page_stale"]
+    ] as const) {
+      const response = await GET(new Request(url, { headers: { cookie: authCookie() } }), {
+        params: { chatId: "chat-1" }
+      });
+      expect(response.status).toBe(status);
+      await expect(response.json()).resolves.toEqual({ error });
+    }
+  });
+
+  it("returns a separate current-user compact branch graph", async () => {
+    let received: Parameters<ChatRepository["getBranches"]>[0] | null = null;
+    const repository: ChatRepository = {
+      ...historyRepositoryMethods,
+      archiveChat: async () => false,
+      createChat: async () => null,
+      createFolder: async () => null,
+      deleteFolder: async () => false,
+      getBranches: async (input) => {
+        received = input;
+        return {
+          activeLeafMessageId: "assistant-a",
+          nodes: [{
+            id: "assistant-a",
+            parentMessageId: null,
+            preview: "Bounded answer",
+            role: "assistant",
+            status: "complete"
+          }],
+          snapshotUpdatedAt: "2026-06-07T09:00:02.000Z"
+        };
+      },
+      getChat: async () => null,
+      listWorkspace: async () => null,
+      searchChatContent: async () => [],
+      updateChat: async () => null,
+      updateFolder: async () => null
+    };
+    const GET = createGetChatBranchesHandler({ repository, resolveAuth: auth.resolveAuth });
+    const response = await GET(new Request("http://app.local/api/chats/chat-1/branches", {
+      headers: { cookie: authCookie() }
+    }), { params: { chatId: "chat-1" } });
+
+    expect(received).toEqual({ chatId: "chat-1", userId: config.bootstrapUserId });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      branchGraph: { nodes: [{ preview: "Bounded answer" }] }
+    });
+  });
+
   it("renames an owned folder", async () => {
     let updateInput: Parameters<ChatRepository["updateFolder"]>[0] | null = null;
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => false,
       createChat: async () => null,
       createFolder: async () => null,
@@ -369,6 +517,7 @@ describe("chat route handlers", () => {
   it("deletes an owned folder", async () => {
     let deletedFolderId: string | null = null;
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => false,
       createChat: async () => null,
       createFolder: async () => null,
@@ -413,6 +562,7 @@ describe("chat route handlers", () => {
   it("updates the active leaf for branch checkout", async () => {
     let updateInput: Parameters<ChatRepository["updateChat"]>[0] | null = null;
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => false,
       createChat: async () => null,
       createFolder: async () => null,
@@ -477,6 +627,7 @@ describe("chat route handlers", () => {
     let chatDefault: Parameters<ChatRepository["updateChat"]>[0]["defaultKnowledgePlan"];
     let folderDefault: Parameters<ChatRepository["updateFolder"]>[0]["defaultKnowledgePlan"];
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => false,
       createChat: async () => null,
       createFolder: async () => null,
@@ -540,6 +691,7 @@ describe("chat route handlers", () => {
   it("rejects malformed Knowledge defaults before repository mutation", async () => {
     let called = false;
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => false,
       createChat: async () => null,
       createFolder: async () => null,
@@ -566,6 +718,7 @@ describe("chat route handlers", () => {
 
   it("returns a stable conflict for active-leaf checkout and archive during an active run", async () => {
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => {
         throw new ActiveRunConflictError();
       },
@@ -607,6 +760,7 @@ describe("chat route handlers", () => {
 
   it("rejects updates for archived chats using the normal not-found response", async () => {
     const repository: ChatRepository = {
+      ...historyRepositoryMethods,
       archiveChat: async () => false,
       createChat: async () => null,
       createFolder: async () => null,

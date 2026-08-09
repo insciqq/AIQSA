@@ -3,6 +3,8 @@
 import { AdminMcpDraftEditor } from "@/components/admin/AdminMcpDraftEditor";
 import { AdminMcpServerWorkspace } from "@/components/admin/AdminMcpServerWorkspace";
 import {
+  blankMcpServerForm,
+  editableMcpServerForm,
   requestMcpSharedValues,
   sourceDisplay,
   type AdminMcpServerForm
@@ -24,6 +26,7 @@ import {
   primaryButton,
   quietButton
 } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import type {
   AdminMcpEditorMode,
@@ -408,6 +411,24 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
   } = state;
   const [oauthReturn] = useState<AdminMcpOAuthReturn | null>(readAdminMcpOAuthReturn);
   const selected = controller.state.selectedServer;
+  const cancelEditor = () => {
+    actions.closeEditor();
+    if (selected) actions.openServer();
+    else actions.showCatalog();
+  };
+  const editorDirty = mode === "import"
+    ? importValue.length > 0
+    : mode === "create"
+      ? JSON.stringify(form) !== JSON.stringify(blankMcpServerForm())
+      : mode === "edit" && selected
+        ? JSON.stringify(form) !== JSON.stringify(editableMcpServerForm(selected))
+        : false;
+  const requestDiscard = useAdminDraftProtection({
+    dirty: editorDirty,
+    onDiscard: cancelEditor,
+    owner: "mcp-server-draft",
+    pending: editorDirty && controller.state.busy
+  });
 
   useEffect(() => {
     if (controller.state.loaded && compactDetailOpen && mode === null && !selected) {
@@ -427,12 +448,6 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
     url.searchParams.delete("server");
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
   }, [actions, controller.actions, controller.state.loaded, controller.state.servers, oauthReturn]);
-
-  const cancelEditor = () => {
-    actions.closeEditor();
-    if (selected) actions.openServer();
-    else actions.showCatalog();
-  };
 
   const save = async () => {
     const sharedValues = requestMcpSharedValues(form);
@@ -489,7 +504,15 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-trace-subtle px-4 py-3">
         <p className="text-xs text-ink-muted">Installation-owned MCP control plane</p>
-        <button className={quietButton} disabled={controller.state.loading || controller.state.busy} onClick={() => void controller.actions.refresh()} type="button">
+        <button
+          className={quietButton}
+          disabled={controller.state.loading || controller.state.busy}
+          onClick={() => requestDiscard(
+            () => void controller.actions.refresh(),
+            ["mcp-server-draft", "mcp-one-time-values"]
+          )}
+          type="button"
+        >
           <RefreshCw aria-hidden="true" className="size-3.5" />
           Refresh MCP
         </button>
@@ -498,11 +521,14 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
         <AdminTaskIndexPane compactDetailOpen={compactDetailOpen} testId="mcp-catalog-view">
           <ServerCatalog
             controller={controller}
-            onCreate={actions.startImport}
-            onSelect={(serverId) => {
+            onCreate={() => requestDiscard(
+              actions.startImport,
+              ["mcp-server-draft", "mcp-one-time-values"]
+            )}
+            onSelect={(serverId) => requestDiscard(() => {
               controller.actions.select(serverId);
               actions.openServer();
-            }}
+            }, ["mcp-server-draft", "mcp-one-time-values"])}
             query={query}
             setQuery={actions.setQuery}
           />
@@ -510,12 +536,12 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
         <AdminTaskDetailPane compactDetailOpen={compactDetailOpen} testId="mcp-detail-view">
           {mode === "import" ? (
             <div>
-              <div className="px-4 pt-4"><AdminTaskBackButton label="Back to MCP servers" onClick={actions.showCatalog} /></div>
+              <div className="px-4 pt-4"><AdminTaskBackButton label="Back to MCP servers" onClick={() => requestDiscard(cancelEditor)} /></div>
               <ImportForm
                 disabled={controller.state.busy}
                 error={importError}
-                onCancel={cancelEditor}
-                onManual={actions.startCreate}
+                onCancel={() => requestDiscard(cancelEditor)}
+                onManual={() => requestDiscard(actions.startCreate)}
                 onNormalize={actions.normalizeImport}
                 setValue={actions.setImportValue}
                 value={importValue}
@@ -523,13 +549,13 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
             </div>
           ) : mode === "create" || mode === "edit" ? (
             <div>
-              <div className="px-4 pt-4"><AdminTaskBackButton label="Back to MCP servers" onClick={actions.showCatalog} /></div>
+              <div className="px-4 pt-4"><AdminTaskBackButton label="Back to MCP servers" onClick={() => requestDiscard(cancelEditor)} /></div>
               <ServerEditor
                 disabled={controller.state.busy}
                 form={form}
                 imported={imported}
                 mode={mode}
-                onCancel={cancelEditor}
+                onCancel={() => requestDiscard(cancelEditor)}
                 onSave={() => void save()}
                 setForm={actions.setForm}
                 storedSharedValues={mode === "edit" ? selected?.sharedValues : undefined}

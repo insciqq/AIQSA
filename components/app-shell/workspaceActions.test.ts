@@ -9,7 +9,11 @@ import {
 } from "./composerSessionStore";
 import { resetRunSurfaceStoreForTest, useRunSurfaceStore } from "./runSurfaceStore";
 import { useWorkspaceActions } from "./workspaceActions";
-import { resetThreadStoreForTest, useThreadStore } from "./threadStore";
+import {
+  resetThreadStoreForTest,
+  useThreadStore,
+  type ThreadHistoryState
+} from "./threadStore";
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/chat/Composer";
 import type { Catalog, ChatDetail, ChatSummary, ThreadMessage } from "./types";
@@ -81,24 +85,92 @@ function apiChatSummary(summary: ChatSummary) {
   };
 }
 
-function apiChatDetail(summary: ChatSummary, messages: ThreadMessage[]) {
+function apiMessage(candidate: ThreadMessage) {
   return {
-    ...apiChatSummary(summary),
-    messageCount: messages.length,
-    messages: messages.map((candidate) => ({
-      artifactSummary: candidate.artifactSummary ?? null,
-      content: candidate.content,
-      createdAt: "2026-06-10T00:00:00.000Z",
-      errorMessage: null,
-      id: candidate.id,
-      modelId: candidate.modelId ?? null,
-      modelRunId: candidate.runId ?? null,
-      parentMessageId: candidate.parentMessageId,
-      provider: candidate.provider ?? null,
-      role: candidate.role,
-      status: candidate.status
-    })),
-    usageStats: null
+    artifactSummary: candidate.artifactSummary ?? null,
+    content: candidate.content,
+    createdAt: "2026-06-10T00:00:00.000Z",
+    errorMessage: null,
+    id: candidate.id,
+    modelId: candidate.modelId ?? null,
+    modelRunId: candidate.runId ?? null,
+    parentMessageId: candidate.parentMessageId,
+    provider: candidate.provider ?? null,
+    role: candidate.role,
+    status: candidate.status
+  };
+}
+
+function apiChatDetail(
+  summary: ChatSummary,
+  messages: ThreadMessage[],
+  options: {
+    activeLeafMessageId?: string | null;
+    beforeCursor?: string | null;
+    contextTokens?: number;
+    messageCount?: number;
+    usageStats?: ChatDetail["usageStats"];
+  } = {}
+) {
+  const activeLeafMessageId =
+    options.activeLeafMessageId ?? messages.at(-1)?.id ?? null;
+  const beforeCursor = options.beforeCursor === undefined
+    ? messages[0]?.parentMessageId
+      ? "cursor-before-page"
+      : null
+    : options.beforeCursor;
+  const detailSummary = {
+    ...summary,
+    activeLeafMessageId,
+    messageCount: options.messageCount ?? Math.max(summary.messageCount, messages.length)
+  };
+
+  return {
+    ...apiChatSummary(detailSummary),
+    contextStats: {
+      approximateActiveBranchInputTokens: options.contextTokens ?? 96
+    },
+    messages: messages.map(apiMessage),
+    pageInfo: {
+      activeLeafMessageId,
+      beforeCursor,
+      hasOlder: beforeCursor !== null,
+      snapshotUpdatedAt: detailSummary.updatedAt
+    },
+    usageStats: options.usageStats ?? null
+  };
+}
+
+function apiMessagesPage(
+  messages: ThreadMessage[],
+  input: {
+    activeLeafMessageId: string | null;
+    beforeCursor: string | null;
+    snapshotUpdatedAt: string;
+  }
+) {
+  return {
+    messages: messages.map(apiMessage),
+    pageInfo: {
+      ...input,
+      hasOlder: input.beforeCursor !== null
+    }
+  };
+}
+
+function threadHistory(
+  summary: ChatSummary,
+  overrides: Partial<ThreadHistoryState> = {}
+): ThreadHistoryState {
+  return {
+    beforeCursor: null,
+    error: null,
+    hasOlder: false,
+    loading: false,
+    requestGeneration: 0,
+    snapshotActiveLeafId: summary.activeLeafMessageId,
+    snapshotUpdatedAt: summary.updatedAt,
+    ...overrides
   };
 }
 
@@ -108,6 +180,7 @@ function useWorkspaceActionsForTest(input: {
   draft: string;
   includeConcurrentChat?: boolean;
   activeStreamChatIds?: string[];
+  pendingThreadMutationChatIds?: string[];
 }) {
   const catalog = {
     defaults: {
@@ -161,15 +234,21 @@ function useWorkspaceActionsForTest(input: {
     finishEditing: vi.fn()
   };
   const activeStreamChatIds = new Set(input.activeStreamChatIds ?? []);
+  const pendingThreadMutationChatIds = new Set(input.pendingThreadMutationChatIds ?? []);
   const chatHasActiveStream = vi.fn((chatId: string) => activeStreamChatIds.has(chatId));
+  const chatHasPendingThreadMutation = vi.fn((chatId: string) =>
+    pendingThreadMutationChatIds.has(chatId)
+  );
+  const chatDetailRequestsRef = { current: new Map<string, Promise<ChatDetail | null>>() };
   const workspaceRefreshPromiseRef = { current: null } as {
     current: Promise<ChatDetail | null> | null;
   };
   const actions = useWorkspaceActions({
     activeChatIdRef,
     applyModelControlDefaults,
-    chatDetailRequestsRef: { current: new Map() },
+    chatDetailRequestsRef,
     chatHasActiveStream,
+    chatHasPendingThreadMutation,
     chatMutation,
     confirmDeleteChat,
     loadingChatDetailIdRef: { current: null },
@@ -186,14 +265,17 @@ function useWorkspaceActionsForTest(input: {
     actions,
     applyModelControlDefaults,
     activeComposer: () => selectActiveComposerSession(useComposerSessionStore.getState()),
+    activeStreamChatIds,
     attachments: () => selectActiveComposerSession(useComposerSessionStore.getState()).attachments,
     chatA,
     chatB,
     chatC,
     chatHasActiveStream,
+    chatDetailRequestsRef,
     chats: () => useWorkspaceStore.getState().chats,
     confirmDeleteChat,
     draft: () => selectActiveComposerSession(useComposerSessionStore.getState()).draft,
+    pendingThreadMutationChatIds,
     resumeChatRun,
     session: (key: ComposerSessionKey) =>
       selectComposerSession(useComposerSessionStore.getState(), key),
@@ -482,6 +564,84 @@ describe("workspace actions", () => {
       activeLeafId: "message-1",
       messages: [expect.objectContaining({ id: "message-1" })]
     });
+  });
+
+  it("re-prunes temporary cache exceptions after their owners settle", () => {
+    const state = useWorkspaceActionsForTest({
+      activeStreamChatIds: ["chat-b"],
+      attachments: [],
+      draft: "",
+      pendingThreadMutationChatIds: ["chat-c"]
+    });
+    const chatIds = ["chat-a", "chat-b", "chat-c", "chat-d", "chat-e", "chat-f"];
+    for (const chatId of chatIds) {
+      useThreadStore.getState().replaceThread(chatId, {
+        activeLeafId: `${chatId}-message`,
+        messages: [message({ id: `${chatId}-message` })],
+        usageStats: null
+      });
+      useThreadStore.getState().touchThread(chatId);
+      useRunSurfaceStore.getState().resetSurface(chatId);
+    }
+    const pendingSessionKey = composerSessionKey("chat-d");
+    useComposerSessionStore.getState().activateSession(pendingSessionKey);
+    useComposerSessionStore.getState().setDraft("Pending send");
+    const sendToken = useComposerSessionStore.getState().beginSend(pendingSessionKey);
+    expect(sendToken).not.toBeNull();
+    state.chatDetailRequestsRef.current.set("chat-e", Promise.resolve(null));
+
+    expect(state.actions.pruneThreadCache()).toEqual([]);
+    expect(Object.keys(useThreadStore.getState().threadsByChatId)).toHaveLength(6);
+
+    state.activeStreamChatIds.delete("chat-b");
+    state.chatDetailRequestsRef.current.delete("chat-e");
+    useComposerSessionStore.getState().finishSend(sendToken!, "failed");
+    expect(state.actions.pruneThreadCache().sort()).toEqual(["chat-b", "chat-d"]);
+    expect(Object.keys(useThreadStore.getState().threadsByChatId).sort()).toEqual([
+      "chat-a",
+      "chat-c",
+      "chat-e",
+      "chat-f"
+    ]);
+    expect(useThreadStore.getState().threadsByChatId["chat-a"]).toBeDefined();
+    expect(useThreadStore.getState().threadsByChatId["chat-c"]).toBeDefined();
+    expect(useRunSurfaceStore.getState().surfacesByChatId["chat-b"]).toBeUndefined();
+    expect(useRunSurfaceStore.getState().surfacesByChatId["chat-d"]).toBeUndefined();
+
+    state.pendingThreadMutationChatIds.delete("chat-c");
+    expect(state.actions.pruneThreadCache()).toEqual(["chat-c"]);
+    expect(Object.keys(useThreadStore.getState().threadsByChatId).sort()).toEqual([
+      "chat-a",
+      "chat-e",
+      "chat-f"
+    ]);
+    expect(useRunSurfaceStore.getState().surfacesByChatId["chat-c"]).toBeUndefined();
+    expect(useRunSurfaceStore.getState().surfacesByChatId["chat-e"]).toBeDefined();
+    expect(useRunSurfaceStore.getState().surfacesByChatId["chat-f"]).toBeDefined();
+  });
+
+  it("keeps only two inactive snapshots after opening a blank New Chat", () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    for (const chatId of ["chat-a", "chat-b", "chat-c", "chat-d"]) {
+      useThreadStore.getState().replaceThread(chatId, {
+        activeLeafId: `${chatId}-message`,
+        messages: [message({ id: `${chatId}-message` })],
+        usageStats: null
+      });
+      useThreadStore.getState().touchThread(chatId);
+      useRunSurfaceStore.getState().resetSurface(chatId);
+    }
+
+    state.actions.activateBlankWorkspace();
+
+    expect(Object.keys(useThreadStore.getState().threadsByChatId).sort()).toEqual([
+      "chat-c",
+      "chat-d"
+    ]);
+    expect(Object.keys(useRunSurfaceStore.getState().surfacesByChatId).sort()).toEqual([
+      "chat-c",
+      "chat-d"
+    ]);
   });
 
   it("reapplies recovered catalog defaults without repeating chat activation or run resume", () => {
@@ -869,7 +1029,7 @@ describe("workspace actions", () => {
     };
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({
-        chat: apiChatDetail(lazyChat, detailMessages)
+        chat: apiChatDetail(lazyChat, detailMessages, { contextTokens: 12_345 })
       })
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -884,6 +1044,9 @@ describe("workspace actions", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a");
     expect(useThreadStore.getState().threadsByChatId["chat-a"]).toMatchObject({
       activeLeafId: "assistant-a",
+      contextStats: {
+        approximateActiveBranchInputTokens: 12_345
+      },
       messages: [
         expect.objectContaining({ id: "user-a" }),
         expect.objectContaining({ id: "assistant-a" })
@@ -1015,7 +1178,7 @@ describe("workspace actions", () => {
       message({
         content: "Server sibling",
         id: "assistant-server",
-        parentMessageId: "user-a",
+        parentMessageId: "assistant-a",
         role: "assistant"
       })
     ];
@@ -1086,6 +1249,138 @@ describe("workspace actions", () => {
     });
   });
 
+  it("prepends a snapshot-matched older page without replacing thread facts", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const summary = {
+      ...state.chatA,
+      activeLeafMessageId: "message-4",
+      messageCount: 4
+    };
+    const tail = [
+      message({ content: "Third", id: "message-3", parentMessageId: "message-2" }),
+      message({
+        content: "Fourth",
+        id: "message-4",
+        parentMessageId: "message-3",
+        role: "assistant"
+      })
+    ];
+    useWorkspaceStore.getState().updateChats((current) =>
+      current.map((candidate) => (candidate.id === summary.id ? summary : candidate))
+    );
+    useThreadStore.getState().replaceThread(summary.id, {
+      activeLeafId: summary.activeLeafMessageId,
+      contextStats: { approximateActiveBranchInputTokens: 4_200 },
+      history: threadHistory(summary, {
+        beforeCursor: "cursor-tail",
+        hasOlder: true
+      }),
+      messages: tail,
+      sourceUpdatedAt: summary.updatedAt,
+      usageStats: {
+        activeBranchMessageCount: 4,
+        cachedInputTokens: 12,
+        cacheWriteInputTokens: 3,
+        totalTokens: 88
+      }
+    });
+    const older = [
+      message({ content: "First", id: "message-1" }),
+      message({ content: "Second", id: "message-2", parentMessageId: "message-1" })
+    ];
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json(
+        apiMessagesPage(older, {
+          activeLeafMessageId: summary.activeLeafMessageId,
+          beforeCursor: null,
+          snapshotUpdatedAt: summary.updatedAt
+        })
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(state.actions.loadEarlierMessages(summary.id)).resolves.toBe("prepended");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/chats/chat-a/messages?before=cursor-tail"
+    );
+    expect(useThreadStore.getState().threadsByChatId[summary.id]).toMatchObject({
+      activeLeafId: "message-4",
+      contextStats: { approximateActiveBranchInputTokens: 4_200 },
+      history: {
+        beforeCursor: null,
+        error: null,
+        hasOlder: false,
+        loading: false
+      },
+      usageStats: {
+        activeBranchMessageCount: 4,
+        cachedInputTokens: 12,
+        cacheWriteInputTokens: 3,
+        totalTokens: 88
+      }
+    });
+    expect(
+      useThreadStore.getState().threadsByChatId[summary.id]?.messages.map(
+        (candidate) => candidate.id
+      )
+    ).toEqual(["message-1", "message-2", "message-3", "message-4"]);
+  });
+
+  it("rejects an older page from a different snapshot without corrupting the tail", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const summary = {
+      ...state.chatA,
+      activeLeafMessageId: "message-4",
+      messageCount: 4
+    };
+    const tail = [
+      message({ id: "message-3", parentMessageId: "message-2" }),
+      message({ id: "message-4", parentMessageId: "message-3", role: "assistant" })
+    ];
+    useWorkspaceStore.getState().updateChats((current) =>
+      current.map((candidate) => (candidate.id === summary.id ? summary : candidate))
+    );
+    useThreadStore.getState().replaceThread(summary.id, {
+      activeLeafId: summary.activeLeafMessageId,
+      history: threadHistory(summary, {
+        beforeCursor: "cursor-tail",
+        hasOlder: true
+      }),
+      messages: tail,
+      sourceUpdatedAt: summary.updatedAt,
+      usageStats: null
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json(
+          apiMessagesPage(
+            [
+              message({ id: "message-1" }),
+              message({ id: "message-2", parentMessageId: "message-1" })
+            ],
+            {
+              activeLeafMessageId: summary.activeLeafMessageId,
+              beforeCursor: null,
+              snapshotUpdatedAt: "2026-06-10T00:01:00.000Z"
+            }
+          )
+        )
+      )
+    );
+
+    await expect(state.actions.loadEarlierMessages(summary.id)).resolves.toBe("failed");
+
+    expect(useThreadStore.getState().threadsByChatId[summary.id]).toMatchObject({
+      history: {
+        error: expect.stringContaining("chat_page_malformed"),
+        loading: false
+      },
+      messages: tail
+    });
+  });
+
   it("exports the active branch from keyed detail without fetching", async () => {
     const state = useWorkspaceActionsForTest({
       attachments: [],
@@ -1101,6 +1396,7 @@ describe("workspace actions", () => {
     );
     useThreadStore.getState().replaceThread(summary.id, {
       activeLeafId: "assistant-b",
+      history: threadHistory(summary),
       messages: [
         message({ content: "Question", id: "user-1" }),
         message({ content: "Branch A", id: "assistant-a", parentMessageId: "user-1", role: "assistant" }),
@@ -1136,6 +1432,79 @@ describe("workspace actions", () => {
     ]);
   });
 
+  it("exports older pages through operation-local memory without growing the thread cache", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const summary = {
+      ...state.chatA,
+      activeLeafMessageId: "message-4",
+      messageCount: 4
+    };
+    const tail = [
+      message({ content: "Third", id: "message-3", parentMessageId: "message-2" }),
+      message({
+        content: "Fourth",
+        id: "message-4",
+        parentMessageId: "message-3",
+        role: "assistant"
+      })
+    ];
+    useWorkspaceStore.getState().updateChats((current) =>
+      current.map((candidate) => (candidate.id === summary.id ? summary : candidate))
+    );
+    useThreadStore.getState().replaceThread(summary.id, {
+      activeLeafId: summary.activeLeafMessageId,
+      history: threadHistory(summary, {
+        beforeCursor: "cursor-tail",
+        hasOlder: true
+      }),
+      messages: tail,
+      sourceUpdatedAt: summary.updatedAt,
+      usageStats: null
+    });
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json(
+        apiMessagesPage(
+          [
+            message({ content: "First", id: "message-1" }),
+            message({ content: "Second", id: "message-2", parentMessageId: "message-1" })
+          ],
+          {
+            activeLeafMessageId: summary.activeLeafMessageId,
+            beforeCursor: null,
+            snapshotUpdatedAt: summary.updatedAt
+          }
+        )
+      )
+    );
+    let exportedText = "";
+    class CapturedBlob {
+      constructor(parts: BlobPart[]) {
+        exportedText = parts.map((part) => (typeof part === "string" ? part : "")).join("");
+      }
+    }
+    vi.stubGlobal("Blob", CapturedBlob);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:export");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await state.actions.exportChat(summary);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/chats/chat-a/messages?before=cursor-tail"
+    );
+    expect(
+      (JSON.parse(exportedText) as { messages: Array<{ content: string }> }).messages.map(
+        (candidate) => candidate.content
+      )
+    ).toEqual(["First", "Second", "Third", "Fourth"]);
+    expect(
+      useThreadStore.getState().threadsByChatId[summary.id]?.messages.map(
+        (candidate) => candidate.id
+      )
+    ).toEqual(["message-3", "message-4"]);
+  });
+
   it("refreshes a same-count stale thread before exporting it", async () => {
     const state = useWorkspaceActionsForTest({
       attachments: [],
@@ -1152,6 +1521,9 @@ describe("workspace actions", () => {
     );
     useThreadStore.getState().replaceThread(summary.id, {
       activeLeafId: "message-a",
+      history: threadHistory(summary, {
+        snapshotUpdatedAt: "2026-06-10T00:00:00.000Z"
+      }),
       messages: [message({ content: "stale export", id: "message-a" })],
       sourceUpdatedAt: "2026-06-10T00:00:00.000Z",
       usageStats: null

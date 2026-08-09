@@ -17,6 +17,7 @@ import {
   quietButton,
   touchTarget
 } from "@/components/admin/adminPrimitives";
+import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
 import { formatDate } from "@/components/admin/adminViewUtils";
 import {
   useAdminEmailController,
@@ -522,9 +523,10 @@ function CommissioningTask({
   );
 }
 
-function RuntimeTask({ controller, email }: Readonly<{
+function RuntimeTask({ controller, email, onRefresh }: Readonly<{
   controller: AdminEmailController;
   email: AdminEmailState;
+  onRefresh(): void;
 }>) {
   const presentation = deriveAdminEmailPresentation(email);
   const hasActive = Boolean(email.active.configuration);
@@ -546,7 +548,7 @@ function RuntimeTask({ controller, email }: Readonly<{
           ) : (
             <span className="text-sm font-medium text-ink-secondary">Not configured</span>
           )}
-          <button className={quietButton} disabled={controller.state.busy || controller.state.loading} onClick={() => void controller.actions.refresh()} type="button"><RefreshCw aria-hidden="true" className="size-3.5" />Refresh</button>
+          <button className={quietButton} disabled={controller.state.busy || controller.state.loading} onClick={onRefresh} type="button"><RefreshCw aria-hidden="true" className="size-3.5" />Refresh</button>
         </div>
       </section>
       <section className="border-t border-trace-subtle pt-5">
@@ -624,7 +626,19 @@ function AdminEmailContent({ controller, email }: Readonly<{
 
   const presentation = deriveAdminEmailPresentation(email);
   const draftDirty = JSON.stringify(form) !== JSON.stringify(formFrom(email));
+  const valueDirty = draftDirty || recipient.length > 0;
   const busy = controller.state.busy;
+  const discardDraft = () => {
+    setForm(formFrom(email));
+    setPlaintextAcknowledged(false);
+    setRecipient("");
+  };
+  const requestDiscard = useAdminDraftProtection({
+    dirty: valueDirty,
+    onDiscard: discardDraft,
+    owner: "email-delivery-draft",
+    pending: valueDirty && busy
+  });
   const current = tasks.find((item) => item.id === task) ?? tasks[0];
   const openTask = (nextTask: EmailTask) => {
     setTask(nextTask);
@@ -660,8 +674,7 @@ function AdminEmailContent({ controller, email }: Readonly<{
                 email={email}
                 form={form}
                 onReset={() => {
-                  setPlaintextAcknowledged(false);
-                  setForm(formFrom(email));
+                  requestDiscard(discardDraft);
                 }}
                 onSave={() => void (async () => {
                   const saved = await controller.actions.save({
@@ -689,7 +702,11 @@ function AdminEmailContent({ controller, email }: Readonly<{
                 setRecipient={setRecipient}
               />
             ) : task === "runtime" ? (
-              <RuntimeTask controller={controller} email={email} />
+              <RuntimeTask
+                controller={controller}
+                email={email}
+                onRefresh={() => requestDiscard(() => void controller.actions.refresh())}
+              />
             ) : task === "clear" ? (
               <ClearTask controller={controller} email={email} onCleared={() => openTask("overview")} />
             ) : (

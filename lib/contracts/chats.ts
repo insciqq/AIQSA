@@ -20,6 +20,24 @@ import {
 } from "./toolActivity";
 import { decodeKnowledgePlan, type KnowledgePlan } from "./knowledge";
 
+export const CHAT_HISTORY_PAGE_SIZE = 50;
+export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
+export const CHAT_BRANCH_PREVIEW_MAX_LENGTH = 160;
+
+export function boundedChatBranchPreview(value: string): string {
+  if (value.length <= CHAT_BRANCH_PREVIEW_MAX_LENGTH) return value;
+  let end = CHAT_BRANCH_PREVIEW_MAX_LENGTH;
+  const finalCodeUnit = value.charCodeAt(end - 1);
+  const nextCodeUnit = value.charCodeAt(end);
+  if (
+    finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff &&
+    nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff
+  ) {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
 export type {
   ThreadSearchExecution,
   ThreadSearchProviderOperation,
@@ -153,8 +171,21 @@ export type ChatUsageStats = {
   totalTokens: number;
 };
 
+export type ChatContextStats = {
+  approximateActiveBranchInputTokens: number;
+};
+
+export type ChatMessagePageInfo = {
+  activeLeafMessageId: string | null;
+  beforeCursor: string | null;
+  hasOlder: boolean;
+  snapshotUpdatedAt: string;
+};
+
 export type ChatDetail = WorkspaceChatSummary & {
+  contextStats: ChatContextStats;
   messages: ThreadMessage[];
+  pageInfo: ChatMessagePageInfo;
   usageStats: ChatUsageStats | null;
 };
 
@@ -187,7 +218,9 @@ export type WorkspaceChatSummaryWire = Omit<
 };
 
 export type ChatDetailWire = WorkspaceChatSummaryWire & {
+  contextStats: ChatContextStats;
   messages: ChatMessageWire[];
+  pageInfo: ChatMessagePageInfo;
   usageStats: ChatUsageStats | null;
 };
 
@@ -197,6 +230,29 @@ export type ChatSummaryResponseWire = {
 
 export type ChatDetailResponseWire = {
   chat: ChatDetailWire;
+};
+
+export type ChatMessagesPageWire = {
+  messages: ChatMessageWire[];
+  pageInfo: ChatMessagePageInfo;
+};
+
+export type ChatBranchNodeWire = {
+  id: string;
+  parentMessageId: string | null;
+  preview: string;
+  role: "assistant" | "user";
+  status: "cancelled" | "complete" | "error" | "queued" | "streaming";
+};
+
+export type ChatBranchGraphWire = {
+  activeLeafMessageId: string | null;
+  nodes: ChatBranchNodeWire[];
+  snapshotUpdatedAt: string;
+};
+
+export type ChatBranchesResponseWire = {
+  branchGraph: ChatBranchGraphWire;
 };
 
 export type CreateChatRequestWire = {
@@ -216,6 +272,8 @@ export type ChatRouteServerErrorCode =
   | SessionErrorCode
   | MutationOriginErrorCode
   | "active_run_in_progress"
+  | "chat_page_cursor_invalid"
+  | "chat_page_stale"
   | "chat_not_created"
   | "chat_not_found"
   | "knowledge_plan_invalid"
@@ -258,6 +316,7 @@ export type DecodedWorkspaceChatsResponse = {
 
 export type ChatUpdateDataWire = {
   chat: WorkspaceChatSummaryWire & {
+    contextStats: ChatContextStats;
     usageStats: ChatUsageStats | null;
   };
   messages: ChatMessageWire[];
@@ -265,6 +324,12 @@ export type ChatUpdateDataWire = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(record: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(record).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
 function requiredString(value: unknown): string | null {
@@ -326,6 +391,88 @@ function decodeUsageStats(value: unknown): ChatUsageStats | null | undefined {
     cacheWriteInputTokens,
     totalTokens
   };
+}
+
+function isoTimestamp(value: unknown): string | null {
+  if (typeof value !== "string" || !value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) || date.toISOString() !== value ? null : value;
+}
+
+function decodeContextStats(value: unknown): ChatContextStats | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["approximateActiveBranchInputTokens"])) {
+    return null;
+  }
+  const approximateActiveBranchInputTokens = nonNegativeInteger(
+    value.approximateActiveBranchInputTokens
+  );
+  return approximateActiveBranchInputTokens === null
+    ? null
+    : { approximateActiveBranchInputTokens };
+}
+
+function decodeMessagePageInfo(value: unknown): ChatMessagePageInfo | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "activeLeafMessageId",
+      "beforeCursor",
+      "hasOlder",
+      "snapshotUpdatedAt"
+    ])
+  ) return null;
+  const activeLeafMessageId = nullableId(value.activeLeafMessageId);
+  const beforeCursor = nullableId(value.beforeCursor);
+  const snapshotUpdatedAt = isoTimestamp(value.snapshotUpdatedAt);
+  if (
+    activeLeafMessageId === undefined ||
+    beforeCursor === undefined ||
+    (typeof beforeCursor === "string" && (
+      beforeCursor.length > CHAT_HISTORY_CURSOR_MAX_LENGTH ||
+      !/^[A-Za-z0-9_-]+$/u.test(beforeCursor)
+    )) ||
+    typeof value.hasOlder !== "boolean" ||
+    !snapshotUpdatedAt ||
+    value.hasOlder !== (beforeCursor !== null)
+  ) {
+    return null;
+  }
+  return {
+    activeLeafMessageId,
+    beforeCursor,
+    hasOlder: value.hasOlder,
+    snapshotUpdatedAt
+  };
+}
+
+function decodeMessagePage(
+  messagesValue: unknown,
+  pageInfoValue: unknown,
+  options: { requireActiveLeaf: boolean }
+): { messages: ChatMessageWire[]; pageInfo: ChatMessagePageInfo } | null {
+  if (!Array.isArray(messagesValue) || messagesValue.length > CHAT_HISTORY_PAGE_SIZE) {
+    return null;
+  }
+  const pageInfo = decodeMessagePageInfo(pageInfoValue);
+  const decodedMessages = messagesValue.map(decodeChatMessageWire);
+  if (!pageInfo || decodedMessages.some((message) => message === null)) return null;
+  const messages = decodedMessages.filter(
+    (message): message is ChatMessageWire => message !== null
+  );
+  if (new Set(messages.map((message) => message.id)).size !== messages.length) return null;
+  if (
+    messages.some((message, index) =>
+      index > 0 && message.parentMessageId !== messages[index - 1]?.id
+    ) ||
+    (messages.length === 0 && (pageInfo.activeLeafMessageId !== null || pageInfo.hasOlder)) ||
+    (messages.length > 0 && pageInfo.activeLeafMessageId === null) ||
+    (messages.length > 0 && pageInfo.hasOlder !== (messages[0]?.parentMessageId !== null))
+  ) return null;
+  if (
+    options.requireActiveLeaf &&
+    (messages.at(-1)?.id ?? null) !== pageInfo.activeLeafMessageId
+  ) return null;
+  return { messages, pageInfo };
 }
 
 function decodeThreadRunUsage(value: unknown): ThreadRunUsage | null | undefined {
@@ -874,16 +1021,103 @@ export function decodeChatDetailResponse(value: unknown): ChatDetailWire | null 
   }
 
   const chat = decodeWorkspaceChatSummaryWire(value.chat);
+  const contextStats = decodeContextStats(value.chat.contextStats);
   const usageStats = decodeUsageStats(value.chat.usageStats);
-  const messages = value.chat.messages.map(decodeChatMessageWire);
-  if (!chat || usageStats === undefined || messages.some((message) => message === null)) {
+  const page = decodeMessagePage(value.chat.messages, value.chat.pageInfo, {
+    requireActiveLeaf: true
+  });
+  if (
+    !chat ||
+    !contextStats ||
+    usageStats === undefined ||
+    !page ||
+    page.pageInfo.activeLeafMessageId !== chat.activeLeafMessageId ||
+    page.pageInfo.snapshotUpdatedAt !== chat.updatedAt
+  ) {
     return null;
   }
 
   return {
     ...chat,
-    messages: messages.filter((message): message is ChatMessageWire => message !== null),
+    contextStats,
+    messages: page.messages,
+    pageInfo: page.pageInfo,
     usageStats
+  };
+}
+
+export function decodeChatMessagesPageResponse(value: unknown): ChatMessagesPageWire | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["messages", "pageInfo"])) return null;
+  return decodeMessagePage(value.messages, value.pageInfo, { requireActiveLeaf: false });
+}
+
+function decodeChatBranchNode(value: unknown): ChatBranchNodeWire | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["id", "parentMessageId", "preview", "role", "status"])
+  ) return null;
+  const id = requiredString(value.id);
+  const parentMessageId = nullableId(value.parentMessageId);
+  if (
+    !id ||
+    parentMessageId === undefined ||
+    typeof value.preview !== "string" ||
+    value.preview.length > CHAT_BRANCH_PREVIEW_MAX_LENGTH ||
+    (value.role !== "assistant" && value.role !== "user") ||
+    (value.status !== "cancelled" &&
+      value.status !== "complete" &&
+      value.status !== "error" &&
+      value.status !== "queued" &&
+      value.status !== "streaming")
+  ) return null;
+  return {
+    id,
+    parentMessageId,
+    preview: value.preview,
+    role: value.role,
+    status: value.status
+  };
+}
+
+export function decodeChatBranchesResponse(value: unknown): ChatBranchesResponseWire | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["branchGraph"]) || !isRecord(value.branchGraph)) {
+    return null;
+  }
+  const graph = value.branchGraph;
+  if (
+    !hasExactKeys(graph, ["activeLeafMessageId", "nodes", "snapshotUpdatedAt"]) ||
+    !Array.isArray(graph.nodes)
+  ) return null;
+  const activeLeafMessageId = nullableId(graph.activeLeafMessageId);
+  const snapshotUpdatedAt = isoTimestamp(graph.snapshotUpdatedAt);
+  const decodedNodes = graph.nodes.map(decodeChatBranchNode);
+  if (
+    activeLeafMessageId === undefined ||
+    !snapshotUpdatedAt ||
+    decodedNodes.some((node) => node === null)
+  ) return null;
+  const nodes = decodedNodes.filter((node): node is ChatBranchNodeWire => node !== null);
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  if (
+    byId.size !== nodes.length ||
+    (activeLeafMessageId !== null && !byId.has(activeLeafMessageId)) ||
+    nodes.some((node) => node.parentMessageId !== null && !byId.has(node.parentMessageId))
+  ) return null;
+  for (const node of nodes) {
+    const seen = new Set<string>();
+    let cursor: ChatBranchNodeWire | undefined = node;
+    while (cursor) {
+      if (seen.has(cursor.id)) return null;
+      seen.add(cursor.id);
+      cursor = cursor.parentMessageId ? byId.get(cursor.parentMessageId) : undefined;
+    }
+  }
+  return {
+    branchGraph: {
+      activeLeafMessageId,
+      nodes,
+      snapshotUpdatedAt
+    }
   };
 }
 
@@ -893,8 +1127,9 @@ export function decodeChatUpdateData(value: unknown): ChatUpdateDataWire | null 
   }
 
   const chat = decodeWorkspaceChatSummaryWire(value.chat);
+  const contextStats = decodeContextStats(value.chat.contextStats);
   const usageStats = decodeUsageStats(value.chat.usageStats);
-  if (!chat || usageStats === undefined) {
+  if (!chat || !contextStats || usageStats === undefined) {
     return null;
   }
 
@@ -906,6 +1141,7 @@ export function decodeChatUpdateData(value: unknown): ChatUpdateDataWire | null 
   return {
     chat: {
       ...chat,
+      contextStats,
       usageStats
     },
     messages: decodedMessages.filter(

@@ -1922,8 +1922,17 @@ describe("message run actions", () => {
       return {
         ...chat(),
         activeLeafMessageId: "assistant-canonical",
+        contextStats: {
+          approximateActiveBranchInputTokens: 48
+        },
         messageCount: 2,
         messages: canonicalMessages,
+        pageInfo: {
+          activeLeafMessageId: "assistant-canonical",
+          beforeCursor: null,
+          hasOlder: false,
+          snapshotUpdatedAt: chat().updatedAt
+        },
         usageStats: null
       };
     });

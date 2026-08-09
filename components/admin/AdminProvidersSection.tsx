@@ -6,6 +6,7 @@ import { AdminProviderConnectionEditor } from "@/components/admin/AdminProviderC
 import { AdminProviderCredentialsTask } from "@/components/admin/AdminProviderCredentialsTask";
 import { AdminProviderDiagnosticsTask } from "@/components/admin/AdminProviderDiagnosticsTask";
 import { AdminProviderModelsTask } from "@/components/admin/AdminProviderModelsTask";
+import { useAdminDiscardAction } from "@/components/admin/AdminDraftProtection";
 import {
   AdminAvailabilityStatus,
   adminAvailabilityRowClass,
@@ -43,6 +44,7 @@ import {
 } from "@/components/admin/useAdminProvidersController";
 import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
+import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import {
   Check,
   ChevronRight,
@@ -54,7 +56,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export type AdminProvidersSectionProps = Readonly<{
   active: boolean;
@@ -123,6 +125,7 @@ function publicationStatusClass(
 }
 
 function ConnectionIndex({
+  connectionLabels,
   connections,
   controller,
   onCreate,
@@ -131,6 +134,7 @@ function ConnectionIndex({
   preferredFamily,
   query
 }: Readonly<{
+  connectionLabels: ReadonlyMap<string, string>;
   connections: AdminProviderConnection[];
   controller: AdminProvidersController;
   onCreate(): void;
@@ -142,6 +146,7 @@ function ConnectionIndex({
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = connections.filter((connection) => !normalizedQuery || [
     connection.displayName,
+    connectionLabels.get(connection.id) ?? connection.displayName,
     connection.family,
     providerFamilyLabel(connection.family)
   ].join(" ").toLocaleLowerCase().includes(normalizedQuery));
@@ -198,11 +203,13 @@ function ConnectionIndex({
         {filtered.length ? (
           <ul className="divide-y divide-trace-subtle">
             {filtered.map((connection) => {
+              const connectionLabel = connectionLabels.get(connection.id) ?? connection.displayName;
               const presentation = presentProviderConnection(connection);
               const preferred = preferredFamily === connection.family;
               return (
                 <li key={connection.id}>
                   <button
+                    aria-label={`Open ${connectionLabel} connection · ${providerFamilyLabel(connection.family)} · ${connection.enabled ? "Enabled" : "Disabled"} · ${presentation.publicationLabel}`}
                     className={`flex min-h-touch w-full min-w-0 items-center gap-3 px-4 py-3 text-left hover:bg-control-hover ${adminAvailabilityRowClass(connection.enabled)}`}
                     data-resource-availability-row={connection.enabled ? "enabled" : "disabled"}
                     onClick={() => onSelect(connection.id)}
@@ -210,7 +217,7 @@ function ConnectionIndex({
                   >
                     <span className="min-w-0 flex-1">
                       <span className="block break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
-                        {connection.displayName}
+                        {connectionLabel}
                       </span>
                       <span className="mt-1 block text-xs leading-5 text-ink-muted">
                         {providerFamilyLabel(connection.family)}
@@ -283,6 +290,7 @@ function runPrimaryAction(
 
 function ConnectionDetail({
   connection,
+  connectionLabel,
   controller,
   discovery,
   groups,
@@ -291,6 +299,7 @@ function ConnectionDetail({
   requestConfirmation
 }: Readonly<{
   connection: AdminProviderConnection;
+  connectionLabel: string;
   controller: AdminProvidersController;
   discovery: ReturnType<typeof useAdminOpenRouterDiscovery>;
   groups: AdminGroup[];
@@ -302,6 +311,7 @@ function ConnectionDetail({
   const [activeTask, setActiveTask] = useState<ProviderAdvancedTask>(() =>
     providerTaskForPrimaryAction(ui.primaryAction)
   );
+  const requestDraftDiscard = useAdminDiscardAction();
   const primaryActionIsAlreadyOpen = ui.primaryAction?.kind === "configure_credential" &&
     activeTask === "credentials" &&
     connection.credentials.length === 0;
@@ -325,11 +335,15 @@ function ConnectionDetail({
   return (
     <div className="min-w-0" data-testid="provider-connection-detail">
       <div className="border-b border-trace-subtle px-4 py-4 sm:px-6">
-        <AdminTaskBackButton alwaysVisible label="Back to connections" onClick={onBack} />
+        <AdminTaskBackButton
+          alwaysVisible
+          label="Back to connections"
+          onClick={() => requestDraftDiscard(onBack)}
+        />
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <h2 className="break-words text-lg font-semibold text-ink">{connection.displayName}</h2>
+              <h2 className="break-words text-lg font-semibold text-ink">{connectionLabel}</h2>
               <AdminAvailabilityStatus enabled={connection.enabled} />
               <span className={`text-xs font-medium ${publicationStatusClass(ui.publication.kind)}`}>
                 {ui.publication.label}
@@ -338,7 +352,12 @@ function ConnectionDetail({
             <p className="mt-1 text-sm text-ink-muted">{providerFamilyLabel(connection.family)} connection</p>
           </div>
           <div className="flex flex-wrap items-center gap-1">
-            <button className={quietButton} disabled={controller.state.busy} onClick={onEdit} type="button">
+            <button
+              className={quietButton}
+              disabled={controller.state.busy}
+              onClick={() => requestDraftDiscard(onEdit)}
+              type="button"
+            >
               <Pencil aria-hidden="true" className="size-3.5" />
               Edit
             </button>
@@ -362,7 +381,9 @@ function ConnectionDetail({
               aria-label="Refresh provider connections"
               className={quietButton}
               disabled={controller.state.busy || controller.state.loading}
-              onClick={() => void controller.actions.refresh()}
+              onClick={() => requestDraftDiscard(() => {
+                void controller.actions.refresh();
+              })}
               type="button"
             >
               <RefreshCw aria-hidden="true" className={`size-3.5 ${controller.state.loading ? "animate-spin" : ""}`} />
@@ -370,7 +391,7 @@ function ConnectionDetail({
             </button>
             <details className="relative">
               <summary
-                aria-label={`More actions for ${connection.displayName} connection`}
+                aria-label={`More actions for ${connectionLabel} connection`}
                 className={`${quietButton} cursor-pointer list-none`}
               >
                 <MoreHorizontal aria-hidden="true" className="size-3.5" />
@@ -384,7 +405,7 @@ function ConnectionDetail({
                   </p>
                 </div>
                 <button
-                  aria-label={`Delete ${connection.displayName} connection`}
+                  aria-label={`Delete ${connectionLabel} connection`}
                   className={dangerButton}
                   disabled={controller.state.busy}
                   onClick={() => requestConfirmation({
@@ -394,7 +415,7 @@ function ConnectionDetail({
                     confirmLabel: connection.family === "openai_compatible"
                       ? "Delete connection and configuration"
                       : "Delete connection",
-                    dialogLabel: `Delete ${connection.displayName} connection`,
+                    dialogLabel: `Delete ${connectionLabel} connection`,
                     icon: "trash",
                     onConfirm: async () => {
                       if (await controller.actions.deleteConnection(connection.id)) {
@@ -402,7 +423,7 @@ function ConnectionDetail({
                       }
                     },
                     testId: "admin-confirm-delete-provider-connection",
-                    title: `Delete “${connection.displayName}”?`,
+                    title: `Delete “${connectionLabel}”?`,
                     tone: "destructive"
                   })}
                   type="button"
@@ -462,7 +483,19 @@ function ConnectionDetail({
             <button
               className={ui.primaryAction.kind === "enable" ? enableButton : primaryButton}
               disabled={controller.state.busy}
-              onClick={() => runPrimaryAction(ui.primaryAction!, connection, controller, setActiveTask)}
+              onClick={() => {
+                const action = ui.primaryAction!;
+                if (action.kind === "activate" || action.kind === "enable") {
+                  runPrimaryAction(action, connection, controller, setActiveTask);
+                  return;
+                }
+                requestDraftDiscard(() => runPrimaryAction(
+                  action,
+                  connection,
+                  controller,
+                  setActiveTask
+                ));
+              }}
               type="button"
             >
               {ui.primaryAction.kind === "activate" ? <Check aria-hidden="true" className="size-3.5" /> : null}
@@ -480,7 +513,7 @@ function ConnectionDetail({
               onClick={() => requestConfirmation({
                 body: "Activation will keep every missing exact model/key pair unavailable. Existing active configuration is unchanged until this activation succeeds.",
                 confirmLabel: "Activate with override",
-                dialogLabel: `Activate ${connection.displayName} with unavailable models`,
+                dialogLabel: `Activate ${connectionLabel} with unavailable models`,
                 onConfirm: async () => {
                   await controller.actions.connectionAction(
                     connection.id,
@@ -505,7 +538,10 @@ function ConnectionDetail({
           <span className="mb-1 block text-xs font-medium text-ink-secondary">Connection task</span>
           <select
             className={inputClass}
-            onChange={(event) => setActiveTask(event.currentTarget.value as ProviderAdvancedTask)}
+            onChange={(event) => {
+              const task = event.currentTarget.value as ProviderAdvancedTask;
+              requestDraftDiscard(() => setActiveTask(task));
+            }}
             value={activeTask}
           >
             {PROVIDER_ADVANCED_TASKS.map((task) => (
@@ -519,7 +555,7 @@ function ConnectionDetail({
               aria-selected={activeTask === task}
               className={activeTask === task ? primaryButton : quietButton}
               key={task}
-              onClick={() => setActiveTask(task)}
+              onClick={() => requestDraftDiscard(() => setActiveTask(task))}
               role="tab"
               type="button"
             >
@@ -580,6 +616,13 @@ export function AdminProvidersSection({
   const handledEntryConnectionRef = useRef<string | null>(null);
   const handledEntryProviderRef = useRef<AdminProviderQuickSetupId | null>(null);
   const selected = controller.state.selectedConnection;
+  const requestDraftDiscard = useAdminDiscardAction();
+  const connectionLabels = useMemo(
+    () => resolveProviderConnectionLabels(
+      controller.state.connections.map(({ displayName: name, id }) => ({ id, name }))
+    ),
+    [controller.state.connections]
+  );
   const requestConfirmation = externalRequestConfirmation ?? setLocalConfirmation;
 
   useEffect(() => {
@@ -668,10 +711,10 @@ export function AdminProvidersSection({
                     <AdminTaskBackButton
                       alwaysVisible
                       label="Back to connections"
-                      onClick={() => {
+                      onClick={() => requestDraftDiscard(() => {
                         setCreating(false);
                         setConnectionTaskOpen(false);
-                      }}
+                      })}
                     />
                     <AdminProviderConnectionEditor
                       connection={null}
@@ -685,12 +728,16 @@ export function AdminProvidersSection({
                   </div>
                 ) : selected ? (
                   <>
-                    <div hidden={editingConnectionId !== selected.id}>
+                    {editingConnectionId === selected.id ? (
+                      <div>
                       <div className="px-4 pt-4 sm:px-6">
                         <AdminTaskBackButton
                           alwaysVisible
                           label="Back to connection"
-                          onClick={() => setEditingConnectionId(null)}
+                          onClick={() => requestDraftDiscard(
+                            () => setEditingConnectionId(null),
+                            ["provider-connection-editor"]
+                          )}
                         />
                       </div>
                       <AdminProviderConnectionEditor
@@ -698,10 +745,12 @@ export function AdminProvidersSection({
                         controller={controller}
                         onClose={() => setEditingConnectionId(null)}
                       />
-                    </div>
+                      </div>
+                    ) : null}
                     <div hidden={editingConnectionId === selected.id}>
                       <ConnectionDetail
                         connection={selected}
+                        connectionLabel={connectionLabels.get(selected.id) ?? selected.displayName}
                         controller={controller}
                         discovery={discovery}
                         groups={groups}
@@ -718,6 +767,7 @@ export function AdminProvidersSection({
               </div>
             ) : (
               <ConnectionIndex
+                connectionLabels={connectionLabels}
                 connections={controller.state.connections}
                 controller={controller}
                 onCreate={() => {
