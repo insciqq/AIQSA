@@ -17,6 +17,7 @@ describe("adminSections", () => {
     expect(adminSections.map(({ group, id, label }) => ({ group, id, label }))).toEqual([
       { group: "ai-setup", id: "providers", label: "Providers" },
       { group: "ai-setup", id: "search", label: "Search" },
+      { group: "ai-setup", id: "knowledge", label: "Knowledge" },
       { group: "team-access", id: "users", label: "Users" },
       { group: "team-access", id: "access", label: "Access & groups" },
       { group: "team-access", id: "invites", label: "Invites" },
@@ -32,7 +33,7 @@ describe("adminSections", () => {
         sections: adminSections.filter((section) => section.group === group.id).map((section) => section.label)
       }))
     ).toEqual([
-      { label: "AI setup", sections: ["Providers", "Search"] },
+      { label: "AI setup", sections: ["Providers", "Search", "Knowledge"] },
       { label: "Team & access", sections: ["Users", "Access & groups", "Invites", "Access rules"] },
       { label: "Operations", sections: ["Usage"] },
       { label: "Infrastructure", sections: ["MCP servers", "Email delivery"] },

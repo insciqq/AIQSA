@@ -92,7 +92,7 @@ export function ComposerControls({
   disabled = false,
   knowledge = emptyKnowledgeView,
   maxOutputTokens,
-  onMakeCurrentModelDefault,
+  onMakeModelDefault,
   onBackgroundModeChange,
   onMaxOutputTokensChange,
   onMaxOutputTokensCommit,
@@ -141,7 +141,7 @@ export function ComposerControls({
   disabled?: boolean;
   knowledge?: ShellComposerView["knowledge"];
   maxOutputTokens: string;
-  onMakeCurrentModelDefault?(): void;
+  onMakeModelDefault?(model: CatalogModel): void;
   onBackgroundModeChange(value: boolean): void;
   onMaxOutputTokensChange(value: string): void;
   onMaxOutputTokensCommit?(): void;
@@ -344,7 +344,7 @@ export function ComposerControls({
         streaming={streaming}
         valueTestId="run-model-summary"
         onOpenChange={setInlineModelPickerOpen}
-        onMakeCurrentDefault={onMakeCurrentModelDefault}
+        onMakeModelDefault={onMakeModelDefault}
         onSelectModel={onSelectModel}
         onUseOrganizationDefault={onUseOrganizationModelDefault}
       />
@@ -496,7 +496,7 @@ export function ComposerControls({
                     selectedProviderName={selectedProviderName}
                     streaming={streaming}
                     onOpenChange={setSetupModelPickerOpen}
-                    onMakeCurrentDefault={onMakeCurrentModelDefault}
+                    onMakeModelDefault={onMakeModelDefault}
                     onSelectModel={onSelectModel}
                     onUseOrganizationDefault={onUseOrganizationModelDefault}
                   />

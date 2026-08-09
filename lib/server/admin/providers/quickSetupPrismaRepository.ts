@@ -410,7 +410,6 @@ async function loadQuickSetupState(
     assignedCredential.groupAssignments.length === 0 &&
     (assignedCredential.userAssignments ?? []).length === 1 &&
     assignedCredential.userAssignments?.[0]?.userId === input.userId &&
-    connection?.defaultCredentialId !== assignedCredential.id &&
     assignedCredential.draftSecretEnvelope === null &&
     Number.isSafeInteger(assignedCredential.draftVersion) &&
     assignedCredential.draftVersion >= 0 &&
@@ -1293,6 +1292,8 @@ async function applyQuickSetupPlan(
     canonicalJson(plan.preservedModels) !== canonicalJson(current.inspection.preservedModels)) {
     return "stale";
   }
+  const defaultCredentialChanged =
+    current.connection?.defaultCredentialId !== plan.credential.id;
 
   const preservedTargets = new Map<string, Readonly<{
     configuration: ProviderModelConfiguration;
@@ -1487,6 +1488,12 @@ async function applyQuickSetupPlan(
       }
     }
   });
+  if (defaultCredentialChanged) {
+    await tx.providerConnection.update({
+      data: { defaultCredentialId: plan.credential.id },
+      where: { id: policy.connection.id }
+    });
+  }
   for (const candidate of canonicalCandidates) {
     preservedTargets.set(candidate.modelId, {
       configuration: candidate.configuration,
@@ -1551,6 +1558,7 @@ async function applyQuickSetupPlan(
     throw new QuickSetupCatalogUnavailableError();
   }
   return {
+    defaultCredentialChanged,
     defaultChanged: false,
     ...(plan.search ? { search } : {}),
     status: "ready"

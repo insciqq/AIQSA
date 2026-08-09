@@ -61,11 +61,13 @@ describe("run surface store", () => {
 
     expect(surface("chat-a")).toEqual({
       events: [{ data: { message: "started" }, type: "start" }],
-      lastRun: null
+      lastRun: null,
+      runsById: {}
     });
     expect(surface("chat-b")).toEqual({
       events: [{ data: { status: "complete" }, type: "done" }],
-      lastRun: chatBRun
+      lastRun: chatBRun,
+      runsById: { "run-b": chatBRun }
     });
   });
 
@@ -109,5 +111,25 @@ describe("run surface store", () => {
       emptyRunSurfaceSnapshot
     );
     expect(useRunSurfaceStore.getState().surfacesByChatId).not.toHaveProperty("chat-b");
+  });
+
+  it("caches exact runs without replacing the selected Details run", () => {
+    const selected = run("run-selected");
+    const historical = run("run-historical");
+    useRunSurfaceStore.getState().replaceSurface("chat-a", {
+      events: [{ data: { runId: selected.id }, type: "done" }],
+      lastRun: selected
+    });
+
+    useRunSurfaceStore.getState().cacheRun("chat-a", historical);
+
+    expect(surface("chat-a")).toEqual({
+      events: [{ data: { runId: selected.id }, type: "done" }],
+      lastRun: selected,
+      runsById: {
+        "run-historical": historical,
+        "run-selected": selected
+      }
+    });
   });
 });

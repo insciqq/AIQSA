@@ -372,6 +372,15 @@ export function useWorkspaceActions({
     useWorkspaceStore.getState().setActiveChatId(null);
     useComposerSessionStore.getState().activateSession(composerSessionKey(null, folderId));
     if (!useComposerControlStore.getState().selectedAssistant) {
+      const catalog = useWorkspaceStore.getState().catalog;
+      const defaultModel = catalog?.models.find(
+        (candidate) =>
+          candidate.provider === catalog.defaults.provider &&
+          candidate.modelId === catalog.defaults.modelId
+      );
+      setSelectedProvider(defaultModel?.provider ?? "", "system");
+      setSelectedModelId(defaultModel?.modelId ?? "", "system");
+      applyModelControlDefaults(defaultModel, catalog?.defaults.controlValues);
       const projectPlan = folderId
         ? useWorkspaceStore.getState().folders.find((folder) => folder.id === folderId)
             ?.defaultKnowledgePlan ?? null

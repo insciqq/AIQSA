@@ -532,6 +532,12 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
     update: {},
     where: { id: "installation" }
   });
+  await tx.knowledgePolicy.upsert({
+    create: { id: "installation" },
+    // Bootstrap adoption repairs only a missing row and preserves operator policy.
+    update: {},
+    where: { id: "installation" }
+  });
   await tx.systemModelPolicy.upsert({
     create: {
       id: "installation",

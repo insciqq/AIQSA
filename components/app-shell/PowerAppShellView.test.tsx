@@ -356,11 +356,12 @@ function baseProps(): PowerAppShellViewProps {
       handleEditMessage: noop,
       handleRegenerateMessage: noop,
       handleThreadScroll: noop,
-      inspectRun: noop,
+      loadRunReceipt: noop,
       jumpToLatest: noop,
       lastRun: null,
       liveArtifactSummary: null,
       openKnowledgeEvidence: noop,
+      persistedRunsById: {},
       retryActiveChatDetail: noop,
       showJumpToLatest: false,
       threadScrollRef: { current: null },
@@ -738,9 +739,11 @@ describe("PowerAppShellView compact New chat", () => {
     expect(screen.getByRole("button", { name: "Start new chat" })).toBeVisible();
     const topRail = screen.getByTestId("top-rail");
     const workspace = screen.getByTestId("left-chat-pane");
-    expect(topRail).not.toContainElement(screen.getByRole("button", { name: /Account menu/ }));
-    expect(workspace).toContainElement(screen.getByRole("button", { name: /Account menu/ }));
-    expect(screen.getAllByRole("button", { name: /Account menu/ })).toHaveLength(1);
+    const account = screen.getByRole("button", { name: "Account" });
+    expect(account).toHaveAccessibleName("Account");
+    expect(topRail).not.toContainElement(account);
+    expect(workspace).not.toContainElement(account);
+    expect(screen.queryByTestId("mock-workspace-account-footer")).not.toBeInTheDocument();
   });
 
   it("closes the desktop Account menu and moves focus to Workspace when the viewport becomes compact", async () => {
@@ -766,7 +769,7 @@ describe("PowerAppShellView compact New chat", () => {
     );
     render(<PowerAppShellView {...baseProps()} />);
 
-    const accountTrigger = screen.getByRole("button", { name: /Account menu/ });
+    const accountTrigger = screen.getByRole("button", { name: "Account" });
     fireEvent.click(accountTrigger);
     const paletteItem = await screen.findByRole("menuitem", { name: "Command palette" });
     await waitFor(() => expect(paletteItem).toHaveFocus());
@@ -1018,7 +1021,7 @@ describe("PowerAppShellView Details composition", () => {
     expect(rail).toHaveClass(
       "bg-workspace-rail",
       "min-[1281px]:flex",
-      "w-[calc(3rem+env(safe-area-inset-left))]"
+      "w-[calc(5rem+env(safe-area-inset-left))]"
     );
     expect(pane).toHaveClass("bg-workspace-rail", "min-[1281px]:grid");
     expect(pane).not.toHaveClass("min-[1281px]:pl-[env(safe-area-inset-left)]");
@@ -1029,7 +1032,7 @@ describe("PowerAppShellView Details composition", () => {
     expect(screen.queryByTestId("details-pane")).not.toBeInTheDocument();
     expect(grid).toHaveAttribute("data-details-presentation", "closed");
     expect(grid).toHaveClass(
-      "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]"
+      "min-[1281px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]"
     );
     expect(grid.className).not.toContain("minmax(480px");
     expect(screen.getByTestId("shell-primary-content")).not.toHaveAttribute("inert");
@@ -1058,7 +1061,7 @@ describe("PowerAppShellView Details composition", () => {
 
     await waitFor(() => expect(grid).toHaveAttribute("data-workspace-pane-hidden", "true"));
     expect(grid).toHaveClass(
-      "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_minmax(0,1fr)]"
+      "min-[1281px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_minmax(0,1fr)]"
     );
     expect(screen.getByTestId("workspace-pane-desktop")).toHaveAttribute("inert");
     expect(window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY)).toBe("hidden");
@@ -1071,7 +1074,7 @@ describe("PowerAppShellView Details composition", () => {
 
     await waitFor(() => expect(grid).not.toHaveAttribute("data-workspace-pane-hidden"));
     expect(grid).toHaveClass(
-      "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]"
+      "min-[1281px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]"
     );
     expect(window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY)).toBe("visible");
     await waitFor(() => expect(screen.getByRole("button", { name: "Hide workspace" })).toHaveFocus());
@@ -1097,25 +1100,25 @@ describe("PowerAppShellView Details composition", () => {
     const grid = screen.getByTestId("shell-workspace-grid");
 
     expect(grid).toHaveClass(
-      "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]",
-      "min-[1440px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)_23rem]"
+      "min-[1281px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]",
+      "min-[1440px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)_23rem]"
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Hide workspace" }));
     await waitFor(() => expect(grid).toHaveAttribute("data-workspace-pane-hidden", "true"));
     expect(grid).toHaveClass(
-      "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_minmax(0,1fr)]",
-      "min-[1440px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_minmax(0,1fr)_23rem]"
+      "min-[1281px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_minmax(0,1fr)]",
+      "min-[1440px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_minmax(0,1fr)_23rem]"
     );
   });
 
-  it("re-anchors an open pane Account surface to the surviving rail before hiding the pane", async () => {
+  it("keeps the single rail Account surface anchored while hiding the Workspace pane", async () => {
     render(<StatefulView />);
-    const paneAccount = screen.getByRole("button", { name: /Account menu for/ });
-    fireEvent.click(paneAccount);
+    const railAccount = screen.getByRole("button", { name: "Account" });
+    fireEvent.click(railAccount);
     expect(screen.getByRole("menu", { name: "Account" }).parentElement).toHaveAttribute(
       "data-account-menu-anchor",
-      "pane"
+      "rail"
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Hide workspace" }));
@@ -1127,16 +1130,15 @@ describe("PowerAppShellView Details composition", () => {
       )
     );
     expect(screen.getByTestId("shell-workspace-grid")).toHaveAttribute("data-workspace-pane-hidden", "true");
-    expect(screen.getByRole("button", { name: "Account" })).toHaveAttribute("aria-controls", "account-menu");
-    expect(paneAccount).not.toHaveAttribute("aria-controls");
+    expect(railAccount).toHaveAttribute("aria-controls", "account-menu");
     expect(screen.getAllByRole("menu", { name: "Account" })).toHaveLength(1);
   });
 
   it("opens direct rail destinations with one overlay and restores the exact Settings opener", async () => {
     render(<StatefulNavigationOverlayView />);
     const directSettings = screen.getByRole("button", { name: "Settings" });
-    const paneAccount = screen.getByRole("button", { name: /Account menu for/ });
-    fireEvent.click(paneAccount);
+    const railAccount = screen.getByRole("button", { name: "Account" });
+    fireEvent.click(railAccount);
     expect(screen.getByRole("menu", { name: "Account" })).toBeVisible();
 
     fireEvent.click(directSettings);
@@ -1152,15 +1154,8 @@ describe("PowerAppShellView Details composition", () => {
     expect(screen.queryByRole("menu", { name: "Account" })).not.toBeInTheDocument();
   });
 
-  it("restores Settings to the invoking pane or rail Account trigger", async () => {
+  it("restores Settings to the invoking rail Account trigger", async () => {
     render(<StatefulNavigationOverlayView />);
-    const paneAccount = screen.getByRole("button", { name: /Account menu for/ });
-    fireEvent.click(paneAccount);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
-    await screen.findByRole("dialog", { name: "Settings" });
-    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
-    await waitFor(() => expect(paneAccount).toHaveFocus());
-
     const railAccount = screen.getByRole("button", { name: "Account" });
     fireEvent.click(railAccount);
     fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
@@ -1278,7 +1273,7 @@ describe("PowerAppShellView Details composition", () => {
     expect(screen.queryByTestId("details-pane-backdrop")).not.toBeInTheDocument();
     expect(screen.getByTestId("shell-primary-content")).not.toHaveAttribute("inert");
     expect(screen.getByTestId("shell-workspace-grid")).toHaveClass(
-      "min-[1440px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)_23rem]"
+      "min-[1440px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)_23rem]"
     );
     expect(trigger).not.toHaveFocus();
 
@@ -1401,8 +1396,8 @@ describe("PowerAppShellView Details composition", () => {
     );
     render(<PowerAppShellView {...baseProps()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Account menu/ }));
-    expect(screen.getAllByText("shell.user@example.com")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+    expect(screen.getAllByText("shell.user@example.com")).toHaveLength(1);
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     expect(await screen.findByRole("menuitem", { name: "Signing out…" })).toBeDisabled();
 
@@ -1425,7 +1420,7 @@ describe("PowerAppShellView Details composition", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Account menu/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
     expect(screen.getByRole("menuitem", { name: "Control Center" })).toHaveAttribute(
       "href",
       "/admin"
@@ -1443,7 +1438,7 @@ describe("PowerAppShellView Details composition", () => {
     const props = baseProps();
     const { rerender } = render(<PowerAppShellView {...props} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Account menu/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     fireEvent.keyDown(screen.getByRole("menu", { name: "Account" }), { key: "Escape" });
     rerender(

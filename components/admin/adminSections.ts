@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  BookOpenText,
   Boxes,
   Globe2,
   Link2,
@@ -17,6 +18,7 @@ export type AdminSectionId =
   | "access"
   | "email"
   | "invites"
+  | "knowledge"
   | "mcp"
   | "providers"
   | "search"
@@ -59,6 +61,13 @@ export const adminSections = [
     group: "ai-setup",
     id: "search",
     label: "Search"
+  },
+  {
+    Icon: BookOpenText,
+    description: "Set global retrieval policy and inspect effective ingestion limits without exposing private bases.",
+    group: "ai-setup",
+    id: "knowledge",
+    label: "Knowledge"
   },
   {
     Icon: Users,

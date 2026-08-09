@@ -8,6 +8,7 @@ import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnav
 import { AdminFeedbackMessages } from "@/components/admin/AdminFeedbackMessages";
 import { AdminEmailSection } from "@/components/admin/AdminEmailSection";
 import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
+import { AdminKnowledgeSection } from "@/components/admin/AdminKnowledgeSection";
 import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
 import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
 import { AdminProvidersExperience } from "@/components/admin/AdminProvidersExperience";
@@ -165,6 +166,13 @@ function AdminSectionContent({
     case "search":
       return (
         <AdminSearchSection
+          active
+          onMutationCommitted={onMutationCommitted}
+        />
+      );
+    case "knowledge":
+      return (
+        <AdminKnowledgeSection
           active
           onMutationCommitted={onMutationCommitted}
         />

@@ -2276,7 +2276,11 @@ describe("message run actions", () => {
       activeLeafId: null,
       messages: []
     });
-    expect(actions.surface(createdChat.id)).toEqual({ events: [], lastRun: null });
+    expect(actions.surface(createdChat.id)).toEqual({
+      events: [],
+      lastRun: null,
+      runsById: {}
+    });
     expect(actions.session(composerSessionKey(createdChat.id))).toMatchObject({
       draft: "Question that should survive",
       operationError: "Send failed. Your draft was preserved.",

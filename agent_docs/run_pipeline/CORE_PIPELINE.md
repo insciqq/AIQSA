@@ -82,8 +82,10 @@ the accepted credential version checked again before provider I/O. One
 parameterized SQL statement then joins the run/user-owned immutable binding,
 pins its generation and cumulative `visibleFromRevision <= R` document set,
 and fuses dimension-specific cosine HNSW candidates with `simple` FTS GIN
-candidates using RRF k=60. The defaults are 40 candidates per ANN/FTS branch
-per base, threshold 0.01, and eight final passages. Provider-facing results are capped at 48 KiB
+candidates using RRF k=60. Each invocation resolves the administrator-managed
+installation policy (defaulting to 40 candidates per ANN/FTS branch per base,
+threshold 0.01, and eight final passages) and persists those exact values in
+its receipt before they can change for a later invocation. Provider-facing results are capped at 48 KiB
 and contain only opaque per-invocation handles, page numbers, bounded passage
 text, and honest truncation markers; base/document labels, storage facts, and
 database identities remain private receipt evidence. Empty, indexing,

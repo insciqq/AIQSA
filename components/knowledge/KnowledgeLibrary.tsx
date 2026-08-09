@@ -14,6 +14,7 @@ import type {
 import {
   KNOWLEDGE_BASE_DESCRIPTION_MAX_LENGTH,
   KNOWLEDGE_BASE_NAME_MAX_LENGTH,
+  KNOWLEDGE_DOCUMENT_SEARCH_MAX_LENGTH,
   type KnowledgeBaseSummary,
   type KnowledgeDocumentStatus,
   type KnowledgeDocumentVersionStatus,
@@ -848,9 +849,17 @@ function DocumentsSection({
   const [dragActive, setDragActive] = useState(false);
   const dragDepth = useRef(0);
   const base = detail.base!;
-  const documents = detail.ingestion!.documents;
+  const ingestion = detail.ingestion!;
+  const documents = ingestion.documents;
+  const pagination = ingestion.pagination;
   const activeDocuments = documents.filter((document) => !document.archived);
   const removedDocuments = documents.filter((document) => document.archived);
+  const firstDocument = pagination.totalItems === 0
+    ? 0
+    : (pagination.page - 1) * pagination.pageSize + 1;
+  const lastDocument = pagination.totalItems === 0
+    ? 0
+    : firstDocument + documents.length - 1;
   const uploadDisabled = busy || base.archived || !base.owned;
   const acceptFiles = (files: FileList | null) => {
     if (!files || uploadDisabled) return;
@@ -863,7 +872,13 @@ function DocumentsSection({
         <div>
           <h2 className="text-base font-semibold text-ink" id="knowledge-documents-title">Documents</h2>
           <p className="mt-1 text-xs leading-5 text-ink-muted">
-            {activeDocuments.length} current · {removedDocuments.length} removed · metadata and lifecycle only
+            {pagination.totalItems === 0
+              ? `0 ${pagination.query ? "matching " : ""}documents`
+              : `Showing ${firstDocument}–${lastDocument} of ${pagination.totalItems}${pagination.query ? " matching" : ""}`}
+            {documents.length > 0
+              ? ` · ${activeDocuments.length} current · ${removedDocuments.length} removed on this page`
+              : ""}
+            {" · metadata and lifecycle only"}
           </p>
         </div>
         <button className={quietButton} disabled={busy} onClick={detail.onRefresh} type="button">
@@ -934,11 +949,35 @@ function DocumentsSection({
           ) : null}
         </div>
       ) : null}
-      {activeDocuments.length === 0 ? (
+      <label className="relative mt-4 block w-full max-w-sm" htmlFor="knowledge-document-search">
+        <span className="sr-only">Search documents by filename</span>
+        <Search
+          aria-hidden="true"
+          className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-muted"
+        />
+        <input
+          autoComplete="off"
+          className={`${fieldInput} pl-9`}
+          disabled={busy}
+          id="knowledge-document-search"
+          maxLength={KNOWLEDGE_DOCUMENT_SEARCH_MAX_LENGTH}
+          onChange={(event) => detail.onDocumentQueryChange(event.currentTarget.value)}
+          placeholder="Search filenames"
+          type="search"
+          value={detail.documentQuery}
+        />
+      </label>
+      {documents.length === 0 ? (
         <div className="py-10 text-center">
           <FileText className="mx-auto size-6 text-ink-muted" aria-hidden="true" />
-          <p className="mt-3 text-sm font-semibold text-ink">No current documents</p>
-          <p className="mt-1 text-xs leading-5 text-ink-muted">This base is valid and returns honest empty retrieval evidence.</p>
+          <p className="mt-3 text-sm font-semibold text-ink">
+            {detail.documentQuery ? "No documents match this filename" : "No current documents"}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">
+            {detail.documentQuery
+              ? "Try another filename. Search is case-insensitive and does not inspect document contents."
+              : "This base is valid and returns honest empty retrieval evidence."}
+          </p>
         </div>
       ) : (
         <ul className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle" aria-label="Current Knowledge documents">
@@ -964,6 +1003,34 @@ function DocumentsSection({
             ))}
           </ul>
         </details>
+      ) : null}
+      {pagination.totalPages > 1 ? (
+        <nav
+          aria-label="Knowledge document pages"
+          className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-trace-subtle pt-4"
+        >
+          <p className="text-xs text-ink-muted">
+            Page {pagination.page} of {pagination.totalPages}
+          </p>
+          <div className="flex gap-2">
+            <button
+              className={quietButton}
+              disabled={busy || pagination.page <= 1}
+              onClick={() => detail.onDocumentPageChange(pagination.page - 1)}
+              type="button"
+            >
+              Previous
+            </button>
+            <button
+              className={quietButton}
+              disabled={busy || pagination.page >= pagination.totalPages}
+              onClick={() => detail.onDocumentPageChange(pagination.page + 1)}
+              type="button"
+            >
+              Next
+            </button>
+          </div>
+        </nav>
       ) : null}
     </section>
   );

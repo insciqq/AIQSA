@@ -162,14 +162,9 @@ export function KnowledgeEvidenceBlock({
           ) : exactReceipts.length > 0 ? (
             exactReceipts.map((receipt) => <InvocationReceipt key={receipt.id} receipt={receipt} />)
           ) : (
-            <div className="px-2 py-3">
-              <p className="text-ink-muted">Exact passage text is unavailable on this surface.</p>
-              {outcomes.length > 0 ? (
-                <ol className="mt-2 space-y-1">
-                  {outcomes.map((outcome) => <li key={outcome.invocationOrdinal}>Invocation {outcome.invocationOrdinal}: <span className={outcomeTone(outcome.outcome)}>{outcomeLabel(outcome.outcome)}</span></li>)}
-                </ol>
-              ) : null}
-            </div>
+            <ol className="space-y-1 px-2 py-3">
+              {outcomes.map((outcome) => <li key={outcome.invocationOrdinal}>Invocation {outcome.invocationOrdinal}: <span className={outcomeTone(outcome.outcome)}>{outcomeLabel(outcome.outcome)}</span></li>)}
+            </ol>
           )}
         </div>
       ) : null}

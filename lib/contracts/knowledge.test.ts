@@ -190,6 +190,13 @@ describe("Knowledge Base contracts", () => {
     expect(decodeKnowledgeIngestionStatusResponse({
       documents: [document],
       owned: true,
+      pagination: {
+        page: 1,
+        pageSize: 25,
+        query: "guide",
+        totalItems: 1,
+        totalPages: 1
+      },
       reindex: {
         completedDocuments: 1,
         createdAt: "2026-08-08T00:00:00.000Z",
@@ -242,6 +249,25 @@ describe("Knowledge Base contracts", () => {
         }]
       }],
       owned: true,
+      pagination: {
+        page: 1,
+        pageSize: 25,
+        query: "",
+        totalItems: 1,
+        totalPages: 1
+      },
+      reindex: null
+    })).toBeNull();
+    expect(decodeKnowledgeIngestionStatusResponse({
+      documents: [documentStatus()],
+      owned: true,
+      pagination: {
+        page: 1,
+        pageSize: 25,
+        query: "",
+        totalItems: 26,
+        totalPages: 1
+      },
       reindex: null
     })).toBeNull();
     expect(decodeKnowledgeIngestionStatusResponse({
@@ -250,6 +276,13 @@ describe("Knowledge Base contracts", () => {
         currentVersionId: "missing-version"
       }],
       owned: true,
+      pagination: {
+        page: 1,
+        pageSize: 25,
+        query: "",
+        totalItems: 1,
+        totalPages: 1
+      },
       reindex: null
     })).toBeNull();
     expect(decodeKnowledgeBaseListResponse({

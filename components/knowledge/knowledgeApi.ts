@@ -13,6 +13,7 @@ import {
   type KnowledgeBasePublicationInput,
   type KnowledgeBaseUpdateInput,
   type KnowledgeDocumentStatus,
+  KNOWLEDGE_DOCUMENT_PAGE_SIZE,
   type KnowledgeIngestionStatusResponse,
   type KnowledgeReindexProgress
 } from "@/lib/contracts/knowledge";
@@ -122,10 +123,17 @@ export function updateKnowledgeBase(
 }
 
 export function fetchKnowledgeDocuments(
-  baseId: string
+  baseId: string,
+  input: Readonly<{ page?: number; pageSize?: number; query?: string }> = {}
 ): Promise<KnowledgeApiResult<KnowledgeIngestionStatusResponse>> {
+  const search = new URLSearchParams({
+    page: String(input.page ?? 1),
+    pageSize: String(input.pageSize ?? KNOWLEDGE_DOCUMENT_PAGE_SIZE)
+  });
+  const query = input.query?.trim() ?? "";
+  if (query) search.set("q", query);
   return requestJson(
-    `${basePath(baseId)}/documents`,
+    `${basePath(baseId)}/documents?${search.toString()}`,
     { method: "GET" },
     decodeKnowledgeIngestionStatusResponse
   );

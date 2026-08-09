@@ -37,6 +37,34 @@ function message(input: Partial<ThreadMessage> & { id: string }): ThreadMessage 
   };
 }
 
+function catalogModel(modelId: string, displayName: string): Catalog["models"][number] {
+  return {
+    capabilities: {
+      background: false,
+      documentInputMode: "none",
+      imageInput: false,
+      nativeWebSearch: false,
+      openRouterPerplexitySearch: false,
+      reasoning: false,
+      streaming: true,
+      toolCalling: false
+    },
+    contextWindow: 32_000,
+    defaultParams: {},
+    displayName,
+    modelId,
+    parameterControls: {
+      background: { defaultValue: false, supported: false },
+      maxOutputTokens: { defaultValue: 4_096, maxValue: 4_096 },
+      reasoningEffort: { defaultValue: "none", options: ["none"], supported: false },
+      stream: { defaultValue: true, supported: true },
+      temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
+    },
+    provider: "openai",
+    searchStrategyIds: ["search-disabled"]
+  };
+}
+
 function apiChatSummary(summary: ChatSummary) {
   return {
     activeLeafMessageId: summary.activeLeafMessageId,
@@ -533,6 +561,52 @@ describe("workspace actions", () => {
     expect(useWorkspaceStore.getState().pendingChatFolderId).toBe("folder-1");
   });
 
+  it("applies only the exact runnable catalog default when a new blank chat opens", () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const previous = catalogModel("gpt-5.5", "GPT-5.5");
+    const luna = catalogModel("gpt-5.6-luna", "GPT-5.6 Luna");
+    const currentCatalog = useWorkspaceStore.getState().catalog!;
+    useWorkspaceStore.setState({
+      catalog: {
+        ...currentCatalog,
+        defaults: {
+          ...currentCatalog.defaults,
+          modelId: luna.modelId,
+          personalModelDefault: { modelId: luna.modelId, provider: luna.provider },
+          provider: luna.provider
+        },
+        models: [previous, luna],
+        providers: [{ id: "openai", models: [previous.modelId, luna.modelId], name: "OpenAI" }]
+      }
+    });
+    state.setSelectedModelId.mockClear();
+    state.setSelectedProvider.mockClear();
+    state.applyModelControlDefaults.mockClear();
+
+    state.actions.activateBlankWorkspace();
+
+    expect(state.setSelectedProvider).toHaveBeenCalledWith("openai", "system");
+    expect(state.setSelectedModelId).toHaveBeenCalledWith("gpt-5.6-luna", "system");
+    expect(state.applyModelControlDefaults).toHaveBeenCalledWith(
+      luna,
+      currentCatalog.defaults.controlValues
+    );
+
+    useWorkspaceStore.setState((workspace) => ({
+      catalog: workspace.catalog
+        ? {
+            ...workspace.catalog,
+            defaults: { ...workspace.catalog.defaults, modelId: "hidden-model", provider: "hidden" }
+          }
+        : null
+    }));
+    state.setSelectedModelId.mockClear();
+    state.setSelectedProvider.mockClear();
+    state.actions.activateBlankWorkspace();
+    expect(state.setSelectedProvider).toHaveBeenCalledWith("", "system");
+    expect(state.setSelectedModelId).toHaveBeenCalledWith("", "system");
+  });
+
   it("transfers the selected blank session only after chat creation succeeds", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     const sourceKey = composerSessionKey(null, "folder-1");
@@ -542,6 +616,8 @@ describe("workspace actions", () => {
       kind: "pdf" as const
     };
     state.actions.activateBlankWorkspace("folder-1");
+    state.setSelectedModelId.mockClear();
+    state.setSelectedProvider.mockClear();
     state.setComposerState("First send", [attachment]);
     const created = chat({
       folderId: "folder-1",

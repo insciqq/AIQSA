@@ -38,33 +38,40 @@ describe("WorkspaceIconRail", () => {
     expect(controls.map((control) => control.getAttribute("aria-label"))).toEqual([
       "New chat",
       "Chats",
+      "Account",
       "Assistants",
       "Knowledge",
       "Settings",
-      "Control Center",
-      "Account"
+      "Control Center"
     ]);
     expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Control Center" })).toHaveAttribute("href", "/admin");
     expect(navigation).toHaveClass(
       "hidden",
       "min-[1281px]:flex",
-      "w-[calc(3rem+env(safe-area-inset-left))]",
+      "w-[calc(5rem+env(safe-area-inset-left))]",
       "pl-[env(safe-area-inset-left)]",
       "bg-workspace-rail"
     );
   });
 
-  it("keeps Chats a no-op while expanded and restores only a hidden pane", () => {
+  it("restores a hidden pane from Chats or the non-control rail surface without stealing control clicks", () => {
     const props = baseProps();
     const { rerender } = render(<WorkspaceIconRail {...props} />);
+    const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
 
     fireEvent.click(screen.getByRole("button", { name: "Chats" }));
+    fireEvent.click(navigation);
     expect(props.onRestoreChats).not.toHaveBeenCalled();
 
     rerender(<WorkspaceIconRail {...props} paneHidden />);
     fireEvent.click(screen.getByRole("button", { name: "Chats" }));
     expect(props.onRestoreChats).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(props.onRestoreChats).toHaveBeenCalledOnce();
+    fireEvent.click(navigation);
+    expect(props.onRestoreChats).toHaveBeenCalledTimes(2);
   });
 
   it("gates Control Center by entitlement", () => {
@@ -126,7 +133,7 @@ describe("WorkspaceIconRail", () => {
     for (const control of unavailable) {
       expect(control).toHaveAttribute("aria-disabled", "true");
       expect(control).not.toHaveAttribute("disabled");
-      expect(control).toHaveClass("size-11", "[@media(pointer:coarse)]:!size-11");
+      expect(control).toHaveClass("min-h-[3.25rem]", "w-[4.5rem]", "[@media(pointer:coarse)]:!min-h-touch");
       control.focus();
       expect(control).toHaveFocus();
       fireEvent.keyDown(control, { key: "Enter" });
@@ -153,5 +160,14 @@ describe("WorkspaceIconRail", () => {
     expect(props.onOpenAssistants).toHaveBeenCalledOnce();
     expect(props.onOpenKnowledge).toHaveBeenCalledOnce();
     expect(props.onOpenSettings).toHaveBeenCalledOnce();
+  });
+
+  it("renders compact persistent labels inside every desktop control", () => {
+    render(<WorkspaceIconRail {...baseProps()} adminHref="/admin" />);
+    const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
+
+    for (const label of ["New chat", "Chats", "Account", "Assistants", "Knowledge", "Settings", "Admin"]) {
+      expect(within(navigation).getByText(label)).toBeVisible();
+    }
   });
 });

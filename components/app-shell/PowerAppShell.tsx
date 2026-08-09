@@ -429,7 +429,7 @@ export function PowerAppShell({
     changeStreamMode,
     changeTemperature,
     flushPendingModelControlDefaults,
-    makeCurrentModelDefault,
+    makeModelDefault,
     removeAssistantFromComposer,
     selectModel,
     selectSearchPlan,
@@ -755,7 +755,7 @@ export function PowerAppShell({
     refreshActiveChat,
     setNotice
   });
-  const { fetchRun, retryAttachment, stopCurrentRun, uploadFiles } = runLifecycleActions;
+  const { fetchRun, fetchRunReceipt, retryAttachment, stopCurrentRun, uploadFiles } = runLifecycleActions;
 
   const {
     branchChatFromMessage,
@@ -944,11 +944,12 @@ export function PowerAppShell({
     handleEditMessage,
     handleRegenerateMessage,
     handleThreadScroll,
-    inspectRun: async (runId: string) => {
-      if (activeChatId) await fetchRun(runId, activeChatId);
+    loadRunReceipt: async (runId: string) => {
+      if (activeChatId) await fetchRunReceipt(runId, activeChatId);
     },
     jumpToLatest,
     lastRun: activeRunSurface.lastRun,
+    persistedRunsById: activeRunSurface.runsById,
     liveArtifactSummary,
     openKnowledgeEvidence: (knowledgeBaseId: string) => {
       assistantLibraryActions.closeLibrary();
@@ -1019,7 +1020,7 @@ export function PowerAppShell({
       source: knowledgePlanSource
     },
     maxOutputTokens,
-    makeCurrentModelDefault,
+    makeModelDefault,
     notificationSoundEnabled,
     operationError: composerSession.operationError,
     operationErrorLive: composerSession.operationErrorLive,

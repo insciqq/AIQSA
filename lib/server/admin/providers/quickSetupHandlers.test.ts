@@ -37,6 +37,7 @@ function service(overrides: Partial<AdminProviderQuickSetupService> = {}): Admin
     })),
     setup: vi.fn(async () => ({
       checkedAt: "2026-07-26T10:00:00.000Z",
+      defaultCredentialChanged: true,
       defaultChanged: true,
       model: { displayName: "GPT-5.6 Terra" },
       models: [
@@ -144,6 +145,7 @@ describe("provider Quick setup handlers", () => {
   it("passes only the authenticated actor and validated write-only request", async () => {
     const setup = vi.fn(async () => ({
       checkedAt: "2026-07-26T10:00:00.000Z",
+      defaultCredentialChanged: true,
       defaultChanged: true,
       model: { displayName: "GPT-5.6 Luna" },
       models: [{ displayName: "GPT-5.6 Luna" }],

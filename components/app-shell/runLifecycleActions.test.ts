@@ -11,6 +11,7 @@ import {
 } from "./runLifecycleActions";
 import { resetRunLifecycleStoreForTest, useRunLifecycleStore } from "./runLifecycleStore";
 import {
+  emptyRunSurfaceSnapshot,
   resetRunSurfaceStoreForTest,
   selectRunSurface,
   useRunSurfaceStore
@@ -332,7 +333,8 @@ describe("run lifecycle actions", () => {
     ]);
     expect(surface("chat-2")).toEqual({
       events: [{ data: { runId: "run-2" }, type: "start" }],
-      lastRun: null
+      lastRun: null,
+      runsById: {}
     });
 
     const staleFetch = actions.fetchRun("run-1", "chat-1");
@@ -349,7 +351,7 @@ describe("run lifecycle actions", () => {
     );
 
     await expect(staleFetch).resolves.toMatchObject({ id: "run-1" });
-    expect(surface("chat-1")).toEqual({ events: [], lastRun: null });
+    expect(surface("chat-1")).toEqual({ events: [], lastRun: null, runsById: {} });
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]?.runId).toBe("run-new");
   });
 
@@ -371,11 +373,90 @@ describe("run lifecycle actions", () => {
 
     await expect(actions.fetchRun("run-1", "chat-1")).resolves.toBeNull();
 
-    expect(surface("chat-1")).toEqual({ events: [], lastRun: null });
+    expect(surface("chat-1")).toEqual({ events: [], lastRun: null, runsById: {} });
     expect(notice()).toEqual({
       kind: "error",
       text: "Run response was malformed (run_malformed)"
     });
+  });
+
+  it("loads exact historical receipts without replacing the selected run surface", async () => {
+    const selectedResponse = runResponse();
+    const historicalResponse = runResponse();
+    historicalResponse.run.id = "run-historical";
+    historicalResponse.run.events[0]!.payload = { inputTokens: 9 };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(Response.json(selectedResponse))
+        .mockResolvedValueOnce(Response.json(historicalResponse))
+    );
+    const { actions, surface } = useRunLifecycleActionsForTest();
+    await actions.fetchRun("run-1", "chat-1");
+    const selectedSurface = surface("chat-1");
+
+    await expect(actions.fetchRunReceipt("run-historical", "chat-1"))
+      .resolves.toMatchObject({ id: "run-historical" });
+
+    expect(surface("chat-1")).toMatchObject({
+      events: selectedSurface.events,
+      lastRun: { id: "run-1" },
+      runsById: {
+        "run-1": { id: "run-1" },
+        "run-historical": { id: "run-historical" }
+      }
+    });
+  });
+
+  it("refetches an active cached run before returning a terminal receipt", async () => {
+    const active = runResponse("streaming");
+    const complete = runResponse("complete");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(active))
+      .mockResolvedValueOnce(Response.json(complete));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, surface } = useRunLifecycleActionsForTest();
+
+    await expect(actions.fetchRunReceipt("run-1", "chat-1"))
+      .resolves.toMatchObject({ status: "streaming" });
+    await expect(actions.fetchRunReceipt("run-1", "chat-1"))
+      .resolves.toMatchObject({ status: "complete" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(surface("chat-1")).toMatchObject({
+      lastRun: null,
+      runsById: { "run-1": { status: "complete" } }
+    });
+  });
+
+  it("keeps out-of-order receipt fetches keyed to their exact run and source chat", async () => {
+    const resolvers = new Map<string, (response: Response) => void>();
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const runId = String(input).split("/").at(-1)!;
+      return new Promise<Response>((resolve) => resolvers.set(runId, resolve));
+    }));
+    const { actions, activeChatIdRef, surface } = useRunLifecycleActionsForTest();
+    const first = actions.fetchRunReceipt("run-first", "chat-1");
+    const second = actions.fetchRunReceipt("run-second", "chat-1");
+    activeChatIdRef.current = "chat-2";
+    const secondResponse = runResponse();
+    secondResponse.run.id = "run-second";
+    resolvers.get("run-second")!(Response.json(secondResponse));
+    await second;
+    const firstResponse = runResponse();
+    firstResponse.run.id = "run-first";
+    resolvers.get("run-first")!(Response.json(firstResponse));
+    await first;
+
+    expect(surface("chat-1")).toMatchObject({
+      events: [],
+      lastRun: null,
+      runsById: {
+        "run-first": { id: "run-first" },
+        "run-second": { id: "run-second" }
+      }
+    });
+    expect(surface("chat-2")).toBe(emptyRunSurfaceSnapshot);
   });
 
   it("settles a delayed partial upload only in its source composer session", async () => {

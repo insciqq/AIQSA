@@ -24,6 +24,8 @@ export type KnowledgeDetailState = {
   baseline: string;
   dataError: string | null;
   dataState: "error" | "loading" | "ready";
+  documentPage: number;
+  documentQuery: string;
   draft: { description: string; name: string };
   error: { code: string; text: string } | null;
   ingestion: KnowledgeIngestionStatusResponse | null;

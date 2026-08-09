@@ -96,11 +96,18 @@ function documentStatus(overrides: Partial<KnowledgeDocumentStatus> = {}): Knowl
 }
 
 function ingestion(overrides: Partial<KnowledgeIngestionStatusResponse> = {}): KnowledgeIngestionStatusResponse {
+  const documents = overrides.documents ?? [documentStatus()];
   return {
-    documents: [documentStatus()],
-    owned: true,
-    reindex: null,
-    ...overrides
+    documents,
+    owned: overrides.owned ?? true,
+    pagination: overrides.pagination ?? {
+      page: 1,
+      pageSize: 25,
+      query: "",
+      totalItems: documents.length,
+      totalPages: documents.length > 0 ? 1 : 0
+    },
+    reindex: overrides.reindex ?? null
   };
 }
 
@@ -128,6 +135,8 @@ function installDetail(detail = base(), status = ingestion()) {
       baseline: JSON.stringify([detail.description, detail.name]),
       dataError: null,
       dataState: "ready",
+      documentPage: status.pagination.page,
+      documentQuery: status.pagination.query,
       draft: { description: detail.description, name: detail.name },
       error: null,
       ingestion: status,
@@ -237,6 +246,58 @@ describe("knowledgeLibraryController", () => {
       draft: { description: "Unsaved", name: "Local edit" },
       ingestion: { documents: [{ versions: [{ state: "ready" }] }] }
     });
+  });
+
+  it("keeps the active filename query and page in refreshes", async () => {
+    installDetail(base(), ingestion({
+      pagination: {
+        page: 1,
+        pageSize: 25,
+        query: "",
+        totalItems: 51,
+        totalPages: 3
+      }
+    }));
+    const actions = createKnowledgeLibraryActions();
+    const pageTwo = ingestion({
+      pagination: {
+        page: 2,
+        pageSize: 25,
+        query: "",
+        totalItems: 51,
+        totalPages: 3
+      }
+    });
+    mocks.fetchKnowledgeDocuments.mockResolvedValueOnce({ data: pageTwo, ok: true });
+
+    actions.setDocumentPage(2);
+    await vi.waitFor(() => expect(mocks.fetchKnowledgeDocuments).toHaveBeenCalledWith(
+      "base-1",
+      { page: 2, pageSize: 25, query: "" }
+    ));
+    await vi.waitFor(() => expect(useKnowledgeLibraryStore.getState().detail?.documentPage).toBe(2));
+
+    const searched = ingestion({
+      documents: [],
+      pagination: {
+        page: 1,
+        pageSize: 25,
+        query: "incident",
+        totalItems: 0,
+        totalPages: 0
+      }
+    });
+    mocks.fetchKnowledgeDocuments.mockResolvedValueOnce({ data: searched, ok: true });
+    actions.setDocumentQuery("incident");
+    await vi.waitFor(() => expect(mocks.fetchKnowledgeDocuments).toHaveBeenLastCalledWith(
+      "base-1",
+      { page: 1, pageSize: 25, query: "incident" }
+    ));
+    await vi.waitFor(() => expect(useKnowledgeLibraryStore.getState().detail).toMatchObject({
+      documentPage: 1,
+      documentQuery: "incident",
+      ingestion: { documents: [] }
+    }));
   });
 
   it("uploads multiple files sequentially and keeps partial failure truthful", async () => {

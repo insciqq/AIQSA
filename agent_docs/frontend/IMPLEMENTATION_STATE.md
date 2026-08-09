@@ -86,7 +86,7 @@ prompt owner.
 
 `runLifecycleStore` owns active stream/controller records keyed by source chat, run IDs, optimistic assistant IDs, cancellation, and resume ownership. The active view selects only its active chat key; a late background event cannot steal selection.
 
-`runSurfaceStore` owns the latest compacted event timeline and decoded persisted run per saved chat. Every writer captures a non-null source chat before asynchronous work. New send/regenerate resets only that source; navigation is read-only selection; deletion evicts only the deleted key.
+`runSurfaceStore` owns the selected/live compacted event timeline and decoded `lastRun` per saved chat plus an exact `runId`-keyed persisted-run receipt cache for that chat. The lifecycle fetch may replace `lastRun` and Events only while its source surface fence still owns selection; the message-receipt loader updates only the exact cache entry and never selects Details or replaces live events. Every writer captures a non-null source chat before asynchronous work. New send/regenerate resets only that source; navigation is read-only selection; deletion evicts only the deleted key.
 
 Send and regenerate keep their distinct optimistic preparation but share one lifecycle executor for HTTP/SSE work, persisted-ID adoption, source reconciliation, terminal notification, failure/cancellation, and controller-safe cleanup. A rejected request rolls back only its optimistic rows. An ambiguous accepted/network failure performs a source-keyed durable refresh before retry.
 
@@ -100,7 +100,7 @@ Foreground token deltas are buffered for React updates and adjacent event aggreg
 
 `settingsDestinationStore` owns the bounded Settings destination (Appearance, MCP & tools). The Assistants surface owns its own focused state: `assistantLibraryStore` holds the open full-screen task (list, editor, history), Discover/Yours mode, filter/category/query, fetched list data, and editor/history drafts, while `assistantLibraryController` owns every surface mutation (create, revise with CAS, archive/restore, duplicate, publish/revoke, pin, restore-as-new-revision) and `Use` application into the composer owner. Editor avatar generation happens exactly once per new draft plus once per explicit `Generate another`, entirely in the browser. Current-composer Assistant selection remains with composer controls; the surface never mutates next-run state except through the atomic apply/remove actions.
 
-Knowledge follows the same focused-owner boundary without sharing Assistant or composer state. `knowledgeLibraryStore` owns its open list/create/detail task, filter/query, decoded list/detail/ingestion projections, dirty drafts, action identity, and bounded notice; `knowledgeLibraryController` owns loading, CAS save, sequential multi-file upload, retry/replace/remove, archive/restore, reindex, publish/revoke, and stale-response fencing. Lifecycle polling refreshes only transient work, preserves the last useful projection on background failure, and cannot replace a dirty base draft. The Knowledge management surface does not select next-run retrieval; composer binding and persisted run evidence remain with their dedicated run task and owners.
+Knowledge follows the same focused-owner boundary without sharing Assistant or composer state. `knowledgeLibraryStore` owns its open list/create/detail task, list filter/query, active document query/page, decoded list/detail/ingestion projections, dirty drafts, action identity, and bounded notice; `knowledgeLibraryController` owns loading, server-paged filename search, CAS save, sequential multi-file upload, retry/replace/remove, archive/restore, reindex, publish/revoke, and stale-response fencing. Lifecycle polling refreshes only transient work on the active document query/page, preserves the last useful projection on background failure, and cannot replace a dirty base draft. The Knowledge management surface does not select next-run retrieval; composer binding and persisted run evidence remain with their dedicated run task and owners.
 
 MCP settings owns its coalesced catalog refresh, mutation replacement, OAuth outcome, readiness polling, and last ready/error presentation. Personal input values remain leaf-local and write-only. Background reads do not flash an empty catalog over last-known useful state.
 
@@ -141,19 +141,20 @@ context disclosure belong to [Messages](MESSAGES_AND_MARKDOWN.md),
 ### Shell and session ownership
 
 - Shell adapters project the action destinations and availability owned by
-  [product and layout](PRODUCT_AND_LAYOUT.md). `WorkspaceIconRail` is the narrow
-  desktop presentation owner for those existing global destinations; it does
+  [product and layout](PRODUCT_AND_LAYOUT.md). `WorkspaceIconRail` is the compact
+  labeled desktop presentation owner for those existing global destinations; it does
   not create a second navigation, Account, conversation-action, or Details
   state owner.
 - Initial bootstrap has one actionable Retry surface and disables dependent mutations. Blank-chat and zero-model states render only after readiness and distinguish an empty workspace from missing granted access. The zero-model projection also distinguishes admin authority: only an administrator receives the direct Control Center provider-setup action.
-- Above the compact shell threshold, the icon rail is mandatory and wide
+- Above the compact shell threshold, the labeled rail is mandatory and wide
   Workspace-pane visibility is one browser-local presentation preference.
-  Hiding closes pane-owned menus, re-anchors a pane Account surface to rail
-  Account when necessary, and focuses rail `Chats`; restoring focuses the
-  pane's hide action. The rail and pane Account triggers share one externally
-  anchored surface. At compact widths `Open workspace` continues to own the
-  modal drawer, and no chat/folder/account state migrates into this preference.
-- A persisted chat with no provider/model default is valid. Blank startup uses only the catalog's exact effective personal-or-installation default; when that projection is absent, the shell keeps model selection empty instead of substituting the first visible model. Existing-chat activation preserves its independent saved tuple and established non-persisting visible fallback when that tuple is absent or unavailable. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
+  Hiding closes pane-owned menus and focuses rail `Chats`; Chats or a pointer
+  click on non-control rail space restores and focuses the pane's hide action.
+  Desktop Account has one top-group rail trigger and one externally anchored
+  surface; only the compact drawer retains its own Account footer presentation.
+  At compact widths `Open workspace` continues to own the modal drawer, and no
+  chat/folder/account state migrates into this preference.
+- A persisted chat with no provider/model default is valid. Blank startup and every ordinary New-chat transition re-resolve only the catalog's exact effective personal-or-installation default; when that projection is absent, the shell keeps model selection empty instead of substituting the first visible model. An active Assistant keeps its revision-owned selection across a blank transition. Existing-chat activation preserves its independent saved tuple and established non-persisting visible fallback when that tuple is absent or unavailable. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
 - Any Chat `401` creates one sticky session-expiry transition. Concurrent failures navigate once, store only the active text draft in tab-scoped owner-bound state, and restore it after the same account reauthenticates only into an untouched matching destination. The handoff expires after 30 minutes and never includes attachments.
 - Sign-out failure remains visibly attributable to Account and retryable. Answer completion may use the local audio/favicon alert; hidden-tab signaling stops when the user returns.
 

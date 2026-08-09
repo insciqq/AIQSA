@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   decodeKnowledgeReindex,
+  KNOWLEDGE_DOCUMENT_PAGE_SIZE,
+  KNOWLEDGE_DOCUMENT_PAGE_SIZE_MAX,
+  KNOWLEDGE_DOCUMENT_SEARCH_MAX_LENGTH,
   type KnowledgeDocumentMutationResponse,
   type KnowledgeDocumentStatus,
   type KnowledgeIngestionStatusResponse,
@@ -79,6 +82,33 @@ function boundedId(value: unknown): string | null {
     !/[\u0000-\u0020\u007f]/u.test(value)
     ? value
     : null;
+}
+
+function positiveQueryInteger(value: string | null, fallback: number, maximum: number): number | null {
+  if (value === null) return fallback;
+  if (!/^[1-9]\d{0,8}$/u.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : null;
+}
+
+function documentListInput(request: Request): Readonly<{
+  page: number;
+  pageSize: number;
+  query: string;
+}> | null {
+  const search = new URL(request.url).searchParams;
+  if (search.getAll("q").length > 1 || search.getAll("page").length > 1 ||
+    search.getAll("pageSize").length > 1) return null;
+  const query = (search.get("q") ?? "").trim();
+  const page = positiveQueryInteger(search.get("page"), 1, 1_000_000);
+  const pageSize = positiveQueryInteger(
+    search.get("pageSize"),
+    KNOWLEDGE_DOCUMENT_PAGE_SIZE,
+    KNOWLEDGE_DOCUMENT_PAGE_SIZE_MAX
+  );
+  if (page === null || pageSize === null || query.length > KNOWLEDGE_DOCUMENT_SEARCH_MAX_LENGTH ||
+    /[\u0000-\u001f\u007f]/u.test(query)) return null;
+  return { page, pageSize, query };
 }
 
 function safeFileName(fileName: string): string {
@@ -265,7 +295,11 @@ function createKnowledgeDocumentUploadHandler(
           : errorJson("knowledge_base_not_available", 404);
       }
       kick(deps);
-      const status = await deps.repository.listStatus(owner.userId, owner.baseId);
+      const status = await deps.repository.listStatus(owner.userId, owner.baseId, {
+        documentId: created.documentId,
+        page: 1,
+        pageSize: 1
+      });
       const document = documentFromStatus(status, created.documentId);
       if (!document) return errorJson("knowledge_base_not_available", 404);
       return Response.json(
@@ -284,7 +318,9 @@ export function createListKnowledgeDocumentsHandler(deps: KnowledgeIngestionHand
     if (!auth) return errorJson("unauthorized", 401);
     const baseId = boundedId((await context.params).baseId);
     if (!baseId) return errorJson("knowledge_base_not_available", 404);
-    const status = await deps.repository.listStatus(auth.userId, baseId);
+    const listInput = documentListInput(request);
+    if (!listInput) return errorJson("knowledge_document_query_invalid", 400);
+    const status = await deps.repository.listStatus(auth.userId, baseId, listInput);
     if (!status) return errorJson("knowledge_base_not_available", 404);
     return Response.json(status satisfies KnowledgeIngestionStatusResponse, {
       headers: { "cache-control": "no-store" }
@@ -332,7 +368,11 @@ export function createRetryKnowledgeDocumentVersionHandler(deps: KnowledgeIngest
       return errorJson("knowledge_document_retry_not_available", 409);
     }
     kick(deps);
-    const status = await deps.repository.listStatus(owner.userId, owner.baseId);
+    const status = await deps.repository.listStatus(owner.userId, owner.baseId, {
+      documentId: owner.documentId!,
+      page: 1,
+      pageSize: 1
+    });
     const document = documentFromStatus(status, owner.documentId!);
     if (!document) return errorJson("knowledge_base_not_available", 404);
     return Response.json(

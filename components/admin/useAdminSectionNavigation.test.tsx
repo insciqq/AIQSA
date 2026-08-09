@@ -133,8 +133,10 @@ describe("useAdminSectionNavigation", () => {
     await press("Providers", "ArrowLeft", "Safety");
     await press("Safety", "ArrowRight", "Providers");
     await press("Providers", "ArrowDown", "Search");
-    await press("Search", "ArrowDown", "Users");
-    await press("Users", "ArrowUp", "Search");
+    await press("Search", "ArrowDown", "Knowledge");
+    await press("Knowledge", "ArrowDown", "Users");
+    await press("Users", "ArrowUp", "Knowledge");
+    await press("Knowledge", "ArrowUp", "Search");
     await press("Search", "ArrowUp", "Providers");
     await press("Providers", "End", "Safety");
     await press("Safety", "Home", "Providers");

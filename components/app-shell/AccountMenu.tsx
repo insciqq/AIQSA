@@ -11,7 +11,7 @@ import {
 const menuItemClass =
   "flex min-h-touch w-full items-center gap-2 rounded-control px-3 text-left text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:bg-control-hover focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-focus min-[1281px]:min-h-9 [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
 
-export type DesktopAccountMenuAnchor = "pane" | "rail";
+export type DesktopAccountMenuAnchor = "rail";
 export type AccountMenuAnchor = DesktopAccountMenuAnchor | "mobile";
 export type AccountMenuInitialFocus = "first" | "last";
 
@@ -71,7 +71,7 @@ export const AccountMenuTrigger = forwardRef<HTMLButtonElement, AccountMenuTrigg
           ref={ref}
           className={
             rail
-              ? `relative grid size-11 shrink-0 place-items-center rounded-control hover:bg-control-hover ${signOutError ? "bg-critical/10 text-critical" : active ? "bg-control-selected text-ink" : "text-ink-secondary"} ${focusClass}`
+              ? `relative flex min-h-[3.25rem] w-[4.5rem] shrink-0 flex-col items-center justify-center gap-1 rounded-control px-1 hover:bg-control-hover [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch ${signOutError ? "bg-critical/10 text-critical" : active ? "bg-control-selected text-ink" : "text-ink-secondary"} ${focusClass}`
               : `relative flex min-h-11 w-full items-center gap-2 rounded-control px-2 text-left hover:bg-control-hover [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch ${signOutError ? "bg-critical/10 text-critical" : "text-ink-secondary"} ${focusClass}`
           }
           type="button"
@@ -87,7 +87,7 @@ export const AccountMenuTrigger = forwardRef<HTMLButtonElement, AccountMenuTrigg
           onClick={() => (active ? onClose() : onOpen("first"))}
           onKeyDown={handleKeyDown}
         >
-          <span className={rail ? "relative grid size-5 place-items-center" : "relative grid size-7 shrink-0 place-items-center"} aria-hidden="true">
+          <span className={rail ? "relative grid size-4 shrink-0 place-items-center" : "relative grid size-7 shrink-0 place-items-center"} aria-hidden="true">
             <UserRound className="size-4" />
             {signOutError ? (
               <span
@@ -96,7 +96,9 @@ export const AccountMenuTrigger = forwardRef<HTMLButtonElement, AccountMenuTrigg
               />
             ) : null}
           </span>
-          {rail ? null : (
+          {rail ? (
+            <span className="max-w-full truncate text-[0.6875rem] font-medium leading-none">Account</span>
+          ) : (
             <>
               <span className="min-w-0 flex-1 truncate text-sm font-medium" title={accountIdentity}>
                 {accountIdentity}
@@ -142,8 +144,7 @@ function placementClass(anchor: AccountMenuAnchor): string {
     return "absolute bottom-12 left-0 w-full max-w-64";
   }
 
-  const width = anchor === "rail" ? "w-64" : "w-[15rem]";
-  return `fixed bottom-[calc(max(0.5rem,env(safe-area-inset-bottom))+3.5rem)] left-[calc(3rem+env(safe-area-inset-left)+0.5rem)] ${width} max-w-[calc(100vw-3.5rem-env(safe-area-inset-left)-env(safe-area-inset-right))]`;
+  return "fixed left-[calc(5rem+env(safe-area-inset-left)+0.5rem)] top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)] w-64 max-w-[calc(100vw-5.5rem-env(safe-area-inset-left)-env(safe-area-inset-right))]";
 }
 
 export function AccountMenu({

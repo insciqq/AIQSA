@@ -16,6 +16,7 @@ import type {
   ChatSummary,
   FolderSummary,
   PersistedRun,
+  ThreadArtifactSummary,
   ThreadMessage
 } from "./types";
 
@@ -198,6 +199,57 @@ function persistedRun(overrides: Partial<PersistedRun> = {}): PersistedRun {
   };
 }
 
+function knowledgeArtifactSummary(): ThreadArtifactSummary {
+  return {
+    citationCount: 0,
+    citations: [],
+    knowledgeInvocationCount: 1,
+    knowledgeOutcomes: [{ invocationOrdinal: 1, outcome: "base_empty" }],
+    reasoningCount: 0,
+    reasoningText: [],
+    searchCount: 0,
+    searchStrategy: null,
+    toolCallCount: 0,
+    toolCalls: []
+  };
+}
+
+function knowledgePersistedRun(id: string, query: string): PersistedRun {
+  return persistedRun({
+    id,
+    knowledgeRuns: [{
+      baseEvidence: [{
+        baseContentRevision: 1,
+        baseName: "Runbooks",
+        candidateCount: 0,
+        indexedContentRevision: 1,
+        knowledgeBaseId: "base-1",
+        ordinal: 0,
+        state: "empty"
+      }],
+      candidateCount: 0,
+      candidateLimit: 40,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      durationMs: 4,
+      embeddingUsage: [],
+      failureCode: null,
+      fusion: "rrf_k60",
+      id: `receipt-${id}`,
+      invocationOrdinal: 1,
+      modelRunToolCallId: `tool-${id}`,
+      outcome: "base_empty",
+      postRerankOrder: null,
+      preRerankOrder: null,
+      providerText: "The selected base is empty.",
+      query,
+      rerankerBinding: null,
+      resultLimit: 8,
+      results: [],
+      threshold: 0.01
+    }]
+  });
+}
+
 function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = {}) {
   const props: ComponentProps<typeof MainThreadPane> = {
     activeChatDetailError: null,
@@ -248,6 +300,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     operationErrorLive: true,
     openRunDetails: vi.fn(),
     openMcpSettings: vi.fn(),
+    persistedRunsById: {},
     reasoningEffort: "none",
     reasoningMode: "standard",
     retryActiveChatDetail: vi.fn(),
@@ -1128,6 +1181,47 @@ describe("MainThreadPane", () => {
     rerender(<MainThreadPane {...props} lastRun={null} />);
     expect(within(historical as HTMLElement).getByText("48 tokens used")).toBeVisible();
     expect(within(current as HTMLElement).getByText("120 tokens used")).toBeVisible();
+  });
+
+  it("keeps each Knowledge receipt attached to its exact answer while disclosures toggle", () => {
+    const firstRun = knowledgePersistedRun("run-first", "first answer query");
+    const secondRun = knowledgePersistedRun("run-second", "second answer query");
+    const loadRunReceipt = vi.fn();
+    const { container } = renderPane({
+      ...readyComposerOverrides,
+      lastRun: secondRun,
+      loadRunReceipt,
+      persistedRunsById: {
+        [firstRun.id]: firstRun,
+        [secondRun.id]: secondRun
+      },
+      visibleMessages: [
+        assistantMessage("assistant-first", {
+          artifactSummary: knowledgeArtifactSummary(),
+          runId: firstRun.id
+        }),
+        assistantMessage("assistant-second", {
+          artifactSummary: knowledgeArtifactSummary(),
+          runId: secondRun.id
+        })
+      ]
+    });
+    const first = container.querySelector<HTMLElement>('[data-message-id="assistant-first"]')!;
+    const second = container.querySelector<HTMLElement>('[data-message-id="assistant-second"]')!;
+
+    fireEvent.click(within(first).getByRole("button", { name: /Knowledge 1 invocation/ }));
+    fireEvent.click(within(first).getByText("Invocation 1").closest("summary")!);
+    fireEvent.click(within(second).getByRole("button", { name: /Knowledge 1 invocation/ }));
+    fireEvent.click(within(second).getByText("Invocation 1").closest("summary")!);
+
+    expect(first).toHaveTextContent("first answer query");
+    expect(first).not.toHaveTextContent("second answer query");
+    expect(second).toHaveTextContent("second answer query");
+    expect(second).not.toHaveTextContent("first answer query");
+    fireEvent.click(within(first).getByRole("button", { name: /Knowledge 1 invocation/ }));
+    fireEvent.click(within(first).getByRole("button", { name: /Knowledge 1 invocation/ }));
+    expect(second).toHaveTextContent("second answer query");
+    expect(loadRunReceipt).not.toHaveBeenCalled();
   });
 
   it("keeps warnings on their originating run across branch changes", () => {

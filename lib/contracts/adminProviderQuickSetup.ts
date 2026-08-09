@@ -67,6 +67,7 @@ export type AdminProviderQuickSetupCandidate = Readonly<{
 
 export type AdminProviderQuickSetupReadyResult = Readonly<{
   checkedAt: string;
+  defaultCredentialChanged: boolean;
   defaultChanged: boolean;
   model: AdminProviderQuickSetupModelDisplay;
   models: AdminProviderQuickSetupModelDisplay[];

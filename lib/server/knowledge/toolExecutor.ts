@@ -8,6 +8,10 @@ import type {
   ToolExecutor
 } from "../tools/types";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
+import {
+  isKnowledgeRetrievalPolicy,
+  type KnowledgeRetrievalPolicyResolver
+} from "./knowledgePolicy";
 import { validateKnowledgeToolArguments } from "./retrievalQuery";
 import {
   aggregateKnowledgeUsage,
@@ -275,16 +279,17 @@ function validBindings(bindings: readonly KnowledgeAcceptedBinding[]): boolean {
 export function createKnowledgeToolExecutor(input: Readonly<{
   candidateLimit?: number;
   embeddingRuntime: KnowledgeEmbeddingRuntimeResolver;
+  policy?: KnowledgeRetrievalPolicyResolver;
   resultLimit?: number;
   scoreThreshold?: number;
   store: KnowledgeRetrievalStore;
 }>): KnowledgeToolExecutor {
-  const candidateLimit = input.candidateLimit ?? KNOWLEDGE_CANDIDATE_LIMIT;
-  const resultLimit = input.resultLimit ?? KNOWLEDGE_RESULT_LIMIT;
-  const threshold = input.scoreThreshold ?? KNOWLEDGE_SCORE_THRESHOLD;
-  if (!Number.isSafeInteger(candidateLimit) || candidateLimit < resultLimit || candidateLimit > 100 ||
-    !Number.isSafeInteger(resultLimit) || resultLimit < 1 || resultLimit > KNOWLEDGE_RESULT_LIMIT ||
-    !Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+  const staticPolicy = {
+    candidateLimit: input.candidateLimit ?? KNOWLEDGE_CANDIDATE_LIMIT,
+    resultLimit: input.resultLimit ?? KNOWLEDGE_RESULT_LIMIT,
+    scoreThreshold: input.scoreThreshold ?? KNOWLEDGE_SCORE_THRESHOLD
+  };
+  if (!isKnowledgeRetrievalPolicy(staticPolicy)) {
     throw new Error("knowledge_retrieval_configuration_invalid");
   }
 
@@ -319,6 +324,19 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           "Knowledge retrieval limit reached. Continue with the Knowledge evidence already returned."
         );
       }
+      let retrievalPolicy = staticPolicy;
+      if (input.policy) {
+        try {
+          const resolved = await input.policy.resolve();
+          if (!isKnowledgeRetrievalPolicy(resolved)) throw new Error("knowledge_policy_unavailable");
+          retrievalPolicy = resolved;
+        } catch {
+          return errorResult(call, "knowledge_policy_unavailable");
+        }
+      }
+      const candidateLimit = retrievalPolicy.candidateLimit;
+      const resultLimit = retrievalPolicy.resultLimit;
+      const threshold = retrievalPolicy.scoreThreshold;
       const startedAt = Date.now();
       const bindings = await input.store.loadBindings({ runId, userId: context.userId });
       if (!validBindings(bindings)) return errorResult(call, "knowledge_run_binding_unavailable");

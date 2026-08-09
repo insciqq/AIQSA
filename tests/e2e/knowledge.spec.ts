@@ -155,7 +155,30 @@ async function installKnowledgeFixture(page: Page) {
       return;
     }
     if (path === "/api/me/knowledge-bases/base-e2e/documents" && method === "GET") {
-      await fulfillJson(route, { documents, owned: true, reindex });
+      const search = new URL(request.url()).searchParams;
+      const query = (search.get("q") ?? "").trim();
+      const pageSize = Number(search.get("pageSize") ?? "25");
+      const matching = documents.filter((entry) =>
+        entry.versions.some((entryVersion) =>
+          entryVersion.fileName.toLocaleLowerCase().includes(query.toLocaleLowerCase())
+        )
+      );
+      const totalPages = matching.length === 0 ? 0 : Math.ceil(matching.length / pageSize);
+      const requestedPage = Number(search.get("page") ?? "1");
+      const pageNumber = Math.min(requestedPage, Math.max(1, totalPages));
+      const pageDocuments = matching.slice((pageNumber - 1) * pageSize, pageNumber * pageSize);
+      await fulfillJson(route, {
+        documents: pageDocuments,
+        owned: true,
+        pagination: {
+          page: pageNumber,
+          pageSize,
+          query,
+          totalItems: matching.length,
+          totalPages
+        },
+        reindex
+      });
       return;
     }
     if (path === "/api/me/knowledge-bases/base-e2e/documents" && method === "POST") {
@@ -265,6 +288,11 @@ test("manages a Knowledge base and stays contained at every contract viewport", 
   await expect(
     library.getByTestId("knowledge-document-document-2").getByText("2 chunks ready").first()
   ).toBeVisible();
+  await library.getByRole("searchbox", { name: "Search documents by filename" }).fill("incident");
+  await expect(library.getByText("incident.txt", { exact: true })).toBeVisible();
+  await expect(library.getByText("handbook.md", { exact: true })).toHaveCount(0);
+  await library.getByRole("searchbox", { name: "Search documents by filename" }).fill("");
+  await expect(library.getByText("handbook.md", { exact: true })).toBeVisible();
 
   await library.getByRole("button", { name: "Start reindex" }).click();
   await expect(library.getByText("Building shadow index")).toBeVisible();

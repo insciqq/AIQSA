@@ -36,6 +36,8 @@ export type KnowledgeDetailView = {
   base: KnowledgeBaseDetail | null;
   dataError: string | null;
   dataState: "error" | "loading" | "ready";
+  documentPage: number;
+  documentQuery: string;
   dirty: boolean;
   draft: Pick<KnowledgeCreateDraft, "description" | "name">;
   embeddingDeployments: KnowledgeEmbeddingDeployment[];
@@ -44,6 +46,8 @@ export type KnowledgeDetailView = {
   onArchiveToggle(archived: boolean): void;
   onBack(): void;
   onChange(update: Partial<Pick<KnowledgeCreateDraft, "description" | "name">>): void;
+  onDocumentPageChange(page: number): void;
+  onDocumentQueryChange(query: string): void;
   onPublish(input: KnowledgeBasePublicationInput): void;
   onRefresh(): void;
   onReindex(embeddingDeploymentId: string): void;

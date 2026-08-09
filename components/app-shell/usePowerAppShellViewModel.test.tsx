@@ -38,7 +38,7 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
       pendingChatFolderId: null,
       projectSettingsFolderId: null,
       renderActiveLeafId: null,
-      runSurface: { events: [], lastRun: null },
+      runSurface: { events: [], lastRun: null, runsById: {} },
       selectedAssistantPromptCharacterCount: null,
       selectedModelId: "gpt-5.5",
       selectedProvider: "openai",
@@ -94,7 +94,7 @@ describe("usePowerAppShellViewModel", () => {
         pendingChatFolderId: null,
         projectSettingsFolderId: null,
         renderActiveLeafId: null,
-        runSurface: { events: [], lastRun: null },
+        runSurface: { events: [], lastRun: null, runsById: {} },
         selectedAssistantPromptCharacterCount: null,
         selectedModelId: "gpt-5.5",
         selectedProvider: "openai",
@@ -200,14 +200,15 @@ describe("usePowerAppShellViewModel", () => {
     const idleB = renderViewModel({
       activeChatId: "chat-b",
       chats: [chat("chat-a"), chat("chat-b")],
-      runSurface: { events: [], lastRun: null }
+      runSurface: { events: [], lastRun: null, runsById: {} }
     });
     expect(idleB.result.current.currentErrorText).toBeNull();
 
     const failedA = renderViewModel({
       runSurface: {
         events: [{ data: { message: "A failed" }, type: "error" }],
-        lastRun: null
+        lastRun: null,
+        runsById: {}
       }
     });
     expect(failedA.result.current.currentErrorText).toContain("A failed");

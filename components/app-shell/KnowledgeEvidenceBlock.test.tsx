@@ -165,4 +165,22 @@ describe("KnowledgeEvidenceBlock", () => {
     expect(screen.getAllByText("15 ms")).not.toHaveLength(0);
     expect(screen.getAllByText("11 ms")).not.toHaveLength(0);
   });
+
+  it("falls back to bounded outcomes without claiming exact text is unavailable", () => {
+    render(
+      <KnowledgeEvidenceBlock
+        expanded
+        loading={false}
+        persistedRun={null}
+        showCitations={false}
+        summary={summary}
+        onExpandedChange={vi.fn()}
+        onOpenEvidence={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/Invocation 1:/)).toHaveTextContent("Retrieved evidence");
+    expect(screen.getByText(/Invocation 2:/)).toHaveTextContent("No passage above threshold");
+    expect(screen.queryByText(/Exact passage text is unavailable/)).not.toBeInTheDocument();
+  });
 });

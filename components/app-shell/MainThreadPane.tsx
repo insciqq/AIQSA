@@ -91,13 +91,14 @@ export type MainThreadPaneProps = {
   handleEditMessage(message: ThreadMessage): void;
   handleRegenerateMessage(messageId: string): void;
   handleThreadScroll(): void;
-  inspectRun?(runId: string): Promise<void> | void;
+  loadRunReceipt?(runId: string): Promise<void> | void;
   jumpToLatest(): void;
   knowledge?: ShellComposerView["knowledge"];
   lastRun: PersistedRun | null;
+  persistedRunsById: Readonly<Record<string, PersistedRun>>;
   liveArtifactSummary: ThreadArtifactSummary | null;
   maxOutputTokens: string;
-  makeCurrentModelDefault?(): void;
+  makeModelDefault?(model: CatalogModel): void;
   notificationSoundEnabled: boolean;
   operationError: string | null;
   operationErrorLive: boolean;
@@ -182,13 +183,14 @@ export function MainThreadPane({
   handleEditMessage,
   handleRegenerateMessage,
   handleThreadScroll,
-  inspectRun,
+  loadRunReceipt,
   jumpToLatest,
   knowledge,
   lastRun,
+  persistedRunsById,
   liveArtifactSummary,
   maxOutputTokens,
-  makeCurrentModelDefault,
+  makeModelDefault,
   notificationSoundEnabled,
   operationError,
   operationErrorLive,
@@ -661,7 +663,10 @@ export function MainThreadPane({
                 key={message.id}
                 message={message}
                 mobileControlsOpen={mobileControlsMessageId === message.id}
-                persistedRun={message.runId && message.runId === lastRun?.id ? lastRun : null}
+                persistedRun={message.runId
+                  ? persistedRunsById[message.runId] ??
+                    (message.runId === lastRun?.id ? lastRun : null)
+                  : null}
                 runActivity={visibleRunActivity}
                 runWarnings={messageRunWarnings}
                 showCitations={showCitations}
@@ -673,7 +678,7 @@ export function MainThreadPane({
                 onDeleteMessage={handleDeleteMessage}
                 onEditMessage={handleEditMessage}
                 onOpenRunDetails={openRunDetails}
-                onInspectRun={inspectRun}
+                onLoadPersistedRun={loadRunReceipt}
                 onOpenKnowledgeEvidence={openKnowledgeEvidence}
                 onRegenerateMessage={handleRegenerateMessage}
                 onToggleMobileControls={toggleMobileMessageControls}
@@ -771,7 +776,7 @@ export function MainThreadPane({
               onBackgroundModeChange={changeBackgroundMode}
               onMaxOutputTokensChange={changeMaxOutputTokens}
               onMaxOutputTokensCommit={flushPendingModelControlDefaults}
-              onMakeCurrentModelDefault={makeCurrentModelDefault}
+              onMakeModelDefault={makeModelDefault}
               onReasoningEffortChange={changeReasoningEffort}
               onReasoningModeChange={changeReasoningMode}
               onSearchPlanChange={selectSearchPlan}

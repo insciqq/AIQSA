@@ -17,18 +17,20 @@ Not owned here: Composer input, run parameter controls, receipt/details, or visu
 - Results are grouped under readable Actions, Chats, Models, and Search strategies headings with group counts. Current chat/model/search rows use a visible `Current` marker; category and readable provider/capability/search context form the secondary line instead of exposing raw ids. `Open assistants` and `Open Knowledge` actions open their respective full-screen resource surfaces.
 - Long labels wrap, results scroll locally, keyboard movement keeps the active row visible, and an unmatched query replaces stale results with a readable `No matching commands` status. Enter does nothing when there is no result.
 - The palette is viewport bounded. Arrow/Home/End/Enter operate its current option, and Escape or the backdrop closes it.
-- Settings can be opened directly from the desktop icon rail, from either Account presentation, from the compact Workspace drawer, or from the command palette. Assistants and Knowledge are separate direct rail, Account, and command-palette destinations; the composer's Run setup offers the secondary `Use an assistant…` action that opens the quick picker instead.
+- Settings can be opened directly from the desktop labeled rail, from its Account menu, from the compact Workspace drawer, or from the command palette. Assistants and Knowledge are separate direct rail, Account, and command-palette destinations; the composer's Run setup offers the secondary `Use an assistant…` action that opens the quick picker instead.
 - The command palette includes a `New chat` action for keyboard and mobile users.
 
 ## Left pane
 
-- At `>=1281px`, one named `Primary navigation` icon rail always precedes the
-  optional wide pane. Its ordered destinations are New chat, current Chats,
-  Assistants, Knowledge, Settings, entitled Control Center, and bottom Account. Every
-  entry has an exact accessible name and an associated visible hover/focus
-  tooltip; unavailable entries remain focusable with guarded `aria-disabled`.
-  Chats restores a hidden pane and is a no-op while it is already visible.
-  Rail and pane Account triggers re-anchor one menu rather than duplicating it.
+- At `>=1281px`, one named `Primary navigation` 5rem rail always precedes the
+  optional wide pane. Its ordered controls are New chat, current Chats, Account,
+  then Assistants, Knowledge, Settings, and entitled Control Center after a divider.
+  Every entry combines an icon with a persistent compact label, keeps an exact
+  accessible name and explanatory hover/focus tooltip, and remains focusable with
+  guarded `aria-disabled` when unavailable. Chats restores a hidden pane and is a
+  no-op while it is already visible; a pointer click on non-control rail space also
+  restores a hidden pane without intercepting destination actions. Desktop Account
+  exists only in the rail and opens one viewport-contained top-anchored menu.
 - The header gives the proof-backed primary action to `New Chat`, keeps `New folder` secondary, and places one labeled search field immediately below them. `New Chat` remains the pane's first focusable action.
 - Chat search filters lightweight loaded summaries locally by title/provider/model only. Loaded message bodies do not become an accidental second local-content index.
 - Non-empty search text also debounces a `/api/chats?q=<query>` request and merges server-side message-content matches, so chats that have never been opened in the current session can appear. The pane distinguishes `Title match`, `Model match`, and `Message match`, announces result/message-match counts, waits before showing empty results, and reports message-search failure while leaving local title/model results usable.

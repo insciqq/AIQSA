@@ -119,6 +119,18 @@ export type KnowledgeDocumentStatus = Readonly<{
   versions: KnowledgeDocumentVersionStatus[];
 }>;
 
+export const KNOWLEDGE_DOCUMENT_PAGE_SIZE = 25;
+export const KNOWLEDGE_DOCUMENT_PAGE_SIZE_MAX = 100;
+export const KNOWLEDGE_DOCUMENT_SEARCH_MAX_LENGTH = 200;
+
+export type KnowledgeDocumentPagination = Readonly<{
+  page: number;
+  pageSize: number;
+  query: string;
+  totalItems: number;
+  totalPages: number;
+}>;
+
 export type KnowledgeReindexProgress = Readonly<{
   completedDocuments: number;
   createdAt: string;
@@ -133,6 +145,7 @@ export type KnowledgeReindexProgress = Readonly<{
 export type KnowledgeIngestionStatusResponse = Readonly<{
   documents: KnowledgeDocumentStatus[];
   owned: boolean;
+  pagination: KnowledgeDocumentPagination;
   reindex: KnowledgeReindexProgress | null;
 }>;
 
@@ -620,21 +633,50 @@ export function decodeKnowledgeBasePublicationResponse(
 export function decodeKnowledgeIngestionStatusResponse(
   value: unknown
 ): KnowledgeIngestionStatusResponse | null {
-  if (!isRecord(value) || !Array.isArray(value.documents) || typeof value.owned !== "boolean") {
+  if (!isRecord(value) || !Array.isArray(value.documents) || typeof value.owned !== "boolean" ||
+    !isRecord(value.pagination)) {
     return null;
   }
   const documents = value.documents.map(decodeKnowledgeDocumentStatus);
   const reindex = value.reindex === null ? null : decodeKnowledgeReindexProgress(value.reindex);
+  const pagination = value.pagination;
   if (
     documents.some((document) => document === null) ||
     new Set(documents.map((document) => document?.id)).size !== documents.length ||
-    (value.reindex !== null && !reindex)
+    (value.reindex !== null && !reindex) ||
+    !safeInteger(pagination.page, 1) ||
+    !safeInteger(pagination.pageSize, 1) ||
+    pagination.pageSize > KNOWLEDGE_DOCUMENT_PAGE_SIZE_MAX ||
+    typeof pagination.query !== "string" ||
+    pagination.query !== pagination.query.trim() ||
+    pagination.query.length > KNOWLEDGE_DOCUMENT_SEARCH_MAX_LENGTH ||
+    /[\u0000-\u001f\u007f]/u.test(pagination.query) ||
+    !safeInteger(pagination.totalItems) ||
+    !safeInteger(pagination.totalPages) ||
+    pagination.totalPages !== (pagination.totalItems === 0
+      ? 0
+      : Math.ceil(pagination.totalItems / pagination.pageSize)) ||
+    pagination.page > Math.max(1, pagination.totalPages) ||
+    documents.length > pagination.pageSize ||
+    documents.length !== (pagination.totalItems === 0
+      ? 0
+      : Math.min(
+          pagination.pageSize,
+          pagination.totalItems - (pagination.page - 1) * pagination.pageSize
+        ))
   ) {
     return null;
   }
   return {
     documents: documents as KnowledgeDocumentStatus[],
     owned: value.owned,
+    pagination: {
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+      query: pagination.query,
+      totalItems: pagination.totalItems,
+      totalPages: pagination.totalPages
+    },
     reindex
   };
 }

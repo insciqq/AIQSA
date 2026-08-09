@@ -67,6 +67,7 @@ async function main() {
     (model) => `${model.provider}:${model.modelId}`
   );
   const [
+    knowledgePolicy,
     modelPolicy,
     systemModelPolicy,
     providerConnections,
@@ -74,6 +75,7 @@ async function main() {
     searchOptions,
     searchStrategies
   ] = await Promise.all([
+    prisma.knowledgePolicy.findUnique({ where: { id: "installation" } }),
     prisma.modelPolicy.findUnique({ where: { id: "installation" } }),
     prisma.systemModelPolicy.findUnique({ where: { id: "installation" } }),
     prisma.providerConnection.findMany({
@@ -106,6 +108,9 @@ async function main() {
   const fakeModel = providerModels.find((model) => model.templateKey === "fake:fake-qsa");
 
   if (
+    !knowledgePolicy ||
+    knowledgePolicy.version < 1 ||
+    knowledgePolicy.candidateLimit < knowledgePolicy.resultLimit ||
     !modelPolicy ||
     modelPolicy.version < 1 ||
     !systemModelPolicy ||

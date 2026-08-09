@@ -400,6 +400,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       }
       return {
         checkedAt: checkedAt.toISOString(),
+        defaultCredentialChanged: commit.defaultCredentialChanged,
         defaultChanged: commit.defaultChanged,
         model: { displayName: candidate.displayName },
         models: availableCandidates.map(({ displayName }) => ({ displayName })),

@@ -446,8 +446,10 @@ export function useRunControlsActions({
     });
   }
 
-  function makeCurrentModelDefault() {
-    const model = selectedModelFromStore();
+  function makeModelDefault(requestedModel: CatalogModel) {
+    const model = currentCatalogFromStore()?.models.find(
+      (candidate) => candidate.provider === requestedModel.provider && candidate.modelId === requestedModel.modelId
+    );
     if (!model) return;
     const personalModelDefault = {
       modelId: model.modelId,
@@ -714,7 +716,7 @@ export function useRunControlsActions({
     changeStreamMode,
     changeTemperature,
     flushPendingModelControlDefaults,
-    makeCurrentModelDefault,
+    makeModelDefault,
     persistUserDefaults,
     removeAssistantFromComposer,
     selectModel,

@@ -111,6 +111,7 @@ function harness(input: Readonly<{
   candidateCount?: number;
   invocationOrdinal?: number;
   passages?: KnowledgeHybridPassage[];
+  policy?: { candidateLimit: number; resultLimit: number; scoreThreshold: number };
   runtimeFailure?: Error;
 }> = {}) {
   const embed = vi.fn(async (request: { mode: "document" | "query"; texts: readonly string[] }) => ({
@@ -147,7 +148,11 @@ function harness(input: Readonly<{
   return {
     embed,
     embeddingRuntime,
-    executor: createKnowledgeToolExecutor({ embeddingRuntime, store }),
+    executor: createKnowledgeToolExecutor({
+      embeddingRuntime,
+      ...(input.policy ? { policy: { resolve: vi.fn(async () => input.policy!) } } : {}),
+      store
+    }),
     receipts,
     store
   };
@@ -215,6 +220,24 @@ describe("Knowledge retrieval tool executor", () => {
       stored
     );
     expect(rehydrated).toEqual(result);
+  });
+
+  it("resolves the current installation retrieval policy and snapshots it in the receipt", async () => {
+    const value = harness({
+      policy: { candidateLimit: 12, resultLimit: 3, scoreThreshold: 0.02 }
+    });
+    const result = await execute(value);
+
+    expect(value.store.hybridSearch).toHaveBeenCalledWith(expect.objectContaining({
+      candidateLimit: 12,
+      resultLimit: 3,
+      threshold: 0.02
+    }));
+    expect(knowledgeEvidenceFromToolResult(result)).toMatchObject({
+      candidateLimit: 12,
+      resultLimit: 3,
+      threshold: 0.02
+    });
   });
 
   it("rejects canonical evidence whose opaque handle disagrees with its invocation", async () => {

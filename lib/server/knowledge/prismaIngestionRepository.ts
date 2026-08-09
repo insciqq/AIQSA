@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type {
-  KnowledgeDocumentStatus,
-  KnowledgeDocumentVersionStatus,
-  KnowledgeIngestionStatusResponse,
-  KnowledgeReindexProgress
+import {
+  KNOWLEDGE_DOCUMENT_PAGE_SIZE,
+  KNOWLEDGE_DOCUMENT_PAGE_SIZE_MAX,
+  type KnowledgeDocumentStatus,
+  type KnowledgeDocumentVersionStatus,
+  type KnowledgeIngestionStatusResponse,
+  type KnowledgeReindexProgress
 } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
 import { KNOWLEDGE_CHUNKING_PROFILE_VERSION } from "./indexProfile";
+import type { KnowledgeChunkPlanEntry } from "./chunking";
 import {
   resolveKnowledgeEmbeddingDeployments,
   type KnowledgeEmbeddingDeploymentResolution
@@ -635,6 +638,68 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
 
     completedBatchIndexes,
 
+    async recoverReindexChunkPlan(input: KnowledgeWorkIdentity & {
+      chunkingProfileVersion: number;
+      maxChunks: number;
+    }): Promise<readonly KnowledgeChunkPlanEntry[] | null> {
+      if (
+        input.kind !== "reindex" ||
+        !Number.isSafeInteger(input.maxChunks) ||
+        input.maxChunks < 1
+      ) {
+        return null;
+      }
+      const target = await client.knowledgeIndexGeneration.findFirst({
+        select: { sourceIndexGenerationId: true },
+        where: {
+          chunkingProfileVersion: input.chunkingProfileVersion,
+          generationDocuments: {
+            some: {
+              claimToken: input.claimToken,
+              documentVersionId: input.documentVersionId
+            }
+          },
+          id: input.generationId,
+          sourceIndexGeneration: {
+            is: {
+              chunkingProfileVersion: input.chunkingProfileVersion,
+              status: "active"
+            }
+          },
+          status: "building"
+        }
+      });
+      if (!target?.sourceIndexGenerationId) return null;
+
+      const rows = await client.knowledgeChunk.findMany({
+        orderBy: { chunkIndex: "asc" },
+        select: {
+          chunkIndex: true,
+          headingPath: true,
+          page: true,
+          text: true
+        },
+        take: input.maxChunks + 1,
+        where: {
+          documentVersionId: input.documentVersionId,
+          indexGenerationId: target.sourceIndexGenerationId
+        }
+      });
+      if (
+        rows.length === 0 ||
+        rows.length > input.maxChunks ||
+        rows.some((row, index) => row.chunkIndex !== index)
+      ) {
+        return null;
+      }
+      return rows.map((row) => ({
+        headingPath: row.headingPath,
+        index: row.chunkIndex,
+        page: row.page,
+        text: row.text
+      }));
+    },
+
     async completeChunking(input: KnowledgeWorkIdentity & {
       chunkCount: number;
       now: Date;
@@ -1006,74 +1071,133 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
 
     async listStatus(
       userId: string,
-      knowledgeBaseId: string
+      knowledgeBaseId: string,
+      input: Readonly<{
+        documentId?: string;
+        page?: number;
+        pageSize?: number;
+        query?: string;
+      }> = {}
     ): Promise<KnowledgeIngestionStatusResponse | null> {
-      const memberships = await client.userGroup.findMany({
-        select: { groupId: true },
-        where: { group: { archivedAt: null }, userId }
-      });
-      const groupIds = memberships.map(({ groupId }) => groupId);
-      const base = await client.knowledgeBase.findFirst({
-        include: {
-          documents: {
-            include: { versions: { orderBy: { versionNumber: "desc" } } },
-            orderBy: [{ createdAt: "asc" }, { id: "asc" }]
-          },
-          indexGenerations: {
-            include: { generationDocuments: true },
-            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-            where: { sourceIndexGenerationId: { not: null } }
-          }
-        },
-        where: {
-          id: knowledgeBaseId,
-          OR: [
-            { ownerUserId: userId },
-            {
-              archivedAt: null,
-              publications: {
-                some: {
-                  OR: [
-                    { scope: "installation" },
-                    ...(groupIds.length > 0
-                      ? [{ groupId: { in: groupIds }, group: { archivedAt: null }, scope: "group" as const }]
-                      : [])
-                  ]
+      const requestedPage = Number.isSafeInteger(input.page) && Number(input.page) > 0
+        ? Number(input.page)
+        : 1;
+      const pageSize = Number.isSafeInteger(input.pageSize) && Number(input.pageSize) > 0 &&
+        Number(input.pageSize) <= KNOWLEDGE_DOCUMENT_PAGE_SIZE_MAX
+        ? Number(input.pageSize)
+        : KNOWLEDGE_DOCUMENT_PAGE_SIZE;
+      const query = input.query?.trim() ?? "";
+
+      return client.$transaction(async (tx) => {
+        const memberships = await tx.userGroup.findMany({
+          select: { groupId: true },
+          where: { group: { archivedAt: null }, userId }
+        });
+        const groupIds = memberships.map(({ groupId }) => groupId);
+        const base = await tx.knowledgeBase.findFirst({
+          select: { ownerUserId: true },
+          where: {
+            id: knowledgeBaseId,
+            OR: [
+              { ownerUserId: userId },
+              {
+                archivedAt: null,
+                publications: {
+                  some: {
+                    OR: [
+                      { scope: "installation" },
+                      ...(groupIds.length > 0
+                        ? [{ groupId: { in: groupIds }, group: { archivedAt: null }, scope: "group" as const }]
+                        : [])
+                    ]
+                  }
                 }
               }
-            }
-          ]
-        }
-      });
-      if (!base) return null;
-      const owned = base.ownerUserId === userId;
-      const documents: KnowledgeDocumentStatus[] = base.documents.flatMap((document) => {
-        if (!owned && (document.archivedAt || !document.currentVersionId)) return [];
-        const versions = document.versions
-          .filter((version) => owned || version.id === document.currentVersionId && version.ingestState === "ready")
-          .map((version) => versionStatus(version, document.currentVersionId));
-        if (!owned && versions.length === 0) return [];
-        return [{
-          archived: document.archivedAt !== null,
-          currentVersionId: document.currentVersionId,
-          id: document.id,
-          versions
-        }];
-      });
-      const latest = owned ? base.indexGenerations[0] ?? null : null;
-      const reindex: KnowledgeReindexProgress | null = latest
-        ? {
-            completedDocuments: latest.generationDocuments.filter((row) => row.state === "ready").length,
-            createdAt: latest.createdAt.toISOString(),
-            errorCode: latest.lastErrorCode,
-            failedDocuments: latest.generationDocuments.filter((row) => row.state === "failed").length,
-            generationId: latest.id,
-            status: latest.status,
-            targetContentRevision: latest.targetContentRevision ?? 0,
-            totalDocuments: latest.generationDocuments.length
+            ]
           }
-        : null;
-      return { documents, owned, reindex };
+        });
+        if (!base) return null;
+        const owned = base.ownerUserId === userId;
+        const fileNameFilter = query
+          ? { contains: query, mode: Prisma.QueryMode.insensitive }
+          : undefined;
+        const documentWhere: Prisma.KnowledgeDocumentWhereInput = {
+          knowledgeBaseId,
+          ...(input.documentId ? { id: input.documentId } : {}),
+          ...(owned
+            ? fileNameFilter
+              ? { versions: { some: { fileName: fileNameFilter } } }
+              : {}
+            : {
+                archivedAt: null,
+                currentVersion: {
+                  is: {
+                    ...(fileNameFilter ? { fileName: fileNameFilter } : {}),
+                    ingestState: "ready"
+                  }
+                }
+              })
+        };
+        const totalItems = await tx.knowledgeDocument.count({ where: documentWhere });
+        const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / pageSize);
+        const page = Math.min(requestedPage, Math.max(1, totalPages));
+        const rows = await tx.knowledgeDocument.findMany({
+          include: { versions: { orderBy: { versionNumber: "desc" } } },
+          orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+          where: documentWhere
+        });
+        const documents: KnowledgeDocumentStatus[] = rows.flatMap((document) => {
+          const versions = document.versions
+            .filter((version) => owned || version.id === document.currentVersionId && version.ingestState === "ready")
+            .map((version) => versionStatus(version, document.currentVersionId));
+          if (!owned && versions.length === 0) return [];
+          return [{
+            archived: document.archivedAt !== null,
+            currentVersionId: document.currentVersionId,
+            id: document.id,
+            versions
+          }];
+        });
+
+        const latest = owned ? await tx.knowledgeIndexGeneration.findFirst({
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          select: {
+            createdAt: true,
+            id: true,
+            lastErrorCode: true,
+            status: true,
+            targetContentRevision: true
+          },
+          where: { knowledgeBaseId, sourceIndexGenerationId: { not: null } }
+        }) : null;
+        const stateCounts = latest ? await tx.knowledgeGenerationDocument.groupBy({
+          _count: { _all: true },
+          by: ["state"],
+          where: { indexGenerationId: latest.id }
+        }) : [];
+        const countFor = (state: "failed" | "ready") =>
+          stateCounts.find((row) => row.state === state)?._count._all ?? 0;
+        const reindex: KnowledgeReindexProgress | null = latest
+          ? {
+              completedDocuments: countFor("ready"),
+              createdAt: latest.createdAt.toISOString(),
+              errorCode: latest.lastErrorCode,
+              failedDocuments: countFor("failed"),
+              generationId: latest.id,
+              status: latest.status,
+              targetContentRevision: latest.targetContentRevision ?? 0,
+              totalDocuments: stateCounts.reduce((total, row) => total + row._count._all, 0)
+            }
+          : null;
+        return {
+          documents,
+          owned,
+          pagination: { page, pageSize, query, totalItems, totalPages },
+          reindex
+        };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
 
     async persistEmbeddingBatch(input: KnowledgeWorkIdentity & {

@@ -19,7 +19,7 @@ import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { encryptProviderCredentialSecret } from "../../lib/server/providers/credentialSecrets";
 import { parseSecretEncryptionKey } from "../../lib/server/secrets/envelope";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
-import { selectModel } from "./shell/composer";
+import { chooseSearchStrategy, selectModel } from "./shell/composer";
 import { signInWithLocalToken } from "./support/localAuth";
 
 test.describe.configure({ mode: "serial" });
@@ -312,6 +312,10 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
     await tx.providerCredential.update({
       data: { activeVersionId: fixture.credentialVersionId },
       where: { id: fixture.credentialId }
+    });
+    await tx.providerConnection.update({
+      data: { defaultCredentialId: fixture.credentialId },
+      where: { id: fixture.connectionId }
     });
     await tx.providerUserCredentialAssignment.create({
       data: {
@@ -712,6 +716,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
         contentType: "application/json",
         json: {
           checkedAt: now,
+          defaultCredentialChanged: true,
           defaultChanged: false,
           model: { displayName: "GPT-5.6 Sol" },
           models: [
@@ -804,6 +809,9 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   );
   await expect(readyReceipt).toContainText("Access: available to this administrator.");
   await expect(readyReceipt).toContainText(
+    "Connection default credential: set to this verified key."
+  );
+  await expect(readyReceipt).toContainText(
     "Default models: unchanged. Choose one explicitly from the model picker or the Default model task."
   );
   await expect(readyReceipt).not.toContainText("Default selection: updated.");
@@ -883,6 +891,10 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     select: { defaultProviderModelId: true },
     where: { userId: installedFixture.userId }
   })).resolves.toEqual({ defaultProviderModelId: installedFixture.priorDefaultModelId });
+  await expect(prisma.providerConnection.findUniqueOrThrow({
+    select: { defaultCredentialId: true },
+    where: { id: installedFixture.connectionId }
+  })).resolves.toEqual({ defaultCredentialId: installedFixture.credentialId });
   const catalogBody = await realCatalogResponse.json() as QuickCatalogBody;
   expect(catalogBody.catalog.defaults).not.toMatchObject({
     modelId: installedFixture.modelId,
@@ -906,6 +918,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
       name: "OpenAI"
     }]);
   await selectModel(page, installedFixture.connectionId, "GPT-5.6 Sol", "OpenAI");
+  await chooseSearchStrategy(page, "^Off");
   await expect(page.getByTestId("run-model-summary")).toHaveText("GPT-5.6 Sol");
   const composer = page.getByRole("textbox", { name: "Message" });
   await expect(composer).toBeEnabled();

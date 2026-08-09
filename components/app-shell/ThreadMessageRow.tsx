@@ -489,7 +489,7 @@ function ThreadMessageRowComponent({
   onCopyMessage,
   onDeleteMessage,
   onEditMessage,
-  onInspectRun,
+  onLoadPersistedRun,
   onOpenKnowledgeEvidence,
   onOpenRunDetails,
   onRegenerateMessage,
@@ -512,7 +512,7 @@ function ThreadMessageRowComponent({
   onCopyMessage(message: ThreadMessage): void;
   onDeleteMessage(messageId: string): void;
   onEditMessage(message: ThreadMessage): void;
-  onInspectRun?(runId: string): Promise<void> | void;
+  onLoadPersistedRun?(runId: string): Promise<void> | void;
   onOpenKnowledgeEvidence?(knowledgeBaseId: string): void;
   onOpenRunDetails(): void;
   onRegenerateMessage(messageId: string): void;
@@ -541,12 +541,19 @@ function ThreadMessageRowComponent({
     artifactSummary?.toolCalls.some((call) => call.capability === "mcp")
   );
   const hasInlineCitations = showCitations && Boolean(artifactSummary?.citationCount);
-  const hasInlineKnowledge = Boolean(artifactSummary?.knowledgeInvocationCount);
+  const hasInlineKnowledge = message.status !== "streaming" &&
+    Boolean(artifactSummary?.knowledgeInvocationCount);
   const hasInlineReasoning = showReasoningBlocks && Boolean(artifactSummary?.reasoningCount);
+  const exactTerminalPersistedRun = persistedRun &&
+    persistedRun.id === message.runId &&
+    persistedRun.status !== "in_progress" &&
+    persistedRun.status !== "queued" &&
+    persistedRun.status !== "streaming"
+      ? persistedRun
+      : null;
   const hasExactRunEvents = Boolean(
     message.runId &&
-    persistedRun?.id === message.runId &&
-    persistedRun.events.length > 0
+    exactTerminalPersistedRun?.events.length
   );
   function changeDisclosure(kind: InlineReceiptDisclosure, expanded: boolean) {
     setExpandedDisclosures((current) => {
@@ -564,12 +571,12 @@ function ThreadMessageRowComponent({
     if (
       !expanded ||
       !message.runId ||
-      persistedRun?.id === message.runId ||
-      !onInspectRun ||
+      exactTerminalPersistedRun ||
+      !onLoadPersistedRun ||
       knowledgeLoading
     ) return;
     setKnowledgeLoading(true);
-    void Promise.resolve(onInspectRun(message.runId)).finally(() => setKnowledgeLoading(false));
+    void Promise.resolve(onLoadPersistedRun(message.runId)).finally(() => setKnowledgeLoading(false));
   }
   function activateReceiptSegment(kind: RunReceiptSegmentKind) {
     if (kind === "search" && hasInlineSearch) {
@@ -870,7 +877,7 @@ function ThreadMessageRowComponent({
               <KnowledgeEvidenceBlock
                 expanded={expandedDisclosures.has("knowledge")}
                 loading={knowledgeLoading}
-                persistedRun={persistedRun?.id === message.runId ? persistedRun : null}
+                persistedRun={exactTerminalPersistedRun}
                 showCitations={showCitations}
                 summary={artifactSummary}
                 onExpandedChange={changeKnowledgeDisclosure}

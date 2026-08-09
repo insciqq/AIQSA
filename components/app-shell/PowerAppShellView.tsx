@@ -223,7 +223,6 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   });
   const desktopIconNavigationRef = useRef<HTMLDivElement>(null);
   const desktopPaneNavigationRef = useRef<HTMLDivElement>(null);
-  const desktopPaneAccountButtonRef = useRef<HTMLButtonElement>(null);
   const desktopRailAccountButtonRef = useRef<HTMLButtonElement>(null);
   const desktopRailAssistantsButtonRef = useRef<HTMLButtonElement>(null);
   const desktopRailKnowledgeButtonRef = useRef<HTMLButtonElement>(null);
@@ -282,9 +281,6 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     const timer = window.setTimeout(() => {
       const hidden = storedWorkspaceRailHidden();
       setWorkspacePaneHidden(hidden);
-      if (hidden) {
-        setDesktopAccountAnchor((anchor) => (anchor === "pane" ? "rail" : anchor));
-      }
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -348,7 +344,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       }
       return {
         element,
-        fallback: element === desktopPaneAccountButtonRef.current ? "account" : "chats"
+        fallback: element === desktopRailAccountButtonRef.current ? "account" : "chats"
       };
     }
 
@@ -360,10 +356,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       }
 
       if (desktopAccountAnchor && activeElement?.closest('[data-account-menu-root="true"]')) {
-        const accountTrigger = desktopAccountAnchor === "rail"
-          ? desktopRailAccountButtonRef.current
-          : desktopPaneAccountButtonRef.current;
-        return originFor(accountTrigger);
+        return originFor(desktopRailAccountButtonRef.current);
       }
 
       if (settingsState.open || libraryView || knowledgeView) {
@@ -460,13 +453,10 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   }, [setInspectorMode]);
   const hideWorkspacePane = useCallback(() => {
     workspace.pane.actions.closeMenus();
-    setDesktopAccountAnchor((anchor) => (anchor === "pane" ? "rail" : anchor));
     rememberWorkspaceRailHidden(true);
     setWorkspacePaneHidden(true);
-    if (!desktopAccountAnchor) {
-      window.setTimeout(() => workspaceChatsButtonRef.current?.focus({ preventScroll: true }), 0);
-    }
-  }, [desktopAccountAnchor, workspace.pane.actions]);
+    window.setTimeout(() => workspaceChatsButtonRef.current?.focus({ preventScroll: true }), 0);
+  }, [workspace.pane.actions]);
   const showWorkspacePane = useCallback(() => {
     rememberWorkspaceRailHidden(false);
     setWorkspacePaneHidden(false);
@@ -506,9 +496,9 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     window.setTimeout(settings.open, 0);
   });
   const openDesktopAccount = useCallback(
-    (anchor: DesktopAccountMenuAnchor, initialFocus: AccountMenuInitialFocus) => {
+    (initialFocus: AccountMenuInitialFocus) => {
       setDesktopAccountInitialFocus(initialFocus);
-      setDesktopAccountAnchor(anchor);
+      setDesktopAccountAnchor("rail");
     },
     []
   );
@@ -519,19 +509,19 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   const openLibraryFromDesktopAccount = useEventCallback(() => {
     overlayDesktopOpenerRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
-      : desktopPaneAccountButtonRef.current;
+      : desktopRailAccountButtonRef.current;
     settings.openLibrary();
   });
   const openKnowledgeFromDesktopAccount = useEventCallback(() => {
     overlayDesktopOpenerRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
-      : desktopPaneAccountButtonRef.current;
+      : desktopRailAccountButtonRef.current;
     settings.openKnowledge();
   });
   const openSettingsFromDesktopAccount = useEventCallback(() => {
     overlayDesktopOpenerRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
-      : desktopPaneAccountButtonRef.current;
+      : desktopRailAccountButtonRef.current;
     settings.open();
   });
   const openLibraryFromRail = useEventCallback(() => {
@@ -554,28 +544,6 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
   });
   const responsiveOverlayRestoreFocus = useEventCallback(() =>
     responsiveNavigationOriginRef.current ? mobileWorkspaceButtonRef.current : null
-  );
-  const desktopAccountFooter = useMemo(
-    () => (
-      <AccountMenuTrigger
-        ref={desktopPaneAccountButtonRef}
-        accountEmail={accountEmail}
-        active={desktopAccountAnchor === "pane"}
-        controlsId="account-menu"
-        layout="pane"
-        onClose={() => setDesktopAccountAnchor(null)}
-        onOpen={(initialFocus) => openDesktopAccount("pane", initialFocus)}
-        signOutError={signOutError}
-        signingOut={signingOut}
-      />
-    ),
-    [
-      accountEmail,
-      desktopAccountAnchor,
-      openDesktopAccount,
-      signOutError,
-      signingOut
-    ]
   );
   const mobileAccountFooter = useMemo(
     () => (
@@ -742,12 +710,12 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
           className={[
             "grid h-full min-h-0 grid-cols-1 overflow-hidden bg-app-canvas",
             workspacePaneHidden
-              ? "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_minmax(0,1fr)]"
-              : "min-[1281px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]",
+              ? "min-[1281px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_minmax(0,1fr)]"
+              : "min-[1281px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)]",
             inspectorMode === "pinned"
               ? workspacePaneHidden
-                ? "min-[1440px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_minmax(0,1fr)_23rem]"
-                : "min-[1440px]:grid-cols-[calc(3rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)_23rem]"
+                ? "min-[1440px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_minmax(0,1fr)_23rem]"
+                : "min-[1440px]:grid-cols-[calc(5rem+env(safe-area-inset-left))_16rem_minmax(0,1fr)_23rem]"
               : ""
           ].join(" ")}
           data-details-presentation={inspectorMode}
@@ -768,7 +736,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
                   controlsId="account-menu"
                   layout="rail"
                   onClose={() => setDesktopAccountAnchor(null)}
-                  onOpen={(initialFocus) => openDesktopAccount("rail", initialFocus)}
+                  onOpen={openDesktopAccount}
                   signOutError={signOutError}
                   signingOut={signingOut}
                   tooltipId={tooltipId}
@@ -809,7 +777,6 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               activeChatId={activeChatId}
               availableChatModelKeys={availableChatModelKeys}
               chatModelLabels={chatModelLabels}
-              footer={mobileWorkspaceOpen ? null : desktopAccountFooter}
               onHideWorkspace={hideWorkspacePane}
               pane={workspace.pane}
               workspaceToggleRef={desktopWorkspaceToggleRef}
@@ -885,11 +852,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       {desktopAccountAnchor ? (
         <AccountMenu
           accountEmail={accountEmail}
-          activeTriggerRef={
-            desktopAccountAnchor === "rail"
-              ? desktopRailAccountButtonRef
-              : desktopPaneAccountButtonRef
-          }
+          activeTriggerRef={desktopRailAccountButtonRef}
           adminHref={adminEntryVisible ? "/admin" : null}
           anchor={desktopAccountAnchor}
           initialFocus={desktopAccountInitialFocus}
@@ -902,7 +865,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
           onSignOut={handleSignOut}
           signOutError={signOutError}
           signingOut={signingOut}
-          triggerRefs={[desktopRailAccountButtonRef, desktopPaneAccountButtonRef]}
+          triggerRefs={[desktopRailAccountButtonRef]}
         />
       ) : null}
 

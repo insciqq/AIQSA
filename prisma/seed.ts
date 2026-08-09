@@ -504,6 +504,12 @@ async function main() {
     update: {},
     where: { id: "installation" }
   });
+  await prisma.knowledgePolicy.upsert({
+    create: { id: "installation" },
+    // Local reseeding must not overwrite administrator-managed retrieval policy.
+    update: {},
+    where: { id: "installation" }
+  });
   await prisma.systemModelPolicy.upsert({
     create: {
       id: "installation",

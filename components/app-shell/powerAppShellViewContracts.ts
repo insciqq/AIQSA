@@ -151,9 +151,10 @@ export type ShellThreadView = {
   handleEditMessage(message: ThreadMessage): void;
   handleRegenerateMessage(messageId: string): void;
   handleThreadScroll(): void;
-  inspectRun(runId: string): Promise<void> | void;
+  loadRunReceipt(runId: string): Promise<void> | void;
   jumpToLatest(): void;
   lastRun: PersistedRun | null;
+  persistedRunsById: Readonly<Record<string, PersistedRun>>;
   liveArtifactSummary: ThreadArtifactSummary | null;
   openKnowledgeEvidence(knowledgeBaseId: string): void;
   retryActiveChatDetail(): void;
@@ -223,7 +224,7 @@ export type ShellComposerView = {
     source: ComposerKnowledgePlanSource;
   };
   maxOutputTokens: string;
-  makeCurrentModelDefault?(): void;
+  makeModelDefault?(model: CatalogModel): void;
   notificationSoundEnabled: boolean;
   operationError: string | null;
   operationErrorLive: boolean;

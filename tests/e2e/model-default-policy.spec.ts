@@ -229,9 +229,10 @@ test.describe("installation model default policy", () => {
     page
   }) => {
     test.setTimeout(60_000);
-    await expect(createAdminModelPolicyService(prisma).list()).resolves.toMatchObject({
-      candidates: [expect.objectContaining({ id: fixture.modelId })]
-    });
+    const adminPolicy = await createAdminModelPolicyService(prisma).list();
+    expect(adminPolicy.candidates).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: fixture.modelId })])
+    );
     await signInWithLocalToken(page);
     await page.goto("/admin");
     await page.getByRole("tab", { name: "Default model" }).click();
@@ -314,7 +315,7 @@ test.describe("installation model default policy", () => {
         response.request().method() === "PATCH" &&
         new URL(response.url()).pathname === "/api/me/settings"
       );
-      await modelPicker.getByRole("button", { name: "Make current my default" }).click();
+      await modelPicker.getByRole("button", { name: "Make Fake QSA Fake QSA my default" }).click();
       expect((await personalSave).status()).toBe(200);
       await expect(userPage.getByTestId("shell-notice")).toContainText(
         "Personal default model updated."
@@ -323,8 +324,13 @@ test.describe("installation model default policy", () => {
         defaultModelId: providerTemplateIds.fakeModel,
         defaultProvider: providerTemplateIds.fakeConnection
       }]);
-      await userPage.keyboard.press("Escape");
+      await modelPicker.getByRole("button", {
+        name: "Select model Browser Default Fixture Browser Policy Model"
+      }).click();
       await closeRunSetup(userPage);
+      await expectRunSummary(userPage, { model: "Browser Policy Model" });
+      await userPage.getByTestId("workspace-icon-rail").getByRole("button", { name: "New chat" }).click();
+      await expectRunSummary(userPage, { model: "Fake QSA" });
 
       await userPage.reload();
       await expect(userPage.getByTestId("app-shell")).toBeVisible();

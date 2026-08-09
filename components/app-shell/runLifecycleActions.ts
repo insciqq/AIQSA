@@ -312,8 +312,7 @@ export function useRunLifecycleActions({
     }
   }
 
-  async function fetchRunOutcome(runId: string, chatId: string): Promise<RunFetchOutcome> {
-    const surfaceAtRequest = selectRunSurface(useRunSurfaceStore.getState(), chatId);
+  async function requestPersistedRun(runId: string, chatId: string): Promise<RunFetchOutcome> {
     try {
       const response = await shellFetch(`/api/model-runs/${runId}`);
       if (!response.ok) {
@@ -321,33 +320,9 @@ export function useRunLifecycleActions({
       }
 
       const run = decodeGetModelRunResponse(await response.json());
-      if (!run) {
+      if (!run || run.id !== runId) {
         throw new Error("run_malformed");
       }
-
-      const activeStream = useRunLifecycleStore.getState().activeStreams[chatId];
-      const currentSurface = selectRunSurface(useRunSurfaceStore.getState(), chatId);
-      if (
-        (activeStream && activeStream.runId !== run.id) ||
-        (!activeStream && currentSurface !== surfaceAtRequest && currentSurface.lastRun?.id !== run.id)
-      ) {
-        return { kind: "found", run };
-      }
-
-      useRunLifecycleStore.getState().runIdReceived({ chatId, runId: run.id });
-      useRunSurfaceStore.getState().replaceSurface(chatId, {
-        events: run.events.map((event) => ({
-          data:
-            event.eventType === "usage" && isRecord(event.payload)
-              ? {
-                  ...event.payload,
-                  estimatedCostMicros: run.estimatedCostMicros
-                }
-              : event.payload,
-          type: event.eventType
-        })),
-        lastRun: run
-      });
 
       return { kind: "found", run };
     } catch (error) {
@@ -361,9 +336,53 @@ export function useRunLifecycleActions({
     }
   }
 
+  async function fetchRunOutcome(runId: string, chatId: string): Promise<RunFetchOutcome> {
+    const surfaceAtRequest = selectRunSurface(useRunSurfaceStore.getState(), chatId);
+    const outcome = await requestPersistedRun(runId, chatId);
+    if (outcome.kind !== "found") return outcome;
+    const { run } = outcome;
+    const activeStream = useRunLifecycleStore.getState().activeStreams[chatId];
+    const currentSurface = selectRunSurface(useRunSurfaceStore.getState(), chatId);
+    const surfaceChanged =
+      (activeStream && activeStream.runId !== run.id) ||
+      (!activeStream &&
+        currentSurface !== surfaceAtRequest &&
+        currentSurface.lastRun?.id !== run.id);
+    if (surfaceChanged) {
+      return { kind: "found", run };
+    }
+    useRunSurfaceStore.getState().cacheRun(chatId, run);
+
+    useRunLifecycleStore.getState().runIdReceived({ chatId, runId: run.id });
+    useRunSurfaceStore.getState().replaceSurface(chatId, {
+      events: run.events.map((event) => ({
+        data:
+          event.eventType === "usage" && isRecord(event.payload)
+            ? {
+                ...event.payload,
+                estimatedCostMicros: run.estimatedCostMicros
+              }
+            : event.payload,
+        type: event.eventType
+      })),
+      lastRun: run
+    });
+
+    return { kind: "found", run };
+  }
+
   async function fetchRun(runId: string, chatId: string) {
     const outcome = await fetchRunOutcome(runId, chatId);
     return outcome.kind === "found" ? outcome.run : null;
+  }
+
+  async function fetchRunReceipt(runId: string, chatId: string) {
+    const cached = selectRunSurface(useRunSurfaceStore.getState(), chatId).runsById[runId];
+    if (cached && !isActivePersistedRunStatus(cached.status)) return cached;
+    const outcome = await requestPersistedRun(runId, chatId);
+    if (outcome.kind !== "found") return null;
+    useRunSurfaceStore.getState().cacheRun(chatId, outcome.run);
+    return outcome.run;
   }
 
   function ownsResume(chatId: string, runId: string): boolean {
@@ -531,6 +550,7 @@ export function useRunLifecycleActions({
 
   return {
     fetchRun,
+    fetchRunReceipt,
     retryAttachment,
     resumeChatRun,
     stopCurrentRun,

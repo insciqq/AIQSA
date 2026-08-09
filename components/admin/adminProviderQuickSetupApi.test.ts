@@ -72,6 +72,7 @@ describe("admin provider Quick setup API", () => {
   it("sends only the write-only atomic request and decodes Ready", async () => {
     const ready = {
       checkedAt,
+      defaultCredentialChanged: true,
       defaultChanged: false,
       model: { displayName: "GPT-5.6 Terra" },
       models: [
@@ -218,7 +219,17 @@ describe("admin provider Quick setup API", () => {
 
   it.each([
     {
+      checkedAt,
+      defaultChanged: false,
+      model: { displayName: "Model" },
+      models: [{ displayName: "Model" }],
+      outcome: "ready",
+      provider: "openai",
+      providerDisplayName: "OpenAI"
+    },
+    {
       checkedAt: "not-a-time",
+      defaultCredentialChanged: true,
       defaultChanged: true,
       model: { displayName: "Model" },
       models: [{ displayName: "Model" }],
@@ -228,6 +239,7 @@ describe("admin provider Quick setup API", () => {
     },
     {
       checkedAt,
+      defaultCredentialChanged: true,
       defaultChanged: true,
       model: { displayName: "Model" },
       models: [{ displayName: "Model" }],

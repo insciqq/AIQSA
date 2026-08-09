@@ -5,8 +5,7 @@ import {
   AccountMenu,
   AccountMenuTrigger,
   type AccountMenuAnchor,
-  type AccountMenuInitialFocus,
-  type DesktopAccountMenuAnchor
+  type AccountMenuInitialFocus
 } from "./AccountMenu";
 
 type HarnessProps = {
@@ -32,14 +31,13 @@ function DesktopAccountHarness({
   signOutError = null,
   signingOut = false
 }: HarnessProps) {
-  const [anchor, setAnchor] = useState<DesktopAccountMenuAnchor | null>(null);
+  const [open, setOpen] = useState(false);
   const [initialFocus, setInitialFocus] = useState<AccountMenuInitialFocus>("first");
   const railRef = useRef<HTMLButtonElement>(null);
-  const paneRef = useRef<HTMLButtonElement>(null);
 
-  function open(nextAnchor: DesktopAccountMenuAnchor, focus: AccountMenuInitialFocus) {
+  function openMenu(focus: AccountMenuInitialFocus) {
     setInitialFocus(focus);
-    setAnchor(nextAnchor);
+    setOpen(true);
   }
 
   return (
@@ -47,36 +45,25 @@ function DesktopAccountHarness({
       <AccountMenuTrigger
         ref={railRef}
         accountEmail={accountEmail}
-        active={anchor === "rail"}
+        active={open}
         controlsId="account-menu"
         layout="rail"
-        onClose={() => setAnchor(null)}
-        onOpen={(focus) => open("rail", focus)}
+        onClose={() => setOpen(false)}
+        onOpen={openMenu}
         signOutError={signOutError}
         signingOut={signingOut}
         tooltipId="rail-account-tooltip"
       />
       <span id="rail-account-tooltip" role="tooltip">Open account and session actions</span>
-      <AccountMenuTrigger
-        ref={paneRef}
-        accountEmail={accountEmail}
-        active={anchor === "pane"}
-        controlsId="account-menu"
-        layout="pane"
-        onClose={() => setAnchor(null)}
-        onOpen={(focus) => open("pane", focus)}
-        signOutError={signOutError}
-        signingOut={signingOut}
-      />
-      {anchor ? (
+      {open ? (
         <AccountMenu
           accountEmail={accountEmail}
-          activeTriggerRef={anchor === "rail" ? railRef : paneRef}
+          activeTriggerRef={railRef}
           adminHref={adminHref}
-          anchor={anchor}
+          anchor="rail"
           initialFocus={initialFocus}
           menuId="account-menu"
-          onClose={() => setAnchor(null)}
+          onClose={() => setOpen(false)}
           onOpenKnowledge={onOpenKnowledge}
           onOpenLibrary={onOpenLibrary}
           onOpenPalette={onOpenPalette}
@@ -84,7 +71,7 @@ function DesktopAccountHarness({
           onSignOut={onSignOut}
           signOutError={signOutError}
           signingOut={signingOut}
-          triggerRefs={[railRef, paneRef]}
+          triggerRefs={[railRef]}
         />
       ) : null}
     </div>
@@ -136,45 +123,33 @@ function MobileAccountHarness({ signingOut = false }: { signingOut?: boolean }) 
 afterEach(cleanup);
 
 describe("AccountMenu", () => {
-  it("shares one uniquely identified surface between pane and rail anchors", async () => {
+  it("anchors one uniquely identified desktop surface beside the top rail Account control", () => {
     render(<DesktopAccountHarness adminHref="/admin" />);
     const railTrigger = screen.getByRole("button", { name: "Account" });
-    const paneTrigger = screen.getByRole("button", { name: /Account menu for/ });
 
     expect(railTrigger).not.toHaveAttribute("aria-controls");
-    expect(paneTrigger).not.toHaveAttribute("aria-controls");
-    fireEvent.click(paneTrigger);
+    fireEvent.click(railTrigger);
 
     const menu = screen.getByRole("menu", { name: "Account" });
     expect(menu).toHaveAttribute("id", "account-menu");
     expect(screen.getAllByRole("menu", { name: "Account" })).toHaveLength(1);
-    expect(paneTrigger).toHaveAttribute("aria-controls", "account-menu");
-    expect(railTrigger).not.toHaveAttribute("aria-controls");
-    expect(menu.parentElement).toHaveAttribute("data-account-menu-anchor", "pane");
+    expect(railTrigger).toHaveAttribute("aria-controls", "account-menu");
+    expect(menu.parentElement).toHaveAttribute("data-account-menu-anchor", "rail");
     expect(menu.parentElement).toHaveClass(
       "fixed",
-      "left-[calc(3rem+env(safe-area-inset-left)+0.5rem)]",
-      "bottom-[calc(max(0.5rem,env(safe-area-inset-bottom))+3.5rem)]",
-      "w-[15rem]"
+      "left-[calc(5rem+env(safe-area-inset-left)+0.5rem)]",
+      "top-[calc(max(0.5rem,env(safe-area-inset-top))+7rem)]",
+      "w-64"
     );
-
-    fireEvent.click(railTrigger);
-    await waitFor(() => expect(menu.parentElement).toHaveAttribute("data-account-menu-anchor", "rail"));
-    expect(screen.getAllByRole("menu", { name: "Account" })).toHaveLength(1);
-    expect(railTrigger).toHaveAttribute("aria-controls", "account-menu");
-    expect(paneTrigger).not.toHaveAttribute("aria-controls");
-    expect(menu.parentElement).toHaveClass("w-64");
     expect(screen.getByRole("menuitem", { name: "Control Center" })).toHaveAttribute("href", "/admin");
   });
 
   it("keeps identity text contained and entitlement-gates Control Center", () => {
     const longEmail = "research.operator.with.a.deliberately.long.identity@subdomain.example.com";
     render(<DesktopAccountHarness accountEmail={longEmail} />);
-    const paneTrigger = screen.getByRole("button", { name: `Account menu for ${longEmail}` });
-    const triggerIdentity = within(paneTrigger).getByText(longEmail);
-
-    expect(triggerIdentity).toHaveClass("min-w-0", "truncate");
-    fireEvent.click(paneTrigger);
+    const railTrigger = screen.getByRole("button", { name: "Account" });
+    expect(within(railTrigger).getByText("Account")).toHaveClass("truncate");
+    fireEvent.click(railTrigger);
     const menu = screen.getByRole("menu", { name: "Account" });
     expect(within(menu).getByText(longEmail)).toHaveClass("break-words", "[overflow-wrap:anywhere]");
     expect(screen.queryByRole("menuitem", { name: "Control Center" })).not.toBeInTheDocument();
@@ -240,7 +215,7 @@ describe("AccountMenu", () => {
     expect(screen.queryByRole("menu", { name: "Account" })).not.toBeInTheDocument();
   });
 
-  it("keeps sign-out pending and failure evidence in both triggers and the one menu", () => {
+  it("keeps sign-out pending and failure evidence in the rail trigger and menu", () => {
     const onSignOut = vi.fn();
     const { rerender } = render(<DesktopAccountHarness onSignOut={onSignOut} />);
     fireEvent.click(screen.getByRole("button", { name: "Account" }));
@@ -250,7 +225,6 @@ describe("AccountMenu", () => {
     rerender(<DesktopAccountHarness onSignOut={onSignOut} signingOut />);
     expect(screen.getByRole("menuitem", { name: "Signing out…" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Account" })).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByRole("button", { name: /Account menu for/ })).toHaveAttribute("aria-busy", "true");
 
     rerender(
       <DesktopAccountHarness
@@ -259,7 +233,6 @@ describe("AccountMenu", () => {
       />
     );
     expect(screen.getByTestId("rail-account-error-cue")).toBeVisible();
-    expect(screen.getByTestId("account-error-cue")).toBeVisible();
     expect(screen.getByRole("menuitem", { name: "Sign out" })).toHaveAttribute(
       "aria-describedby",
       "account-menu-sign-out-error-detail"

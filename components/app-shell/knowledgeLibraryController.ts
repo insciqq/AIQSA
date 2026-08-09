@@ -21,11 +21,13 @@ import {
   type KnowledgeDetailState,
   type KnowledgeLibraryStore
 } from "@/components/app-shell/knowledgeLibraryStore";
-import type {
-  KnowledgeBaseDetail,
-  KnowledgeBaseSummary,
-  KnowledgeDocumentStatus,
-  KnowledgeIngestionStatusResponse
+import {
+  KNOWLEDGE_DOCUMENT_PAGE_SIZE,
+  KNOWLEDGE_DOCUMENT_SEARCH_MAX_LENGTH,
+  type KnowledgeBaseDetail,
+  type KnowledgeBaseSummary,
+  type KnowledgeDocumentStatus,
+  type KnowledgeIngestionStatusResponse
 } from "@/lib/contracts/knowledge";
 
 function createBaseline(draft: KnowledgeCreateDraft): string {
@@ -83,6 +85,8 @@ function blankDetail(baseId: string, base: KnowledgeBaseDetail | null = null): K
     baseline: detailBaseline(draft),
     dataError: null,
     dataState: base ? "ready" : "loading",
+    documentPage: 1,
+    documentQuery: "",
     draft,
     error: null,
     ingestion: null,
@@ -114,11 +118,11 @@ function replaceDocumentInStatus(
 ): KnowledgeIngestionStatusResponse | null {
   if (!status) return null;
   const exists = status.documents.some((candidate) => candidate.id === document.id);
+  if (!exists) return status;
   return {
     ...status,
-    documents: exists
-      ? status.documents.map((candidate) => (candidate.id === document.id ? document : candidate))
-      : [document, ...status.documents]
+    documents: status.documents.map((candidate) =>
+      candidate.id === document.id ? document : candidate)
   };
 }
 
@@ -277,7 +281,11 @@ export function createKnowledgeLibraryActions() {
     });
     const [detailResult, ingestionResult] = await Promise.all([
       fetchKnowledgeBaseDetail(baseId),
-      fetchKnowledgeDocuments(baseId)
+      fetchKnowledgeDocuments(baseId, {
+        page: current.documentPage,
+        pageSize: KNOWLEDGE_DOCUMENT_PAGE_SIZE,
+        query: current.documentQuery
+      })
     ]);
     if (!ownsDetailRequest(baseId, requestId)) return;
     if (!detailResult.ok || !ingestionResult.ok || detailResult.data.owned !== ingestionResult.data.owned) {
@@ -307,6 +315,8 @@ export function createKnowledgeLibraryActions() {
       baseline: dirty ? latest.baseline : detailBaseline(nextDraft),
       dataError: null,
       dataState: "ready",
+      documentPage: ingestionResult.data.pagination.page,
+      documentQuery: ingestionResult.data.pagination.query,
       draft: dirty ? latest.draft : nextDraft,
       ingestion: ingestionResult.data
     });
@@ -428,12 +438,6 @@ export function createKnowledgeLibraryActions() {
       if (!ownsOperation(requestId)) return;
       if (result.ok) {
         completed += 1;
-        const current = store().detail;
-        if (current) {
-          store().patchDetail({
-            ingestion: replaceDocumentInStatus(current.ingestion, result.data)
-          });
-        }
       } else {
         failures.push(result.code);
       }
@@ -517,6 +521,24 @@ export function createKnowledgeLibraryActions() {
     finishOperation(requestId);
     store().patch({ notice: { kind: "success", text: "Document retry queued." } });
     void refreshDetail(detail.base.id, true);
+  }
+
+  function setDocumentQuery(query: string) {
+    const detail = store().detail;
+    if (!detail || store().busy) return;
+    const normalized = query.slice(0, KNOWLEDGE_DOCUMENT_SEARCH_MAX_LENGTH);
+    store().patchDetail({ documentPage: 1, documentQuery: normalized });
+    void refreshDetail(detail.baseId, true);
+  }
+
+  function setDocumentPage(page: number) {
+    const detail = store().detail;
+    if (!detail || store().busy || !Number.isSafeInteger(page) || page < 1) return;
+    const maximum = Math.max(1, detail.ingestion?.pagination.totalPages ?? 1);
+    const next = Math.min(page, maximum);
+    if (next === detail.documentPage) return;
+    store().patchDetail({ documentPage: next });
+    void refreshDetail(detail.baseId, true);
   }
 
   async function reindex(embeddingDeploymentId: string) {
@@ -609,6 +631,8 @@ export function createKnowledgeLibraryActions() {
     revokePublication,
     saveCreate,
     saveDetail,
+    setDocumentPage,
+    setDocumentQuery,
     setArchived,
     uploadFiles
   };
@@ -668,6 +692,12 @@ export function buildKnowledgeLibraryView(
             if (current.busy || !current.detail) return;
             current.patchDetail({ draft: { ...current.detail.draft, ...update }, error: null });
           },
+          onDocumentPageChange(page) {
+            actions.setDocumentPage(page);
+          },
+          onDocumentQueryChange(query) {
+            actions.setDocumentQuery(query);
+          },
           onPublish(input) {
             void actions.publish(input);
           },
@@ -696,6 +726,8 @@ export function buildKnowledgeLibraryView(
             void actions.uploadFiles(files);
           },
           publishableGroups: snapshot.data?.publishableGroups ?? [],
+          documentPage: detail.documentPage,
+          documentQuery: detail.documentQuery,
           upload: detail.upload
         }
       : null,

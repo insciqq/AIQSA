@@ -9,7 +9,18 @@ import {
 } from "react";
 
 const railControlClass =
-  "grid size-11 shrink-0 place-items-center rounded-control outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-workspace-rail [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11";
+  "flex min-h-[3.25rem] w-[4.5rem] shrink-0 flex-col items-center justify-center gap-1 rounded-control px-1 outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-workspace-rail [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
+
+function RailControlContent({ icon, label }: { icon: ReactNode; label: string }) {
+  return (
+    <>
+      <span className="grid size-4 shrink-0 place-items-center" aria-hidden="true">
+        {icon}
+      </span>
+      <span className="max-w-full truncate text-[0.6875rem] font-medium leading-none">{label}</span>
+    </>
+  );
+}
 
 function pointerCanHover(): boolean {
   return typeof window.matchMedia !== "function" || window.matchMedia("(hover: hover) and (pointer: fine)").matches;
@@ -34,7 +45,7 @@ function RailEntry({
 
   return (
     <div
-      className="relative flex w-12 justify-center"
+      className="relative flex w-20 justify-center"
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) {
           setTooltipVisible(false);
@@ -125,10 +136,16 @@ export function WorkspaceIconRail({
   return (
     <nav
       aria-label="Primary navigation"
-      className="hidden h-full min-h-0 w-[calc(3rem+env(safe-area-inset-left))] flex-col border-r border-trace-subtle bg-workspace-rail pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)] pt-[max(0.5rem,env(safe-area-inset-top))] text-ink min-[1281px]:flex"
+      className="hidden h-full min-h-0 w-[calc(5rem+env(safe-area-inset-left))] flex-col border-r border-trace-subtle bg-workspace-rail pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)] pt-[max(0.5rem,env(safe-area-inset-top))] text-ink min-[1281px]:flex"
       data-testid="workspace-icon-rail"
+      onClick={(event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (paneHidden && !target?.closest("button, a")) {
+          onRestoreChats();
+        }
+      }}
     >
-      <div className="flex w-12 flex-1 flex-col items-center gap-1">
+      <div className="flex w-20 flex-1 flex-col items-center gap-1">
         <RailEntry description="Start a blank conversation">
           {(tooltipId) => (
             <button
@@ -150,11 +167,10 @@ export function WorkspaceIconRail({
               }}
               onKeyDown={(event) => guardUnavailableKey(event, newChatUnavailable)}
             >
-              {creatingChat ? (
-                <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <SquarePen className="size-4" aria-hidden="true" />
-              )}
+              <RailControlContent
+                icon={creatingChat ? <LoaderCircle className="size-4 animate-spin" /> : <SquarePen className="size-4" />}
+                label="New chat"
+              />
             </button>
           )}
         </RailEntry>
@@ -177,12 +193,14 @@ export function WorkspaceIconRail({
                 }
               }}
             >
-              <MessageSquareText className="size-4" aria-hidden="true" />
+              <RailControlContent icon={<MessageSquareText className="size-4" />} label="Chats" />
             </button>
           )}
         </RailEntry>
 
-        <div className="my-1 h-px w-7 bg-trace-subtle" aria-hidden="true" />
+        <RailEntry description="Open account and session actions">{accountTrigger}</RailEntry>
+
+        <div className="my-1 h-px w-10 bg-trace-subtle" aria-hidden="true" />
 
         <RailEntry description="Browse and manage assistants">
           {(tooltipId) => (
@@ -204,7 +222,7 @@ export function WorkspaceIconRail({
               }}
               onKeyDown={(event) => guardUnavailableKey(event, signingOut)}
             >
-              <ScrollText className="size-4" aria-hidden="true" />
+              <RailControlContent icon={<ScrollText className="size-4" />} label="Assistants" />
             </button>
           )}
         </RailEntry>
@@ -229,7 +247,7 @@ export function WorkspaceIconRail({
               }}
               onKeyDown={(event) => guardUnavailableKey(event, signingOut)}
             >
-              <BookOpen className="size-4" aria-hidden="true" />
+              <RailControlContent icon={<BookOpen className="size-4" />} label="Knowledge" />
             </button>
           )}
         </RailEntry>
@@ -254,7 +272,7 @@ export function WorkspaceIconRail({
               }}
               onKeyDown={(event) => guardUnavailableKey(event, signingOut)}
             >
-              <Settings className="size-4" aria-hidden="true" />
+              <RailControlContent icon={<Settings className="size-4" />} label="Settings" />
             </button>
           )}
         </RailEntry>
@@ -278,15 +296,11 @@ export function WorkspaceIconRail({
                 }}
                 onKeyDown={(event) => guardUnavailableKey(event, signingOut)}
               >
-                <Shield className="size-4" aria-hidden="true" />
+                <RailControlContent icon={<Shield className="size-4" />} label="Admin" />
               </a>
             )}
           </RailEntry>
         ) : null}
-      </div>
-
-      <div className="flex w-12 shrink-0 justify-center">
-        <RailEntry description="Open account and session actions">{accountTrigger}</RailEntry>
       </div>
     </nav>
   );

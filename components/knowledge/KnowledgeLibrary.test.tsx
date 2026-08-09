@@ -98,7 +98,19 @@ function knowledgeDocument(overrides: Partial<KnowledgeDocumentStatus> = {}): Kn
 }
 
 function ingestion(overrides: Partial<KnowledgeIngestionStatusResponse> = {}): KnowledgeIngestionStatusResponse {
-  return { documents: [knowledgeDocument()], owned: true, reindex: null, ...overrides };
+  const documents = overrides.documents ?? [knowledgeDocument()];
+  return {
+    documents,
+    owned: overrides.owned ?? true,
+    pagination: overrides.pagination ?? {
+      page: 1,
+      pageSize: 25,
+      query: "",
+      totalItems: documents.length,
+      totalPages: documents.length > 0 ? 1 : 0
+    },
+    reindex: overrides.reindex ?? null
+  };
 }
 
 function list(overrides: Partial<KnowledgeListView> = {}): KnowledgeListView {
@@ -139,6 +151,8 @@ function detail(overrides: Partial<KnowledgeDetailView> = {}): KnowledgeDetailVi
     canPublishInstallation: true,
     dataError: null,
     dataState: "ready",
+    documentPage: 1,
+    documentQuery: "",
     dirty: false,
     draft: { description: owner.description, name: owner.name },
     embeddingDeployments: [owner.activeGeneration.embeddingDeployment!],
@@ -147,6 +161,8 @@ function detail(overrides: Partial<KnowledgeDetailView> = {}): KnowledgeDetailVi
     onArchiveToggle: vi.fn(),
     onBack: vi.fn(),
     onChange: vi.fn(),
+    onDocumentPageChange: vi.fn(),
+    onDocumentQueryChange: vi.fn(),
     onPublish: vi.fn(),
     onRefresh: vi.fn(),
     onReindex: vi.fn(),
@@ -303,6 +319,55 @@ describe("KnowledgeLibrary", () => {
     expect(detailView.onRemoveDocument).not.toHaveBeenCalled();
     fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm remove document" }));
     expect(detailView.onRemoveDocument).toHaveBeenCalledWith("document-1");
+  });
+
+  it("searches filenames and navigates bounded server pages", () => {
+    const pagedIngestion = ingestion({
+      pagination: {
+        page: 2,
+        pageSize: 25,
+        query: "guide",
+        totalItems: 26,
+        totalPages: 2
+      }
+    });
+    const detailView = detail({
+      documentPage: 2,
+      documentQuery: "guide",
+      ingestion: pagedIngestion
+    });
+    render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
+
+    expect(screen.getByText(/Showing 26–26 of 26 matching/)).toBeVisible();
+    expect(screen.getByText("Page 2 of 2")).toBeVisible();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search documents by filename" }), {
+      target: { value: "incident" }
+    });
+    expect(detailView.onDocumentQueryChange).toHaveBeenCalledWith("incident");
+    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
+    expect(detailView.onDocumentPageChange).toHaveBeenCalledWith(1);
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  });
+
+  it("distinguishes an empty base from a filename search with no matches", () => {
+    const detailView = detail({
+      documentQuery: "missing",
+      ingestion: ingestion({
+        documents: [],
+        pagination: {
+          page: 1,
+          pageSize: 25,
+          query: "missing",
+          totalItems: 0,
+          totalPages: 0
+        }
+      })
+    });
+    render(<KnowledgeLibrary view={view({ detail: detailView, task: "detail" })} />);
+
+    expect(screen.getByText("No documents match this filename")).toBeVisible();
+    expect(screen.getByText(/does not inspect document contents/)).toBeVisible();
+    expect(screen.queryByText("honest empty retrieval evidence")).not.toBeInTheDocument();
   });
 
   it("renders truthful reindex and live-publication controls with their disclosures", () => {

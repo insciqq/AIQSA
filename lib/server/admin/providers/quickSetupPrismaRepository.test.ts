@@ -586,6 +586,29 @@ describe("Prisma provider Quick setup eligibility", () => {
     expect(inspection.quickSetupCredential).toBeNull();
   });
 
+  it("keeps the assigned Quick credential reusable when it is the connection default", async () => {
+    const graph = readyGraph();
+    (graph.connection as unknown as { defaultCredentialId: string | null }).defaultCredentialId =
+      graph.credential.id;
+    const { repository } = inspectionRepository({
+      connections: [graph.connection],
+      grants: [exactGrant()]
+    });
+
+    const inspection = await repository.inspect({
+      now,
+      provider: "openai",
+      sessionId: "session-admin",
+      userId: "admin"
+    });
+
+    expect(inspection).toMatchObject({ mode: "replacement", state: "ready" });
+    expect(inspection.quickSetupCredential).toEqual({
+      draftVersion: 1,
+      id: graph.credential.id
+    });
+  });
+
   it("keeps an enabled configured provider with a missing active credential in Needs attention", async () => {
     const graph = readyGraph();
     const credential = graph.credential as unknown as {

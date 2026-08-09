@@ -5,13 +5,15 @@ import { create } from "zustand";
 export type RunSurfaceSnapshot = {
   events: RunEventView[];
   lastRun: PersistedRun | null;
+  runsById: Readonly<Record<string, PersistedRun>>;
 };
 
-type RunSurfaceReplacement = RunSurfaceSnapshot;
+type RunSurfaceReplacement = Pick<RunSurfaceSnapshot, "events" | "lastRun">;
 
 export type RunSurfaceStore = {
   surfacesByChatId: Record<string, RunSurfaceSnapshot>;
   appendEvent(chatId: string, event: RunEventView): void;
+  cacheRun(chatId: string, run: PersistedRun): void;
   removeSurface(chatId: string): void;
   replaceSurface(chatId: string, input: RunSurfaceReplacement): void;
   resetSurface(chatId: string): void;
@@ -19,9 +21,11 @@ export type RunSurfaceStore = {
 
 export const emptyRunSurfaceSnapshot: RunSurfaceSnapshot = {
   events: [],
-  lastRun: null
+  lastRun: null,
+  runsById: {}
 };
 Object.freeze(emptyRunSurfaceSnapshot.events);
+Object.freeze(emptyRunSurfaceSnapshot.runsById);
 Object.freeze(emptyRunSurfaceSnapshot);
 
 function compactEvents(events: RunEventView[]): RunEventView[] {
@@ -53,6 +57,21 @@ export const useRunSurfaceStore = create<RunSurfaceStore>((set) => ({
       };
     });
   },
+  cacheRun(chatId, run) {
+    set((state) => {
+      const current = selectRunSurface(state, chatId);
+      if (current.runsById[run.id] === run) return state;
+      return {
+        surfacesByChatId: {
+          ...state.surfacesByChatId,
+          [chatId]: {
+            ...current,
+            runsById: { ...current.runsById, [run.id]: run }
+          }
+        }
+      };
+    });
+  },
   removeSurface(chatId) {
     set((state) => {
       if (!(chatId in state.surfacesByChatId)) {
@@ -64,15 +83,21 @@ export const useRunSurfaceStore = create<RunSurfaceStore>((set) => ({
     });
   },
   replaceSurface(chatId, input) {
-    set((state) => ({
-      surfacesByChatId: {
-        ...state.surfacesByChatId,
-        [chatId]: {
-          events: compactEvents(input.events),
-          lastRun: input.lastRun
+    set((state) => {
+      const current = selectRunSurface(state, chatId);
+      return {
+        surfacesByChatId: {
+          ...state.surfacesByChatId,
+          [chatId]: {
+            events: compactEvents(input.events),
+            lastRun: input.lastRun,
+            runsById: input.lastRun
+              ? { ...current.runsById, [input.lastRun.id]: input.lastRun }
+              : current.runsById
+          }
         }
-      }
-    }));
+      };
+    });
   },
   resetSurface(chatId) {
     set((state) => ({

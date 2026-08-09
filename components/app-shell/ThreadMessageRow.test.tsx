@@ -769,14 +769,14 @@ describe("ThreadMessageRow", () => {
   });
 
   it("loads a historical Knowledge receipt independently of generic tool visibility", async () => {
-    const onInspectRun = vi.fn(async () => undefined);
+    const onLoadPersistedRun = vi.fn(async () => undefined);
     renderRow({
       artifactSummary: artifactSummary({
         knowledgeInvocationCount: 1,
         knowledgeOutcomes: [{ invocationOrdinal: 1, outcome: "base_empty" }]
       }),
       message: assistantMessage({ runId: "run-historical" }),
-      onInspectRun,
+      onLoadPersistedRun,
       persistedRun: persistedRun({ id: "run-latest" }),
       showToolActivity: false
     });
@@ -784,8 +784,68 @@ describe("ThreadMessageRow", () => {
     const disclosure = screen.getByRole("button", { name: /Knowledge 1 invocation/ });
     expect(screen.queryByTestId("thread-tool-activity")).not.toBeInTheDocument();
     fireEvent.click(disclosure);
-    await waitFor(() => expect(onInspectRun).toHaveBeenCalledWith("run-historical"));
+    await waitFor(() => expect(onLoadPersistedRun).toHaveBeenCalledWith("run-historical"));
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("mounts Knowledge once only after the owning answer settles", () => {
+    const summary = artifactSummary({
+      knowledgeInvocationCount: 1,
+      knowledgeOutcomes: [{ invocationOrdinal: 1, outcome: "base_empty" }]
+    });
+    const { props, rerender } = renderRow({
+      artifactSummary: summary,
+      message: assistantMessage({ runId: "run-streaming", status: "streaming" }),
+      streaming: true
+    });
+
+    expect(screen.queryByTestId("thread-knowledge-evidence")).not.toBeInTheDocument();
+    rerender(
+      <ThreadMessageRow
+        {...props}
+        artifactSummary={summary}
+        message={assistantMessage({ runId: "run-streaming", status: "complete" })}
+        streaming={false}
+      />
+    );
+    expect(screen.getAllByTestId("thread-knowledge-evidence")).toHaveLength(1);
+  });
+
+  it("retains settled Knowledge outcomes on failed and cancelled answers", () => {
+    const summary = artifactSummary({
+      knowledgeInvocationCount: 1,
+      knowledgeOutcomes: [{ invocationOrdinal: 1, outcome: "embedding_model_unavailable" }]
+    });
+    const { props, rerender } = renderRow({
+      artifactSummary: summary,
+      message: assistantMessage({ runId: "run-error", status: "error" })
+    });
+    expect(screen.getByRole("button", { name: /Knowledge 1 invocation/ })).toBeVisible();
+
+    rerender(
+      <ThreadMessageRow
+        {...props}
+        artifactSummary={summary}
+        message={assistantMessage({ runId: "run-cancelled", status: "cancelled" })}
+      />
+    );
+    expect(screen.getByRole("button", { name: /Knowledge 1 invocation/ })).toBeVisible();
+  });
+
+  it("reloads an active cached run before treating it as a terminal receipt", async () => {
+    const onLoadPersistedRun = vi.fn(async () => undefined);
+    renderRow({
+      artifactSummary: artifactSummary({
+        knowledgeInvocationCount: 1,
+        knowledgeOutcomes: [{ invocationOrdinal: 1, outcome: "base_empty" }]
+      }),
+      message: assistantMessage({ runId: "run-active-cache" }),
+      onLoadPersistedRun,
+      persistedRun: persistedRun({ id: "run-active-cache", status: "streaming" })
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Knowledge 1 invocation/ }));
+    await waitFor(() => expect(onLoadPersistedRun).toHaveBeenCalledWith("run-active-cache"));
   });
 
   it("renders an honest collapsed Search row when only the historical observation survives", () => {

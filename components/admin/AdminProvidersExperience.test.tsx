@@ -128,10 +128,12 @@ function snapshot(options: {
 
 function ready(
   defaultChanged = true,
-  searchStatus?: "needs_attention" | "ready"
+  searchStatus?: "needs_attention" | "ready",
+  defaultCredentialChanged = true
 ) {
   return {
     checkedAt: "2026-07-26T03:00:00.000Z",
+    defaultCredentialChanged,
     defaultChanged,
     model: { displayName: "GPT-5.6 Terra" },
     models: [
@@ -388,7 +390,7 @@ describe("AdminProvidersExperience", () => {
     });
     expect(screen.queryByDisplayValue("browser-only-key")).not.toBeInTheDocument();
     expect(screen.getByText("GPT-5.6 Terra")).toBeInTheDocument();
-    expect(screen.getByText("This provider is configured and available in chat. Default models remain unchanged.")).toBeInTheDocument();
+    expect(screen.getByText("This provider is configured and available in chat. Personal and installation default models remain unchanged.")).toBeInTheDocument();
     const receipt = screen.getByTestId("provider-quick-ready-receipt");
     expect(receipt).toHaveTextContent("API key: saved and verified.");
     expect(receipt).toHaveTextContent("Prepared model: GPT-5.6 Terra.");
@@ -396,6 +398,9 @@ describe("AdminProvidersExperience", () => {
       "Available models: GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol."
     );
     expect(receipt).toHaveTextContent("Access: available to this administrator.");
+    expect(receipt).toHaveTextContent(
+      "Connection default credential: set to this verified key."
+    );
     expect(screen.getByText(/Default models: unchanged\./)).toBeInTheDocument();
     expect(receipt).not.toHaveTextContent("Run profiles");
     const feedback = screen.getByTestId("provider-quick-feedback");
@@ -647,7 +652,7 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByLabelText("API key")).toBeInTheDocument();
   });
 
-  it("confirms a truthful Quick assignment removal without promising fallback access", async () => {
+  it("confirms that assignment removal leaves the connection default unchanged", async () => {
     api.get
       .mockResolvedValueOnce({
         data: snapshot({ openai: "ready", suggestedProvider: "openai" }),
@@ -666,19 +671,20 @@ describe("AdminProvidersExperience", () => {
     render(<AdminProvidersExperience active groups={[]} />);
 
     await screen.findByText("Ready to chat");
-    expect(screen.getByText(/model access may stop unless an applicable team or default credential/i))
+    expect(screen.getByText(/does not change the connection default/i))
       .toBeInTheDocument();
     expect(screen.getByText(/stored credential and all team settings stay unchanged/i))
       .toBeInTheDocument();
     expect(screen.getByText(/credential remains manageable in Connections/i))
       .toBeInTheDocument();
-    expect(screen.queryByText(/fall back to the applicable/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/returns to normal team\/default credential resolution/i))
+      .toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Remove my key assignment" }));
 
     const confirmation = await screen.findByTestId(
       "admin-confirm-clear-provider-quick-assignment"
     );
-    expect(confirmation).toHaveTextContent("Model access may stop");
+    expect(confirmation).toHaveTextContent("does not change the connection default");
     expect(api.clear).not.toHaveBeenCalled();
     fireEvent.click(within(confirmation).getByRole("button", {
       name: "Confirm remove key assignment"
@@ -842,7 +848,7 @@ describe("AdminProvidersExperience", () => {
         ok: true
       });
     api.submit.mockResolvedValueOnce({
-      data: ready(false),
+      data: ready(false, undefined, false),
       ok: true
     });
     render(<AdminProvidersExperience active groups={[]} />);
@@ -855,6 +861,8 @@ describe("AdminProvidersExperience", () => {
     expect(screen.getByText("Ready to chat")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Start chatting" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace API key" })).toBeDisabled();
+    expect(screen.getByText(/Connection default credential: already uses this verified key\./))
+      .toBeInTheDocument();
     expect(screen.getByText(/Default models: unchanged\./)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Retry status refresh" }));

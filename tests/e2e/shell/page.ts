@@ -4,13 +4,6 @@ export async function runAccountMenuAction(
   page: Page,
   name: "Command palette" | "Assistants" | "Knowledge" | "Settings"
 ): Promise<Locator> {
-  const desktopTrigger = page.getByTestId("left-chat-pane").getByRole("button", { name: /Account menu/ });
-  if (await desktopTrigger.isVisible()) {
-    await desktopTrigger.click();
-    await page.getByRole("menu", { name: "Account" }).getByRole("menuitem", { name }).click();
-    return desktopTrigger;
-  }
-
   const railTrigger = page.getByTestId("workspace-icon-rail").getByRole("button", { name: "Account" });
   if (await railTrigger.isVisible()) {
     await railTrigger.click();

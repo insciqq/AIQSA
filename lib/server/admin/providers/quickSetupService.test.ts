@@ -64,6 +64,7 @@ function fixture(input: {
   const commit = vi.fn(input.repositoryCommit ?? (async (plan) => {
     order.push("commit");
     return {
+      defaultCredentialChanged: true,
       defaultChanged: true,
       search: plan.search
         ? plan.search.evidence.status === "available"
@@ -176,7 +177,11 @@ describe("provider Quick setup service", () => {
         secret: "sk-one-use"
       }
     });
-    expect(result).toMatchObject({ outcome: "ready", provider });
+    expect(result).toMatchObject({
+      defaultCredentialChanged: true,
+      outcome: "ready",
+      provider
+    });
     expect(value.test).toHaveBeenCalledTimes(1);
     expect(value.commit).toHaveBeenCalledTimes(1);
     expect(value.commit.mock.calls[0][0].candidate.candidateId).toBe(candidateId);

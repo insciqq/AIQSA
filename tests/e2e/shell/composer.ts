@@ -9,16 +9,19 @@ export async function selectModel(
 ): Promise<void> {
   const providerName =
     providerNameOverride ?? matrixCatalog.providers.find((candidate) => candidate.id === provider)?.name ?? provider;
-  const providerNamePattern = new RegExp(`^${providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
+  const escapedProviderName = providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const controls = await openRunSetup(page);
   await controls.getByRole("button", { name: "Select model" }).click();
   await expect(page.getByLabel("Search models")).toBeFocused();
   await page.getByLabel("Search models").fill(modelQuery);
   const modelPicker = page.getByTestId("model-picker");
-  const providerSection = modelPicker.locator("section").filter({
-    has: page.getByRole("heading", { name: providerNamePattern })
-  });
-  await providerSection.getByRole("button", { name: /^Select model / }).first().click();
+  const providerRows = modelPicker.locator(
+    `[data-model-picker-row^="${provider}:"]`
+  );
+  await expect(providerRows.first()).toBeVisible();
+  await providerRows.getByRole("button", {
+    name: new RegExp(`^Select model ${escapedProviderName} `, "i")
+  }).first().click();
   await closeRunSetup(page);
 }
 
@@ -37,7 +40,10 @@ export async function reasoningOptionValues(page: Page): Promise<string[]> {
 export async function chooseSearchStrategy(page: Page, label: string): Promise<void> {
   const controls = await openRunSetup(page);
   await controls.getByRole("button", { name: "Search strategy" }).click();
-  await controls.getByTestId("search-select-options").getByRole("button", { name: new RegExp(label) }).click();
+  const options = controls.getByTestId("search-select-options");
+  await options.getByRole("button", { name: new RegExp(label) }).click();
+  await options.getByRole("button", { name: "Close Search picker" }).click();
+  await expect(options).toHaveCount(0);
   await closeRunSetup(page);
 }
 

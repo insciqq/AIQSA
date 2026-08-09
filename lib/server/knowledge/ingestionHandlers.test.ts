@@ -58,6 +58,13 @@ function status(): KnowledgeIngestionStatusResponse {
       }]
     }],
     owned: true,
+    pagination: {
+      page: 1,
+      pageSize: 25,
+      query: "",
+      totalItems: 1,
+      totalPages: 1
+    },
     reindex: null
   };
 }
@@ -175,14 +182,36 @@ describe("Knowledge ingestion handlers", () => {
   });
 
   it("returns no-store progress and exposes no private storage keys", async () => {
-    const response = await createListKnowledgeDocumentsHandler(deps())(
-      new Request("http://app.local/api/me/knowledge-bases/base-1/documents"),
+    const repo = repository();
+    const response = await createListKnowledgeDocumentsHandler(deps(repo))(
+      new Request("http://app.local/api/me/knowledge-bases/base-1/documents?q=Guide&page=2&pageSize=10"),
       { params: { baseId: "base-1" } }
     );
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(JSON.stringify(await response.json())).not.toContain("storageKey");
+    expect(repo.listStatus).toHaveBeenCalledWith("owner-1", "base-1", {
+      page: 2,
+      pageSize: 10,
+      query: "Guide"
+    });
+  });
+
+  it("rejects malformed or duplicate document-list query controls", async () => {
+    const repo = repository();
+    const handler = createListKnowledgeDocumentsHandler(deps(repo));
+
+    for (const url of [
+      "http://app.local/api/me/knowledge-bases/base-1/documents?page=0",
+      "http://app.local/api/me/knowledge-bases/base-1/documents?pageSize=101",
+      "http://app.local/api/me/knowledge-bases/base-1/documents?q=one&q=two"
+    ]) {
+      const response = await handler(new Request(url), { params: { baseId: "base-1" } });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "knowledge_document_query_invalid" });
+    }
+    expect(repo.listStatus).not.toHaveBeenCalled();
   });
 
   it("maps retry, archive, and reindex mutations to durable repository operations", async () => {

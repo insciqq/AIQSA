@@ -4,10 +4,13 @@ import { DocumentParserError, type ParsedDocument } from "../parsing";
 import type { EmbeddingRuntimeBinding } from "../providerRuntime/embeddingRuntime";
 import type { ProviderModelConfiguration } from "../providers/providerConfiguration";
 import { createMemoryStorageAdapter } from "../uploads/storage";
-import { createKnowledgeIngestionProcessor } from "./ingestionProcessor";
+import {
+  createKnowledgeIngestionProcessor,
+  type KnowledgeIngestionProcessorRepository
+} from "./ingestionProcessor";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
-import type { KnowledgeDocumentWorkClaim } from "./ingestionTypes";
+import type { KnowledgeDocumentWorkClaim, KnowledgeReindexWorkClaim } from "./ingestionTypes";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 
 const config: KnowledgeExtractionConfig = {
@@ -95,7 +98,39 @@ function repository() {
     completeChunking: vi.fn(async () => true),
     completeParsing: vi.fn(async () => true),
     persistEmbeddingBatch: vi.fn(async () => true),
+    recoverReindexChunkPlan: vi.fn<
+      KnowledgeIngestionProcessorRepository["recoverReindexChunkPlan"]
+    >(async () => null),
     settleReindexReady: vi.fn(async () => true)
+  };
+}
+
+function reindexClaim(
+  state: KnowledgeReindexWorkClaim["state"],
+  overrides: Partial<KnowledgeReindexWorkClaim> = {}
+): KnowledgeReindexWorkClaim {
+  return {
+    attemptCount: 1,
+    chunkCount: null,
+    claimToken: "reindex-claim-1",
+    documentId: "document-1",
+    documentVersionId: "version-1",
+    generation: {
+      chunkingProfileVersion: 1,
+      embeddingConfiguration: pin.configuration,
+      embeddingProviderModelId: "embedding-1",
+      id: "generation-2",
+      targetDimension: pin.targetDimension,
+      vectorSpaceFingerprint: pin.fingerprint
+    },
+    kind: "reindex",
+    knowledgeBaseId: "base-1",
+    normalizedTextByteSize: null,
+    normalizedTextChecksum: null,
+    normalizedTextStorageKey: "normalized.json",
+    ownerUserId: "owner-1",
+    state,
+    ...overrides
   };
 }
 
@@ -227,6 +262,63 @@ describe("Knowledge ingestion processor", () => {
     expect(repo.activateDocumentVersion).toHaveBeenCalledWith(expect.objectContaining({
       expectedChunkCount: 65
     }));
+  });
+
+  it("reindexes from fenced source chunks when the legacy normalized object is rejected", async () => {
+    const storage = createMemoryStorageAdapter();
+    const invalid = Buffer.from('{"schemaVersion":0,"blocks":[]}');
+    await storage.putObject({
+      body: invalid,
+      contentType: "application/json",
+      storageKey: "normalized.json"
+    });
+    const recovered = [{ headingPath: ["Legacy"], index: 0, page: 2, text: "settled source passage" }];
+    const embed = vi.fn<EmbeddingRuntimeBinding["adapter"]["embed"]>(async (request) => ({
+      model: "embed-v1",
+      requestId: "request-reindex",
+      usage: { inputTokens: 3, totalTokens: 3 },
+      vectors: request.texts.map(() => Array.from({ length: 1024 }, () => 0.01))
+    }));
+    const repo = repository();
+    repo.recoverReindexChunkPlan.mockResolvedValue(recovered);
+    const process = createKnowledgeIngestionProcessor({
+      config,
+      embeddingRuntime: { resolveForUser: vi.fn(async () => binding(embed)) },
+      repository: repo,
+      storage
+    });
+    const normalized = {
+      normalizedTextByteSize: invalid.byteLength,
+      normalizedTextChecksum: digest(invalid)
+    };
+
+    await process(reindexClaim("queued", normalized));
+    expect(repo.advanceReindexToEmbedding).toHaveBeenCalledWith(expect.objectContaining({
+      chunkCount: 1
+    }));
+
+    await process(reindexClaim("embedding", { ...normalized, chunkCount: 1 }));
+    expect(embed).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "document",
+      texts: ["settled source passage"]
+    }));
+    expect(repo.settleReindexReady).toHaveBeenCalledWith(expect.objectContaining({
+      expectedChunkCount: 1
+    }));
+  });
+
+  it("reports a reindex-specific failure when neither normalized text nor source chunks are usable", async () => {
+    const process = createKnowledgeIngestionProcessor({
+      config,
+      embeddingRuntime: { resolveForUser: vi.fn() },
+      repository: repository(),
+      storage: createMemoryStorageAdapter()
+    });
+
+    await expect(process(reindexClaim("queued"))).rejects.toMatchObject({
+      code: "reindex_source_unavailable",
+      retryable: false
+    });
   });
 
   it("maps primary parser unavailability to an explicit retryable failure", async () => {

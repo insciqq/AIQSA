@@ -60,6 +60,7 @@ describe("composer model picker default facts", () => {
       searchStrategies: [{ displayName: "No Search", kind: "none", strategyId: "search-disabled" }]
     };
     const makeDefault = vi.fn();
+    const selectModel = vi.fn();
     const useOrganization = vi.fn();
 
     render(<ComposerModelPicker
@@ -67,9 +68,9 @@ describe("composer model picker default facts", () => {
       catalogUnavailable={false}
       currentModel={current}
       disabled={false}
-      onMakeCurrentDefault={makeDefault}
+      onMakeModelDefault={makeDefault}
       onOpenChange={vi.fn()}
-      onSelectModel={vi.fn()}
+      onSelectModel={selectModel}
       onUseOrganizationDefault={useOrganization}
       open
       selectedModelId={current.modelId}
@@ -82,9 +83,11 @@ describe("composer model picker default facts", () => {
     expect(screen.getByText("My default")).toBeInTheDocument();
     expect(screen.getByText("Organization default")).toBeInTheDocument();
     expect(screen.getByText("Choosing a model changes only the next run.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Make current my default" }));
+    expect(screen.queryByRole("button", { name: "Make Provider A Personal model my default" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Make Provider A Current model my default" }));
     fireEvent.click(screen.getByRole("button", { name: "Use organization default" }));
-    expect(makeDefault).toHaveBeenCalledTimes(1);
+    expect(makeDefault).toHaveBeenCalledWith(current);
+    expect(selectModel).not.toHaveBeenCalled();
     expect(useOrganization).toHaveBeenCalledTimes(1);
   });
 
@@ -118,7 +121,7 @@ describe("composer model picker default facts", () => {
       catalogUnavailable={false}
       currentModel={organization}
       disabled={false}
-      onMakeCurrentDefault={makeDefault}
+      onMakeModelDefault={makeDefault}
       onOpenChange={vi.fn()}
       onSelectModel={vi.fn()}
       onUseOrganizationDefault={vi.fn()}
@@ -134,7 +137,7 @@ describe("composer model picker default facts", () => {
     expect(screen.queryByText("My default")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Use organization default" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Make current my default" }));
-    expect(makeDefault).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Make Provider A Organization model my default" }));
+    expect(makeDefault).toHaveBeenCalledWith(organization);
   });
 });

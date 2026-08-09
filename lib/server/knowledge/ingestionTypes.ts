@@ -16,7 +16,8 @@ export type KnowledgeIngestionFailureCode =
   | "knowledge_text_limit_exceeded"
   | "normalized_text_unavailable"
   | "parser_rejected"
-  | "parser_unavailable";
+  | "parser_unavailable"
+  | "reindex_source_unavailable";
 
 export class KnowledgeIngestionError extends Error {
   constructor(

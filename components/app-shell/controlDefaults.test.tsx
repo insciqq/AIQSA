@@ -877,7 +877,7 @@ describe("control default freshness", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
 
-    harness.actions().makeCurrentModelDefault();
+    harness.actions().makeModelDefault(fakeModel);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(jsonBodies(fetchMock)[0]).toEqual({
       defaultModelId: "fake-qsa",

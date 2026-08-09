@@ -15,7 +15,8 @@ import {
 import {
   chunkKnowledgeDocument,
   KnowledgeChunkingError,
-  knowledgeEmbeddingBatches
+  knowledgeEmbeddingBatches,
+  type KnowledgeChunkPlanEntry
 } from "./chunking";
 import {
   getKnowledgeExtractionConfig,
@@ -64,6 +65,10 @@ export type KnowledgeIngestionProcessorRepository = Readonly<{
     ownerUserId: string;
     targetDimension: number;
   }): Promise<boolean>;
+  recoverReindexChunkPlan(input: KnowledgeWorkIdentity & {
+    chunkingProfileVersion: number;
+    maxChunks: number;
+  }): Promise<readonly KnowledgeChunkPlanEntry[] | null>;
   settleReindexReady(input: KnowledgeWorkIdentity & {
     expectedChunkCount: number;
     now: Date;
@@ -191,16 +196,39 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
   }
 
   async function chunkPlan(claim: KnowledgeWorkClaim, signal?: AbortSignal) {
-    const normalized = await normalizedDocument(claim, signal);
     try {
+      const normalized = await normalizedDocument(claim, signal);
       return chunkKnowledgeDocument({
         blocks: normalized.blocks,
         maxChunks: config.maxChunksPerDocument,
         profileVersion: claim.generation.chunkingProfileVersion
       });
     } catch (error) {
-      if (error instanceof KnowledgeChunkingError) throw chunkingFailure(error);
-      throw error;
+      const normalizedError = error instanceof KnowledgeChunkingError
+        ? chunkingFailure(error)
+        : error;
+      if (claim.kind !== "reindex" || !(normalizedError instanceof KnowledgeIngestionError)) {
+        throw normalizedError;
+      }
+      const recovered = await input.repository.recoverReindexChunkPlan({
+        ...knowledgeWorkIdentity(claim),
+        chunkingProfileVersion: claim.generation.chunkingProfileVersion,
+        maxChunks: config.maxChunksPerDocument
+      });
+      if (
+        !recovered ||
+        recovered.length === 0 ||
+        recovered.length > config.maxChunksPerDocument ||
+        recovered.some((chunk, index) =>
+          chunk.index !== index ||
+          !Number.isSafeInteger(chunk.page) ||
+          chunk.page < 1 ||
+          !chunk.text.trim() ||
+          chunk.headingPath.length > 16)
+      ) {
+        throw new KnowledgeIngestionError("reindex_source_unavailable");
+      }
+      return [...recovered];
     }
   }
 

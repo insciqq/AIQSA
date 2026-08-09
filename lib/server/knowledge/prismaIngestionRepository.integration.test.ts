@@ -380,6 +380,24 @@ integration("Knowledge ingestion Prisma repository", () => {
       select: { activeIndexGenerationId: true },
       where: { id: baseId }
     })).activeIndexGenerationId!;
+    const legacyNormalized = Buffer.from('{"schemaVersion":0,"blocks":[]}');
+    const goodStorage = await database.knowledgeDocumentVersion.findUniqueOrThrow({
+      select: { normalizedTextStorageKey: true },
+      where: { id: good.documentVersionId }
+    });
+    if (!goodStorage.normalizedTextStorageKey) throw new Error("normalized fixture missing");
+    await storage.putObject({
+      body: legacyNormalized,
+      contentType: "application/json",
+      storageKey: goodStorage.normalizedTextStorageKey
+    });
+    await database.knowledgeDocumentVersion.update({
+      data: {
+        normalizedTextByteSize: legacyNormalized.byteLength,
+        normalizedTextChecksum: checksum(legacyNormalized)
+      },
+      where: { id: good.documentVersionId }
+    });
     const reindex = await ingestion.startReindex({
       embeddingDeploymentId: secondModelId,
       knowledgeBaseId: baseId,
@@ -391,6 +409,20 @@ integration("Knowledge ingestion Prisma repository", () => {
 
     const late = await upload("late.txt");
     await drain(new Date(stageNow.getTime() + 63_000));
+    await drain(new Date(stageNow.getTime() + 64_000));
+
+    const reindexRows = await database.knowledgeGenerationDocument.findMany({
+      orderBy: { documentVersion: { fileName: "asc" } },
+      select: {
+        chunkCount: true,
+        documentVersion: { select: { fileName: true } },
+        errorCode: true,
+        state: true
+      },
+      where: { indexGenerationId: reindex.generationId }
+    });
+    expect(reindexRows).toHaveLength(4);
+    expect(reindexRows.every((row) => row.state === "ready" && row.errorCode === null)).toBe(true);
 
     const base = await database.knowledgeBase.findUniqueOrThrow({
       include: { indexGenerations: true },
@@ -430,6 +462,35 @@ integration("Knowledge ingestion Prisma repository", () => {
         totalDocuments: 4
       }
     });
+    await expect(ingestion.listStatus(ownerId, baseId, {
+      page: 1,
+      pageSize: 2,
+      query: "GOOD"
+    })).resolves.toMatchObject({
+      documents: [{ versions: [{ fileName: "good.txt" }] }],
+      pagination: {
+        page: 1,
+        pageSize: 2,
+        query: "GOOD",
+        totalItems: 1,
+        totalPages: 1
+      }
+    });
+    const secondPage = await ingestion.listStatus(ownerId, baseId, {
+      page: 2,
+      pageSize: 2,
+      query: ".txt"
+    });
+    expect(secondPage).toMatchObject({
+      pagination: {
+        page: 2,
+        pageSize: 2,
+        query: ".txt",
+        totalItems: 4,
+        totalPages: 2
+      }
+    });
+    expect(secondPage?.documents).toHaveLength(2);
 
     const abandoned = await upload("archived-before-claim.txt");
     await database.knowledgeBase.update({

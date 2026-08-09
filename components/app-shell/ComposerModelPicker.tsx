@@ -27,7 +27,7 @@ export function ComposerModelPicker({
   idPrefix = "composer-model",
   disabled,
   nestedInRunSetup = false,
-  onMakeCurrentDefault,
+  onMakeModelDefault,
   onOpenChange,
   onSelectModel,
   onUseOrganizationDefault,
@@ -46,7 +46,7 @@ export function ComposerModelPicker({
   disabled: boolean;
   idPrefix?: string;
   nestedInRunSetup?: boolean;
-  onMakeCurrentDefault?(): void;
+  onMakeModelDefault?(model: CatalogModel): void;
   onOpenChange(open: boolean): void;
   onSelectModel(model: CatalogModel): void;
   onUseOrganizationDefault?(): void;
@@ -350,13 +350,17 @@ export function ComposerModelPicker({
                       );
 
                       return (
-                        <button
+                        <div
                           key={`${model.provider}:${model.modelId}`}
-                          {...getItemProps(actionIndex)}
                           className={[
-                            "flex min-h-touch w-full items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus",
+                            "flex min-h-touch w-full items-stretch rounded-control",
                             active ? "bg-control-selected text-ink" : "text-ink-secondary"
                           ].join(" ")}
+                          data-model-picker-row={`${model.provider}:${model.modelId}`}
+                        >
+                          <button
+                          {...getItemProps(actionIndex)}
+                          className="flex min-w-0 flex-1 items-start justify-between gap-3 rounded-control px-3 py-2.5 text-left outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
                           id={`${idPrefix}-picker-action-${actionIndex}`}
                           type="button"
                           aria-current={active ? "true" : undefined}
@@ -370,7 +374,7 @@ export function ComposerModelPicker({
                             .filter((id): id is string => Boolean(id))
                             .join(" ")}
                           title={`${provider.name} / ${model.displayName}\n${modelCapabilityDescription(model)}`}
-                        >
+                          >
                           <span className="min-w-0 flex-1">
                             <span className="block break-words text-sm font-semibold leading-5 text-ink [overflow-wrap:anywhere]">
                               {model.displayName}
@@ -421,7 +425,21 @@ export function ComposerModelPicker({
                             ) : null}
                             {active ? <Check className="size-4 text-proof" aria-hidden="true" /> : null}
                           </span>
-                        </button>
+                          </button>
+                          {onMakeModelDefault && !isPersonalDefault ? (
+                            <div className="flex shrink-0 items-center pr-2">
+                              <button
+                                className="inline-flex min-h-8 items-center rounded-control border border-control-boundary px-2 text-[0.6875rem] font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
+                                type="button"
+                                aria-label={`Make ${provider.name} ${model.displayName} my default`}
+                                title={`Make ${provider.name} / ${model.displayName} my default`}
+                                onClick={() => onMakeModelDefault(model)}
+                              >
+                                Make default
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
                       );
                     })}
                   </div>
@@ -429,24 +447,12 @@ export function ComposerModelPicker({
               );
             })}
           </div>
-          {onMakeCurrentDefault || onUseOrganizationDefault ? (
+          {onMakeModelDefault || onUseOrganizationDefault ? (
             <div className="mt-3 flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-trace-subtle pt-3">
               <p className="text-xs text-ink-muted">
                 Choosing a model changes only the next run.
               </p>
               <div className="flex flex-wrap items-center gap-1.5">
-                {currentModel && onMakeCurrentDefault && !(
-                  currentModel.provider === catalog?.defaults.personalModelDefault?.provider &&
-                  currentModel.modelId === catalog.defaults.personalModelDefault.modelId
-                ) ? (
-                  <button
-                    className="inline-flex min-h-touch items-center rounded-control px-2.5 text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus sm:min-h-control"
-                    onClick={onMakeCurrentDefault}
-                    type="button"
-                  >
-                    Make current my default
-                  </button>
-                ) : null}
                 {catalog?.defaults.hasPersonalModelDefault && onUseOrganizationDefault ? (
                   <button
                     className="inline-flex min-h-touch items-center rounded-control px-2.5 text-xs font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus sm:min-h-control"

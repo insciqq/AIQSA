@@ -355,13 +355,13 @@ function QuickAssignmentControl({
   return (
     <div className="mt-5 border-t border-trace-subtle pt-4">
       <p className="max-w-xl text-xs leading-5 text-ink-muted">
-        Remove this Quick setup key assignment from your account. Model access may stop unless an applicable team or default credential is already configured. The stored credential and all team settings stay unchanged; the credential remains manageable in Connections.
+        Remove this Quick setup key assignment from your account. This action does not change the connection default; your account returns to normal team/default credential resolution. The stored credential and all team settings stay unchanged; the credential remains manageable in Connections.
       </p>
       <button
         className={`${quietButton} mt-2`}
         disabled={controller.state.formLocked}
         onClick={() => requestConfirmation({
-          body: "AIQSA will remove only your direct Quick setup key assignment. Model access may stop unless an applicable team or default credential is already configured. The stored credential, grants, and team settings will remain unchanged.",
+          body: "AIQSA will remove only your direct Quick setup key assignment. This action does not change the connection default; your account returns to normal team/default credential resolution. The stored credential, grants, and team settings will remain unchanged.",
           confirmLabel: "Remove key assignment",
           dialogLabel: `Remove ${provider.providerDisplayName} Quick key assignment`,
           icon: "x",
@@ -404,7 +404,7 @@ function ReadyProvider({
         {provider.model?.displayName}
       </h3>
       <p className="mt-2 max-w-xl text-sm leading-6 text-ink-secondary">
-        This provider is configured and available in chat. Default models remain unchanged.
+        This provider is configured and available in chat. Personal and installation default models remain unchanged.
       </p>
       {confirmation ? (
         <div
@@ -417,6 +417,11 @@ function ReadyProvider({
             Available models: {confirmation.models.map(({ displayName }) => displayName).join(", ")}.
           </p>
           <p>Access: available to this administrator.</p>
+          <p>
+            Connection default credential: {confirmation.defaultCredentialChanged
+              ? "set to this verified key."
+              : "already uses this verified key."}
+          </p>
           <p>Default models: unchanged. Choose one explicitly from the model picker or the Default model task.</p>
           {search ? (
             <p>
@@ -567,7 +572,7 @@ function SetupGuide() {
       title: "Verify the key"
     },
     {
-      detail: "AIQSA activates the current supported answer models available to your key without changing any default.",
+      detail: "AIQSA activates the current supported answer models and makes the verified key the connection default without changing model defaults.",
       Icon: CheckCircle2,
       title: "Prepare a model"
     },

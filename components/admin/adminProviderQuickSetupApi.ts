@@ -201,6 +201,7 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
   if (!record(value) || containsForbiddenMaterial(value) || typeof value.outcome !== "string") return null;
   if (value.outcome === "ready" && exactKeys(value, [
     "checkedAt",
+    "defaultCredentialChanged",
     "defaultChanged",
     "model",
     "models",
@@ -208,7 +209,9 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
     "provider",
     "providerDisplayName",
     ...(value.search === undefined ? [] : ["search"])
-  ]) && timestamp(value.checkedAt) && typeof value.defaultChanged === "boolean" &&
+  ]) && timestamp(value.checkedAt) &&
+    typeof value.defaultCredentialChanged === "boolean" &&
+    typeof value.defaultChanged === "boolean" &&
     model(value.model) && Array.isArray(value.models) && value.models.length > 0 &&
     value.models.length <= 16 && value.models.every(model) &&
     new Set(value.models.map((entry) => (entry as AdminProviderQuickSetupModel).displayName)).size ===

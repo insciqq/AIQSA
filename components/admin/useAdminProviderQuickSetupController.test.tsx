@@ -68,11 +68,13 @@ function readySnapshot(stateToken = "state-openai-ready") {
 }
 
 function readyResult(options: {
+  defaultCredentialChanged?: boolean;
   defaultChanged?: boolean;
   profilesFilled?: ("balanced" | "deep" | "fast")[];
 } = {}) {
   return {
     checkedAt: "2026-07-26T03:00:00.000Z",
+    defaultCredentialChanged: options.defaultCredentialChanged ?? true,
     defaultChanged: options.defaultChanged ?? true,
     model: { displayName: "GPT-5.6 Terra" },
     models: [
@@ -125,6 +127,7 @@ describe("useAdminProviderQuickSetupController", () => {
       .mockResolvedValueOnce({
         data: {
           checkedAt: "2026-07-26T03:01:00.000Z",
+          defaultCredentialChanged: true,
           defaultChanged: true,
           model: { displayName: "GPT-5.6 Luna" },
           models: [{ displayName: "GPT-5.6 Luna" }],
@@ -507,6 +510,7 @@ describe("useAdminProviderQuickSetupController", () => {
     api.submit.mockResolvedValueOnce({
       data: {
         checkedAt: "2026-07-26T03:00:00.000Z",
+        defaultCredentialChanged: true,
         defaultChanged: true,
         model: { displayName: "GPT-5.6 Terra" },
         models: [
@@ -636,6 +640,7 @@ describe("useAdminProviderQuickSetupController", () => {
     const pending = deferred<{
       data: {
         checkedAt: string;
+        defaultCredentialChanged: boolean;
         defaultChanged: boolean;
         model: { displayName: string };
         models: { displayName: string }[];
@@ -673,6 +678,7 @@ describe("useAdminProviderQuickSetupController", () => {
     pending.resolve({
       data: {
         checkedAt: "2026-07-26T03:00:00.000Z",
+        defaultCredentialChanged: true,
         defaultChanged: true,
         model: { displayName: "GPT-5.6 Terra" },
         models: [

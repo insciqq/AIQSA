@@ -78,6 +78,7 @@ export type AdminProviderQuickSetupCommitResult =
   | "catalog_unavailable"
   | "stale"
   | Readonly<{
+      defaultCredentialChanged: boolean;
       defaultChanged: boolean;
       search?: "needs_attention" | "ready" | null;
       status: "ready";

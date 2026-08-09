@@ -49,6 +49,7 @@ const INITIAL_WRITE_BOUNDARIES = [
   "providerCredentialVersion.create#1",
   "providerCredential.update#1",
   "providerUserCredentialAssignment.upsert#1",
+  "providerConnection.update#2",
   "providerModelCredentialCheck.create#1",
   "accessGrant.create#1"
 ] as const;
@@ -770,6 +771,9 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
       `AS ENUM ('use_default', 'require_assignment')`
     );
     await administrationDatabase.$executeRawUnsafe(
+      `CREATE TYPE ${schema}."ProviderModelClass" AS ENUM ('answer', 'embedding')`
+    );
+    await administrationDatabase.$executeRawUnsafe(
       `CREATE TYPE ${schema}."ProviderCredentialCheckStatus" ` +
       `AS ENUM ('available', 'unavailable')`
     );
@@ -813,6 +817,13 @@ async function createIsolatedQuickSetupDatabase(): Promise<Readonly<{
       `USING "unassignedPolicy"::text::${schema}."ProviderUnassignedPolicy", ` +
       `ALTER COLUMN "unassignedPolicy" ` +
       `SET DEFAULT 'use_default'::${schema}."ProviderUnassignedPolicy"`
+    );
+    await administrationDatabase.$executeRawUnsafe(
+      `ALTER TABLE ${schema}."ProviderModel" ` +
+      `ALTER COLUMN "modelClass" DROP DEFAULT, ` +
+      `ALTER COLUMN "modelClass" TYPE ${schema}."ProviderModelClass" ` +
+      `USING "modelClass"::text::${schema}."ProviderModelClass", ` +
+      `ALTER COLUMN "modelClass" SET DEFAULT 'answer'::${schema}."ProviderModelClass"`
     );
     for (const table of ["ProviderDraftCheck", "ProviderModelCredentialCheck"] as const) {
       await administrationDatabase.$executeRawUnsafe(
@@ -1465,6 +1476,101 @@ integration("Prisma provider Quick setup atomic graph", () => {
     }
   }, 30_000);
 
+  it("replaces an existing connection default while preserving its credential and model defaults", async () => {
+    await expect(database.$transaction(async (transaction) => {
+      await resetOpenAiToInitial(transaction);
+      const suffix = randomUUID();
+      const actor = await createActor(transaction, suffix);
+      const priorCredentialId = `prior-default-credential-${suffix}`;
+      const priorVersionId = `prior-default-version-${suffix}`;
+      const priorCheckedAt = new Date("2026-07-26T09:59:00.000Z");
+      await transaction.providerCredential.create({
+        data: {
+          connectionId: policy.connection.id,
+          draftSecretEnvelope: null,
+          draftVersion: 1,
+          enabled: true,
+          id: priorCredentialId,
+          label: "Existing shared credential"
+        }
+      });
+      await transaction.providerCredentialVersion.create({
+        data: {
+          activatedAt: priorCheckedAt,
+          credentialId: priorCredentialId,
+          id: priorVersionId,
+          secretEnvelope: "v2.integration.prior-default",
+          testEvidence: { method: "models_catalog", version: 1 },
+          testedAt: priorCheckedAt,
+          version: 1
+        }
+      });
+      await transaction.providerCredential.update({
+        data: {
+          activatedAt: priorCheckedAt,
+          activeVersionId: priorVersionId,
+          testedAt: priorCheckedAt
+        },
+        where: { id: priorCredentialId }
+      });
+      await transaction.providerConnection.update({
+        data: { defaultCredentialId: priorCredentialId },
+        where: { id: policy.connection.id }
+      });
+      const [priorCredential, personalDefault, installationDefault] = await Promise.all([
+        transaction.providerCredential.findUniqueOrThrow({
+          include: { versions: true },
+          where: { id: priorCredentialId }
+        }),
+        transaction.userSettings.findUniqueOrThrow({ where: { userId: actor.userId } }),
+        transaction.modelPolicy.findUniqueOrThrow({ where: { id: "installation" } })
+      ]);
+      const repository = createPrismaAdminProviderQuickSetupRepository(
+        transactionBackedClient(transaction)
+      );
+      const inspection = await repository.inspect({
+        ...actor,
+        now: new Date("2026-07-26T10:00:00.000Z"),
+        provider: "openai"
+      });
+      expect(inspection).toMatchObject({ mode: "recovery", state: "not_configured" });
+
+      const quickCredentialId = `replacement-default-credential-${suffix}`;
+      await expect(repository.commit(plan({
+        actor,
+        credentialId: quickCredentialId,
+        credentialIsNew: true,
+        credentialVersion: 1,
+        expectedFingerprint: inspection.fingerprint,
+        grantId: `replacement-default-grant-${suffix}`,
+        mode: "recovery",
+        preservedModels: inspection.preservedModels,
+        versionId: `replacement-default-version-${suffix}`
+      }))).resolves.toEqual({
+        defaultCredentialChanged: true,
+        defaultChanged: false,
+        status: "ready"
+      });
+
+      expect(await transaction.providerConnection.findUniqueOrThrow({
+        where: { id: policy.connection.id }
+      })).toMatchObject({ defaultCredentialId: quickCredentialId });
+      expect(await transaction.providerCredential.findUniqueOrThrow({
+        include: { versions: true },
+        where: { id: priorCredentialId }
+      })).toEqual(priorCredential);
+      expect(await transaction.userSettings.findUniqueOrThrow({
+        where: { userId: actor.userId }
+      })).toEqual(personalDefault);
+      expect(await transaction.modelPolicy.findUniqueOrThrow({
+        where: { id: "installation" }
+      })).toEqual(installationDefault);
+      throw new RollbackFixture("default_credential_replacement_fixture_complete");
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
+      RollbackFixture
+    );
+  }, 30_000);
+
   it("commits a catalog-visible personal graph without group writes and preserves it on replacement", async () => {
     const isolated = await createIsolatedQuickSetupDatabase();
     try {
@@ -1495,6 +1601,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         preservedModels: initial.preservedModels,
         versionId: firstVersionId
       }))).resolves.toEqual({
+        defaultCredentialChanged: true,
         defaultChanged: false,
         status: "ready"
       });
@@ -1552,7 +1659,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
       })).toMatchObject({ credentialId });
       expect(await transaction.providerConnection.findUniqueOrThrow({
         where: { id: policy.connection.id }
-      })).toMatchObject({ defaultCredentialId: null });
+      })).toMatchObject({ defaultCredentialId: credentialId });
       expect(await groupGraphSnapshot(transaction)).toEqual(groupGraphBefore);
 
       const entitlementRows = await transaction.accessGrant.findMany({
@@ -1601,7 +1708,11 @@ integration("Prisma provider Quick setup atomic graph", () => {
         mode: "replacement",
         preservedModels: ready.preservedModels,
         versionId: secondVersionId
-      }))).resolves.toEqual({ defaultChanged: false, status: "ready" });
+      }))).resolves.toEqual({
+        defaultCredentialChanged: false,
+        defaultChanged: false,
+        status: "ready"
+      });
 
       const [connectionAfter, modelAfter, grantAfter, settingsAfter] =
         await Promise.all([
@@ -1797,9 +1908,8 @@ integration("Prisma provider Quick setup atomic graph", () => {
         loadEntitlements: (userId) => loadEntitlementsForUser(userId, transaction),
         prisma: transaction as unknown as PrismaClientType
       })(actor.userId);
-      expect(catalog?.models.some((model) =>
-        model.modelId === terra.modelId || model.modelId === luna.modelId
-      )).toBe(false);
+      expect(catalog?.models.map((model) => model.modelId)).toContain(terra.modelId);
+      expect(catalog?.models.map((model) => model.modelId)).not.toContain(luna.modelId);
 
       throw new RollbackFixture("full_access_fixture_complete");
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })).rejects.toBeInstanceOf(
@@ -2002,6 +2112,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         preservedModels: recovery.preservedModels,
         versionId: secondVersionId
       }))).resolves.toEqual({
+        defaultCredentialChanged: false,
         defaultChanged: false,
         status: "ready"
       });
@@ -2166,6 +2277,7 @@ integration("Prisma provider Quick setup atomic graph", () => {
         transactionBackedClient(transaction, instrumentWrites(transaction, { trace }))
       );
       await expect(tracedRepository.commit(recoveryPlan)).resolves.toEqual({
+        defaultCredentialChanged: false,
         defaultChanged: false,
         status: "ready"
       });
