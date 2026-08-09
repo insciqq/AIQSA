@@ -51,7 +51,7 @@ and checksum-pinned English/Cyrillic OCR assets. The build needs registry/model
 download access, but document conversion uses the sealed local assets and does
 not download a model on first request.
 
-The setup helper asks only for the initial administrator email, generates the initial password and infrastructure secrets, writes `.env` with mode `0600`, and prints the administrator password once. Save that password in a password manager. For unattended setup:
+The setup helper asks only for the initial administrator email, generates the initial password and installation secrets, writes `.env` with mode `0600`, and prints the administrator password once. Save that password in a password manager. For unattended setup:
 
 ```bash
 bash prepare-secrets.sh --admin-email owner@example.com
@@ -90,7 +90,7 @@ ops/backup/create.sh /secure/aiqsa-backups
 ops/backup/restore.sh --verify-only /secure/aiqsa-backups/aiqsa-backup-TIMESTAMP
 ```
 
-Use an existing protected directory, copy verified bundles to encrypted off-host storage, and back up `AIQSA_ENCRYPTION_KEY` separately. The bundled helper supports the bundled private MinIO storage; external S3 requires its own consistent object-backup procedure coordinated with PostgreSQL.
+Use an existing protected directory, copy verified bundles to encrypted off-host storage, and back up `AIQSA_ENCRYPTION_KEY` plus `AIQSA_MEMORY_FINGERPRINT_KEYRING` separately from those bundles. The bundled helper supports the bundled private MinIO storage; external S3 requires its own consistent object-backup procedure coordinated with PostgreSQL.
 
 Update an existing checkout with:
 

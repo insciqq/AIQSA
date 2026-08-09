@@ -437,6 +437,9 @@ every required suppression-fingerprint key ID, reapply an external post-backup
 deletion journal when present, reconcile deletion outbox/account/source
 barriers, and audit for resurrection before production promotion. Missing keys
 fail closed and prohibit automatic-memory resume, rebuild, or redream.
+Ordinary bundles retain only the non-secret `fingerprintKeyVersion` metadata;
+the dedicated keyring is recovered independently from protected secret storage
+and is never copied into PostgreSQL, object archives, manifests, or checksums.
 
 ## Bounded Ownership Map
 

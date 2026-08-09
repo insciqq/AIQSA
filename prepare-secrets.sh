@@ -228,8 +228,19 @@ ensure_base64_secret() {
   fi
 }
 
+ensure_memory_fingerprint_keyring() {
+  local key="AIQSA_MEMORY_FINGERPRINT_KEYRING"
+  local placeholder="current=v1,v1=replace-with-base64-encoded-32-byte-key"
+
+  if value_needs_generation "${key}" "${placeholder}"; then
+    set_env_value "${key}" "current=v1,v1=$(openssl rand -base64 32)"
+    generated_keys+=("${key}")
+  fi
+}
+
 ensure_hex_secret "AIQSA_AUTH_SESSION_SECRET" "replace-with-random-session-secret" 32
 ensure_base64_secret "AIQSA_ENCRYPTION_KEY" "replace-with-base64-encoded-32-byte-key" 32
+ensure_memory_fingerprint_keyring
 ensure_hex_secret "AIQSA_POSTGRES_PASSWORD" "replace-with-random-postgres-password" 32
 ensure_hex_secret "AIQSA_S3_SECRET_ACCESS_KEY" "replace-with-random-object-storage-secret" 32
 
@@ -266,7 +277,7 @@ else
   printf 'The existing initial administrator password was preserved and not displayed.\n'
 fi
 
-printf '\nKeep this file private and back up AIQSA_ENCRYPTION_KEY separately.\n'
+printf '\nKeep this file private and back up AIQSA_ENCRYPTION_KEY and AIQSA_MEMORY_FINGERPRINT_KEYRING separately.\n'
 if [[ "${ENV_FILE}" == "${SCRIPT_DIR}/.env" ]]; then
   printf 'Next: docker compose pull && docker compose up -d\n'
 else

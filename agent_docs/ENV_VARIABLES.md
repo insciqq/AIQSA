@@ -14,6 +14,7 @@ AIQSA has one operator configuration regardless of where it runs. There is no na
 ```text
 AIQSA_AUTH_SESSION_SECRET=
 AIQSA_ENCRYPTION_KEY=
+AIQSA_MEMORY_FINGERPRINT_KEYRING=
 AIQSA_INITIAL_ADMIN_EMAIL=
 AIQSA_INITIAL_ADMIN_PASSWORD=
 AIQSA_INITIAL_ADMIN_DISPLAY_NAME=Administrator
@@ -31,15 +32,16 @@ AIQSA_S3_SECRET_ACCESS_KEY=
 For a fresh checkout, root `prepare-secrets.sh` is the canonical convenience
 path. It creates `.env` from `.env.example` only when the target does not exist,
 prompts for `AIQSA_INITIAL_ADMIN_EMAIL` in an interactive terminal (or accepts
-`--admin-email`), and generates the initial password plus the four required
+`--admin-email`), and generates the initial password plus the five required
 secrets with OpenSSL. The completed file is published only after preparation
 succeeds and has mode `0600`. An existing target of any kind is a successful
 no-op: the helper does not read it, alter permissions, replace values, or repair
 partial configuration. Consequently the helper is run instead of a preceding
 `cp .env.example .env`; manual creation remains supported.
 
-`AIQSA_AUTH_SESSION_SECRET`, `AIQSA_ENCRYPTION_KEY`, the PostgreSQL password,
-and the S3/MinIO secret must be deployment-specific high-entropy values.
+`AIQSA_AUTH_SESSION_SECRET`, `AIQSA_ENCRYPTION_KEY`,
+`AIQSA_MEMORY_FINGERPRINT_KEYRING`, the PostgreSQL password, and the S3/MinIO
+secret must be deployment-specific high-entropy values.
 Generate the session secret with `openssl rand -hex 32` or stronger and the
 encrypted-state key with `openssl rand -base64 32`; the latter must decode to
 exactly 32 bytes. Back it up separately from Postgres. Changing or losing it
@@ -61,6 +63,42 @@ use the stable email and optional explicit UUID to identify adoption. Remove the
 plaintext initial password after first success but keep the email stable;
 [persistence and retention](backend/PERSISTENCE_AND_RETENTION.md) owns the
 transactional fresh/adopted behavior and preservation set.
+
+## Memory Suppression Fingerprint Keyring
+
+`AIQSA_MEMORY_FINGERPRINT_KEYRING` is a required installation secret with this
+strict comma-separated grammar:
+
+```text
+current=<key-id>,<key-id>=<canonical-base64-32-byte-key>[,<key-id>=<canonical-base64-32-byte-key>...]
+```
+
+The `current` declaration is first and occurs once. Key IDs match
+`[a-z][a-z0-9_-]{0,63}`, except for the reserved name `current`; every ID and
+key value is unique, and the named current key must exist. Values use padded
+standard Base64 and decode to exactly 32 bytes. Whitespace, malformed entries,
+low-diversity key material, duplicate names/material, an absent current key,
+or more than 256 keys make Memory configuration unavailable without echoing
+the value. Root `prepare-secrets.sh` creates the initial `v1` key with OpenSSL.
+
+This keyring is used only for domain-separated HMAC-SHA-256 suppression
+fingerprints and is cryptographically independent from
+`AIQSA_ENCRYPTION_KEY`. New fingerprints use only the current ID; verification
+selects the exact `fingerprintKeyVersion` stored with an existing suppression
+row. To rotate, generate another independent 32-byte key, add it under a new
+ID, change `current` to that ID, and deploy the complete keyring atomically to
+every Memory writer. Retain every prior ID still referenced by suppression
+rows. Removing or losing one blocks automatic extraction, resume, redream,
+rebuild, and restore promotion; it never resets the barrier or resumes
+learning.
+
+Key values never belong in PostgreSQL, events, exports, logs, metrics, error
+payloads, fixtures, or ordinary database/object backup bundles. Database rows
+and those bundles may contain only the non-secret key IDs needed for preflight.
+Back up the complete keyring in encrypted access-restricted secret storage,
+separately from application data, and test that recovery provides every
+distinct required ID before starting automatic Memory work. Core web readiness
+remains independent while Memory reports a feature-local blocked status.
 
 ## Address, Cookies, And Proxy Trust
 

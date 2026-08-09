@@ -59,17 +59,23 @@ domain-separated HMAC subkey derived from the session secret and never the
 encryption key. The encryption key is dedicated to purpose/owner/value-bound
 versioned AES-256-GCM envelopes for provider credentials, SMTP passwords, MCP
 values, and OAuth tokens; secret API fields remain write-only. It is never
-session or flow-signing material. [Environment variables](../ENV_VARIABLES.md)
-owns key format, generation, backup, and recovery-window configuration.
+session or flow-signing material. Memory suppression fingerprints use a third,
+independent named HMAC-SHA-256 keyring: key values never enter PostgreSQL,
+exports, ordinary backups, or diagnostics, and missing historical versions
+fail closed instead of weakening a no-resurrection barrier.
+[Environment variables](../ENV_VARIABLES.md) owns both key formats, generation,
+rotation, backup, and recovery configuration.
 
 Root `prepare-secrets.sh` is a local first-install helper, not a rotation tool.
 It uses OpenSSL for independent random values, stages the complete file with
 mode `0600`, and publishes it without replacing an existing path. It never
 sources or reads an existing `.env` and never prints session, encryption,
-database, or object-storage secret values. It does print a newly generated
-initial administrator password once and stores it in `.env`; protect terminal
+database, object-storage, or Memory fingerprint-keyring secret values. It does
+print a newly generated initial administrator password once and stores it in
+`.env`; protect terminal
 history/output, move that password to a password manager, remove it from `.env`
-after successful bootstrap, and back up `AIQSA_ENCRYPTION_KEY` separately.
+after successful bootstrap, and back up `AIQSA_ENCRYPTION_KEY` plus
+`AIQSA_MEMORY_FINGERPRINT_KEYRING` separately from application data.
 
 Email-verification, password-reset, and invite tokens are high entropy, one time, expiring, and stored only as hashes. Verification consumes sibling tokens while establishing the password, so concurrent links have one winner. Invite acceptance likewise locks the token and any matching identity/user by normalized email before creating the session. The SMTP password is a write-only purpose-bound encrypted value; `AIQSA_APP_BASE_URL` remains the trusted link origin. Each send loads one active database snapshot; connection, command, and complete-send deadlines fail closed and destroy the current socket. Errors never include credentials, AUTH payloads, message bodies, addresses, raw server responses, or token-bearing URLs. Registration and reset return one generic result behind a small SMTP-independent floor; any eligible token is persisted before asynchronous delivery, whose failure remains only in administrator health and sanitized logs. Requested admin invite delivery still reports partial unavailable/failed outcome without discarding the only recoverable URL.
 

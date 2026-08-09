@@ -57,6 +57,11 @@ describe("prepare-secrets.sh", () => {
     expect(values.AIQSA_POSTGRES_PASSWORD).toMatch(/^[0-9a-f]{64}$/);
     expect(values.AIQSA_S3_SECRET_ACCESS_KEY).toMatch(/^[0-9a-f]{64}$/);
     expect(Buffer.from(values.AIQSA_ENCRYPTION_KEY, "base64")).toHaveLength(32);
+    const fingerprintKeyring = values.AIQSA_MEMORY_FINGERPRINT_KEYRING.match(
+      /^current=v1,v1=([A-Za-z0-9+/]{43}=)$/u
+    );
+    expect(fingerprintKeyring).not.toBeNull();
+    expect(Buffer.from(fingerprintKeyring?.[1] ?? "", "base64")).toHaveLength(32);
     expect(body).not.toContain("replace-with-");
 
     expect(result.stdout).toContain("Initial administrator credentials:");
@@ -64,11 +69,15 @@ describe("prepare-secrets.sh", () => {
     for (const key of [
       "AIQSA_AUTH_SESSION_SECRET",
       "AIQSA_ENCRYPTION_KEY",
+      "AIQSA_MEMORY_FINGERPRINT_KEYRING",
       "AIQSA_POSTGRES_PASSWORD",
       "AIQSA_S3_SECRET_ACCESS_KEY"
     ]) {
       expect(result.stdout).not.toContain(values[key]);
+      expect(result.stderr).not.toContain(values[key]);
     }
+    expect(result.stdout).not.toContain(fingerprintKeyring?.[1]);
+    expect(result.stderr).not.toContain(fingerprintKeyring?.[1]);
   });
 
   it("skips an existing env file without reading or changing it", () => {
