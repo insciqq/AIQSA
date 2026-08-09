@@ -37,7 +37,9 @@ const messages = {
   providerConsumer: "Provider adapters must not import app or component modules.",
   providerPrisma: "Provider adapters must not import Prisma.",
   providerRun: "Provider adapters must not import run orchestration, handlers, or repositories.",
-  appShellAdmin: "The app shell must not depend on the admin feature."
+  appShellAdmin: "The app shell must not depend on the admin feature.",
+  memoryReference:
+    "Production modules must not import development-only Memory reference adapters or Hindsight packages."
 };
 
 const toPosixPath = (value) => value.split(path.sep).join("/");
@@ -301,9 +303,62 @@ const architectureBoundariesRule = {
   }
 };
 
+const isMemoryReferenceDependency = (specifier, importerFilename) => {
+  const normalizedSpecifier = specifier.toLowerCase();
+  if (normalizedSpecifier.split("/").some((segment) => segment.includes("hindsight"))) {
+    return true;
+  }
+  const target = repositoryTarget(specifier, importerFilename);
+  return targets(target, "tests/harness/memory-reference");
+};
+
+const noMemoryReferenceRule = {
+  meta: {
+    type: "problem",
+    docs: {
+      description: "Keep development-only Memory references out of production modules"
+    },
+    schema: [],
+    messages: {
+      reference: "'{{specifier}}' import crosses an architecture boundary. {{reason}}"
+    }
+  },
+  create(context) {
+    const importerFilename = context.physicalFilename ?? context.filename;
+    const checkSource = (sourceNode) => {
+      const specifier = staticString(sourceNode);
+      if (specifier !== null && isMemoryReferenceDependency(specifier, importerFilename)) {
+        context.report({
+          node: sourceNode,
+          messageId: "reference",
+          data: { reason: messages.memoryReference, specifier }
+        });
+      }
+    };
+    return {
+      ImportDeclaration: (node) => checkSource(node.source),
+      ExportNamedDeclaration: (node) => checkSource(node.source),
+      ExportAllDeclaration: (node) => checkSource(node.source),
+      ImportExpression: (node) => checkSource(node.source),
+      TSImportType: (node) => checkSource(node.source),
+      TSImportEqualsDeclaration: (node) => {
+        if (node.moduleReference.type === "TSExternalModuleReference") {
+          checkSource(node.moduleReference.expression);
+        }
+      },
+      CallExpression: (node) => {
+        if (node.callee.type === "Identifier" && node.callee.name === "require") {
+          checkSource(node.arguments[0]);
+        }
+      }
+    };
+  }
+};
+
 const architectureBoundariesPlugin = {
   rules: {
-    "architecture-boundaries": architectureBoundariesRule
+    "architecture-boundaries": architectureBoundariesRule,
+    "no-memory-reference": noMemoryReferenceRule
   }
 };
 

@@ -22,6 +22,17 @@ const eslintConfig = [
     }
   },
   {
+    files: [
+      `app/${architectureModules}`,
+      `components/${architectureModules}`,
+      `lib/${architectureModules}`
+    ],
+    ignores: ["**/*.test.*", "**/*.spec.*"],
+    rules: {
+      "aiqsa-architecture/no-memory-reference": "error"
+    }
+  },
+  {
     files: [`components/${architectureModules}`],
     rules: {
       "aiqsa-architecture/architecture-boundaries": architectureBoundary("components")

@@ -5,11 +5,14 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 ## Implementation Status And Authority
 
-Native Memory is an approved target capability and is not implemented at the
-current baseline. There are no production Memory settings, scopes, facts,
-indexes, jobs, run bindings, APIs, or UI surfaces yet. Existing chat context and
-folder/project prompt memory keep their current behavior and are not this
-feature.
+Native Memory is an approved target capability. The current baseline implements
+only the feature-dark Phase 0 contract and evaluation foundation: strict wire
+decoders, pure state/counter/safety validators, RU/EN copy parity, a
+provider-neutral aggregate evaluator, frozen scorers, qualification decisions,
+and a development-only reference boundary. There are no production Memory
+settings, scopes, facts, indexes, jobs, run bindings, APIs, UI surfaces, or
+provider calls yet. Existing chat context and folder/project prompt memory keep
+their current behavior and are not this feature.
 
 This document owns the durable target contract while implementation lands in
 ordered slices. Executable code, migrations, and tests remain authoritative for
@@ -29,6 +32,27 @@ with a pinned upstream version and recorded configuration. Production code
 must not import it, and comparison results never define AIQSA truth. Behavior-
 level reimplementation is preferred; copied code requires license and
 attribution review.
+
+Evaluation evidence binds the exact adapter/deployment/config/vector
+fingerprints, corpus hash, suite/corpus/scorer and pipeline/policy/prompt/schema
+versions, PostgreSQL/pgvector profile, and fixed random seed. Proportion metrics
+use two-sided 95% Wilson intervals; ranked retrieval uses deterministic
+stratified-bootstrap 95% intervals. Gates compare unrounded values, while
+display values round to three decimals. Missing hard-invariant coverage fails,
+and one deterministic privacy, lifecycle, run, or safety violation fails the
+suite rather than being averaged away. Automatic-learning beta evidence is
+incomplete until every frozen overall quality gate is independently present
+and passing for RU and EN.
+
+`MemoryCapabilityQualification` is fail-closed authority, not advisory
+metadata. It matches the exact role, language, provider/model/deployment/config
+and vector fingerprints, retrieval configuration, and material version/hash
+set; approval must be signature-verified, already effective, and unexpired.
+Missing, stale, ambiguous, unapproved, expired, or unverifiable qualification
+cannot enable the affected role. A live evaluation has no ambient permission:
+it requires an explicit operator authorization bound to the exact native
+adapter and evaluation configuration, accepts only synthetic HOLDOUT fixtures,
+and returns sanitized aggregates without fixture or provider bodies.
 
 ## Product Vocabulary And Independent Controls
 

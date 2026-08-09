@@ -9,6 +9,7 @@ const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/import-boundaries"
 const eslint = new ESLint({ cwd: repositoryRoot });
 
 const boundaryRuleId = "aiqsa-architecture/architecture-boundaries";
+const memoryReferenceRuleId = "aiqsa-architecture/no-memory-reference";
 const boundaryMessage = (specifier: string, message: string) =>
   `'${specifier}' import crosses an architecture boundary. ${message}`;
 const unverifiableDynamicMessage = (kind: string) =>
@@ -167,6 +168,50 @@ const invalidFixtures: InvalidFixture[] = [
 ];
 
 describe("architecture import boundaries", () => {
+  it("keeps Hindsight packages and development reference adapters out of production modules", async () => {
+    const source = [
+      'import "hindsight-client";',
+      'export * from "@vectorize-io/hindsight";',
+      'void import("@/tests/harness/memory-reference/hindsightReference");',
+      'require("tests/harness/memory-reference/hindsightReference");'
+    ].join("\n");
+    const [result] = await eslint.lintText(source, {
+      filePath: path.join(repositoryRoot, "lib/server/memoryReferenceLeak.ts")
+    });
+    expect(result.messages.filter(({ fatal }) => fatal)).toEqual([]);
+    expect(
+      result.messages
+        .filter(({ ruleId }) => ruleId === memoryReferenceRuleId)
+        .map(({ message }) => message)
+    ).toEqual([
+      "'hindsight-client' import crosses an architecture boundary. Production modules must not import development-only Memory reference adapters or Hindsight packages.",
+      "'@vectorize-io/hindsight' import crosses an architecture boundary. Production modules must not import development-only Memory reference adapters or Hindsight packages.",
+      "'@/tests/harness/memory-reference/hindsightReference' import crosses an architecture boundary. Production modules must not import development-only Memory reference adapters or Hindsight packages.",
+      "'tests/harness/memory-reference/hindsightReference' import crosses an architecture boundary. Production modules must not import development-only Memory reference adapters or Hindsight packages."
+    ]);
+
+    const [allowed] = await eslint.lintText(
+      'import type { MemoryEvaluationAdapterKind } from "@/lib/evaluation/memory/contracts";\nconst kind: MemoryEvaluationAdapterKind = "HINDSIGHT_REFERENCE";\nvoid kind;',
+      { filePath: path.join(repositoryRoot, "lib/server/memoryEvaluationKinds.ts") }
+    );
+    expect(allowed.messages.filter(({ ruleId }) => ruleId === memoryReferenceRuleId)).toEqual([]);
+
+    const packageManifest = JSON.parse(
+      await readFile(path.join(repositoryRoot, "package.json"), "utf8")
+    ) as {
+      dependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+    };
+    expect(
+      [
+        ...Object.keys(packageManifest.dependencies ?? {}),
+        ...Object.keys(packageManifest.optionalDependencies ?? {}),
+        ...Object.keys(packageManifest.peerDependencies ?? {})
+      ].filter((name) => name.toLowerCase().includes("hindsight"))
+    ).toEqual([]);
+  });
+
   it("rejects invalid dependencies in every protected layer", async () => {
     for (const { fixture, filePath, expected } of invalidFixtures) {
       const source = await readFile(path.join(fixtureRoot, fixture), "utf8");
