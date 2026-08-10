@@ -3,9 +3,14 @@ import {
   CHAT_BRANCH_PREVIEW_MAX_LENGTH,
   CHAT_HISTORY_PAGE_SIZE,
   boundedChatBranchPreview,
+  decodeArchivedChatDetailResponse,
+  decodeArchivedChatsResponse,
   decodeChatBranchesResponse,
   decodeChatDetailResponse,
+  decodeChatLifecycleRequest,
+  decodeChatLifecycleResponse,
   decodeChatMessagesPageResponse,
+  decodeChatSourceResolutionResponse,
   decodeChatSummaryResponse,
   decodeChatUpdateData,
   decodeWorkspaceChatsResponse
@@ -715,6 +720,64 @@ describe("chat wire contracts", () => {
     expect(decode({
       ...artifactSummary,
       memoryAction: { ...artifactSummary.memoryAction, targetId: "private" }
+    })).toBeNull();
+  });
+
+  it("strictly decodes distinct lifecycle, Archived, and source-resolution wires", () => {
+    const lifecycle = {
+      chat: {
+        archived: true,
+        id: summary.id,
+        memoryMode: "NORMAL",
+        sourceRevision: 7,
+        updatedAt: summary.updatedAt
+      }
+    };
+    const archivedSummary = {
+      ...summary,
+      archived: true,
+      memoryMode: "EXCLUDED",
+      sourceRevision: 8
+    };
+    const archivedDetail = {
+      chat: {
+        ...detailChat(),
+        archived: true,
+        memoryMode: "NORMAL",
+        messages: [message],
+        sourceRevision: 7,
+        usageStats
+      }
+    };
+    const source = {
+      source: {
+        chatId: summary.id,
+        location: "ARCHIVED_PREVIEW",
+        memoryMode: "NORMAL",
+        sourceRevision: 7,
+        updatedAt: summary.updatedAt
+      }
+    };
+
+    expect(decodeChatLifecycleRequest({ expectedChatRevision: 7 })).toEqual({
+      expectedChatRevision: 7
+    });
+    expect(decodeChatLifecycleRequest({ expectedChatRevision: 7, erase: true })).toBeNull();
+    expect(decodeChatLifecycleResponse(lifecycle)).toEqual(lifecycle);
+    expect(decodeArchivedChatsResponse({ chats: [archivedSummary], nextCursor: "opaque" }))
+      .toEqual({ chats: [archivedSummary], nextCursor: "opaque" });
+    expect(decodeArchivedChatDetailResponse(archivedDetail)).toEqual(archivedDetail);
+    expect(decodeChatSourceResolutionResponse(source)).toEqual(source);
+
+    expect(decodeChatLifecycleResponse({
+      chat: { ...lifecycle.chat, memoryMode: "TEMPORARY" }
+    })).toBeNull();
+    expect(decodeArchivedChatsResponse({
+      chats: [{ ...archivedSummary, archived: false }],
+      nextCursor: null
+    })).toBeNull();
+    expect(decodeChatSourceResolutionResponse({
+      source: { ...source.source, location: "MISSING" }
     })).toBeNull();
   });
 });

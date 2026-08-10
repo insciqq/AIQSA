@@ -23,12 +23,15 @@ import {
   decodeMemoryActionFeedback,
   decodeMemoryReceipt,
   type MemoryActionFeedback,
+  type MemoryChatMode,
   type MemoryReceipt
 } from "./memory";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
 export const CHAT_BRANCH_PREVIEW_MAX_LENGTH = 160;
+export const ARCHIVED_CHAT_PAGE_SIZE = 20;
+export const ARCHIVED_CHAT_CURSOR_MAX_LENGTH = 2_048;
 
 export function boundedChatBranchPreview(value: string): string {
   if (value.length <= CHAT_BRANCH_PREVIEW_MAX_LENGTH) return value;
@@ -263,6 +266,57 @@ export type ChatBranchesResponseWire = {
   branchGraph: ChatBranchGraphWire;
 };
 
+export type RetainedChatMemoryMode = Exclude<MemoryChatMode, "TEMPORARY">;
+
+export type ChatLifecycleRequestWire = {
+  expectedChatRevision: number;
+};
+
+export type ChatLifecycleStateWire = {
+  archived: boolean;
+  id: string;
+  memoryMode: RetainedChatMemoryMode;
+  sourceRevision: number;
+  updatedAt: string;
+};
+
+export type ChatLifecycleResponseWire = {
+  chat: ChatLifecycleStateWire;
+};
+
+export type ArchivedChatSummaryWire = WorkspaceChatSummaryWire & {
+  archived: true;
+  memoryMode: RetainedChatMemoryMode;
+  sourceRevision: number;
+};
+
+export type ArchivedChatsResponseWire = {
+  chats: ArchivedChatSummaryWire[];
+  nextCursor: string | null;
+};
+
+export type ArchivedChatDetailWire = ChatDetailWire & {
+  archived: true;
+  memoryMode: RetainedChatMemoryMode;
+  sourceRevision: number;
+};
+
+export type ArchivedChatDetailResponseWire = {
+  chat: ArchivedChatDetailWire;
+};
+
+export type ChatSourceResolutionWire = {
+  chatId: string;
+  location: "ACTIVE_CHAT" | "ARCHIVED_PREVIEW";
+  memoryMode: RetainedChatMemoryMode;
+  sourceRevision: number;
+  updatedAt: string;
+};
+
+export type ChatSourceResolutionResponseWire = {
+  source: ChatSourceResolutionWire;
+};
+
 export type CreateChatRequestWire = {
   folderId?: string | null;
   title?: string | null;
@@ -280,10 +334,13 @@ export type ChatRouteServerErrorCode =
   | SessionErrorCode
   | MutationOriginErrorCode
   | "active_run_in_progress"
+  | "archived_chat_cursor_invalid"
   | "chat_page_cursor_invalid"
   | "chat_page_stale"
+  | "chat_lifecycle_invalid"
   | "chat_not_created"
   | "chat_not_found"
+  | "chat_revision_stale"
   | "knowledge_plan_invalid"
   | "workspace_not_found";
 
@@ -1072,6 +1129,153 @@ export function decodeChatDetailResponse(value: unknown): ChatDetailWire | null 
 export function decodeChatMessagesPageResponse(value: unknown): ChatMessagesPageWire | null {
   if (!isRecord(value) || !hasExactKeys(value, ["messages", "pageInfo"])) return null;
   return decodeMessagePage(value.messages, value.pageInfo, { requireActiveLeaf: false });
+}
+
+export function decodeChatLifecycleRequest(value: unknown): ChatLifecycleRequestWire | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["expectedChatRevision"])) return null;
+  const expectedChatRevision = nonNegativeInteger(value.expectedChatRevision);
+  return expectedChatRevision === null || !Number.isSafeInteger(expectedChatRevision)
+    ? null
+    : { expectedChatRevision };
+}
+
+function retainedMemoryMode(value: unknown): RetainedChatMemoryMode | null {
+  return value === "NORMAL" || value === "EXCLUDED" ? value : null;
+}
+
+function decodeChatLifecycleState(value: unknown): ChatLifecycleStateWire | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["archived", "id", "memoryMode", "sourceRevision", "updatedAt"])
+  ) return null;
+  const id = requiredString(value.id);
+  const memoryMode = retainedMemoryMode(value.memoryMode);
+  const sourceRevision = nonNegativeInteger(value.sourceRevision);
+  const updatedAt = isoTimestamp(value.updatedAt);
+  if (
+    !id ||
+    !memoryMode ||
+    sourceRevision === null ||
+    !Number.isSafeInteger(sourceRevision) ||
+    !updatedAt ||
+    typeof value.archived !== "boolean"
+  ) {
+    return null;
+  }
+  return { archived: value.archived, id, memoryMode, sourceRevision, updatedAt };
+}
+
+export function decodeChatLifecycleResponse(value: unknown): ChatLifecycleResponseWire | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["chat"])) return null;
+  const chat = decodeChatLifecycleState(value.chat);
+  return chat ? { chat } : null;
+}
+
+function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | null {
+  if (
+    !isRecord(value) ||
+    value.archived !== true ||
+    !hasExactKeys(value, [
+      "activeLeafMessageId",
+      "archived",
+      "createdAt",
+      "defaultKnowledgePlan",
+      "defaultModelId",
+      "defaultProvider",
+      "folderId",
+      "id",
+      "memoryMode",
+      "messageCount",
+      "pinned",
+      "sourceRevision",
+      "title",
+      "updatedAt"
+    ])
+  ) return null;
+  const summary = decodeWorkspaceChatSummaryWire(value);
+  const memoryMode = retainedMemoryMode(value.memoryMode);
+  const sourceRevision = nonNegativeInteger(value.sourceRevision);
+  return summary && memoryMode && sourceRevision !== null && Number.isSafeInteger(sourceRevision)
+    ? { ...summary, archived: true, memoryMode, sourceRevision }
+    : null;
+}
+
+export function decodeArchivedChatsResponse(value: unknown): ArchivedChatsResponseWire | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["chats", "nextCursor"]) || !Array.isArray(value.chats)) {
+    return null;
+  }
+  const nextCursor = nullableId(value.nextCursor);
+  const chats = value.chats.map(decodeArchivedChatSummary);
+  if (
+    chats.length > ARCHIVED_CHAT_PAGE_SIZE ||
+    chats.some((chat) => chat === null) ||
+    nextCursor === undefined ||
+    (typeof nextCursor === "string" && (
+      nextCursor.length > ARCHIVED_CHAT_CURSOR_MAX_LENGTH ||
+      !/^[A-Za-z0-9_-]+$/u.test(nextCursor)
+    ))
+  ) return null;
+  return {
+    chats: chats.filter((chat): chat is ArchivedChatSummaryWire => chat !== null),
+    nextCursor
+  };
+}
+
+export function decodeArchivedChatDetailResponse(
+  value: unknown
+): ArchivedChatDetailResponseWire | null {
+  const detail = decodeChatDetailResponse(value);
+  if (!detail || !isRecord(value) || !isRecord(value.chat) || value.chat.archived !== true) {
+    return null;
+  }
+  if (!hasExactKeys(value, ["chat"]) || !hasExactKeys(value.chat, [
+    "activeLeafMessageId",
+    "archived",
+    "contextStats",
+    "createdAt",
+    "defaultKnowledgePlan",
+    "defaultModelId",
+    "defaultProvider",
+    "folderId",
+    "id",
+    "memoryMode",
+    "messageCount",
+    "messages",
+    "pageInfo",
+    "pinned",
+    "sourceRevision",
+    "title",
+    "updatedAt",
+    "usageStats"
+  ])) return null;
+  const memoryMode = retainedMemoryMode(value.chat.memoryMode);
+  const sourceRevision = nonNegativeInteger(value.chat.sourceRevision);
+  return memoryMode && sourceRevision !== null && Number.isSafeInteger(sourceRevision)
+    ? { chat: { ...detail, archived: true, memoryMode, sourceRevision } }
+    : null;
+}
+
+export function decodeChatSourceResolutionResponse(
+  value: unknown
+): ChatSourceResolutionResponseWire | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["source"]) || !isRecord(value.source)) {
+    return null;
+  }
+  const source = value.source;
+  if (
+    !hasExactKeys(source, ["chatId", "location", "memoryMode", "sourceRevision", "updatedAt"])
+  ) return null;
+  const chatId = requiredString(source.chatId);
+  const memoryMode = retainedMemoryMode(source.memoryMode);
+  const sourceRevision = nonNegativeInteger(source.sourceRevision);
+  const updatedAt = isoTimestamp(source.updatedAt);
+  const location = source.location === "ACTIVE_CHAT" || source.location === "ARCHIVED_PREVIEW"
+    ? source.location
+    : null;
+  return chatId && location && memoryMode && sourceRevision !== null &&
+    Number.isSafeInteger(sourceRevision) && updatedAt
+    ? { source: { chatId, location, memoryMode, sourceRevision, updatedAt } }
+    : null;
 }
 
 function decodeChatBranchNode(value: unknown): ChatBranchNodeWire | null {

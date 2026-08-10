@@ -17,6 +17,8 @@ import {
 } from "../../domain/searchDisclosure";
 import { decodeAssistantAvatarRecipe } from "../../contracts/assistants";
 import {
+  ARCHIVED_CHAT_CURSOR_MAX_LENGTH,
+  ARCHIVED_CHAT_PAGE_SIZE,
   CHAT_BRANCH_PREVIEW_MAX_LENGTH,
   CHAT_HISTORY_CURSOR_MAX_LENGTH,
   CHAT_HISTORY_PAGE_SIZE,
@@ -24,6 +26,7 @@ import {
   type ChatContextStats
 } from "../../contracts/chats";
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 import { prisma } from "../prisma";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { persistedToolCallActivity } from "../runs/toolInspection";
@@ -36,6 +39,12 @@ import type {
   ThreadArtifactSummary,
   ThreadCitation
 } from "./handlers";
+import type {
+  ArchivedChatDetailRecord,
+  ArchivedChatSummaryRecord,
+  ChatLifecycleMutationResult,
+  ChatLifecycleRepository
+} from "./lifecycleHandlers";
 import { loadChatCreationDefaults } from "./chatCreationDefaults";
 import { defaultChatTitle } from "./titlePolicy";
 import {
@@ -50,6 +59,11 @@ import {
   type MemorySourceMutationHooks
 } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
+import { lockMemorySettings } from "../memory/persistence/transaction";
+import {
+  loadMemorySuppressionKeyring,
+  preflightMemorySuppressionKeys
+} from "../memory/suppressionKeyring";
 
 const assistantRunDetailSelect = {
   assistantId: true,
@@ -174,7 +188,17 @@ const chatSummarySelect = {
   updatedAt: true
 } satisfies Prisma.ChatSelect;
 
+const archivedChatSummarySelect = {
+  ...chatSummarySelect,
+  archived: true,
+  memoryMode: true,
+  memorySourceRevision: true
+} satisfies Prisma.ChatSelect;
+
 type ChatSummaryRow = Prisma.ChatGetPayload<{ select: typeof chatSummarySelect }>;
+type ArchivedChatSummaryRow = Prisma.ChatGetPayload<{
+  select: typeof archivedChatSummarySelect;
+}>;
 type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }>;
 type HydratedMessagePath = Readonly<{
   memoryEvidenceByRun: ReadonlyMap<string, MemoryRunEvidenceProjection>;
@@ -279,6 +303,12 @@ type ChatHistoryCursor = {
   v: 1;
 };
 
+type ArchivedChatCursor = {
+  id: string;
+  updatedAt: string;
+  v: 1;
+};
+
 function encodeHistoryCursor(cursor: ChatHistoryCursor): string {
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
@@ -306,6 +336,36 @@ function decodeHistoryCursor(value: string): ChatHistoryCursor | null {
       new Date(record.snapshotUpdatedAt).toISOString() !== record.snapshotUpdatedAt
     ) return null;
     return record as ChatHistoryCursor;
+  } catch {
+    return null;
+  }
+}
+
+function encodeArchivedChatCursor(cursor: ArchivedChatCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeArchivedChatCursor(value: string): ArchivedChatCursor | null {
+  if (
+    !value ||
+    value.length > ARCHIVED_CHAT_CURSOR_MAX_LENGTH ||
+    !/^[A-Za-z0-9_-]+$/u.test(value)
+  ) return null;
+  try {
+    const decoded = Buffer.from(value, "base64url").toString("utf8");
+    if (Buffer.from(decoded, "utf8").toString("base64url") !== value) return null;
+    const parsed: unknown = JSON.parse(decoded);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    if (
+      Object.keys(record).sort().join("|") !== "id|updatedAt|v" ||
+      record.v !== 1 ||
+      typeof record.id !== "string" ||
+      !record.id ||
+      typeof record.updatedAt !== "string" ||
+      new Date(record.updatedAt).toISOString() !== record.updatedAt
+    ) return null;
+    return record as ArchivedChatCursor;
   } catch {
     return null;
   }
@@ -603,6 +663,55 @@ function serializeChatSummary(chat: ChatSummaryRow): ChatSummaryRecord {
     title: chat.title,
     updatedAt: chat.updatedAt
   };
+}
+
+function serializeArchivedChatSummary(
+  chat: ArchivedChatSummaryRow
+): ArchivedChatSummaryRecord {
+  if (chat.memoryMode === "TEMPORARY" || !chat.archived) {
+    throw new Error("archived_chat_lifecycle_integrity_invalid");
+  }
+  return {
+    ...serializeChatSummary(chat),
+    archived: true,
+    memoryMode: chat.memoryMode,
+    sourceRevision: chat.memorySourceRevision
+  };
+}
+
+function serializeArchivedChatDetail(input: {
+  chat: ArchivedChatSummaryRow;
+  contextInputTokens: number;
+  hasOlder: boolean;
+  lightweightMessages: LightweightMessageRow[];
+  messages: HydratedMessagePath;
+}): ArchivedChatDetailRecord {
+  if (input.chat.memoryMode === "TEMPORARY" || !input.chat.archived) {
+    throw new Error("archived_chat_lifecycle_integrity_invalid");
+  }
+  return {
+    ...serializeChatDetail(input),
+    archived: true,
+    memoryMode: input.chat.memoryMode,
+    sourceRevision: input.chat.memorySourceRevision
+  };
+}
+
+async function defaultResumeSuppressionPreflight(
+  tx: Prisma.TransactionClient,
+  userId: string
+): Promise<boolean> {
+  const required = await tx.memorySuppression.findMany({
+    distinct: ["fingerprintKeyVersion"],
+    orderBy: { fingerprintKeyVersion: "asc" },
+    select: { fingerprintKeyVersion: true },
+    where: { userId }
+  });
+  return preflightMemorySuppressionKeys(
+    loadMemorySuppressionKeyring(),
+    required.map((row) => row.fingerprintKeyVersion),
+    "resume"
+  ).status === "ready";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1089,9 +1198,17 @@ export async function loadChatContextStats(
 
 export function createPrismaChatRepository(
   prismaClient = prisma,
-  options: Readonly<{ memorySourceHooks?: MemorySourceMutationHooks }> = {}
-): ChatRepository {
+  options: Readonly<{
+    memorySourceHooks?: MemorySourceMutationHooks;
+    resumeSuppressionPreflight?: (
+      tx: Prisma.TransactionClient,
+      userId: string
+    ) => Promise<boolean>;
+  }> = {}
+): ChatRepository & ChatLifecycleRepository {
   const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
+  const resumeSuppressionPreflight = options.resumeSuppressionPreflight ??
+    defaultResumeSuppressionPreflight;
   return {
     archiveChat: async ({ chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
@@ -1131,6 +1248,62 @@ export function createPrismaChatRepository(
           patch: { archived: true }
         });
         return true;
+      });
+    },
+    setArchived: async ({ archived, chatId, expectedChatRevision, userId }) => {
+      if (!Number.isSafeInteger(expectedChatRevision) || expectedChatRevision < 0) {
+        return { kind: "stale" };
+      }
+      return prismaClient.$transaction(async (tx): Promise<ChatLifecycleMutationResult> => {
+        const chats = await tx.$queryRaw<Array<LockedMemorySourceChat & { updatedAt: Date }>>`
+          SELECT
+            "id", "userId", "activeLeafMessageId", "archived", "folderId",
+            "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
+            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline", "updatedAt"
+          FROM "Chat"
+          WHERE "id" = ${chatId}
+            AND "userId" = ${userId}
+          FOR UPDATE
+        `;
+        const chat = chats[0];
+        if (!chat || chat.memoryMode === "TEMPORARY") return { kind: "not_found" };
+        if (
+          chat.archived === archived ||
+          chat.memorySourceRevision !== expectedChatRevision
+        ) return { kind: "stale" };
+
+        const activeRun = await tx.modelRun.findFirst({
+          select: { id: true },
+          where: {
+            chatId,
+            status: { in: ["preparing", "streaming", "queued", "in_progress"] }
+          }
+        });
+        if (activeRun) throw new ActiveRunConflictError();
+
+        const snapshot = await applyMemorySourceMutations(tx, {
+          chat,
+          hooks: memorySourceHooks,
+          mutations: ["CHAT_ARCHIVE_OR_RESTORE"],
+          patch: { archived }
+        });
+        const updated = await tx.chat.findUniqueOrThrow({
+          select: { updatedAt: true },
+          where: { id: chatId }
+        });
+        if (snapshot.memoryMode === "TEMPORARY") {
+          throw new Error("chat_lifecycle_integrity_invalid");
+        }
+        return {
+          chat: {
+            archived: snapshot.archived,
+            id: snapshot.id,
+            memoryMode: snapshot.memoryMode,
+            sourceRevision: snapshot.memorySourceRevision,
+            updatedAt: updated.updatedAt
+          },
+          kind: "ok"
+        };
       });
     },
     createChat: async ({ folderId, title, userId }) => {
@@ -1250,6 +1423,94 @@ export function createPrismaChatRepository(
         });
         return result.count === 1;
       }),
+    getArchivedChat: async ({ chatId, userId }) => {
+      return prismaClient.$transaction(async (tx) => {
+        const chat = await tx.chat.findFirst({
+          select: archivedChatSummarySelect,
+          where: {
+            archived: true,
+            id: chatId,
+            memoryMode: { not: "TEMPORARY" },
+            userId
+          }
+        });
+        if (!chat) return null;
+        const lightweightMessages = await tx.message.findMany({
+          select: lightweightMessageSelect,
+          where: { chatId }
+        });
+        const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
+        const pageMessages = activeMessages.slice(-CHAT_HISTORY_PAGE_SIZE);
+        const [messages, contextInputTokens] = await Promise.all([
+          hydrateMessagePath(tx, chatId, pageMessages, userId),
+          approximateActiveBranchInputTokens(tx, activeMessages)
+        ]);
+        return serializeArchivedChatDetail({
+          chat,
+          contextInputTokens,
+          hasOlder: activeMessages.length > CHAT_HISTORY_PAGE_SIZE,
+          lightweightMessages,
+          messages
+        });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    },
+    getArchivedMessagesPage: async ({ before, chatId, userId }) => {
+      return prismaClient.$transaction(async (tx) => {
+        const chat = await tx.chat.findFirst({
+          select: {
+            activeLeafMessageId: true,
+            id: true,
+            updatedAt: true
+          },
+          where: {
+            archived: true,
+            id: chatId,
+            memoryMode: { not: "TEMPORARY" },
+            userId
+          }
+        });
+        if (!chat) return { kind: "not_found" as const };
+        const cursor = decodeHistoryCursor(before);
+        if (!cursor || cursor.chatId !== chatId) return { kind: "cursor_invalid" as const };
+        if (
+          !chat.activeLeafMessageId ||
+          cursor.activeLeafMessageId !== chat.activeLeafMessageId ||
+          cursor.snapshotUpdatedAt !== chat.updatedAt.toISOString()
+        ) return { kind: "stale" as const };
+        const lightweightMessages = await tx.message.findMany({
+          select: { id: true, parentMessageId: true },
+          where: { chatId }
+        });
+        const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
+        const boundary = activeMessages.findIndex(
+          (message) => message.id === cursor.beforeMessageId
+        );
+        if (boundary <= 0) return { kind: "stale" as const };
+        const start = Math.max(0, boundary - CHAT_HISTORY_PAGE_SIZE);
+        const pagePath = activeMessages.slice(start, boundary);
+        const messages = await hydrateMessagePath(tx, chatId, pagePath, userId);
+        const hasOlder = start > 0;
+        return {
+          kind: "ok" as const,
+          page: {
+            messages: messages.messages.map((message) =>
+              serializeHydratedMessage(message, messages.memoryEvidenceByRun)),
+            pageInfo: {
+              activeLeafMessageId: chat.activeLeafMessageId,
+              beforeCursor: pageCursor({
+                activeLeafMessageId: chat.activeLeafMessageId,
+                beforeMessageId: messages.messages[0]?.id,
+                chatId,
+                chatUpdatedAt: chat.updatedAt,
+                hasOlder
+              }),
+              hasOlder,
+              snapshotUpdatedAt: chat.updatedAt
+            }
+          }
+        };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    },
     getChat: async ({ chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
         const chat = await tx.chat.findFirst({
@@ -1492,6 +1753,42 @@ export function createPrismaChatRepository(
         throw error;
       }
     },
+    listArchivedChats: async ({ cursor: cursorValue, userId }) => {
+      const cursor = cursorValue ? decodeArchivedChatCursor(cursorValue) : null;
+      if (cursorValue && !cursor) return { kind: "cursor_invalid" as const };
+      const rows = await prismaClient.chat.findMany({
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        select: archivedChatSummarySelect,
+        take: ARCHIVED_CHAT_PAGE_SIZE + 1,
+        where: {
+          archived: true,
+          memoryMode: { not: "TEMPORARY" },
+          userId,
+          ...(cursor
+            ? {
+                OR: [
+                  { updatedAt: { lt: new Date(cursor.updatedAt) } },
+                  { id: { lt: cursor.id }, updatedAt: new Date(cursor.updatedAt) }
+                ]
+              }
+            : {})
+        }
+      });
+      const hasMore = rows.length > ARCHIVED_CHAT_PAGE_SIZE;
+      const page = rows.slice(0, ARCHIVED_CHAT_PAGE_SIZE);
+      const boundary = page.at(-1);
+      return {
+        chats: page.map(serializeArchivedChatSummary),
+        kind: "ok" as const,
+        nextCursor: hasMore && boundary
+          ? encodeArchivedChatCursor({
+              id: boundary.id,
+              updatedAt: boundary.updatedAt.toISOString(),
+              v: 1
+            })
+          : null
+      };
+    },
     listWorkspace: async (userId) => {
       const user = await prismaClient.user.findUnique({
         select: {
@@ -1552,6 +1849,94 @@ export function createPrismaChatRepository(
           defaultKnowledgePlan: storedKnowledgeDefault(folder.defaultKnowledgePlan)
         }))
       };
+    },
+    resolveChatSource: async ({ chatId, userId }) => {
+      const chat = await prismaClient.chat.findFirst({
+        select: {
+          archived: true,
+          id: true,
+          memoryMode: true,
+          memorySourceRevision: true,
+          updatedAt: true
+        },
+        where: {
+          id: chatId,
+          memoryMode: { not: "TEMPORARY" },
+          userId
+        }
+      });
+      if (!chat || chat.memoryMode === "TEMPORARY") return null;
+      return {
+        chatId: chat.id,
+        location: chat.archived ? "ARCHIVED_PREVIEW" as const : "ACTIVE_CHAT" as const,
+        memoryMode: chat.memoryMode,
+        sourceRevision: chat.memorySourceRevision,
+        updatedAt: chat.updatedAt
+      };
+    },
+    setMemoryMode: async ({
+      chatId,
+      expectedChatRevision,
+      expectedMemoryRevision,
+      mode,
+      resumeDisclosureCopyVersion,
+      userId
+    }) => {
+      if (
+        !Number.isSafeInteger(expectedChatRevision) || expectedChatRevision < 0 ||
+        !Number.isSafeInteger(expectedMemoryRevision) || expectedMemoryRevision < 0 ||
+        (mode === "NORMAL" &&
+          resumeDisclosureCopyVersion !== MEMORY_CONFIRMATION_COPY_VERSION) ||
+        (mode === "EXCLUDED" && resumeDisclosureCopyVersion !== undefined)
+      ) return { kind: "contract_invalid" as const };
+      return prismaClient.$transaction(async (tx) => {
+        const chats = await tx.$queryRaw<LockedMemorySourceChat[]>`
+          SELECT
+            "id", "userId", "activeLeafMessageId", "archived", "folderId",
+            "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
+            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
+          FROM "Chat"
+          WHERE "id" = ${chatId}
+            AND "userId" = ${userId}
+          FOR UPDATE
+        `;
+        const chat = chats[0];
+        if (!chat) return { kind: "not_found" as const };
+        if (chat.memoryMode === "TEMPORARY") return { kind: "temporary" as const };
+        if (
+          chat.memorySourceRevision !== expectedChatRevision ||
+          chat.memoryMode === mode
+        ) return { kind: "source_stale" as const };
+
+        const settings = await lockMemorySettings(tx, userId, false);
+        if (settings.memoryRevision !== expectedMemoryRevision) {
+          return { kind: "memory_stale" as const };
+        }
+        if (mode === "NORMAL" && !(await resumeSuppressionPreflight(tx, userId))) {
+          return { kind: "resume_blocked" as const };
+        }
+
+        const snapshot = await applyMemorySourceMutations(tx, {
+          chat,
+          hooks: memorySourceHooks,
+          mutations: [mode === "EXCLUDED" ? "SOURCE_EXCLUDE" : "SOURCE_RESUME"],
+          patch: { memoryMode: mode }
+        });
+        const advanced = await tx.userMemorySettings.findUniqueOrThrow({
+          select: { memoryGeneration: true, memoryRevision: true },
+          where: { userId }
+        });
+        return {
+          kind: "ok" as const,
+          response: {
+            chatId: snapshot.id,
+            memoryGeneration: advanced.memoryGeneration,
+            memoryRevision: advanced.memoryRevision,
+            mode: snapshot.memoryMode,
+            sourceRevision: snapshot.memorySourceRevision
+          }
+        };
+      });
     },
     updateChat: async ({
       activeLeafMessageId,

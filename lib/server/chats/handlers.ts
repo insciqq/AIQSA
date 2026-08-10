@@ -245,7 +245,7 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
   };
 }
 
-function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSummaryWire {
+export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSummaryWire {
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: iso(chat.createdAt),
@@ -261,7 +261,7 @@ function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSummaryWire
   };
 }
 
-function serializeChatDetail(chat: ChatDetailRecord): ChatDetailWire {
+export function serializeChatDetail(chat: ChatDetailRecord): ChatDetailWire {
   return {
     ...serializeChatSummary(chat),
     contextStats: chat.contextStats,
@@ -274,7 +274,7 @@ function serializeChatDetail(chat: ChatDetailRecord): ChatDetailWire {
   };
 }
 
-function serializeMessagesPage(page: ChatMessagesPageRecord): ChatMessagesPageWire {
+export function serializeMessagesPage(page: ChatMessagesPageRecord): ChatMessagesPageWire {
   return {
     messages: page.messages.map(serializeMessage),
     pageInfo: {

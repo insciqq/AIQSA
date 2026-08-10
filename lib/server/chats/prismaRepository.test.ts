@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { boundedChatBranchPreview } from "../../contracts/chats";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 import { textMessageContent } from "../../domain/content";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { prisma } from "../prisma";
@@ -935,6 +936,288 @@ describe("Prisma chat repository", () => {
       }
 
       expect(stored.archived && stored.modelRuns.some((run) => run.status === "streaming")).toBe(false);
+    });
+  });
+
+  it("keeps explicit Archive/Restore counter-neutral while serving owner-only Archived history", async () => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
+      const repository = createPrismaChatRepository(prisma);
+      const chat = await prisma.chat.create({
+        data: { defaultProviderModelId: fakeProviderModelId, title: "Archived history", userId }
+      });
+      const ids = Array.from({ length: 51 }, (_, index) =>
+        `archived-history-${randomUUID()}-${index}`);
+      await prisma.message.createMany({
+        data: ids.map((id, index) => ({
+          chatId: chat.id,
+          content: textMessageContent(`Archived message ${index}`),
+          id,
+          parentMessageId: index === 0 ? null : ids[index - 1],
+          role: index % 2 === 0 ? "user" : "assistant",
+          status: "complete" as const
+        }))
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: ids.at(-1) },
+        where: { id: chat.id }
+      });
+      const countersBefore = await prisma.userMemorySettings.findUniqueOrThrow({
+        select: { memoryGeneration: true, memoryRevision: true },
+        where: { userId }
+      });
+
+      await expect(repository.setArchived({
+        archived: true,
+        chatId: chat.id,
+        expectedChatRevision: 0,
+        userId
+      })).resolves.toMatchObject({
+        chat: { archived: true, id: chat.id, sourceRevision: 0 },
+        kind: "ok"
+      });
+      await expect(repository.getChat({ chatId: chat.id, userId })).resolves.toBeNull();
+      const preview = await repository.getArchivedChat({ chatId: chat.id, userId });
+      expect(preview).toMatchObject({
+        archived: true,
+        messageCount: 51,
+        pageInfo: { beforeCursor: expect.any(String), hasOlder: true },
+        sourceRevision: 0
+      });
+      expect(preview?.messages.map(({ id }) => id)).toEqual(ids.slice(1));
+      const older = await repository.getArchivedMessagesPage({
+        before: preview?.pageInfo.beforeCursor ?? "",
+        chatId: chat.id,
+        userId
+      });
+      expect(older).toMatchObject({ kind: "ok", page: { messages: [{ id: ids[0] }] } });
+      await expect(repository.getArchivedChat({
+        chatId: chat.id,
+        userId: `foreign-${userId}`
+      })).resolves.toBeNull();
+      await expect(repository.resolveChatSource({ chatId: chat.id, userId })).resolves.toMatchObject({
+        location: "ARCHIVED_PREVIEW",
+        sourceRevision: 0
+      });
+      await expect(repository.listArchivedChats({ cursor: null, userId })).resolves.toMatchObject({
+        chats: [expect.objectContaining({ id: chat.id })],
+        kind: "ok"
+      });
+      await expect(repository.setArchived({
+        archived: false,
+        chatId: chat.id,
+        expectedChatRevision: 1,
+        userId
+      })).resolves.toEqual({ kind: "stale" });
+      await expect(repository.setArchived({
+        archived: false,
+        chatId: chat.id,
+        expectedChatRevision: 0,
+        userId
+      })).resolves.toMatchObject({
+        chat: { archived: false, sourceRevision: 0 },
+        kind: "ok"
+      });
+      await expect(repository.resolveChatSource({ chatId: chat.id, userId })).resolves.toMatchObject({
+        location: "ACTIVE_CHAT",
+        sourceRevision: 0
+      });
+      await expect(repository.getArchivedChat({ chatId: chat.id, userId })).resolves.toBeNull();
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
+        select: { memoryGeneration: true, memoryRevision: true },
+        where: { userId }
+      })).resolves.toEqual(countersBefore);
+      await expect(prisma.memoryJob.count({ where: { chatId: chat.id, userId } })).resolves.toBe(0);
+    });
+  });
+
+  it("paginates Archived chats by owner with opaque cursor validation", async () => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
+      const repository = createPrismaChatRepository(prisma);
+      const base = new Date("2026-08-10T00:00:00.000Z").getTime();
+      await prisma.chat.createMany({
+        data: Array.from({ length: 21 }, (_, index) => ({
+          archived: true,
+          defaultProviderModelId: fakeProviderModelId,
+          title: `Archived ${index}`,
+          updatedAt: new Date(base + index * 1_000),
+          userId
+        }))
+      });
+      const first = await repository.listArchivedChats({ cursor: null, userId });
+      expect(first).toMatchObject({
+        chats: expect.any(Array),
+        kind: "ok",
+        nextCursor: expect.any(String)
+      });
+      if (first.kind !== "ok") throw new Error("expected archived page");
+      expect(first.chats).toHaveLength(20);
+      const second = await repository.listArchivedChats({
+        cursor: first.nextCursor,
+        userId
+      });
+      expect(second).toMatchObject({ chats: [expect.any(Object)], kind: "ok", nextCursor: null });
+      if (second.kind !== "ok") throw new Error("expected archived page");
+      expect(new Set([...first.chats, ...second.chats].map(({ id }) => id)).size).toBe(21);
+      await expect(repository.listArchivedChats({
+        cursor: "malformed!",
+        userId
+      })).resolves.toEqual({ kind: "cursor_invalid" });
+      await expect(repository.listArchivedChats({
+        cursor: null,
+        userId: `foreign-${userId}`
+      })).resolves.toEqual({ chats: [], kind: "ok", nextCursor: null });
+    });
+  });
+
+  it("fences Exclude synchronously and resumes without crossing suppression or source cutoffs", async () => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
+      const preflight = vi.fn(async () => true);
+      const repository = createPrismaChatRepository(prisma, {
+        resumeSuppressionPreflight: preflight
+      });
+      const chat = await prisma.chat.create({
+        data: { defaultProviderModelId: fakeProviderModelId, title: "Memory source", userId }
+      });
+      const message = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Remember only eligible evidence"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: message.id },
+        where: { id: chat.id }
+      });
+      const barrier = await prisma.memorySourceBarrier.create({
+        data: {
+          kind: "ALL_REUSABLE",
+          memoryGeneration: 0,
+          sourceCreatedAtCutoff: new Date("2026-08-09T00:00:00.000Z"),
+          userId
+        }
+      });
+      const suppression = await prisma.memorySuppression.create({
+        data: {
+          deletionGeneration: 0,
+          fingerprintKeyVersion: "v1",
+          normalizationVersion: "memory-normalization-v1",
+          scope: "ALL",
+          userId
+        }
+      });
+
+      await expect(repository.setMemoryMode({
+        chatId: chat.id,
+        expectedChatRevision: 0,
+        expectedMemoryRevision: 0,
+        mode: "EXCLUDED",
+        userId
+      })).resolves.toEqual({
+        kind: "ok",
+        response: {
+          chatId: chat.id,
+          memoryGeneration: 1,
+          memoryRevision: 1,
+          mode: "EXCLUDED",
+          sourceRevision: 1
+        }
+      });
+      await expect(prisma.chat.findUniqueOrThrow({
+        select: { archived: true, memoryMode: true, memorySourceRevision: true },
+        where: { id: chat.id }
+      })).resolves.toEqual({
+        archived: false,
+        memoryMode: "EXCLUDED",
+        memorySourceRevision: 1
+      });
+      await expect(repository.setMemoryMode({
+        chatId: chat.id,
+        expectedChatRevision: 1,
+        expectedMemoryRevision: 1,
+        mode: "EXCLUDED",
+        userId
+      })).resolves.toEqual({ kind: "source_stale" });
+
+      await expect(repository.setMemoryMode({
+        chatId: chat.id,
+        expectedChatRevision: 1,
+        expectedMemoryRevision: 1,
+        mode: "NORMAL",
+        resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        userId
+      })).resolves.toEqual({
+        kind: "ok",
+        response: {
+          chatId: chat.id,
+          memoryGeneration: 1,
+          memoryRevision: 2,
+          mode: "NORMAL",
+          sourceRevision: 2
+        }
+      });
+      expect(preflight).toHaveBeenCalledWith(expect.anything(), userId);
+      await expect(prisma.memoryJob.findMany({
+        orderBy: { createdAt: "asc" },
+        select: {
+          kind: true,
+          memoryGenerationSnapshot: true,
+          memoryRevisionSnapshot: true,
+          sourceRevision: true
+        },
+        where: { chatId: chat.id, userId }
+      })).resolves.toEqual([
+        {
+          kind: "RECONCILE_SOURCE",
+          memoryGenerationSnapshot: 1,
+          memoryRevisionSnapshot: 1,
+          sourceRevision: 1
+        },
+        {
+          kind: "RECONCILE_SOURCE",
+          memoryGenerationSnapshot: 1,
+          memoryRevisionSnapshot: 2,
+          sourceRevision: 2
+        }
+      ]);
+      await expect(prisma.memorySourceBarrier.findUnique({
+        where: { userId_id: { id: barrier.id, userId } }
+      })).resolves.toMatchObject({
+        explicitOverrideAllowed: false,
+        id: barrier.id,
+        sourceCreatedAtCutoff: barrier.sourceCreatedAtCutoff
+      });
+      await expect(prisma.memorySuppression.findUnique({
+        where: { userId_id: { id: suppression.id, userId } }
+      })).resolves.toMatchObject({ explicitOverrideAllowed: false, id: suppression.id });
+
+      await repository.setMemoryMode({
+        chatId: chat.id,
+        expectedChatRevision: 2,
+        expectedMemoryRevision: 2,
+        mode: "EXCLUDED",
+        userId
+      });
+      const blockedRepository = createPrismaChatRepository(prisma, {
+        resumeSuppressionPreflight: async () => false
+      });
+      await expect(blockedRepository.setMemoryMode({
+        chatId: chat.id,
+        expectedChatRevision: 3,
+        expectedMemoryRevision: 3,
+        mode: "NORMAL",
+        resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        userId
+      })).resolves.toEqual({ kind: "resume_blocked" });
+      await expect(prisma.chat.findUniqueOrThrow({
+        select: { memoryMode: true, memorySourceRevision: true },
+        where: { id: chat.id }
+      })).resolves.toEqual({ memoryMode: "EXCLUDED", memorySourceRevision: 3 });
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
+        select: { memoryGeneration: true, memoryRevision: true },
+        where: { userId }
+      })).resolves.toEqual({ memoryGeneration: 2, memoryRevision: 3 });
     });
   });
 });
