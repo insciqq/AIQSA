@@ -15,6 +15,7 @@ import {
   normalizeMemorySearchText,
   normalizeMemorySearchTextYo
 } from "../persistence/lexical";
+import { enqueueMemoryJob } from "../persistence/jobs";
 import {
   advanceMemoryMutation,
   lockMemorySettings,
@@ -44,6 +45,10 @@ import {
   type MemoryHistorySourceOrigin,
   type MemoryHistoryTaintSource
 } from "./sourceProjection";
+import {
+  MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION,
+  memoryEpisodeExtractionJobFingerprint
+} from "./episode/contract";
 
 type MemoryHistoryPrepareResult =
   | Readonly<{ decision: Exclude<MemoryJobGateDecision, { status: "READY" }> }>
@@ -768,7 +773,23 @@ async function applyPlan(
   ) {
     throw new MemoryCoordinatorError("memory_history_plan_stale", true);
   }
-  if (await planAlreadyApplied(tx, settings, plan)) return;
+  if (await planAlreadyApplied(tx, settings, plan)) {
+    if (plan.chunks.length > 0) {
+      await enqueueMemoryJob(tx, settings, {
+        idempotencyFingerprint: memoryEpisodeExtractionJobFingerprint(plan.source),
+        kind: "EXTRACT_EPISODE",
+        pipelineVersion: MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION,
+        source: {
+          activeLeafMessageId: plan.source.activeLeafMessageId,
+          branchGeneration: plan.source.branchGeneration,
+          chatId: plan.source.chatId,
+          sourceHash: plan.source.sourceHash,
+          sourceRevision: plan.source.sourceRevision
+        }
+      });
+    }
+    return;
+  }
 
   const activeChunks = await tx.memoryRecallChunk.findMany({
     select: { id: true },
@@ -809,6 +830,9 @@ async function applyPlan(
       branchGeneration: plan.source.branchGeneration,
       chatId: plan.source.chatId,
       lastIndexedMessageId: plan.source.activeLeafMessageId,
+      lastDreamedMessageId: plan.chunks.length === 0
+        ? plan.source.activeLeafMessageId
+        : null,
       lastSucceededAt: now,
       sourceContentHash: plan.source.sourceHash,
       sourceRevision: plan.source.sourceRevision,
@@ -820,6 +844,9 @@ async function applyPlan(
       branchGeneration: plan.source.branchGeneration,
       lastErrorCode: null,
       lastIndexedMessageId: plan.source.activeLeafMessageId,
+      lastDreamedMessageId: plan.chunks.length === 0
+        ? plan.source.activeLeafMessageId
+        : null,
       lastSucceededAt: now,
       sourceContentHash: plan.source.sourceHash,
       sourceRevision: plan.source.sourceRevision,
@@ -832,6 +859,20 @@ async function applyPlan(
       }
     }
   });
+  if (plan.chunks.length > 0) {
+    await enqueueMemoryJob(tx, settings, {
+      idempotencyFingerprint: memoryEpisodeExtractionJobFingerprint(plan.source),
+      kind: "EXTRACT_EPISODE",
+      pipelineVersion: MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION,
+      source: {
+        activeLeafMessageId: plan.source.activeLeafMessageId,
+        branchGeneration: plan.source.branchGeneration,
+        chatId: plan.source.chatId,
+        sourceHash: plan.source.sourceHash,
+        sourceRevision: plan.source.sourceRevision
+      }
+    });
+  }
 }
 
 export function createPrismaMemoryHistoryIndexRepository(

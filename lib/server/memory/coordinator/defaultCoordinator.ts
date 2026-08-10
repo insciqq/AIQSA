@@ -5,6 +5,7 @@ import {
 import { MEMORY_EVALUATION_SCORER_VERSION } from "../../../evaluation/memory/contracts";
 import { createPrismaMemoryExplicitEmbeddingHandler } from "../embedding/handler";
 import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
+import { createPrismaMemoryEpisodeExtractionHandler } from "../history/episode/handler";
 import { ensureDefaultMemoryPurgeHandlerRegistered } from "../purge/defaultPurge";
 import { MemoryCoordinator } from "./coordinator";
 import { createPrismaMemoryCoordinatorRepository } from "./prismaRepository";
@@ -23,7 +24,7 @@ export const defaultMemoryCoordinatorRepository =
 // an exact signed qualification entry before the handler can leave its durable
 // waiting state. The code-owned registry is empty by default and verification
 // is deliberately fail-closed until an operator-approved authority is wired.
-const defaultExplicitEmbeddingHandler = createPrismaMemoryExplicitEmbeddingHandler({
+const defaultMemoryQualificationAuthority = {
   qualification: {
     corpusHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     corpusVersion: "memory-qualification-registry-v1",
@@ -32,12 +33,21 @@ const defaultExplicitEmbeddingHandler = createPrismaMemoryExplicitEmbeddingHandl
     suiteVersion: "memory-explicit-phase2-v1",
     verifySignature: () => false
   }
-}, prisma);
+} as const;
+
+const defaultExplicitEmbeddingHandler = createPrismaMemoryExplicitEmbeddingHandler(
+  defaultMemoryQualificationAuthority,
+  prisma
+);
 
 const defaultTemporaryChatDeletionHandler =
   createPrismaTemporaryChatDeletionHandler(createS3StorageAdapter(), prisma);
 
 const defaultHistoryIndexHandler = createPrismaMemoryHistoryIndexHandler(prisma);
+const defaultEpisodeExtractionHandler = createPrismaMemoryEpisodeExtractionHandler(
+  defaultMemoryQualificationAuthority,
+  prisma
+);
 
 export function ensureDefaultMemoryPhase2HandlersRegistered(): void {
   ensureDefaultMemoryPurgeHandlerRegistered();
@@ -57,10 +67,18 @@ export function ensureDefaultMemoryPhase2HandlersRegistered(): void {
 
 export function ensureDefaultMemoryPhase4HandlersRegistered(): void {
   ensureDefaultMemoryPhase2HandlersRegistered();
-  const existing = defaultMemoryCoordinatorRegistry.jobHandler("INDEX_HISTORY");
-  if (existing === defaultHistoryIndexHandler) return;
-  if (existing) throw new Error("memory_default_history_index_handler_conflict");
-  defaultMemoryCoordinatorRegistry.registerJob(defaultHistoryIndexHandler);
+  const history = defaultMemoryCoordinatorRegistry.jobHandler("INDEX_HISTORY");
+  if (!history) {
+    defaultMemoryCoordinatorRegistry.registerJob(defaultHistoryIndexHandler);
+  } else if (history !== defaultHistoryIndexHandler) {
+    throw new Error("memory_default_history_index_handler_conflict");
+  }
+  const episode = defaultMemoryCoordinatorRegistry.jobHandler("EXTRACT_EPISODE");
+  if (!episode) {
+    defaultMemoryCoordinatorRegistry.registerJob(defaultEpisodeExtractionHandler);
+  } else if (episode !== defaultEpisodeExtractionHandler) {
+    throw new Error("memory_default_episode_handler_conflict");
+  }
 }
 
 function createDefaultMemoryCoordinator(): MemoryCoordinator {

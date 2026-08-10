@@ -1,5 +1,6 @@
 export * from "./chunking";
 export * from "./contract";
+export * from "./episode";
 export * from "./handler";
 export * from "./language";
 export * from "./repository";

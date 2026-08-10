@@ -13,6 +13,12 @@ import {
 } from "../sourceState";
 import { createPrismaMemoryHistoryIndexHandler } from "./handler";
 import {
+  decodeMemoryEpisodeExtraction,
+  MEMORY_EPISODE_TOOL_NAME,
+  createPrismaMemoryEpisodeRepository
+} from "./episode";
+import { withLockedMemoryTransaction } from "../persistence/transaction";
+import {
   MEMORY_TEMPORARY_DELETION_GENERATION,
   MEMORY_TEMPORARY_DELETION_TARGET_TYPE
 } from "../temporaryRetention";
@@ -156,6 +162,69 @@ async function claimHistoryJob(userId: string): Promise<MemoryJobClaim> {
     stage: claimed.stage,
     userId: claimed.userId
   };
+}
+
+async function claimEpisodeJob(userId: string): Promise<MemoryJobClaim> {
+  const job = await prisma.memoryJob.findFirstOrThrow({
+    orderBy: [{ sourceRevision: "desc" }, { createdAt: "desc" }],
+    where: { kind: "EXTRACT_EPISODE", state: "QUEUED", userId }
+  });
+  const claimToken = randomUUID();
+  const leaseExpiresAt = new Date(Date.now() + 60_000);
+  const claimed = await prisma.memoryJob.update({
+    data: {
+      attemptCount: { increment: 1 },
+      leaseExpiresAt,
+      leaseToken: claimToken,
+      state: "CLAIMED"
+    },
+    where: { id: job.id }
+  });
+  return {
+    activeLeafMessageId: claimed.activeLeafMessageId,
+    attemptCount: claimed.attemptCount,
+    branchGeneration: claimed.branchGeneration,
+    chatId: claimed.chatId,
+    claimToken,
+    id: claimed.id,
+    idempotencyFingerprint: claimed.idempotencyFingerprint,
+    kind: claimed.kind,
+    leaseExpiresAt,
+    memoryGenerationSnapshot: claimed.memoryGenerationSnapshot,
+    memoryRevisionSnapshot: claimed.memoryRevisionSnapshot,
+    pipelineVersion: claimed.pipelineVersion,
+    recoveredLease: false,
+    sourceHash: claimed.sourceHash,
+    sourceRevision: claimed.sourceRevision,
+    stage: claimed.stage,
+    userId: claimed.userId
+  };
+}
+
+function episodeToolCall(
+  input: Extract<
+    Awaited<ReturnType<ReturnType<typeof createPrismaMemoryEpisodeRepository>["prepare"]>>,
+    { input: unknown }
+  >["input"],
+  summary: string,
+  keyword: string
+) {
+  const chunk = input.chunks[0]!;
+  return [{
+    arguments: {
+      episodes: [{
+        keywords: [keyword],
+        language: chunk.languageCode,
+        occurred_from: chunk.occurredFrom,
+        occurred_to: chunk.occurredTo,
+        source_chunk_ids: [chunk.id],
+        source_message_ids: [...chunk.messageIds],
+        summary
+      }]
+    },
+    id: "episode-call-1",
+    name: MEMORY_EPISODE_TOOL_NAME
+  }];
 }
 
 function executionContext(now: Date) {
@@ -316,6 +385,204 @@ describe("Memory lexical history index persistence", () => {
       await expect(prisma.memoryRecallChunk.count({
         where: { chatId: chat.id, state: "INVALIDATED", userId }
       })).resolves.toBe(1);
+    } finally {
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  });
+
+  it("persists an exact episode, message evidence, and lexical row atomically", async () => {
+    const userId = await createOwner("memory-episode-apply");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Episode persistence", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Подтверждаю выбранный сине-зелёный выпуск.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T08:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Для выпуска используем сине-зелёное развёртывание."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: turn.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: turn.assistantMessage.id,
+          runId: turn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const claim = await claimEpisodeJob(userId);
+      const repository = createPrismaMemoryEpisodeRepository(prisma);
+      const prepared = await repository.prepare(claim);
+      if ("decision" in prepared) throw new Error(prepared.decision.errorCode);
+      const summary = "Для выпуска используем сине-зелёное развёртывание.";
+      const plan = decodeMemoryEpisodeExtraction(
+        episodeToolCall(prepared.input, summary, "сине-зелёное"),
+        prepared.input
+      );
+      const bindingId = `episode-binding-${randomUUID()}`;
+      const settledAt = new Date("2026-08-10T08:04:00.000Z");
+      await prisma.memoryExecutionBinding.create({
+        data: {
+          acceptedOutputHash: plan.outputHash,
+          completedAt: settledAt,
+          createdAt: new Date("2026-08-10T08:03:00.000Z"),
+          destinationFingerprint: "d".repeat(64),
+          id: bindingId,
+          inputHash: prepared.input.inputHash,
+          logicalRole: "MEMORY_EPISODE_EXTRACT",
+          memoryJobId: claim.id,
+          ordinal: 0,
+          ownerType: "JOB",
+          pipelineVersion: claim.pipelineVersion,
+          policyVersion: "memory-episode-extractive-policy-v1",
+          promptVersion: "memory-episode-extractive-prompt-v1",
+          providerId: "episode-test-provider",
+          recoverableUntil: settledAt,
+          relationsDetachedAt: settledAt,
+          schemaVersion: "memory-episode-extractive-schema-v1",
+          secretFreeExecutionSnapshot: {},
+          state: "SUCCEEDED",
+          userId
+        }
+      });
+      const applied = await withLockedMemoryTransaction(
+        prisma,
+        userId,
+        (tx, settings) => repository.apply(
+          tx,
+          settings,
+          claim,
+          plan,
+          bindingId,
+          new Date("2026-08-10T08:05:00.000Z")
+        )
+      );
+      expect(applied).toBe("APPLIED");
+      const episode = await prisma.memoryEpisode.findFirstOrThrow({
+        where: { createdByExecutionId: bindingId, state: "ACTIVE", userId }
+      });
+      expect(episode).toMatchObject({
+        languageCode: "ru",
+        safeSummary: summary,
+        safetyClass: "NORMAL"
+      });
+      await expect(prisma.memoryEpisodeMessage.findMany({
+        orderBy: { ordinal: "asc" },
+        where: { episodeId: episode.id, userId }
+      })).resolves.toMatchObject(prepared.input.chunks[0]!.messageIds.map(
+        (messageId, ordinal) => ({ messageId, ordinal })
+      ));
+      await expect(prisma.memorySearchEntry.findFirstOrThrow({
+        where: { episodeId: episode.id, itemType: "EPISODE", userId }
+      })).resolves.toMatchObject({
+        embeddingState: "NOT_APPLICABLE",
+        languageCode: "ru"
+      });
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({
+        lastDreamedMessageId: turn.assistantMessage.id,
+        lastErrorCode: null
+      });
+      const after = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      expect(after.memoryRevision).toBe(before.memoryRevision + 1);
+
+      await expect(withLockedMemoryTransaction(
+        prisma,
+        userId,
+        (tx, settings) => repository.apply(
+          tx,
+          settings,
+          claim,
+          plan,
+          bindingId,
+          new Date("2026-08-10T08:06:00.000Z")
+        )
+      )).resolves.toBe("APPLIED");
+      await expect(prisma.memoryEpisode.count({ where: { userId } })).resolves.toBe(1);
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
+        .resolves.toMatchObject({ memoryRevision: after.memoryRevision });
+    } finally {
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  });
+
+  it("rejects an episode apply after the exact source revision changes", async () => {
+    const userId = await createOwner("memory-episode-source-race");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Episode source race", userId }
+      });
+      const first = await createTurn({
+        assistantText: "Initial assistant reply.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T08:30:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Initial user decision."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: first.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: first.assistantMessage.id,
+          runId: first.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+      const claim = await claimEpisodeJob(userId);
+      const repository = createPrismaMemoryEpisodeRepository(prisma);
+      const prepared = await repository.prepare(claim);
+      if ("decision" in prepared) throw new Error(prepared.decision.errorCode);
+      const plan = decodeMemoryEpisodeExtraction(
+        episodeToolCall(prepared.input, "Initial user decision.", "decision"),
+        prepared.input
+      );
+
+      const second = await createTurn({
+        assistantText: "Updated assistant reply.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T08:35:00.000Z"),
+        parentMessageId: first.assistantMessage.id,
+        userId,
+        userText: "Updated user decision."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: second.assistantMessage.id }
+      });
+      await expect(withLockedMemoryTransaction(
+        prisma,
+        userId,
+        (tx, settings) => repository.apply(
+          tx,
+          settings,
+          claim,
+          plan,
+          `episode-binding-${randomUUID()}`,
+          new Date("2026-08-10T08:36:00.000Z")
+        )
+      )).resolves.toBe("STALE");
+      await expect(prisma.memoryEpisode.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memorySearchEntry.count({
+        where: { itemType: "EPISODE", userId }
+      })).resolves.toBe(0);
     } finally {
       await prisma.user.deleteMany({ where: { id: userId } });
     }
