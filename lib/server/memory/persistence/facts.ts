@@ -1262,15 +1262,13 @@ export function createPrismaMemoryFactRepository(
             data: { lastConfirmedAt: input.evidence.observedAt },
             where: { id: existing.id }
           });
-          const searchEntry = await tx.memorySearchEntry.findUnique({
+          const searchEntry = await tx.memorySearchEntry.findFirst({
             select: { embeddingState: true, id: true },
             where: {
-              userId_indexGenerationId_itemType_factVersionId: {
-                factVersionId: currentVersion.id,
-                indexGenerationId: activeIndex.id,
-                itemType: "FACT_VERSION",
-                userId
-              }
+              factVersionId: currentVersion.id,
+              indexGenerationId: activeIndex.id,
+              itemType: "FACT_VERSION",
+              userId
             }
           });
           await enqueueExplicitEmbedding(tx, settings, input, searchEntry);

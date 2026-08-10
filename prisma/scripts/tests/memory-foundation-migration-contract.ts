@@ -13,6 +13,7 @@ const MEMORY_FOLLOWUP_MIGRATIONS = [
 const CHAT_SCOPE_MIGRATION = "20260810180000_memory_chat_scope_state";
 const SCOPE_LIFECYCLE_MIGRATION = "20260810190000_memory_scope_lifecycle";
 const TEMPORARY_RETENTION_MIGRATION = "20260810200000_memory_temporary_retention";
+const HISTORY_SCHEMA_MIGRATION = "20260810210000_memory_history_schema";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -23,6 +24,7 @@ const freshDatabase = `aiqsa_memory_fresh_${suffix}`;
 const rollbackDatabase = `aiqsa_memory_rollback_${suffix}`;
 const scopeRollbackDatabase = `aiqsa_memory_scope_rollback_${suffix}`;
 const temporaryRollbackDatabase = `aiqsa_memory_temporary_rollback_${suffix}`;
+const historyRollbackDatabase = `aiqsa_memory_history_rollback_${suffix}`;
 const createdDatabases = new Set<string>();
 
 type CommandResult = Readonly<{
@@ -1179,6 +1181,544 @@ function assertScopeLifecycleContracts(database: string): void {
   );
 }
 
+function assertHistorySchemaContracts(database: string, withCardinality: boolean): void {
+  const historyTables = [
+    "ChatMemoryCheckpoint",
+    "MemoryEpisode",
+    "MemoryEpisodeMessage",
+    "MemoryRecallChunk",
+    "MemoryRecallChunkMessage"
+  ];
+  assert.equal(
+    scalar(database, `
+      SELECT count(*) FROM information_schema.tables
+      WHERE table_schema = current_schema()
+        AND table_name IN (${historyTables.map((name) => `'${name}'`).join(",")});
+    `),
+    String(historyTables.length),
+    "Phase 4 history tables are incomplete"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+      FROM pg_enum
+      WHERE enumtypid = '"MemorySearchItemType"'::regtype;
+    `),
+    "FACT_VERSION,EPISODE,RECALL_CHUNK",
+    "Phase 4 search target enum is incomplete"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT count(*) FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND indexname IN (
+          'MemorySearchEntry_embedding_1024_hnsw_idx',
+          'MemorySearchEntry_embedding_1536_hnsw_idx',
+          'MemorySearchEntry_episode_target_key',
+          'MemorySearchEntry_recall_chunk_target_key'
+        );
+    `),
+    "4",
+    "Phase 4 typed-target or HNSW indexes are missing"
+  );
+
+  requireSuccess(psql(database, `
+    BEGIN;
+    INSERT INTO "Chat" ("id", "userId", "folderId", "title", "updatedAt")
+    VALUES (
+      'memory-history-chat-b', 'memory-phase3-owner-b', 'memory-phase3-folder-b',
+      'History B', CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Message" ("id", "chatId", "role", "content", "status", "updatedAt") VALUES
+      ('memory-history-user-b', 'memory-history-chat-b', 'user', '[]'::jsonb, 'complete', CURRENT_TIMESTAMP),
+      ('memory-history-assistant-b', 'memory-history-chat-b', 'assistant', '[]'::jsonb, 'complete', CURRENT_TIMESTAMP);
+    UPDATE "Chat"
+    SET "activeLeafMessageId" = 'memory-history-assistant-b'
+    WHERE "id" = 'memory-history-chat-b';
+    UPDATE "Chat"
+    SET "activeLeafMessageId" = 'memory-assistant-message-a'
+    WHERE "id" = 'memory-chat-a';
+
+    INSERT INTO "MemoryIndexGeneration" (
+      "id", "userId", "generation", "state", "indexMode", "targetMemoryRevision",
+      "indexedThroughMemoryRevision", "languageProfile", "normalizationVersion",
+      "chunkingVersion", "retrievalPipelineVersion", "readyAt", "activatedAt"
+    )
+    SELECT
+      'memory-history-lexical-a', 'memory-owner-a', 9, 'ACTIVE', 'LEXICAL_ONLY',
+      settings."memoryRevision", settings."memoryRevision", 'RU_EN_MULTILINGUAL_V1',
+      'memory-normalization-v1', 'memory-chunking-v1', 'memory-retrieval-v1',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    FROM "UserMemorySettings" AS settings
+    WHERE settings."userId" = 'memory-owner-a'
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemoryIndexGeneration"
+        WHERE "userId" = 'memory-owner-a' AND "state" = 'ACTIVE'
+      );
+    UPDATE "UserMemorySettings"
+    SET "activeIndexGenerationId" = (
+      SELECT "id" FROM "MemoryIndexGeneration"
+      WHERE "userId" = 'memory-owner-a' AND "state" = 'ACTIVE'
+    )
+    WHERE "userId" = 'memory-owner-a';
+
+    INSERT INTO "ChatMemoryCheckpoint" (
+      "id", "userId", "chatId", "branchGeneration", "sourceRevision",
+      "activeLeafMessageId", "sourceContentHash", "lastIndexedMessageId",
+      "status", "lastSucceededAt"
+    ) VALUES (
+      'memory-history-checkpoint-a', 'memory-owner-a', 'memory-chat-a', 0, 0,
+      'memory-assistant-message-a', repeat('a', 64), 'memory-assistant-message-a',
+      'READY', CURRENT_TIMESTAMP
+    );
+    INSERT INTO "MemoryRecallChunk" (
+      "id", "userId", "chatId", "sourceFolderId", "branchGeneration",
+      "sourceRevisionAtCreation", "chunkOrdinal", "contentHash",
+      "safeProjectedText", "normalizedSafeSearchText", "languageCode",
+      "occurredFrom", "occurredTo", "state", "chunkingVersion",
+      "sourceProjectionVersion", "safetyClass", "redactionState"
+    )
+    SELECT
+      'memory-history-chunk-a', chat."userId", chat."id", chat."folderId", 0, 0, 0,
+      repeat('b', 64), 'Безопасный фрагмент API', 'безопасный фрагмент api', 'ru',
+      CURRENT_TIMESTAMP - interval '1 minute', CURRENT_TIMESTAMP, 'ACTIVE',
+      'memory-chunking-v1', 'memory-source-v1', 'NORMAL', 'NOT_NEEDED'
+    FROM "Chat" AS chat WHERE chat."id" = 'memory-chat-a';
+    INSERT INTO "MemoryRecallChunkMessage" (
+      "userId", "chunkId", "chatId", "messageId", "ordinal", "role"
+    ) VALUES (
+      'memory-owner-a', 'memory-history-chunk-a', 'memory-chat-a',
+      'memory-user-message-a', 0, 'user'
+    );
+    INSERT INTO "MemoryEpisode" (
+      "id", "userId", "chatId", "sourceFolderId", "branchGeneration",
+      "sourceRevisionAtCreation", "safeSummary", "normalizedSafeSearchText",
+      "languageCode", "keywords", "entities", "occurredFrom", "occurredTo",
+      "state", "extractorRole", "createdByExecutionId", "pipelineVersion",
+      "sourceHash", "sourceProjectionVersion", "safetyClass", "redactionState"
+    )
+    SELECT
+      'memory-history-episode-a', chat."userId", chat."id", chat."folderId", 0, 0,
+      'Обсуждение безопасного API', 'обсуждение безопасного api', 'ru',
+      '["api"]'::jsonb, '[]'::jsonb, CURRENT_TIMESTAMP - interval '1 minute',
+      CURRENT_TIMESTAMP, 'ACTIVE', 'MEMORY_EPISODE_EXTRACT',
+      'memory-execution-usage-binding', 'memory-episode-v1', repeat('c', 64),
+      'memory-source-v1', 'NORMAL', 'NOT_NEEDED'
+    FROM "Chat" AS chat WHERE chat."id" = 'memory-chat-a';
+    INSERT INTO "MemoryEpisodeMessage" (
+      "userId", "episodeId", "chatId", "messageId", "ordinal"
+    ) VALUES (
+      'memory-owner-a', 'memory-history-episode-a', 'memory-chat-a',
+      'memory-user-message-a', 0
+    );
+
+    INSERT INTO "MemorySearchEntry" (
+      "id", "userId", "indexGenerationId", "itemType", "recallChunkId",
+      "safeSearchText", "safeSearchTextYoNormalized", "safeContentHash",
+      "languageCode", "safetyIdentitySnapshot", "sourceIdentitySnapshot",
+      "suppressionIdentitySnapshot", "embeddingState"
+    )
+    SELECT
+      'memory-history-search-chunk-a', 'memory-owner-a', generation."id",
+      'RECALL_CHUNK', 'memory-history-chunk-a', 'Безопасный фрагмент API',
+      'Безопасный фрагмент API', repeat('d', 64), 'ru', repeat('e', 64),
+      repeat('f', 64), repeat('g', 64), 'NOT_APPLICABLE'
+    FROM "MemoryIndexGeneration" AS generation
+    WHERE generation."userId" = 'memory-owner-a' AND generation."state" = 'ACTIVE';
+    INSERT INTO "MemorySearchEntry" (
+      "id", "userId", "indexGenerationId", "itemType", "episodeId",
+      "safeSearchText", "safeSearchTextYoNormalized", "safeContentHash",
+      "languageCode", "safetyIdentitySnapshot", "sourceIdentitySnapshot",
+      "suppressionIdentitySnapshot", "embeddingState"
+    )
+    SELECT
+      'memory-history-search-episode-a', 'memory-owner-a', generation."id",
+      'EPISODE', 'memory-history-episode-a', 'Обсуждение безопасного API',
+      'Обсуждение безопасного API', repeat('h', 64), 'ru', repeat('i', 64),
+      repeat('j', 64), repeat('k', 64), 'NOT_APPLICABLE'
+    FROM "MemoryIndexGeneration" AS generation
+    WHERE generation."userId" = 'memory-owner-a' AND generation."state" = 'ACTIVE';
+    COMMIT;
+  `), "create Phase 4 history aggregates and lexical targets");
+
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM "ChatMemoryCheckpoint" WHERE "userId" = 'memory-owner-a'),
+        (SELECT count(*) FROM "MemoryRecallChunkMessage" WHERE "userId" = 'memory-owner-a'),
+        (SELECT count(*) FROM "MemoryEpisodeMessage" WHERE "userId" = 'memory-owner-a'),
+        (SELECT ("searchVectorRussian" @@ plainto_tsquery('russian', 'фрагмент'))::int
+         FROM "MemorySearchEntry" WHERE "id" = 'memory-history-search-chunk-a'),
+        (SELECT ("searchVectorSimple" @@ plainto_tsquery('simple', 'API'))::int
+         FROM "MemorySearchEntry" WHERE "id" = 'memory-history-search-episode-a')
+      );
+    `),
+    "1|1|1|1|1",
+    "history joins or synchronous multilingual lexical rows are incomplete"
+  );
+
+  expectRejected(database, `
+    INSERT INTO "MemoryRecallChunk" (
+      "id", "userId", "chatId", "sourceFolderId", "branchGeneration",
+      "sourceRevisionAtCreation", "chunkOrdinal", "contentHash",
+      "safeProjectedText", "normalizedSafeSearchText", "languageCode",
+      "occurredFrom", "occurredTo", "state", "chunkingVersion",
+      "sourceProjectionVersion", "safetyClass", "redactionState"
+    ) VALUES (
+      'memory-history-cross-owner', 'memory-owner-a', 'memory-history-chat-b',
+      'memory-phase3-folder-b', 0, 0, 0, repeat('l', 64), 'cross owner',
+      'cross owner', 'en', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ACTIVE',
+      'memory-chunking-v1', 'memory-source-v1', 'NORMAL', 'NOT_NEEDED'
+    );
+  `, /MemoryRecallChunk_(chat|folder)_fkey/u, "cross-owner history source");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryRecallChunk" (
+      "id", "userId", "chatId", "sourceFolderId", "branchGeneration",
+      "sourceRevisionAtCreation", "chunkOrdinal", "contentHash",
+      "safeProjectedText", "normalizedSafeSearchText", "languageCode",
+      "occurredFrom", "occurredTo", "state", "chunkingVersion",
+      "sourceProjectionVersion", "safetyClass", "redactionState"
+    )
+    SELECT
+      'memory-history-stale-source', chat."userId", chat."id", chat."folderId", 99,
+      0, 99, repeat('m', 64), 'stale source', 'stale source', 'en',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ACTIVE', 'memory-chunking-v1',
+      'memory-source-v1', 'NORMAL', 'NOT_NEEDED'
+    FROM "Chat" AS chat WHERE chat."id" = 'memory-chat-a';
+  `, /ACTIVE Memory history must match/u, "active stale source generation");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryRecallChunk" (
+      "id", "userId", "chatId", "sourceFolderId", "branchGeneration",
+      "sourceRevisionAtCreation", "chunkOrdinal", "contentHash",
+      "safeProjectedText", "normalizedSafeSearchText", "languageCode",
+      "occurredFrom", "occurredTo", "state", "chunkingVersion",
+      "sourceProjectionVersion", "safetyClass", "redactionState"
+    )
+    SELECT
+      'memory-history-secret', chat."userId", chat."id", chat."folderId", 0, 0,
+      98, repeat('n', 64), 'must not persist', 'must not persist', 'en',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ACTIVE', 'memory-chunking-v1',
+      'memory-source-v1', 'SECRET_TAINTED', 'EXCLUDED'
+    FROM "Chat" AS chat WHERE chat."id" = 'memory-chat-a';
+  `, /MemoryRecallChunk_shape_check/u, "secret-tainted derivative retention");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryRecallChunkMessage" (
+      "userId", "chunkId", "chatId", "messageId", "ordinal", "role"
+    ) VALUES (
+      'memory-owner-a', 'memory-history-chunk-a', 'memory-history-chat-b',
+      'memory-history-user-b', 2, 'user'
+    );
+  `, /MemoryRecallChunkMessage_chunk_fkey/u, "cross-chat chunk message");
+
+  expectRejected(database, `
+    INSERT INTO "MemorySearchEntry" (
+      "id", "userId", "indexGenerationId", "itemType", "episodeId",
+      "recallChunkId", "safeSearchText", "safeSearchTextYoNormalized",
+      "safeContentHash", "languageCode", "safetyIdentitySnapshot",
+      "sourceIdentitySnapshot", "suppressionIdentitySnapshot", "embeddingState"
+    )
+    SELECT
+      'memory-history-invalid-target-shape', 'memory-owner-a', generation."id",
+      'EPISODE', 'memory-history-episode-a', 'memory-history-chunk-a', 'invalid',
+      'invalid', repeat('o', 64), 'en', repeat('p', 64), repeat('q', 64),
+      repeat('r', 64), 'NOT_APPLICABLE'
+    FROM "MemoryIndexGeneration" AS generation
+    WHERE generation."userId" = 'memory-owner-a' AND generation."state" = 'ACTIVE';
+  `, /MemorySearchEntry_shape_check/u, "multi-target search row");
+
+  expectRejected(database, `
+    UPDATE "Chat"
+    SET "memorySourceRevision" = "memorySourceRevision" + 1
+    WHERE "id" = 'memory-chat-a';
+  `, /ACTIVE Memory history must match/u, "source revision without derivative transition");
+
+  if (withCardinality) {
+    requireSuccess(psql(database, `
+      INSERT INTO "MemoryEvidence" (
+        "id", "userId", "factVersionId", "stance", "sourceType", "chatId",
+        "episodeId", "branchGeneration", "safeExcerpt", "safeSourceHash",
+        "sourceProjectionVersion", "safetyClass", "observedAt"
+      ) VALUES (
+        'memory-history-episode-evidence', 'memory-owner-a', 'memory-version-a',
+        'SUPPORTS', 'EPISODE', 'memory-chat-a', 'memory-history-episode-a', 0,
+        'Безопасное эпизодическое свидетельство', repeat('s', 64),
+        'memory-source-v1', 'NORMAL', CURRENT_TIMESTAMP
+      );
+      INSERT INTO "MemorySuppression" (
+        "id", "userId", "scope", "sourceChatId", "sourceEpisodeId",
+        "sourceBranchGeneration", "deletionGeneration", "fingerprintKeyVersion",
+        "normalizationVersion"
+      ) VALUES (
+        'memory-history-episode-suppression', 'memory-owner-a', 'SOURCE_EPISODE',
+        'memory-chat-a', 'memory-history-episode-a', 0, 0, 'memory-key-v1',
+        'memory-normalization-v1'
+      );
+
+      INSERT INTO "MemoryRetrievalAttemptItem" (
+        "id", "userId", "attemptId", "ordinal", "itemType", "exactItemId",
+        "episodeId", "sourceChatIdSnapshot", "sourceBranchGenerationSnapshot",
+        "sourceRevisionSnapshot", "sourceContentHashSnapshot", "exactSafeText",
+        "textHash", "sourceSnapshot", "versionSnapshot", "laneRanks",
+        "featureSnapshot", "selectionReason"
+      ) VALUES (
+        'memory-history-attempt-item', 'memory-owner-a', 'memory-attempt-1', 10,
+        'EPISODE', 'memory-history-episode-a', 'memory-history-episode-a',
+        'memory-chat-a', 0, 0, repeat('c', 64), 'Обсуждение безопасного API',
+        repeat('t', 64), '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+        'history-schema-contract'
+      );
+
+      INSERT INTO "MemoryEpisode" (
+        "id", "userId", "chatId", "sourceFolderId", "branchGeneration",
+        "sourceRevisionAtCreation", "safeSummary", "normalizedSafeSearchText",
+        "languageCode", "keywords", "entities", "state", "extractorRole",
+        "createdByExecutionId", "pipelineVersion", "sourceHash",
+        "sourceProjectionVersion", "safetyClass", "redactionState"
+      )
+      SELECT
+        'memory-history-accepted-episode', chat."userId", chat."id", chat."folderId",
+        0, 0, 'Accepted history snapshot', 'accepted history snapshot', 'en',
+        '[]'::jsonb, '[]'::jsonb, 'ACTIVE', 'MEMORY_EPISODE_EXTRACT',
+        'memory-execution-usage-binding', 'memory-episode-v1', repeat('u', 64),
+        'memory-source-v1', 'NORMAL', 'NOT_NEEDED'
+      FROM "Chat" AS chat WHERE chat."id" = 'memory-chat-a';
+      INSERT INTO "ModelRunMemoryItem" (
+        "id", "userId", "bindingId", "ordinal", "itemType", "exactItemId",
+        "episodeId", "sourceChatIdSnapshot", "sourceBranchGenerationSnapshot",
+        "sourceRevisionSnapshot", "sourceContentHashSnapshot",
+        "sourceMessageIdsSnapshot", "includedText", "includedTextHash",
+        "itemStateAtAdmission", "laneRanks", "featureSnapshot", "finalScore",
+        "selectionReason"
+      ) VALUES (
+        'memory-history-accepted-item', 'memory-owner-a', 'memory-run-binding-1', 10,
+        'EPISODE', 'memory-history-accepted-episode', 'memory-history-accepted-episode',
+        'memory-chat-a', 0, 0, repeat('u', 64), ARRAY['memory-user-message-a'],
+        'Accepted history snapshot', repeat('v', 64), 'ACTIVE', '{}'::jsonb,
+        '{}'::jsonb, 0.8, 'history-schema-contract'
+      );
+      DELETE FROM "MemoryEpisode" WHERE "id" = 'memory-history-accepted-episode';
+    `), "prove typed staging and immutable accepted history snapshots");
+
+    assert.equal(
+      scalar(database, `
+        SELECT concat_ws('|', "exactItemId", COALESCE("episodeId", 'NULL'),
+          "sourceChatIdSnapshot", "sourceBranchGenerationSnapshot",
+          "sourceRevisionSnapshot", "sourceContentHashSnapshot")
+        FROM "ModelRunMemoryItem" WHERE "id" = 'memory-history-accepted-item';
+      `),
+      `memory-history-accepted-episode|NULL|memory-chat-a|0|0|${"u".repeat(64)}`,
+      "accepted history snapshot did not retain exact source-generation evidence"
+    );
+
+    expectRejected(database, `
+      INSERT INTO "MemoryRetrievalAttemptItem" (
+        "id", "userId", "attemptId", "ordinal", "itemType", "exactItemId",
+        "recallChunkId", "sourceChatIdSnapshot", "sourceBranchGenerationSnapshot",
+        "sourceRevisionSnapshot", "sourceContentHashSnapshot", "exactSafeText",
+        "textHash", "selectionReason"
+      ) VALUES (
+        'memory-history-wrong-generation-item', 'memory-owner-a', 'memory-attempt-1',
+        11, 'RECALL_CHUNK', 'memory-history-chunk-a', 'memory-history-chunk-a',
+        'memory-chat-a', 0, 999, repeat('b', 64), 'wrong generation',
+        repeat('w', 64), 'history-schema-contract'
+      );
+    `, /MemoryRetrievalAttemptItem_recall_chunk_fkey/u,
+    "staged item with mismatched source generation");
+  }
+
+  requireSuccess(psql(database, `
+    BEGIN;
+    UPDATE "MemoryRecallChunk"
+    SET "state" = 'INVALIDATED', "invalidatedAt" = CURRENT_TIMESTAMP
+    WHERE "userId" = 'memory-owner-a' AND "chatId" = 'memory-chat-a'
+      AND "state" = 'ACTIVE';
+    UPDATE "MemoryEpisode"
+    SET "state" = 'INVALIDATED', "invalidatedAt" = CURRENT_TIMESTAMP
+    WHERE "userId" = 'memory-owner-a' AND "chatId" = 'memory-chat-a'
+      AND "state" = 'ACTIVE';
+    UPDATE "ChatMemoryCheckpoint"
+    SET "status" = 'STALE'
+    WHERE "userId" = 'memory-owner-a' AND "chatId" = 'memory-chat-a';
+    UPDATE "Chat"
+    SET "memorySourceRevision" = "memorySourceRevision" + 1
+    WHERE "id" = 'memory-chat-a';
+    COMMIT;
+  `), "advance chat source only with atomic history invalidation");
+
+  if (!withCardinality) return;
+
+  requireSuccess(psql(database, `
+    INSERT INTO "ProviderConnection" (
+      "id", "displayName", "family", "enabled", "draftConfig", "draftVersion",
+      "activeConfig", "activeVersion", "activatedAt", "updatedAt"
+    ) VALUES (
+      'memory-history-embedding-connection', 'Memory history embedding',
+      'openai_compatible', true, '{}'::jsonb, 1, '{}'::jsonb, 1,
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "ProviderModel" (
+      "id", "connectionId", "provider", "modelId", "displayName", "modelClass",
+      "contextWindow", "draftConfig", "draftVersion", "activeConfig",
+      "activeVersion", "capabilities", "defaultParams", "activatedAt", "updatedAt"
+    ) VALUES (
+      'memory-history-embedding-model', 'memory-history-embedding-connection',
+      'openai_compatible', 'memory-history-embedding', 'Memory history embedding',
+      'embedding', 32768, '{}'::jsonb, 1, '{}'::jsonb, 1, '{}'::jsonb,
+      '{}'::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "MemoryIndexGeneration" (
+      "id", "userId", "generation", "state", "indexMode",
+      "targetMemoryRevision", "indexedThroughMemoryRevision",
+      "embeddingConnectionId", "embeddingProviderModelId",
+      "embeddingConfigurationFingerprint", "embeddingDimension",
+      "vectorSpaceFingerprint", "languageProfile", "normalizationVersion",
+      "chunkingVersion", "retrievalPipelineVersion"
+    ) VALUES
+      (
+        'memory-history-hybrid-1024', 'memory-owner-a', 10, 'BUILDING', 'HYBRID',
+        0, 0, 'memory-history-embedding-connection', 'memory-history-embedding-model',
+        repeat('x', 64), 1024, repeat('y', 64), 'RU_EN_MULTILINGUAL_V1',
+        'memory-normalization-v1', 'memory-chunking-v1', 'memory-retrieval-v1'
+      ),
+      (
+        'memory-history-hybrid-1536', 'memory-phase3-owner-b', 10, 'BUILDING',
+        'HYBRID', 0, 0, 'memory-history-embedding-connection',
+        'memory-history-embedding-model', repeat('z', 64), 1536, repeat('0', 64),
+        'RU_EN_MULTILINGUAL_V1', 'memory-normalization-v1', 'memory-chunking-v1',
+        'memory-retrieval-v1'
+      );
+
+    INSERT INTO "MemoryRecallChunk" (
+      "id", "userId", "chatId", "sourceFolderId", "branchGeneration",
+      "sourceRevisionAtCreation", "chunkOrdinal", "contentHash",
+      "safeProjectedText", "normalizedSafeSearchText", "languageCode",
+      "occurredFrom", "occurredTo", "state", "chunkingVersion",
+      "sourceProjectionVersion", "safetyClass", "redactionState"
+    )
+    SELECT
+      'memory-cardinality-1024-chunk-' || n, chat."userId", chat."id", chat."folderId",
+      chat."memoryBranchGeneration", chat."memorySourceRevision", 1000 + n,
+      md5('memory-cardinality-1024-' || n), 'Recall fixture ' || n,
+      'recall fixture ' || n, 'en', CURRENT_TIMESTAMP - interval '1 day',
+      CURRENT_TIMESTAMP, 'ACTIVE', 'memory-chunking-v1', 'memory-source-v1',
+      'NORMAL', 'NOT_NEEDED'
+    FROM generate_series(1, 5001) AS n
+    CROSS JOIN "Chat" AS chat
+    WHERE chat."id" = 'memory-chat-a';
+    INSERT INTO "MemorySearchEntry" (
+      "id", "userId", "indexGenerationId", "itemType", "recallChunkId",
+      "safeSearchText", "safeSearchTextYoNormalized", "safeContentHash",
+      "languageCode", "safetyIdentitySnapshot", "sourceIdentitySnapshot",
+      "suppressionIdentitySnapshot", "embedding", "embeddingDimension",
+      "embeddingState"
+    )
+    SELECT
+      'memory-cardinality-1024-search-' || n, 'memory-owner-a',
+      'memory-history-hybrid-1024', 'RECALL_CHUNK',
+      'memory-cardinality-1024-chunk-' || n, 'Recall fixture ' || n,
+      'Recall fixture ' || n, md5('memory-cardinality-1024-search-' || n), 'en',
+      md5('memory-safety-1024-' || n), md5('memory-source-1024-' || n),
+      md5('memory-suppression-1024-' || n),
+      (ARRAY[1::real] || array_fill((n % 17)::real / 1000, ARRAY[1023]))::vector,
+      1024, 'READY'
+    FROM generate_series(1, 5001) AS n;
+
+    INSERT INTO "MemoryRecallChunk" (
+      "id", "userId", "chatId", "sourceFolderId", "branchGeneration",
+      "sourceRevisionAtCreation", "chunkOrdinal", "contentHash",
+      "safeProjectedText", "normalizedSafeSearchText", "languageCode",
+      "occurredFrom", "occurredTo", "state", "chunkingVersion",
+      "sourceProjectionVersion", "safetyClass", "redactionState"
+    )
+    SELECT
+      'memory-cardinality-1536-chunk-' || n, chat."userId", chat."id", chat."folderId",
+      chat."memoryBranchGeneration", chat."memorySourceRevision", 1000 + n,
+      md5('memory-cardinality-1536-' || n), 'Recall fixture B ' || n,
+      'recall fixture b ' || n, 'en', CURRENT_TIMESTAMP - interval '1 day',
+      CURRENT_TIMESTAMP, 'ACTIVE', 'memory-chunking-v1', 'memory-source-v1',
+      'NORMAL', 'NOT_NEEDED'
+    FROM generate_series(1, 32) AS n
+    CROSS JOIN "Chat" AS chat
+    WHERE chat."id" = 'memory-history-chat-b';
+    INSERT INTO "MemorySearchEntry" (
+      "id", "userId", "indexGenerationId", "itemType", "recallChunkId",
+      "safeSearchText", "safeSearchTextYoNormalized", "safeContentHash",
+      "languageCode", "safetyIdentitySnapshot", "sourceIdentitySnapshot",
+      "suppressionIdentitySnapshot", "embedding", "embeddingDimension",
+      "embeddingState"
+    )
+    SELECT
+      'memory-cardinality-1536-search-' || n, 'memory-phase3-owner-b',
+      'memory-history-hybrid-1536', 'RECALL_CHUNK',
+      'memory-cardinality-1536-chunk-' || n, 'Recall fixture B ' || n,
+      'Recall fixture B ' || n, md5('memory-cardinality-1536-search-' || n), 'en',
+      md5('memory-safety-1536-' || n), md5('memory-source-1536-' || n),
+      md5('memory-suppression-1536-' || n),
+      (ARRAY[1::real] || array_fill((n % 19)::real / 1000, ARRAY[1535]))::vector,
+      1536, 'READY'
+    FROM generate_series(1, 32) AS n;
+    ANALYZE "MemorySearchEntry";
+  `), "load Phase 4 realistic HNSW cardinality fixtures");
+
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM "MemorySearchEntry"
+         WHERE "indexGenerationId" = 'memory-history-hybrid-1024'),
+        (SELECT count(*) FROM "MemorySearchEntry"
+         WHERE "indexGenerationId" = 'memory-history-hybrid-1536')
+      );
+    `),
+    "5001|32",
+    "HNSW cardinality fixtures are incomplete"
+  );
+
+  const plan1024 = requireSuccess(psql(database, `
+    SET enable_seqscan = off;
+    SET enable_sort = off;
+    EXPLAIN (COSTS OFF)
+    SELECT "id"
+    FROM "MemorySearchEntry"
+    WHERE "userId" = 'memory-owner-a'
+      AND "indexGenerationId" = 'memory-history-hybrid-1024'
+      AND "itemType" = 'RECALL_CHUNK'
+      AND "embeddingState" = 'READY'
+      AND "embeddingDimension" = 1024
+    ORDER BY ("embedding"::vector(1024) <=>
+      ((ARRAY[1::real] || array_fill(0::real, ARRAY[1023]))::vector(1024)))
+    LIMIT 10;
+  `), "EXPLAIN Memory 1024 HNSW index usability");
+  assert.match(
+    plan1024,
+    /MemorySearchEntry_embedding_1024_hnsw_idx/u,
+    "1024-dimensional Memory HNSW index is not usable"
+  );
+
+  const plan1536 = requireSuccess(psql(database, `
+    SET enable_seqscan = off;
+    SET enable_sort = off;
+    EXPLAIN (COSTS OFF)
+    SELECT "id"
+    FROM "MemorySearchEntry"
+    WHERE "userId" = 'memory-phase3-owner-b'
+      AND "indexGenerationId" = 'memory-history-hybrid-1536'
+      AND "itemType" = 'RECALL_CHUNK'
+      AND "embeddingState" = 'READY'
+      AND "embeddingDimension" = 1536
+    ORDER BY ("embedding"::vector(1536) <=>
+      ((ARRAY[1::real] || array_fill(0::real, ARRAY[1535]))::vector(1536)))
+    LIMIT 10;
+  `), "EXPLAIN Memory 1536 HNSW index usability");
+  assert.match(
+    plan1536,
+    /MemorySearchEntry_embedding_1536_hnsw_idx/u,
+    "1536-dimensional Memory HNSW index is not usable"
+  );
+}
+
 function assertScopeLifecycleMigrationAtomicRollback(database: string): void {
   requireSuccess(psql(database, `
     CREATE FUNCTION aiqsa_memory_fact_scope_guard() RETURNS trigger
@@ -1272,6 +1812,43 @@ function assertTemporaryRetentionMigrationAtomicRollback(database: string): void
   "pre-migration Temporary mode guard after rollback");
 }
 
+function assertHistorySchemaMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE FUNCTION aiqsa_memory_assert_history_source(text, text)
+    RETURNS void LANGUAGE plpgsql AS $$ BEGIN RETURN; END $$;
+  `), "install history-schema rollback-conflict fixture");
+
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, HISTORY_SCHEMA_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting history-schema migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /function "aiqsa_memory_assert_history_source" already exists/u,
+    "history-schema rollback fixture failed for an unexpected reason"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+         FROM pg_enum WHERE enumtypid = '"MemorySearchItemType"'::regtype),
+        (SELECT count(*) FROM information_schema.tables
+         WHERE table_schema = current_schema()
+           AND table_name IN ('ChatMemoryCheckpoint', 'MemoryRecallChunk', 'MemoryEpisode')),
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'ModelRunMemoryItem' AND column_name = 'exactItemId'),
+        (SELECT count(*) FROM pg_indexes
+         WHERE schemaname = current_schema()
+           AND indexname LIKE 'MemorySearchEntry_embedding_%_hnsw_idx')
+      );
+    `),
+    "FACT_VERSION|0|0|0",
+    "failed history-schema migration left partial durable state"
+  );
+}
+
 function main(): void {
   requireSuccess(compose(["up", "-d", POSTGRES_SERVICE]), "start disposable PostgreSQL service");
   try {
@@ -1295,6 +1872,8 @@ function main(): void {
     ]);
     assertChatScopeSchemaContracts(upgradeDatabase);
     assertScopeLifecycleContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [HISTORY_SCHEMA_MIGRATION]);
+    assertHistorySchemaContracts(upgradeDatabase, true);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
@@ -1312,6 +1891,8 @@ function main(): void {
     ]);
     assertChatScopeSchemaContracts(freshDatabase);
     assertScopeLifecycleContracts(freshDatabase);
+    applyMigrations(freshDatabase, [HISTORY_SCHEMA_MIGRATION]);
+    assertHistorySchemaContracts(freshDatabase, false);
 
     createDatabase(rollbackDatabase);
     applyMigrations(rollbackDatabase, migrationNames((name) => name < CHAT_SCOPE_MIGRATION));
@@ -1330,11 +1911,18 @@ function main(): void {
       migrationNames((name) => name < TEMPORARY_RETENTION_MIGRATION)
     );
     assertTemporaryRetentionMigrationAtomicRollback(temporaryRollbackDatabase);
+
+    createDatabase(historyRollbackDatabase);
+    applyMigrations(
+      historyRollbackDatabase,
+      migrationNames((name) => name < HISTORY_SCHEMA_MIGRATION)
+    );
+    assertHistorySchemaMigrationAtomicRollback(historyRollbackDatabase);
   } finally {
     dropDatabases();
   }
 
-  console.info("Memory migration contract passed through Phase 3 Temporary retention.");
+  console.info("Memory migration contract passed through the Phase 4 history schema.");
 }
 
 main();

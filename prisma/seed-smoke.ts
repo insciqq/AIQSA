@@ -218,6 +218,31 @@ async function main() {
     throw new Error("Seed smoke did not find exactly two ordinary-user fixtures");
   }
 
+  const seededUserIds = [user.id, ...LOCAL_ORDINARY_USERS.map((fixture) => fixture.id)];
+  const [memorySettings, checkpointCount, chunkCount, episodeCount] = await Promise.all([
+    prisma.userMemorySettings.findMany({
+      where: { userId: { in: seededUserIds } }
+    }),
+    prisma.chatMemoryCheckpoint.count({ where: { userId: { in: seededUserIds } } }),
+    prisma.memoryRecallChunk.count({ where: { userId: { in: seededUserIds } } }),
+    prisma.memoryEpisode.count({ where: { userId: { in: seededUserIds } } })
+  ]);
+  if (
+    memorySettings.length !== seededUserIds.length ||
+    memorySettings.some(
+      (settings) =>
+        settings.useMemoryFacts ||
+        settings.referenceChatHistory ||
+        settings.learnAutomatically ||
+        settings.activeIndexGenerationId !== null
+    ) ||
+    checkpointCount !== 0 ||
+    chunkCount !== 0 ||
+    episodeCount !== 0
+  ) {
+    throw new Error("Seed smoke found non-inert Memory history state");
+  }
+
   if (
     expectEmptyWorkspace &&
     (

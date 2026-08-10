@@ -350,6 +350,35 @@ enum MemoryReceiptOutcome {
 
 enum MemorySearchItemType {
   FACT_VERSION
+  EPISODE
+  RECALL_CHUNK
+}
+
+enum MemoryHistoryCheckpointStatus {
+  PENDING
+  INDEXING
+  READY
+  STALE
+  FAILED
+}
+
+enum MemoryHistoryItemState {
+  ACTIVE
+  INVALIDATED
+  SUPPRESSED
+}
+
+enum MemoryDerivedSafetyClass {
+  NORMAL
+  SENSITIVE
+  HIGHLY_SENSITIVE
+  SECRET_TAINTED
+}
+
+enum MemoryRedactionState {
+  NOT_NEEDED
+  REDACTED
+  EXCLUDED
 }
 
 enum MemoryDeletionOperation {
@@ -1982,6 +2011,128 @@ model MemoryScope {
   @@index([userId, chatId])
 }
 
+model ChatMemoryCheckpoint {
+  id                   String                        @id @default(uuid())
+  userId               String
+  chatId               String
+  branchGeneration     Int
+  sourceRevision       Int
+  activeLeafMessageId  String
+  sourceContentHash    String                        @db.VarChar(128)
+  lastIndexedMessageId String?
+  lastDreamedMessageId String?
+  status               MemoryHistoryCheckpointStatus @default(PENDING)
+  lastSucceededAt      DateTime?
+  lastErrorCode        String?                       @db.VarChar(64)
+  createdAt            DateTime                      @default(now())
+  updatedAt            DateTime                      @default(now()) @updatedAt
+
+  @@unique([userId, id])
+  @@unique([userId, chatId])
+  @@index([userId, status, updatedAt])
+  @@index([chatId, activeLeafMessageId])
+  @@index([chatId, lastIndexedMessageId])
+  @@index([chatId, lastDreamedMessageId])
+}
+
+model MemoryRecallChunk {
+  id                       String                   @id @default(uuid())
+  userId                   String
+  chatId                   String
+  sourceFolderId           String?
+  sourceAssistantId        String?
+  branchGeneration         Int
+  sourceRevisionAtCreation Int
+  chunkOrdinal             Int
+  contentHash              String                   @db.VarChar(128)
+  safeProjectedText        String
+  normalizedSafeSearchText String
+  languageCode             String                   @db.VarChar(35)
+  occurredFrom             DateTime
+  occurredTo               DateTime
+  state                    MemoryHistoryItemState   @default(ACTIVE)
+  chunkingVersion          String                   @db.VarChar(64)
+  sourceProjectionVersion  String                   @db.VarChar(64)
+  safetyClass              MemoryDerivedSafetyClass
+  redactionState           MemoryRedactionState
+  redactionReasonCodes     String[]                 @default([])
+  createdAt                DateTime                 @default(now())
+  invalidatedAt            DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, chatId, id])
+  @@unique([userId, id, chatId, branchGeneration, sourceRevisionAtCreation, contentHash], map: "MemoryRecallChunk_source_identity_key")
+  @@unique([userId, chatId, branchGeneration, sourceRevisionAtCreation, chunkingVersion, sourceProjectionVersion, chunkOrdinal], map: "MemoryRecallChunk_source_ordinal_key")
+  @@index([userId, chatId, state, branchGeneration, sourceRevisionAtCreation])
+  @@index([userId, sourceFolderId, state])
+  @@index([userId, sourceAssistantId, state])
+  @@index([userId, occurredFrom, occurredTo])
+}
+
+model MemoryRecallChunkMessage {
+  userId      String
+  chunkId     String
+  chatId      String
+  messageId   String
+  ordinal     Int
+  role        String @db.VarChar(32)
+  startOffset Int?
+  endOffset   Int?
+
+  @@id([chunkId, messageId])
+  @@unique([chunkId, ordinal])
+  @@index([userId, chatId, messageId])
+}
+
+model MemoryEpisode {
+  id                       String                   @id @default(uuid())
+  userId                   String
+  chatId                   String
+  sourceFolderId           String?
+  sourceAssistantId        String?
+  branchGeneration         Int
+  sourceRevisionAtCreation Int
+  safeSummary              String
+  normalizedSafeSearchText String
+  languageCode             String                   @db.VarChar(35)
+  keywords                 Json                     @default("[]")
+  entities                 Json                     @default("[]")
+  occurredFrom             DateTime?
+  occurredTo               DateTime?
+  state                    MemoryHistoryItemState   @default(ACTIVE)
+  extractorRole            String                   @db.VarChar(64)
+  createdByExecutionId     String
+  pipelineVersion          String                   @db.VarChar(64)
+  sourceHash               String                   @db.VarChar(128)
+  sourceProjectionVersion  String                   @db.VarChar(64)
+  safetyClass              MemoryDerivedSafetyClass
+  redactionState           MemoryRedactionState
+  redactionReasonCodes     String[]                 @default([])
+  createdAt                DateTime                 @default(now())
+  invalidatedAt            DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, chatId, id])
+  @@unique([userId, id, chatId, branchGeneration, sourceRevisionAtCreation, sourceHash], map: "MemoryEpisode_source_identity_key")
+  @@index([userId, chatId, state, branchGeneration, sourceRevisionAtCreation])
+  @@index([userId, sourceFolderId, state])
+  @@index([userId, sourceAssistantId, state])
+  @@index([userId, createdByExecutionId])
+  @@index([userId, occurredFrom, occurredTo])
+}
+
+model MemoryEpisodeMessage {
+  userId    String
+  episodeId String
+  chatId    String
+  messageId String
+  ordinal   Int
+
+  @@id([episodeId, messageId])
+  @@unique([episodeId, ordinal])
+  @@index([userId, chatId, messageId])
+}
+
 model MemoryFact {
   id               String                 @id @default(uuid())
   userId           String
@@ -2211,7 +2362,9 @@ model MemorySearchEntry {
   userId                      String
   indexGenerationId           String
   itemType                    MemorySearchItemType
-  factVersionId               String
+  factVersionId               String?
+  episodeId                   String?
+  recallChunkId               String?
   safeSearchText              String
   safeSearchTextYoNormalized  String
   safeContentHash             String                   @db.VarChar(128)
@@ -2229,9 +2382,10 @@ model MemorySearchEntry {
   updatedAt                   DateTime                 @default(now()) @updatedAt
 
   @@unique([userId, id])
-  @@unique([userId, indexGenerationId, itemType, factVersionId])
   @@index([userId, indexGenerationId, embeddingState])
   @@index([userId, factVersionId])
+  @@index([userId, episodeId])
+  @@index([userId, recallChunkId])
 }
 
 model MemoryJob {
@@ -2335,25 +2489,34 @@ model MemoryRetrievalAttempt {
 }
 
 model MemoryRetrievalAttemptItem {
-  id              String               @id @default(uuid())
-  userId          String
-  attemptId       String
-  ordinal         Int
-  itemType        MemorySearchItemType
-  exactItemId     String
-  factVersionId   String
-  exactSafeText   String
-  textHash        String               @db.VarChar(128)
-  sourceSnapshot  Json                 @default("{}")
-  versionSnapshot Json                 @default("{}")
-  laneRanks       Json                 @default("{}")
-  featureSnapshot Json                 @default("{}")
-  selectionReason String               @db.VarChar(128)
-  createdAt       DateTime             @default(now())
+  id                             String               @id @default(uuid())
+  userId                         String
+  attemptId                      String
+  ordinal                        Int
+  itemType                       MemorySearchItemType
+  exactItemId                    String
+  factVersionId                  String?
+  episodeId                      String?
+  recallChunkId                  String?
+  sourceChatIdSnapshot           String?
+  sourceBranchGenerationSnapshot Int?
+  sourceRevisionSnapshot         Int?
+  sourceContentHashSnapshot      String?              @db.VarChar(128)
+  exactSafeText                  String
+  textHash                       String               @db.VarChar(128)
+  sourceSnapshot                 Json                 @default("{}")
+  versionSnapshot                Json                 @default("{}")
+  laneRanks                      Json                 @default("{}")
+  featureSnapshot                Json                 @default("{}")
+  selectionReason                String               @db.VarChar(128)
+  createdAt                      DateTime             @default(now())
 
   @@unique([userId, id])
   @@unique([userId, attemptId, ordinal])
+  @@unique([userId, attemptId, itemType, exactItemId], map: "MemoryRetrievalAttemptItem_target_key")
   @@index([userId, factVersionId])
+  @@index([userId, episodeId])
+  @@index([userId, recallChunkId])
 }
 
 model MemoryExecutionBinding {
@@ -2431,24 +2594,32 @@ model ModelRunMemoryBinding {
 }
 
 model ModelRunMemoryItem {
-  id                       String               @id @default(uuid())
-  userId                   String
-  bindingId                String
-  ordinal                  Int
-  itemType                 MemorySearchItemType
-  factVersionId            String?
-  sourceChatIdSnapshot     String?
-  sourceMessageIdsSnapshot String[]             @default([])
-  includedText             String
-  includedTextHash         String               @db.VarChar(128)
-  itemStateAtAdmission     String               @db.VarChar(64)
-  laneRanks                Json                 @default("{}")
-  featureSnapshot          Json                 @default("{}")
-  finalScore               Float
-  selectionReason          String               @db.VarChar(128)
-  createdAt                DateTime             @default(now())
+  id                             String               @id @default(uuid())
+  userId                         String
+  bindingId                      String
+  ordinal                        Int
+  itemType                       MemorySearchItemType
+  exactItemId                    String
+  factVersionId                  String?
+  episodeId                      String?
+  recallChunkId                  String?
+  sourceChatIdSnapshot           String?
+  sourceBranchGenerationSnapshot Int?
+  sourceRevisionSnapshot         Int?
+  sourceContentHashSnapshot      String?              @db.VarChar(128)
+  sourceMessageIdsSnapshot       String[]             @default([])
+  includedText                   String
+  includedTextHash               String               @db.VarChar(128)
+  itemStateAtAdmission           String               @db.VarChar(64)
+  laneRanks                      Json                 @default("{}")
+  featureSnapshot                Json                 @default("{}")
+  finalScore                     Float
+  selectionReason                String               @db.VarChar(128)
+  createdAt                      DateTime             @default(now())
 
   @@unique([userId, id])
   @@unique([userId, bindingId, ordinal])
   @@index([userId, factVersionId])
+  @@index([userId, episodeId])
+  @@index([userId, recallChunkId])
 }

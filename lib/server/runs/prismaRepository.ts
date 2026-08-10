@@ -1929,6 +1929,7 @@ async function loadAndValidatePreparingAttemptItems(
       exactSafeText: true,
       factVersionId: true,
       featureSnapshot: true,
+      itemType: true,
       laneRanks: true,
       ordinal: true,
       selectionReason: true,
@@ -1942,6 +1943,7 @@ async function loadAndValidatePreparingAttemptItems(
     },
     orderBy: { ordinal: "asc" }
   });
+  const validatedItems: PreparingAttemptItemRow[] = [];
   for (let ordinal = 0; ordinal < items.length; ordinal += 1) {
     const item = items[ordinal]!;
     const featureSnapshot = isRecord(item.featureSnapshot)
@@ -1955,6 +1957,8 @@ async function loadAndValidatePreparingAttemptItems(
       : null;
     const finalScore = featureSnapshot?.finalScore;
     if (
+      item.itemType !== "FACT_VERSION" ||
+      item.factVersionId === null ||
       item.ordinal !== ordinal ||
       memoryPreparingTextHash(item.exactSafeText) !== item.textHash ||
       typeof finalScore !== "number" ||
@@ -2049,8 +2053,19 @@ async function loadAndValidatePreparingAttemptItems(
     ) {
       throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
     }
+    validatedItems.push({
+      exactSafeText: item.exactSafeText,
+      factVersionId: item.factVersionId,
+      featureSnapshot: item.featureSnapshot,
+      laneRanks: item.laneRanks,
+      ordinal: item.ordinal,
+      selectionReason: item.selectionReason,
+      sourceSnapshot: item.sourceSnapshot,
+      textHash: item.textHash,
+      versionSnapshot: item.versionSnapshot
+    });
   }
-  return items;
+  return validatedItems;
 }
 
 async function assertCurrentMemoryActionAuthorization(
@@ -2512,6 +2527,7 @@ async function finalizePreparingRunWithClient(
       await tx.modelRunMemoryItem.createMany({
         data: items.map((item) => ({
           bindingId: binding.id,
+          exactItemId: item.factVersionId,
           factVersionId: item.factVersionId,
           featureSnapshot: json(item.featureSnapshot),
           finalScore: (item.featureSnapshot as Record<string, unknown>).finalScore as number,
