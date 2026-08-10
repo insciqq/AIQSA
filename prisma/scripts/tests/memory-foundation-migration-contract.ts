@@ -10,6 +10,7 @@ const MEMORY_FOLLOWUP_MIGRATIONS = [
   "20260810161000_memory_execution_usage_shape",
   "20260810170000_memory_coordinator_fairness"
 ] as const;
+const CHAT_SCOPE_MIGRATION = "20260810180000_memory_chat_scope_state";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -17,6 +18,7 @@ const migrationsRoot = join(repositoryRoot, "prisma/migrations");
 const suffix = `${process.pid}_${Date.now()}`;
 const upgradeDatabase = `aiqsa_memory_upgrade_${suffix}`;
 const freshDatabase = `aiqsa_memory_fresh_${suffix}`;
+const rollbackDatabase = `aiqsa_memory_rollback_${suffix}`;
 const createdDatabases = new Set<string>();
 
 type CommandResult = Readonly<{
@@ -699,6 +701,233 @@ function assertCoordinatorFairnessContracts(database: string): void {
   `, /DocumentProcessingFairnessCursor_pipeline_check/u, "unsupported fairness lane");
 }
 
+function assertChatScopeSchemaContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        "memoryMode",
+        "memoryBranchGeneration",
+        "memorySourceRevision",
+        num_nonnulls("temporaryRetentionPolicyVersion", "temporaryRetentionDeadline")
+      )
+      FROM "Chat"
+      WHERE "id" = 'memory-chat-a';
+    `),
+    "NORMAL|0|0|0",
+    "Phase 3 migration changed an existing chat or invented source state"
+  );
+
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM pg_constraint
+         WHERE conname = 'Chat_memory_state_check' AND convalidated),
+        (SELECT count(*) FROM pg_indexes
+         WHERE schemaname = current_schema()
+           AND indexname = 'Chat_memoryMode_temporaryRetentionDeadline_idx'),
+        (SELECT count(*) FROM pg_trigger
+         WHERE tgname = 'Chat_memory_mode_guard' AND NOT tgisinternal),
+        (SELECT count(*) FROM pg_constraint
+         WHERE conname IN (
+           'MemoryScope_folder_fkey',
+           'MemoryScope_chat_fkey',
+           'MemoryScope_target_shape_check'
+         ) AND convalidated)
+      );
+    `),
+    "1|1|1|3",
+    "Phase 3 chat or inherited typed-scope constraints are incomplete"
+  );
+
+  requireSuccess(psql(database, `
+    INSERT INTO "Chat" ("id", "userId", "title", "updatedAt")
+    VALUES ('memory-phase3-normal', 'memory-owner-a', 'Normal', CURRENT_TIMESTAMP);
+
+    INSERT INTO "Chat" (
+      "id", "userId", "title", "memoryMode",
+      "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline",
+      "createdAt", "updatedAt"
+    ) VALUES (
+      'memory-phase3-temporary', 'memory-owner-a', 'Temporary', 'TEMPORARY',
+      'temporary-24h-v1', CURRENT_TIMESTAMP + interval '24 hours',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+
+    UPDATE "Chat"
+    SET "temporaryRetentionDeadline" = "temporaryRetentionDeadline" + interval '1 hour'
+    WHERE "id" = 'memory-phase3-temporary';
+  `), "create ordinary and admitted Temporary chat state");
+
+  expectRejected(database, `
+    INSERT INTO "Chat" (
+      "id", "userId", "title", "memoryMode", "temporaryRetentionDeadline", "updatedAt"
+    ) VALUES (
+      'memory-phase3-temp-no-policy', 'memory-owner-a', 'Invalid', 'TEMPORARY',
+      CURRENT_TIMESTAMP + interval '24 hours', CURRENT_TIMESTAMP
+    );
+  `, /Chat_memory_state_check/u, "Temporary chat without reviewed policy");
+
+  expectRejected(database, `
+    INSERT INTO "Chat" (
+      "id", "userId", "title", "memoryMode", "temporaryRetentionPolicyVersion",
+      "temporaryRetentionDeadline", "updatedAt"
+    ) VALUES (
+      'memory-phase3-temp-old-policy', 'memory-owner-a', 'Invalid', 'TEMPORARY',
+      'temporary-legacy', CURRENT_TIMESTAMP + interval '24 hours', CURRENT_TIMESTAMP
+    );
+  `, /Chat_memory_state_check/u, "Temporary chat with unreviewed policy");
+
+  expectRejected(database, `
+    INSERT INTO "Chat" (
+      "id", "userId", "title", "memoryMode", "temporaryRetentionPolicyVersion",
+      "temporaryRetentionDeadline", "updatedAt"
+    ) VALUES (
+      'memory-phase3-temp-expired', 'memory-owner-a', 'Invalid', 'TEMPORARY',
+      'temporary-24h-v1', CURRENT_TIMESTAMP - interval '1 second', CURRENT_TIMESTAMP
+    );
+  `, /Chat_memory_state_check/u, "Temporary chat with a pre-creation deadline");
+
+  expectRejected(database, `
+    INSERT INTO "Chat" (
+      "id", "userId", "title", "memoryBranchGeneration", "updatedAt"
+    ) VALUES (
+      'memory-phase3-negative-counter', 'memory-owner-a', 'Invalid', -1, CURRENT_TIMESTAMP
+    );
+  `, /Chat_memory_state_check/u, "negative chat Memory counter");
+
+  expectRejected(database, `
+    UPDATE "Chat"
+    SET "memoryMode" = 'NORMAL',
+        "temporaryRetentionPolicyVersion" = NULL,
+        "temporaryRetentionDeadline" = NULL
+    WHERE "id" = 'memory-phase3-temporary';
+  `, /Temporary chat mode is immutable after admission/u, "Temporary-to-normal conversion");
+
+  expectRejected(database, `
+    UPDATE "Chat"
+    SET "memoryMode" = 'TEMPORARY',
+        "temporaryRetentionPolicyVersion" = 'temporary-24h-v1',
+        "temporaryRetentionDeadline" = CURRENT_TIMESTAMP + interval '24 hours'
+    WHERE "id" = 'memory-phase3-normal';
+  `, /Temporary chat mode is immutable after admission/u, "late Temporary conversion");
+
+  expectRejected(database, `
+    UPDATE "Chat"
+    SET "temporaryRetentionPolicyVersion" = 'temporary-replacement'
+    WHERE "id" = 'memory-phase3-temporary';
+  `, /Temporary retention policy is immutable after admission/u, "Temporary policy replacement");
+
+  requireSuccess(psql(database, `
+    UPDATE "Chat" SET "memoryMode" = 'EXCLUDED'
+    WHERE "id" = 'memory-phase3-normal';
+    UPDATE "Chat" SET "archived" = TRUE
+    WHERE "id" = 'memory-phase3-normal';
+  `), "change independent ordinary chat organization and source mode");
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|', "memoryMode", "archived"::int,
+        "memoryBranchGeneration", "memorySourceRevision")
+      FROM "Chat" WHERE "id" = 'memory-phase3-normal';
+    `),
+    "EXCLUDED|1|0|0",
+    "archive state changed chat Memory mode or counters"
+  );
+
+  requireSuccess(psql(database, `
+    INSERT INTO "User" ("id", "email", "displayName", "role", "status", "updatedAt")
+    VALUES (
+      'memory-phase3-owner-b', 'memory-phase3-b@example.test', 'Memory Phase 3 B',
+      'user', 'active', CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Folder" ("id", "userId", "name", "updatedAt")
+    VALUES (
+      'memory-phase3-folder-b', 'memory-phase3-owner-b', 'Phase 3 B', CURRENT_TIMESTAMP
+    );
+  `), "create second Phase 3 scope owner");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryScope" (
+      "id", "userId", "scopeType", "targetIdSnapshot", "folderId", "state"
+    ) VALUES (
+      'memory-phase3-dark-scope', 'memory-owner-a', 'FOLDER', 'memory-phase3-folder-b',
+      'memory-phase3-folder-b', 'ACTIVE'
+    );
+  `, /feature-dark until Phase 3 authorization/u, "feature-dark scoped target");
+
+  requireSuccess(
+    psql(database, `ALTER TABLE "MemoryScope" DISABLE TRIGGER "MemoryScope_phase1_guard";`),
+    "temporarily expose inherited scope constraints"
+  );
+  try {
+    expectRejected(database, `
+      INSERT INTO "MemoryScope" (
+        "id", "userId", "scopeType", "targetIdSnapshot", "folderId", "state"
+      ) VALUES (
+        'memory-phase3-cross-owner-scope', 'memory-owner-a', 'FOLDER',
+        'memory-phase3-folder-b', 'memory-phase3-folder-b', 'ACTIVE'
+      );
+    `, /MemoryScope_folder_fkey/u, "cross-owner Phase 3 scope target");
+
+    expectRejected(database, `
+      INSERT INTO "MemoryScope" (
+        "id", "userId", "scopeType", "targetIdSnapshot", "folderId", "state"
+      ) VALUES (
+        'memory-phase3-dangling-scope', 'memory-owner-a', 'FOLDER',
+        'memory-phase3-missing-folder', 'memory-phase3-missing-folder', 'ACTIVE'
+      );
+    `, /MemoryScope_folder_fkey/u, "dangling Phase 3 scope target");
+  } finally {
+    requireSuccess(
+      psql(database, `ALTER TABLE "MemoryScope" ENABLE TRIGGER "MemoryScope_phase1_guard";`),
+      "restore feature-dark scope guard"
+    );
+  }
+}
+
+function assertChatScopeMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE FUNCTION aiqsa_chat_memory_mode_guard() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      RETURN NEW;
+    END
+    $$;
+  `), "install rollback-conflict fixture");
+
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, CHAT_SCOPE_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting Phase 3 migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /function "aiqsa_chat_memory_mode_guard" already exists/u,
+    "Phase 3 rollback fixture failed for an unexpected reason"
+  );
+
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'Chat'
+           AND column_name IN (
+             'memoryMode', 'memoryBranchGeneration', 'memorySourceRevision',
+             'temporaryRetentionPolicyVersion', 'temporaryRetentionDeadline'
+           )),
+        (SELECT count(*) FROM pg_constraint WHERE conname = 'Chat_memory_state_check'),
+        (SELECT count(*) FROM pg_indexes
+         WHERE schemaname = current_schema()
+           AND indexname = 'Chat_memoryMode_temporaryRetentionDeadline_idx'),
+        (SELECT count(*) FROM pg_trigger
+         WHERE tgname = 'Chat_memory_mode_guard' AND NOT tgisinternal),
+        (SELECT count(*) FROM pg_proc WHERE proname = 'aiqsa_chat_memory_mode_guard')
+      );
+    `),
+    "0|0|0|0|1",
+    "failed Phase 3 migration left partial durable state"
+  );
+}
+
 function main(): void {
   requireSuccess(compose(["up", "-d", POSTGRES_SERVICE]), "start disposable PostgreSQL service");
   try {
@@ -714,6 +943,8 @@ function main(): void {
     applyMigrations(upgradeDatabase, MEMORY_FOLLOWUP_MIGRATIONS);
     assertExecutionUsageContracts(upgradeDatabase);
     assertCoordinatorFairnessContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [CHAT_SCOPE_MIGRATION]);
+    assertChatScopeSchemaContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
@@ -723,11 +954,17 @@ function main(): void {
     applyMigrations(freshDatabase, MEMORY_FOLLOWUP_MIGRATIONS);
     assertExecutionUsageContracts(freshDatabase);
     assertCoordinatorFairnessContracts(freshDatabase);
+    applyMigrations(freshDatabase, [CHAT_SCOPE_MIGRATION]);
+    assertChatScopeSchemaContracts(freshDatabase);
+
+    createDatabase(rollbackDatabase);
+    applyMigrations(rollbackDatabase, migrationNames((name) => name < CHAT_SCOPE_MIGRATION));
+    assertChatScopeMigrationAtomicRollback(rollbackDatabase);
   } finally {
     dropDatabases();
   }
 
-  console.info("Memory Phase 1 migration contract passed.");
+  console.info("Memory migration contract passed through Phase 3 chat scope schema.");
 }
 
 main();

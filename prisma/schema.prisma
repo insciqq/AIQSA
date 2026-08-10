@@ -1420,33 +1420,39 @@ model SearchRunBinding {
 }
 
 model Chat {
-  id                     String               @id @default(uuid())
-  userId                 String
-  folderId               String?
-  title                  String
-  activeLeafMessageId    String?
-  defaultProviderModelId String?
-  defaultKnowledgePlan   Json?
-  pinned                 Boolean              @default(false)
-  archived               Boolean              @default(false)
-  totalInputTokens       Int                  @default(0)
-  totalOutputTokens      Int                  @default(0)
-  totalReasoningTokens   Int                  @default(0)
-  createdAt              DateTime             @default(now())
-  updatedAt              DateTime             @updatedAt
+  id                              String               @id @default(uuid())
+  userId                          String
+  folderId                        String?
+  title                           String
+  activeLeafMessageId             String?
+  defaultProviderModelId          String?
+  defaultKnowledgePlan            Json?
+  memoryMode                      MemoryChatMode       @default(NORMAL)
+  memoryBranchGeneration          Int                  @default(0)
+  memorySourceRevision            Int                  @default(0)
+  temporaryRetentionPolicyVersion String?              @db.VarChar(64)
+  temporaryRetentionDeadline      DateTime?
+  pinned                          Boolean              @default(false)
+  archived                        Boolean              @default(false)
+  totalInputTokens                Int                  @default(0)
+  totalOutputTokens               Int                  @default(0)
+  totalReasoningTokens            Int                  @default(0)
+  createdAt                       DateTime             @default(now())
+  updatedAt                       DateTime             @updatedAt
   /// The migration uses PostgreSQL's column-scoped SET NULL so deleting the leaf clears only activeLeafMessageId, never Chat.id.
-  activeLeafMessage      Message?             @relation("ChatActiveLeaf", fields: [id, activeLeafMessageId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Chat_id_activeLeafMessageId_fkey")
-  attachments            Attachment[]
-  folder                 Folder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  defaultProviderModel   ProviderModel?       @relation("ChatDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
-  messages               Message[]            @relation("ChatMessages")
-  modelRuns              ModelRun[]
-  sharedSnapshots        SharedChatSnapshot[]
-  user                   User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeLeafMessage               Message?             @relation("ChatActiveLeaf", fields: [id, activeLeafMessageId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Chat_id_activeLeafMessageId_fkey")
+  attachments                     Attachment[]
+  folder                          Folder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  defaultProviderModel            ProviderModel?       @relation("ChatDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
+  messages                        Message[]            @relation("ChatMessages")
+  modelRuns                       ModelRun[]
+  sharedSnapshots                 SharedChatSnapshot[]
+  user                            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, id])
   @@index([activeLeafMessageId])
   @@index([defaultProviderModelId])
+  @@index([memoryMode, temporaryRetentionDeadline])
   @@index([userId, archived, updatedAt])
 }
 
