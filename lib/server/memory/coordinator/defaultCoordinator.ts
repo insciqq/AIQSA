@@ -8,6 +8,8 @@ import { ensureDefaultMemoryPurgeHandlerRegistered } from "../purge/defaultPurge
 import { MemoryCoordinator } from "./coordinator";
 import { createPrismaMemoryCoordinatorRepository } from "./prismaRepository";
 import { defaultMemoryCoordinatorRegistry } from "./registry";
+import { createS3StorageAdapter } from "../../uploads/storage";
+import { createPrismaTemporaryChatDeletionHandler } from "../temporaryDeletion";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -31,8 +33,19 @@ const defaultExplicitEmbeddingHandler = createPrismaMemoryExplicitEmbeddingHandl
   }
 }, prisma);
 
+const defaultTemporaryChatDeletionHandler =
+  createPrismaTemporaryChatDeletionHandler(createS3StorageAdapter(), prisma);
+
 export function ensureDefaultMemoryPhase2HandlersRegistered(): void {
   ensureDefaultMemoryPurgeHandlerRegistered();
+  const deletion = defaultMemoryCoordinatorRegistry.deletionHandler("TEMPORARY_DELETE");
+  if (!deletion) {
+    defaultMemoryCoordinatorRegistry.registerDeletion(
+      defaultTemporaryChatDeletionHandler
+    );
+  } else if (deletion !== defaultTemporaryChatDeletionHandler) {
+    throw new Error("memory_default_temporary_deletion_handler_conflict");
+  }
   const existing = defaultMemoryCoordinatorRegistry.jobHandler("EMBED_ITEMS");
   if (existing === defaultExplicitEmbeddingHandler) return;
   if (existing) throw new Error("memory_default_embedding_handler_conflict");

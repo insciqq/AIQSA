@@ -689,14 +689,18 @@ function successBody(overrides: Readonly<Record<string, unknown>> = {}): Readonl
   };
 }
 
-function sendInput(body: Readonly<Record<string, unknown>> | null = successBody()): RunPreparationInput {
+function sendInput(
+  body: Readonly<Record<string, unknown>> | null = successBody(),
+  chatOverrides: Partial<SendRunPreparationSource["chat"]> = {}
+): RunPreparationInput {
   const source: SendRunPreparationSource = {
     chat: {
       activeLeafMessageId: "prior-user-message",
       defaultModelId: "fake-qsa",
       defaultProvider: "fake",
       id: "chat-1",
-      projectMemory: "  Server project memory  "
+      projectMemory: "  Server project memory  ",
+      ...chatOverrides
     },
     kind: "send"
   };
@@ -957,6 +961,79 @@ describe("run preparation", () => {
 
     expect(result).toMatchObject({
       code: "memory_tool_egress_forbidden",
+      ok: false,
+      status: 409
+    });
+  });
+
+  it("accepts the reviewed Temporary policy only on an empty first send", async () => {
+    const result = await prepareRun(
+      createHarness().deps,
+      sendInput(
+        successBody({
+          chatMode: "TEMPORARY",
+          temporaryRetentionPolicyVersion: "temporary-24h-v1"
+        }),
+        {
+          activeLeafMessageId: null,
+          memoryMode: "NORMAL",
+          messageCount: 0
+        }
+      )
+    );
+
+    const prepared = materializePreparedRunData(preparedFrom(result));
+    expect(prepared.initialChatMode).toEqual({
+      chatMode: "TEMPORARY",
+      temporaryRetentionPolicyVersion: "temporary-24h-v1"
+    });
+    expect(prepared.normalizedRequest.prompt.system).not.toContain("Project memory:");
+    expect(prepared.normalizedRequest.prompt.system).not.toContain("Server project memory");
+  });
+
+  it("rejects stale policy acknowledgement and late Temporary conversion", async () => {
+    const stalePolicy = await prepareRun(
+      createHarness().deps,
+      sendInput(successBody({
+        chatMode: "TEMPORARY",
+        temporaryRetentionPolicyVersion: "temporary-legacy"
+      }), { activeLeafMessageId: null, memoryMode: "NORMAL", messageCount: 0 })
+    );
+    const lateConversion = await prepareRun(
+      createHarness().deps,
+      sendInput(successBody({
+        chatMode: "TEMPORARY",
+        temporaryRetentionPolicyVersion: "temporary-24h-v1"
+      }), { memoryMode: "NORMAL", messageCount: 2 })
+    );
+
+    expect(stalePolicy).toMatchObject({
+      code: "memory_temporary_policy_review_required",
+      ok: false,
+      status: 409
+    });
+    expect(lateConversion).toMatchObject({
+      code: "memory_temporary_chat_forbidden",
+      ok: false,
+      status: 409
+    });
+  });
+
+  it("rejects first-party Memory actions in an admitted Temporary chat", async () => {
+    const result = await prepareRun(
+      createHarness({
+        capabilities: { ...baseCapabilities, toolCalling: true }
+      }).deps,
+      sendInput(
+        successBody({
+          content: textMessageContent("Remember that my favorite color is teal")
+        }),
+        { memoryMode: "TEMPORARY", messageCount: 2 }
+      )
+    );
+
+    expect(result).toMatchObject({
+      code: "memory_temporary_chat_forbidden",
       ok: false,
       status: 409
     });

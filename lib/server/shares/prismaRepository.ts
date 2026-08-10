@@ -23,6 +23,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
           where: {
             archived: false,
             id: chatId,
+            memoryMode: { not: "TEMPORARY" },
             userId
           }
         });
@@ -83,14 +84,18 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
     findPublicShare: async (slugHash, now) => {
       const share = await prismaClient.sharedChatSnapshot.findFirst({
         where: {
-          OR: [
+          AND: [
             {
-              expiresAt: null
+              OR: [
+                { expiresAt: null },
+                { expiresAt: { gt: now } }
+              ]
             },
             {
-              expiresAt: {
-                gt: now
-              }
+              OR: [
+                { chatId: null },
+                { chat: { memoryMode: { not: "TEMPORARY" } } }
+              ]
             }
           ],
           revokedAt: null,
@@ -120,6 +125,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
         },
         where: {
           OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+          chat: { memoryMode: { not: "TEMPORARY" } },
           chatId,
           ownerUserId: userId,
           revokedAt: null

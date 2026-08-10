@@ -198,6 +198,8 @@ export const MEMORY_ERROR_CODES = [
   "memory_secret_rejected",
   "memory_sensitive_requires_explicit",
   "memory_temporary_chat_forbidden",
+  "memory_temporary_chat_expired",
+  "memory_temporary_policy_review_required",
   "memory_generation_changed",
   "memory_source_stale",
   "memory_index_unavailable",

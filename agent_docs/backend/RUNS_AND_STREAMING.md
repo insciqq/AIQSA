@@ -50,6 +50,14 @@ model-run response previews when it differs from the visible answer.
 
 The first send in a blank/new chat derives a short deterministic title from local message text inside the run-creation transaction. Normalized multi-word text stops at the last whole-word boundary within the 56-code-point budget and persists no display ellipsis; a single unbroken token uses a bounded code-point fallback, while display surfaces own any visual truncation. The update is compare-and-set against `New Chat`/`Untitled QSA`, so a concurrent or existing explicit title wins. Attachment-only or blank text keeps `New Chat`. Title derivation never calls a provider and creates no usage, event, or accounting record. New share snapshots copy that already-persisted clean chat title unchanged.
 
+A reviewed Temporary first send changes only a still-empty `NORMAL` chat and
+persists its policy/deadline/deletion obligation with the Phase-A graph. Its
+provider context may include only that Temporary branch plus explicitly
+admitted ordinary dependencies; Folder `projectMemory`, personal Memory
+retrieval/actions, source hashing/jobs, and retained-chat update projection are
+absent. Later send/regeneration preserves the immutable mode and rejects an
+expired or already-claimed aggregate.
+
 ## SSE Requirements
 
 `lib/domain/modelRunEvents.ts` is the executable owner of the normalized SSE event union and encoder. `runExecution.ts` owns foreground stream/provider/tool behavior, `runFinalization.ts` owns durable event/completion primitives, `runRecovery.ts` owns refresh/orphan settlement, and route handlers own the pre-execution mutation order. Together these boundaries must:
@@ -62,6 +70,10 @@ The first send in a blank/new chat derives a short deterministic title from loca
   revalidate the admitted DAG and mutable authority, consume the attempt,
   create its immutable run binding, freeze the normalized request/provider
   preview, and transition to `streaming` before first provider I/O;
+- for Temporary, use the fixed disabled settings snapshot and a zero-item,
+  zero-token `DISABLED` final binding without loading personal Memory settings
+  or reusable data; the binding is run evidence and is deleted with the
+  Temporary aggregate;
 - reject `PREPARING` at the execution fence before `run_start`, provider
   resolution, or adapter invocation. Cancellation, failure, boot sweep, stale
   reconciliation, and expiry terminally settle the owned attempt and freeze the

@@ -12,6 +12,7 @@ const MEMORY_FOLLOWUP_MIGRATIONS = [
 ] as const;
 const CHAT_SCOPE_MIGRATION = "20260810180000_memory_chat_scope_state";
 const SCOPE_LIFECYCLE_MIGRATION = "20260810190000_memory_scope_lifecycle";
+const TEMPORARY_RETENTION_MIGRATION = "20260810200000_memory_temporary_retention";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -21,6 +22,7 @@ const upgradeDatabase = `aiqsa_memory_upgrade_${suffix}`;
 const freshDatabase = `aiqsa_memory_fresh_${suffix}`;
 const rollbackDatabase = `aiqsa_memory_rollback_${suffix}`;
 const scopeRollbackDatabase = `aiqsa_memory_scope_rollback_${suffix}`;
+const temporaryRollbackDatabase = `aiqsa_memory_temporary_rollback_${suffix}`;
 const createdDatabases = new Set<string>();
 
 type CommandResult = Readonly<{
@@ -703,7 +705,81 @@ function assertCoordinatorFairnessContracts(database: string): void {
   `, /DocumentProcessingFairnessCursor_pipeline_check/u, "unsupported fairness lane");
 }
 
+function assertFeatureDarkScopeContracts(database: string): void {
+  requireSuccess(psql(database, `
+    INSERT INTO "User" ("id", "email", "displayName", "role", "status", "updatedAt")
+    VALUES (
+      'memory-phase3-owner-b', 'memory-phase3-b@example.test', 'Memory Phase 3 B',
+      'user', 'active', CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Folder" ("id", "userId", "name", "updatedAt")
+    VALUES (
+      'memory-phase3-folder-b', 'memory-phase3-owner-b', 'Phase 3 B', CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Chat" (
+      "id", "userId", "title", "memoryMode",
+      "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline",
+      "createdAt", "updatedAt"
+    ) VALUES (
+      'memory-phase3-feature-dark-temp', 'memory-owner-a', 'Feature-dark Temporary',
+      'TEMPORARY', 'temporary-24h-v1', CURRENT_TIMESTAMP + interval '24 hours',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+  `), "create second Phase 3 scope owner");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryScope" (
+      "id", "userId", "scopeType", "targetIdSnapshot", "folderId", "state"
+    ) VALUES (
+      'memory-phase3-dark-scope', 'memory-owner-a', 'FOLDER', 'memory-phase3-folder-b',
+      'memory-phase3-folder-b', 'ACTIVE'
+    );
+  `, /feature-dark until Phase 3 authorization/u, "feature-dark scoped target");
+
+  requireSuccess(
+    psql(database, `ALTER TABLE "MemoryScope" DISABLE TRIGGER "MemoryScope_phase1_guard";`),
+    "temporarily expose inherited scope constraints"
+  );
+  try {
+    expectRejected(database, `
+      INSERT INTO "MemoryScope" (
+        "id", "userId", "scopeType", "targetIdSnapshot", "folderId", "state"
+      ) VALUES (
+        'memory-phase3-cross-owner-scope', 'memory-owner-a', 'FOLDER',
+        'memory-phase3-folder-b', 'memory-phase3-folder-b', 'ACTIVE'
+      );
+    `, /MemoryScope_folder_fkey/u, "cross-owner Phase 3 scope target");
+
+    expectRejected(database, `
+      INSERT INTO "MemoryScope" (
+        "id", "userId", "scopeType", "targetIdSnapshot", "folderId", "state"
+      ) VALUES (
+        'memory-phase3-dangling-scope', 'memory-owner-a', 'FOLDER',
+        'memory-phase3-missing-folder', 'memory-phase3-missing-folder', 'ACTIVE'
+      );
+    `, /MemoryScope_folder_fkey/u, "dangling Phase 3 scope target");
+  } finally {
+    requireSuccess(
+      psql(database, `ALTER TABLE "MemoryScope" ENABLE TRIGGER "MemoryScope_phase1_guard";`),
+      "restore feature-dark scope guard"
+    );
+  }
+}
+
 function assertChatScopeSchemaContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|', deletion."state", deletion."memoryGeneration")
+      FROM "MemoryDeletionOutbox" AS deletion
+      WHERE deletion."userId" = 'memory-owner-a'
+        AND deletion."operation" = 'TEMPORARY_DELETE'
+        AND deletion."targetType" = 'TEMPORARY_CHAT@temporary-24h-v1'
+        AND deletion."targetId" = 'memory-phase3-feature-dark-temp';
+    `),
+    "PENDING|0",
+    "Temporary-retention migration did not adopt a feature-dark row"
+  );
+
   assert.equal(
     scalar(database, `
       SELECT concat_ws('|',
@@ -742,6 +818,7 @@ function assertChatScopeSchemaContracts(database: string): void {
   );
 
   requireSuccess(psql(database, `
+    BEGIN;
     INSERT INTO "Chat" ("id", "userId", "title", "updatedAt")
     VALUES ('memory-phase3-normal', 'memory-owner-a', 'Normal', CURRENT_TIMESTAMP);
 
@@ -754,10 +831,19 @@ function assertChatScopeSchemaContracts(database: string): void {
       'temporary-24h-v1', CURRENT_TIMESTAMP + interval '24 hours',
       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
     );
+    INSERT INTO "MemoryDeletionOutbox" (
+      "id", "userId", "operation", "targetType", "targetId",
+      "memoryGeneration", "state", "nextAttemptAt", "updatedAt"
+    ) VALUES (
+      'memory-phase3-temporary-delete', 'memory-owner-a', 'TEMPORARY_DELETE',
+      'TEMPORARY_CHAT@temporary-24h-v1', 'memory-phase3-temporary', 0,
+      'PENDING', CURRENT_TIMESTAMP + interval '24 hours', CURRENT_TIMESTAMP
+    );
 
     UPDATE "Chat"
     SET "temporaryRetentionDeadline" = "temporaryRetentionDeadline" + interval '1 hour'
     WHERE "id" = 'memory-phase3-temporary';
+    COMMIT;
   `), "create ordinary and admitted Temporary chat state");
 
   expectRejected(database, `
@@ -803,15 +889,104 @@ function assertChatScopeSchemaContracts(database: string): void {
         "temporaryRetentionPolicyVersion" = NULL,
         "temporaryRetentionDeadline" = NULL
     WHERE "id" = 'memory-phase3-temporary';
-  `, /Temporary chat mode is immutable after admission/u, "Temporary-to-normal conversion");
+  `, /Temporary chat mode is immutable after first-send admission/u, "Temporary-to-normal conversion");
 
   expectRejected(database, `
+    INSERT INTO "Message" (
+      "id", "chatId", "role", "content", "status", "updatedAt"
+    ) VALUES (
+      'memory-phase3-normal-message', 'memory-phase3-normal', 'user',
+      '{"blocks":[{"type":"text","text":"already sent"}]}'::jsonb,
+      'complete', CURRENT_TIMESTAMP
+    );
     UPDATE "Chat"
     SET "memoryMode" = 'TEMPORARY',
         "temporaryRetentionPolicyVersion" = 'temporary-24h-v1',
         "temporaryRetentionDeadline" = CURRENT_TIMESTAMP + interval '24 hours'
     WHERE "id" = 'memory-phase3-normal';
-  `, /Temporary chat mode is immutable after admission/u, "late Temporary conversion");
+  `, /Temporary chat mode is immutable after first-send admission/u, "late Temporary conversion");
+
+  requireSuccess(psql(database, `
+    BEGIN;
+    INSERT INTO "Chat" ("id", "userId", "title", "updatedAt")
+    VALUES (
+      'memory-phase3-pre-send', 'memory-owner-a', 'Pre-send', CURRENT_TIMESTAMP
+    );
+    UPDATE "Chat"
+    SET "memoryMode" = 'TEMPORARY',
+        "temporaryRetentionPolicyVersion" = 'temporary-24h-v1',
+        "temporaryRetentionDeadline" = CURRENT_TIMESTAMP + interval '24 hours'
+    WHERE "id" = 'memory-phase3-pre-send';
+    INSERT INTO "MemoryDeletionOutbox" (
+      "id", "userId", "operation", "targetType", "targetId",
+      "memoryGeneration", "state", "nextAttemptAt", "updatedAt"
+    ) VALUES (
+      'memory-phase3-pre-send-delete', 'memory-owner-a', 'TEMPORARY_DELETE',
+      'TEMPORARY_CHAT@temporary-24h-v1', 'memory-phase3-pre-send', 0,
+      'PENDING', CURRENT_TIMESTAMP + interval '24 hours', CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Message" (
+      "id", "chatId", "role", "content", "status", "updatedAt"
+    ) VALUES (
+      'memory-phase3-pre-send-message', 'memory-phase3-pre-send', 'user',
+      '{"blocks":[{"type":"text","text":"temporary"}]}'::jsonb,
+      'complete', CURRENT_TIMESTAMP
+    );
+    COMMIT;
+  `), "admit Temporary and its one deletion obligation atomically");
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|', chat."memoryMode", deletion."state",
+        deletion."memoryGeneration")
+      FROM "Chat" AS chat
+      INNER JOIN "MemoryDeletionOutbox" AS deletion
+        ON deletion."targetId" = chat."id"
+       AND deletion."operation" = 'TEMPORARY_DELETE'
+      WHERE chat."id" = 'memory-phase3-pre-send';
+    `),
+    "TEMPORARY|PENDING|0",
+    "pre-send admission did not bind the exact durable deletion obligation"
+  );
+
+  expectRejected(database, `
+    BEGIN;
+    INSERT INTO "Chat" ("id", "userId", "title", "updatedAt")
+    VALUES (
+      'memory-phase3-unbound-temp', 'memory-owner-a', 'Unbound', CURRENT_TIMESTAMP
+    );
+    UPDATE "Chat"
+    SET "memoryMode" = 'TEMPORARY',
+        "temporaryRetentionPolicyVersion" = 'temporary-24h-v1',
+        "temporaryRetentionDeadline" = CURRENT_TIMESTAMP + interval '24 hours'
+    WHERE "id" = 'memory-phase3-unbound-temp';
+    INSERT INTO "Message" (
+      "id", "chatId", "role", "content", "status", "updatedAt"
+    ) VALUES (
+      'memory-phase3-unbound-message', 'memory-phase3-unbound-temp', 'user',
+      '{"blocks":[]}'::jsonb, 'complete', CURRENT_TIMESTAMP
+    );
+    COMMIT;
+  `, /exactly one durable deletion obligation/u, "unbound Temporary admission");
+
+  expectRejected(database, `
+    DELETE FROM "Chat" WHERE "id" = 'memory-phase3-pre-send';
+  `, /claimed durable obligation/u, "uncoordinated Temporary hard delete");
+
+  expectRejected(database, `
+    BEGIN;
+    DELETE FROM "Message" WHERE "chatId" = 'memory-phase3-pre-send';
+    DELETE FROM "MemoryDeletionOutbox"
+    WHERE "id" = 'memory-phase3-pre-send-delete';
+    COMMIT;
+  `, /exactly one durable deletion obligation/u,
+  "remove Temporary messages and deletion obligation");
+
+  expectRejected(database, `
+    UPDATE "MemoryDeletionOutbox"
+    SET "targetId" = 'memory-phase3-normal'
+    WHERE "id" = 'memory-phase3-pre-send-delete';
+  `, /exactly one durable deletion obligation/u,
+  "retarget the only Temporary deletion obligation");
 
   expectRejected(database, `
     UPDATE "Chat"
@@ -835,55 +1010,6 @@ function assertChatScopeSchemaContracts(database: string): void {
     "archive state changed chat Memory mode or counters"
   );
 
-  requireSuccess(psql(database, `
-    INSERT INTO "User" ("id", "email", "displayName", "role", "status", "updatedAt")
-    VALUES (
-      'memory-phase3-owner-b', 'memory-phase3-b@example.test', 'Memory Phase 3 B',
-      'user', 'active', CURRENT_TIMESTAMP
-    );
-    INSERT INTO "Folder" ("id", "userId", "name", "updatedAt")
-    VALUES (
-      'memory-phase3-folder-b', 'memory-phase3-owner-b', 'Phase 3 B', CURRENT_TIMESTAMP
-    );
-  `), "create second Phase 3 scope owner");
-
-  expectRejected(database, `
-    INSERT INTO "MemoryScope" (
-      "id", "userId", "scopeType", "targetIdSnapshot", "folderId", "state"
-    ) VALUES (
-      'memory-phase3-dark-scope', 'memory-owner-a', 'FOLDER', 'memory-phase3-folder-b',
-      'memory-phase3-folder-b', 'ACTIVE'
-    );
-  `, /feature-dark until Phase 3 authorization/u, "feature-dark scoped target");
-
-  requireSuccess(
-    psql(database, `ALTER TABLE "MemoryScope" DISABLE TRIGGER "MemoryScope_phase1_guard";`),
-    "temporarily expose inherited scope constraints"
-  );
-  try {
-    expectRejected(database, `
-      INSERT INTO "MemoryScope" (
-        "id", "userId", "scopeType", "targetIdSnapshot", "folderId", "state"
-      ) VALUES (
-        'memory-phase3-cross-owner-scope', 'memory-owner-a', 'FOLDER',
-        'memory-phase3-folder-b', 'memory-phase3-folder-b', 'ACTIVE'
-      );
-    `, /MemoryScope_folder_fkey/u, "cross-owner Phase 3 scope target");
-
-    expectRejected(database, `
-      INSERT INTO "MemoryScope" (
-        "id", "userId", "scopeType", "targetIdSnapshot", "folderId", "state"
-      ) VALUES (
-        'memory-phase3-dangling-scope', 'memory-owner-a', 'FOLDER',
-        'memory-phase3-missing-folder', 'memory-phase3-missing-folder', 'ACTIVE'
-      );
-    `, /MemoryScope_folder_fkey/u, "dangling Phase 3 scope target");
-  } finally {
-    requireSuccess(
-      psql(database, `ALTER TABLE "MemoryScope" ENABLE TRIGGER "MemoryScope_phase1_guard";`),
-      "restore feature-dark scope guard"
-    );
-  }
 }
 
 function assertChatScopeMigrationAtomicRollback(database: string): void {
@@ -1086,6 +1212,66 @@ function assertScopeLifecycleMigrationAtomicRollback(database: string): void {
   );
 }
 
+function assertTemporaryRetentionMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE FUNCTION aiqsa_assert_temporary_chat_obligation(text, text)
+    RETURNS void LANGUAGE plpgsql AS $$ BEGIN RETURN; END $$;
+  `), "install Temporary-retention rollback-conflict fixture");
+
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, TEMPORARY_RETENTION_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting Temporary-retention migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /function "aiqsa_assert_temporary_chat_obligation" already exists/u,
+    "Temporary-retention rollback fixture failed for an unexpected reason"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM pg_indexes
+         WHERE schemaname = current_schema()
+           AND indexname = 'MemoryDeletionOutbox_temporary_chat_key'),
+        (SELECT count(*) FROM pg_trigger
+         WHERE tgname = 'Chat_temporary_delete_guard' AND NOT tgisinternal),
+        (SELECT count(*) FROM pg_trigger
+         WHERE tgname IN (
+           'Chat_temporary_obligation_guard',
+           'Message_temporary_obligation_guard',
+           'MemoryDeletionOutbox_temporary_chat_guard'
+         ) AND NOT tgisinternal),
+        (SELECT count(*) FROM pg_proc
+         WHERE proname = 'aiqsa_temporary_chat_delete_guard')
+      );
+    `),
+    "0|0|0|0",
+    "failed Temporary-retention migration left partial durable state"
+  );
+
+  requireSuccess(psql(database, `
+    INSERT INTO "User" ("id", "displayName", "role", "status", "updatedAt")
+    VALUES (
+      'memory-temp-rollback-owner', 'Temporary rollback', 'user', 'active',
+      CURRENT_TIMESTAMP
+    );
+    INSERT INTO "Chat" ("id", "userId", "title", "updatedAt")
+    VALUES (
+      'memory-temp-rollback-chat', 'memory-temp-rollback-owner', 'Temporary rollback',
+      CURRENT_TIMESTAMP
+    );
+  `), "create Temporary-retention rollback guard fixture");
+  expectRejected(database, `
+    UPDATE "Chat"
+    SET "memoryMode" = 'TEMPORARY',
+        "temporaryRetentionPolicyVersion" = 'temporary-24h-v1',
+        "temporaryRetentionDeadline" = CURRENT_TIMESTAMP + interval '24 hours'
+    WHERE "id" = 'memory-temp-rollback-chat';
+  `, /Temporary chat mode is immutable after admission/u,
+  "pre-migration Temporary mode guard after rollback");
+}
+
 function main(): void {
   requireSuccess(compose(["up", "-d", POSTGRES_SERVICE]), "start disposable PostgreSQL service");
   try {
@@ -1102,8 +1288,12 @@ function main(): void {
     assertExecutionUsageContracts(upgradeDatabase);
     assertCoordinatorFairnessContracts(upgradeDatabase);
     applyMigrations(upgradeDatabase, [CHAT_SCOPE_MIGRATION]);
+    assertFeatureDarkScopeContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [
+      SCOPE_LIFECYCLE_MIGRATION,
+      TEMPORARY_RETENTION_MIGRATION
+    ]);
     assertChatScopeSchemaContracts(upgradeDatabase);
-    applyMigrations(upgradeDatabase, [SCOPE_LIFECYCLE_MIGRATION]);
     assertScopeLifecycleContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
@@ -1115,8 +1305,12 @@ function main(): void {
     assertExecutionUsageContracts(freshDatabase);
     assertCoordinatorFairnessContracts(freshDatabase);
     applyMigrations(freshDatabase, [CHAT_SCOPE_MIGRATION]);
+    assertFeatureDarkScopeContracts(freshDatabase);
+    applyMigrations(freshDatabase, [
+      SCOPE_LIFECYCLE_MIGRATION,
+      TEMPORARY_RETENTION_MIGRATION
+    ]);
     assertChatScopeSchemaContracts(freshDatabase);
-    applyMigrations(freshDatabase, [SCOPE_LIFECYCLE_MIGRATION]);
     assertScopeLifecycleContracts(freshDatabase);
 
     createDatabase(rollbackDatabase);
@@ -1129,11 +1323,18 @@ function main(): void {
       migrationNames((name) => name < SCOPE_LIFECYCLE_MIGRATION)
     );
     assertScopeLifecycleMigrationAtomicRollback(scopeRollbackDatabase);
+
+    createDatabase(temporaryRollbackDatabase);
+    applyMigrations(
+      temporaryRollbackDatabase,
+      migrationNames((name) => name < TEMPORARY_RETENTION_MIGRATION)
+    );
+    assertTemporaryRetentionMigrationAtomicRollback(temporaryRollbackDatabase);
   } finally {
     dropDatabases();
   }
 
-  console.info("Memory migration contract passed through Phase 3 scoped target lifecycle.");
+  console.info("Memory migration contract passed through Phase 3 Temporary retention.");
 }
 
 main();

@@ -6,8 +6,9 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 ## Implementation Status And Authority
 
 Native Memory is approved. The baseline includes Phase 0 contracts/evaluation,
-Phase 1 persistence/coordination, complete Phase 2 explicit Memory, and initial
-Phase 3 source/scoped-target lifecycle. Explicit Saved Memories may
+Phase 1 persistence/coordination, complete Phase 2 explicit Memory, and the
+implemented Phase 3 source/scoped-target plus backend Temporary lifecycle.
+Explicit Saved Memories may
 use owned `GLOBAL_USER`, `FOLDER`, `ASSISTANT`, and non-Temporary `CHAT` scopes.
 Assistant archive pauses its scope without changing identity; target deletion
 tombstones the scope, retracts automatic current versions, and orphans explicit
@@ -24,23 +25,14 @@ MemoryJob lease row. This order is part of the deadlock-avoidance contract.
 Branch and folder changes enqueue final-state reconciliation snapshots, while
 queued/streaming assistant payload is normalized out of the source projection
 so ordinary token flushes remain counter- and hash-neutral. Past-chat and
-automatic lifecycle execution, Temporary cleanup, and scoped answer retrieval
-remain unavailable until their later gates. Phase 0 has strict decoders, pure
-state/counter/safety validation, RU/EN parity, frozen provider-neutral scoring,
-signed qualification decisions, and a hash-frozen synthetic tuning/holdout
-corpus. Behavior-only benchmark-shaped probes contain no upstream benchmark
-text and are not official benchmark scores.
+automatic lifecycle execution and scoped answer retrieval remain unavailable
+until their later gates.
 
-Phase 1 persists default-off settings; dormant typed scopes; fact, version,
-event, evidence, suppression, mutation, generation, job/deletion, execution,
-retrieval-attempt, and final-run evidence. Database ownership, uniqueness,
-current-pointer, active-generation, request/execution/vector shape, and account
-deletion constraints are authoritative. Typed scopes bind owner and target,
-active facts require an active scope at commit, and a fact's scope identity
-cannot be changed in place. Production repositories and the feature-local
-coordinator fence claims, retries, slow-schedule blocked deletion work, and
-apply. New-user/bootstrap/upgrade paths schedule no work. Suppression HMAC keys
-stay installation-only and are preflighted before restore or automatic work.
+Phase 1 persists default-off settings, facts/evidence/suppressions, indexes,
+jobs/deletions, execution/retrieval attempts, and final-run evidence under
+database ownership/shape/current-pointer constraints. The coordinator fences
+claims, retries, blocked deletion, and apply; bootstrap/upgrade schedules no
+work, and suppression HMAC keys stay installation-only.
 
 Every normal send and regeneration uses the two-phase run boundary. Phase A
 commits the exact DAG, ordinary dependency evidence, private `PREPARING` run,
@@ -129,8 +121,8 @@ Memory-plus-external-tool synthesis, other lifecycle/bulk variants, and
 production-composed qualified utility calls remain unavailable. Development runs the
 feature-local coordinator; production uses the same code in private no-API
 `memory-worker`. Both preflight every historical suppression key ID, and Memory
-failure does not alter web readiness. The default Phase 2 registry composes
-`FORGET_PURGE` and optional `EMBED_ITEMS`; embedding parks before provider I/O
+failure does not alter web readiness. The default registry composes
+`FORGET_PURGE`, `TEMPORARY_DELETE`, and optional `EMBED_ITEMS`; embedding parks before provider I/O
 because the code-owned qualification registry is empty and signature
 verification is fail-closed until operator-approved authority is installed.
 Lexical CRUD and retrieval remain live. Per-call execution owns
@@ -138,7 +130,11 @@ current authority/consent/qualification, immutable destination evidence,
 single-winner start, nullable usage, unknown-outcome recovery, and detach.
 Private `preparing` runs never enter public projection or provider I/O.
 Ordinary answers cannot create Memory. Existing chat context and folder/project
-prompt memory are separate behavior.
+prompt memory are separate retained-chat behavior.
+
+Temporary admission atomically binds an empty chat to one deletion obligation;
+mode/policy are immutable. It keeps disabled run evidence, omits Memory/source/
+project projections, and stays exact-route.
 
 Anonymous share creation and reads re-project through the positive public
 text-only schema. Personal context, Memory attempts/executions/bindings/items,
@@ -423,7 +419,8 @@ admission with two durable phases:
    of a finalized run replays that frozen request and never performs fresh
    retrieval.
 
-Temporary runs take the zero-read/zero-write path. Whole-retrieval failure
+Temporary runs use a fixed disabled snapshot and zero-item `DISABLED` binding
+without querying reusable Memory. Whole-retrieval failure
 normally degrades an ordinary answer to no personal context with an honest
 receipt; a Memory-management request cannot degrade into an invented success.
 Old bindings and included item text are immutable and may later show lifecycle
@@ -554,6 +551,14 @@ creation/last local activity when no run settles. Recovery must settle a stuck
 run rather than let it postpone deletion indefinitely. The deadline covers all
 owned content and object bytes; overdue work is visible as
 `BLOCKED_REQUIRES_ADMIN` and remains retryable.
+
+One policy-versioned outbox row and a claimed-lease delete guard own expiry.
+The handler settles stuck runs/attempts/executions/tools, removes the complete
+run/chat/share/attachment aggregate, deletes only object keys with no surviving
+Attachment/Knowledge reference, and requires an empty audit before success.
+Crash, lease loss, object failure, or corruption stays blocked/retryable. This
+removes AIQSA-owned data only; external providers/tools and operator backups
+retain already-sent data under their disclosed policies.
 
 Public anonymous snapshots keep visible assistant prose but strip personal
 context, Memory settings/IDs/scores/sources, attempts and execution bindings,

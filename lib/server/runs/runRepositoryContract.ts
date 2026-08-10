@@ -44,6 +44,7 @@ import type {
   MemoryPreparingAttemptResult,
   MemoryPreparingSettingsSnapshot
 } from "./preparingRun";
+import type { MemoryInitialChatMode } from "../../contracts/memory";
 
 export type RunAttachmentRecord = ProviderAttachment & {
   storageKey: string;
@@ -225,6 +226,7 @@ export type CreateRunInput = {
   defaults?: AcceptedRunDefaults;
   expectedActiveLeafId: string | null;
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
+  initialChatMode?: MemoryInitialChatMode;
   mcpBindings?: McpRunPlanBinding[];
   modelId: string;
   memoryMaterializer?: PreparingRunMemoryMaterializer;
@@ -261,6 +263,7 @@ export type PreparingRunAdmissionInput =
 export type PreparingRunAdmissionResult = Readonly<{
   assistantMessageId: string;
   attemptId: string;
+  chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   memoryGeneration: number;
   memoryRevision: number;
   runId: string;
@@ -390,6 +393,7 @@ export type RunRepository = {
     defaultProvider: string;
     folderDefaultKnowledgePlan?: unknown;
     id: string;
+    memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
     messageCount: number;
     projectMemory: string | null;
     title: string;
@@ -421,6 +425,7 @@ export type RunRepository = {
       defaultProvider: string;
       folderDefaultKnowledgePlan?: unknown;
       id: string;
+      memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
       projectMemory: string | null;
     };
     userMessage: {

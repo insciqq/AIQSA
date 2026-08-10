@@ -82,6 +82,15 @@ import {
   type MemorySourceMutationHooks
 } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
+import {
+  scheduleTemporaryChatDeletion,
+  temporaryRetentionDeadline
+} from "../memory/temporaryRetention";
+import {
+  decodeMemoryInitialChatMode,
+  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
+  type MemoryInitialChatMode
+} from "../../contracts/memory";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
 import {
   KnowledgeRunAdmissionError,
@@ -874,6 +883,7 @@ type LockedPreparingAttempt = Readonly<{
   boundedSafeQuerySnapshot: string | null;
   budgetSnapshot: Prisma.JsonValue | null;
   chatId: string;
+  chatMemoryModeSnapshot: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   degradationCode: string | null;
   expiresAt: Date;
   folderIdSnapshot: string | null;
@@ -892,6 +902,20 @@ type LockedPreparingAttempt = Readonly<{
   state: "PENDING" | "EXECUTING" | "READY" | "CONSUMED" | "STALE" | "FAILED" | "CANCELLED" | "EXPIRED";
   userId: string;
 }>;
+
+const TEMPORARY_PREPARING_SETTINGS: PreparingSettingsRow = Object.freeze({
+  acceptedUtilityEgressFingerprint: null,
+  acceptedUtilityPolicyVersion: null,
+  activeIndexGenerationId: null,
+  learnAutomatically: false,
+  memoryConsentRevision: 0,
+  memoryGeneration: 0,
+  memoryRevision: 0,
+  referenceChatHistory: false,
+  schemaVersion: 1,
+  settingsRevision: 0,
+  useMemoryFacts: false
+});
 
 type LockedPreparingRun = Readonly<{
   assistantId: string | null;
@@ -976,6 +1000,7 @@ async function lockPreparingAttempt(
       "modelRunId", "outcome"::text AS "outcome", "preSendActiveLeafMessageId",
       "preparedContextHash", "preparedContextText", "preparedContextTokenCount",
       "queryHash", "retrievalRevisionSnapshot", "settingsSnapshot",
+      "chatMemoryModeSnapshot"::text AS "chatMemoryModeSnapshot",
       "state"::text AS "state", "userId"
     FROM "MemoryRetrievalAttempt"
     WHERE "modelRunId" = ${input.runId}
@@ -1024,6 +1049,7 @@ async function createPreparingAttempt(
     attemptOrdinal: number;
     baseSnapshot: ReturnType<typeof createMemoryPreparingBaseSnapshot>;
     chatId: string;
+    chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
     folderIdSnapshot: string | null;
     now: Date;
     preSendActiveLeafMessageId: string | null;
@@ -1044,7 +1070,7 @@ async function createPreparingAttempt(
       baseRequestHash: memoryPreparingHash(input.baseSnapshot),
       boundedPrivateBaseRequestSnapshot: json(input.baseSnapshot),
       chatId: input.chatId,
-      chatMemoryModeSnapshot: "NORMAL",
+      chatMemoryModeSnapshot: input.chatMemoryMode,
       createdAt: input.now,
       expiresAt: new Date(input.now.getTime() + MEMORY_PREPARING_ATTEMPT_TTL_MS),
       externalRolesUsed: [],
@@ -1066,11 +1092,19 @@ async function createPreparingAttempt(
 }
 
 function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void {
+  const initialMode = "initialChatMode" in input ? input.initialChatMode : undefined;
+  if (initialMode !== undefined && !decodeMemoryInitialChatMode(initialMode).ok) {
+    throw new MemoryPreparingRunConflictError(
+      "memory_temporary_policy_review_required",
+      false
+    );
+  }
   if (
     input.normalizedRequest.chatId !== input.chatId ||
     input.normalizedRequest.modelId !== input.modelId ||
     input.normalizedRequest.provider !== input.provider ||
     input.normalizedRequest.personalContext !== undefined ||
+    (input.admissionKind === "REGENERATE" && initialMode !== undefined) ||
     (input.admissionKind === "NORMAL_SEND" &&
       memoryPreparingHash(input.normalizedRequest.content) !== memoryPreparingHash(input.content))
   ) {
@@ -1090,6 +1124,7 @@ async function admitPreparingRunWithClient(
   });
   return mapActiveRunConflict(() =>
     repeatableReadTransaction(prismaClient, async (tx) => {
+      const admissionNow = new Date();
       const lockedChats = await tx.$queryRaw<LockedMemorySourceChat[]>(Prisma.sql`
         SELECT
           "id", "userId", "activeLeafMessageId", "archived", "folderId",
@@ -1099,7 +1134,7 @@ async function admitPreparingRunWithClient(
         WHERE "id" = ${input.chatId} AND "userId" = ${input.userId}
         FOR UPDATE
       `);
-      const lockedChat = lockedChats[0];
+      let lockedChat = lockedChats[0];
       if (!lockedChat || lockedChat.archived) {
         throw new ActiveLeafConflictError();
       }
@@ -1133,6 +1168,82 @@ async function admitPreparingRunWithClient(
           }
         });
         if (!chat) throw new ActiveLeafConflictError();
+
+        const initialChatMode = input.initialChatMode;
+        if (initialChatMode) {
+          const requestedMode = initialChatMode.chatMode;
+          const firstSend = chat._count.messages === 0;
+          if (
+            requestedMode !== lockedChat.memoryMode &&
+            !(requestedMode === "TEMPORARY" &&
+              lockedChat.memoryMode === "NORMAL" && firstSend)
+          ) {
+            throw new MemoryPreparingRunConflictError(
+              "memory_temporary_chat_forbidden",
+              false
+            );
+          }
+        }
+
+        const convertToTemporary = initialChatMode?.chatMode === "TEMPORARY" &&
+          lockedChat.memoryMode === "NORMAL" && chat._count.messages === 0;
+        const temporaryAdmission = lockedChat.memoryMode === "TEMPORARY" ||
+          convertToTemporary;
+        if (temporaryAdmission) {
+          if (
+            !convertToTemporary &&
+            lockedChat.temporaryRetentionDeadline &&
+            lockedChat.temporaryRetentionDeadline <= admissionNow
+          ) {
+            throw new MemoryPreparingRunConflictError(
+              "memory_temporary_chat_expired",
+              false
+            );
+          }
+          const deadline = temporaryRetentionDeadline(admissionNow);
+          if (convertToTemporary) {
+            await tx.chat.update({
+              data: {
+                memoryMode: "TEMPORARY",
+                temporaryRetentionDeadline: deadline,
+                temporaryRetentionPolicyVersion:
+                  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+              },
+              where: { id: input.chatId }
+            });
+          } else {
+            await tx.chat.update({
+              data: { temporaryRetentionDeadline: deadline },
+              where: { id: input.chatId }
+            });
+          }
+          try {
+            await scheduleTemporaryChatDeletion(tx, {
+              chatId: input.chatId,
+              deadline,
+              now: admissionNow,
+              userId: input.userId
+            });
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message === "memory_temporary_deletion_already_claimed"
+            ) {
+              throw new MemoryPreparingRunConflictError(
+                "memory_temporary_chat_expired",
+                false
+              );
+            }
+            throw error;
+          }
+          lockedChat = {
+            ...lockedChat,
+            memoryMode: "TEMPORARY",
+            temporaryRetentionDeadline: deadline,
+            temporaryRetentionPolicyVersion:
+              MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+          };
+        }
 
         const userMessage = await tx.message.create({
           data: {
@@ -1200,6 +1311,42 @@ async function admitPreparingRunWithClient(
           });
         }
       } else {
+        if (lockedChat.memoryMode === "TEMPORARY") {
+          if (
+            lockedChat.temporaryRetentionDeadline &&
+            lockedChat.temporaryRetentionDeadline <= admissionNow
+          ) {
+            throw new MemoryPreparingRunConflictError(
+              "memory_temporary_chat_expired",
+              false
+            );
+          }
+          const deadline = temporaryRetentionDeadline(admissionNow);
+          await tx.chat.update({
+            data: { temporaryRetentionDeadline: deadline },
+            where: { id: input.chatId }
+          });
+          try {
+            await scheduleTemporaryChatDeletion(tx, {
+              chatId: input.chatId,
+              deadline,
+              now: admissionNow,
+              userId: input.userId
+            });
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message === "memory_temporary_deletion_already_claimed"
+            ) {
+              throw new MemoryPreparingRunConflictError(
+                "memory_temporary_chat_expired",
+                false
+              );
+            }
+            throw error;
+          }
+          lockedChat = { ...lockedChat, temporaryRetentionDeadline: deadline };
+        }
         const preSendAssistantMessageId = input.preSendAssistantMessageId ??
           lockedChat.activeLeafMessageId;
         if (!preSendAssistantMessageId ||
@@ -1253,7 +1400,9 @@ async function admitPreparingRunWithClient(
         });
       }
 
-      const settings = await loadPreparingSettings(tx, input.userId);
+      const settings = lockedChat.memoryMode === "TEMPORARY"
+        ? TEMPORARY_PREPARING_SETTINGS
+        : await loadPreparingSettings(tx, input.userId);
 
       const run = await tx.modelRun.create({
         data: {
@@ -1300,8 +1449,9 @@ async function admitPreparingRunWithClient(
         attemptOrdinal: 0,
         baseSnapshot,
         chatId: input.chatId,
+        chatMemoryMode: lockedChat.memoryMode,
         folderIdSnapshot: lockedChat.folderId,
-        now: new Date(),
+        now: admissionNow,
         preSendActiveLeafMessageId,
         runId: run.id,
         settings,
@@ -1312,6 +1462,7 @@ async function admitPreparingRunWithClient(
       return {
         assistantMessageId,
         attemptId,
+        chatMemoryMode: lockedChat.memoryMode,
         memoryGeneration: settings.memoryGeneration,
         memoryRevision: settings.memoryRevision,
         runId: run.id,
@@ -2105,8 +2256,10 @@ async function finalizePreparingRunWithClient(
       activeLeafMessageId: string | null;
       archived: boolean;
       folderId: string | null;
+      memoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
     }>>(Prisma.sql`
-      SELECT "activeLeafMessageId", "archived", "folderId"
+      SELECT "activeLeafMessageId", "archived", "folderId",
+        "memoryMode"::text AS "memoryMode"
       FROM "Chat"
       WHERE "id" = ${run.chatId} AND "userId" = ${input.userId}
       FOR UPDATE
@@ -2115,7 +2268,8 @@ async function finalizePreparingRunWithClient(
       !chat ||
       chat.archived ||
       chat.activeLeafMessageId !== attempt.admittedAssistantLeafMessageId ||
-      chat.folderId !== attempt.folderIdSnapshot
+      chat.folderId !== attempt.folderIdSnapshot ||
+      chat.memoryMode !== attempt.chatMemoryModeSnapshot
     ) {
       throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
     }
@@ -2243,6 +2397,73 @@ async function finalizePreparingRunWithClient(
     if (!usedContextIsValid && !emptyContextIsValid) {
       throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
     }
+    await assertCurrentProviderAdmission(tx, {
+      plan: input.providerAdmissionPlan,
+      userId: input.userId
+    });
+    await assertCurrentKnowledgeAdmission(tx, {
+      plan: input.knowledgeAdmissionPlan,
+      userId: input.userId
+    });
+    await assertCurrentMcpAdmission(tx, {
+      bindings: input.mcpBindings,
+      runId: input.runId,
+      userId: input.userId
+    });
+
+    if (attempt.chatMemoryModeSnapshot === "TEMPORARY") {
+      if (
+        attempt.outcome !== "DISABLED" ||
+        items.length !== 0 ||
+        !sameMemoryPreparingSettings(
+          settingsSnapshot,
+          memoryPreparingSettingsSnapshot(TEMPORARY_PREPARING_SETTINGS)
+        ) ||
+        baseSnapshot.normalizedRequest.memoryActionPlan !== undefined ||
+        input.normalizedRequest.personalContext !== undefined
+      ) {
+        throw new MemoryPreparingRunConflictError(
+          "memory_temporary_chat_forbidden",
+          false
+        );
+      }
+      validateFinalPreparingRequest(input, baseSnapshot, attempt, items, 0);
+      await tx.modelRunMemoryBinding.create({
+        data: {
+          boundedSafeQuerySnapshot: null,
+          contextTextHash: memoryPreparingTextHash(""),
+          contextTokenCount: 0,
+          degradationCode: null,
+          finalizedAt: now,
+          finalizedRevisionSnapshot: 0,
+          indexGenerationId: null,
+          memoryGenerationSnapshot: 0,
+          modelRunId: run.id,
+          outcome: "DISABLED",
+          queryHash: attempt.queryHash,
+          queryPlannerVersion: MEMORY_PREPARING_QUERY_PLANNER_VERSION,
+          retrievalAttemptId: attempt.id,
+          retrievalPipelineVersion: MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION,
+          retrievalRevisionSnapshot: 0,
+          settingsSnapshot: json(settingsSnapshot),
+          userId: input.userId
+        }
+      });
+      await tx.memoryRetrievalAttempt.update({
+        data: { consumedAt: now, state: "CONSUMED", updatedAt: now },
+        where: { id: attempt.id }
+      });
+      await tx.modelRun.update({
+        data: {
+          normalizedRequest: json(input.normalizedRequest),
+          providerRequestPreview: json(input.providerRequestPreview),
+          status: "streaming"
+        },
+        where: { id: run.id }
+      });
+      return true;
+    }
+
     const currentSettings = await loadPreparingSettings(tx, input.userId);
     const currentSnapshot = memoryPreparingSettingsSnapshot(currentSettings);
     if (
@@ -2265,20 +2486,6 @@ async function finalizePreparingRunWithClient(
       items,
       currentSettings.memoryRevision
     );
-
-    await assertCurrentProviderAdmission(tx, {
-      plan: input.providerAdmissionPlan,
-      userId: input.userId
-    });
-    await assertCurrentKnowledgeAdmission(tx, {
-      plan: input.knowledgeAdmissionPlan,
-      userId: input.userId
-    });
-    await assertCurrentMcpAdmission(tx, {
-      bindings: input.mcpBindings,
-      runId: input.runId,
-      userId: input.userId
-    });
 
     const binding = await tx.modelRunMemoryBinding.create({
       data: {
@@ -2376,8 +2583,10 @@ async function retryPreparingRunAttemptWithClient(
       activeLeafMessageId: string | null;
       archived: boolean;
       folderId: string | null;
+      memoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
     }>>(Prisma.sql`
-      SELECT "activeLeafMessageId", "archived", "folderId"
+      SELECT "activeLeafMessageId", "archived", "folderId",
+        "memoryMode"::text AS "memoryMode"
       FROM "Chat"
       WHERE "id" = ${attempt.chatId} AND "userId" = ${input.userId}
       FOR UPDATE
@@ -2386,7 +2595,8 @@ async function retryPreparingRunAttemptWithClient(
       !chat ||
       chat.archived ||
       chat.activeLeafMessageId !== attempt.admittedAssistantLeafMessageId ||
-      chat.folderId !== attempt.folderIdSnapshot
+      chat.folderId !== attempt.folderIdSnapshot ||
+      chat.memoryMode !== attempt.chatMemoryModeSnapshot
     ) {
       throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
     }
@@ -2399,7 +2609,9 @@ async function retryPreparingRunAttemptWithClient(
     } else if (run.assistantId || run.assistantRevisionId) {
       throw new MemoryPreparingRunConflictError("memory_admission_shape_changed", false);
     }
-    const settings = await loadPreparingSettings(tx, input.userId);
+    const settings = attempt.chatMemoryModeSnapshot === "TEMPORARY"
+      ? TEMPORARY_PREPARING_SETTINGS
+      : await loadPreparingSettings(tx, input.userId);
     await tx.memoryRetrievalAttempt.update({
       data: {
         errorCode: "memory_admission_settings_changed",
@@ -2415,6 +2627,7 @@ async function retryPreparingRunAttemptWithClient(
       attemptOrdinal: 1,
       baseSnapshot,
       chatId: attempt.chatId,
+      chatMemoryMode: attempt.chatMemoryModeSnapshot,
       folderIdSnapshot: attempt.folderIdSnapshot,
       now: input.now,
       preSendActiveLeafMessageId: attempt.preSendActiveLeafMessageId,
@@ -2608,6 +2821,12 @@ async function createDormantPreparingRun(
     if (actionPlanValue !== undefined && !actionPlan) {
       throw new MemoryPreparingRunConflictError("memory_action_plan_invalid", false);
     }
+    if (created.chatMemoryMode === "TEMPORARY" && actionPlan) {
+      throw new MemoryPreparingRunConflictError(
+        "memory_temporary_chat_forbidden",
+        false
+      );
+    }
     if (actionPlan) {
       await authorizeRunMemoryAction(prismaClient, {
         admissionKind: admission.admissionKind,
@@ -2631,7 +2850,9 @@ async function createDormantPreparingRun(
         if (!began) {
           throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
         }
-        let attemptResult = admission.memoryMaterializer
+        let attemptResult = created.chatMemoryMode === "TEMPORARY"
+          ? dormantMemoryAttemptResult(currentSettings.settingsSnapshot)
+          : admission.memoryMaterializer
           ? await retrieveExplicitRunMemory(prismaClient, {
               ...(actionPlan ? { actionPlan } : {}),
               ...(admission.assistant
@@ -3606,6 +3827,7 @@ export function createPrismaRunRepository(
 	            }
 	          },
 	          id: true,
+	          memoryMode: true,
 	          title: true
 	        },
         where: {
@@ -3622,6 +3844,7 @@ export function createPrismaRunRepository(
 	              defaultProvider: chat.defaultProviderModel?.connectionId ?? "",
 	              folderDefaultKnowledgePlan: chat.folder?.defaultKnowledgePlan ?? null,
 	              id: chat.id,
+	              memoryMode: chat.memoryMode,
 	              messageCount: chat._count.messages,
 	              projectMemory: chat.folder?.projectMemory ?? null,
 	              title: chat.title
@@ -3724,7 +3947,8 @@ export function createPrismaRunRepository(
                   projectMemory: true
                 }
               },
-              id: true
+              id: true,
+              memoryMode: true
             }
           },
           parent: {
@@ -3755,6 +3979,7 @@ export function createPrismaRunRepository(
         defaultProvider: sourceMessage.chat.defaultProviderModel?.connectionId ?? "",
         folderDefaultKnowledgePlan: sourceMessage.chat.folder?.defaultKnowledgePlan ?? null,
         id: sourceMessage.chat.id,
+        memoryMode: sourceMessage.chat.memoryMode,
         projectMemory: sourceMessage.chat.folder?.projectMemory ?? null
       };
 
@@ -4008,6 +4233,7 @@ export function createPrismaRunRepository(
           },
           folderId: true,
           id: true,
+          memoryMode: true,
           messages: {
             include: {
               assistantModelRuns: {
@@ -4101,7 +4327,7 @@ export function createPrismaRunRepository(
         }
         });
 
-        if (!chat) {
+        if (!chat || chat.memoryMode === "TEMPORARY") {
           return null;
         }
 

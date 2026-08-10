@@ -42,6 +42,10 @@ import type {
 } from "../providers/types";
 import type { StorageAdapter } from "../uploads/storage";
 import {
+  decodeMemoryInitialChatMode,
+  type MemoryInitialChatMode
+} from "../../contracts/memory";
+import {
   KnowledgeRunAdmissionError,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
@@ -149,6 +153,8 @@ export type SendRunPreparationSource = Readonly<{
     defaultProvider: string;
     folderDefaultKnowledgePlan?: unknown;
     id: string;
+    memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+    messageCount?: number;
     projectMemory: string | null;
   }>;
   kind: "send";
@@ -167,6 +173,7 @@ export type RegenerateRunPreparationSource = Readonly<{
       defaultProvider: string;
       folderDefaultKnowledgePlan?: unknown;
       id: string;
+      memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
       projectMemory: string | null;
     }>;
     userMessage: Readonly<{
@@ -210,6 +217,7 @@ export type MaterializedPreparedRunData = {
   contextTruncation: ContextTruncationSummary | null;
   defaults: PreparedRunDefaultsData | null;
   expectedActiveLeafId: string | null;
+  initialChatMode?: MemoryInitialChatMode;
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
   normalizedRequest: NormalizedRunRequest;
@@ -257,6 +265,54 @@ function failure(
     ok: false,
     status
   });
+}
+
+type ResolvedRunChatMode = Readonly<{
+  initialChatMode?: MemoryInitialChatMode;
+  mode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+}>;
+
+function resolveRunChatMode(
+  body: Readonly<Record<string, unknown>> | null,
+  source: RunPreparationInput["source"]
+): ResolvedRunChatMode | RunPreparationFailure {
+  const hasMode = body !== null && Object.hasOwn(body, "chatMode");
+  const hasPolicy = body !== null && Object.hasOwn(body, "temporaryRetentionPolicyVersion");
+  if (source.kind === "regenerate") {
+    if (hasMode || hasPolicy) {
+      return failure("memory_temporary_chat_forbidden", 409);
+    }
+    return { mode: source.source.chat.memoryMode ?? "NORMAL" };
+  }
+
+  const currentMode = source.chat.memoryMode ?? "NORMAL";
+  let requested: MemoryInitialChatMode;
+  if (hasMode || hasPolicy) {
+    const decoded = decodeMemoryInitialChatMode({
+      ...(hasMode ? { chatMode: body?.chatMode } : {}),
+      ...(hasPolicy
+        ? { temporaryRetentionPolicyVersion: body?.temporaryRetentionPolicyVersion }
+        : {})
+    });
+    if (!decoded.ok) {
+      return failure("memory_temporary_policy_review_required", 409);
+    }
+    requested = decoded.value;
+  } else {
+    return { mode: currentMode };
+  }
+
+  const requestedMode = requested.chatMode;
+  const firstSend = (source.chat.messageCount ?? 0) === 0;
+  const conversionAllowed = firstSend && currentMode === "NORMAL";
+  const matchesCurrent = requestedMode === currentMode;
+  if (!matchesCurrent && !(requestedMode === "TEMPORARY" && conversionAllowed)) {
+    return failure("memory_temporary_chat_forbidden", 409);
+  }
+  return {
+    initialChatMode: requested,
+    mode: requestedMode
+  };
 }
 
 function attachmentFailure(error: unknown): RunPreparationFailure | null {
@@ -380,6 +436,9 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
     contextTruncation: mutablePreparedData<ContextTruncationSummary | null>(prepared.contextTruncation),
     defaults: mutablePreparedData<PreparedRunDefaultsData | null>(prepared.defaults),
     expectedActiveLeafId: prepared.expectedActiveLeafId,
+    ...(prepared.initialChatMode
+      ? { initialChatMode: mutablePreparedData<MemoryInitialChatMode>(prepared.initialChatMode) }
+      : {}),
     ...(prepared.knowledgeAdmissionPlan
       ? {
           knowledgeAdmissionPlan: mutablePreparedData<KnowledgeRunAdmissionPlan>(
@@ -884,6 +943,10 @@ export async function prepareRun(
   }
 
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
+  const resolvedChatMode = resolveRunChatMode(body, input.source);
+  if ("ok" in resolvedChatMode) {
+    return resolvedChatMode;
+  }
   const decodedKnowledgePlan = assistantRun
     ? { ok: true as const, plan: { baseIds: [...assistantRun.knowledgeBaseIds] } }
     : resolvedOrdinaryKnowledgePlan(body, chat);
@@ -1063,6 +1126,9 @@ export async function prepareRun(
       : null;
 
   const memoryActionIntent = planMemoryAction(content);
+  if (resolvedChatMode.mode === "TEMPORARY" && memoryActionIntent.kind !== "NONE") {
+    return failure("memory_temporary_chat_forbidden", 409);
+  }
   if (memoryActionIntent.kind === "AMBIGUOUS") {
     return failure(
       "memory_intent_confirmation_required",
@@ -1193,7 +1259,10 @@ export async function prepareRun(
   }
 
   const normalizedPrompt = assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body);
-  const prompt = promptWithProjectMemory(normalizedPrompt, chat.projectMemory);
+  const prompt = promptWithProjectMemory(
+    normalizedPrompt,
+    resolvedChatMode.mode === "TEMPORARY" ? null : chat.projectMemory
+  );
   const sendContext =
     input.source.kind === "send"
       ? await deps.repository.loadConversationContextForExpectedLeaf(
@@ -1489,6 +1558,9 @@ export async function prepareRun(
     contextTruncation: providerBudget.contextTruncation,
     defaults,
     expectedActiveLeafId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : null,
+    ...(resolvedChatMode.initialChatMode
+      ? { initialChatMode: resolvedChatMode.initialChatMode }
+      : {}),
     ...(knowledgeAdmissionPlan ? { knowledgeAdmissionPlan } : {}),
     ...(mcpPlan?.ok ? { mcpBindings: [...mcpPlan.bindings] } : {}),
     normalizedRequest,

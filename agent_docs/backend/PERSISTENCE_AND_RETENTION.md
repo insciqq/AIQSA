@@ -97,8 +97,8 @@ owner, state, token, and unexpired lease. Consent waiting carries neither lease
 nor fallback authority. Job apply and success settle in one transaction.
 Deletion apply and success do likewise; failures release to bounded retry and
 then `BLOCKED_REQUIRES_ADMIN` with a slow due time and audit timestamp, never a
-terminal abandoned state. The default Phase 2 registry claims `FORGET_PURGE`
-and the optional fail-closed `EMBED_ITEMS` leaf.
+terminal abandoned state. The default registry claims `FORGET_PURGE`,
+`TEMPORARY_DELETE`, and the optional fail-closed `EMBED_ITEMS` leaf.
 Its typed manifest requires versioned contributors for unaccepted retrieval
 attempts, fact evidence, fact search rows (including their vectors/FTS), and
 forgotten version content. All leaves and the final completeness audit execute
@@ -115,6 +115,17 @@ starts the feature-local coordinator from server instrumentation; production
 runs the same coordinator code in the private `memory-worker` role. Both
 preflight the suppression keyring and every referenced historical key ID before
 reconciliation and claims.
+
+Temporary is a guarded first-send transition from an empty `NORMAL` chat. It
+atomically writes policy `temporary-24h-v1`, deadline, first graph, and exactly
+one `TEMPORARY_CHAT@temporary-24h-v1` deletion row. Deferred guards enforce or
+adopt that unique binding; only its live `RUNNING` lease may delete the chat.
+
+At expiry the handler locks/rechecks the chat, blocks reusable-Memory
+corruption, settles active run/attempt/execution/tool state, and deletes the
+complete run/chat/share/attachment aggregate in claim-success. Object deletion
+is crash-idempotent, preserves keys/jobs with any Attachment/Knowledge
+reference, and requires an unchanged manifest plus empty audit before success.
 
 `User.role`/`User.status`, identity/session/token/rule/invite relations, and exact normalized email/domain matching implement the auth state machine. The schema owns field/enumeration shape; the bounded owners routed by `SECURITY.md` own the threat and session contract.
 

@@ -57,6 +57,16 @@ export type MemorySourceSnapshot = LockedMemorySourceChat & Readonly<{
   sourceHash: string;
 }>;
 
+function temporaryMemorySourceSnapshot(
+  chat: LockedMemorySourceChat
+): MemorySourceSnapshot {
+  return {
+    ...chat,
+    messages: [],
+    sourceHash: memorySha256({ chatId: chat.id, mode: "TEMPORARY" })
+  };
+}
+
 export type MemoryTerminalSettlement = Readonly<{
   assistantMessageId: string | null;
   runId: string;
@@ -280,6 +290,9 @@ export async function loadMemorySourceSnapshot(
     userId: input.userId
   });
   if (!chat) return null;
+  if (chat.memoryMode === "TEMPORARY") {
+    return temporaryMemorySourceSnapshot(chat);
+  }
   const path = await loadActiveSourcePath(tx, chat.id, chat.activeLeafMessageId);
   const sourceHash = memorySha256({
     activeLeafMessageId: chat.activeLeafMessageId,
@@ -317,12 +330,15 @@ export async function applyMemorySourceMutations(
   ) {
     throw new MemorySourceStateConflictError("memory_source_mutation_unclassified");
   }
+  const patch = input.patch ?? {};
+  const nextMemoryMode = nextValue(input.chat.memoryMode, patch.memoryMode);
   const sourceRequiresBranchGeneration = input.sourceRequiresBranchGeneration ?? false;
   let branchIncrement = 0;
   let sourceIncrement = 0;
   let memoryGenerationIncrement = 0;
   let memoryRevisionIncrement = 0;
   for (const mutation of input.mutations) {
+    if (nextMemoryMode === "TEMPORARY") continue;
     const effect = memoryCounterEffectFor(mutation);
     branchIncrement += Number(counterAdvance(
       effect.branchGeneration,
@@ -344,7 +360,9 @@ export async function applyMemorySourceMutations(
     input.chat.memorySourceRevision,
     sourceIncrement
   );
-  const jobKinds = sourceJobKinds(input.mutations, branchIncrement > 0);
+  const jobKinds = nextMemoryMode === "TEMPORARY"
+    ? []
+    : sourceJobKinds(input.mutations, branchIncrement > 0);
   const needsSettings = memoryGenerationIncrement > 0 ||
     memoryRevisionIncrement > 0 || jobKinds.length > 0;
   const settings = needsSettings
@@ -377,7 +395,6 @@ export async function applyMemorySourceMutations(
     settings.memoryRevision = nextMemoryRevision;
   }
 
-  const patch = input.patch ?? {};
   const updated = await tx.chat.updateMany({
     data: {
       activeLeafMessageId: nextValue(input.chat.activeLeafMessageId, patch.activeLeafMessageId),
@@ -409,11 +426,32 @@ export async function applyMemorySourceMutations(
     throw new MemorySourceStateConflictError();
   }
 
-  const snapshot = await loadMemorySourceSnapshot(tx, {
-    chatId: input.chat.id,
-    lock: "UPDATE",
-    userId: input.chat.userId
-  });
+  const snapshot = nextMemoryMode === "TEMPORARY"
+    ? temporaryMemorySourceSnapshot({
+        ...input.chat,
+        activeLeafMessageId: nextValue(
+          input.chat.activeLeafMessageId,
+          patch.activeLeafMessageId
+        ),
+        archived: nextValue(input.chat.archived, patch.archived),
+        folderId: nextValue(input.chat.folderId, patch.folderId),
+        memoryBranchGeneration: nextBranchGeneration,
+        memoryMode: nextMemoryMode,
+        memorySourceRevision: nextSourceRevision,
+        temporaryRetentionDeadline: nextValue(
+          input.chat.temporaryRetentionDeadline,
+          patch.temporaryRetentionDeadline
+        ),
+        temporaryRetentionPolicyVersion: nextValue(
+          input.chat.temporaryRetentionPolicyVersion,
+          patch.temporaryRetentionPolicyVersion
+        )
+      })
+    : await loadMemorySourceSnapshot(tx, {
+        chatId: input.chat.id,
+        lock: "UPDATE",
+        userId: input.chat.userId
+      });
   if (
     !snapshot ||
     snapshot.memoryBranchGeneration !== nextBranchGeneration ||
@@ -448,7 +486,7 @@ export async function applyMemorySourceMutations(
   }
 
   const hooks = input.hooks ?? NOOP_MEMORY_SOURCE_MUTATION_HOOKS;
-  if (input.mutations.some((mutation) =>
+  if (snapshot.memoryMode !== "TEMPORARY" && input.mutations.some((mutation) =>
     mutation === "FOLDER_MOVE" ||
     mutation === "SCOPE_TARGET_DELETE" ||
     mutation === "ASSISTANT_ACCESS_CHANGE")) {

@@ -10,6 +10,7 @@ describe("default Phase 2 Memory coordinator composition", () => {
     ensureDefaultMemoryPhase2HandlersRegistered();
 
     expect(defaultMemoryCoordinatorRegistry.deletionOperations()).toContain("FORGET_PURGE");
+    expect(defaultMemoryCoordinatorRegistry.deletionOperations()).toContain("TEMPORARY_DELETE");
     expect(defaultMemoryCoordinatorRegistry.jobKinds()).toContain("EMBED_ITEMS");
     expect(defaultMemoryCoordinatorRegistry.jobHandler("EMBED_ITEMS")?.kind).toBe("EMBED_ITEMS");
   });

@@ -6,6 +6,7 @@ import {
   applyMemoryAssistantAvailabilityChange,
   applyMemoryScopeTargetDeletion
 } from "./scopeLifecycle";
+import { applyTemporaryRunFinalized } from "./temporaryRetention";
 
 /**
  * Feature-local Memory leaves compose here. Shared chat/message/run repositories
@@ -14,6 +15,7 @@ import {
 export const defaultMemorySourceMutationHooks: MemorySourceMutationHooks =
   Object.freeze({
     ...NOOP_MEMORY_SOURCE_MUTATION_HOOKS,
+    onTemporaryRunFinalized: applyTemporaryRunFinalized,
     async onScopedTargetOwnerLifecycle(tx, event) {
       if (event.kind === "ASSISTANT_ACCESS_CHANGE") {
         await applyMemoryAssistantAvailabilityChange(tx, {

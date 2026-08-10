@@ -14,3 +14,15 @@ Not owned here: Storage threat controls, auth onboarding, chats/runs, or fronten
 - Object keys are unique per upload. If row creation fails after object storage, a durable cleanup job is staged before immediate best-effort deletion; failed cleanup remains retryable.
 - Public shares are immutable sanitized snapshots. The token is hashed for lookup; create/read/revoke never exposes live private state. Missing, invalid, expired, or revoked tokens share one generic unavailable response.
 - Public API/page reads reauthorize against the repository on every request, are force-dynamic, use private no-store and noindex/noarchive policy, and never cache revocation behind the framework or an intermediary. Hosted-answer native Gemini live-only grounded answers cannot be shared as placeholder content.
+- Temporary chats cannot create or list a public share. A bearer snapshot still
+  linked to a Temporary chat is unavailable even if a stale/corrupt row exists,
+  and aggregate expiry deletes every such row before deleting the chat. A
+  legacy retained snapshot whose source relation is already null preserves its
+  existing immutable-share behavior.
+- Temporary expiry owns its attachment rows and private object payloads. It
+  rechecks the exact attachment manifest and all Attachment/Knowledge
+  references around idempotent object deletion, deletes only an unshared key,
+  and leaves a shared key plus any existing cleanup job with the surviving
+  aggregate. Storage failures expose only
+  `memory_temporary_object_delete_failed`, retain the relational manifest, and
+  keep the complete deletion obligation retryable.

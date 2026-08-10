@@ -197,7 +197,7 @@ export function createPrismaMessageBranchRepository(
           messageId: sourceMessageId,
           userId
         });
-        if (!lockedChat) {
+        if (!lockedChat || lockedChat.memoryMode === "TEMPORARY") {
           return null;
         }
         await assertChatHasNoActiveRun(tx, lockedChat.id);

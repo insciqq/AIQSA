@@ -8,6 +8,10 @@ import {
   loadMemorySourceSnapshot,
   lockMemorySourceChat
 } from "./sourceState";
+import {
+  MEMORY_TEMPORARY_DELETION_GENERATION,
+  MEMORY_TEMPORARY_DELETION_TARGET_TYPE
+} from "./temporaryRetention";
 
 async function mutateSource(
   userId: string,
@@ -352,26 +356,47 @@ describe("Memory source-state persistence", () => {
       }
     });
     try {
-      const chat = await prisma.chat.create({
-        data: {
-          memoryMode: "TEMPORARY",
-          temporaryRetentionDeadline: new Date("2026-08-11T18:00:00.000Z"),
-          temporaryRetentionPolicyVersion: "temporary-24h-v1",
-          title: "Temporary source",
-          userId
-        }
-      });
-      const message = await prisma.message.create({
-        data: {
-          chatId: chat.id,
-          content: textMessageContent("Temporary answer"),
-          role: "assistant",
-          status: "complete"
-        }
+      const { chat, message } = await prisma.$transaction(async (tx) => {
+        const deadline = new Date(Date.now() + 86_400_000);
+        const chat = await tx.chat.create({
+          data: {
+            memoryMode: "TEMPORARY",
+            temporaryRetentionDeadline: deadline,
+            temporaryRetentionPolicyVersion: "temporary-24h-v1",
+            title: "Temporary source",
+            userId
+          }
+        });
+        await tx.memoryDeletionOutbox.create({
+          data: {
+            memoryGeneration: MEMORY_TEMPORARY_DELETION_GENERATION,
+            nextAttemptAt: deadline,
+            operation: "TEMPORARY_DELETE",
+            targetId: chat.id,
+            targetType: MEMORY_TEMPORARY_DELETION_TARGET_TYPE,
+            userId
+          }
+        });
+        const message = await tx.message.create({
+          data: {
+            chatId: chat.id,
+            content: textMessageContent("Temporary answer"),
+            role: "assistant",
+            status: "complete"
+          }
+        });
+        return { chat, message };
       });
       await mutateSource(userId, chat.id, {
         mutations: ["NORMAL_APPEND"],
         patch: { activeLeafMessageId: message.id }
+      });
+      await expect(prisma.$transaction((tx) => loadMemorySourceSnapshot(tx, {
+        chatId: chat.id,
+        userId
+      }))).resolves.toMatchObject({
+        memoryMode: "TEMPORARY",
+        messages: []
       });
       const temporaryHook = vi.fn(async () => undefined);
       await mutateSource(userId, chat.id, {
@@ -392,11 +417,25 @@ describe("Memory source-state persistence", () => {
         snapshot: expect.objectContaining({
           activeLeafMessageId: message.id,
           memoryMode: "TEMPORARY",
-          memorySourceRevision: 2
+          memorySourceRevision: 0,
+          messages: []
         })
       });
     } finally {
-      await prisma.user.deleteMany({ where: { id: userId } });
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryDeletionOutbox.updateMany({
+          data: {
+            leaseExpiresAt: new Date(Date.now() + 60_000),
+            leaseToken: "temporary-source-test-cleanup",
+            nextAttemptAt: null,
+            state: "RUNNING"
+          },
+          where: { operation: "TEMPORARY_DELETE", userId }
+        });
+        await tx.chat.deleteMany({ where: { userId } });
+        await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
+        await tx.user.deleteMany({ where: { id: userId } });
+      });
     }
   });
 });

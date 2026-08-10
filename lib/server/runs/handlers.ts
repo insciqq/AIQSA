@@ -396,6 +396,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
             }
           : {}),
         expectedActiveLeafId: preparedData.expectedActiveLeafId,
+        ...(preparedData.initialChatMode
+          ? { initialChatMode: preparedData.initialChatMode }
+          : {}),
         ...(preparedData.knowledgeAdmissionPlan
           ? { knowledgeAdmissionPlan: preparedData.knowledgeAdmissionPlan }
           : {}),

@@ -1222,7 +1222,7 @@ export function createPrismaChatRepository(
             AND "userId" = ${userId}
           FOR UPDATE
         `;
-        if (!chats[0] || chats[0].archived) {
+        if (!chats[0] || chats[0].archived || chats[0].memoryMode === "TEMPORARY") {
           return false;
         }
 
@@ -1659,6 +1659,7 @@ export function createPrismaChatRepository(
         INNER JOIN "Chat" c ON c."id" = m."chatId"
         WHERE c."userId" = ${userId}
           AND c."archived" = false
+          AND c."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
           AND m."content"::text ILIKE ${pattern}
         GROUP BY m."chatId", c."updatedAt"
         ORDER BY c."updatedAt" DESC
@@ -1837,6 +1838,7 @@ export function createPrismaChatRepository(
           select: chatSummarySelect,
           where: {
             archived: false,
+            memoryMode: { not: "TEMPORARY" },
             userId
           }
         })

@@ -41,6 +41,15 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
    answer adapter; cancellation and recovery terminally settle its owned
    attempt, while finalized recovery replays the already frozen request.
 
+   A reviewed Temporary first send persists mode, policy, deadline, and its one
+   deletion obligation inside that same Phase A. It uses a fixed disabled
+   settings snapshot and a zero-item `DISABLED` Phase-B binding without reading
+   personal Memory settings/data, applying Folder `projectMemory`, advancing
+   Memory source counters, or scheduling source work. Its own active branch and
+   explicitly admitted ordinary provider/Search/MCP/Knowledge dependencies
+   remain valid run input and retain their separately disclosed external
+   retention.
+
 2. Optional search and tools
    - optional but first-class Knowledge retrieval, Search, and model-requested MCP tools remain inside the same run;
    - [Search plans and integrations](SEARCH_PLANS.md) owns preference, compatibility, route selection, invocation, evidence, and publication semantics;

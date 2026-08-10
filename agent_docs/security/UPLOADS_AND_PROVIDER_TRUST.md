@@ -45,6 +45,17 @@ and data-processing trust boundary.
 
 Storage remains private. MinIO has no anonymous access, filesystem fallback is server-only, provider payloads resolve objects only after ownership/capability checks, and previews redact original bytes. Attachment-processing workers re-read only the claimed row's bounded private object, require its settled size/checksum, send it only to configured parser boundaries, and persist only normalized extraction evidence or a bounded stable error code. Status/retry routes reauthorize the owner and never project storage keys, checksums, parser bodies, or raw failures. Newly created public snapshots replace image/file/PDF/document blocks with neutral omission text and include no filename, alt text, attachment id, storage key, URL, or object metadata; already-stored immutable snapshots are not rewritten. UUID-bearing keys prevent a later upload from reusing deletion work. Message deletion only detaches rows; retention locks and rechecks every same-key row, atomically removes the final orphan rows with one durable deletion job, and claims that job through a bounded lease. Run linking uses the opposite ready/unattached-row compare-and-set, so prune/run races cannot delete a provider-bound object. Object deletion and retry summaries expose stable job ids/codes only, never private keys, filenames, content, or raw storage errors.
 
+Temporary retention uses its aggregate deletion obligation rather than the
+age-based prune command. At the due deadline it keeps the exact attachment rows
+as a durable object manifest, rechecks every same-key Attachment and Knowledge
+reference, and deletes only an unshared object. A shared key and its existing
+deletion job remain with the surviving aggregate. Storage failure or lease loss
+leaves the Temporary obligation retryable with a stable value-free code; no
+storage key, filename, object content, or adapter error enters user/admin
+evidence. This removes AIQSA-owned bytes only. Providers, Search integrations,
+MCP servers, Knowledge embedding destinations, external tools, and backups
+retain already-sent data under their own policies.
+
 Repository-local `.aiqsa/` state is excluded from Git and Docker build context because it may contain user objects or other private runtime data. Do not copy it into images or caches.
 
 ## Knowledge Indexing Egress
