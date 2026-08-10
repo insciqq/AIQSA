@@ -31,6 +31,7 @@ import {
 } from "../persistence/errors";
 import type {
   MemoryFactEditInput,
+  MemoryFactMoveInput,
   MemoryFactMutationResult,
   MemoryFactSaveInput,
   MemoryFactValueInput
@@ -61,6 +62,7 @@ export type ExplicitMemoryAuthorizationRepository = Readonly<{
 
 export type ExplicitMemoryFactRepository = Readonly<{
   edit(userId: string, input: MemoryFactEditInput): Promise<MemoryFactMutationResult>;
+  move(userId: string, input: MemoryFactMoveInput): Promise<MemoryFactMutationResult>;
   save(userId: string, input: MemoryFactSaveInput): Promise<MemoryFactMutationResult>;
 }>;
 
@@ -77,6 +79,7 @@ export type ExplicitMemoryReadRepository = Readonly<{
 }>;
 
 export type ExplicitMemoryScopeRepository = Readonly<{
+  ensure(userId: string, scope: MemoryCreateInput["scope"]): Promise<ActiveMemoryScope>;
   ensureGlobal(userId: string): Promise<ActiveMemoryScope>;
 }>;
 
@@ -176,10 +179,6 @@ async function persisted<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-function requireGlobalScope(scope: { type: string }): void {
-  if (scope.type !== "GLOBAL_USER") return failure("memory_scope_invalid");
-}
-
 function requireStatement(statement: string): void {
   if (
     !normalizeMemorySearchText(statement) ||
@@ -258,7 +257,7 @@ function evidenceFor(
 }
 
 function authorizationUse(input: Readonly<{
-  action: "EDIT" | "SAVE";
+  action: "EDIT" | "MOVE_SCOPE" | "SAVE";
   authorizationId: string;
   authorizedPayloadHash: string;
   expectedTargetVersionId?: string;
@@ -277,7 +276,7 @@ function idempotencyFingerprint(input: MemoryMutationAuthorizationUse): string {
 }
 
 function idempotencyPayloadHash(
-  action: "EDIT" | "SAVE",
+  action: "EDIT" | "MOVE_SCOPE" | "SAVE",
   payload: unknown
 ): string {
   return memorySha256({
@@ -326,7 +325,6 @@ export function createExplicitMemoryService(input: Readonly<{
 
   return Object.freeze({
     async create(userId, createInput, execution) {
-      requireGlobalScope(createInput.scope);
       requireStatement(createInput.statement);
       const authorizedPayloadHash = memorySha256(createInput.statement);
       const authorization = authorizationUse({
@@ -337,7 +335,8 @@ export function createExplicitMemoryService(input: Readonly<{
       const resolved = await persisted(() =>
         input.authorizationRepository.resolveForUse(userId, authorization)
       );
-      const scope = await persisted(() => input.scopeRepository.ensureGlobal(userId));
+      const scope = await persisted(() =>
+        input.scopeRepository.ensure(userId, createInput.scope));
       const observedAt = resolved.confirmedAt;
       const saved = await persisted(() => input.factRepository.save(userId, {
         authorization,
@@ -378,16 +377,12 @@ export function createExplicitMemoryService(input: Readonly<{
     },
 
     async list(userId, listInput) {
-      if (listInput.scope) requireGlobalScope(listInput.scope);
       return checkedList(await persisted(() =>
         input.readRepository.list(userId, listInput)
       ));
     },
 
     async mintAuthorization(userId, authorizationInput) {
-      if (authorizationInput.action === "MOVE_SCOPE") {
-        return failure("memory_operation_unsupported");
-      }
       if (
         authorizationInput.action === "BULK_DELETE" &&
         authorizationInput.operation !== "DELETE_EXPLICIT"
@@ -447,18 +442,83 @@ export function createExplicitMemoryService(input: Readonly<{
     },
 
     async search(userId, searchInput) {
-      if (searchInput.scope) requireGlobalScope(searchInput.scope);
       return checkedList(await persisted(() =>
         input.readRepository.search(userId, searchInput)
       ));
     },
 
     async update(userId, factId, updateInput, execution) {
-      if (updateInput.scope) requireGlobalScope(updateInput.scope);
       const current = await persisted(() =>
         input.readRepository.getEditable(userId, factId)
       );
       if (!current) return failure("memory_not_found");
+      const targetScope = updateInput.scope
+        ? await persisted(() => input.scopeRepository.ensure(userId, updateInput.scope!))
+        : null;
+      const moving = targetScope !== null && targetScope.id !== current.scopeId;
+      if (moving) {
+        const mixedMove = [
+          "category",
+          "modality",
+          "pinned",
+          "statement",
+          "validFrom",
+          "validTo"
+        ].some((key) => Object.hasOwn(updateInput, key));
+        if (mixedMove) return failure("memory_contract_invalid");
+        const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
+          action: "MOVE_SCOPE",
+          expectedTargetVersionId: updateInput.expectedVersionId,
+          targetFactId: factId
+        });
+        const authorization = authorizationUse({
+          action: "MOVE_SCOPE",
+          authorizationId: updateInput.mutationAuthorizationId,
+          authorizedPayloadHash,
+          expectedTargetVersionId: updateInput.expectedVersionId,
+          targetFactId: factId
+        });
+        const resolved = await persisted(() =>
+          input.authorizationRepository.resolveForUse(userId, authorization)
+        );
+        const moved = await persisted(() => input.factRepository.move(userId, {
+          authorization,
+          evidence: evidenceFor(
+            current.displayText,
+            resolved.confirmedAt,
+            current.sensitivityClass
+          ),
+          expectedVersionId: updateInput.expectedVersionId,
+          explicitSuppressionOverride: false,
+          factId,
+          idempotencyFingerprint: idempotencyFingerprint(authorization),
+          idempotencyPayloadHash: idempotencyPayloadHash("MOVE_SCOPE", {
+            factId,
+            input: updateInput
+          }),
+          ...(execution
+            ? {
+                modelRunId: execution.modelRunId,
+                persistedToolCallId: execution.persistedToolCallId
+              }
+            : {}),
+          requestId: resolved.requestId,
+          targetScopeId: targetScope.id,
+          value: valueFor({
+            canonicalKey: current.canonicalKey,
+            category: current.category,
+            modality: current.modality,
+            sensitivityClass: current.sensitivityClass,
+            statement: current.displayText,
+            validFrom: current.validFrom,
+            validTo: current.validTo
+          })
+        }));
+        return currentResponse(userId, moved.factId);
+      }
+      if (current.factState !== "ACTIVE") {
+        return failure("memory_scope_unavailable");
+      }
       const statement = updateInput.statement ?? current.displayText;
       requireStatement(statement);
       const validFrom = Object.hasOwn(updateInput, "validFrom")

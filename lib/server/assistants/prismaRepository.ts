@@ -10,6 +10,12 @@ import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalo
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
 import { isMcpRunPlanRecordRunnable } from "../mcp/runPlan";
 import { loadMcpRunPlanRecords } from "../mcp/runPlanRepository";
+import { lockMemorySettings } from "../memory/persistence/transaction";
+import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
+import {
+  applyMemoryScopedTargetOwnerLifecycle,
+  type MemorySourceMutationHooks
+} from "../memory/sourceState";
 import { prisma } from "../prisma";
 import {
   validateAssistantConfigurationAgainstCatalog,
@@ -234,6 +240,7 @@ export type PrismaAssistantRepositoryOptions = {
     tx: Prisma.TransactionClient,
     userId: string
   ): Promise<AssistantCatalogView | null>;
+  memorySourceHooks?: MemorySourceMutationHooks;
   now?(): Date;
 };
 
@@ -360,6 +367,7 @@ export function createPrismaAssistantRepository(
   client: PrismaClient = prisma,
   options: PrismaAssistantRepositoryOptions = {}
 ) {
+  const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
   const loadCatalogView = options.loadCatalogView ?? (async (
     tx: Prisma.TransactionClient,
     userId: string
@@ -826,13 +834,26 @@ export function createPrismaAssistantRepository(
         if (!definition) return { kind: "not_found" as const };
         if (definition.version !== expectedVersion) return { kind: "version_conflict" as const };
 
+        const availabilityChanged = (definition.archivedAt !== null) !== archived;
+        if (availabilityChanged) {
+          await lockMemorySettings(tx, userId, false);
+        }
+
         await tx.assistantDefinition.update({
           data: {
-            archivedAt: archived ? new Date() : null,
+            archivedAt: archived ? (options.now?.() ?? new Date()) : null,
             version: { increment: 1 }
           },
           where: { id: assistantId }
         });
+        if (availabilityChanged) {
+          await applyMemoryScopedTargetOwnerLifecycle(tx, memorySourceHooks, {
+            kind: "ASSISTANT_ACCESS_CHANGE",
+            sourceSnapshots: [],
+            targetId: assistantId,
+            userId
+          });
+        }
         return { assistantId, kind: "ok" as const };
       });
     },

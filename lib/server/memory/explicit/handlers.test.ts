@@ -187,6 +187,17 @@ describe("explicit Memory handlers", () => {
       scope: { type: "GLOBAL_USER" },
       sourceMode: "EXPLICIT"
     });
+    const scoped = await createListMemoriesHandler(handlerDeps)(new Request(
+      "http://localhost/api/me/memories?scope=FOLDER&targetId=folder-1"
+    ));
+    expect(scoped.status).toBe(200);
+    expect(explicitService.list).toHaveBeenCalledWith("user-1", {
+      scope: { targetId: "folder-1", type: "FOLDER" }
+    });
+    const missingTarget = await createListMemoriesHandler(handlerDeps)(new Request(
+      "http://localhost/api/me/memories?scope=CHAT"
+    ));
+    expect(missingTarget.status).toBe(400);
 
     const queryInUrl = await createListMemoriesHandler(handlerDeps)(new Request(
       "http://localhost/api/me/memories?query=private-text"

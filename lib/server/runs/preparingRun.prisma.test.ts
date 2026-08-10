@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
+import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { prisma } from "../prisma";
 import type { NormalizedRunRequest } from "../providers/types";
 import { MemorySuppressionKeyring } from "../memory/suppressionKeyring";
@@ -14,6 +15,7 @@ import { createExplicitMemoryService } from "../memory/explicit/service";
 import { planMemoryActionFromText } from "../memory/actions/intent";
 import { createMemoryActionExecutor } from "../memory/actions/toolExecutor";
 import { retrieveExplicitRunMemory } from "../memory/retrieval/explicitRun";
+import { applyMemoryScopeTargetDeletion } from "../memory/scopeLifecycle";
 import { createPrismaRunRepository } from "./prismaRepository";
 import {
   MemoryPreparingRunConflictError,
@@ -920,6 +922,196 @@ describe("PREPARING run orchestration", () => {
         runId: stale.admitted.runId,
         state: "STALE",
         userId
+      });
+    });
+  });
+
+  it("admits only the exact current Folder scope and rejects a target tombstone before finalization", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      await createPrismaMemorySettingsRepository(prisma).patch(userId, {
+        expectedMemoryRevision: 0,
+        expectedSettingsRevision: 0,
+        useMemoryFacts: true
+      });
+      const [folder, otherFolder] = await Promise.all([
+        prisma.folder.create({ data: { name: "Scoped run", userId } }),
+        prisma.folder.create({ data: { name: "Other run", userId } })
+      ]);
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensure(userId, {
+        targetId: folder.id,
+        type: "FOLDER"
+      });
+      const displayText = "Use the exact Folder-scoped deployment.";
+      const fact = await saveExplicitFact(userId, scope.id, displayText);
+      const repository = createPrismaRunRepository(prisma);
+
+      const stage = async (
+        title: string,
+        folderId: string,
+        item: Readonly<{ displayText: string; versionId: string }> = {
+          displayText,
+          versionId: fact.versionId
+        }
+      ) => {
+        const chat = await prisma.chat.create({ data: { folderId, title, userId } });
+        const request = normalizedRequest(chat.id);
+        const admitted = await repository.admitPreparingRun({
+          admissionKind: "NORMAL_SEND",
+          chatId: chat.id,
+          content: request.content,
+          expectedActiveLeafId: null,
+          modelId: request.modelId,
+          normalizedRequest: request,
+          provider: request.provider,
+          providerRequestPreview: {},
+          userId
+        });
+        const result = {
+          budgetSnapshot: { hardCapTokens: 2_500, schemaVersion: 1 },
+          items: [{
+            exactSafeText: item.displayText,
+            factVersionId: item.versionId,
+            finalScore: 0.9,
+            laneRanks: { exact: 1 },
+            selectionReason: "exact_folder"
+          }],
+          outcome: "USED" as const,
+          preparedContext: {
+            approxTokens: 8,
+            text: `User memory: ${item.displayText}`
+          }
+        };
+        return { admitted, request, result };
+      };
+
+      const mismatched = await stage("Wrong folder", otherFolder.id);
+      await expect(repository.completePreparingRunAttempt({
+        attemptId: mismatched.admitted.attemptId,
+        result: mismatched.result,
+        runId: mismatched.admitted.runId,
+        userId
+      })).rejects.toMatchObject({ code: "memory_attempt_item_stale" });
+
+      const accepted = await stage("Exact folder", folder.id);
+      await expect(repository.completePreparingRunAttempt({
+        attemptId: accepted.admitted.attemptId,
+        result: accepted.result,
+        runId: accepted.admitted.runId,
+        userId
+      })).resolves.toBe(true);
+      const acceptedSettings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      await expect(repository.finalizePreparingRun({
+        attemptId: accepted.admitted.attemptId,
+        normalizedRequest: {
+          ...accepted.request,
+          personalContext: {
+            approxTokens: 8,
+            itemCount: 1,
+            memoryGeneration: acceptedSettings.memoryGeneration,
+            memoryRevision: acceptedSettings.memoryRevision,
+            mode: "prefetched",
+            text: accepted.result.preparedContext.text
+          }
+        },
+        providerRequestPreview: {},
+        runId: accepted.admitted.runId,
+        userId
+      })).resolves.toBe(true);
+
+      const concurrentFolder = await prisma.folder.create({
+        data: { name: "Concurrent finalization", userId }
+      });
+      const concurrentScope = await createPrismaMemoryScopeRepository(prisma).ensure(userId, {
+        targetId: concurrentFolder.id,
+        type: "FOLDER"
+      });
+      const concurrentText = "Serialize scoped finalization against target deletion.";
+      const concurrentFact = await saveExplicitFact(
+        userId,
+        concurrentScope.id,
+        concurrentText
+      );
+      const concurrent = await stage(
+        "Concurrent target race",
+        concurrentFolder.id,
+        { displayText: concurrentText, versionId: concurrentFact.versionId }
+      );
+      await expect(repository.completePreparingRunAttempt({
+        attemptId: concurrent.admitted.attemptId,
+        result: concurrent.result,
+        runId: concurrent.admitted.runId,
+        userId
+      })).resolves.toBe(true);
+      const concurrentSettings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const [concurrentFinalization, concurrentDeletion] = await Promise.allSettled([
+        repository.finalizePreparingRun({
+          attemptId: concurrent.admitted.attemptId,
+          normalizedRequest: {
+            ...concurrent.request,
+            personalContext: {
+              approxTokens: 8,
+              itemCount: 1,
+              memoryGeneration: concurrentSettings.memoryGeneration,
+              memoryRevision: concurrentSettings.memoryRevision,
+              mode: "prefetched",
+              text: concurrent.result.preparedContext.text
+            }
+          },
+          providerRequestPreview: {},
+          runId: concurrent.admitted.runId,
+          userId
+        }),
+        createPrismaChatRepository(prisma).deleteFolder({
+          folderId: concurrentFolder.id,
+          userId
+        })
+      ]);
+      expect(concurrentDeletion).toMatchObject({ status: "fulfilled", value: true });
+      if (concurrentFinalization.status === "rejected") {
+        expect(["memory_admission_dag_changed", "memory_attempt_item_stale"])
+          .toContain(concurrentFinalization.reason?.code);
+      } else {
+        expect(concurrentFinalization.value).toBe(true);
+      }
+
+      const raced = await stage("Deleted target race", folder.id);
+      await expect(repository.completePreparingRunAttempt({
+        attemptId: raced.admitted.attemptId,
+        result: raced.result,
+        runId: raced.admitted.runId,
+        userId
+      })).resolves.toBe(true);
+      const racedSettings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      await prisma.$transaction((tx) => applyMemoryScopeTargetDeletion(tx, {
+        scopeType: "FOLDER",
+        targetId: folder.id,
+        userId
+      }));
+      await expect(repository.finalizePreparingRun({
+        attemptId: raced.admitted.attemptId,
+        normalizedRequest: {
+          ...raced.request,
+          personalContext: {
+            approxTokens: 8,
+            itemCount: 1,
+            memoryGeneration: racedSettings.memoryGeneration,
+            memoryRevision: racedSettings.memoryRevision,
+            mode: "prefetched",
+            text: raced.result.preparedContext.text
+          }
+        },
+        providerRequestPreview: {},
+        runId: raced.admitted.runId,
+        userId
+      })).rejects.toMatchObject({
+        code: "memory_attempt_item_stale",
+        retryable: true
       });
     });
   });

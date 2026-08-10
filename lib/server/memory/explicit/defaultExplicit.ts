@@ -28,6 +28,7 @@ function configuredFactRepository(): ExplicitMemoryFactRepository {
 
 const factRepository: ExplicitMemoryFactRepository = Object.freeze({
   edit: (userId, input) => configuredFactRepository().edit(userId, input),
+  move: (userId, input) => configuredFactRepository().move(userId, input),
   save: (userId, input) => configuredFactRepository().save(userId, input)
 });
 

@@ -5,6 +5,7 @@ import type {
   MemoryListInput,
   MemoryListResponse,
   MemoryListSearchInput,
+  MemoryScopeSelection,
   MemorySummary
 } from "../../../contracts/memory";
 import { prisma } from "../../prisma";
@@ -35,9 +36,12 @@ type SummaryRow = Readonly<{
   sensitivityClass: MemorySummary["sensitivityClass"] | null;
   sourceCount: number;
   sourceMode: MemorySummary["sourceMode"] | null;
+  scopeTargetIdSnapshot: string | null;
+  scopeType: MemoryScopeSelection["type"];
   updatedAt: Date;
   validFrom: Date | null;
   validTo: Date | null;
+  versionState: MemorySummary["versionState"] | null;
 }>;
 
 type EvidenceRow = Readonly<{
@@ -58,11 +62,13 @@ export type ExplicitMemoryEditable = Readonly<{
   category: string;
   currentVersionId: string;
   displayText: string;
+  factState: "ACTIVE" | "ORPHANED" | "RETRACTED";
   factId: string;
   languageCode: string;
   modality: MemorySummary["modality"];
   pinned: boolean;
   scopeId: string;
+  scope: MemoryScopeSelection;
   sensitivityClass: MemorySummary["sensitivityClass"];
   validFrom: Date | null;
   validTo: Date | null;
@@ -172,23 +178,25 @@ function decodeEvidenceCursor(value: string, factHash: string): EvidenceCursor {
   return parsed as EvidenceCursor;
 }
 
-function versionStateFor(
-  state: SummaryRow["factState"]
-): MemorySummary["versionState"] {
-  switch (state) {
-    case "ACTIVE":
-      return "ACTIVE";
-    case "CONFLICTED":
-      return "CONFLICTING";
-    case "EXPIRED":
-      return "EXPIRED";
-    case "FORGOTTEN":
-      return "FORGOTTEN";
-    case "ORPHANED":
-      return "ORPHANED";
-    case "RETRACTED":
-      return "RETRACTED";
+function scopeSelection(row: Pick<
+  SummaryRow,
+  "scopeTargetIdSnapshot" | "scopeType"
+>): MemoryScopeSelection {
+  if (row.scopeType === "GLOBAL_USER") return { type: "GLOBAL_USER" };
+  if (!row.scopeTargetIdSnapshot) {
+    return memoryPersistenceFailure("memory_counter_contract_invalid");
   }
+  return { targetId: row.scopeTargetIdSnapshot, type: row.scopeType };
+}
+
+function scopeFilter(selection: MemoryScopeSelection): Prisma.Sql {
+  if (selection.type === "GLOBAL_USER") {
+    return Prisma.sql`scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"`;
+  }
+  return Prisma.sql`
+    scope."scopeType" = ${selection.type}::"MemoryScopeType"
+    AND scope."targetIdSnapshot" = ${selection.targetId}
+  `;
 }
 
 function indexingState(row: SummaryRow): MemorySummary["indexingState"] {
@@ -200,7 +208,7 @@ function indexingState(row: SummaryRow): MemorySummary["indexingState"] {
 }
 
 function summaryFromRow(row: SummaryRow): MemorySummary {
-  if (!row.modality || !row.sensitivityClass || !row.sourceMode) {
+  if (!row.modality || !row.sensitivityClass || !row.sourceMode || !row.versionState) {
     return memoryPersistenceFailure("memory_counter_contract_invalid");
   }
   const active = row.factState === "ACTIVE";
@@ -211,7 +219,7 @@ function summaryFromRow(row: SummaryRow): MemorySummary {
     category: row.category,
     createdAt: row.createdAt.toISOString(),
     currentVersionId: active ? row.currentVersionId : null,
-    displayText: active ? row.displayText : null,
+    displayText: active || row.factState === "ORPHANED" ? row.displayText : null,
     factState: row.factState,
     id: row.id,
     indexingState: indexingState(row),
@@ -219,14 +227,14 @@ function summaryFromRow(row: SummaryRow): MemorySummary {
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     modality: row.modality,
     pinned: row.pinned,
-    scope: { type: "GLOBAL_USER" },
+    scope: scopeSelection(row),
     sensitivityClass: row.sensitivityClass,
     sourceCount: row.sourceCount,
     sourceMode: row.sourceMode,
     updatedAt: row.updatedAt.toISOString(),
     validFrom: row.validFrom?.toISOString() ?? null,
     validTo: row.validTo?.toISOString() ?? null,
-    versionState: versionStateFor(row.factState)
+    versionState: row.versionState
   };
 }
 
@@ -247,12 +255,15 @@ async function summariesByIds(
       fact."lastConfirmedAt",
       fact."createdAt",
       fact."updatedAt",
+      scope."scopeType"::text AS "scopeType",
+      scope."targetIdSnapshot" AS "scopeTargetIdSnapshot",
       version."displayText",
       version."modality",
       version."sourceMode",
       version."sensitivityClass",
       version."validFrom",
       version."validTo",
+      version."state"::text AS "versionState",
       COALESCE(evidence."sourceCount", 0)::integer AS "sourceCount",
       generation."indexMode",
       search."id" AS "searchEntryId",
@@ -263,8 +274,6 @@ async function summariesByIds(
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId"
       AND scope."id" = fact."scopeId"
-      AND scope."scopeType" = 'GLOBAL_USER'
-      AND scope."state" = 'ACTIVE'
     LEFT JOIN LATERAL (
       SELECT candidate.*
       FROM "MemoryFactVersion" AS candidate
@@ -320,9 +329,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
       const decodedCursor = cursor ? decodeEvidenceCursor(cursor, factHash) : null;
       const conditions = [
         Prisma.sql`fact."userId" = ${userId}`,
-        Prisma.sql`fact."id" = ${factId}`,
-        Prisma.sql`scope."scopeType" = 'GLOBAL_USER'`,
-        Prisma.sql`scope."state" = 'ACTIVE'`
+        Prisma.sql`fact."id" = ${factId}`
       ];
       if (decodedCursor) {
         const observedAt = new Date(decodedCursor.observedAt);
@@ -398,24 +405,38 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
           category: true,
           currentVersionId: true,
           id: true,
+          movedToFactId: true,
           pinned: true,
           scopeId: true,
           state: true
         },
         where: { id: factId, userId }
       });
-      if (!fact || fact.state !== "ACTIVE" || !fact.currentVersionId) return null;
-      const [scope, version] = await Promise.all([
-        client.memoryScope.findFirst({
-          select: { id: true },
-          where: {
-            id: fact.scopeId,
-            scopeType: "GLOBAL_USER",
-            state: "ACTIVE",
-            userId
-          }
-        }),
-        client.memoryFactVersion.findFirst({
+      if (
+        !fact ||
+        (fact.state !== "ACTIVE" &&
+          fact.state !== "ORPHANED" &&
+          !(fact.state === "RETRACTED" && fact.movedToFactId))
+      ) return null;
+      const scope = await client.memoryScope.findFirst({
+        select: {
+          id: true,
+          scopeType: true,
+          state: true,
+          targetIdSnapshot: true
+        },
+        where: {
+          id: fact.scopeId,
+          state: fact.state === "ACTIVE"
+            ? "ACTIVE"
+            : fact.state === "ORPHANED"
+              ? "ORPHANED"
+              : { in: ["ACTIVE", "ORPHANED"] },
+          userId
+        }
+      });
+      const version = fact.state === "ACTIVE" && fact.currentVersionId
+        ? await client.memoryFactVersion.findFirst({
           select: {
             displayText: true,
             id: true,
@@ -433,20 +454,46 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
             userId
           }
         })
-      ]);
+        : await client.memoryFactVersion.findFirst({
+          orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
+          select: {
+            displayText: true,
+            id: true,
+            languageCode: true,
+            modality: true,
+            sensitivityClass: true,
+            sourceMode: true,
+            validFrom: true,
+            validTo: true
+          },
+          where: {
+            factId,
+            sourceMode: "EXPLICIT",
+            state: fact.state === "ORPHANED" ? "ORPHANED" : "RETRACTED",
+            userId
+          }
+        });
       if (!scope || !version || !version.displayText || version.sourceMode !== "EXPLICIT") {
         return null;
       }
+      const selection = scope.scopeType === "GLOBAL_USER"
+        ? { type: "GLOBAL_USER" as const }
+        : scope.targetIdSnapshot
+          ? { targetId: scope.targetIdSnapshot, type: scope.scopeType }
+          : null;
+      if (!selection) return null;
       return {
         canonicalKey: fact.canonicalKey,
         category: fact.category,
         currentVersionId: version.id,
         displayText: version.displayText,
+        factState: fact.state,
         factId: fact.id,
         languageCode: version.languageCode,
         modality: version.modality,
         pinned: fact.pinned,
         scopeId: fact.scopeId,
+        scope: selection,
         sensitivityClass: version.sensitivityClass,
         validFrom: version.validFrom,
         validTo: version.validTo
@@ -463,10 +510,9 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
       });
       const cursor = input.cursor ? decodeListCursor(input.cursor, filterHash) : null;
       const conditions = [
-        Prisma.sql`fact."userId" = ${userId}`,
-        Prisma.sql`scope."scopeType" = 'GLOBAL_USER'`,
-        Prisma.sql`scope."state" = 'ACTIVE'`
+        Prisma.sql`fact."userId" = ${userId}`
       ];
+      if (input.scope) conditions.push(scopeFilter(input.scope));
       if (input.state) conditions.push(Prisma.sql`fact."state" = ${input.state}::"MemoryFactState"`);
       if (input.sourceMode) {
         conditions.push(
@@ -537,9 +583,37 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
       const offset = cursor?.offset ?? 0;
       const conditions = [
         Prisma.sql`fact."userId" = ${userId}`,
-        Prisma.sql`scope."scopeType" = 'GLOBAL_USER'`,
         Prisma.sql`scope."state" = 'ACTIVE'`,
         Prisma.sql`fact."state" = 'ACTIVE'`,
+        Prisma.sql`(
+          scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
+          OR (
+            scope."scopeType" = 'FOLDER'::"MemoryScopeType"
+            AND EXISTS (
+              SELECT 1 FROM "Folder" AS target
+              WHERE target."userId" = fact."userId"
+                AND target."id" = scope."folderId"
+            )
+          )
+          OR (
+            scope."scopeType" = 'ASSISTANT'::"MemoryScopeType"
+            AND EXISTS (
+              SELECT 1 FROM "AssistantDefinition" AS target
+              WHERE target."ownerUserId" = fact."userId"
+                AND target."id" = scope."assistantId"
+                AND target."archivedAt" IS NULL
+            )
+          )
+          OR (
+            scope."scopeType" = 'CHAT'::"MemoryScopeType"
+            AND EXISTS (
+              SELECT 1 FROM "Chat" AS target
+              WHERE target."userId" = fact."userId"
+                AND target."id" = scope."chatId"
+                AND target."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
+            )
+          )
+        )`,
         Prisma.sql`(
           search."safeSearchTextYoNormalized" = ${normalizedYoQuery}
           OR strpos(search."safeSearchTextYoNormalized", ${normalizedYoQuery}) > 0
@@ -548,6 +622,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
           OR search."searchVectorEnglish" @@ plainto_tsquery('english', ${normalizedQuery})
         )`
       ];
+      if (input.scope) conditions.push(scopeFilter(input.scope));
       if (input.state) conditions.push(Prisma.sql`fact."state" = ${input.state}::"MemoryFactState"`);
       if (input.sourceMode) {
         conditions.push(

@@ -11,6 +11,7 @@ const MEMORY_FOLLOWUP_MIGRATIONS = [
   "20260810170000_memory_coordinator_fairness"
 ] as const;
 const CHAT_SCOPE_MIGRATION = "20260810180000_memory_chat_scope_state";
+const SCOPE_LIFECYCLE_MIGRATION = "20260810190000_memory_scope_lifecycle";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -19,6 +20,7 @@ const suffix = `${process.pid}_${Date.now()}`;
 const upgradeDatabase = `aiqsa_memory_upgrade_${suffix}`;
 const freshDatabase = `aiqsa_memory_fresh_${suffix}`;
 const rollbackDatabase = `aiqsa_memory_rollback_${suffix}`;
+const scopeRollbackDatabase = `aiqsa_memory_scope_rollback_${suffix}`;
 const createdDatabases = new Set<string>();
 
 type CommandResult = Readonly<{
@@ -928,6 +930,162 @@ function assertChatScopeMigrationAtomicRollback(database: string): void {
   );
 }
 
+function assertScopeLifecycleContracts(database: string): void {
+  requireSuccess(psql(database, `
+    INSERT INTO "User" (
+      "id", "email", "displayName", "role", "status", "updatedAt"
+    ) VALUES (
+      'memory-owner-b', 'memory-scope-owner-b@example.test', 'Memory scope B',
+      'user', 'active', CURRENT_TIMESTAMP
+    ) ON CONFLICT ("id") DO NOTHING;
+    INSERT INTO "Folder" ("id", "userId", "name", "updatedAt")
+    VALUES ('memory-scope-live-folder', 'memory-owner-a', 'Scoped target', CURRENT_TIMESTAMP);
+    INSERT INTO "AssistantDefinition" (
+      "id", "ownerUserId", "version", "createdAt", "updatedAt"
+    ) VALUES (
+      'memory-scope-assistant-a', 'memory-owner-a', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "AssistantDefinition" (
+      "id", "ownerUserId", "version", "createdAt", "updatedAt"
+    ) VALUES (
+      'memory-scope-assistant-b', 'memory-owner-b', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO "MemoryScope" (
+      "id", "userId", "scopeType", "targetIdSnapshot", "folderId", "state"
+    ) VALUES (
+      'memory-scope-folder-a', 'memory-owner-a', 'FOLDER', 'memory-scope-live-folder',
+      'memory-scope-live-folder', 'ACTIVE'
+    );
+    INSERT INTO "MemoryScope" (
+      "id", "userId", "scopeType", "targetIdSnapshot", "assistantId", "state"
+    ) VALUES (
+      'memory-scope-assistant-owned', 'memory-owner-a', 'ASSISTANT',
+      'memory-scope-assistant-a', 'memory-scope-assistant-a', 'ACTIVE'
+    );
+    INSERT INTO "MemoryScope" (
+      "id", "userId", "scopeType", "targetIdSnapshot", "chatId", "state"
+    ) VALUES (
+      'memory-scope-chat-owned', 'memory-owner-a', 'CHAT',
+      'memory-chat-a', 'memory-chat-a', 'ACTIVE'
+    );
+  `), "activate owned typed Memory scopes");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryScope" (
+      "id", "userId", "scopeType", "targetIdSnapshot", "assistantId", "state"
+    ) VALUES (
+      'memory-scope-assistant-foreign', 'memory-owner-a', 'ASSISTANT',
+      'memory-scope-assistant-b', 'memory-scope-assistant-b', 'ACTIVE'
+    );
+  `, /MemoryScope_assistant_fkey/u, "foreign-owned Assistant Memory scope");
+
+  requireSuccess(psql(database, `
+    BEGIN;
+    SET CONSTRAINTS ALL DEFERRED;
+    INSERT INTO "MemoryFact" (
+      "id", "userId", "scopeId", "canonicalKey", "category", "state", "currentVersionId"
+    ) VALUES (
+      'memory-scope-fact-a', 'memory-owner-a', 'memory-scope-folder-a',
+      'scope.lifecycle', 'preference', 'ACTIVE', 'memory-scope-version-a'
+    );
+    INSERT INTO "MemoryEvent" (
+      "id", "userId", "operation", "actorType", "actorUserId", "factId",
+      "factVersionId", "metadata"
+    ) VALUES (
+      'memory-scope-event-a', 'memory-owner-a', 'EXPLICIT_SAVE', 'USER',
+      'memory-owner-a', 'memory-scope-fact-a', 'memory-scope-version-a', '{}'::jsonb
+    );
+    INSERT INTO "MemoryFactVersion" (
+      "id", "userId", "factId", "displayText", "normalizedSearchText",
+      "languageCode", "structuredValue", "category", "modality", "sourceMode",
+      "state", "confidence", "importance", "directness", "sensitivityClass",
+      "createdByEventId", "pipelineVersion"
+    ) VALUES (
+      'memory-scope-version-a', 'memory-owner-a', 'memory-scope-fact-a',
+      'Scoped lifecycle', 'scoped lifecycle', 'en', '{"scope":"folder"}'::jsonb,
+      'preference', 'PREFERENCE', 'EXPLICIT', 'ACTIVE', 1, 1, 'DIRECT', 'NORMAL',
+      'memory-scope-event-a', 'memory-pipeline-v1'
+    );
+    COMMIT;
+  `), "create active fact under an owned typed scope");
+
+  expectRejected(database, `
+    BEGIN;
+    UPDATE "MemoryScope"
+    SET "state" = 'ORPHANED', "folderId" = NULL, "orphanedAt" = CURRENT_TIMESTAMP
+    WHERE "id" = 'memory-scope-folder-a';
+    COMMIT;
+  `, /ACTIVE Memory fact requires an ACTIVE scope/u, "dangling active scoped fact");
+
+  expectRejected(database, `
+    UPDATE "MemoryFact" SET "scopeId" = 'memory-global-a'
+    WHERE "id" = 'memory-scope-fact-a';
+  `, /Memory fact scope identity is immutable/u, "in-place fact rescope");
+
+  requireSuccess(psql(database, `
+    BEGIN;
+    SET CONSTRAINTS ALL DEFERRED;
+    UPDATE "MemoryFactVersion"
+    SET "state" = 'ORPHANED', "systemTo" = CURRENT_TIMESTAMP + interval '1 millisecond'
+    WHERE "id" = 'memory-scope-version-a';
+    UPDATE "MemoryFact"
+    SET "state" = 'ORPHANED', "currentVersionId" = NULL
+    WHERE "id" = 'memory-scope-fact-a';
+    UPDATE "MemoryScope"
+    SET "state" = 'ORPHANED', "folderId" = NULL, "orphanedAt" = CURRENT_TIMESTAMP
+    WHERE "id" = 'memory-scope-folder-a';
+    DELETE FROM "Folder" WHERE "id" = 'memory-scope-live-folder';
+    COMMIT;
+  `), "detach a typed target only with its fact lifecycle transition");
+
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|', scope."targetIdSnapshot", COALESCE(scope."folderId", 'NULL'),
+        scope."state", fact."state", COALESCE(fact."currentVersionId", 'NULL'), version."state")
+      FROM "MemoryScope" AS scope
+      INNER JOIN "MemoryFact" AS fact ON fact."scopeId" = scope."id"
+      INNER JOIN "MemoryFactVersion" AS version ON version."factId" = fact."id"
+      WHERE scope."id" = 'memory-scope-folder-a';
+    `),
+    "memory-scope-live-folder|NULL|ORPHANED|ORPHANED|NULL|ORPHANED",
+    "scope tombstone did not preserve identity and clear live pointers"
+  );
+}
+
+function assertScopeLifecycleMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE FUNCTION aiqsa_memory_fact_scope_guard() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+  `), "install scoped-lifecycle rollback-conflict fixture");
+
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, SCOPE_LIFECYCLE_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting scoped-lifecycle migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /function "aiqsa_memory_fact_scope_guard" already exists/u,
+    "scoped-lifecycle rollback fixture failed for an unexpected reason"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM pg_trigger
+         WHERE tgname = 'MemoryScope_phase1_guard' AND NOT tgisinternal),
+        (SELECT count(*) FROM pg_trigger
+         WHERE tgname = 'MemoryScope_identity_guard' AND NOT tgisinternal),
+        (SELECT count(*) FROM pg_indexes
+         WHERE schemaname = current_schema()
+           AND indexname = 'AssistantDefinition_ownerUserId_id_key')
+      );
+    `),
+    "1|0|0",
+    "failed scoped-lifecycle migration left partial durable state"
+  );
+}
+
 function main(): void {
   requireSuccess(compose(["up", "-d", POSTGRES_SERVICE]), "start disposable PostgreSQL service");
   try {
@@ -945,6 +1103,8 @@ function main(): void {
     assertCoordinatorFairnessContracts(upgradeDatabase);
     applyMigrations(upgradeDatabase, [CHAT_SCOPE_MIGRATION]);
     assertChatScopeSchemaContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [SCOPE_LIFECYCLE_MIGRATION]);
+    assertScopeLifecycleContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
@@ -956,15 +1116,24 @@ function main(): void {
     assertCoordinatorFairnessContracts(freshDatabase);
     applyMigrations(freshDatabase, [CHAT_SCOPE_MIGRATION]);
     assertChatScopeSchemaContracts(freshDatabase);
+    applyMigrations(freshDatabase, [SCOPE_LIFECYCLE_MIGRATION]);
+    assertScopeLifecycleContracts(freshDatabase);
 
     createDatabase(rollbackDatabase);
     applyMigrations(rollbackDatabase, migrationNames((name) => name < CHAT_SCOPE_MIGRATION));
     assertChatScopeMigrationAtomicRollback(rollbackDatabase);
+
+    createDatabase(scopeRollbackDatabase);
+    applyMigrations(
+      scopeRollbackDatabase,
+      migrationNames((name) => name < SCOPE_LIFECYCLE_MIGRATION)
+    );
+    assertScopeLifecycleMigrationAtomicRollback(scopeRollbackDatabase);
   } finally {
     dropDatabases();
   }
 
-  console.info("Memory migration contract passed through Phase 3 chat scope schema.");
+  console.info("Memory migration contract passed through Phase 3 scoped target lifecycle.");
 }
 
 main();

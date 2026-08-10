@@ -97,7 +97,13 @@ export type MemoryFactEditInput = MemoryFactMutationCommonInput & Readonly<{
   scopeId: string;
 }>;
 
-export type MemoryFactMutationOutcome = "CREATED" | "EDITED" | "REINFORCED";
+export type MemoryFactMoveInput = MemoryFactMutationCommonInput & Readonly<{
+  expectedVersionId: string;
+  factId: string;
+  targetScopeId: string;
+}>;
+
+export type MemoryFactMutationOutcome = "CREATED" | "EDITED" | "MOVED" | "REINFORCED";
 
 export type MemoryFactMutationResult = Readonly<{
   eventId: string;
@@ -220,7 +226,7 @@ function validateMutationIdentity(input: MemoryReceiptIdentity): void {
 
 function validateMutation(
   input: MemoryFactMutationCommonInput,
-  operation: "EDIT" | "SAVE"
+  operation: "EDIT" | "MOVE_SCOPE" | "SAVE"
 ): void {
   validateMutationIdentity(input);
   if (
@@ -265,19 +271,27 @@ async function requireEvidenceOwner(
 }
 
 function payloadHash(
-  operation: "EDIT" | "SAVE",
-  input: MemoryFactEditInput | MemoryFactSaveInput
+  operation: "EDIT" | "MOVE_SCOPE" | "SAVE",
+  input: MemoryFactEditInput | MemoryFactMoveInput | MemoryFactSaveInput
 ): string {
   if (input.idempotencyPayloadHash) return input.idempotencyPayloadHash;
   return memorySha256({
     evidence: input.evidence,
     explicitSuppressionOverride: input.explicitSuppressionOverride,
     operation,
-    scopeId: input.scopeId,
+    scopeId: operation === "SAVE"
+      ? (input as MemoryFactSaveInput).scopeId
+      : operation === "EDIT"
+        ? (input as MemoryFactEditInput).scopeId
+        : undefined,
     target: operation === "EDIT" ? {
       expectedVersionId: (input as MemoryFactEditInput).expectedVersionId,
       factId: (input as MemoryFactEditInput).factId,
       pinned: (input as MemoryFactEditInput).pinned ?? null
+    } : operation === "MOVE_SCOPE" ? {
+      expectedVersionId: (input as MemoryFactMoveInput).expectedVersionId,
+      factId: (input as MemoryFactMoveInput).factId,
+      targetScopeId: (input as MemoryFactMoveInput).targetScopeId
     } : null,
     value: input.value
   });
@@ -356,6 +370,7 @@ function parseReceiptSnapshot(
     typeof snapshot.memoryRevision !== "number" ||
     (snapshot.outcome !== "CREATED" &&
       snapshot.outcome !== "EDITED" &&
+      snapshot.outcome !== "MOVED" &&
       snapshot.outcome !== "REINFORCED") ||
     typeof snapshot.versionId !== "string"
   ) {
@@ -375,7 +390,7 @@ function parseReceiptSnapshot(
 async function replayedReceipt(
   tx: MemoryTransaction,
   userId: string,
-  operation: "EDIT" | "SAVE",
+  operation: "EDIT" | "MOVE_SCOPE" | "SAVE",
   input: MemoryReceiptIdentity,
   inputPayloadHash: string
 ): Promise<MemoryFactMutationResult | null> {
@@ -403,7 +418,7 @@ async function replayedReceipt(
 async function persistReceipt(
   tx: MemoryTransaction,
   userId: string,
-  operation: "EDIT" | "SAVE",
+  operation: "EDIT" | "MOVE_SCOPE" | "SAVE",
   input: MemoryReceiptIdentity,
   inputPayloadHash: string,
   result: Omit<MemoryFactMutationResult, "replayed">
@@ -430,7 +445,7 @@ async function createEvent(
   userId: string,
   factId: string,
   versionId: string,
-  operation: "EDIT" | "EXPLICIT_SAVE" | "PROMOTE" | "REINFORCE",
+  operation: "EDIT" | "EXPLICIT_SAVE" | "PROMOTE" | "REINFORCE" | "SCOPE_CHANGE",
   value: MemoryFactValueInput,
   evidence: MemoryFactEvidenceInput,
   eventId: string
@@ -622,8 +637,10 @@ const currentVersionSelect = {
   pipelineVersion: true,
   sensitivityClass: true,
   sourceMode: true,
+  state: true,
   structuredValue: true,
   systemFrom: true,
+  systemTo: true,
   validFrom: true,
   validTo: true
 } satisfies Prisma.MemoryFactVersionSelect;
@@ -697,7 +714,8 @@ export function createPrismaMemoryFactRepository(
         if (!fact) return memoryPersistenceFailure("memory_fact_not_found");
         if (
           fact.state !== "ACTIVE" ||
-          fact.currentVersionId !== input.expectedVersionId
+          fact.currentVersionId !== input.expectedVersionId ||
+          fact.scopeId !== input.scopeId
         ) {
           return memoryPersistenceFailure("memory_fact_version_stale");
         }
@@ -783,8 +801,7 @@ export function createPrismaMemoryFactRepository(
             category: input.value.category,
             currentVersionId: versionId,
             lastConfirmedAt: input.evidence.observedAt,
-            ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
-            scopeId: input.scopeId
+            ...(input.pinned === undefined ? {} : { pinned: input.pinned })
           },
           where: {
             currentVersionId: input.expectedVersionId,
@@ -822,6 +839,342 @@ export function createPrismaMemoryFactRepository(
           versionId
         };
         await persistReceipt(tx, userId, "EDIT", input, inputPayloadHash, result);
+        return { ...result, replayed: false };
+      });
+    },
+
+    async move(userId: string, input: MemoryFactMoveInput): Promise<MemoryFactMutationResult> {
+      validateMutation(input, "MOVE_SCOPE");
+      if (
+        !validBounded(input.factId, 256) ||
+        !validBounded(input.expectedVersionId, 256) ||
+        !validBounded(input.targetScopeId, 256) ||
+        input.value.sourceMode !== "EXPLICIT"
+      ) {
+        return memoryPersistenceFailure("memory_input_invalid");
+      }
+      const inputPayloadHash = payloadHash("MOVE_SCOPE", input);
+      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        const replay = await replayedReceipt(
+          tx,
+          userId,
+          "MOVE_SCOPE",
+          input,
+          inputPayloadHash
+        );
+        if (replay) return replay;
+        await authorizeExplicitMutation(tx, userId, input);
+        const targetScope = await requireActiveOwnedMemoryScope(
+          tx,
+          userId,
+          input.targetScopeId
+        );
+
+        const [sourceFact] = await tx.$queryRaw<Array<{
+          canonicalKey: string;
+          category: string;
+          currentVersionId: string | null;
+          id: string;
+          pinned: boolean;
+          scopeId: string;
+          state: "ACTIVE" | "ORPHANED";
+        }>>(Prisma.sql`
+          SELECT "id", "scopeId", "canonicalKey", "category", "state"::text AS "state",
+            "pinned", "currentVersionId"
+          FROM "MemoryFact"
+          WHERE "id" = ${input.factId} AND "userId" = ${userId}
+            AND "state" IN (
+              'ACTIVE'::"MemoryFactState",
+              'ORPHANED'::"MemoryFactState"
+            )
+          FOR UPDATE
+        `);
+        if (!sourceFact) return memoryPersistenceFailure("memory_fact_not_found");
+        if (sourceFact.scopeId === targetScope.id) {
+          return memoryPersistenceFailure("memory_fact_identity_conflict");
+        }
+        const [sourceScope] = await tx.$queryRaw<Array<{
+          id: string;
+          state: "ACTIVE" | "ORPHANED";
+        }>>(Prisma.sql`
+          SELECT "id", "state"::text AS "state"
+          FROM "MemoryScope"
+          WHERE "id" = ${sourceFact.scopeId} AND "userId" = ${userId}
+            AND "state" IN (
+              'ACTIVE'::"MemoryScopeState",
+              'ORPHANED'::"MemoryScopeState"
+            )
+          FOR SHARE
+        `);
+        if (!sourceScope || sourceScope.state !== sourceFact.state) {
+          return memoryPersistenceFailure("memory_scope_unavailable");
+        }
+        if (
+          (sourceFact.state === "ACTIVE" &&
+            sourceFact.currentVersionId !== input.expectedVersionId) ||
+          (sourceFact.state === "ORPHANED" && sourceFact.currentVersionId !== null)
+        ) {
+          return memoryPersistenceFailure("memory_fact_version_stale");
+        }
+        if (sourceFact.canonicalKey !== input.value.canonicalKey) {
+          return memoryPersistenceFailure("memory_fact_identity_conflict");
+        }
+        const sourceVersion = await tx.memoryFactVersion.findFirst({
+          select: currentVersionSelect,
+          where: {
+            factId: sourceFact.id,
+            id: input.expectedVersionId,
+            sourceMode: "EXPLICIT",
+            state: sourceFact.state,
+            userId
+          }
+        });
+        if (!sourceVersion) return memoryPersistenceFailure("memory_fact_version_stale");
+        if (!sourceVersion.displayText || sourceVersion.structuredValue === null) {
+          return memoryPersistenceFailure("memory_fact_version_stale");
+        }
+        const movedValue: MemoryFactValueInput = {
+          canonicalKey: sourceFact.canonicalKey,
+          category: sourceVersion.category,
+          confidence: sourceVersion.confidence,
+          directness: sourceVersion.directness,
+          displayText: sourceVersion.displayText,
+          importance: sourceVersion.importance,
+          languageCode: sourceVersion.languageCode,
+          modality: sourceVersion.modality,
+          pipelineVersion: sourceVersion.pipelineVersion,
+          secretTaintedSourceWindow: false,
+          sensitivityClass: sourceVersion.sensitivityClass,
+          sourceMode: "EXPLICIT",
+          structuredValue: sourceVersion.structuredValue as Prisma.InputJsonValue,
+          validFrom: sourceVersion.validFrom,
+          validTo: sourceVersion.validTo
+        };
+        const movedInput: MemoryFactMoveInput = { ...input, value: movedValue };
+        if (sourceFact.state === "ORPHANED") {
+          const latest = await tx.memoryFactVersion.findFirst({
+            orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
+            select: { id: true },
+            where: { factId: sourceFact.id, state: "ORPHANED", userId }
+          });
+          if (latest?.id !== sourceVersion.id) {
+            return memoryPersistenceFailure("memory_fact_version_stale");
+          }
+        }
+
+        const [targetFact] = await tx.$queryRaw<Array<{
+          currentVersionId: string | null;
+          id: string;
+          pinned: boolean;
+          state: string;
+        }>>(Prisma.sql`
+          SELECT "id", "state"::text AS "state", "pinned", "currentVersionId"
+          FROM "MemoryFact"
+          WHERE "userId" = ${userId}
+            AND "scopeId" = ${targetScope.id}
+            AND "canonicalKey" = ${sourceFact.canonicalKey}
+          FOR UPDATE
+        `);
+        if (targetFact && (targetFact.state !== "ACTIVE" || !targetFact.currentVersionId)) {
+          return memoryPersistenceFailure("memory_fact_identity_conflict");
+        }
+        const targetCurrentVersion = targetFact?.currentVersionId
+          ? await tx.memoryFactVersion.findFirst({
+            select: currentVersionSelect,
+            where: {
+              factId: targetFact.id,
+              id: targetFact.currentVersionId,
+              state: "ACTIVE",
+              userId
+            }
+          })
+          : null;
+        if (targetFact && !targetCurrentVersion) {
+          return memoryPersistenceFailure("memory_fact_version_stale");
+        }
+        if (
+          targetCurrentVersion &&
+          versionContentHash(targetCurrentVersion) !== versionContentHash(sourceVersion)
+        ) {
+          return memoryPersistenceFailure("memory_fact_identity_conflict");
+        }
+
+        await requireEvidenceOwner(tx, userId, input.evidence);
+        await assertMemoryWriteNotSuppressed(
+          tx,
+          keyring,
+          userId,
+          suppressionMatchInput(movedInput),
+          { explicitOverrideRequested: false, sourceMode: "EXPLICIT" }
+        );
+        await advanceMemoryMutation(tx, settings, "EXPLICIT_EDIT_PIN_RESCOPE_OR_RESOLVE");
+        const activeIndex = await requireActiveMemoryIndex(tx, settings);
+        if (!activeIndex) return memoryPersistenceFailure("memory_active_generation_invalid");
+
+        const eventId = randomUUID();
+        const targetFactId = targetFact?.id ?? randomUUID();
+        const targetVersionId = randomUUID();
+        const transitionAt = new Date(Math.max(
+          Date.now(),
+          sourceVersion.systemFrom.getTime() + 1,
+          (targetCurrentVersion?.systemFrom.getTime() ?? 0) + 1
+        ));
+
+        if (!targetFact) {
+          await tx.memoryFact.create({
+            data: {
+              canonicalKey: sourceFact.canonicalKey,
+              category: movedValue.category,
+              currentVersionId: targetVersionId,
+              id: targetFactId,
+              lastConfirmedAt: input.evidence.observedAt,
+              pinned: sourceFact.pinned,
+              scopeId: targetScope.id,
+              state: "ACTIVE",
+              userId
+            }
+          });
+        }
+        await tx.memoryEvent.create({
+          data: {
+            actorType: "USER",
+            actorUserId: userId,
+            factId: targetFactId,
+            factVersionId: targetVersionId,
+            id: eventId,
+            metadata: {
+              movedFromFactId: sourceFact.id,
+              movedFromScopeId: sourceFact.scopeId,
+              movedFromVersionId: sourceVersion.id,
+              movedToScopeId: targetScope.id,
+              schemaVersion: "memory-scope-move-v1"
+            },
+            operation: "SCOPE_CHANGE",
+            userId
+          }
+        });
+        if (targetCurrentVersion && targetFact) {
+          const superseded = await tx.memoryFactVersion.updateMany({
+            data: { state: "SUPERSEDED", systemTo: transitionAt },
+            where: {
+              factId: targetFact.id,
+              id: targetCurrentVersion.id,
+              state: "ACTIVE",
+              systemTo: null,
+              userId
+            }
+          });
+          if (superseded.count !== 1) {
+            return memoryPersistenceFailure("memory_fact_version_stale");
+          }
+        }
+        await tx.memoryFactVersion.create({
+          data: {
+            category: movedValue.category,
+            confidence: movedValue.confidence,
+            createdByEventId: eventId,
+            directness: movedValue.directness,
+            displayText: movedValue.displayText,
+            factId: targetFactId,
+            id: targetVersionId,
+            importance: movedValue.importance,
+            languageCode: movedValue.languageCode,
+            modality: movedValue.modality,
+            movedFromVersionId: sourceVersion.id,
+            normalizedSearchText: normalizeMemorySearchText(movedValue.displayText),
+            pipelineVersion: movedValue.pipelineVersion,
+            sensitivityClass: movedValue.sensitivityClass,
+            sourceMode: "EXPLICIT",
+            state: "ACTIVE",
+            structuredValue: movedValue.structuredValue,
+            supersedesVersionId: targetCurrentVersion?.id,
+            systemFrom: transitionAt,
+            userId,
+            validFrom: movedValue.validFrom,
+            validTo: movedValue.validTo
+          }
+        });
+        if (targetFact) {
+          const updatedTarget = await tx.memoryFact.updateMany({
+            data: {
+              category: movedValue.category,
+              currentVersionId: targetVersionId,
+              lastConfirmedAt: input.evidence.observedAt,
+              pinned: targetFact.pinned || sourceFact.pinned
+            },
+            where: {
+              currentVersionId: targetCurrentVersion!.id,
+              id: targetFact.id,
+              state: "ACTIVE",
+              userId
+            }
+          });
+          if (updatedTarget.count !== 1) {
+            return memoryPersistenceFailure("memory_fact_version_stale");
+          }
+        }
+        const retractedVersion = await tx.memoryFactVersion.updateMany({
+          data: {
+            state: "RETRACTED",
+            ...(sourceVersion.systemTo ? {} : { systemTo: transitionAt })
+          },
+          where: {
+            factId: sourceFact.id,
+            id: sourceVersion.id,
+            state: sourceFact.state,
+            userId
+          }
+        });
+        if (retractedVersion.count !== 1) {
+          return memoryPersistenceFailure("memory_fact_version_stale");
+        }
+        const retractedFact = await tx.memoryFact.updateMany({
+          data: {
+            currentVersionId: null,
+            movedToFactId: targetFactId,
+            pinned: false,
+            state: "RETRACTED"
+          },
+          where: {
+            currentVersionId: sourceFact.currentVersionId,
+            id: sourceFact.id,
+            state: sourceFact.state,
+            userId
+          }
+        });
+        if (retractedFact.count !== 1) {
+          return memoryPersistenceFailure("memory_fact_version_stale");
+        }
+        await tx.memorySearchEntry.deleteMany({
+          where: {
+            factVersionId: {
+              in: [sourceVersion.id, ...(targetCurrentVersion ? [targetCurrentVersion.id] : [])]
+            },
+            indexGenerationId: activeIndex.id,
+            userId
+          }
+        });
+        await createEvidence(tx, userId, targetVersionId, eventId, input.evidence);
+        const searchEntry = await createSearchEntry(
+          tx,
+          activeIndex,
+          userId,
+          targetVersionId,
+          movedValue,
+          input.evidence
+        );
+        await enqueueExplicitEmbedding(tx, settings, movedInput, searchEntry);
+        await enqueueWorkingSetRefresh(tx, settings, movedInput, targetFactId);
+
+        const result = {
+          eventId,
+          factId: targetFactId,
+          memoryGeneration: settings.memoryGeneration,
+          memoryRevision: settings.memoryRevision,
+          outcome: "MOVED" as const,
+          versionId: targetVersionId
+        };
+        await persistReceipt(tx, userId, "MOVE_SCOPE", input, inputPayloadHash, result);
         return { ...result, replayed: false };
       });
     },

@@ -38,7 +38,7 @@ running before the attempt.
 Backup format 2 adds the sorted distinct non-secret
 `MemorySuppression.fingerprintKeyVersion` IDs to `manifest.env`; key material
 never enters the bundle. Format 1 remains structurally verifiable for recovery
-of older feature-dark installations. Restore still accepts only explicitly
+of older pre-activation installations. Restore still accepts only explicitly
 acknowledged empty disposable services and never starts either writer. It first
 validates manifest IDs with the separately recovered keyring, restores the
 database transactionally, reads the authoritative distinct IDs back, checks a
@@ -50,7 +50,16 @@ resurrection review owned by the Memory lifecycle contract.
 
 ## Core Tables
 
-The executable model inventory is `prisma/schema.prisma`. Its current categories are identity/session/approval, users/groups/settings/grants, folders/chats/message DAGs, Assistant definitions/revisions/publications/pins, provider/search catalog, runs/events/usage, MCP definitions/revisions/grants/user state/runtime evidence/tool calls, attachments plus their durable processing queue and purpose-built deletion outbox, per-pipeline document-processing fairness cursors, feature-dark Native Memory settings/authority/derivative/operational evidence, and immutable share snapshots. Living prose records only cross-table constraints that affect behavior.
+The executable model inventory is `prisma/schema.prisma`. Its current categories are identity/session/approval, users/groups/settings/grants, folders/chats/message DAGs, Assistant definitions/revisions/publications/pins, provider/search catalog, runs/events/usage, MCP definitions/revisions/grants/user state/runtime evidence/tool calls, attachments plus their durable processing queue and purpose-built deletion outbox, per-pipeline document-processing fairness cursors, Native Memory settings/authority/derivative/operational evidence, and immutable share snapshots. Living prose records only cross-table constraints that affect behavior.
+
+Native Memory scope identity is immutable. A typed `FOLDER`, `ASSISTANT`, or
+`CHAT` scope carries both its owner and its restrictive live-target relation;
+the Assistant relation additionally proves the same owner at the database
+boundary. Deferred constraints require every active fact to reference an active
+scope at commit and reject an in-place fact rescope. Target deletion changes
+the scope to a tombstone, clears the live target relation while retaining
+bounded target snapshots, clears active fact pointers, and leaves explicit Move
+lineage to a distinct same-owner fact rather than rewriting old history.
 
 `DocumentProcessingFairnessCursor` has exactly the independent `attachment`,
 `knowledge`, `memory-job`, and `memory-delete` rows. Its nullable last-owner
@@ -77,7 +86,7 @@ partial Knowledge predicates because the supported Prisma version cannot
 represent partial-index conditions. The focused migration contract pins those
 predicates and proves their bounded owner-range query plans.
 
-The feature-dark Memory coordinator uses the same short cursor transaction for
+The Memory coordinator uses the same short cursor transaction for
 registered `MemoryJob` kinds and registered `MemoryDeletionOutbox` operations.
 Jobs require a currently active owner; queued, retryable, waiting, or
 expired-claimed work for an unavailable owner is cancelled with a stable code.

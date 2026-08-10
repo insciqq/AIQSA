@@ -190,10 +190,14 @@ export async function ensureActiveLexicalGeneration(
 export async function advanceMemoryMutation(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
-  mutation: MemoryCounterMutation
+  mutation: MemoryCounterMutation,
+  options: Readonly<{ sourceRevisionHandled?: boolean }> = {}
 ): Promise<MemoryCounterSnapshot> {
   const effect = memoryCounterEffectFor(mutation);
-  if (effect.branchGeneration !== false || effect.sourceRevision !== false) {
+  if (
+    effect.branchGeneration !== false ||
+    (effect.sourceRevision !== false && !options.sourceRevisionHandled)
+  ) {
     return memoryPersistenceFailure("memory_counter_contract_invalid");
   }
 

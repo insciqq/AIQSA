@@ -167,12 +167,23 @@ async function requireCurrentTarget(
     where: { id: input.targetFactId!, userId }
   });
   if (!fact) return memoryPersistenceFailure("memory_fact_not_found");
-  if (
-    fact.state !== "ACTIVE" ||
-    fact.currentVersionId !== input.expectedTargetVersionId
-  ) {
-    return memoryPersistenceFailure("memory_fact_version_stale");
+  if (fact.state === "ACTIVE" && fact.currentVersionId === input.expectedTargetVersionId) {
+    return;
   }
+  if (input.action !== "EDIT" && fact.state === "ORPHANED") {
+    const latest = await tx.memoryFactVersion.findFirst({
+      orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
+      select: { id: true },
+      where: {
+        factId: input.targetFactId!,
+        sourceMode: "EXPLICIT",
+        state: "ORPHANED",
+        userId
+      }
+    });
+    if (latest?.id === input.expectedTargetVersionId) return;
+  }
+  return memoryPersistenceFailure("memory_fact_version_stale");
 }
 
 export function memoryMutationNonceHash(userId: string, requestNonce: string): string {

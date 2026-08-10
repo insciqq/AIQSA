@@ -806,6 +806,7 @@ model AssistantDefinition {
   revisions         AssistantRevision[]    @relation("AssistantRevisions")
 
   @@unique([id, currentRevisionId])
+  @@unique([ownerUserId, id])
   @@index([ownerUserId, archivedAt])
 }
 

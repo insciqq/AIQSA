@@ -1339,6 +1339,84 @@ async function beginPreparingRunAttemptWithClient(
   return updated.count === 1;
 }
 
+function memoryScopeEligibleForAttempt(
+  attempt: Pick<
+    LockedPreparingAttempt,
+    "assistantIdSnapshot" | "chatId" | "folderIdSnapshot" | "userId"
+  >
+): Prisma.Sql {
+  return Prisma.sql`(
+    scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
+    OR (
+      scope."scopeType" = 'FOLDER'::"MemoryScopeType"
+      AND scope."folderId" = ${attempt.folderIdSnapshot}
+      AND EXISTS (
+        SELECT 1 FROM "Folder" AS target
+        WHERE target."userId" = ${attempt.userId}
+          AND target."id" = scope."folderId"
+      )
+    )
+    OR (
+      scope."scopeType" = 'CHAT'::"MemoryScopeType"
+      AND scope."chatId" = ${attempt.chatId}
+      AND EXISTS (
+        SELECT 1 FROM "Chat" AS target
+        WHERE target."userId" = ${attempt.userId}
+          AND target."id" = scope."chatId"
+          AND target."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
+      )
+    )
+    OR (
+      scope."scopeType" = 'ASSISTANT'::"MemoryScopeType"
+      AND scope."assistantId" = ${attempt.assistantIdSnapshot}
+      AND EXISTS (
+        SELECT 1 FROM "AssistantDefinition" AS target
+        WHERE target."ownerUserId" = ${attempt.userId}
+          AND target."id" = scope."assistantId"
+          AND target."archivedAt" IS NULL
+      )
+    )
+  )`;
+}
+
+async function lockMemoryAttemptTargets(
+  tx: Prisma.TransactionClient,
+  attempt: Pick<LockedPreparingAttempt, "assistantIdSnapshot" | "chatId" | "folderIdSnapshot" | "userId">
+): Promise<void> {
+  if (attempt.folderIdSnapshot) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT "id" FROM "Folder"
+      WHERE "id" = ${attempt.folderIdSnapshot} AND "userId" = ${attempt.userId}
+      FOR SHARE
+    `);
+    if (!rows[0]) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+    }
+  }
+  const chats = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id" FROM "Chat"
+    WHERE "id" = ${attempt.chatId}
+      AND "userId" = ${attempt.userId}
+      AND "memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
+    FOR SHARE
+  `);
+  if (!chats[0]) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+  }
+  if (attempt.assistantIdSnapshot) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT "id" FROM "AssistantDefinition"
+      WHERE "id" = ${attempt.assistantIdSnapshot}
+        AND "ownerUserId" = ${attempt.userId}
+        AND "archivedAt" IS NULL
+      FOR SHARE
+    `);
+    if (!rows[0]) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+    }
+  }
+}
+
 async function completePreparingRunAttemptWithClient(
   prismaClient: PrismaClient,
   input: Readonly<{
@@ -1365,6 +1443,9 @@ async function completePreparingRunAttemptWithClient(
       if (!baseSnapshot || !baseRequestUsesNonToolMemoryList(baseSnapshot)) {
         throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
       }
+    }
+    if ((input.result.items?.length ?? 0) > 0) {
+      await lockMemoryAttemptTargets(tx, attempt);
     }
 
     const authoritativeItems: Array<{
@@ -1433,7 +1514,7 @@ async function completePreparingRunAttemptWithClient(
           AND fact."state" = 'ACTIVE'::"MemoryFactState"
           AND fact."currentVersionId" = version."id"
           AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-          AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
+          AND ${memoryScopeEligibleForAttempt(attempt)}
         FOR SHARE OF version, fact, scope
       `);
       if (!version || version.displayText === null ||
@@ -1684,6 +1765,10 @@ type PreparingAttemptItemRow = Readonly<{
 async function loadAndValidatePreparingAttemptItems(
   tx: Prisma.TransactionClient,
   input: Readonly<{
+    attempt: Pick<
+      LockedPreparingAttempt,
+      "assistantIdSnapshot" | "chatId" | "folderIdSnapshot" | "userId"
+    >;
     attemptId: string;
     userId: string;
   }>
@@ -1780,7 +1865,7 @@ async function loadAndValidatePreparingAttemptItems(
         AND fact."state" = 'ACTIVE'::"MemoryFactState"
         AND fact."currentVersionId" = version."id"
         AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-        AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
+        AND ${memoryScopeEligibleForAttempt(input.attempt)}
       FOR SHARE OF version, fact, scope
     `);
     if (
@@ -1997,6 +2082,13 @@ async function finalizePreparingRunWithClient(
       throw new MemoryPreparingRunConflictError("memory_admission_shape_changed", false);
     }
 
+    const itemCount = await tx.memoryRetrievalAttemptItem.count({
+      where: { attemptId: attempt.id, userId: input.userId }
+    });
+    if (itemCount > 0) {
+      await lockMemoryAttemptTargets(tx, attempt);
+    }
+
     const baseSnapshot = decodeMemoryPreparingBaseSnapshot(
       attempt.boundedPrivateBaseRequestSnapshot
     );
@@ -2122,6 +2214,7 @@ async function finalizePreparingRunWithClient(
     }
 
     const items = await loadAndValidatePreparingAttemptItems(tx, {
+      attempt,
       attemptId: attempt.id,
       userId: input.userId
     });

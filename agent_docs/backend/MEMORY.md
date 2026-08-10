@@ -5,12 +5,17 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 ## Implementation Status And Authority
 
-Native Memory is approved. The current baseline includes the feature-dark
-Phase 0 contract/evaluation harness, Phase 1 persistence and coordination, and
-the complete explicit Saved Memories vertical slice of Phase 2. The first
-feature-dark Phase 3 slices persist chat source mode, branch/source counters,
-and Temporary retention metadata, and route every production DAG/source writer
-through one transaction helper. Exact active-path hashes bind source jobs;
+Native Memory is approved. The baseline includes Phase 0 contracts/evaluation,
+Phase 1 persistence/coordination, complete Phase 2 explicit Memory, and initial
+Phase 3 source/scoped-target lifecycle. Explicit Saved Memories may
+use owned `GLOBAL_USER`, `FOLDER`, `ASSISTANT`, and non-Temporary `CHAT` scopes.
+Assistant archive pauses its scope without changing identity; target deletion
+tombstones the scope, retracts automatic current versions, and orphans explicit
+current versions for Move or Forget. Move appends same-owner cross-fact lineage
+and retains the source identity/history. The dormant chat hard-delete hook has
+no public surface. Phase 3 also persists chat mode/counters and Temporary
+metadata and routes every production DAG/source writer through one transaction
+helper. Exact active-path hashes bind source jobs;
 generation, leaf, branch, revision, and hash are rechecked under the chat lock
 immediately before apply, with stale claims settling without partial writes.
 Source mutations lock an affected target Folder when needed, then Chat, then
@@ -18,8 +23,9 @@ UserMemorySettings; source-job commit locks Chat, UserMemorySettings, then the
 MemoryJob lease row. This order is part of the deadlock-avoidance contract.
 Branch and folder changes enqueue final-state reconciliation snapshots, while
 queued/streaming assistant payload is normalized out of the source projection
-so ordinary token flushes remain counter- and hash-neutral. Lifecycle APIs and
-retrieval remain unavailable until their later gates. Phase 0 has strict decoders, pure
+so ordinary token flushes remain counter- and hash-neutral. Past-chat and
+automatic lifecycle execution, Temporary cleanup, and scoped answer retrieval
+remain unavailable until their later gates. Phase 0 has strict decoders, pure
 state/counter/safety validation, RU/EN parity, frozen provider-neutral scoring,
 signed qualification decisions, and a hash-frozen synthetic tuning/holdout
 corpus. Behavior-only benchmark-shaped probes contain no upstream benchmark
@@ -29,18 +35,22 @@ Phase 1 persists default-off settings; dormant typed scopes; fact, version,
 event, evidence, suppression, mutation, generation, job/deletion, execution,
 retrieval-attempt, and final-run evidence. Database ownership, uniqueness,
 current-pointer, active-generation, request/execution/vector shape, and account
-deletion constraints are authoritative. Production repositories and the
-feature-local coordinator fence claims, retries, slow-schedule blocked deletion
-work, and apply. New-user/bootstrap/upgrade paths schedule no work. Non-global
-scope activation remains database-blocked until Phase 3. Suppression HMAC keys
+deletion constraints are authoritative. Typed scopes bind owner and target,
+active facts require an active scope at commit, and a fact's scope identity
+cannot be changed in place. Production repositories and the feature-local
+coordinator fence claims, retries, slow-schedule blocked deletion work, and
+apply. New-user/bootstrap/upgrade paths schedule no work. Suppression HMAC keys
 stay installation-only and are preflighted before restore or automatic work.
 
 Every normal send and regeneration uses the two-phase run boundary. Phase A
 commits the exact DAG, ordinary dependency evidence, private `PREPARING` run,
-bounded base request, and local-only attempt. Eligible current explicit
-`GLOBAL_USER` facts come from local exact/FTS and enter the shared budget as
-clearly untrusted personal context with no utility consent. Phase B revalidates
-the DAG, folder/Assistant, settings/generation/index, ordinary admission, and
+bounded base request, and local-only attempt. Production answer retrieval still
+selects eligible current explicit `GLOBAL_USER` facts from local exact/FTS and
+enters them into the shared budget as clearly untrusted personal context with
+no utility consent. The finalization boundary nevertheless validates every
+staged scope against the exact attempt target: `FOLDER`, `CHAT`, and owned live
+`ASSISTANT` items cannot cross targets or survive target/archive drift. Phase B
+also revalidates the DAG, settings/generation/index, ordinary admission, and
 each staged version/source/scope/safety snapshot before freezing the request,
 preview, binding, and items. Drift gets at most one safe fresh attempt; stale
 mutation authority fails. Ordinary retrieval may degrade without Memory, but
@@ -66,16 +76,20 @@ the route schedules no work. Phase 2 advertises explicit Memory and qualified
 RU local retrieval while history recall and automatic learning remain
 unavailable; existing users remain default-off for Memory use.
 
-Explicit `GLOBAL_USER` management is gate-independent. Short-lived grants bind
-Save to an exact statement; Edit/Forget to owner fact/current version; and
+Explicit management is gate-independent across owned `GLOBAL_USER`, `FOLDER`,
+`ASSISTANT`, and non-Temporary `CHAT` scopes. Short-lived grants bind Save to an
+exact statement; Edit/Forget/Move to the owner fact and current version; and
 `DELETE_EXPLICIT` to the operation plus settings/Memory revisions, confirmation
-copy, and nonce. The serializable mutation consumes the grant; only an exact
-receipt-matched retry can replay. Private list, POST-search, detail, evidence,
-create, edit, pin, Forget, bulk-delete, and status routes rejoin ownership and
-keep free text out of URLs. Writes synchronously update exact/RU/EN/simple FTS
-without utility egress. Non-global scope and secret-like statements are
-rejected; internal owner/canonical/authorization/suppression identities stay
-private.
+copy, and nonce. Move separately reauthorizes and locks its exact active target
+scope before the grant is consumed. The serializable
+mutation consumes the grant; only an exact receipt-matched retry can replay.
+Private list, POST-search, detail, evidence, create, edit, Move, pin, Forget,
+bulk-delete, and status routes rejoin ownership and keep free text out of URLs.
+Writes synchronously update exact/RU/EN/simple FTS without utility egress.
+Published foreign Assistants confer no personal-memory authority, unavailable
+targets do not consume a mutation grant, and orphaned explicit facts expose
+only Move or Forget. Secret-like statements remain rejected; internal owner,
+canonical, authorization, and suppression identities stay private.
 
 Deterministic direct-current-user intent may expose exactly one strict
 first-party `save_memory`, `list_memories`, `update_memory`, or `forget_memory`

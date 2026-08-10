@@ -29,6 +29,7 @@ type ActiveFactRow = Readonly<{
   currentSourceMode: "AUTOMATIC" | "EXPLICIT";
   currentSystemFrom: Date;
   currentVersionId: string;
+  factState: "ACTIVE" | "ORPHANED";
   factId: string;
   scopeId: string;
 }>;
@@ -245,7 +246,7 @@ async function persistReceipt(
   });
 }
 
-async function lockActiveFact(
+async function lockForgettableFact(
   tx: MemoryTransaction,
   userId: string,
   factId: string
@@ -256,7 +257,8 @@ async function lockActiveFact(
       fact."scopeId",
       fact."canonicalKey",
       fact."category",
-      fact."currentVersionId",
+      fact."state"::text AS "factState",
+      version."id" AS "currentVersionId",
       version."sourceMode"::text AS "currentSourceMode",
       version."systemFrom" AS "currentSystemFrom"
     FROM "MemoryFact" AS fact
@@ -265,19 +267,41 @@ async function lockActiveFact(
     INNER JOIN "MemoryFactVersion" AS version
       ON version."userId" = fact."userId"
       AND version."factId" = fact."id"
-      AND version."id" = fact."currentVersionId"
+      AND (
+        (
+          fact."state" = 'ACTIVE'::"MemoryFactState"
+          AND version."id" = fact."currentVersionId"
+          AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+        )
+        OR (
+          fact."state" = 'ORPHANED'::"MemoryFactState"
+          AND version."state" = 'ORPHANED'::"MemoryFactVersionState"
+          AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemoryFactVersion" AS newer
+            WHERE newer."userId" = version."userId"
+              AND newer."factId" = version."factId"
+              AND newer."state" = 'ORPHANED'::"MemoryFactVersionState"
+              AND (newer."systemFrom", newer."id") > (version."systemFrom", version."id")
+          )
+        )
+      )
     WHERE fact."userId" = ${userId}
       AND fact."id" = ${factId}
-      AND fact."state" = 'ACTIVE'::"MemoryFactState"
-      AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
-      AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND fact."state" IN (
+        'ACTIVE'::"MemoryFactState",
+        'ORPHANED'::"MemoryFactState"
+      )
+      AND scope."state" = CASE fact."state"
+        WHEN 'ACTIVE'::"MemoryFactState" THEN 'ACTIVE'::"MemoryScopeState"
+        ELSE 'ORPHANED'::"MemoryScopeState"
+      END
     FOR UPDATE OF fact, version
   `);
   return rows[0] ?? null;
 }
 
-async function lockActiveExplicitFacts(
+async function lockExplicitFacts(
   tx: MemoryTransaction,
   userId: string
 ): Promise<ActiveFactRow[]> {
@@ -287,7 +311,8 @@ async function lockActiveExplicitFacts(
       fact."scopeId",
       fact."canonicalKey",
       fact."category",
-      fact."currentVersionId",
+      fact."state"::text AS "factState",
+      version."id" AS "currentVersionId",
       version."sourceMode"::text AS "currentSourceMode",
       version."systemFrom" AS "currentSystemFrom"
     FROM "MemoryFact" AS fact
@@ -296,13 +321,34 @@ async function lockActiveExplicitFacts(
     INNER JOIN "MemoryFactVersion" AS version
       ON version."userId" = fact."userId"
       AND version."factId" = fact."id"
-      AND version."id" = fact."currentVersionId"
-    WHERE fact."userId" = ${userId}
-      AND fact."state" = 'ACTIVE'::"MemoryFactState"
-      AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
-      AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
       AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+      AND (
+        (
+          fact."state" = 'ACTIVE'::"MemoryFactState"
+          AND version."id" = fact."currentVersionId"
+          AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+        )
+        OR (
+          fact."state" = 'ORPHANED'::"MemoryFactState"
+          AND version."state" = 'ORPHANED'::"MemoryFactVersionState"
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemoryFactVersion" AS newer
+            WHERE newer."userId" = version."userId"
+              AND newer."factId" = version."factId"
+              AND newer."state" = 'ORPHANED'::"MemoryFactVersionState"
+              AND (newer."systemFrom", newer."id") > (version."systemFrom", version."id")
+          )
+        )
+      )
+    WHERE fact."userId" = ${userId}
+      AND fact."state" IN (
+        'ACTIVE'::"MemoryFactState",
+        'ORPHANED'::"MemoryFactState"
+      )
+      AND scope."state" = CASE fact."state"
+        WHEN 'ACTIVE'::"MemoryFactState" THEN 'ACTIVE'::"MemoryScopeState"
+        ELSE 'ORPHANED'::"MemoryScopeState"
+      END
     ORDER BY fact."id"
     FOR UPDATE OF fact, version
   `);
@@ -446,9 +492,9 @@ async function applyForgetFence(
         state: "FORGOTTEN"
       },
       where: {
-        currentVersionId: fact.currentVersionId,
+        currentVersionId: fact.factState === "ACTIVE" ? fact.currentVersionId : null,
         id: fact.factId,
-        state: "ACTIVE",
+        state: fact.factState,
         userId: settings.userId
       }
     });
@@ -572,7 +618,7 @@ export function createPrismaMemoryLifecycleRepository(
           ...input.authorization,
           requestId: input.requestId
         }, input.now);
-        const facts = await lockActiveExplicitFacts(tx, userId);
+        const facts = await lockExplicitFacts(tx, userId);
         await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
         const deletion = await enqueueMemoryDeletion(tx, settings, {
           operation: "FORGET_PURGE",
@@ -612,7 +658,7 @@ export function createPrismaMemoryLifecycleRepository(
           ...input.authorization,
           requestId: input.requestId
         }, input.now);
-        const fact = await lockActiveFact(tx, userId, input.factId);
+        const fact = await lockForgettableFact(tx, userId, input.factId);
         if (!fact) return memoryPersistenceFailure("memory_fact_not_found");
         if (fact.currentVersionId !== input.expectedVersionId) {
           return memoryPersistenceFailure("memory_fact_version_stale");

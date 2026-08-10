@@ -68,6 +68,15 @@ function factRepository(): ExplicitMemoryFactRepository {
       versionId: "version-2"
       };
     }),
+    move: vi.fn(async () => ({
+      eventId: "event-move",
+      factId: "fact-moved",
+      memoryGeneration: 0,
+      memoryRevision: 2,
+      outcome: "MOVED" as const,
+      replayed: false,
+      versionId: "version-moved"
+    })),
     save: vi.fn(async () => ({
       eventId: "event-1",
       factId: "fact-1",
@@ -89,11 +98,13 @@ function readRepository(): ExplicitMemoryReadRepository {
       category: "preference",
       currentVersionId: "version-1",
       displayText: STATEMENT,
+      factState: "ACTIVE" as const,
       factId: "fact-1",
       languageCode: "ru",
       modality: "PREFERENCE" as const,
       pinned: false,
       scopeId: "scope-1",
+      scope: { type: "GLOBAL_USER" as const },
       sensitivityClass: "NORMAL" as const,
       validFrom: null,
       validTo: null
@@ -105,9 +116,16 @@ function readRepository(): ExplicitMemoryReadRepository {
 
 function scopeRepository(): ExplicitMemoryScopeRepository {
   return {
+    ensure: vi.fn(async (userId, selection) => ({
+      id: selection.type === "GLOBAL_USER" ? "scope-1" : `scope-${selection.targetId}`,
+      scopeType: selection.type,
+      targetIdSnapshot: selection.type === "GLOBAL_USER" ? null : selection.targetId,
+      userId
+    })),
     ensureGlobal: vi.fn(async (userId) => ({
       id: "scope-1",
       scopeType: "GLOBAL_USER" as const,
+      targetIdSnapshot: null,
       userId
     }))
   };
@@ -142,7 +160,7 @@ describe("explicit Memory service", () => {
     expect(JSON.stringify(vi.mocked(authorizations.mint).mock.calls)).not.toContain(STATEMENT);
   });
 
-  it("rejects only lifecycle authorizations without a shipped consumer", async () => {
+  it("mints Move scope authorization and rejects only unshipped bulk lifecycle actions", async () => {
     const authorizations = authorizationRepository();
     const service = createExplicitMemoryService({
       authorizationRepository: authorizations,
@@ -158,7 +176,7 @@ describe("explicit Memory service", () => {
       expectedTargetVersionId: "version-1",
       requestNonce: "nonce-move",
       targetFactId: "fact-1"
-    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_operation_unsupported"));
+    })).resolves.toMatchObject({ mutationAuthorizationId: "authorization-1" });
     await expect(service.mintAuthorization("user-1", {
       action: "BULK_DELETE",
       confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
@@ -167,7 +185,7 @@ describe("explicit Memory service", () => {
       operation: "CLEAR_HISTORY_INDEX",
       requestNonce: "nonce-clear-history"
     })).rejects.toEqual(new ExplicitMemoryServiceError("memory_operation_unsupported"));
-    expect(authorizations.mint).not.toHaveBeenCalled();
+    expect(authorizations.mint).toHaveBeenCalledTimes(1);
   });
 
   it("commits the exact display statement through an authorized local lexical write", async () => {
@@ -251,27 +269,95 @@ describe("explicit Memory service", () => {
     expect(facts.edit).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects non-global scope and secrets before persistence and maps hidden failures", async () => {
+  it("moves an orphaned explicit fact through append-only target lineage", async () => {
+    const facts = factRepository();
+    const reads = readRepository();
+    vi.mocked(reads.getEditable).mockResolvedValue({
+      canonicalKey: "custom.abc",
+      category: "preference",
+      currentVersionId: "version-1",
+      displayText: STATEMENT,
+      factId: "fact-1",
+      factState: "ORPHANED",
+      languageCode: "ru",
+      modality: "PREFERENCE",
+      pinned: false,
+      scope: { targetId: "deleted-chat", type: "CHAT" },
+      scopeId: "scope-deleted-chat",
+      sensitivityClass: "NORMAL",
+      validFrom: null,
+      validTo: null
+    });
+    vi.mocked(reads.get).mockResolvedValue(summary({
+      currentVersionId: "version-moved",
+      id: "fact-moved",
+      scope: { targetId: "chat-live", type: "CHAT" }
+    }));
+    const service = createExplicitMemoryService({
+      authorizationRepository: authorizationRepository(),
+      clock: () => NOW,
+      factRepository: facts,
+      readRepository: reads,
+      scopeRepository: scopeRepository()
+    });
+
+    await expect(service.update("user-1", "fact-1", {
+      expectedVersionId: "version-1",
+      mutationAuthorizationId: "authorization-move",
+      scope: { targetId: "chat-live", type: "CHAT" }
+    })).resolves.toMatchObject({
+      memory: { id: "fact-moved", scope: { targetId: "chat-live", type: "CHAT" } }
+    });
+    expect(facts.move).toHaveBeenCalledWith("user-1", expect.objectContaining({
+      authorization: expect.objectContaining({ action: "MOVE_SCOPE" }),
+      expectedVersionId: "version-1",
+      factId: "fact-1",
+      targetScopeId: "scope-chat-live"
+    }));
+    expect(facts.edit).not.toHaveBeenCalled();
+
+    await expect(service.update("user-1", "fact-1", {
+      expectedVersionId: "version-1",
+      mutationAuthorizationId: "authorization-mixed-move",
+      pinned: true,
+      scope: { targetId: "chat-live", type: "CHAT" }
+    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_contract_invalid"));
+    expect(facts.move).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps unavailable scoped targets, rejects secrets, and hides authorization failures", async () => {
     const facts = factRepository();
     const authorizations = authorizationRepository();
+    const scopes = scopeRepository();
+    vi.mocked(scopes.ensure).mockImplementation(async (userId, selection) => {
+      if (selection.type === "CHAT") {
+        throw new MemoryPersistenceError("memory_scope_unavailable");
+      }
+      return {
+        id: "scope-1",
+        scopeType: "GLOBAL_USER",
+        targetIdSnapshot: null,
+        userId
+      };
+    });
     const service = createExplicitMemoryService({
       authorizationRepository: authorizations,
       factRepository: facts,
       readRepository: readRepository(),
-      scopeRepository: scopeRepository()
+      scopeRepository: scopes
     });
     await expect(service.create("user-1", {
       mutationAuthorizationId: "authorization-1",
       scope: { targetId: "chat-1", type: "CHAT" },
       statement: "Remember this"
-    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_scope_invalid"));
+    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_scope_unavailable"));
     await expect(service.create("user-1", {
       mutationAuthorizationId: "authorization-2",
       scope: { type: "GLOBAL_USER" },
       statement: "API key: sk-abcdefghijklmnopqrstuvwxyz123456"
     })).rejects.toEqual(new ExplicitMemoryServiceError("memory_secret_rejected"));
     expect(facts.save).not.toHaveBeenCalled();
-    expect(authorizations.resolveForUse).not.toHaveBeenCalled();
+    expect(authorizations.resolveForUse).toHaveBeenCalledTimes(1);
 
     const failing = createExplicitMemoryService({
       authorizationRepository: {

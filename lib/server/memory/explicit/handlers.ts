@@ -111,16 +111,27 @@ function hasNoSearchParams(request: Request): boolean {
 function listInput(request: Request) {
   const params = strictSearchParams(
     request,
-    new Set(["cursor", "pageSize", "scope", "sourceMode", "state"])
+    new Set(["cursor", "pageSize", "scope", "sourceMode", "state", "targetId"])
   );
   if (!params) return null;
   const scope = params.get("scope");
-  if (scope !== null && scope !== "GLOBAL_USER") return null;
+  const targetId = params.get("targetId");
+  if (
+    (scope !== null && !["GLOBAL_USER", "FOLDER", "ASSISTANT", "CHAT"].includes(scope)) ||
+    (scope === null && targetId !== null) ||
+    (scope === "GLOBAL_USER" && targetId !== null) ||
+    (scope !== null && scope !== "GLOBAL_USER" && targetId === null)
+  ) return null;
   const pageSize = params.get("pageSize");
+  const scopeSelection = scope === "GLOBAL_USER"
+    ? { type: "GLOBAL_USER" as const }
+    : scope && targetId
+      ? { targetId, type: scope }
+      : null;
   const candidate = {
     ...(params.has("cursor") ? { cursor: params.get("cursor") } : {}),
     ...(pageSize !== null ? { pageSize: Number(pageSize) } : {}),
-    ...(scope === "GLOBAL_USER" ? { scope: { type: "GLOBAL_USER" as const } } : {}),
+    ...(scopeSelection ? { scope: scopeSelection } : {}),
     ...(params.has("sourceMode") ? { sourceMode: params.get("sourceMode") } : {}),
     ...(params.has("state") ? { state: params.get("state") } : {})
   };
