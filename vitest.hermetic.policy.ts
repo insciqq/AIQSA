@@ -6,6 +6,7 @@ export const databaseRequiredTestFiles = [
   "lib/server/auth/registrationRepository.test.ts",
   "lib/server/chats/prismaRepository.test.ts",
   "lib/server/messages/prismaRepository.test.ts",
+  "lib/server/memory/explicit/prismaExplicit.prisma.test.ts",
   "lib/server/memory/persistence/prismaPersistence.prisma.test.ts",
   "lib/server/memory/execution/prismaExecution.prisma.test.ts",
   "lib/server/memory/coordinator/prismaRepository.prisma.test.ts",

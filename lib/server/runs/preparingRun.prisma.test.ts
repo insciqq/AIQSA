@@ -278,9 +278,18 @@ describe("PREPARING run orchestration", () => {
         useMemoryFacts: true
       });
       const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
-      const fact = await createPrismaMemoryFactRepository(suppressionKeyring, prisma).save(
+      const fact = await createPrismaMemoryFactRepository(
+        suppressionKeyring,
+        prisma,
+        { consumeExplicitAuthorization: async () => undefined }
+      ).save(
         userId,
         {
+          authorization: {
+            action: "SAVE",
+            authorizationId: `preparing-fact-authorization-${randomUUID()}`,
+            authorizedPayloadHash: "f".repeat(64)
+          },
           evidence: {
             kind: "EXPLICIT_ACTION",
             observedAt: new Date("2026-08-10T12:00:00.000Z"),

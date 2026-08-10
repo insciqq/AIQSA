@@ -68,10 +68,26 @@ and refuses a stale client observation without partial mutation. Phase release
 capabilities remain fail-closed constants for later composition gates, and the
 route schedules no work.
 
-There are still no fact/lifecycle Memory APIs, registered phase handlers,
-retrieval integration, UI surfaces, or live Memory provider calls. Development starts
-the coordinator feature-locally from server instrumentation, while production
-uses the same image/code in the private no-API `memory-worker` role. Both paths
+Authenticated explicit management is now available independently of those
+three gates for `GLOBAL_USER` facts. A short-lived mutation-authorization route
+binds Save to the exact statement hash and Edit to the exact owner fact/current
+version, current confirmation copy, and caller nonce; the grant is consumed in
+the same serializable transaction as the fact mutation, while an exact retry
+may replay only its matching durable receipt. Private list, POST-search,
+detail, evidence, create, edit, and pin routes preserve exact display text,
+append versions, fence stale writes, authoritatively rejoin ownership, and keep
+free-form queries out of URLs. Every successful explicit write synchronously
+creates or advances the active lexical projection, including exact,
+`ё`/`е`-normalized, Russian, English, and simple PostgreSQL search, without a
+worker, model, embedding call, or utility egress. The first API slice rejects
+non-global scope and secret-like statements and exposes no internal owner,
+canonical-key, authorization-request, or suppression identity.
+
+There are still no Forget/bulk-delete or other fact-lifecycle APIs, registered
+phase handlers, retrieval integration, UI surfaces, or live Memory provider
+calls. Development starts the coordinator feature-locally from server
+instrumentation, while production uses the same image/code in the private
+no-API `memory-worker` role. Both paths
 preflight the configured suppression keyring against every distinct historical
 key ID before starting. Failure stays local to Memory and does not alter core
 web readiness. The default registry is empty, so startup schedules no work and

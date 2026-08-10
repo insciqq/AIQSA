@@ -238,6 +238,8 @@ const utilityPolicyVersionSchema = z.string().trim().min(1).max(64).regex(
 const safeText = (maxLength: number) => z.string().min(1).max(maxLength)
   .refine((value) => value.trim().length > 0, "text is blank")
   .refine((value) => !/\u0000/u.test(value), "text contains a null byte");
+const memoryStatementSchema = safeText(MEMORY_STATEMENT_MAX_LENGTH);
+const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/u, "invalid SHA-256 hash");
 const isoTimestampSchema = z.string().max(64).refine((value) => {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value)) {
     return false;
@@ -360,7 +362,7 @@ const mutationAuthorizationCommonSchema = z.strictObject({
 const memoryMutationAuthorizationInputSchema = z.discriminatedUnion("action", [
   mutationAuthorizationCommonSchema.extend({
     action: z.literal("SAVE"),
-    exactStatementHash: hashSchema
+    exactStatementHash: sha256HexSchema
   }),
   mutationAuthorizationCommonSchema.extend({
     action: z.literal("EDIT"),
@@ -413,7 +415,7 @@ const memoryCreateInputSchema = z.strictObject({
   modality: z.enum(MEMORY_MODALITIES).nullable().optional(),
   mutationAuthorizationId: idSchema,
   scope: memoryScopeSelectionSchema,
-  statement: safeText(MEMORY_STATEMENT_MAX_LENGTH),
+  statement: memoryStatementSchema,
   validFrom: nullableTimestampSchema.optional(),
   validTo: nullableTimestampSchema.optional()
 }).superRefine((value, context) => {
@@ -470,7 +472,7 @@ const memoryUpdateInputSchema = z.strictObject({
   mutationAuthorizationId: idSchema,
   pinned: z.boolean().optional(),
   scope: memoryScopeSelectionSchema.optional(),
-  statement: safeText(MEMORY_STATEMENT_MAX_LENGTH).optional(),
+  statement: memoryStatementSchema.optional(),
   validFrom: nullableTimestampSchema.optional(),
   validTo: nullableTimestampSchema.optional()
 }).superRefine((value, context) => {
@@ -736,6 +738,51 @@ export function decodeMemoryMutationResponse(
   value: unknown
 ): MemoryContractDecodeResult<MemoryMutationResponse> {
   return decode(memoryMutationResponseSchema, value);
+}
+
+const memoryEvidenceItemSchema = z.strictObject({
+  factVersionId: idSchema,
+  id: idSchema,
+  observedAt: isoTimestampSchema,
+  safeExcerpt: safeText(MEMORY_STATEMENT_MAX_LENGTH),
+  safetyClass: z.enum(MEMORY_SENSITIVITY_CLASSES),
+  sourceChatId: idSchema.nullable(),
+  sourceMessageId: idSchema.nullable(),
+  sourceRole: z.string().trim().min(1).max(32).nullable(),
+  sourceType: z.enum(["MESSAGE", "EXPLICIT_ACTION", "EPISODE"]),
+  stance: z.enum(["SUPPORTS", "CONTRADICTS"])
+}).superRefine((value, context) => {
+  if (
+    value.sourceType === "EXPLICIT_ACTION" &&
+    (value.sourceChatId !== null ||
+      value.sourceMessageId !== null ||
+      value.sourceRole !== null)
+  ) {
+    context.addIssue({ code: "custom", message: "explicit evidence has no source message" });
+  }
+  if (
+    value.sourceType === "MESSAGE" &&
+    (value.sourceChatId === null ||
+      value.sourceMessageId === null ||
+      value.sourceRole === null)
+  ) {
+    context.addIssue({ code: "custom", message: "message evidence requires source metadata" });
+  }
+});
+
+export type MemoryEvidenceItem = z.infer<typeof memoryEvidenceItemSchema>;
+
+const memoryEvidenceResponseSchema = z.strictObject({
+  evidence: z.array(memoryEvidenceItemSchema).max(MEMORY_PAGE_SIZE_MAX),
+  nextCursor: cursorSchema
+});
+
+export type MemoryEvidenceResponse = z.infer<typeof memoryEvidenceResponseSchema>;
+
+export function decodeMemoryEvidenceResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemoryEvidenceResponse> {
+  return decode(memoryEvidenceResponseSchema, value);
 }
 
 const memoryDeletionStatusSchema = z.strictObject({

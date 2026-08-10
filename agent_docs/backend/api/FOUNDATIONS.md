@@ -25,7 +25,8 @@ The executable route inventory and methods live in `app/api/**/route.ts`; shared
 Stable route families are:
 
 - health plus password/OAuth/onboarding/recovery authentication;
-- current-user identity, catalog, settings, and MCP configuration;
+- current-user identity, catalog, settings, explicit Memory management, and MCP
+  configuration;
 - administrator users, groups, grants, rules, invites, providers, Search, SMTP, MCP, release awareness, and usage;
 - current-user Assistants: list/detail, create/revise/archive, duplication, revisions, exact-revision publications, and per-user pins;
 - current-user Knowledge Bases: entitled embedding destinations, list/detail, create/update/archive, live group/installation publication management, owner-only document upload/replace/archive/retry with progress, and shadow-generation reindex;

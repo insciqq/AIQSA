@@ -10,6 +10,7 @@ import {
   decodeMemoryConsentInput,
   decodeMemoryCreateInput,
   decodeMemoryDeletionStatus,
+  decodeMemoryEvidenceResponse,
   decodeMemoryErrorResponse,
   decodeMemoryHistorySearchInput,
   decodeMemoryHistorySearchResponse,
@@ -190,7 +191,7 @@ describe("Memory request contracts", () => {
     expect(decodeMemoryMutationAuthorizationInput({
       action: "SAVE",
       confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-      exactStatementHash: "statement-hash-1234",
+      exactStatementHash: "a".repeat(64),
       requestNonce: "nonce-1"
     })).toMatchObject({ ok: true });
     expect(decodeMemoryMutationAuthorizationInput({
@@ -395,6 +396,29 @@ describe("Memory response contracts", () => {
     expect(decodeMemoryMutationResponse({ memory: memorySummary() })).toMatchObject({ ok: true });
     expect(decodeMemoryListResponse({
       memories: [{ ...memorySummary(), ownerUserId: "other" }],
+      nextCursor: null
+    })).toMatchObject({ ok: false });
+  });
+
+  it("decodes bounded evidence without accepting impossible source shapes", () => {
+    const explicitEvidence = {
+      factVersionId: "version-1",
+      id: "evidence-1",
+      observedAt: now,
+      safeExcerpt: "  Exact saved text.  ",
+      safetyClass: "NORMAL",
+      sourceChatId: null,
+      sourceMessageId: null,
+      sourceRole: null,
+      sourceType: "EXPLICIT_ACTION",
+      stance: "SUPPORTS"
+    };
+    expect(decodeMemoryEvidenceResponse({
+      evidence: [explicitEvidence],
+      nextCursor: null
+    })).toMatchObject({ ok: true });
+    expect(decodeMemoryEvidenceResponse({
+      evidence: [{ ...explicitEvidence, sourceMessageId: "message-1" }],
       nextCursor: null
     })).toMatchObject({ ok: false });
   });

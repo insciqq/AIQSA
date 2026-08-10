@@ -26,6 +26,12 @@ const suppressionKeyring = MemorySuppressionKeyring.parse(
   `current=test-v1,test-v1=${keyBytes.toString("base64")}`
 );
 
+function createTestMemoryFactRepository() {
+  return createPrismaMemoryFactRepository(suppressionKeyring, prisma, {
+    consumeExplicitAuthorization: async () => undefined
+  });
+}
+
 async function createActiveUser(label: string): Promise<string> {
   const id = randomUUID();
   await prisma.user.create({
@@ -72,6 +78,11 @@ function saveInput(
   value: MemoryFactValueInput
 ): MemoryFactSaveInput {
   return {
+    authorization: {
+      action: "SAVE",
+      authorizationId: `authorization-${idempotencyFingerprint}`,
+      authorizedPayloadHash: "f".repeat(64)
+    },
     evidence: {
       kind: "EXPLICIT_ACTION",
       observedAt: new Date("2026-08-10T10:00:00.000Z"),
@@ -302,7 +313,7 @@ describe("Prisma Memory persistence", () => {
     const userId = await createActiveUser("fact-cas");
     try {
       const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
-      const repository = createPrismaMemoryFactRepository(suppressionKeyring, prisma);
+      const repository = createTestMemoryFactRepository();
       const initial = saveInput(
         scope.id,
         "save-favorite-color-v1",
@@ -318,6 +329,13 @@ describe("Prisma Memory persistence", () => {
 
       const original = saves[0]!;
       const editBase = {
+        authorization: {
+          action: "EDIT" as const,
+          authorizationId: "authorization-edit-favorite-color",
+          authorizedPayloadHash: "e".repeat(64),
+          expectedTargetVersionId: original.versionId,
+          targetFactId: original.factId
+        },
         evidence: {
           kind: "EXPLICIT_ACTION" as const,
           observedAt: new Date("2026-08-10T10:05:00.000Z"),
@@ -395,7 +413,7 @@ describe("Prisma Memory persistence", () => {
     const foreignUserId = await createActiveUser("scope-foreign");
     try {
       const foreignScope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(foreignUserId);
-      const repository = createPrismaMemoryFactRepository(suppressionKeyring, prisma);
+      const repository = createTestMemoryFactRepository();
       await Promise.all([
         expect(repository.save(ownerUserId, saveInput(
           foreignScope.id,
@@ -426,7 +444,7 @@ describe("Prisma Memory persistence", () => {
     try {
       const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
       const suppressions = createPrismaMemorySuppressionRepository(suppressionKeyring, prisma);
-      const facts = createPrismaMemoryFactRepository(suppressionKeyring, prisma);
+      const facts = createTestMemoryFactRepository();
       const blockedInput = {
         canonicalKey: "profile.favorite_color",
         explicitOverrideAllowed: false,

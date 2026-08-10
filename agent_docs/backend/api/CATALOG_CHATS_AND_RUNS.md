@@ -18,6 +18,18 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   selection and utility consent revalidate exact current authority inside the
   locked mutation, and provider/consent unavailability never disables local
   management capabilities.
+- `/api/me/memory/mutation-authorizations` and `/api/me/memories` are the
+  private explicit-Memory management family. The first release accepts only
+  exact `GLOBAL_USER` statements and identifiers. Save grants bind the exact
+  statement hash; Edit grants bind the owner fact and current version; both
+  bind the current confirmation copy and one caller nonce and are consumed
+  atomically with the append-only mutation. Exact matching receipt retries are
+  idempotent, while expired, stale, altered, replayed-for-another-operation,
+  foreign, or natural-language targets fail without mutation. List, detail,
+  bounded evidence, create, edit, and pin remain available with all three
+  Memory gates off. Search accepts private query text only in a strict POST
+  body and synchronously uses the active exact/Russian/English/simple lexical
+  projection; no provider, worker, or utility consent participates.
 - The catalog returns the client-safe entitled answer and Search projection
   produced by provider admission, together with personal/installation default
   source facts and presentation preferences. A non-null personal exact

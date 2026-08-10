@@ -8,6 +8,10 @@ import type {
 import { memoryDerivativePlaintextAllowed } from "../../../domain/memory/safety";
 import { prisma } from "../../prisma";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
+import {
+  consumeMemoryMutationAuthorization,
+  type MemoryMutationAuthorizationUse
+} from "./authorizations";
 import { memoryPersistenceFailure } from "./errors";
 import { enqueueMemoryJob } from "./jobs";
 import {
@@ -67,9 +71,11 @@ export type MemoryFactEvidenceInput = MemoryEvidenceCommonInput & (
 );
 
 type MemoryFactMutationCommonInput = Readonly<{
+  authorization?: MemoryMutationAuthorizationUse;
   evidence: MemoryFactEvidenceInput;
   explicitSuppressionOverride: boolean;
   idempotencyFingerprint: string;
+  idempotencyPayloadHash?: string;
   modelRunId?: string | null;
   persistedToolCallId?: string | null;
   requestId: string;
@@ -83,6 +89,7 @@ export type MemoryFactSaveInput = MemoryFactMutationCommonInput & Readonly<{
 export type MemoryFactEditInput = MemoryFactMutationCommonInput & Readonly<{
   expectedVersionId: string;
   factId: string;
+  pinned?: boolean;
   scopeId: string;
 }>;
 
@@ -112,6 +119,11 @@ function validBounded(value: string, maxLength: number): boolean {
   return value.trim() === value && value.length > 0 && value.length <= maxLength;
 }
 
+function validPlaintext(value: string, maxLength: number): boolean {
+  return value.length > 0 && value.length <= maxLength &&
+    value.trim().length > 0 && !value.includes("\u0000");
+}
+
 function validUnitInterval(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 1;
 }
@@ -127,7 +139,7 @@ function validateEvidence(
     return memoryPersistenceFailure("memory_plaintext_not_allowed");
   }
   if (
-    !validBounded(evidence.safeExcerpt, 2_000) ||
+    !validPlaintext(evidence.safeExcerpt, 2_000) ||
     !validBounded(evidence.safeSourceHash, 128) ||
     !validBounded(evidence.sourceProjectionVersion, 64) ||
     !Number.isFinite(evidence.observedAt.getTime()) ||
@@ -169,7 +181,7 @@ function validateValue(value: MemoryFactValueInput): void {
   if (
     !canonicalKeyPattern.test(value.canonicalKey) ||
     !categoryPattern.test(value.category) ||
-    !validBounded(value.displayText, 2_000) ||
+    !validPlaintext(value.displayText, 2_000) ||
     !normalizedSearchText ||
     normalizedSearchText.length > 4_000 ||
     !languageCodePattern.test(value.languageCode) ||
@@ -202,10 +214,32 @@ function validateMutationIdentity(input: MemoryReceiptIdentity): void {
   }
 }
 
-function validateMutation(input: MemoryFactMutationCommonInput): void {
+function validateMutation(
+  input: MemoryFactMutationCommonInput,
+  operation: "EDIT" | "SAVE"
+): void {
   validateMutationIdentity(input);
+  if (
+    input.idempotencyPayloadHash !== undefined &&
+    !/^[a-f0-9]{64}$/u.test(input.idempotencyPayloadHash)
+  ) {
+    return memoryPersistenceFailure("memory_input_invalid");
+  }
   validateValue(input.value);
   validateEvidence(input.evidence, input.value);
+  const authorization = input.authorization;
+  if (input.value.sourceMode === "EXPLICIT") {
+    if (
+      !authorization ||
+      authorization.action !== operation ||
+      !validBounded(authorization.authorizationId, 256) ||
+      !validBounded(authorization.authorizedPayloadHash, 128)
+    ) {
+      return memoryPersistenceFailure("memory_input_invalid");
+    }
+  } else if (authorization) {
+    return memoryPersistenceFailure("memory_input_invalid");
+  }
 }
 
 async function requireEvidenceOwner(
@@ -230,6 +264,7 @@ function payloadHash(
   operation: "EDIT" | "SAVE",
   input: MemoryFactEditInput | MemoryFactSaveInput
 ): string {
+  if (input.idempotencyPayloadHash) return input.idempotencyPayloadHash;
   return memorySha256({
     evidence: input.evidence,
     explicitSuppressionOverride: input.explicitSuppressionOverride,
@@ -237,7 +272,8 @@ function payloadHash(
     scopeId: input.scopeId,
     target: operation === "EDIT" ? {
       expectedVersionId: (input as MemoryFactEditInput).expectedVersionId,
-      factId: (input as MemoryFactEditInput).factId
+      factId: (input as MemoryFactEditInput).factId,
+      pinned: (input as MemoryFactEditInput).pinned ?? null
     } : null,
     value: input.value
   });
@@ -557,18 +593,46 @@ const currentVersionSelect = {
   validTo: true
 } satisfies Prisma.MemoryFactVersionSelect;
 
+type MemoryFactRepositoryOptions = Readonly<{
+  consumeExplicitAuthorization?: (
+    tx: MemoryTransaction,
+    userId: string,
+    input: MemoryMutationAuthorizationUse & Readonly<{ requestId: string }>
+  ) => Promise<void>;
+}>;
+
 export function createPrismaMemoryFactRepository(
   keyring: MemorySuppressionKeyring,
-  client: PrismaClient = prisma
+  client: PrismaClient = prisma,
+  options: MemoryFactRepositoryOptions = {}
 ) {
+  const consumeExplicitAuthorization = options.consumeExplicitAuthorization ??
+    consumeMemoryMutationAuthorization;
+
+  async function authorizeExplicitMutation(
+    tx: MemoryTransaction,
+    userId: string,
+    input: MemoryFactMutationCommonInput
+  ): Promise<void> {
+    if (input.value.sourceMode !== "EXPLICIT") return;
+    if (!input.authorization) {
+      return memoryPersistenceFailure("memory_input_invalid");
+    }
+    await consumeExplicitAuthorization(tx, userId, {
+      ...input.authorization,
+      requestId: input.requestId
+    });
+  }
+
   return Object.freeze({
     async edit(userId: string, input: MemoryFactEditInput): Promise<MemoryFactMutationResult> {
-      validateMutation(input);
+      validateMutation(input, "EDIT");
       if (
         !validBounded(input.factId, 256) ||
         !validBounded(input.expectedVersionId, 256) ||
         !validBounded(input.scopeId, 256) ||
-        input.value.sourceMode !== "EXPLICIT"
+        input.value.sourceMode !== "EXPLICIT" ||
+        (input.pinned !== undefined && typeof input.pinned !== "boolean")
       ) {
         return memoryPersistenceFailure("memory_input_invalid");
       }
@@ -582,6 +646,7 @@ export function createPrismaMemoryFactRepository(
           inputPayloadHash
         );
         if (replay) return replay;
+        await authorizeExplicitMutation(tx, userId, input);
         await requireActiveOwnedMemoryScope(tx, userId, input.scopeId);
 
         const fact = await tx.memoryFact.findFirst({
@@ -683,6 +748,7 @@ export function createPrismaMemoryFactRepository(
             category: input.value.category,
             currentVersionId: versionId,
             lastConfirmedAt: input.evidence.observedAt,
+            ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
             scopeId: input.scopeId
           },
           where: {
@@ -718,7 +784,7 @@ export function createPrismaMemoryFactRepository(
     },
 
     async save(userId: string, input: MemoryFactSaveInput): Promise<MemoryFactMutationResult> {
-      validateMutation(input);
+      validateMutation(input, "SAVE");
       if (!validBounded(input.scopeId, 256)) {
         return memoryPersistenceFailure("memory_input_invalid");
       }
@@ -732,6 +798,7 @@ export function createPrismaMemoryFactRepository(
           inputPayloadHash
         );
         if (replay) return replay;
+        await authorizeExplicitMutation(tx, userId, input);
         await requireActiveOwnedMemoryScope(tx, userId, input.scopeId);
 
         const existing = await tx.memoryFact.findFirst({
