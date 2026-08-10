@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { boundedChatBranchPreview } from "../../contracts/chats";
 import { textMessageContent } from "../../domain/content";
 import { estimateApproxTokens } from "../../domain/contextBudget";
@@ -364,6 +364,94 @@ describe("Prisma chat repository", () => {
           where: { id: "installation" }
         });
       }
+    });
+  });
+
+  it("routes chat moves and folder deletion through source metadata fencing", async () => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
+      const ownerLifecycle = vi.fn(async () => undefined);
+      const repository = createPrismaChatRepository(prisma, {
+        memorySourceHooks: { onScopedTargetOwnerLifecycle: ownerLifecycle }
+      });
+      const [folderA, folderB] = await Promise.all([
+        repository.createFolder({ name: "Source A", userId }),
+        repository.createFolder({ name: "Source B", userId })
+      ]);
+      const chat = await prisma.chat.create({
+        data: {
+          defaultProviderModelId: fakeProviderModelId,
+          folderId: folderA?.id,
+          title: "Movable source",
+          userId
+        }
+      });
+      const message = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Retained source"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: message.id },
+        where: { id: chat.id }
+      });
+
+      await expect(repository.updateChat({
+        chatId: chat.id,
+        folderId: folderB?.id,
+        userId
+      })).resolves.toMatchObject({ folderId: folderB?.id });
+      await expect(Promise.all([
+        prisma.chat.findUniqueOrThrow({
+          select: {
+            folderId: true,
+            memoryBranchGeneration: true,
+            memorySourceRevision: true
+          },
+          where: { id: chat.id }
+        }),
+        prisma.userMemorySettings.findUniqueOrThrow({
+          select: { memoryGeneration: true, memoryRevision: true },
+          where: { userId }
+        })
+      ])).resolves.toEqual([
+        {
+          folderId: folderB?.id,
+          memoryBranchGeneration: 0,
+          memorySourceRevision: 1
+        },
+        { memoryGeneration: 0, memoryRevision: 1 }
+      ]);
+
+      await expect(repository.deleteFolder({
+        folderId: folderB?.id ?? "",
+        userId
+      })).resolves.toBe(true);
+      expect(ownerLifecycle).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        kind: "FOLDER_DELETE",
+        sourceSnapshots: [expect.objectContaining({ id: chat.id, folderId: null })],
+        targetId: folderB?.id,
+        userId
+      }));
+      await expect(Promise.all([
+        prisma.chat.findUniqueOrThrow({
+          select: {
+            folderId: true,
+            memoryBranchGeneration: true,
+            memorySourceRevision: true
+          },
+          where: { id: chat.id }
+        }),
+        prisma.userMemorySettings.findUniqueOrThrow({
+          select: { memoryGeneration: true, memoryRevision: true },
+          where: { userId }
+        })
+      ])).resolves.toEqual([
+        { folderId: null, memoryBranchGeneration: 0, memorySourceRevision: 2 },
+        { memoryGeneration: 0, memoryRevision: 2 }
+      ]);
     });
   });
 

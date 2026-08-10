@@ -64,7 +64,7 @@ function serializationConflict(error: unknown): boolean {
     error.meta.code === "40001";
 }
 
-async function lockMemorySettings(
+export async function lockMemorySettings(
   tx: MemoryTransaction,
   userId: string,
   requireActiveOwner: boolean

@@ -42,6 +42,14 @@ import {
   loadMemoryRunEvidence,
   type MemoryRunEvidenceProjection
 } from "../memory/receipts/projection";
+import {
+  applyMemoryScopedTargetOwnerLifecycle,
+  applyMemorySourceMutations,
+  type LockedMemorySourceChat,
+  type MemorySourceMutation,
+  type MemorySourceMutationHooks
+} from "../memory/sourceState";
+import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 
 const assistantRunDetailSelect = {
   assistantId: true,
@@ -1079,12 +1087,19 @@ export async function loadChatContextStats(
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }
 
-export function createPrismaChatRepository(prismaClient = prisma): ChatRepository {
+export function createPrismaChatRepository(
+  prismaClient = prisma,
+  options: Readonly<{ memorySourceHooks?: MemorySourceMutationHooks }> = {}
+): ChatRepository {
+  const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
   return {
     archiveChat: async ({ chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
-        const chats = await tx.$queryRaw<Array<{ archived: boolean; id: string }>>`
-          SELECT "id", "archived"
+        const chats = await tx.$queryRaw<LockedMemorySourceChat[]>`
+          SELECT
+            "id", "userId", "activeLeafMessageId", "archived", "folderId",
+            "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
+            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
@@ -1109,13 +1124,11 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
           throw new ActiveRunConflictError();
         }
 
-        await tx.chat.update({
-          data: {
-            archived: true
-          },
-          where: {
-            id: chatId
-          }
+        await applyMemorySourceMutations(tx, {
+          chat: chats[0],
+          hooks: memorySourceHooks,
+          mutations: ["CHAT_ARCHIVE_OR_RESTORE"],
+          patch: { archived: true }
         });
         return true;
       });
@@ -1198,16 +1211,45 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
         throw error;
       }
     },
-    deleteFolder: async ({ folderId, userId }) => {
-      const result = await prismaClient.folder.deleteMany({
-        where: {
-          id: folderId,
-          userId
+    deleteFolder: async ({ folderId, userId }) =>
+      prismaClient.$transaction(async (tx) => {
+        const folders = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "Folder"
+          WHERE "id" = ${folderId} AND "userId" = ${userId}
+          FOR UPDATE
+        `;
+        if (!folders[0]) return false;
+        const chats = await tx.$queryRaw<LockedMemorySourceChat[]>`
+          SELECT
+            "id", "userId", "activeLeafMessageId", "archived", "folderId",
+            "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
+            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
+          FROM "Chat"
+          WHERE "userId" = ${userId} AND "folderId" = ${folderId}
+          ORDER BY "id"
+          FOR UPDATE
+        `;
+        const movedSources = [];
+        for (const chat of chats) {
+          movedSources.push(await applyMemorySourceMutations(tx, {
+            chat,
+            hooks: memorySourceHooks,
+            mutations: ["FOLDER_MOVE"],
+            patch: { folderId: null }
+          }));
         }
-      });
-
-      return result.count > 0;
-    },
+        await applyMemoryScopedTargetOwnerLifecycle(tx, memorySourceHooks, {
+          kind: "FOLDER_DELETE",
+          sourceSnapshots: movedSources,
+          targetId: folderId,
+          userId
+        });
+        const result = await tx.folder.deleteMany({
+          where: { id: folderId, userId }
+        });
+        return result.count === 1;
+      }),
     getChat: async ({ chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
         const chat = await tx.chat.findFirst({
@@ -1521,8 +1563,22 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
       userId
     }) =>
       prismaClient.$transaction(async (tx) => {
-        const chats = await tx.$queryRaw<Array<{ archived: boolean; id: string }>>`
-          SELECT "id", "archived"
+        if (folderId) {
+          const folders = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id"
+            FROM "Folder"
+            WHERE "id" = ${folderId} AND "userId" = ${userId}
+            FOR KEY SHARE
+          `;
+          if (!folders[0]) {
+            return null;
+          }
+        }
+        const chats = await tx.$queryRaw<LockedMemorySourceChat[]>`
+          SELECT
+            "id", "userId", "activeLeafMessageId", "archived", "folderId",
+            "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
+            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
@@ -1530,13 +1586,6 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
         `;
         if (!chats[0] || chats[0].archived) {
           return null;
-        }
-
-        if (folderId) {
-          const folder = await findOwnedFolder(tx, folderId, userId);
-          if (!folder) {
-            return null;
-          }
         }
 
         if (activeLeafMessageId) {
@@ -1571,21 +1620,46 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
           }
         }
 
-        const updated = await tx.chat.update({
-          data: {
-            ...(activeLeafMessageId !== undefined ? { activeLeafMessageId } : {}),
-            ...(defaultKnowledgePlan !== undefined
-              ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
-              : {}),
-            ...(folderId !== undefined ? { folderId } : {}),
-            ...(pinned !== undefined ? { pinned } : {}),
-            ...(title ? { title: title.trim().slice(0, 80) } : {})
-          },
-          select: chatSummarySelect,
-          where: {
-            id: chatId
-          }
-        });
+        const mutations: MemorySourceMutation[] = [];
+        if (
+          activeLeafMessageId !== undefined &&
+          activeLeafMessageId !== chats[0].activeLeafMessageId
+        ) {
+          mutations.push("BRANCH_PATH_CHANGE");
+        }
+        if (folderId !== undefined && folderId !== chats[0].folderId) {
+          mutations.push("FOLDER_MOVE");
+        }
+        if (mutations.length > 0) {
+          await applyMemorySourceMutations(tx, {
+            chat: chats[0],
+            hooks: memorySourceHooks,
+            mutations,
+            patch: {
+              ...(activeLeafMessageId !== undefined ? { activeLeafMessageId } : {}),
+              ...(folderId !== undefined ? { folderId } : {})
+            }
+          });
+        }
+
+        const hasMetadataUpdate = defaultKnowledgePlan !== undefined ||
+          pinned !== undefined || Boolean(title);
+        const updated = hasMetadataUpdate
+          ? await tx.chat.update({
+              data: {
+                ...(defaultKnowledgePlan !== undefined
+                  ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
+                  : {}),
+                ...(pinned !== undefined ? { pinned } : {}),
+                ...(title ? { title: title.trim().slice(0, 80) } : {})
+              },
+              select: chatSummarySelect,
+              where: { id: chatId }
+            })
+          : await tx.chat.findUniqueOrThrow({
+              select: chatSummarySelect,
+              where: { id: chatId }
+            });
 
         return serializeChatSummary(updated);
       })

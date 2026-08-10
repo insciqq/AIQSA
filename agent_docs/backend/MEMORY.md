@@ -7,7 +7,19 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 Native Memory is approved. The current baseline includes the feature-dark
 Phase 0 contract/evaluation harness, Phase 1 persistence and coordination, and
-the complete explicit Saved Memories vertical slice of Phase 2. Phase 0 has strict decoders, pure
+the complete explicit Saved Memories vertical slice of Phase 2. The first
+feature-dark Phase 3 slices persist chat source mode, branch/source counters,
+and Temporary retention metadata, and route every production DAG/source writer
+through one transaction helper. Exact active-path hashes bind source jobs;
+generation, leaf, branch, revision, and hash are rechecked under the chat lock
+immediately before apply, with stale claims settling without partial writes.
+Source mutations lock an affected target Folder when needed, then Chat, then
+UserMemorySettings; source-job commit locks Chat, UserMemorySettings, then the
+MemoryJob lease row. This order is part of the deadlock-avoidance contract.
+Branch and folder changes enqueue final-state reconciliation snapshots, while
+queued/streaming assistant payload is normalized out of the source projection
+so ordinary token flushes remain counter- and hash-neutral. Lifecycle APIs and
+retrieval remain unavailable until their later gates. Phase 0 has strict decoders, pure
 state/counter/safety validation, RU/EN parity, frozen provider-neutral scoring,
 signed qualification decisions, and a hash-frozen synthetic tuning/holdout
 corpus. Behavior-only benchmark-shaped probes contain no upstream benchmark

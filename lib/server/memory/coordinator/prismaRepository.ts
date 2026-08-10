@@ -6,6 +6,7 @@ import {
 } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { isMemoryCoordinatorErrorCode } from "./errors";
+import { memorySourceJobSnapshotMatches } from "../sourceState";
 import type {
   MemoryDeletionApply,
   MemoryDeletionClaim,
@@ -468,6 +469,7 @@ export function createPrismaMemoryCoordinatorRepository(
     async commitJobSuccess(input) {
       if (!sha256.test(input.acceptedResultHash) || !validStage(input.stage)) return false;
       return client.$transaction(async (tx) => {
+        const sourceMatches = await memorySourceJobSnapshotMatches(tx, input.claim);
         const lease = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           SELECT "id" FROM "MemoryJob"
           WHERE "id" = ${input.claim.id}
@@ -483,6 +485,28 @@ export function createPrismaMemoryCoordinatorRepository(
           FOR UPDATE
         `);
         if (!lease[0]) return false;
+        if (!sourceMatches) {
+          const staled = await tx.memoryJob.updateMany({
+            data: {
+              completedAt: input.now,
+              errorCode: "memory_source_stale",
+              errorMessage: null,
+              leaseExpiresAt: null,
+              leaseToken: null,
+              nextAttemptAt: null,
+              state: "STALE",
+              updatedAt: input.now
+            },
+            where: {
+              id: input.claim.id,
+              leaseExpiresAt: { gt: input.now },
+              leaseToken: input.claim.claimToken,
+              state: "CLAIMED",
+              userId: input.claim.userId
+            }
+          });
+          return staled.count === 1;
+        }
         await input.apply?.(tx, input.claim);
         const updated = await tx.memoryJob.updateMany({
           data: {

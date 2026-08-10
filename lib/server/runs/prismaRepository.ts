@@ -74,6 +74,14 @@ import { decodeKnowledgeRunProjection } from "../../contracts/runs";
 import { projectKnowledgeInspectionEvents } from "./knowledgeInspectionEvents";
 import { projectMemoryInspectionEvents } from "./memoryInspectionEvents";
 import { loadMemoryRunEvidence } from "../memory/receipts/projection";
+import {
+  applyMemorySourceMutations,
+  lockMemorySourceChat,
+  MemorySourceStateConflictError,
+  type LockedMemorySourceChat,
+  type MemorySourceMutationHooks
+} from "../memory/sourceState";
+import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
 import {
   KnowledgeRunAdmissionError,
@@ -1072,7 +1080,8 @@ function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void 
 
 async function admitPreparingRunWithClient(
   prismaClient: PrismaClient,
-  input: PreparingRunAdmissionInput
+  input: PreparingRunAdmissionInput,
+  memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<PreparingRunAdmissionResult> {
   assertPreparingAdmissionInput(input);
   const baseSnapshot = createMemoryPreparingBaseSnapshot({
@@ -1081,13 +1090,11 @@ async function admitPreparingRunWithClient(
   });
   return mapActiveRunConflict(() =>
     repeatableReadTransaction(prismaClient, async (tx) => {
-      const lockedChats = await tx.$queryRaw<Array<{
-        activeLeafMessageId: string | null;
-        archived: boolean;
-        folderId: string | null;
-        id: string;
-      }>>(Prisma.sql`
-        SELECT "id", "activeLeafMessageId", "archived", "folderId"
+      const lockedChats = await tx.$queryRaw<LockedMemorySourceChat[]>(Prisma.sql`
+        SELECT
+          "id", "userId", "activeLeafMessageId", "archived", "folderId",
+          "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
+          "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
         FROM "Chat"
         WHERE "id" = ${input.chatId} AND "userId" = ${input.userId}
         FOR UPDATE
@@ -1105,7 +1112,6 @@ async function admitPreparingRunWithClient(
         });
       }
 
-      const settings = await loadPreparingSettings(tx, input.userId);
       let assistantMessageId: string;
       let preSendActiveLeafMessageId: string | null;
       let userMessageId: string;
@@ -1170,15 +1176,18 @@ async function admitPreparingRunWithClient(
         preSendActiveLeafMessageId = input.expectedActiveLeafId;
         userMessageId = userMessage.id;
 
-        await tx.chat.update({
-          data: {
-            activeLeafMessageId: assistantMessage.id,
-            ...(chat._count.messages === 0 && input.defaults
-              ? { defaultProviderModelId: input.defaults.modelId }
-              : {})
-          },
-          where: { id: input.chatId }
+        await applyMemorySourceMutations(tx, {
+          chat: lockedChat,
+          hooks: memorySourceHooks,
+          mutations: ["NORMAL_APPEND"],
+          patch: { activeLeafMessageId: assistantMessage.id }
         });
+        if (chat._count.messages === 0 && input.defaults) {
+          await tx.chat.update({
+            data: { defaultProviderModelId: input.defaults.modelId },
+            where: { id: input.chatId }
+          });
+        }
         if (chat._count.messages === 0) {
           await tx.chat.updateMany({
             data: { title: titleFromMessageContent(input.content) },
@@ -1236,11 +1245,15 @@ async function admitPreparingRunWithClient(
         assistantMessageId = assistantMessage.id;
         preSendActiveLeafMessageId = preSendAssistantMessageId;
         userMessageId = input.userMessageId;
-        await tx.chat.update({
-          data: { activeLeafMessageId: assistantMessage.id },
-          where: { id: input.chatId }
+        await applyMemorySourceMutations(tx, {
+          chat: lockedChat,
+          hooks: memorySourceHooks,
+          mutations: ["BRANCH_PATH_CHANGE"],
+          patch: { activeLeafMessageId: assistantMessage.id }
         });
       }
+
+      const settings = await loadPreparingSettings(tx, input.userId);
 
       const run = await tx.modelRun.create({
         data: {
@@ -2336,9 +2349,39 @@ type PreparingSettlementInput = Readonly<{
   userId: string;
 }>;
 
+async function settleTerminalMemorySource(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    assistantMessageId: string | null;
+    chatId: string;
+    runId: string;
+    status: "cancelled" | "complete" | "error";
+    userId: string;
+  }>,
+  memorySourceHooks?: MemorySourceMutationHooks
+): Promise<void> {
+  const chat = await lockMemorySourceChat(tx, {
+    chatId: input.chatId,
+    lock: "UPDATE",
+    userId: input.userId
+  });
+  if (!chat) throw new MemorySourceStateConflictError();
+  await applyMemorySourceMutations(tx, {
+    chat,
+    hooks: memorySourceHooks,
+    mutations: ["TERMINAL_SETTLEMENT"],
+    terminalSettlement: {
+      assistantMessageId: input.assistantMessageId,
+      runId: input.runId,
+      status: input.status
+    }
+  });
+}
+
 async function settlePreparingRunInTransaction(
   tx: Prisma.TransactionClient,
-  input: PreparingSettlementInput
+  input: PreparingSettlementInput,
+  memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<boolean> {
   const run = await lockPreparingRun(tx, input.runId, input.userId);
   if (!run || run.status !== "preparing") return false;
@@ -2389,19 +2432,29 @@ async function settlePreparingRunInTransaction(
       }
     });
   }
+  await settleTerminalMemorySource(tx, {
+    assistantMessageId: run.assistantMessageId,
+    chatId: run.chatId,
+    runId: run.id,
+    status: cancelled ? "cancelled" : "error",
+    userId: input.userId
+  }, memorySourceHooks);
   return true;
 }
 
 async function settlePreparingRunFailureWithClient(
   prismaClient: PrismaClient,
-  input: PreparingSettlementInput
+  input: PreparingSettlementInput,
+  memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<boolean> {
-  return prismaClient.$transaction((tx) => settlePreparingRunInTransaction(tx, input));
+  return prismaClient.$transaction((tx) =>
+    settlePreparingRunInTransaction(tx, input, memorySourceHooks));
 }
 
 async function recoverPreparingRunWithClient(
   prismaClient: PrismaClient,
-  input: Readonly<{ now: Date; runId: string; userId: string }>
+  input: Readonly<{ now: Date; runId: string; userId: string }>,
+  memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<PreparingRunRecoveryResult> {
   return prismaClient.$transaction(async (tx) => {
     const run = await lockPreparingRun(tx, input.runId, input.userId);
@@ -2431,18 +2484,23 @@ async function recoverPreparingRunWithClient(
       runId: input.runId,
       state: expired ? "EXPIRED" : "FAILED",
       userId: input.userId
-    });
+    }, memorySourceHooks);
     return settled ? "settled" : "not_preparing";
   });
 }
 
 async function createDormantPreparingRun(
   prismaClient: PrismaClient,
-  admission: PreparingRunAdmissionInput
+  admission: PreparingRunAdmissionInput,
+  memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<PreparingRunAdmissionResult & Readonly<{
   materializedRequest?: PreparingRunMaterializedRequest;
 }>> {
-  const created = await admitPreparingRunWithClient(prismaClient, admission);
+  const created = await admitPreparingRunWithClient(
+    prismaClient,
+    admission,
+    memorySourceHooks
+  );
   let currentAttemptId = created.attemptId;
   let currentSettings = {
     memoryGeneration: created.memoryGeneration,
@@ -2586,7 +2644,7 @@ async function createDormantPreparingRun(
       runId: created.runId,
       state: "FAILED",
       userId: admission.userId
-    }).catch(() => false);
+    }, memorySourceHooks).catch(() => false);
     if (error instanceof ExplicitRunMemoryManagementError ||
       error instanceof MemoryRunActionAuthorizationError) {
       throw new MemoryPreparingRunConflictError(error.code, false);
@@ -2595,7 +2653,11 @@ async function createDormantPreparingRun(
   }
 }
 
-export function createPrismaRunRepository(prismaClient = prisma): RunRepository {
+export function createPrismaRunRepository(
+  prismaClient = prisma,
+  options: Readonly<{ memorySourceHooks?: MemorySourceMutationHooks }> = {}
+): RunRepository {
+  const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
   async function loadConversationPath(
     chatId: string,
     userId: string,
@@ -2674,7 +2736,8 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
   }
 
   return {
-    admitPreparingRun: (input) => admitPreparingRunWithClient(prismaClient, input),
+    admitPreparingRun: (input) =>
+      admitPreparingRunWithClient(prismaClient, input, memorySourceHooks),
     beginPreparingRunAttempt: (input) =>
       beginPreparingRunAttemptWithClient(prismaClient, input),
     completePreparingRunAttempt: (input) =>
@@ -2682,11 +2745,11 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
     finalizePreparingRun: (input) =>
       finalizePreparingRunWithClient(prismaClient, input),
     recoverPreparingRun: (input) =>
-      recoverPreparingRunWithClient(prismaClient, input),
+      recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks),
     retryPreparingRunAttempt: (input) =>
       retryPreparingRunAttemptWithClient(prismaClient, input),
     settlePreparingRunFailure: (input) =>
-      settlePreparingRunFailureWithClient(prismaClient, input),
+      settlePreparingRunFailureWithClient(prismaClient, input, memorySourceHooks),
     advanceToolLoopCallBatch: async (input) => {
       if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 0 ||
         input.roundIndex > toolLoopPersistenceLimits.roundIndex) return "conflict";
@@ -2865,6 +2928,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         const runs = await tx.modelRun.findMany({
           select: {
             assistantMessageId: true,
+            chatId: true,
             id: true,
             status: true,
             userId: true
@@ -2893,60 +2957,54 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         }
 
         let preparedSettled = 0;
+        let dispatchableSettled = 0;
         for (const run of runs) {
-          if (run.status !== "preparing") continue;
-          if (await settlePreparingRunInTransaction(tx, {
-            errorCode: payload.code,
-            message: payload.message,
-            runId: run.id,
-            state: "FAILED",
-            userId: run.userId
-          })) preparedSettled += 1;
-        }
-        const runIds = runs
-          .filter((run) => run.status !== "preparing")
-          .map((run) => run.id);
-        const updatedRuns = await tx.modelRun.updateMany({
-          data: {
-            errorPayload: json(payload),
-            status: "error"
-          },
-          where: {
-            id: {
-              in: runIds
-            },
-            status: {
-              in: dispatchableModelRunStatuses
-            },
-            providerResponseId: null,
-            toolLoopState: { equals: Prisma.DbNull }
+          if (run.status === "preparing") {
+            if (await settlePreparingRunInTransaction(tx, {
+              errorCode: payload.code,
+              message: payload.message,
+              runId: run.id,
+              state: "FAILED",
+              userId: run.userId
+            }, memorySourceHooks)) preparedSettled += 1;
+            continue;
           }
-        });
-        const assistantMessageIds = unique(
-          runs.flatMap((run) =>
-            run.status !== "preparing" && run.assistantMessageId
-              ? [run.assistantMessageId]
-              : [])
-        );
-
-        if (assistantMessageIds.length > 0) {
-          await tx.message.updateMany({
+          const updated = await tx.modelRun.updateMany({
             data: {
-              errorMessage: payload.message,
+              errorPayload: json(payload),
               status: "error"
             },
             where: {
-              id: {
-                in: assistantMessageIds
-              },
-              status: {
-                in: activeMessageStatuses
-              }
+              id: run.id,
+              providerResponseId: null,
+              status: { in: dispatchableModelRunStatuses },
+              toolLoopState: { equals: Prisma.DbNull }
             }
           });
+          if (updated.count !== 1) continue;
+          if (run.assistantMessageId) {
+            await tx.message.updateMany({
+              data: {
+                errorMessage: payload.message,
+                status: "error"
+              },
+              where: {
+                id: run.assistantMessageId,
+                status: { in: activeMessageStatuses }
+              }
+            });
+          }
+          await settleTerminalMemorySource(tx, {
+            assistantMessageId: run.assistantMessageId,
+            chatId: run.chatId,
+            runId: run.id,
+            status: "error",
+            userId: run.userId
+          }, memorySourceHooks);
+          dispatchableSettled += 1;
         }
 
-        return preparedSettled + updatedRuns.count;
+        return preparedSettled + dispatchableSettled;
       });
     },
     cancelRun: async (input) => {
@@ -2959,7 +3017,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               runId: input.runId,
               state: "CANCELLED",
               userId: input.userId
-            }))
+            }, memorySourceHooks))
           : (await tx.modelRun.updateMany({
               data: {
                 errorPayload: json(input.payload),
@@ -3029,6 +3087,15 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               }
             }
           });
+        }
+        if (lockedRun?.status !== "preparing") {
+          await settleTerminalMemorySource(tx, {
+            assistantMessageId: run.assistantMessageId,
+            chatId: run.chatId,
+            runId: run.id,
+            status: "cancelled",
+            userId: input.userId
+          }, memorySourceHooks);
         }
 
         return {
@@ -3156,6 +3223,13 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             ]
           }
         });
+        await settleTerminalMemorySource(tx, {
+          assistantMessageId: input.assistantMessageId,
+          chatId: input.chatId,
+          runId: input.runId,
+          status: "complete",
+          userId: input.userId
+        }, memorySourceHooks);
         await tx.usageEvent.deleteMany({
           where: {
             modelRunId: input.runId
@@ -3231,7 +3305,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       const created = await createDormantPreparingRun(prismaClient, {
         ...input,
         admissionKind: "NORMAL_SEND"
-      });
+      }, memorySourceHooks);
       return {
         assistantMessageId: created.assistantMessageId,
         ...(created.materializedRequest
@@ -3245,7 +3319,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       const created = await createDormantPreparingRun(prismaClient, {
         ...input,
         admissionKind: "REGENERATE"
-      });
+      }, memorySourceHooks);
       return {
         assistantMessageId: created.assistantMessageId,
         ...(created.materializedRequest
@@ -3326,7 +3400,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               runId,
               state: "FAILED",
               userId: lockedRun.userId
-            }))
+            }, memorySourceHooks))
           : (await tx.modelRun.updateMany({
               data: {
                 errorPayload: json(
@@ -3384,6 +3458,19 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             }
           }
         });
+        if (lockedRun.status !== "preparing") {
+          const run = await tx.modelRun.findUniqueOrThrow({
+            select: { assistantMessageId: true, chatId: true, id: true },
+            where: { id: runId }
+          });
+          await settleTerminalMemorySource(tx, {
+            assistantMessageId: run.assistantMessageId,
+            chatId: run.chatId,
+            runId: run.id,
+            status: "error",
+            userId: lockedRun.userId
+          }, memorySourceHooks);
+        }
         const latestEvent = await tx.modelRunEvent.aggregate({
           _max: {
             sequence: true
@@ -4550,6 +4637,13 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             }
           });
         }
+        await settleTerminalMemorySource(tx, {
+          assistantMessageId: run.assistantMessageId,
+          chatId: run.chatId,
+          runId: input.runId,
+          status: "error",
+          userId: run.userId
+        }, memorySourceHooks);
 
         if (usageAttributions.length > 0) {
           await tx.usageEvent.deleteMany({

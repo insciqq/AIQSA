@@ -2,6 +2,14 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type MessageStatus, type ModelRunStatus } from "@prisma/client";
 import { prisma } from "../prisma";
 import {
+  applyMemorySourceMutations,
+  deleteMemorySourceJobsForMessages,
+  lockMemorySourceChat,
+  type LockedMemorySourceChat,
+  type MemorySourceMutationHooks
+} from "../memory/sourceState";
+import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
+import {
   ActiveMessageMutationConflictError,
   type BranchChatRecord,
   type BranchMessageRecord,
@@ -26,11 +34,8 @@ function isActiveMessageStatus(status: MessageStatus): boolean {
   return activeMessageStatuses.includes(status);
 }
 
-type LockedOwnedChat = {
-  activeLeafMessageId: string | null;
+type LockedOwnedChat = LockedMemorySourceChat & {
   defaultProviderModelId: string | null;
-  folderId: string | null;
-  id: string;
   title: string;
 };
 
@@ -44,7 +49,14 @@ async function lockOwnedChatForMessage(
       chat."defaultProviderModelId",
       chat."folderId",
       chat."id",
-      chat."title"
+      chat."title",
+      chat."userId",
+      chat."archived",
+      chat."memoryMode",
+      chat."memoryBranchGeneration",
+      chat."memorySourceRevision",
+      chat."temporaryRetentionPolicyVersion",
+      chat."temporaryRetentionDeadline"
     FROM "Chat" AS chat
     WHERE chat."userId" = ${input.userId}
       AND chat."archived" = FALSE
@@ -173,7 +185,11 @@ function rewriteMessageAttachmentIds(
   });
 }
 
-export function createPrismaMessageBranchRepository(prismaClient = prisma): MessageBranchRepository {
+export function createPrismaMessageBranchRepository(
+  prismaClient = prisma,
+  options: Readonly<{ memorySourceHooks?: MemorySourceMutationHooks }> = {}
+): MessageBranchRepository {
+  const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
   return {
     createChatBranchFromMessage: async ({ sourceMessageId, userId }) =>
       prismaClient.$transaction(async (tx) => {
@@ -379,10 +395,19 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
           activeLeafMessageId = cloned.id;
         }
 
-        const updated = await tx.chat.update({
-          data: {
-            activeLeafMessageId
-          },
+        const newChat = await lockMemorySourceChat(tx, {
+          chatId: chat.id,
+          lock: "UPDATE",
+          userId
+        });
+        if (!newChat) throw new Error("branch_chat_disappeared");
+        await applyMemorySourceMutations(tx, {
+          chat: newChat,
+          hooks: memorySourceHooks,
+          mutations: ["NORMAL_APPEND"],
+          patch: { activeLeafMessageId }
+        });
+        const updated = await tx.chat.findUniqueOrThrow({
           select: {
             activeLeafMessageId: true,
             createdAt: true,
@@ -452,13 +477,11 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
           }
         });
 
-        await tx.chat.update({
-          data: {
-            activeLeafMessageId: message.id
-          },
-          where: {
-            id: original.chatId
-          }
+        await applyMemorySourceMutations(tx, {
+          chat: lockedChat,
+          hooks: memorySourceHooks,
+          mutations: ["BRANCH_PATH_CHANGE"],
+          patch: { activeLeafMessageId: message.id }
         });
 
         return message;
@@ -571,6 +594,19 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
             userId
           }
         });
+        await deleteMemorySourceJobsForMessages(tx, {
+          chatId: root.chatId,
+          messageIds: deletedMessageIds,
+          userId
+        });
+        if (nextActiveLeafMessageId !== activeLeafMessageId) {
+          await applyMemorySourceMutations(tx, {
+            chat: lockedChat,
+            hooks: memorySourceHooks,
+            mutations: ["BRANCH_PATH_CHANGE"],
+            patch: { activeLeafMessageId: nextActiveLeafMessageId }
+          });
+        }
 
         for (const id of deletedMessageIds.sort((a, b) => (deletedDepths.get(b) ?? 0) - (deletedDepths.get(a) ?? 0))) {
           await tx.message.delete({
@@ -579,15 +615,6 @@ export function createPrismaMessageBranchRepository(prismaClient = prisma): Mess
             }
           });
         }
-
-        await tx.chat.update({
-          data: {
-            activeLeafMessageId: nextActiveLeafMessageId
-          },
-          where: {
-            id: root.chatId
-          }
-        });
 
         return {
           activeLeafMessageId: nextActiveLeafMessageId,

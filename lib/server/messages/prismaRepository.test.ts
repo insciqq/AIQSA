@@ -571,6 +571,22 @@ describe("Prisma message branch repository", () => {
           }
         })
       ).resolves.toBe(0);
+      await expect(Promise.all([
+        prisma.chat.findUniqueOrThrow({
+          select: {
+            memoryBranchGeneration: true,
+            memorySourceRevision: true
+          },
+          where: { id: sourceChat.id }
+        }),
+        prisma.userMemorySettings.findUniqueOrThrow({
+          select: { memoryGeneration: true, memoryRevision: true },
+          where: { userId }
+        })
+      ])).resolves.toEqual([
+        { memoryBranchGeneration: 1, memorySourceRevision: 1 },
+        { memoryGeneration: 1, memoryRevision: 1 }
+      ]);
     });
   });
 
@@ -1016,15 +1032,42 @@ describe("Prisma message branch repository", () => {
       await expect(
         prisma.chat.findUniqueOrThrow({
           select: {
-            activeLeafMessageId: true
+            activeLeafMessageId: true,
+            memoryBranchGeneration: true,
+            memorySourceRevision: true
           },
           where: {
             id: sourceChat.id
           }
         })
       ).resolves.toEqual({
-        activeLeafMessageId: edited?.id
+        activeLeafMessageId: edited?.id,
+        memoryBranchGeneration: 1,
+        memorySourceRevision: 1
       });
+      await expect(Promise.all([
+        prisma.userMemorySettings.findUniqueOrThrow({
+          select: { memoryGeneration: true, memoryRevision: true },
+          where: { userId }
+        }),
+        prisma.memoryJob.findFirstOrThrow({
+          select: {
+            activeLeafMessageId: true,
+            branchGeneration: true,
+            kind: true,
+            sourceRevision: true
+          },
+          where: { chatId: sourceChat.id, kind: "RECONCILE_BRANCH", userId }
+        })
+      ])).resolves.toEqual([
+        { memoryGeneration: 1, memoryRevision: 1 },
+        {
+          activeLeafMessageId: edited?.id,
+          branchGeneration: 1,
+          kind: "RECONCILE_BRANCH",
+          sourceRevision: 1
+        }
+      ]);
       await expect(
         prisma.message.findUniqueOrThrow({
           select: {

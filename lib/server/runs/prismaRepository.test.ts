@@ -1634,6 +1634,13 @@ describe("Prisma run repository", () => {
         activeLeafMessageId: sent.assistantMessageId,
         title: "Atomic defaults"
       });
+      await expect(prisma.chat.findUniqueOrThrow({
+        select: { memoryBranchGeneration: true, memorySourceRevision: true },
+        where: { id: chat.id }
+      })).resolves.toEqual({
+        memoryBranchGeneration: 0,
+        memorySourceRevision: 1
+      });
       await expect(
         prisma.message.findMany({
           orderBy: { createdAt: "asc" },
@@ -1697,6 +1704,34 @@ describe("Prisma run repository", () => {
         activeLeafMessageId: regenerated.assistantMessageId,
         title: "Atomic defaults"
       });
+      await expect(Promise.all([
+        prisma.chat.findUniqueOrThrow({
+          select: { memoryBranchGeneration: true, memorySourceRevision: true },
+          where: { id: chat.id }
+        }),
+        prisma.userMemorySettings.findUniqueOrThrow({
+          select: { memoryGeneration: true, memoryRevision: true },
+          where: { userId }
+        }),
+        prisma.memoryJob.findFirstOrThrow({
+          select: {
+            activeLeafMessageId: true,
+            branchGeneration: true,
+            kind: true,
+            sourceRevision: true
+          },
+          where: { chatId: chat.id, kind: "RECONCILE_BRANCH", userId }
+        })
+      ])).resolves.toEqual([
+        { memoryBranchGeneration: 1, memorySourceRevision: 2 },
+        { memoryGeneration: 1, memoryRevision: 1 },
+        {
+          activeLeafMessageId: regenerated.assistantMessageId,
+          branchGeneration: 1,
+          kind: "RECONCILE_BRANCH",
+          sourceRevision: 2
+        }
+      ]);
     });
   });
 
@@ -2205,6 +2240,42 @@ describe("Prisma run repository", () => {
           userMessageId: first.userMessageId
         }
       ]);
+    });
+  });
+
+  it("advances source revision once for normal append and once for the winning terminal settlement", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Source counter settlement");
+
+      await expect(prisma.chat.findUniqueOrThrow({
+        select: { memoryBranchGeneration: true, memorySourceRevision: true },
+        where: { id: created.chatId }
+      })).resolves.toEqual({
+        memoryBranchGeneration: 0,
+        memorySourceRevision: 1
+      });
+      await repository.appendAssistantText(created.assistantMessageId, "streamed draft");
+      await expect(prisma.chat.findUniqueOrThrow({
+        select: { memoryBranchGeneration: true, memorySourceRevision: true },
+        where: { id: created.chatId }
+      })).resolves.toEqual({
+        memoryBranchGeneration: 0,
+        memorySourceRevision: 1
+      });
+      await expect(repository.completeRun(completionInput(created))).resolves.toBe(true);
+      await expect(repository.completeRun(completionInput(created))).resolves.toBe(false);
+      await expect(prisma.chat.findUniqueOrThrow({
+        select: { memoryBranchGeneration: true, memorySourceRevision: true },
+        where: { id: created.chatId }
+      })).resolves.toEqual({
+        memoryBranchGeneration: 0,
+        memorySourceRevision: 2
+      });
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
+        select: { memoryGeneration: true, memoryRevision: true },
+        where: { userId }
+      })).resolves.toEqual({ memoryGeneration: 0, memoryRevision: 0 });
     });
   });
 
