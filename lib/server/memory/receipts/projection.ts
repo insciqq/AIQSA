@@ -17,9 +17,11 @@ import {
 type MemoryReceiptClient = Pick<
   PrismaClient,
   | "chat"
+  | "memoryEpisode"
   | "memoryFact"
   | "memoryFactVersion"
   | "memoryOperationReceipt"
+  | "memoryRecallChunk"
   | "memoryRetrievalAttemptItem"
   | "modelRunMemoryBinding"
   | "modelRunMemoryItem"
@@ -28,12 +30,22 @@ type MemoryReceiptClient = Pick<
 
 export type MemoryRunEvidenceProjection = Readonly<{
   action: MemoryActionFeedback | null;
+  inspection: Readonly<{
+    degradationCode: string | null;
+    itemCount: number;
+    itemTypes: readonly MemoryReceiptItemType[];
+    outcome: MemoryReceipt["outcome"];
+    queryPlannerVersion: string;
+    retrievalLanes: readonly string[];
+    retrievalPipelineVersion: string;
+  }> | null;
   receipt: MemoryReceipt | null;
 }>;
 
 const sourceModes = new Set(["EXPLICIT", "AUTOMATIC", "HISTORY", "PROFILE"]);
 const scopeTypes = new Set(["GLOBAL_USER", "FOLDER", "ASSISTANT", "CHAT"]);
 const itemTypes = new Set(["FACT_VERSION", "EPISODE", "RECALL_CHUNK", "PROFILE"]);
+const safeLane = /^[A-Z][A-Z0-9_]{0,63}$/u;
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -95,6 +107,8 @@ export async function loadMemoryRunEvidence(
       id: true,
       modelRunId: true,
       outcome: true,
+      queryPlannerVersion: true,
+      retrievalPipelineVersion: true,
       retrievalAttemptId: true
     },
     where: { modelRunId: { in: runIds }, userId: input.userId }
@@ -107,10 +121,13 @@ export async function loadMemoryRunEvidence(
           orderBy: [{ bindingId: "asc" }, { ordinal: "asc" }],
           select: {
             bindingId: true,
+            episodeId: true,
             factVersionId: true,
             includedText: true,
             itemType: true,
+            laneRanks: true,
             ordinal: true,
+            recallChunkId: true,
             selectionReason: true,
             sourceChatIdSnapshot: true,
             sourceMessageIdsSnapshot: true
@@ -149,11 +166,15 @@ export async function loadMemoryRunEvidence(
 
   const factVersionIds = [...new Set(items.flatMap((item) =>
     item.factVersionId ? [item.factVersionId] : []))];
+  const episodeIds = [...new Set(items.flatMap((item) =>
+    item.episodeId ? [item.episodeId] : []))];
+  const recallChunkIds = [...new Set(items.flatMap((item) =>
+    item.recallChunkId ? [item.recallChunkId] : []))];
   const sourceChatIds = [...new Set(items.flatMap((item) =>
     item.sourceChatIdSnapshot ? [item.sourceChatIdSnapshot] : []))];
   const toolCallIds = [...new Set(operationReceipts.flatMap((receipt) =>
     receipt.persistedToolCallId ? [receipt.persistedToolCallId] : []))];
-  const [versions, liveChats, toolCalls] = await Promise.all([
+  const [versions, episodes, recallChunks, liveChats, toolCalls] = await Promise.all([
     factVersionIds.length > 0
       ? client.memoryFactVersion.findMany({
           select: {
@@ -164,6 +185,18 @@ export async function loadMemoryRunEvidence(
             state: true
           },
           where: { id: { in: factVersionIds }, userId: input.userId }
+        })
+      : Promise.resolve([]),
+    episodeIds.length > 0
+      ? client.memoryEpisode.findMany({
+          select: { id: true, invalidatedAt: true, state: true },
+          where: { id: { in: episodeIds }, userId: input.userId }
+        })
+      : Promise.resolve([]),
+    recallChunkIds.length > 0
+      ? client.memoryRecallChunk.findMany({
+          select: { id: true, invalidatedAt: true, state: true },
+          where: { id: { in: recallChunkIds }, userId: input.userId }
         })
       : Promise.resolve([]),
     sourceChatIds.length > 0
@@ -200,6 +233,8 @@ export async function loadMemoryRunEvidence(
     attemptItems.map((item) => [`${item.attemptId}:${item.ordinal}`, item] as const)
   );
   const versionById = new Map(versions.map((version) => [version.id, version] as const));
+  const episodeById = new Map(episodes.map((episode) => [episode.id, episode] as const));
+  const recallChunkById = new Map(recallChunks.map((chunk) => [chunk.id, chunk] as const));
   const factById = new Map(facts.map((fact) => [fact.id, fact] as const));
   const liveChatIds = new Set(liveChats.map(({ id }) => id));
   const toolCallById = new Map(toolCalls.map((call) => [call.id, call] as const));
@@ -230,17 +265,27 @@ export async function loadMemoryRunEvidence(
       );
       const version = item.factVersionId ? versionById.get(item.factVersionId) : null;
       const fact = version ? factById.get(version.factId) : null;
+      const episode = item.episodeId ? episodeById.get(item.episodeId) : null;
+      const recallChunk = item.recallChunkId
+        ? recallChunkById.get(item.recallChunkId)
+        : null;
       const sourceDeleted = Boolean(
         item.sourceChatIdSnapshot && !liveChatIds.has(item.sourceChatIdSnapshot)
       );
       const laterForgotten = itemType === "FACT_VERSION" && (
         !version || !fact || version.state === "FORGOTTEN" ||
         version.contentPurgedAt !== null || fact.state === "FORGOTTEN"
+      ) || itemType === "EPISODE" && (
+        !episode || episode.state !== "ACTIVE" || episode.invalidatedAt !== null
+      ) || itemType === "RECALL_CHUNK" && (
+        !recallChunk || recallChunk.state !== "ACTIVE" || recallChunk.invalidatedAt !== null
       );
       const sourceMode = frozenSourceMode(snapshot?.sourceSnapshot) ??
         (version && sourceModes.has(version.sourceMode)
           ? version.sourceMode as MemoryReceiptItem["sourceMode"]
-          : "EXPLICIT");
+          : itemType === "EPISODE" || itemType === "RECALL_CHUNK"
+            ? "HISTORY"
+            : "EXPLICIT");
 
       return {
         includedText: item.includedText,
@@ -266,9 +311,24 @@ export async function loadMemoryRunEvidence(
     };
     const decoded = decodeMemoryReceipt(candidate);
     if (!decoded.ok) throw new Error("memory_run_receipt_invalid");
+    const retrievalLanes = [...new Set(bindingItems.flatMap((item) => {
+      const ranks = record(item.laneRanks);
+      return ranks
+        ? Object.keys(ranks).filter((lane) => safeLane.test(lane)).slice(0, 32)
+        : [];
+    }))].sort();
     const actions = actionsByRun.get(binding.modelRunId) ?? [];
     projected.set(binding.modelRunId, {
       action: actions.length === 1 ? actions[0]! : null,
+      inspection: {
+        degradationCode: binding.degradationCode,
+        itemCount: decoded.value.itemCount,
+        itemTypes: [...new Set(decoded.value.items.map((item) => item.itemType))],
+        outcome: decoded.value.outcome,
+        queryPlannerVersion: binding.queryPlannerVersion,
+        retrievalLanes,
+        retrievalPipelineVersion: binding.retrievalPipelineVersion
+      },
       receipt: decoded.value
     });
   }
@@ -277,7 +337,7 @@ export async function loadMemoryRunEvidence(
     if (projected.has(runId)) continue;
     const actions = actionsByRun.get(runId) ?? [];
     if (actions.length === 1) {
-      projected.set(runId, { action: actions[0]!, receipt: null });
+      projected.set(runId, { action: actions[0]!, inspection: null, receipt: null });
     }
   }
   return projected;

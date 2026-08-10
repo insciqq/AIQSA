@@ -29,9 +29,59 @@ describe("Memory inspection events", () => {
     expect(events[1]?.payload).toEqual({
       degradationCode: null,
       itemCount: 0,
-      outcome: "DISABLED"
+      itemTypes: [],
+      outcome: "DISABLED",
+      queryPlannerVersion: null,
+      retrievalLanes: [],
+      retrievalPipelineVersion: null
     });
-    expect(JSON.stringify(events)).not.toMatch(/includedText|version|source|binding/i);
+    expect(JSON.stringify(events)).not.toMatch(
+      /includedText|sourceChat|sourceMessage|bindingId/i
+    );
+  });
+
+  it("includes content-free retrieval lane and pipeline evidence", () => {
+    const events = projectMemoryInspectionEvents({
+      events: [],
+      inspection: {
+        degradationCode: "memory_vector_unavailable",
+        itemCount: 1,
+        itemTypes: ["RECALL_CHUNK"],
+        outcome: "DEGRADED",
+        queryPlannerVersion: "memory-query-planner-v1",
+        retrievalLanes: ["HISTORY_RECALL_FTS_ENGLISH"],
+        retrievalPipelineVersion: "memory-retrieval-pipeline-v1"
+      },
+      receipt: {
+        degradationCode: "memory_vector_unavailable",
+        itemCount: 1,
+        items: [{
+          includedText: "private passage",
+          itemType: "RECALL_CHUNK",
+          lifecycleState: "CURRENT",
+          ordinal: 0,
+          scopeType: "CHAT",
+          selectionReason: "history_recall_fts_english",
+          sourceChatId: "chat-1",
+          sourceMessageIds: ["message-1"],
+          sourceMode: "HISTORY",
+          versionId: null
+        }],
+        outcome: "DEGRADED",
+        summary: "memory_receipt:degraded:1"
+      }
+    });
+
+    expect(events[0]?.payload).toEqual({
+      degradationCode: "memory_vector_unavailable",
+      itemCount: 1,
+      itemTypes: ["RECALL_CHUNK"],
+      outcome: "DEGRADED",
+      queryPlannerVersion: "memory-query-planner-v1",
+      retrievalLanes: ["HISTORY_RECALL_FTS_ENGLISH"],
+      retrievalPipelineVersion: "memory-retrieval-pipeline-v1"
+    });
+    expect(JSON.stringify(events)).not.toContain("private passage");
   });
 
   it("does not duplicate a stored Memory event", () => {

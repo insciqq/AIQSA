@@ -91,12 +91,29 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
   const firstReceipt = receipt("First answer frozen memory.", "version-first");
   const secondReceipt = receipt("Second answer frozen memory.", "version-second", {
     degradationCode: "memory_vector_unavailable",
+    itemCount: 2,
     items: [{
-      ...receipt("Second answer frozen memory.", "version-second").items[0]!,
-      lifecycleState: "LATER_FORGOTTEN"
+      ...receipt("Deleted-source previous-chat excerpt.", "unused").items[0]!,
+      itemType: "RECALL_CHUNK",
+      lifecycleState: "SOURCE_DELETED",
+      scopeType: "CHAT",
+      sourceMessageIds: ["source-message-deleted"],
+      sourceMode: "HISTORY",
+      versionId: null
+    }, {
+      ...receipt("Archived previous-chat episode.", "unused").items[0]!,
+      includedText: "Archived previous-chat episode.",
+      itemType: "EPISODE",
+      lifecycleState: "CURRENT",
+      ordinal: 1,
+      scopeType: "CHAT",
+      sourceChatId: "chat-memory-source-archived",
+      sourceMessageIds: ["source-message-archived"],
+      sourceMode: "HISTORY",
+      versionId: null
     }],
     outcome: "DEGRADED",
-    summary: "memory_receipt:degraded:1"
+    summary: "memory_receipt:degraded:2"
   });
   const messages = [
     message({ id: "user-save", parentMessageId: null, role: "user", text: "Remember this" }),
@@ -147,6 +164,63 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({ json: memorySettingsFixture({}, "EN") });
   });
+  await page.route("**/api/chats/chat-memory-source-archived/source", async (route: Route) => {
+    await route.fulfill({
+      json: {
+        source: {
+          chatId: "chat-memory-source-archived",
+          location: "ARCHIVED_PREVIEW",
+          memoryMode: "NORMAL",
+          sourceRevision: 2,
+          updatedAt: timestamp
+        }
+      }
+    });
+  });
+  await page.route("**/api/chats/chat-memory-source-archived/archive", async (route: Route) => {
+    await route.fulfill({
+      json: {
+        chat: {
+          activeLeafMessageId: "archived-source-assistant",
+          archived: true,
+          contextStats: { approximateActiveBranchInputTokens: 12 },
+          createdAt: timestamp,
+          defaultKnowledgePlan: null,
+          defaultModelId: "gpt-5.5",
+          defaultProvider: "openai",
+          folderId: null,
+          id: "chat-memory-source-archived",
+          memoryMode: "NORMAL",
+          messageCount: 2,
+          messages: [
+            message({
+              id: "archived-source-user",
+              parentMessageId: null,
+              role: "user",
+              text: "What did we decide?"
+            }),
+            message({
+              id: "archived-source-assistant",
+              parentMessageId: "archived-source-user",
+              role: "assistant",
+              text: "Archived previous-chat episode."
+            })
+          ],
+          pageInfo: {
+            activeLeafMessageId: "archived-source-assistant",
+            beforeCursor: null,
+            hasOlder: false,
+            snapshotUpdatedAt: timestamp
+          },
+          pinned: false,
+          sourceRevision: 2,
+          title: "Archived Memory source",
+          updatedAt: timestamp,
+          usageStats: null
+        }
+      }
+    });
+  });
   await signInWithLocalToken(page);
 
   await expect(page.getByText("Memory saved.", { exact: true })).toBeVisible();
@@ -164,13 +238,19 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
 
   const second = await openAnswerDetails(page, "assistant-update");
   const secondDisclosure = second.getByRole("button", {
-    name: "Memory. 1 memory used · retrieval degraded safely"
+    name: "Memory. 2 previous chats used · retrieval degraded safely"
   });
   await expect(secondDisclosure).toHaveAttribute("aria-expanded", "false");
   await secondDisclosure.click();
-  await expect(second.getByText("Second answer frozen memory.", { exact: true })).toBeVisible();
-  await expect(second.getByText("Later forgotten", { exact: true })).toBeVisible();
-  await expect(second.getByText("version-second", { exact: true })).toBeVisible();
+  await expect(second.getByText("Deleted-source previous-chat excerpt.", { exact: true }))
+    .toBeVisible();
+  await expect(second.getByText("Archived previous-chat episode.", { exact: true }))
+    .toBeVisible();
+  await expect(second.getByText("Source deleted", { exact: true })).toBeVisible();
+  await second.getByRole("button", { name: "Source · 1" }).click();
+  const archived = page.getByRole("dialog", { name: "Archived Memory source" });
+  await expect(archived.getByText("Archived previous-chat episode.", { exact: true }))
+    .toBeVisible();
   await expect(second.getByText("First answer frozen memory.", { exact: true })).toHaveCount(0);
 });
 

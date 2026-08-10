@@ -49,6 +49,13 @@ function numberField(value: unknown, field: string): number | null {
   return value[field];
 }
 
+function stringArrayField(value: unknown, field: string): string[] {
+  if (!isRecord(value) || !Array.isArray(value[field])) return [];
+  return value[field].flatMap((entry) =>
+    typeof entry === "string" && entry.trim() ? [entry.trim()] : []
+  );
+}
+
 function jsonText(value: unknown): string {
   if (typeof value === "string") {
     return value;
@@ -75,6 +82,7 @@ function fullDetail(value: unknown): string {
 
 const readableAcronyms: Readonly<Record<string, string>> = {
   api: "API",
+  fts: "FTS",
   gpt: "GPT",
   http: "HTTP",
   https: "HTTPS",
@@ -89,12 +97,13 @@ function readableIdentifier(value: string): string {
   const words = value.replace(/[_-]+/g, " ").trim().split(/\s+/).filter(Boolean);
   return words
     .map((word, index) => {
-      const acronym = readableAcronyms[word.toLowerCase()];
+      const lower = word.toLowerCase();
+      const acronym = readableAcronyms[lower];
       if (acronym) {
         return acronym;
       }
 
-      return index === 0 ? `${word[0]?.toUpperCase() ?? ""}${word.slice(1)}` : word.toLowerCase();
+      return index === 0 ? `${lower[0]?.toUpperCase() ?? ""}${lower.slice(1)}` : lower;
     })
     .join(" ");
 }
@@ -718,6 +727,7 @@ export function summarizeInspectorEvents(
       const outcome = stringField(event.data, "outcome") ?? "FAILED_SAFE";
       const itemCount = Math.max(0, Math.floor(numberField(event.data, "itemCount") ?? 0));
       const degradationCode = stringField(event.data, "degradationCode");
+      const retrievalLanes = stringArrayField(event.data, "retrievalLanes");
       const included = `${itemCount} ${itemCount === 1 ? "memory" : "memories"} included`;
       const value = outcome === "USED"
         ? included
@@ -729,7 +739,12 @@ export function summarizeInspectorEvents(
               ? "Memory use was off"
               : "Memory unavailable; answer continued safely";
       summaries.push({
-        detail: degradationCode ? `Reason: ${readableIdentifier(degradationCode)}` : undefined,
+        detail: [
+          retrievalLanes.length > 0
+            ? `Lanes: ${retrievalLanes.map(readableIdentifier).join(", ")}`
+            : null,
+          degradationCode ? `Reason: ${readableIdentifier(degradationCode)}` : null
+        ].filter((part): part is string => Boolean(part)).join(" · ") || undefined,
         id: `memory-${eventIndex}`,
         label: "Memory",
         stage: "M",

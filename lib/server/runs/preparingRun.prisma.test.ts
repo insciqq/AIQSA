@@ -1,5 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import type {
+  MemoryCapabilityQualification,
+  MemoryQualificationRequirement
+} from "../../evaluation/memory/qualification";
+import { canonicalMemoryQualificationPayload } from "../../evaluation/memory/qualification";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
@@ -10,11 +15,26 @@ import { createPrismaMemoryFactRepository } from "../memory/persistence/facts";
 import { createPrismaMemoryMutationAuthorizationRepository } from "../memory/persistence/authorizations";
 import { createPrismaMemoryScopeRepository } from "../memory/persistence/scopes";
 import { createPrismaMemorySettingsRepository } from "../memory/persistence/settings";
+import {
+  MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+  memorySha256,
+  normalizeMemorySearchText,
+  normalizeMemorySearchTextYo
+} from "../memory/persistence/lexical";
 import { createPrismaExplicitMemoryRepository } from "../memory/explicit/repository";
 import { createExplicitMemoryService } from "../memory/explicit/service";
+import { createPrismaMemoryExecutionService } from "../memory/execution";
+import type { MemoryExecutionAuthorityDependencies } from "../memory/execution";
+import {
+  MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+  memoryVectorSpaceFingerprint,
+  resolveCurrentMemoryUtilityPolicy
+} from "../memory/execution/policy";
 import { planMemoryActionFromText } from "../memory/actions/intent";
 import { createMemoryActionExecutor } from "../memory/actions/toolExecutor";
 import { retrieveExplicitRunMemory } from "../memory/retrieval/explicitRun";
+import { MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION } from "../memory/retrieval/runUtilities";
+import { MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT } from "../memory/retrieval/vector";
 import { applyMemoryScopeTargetDeletion } from "../memory/scopeLifecycle";
 import { createPrismaRunRepository } from "./prismaRepository";
 import {
@@ -27,6 +47,68 @@ const suppressionKeyring = MemorySuppressionKeyring.parse(
     Array.from({ length: 32 }, (_, index) => index + 17)
   ).toString("base64")}`
 );
+
+const qualificationHmacKey = Buffer.from(
+  "preparing-memory-execution-qualification-key",
+  "utf8"
+);
+
+const queryEmbeddingVersions = Object.freeze({
+  pipelineVersion: MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION,
+  policyVersion: "memory-query-embedding-policy-v1",
+  promptVersion: "memory-query-embedding-prompt-v1",
+  retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
+  schemaVersion: "memory-query-embedding-result-v1"
+});
+
+const preparingEmbeddingConfiguration = Object.freeze({
+  adapterKind: "openai_embeddings_compatible",
+  answerSelectable: false,
+  capabilities: {
+    nativePdfInput: false,
+    nativeSearch: false,
+    pdf: false,
+    reasoning: false,
+    vision: false
+  },
+  defaultParams: {},
+  embedding: {
+    nativeDimension: 1_024,
+    providerFamily: "openai_compatible",
+    queryInstructionTemplate: null,
+    supportsMrl: false,
+    targetDimension: 1_024
+  },
+  modelClass: "embedding",
+  upstreamModelId: "preparing-memory-query-embedding"
+} as const);
+
+function signPreparingQualification(
+  requirement: MemoryQualificationRequirement
+): MemoryCapabilityQualification {
+  const unsigned: MemoryCapabilityQualification = {
+    approval: {
+      approvalId: "preparing-memory-execution-approval-v1",
+      approved: true,
+      approvedAt: "2026-08-10T00:00:00.000Z",
+      approvedBy: "preparing-memory-test",
+      expiresAt: "2026-09-10T00:00:00.000Z",
+      signature: "pending"
+    },
+    evidenceDigest: "e".repeat(64),
+    key: requirement,
+    qualificationId: "preparing-memory-execution-qualification-v1"
+  };
+  return {
+    ...unsigned,
+    approval: {
+      ...unsigned.approval,
+      signature: createHmac("sha256", qualificationHmacKey)
+        .update(canonicalMemoryQualificationPayload(unsigned), "utf8")
+        .digest("hex")
+    }
+  };
+}
 
 function normalizedRequest(
   chatId: string,
@@ -89,6 +171,179 @@ async function withPreparingUser<T>(
   }
 }
 
+async function createPreparingEmbeddingAuthority(userId: string): Promise<Readonly<{
+  authority: MemoryExecutionAuthorityDependencies;
+  cleanup(): Promise<void>;
+}>> {
+  const suffix = randomUUID();
+  const connectionId = `preparing-memory-connection-${suffix}`;
+  const credentialId = `preparing-memory-credential-${suffix}`;
+  const credentialVersionId = `preparing-memory-credential-version-${suffix}`;
+  const modelId = `preparing-memory-model-${suffix}`;
+  const now = new Date("2026-08-10T12:00:00.000Z");
+  const connectionConfiguration = {
+    allowPrivateNetwork: false,
+    apiRoot: "https://preparing-memory-provider.example.test/v1",
+    responseTimeoutMs: 30_000
+  };
+  await prisma.providerConnection.create({
+    data: {
+      activeConfig: connectionConfiguration,
+      activeVersion: 1,
+      activatedAt: now,
+      displayName: "Preparing Memory provider",
+      draftConfig: connectionConfiguration,
+      draftVersion: 1,
+      enabled: true,
+      family: "openai_compatible",
+      id: connectionId,
+      unassignedPolicy: "use_default"
+    }
+  });
+  await prisma.providerCredential.create({
+    data: {
+      activatedAt: now,
+      connectionId,
+      draftVersion: 1,
+      enabled: true,
+      id: credentialId,
+      label: "Preparing Memory account",
+      testedAt: now
+    }
+  });
+  await prisma.providerCredentialVersion.create({
+    data: {
+      activatedAt: now,
+      credentialId,
+      id: credentialVersionId,
+      secretEnvelope: "test-only-envelope",
+      testedAt: now,
+      testEvidence: { authenticationMode: "bearer" },
+      version: 1
+    }
+  });
+  await prisma.providerCredential.update({
+    data: { activeVersionId: credentialVersionId },
+    where: { id: credentialId }
+  });
+  await prisma.providerConnection.update({
+    data: { defaultCredentialId: credentialId },
+    where: { id: connectionId }
+  });
+  await prisma.providerModel.create({
+    data: {
+      activeConfig: preparingEmbeddingConfiguration,
+      activeVersion: 1,
+      activatedAt: now,
+      capabilities: preparingEmbeddingConfiguration.capabilities,
+      connectionId,
+      contextWindow: 32_768,
+      defaultParams: {},
+      displayName: "Preparing Memory query embedding",
+      draftConfig: preparingEmbeddingConfiguration,
+      draftVersion: 1,
+      enabled: true,
+      id: modelId,
+      modelClass: "embedding",
+      modelId: preparingEmbeddingConfiguration.upstreamModelId,
+      provider: "openai_compatible"
+    }
+  });
+  await prisma.providerModelCredentialCheck.create({
+    data: {
+      checkedAt: now,
+      connectionId,
+      connectionVersion: 1,
+      credentialId,
+      credentialVersionId,
+      evidence: { detail: "ok" },
+      modelVersion: 1,
+      providerModelId: modelId,
+      status: "available"
+    }
+  });
+  await prisma.accessGrant.create({
+    data: { enabled: true, providerModelId: modelId, userId }
+  });
+  await prisma.userMemorySettings.update({
+    data: { embeddingProviderModelId: modelId },
+    where: { userId }
+  });
+  const policy = await prisma.$transaction(async (tx) => {
+    const settings = await tx.userMemorySettings.findUniqueOrThrow({
+      where: { userId }
+    });
+    return resolveCurrentMemoryUtilityPolicy(tx, userId, settings);
+  });
+  const target = policy.targets.get("MEMORY_QUERY_EMBED");
+  if (!target) throw new Error("preparing_memory_embedding_target_missing");
+  const requirement: MemoryQualificationRequirement = {
+    ...target.qualificationFingerprints,
+    corpusHash: "c".repeat(64),
+    corpusVersion: "preparing-memory-corpus-v1",
+    language: "RU",
+    pipelineVersion: queryEmbeddingVersions.pipelineVersion,
+    policyVersion: queryEmbeddingVersions.policyVersion,
+    promptVersion: queryEmbeddingVersions.promptVersion,
+    retrievalConfigFingerprint: queryEmbeddingVersions.retrievalConfigFingerprint,
+    role: "MEMORY_QUERY_EMBED",
+    schemaVersion: queryEmbeddingVersions.schemaVersion,
+    scorerVersion: "preparing-memory-scorer-v1",
+    suiteVersion: "preparing-memory-suite-v1",
+    vectorSpaceFingerprint: memoryVectorSpaceFingerprint(target)
+  };
+  const qualification = signPreparingQualification(requirement);
+  await prisma.userMemorySettings.update({
+    data: {
+      acceptedUtilityEgressAt: now,
+      acceptedUtilityEgressFingerprint: policy.fingerprint,
+      acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
+    },
+    where: { userId }
+  });
+  const authority: MemoryExecutionAuthorityDependencies = {
+    now: () => new Date(now),
+    qualification: {
+      corpusHash: requirement.corpusHash,
+      corpusVersion: requirement.corpusVersion,
+      registry: [qualification],
+      scorerVersion: requirement.scorerVersion,
+      suiteVersion: requirement.suiteVersion,
+      verifySignature: (payload, signature) =>
+        createHmac("sha256", qualificationHmacKey)
+          .update(payload, "utf8")
+          .digest("hex") === signature
+    }
+  };
+  return {
+    authority,
+    async cleanup() {
+      await prisma.usageEvent.deleteMany({ where: { userId } });
+      await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
+      await prisma.userMemorySettings.updateMany({
+        data: { embeddingProviderModelId: null },
+        where: { userId }
+      });
+      await prisma.accessGrant.deleteMany({
+        where: { providerModelId: modelId, userId }
+      });
+      await prisma.providerModelCredentialCheck.deleteMany({ where: { connectionId } });
+      await prisma.providerConnection.updateMany({
+        data: { defaultCredentialId: null },
+        where: { id: connectionId }
+      });
+      await prisma.providerCredential.updateMany({
+        data: { activeVersionId: null },
+        where: { id: credentialId }
+      });
+      await prisma.providerModel.deleteMany({ where: { id: modelId } });
+      await prisma.providerCredentialVersion.deleteMany({ where: { credentialId } });
+      await prisma.providerCredential.deleteMany({ where: { id: credentialId } });
+      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
+    }
+  };
+}
+
 async function saveExplicitFact(
   userId: string,
   scopeId: string,
@@ -135,6 +390,224 @@ async function saveExplicitFact(
       }
     }
   );
+}
+
+async function createPreparingHistoryFixture(userId: string) {
+  await createPrismaMemorySettingsRepository(prisma).patch(userId, {
+    expectedMemoryRevision: 0,
+    expectedSettingsRevision: 0,
+    referenceChatHistory: true
+  });
+  const now = new Date("2026-08-10T12:00:00.000Z");
+  const currentGeneration = await prisma.memoryIndexGeneration.findFirst({
+    orderBy: { generation: "desc" },
+    where: { state: "ACTIVE", userId }
+  });
+  const generation = currentGeneration ?? await prisma.memoryIndexGeneration.create({
+    data: {
+      activatedAt: now,
+      chunkingVersion: "memory-history-chunking-v1",
+      generation: ((await prisma.memoryIndexGeneration.aggregate({
+        _max: { generation: true },
+        where: { userId }
+      }))._max.generation ?? -1) + 1,
+      indexMode: "LEXICAL_ONLY",
+      indexedThroughMemoryRevision: 0,
+      languageProfile: "RU_EN_MULTILINGUAL_V1",
+      normalizationVersion: "memory-search-normalization-v1",
+      readyAt: now,
+      retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+      state: "ACTIVE",
+      targetMemoryRevision: 0,
+      userId
+    }
+  });
+  await prisma.userMemorySettings.update({
+    data: { activeIndexGenerationId: generation.id },
+    where: { userId }
+  });
+  const sourceChat = await prisma.chat.create({
+    data: {
+      archived: true,
+      memorySourceRevision: 1,
+      title: "Archived deployment history",
+      userId
+    }
+  });
+  const sourceMessage = await prisma.message.create({
+    data: {
+      chatId: sourceChat.id,
+      content: textMessageContent(
+        "We chose cedar deployment and scheduled the birch release."
+      ),
+      createdAt: now,
+      role: "user",
+      status: "complete",
+      updatedAt: now
+    }
+  });
+  await prisma.chat.update({
+    data: { activeLeafMessageId: sourceMessage.id },
+    where: { id: sourceChat.id }
+  });
+  const sourceHash = memorySha256({
+    chatId: sourceChat.id,
+    messageId: sourceMessage.id,
+    revision: 1
+  });
+  await prisma.chatMemoryCheckpoint.create({
+    data: {
+      activeLeafMessageId: sourceMessage.id,
+      branchGeneration: 0,
+      chatId: sourceChat.id,
+      lastDreamedMessageId: sourceMessage.id,
+      lastIndexedMessageId: sourceMessage.id,
+      lastSucceededAt: now,
+      sourceContentHash: sourceHash,
+      sourceRevision: 1,
+      status: "READY",
+      userId
+    }
+  });
+  const chunkText = "The previous chat chose cedar deployment.";
+  const chunkHash = memorySha256({ sourceHash, text: chunkText });
+  const chunk = await prisma.memoryRecallChunk.create({
+    data: {
+      branchGeneration: 0,
+      chatId: sourceChat.id,
+      chunkOrdinal: 0,
+      chunkingVersion: "memory-history-chunking-v1",
+      contentHash: chunkHash,
+      languageCode: "en",
+      normalizedSafeSearchText: normalizeMemorySearchText(chunkText),
+      occurredFrom: now,
+      occurredTo: now,
+      redactionState: "NOT_NEEDED",
+      safeProjectedText: chunkText,
+      safetyClass: "NORMAL",
+      sourceProjectionVersion: "memory-history-source-projection-v1",
+      sourceRevisionAtCreation: 1,
+      userId
+    }
+  });
+  await prisma.memoryRecallChunkMessage.create({
+    data: {
+      chatId: sourceChat.id,
+      chunkId: chunk.id,
+      messageId: sourceMessage.id,
+      ordinal: 0,
+      role: "user",
+      userId
+    }
+  });
+  const episodeText = "The previous chat scheduled the birch release.";
+  const episodeJob = await prisma.memoryJob.create({
+    data: {
+      activeLeafMessageId: sourceMessage.id,
+      branchGeneration: 0,
+      chatId: sourceChat.id,
+      completedAt: now,
+      idempotencyFingerprint: memorySha256({ episodeText, sourceHash }),
+      kind: "EXTRACT_EPISODE",
+      memoryGenerationSnapshot: 0,
+      memoryRevisionSnapshot: 0,
+      pipelineVersion: "memory-episode-test-v1",
+      sourceHash,
+      sourceRevision: 1,
+      state: "SUCCEEDED",
+      userId
+    }
+  });
+  const episodeExecution = await prisma.memoryExecutionBinding.create({
+    data: {
+      acceptedOutputHash: memorySha256(episodeText),
+      completedAt: now,
+      createdAt: new Date(now.getTime() - 60_000),
+      destinationFingerprint: "d".repeat(64),
+      inputHash: memorySha256({ episodeText, sourceHash }),
+      logicalRole: "MEMORY_EPISODE_EXTRACT",
+      memoryJobId: episodeJob.id,
+      ordinal: 0,
+      ownerType: "JOB",
+      pipelineVersion: "memory-episode-test-v1",
+      policyVersion: "memory-episode-test-policy-v1",
+      promptVersion: "memory-episode-test-prompt-v1",
+      providerId: "memory-episode-test-provider",
+      recoverableUntil: now,
+      relationsDetachedAt: now,
+      schemaVersion: "memory-episode-test-schema-v1",
+      secretFreeExecutionSnapshot: {},
+      state: "SUCCEEDED",
+      userId
+    }
+  });
+  const episode = await prisma.memoryEpisode.create({
+    data: {
+      branchGeneration: 0,
+      chatId: sourceChat.id,
+      createdByExecutionId: episodeExecution.id,
+      extractorRole: "MEMORY_EPISODE_EXTRACT",
+      languageCode: "en",
+      normalizedSafeSearchText: normalizeMemorySearchText(episodeText),
+      occurredFrom: now,
+      occurredTo: now,
+      pipelineVersion: "memory-episode-test-v1",
+      redactionState: "NOT_NEEDED",
+      safeSummary: episodeText,
+      safetyClass: "NORMAL",
+      sourceHash,
+      sourceProjectionVersion: "memory-history-source-projection-v1",
+      sourceRevisionAtCreation: 1,
+      userId
+    }
+  });
+  await prisma.memoryEpisodeMessage.create({
+    data: {
+      chatId: sourceChat.id,
+      episodeId: episode.id,
+      messageId: sourceMessage.id,
+      ordinal: 0,
+      userId
+    }
+  });
+  await prisma.memorySearchEntry.createMany({
+    data: [{
+      embeddingState: "NOT_APPLICABLE",
+      indexGenerationId: generation.id,
+      itemType: "RECALL_CHUNK",
+      languageCode: "en",
+      recallChunkId: chunk.id,
+      safeContentHash: chunkHash,
+      safeSearchText: normalizeMemorySearchText(chunkText),
+      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(chunkText),
+      safetyIdentitySnapshot: memorySha256({ safety: "NORMAL" }),
+      sourceIdentitySnapshot: memorySha256({ chunkId: chunk.id, sourceHash }),
+      suppressionIdentitySnapshot: memorySha256({ sourceHash }),
+      userId
+    }, {
+      embeddingState: "NOT_APPLICABLE",
+      episodeId: episode.id,
+      indexGenerationId: generation.id,
+      itemType: "EPISODE",
+      languageCode: "en",
+      safeContentHash: memorySha256(episodeText),
+      safeSearchText: normalizeMemorySearchText(episodeText),
+      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(episodeText),
+      safetyIdentitySnapshot: memorySha256({ safety: "NORMAL" }),
+      sourceIdentitySnapshot: memorySha256({ episodeId: episode.id, sourceHash }),
+      suppressionIdentitySnapshot: memorySha256({ sourceHash }),
+      userId
+    }]
+  });
+  return {
+    chunkId: chunk.id,
+    chunkText,
+    episodeId: episode.id,
+    episodeText,
+    generationId: generation.id,
+    sourceChatId: sourceChat.id,
+    sourceMessageId: sourceMessage.id
+  };
 }
 
 describe("PREPARING run orchestration", () => {
@@ -246,7 +719,7 @@ describe("PREPARING run orchestration", () => {
     });
   });
 
-  it("allows exactly one fresh attempt after consent drift", async () => {
+  it("keeps a local-only attempt valid across unrelated utility-consent drift", async () => {
     await withPreparingUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: { title: "Retry", userId }
@@ -281,45 +754,15 @@ describe("PREPARING run orchestration", () => {
         where: { userId }
       });
 
-      const firstFinalize = repository.finalizePreparingRun({
-        attemptId: admitted.attemptId,
-        normalizedRequest: request,
-        providerRequestPreview: {},
-        runId: admitted.runId,
-        userId
-      });
-      await expect(firstFinalize).rejects.toMatchObject({
-        code: "memory_admission_settings_changed",
-        retryable: true
-      });
-      const retried = await repository.retryPreparingRunAttempt({
-        attemptId: admitted.attemptId,
-        now: new Date(),
-        runId: admitted.runId,
-        userId
-      });
-      expect(retried).not.toBeNull();
-      await repository.beginPreparingRunAttempt({
-        attemptId: retried!.attemptId,
-        now: new Date(),
-        runId: admitted.runId,
-        userId
-      });
-      await repository.completePreparingRunAttempt({
-        attemptId: retried!.attemptId,
-        result: dormantMemoryAttemptResult(retried!.settingsSnapshot),
-        runId: admitted.runId,
-        userId
-      });
       await expect(repository.finalizePreparingRun({
-        attemptId: retried!.attemptId,
+        attemptId: admitted.attemptId,
         normalizedRequest: request,
         providerRequestPreview: {},
         runId: admitted.runId,
         userId
       })).resolves.toBe(true);
       await expect(repository.retryPreparingRunAttempt({
-        attemptId: retried!.attemptId,
+        attemptId: admitted.attemptId,
         now: new Date(),
         runId: admitted.runId,
         userId
@@ -331,9 +774,121 @@ describe("PREPARING run orchestration", () => {
       });
       expect(attempts.map(({ attemptOrdinal, state }) => ({ attemptOrdinal, state })))
         .toEqual([
-          { attemptOrdinal: 0, state: "STALE" },
-          { attemptOrdinal: 1, state: "CONSUMED" }
+          { attemptOrdinal: 0, state: "CONSUMED" }
         ]);
+    });
+  });
+
+  it("admits one qualified retrieval utility execution with durable usage before Phase B", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const fixture = await createPreparingEmbeddingAuthority(userId);
+      try {
+        const chat = await prisma.chat.create({
+          data: { title: "Qualified retrieval utility", userId }
+        });
+        const request = normalizedRequest(chat.id, "What did we discuss before?");
+        const repository = createPrismaRunRepository(prisma, {
+          memoryExecutionAuthority: fixture.authority
+        });
+        const admitted = await repository.admitPreparingRun({
+          admissionKind: "NORMAL_SEND",
+          chatId: chat.id,
+          content: request.content,
+          expectedActiveLeafId: null,
+          modelId: request.modelId,
+          normalizedRequest: request,
+          provider: request.provider,
+          providerRequestPreview: {},
+          userId
+        });
+        await expect(repository.beginPreparingRunAttempt({
+          attemptId: admitted.attemptId,
+          now: new Date(),
+          runId: admitted.runId,
+          userId
+        })).resolves.toBe(true);
+
+        const execution = createPrismaMemoryExecutionService(
+          fixture.authority,
+          prisma
+        );
+        const bound = await execution.admission.bind(userId, {
+          inputHash: "1".repeat(64),
+          ordinal: 1,
+          owner: {
+            retrievalAttemptId: admitted.attemptId,
+            type: "RETRIEVAL_ATTEMPT"
+          },
+          role: "MEMORY_QUERY_EMBED",
+          versions: queryEmbeddingVersions
+        });
+        await expect(execution.admission.start(userId, bound.id))
+          .resolves.toMatchObject({ bindingId: bound.id });
+        await expect(execution.lifecycle.settle(userId, bound.id, {
+          acceptedOutputHash: null,
+          errorCode: "preparing_memory_embedding_unavailable",
+          providerResponseId: null,
+          state: "FAILED",
+          usage: {
+            cachedInputTokens: null,
+            completeness: "UNAVAILABLE",
+            estimatedCostMicros: null,
+            inputTokens: null,
+            outputTokens: null,
+            reasoningTokens: null,
+            totalTokens: null
+          }
+        })).resolves.toMatchObject({ state: "FAILED" });
+
+        await expect(repository.completePreparingRunAttempt({
+          attemptId: admitted.attemptId,
+          result: {
+            budgetSnapshot: {
+              itemCount: 0,
+              schemaVersion: 1,
+              utilityEgressMode: "CONSENTED_EXTERNAL"
+            },
+            items: [],
+            outcome: "EMPTY",
+            preparedContext: null
+          },
+          runId: admitted.runId,
+          userId
+        })).resolves.toBe(true);
+        await expect(repository.finalizePreparingRun({
+          attemptId: admitted.attemptId,
+          normalizedRequest: request,
+          providerRequestPreview: {},
+          runId: admitted.runId,
+          userId
+        })).resolves.toBe(true);
+
+        const [attempt, executionBinding, usageCount] = await Promise.all([
+          prisma.memoryRetrievalAttempt.findUniqueOrThrow({
+            where: { id: admitted.attemptId }
+          }),
+          prisma.memoryExecutionBinding.findUniqueOrThrow({
+            where: { id: bound.id }
+          }),
+          prisma.usageEvent.count({
+            where: { memoryExecutionBindingId: bound.id, userId }
+          })
+        ]);
+        expect(attempt).toMatchObject({
+          acceptedUtilityEgressFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          externalRolesUsed: ["MEMORY_QUERY_EMBED"],
+          state: "CONSUMED",
+          utilityEgressMode: "CONSENTED_EXTERNAL"
+        });
+        expect(executionBinding).toMatchObject({
+          logicalRole: "MEMORY_QUERY_EMBED",
+          retrievalAttemptId: admitted.attemptId,
+          state: "FAILED"
+        });
+        expect(usageCount).toBe(1);
+      } finally {
+        await fixture.cleanup();
+      }
     });
   });
 
@@ -432,7 +987,7 @@ describe("PREPARING run orchestration", () => {
       const memoryEvent = initialInspection?.events.find(
         ({ eventType }) => eventType === "memory_retrieval"
       );
-      expect(memoryEvent?.payload).toEqual({
+      expect(memoryEvent?.payload).toMatchObject({
         degradationCode: null,
         itemCount: 1,
         outcome: "USED"
@@ -468,6 +1023,155 @@ describe("PREPARING run orchestration", () => {
           lifecycleState: "LATER_FORGOTTEN",
           versionId: fact.versionId
         });
+    });
+  });
+
+  it("freezes archived previous-chat chunks and episodes and rejects source drift", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const history = await createPreparingHistoryFixture(userId);
+      const repository = createPrismaRunRepository(prisma);
+      const stage = async (title: string) => {
+        const chat = await prisma.chat.create({ data: { title, userId } });
+        const request = normalizedRequest(
+          chat.id,
+          "What did we decide about cedar deployment and the birch release?"
+        );
+        const admitted = await repository.admitPreparingRun({
+          admissionKind: "NORMAL_SEND",
+          chatId: chat.id,
+          content: request.content,
+          expectedActiveLeafId: null,
+          modelId: request.modelId,
+          normalizedRequest: request,
+          provider: request.provider,
+          providerRequestPreview: {},
+          userId
+        });
+        const contextText = [
+          `Previous chat: ${history.chunkText}`,
+          `Previous chat: ${history.episodeText}`
+        ].join("\n");
+        await repository.completePreparingRunAttempt({
+          attemptId: admitted.attemptId,
+          result: {
+            budgetSnapshot: {
+              hardCapTokens: 2_500,
+              schemaVersion: 1,
+              utilityEgressMode: "LOCAL_ONLY"
+            },
+            items: [{
+              exactItemId: history.chunkId,
+              exactSafeText: history.chunkText,
+              finalScore: 0.91,
+              itemType: "RECALL_CHUNK",
+              laneRanks: { HISTORY_RECALL_FTS_ENGLISH: 1 },
+              projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
+              recallChunkId: history.chunkId,
+              selectionReason: "history_recall_fts_english"
+            }, {
+              episodeId: history.episodeId,
+              exactItemId: history.episodeId,
+              exactSafeText: history.episodeText,
+              finalScore: 0.87,
+              itemType: "EPISODE",
+              laneRanks: { HISTORY_EPISODE_FTS_ENGLISH: 1 },
+              projectionKind: "EPISODE_SAFE_SUMMARY",
+              selectionReason: "history_episode_fts_english"
+            }],
+            outcome: "USED",
+            preparedContext: { approxTokens: 24, text: contextText },
+            querySnapshot: "cedar deployment birch release"
+          },
+          runId: admitted.runId,
+          userId
+        });
+        const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+          where: { userId }
+        });
+        return {
+          admitted,
+          finalRequest: {
+            ...request,
+            personalContext: {
+              approxTokens: 24,
+              itemCount: 2,
+              memoryGeneration: settings.memoryGeneration,
+              memoryRevision: settings.memoryRevision,
+              mode: "prefetched" as const,
+              text: contextText
+            }
+          }
+        };
+      };
+
+      const accepted = await stage("Accepted archived history");
+      await expect(repository.finalizePreparingRun({
+        attemptId: accepted.admitted.attemptId,
+        normalizedRequest: accepted.finalRequest,
+        providerRequestPreview: {},
+        runId: accepted.admitted.runId,
+        userId
+      })).resolves.toBe(true);
+      const acceptedInspection = await repository.getRunForUser(
+        accepted.admitted.runId,
+        userId
+      );
+      expect(acceptedInspection?.memoryReceipt?.items).toEqual([
+        expect.objectContaining({
+          includedText: history.chunkText,
+          itemType: "RECALL_CHUNK",
+          lifecycleState: "CURRENT",
+          sourceChatId: history.sourceChatId,
+          sourceMessageIds: [history.sourceMessageId],
+          sourceMode: "HISTORY"
+        }),
+        expect.objectContaining({
+          includedText: history.episodeText,
+          itemType: "EPISODE",
+          lifecycleState: "CURRENT",
+          sourceChatId: history.sourceChatId,
+          sourceMessageIds: [history.sourceMessageId],
+          sourceMode: "HISTORY"
+        })
+      ]);
+      expect(acceptedInspection?.events.find((event) =>
+        event.eventType === "memory_retrieval")?.payload).toMatchObject({
+        itemTypes: ["RECALL_CHUNK", "EPISODE"],
+        retrievalLanes: [
+          "HISTORY_EPISODE_FTS_ENGLISH",
+          "HISTORY_RECALL_FTS_ENGLISH"
+        ]
+      });
+
+      const stale = await stage("Stale archived history");
+      const invalidatedAt = new Date("2026-08-10T13:00:00.000Z");
+      await prisma.$transaction([
+        prisma.memoryRecallChunk.update({
+          data: { invalidatedAt, state: "INVALIDATED" },
+          where: { id: history.chunkId }
+        }),
+        prisma.memoryEpisode.update({
+          data: { invalidatedAt, state: "INVALIDATED" },
+          where: { id: history.episodeId }
+        })
+      ]);
+      await expect(repository.finalizePreparingRun({
+        attemptId: stale.admitted.attemptId,
+        normalizedRequest: stale.finalRequest,
+        providerRequestPreview: {},
+        runId: stale.admitted.runId,
+        userId
+      })).rejects.toMatchObject({
+        code: "memory_attempt_item_stale",
+        retryable: true
+      });
+
+      expect((await repository.getRunForUser(accepted.admitted.runId, userId))
+        ?.memoryReceipt?.items.map((item) => [item.includedText, item.lifecycleState]))
+        .toEqual([
+          [history.chunkText, "LATER_FORGOTTEN"],
+          [history.episodeText, "LATER_FORGOTTEN"]
+        ]);
     });
   });
 

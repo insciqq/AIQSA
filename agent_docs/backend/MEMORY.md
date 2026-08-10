@@ -5,17 +5,15 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 ## Implementation Status And Authority
 
-Native Memory is approved. Phases 0–3 implement contracts/evaluation, durable
-coordination, explicit Memory, scoped chat state/UI, and Temporary lifecycle.
-Phase 4 adds safe projection, multilingual chunks, local
-`INDEX_HISTORY`, qualified episodes/item vectors, and tenant-filtered
-exact/HNSW leaves plus manual history search. It uses exact/Russian/
-English/simple FTS, optional vectors, source/suppression rechecks, and
-degradation states.
+Native Memory is approved. Shipped foundations cover evaluation, durable
+coordination, scoped explicit Memory, Temporary lifecycle, safe history
+indexing/manual search, and answer recall. Recall uses exact/RU/EN/simple FTS,
+optional qualified vectors, RRF, temporal qualification, bounded packing, and
+source/suppression rechecks.
 Retained turns and Resume enqueue indexing only with `referenceChatHistory`;
-learning stays independent. With no qualified query-embedding lane, HYBRID
-manual search degrades explicitly to lexical. Fusion, packing, and answer-time
-history retrieval remain unavailable.
+learning stays independent. HYBRID degrades to lexical without qualified query
+embedding. Remote expansion/rerank are opt-in and require exact accepted policy
+plus signed role qualification.
 
 Explicit Memory supports owned `GLOBAL_USER`, `FOLDER`, `ASSISTANT`, and
 non-Temporary `CHAT` scopes. Assistant archive pauses its scope; target deletion
@@ -40,18 +38,15 @@ work, and suppression HMAC keys stay installation-only.
 
 Every normal send and regeneration uses the two-phase run boundary. Phase A
 commits the exact DAG, ordinary dependency evidence, private `PREPARING` run,
-bounded base request, and local-only attempt. Production answer retrieval still
-selects eligible current explicit `GLOBAL_USER` facts from local exact/FTS and
-enters them into the shared budget as clearly untrusted personal context with
-no utility consent. The finalization boundary nevertheless validates every
-staged scope against the exact attempt target: `FOLDER`, `CHAT`, and owned live
-`ASSISTANT` items cannot cross targets or survive target/archive drift. Phase B
-also revalidates the DAG, settings/generation/index, ordinary admission, and
-each staged version/source/scope/safety snapshot before freezing the request,
-preview, binding, and items. Drift gets at most one safe fresh attempt; stale
-mutation authority fails. Ordinary retrieval may degrade without Memory, but
-management fails actionably. Dispatch rejects `PREPARING`, and recovery reuses
-only a finalized request.
+bounded base request, and one retrieval attempt. Recall selects eligible current
+or requested historical facts plus safe chunks/episodes from the exact active
+generation and scope. Local exact/FTS needs no utility consent. Qualified query
+embedding and optional expansion/rerank bind before I/O and retain one usage row
+per terminal outcome. Phase B rechecks the DAG, target, settings/index, ordinary
+admission, used utility policy, and every exact item/source/safety snapshot
+before freezing the untrusted pack, request, binding, and items. Drift gets one
+safe retry. Retrieval may degrade; management cannot invent success. Dispatch
+rejects `PREPARING`; recovery uses only the finalized request.
 
 All answer adapters place personal context after trusted instructions. Phase 2
 withholds it from hosted Search, Knowledge, MCP/external tools, and non-owned
@@ -124,17 +119,14 @@ vectors and consent. Activation rechecks source/config/barriers/revision and
 advances counters once; failure/cancel never serves. Redream jobs are salted,
 source-fenced, and replayable.
 
-Past-chat answers, automatic/profile retrieval, query embedding, fusion,
-reranking, split Memory/tool synthesis, later lifecycle/bulk variants, and
-production-qualified utility calls remain unavailable. Development and private
-`memory-worker` production use the same coordinator; Memory failure does not
-alter web readiness. Its registry composes purge, Temporary deletion, local
-history indexing, qualified episodes, shadow rebuild, history clear/source
-purge, and optional embeddings under one exact manifest. Remote work parks
-before I/O while the fail-closed code registry has no operator-approved
-qualification.
-Lexical features and the generation-safe vector repository remain live, but
-history is not admitted to answers; manual search is inspection only. Per-call
+Automatic learning/profile retrieval, split Memory/tool synthesis, later bulk
+variants, and an approved production qualification registry remain unavailable.
+Remote lanes require exact consent/qualification and otherwise fail closed while
+local exact/FTS remains available. Web and `memory-worker` share one coordinator
+for purge, Temporary deletion, indexing, episodes, rebuild, history/source
+cleanup, and optional embeddings; Memory failure does not alter web readiness.
+Manual search remains inspection-only; answer recall admits safe frozen history
+through its own PREPARING attempt. Per-call
 execution owns current authority, receipts, single-winner start, usage,
 recovery, and detach. Private
 `preparing` runs never reach public projection or provider I/O.
@@ -623,11 +615,11 @@ deletion outbox plus account/source barriers, and audit for resurrection.
   transitions.
 - [Core run pipeline](../run_pipeline/CORE_PIPELINE.md) and [runs and
   streaming](RUNS_AND_STREAMING.md) own implemented run/message admission,
-  dispatch, recovery, settlement, context, and streaming behavior. Memory owns
-  only its proposed two-phase extension until those seams are executable.
+  two-phase Memory retrieval/finalization, dispatch, recovery, settlement,
+  context, and streaming behavior.
 - [Evidence, sharing, and retention](../run_pipeline/EVIDENCE_SHARING_AND_RETENTION.md)
-  owns implemented run inspection and share projection. Memory owns the
-  additional private-artifact stripping requirement until it ships there.
+  owns implemented frozen Memory inspection and positive public-share
+  stripping alongside the other run evidence.
 - [Provider adapters](PROVIDER_ADAPTERS.md) own provider transport, credential
   resolution, usage normalization, and supported capabilities; Memory owns
   role qualification and no-fallback semantics.

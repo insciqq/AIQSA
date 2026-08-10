@@ -32,12 +32,16 @@ function snapshotRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function mockClient(row = snapshotRow()) {
+function mockClient(
+  row = snapshotRow(),
+  options: Readonly<{ failLaneQueries?: boolean }> = {}
+) {
   const laneSql: string[] = [];
   const $queryRaw = vi.fn(async (query: { strings?: readonly string[] }) => {
     const sql = query.strings?.join("?") ?? "";
     if (sql.includes('owner."status"')) return [row];
     laneSql.push(sql);
+    if (options.failLaneQueries === true) throw new Error("fts unavailable");
     return [];
   });
   const client = {
@@ -144,5 +148,23 @@ describe("local Memory retrieval repository", () => {
     });
     expect(result.vectorState).toBe("DEGRADED");
     expect(result.laneResults.some((lane) => lane.lane === "FACT_FTS_ENGLISH")).toBe(true);
+  });
+
+  it("returns explicit failed-lane evidence instead of rejecting the whole retrieval", async () => {
+    const mocked = mockClient(snapshotRow(), { failLaneQueries: true });
+    const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+      assistantId: null,
+      chatId: "chat-1",
+      now,
+      plan: planMemoryRetrieval({
+        currentUserText: "What did we discuss in the previous chat?",
+        now
+      }),
+      userId: "user-1"
+    });
+
+    expect(result.lexicalState).toBe("FAILED");
+    expect(result.lexicalFailures.length).toBeGreaterThan(0);
+    expect(result.laneResults.every(({ candidates }) => candidates.length === 0)).toBe(true);
   });
 });

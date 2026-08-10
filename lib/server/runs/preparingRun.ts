@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 import type { MemoryReceiptOutcome } from "@prisma/client";
+import {
+  MEMORY_RETRIEVAL_PIPELINE_VERSION,
+  MEMORY_RETRIEVAL_PLANNER_VERSION,
+  type MemoryRetrievalItemType,
+  type MemorySafeProjectionKind
+} from "../../domain/memory/retrieval";
 import { memoryExplicitStatementContainsSecret } from "../memory/explicit/safety";
 import type { NormalizedRunRequest } from "../providers/types";
 
@@ -7,12 +13,14 @@ export const MEMORY_PREPARING_ATTEMPT_TTL_MS = 10 * 60_000;
 export const MEMORY_PREPARING_BASE_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024;
 export const MEMORY_PREPARING_CONTEXT_MAX_TOKENS = 2_500;
 export const MEMORY_PREPARING_ITEM_LIMIT = 12;
-export const MEMORY_PREPARING_QUERY_PLANNER_VERSION = "memory-query-planner-p2-explicit-v1";
-export const MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION = "memory-retrieval-p2-explicit-v1";
+export const MEMORY_PREPARING_QUERY_PLANNER_VERSION =
+  MEMORY_RETRIEVAL_PLANNER_VERSION;
+export const MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION =
+  MEMORY_RETRIEVAL_PIPELINE_VERSION;
 export const MEMORY_PREPARING_AUTHORITATIVE_EMPTY_LIST = "AUTHORITATIVE_EMPTY_LIST";
 
 const safeCode = /^[a-z][a-z0-9_]{0,63}$/u;
-const safeSelectionReason = /^[a-z][a-z0-9_.:-]{0,127}$/u;
+const safeSelectionReason = /^[a-z][a-z0-9_.:+-]{0,127}$/u;
 const MEMORY_PREPARING_CONTEXT_MAX_BYTES = 64 * 1024;
 const MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES = 64 * 1024;
 const MEMORY_PREPARING_SAFE_QUERY_MAX_LENGTH = 2_000;
@@ -35,14 +43,80 @@ export type MemoryPreparingBaseSnapshot = Readonly<{
   schemaVersion: 1;
 }>;
 
-export type MemoryPreparingItemInput = Readonly<{
+type MemoryPreparingItemInputBase = Readonly<{
   exactSafeText: string;
-  factVersionId: string;
   featureSnapshot?: Readonly<Record<string, unknown>>;
   finalScore: number;
   laneRanks?: Readonly<Record<string, unknown>>;
+  projectionKind?: MemorySafeProjectionKind;
   selectionReason: string;
+  supportingItemId?: string | null;
 }>;
+
+export type MemoryPreparingItemInput = MemoryPreparingItemInputBase & (
+  | Readonly<{
+      exactItemId?: string;
+      factVersionId: string;
+      itemType?: "FACT_VERSION";
+    }>
+  | Readonly<{
+      episodeId: string;
+      exactItemId: string;
+      itemType: "EPISODE";
+    }>
+  | Readonly<{
+      exactItemId: string;
+      itemType: "RECALL_CHUNK";
+      recallChunkId: string;
+    }>
+);
+
+export type MemoryPreparingItemTarget = Readonly<{
+  exactItemId: string;
+  factVersionId: string | null;
+  itemType: MemoryRetrievalItemType;
+  episodeId: string | null;
+  recallChunkId: string | null;
+}>;
+
+export function memoryPreparingItemTarget(
+  item: MemoryPreparingItemInput
+): MemoryPreparingItemTarget | null {
+  if ((item.itemType === undefined || item.itemType === "FACT_VERSION") &&
+    "factVersionId" in item && item.factVersionId) {
+    const exactItemId = item.exactItemId ?? item.factVersionId;
+    return exactItemId === item.factVersionId
+      ? {
+          episodeId: null,
+          exactItemId,
+          factVersionId: item.factVersionId,
+          itemType: "FACT_VERSION",
+          recallChunkId: null
+        }
+      : null;
+  }
+  if (item.itemType === "EPISODE" && "episodeId" in item && item.episodeId &&
+    item.exactItemId === item.episodeId) {
+    return {
+      episodeId: item.episodeId,
+      exactItemId: item.exactItemId,
+      factVersionId: null,
+      itemType: "EPISODE",
+      recallChunkId: null
+    };
+  }
+  if (item.itemType === "RECALL_CHUNK" && "recallChunkId" in item &&
+    item.recallChunkId && item.exactItemId === item.recallChunkId) {
+    return {
+      episodeId: null,
+      exactItemId: item.exactItemId,
+      factVersionId: null,
+      itemType: "RECALL_CHUNK",
+      recallChunkId: item.recallChunkId
+    };
+  }
+  return null;
+}
 
 export type MemoryPreparingAttemptResult = Readonly<{
   budgetSnapshot: Readonly<Record<string, unknown>>;
@@ -204,9 +278,18 @@ export function decodeMemoryPreparingSettingsSnapshot(
 
 export function sameMemoryPreparingSettings(
   left: MemoryPreparingSettingsSnapshot,
-  right: MemoryPreparingSettingsSnapshot
+  right: MemoryPreparingSettingsSnapshot,
+  options: Readonly<{ requireUtilityEgressMatch?: boolean }> = {}
 ): boolean {
-  return memoryPreparingHash(left) === memoryPreparingHash(right);
+  return left.activeIndexGenerationId === right.activeIndexGenerationId &&
+    left.learnAutomatically === right.learnAutomatically &&
+    left.referenceChatHistory === right.referenceChatHistory &&
+    left.useMemoryFacts === right.useMemoryFacts &&
+    (options.requireUtilityEgressMatch !== false
+      ? left.acceptedUtilityEgressFingerprint === right.acceptedUtilityEgressFingerprint &&
+        left.acceptedUtilityPolicyVersion === right.acceptedUtilityPolicyVersion &&
+        left.memoryConsentRevision === right.memoryConsentRevision
+      : true);
 }
 
 export function validateMemoryPreparingAttemptResult(
@@ -268,17 +351,25 @@ export function validateMemoryPreparingAttemptResult(
   if ((input.outcome === "DEGRADED") !== Boolean(input.degradationCode)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
-  const seenVersions = new Set<string>();
+  const seenItems = new Set<string>();
   for (const item of items) {
+    const target = memoryPreparingItemTarget(item);
+    const identity = target ? `${target.itemType}:${target.exactItemId}` : "";
     if (
-      !item.factVersionId ||
+      !target ||
       item.exactSafeText.length === 0 ||
       item.exactSafeText.length > 4_000 ||
       !safeSelectionReason.test(item.selectionReason) ||
       !Number.isFinite(item.finalScore) ||
       item.finalScore < 0 ||
       item.finalScore > 1 ||
-      seenVersions.has(item.factVersionId) ||
+      seenItems.has(identity) ||
+      (item.projectionKind !== undefined &&
+        item.projectionKind !== "FACT_DISPLAY_TEXT" &&
+        item.projectionKind !== "EPISODE_SAFE_SUMMARY" &&
+        item.projectionKind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT") ||
+      (item.supportingItemId !== undefined && item.supportingItemId !== null &&
+        (item.supportingItemId.length === 0 || item.supportingItemId.length > 256)) ||
       (item.laneRanks !== undefined && (
         !isRecord(item.laneRanks) ||
         !boundedJson(item.laneRanks, MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES)
@@ -290,7 +381,7 @@ export function validateMemoryPreparingAttemptResult(
     ) {
       throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
     }
-    seenVersions.add(item.factVersionId);
+    seenItems.add(identity);
   }
 }
 

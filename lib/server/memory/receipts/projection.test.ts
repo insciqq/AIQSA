@@ -5,9 +5,11 @@ function client(overrides: Record<string, unknown[]> = {}) {
   const rows = (key: string) => vi.fn(async () => overrides[key] ?? []);
   return {
     chat: { findMany: rows("chats") },
+    memoryEpisode: { findMany: rows("episodes") },
     memoryFact: { findMany: rows("facts") },
     memoryFactVersion: { findMany: rows("versions") },
     memoryOperationReceipt: { findMany: rows("operations") },
+    memoryRecallChunk: { findMany: rows("recallChunks") },
     memoryRetrievalAttemptItem: { findMany: rows("attemptItems") },
     modelRunMemoryBinding: { findMany: rows("bindings") },
     modelRunMemoryItem: { findMany: rows("items") },
@@ -21,6 +23,8 @@ const binding = {
   id: "binding-1",
   modelRunId: "run-1",
   outcome: "USED",
+  queryPlannerVersion: "memory-query-planner-v1",
+  retrievalPipelineVersion: "memory-retrieval-pipeline-v1",
   retrievalAttemptId: "attempt-1"
 };
 
@@ -29,6 +33,7 @@ const item = {
   factVersionId: "version-1",
   includedText: "Prefers exact frozen text.",
   itemType: "FACT_VERSION",
+  laneRanks: { FACT_FTS_ENGLISH: 1 },
   ordinal: 0,
   selectionReason: "explicit_lexical_relevance",
   sourceChatIdSnapshot: null,
@@ -79,6 +84,15 @@ describe("Memory run evidence projection", () => {
 
     expect(evidence.get("run-1")).toEqual({
       action: { operation: "SAVE", status: "COMMITTED" },
+      inspection: {
+        degradationCode: null,
+        itemCount: 1,
+        itemTypes: ["FACT_VERSION"],
+        outcome: "USED",
+        queryPlannerVersion: "memory-query-planner-v1",
+        retrievalLanes: ["FACT_FTS_ENGLISH"],
+        retrievalPipelineVersion: "memory-retrieval-pipeline-v1"
+      },
       receipt: {
         degradationCode: null,
         itemCount: 1,
@@ -167,6 +181,73 @@ describe("Memory run evidence projection", () => {
       ["Prefers exact frozen text.", "LATER_FORGOTTEN", null],
       ["Frozen previous-chat text.", "SOURCE_DELETED", null]
     ]);
+  });
+
+  it("projects frozen chunk and episode sources with later lifecycle state", async () => {
+    const evidence = await loadMemoryRunEvidence(client({
+      attemptItems: [{
+        attemptId: "attempt-1",
+        ordinal: 0,
+        sourceSnapshot: { sourceMode: "HISTORY" },
+        versionSnapshot: { scopeType: "CHAT" }
+      }, {
+        attemptId: "attempt-1",
+        ordinal: 1,
+        sourceSnapshot: { sourceMode: "HISTORY" },
+        versionSnapshot: { scopeType: "CHAT" }
+      }],
+      bindings: [binding],
+      chats: [{ id: "source-chat" }],
+      episodes: [{ id: "episode-1", invalidatedAt: null, state: "ACTIVE" }],
+      items: [{
+        ...item,
+        episodeId: "episode-1",
+        factVersionId: null,
+        includedText: "Frozen episode summary.",
+        itemType: "EPISODE",
+        laneRanks: { HISTORY_EPISODE_FTS_ENGLISH: 1 },
+        sourceChatIdSnapshot: "source-chat",
+        sourceMessageIdsSnapshot: ["message-episode"]
+      }, {
+        ...item,
+        factVersionId: null,
+        includedText: "Frozen previous-chat passage.",
+        itemType: "RECALL_CHUNK",
+        laneRanks: { HISTORY_RECALL_FTS_ENGLISH: 1 },
+        ordinal: 1,
+        recallChunkId: "chunk-1",
+        sourceChatIdSnapshot: "source-chat",
+        sourceMessageIdsSnapshot: ["message-chunk"]
+      }],
+      recallChunks: [{
+        id: "chunk-1",
+        invalidatedAt: new Date("2026-08-10T11:00:00.000Z"),
+        state: "INVALIDATED"
+      }]
+    }) as never, { runIds: ["run-1"], userId: "user-1" });
+
+    expect(evidence.get("run-1")?.receipt?.items).toEqual([
+      expect.objectContaining({
+        includedText: "Frozen episode summary.",
+        itemType: "EPISODE",
+        lifecycleState: "CURRENT",
+        sourceChatId: "source-chat",
+        sourceMode: "HISTORY",
+        versionId: null
+      }),
+      expect.objectContaining({
+        includedText: "Frozen previous-chat passage.",
+        itemType: "RECALL_CHUNK",
+        lifecycleState: "LATER_FORGOTTEN",
+        sourceChatId: "source-chat",
+        sourceMode: "HISTORY",
+        versionId: null
+      })
+    ]);
+    expect(evidence.get("run-1")?.inspection).toMatchObject({
+      itemTypes: ["EPISODE", "RECALL_CHUNK"],
+      retrievalLanes: ["HISTORY_EPISODE_FTS_ENGLISH", "HISTORY_RECALL_FTS_ENGLISH"]
+    });
   });
 
   it("keeps receipts keyed to their exact answer and projects quiet outcomes without items", async () => {

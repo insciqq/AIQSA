@@ -31,6 +31,7 @@ async function withFolderUser<T>(run: (input: FolderUserFixture) => Promise<T>):
     data: {
       displayName: "Folder Test User",
       id: userId,
+      status: "active",
       settings: {
         create: {
           defaultControlValues: {},

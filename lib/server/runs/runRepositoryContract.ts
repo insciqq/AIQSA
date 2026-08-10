@@ -234,6 +234,7 @@ export type CreateRunInput = {
   providerAdmissionPlan?: ProviderAdmissionPlan;
   provider: string;
   providerRequestPreview: Record<string, unknown>;
+  signal?: AbortSignal;
   userId: string;
 };
 
@@ -252,6 +253,7 @@ export type CreateRegenerationRunInput = {
   providerAdmissionPlan?: ProviderAdmissionPlan;
   provider: string;
   providerRequestPreview: Record<string, unknown>;
+  signal?: AbortSignal;
   userId: string;
   userMessageId: string;
 };
@@ -264,6 +266,7 @@ export type PreparingRunAdmissionResult = Readonly<{
   assistantMessageId: string;
   attemptId: string;
   chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+  folderId: string | null;
   memoryGeneration: number;
   memoryRevision: number;
   runId: string;

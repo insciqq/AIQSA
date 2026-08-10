@@ -424,13 +424,14 @@ describe("summarizeInspectorEvents", () => {
       data: {
         degradationCode: "memory_vector_unavailable",
         itemCount: 2,
-        outcome: "DEGRADED"
+        outcome: "DEGRADED",
+        retrievalLanes: ["HISTORY_RECALL_FTS_ENGLISH"]
       },
       type: "memory_retrieval"
     }]);
 
     expect(summaries).toEqual([expect.objectContaining({
-      detail: "Reason: Memory vector unavailable",
+      detail: "Lanes: History recall FTS english · Reason: Memory vector unavailable",
       label: "Memory",
       stage: "M",
       tone: "warning",

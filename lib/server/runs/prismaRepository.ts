@@ -62,9 +62,26 @@ import {
 } from "../memory/actions/runAuthorization";
 import {
   ExplicitRunMemoryManagementError,
-  explicitRunSafeFactText,
   retrieveExplicitRunMemory
 } from "../memory/retrieval/explicitRun";
+import {
+  createPrismaMemoryRunRetrievalService,
+  type MemoryRunRetrievalService
+} from "../memory/retrieval";
+import {
+  assertMemoryExecutionBindingLineage,
+  MEMORY_EXECUTION_RECOVERY_HORIZON_MS,
+  memoryExecutionBindingSelect,
+  parseMemoryExecutionSnapshot,
+  reauthorizeStoredMemoryExecution,
+  type MemoryExecutionAuthorityDependencies,
+  type MemorySecretFreeExecutionSnapshot
+} from "../memory/execution";
+import { defaultMemoryExecutionAuthority } from "../memory/execution/defaultAuthority";
+import {
+  lockMemorySettings,
+  type LockedMemorySettings
+} from "../memory/persistence/transaction";
 import {
   decodeAssistantAvatarRecipe,
   type AssistantAvatarRecipe
@@ -128,8 +145,14 @@ import {
   sameMemoryPreparingSettings,
   validateMemoryPreparingAttemptResult,
   type MemoryPreparingAttemptResult,
+  type MemoryPreparingItemInput,
   type MemoryPreparingSettingsSnapshot
 } from "./preparingRun";
+import {
+  resolvePreparingMemoryItem,
+  samePreparingMemoryItemSnapshot,
+  type ResolvedPreparingMemoryItem
+} from "./preparingMemoryItems";
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
@@ -867,12 +890,10 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
   });
 }
 
-type PreparingSettingsRow = MemoryPreparingSettingsSnapshot & Readonly<{
-  memoryGeneration: number;
-  memoryRevision: number;
-}>;
+type PreparingSettingsRow = MemoryPreparingSettingsSnapshot & LockedMemorySettings;
 
 type LockedPreparingAttempt = Readonly<{
+  acceptedUtilityEgressFingerprint: string | null;
   admittedAssistantLeafMessageId: string;
   admittedUserMessageId: string;
   admissionKind: "NORMAL_SEND" | "REGENERATE";
@@ -886,6 +907,7 @@ type LockedPreparingAttempt = Readonly<{
   chatMemoryModeSnapshot: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   degradationCode: string | null;
   expiresAt: Date;
+  externalRolesUsed: string[];
   folderIdSnapshot: string | null;
   id: string;
   indexGenerationIdSnapshot: string | null;
@@ -901,20 +923,27 @@ type LockedPreparingAttempt = Readonly<{
   settingsSnapshot: Prisma.JsonValue;
   state: "PENDING" | "EXECUTING" | "READY" | "CONSUMED" | "STALE" | "FAILED" | "CANCELLED" | "EXPIRED";
   userId: string;
+  utilityEgressMode: "CONSENTED_EXTERNAL" | "LOCAL_ONLY";
 }>;
 
 const TEMPORARY_PREPARING_SETTINGS: PreparingSettingsRow = Object.freeze({
+  acceptedUtilityEgressAt: null,
   acceptedUtilityEgressFingerprint: null,
   acceptedUtilityPolicyVersion: null,
   activeIndexGenerationId: null,
+  embeddingProviderModelId: null,
   learnAutomatically: false,
   memoryConsentRevision: 0,
   memoryGeneration: 0,
   memoryRevision: 0,
+  memoryUiLocale: "RU",
+  preferredProfileLanguage: "AUTO",
   referenceChatHistory: false,
   schemaVersion: 1,
+  sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
   settingsRevision: 0,
-  useMemoryFacts: false
+  useMemoryFacts: false,
+  userId: "temporary"
 });
 
 type LockedPreparingRun = Readonly<{
@@ -934,20 +963,29 @@ type LockedPreparingRun = Readonly<{
 
 async function loadPreparingSettings(
   tx: Prisma.TransactionClient,
-  userId: string
+  userId: string,
+  lock = false
 ): Promise<PreparingSettingsRow> {
-  const settings = await tx.userMemorySettings.findUnique({
+  const settings = lock
+    ? await lockMemorySettings(tx, userId, true)
+    : await tx.userMemorySettings.findUnique({
     select: {
+      acceptedUtilityEgressAt: true,
       acceptedUtilityEgressFingerprint: true,
       acceptedUtilityPolicyVersion: true,
       activeIndexGenerationId: true,
+      embeddingProviderModelId: true,
       learnAutomatically: true,
       memoryConsentRevision: true,
       memoryGeneration: true,
       memoryRevision: true,
+      memoryUiLocale: true,
+      preferredProfileLanguage: true,
       referenceChatHistory: true,
+      sensitiveAutomaticPolicy: true,
       settingsRevision: true,
-      useMemoryFacts: true
+      useMemoryFacts: true,
+      userId: true
     },
     where: { userId }
   });
@@ -955,9 +993,8 @@ async function loadPreparingSettings(
     throw new MemoryPreparingRunConflictError("memory_owner_unavailable", false);
   }
   return {
-    ...memoryPreparingSettingsSnapshot(settings),
-    memoryGeneration: settings.memoryGeneration,
-    memoryRevision: settings.memoryRevision
+    ...settings,
+    ...memoryPreparingSettingsSnapshot(settings)
   };
 }
 
@@ -991,17 +1028,20 @@ async function lockPreparingAttempt(
       )`;
   const [attempt] = await tx.$queryRaw<LockedPreparingAttempt[]>(Prisma.sql`
     SELECT
-      "admittedAssistantLeafMessageId", "admittedUserMessageId",
+      "acceptedUtilityEgressFingerprint", "admittedAssistantLeafMessageId",
+      "admittedUserMessageId",
       "admissionKind"::text AS "admissionKind", "assistantIdSnapshot",
       "attemptOrdinal",
       "baseRequestHash", "boundedPrivateBaseRequestSnapshot",
-      "boundedSafeQuerySnapshot", "budgetSnapshot", "chatId", "degradationCode", "expiresAt", "folderIdSnapshot",
+      "boundedSafeQuerySnapshot", "budgetSnapshot", "chatId", "degradationCode",
+      "expiresAt", "externalRolesUsed", "folderIdSnapshot",
       "id", "indexGenerationIdSnapshot", "memoryGenerationSnapshot",
       "modelRunId", "outcome"::text AS "outcome", "preSendActiveLeafMessageId",
       "preparedContextHash", "preparedContextText", "preparedContextTokenCount",
       "queryHash", "retrievalRevisionSnapshot", "settingsSnapshot",
       "chatMemoryModeSnapshot"::text AS "chatMemoryModeSnapshot",
-      "state"::text AS "state", "userId"
+      "state"::text AS "state", "userId",
+      "utilityEgressMode"::text AS "utilityEgressMode"
     FROM "MemoryRetrievalAttempt"
     WHERE "modelRunId" = ${input.runId}
       AND "userId" = ${input.userId}
@@ -1463,6 +1503,7 @@ async function admitPreparingRunWithClient(
         assistantMessageId,
         attemptId,
         chatMemoryMode: lockedChat.memoryMode,
+        folderId: lockedChat.folderId,
         memoryGeneration: settings.memoryGeneration,
         memoryRevision: settings.memoryRevision,
         runId: run.id,
@@ -1488,46 +1529,6 @@ async function beginPreparingRunAttemptWithClient(
     }
   });
   return updated.count === 1;
-}
-
-function memoryScopeEligibleForAttempt(
-  attempt: Pick<
-    LockedPreparingAttempt,
-    "assistantIdSnapshot" | "chatId" | "folderIdSnapshot" | "userId"
-  >
-): Prisma.Sql {
-  return Prisma.sql`(
-    scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
-    OR (
-      scope."scopeType" = 'FOLDER'::"MemoryScopeType"
-      AND scope."folderId" = ${attempt.folderIdSnapshot}
-      AND EXISTS (
-        SELECT 1 FROM "Folder" AS target
-        WHERE target."userId" = ${attempt.userId}
-          AND target."id" = scope."folderId"
-      )
-    )
-    OR (
-      scope."scopeType" = 'CHAT'::"MemoryScopeType"
-      AND scope."chatId" = ${attempt.chatId}
-      AND EXISTS (
-        SELECT 1 FROM "Chat" AS target
-        WHERE target."userId" = ${attempt.userId}
-          AND target."id" = scope."chatId"
-          AND target."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
-      )
-    )
-    OR (
-      scope."scopeType" = 'ASSISTANT'::"MemoryScopeType"
-      AND scope."assistantId" = ${attempt.assistantIdSnapshot}
-      AND EXISTS (
-        SELECT 1 FROM "AssistantDefinition" AS target
-        WHERE target."ownerUserId" = ${attempt.userId}
-          AND target."id" = scope."assistantId"
-          AND target."archivedAt" IS NULL
-      )
-    )
-  )`;
 }
 
 async function lockMemoryAttemptTargets(
@@ -1568,6 +1569,172 @@ async function lockMemoryAttemptTargets(
   }
 }
 
+const retrievalExecutionRoles = new Set([
+  "MEMORY_QUERY_EMBED",
+  "MEMORY_QUERY_EXPAND",
+  "MEMORY_RERANK"
+]);
+
+const retrievalExecutionOrdinals = new Map<string, number>([
+  ["MEMORY_QUERY_EXPAND", 0],
+  ["MEMORY_QUERY_EMBED", 1],
+  ["MEMORY_RERANK", 2]
+]);
+
+type PreparingAttemptExecutionEvidence = Readonly<{
+  acceptedUtilityEgressFingerprint: string | null;
+  externalRolesUsed: readonly string[];
+  snapshots: readonly MemorySecretFreeExecutionSnapshot[];
+  utilityEgressMode: "CONSENTED_EXTERNAL" | "LOCAL_ONLY";
+}>;
+
+async function loadPreparingAttemptExecutionEvidence(
+  tx: Prisma.TransactionClient,
+  attempt: Pick<LockedPreparingAttempt, "id" | "userId">
+): Promise<PreparingAttemptExecutionEvidence> {
+  try {
+    const bindings = await tx.memoryExecutionBinding.findMany({
+      orderBy: [{ ordinal: "asc" }, { id: "asc" }],
+      select: memoryExecutionBindingSelect,
+      where: {
+        ownerType: "RETRIEVAL_ATTEMPT",
+        retrievalAttemptId: attempt.id,
+        userId: attempt.userId
+      }
+    });
+    if (bindings.length > retrievalExecutionRoles.size) {
+      throw new Error("binding_count_invalid");
+    }
+    if (bindings.length === 0) {
+      return {
+        acceptedUtilityEgressFingerprint: null,
+        externalRolesUsed: [],
+        snapshots: [],
+        utilityEgressMode: "LOCAL_ONLY"
+      };
+    }
+    const snapshots: MemorySecretFreeExecutionSnapshot[] = [];
+    const roles: string[] = [];
+    const fingerprints = new Set<string>();
+    for (const binding of bindings) {
+      if (
+        binding.ownerType !== "RETRIEVAL_ATTEMPT" ||
+        binding.retrievalAttemptId !== attempt.id ||
+        binding.userId !== attempt.userId ||
+        binding.memoryJobId !== null ||
+        binding.modelRunId !== null ||
+        binding.modelRunToolCallId !== null ||
+        binding.relationsDetachedAt !== null ||
+        !retrievalExecutionRoles.has(binding.logicalRole) ||
+        binding.ordinal !== retrievalExecutionOrdinals.get(binding.logicalRole) ||
+        (binding.state !== "SUCCEEDED" &&
+          binding.state !== "FAILED" &&
+          binding.state !== "CANCELLED" &&
+          binding.state !== "OUTCOME_UNKNOWN") ||
+        binding.completedAt === null ||
+        binding.recoverableUntil === null ||
+        (binding.state === "SUCCEEDED") !== (binding.acceptedOutputHash !== null)
+      ) throw new Error("binding_invalid");
+      const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
+      assertMemoryExecutionBindingLineage(binding, snapshot);
+      snapshots.push(snapshot);
+      roles.push(binding.logicalRole);
+      fingerprints.add(snapshot.acceptedUtilityEgressFingerprint);
+    }
+    if (new Set(roles).size !== roles.length || fingerprints.size !== 1) {
+      throw new Error("binding_lineage_invalid");
+    }
+    const usageCount = await tx.usageEvent.count({
+      where: {
+        memoryExecutionBindingId: { in: bindings.map((binding) => binding.id) },
+        userId: attempt.userId
+      }
+    });
+    if (usageCount !== bindings.length) throw new Error("binding_usage_invalid");
+    return {
+      acceptedUtilityEgressFingerprint: [...fingerprints][0]!,
+      externalRolesUsed: roles,
+      snapshots,
+      utilityEgressMode: "CONSENTED_EXTERNAL"
+    };
+  } catch (error) {
+    if (error instanceof MemoryPreparingRunConflictError) throw error;
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_execution_invalid",
+      true
+    );
+  }
+}
+
+function assertAttemptUtilityDeclaration(
+  budgetSnapshot: unknown,
+  evidence: PreparingAttemptExecutionEvidence
+): void {
+  const declared = isRecord(budgetSnapshot)
+    ? budgetSnapshot.utilityEgressMode
+    : undefined;
+  if (
+    (declared !== undefined && declared !== evidence.utilityEgressMode) ||
+    (evidence.utilityEgressMode === "CONSENTED_EXTERNAL" &&
+      declared !== "CONSENTED_EXTERNAL")
+  ) {
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_execution_invalid",
+      false
+    );
+  }
+}
+
+async function assertCurrentPreparingExecutionEvidence(
+  tx: Prisma.TransactionClient,
+  attempt: LockedPreparingAttempt,
+  settings: LockedMemorySettings,
+  authority: MemoryExecutionAuthorityDependencies,
+  now: Date
+): Promise<void> {
+  const evidence = await loadPreparingAttemptExecutionEvidence(tx, attempt);
+  if (
+    attempt.utilityEgressMode !== evidence.utilityEgressMode ||
+    attempt.acceptedUtilityEgressFingerprint !==
+      evidence.acceptedUtilityEgressFingerprint ||
+    attempt.externalRolesUsed.length !== evidence.externalRolesUsed.length ||
+    attempt.externalRolesUsed.some((role, index) =>
+      role !== evidence.externalRolesUsed[index])
+  ) {
+    throw new MemoryPreparingRunConflictError(
+      "memory_attempt_execution_invalid",
+      false
+    );
+  }
+  if (evidence.utilityEgressMode === "LOCAL_ONLY") return;
+  if (
+    settings.acceptedUtilityEgressFingerprint !==
+      evidence.acceptedUtilityEgressFingerprint ||
+    settings.acceptedUtilityPolicyVersion === null ||
+    settings.acceptedUtilityEgressAt === null
+  ) {
+    throw new MemoryPreparingRunConflictError(
+      "memory_utility_egress_changed",
+      true
+    );
+  }
+  try {
+    for (const snapshot of evidence.snapshots) {
+      await reauthorizeStoredMemoryExecution(tx, settings, {
+        dependencies: authority,
+        now,
+        snapshot,
+        userId: attempt.userId
+      });
+    }
+  } catch {
+    throw new MemoryPreparingRunConflictError(
+      "memory_utility_egress_changed",
+      true
+    );
+  }
+}
+
 async function completePreparingRunAttemptWithClient(
   prismaClient: PrismaClient,
   input: Readonly<{
@@ -1595,163 +1762,66 @@ async function completePreparingRunAttemptWithClient(
         throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
       }
     }
+    const executionEvidence = await loadPreparingAttemptExecutionEvidence(tx, attempt);
+    assertAttemptUtilityDeclaration(input.result.budgetSnapshot, executionEvidence);
     if ((input.result.items?.length ?? 0) > 0) {
       await lockMemoryAttemptTargets(tx, attempt);
     }
 
-    const authoritativeItems: Array<{
-      exactSafeText: string;
-      createdByEventId: string;
-      factCategory: string;
-      factCanonicalKey: string;
-      factId: string;
-      factVersionId: string;
-      featureSnapshot: Record<string, unknown>;
-      finalScore: number;
-      languageCode: string;
-      laneRanks: Readonly<Record<string, unknown>>;
-      scopeAssistantId: string | null;
-      scopeChatId: string | null;
-      scopeFolderId: string | null;
-      scopeId: string;
-      scopeTargetIdSnapshot: string | null;
-      scopeType: string;
-      selectionReason: string;
-      sensitivityClass: string;
-      sourceMode: string;
-    }> = [];
+    const querySnapshot = input.result.querySnapshot ?? null;
+    const authoritativeItems: ResolvedPreparingMemoryItem[] = [];
     for (const item of input.result.items ?? []) {
-      const [version] = await tx.$queryRaw<Array<{
-        createdByEventId: string;
-        displayText: string | null;
-        factCanonicalKey: string;
-        factCategory: string;
-        factId: string;
-        languageCode: string;
-        scopeAssistantId: string | null;
-        scopeChatId: string | null;
-        scopeFolderId: string | null;
-        scopeId: string;
-        scopeTargetIdSnapshot: string | null;
-        scopeType: string;
-        sensitivityClass: string;
-        sourceMode: string;
-      }>>(Prisma.sql`
-        SELECT
-          version."createdByEventId", version."displayText",
-          version."factId", version."languageCode",
-          version."sensitivityClass"::text AS "sensitivityClass",
-          version."sourceMode"::text AS "sourceMode",
-          fact."canonicalKey" AS "factCanonicalKey",
-          fact."category" AS "factCategory", fact."scopeId",
-          scope."assistantId" AS "scopeAssistantId",
-          scope."chatId" AS "scopeChatId", scope."folderId" AS "scopeFolderId",
-          scope."scopeType"::text AS "scopeType",
-          scope."targetIdSnapshot" AS "scopeTargetIdSnapshot"
-        FROM "MemoryFactVersion" AS version
-        INNER JOIN "MemoryFact" AS fact
-          ON fact."userId" = version."userId" AND fact."id" = version."factId"
-        INNER JOIN "MemoryScope" AS scope
-          ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
-        WHERE version."userId" = ${input.userId}
-          AND version."id" = ${item.factVersionId}
-          AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
-          AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-          AND version."sensitivityClass" IN (
-            'NORMAL'::"MemorySensitivityClass",
-            'SENSITIVE'::"MemorySensitivityClass"
-          )
-          AND version."contentPurgedAt" IS NULL
-          AND fact."state" = 'ACTIVE'::"MemoryFactState"
-          AND fact."currentVersionId" = version."id"
-          AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-          AND ${memoryScopeEligibleForAttempt(attempt)}
-        FOR SHARE OF version, fact, scope
-      `);
-      if (!version || version.displayText === null ||
-        explicitRunSafeFactText(version.displayText) !== item.exactSafeText) {
-        throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
-      }
-      authoritativeItems.push({
-        createdByEventId: version.createdByEventId,
-        exactSafeText: item.exactSafeText,
-        factCanonicalKey: version.factCanonicalKey,
-        factCategory: version.factCategory,
-        factId: version.factId,
-        factVersionId: item.factVersionId,
-        featureSnapshot: {
-          ...(item.featureSnapshot ?? {}),
-          finalScore: item.finalScore
-        },
-        finalScore: item.finalScore,
-        languageCode: version.languageCode,
-        laneRanks: item.laneRanks ?? {},
-        scopeAssistantId: version.scopeAssistantId,
-        scopeChatId: version.scopeChatId,
-        scopeFolderId: version.scopeFolderId,
-        scopeId: version.scopeId,
-        scopeTargetIdSnapshot: version.scopeTargetIdSnapshot,
-        scopeType: version.scopeType,
-        selectionReason: item.selectionReason,
-        sensitivityClass: version.sensitivityClass,
-        sourceMode: version.sourceMode
-      });
+      authoritativeItems.push(await resolvePreparingMemoryItem(tx, {
+        assistantId: attempt.assistantIdSnapshot,
+        chatId: attempt.chatId,
+        folderId: attempt.folderIdSnapshot,
+        indexGenerationId: attempt.indexGenerationIdSnapshot,
+        userId: attempt.userId
+      }, querySnapshot, item));
     }
 
     if (authoritativeItems.length > 0) {
       await tx.memoryRetrievalAttemptItem.createMany({
         data: authoritativeItems.map((item, ordinal) => ({
-          exactItemId: item.factVersionId,
+          episodeId: item.episodeId,
+          exactItemId: item.exactItemId,
           exactSafeText: item.exactSafeText,
           factVersionId: item.factVersionId,
           featureSnapshot: json(item.featureSnapshot),
+          itemType: item.itemType,
           laneRanks: json(item.laneRanks),
           ordinal,
+          recallChunkId: item.recallChunkId,
           selectionReason: item.selectionReason,
-          sourceSnapshot: json({
-            createdByEventId: item.createdByEventId,
-            schemaVersion: 1,
-            sourceMode: item.sourceMode
-          }),
-          textHash: memoryPreparingTextHash(item.exactSafeText),
+          sourceBranchGenerationSnapshot: item.sourceBranchGenerationSnapshot,
+          sourceChatIdSnapshot: item.sourceChatIdSnapshot,
+          sourceContentHashSnapshot: item.sourceContentHashSnapshot,
+          sourceRevisionSnapshot: item.sourceRevisionSnapshot,
+          sourceSnapshot: json(item.sourceSnapshot),
+          textHash: item.textHash,
           userId: input.userId,
-          versionSnapshot: json({
-            factCanonicalKey: item.factCanonicalKey,
-            factCategory: item.factCategory,
-            factId: item.factId,
-            factState: "ACTIVE",
-            factVersionId: item.factVersionId,
-            languageCode: item.languageCode,
-            scopeAssistantId: item.scopeAssistantId,
-            scopeChatId: item.scopeChatId,
-            scopeFolderId: item.scopeFolderId,
-            scopeId: item.scopeId,
-            scopeState: "ACTIVE",
-            scopeTargetIdSnapshot: item.scopeTargetIdSnapshot,
-            scopeType: item.scopeType,
-            schemaVersion: 1,
-            sensitivityClass: item.sensitivityClass,
-            versionState: "ACTIVE"
-          }),
-          attemptId: input.attemptId,
-          itemType: "FACT_VERSION"
+          versionSnapshot: json(item.versionSnapshot),
+          attemptId: input.attemptId
         }))
       });
     }
 
     const context = input.result.preparedContext ?? null;
-    const querySnapshot = input.result.querySnapshot ?? null;
     const updated = await tx.memoryRetrievalAttempt.updateMany({
       data: {
         budgetSnapshot: json(input.result.budgetSnapshot),
         boundedSafeQuerySnapshot: querySnapshot,
         degradationCode: input.result.degradationCode ?? null,
+        externalRolesUsed: [...executionEvidence.externalRolesUsed],
         outcome: input.result.outcome,
         preparedContextHash: context ? memoryPreparingTextHash(context.text) : null,
         preparedContextText: context?.text ?? null,
         preparedContextTokenCount: context?.approxTokens ?? null,
         queryHash: input.result.queryHash ?? memoryPreparingTextHash(querySnapshot ?? ""),
         state: "READY",
+        utilityEgressMode: executionEvidence.utilityEgressMode,
+        acceptedUtilityEgressFingerprint:
+          executionEvidence.acceptedUtilityEgressFingerprint,
         updatedAt: now
       },
       where: {
@@ -1901,16 +1971,8 @@ async function assertCurrentMcpAdmission(
   }
 }
 
-type PreparingAttemptItemRow = Readonly<{
-  exactSafeText: string;
-  factVersionId: string;
-  featureSnapshot: Prisma.JsonValue;
-  laneRanks: Prisma.JsonValue;
+type PreparingAttemptItemRow = ResolvedPreparingMemoryItem & Readonly<{
   ordinal: number;
-  selectionReason: string;
-  sourceSnapshot: Prisma.JsonValue;
-  textHash: string;
-  versionSnapshot: Prisma.JsonValue;
 }>;
 
 async function loadAndValidatePreparingAttemptItems(
@@ -1918,7 +1980,8 @@ async function loadAndValidatePreparingAttemptItems(
   input: Readonly<{
     attempt: Pick<
       LockedPreparingAttempt,
-      "assistantIdSnapshot" | "chatId" | "folderIdSnapshot" | "userId"
+      "assistantIdSnapshot" | "boundedSafeQuerySnapshot" | "chatId" |
+      "folderIdSnapshot" | "indexGenerationIdSnapshot" | "userId"
     >;
     attemptId: string;
     userId: string;
@@ -1926,13 +1989,20 @@ async function loadAndValidatePreparingAttemptItems(
 ): Promise<PreparingAttemptItemRow[]> {
   const items = await tx.memoryRetrievalAttemptItem.findMany({
     select: {
+      episodeId: true,
+      exactItemId: true,
       exactSafeText: true,
       factVersionId: true,
       featureSnapshot: true,
       itemType: true,
       laneRanks: true,
       ordinal: true,
+      recallChunkId: true,
       selectionReason: true,
+      sourceBranchGenerationSnapshot: true,
+      sourceChatIdSnapshot: true,
+      sourceContentHashSnapshot: true,
+      sourceRevisionSnapshot: true,
       sourceSnapshot: true,
       textHash: true,
       versionSnapshot: true
@@ -1949,121 +2019,79 @@ async function loadAndValidatePreparingAttemptItems(
     const featureSnapshot = isRecord(item.featureSnapshot)
       ? item.featureSnapshot
       : null;
-    const versionSnapshot = isRecord(item.versionSnapshot)
-      ? item.versionSnapshot
-      : null;
-    const sourceSnapshot = isRecord(item.sourceSnapshot)
-      ? item.sourceSnapshot
-      : null;
+    const laneRanks = isRecord(item.laneRanks) ? item.laneRanks : null;
     const finalScore = featureSnapshot?.finalScore;
     if (
-      item.itemType !== "FACT_VERSION" ||
-      item.factVersionId === null ||
       item.ordinal !== ordinal ||
       memoryPreparingTextHash(item.exactSafeText) !== item.textHash ||
+      !featureSnapshot ||
+      !isRecord(item.sourceSnapshot) ||
+      !isRecord(item.versionSnapshot) ||
+      !laneRanks ||
       typeof finalScore !== "number" ||
       !Number.isFinite(finalScore) ||
       finalScore < 0 ||
-      finalScore > 1 ||
-      sourceSnapshot?.schemaVersion !== 1 ||
-      typeof sourceSnapshot.createdByEventId !== "string" ||
-      typeof sourceSnapshot.sourceMode !== "string" ||
-      versionSnapshot?.schemaVersion !== 1 ||
-      versionSnapshot.factVersionId !== item.factVersionId ||
-      versionSnapshot.versionState !== "ACTIVE" ||
-      versionSnapshot.factState !== "ACTIVE" ||
-      versionSnapshot.scopeState !== "ACTIVE"
+      finalScore > 1
     ) {
       throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
     }
-    const [current] = await tx.$queryRaw<Array<{
-      createdByEventId: string;
-      displayText: string | null;
-      factCanonicalKey: string;
-      factCategory: string;
-      factId: string;
-      languageCode: string;
-      scopeAssistantId: string | null;
-      scopeChatId: string | null;
-      scopeFolderId: string | null;
-      scopeId: string;
-      scopeTargetIdSnapshot: string | null;
-      scopeType: string;
-      sensitivityClass: string;
-      sourceMode: string;
-    }>>(Prisma.sql`
-      SELECT
-        version."createdByEventId", version."displayText",
-        version."factId", version."languageCode",
-        version."sensitivityClass"::text AS "sensitivityClass",
-        version."sourceMode"::text AS "sourceMode",
-        fact."canonicalKey" AS "factCanonicalKey",
-        fact."category" AS "factCategory", fact."scopeId",
-        scope."assistantId" AS "scopeAssistantId",
-        scope."chatId" AS "scopeChatId", scope."folderId" AS "scopeFolderId",
-        scope."scopeType"::text AS "scopeType",
-        scope."targetIdSnapshot" AS "scopeTargetIdSnapshot"
-      FROM "MemoryFactVersion" AS version
-      INNER JOIN "MemoryFact" AS fact
-        ON fact."userId" = version."userId" AND fact."id" = version."factId"
-      INNER JOIN "MemoryScope" AS scope
-        ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
-      WHERE version."userId" = ${input.userId}
-        AND version."id" = ${item.factVersionId}
-        AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
-        AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-        AND version."sensitivityClass" IN (
-          'NORMAL'::"MemorySensitivityClass",
-          'SENSITIVE'::"MemorySensitivityClass"
-        )
-        AND version."contentPurgedAt" IS NULL
-        AND fact."state" = 'ACTIVE'::"MemoryFactState"
-        AND fact."currentVersionId" = version."id"
-        AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-        AND ${memoryScopeEligibleForAttempt(input.attempt)}
-      FOR SHARE OF version, fact, scope
-    `);
+    const common = {
+      exactItemId: item.exactItemId,
+      exactSafeText: item.exactSafeText,
+      featureSnapshot,
+      finalScore,
+      laneRanks,
+      selectionReason: item.selectionReason
+    } as const;
+    let candidate: MemoryPreparingItemInput;
     if (
-      !current ||
-      current.displayText === null ||
-      explicitRunSafeFactText(current.displayText) !== item.exactSafeText ||
-      memoryPreparingHash(sourceSnapshot) !== memoryPreparingHash({
-        createdByEventId: current.createdByEventId,
-        schemaVersion: 1,
-        sourceMode: current.sourceMode
-      }) ||
-      memoryPreparingHash(versionSnapshot) !== memoryPreparingHash({
-        factCanonicalKey: current.factCanonicalKey,
-        factCategory: current.factCategory,
-        factId: current.factId,
-        factState: "ACTIVE",
-        factVersionId: item.factVersionId,
-        languageCode: current.languageCode,
-        scopeAssistantId: current.scopeAssistantId,
-        scopeChatId: current.scopeChatId,
-        scopeFolderId: current.scopeFolderId,
-        scopeId: current.scopeId,
-        scopeState: "ACTIVE",
-        scopeTargetIdSnapshot: current.scopeTargetIdSnapshot,
-        scopeType: current.scopeType,
-        schemaVersion: 1,
-        sensitivityClass: current.sensitivityClass,
-        versionState: "ACTIVE"
-      })
+      item.itemType === "FACT_VERSION" &&
+      item.factVersionId !== null &&
+      item.episodeId === null &&
+      item.recallChunkId === null &&
+      item.exactItemId === item.factVersionId
+    ) {
+      candidate = { ...common, factVersionId: item.factVersionId, itemType: "FACT_VERSION" };
+    } else if (
+      item.itemType === "EPISODE" &&
+      item.episodeId !== null &&
+      item.factVersionId === null &&
+      item.recallChunkId === null &&
+      item.exactItemId === item.episodeId
+    ) {
+      candidate = { ...common, episodeId: item.episodeId, itemType: "EPISODE" };
+    } else if (
+      item.itemType === "RECALL_CHUNK" &&
+      item.recallChunkId !== null &&
+      item.factVersionId === null &&
+      item.episodeId === null &&
+      item.exactItemId === item.recallChunkId
+    ) {
+      candidate = { ...common, itemType: "RECALL_CHUNK", recallChunkId: item.recallChunkId };
+    } else {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    }
+    const resolved = await resolvePreparingMemoryItem(tx, {
+      assistantId: input.attempt.assistantIdSnapshot,
+      chatId: input.attempt.chatId,
+      folderId: input.attempt.folderIdSnapshot,
+      indexGenerationId: input.attempt.indexGenerationIdSnapshot,
+      userId: input.attempt.userId
+    }, input.attempt.boundedSafeQuerySnapshot, candidate);
+    if (
+      !samePreparingMemoryItemSnapshot(item, resolved) ||
+      item.exactItemId !== resolved.exactItemId ||
+      item.factVersionId !== resolved.factVersionId ||
+      item.episodeId !== resolved.episodeId ||
+      item.recallChunkId !== resolved.recallChunkId ||
+      item.sourceChatIdSnapshot !== resolved.sourceChatIdSnapshot ||
+      item.sourceBranchGenerationSnapshot !== resolved.sourceBranchGenerationSnapshot ||
+      item.sourceRevisionSnapshot !== resolved.sourceRevisionSnapshot ||
+      item.sourceContentHashSnapshot !== resolved.sourceContentHashSnapshot
     ) {
       throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
     }
-    validatedItems.push({
-      exactSafeText: item.exactSafeText,
-      factVersionId: item.factVersionId,
-      featureSnapshot: item.featureSnapshot,
-      laneRanks: item.laneRanks,
-      ordinal: item.ordinal,
-      selectionReason: item.selectionReason,
-      sourceSnapshot: item.sourceSnapshot,
-      textHash: item.textHash,
-      versionSnapshot: item.versionSnapshot
-    });
+    validatedItems.push({ ...resolved, ordinal: item.ordinal });
   }
   return validatedItems;
 }
@@ -2222,7 +2250,8 @@ function validateFinalPreparingRequest(
 
 async function finalizePreparingRunWithClient(
   prismaClient: PrismaClient,
-  input: PreparingRunFinalizationInput
+  input: PreparingRunFinalizationInput,
+  memoryExecutionAuthority: MemoryExecutionAuthorityDependencies
 ): Promise<boolean> {
   const now = new Date();
   return repeatableReadTransaction(prismaClient, async (tx) => {
@@ -2382,6 +2411,19 @@ async function finalizePreparingRunWithClient(
       }
     }
 
+    const currentSettings = attempt.chatMemoryModeSnapshot === "TEMPORARY"
+      ? null
+      : await loadPreparingSettings(tx, input.userId, true);
+    if (currentSettings) {
+      await assertCurrentPreparingExecutionEvidence(
+        tx,
+        attempt,
+        currentSettings,
+        memoryExecutionAuthority,
+        now
+      );
+    }
+
     const items = await loadAndValidatePreparingAttemptItems(tx, {
       attempt,
       attemptId: attempt.id,
@@ -2432,10 +2474,14 @@ async function finalizePreparingRunWithClient(
         items.length !== 0 ||
         !sameMemoryPreparingSettings(
           settingsSnapshot,
-          memoryPreparingSettingsSnapshot(TEMPORARY_PREPARING_SETTINGS)
+          memoryPreparingSettingsSnapshot(TEMPORARY_PREPARING_SETTINGS),
+          { requireUtilityEgressMatch: false }
         ) ||
         baseSnapshot.normalizedRequest.memoryActionPlan !== undefined ||
-        input.normalizedRequest.personalContext !== undefined
+        input.normalizedRequest.personalContext !== undefined ||
+        attempt.utilityEgressMode !== "LOCAL_ONLY" ||
+        attempt.acceptedUtilityEgressFingerprint !== null ||
+        attempt.externalRolesUsed.length !== 0
       ) {
         throw new MemoryPreparingRunConflictError(
           "memory_temporary_chat_forbidden",
@@ -2479,14 +2525,21 @@ async function finalizePreparingRunWithClient(
       return true;
     }
 
-    const currentSettings = await loadPreparingSettings(tx, input.userId);
+    if (!currentSettings) {
+      throw new MemoryPreparingRunConflictError("memory_owner_unavailable", false);
+    }
     const currentSnapshot = memoryPreparingSettingsSnapshot(currentSettings);
+    const exactRevisionRequired =
+      decodeMemoryActionPlan(baseSnapshot.normalizedRequest.memoryActionPlan)?.kind === "LIST" ||
+      (attempt.outcome === "EMPTY" && items.length === 0);
     if (
       currentSettings.memoryGeneration !== attempt.memoryGenerationSnapshot ||
       currentSettings.activeIndexGenerationId !== attempt.indexGenerationIdSnapshot ||
-      !sameMemoryPreparingSettings(settingsSnapshot, currentSnapshot) ||
+      !sameMemoryPreparingSettings(settingsSnapshot, currentSnapshot, {
+        requireUtilityEgressMatch: attempt.utilityEgressMode === "CONSENTED_EXTERNAL"
+      }) ||
       currentSettings.memoryRevision < attempt.retrievalRevisionSnapshot ||
-      ((items.length > 0 || authoritativeEmptyList) &&
+      ((exactRevisionRequired || authoritativeEmptyList) &&
         currentSettings.memoryRevision !== attempt.retrievalRevisionSnapshot)
     ) {
       throw new MemoryPreparingRunConflictError("memory_admission_settings_changed", true);
@@ -2527,18 +2580,24 @@ async function finalizePreparingRunWithClient(
       await tx.modelRunMemoryItem.createMany({
         data: items.map((item) => ({
           bindingId: binding.id,
-          exactItemId: item.factVersionId,
+          episodeId: item.episodeId,
+          exactItemId: item.exactItemId,
           factVersionId: item.factVersionId,
           featureSnapshot: json(item.featureSnapshot),
-          finalScore: (item.featureSnapshot as Record<string, unknown>).finalScore as number,
+          finalScore: item.finalScore,
           includedText: item.exactSafeText,
           includedTextHash: item.textHash,
-          itemStateAtAdmission: "ACTIVE",
-          itemType: "FACT_VERSION",
+          itemStateAtAdmission: item.itemStateAtAdmission,
+          itemType: item.itemType,
           laneRanks: json(item.laneRanks),
           ordinal: item.ordinal,
+          recallChunkId: item.recallChunkId,
           selectionReason: item.selectionReason,
-          sourceMessageIdsSnapshot: [],
+          sourceBranchGenerationSnapshot: item.sourceBranchGenerationSnapshot,
+          sourceChatIdSnapshot: item.sourceChatIdSnapshot,
+          sourceContentHashSnapshot: item.sourceContentHashSnapshot,
+          sourceMessageIdsSnapshot: [...item.sourceMessageIdsSnapshot],
+          sourceRevisionSnapshot: item.sourceRevisionSnapshot,
           userId: input.userId
         }))
       });
@@ -2628,6 +2687,12 @@ async function retryPreparingRunAttemptWithClient(
     const settings = attempt.chatMemoryModeSnapshot === "TEMPORARY"
       ? TEMPORARY_PREPARING_SETTINGS
       : await loadPreparingSettings(tx, input.userId);
+    await settlePreparingAttemptExecutions(tx, {
+      attemptId: attempt.id,
+      cancelled: false,
+      now: input.now,
+      userId: input.userId
+    });
     await tx.memoryRetrievalAttempt.update({
       data: {
         errorCode: "memory_admission_settings_changed",
@@ -2659,6 +2724,100 @@ async function retryPreparingRunAttemptWithClient(
       settingsSnapshot: memoryPreparingSettingsSnapshot(settings)
     };
   });
+}
+
+async function settlePreparingAttemptExecutions(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    attemptId: string;
+    cancelled: boolean;
+    now: Date;
+    userId: string;
+  }>
+): Promise<void> {
+  const bindings = await tx.memoryExecutionBinding.findMany({
+    orderBy: [{ ordinal: "asc" }, { id: "asc" }],
+    select: memoryExecutionBindingSelect,
+    where: {
+      ownerType: "RETRIEVAL_ATTEMPT",
+      retrievalAttemptId: input.attemptId,
+      userId: input.userId
+    }
+  });
+  for (const binding of bindings) {
+    const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
+    assertMemoryExecutionBindingLineage(binding, snapshot);
+    const existingUsage = await tx.usageEvent.findUnique({
+      select: { id: true },
+      where: { memoryExecutionBindingId: binding.id }
+    });
+    const open = binding.state === "PENDING" || binding.state === "RUNNING";
+    if (open && existingUsage) {
+      throw new MemoryPreparingRunConflictError(
+        "memory_attempt_execution_invalid",
+        false
+      );
+    }
+    if (open) {
+      const uncertain = binding.state === "RUNNING";
+      const state = uncertain
+        ? "OUTCOME_UNKNOWN" as const
+        : input.cancelled ? "CANCELLED" as const : "FAILED" as const;
+      const updated = await tx.memoryExecutionBinding.updateMany({
+        data: {
+          acceptedOutputHash: null,
+          cachedInputTokens: null,
+          completedAt: input.now,
+          errorCode: uncertain
+            ? "memory_preparing_execution_uncertain"
+            : input.cancelled
+              ? "memory_preparing_execution_cancelled"
+              : "memory_preparing_execution_abandoned",
+          estimatedCostMicros: null,
+          inputTokens: null,
+          outputTokens: null,
+          providerResponseId: null,
+          reasoningTokens: null,
+          recoverableUntil: uncertain
+            ? new Date(input.now.getTime() + MEMORY_EXECUTION_RECOVERY_HORIZON_MS)
+            : input.now,
+          state,
+          totalTokens: null,
+          usageCompleteness: "UNAVAILABLE"
+        },
+        where: {
+          id: binding.id,
+          state: binding.state,
+          userId: input.userId
+        }
+      });
+      if (updated.count !== 1) {
+        throw new MemoryPreparingRunConflictError(
+          "memory_attempt_execution_invalid",
+          true
+        );
+      }
+    }
+    if (!existingUsage) {
+      const provider = snapshot.providerExecutionSnapshot;
+      await tx.usageEvent.create({
+        data: {
+          cachedInputTokens: open ? null : binding.cachedInputTokens,
+          cacheWriteInputTokens: null,
+          estimatedCostMicros: open ? null : binding.estimatedCostMicros,
+          inputTokens: open ? null : binding.inputTokens,
+          memoryExecutionBindingId: binding.id,
+          modelId: provider.model.upstreamModelId,
+          outputTokens: open ? null : binding.outputTokens,
+          provider: provider.providerFamily,
+          providerModelId: provider.providerModelId,
+          reasoningTokens: open ? null : binding.reasoningTokens,
+          totalTokens: open ? null : binding.totalTokens,
+          userId: input.userId
+        }
+      });
+    }
+  }
 }
 
 type PreparingSettlementInput = Readonly<{
@@ -2725,6 +2884,12 @@ async function settlePreparingRunInTransaction(
     ? input.errorCode
     : "memory_preparing_failed";
   const cancelled = input.state === "CANCELLED";
+  await settlePreparingAttemptExecutions(tx, {
+    attemptId: attempt.id,
+    cancelled,
+    now,
+    userId: input.userId
+  });
   await tx.memoryRetrievalAttempt.update({
     data: {
       errorCode,
@@ -2814,6 +2979,8 @@ async function recoverPreparingRunWithClient(
 async function createDormantPreparingRun(
   prismaClient: PrismaClient,
   admission: PreparingRunAdmissionInput,
+  memoryRetrieval: MemoryRunRetrievalService,
+  memoryExecutionAuthority: MemoryExecutionAuthorityDependencies,
   memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<PreparingRunAdmissionResult & Readonly<{
   materializedRequest?: PreparingRunMaterializedRequest;
@@ -2869,15 +3036,34 @@ async function createDormantPreparingRun(
         let attemptResult = created.chatMemoryMode === "TEMPORARY"
           ? dormantMemoryAttemptResult(currentSettings.settingsSnapshot)
           : admission.memoryMaterializer
-          ? await retrieveExplicitRunMemory(prismaClient, {
-              ...(actionPlan ? { actionPlan } : {}),
-              ...(admission.assistant
-                ? { assistantId: admission.assistant.assistantId }
-                : {}),
-              normalizedRequest: admission.normalizedRequest,
-              settings: currentSettings.settingsSnapshot,
-              userId: admission.userId
-            })
+          ? actionPlan
+            ? await retrieveExplicitRunMemory(prismaClient, {
+                actionPlan,
+                ...(admission.assistant
+                  ? { assistantId: admission.assistant.assistantId }
+                  : {}),
+                normalizedRequest: admission.normalizedRequest,
+                settings: currentSettings.settingsSnapshot,
+                userId: admission.userId
+              })
+            : await memoryRetrieval.retrieve({
+                attemptId: currentAttemptId,
+                chatId: admission.chatId,
+                expected: {
+                  activeIndexGenerationId:
+                    currentSettings.settingsSnapshot.activeIndexGenerationId,
+                  assistantId: admission.assistant?.assistantId ?? null,
+                  chatMemoryMode: created.chatMemoryMode,
+                  folderId: created.folderId,
+                  memoryGeneration: currentSettings.memoryGeneration,
+                  memoryRevision: currentSettings.memoryRevision,
+                  settings: currentSettings.settingsSnapshot
+                },
+                normalizedRequest: admission.normalizedRequest,
+                now: new Date(),
+                ...(admission.signal ? { signal: admission.signal } : {}),
+                userId: admission.userId
+              })
           : dormantMemoryAttemptResult(currentSettings.settingsSnapshot);
         let materializedRequest: PreparingRunMaterializedRequest | undefined;
         if (attemptResult.preparedContext) {
@@ -2930,7 +3116,7 @@ async function createDormantPreparingRun(
             materializedRequest?.providerRequestPreview ?? admission.providerRequestPreview,
           runId: created.runId,
           userId: admission.userId
-        });
+        }, memoryExecutionAuthority);
         if (!finalized) {
           throw new MemoryPreparingRunConflictError("memory_preparing_finalize_conflict", false);
         }
@@ -2985,9 +3171,19 @@ async function createDormantPreparingRun(
 
 export function createPrismaRunRepository(
   prismaClient = prisma,
-  options: Readonly<{ memorySourceHooks?: MemorySourceMutationHooks }> = {}
+  options: Readonly<{
+    memoryExecutionAuthority?: MemoryExecutionAuthorityDependencies;
+    memoryRetrieval?: MemoryRunRetrievalService;
+    memorySourceHooks?: MemorySourceMutationHooks;
+  }> = {}
 ): RunRepository {
   const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
+  const memoryExecutionAuthority = options.memoryExecutionAuthority ??
+    defaultMemoryExecutionAuthority;
+  const memoryRetrieval = options.memoryRetrieval ??
+    createPrismaMemoryRunRetrievalService(prismaClient, {
+      authority: memoryExecutionAuthority
+    });
   async function loadConversationPath(
     chatId: string,
     userId: string,
@@ -3073,7 +3269,7 @@ export function createPrismaRunRepository(
     completePreparingRunAttempt: (input) =>
       completePreparingRunAttemptWithClient(prismaClient, input),
     finalizePreparingRun: (input) =>
-      finalizePreparingRunWithClient(prismaClient, input),
+      finalizePreparingRunWithClient(prismaClient, input, memoryExecutionAuthority),
     recoverPreparingRun: (input) =>
       recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks),
     retryPreparingRunAttempt: (input) =>
@@ -3635,7 +3831,7 @@ export function createPrismaRunRepository(
       const created = await createDormantPreparingRun(prismaClient, {
         ...input,
         admissionKind: "NORMAL_SEND"
-      }, memorySourceHooks);
+      }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks);
       return {
         assistantMessageId: created.assistantMessageId,
         ...(created.materializedRequest
@@ -3649,7 +3845,7 @@ export function createPrismaRunRepository(
       const created = await createDormantPreparingRun(prismaClient, {
         ...input,
         admissionKind: "REGENERATE"
-      }, memorySourceHooks);
+      }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks);
       return {
         assistantMessageId: created.assistantMessageId,
         ...(created.materializedRequest
@@ -4158,6 +4354,7 @@ export function createPrismaRunRepository(
       });
       const events = projectMemoryInspectionEvents({
         events: knowledgeEvents,
+        inspection: memoryEvidence?.inspection ?? null,
         receipt: memoryEvidence?.receipt ?? null
       });
 

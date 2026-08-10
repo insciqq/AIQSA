@@ -39,6 +39,7 @@ export type MemoryLocalRetrievalSnapshot = Readonly<{
   activeGenerationId: string | null;
   assistantId: string | null;
   chatId: string;
+  chatMemoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
   folderId: string | null;
   historySuppressionIdentitySnapshot: string | null;
   indexMode: "HYBRID" | "LEXICAL_ONLY" | null;
@@ -70,6 +71,8 @@ export type MemoryLocalRetrievalInput = Readonly<{
 
 export type MemoryLocalRetrievalResult = Readonly<{
   laneResults: readonly MemoryLaneResult[];
+  lexicalFailures: readonly MemoryRetrievalLane[];
+  lexicalState: "DEGRADED" | "DISABLED" | "FAILED" | "READY";
   snapshot: MemoryLocalRetrievalSnapshot;
   vectorEvidence: readonly MemoryVectorLaneEvidence[];
   vectorState: "DEGRADED" | "DISABLED" | "NOT_CONFIGURED" | "READY";
@@ -359,6 +362,9 @@ async function loadSnapshot(
     activeGenerationId: null,
     assistantId,
     chatId: input.chatId,
+    chatMemoryMode: row.chatMemoryMode === "EXCLUDED" || row.chatMemoryMode === "TEMPORARY"
+      ? row.chatMemoryMode
+      : "NORMAL",
     folderId: row.chatFolderId,
     historySuppressionIdentitySnapshot: null,
     indexMode: null,
@@ -401,7 +407,7 @@ async function loadSnapshot(
   };
 }
 
-function activeSuppressionPredicate(userId: string): Prisma.Sql {
+export function memoryActiveSuppressionPredicate(userId: string): Prisma.Sql {
   return Prisma.sql`NOT EXISTS (
     SELECT 1
     FROM "MemorySuppression" AS global_suppression
@@ -414,7 +420,9 @@ function activeSuppressionPredicate(userId: string): Prisma.Sql {
   )`;
 }
 
-function factScopePredicate(snapshot: MemoryLocalRetrievalSnapshot): Prisma.Sql {
+export function memoryFactScopePredicate(
+  snapshot: Pick<MemoryLocalRetrievalSnapshot, "assistantId" | "chatId" | "folderId" | "userId">
+): Prisma.Sql {
   return Prisma.sql`(
     (
       scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
@@ -464,7 +472,7 @@ function factScopePredicate(snapshot: MemoryLocalRetrievalSnapshot): Prisma.Sql 
   )`;
 }
 
-function automaticFactEvidencePredicate(userId: string): Prisma.Sql {
+export function memoryAutomaticFactEvidencePredicate(userId: string): Prisma.Sql {
   return Prisma.sql`(
     version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
     OR EXISTS (
@@ -589,9 +597,9 @@ function factEligibleSelect(
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
     WHERE entry."userId" = ${snapshot.userId}
       AND entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"
-      AND ${factScopePredicate(snapshot)}
-      AND ${automaticFactEvidencePredicate(snapshot.userId)}
-      AND ${activeSuppressionPredicate(snapshot.userId)}
+      AND ${memoryFactScopePredicate(snapshot)}
+      AND ${memoryAutomaticFactEvidencePredicate(snapshot.userId)}
+      AND ${memoryActiveSuppressionPredicate(snapshot.userId)}
       AND (
         version."sensitivityClass" = 'NORMAL'::"MemorySensitivityClass"
         OR (
@@ -689,7 +697,7 @@ function factLaneSql(
   `;
 }
 
-function chunkSourceSafetyPredicate(): Prisma.Sql {
+export function memoryChunkSourceSafetyPredicate(): Prisma.Sql {
   return Prisma.sql`
     NOT EXISTS (
       SELECT 1
@@ -743,7 +751,7 @@ function chunkSourceSafetyPredicate(): Prisma.Sql {
   `;
 }
 
-function episodeSourceSafetyPredicate(): Prisma.Sql {
+export function memoryEpisodeSourceSafetyPredicate(): Prisma.Sql {
   return Prisma.sql`
     NOT EXISTS (
       SELECT 1
@@ -885,7 +893,7 @@ function historyEligibleSelect(
         AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
         AND checkpoint."lastIndexedMessageId" = source_chat."activeLeafMessageId"
         AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
-        AND ${chunkSourceSafetyPredicate()}
+        AND ${memoryChunkSourceSafetyPredicate()}
         AND (
           chunk."safetyClass" = 'NORMAL'::"MemoryDerivedSafetyClass"
           OR (
@@ -971,7 +979,7 @@ function historyEligibleSelect(
       AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
       AND checkpoint."lastDreamedMessageId" = source_chat."activeLeafMessageId"
       AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
-      AND ${episodeSourceSafetyPredicate()}
+      AND ${memoryEpisodeSourceSafetyPredicate()}
       AND (
         episode."safetyClass" = 'NORMAL'::"MemoryDerivedSafetyClass"
         OR (
@@ -1133,9 +1141,9 @@ function temporalFactLaneSql(
           'EXPIRED'::"MemoryFactState"
         )
         AND (fact."currentVersionId" IS NULL OR fact."currentVersionId" <> version."id")
-        AND ${factScopePredicate(snapshot)}
-        AND ${automaticFactEvidencePredicate(snapshot.userId)}
-        AND ${activeSuppressionPredicate(snapshot.userId)}
+        AND ${memoryFactScopePredicate(snapshot)}
+        AND ${memoryAutomaticFactEvidencePredicate(snapshot.userId)}
+        AND ${memoryActiveSuppressionPredicate(snapshot.userId)}
         AND ${timePredicate}
         AND (
           version."sensitivityClass" = 'NORMAL'::"MemorySensitivityClass"
@@ -1294,7 +1302,12 @@ function pushLexicalTasks(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
   allocation: MemoryRetrievalLaneLimitAllocation
-): void {
+): Readonly<{
+  failures(): readonly MemoryRetrievalLane[];
+  state(): MemoryLocalRetrievalResult["lexicalState"];
+}> {
+  const failures: MemoryRetrievalLane[] = [];
+  let scheduled = 0;
   for (const lane of localLexicalLanes(snapshot, plan)) {
     const limit = allocatedLimit(allocation, lane);
     let sql: Prisma.Sql;
@@ -1311,8 +1324,27 @@ function pushLexicalTasks(
     } else {
       throw new Error("memory_retrieval_lane_contract_invalid");
     }
-    tasks.push({ execute: () => queryLane(client, lane, limit, sql), lane });
+    scheduled += 1;
+    tasks.push({
+      async execute() {
+        try {
+          return await queryLane(client, lane, limit, sql);
+        } catch {
+          failures.push(lane);
+          return { candidates: [], lane };
+        }
+      },
+      lane
+    });
   }
+  return {
+    failures: () => [...failures].sort((left, right) => left.localeCompare(right)),
+    state: () => scheduled === 0
+      ? "DISABLED"
+      : failures.length === 0
+        ? "READY"
+        : failures.length === scheduled ? "FAILED" : "DEGRADED"
+  };
 }
 
 function vectorItemLane(itemType: MemorySearchItemType): MemoryRetrievalLane {
@@ -1491,9 +1523,9 @@ function historicalFactExpansionSql(
         'EXPIRED'::"MemoryFactState"
       )
       AND (fact."currentVersionId" IS NULL OR fact."currentVersionId" <> version."id")
-      AND ${factScopePredicate(snapshot)}
-      AND ${automaticFactEvidencePredicate(snapshot.userId)}
-      AND ${activeSuppressionPredicate(snapshot.userId)}
+      AND ${memoryFactScopePredicate(snapshot)}
+      AND ${memoryAutomaticFactEvidencePredicate(snapshot.userId)}
+      AND ${memoryActiveSuppressionPredicate(snapshot.userId)}
       AND ${timePredicate}
       AND (
         version."sensitivityClass" = 'NORMAL'::"MemorySensitivityClass"
@@ -1597,7 +1629,14 @@ function emptyResult(
   snapshot: MemoryLocalRetrievalSnapshot,
   vectorState: MemoryLocalRetrievalResult["vectorState"] = "DISABLED"
 ): MemoryLocalRetrievalResult {
-  return { laneResults: [], snapshot, vectorEvidence: [], vectorState };
+  return {
+    laneResults: [],
+    lexicalFailures: [],
+    lexicalState: "DISABLED",
+    snapshot,
+    vectorEvidence: [],
+    vectorState
+  };
 }
 
 export function createPrismaLocalMemoryRetrievalRepository(
@@ -1676,7 +1715,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
         ...localVectorLanes(snapshot, input)
       ];
       const allocation = allocateMemoryRetrievalLaneLimits(enabledLanes);
-      pushLexicalTasks(tasks, client, snapshot, input.plan, allocation);
+      const lexical = pushLexicalTasks(tasks, client, snapshot, input.plan, allocation);
       const vectorEvidence: MemoryVectorLaneEvidence[] = [];
       const vector = pushVectorTasks(
         tasks,
@@ -1689,6 +1728,8 @@ export function createPrismaLocalMemoryRetrievalRepository(
       const laneResults = await executeMemoryRetrievalLaneTasks(tasks);
       return {
         laneResults,
+        lexicalFailures: lexical.failures(),
+        lexicalState: lexical.state(),
         snapshot,
         vectorEvidence: vectorEvidence.sort((left, right) =>
           left.itemType.localeCompare(right.itemType)),

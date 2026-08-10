@@ -46,7 +46,7 @@ Knowledge provider text contains only opaque citation handles, pages, and
 bounded passages; private base/document labels and database/storage identities
 remain authenticated inspection evidence.
 
-Details Events reduces the already-consumed normalized event stream into a chronological digest without changing the event schema or persistence contract. Repeated provider/search/tool/artifact/token/usage categories update the row created at their first occurrence; raw token deltas and internal message ids stay hidden, while counts, latest meaningful status, long failures, cancellation, and successful completion remain inspectable. Memory contributes only outcome, included-item count, and degradation code to Events; its exact text remains in the answer-bound private receipt. Historical request/response payloads continue to live in the model-run APIs.
+Details Events reduces the already-consumed normalized event stream into a chronological digest without changing the event schema or persistence contract. Repeated provider/search/tool/artifact/token/usage categories update the row created at their first occurrence; raw token deltas and internal message ids stay hidden, while counts, latest meaningful status, long failures, cancellation, and successful completion remain inspectable. Memory contributes a passage-free outcome, included-item count/types, retrieval lanes and pipeline/planner versions, plus any degradation code; its exact text remains only in the answer-bound private receipt. Historical request/response payloads continue to live in the model-run APIs.
 
 ## Provider Strategy
 

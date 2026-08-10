@@ -1,5 +1,6 @@
 import type { MemoryReceipt } from "../../contracts/memory";
 import type { ModelRunEventProjection } from "../../contracts/runs";
+import type { MemoryRunEvidenceProjection } from "../memory/receipts/projection";
 
 type StoredInspectionEvent = ModelRunEventProjection & { createdAt?: string };
 
@@ -7,13 +8,20 @@ function isMemoryEvent(event: StoredInspectionEvent): boolean {
   return event.eventType === "memory_retrieval";
 }
 
-function memoryDigestEvent(receipt: MemoryReceipt): StoredInspectionEvent {
+function memoryDigestEvent(
+  receipt: MemoryReceipt,
+  inspection: MemoryRunEvidenceProjection["inspection"]
+): StoredInspectionEvent {
   return {
     eventType: "memory_retrieval",
     payload: {
       degradationCode: receipt.degradationCode,
       itemCount: receipt.itemCount,
-      outcome: receipt.outcome
+      itemTypes: inspection?.itemTypes ?? [],
+      outcome: receipt.outcome,
+      queryPlannerVersion: inspection?.queryPlannerVersion ?? null,
+      retrievalLanes: inspection?.retrievalLanes ?? [],
+      retrievalPipelineVersion: inspection?.retrievalPipelineVersion ?? null
     },
     sequence: 0
   };
@@ -22,6 +30,7 @@ function memoryDigestEvent(receipt: MemoryReceipt): StoredInspectionEvent {
 /** Adds one content-free private Memory digest at its pre-answer position. */
 export function projectMemoryInspectionEvents(input: Readonly<{
   events: readonly StoredInspectionEvent[];
+  inspection?: MemoryRunEvidenceProjection["inspection"];
   receipt: MemoryReceipt | null;
 }>): StoredInspectionEvent[] {
   const events = input.events.map((event) => ({ ...event }));
@@ -34,6 +43,9 @@ export function projectMemoryInspectionEvents(input: Readonly<{
   const insertionIndex = runStartIndex >= 0
     ? runStartIndex + 1
     : firstAnswerIndex >= 0 ? firstAnswerIndex : events.length;
-  events.splice(insertionIndex, 0, memoryDigestEvent(input.receipt));
+  events.splice(insertionIndex, 0, memoryDigestEvent(
+    input.receipt,
+    input.inspection ?? null
+  ));
   return events.map((event, sequence) => ({ ...event, sequence }));
 }

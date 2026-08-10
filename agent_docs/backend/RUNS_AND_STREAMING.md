@@ -65,11 +65,14 @@ expired or already-claimed aggregate.
 - set `text/event-stream` headers;
 - before opening the stream, atomically persist the exact user/assistant DAG,
   ordinary accepted dependency bindings, a private `PREPARING` model run with
-  null request artifacts, and one bounded local-only Memory attempt;
-- settle the currently dormant attempt as empty/disabled, then atomically
-  revalidate the admitted DAG and mutable authority, consume the attempt,
-  create its immutable run binding, freeze the normalized request/provider
-  preview, and transition to `streaming` before first provider I/O;
+  null request artifacts, and one bounded Memory retrieval attempt before any
+  optional retrieval-utility I/O;
+- stage the exact bounded local/hybrid recall pack or an honest
+  empty/disabled/degraded/failed-safe result, then atomically revalidate the
+  admitted DAG, mutable authority, any qualified utility evidence, and every
+  selected fact/chunk/episode/source; consume the attempt, create its immutable
+  run binding/items, freeze the normalized request/provider preview, and
+  transition to `streaming` before first answer-provider I/O;
 - for Temporary, use the fixed disabled settings snapshot and a zero-item,
   zero-token `DISABLED` final binding without loading personal Memory settings
   or reusable data; the binding is run evidence and is deleted with the

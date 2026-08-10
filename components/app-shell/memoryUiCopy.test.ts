@@ -7,6 +7,7 @@ import {
   memoryReceiptLifecycleLabel,
   memoryReceiptScopeLabel,
   memoryReceiptSourceModeLabel,
+  memoryReceiptUsageLabel,
   memorySensitivityLabel,
   memoryUiCopy
 } from "./memoryUiCopy";
@@ -52,5 +53,53 @@ describe("Memory UI copy", () => {
         expect(memoryReceiptSourceModeLabel(locale, source)).toBeTruthy();
       }
     }
+  });
+
+  it("summarizes reusable Memory and distinct previous-chat sources", () => {
+    const receipt = {
+      degradationCode: null,
+      itemCount: 3,
+      items: [{
+        includedText: "Saved preference",
+        itemType: "FACT_VERSION" as const,
+        lifecycleState: "CURRENT" as const,
+        ordinal: 0,
+        scopeType: "GLOBAL_USER" as const,
+        selectionReason: "exact",
+        sourceChatId: null,
+        sourceMessageIds: [],
+        sourceMode: "EXPLICIT" as const,
+        versionId: "version-1"
+      }, {
+        includedText: "Previous episode",
+        itemType: "EPISODE" as const,
+        lifecycleState: "CURRENT" as const,
+        ordinal: 1,
+        scopeType: "CHAT" as const,
+        selectionReason: "history_episode_fts",
+        sourceChatId: "source-chat",
+        sourceMessageIds: ["message-1"],
+        sourceMode: "HISTORY" as const,
+        versionId: null
+      }, {
+        includedText: "Previous excerpt",
+        itemType: "RECALL_CHUNK" as const,
+        lifecycleState: "CURRENT" as const,
+        ordinal: 2,
+        scopeType: "CHAT" as const,
+        selectionReason: "history_recall_fts",
+        sourceChatId: "source-chat",
+        sourceMessageIds: ["message-2"],
+        sourceMode: "HISTORY" as const,
+        versionId: null
+      }],
+      outcome: "USED" as const,
+      summary: "memory_receipt:used:3"
+    };
+
+    expect(memoryReceiptUsageLabel("EN", receipt))
+      .toBe("1 memory and 1 previous chat used");
+    expect(memoryReceiptUsageLabel("RU", receipt))
+      .toBe("Использовано: 1 воспоминание и 1 предыдущий чат");
   });
 });

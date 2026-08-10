@@ -3,6 +3,7 @@ import {
   memoryReceiptLifecycleLabel,
   memoryReceiptScopeLabel,
   memoryReceiptSourceModeLabel,
+  memoryReceiptUsageLabel,
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
 import type { RunReceiptFact } from "@/components/app-shell/runReceiptModel";
@@ -24,9 +25,7 @@ export function memoryReceiptFact(
   receipt: MemoryReceipt,
   locale: MemoryUiLocale
 ): RunReceiptFact {
-  const label = receipt.itemCount === 1
-    ? memoryUiCopy(locale, "receipt.usedOne")
-    : `${memoryUiCopy(locale, "receipt.usedMany")}: ${receipt.itemCount}`;
+  const label = memoryReceiptUsageLabel(locale, receipt);
   return {
     ...(receipt.outcome === "DEGRADED"
       ? { detail: memoryUiCopy(locale, "receipt.degraded") }
@@ -37,9 +36,7 @@ export function memoryReceiptFact(
 }
 
 function outcomeLabel(receipt: MemoryReceipt, locale: MemoryUiLocale): string {
-  const used = receipt.itemCount === 1
-    ? memoryUiCopy(locale, "receipt.usedOne")
-    : `${memoryUiCopy(locale, "receipt.usedMany")}: ${receipt.itemCount}`;
+  const used = memoryReceiptUsageLabel(locale, receipt);
   return receipt.outcome === "DEGRADED"
     ? `${used} · ${memoryUiCopy(locale, "receipt.degraded")}`
     : used;

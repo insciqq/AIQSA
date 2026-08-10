@@ -103,6 +103,25 @@ function validOrdinal(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
 }
 
+async function assertRetrievalAttemptExecutionOwner(
+  tx: MemoryTransaction,
+  userId: string,
+  owner: MemoryExecutionOwner,
+  now: Date
+): Promise<void> {
+  if (owner.type !== "RETRIEVAL_ATTEMPT") return;
+  const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id"
+    FROM "MemoryRetrievalAttempt"
+    WHERE "id" = ${owner.retrievalAttemptId}
+      AND "userId" = ${userId}
+      AND "state" = 'EXECUTING'::"MemoryRetrievalAttemptState"
+      AND "expiresAt" > ${now}
+    FOR SHARE
+  `);
+  if (!rows[0]) return memoryExecutionFailure("memory_execution_state_conflict");
+}
+
 function bindingView(
   record: MemoryExecutionBindingRecord,
   replayed: boolean
@@ -194,6 +213,7 @@ export function createPrismaMemoryExecutionAdmission(
       const ownerData = memoryExecutionOwnerData(input.owner);
       return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
         const now = memoryExecutionNow(dependencies);
+        await assertRetrievalAttemptExecutionOwner(tx, userId, input.owner, now);
         const authority = await resolveCurrentMemoryExecutionAuthority(tx, settings, {
           dependencies,
           now,
@@ -269,6 +289,12 @@ export function createPrismaMemoryExecutionAdmission(
         if (binding.state !== "PENDING") {
           return memoryExecutionFailure("memory_execution_state_conflict");
         }
+        await assertRetrievalAttemptExecutionOwner(
+          tx,
+          userId,
+          storedMemoryExecutionOwner(binding),
+          now
+        );
         const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
         assertMemoryExecutionBindingLineage(binding, snapshot);
         await reauthorizeStoredMemoryExecution(tx, settings, {

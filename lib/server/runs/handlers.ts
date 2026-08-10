@@ -415,6 +415,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         normalizedRequest: preparedData.normalizedRequest,
         provider: preparedData.normalizedRequest.provider,
         providerRequestPreview: preparedData.providerRequestPreview,
+        signal: request.signal,
         userId: auth.userId
       });
     } catch (error) {
@@ -561,6 +562,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           : {}),
         provider: preparedData.normalizedRequest.provider,
         providerRequestPreview: preparedData.providerRequestPreview,
+        signal: request.signal,
         userId: auth.userId,
         userMessageId: source.userMessage.id
       });

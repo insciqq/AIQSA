@@ -1,6 +1,7 @@
 import type {
   MemoryFactState,
   MemoryModality,
+  MemoryReceipt,
   MemoryReceiptItem,
   MemoryReceiptItemType,
   MemoryReceiptLifecycleState,
@@ -675,4 +676,57 @@ export function memoryReceiptLifecycleLabel(
   value: MemoryReceiptLifecycleState
 ): string {
   return RECEIPT_LIFECYCLE_LABELS[locale][value];
+}
+
+function russianCount(
+  count: number,
+  forms: Readonly<[string, string, string]>
+): string {
+  const modulo100 = count % 100;
+  const modulo10 = count % 10;
+  const form = modulo100 >= 11 && modulo100 <= 14
+    ? forms[2]
+    : modulo10 === 1 ? forms[0] : modulo10 >= 2 && modulo10 <= 4
+      ? forms[1]
+      : forms[2];
+  return `${count} ${form}`;
+}
+
+/** Compact, locale-aware evidence summary without exposing source identities. */
+export function memoryReceiptUsageLabel(
+  locale: MemoryUiLocale,
+  receipt: MemoryReceipt
+): string {
+  const reusableCount = receipt.items.filter((item) =>
+    item.itemType === "FACT_VERSION" || item.itemType === "PROFILE").length;
+  const historyItems = receipt.items.filter((item) =>
+    item.itemType === "EPISODE" || item.itemType === "RECALL_CHUNK");
+  const knownChats = new Set(historyItems.flatMap((item) =>
+    item.sourceChatId ? [item.sourceChatId] : []));
+  const historyCount = knownChats.size + historyItems.filter((item) =>
+    item.sourceChatId === null).length;
+
+  if (historyCount === 0) {
+    return reusableCount === 1
+      ? memoryUiCopy(locale, "receipt.usedOne")
+      : `${memoryUiCopy(locale, "receipt.usedMany")}: ${reusableCount}`;
+  }
+  if (locale === "RU") {
+    const history = russianCount(historyCount, [
+      "предыдущий чат",
+      "предыдущих чата",
+      "предыдущих чатов"
+    ]);
+    if (reusableCount === 0) return `Использовано: ${history}`;
+    const reusable = russianCount(reusableCount, [
+      "воспоминание",
+      "воспоминания",
+      "воспоминаний"
+    ]);
+    return `Использовано: ${reusable} и ${history}`;
+  }
+  const history = `${historyCount} previous ${historyCount === 1 ? "chat" : "chats"}`;
+  if (reusableCount === 0) return `${history} used`;
+  const reusable = `${reusableCount} ${reusableCount === 1 ? "memory" : "memories"}`;
+  return `${reusable} and ${history} used`;
 }

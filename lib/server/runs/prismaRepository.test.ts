@@ -36,6 +36,7 @@ async function withRunUser<T>(run: (input: { userId: string }) => Promise<T>): P
     data: {
       displayName: "Run Repository Test User",
       id: userId,
+      status: "active",
       settings: {
         create: {
           defaultControlValues: {},

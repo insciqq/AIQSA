@@ -30,16 +30,22 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
    - explicit request parameters;
    - admitted user-owned attachments. [Provider admission](../backend/providers/ADMISSION_AND_BINDINGS.md) owns capability and PDF-route selection; [Runs and streaming](../backend/RUNS_AND_STREAMING.md) owns private materialization, replay, and context-budget mechanics.
 
-   Durable admission uses the feature-dark Native Memory two-phase boundary.
+   Durable admission uses the Native Memory two-phase boundary.
    Phase A atomically accepts the exact normal-send or regeneration DAG,
    ordinary dependency bindings, a private `PREPARING` run, the bounded base
-   request, and one local-only retrieval attempt. The currently dormant path
-   stages an explicit empty/disabled result. Phase B then revalidates the DAG,
-   current folder/Assistant, Memory counters/settings/index, provider,
-   Knowledge, MCP, and any exact staged items before it freezes the normalized
+   request, and one retrieval attempt before any optional utility I/O. The
+   attempt plans from direct user text, retrieves eligible exact/FTS and
+   optionally qualified vector lanes, fuses and packs safe fact/chunk/episode
+   projections, and records an honest empty/disabled/degraded/failed-safe
+   result. Every external query embedding, expansion, or rerank binds exact
+   destination/qualification/usage evidence before I/O. Phase B then
+   revalidates the DAG, current folder/Assistant, Memory
+   counters/settings/index, any used utility policy, provider, Knowledge, MCP,
+   and every exact staged item/source before it freezes the normalized
    request/preview and makes the run dispatchable. `PREPARING` never reaches an
    answer adapter; cancellation and recovery terminally settle its owned
-   attempt, while finalized recovery replays the already frozen request.
+   attempt and any open utility bindings, while finalized recovery replays the
+   already frozen request without retrieving again.
 
    A reviewed Temporary first send persists mode, policy, deadline, and its one
    deletion obligation inside that same Phase A. It uses a fixed disabled
