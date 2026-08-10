@@ -13,9 +13,9 @@ usage() {
   cat <<'USAGE'
 Usage: ops/backup/create.sh DESTINATION_DIRECTORY
 
-Create a coordinated AIQSA backup while app is stopped. The script restarts
-app only when it was running before the backup began. This assumes app is the
-only writer to its PostgreSQL database and bucket.
+Create a coordinated AIQSA backup while the web app and standalone Memory
+worker are stopped. The script restarts only services that were running before
+the backup began and fences their durable Memory leases before copying data.
 
 The destination receives one mode-0700 bundle containing:
   manifest.env   privacy-safe format/runtime metadata
@@ -69,6 +69,7 @@ bundle="$destination/$bundle_name"
 partial="$destination/.${bundle_name}.partial.$$"
 objects_directory="$partial/.objects"
 app_was_running=0
+memory_worker_was_running=0
 
 [[ ! -e "$bundle" && ! -e "$partial" ]] || die "Backup destination already exists."
 mkdir -m 700 -- "$partial"
@@ -80,6 +81,15 @@ cleanup() {
   if [[ -d "${partial:-}" ]]; then
     if ! rm -rf -- "$partial"; then
       info "Error: an incomplete private backup directory could not be removed."
+      status=1
+    fi
+  fi
+
+  if [[ "$memory_worker_was_running" -eq 1 ]]; then
+    if compose start memory-worker >/dev/null 2>&1 && service_is_running memory-worker; then
+      info "memory-worker restarted."
+    else
+      info "Error: backup ended but memory-worker could not be restarted."
       status=1
     fi
   fi
@@ -100,15 +110,97 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-if service_is_running app; then
-  app_was_running=1
-  info "Stopping app for a write-quiesced backup..."
-  compose stop app >/dev/null
+service_is_running app && app_was_running=1
+service_is_running memory-worker && memory_worker_was_running=1
+
+if [[ "$app_was_running" -eq 1 || "$memory_worker_was_running" -eq 1 ]]; then
+  info "Stopping web and Memory writers for a write-quiesced backup..."
+  compose stop app memory-worker >/dev/null
 fi
 
 if service_is_running app; then
   die "app is still running; backup was not started."
 fi
+if service_is_running memory-worker; then
+  die "memory-worker is still running; backup was not started."
+fi
+
+info "Fencing durable Memory leases..."
+if ! compose exec -T postgres sh -ceu '
+  : "${POSTGRES_DB:?}"
+  : "${POSTGRES_USER:?}"
+  : "${POSTGRES_PASSWORD:?}"
+  export PGPASSWORD="$POSTGRES_PASSWORD"
+  exec psql -X --no-psqlrc --set ON_ERROR_STOP=1 --quiet \
+    --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" <<'"'"'SQL'"'"'
+DO $memory_backup$
+BEGIN
+  IF to_regclass('"'"'public."MemoryJob"'"'"') IS NOT NULL THEN
+    EXECUTE $sql$
+      UPDATE "MemoryJob"
+      SET
+        "state" = '"'"'RETRYABLE_FAILED'"'"'::"MemoryJobState",
+        "leaseToken" = NULL,
+        "leaseExpiresAt" = NULL,
+        "nextAttemptAt" = CURRENT_TIMESTAMP,
+        "errorCode" = '"'"'memory_backup_fenced'"'"',
+        "errorMessage" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "state" = '"'"'CLAIMED'"'"'::"MemoryJobState"
+    $sql$;
+  END IF;
+  IF to_regclass('"'"'public."MemoryDeletionOutbox"'"'"') IS NOT NULL THEN
+    EXECUTE $sql$
+      UPDATE "MemoryDeletionOutbox"
+      SET
+        "state" = '"'"'RETRY_WAIT'"'"'::"MemoryDeletionState",
+        "leaseToken" = NULL,
+        "leaseExpiresAt" = NULL,
+        "nextAttemptAt" = CURRENT_TIMESTAMP,
+        "lastAuditAt" = CURRENT_TIMESTAMP,
+        "errorCode" = '"'"'memory_backup_fenced'"'"',
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "state" = '"'"'RUNNING'"'"'::"MemoryDeletionState"
+    $sql$;
+  END IF;
+END
+$memory_backup$;
+SQL
+' >/dev/null 2>&1; then
+  die "Durable Memory lease fencing failed; backup was not started."
+fi
+
+memory_suppression_relation="$({
+  compose exec -T postgres sh -ceu '
+    : "${POSTGRES_DB:?}"
+    : "${POSTGRES_USER:?}"
+    : "${POSTGRES_PASSWORD:?}"
+    export PGPASSWORD="$POSTGRES_PASSWORD"
+    exec psql -X --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+      --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
+      --command="SELECT to_regclass('"'"'public.\"MemorySuppression\"'"'"') IS NOT NULL"
+  '
+} 2>/dev/null)" || die "Could not inspect Memory suppression metadata."
+memory_suppression_relation="${memory_suppression_relation//[[:space:]]/}"
+[[ "$memory_suppression_relation" == "t" || "$memory_suppression_relation" == "f" ]] || die "PostgreSQL returned invalid Memory suppression metadata."
+
+memory_key_ids=""
+if [[ "$memory_suppression_relation" == "t" ]]; then
+  memory_key_ids="$({
+    compose exec -T postgres sh -ceu '
+      : "${POSTGRES_DB:?}"
+      : "${POSTGRES_USER:?}"
+      : "${POSTGRES_PASSWORD:?}"
+      export PGPASSWORD="$POSTGRES_PASSWORD"
+      exec psql -X --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+        --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
+        --command='"'"'SELECT COALESCE(string_agg(DISTINCT "fingerprintKeyVersion", '"'"'"'"'"','"'"'"'"'"' ORDER BY "fingerprintKeyVersion"), '"'"'"'"'"''"'"'"'"'"') FROM "MemorySuppression"'"'"'
+    '
+  } 2>/dev/null)" || die "Could not read Memory suppression key metadata."
+  memory_key_ids="${memory_key_ids//$'\r'/}"
+  memory_key_ids="${memory_key_ids//$'\n'/}"
+fi
+valid_memory_key_ids "$memory_key_ids" || die "PostgreSQL returned invalid Memory suppression key metadata."
 
 info "Creating PostgreSQL dump..."
 postgres_version="$({
@@ -186,6 +278,7 @@ APP_REVISION=$app_revision
 POSTGRES_SERVER_VERSION_NUM=$postgres_version
 POSTGRES_DUMP_FORMAT=custom
 OBJECT_ARCHIVE_FORMAT=tar
+MEMORY_SUPPRESSION_KEY_IDS=$memory_key_ids
 MANIFEST
 chmod 600 "$partial/manifest.env"
 

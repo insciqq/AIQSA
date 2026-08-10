@@ -238,18 +238,18 @@ describe("Prisma Memory persistence", () => {
     try {
       const foreignScope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(foreignUserId);
       const repository = createPrismaMemoryFactRepository(suppressionKeyring, prisma);
-      const foreign = repository.save(ownerUserId, saveInput(
-        foreignScope.id,
-        "save-foreign-scope-v1",
-        factValue("profile.city", "I live in Moscow.", "Moscow")
-      ));
-      const absent = repository.save(ownerUserId, saveInput(
-        randomUUID(),
-        "save-absent-scope-v1",
-        factValue("profile.city", "I live in Moscow.", "Moscow")
-      ));
-      await expect(foreign).rejects.toMatchObject({ code: "memory_scope_unavailable" });
-      await expect(absent).rejects.toMatchObject({ code: "memory_scope_unavailable" });
+      await Promise.all([
+        expect(repository.save(ownerUserId, saveInput(
+          foreignScope.id,
+          "save-foreign-scope-v1",
+          factValue("profile.city", "I live in Moscow.", "Moscow")
+        ))).rejects.toMatchObject({ code: "memory_scope_unavailable" }),
+        expect(repository.save(ownerUserId, saveInput(
+          randomUUID(),
+          "save-absent-scope-v1",
+          factValue("profile.city", "I live in Moscow.", "Moscow")
+        ))).rejects.toMatchObject({ code: "memory_scope_unavailable" })
+      ]);
       await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: ownerUserId } }))
         .resolves.toMatchObject({
           activeIndexGenerationId: null,

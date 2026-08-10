@@ -21,6 +21,33 @@ The installation release image's one-shot tools role is the cron/manual owner wh
 
 Dry-run performs only bounded reads. Execute mode deletes old events only for terminal runs; deletes only expired/revoked sessions and consumed/expired auth-flow tokens older than the auth cutoff; and stages orphan and stale Knowledge cleanup transactionally. Knowledge cleanup initially covers only old `failed`, never-visible, non-current versions: it removes partial chunks/embedding-usage markers, clears original/normalized object references, records `payloadPurgedAt`, and retains immutable version identity and bounded failure metadata. Any version that was retrieval-visible remains conservative until run bindings own an explicit recovery-authority cutoff. Orphan selection intentionally includes old attachment `failed` rows and stale `processing` rows; deleting an attachment cascades its processing job. For each storage key, staging takes an advisory lock, rechecks both attachment and Knowledge references, creates or reuses one `AttachmentDeletionJob` only after the last reference is released, and never queues or claims an object still referenced by either aggregate. Run creation links only `ready` uploaded attachments with the inverse compare-and-set (`userId`, `chatId = null`, `messageId = null`, `status = ready`) and rolls its whole graph back with `409 attachment_not_available` if prune or another run won. Deletion workers claim jobs in bounded `FOR UPDATE SKIP LOCKED` leases; object deletion is idempotent, a crash after delete is retried after lease expiry, and failures release durable work with only a stable error code/job id in the summary—never a storage key or provider error string.
 
+## Backup And Restore
+
+`ops/backup/create.sh` is the supported bundled-Postgres/MinIO consistency
+boundary. It records whether `app` and `memory-worker` were running, stops both,
+verifies neither remains live, and then atomically moves every claimed Memory
+job to due `RETRYABLE_FAILED` and every running Memory deletion obligation to
+due `RETRY_WAIT` with the stable `memory_backup_fenced` code. Tokens and lease
+deadlines are cleared in the same transition, so a stale pre-backup claimant
+cannot settle after restart. The transition is conditional on the Memory tables
+existing, allowing the current helper to make the required pre-migration backup
+of an older installation. Only after that fence does it dump PostgreSQL and
+mirror the private bucket; cleanup restarts exactly the writer roles that were
+running before the attempt.
+
+Backup format 2 adds the sorted distinct non-secret
+`MemorySuppression.fingerprintKeyVersion` IDs to `manifest.env`; key material
+never enters the bundle. Format 1 remains structurally verifiable for recovery
+of older feature-dark installations. Restore still accepts only explicitly
+acknowledged empty disposable services and never starts either writer. It first
+validates manifest IDs with the separately recovered keyring, restores the
+database transactionally, reads the authoritative distinct IDs back, checks a
+format-2 manifest match, and repeats key preflight before object restore and
+successful handoff. A missing or invalid key leaves the disposable target
+diagnosable but blocks automatic Memory resume. Production promotion still
+requires the separate deletion-journal, barrier/outbox, bearer-endpoint, and
+resurrection review owned by the Memory lifecycle contract.
+
 ## Core Tables
 
 The executable model inventory is `prisma/schema.prisma`. Its current categories are identity/session/approval, users/groups/settings/grants, folders/chats/message DAGs, Assistant definitions/revisions/publications/pins, provider/search catalog, runs/events/usage, MCP definitions/revisions/grants/user state/runtime evidence/tool calls, attachments plus their durable processing queue and purpose-built deletion outbox, per-pipeline document-processing fairness cursors, feature-dark Native Memory settings/authority/derivative/operational evidence, and immutable share snapshots. Living prose records only cross-table constraints that affect behavior.
@@ -61,8 +88,12 @@ owner, state, token, and unexpired lease. Consent waiting carries neither lease
 nor fallback authority. Job apply and success settle in one transaction.
 Deletion apply and success do likewise; failures release to bounded retry and
 then `BLOCKED_REQUIRES_ADMIN` with a slow due time and audit timestamp, never a
-terminal abandoned state. The default registry is empty and startup is not yet
-wired, so these rows remain dormant until a later handler-owning slice opts in.
+terminal abandoned state. The default registry is empty, so these rows remain
+dormant until a later handler-owning slice opts in. Development starts the
+feature-local coordinator from server instrumentation; production runs the
+same coordinator code in the private `memory-worker` role. Both preflight the
+suppression keyring and every referenced historical key ID before starting
+claims.
 
 `User.role`/`User.status`, identity/session/token/rule/invite relations, and exact normalized email/domain matching implement the auth state machine. The schema owns field/enumeration shape; the bounded owners routed by `SECURITY.md` own the threat and session contract.
 
@@ -177,6 +208,13 @@ Follow the storage/logging invariants in `agent_docs/CRITICAL_INVARIANTS.md`. Pe
 Schema changes land as append-only Prisma migrations. The one-shot installation tools service uses `prisma migrate deploy`; never use `prisma db push` for persistent data volumes. Existing pre-migration volumes that already match the baseline are marked once with `prisma migrate resolve --applied 20260610180000_baseline` before normal deploys continue. Each migration owns its compatibility preflight, transactional conversion, and rollback guidance beside the SQL or in its focused contract script; `TESTING.md` routes the disposable-database commands. This document records only the resulting schema and runtime invariants.
 
 `prisma/bootstrap.ts` is the installation fresh-install/adoption entry point. Under one serializable transaction and advisory lock it first distinguishes an empty schema from an already-adopted initial-admin password identity by normalized email. Every other nonempty target fails before catalog or user mutation. Fresh bootstrap requires an explicit valid email and password, defaults the display name when omitted, and generates a user UUID when none is supplied. It creates only the active admin, verified password identity, immutable built-in `Full access` group with owner membership and current MCP grants, default settings with no default folder, inert default-off `UserMemorySettings`, nullable installation model-policy foundation, code-owned provider/Search scaffolding, and the disabled fake test deployment; it creates no Memory content/work, prompt row, run-profile slot, real provider-model deployment, folder, or demo chat. An explicit user UUID is enforced when supplied. An adopted rerun may repair missing inert Memory settings or model-policy foundation and restore the built-in group/membership/current MCP grants, but never overwrites either settings row, the policy target, or creates newly added answer-model deployments; adding a new template therefore has no migration/backfill effect on an existing installation. It may refresh metadata for already-owned catalog rows while preserving catalog enablement and every operator-owned password/user-profile/role/status/settings/folder/prompt/grant value. The plaintext initial password is unnecessary after first adoption. The default Gemini Quick Setup candidate set includes Gemini 3.6 Flash, 3.5 Flash, 3.5 Flash-Lite, and 3.1 Pro Preview; those deployments are created and granted only when that setup runs against a provider catalog that exposes them, never by an upgrade migration or adopted-bootstrap backfill.
+
+The production one-shot role runs migration deploy, then installation
+bootstrap, then the idempotent legacy provider/SMTP/MCP control-plane cutover.
+That order preserves bootstrap's fail-closed empty-versus-adopted decision: a
+fresh cutover must not create control-plane rows before the initial password
+identity exists. On an adopted database bootstrap repairs only code-owned
+foundation before the cutover imports any complete legacy environment drafts.
 
 `prisma/seed.ts` is intentionally repeatable only for the development/test volumes. Its first executable guard requires exact internal `AIQSA_TEST_MODE=1` and rejects production `NODE_ENV` before any database query. On fresh and repeated runs it atomically keeps the fixed operator active/admin and restores its verified password identity, plus two fixed active ordinary-user identities used for access testing; matching scrypt hashes are retained, while missing, changed, malformed, or obsolete hashes are replaced. Exact-email/user ownership conflicts and multiple password identities fail closed instead of updating an arbitrary identity. These committed credentials are disposable public fixtures and are never an installation bootstrap path. The production installation bootstrap is covered to create only its requested administrator foundation and never these ids, emails, passwords, groups, or MCP fixtures.
 

@@ -55,11 +55,15 @@ drift gets at most one fresh attempt, and cancel/failure/expiry/recovery settles
 the owned attempt while freezing the base request. Foreground and recovery
 dispatch both reject `PREPARING`; finalized recovery reuses the frozen request.
 
-There are still no Memory APIs, registered phase handlers, automatic
-coordinator startup or standalone role, retrieval integration, UI surfaces, or
-live Memory provider calls. The default registry is empty, so the coordinator
-boundary remains feature-dark:
-it resolves current installation utility or entitled embedding authority,
+There are still no Memory APIs, registered phase handlers, retrieval
+integration, UI surfaces, or live Memory provider calls. Development starts
+the coordinator feature-locally from server instrumentation, while production
+uses the same image/code in the private no-API `memory-worker` role. Both paths
+preflight the configured suppression keyring against every distinct historical
+key ID before starting. Failure stays local to Memory and does not alter core
+web readiness. The default registry is empty, so startup schedules no work and
+the feature remains dark. The per-call execution boundary resolves current
+installation utility or entitled embedding authority,
 accepted egress, exact signed role qualification, immutable provider and
 credential evidence, single-winner start, exactly-once nullable usage,
 outcome-unknown recovery, and post-horizon detach, but no shipped caller can
@@ -484,31 +488,38 @@ excerpts, tool queries/results, embeddings, raw provider bodies, or secrets.
 
 ## Runtime, Backup, And Recovery
 
-The implemented coordinator library uses the same code/image and shared
-PostgreSQL schema and exposes a process-local startup seam, but nothing starts
-it while the handler registry is feature-dark. A future supported deployment
-may run it process-locally for development/small installations or as a private
-standalone Compose role for isolation; this is not a microservice and exposes
-no public API. Database-owned jobs use skip-locked claims, leases, heartbeat,
-bounded retry, and idempotency. Memory startup failure does not fail core web
-readiness, but durable degraded/blocked state stays inspectable.
+The coordinator uses the same code/image and shared PostgreSQL schema in both
+supported shapes. Development starts it process-locally from
+`instrumentation.ts`; the persistent Compose topology runs `memory-worker` as a
+private standalone process for isolation. This is not a microservice, exposes
+no port or API, and is not a web readiness dependency. Database-owned jobs use
+skip-locked claims, leases, heartbeat, bounded retry, and idempotency. Invalid
+key configuration, a missing historical key, database preflight failure, or
+coordinator construction failure prevents claims and remains feature-local;
+durable job/deletion status stays inspectable.
 
 No asynchronous embedding, indexing, Temporary promise, or purge promise may
 ship before the job ledger, the single deletion outbox, lease recovery, and
 reconciliation paths that make it durable. Provider/credential removal must
 honor accepted execution evidence and outstanding obligations.
 
-The currently supported backup helper assumes the web app is the sole writer;
-therefore a standalone Memory writer is forbidden until backup/restore can
-quiesce both roles and fence their leases. Restore is accepted only into an
-isolated review target with public bearer endpoints disabled. It must preflight
-every required suppression-fingerprint key ID, reapply an external post-backup
-deletion journal when present, reconcile deletion outbox/account/source
-barriers, and audit for resurrection before production promotion. Missing keys
-fail closed and prohibit automatic-memory resume, rebuild, or redream.
-Ordinary bundles retain only the non-secret `fingerprintKeyVersion` metadata;
+The supported backup helper records and stops both `app` and `memory-worker`,
+verifies both are quiescent, and atomically releases their claimed Memory jobs
+and deletion obligations to due retry states before database/object copying.
+Cleanup restarts exactly the roles that were previously running. Format-2
+bundles retain only sorted distinct non-secret `fingerprintKeyVersion` IDs;
 the dedicated keyring is recovered independently from protected secret storage
 and is never copied into PostgreSQL, object archives, manifests, or checksums.
+The conditional fence also permits a pre-migration backup of a database that
+does not yet contain Memory tables, and format-1 bundles remain verifiable.
+
+Restore is accepted only into an isolated empty review target with public
+bearer endpoints and both writers disabled. It preflights manifest IDs before
+mutation, verifies restored authoritative IDs and preflights again before
+handoff. Missing keys fail closed and prohibit automatic-memory resume,
+rebuild, or redream. Before production promotion the operator must still
+reapply an external post-backup deletion journal when present, reconcile the
+deletion outbox plus account/source barriers, and audit for resurrection.
 
 ## Bounded Ownership Map
 

@@ -99,6 +99,10 @@ Back up the complete keyring in encrypted access-restricted secret storage,
 separately from application data, and test that recovery provides every
 distinct required ID before starting automatic Memory work. Core web readiness
 remains independent while Memory reports a feature-local blocked status.
+Compose forwards the complete keyring to the web role, the standalone Memory
+worker, and the one-shot tools role used for restore preflight. The worker
+refuses startup when configuration is invalid or a referenced historical ID is
+missing; this does not become a web dependency.
 
 ## Address, Cookies, And Proxy Trust
 
@@ -399,6 +403,8 @@ AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:latest
 AIQSA_APP_REVISION=
 AIQSA_APP_CPU_LIMIT=2.0
 AIQSA_APP_MEMORY_LIMIT=2g
+AIQSA_MEMORY_WORKER_CPU_LIMIT=1.0
+AIQSA_MEMORY_WORKER_MEMORY_LIMIT=1g
 AIQSA_TOOLS_CPU_LIMIT=1.0
 AIQSA_TOOLS_MEMORY_LIMIT=1g
 AIQSA_POSTGRES_CPU_LIMIT=1.0
@@ -416,7 +422,7 @@ AIQSA_MINIO_VOLUME_NAME=aiqsa_minio_data
 AIQSA_TOOLHIVE_VOLUME_NAME=aiqsa_toolhive_data
 ```
 
-The app, migration/bootstrap, and maintenance services share `AIQSA_IMAGE`. Its default is the public `latest` release; one SemVer or `sha-...` tag in the same `.env` pins every role to one immutable build. `AIQSA_APP_REVISION` is privacy-safe backup metadata for release trees without `.git`; it is not passed to the web runtime. CPU/memory values, including the independent Docling and Tika budgets, are hard container limits and JSON-file logs rotate at the documented bounds. The checked-in Docling worker/thread profile remains authoritative when memory is overridden.
+The app, standalone Memory worker, migration/bootstrap, and maintenance services share `AIQSA_IMAGE`. Its default is the public `latest` release; one SemVer or `sha-...` tag in the same `.env` pins every role to one immutable build. `AIQSA_APP_REVISION` is privacy-safe backup metadata for release trees without `.git`; it is not passed to the web runtime. CPU/memory values, including the independent Memory worker, Docling, and Tika budgets, are hard container limits and JSON-file logs rotate at the documented bounds. The checked-in Docling worker/thread profile remains authoritative when memory is overridden.
 
 Stable explicit volume names make normal rebuild/update operations independent of checkout-directory naming. The volume-name overrides exist only to adopt already-existing Docker volumes. ToolHive state is sensitive, disposable observed state and is never authoritative for MCP definitions or encrypted credentials. Because explicit volume names do not follow `docker compose -p`, every disposable installation smoke that starts this topology must set unique PostgreSQL, MinIO, and ToolHive volume overrides; routine checks instead use the separate dev Compose file.
 

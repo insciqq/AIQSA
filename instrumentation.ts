@@ -39,4 +39,15 @@ export async function register(): Promise<void> {
     // MCP is an optional subsystem. A missing/invalid MCP deployment setting must
     // not prevent the core application from starting.
   }
+  if (process.env.NODE_ENV !== "production") {
+    try {
+      const { startDefaultMemoryCoordinatorFeatureLocally } = await import(
+        "./lib/server/memory/coordinator/startup"
+      );
+      await startDefaultMemoryCoordinatorFeatureLocally();
+    } catch {
+      // Memory coordination is feature-local. Development web readiness and
+      // ordinary non-Memory behavior remain available when startup is blocked.
+    }
+  }
 }

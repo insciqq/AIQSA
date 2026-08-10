@@ -57,8 +57,8 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
     "dependencies.tsx=$TSX_VERSION" \
   && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
-# One published image owns both the standalone application and the narrowly
-# pruned installation tools. Compose selects the role by overriding the command.
+# One published image owns the standalone application, private Memory worker,
+# and narrowly pruned installation tools. Compose selects the role by command.
 FROM ${NODE_IMAGE} AS release
 
 WORKDIR /app

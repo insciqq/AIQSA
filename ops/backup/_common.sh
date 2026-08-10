@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 
-AIQSA_BACKUP_FORMAT="1"
+AIQSA_BACKUP_FORMAT="2"
 
 die() {
   printf 'Error: %s\n' "$1" >&2
@@ -29,6 +29,23 @@ service_is_running() {
 
 valid_service_name() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]
+}
+
+valid_memory_key_ids() {
+  local value="$1"
+  local previous=""
+  local key_id
+  local -a key_ids=()
+
+  [[ "${#value}" -le 32768 ]] || return 1
+  [[ -n "$value" ]] || return 0
+  IFS=',' read -r -a key_ids <<<"$value"
+  [[ "${#key_ids[@]}" -le 256 ]] || return 1
+  for key_id in "${key_ids[@]}"; do
+    [[ "$key_id" =~ ^[a-z][a-z0-9_-]{0,63}$ && "$key_id" != "current" ]] || return 1
+    [[ -z "$previous" || "$key_id" > "$previous" ]] || return 1
+    previous="$key_id"
+  done
 }
 
 manifest_value() {
@@ -68,7 +85,7 @@ validate_checksum_manifest() {
 
 validate_bundle() {
   local bundle="$1"
-  local format created_at app_revision postgres_version dump_format archive_format
+  local format created_at app_revision postgres_version dump_format archive_format memory_key_ids
 
   [[ -d "$bundle" && ! -L "$bundle" ]] || die "Backup bundle must be a real directory, not a symlink."
 
@@ -90,7 +107,7 @@ validate_bundle() {
   dump_format="$(manifest_value "$bundle/manifest.env" POSTGRES_DUMP_FORMAT)" || die "Backup version manifest is invalid."
   archive_format="$(manifest_value "$bundle/manifest.env" OBJECT_ARCHIVE_FORMAT)" || die "Backup version manifest is invalid."
 
-  [[ "$format" == "$AIQSA_BACKUP_FORMAT" ]] || die "Backup format is incompatible with this restore tool."
+  [[ "$format" == "1" || "$format" == "$AIQSA_BACKUP_FORMAT" ]] || die "Backup format is incompatible with this restore tool."
   [[ "$created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || die "Backup timestamp is invalid."
   [[ "$app_revision" =~ ^([0-9a-f]{40}|unknown)$ ]] || die "Backup application revision is invalid."
   [[ "$postgres_version" =~ ^[0-9]{5,6}$ ]] || die "Backup PostgreSQL version is invalid."
@@ -99,5 +116,13 @@ validate_bundle() {
   [[ "$(LC_ALL=C head -c 5 "$bundle/postgres.dump")" == "PGDMP" ]] || die "Backup PostgreSQL dump header is invalid."
   tar -tf "$bundle/objects.tar" >/dev/null 2>&1 || die "Backup object archive is invalid."
 
+  memory_key_ids=""
+  if [[ "$format" == "2" ]]; then
+    memory_key_ids="$(manifest_value "$bundle/manifest.env" MEMORY_SUPPRESSION_KEY_IDS)" || die "Backup Memory key metadata is invalid."
+    valid_memory_key_ids "$memory_key_ids" || die "Backup Memory key metadata is invalid."
+  fi
+
+  BACKUP_FORMAT="$format"
+  BACKUP_MEMORY_SUPPRESSION_KEY_IDS="$memory_key_ids"
   BACKUP_POSTGRES_VERSION_NUM="$postgres_version"
 }

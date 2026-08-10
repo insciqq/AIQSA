@@ -76,12 +76,12 @@ valid_service_name "$minio_service" || die "Disposable MinIO service name is inv
 [[ "$target_bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || die "Disposable MinIO bucket name is invalid."
 
 case "$postgres_service" in
-  postgres|app|minio|migrate-bootstrap|minio-init|*-p[r]od)
+  postgres|app|memory-worker|minio|migrate-bootstrap|minio-init|*-p[r]od)
     die "Canonical application services cannot be restore targets."
     ;;
 esac
 case "$minio_service" in
-  postgres|app|minio|migrate-bootstrap|minio-init|*-p[r]od)
+  postgres|app|memory-worker|minio|migrate-bootstrap|minio-init|*-p[r]od)
     die "Canonical application services cannot be restore targets."
     ;;
 esac
@@ -131,6 +131,13 @@ target_relation_count="$(postgres_query "
 target_relation_count="${target_relation_count//[[:space:]]/}"
 [[ "$target_relation_count" =~ ^[0-9]+$ ]] || die "Disposable PostgreSQL target returned an invalid emptiness result."
 [[ "$target_relation_count" -eq 0 ]] || die "Disposable PostgreSQL target is not empty; nothing was changed."
+
+info "Preflighting Memory suppression keys..."
+if ! compose run --rm --no-deps --entrypoint npm migrate-bootstrap \
+  run memory:suppression:preflight -- restore \
+  "$BACKUP_MEMORY_SUPPRESSION_KEY_IDS" >/dev/null 2>&1; then
+  die "Memory suppression key preflight failed; nothing was changed."
+fi
 
 minio_preflight="$({
   compose exec -T "$minio_service" sh -ceu '
@@ -192,6 +199,34 @@ if ! compose exec -T "$postgres_service" sh -ceu '
     --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
 ' <"$bundle/postgres.dump" >/dev/null 2>&1; then
   die "PostgreSQL restore failed. The disposable target is incomplete and was left intact for diagnosis."
+fi
+
+restored_memory_relation="$(postgres_query "
+  SELECT to_regclass('public.\"MemorySuppression\"') IS NOT NULL;
+" 2>/dev/null)" || die "Restore completed but Memory suppression metadata could not be inspected."
+restored_memory_relation="${restored_memory_relation//[[:space:]]/}"
+[[ "$restored_memory_relation" == "t" || "$restored_memory_relation" == "f" ]] || die "Restore completed but Memory suppression metadata was invalid."
+
+restored_memory_key_ids=""
+if [[ "$restored_memory_relation" == "t" ]]; then
+  restored_memory_key_ids="$(postgres_query '
+    SELECT COALESCE(
+      string_agg(DISTINCT "fingerprintKeyVersion", '"'"','"'"' ORDER BY "fingerprintKeyVersion"),
+      '"'"''"'"'
+    )
+    FROM "MemorySuppression";
+  ' 2>/dev/null)" || die "Restore completed but Memory suppression key metadata could not be read."
+  restored_memory_key_ids="${restored_memory_key_ids//$'\r'/}"
+  restored_memory_key_ids="${restored_memory_key_ids//$'\n'/}"
+fi
+valid_memory_key_ids "$restored_memory_key_ids" || die "Restore completed with invalid Memory suppression key metadata."
+if [[ "$BACKUP_FORMAT" == "2" && "$restored_memory_key_ids" != "$BACKUP_MEMORY_SUPPRESSION_KEY_IDS" ]]; then
+  die "Restore completed but Memory suppression key metadata does not match the bundle manifest."
+fi
+if ! compose run --rm --no-deps --entrypoint npm migrate-bootstrap \
+  run memory:suppression:preflight -- restore \
+  "$restored_memory_key_ids" >/dev/null 2>&1; then
+  die "Restore completed but required Memory suppression keys are unavailable; automatic Memory resume is blocked."
 fi
 
 info "Restoring private objects into the disposable target..."

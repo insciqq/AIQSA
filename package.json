@@ -52,6 +52,8 @@
     "db:test:bootstrap": "npm run db:migrate:deploy && npm run db:seed",
     "start": "next start --hostname 0.0.0.0",
     "lint": "eslint . --max-warnings=0",
+    "memory:coordinator": "tsx scripts/memory-coordinator.ts",
+    "memory:suppression:preflight": "tsx scripts/memory-suppression-preflight.ts",
     "mcp:cleanup": "tsx scripts/mcp-toolhive-cleanup.ts",
     "prune": "tsx scripts/prune.ts",
     "security:deps": "npm audit --audit-level=high",
