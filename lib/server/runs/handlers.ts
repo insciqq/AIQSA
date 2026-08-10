@@ -39,6 +39,7 @@ import {
   ProviderAdmissionConflictError
 } from "./runRepositoryContract";
 import type { RunRepository } from "./runRepositoryContract";
+import { MemoryPreparingRunConflictError } from "./preparingRun";
 
 export { ActiveLeafConflictError, ActiveRunConflictError };
 export type {
@@ -159,6 +160,13 @@ function isAssistantRunConflictError(error: unknown): error is AssistantRunConfl
     (error instanceof Error && error.name === "AssistantRunConflictError");
 }
 
+function isMemoryPreparingRunConflictError(
+  error: unknown
+): error is MemoryPreparingRunConflictError {
+  return error instanceof MemoryPreparingRunConflictError ||
+    (error instanceof Error && error.name === "MemoryPreparingRunConflictError");
+}
+
 async function acceptedRuntimeBinding(
   deps: RunHandlerDeps,
   runId: string,
@@ -233,7 +241,7 @@ async function activeRunConflictResponse(
       error: "active_run_in_progress",
       run: {
         id: activeRun.id,
-        status: activeRun.status
+        status: activeRun.status === "preparing" ? "streaming" : activeRun.status
       }
     },
     { status: 409 }
@@ -371,6 +379,14 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "assistant_not_available" }, { status: 409 });
       }
 
+      if (isMemoryPreparingRunConflictError(error)) {
+        return Response.json({
+          error: error instanceof MemoryPreparingRunConflictError
+            ? error.code
+            : "memory_preparing_run_conflict"
+        }, { status: 409 });
+      }
+
       throw error;
     }
     const runtime = await acceptedRuntimeBinding(
@@ -471,6 +487,9 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           : {}),
         modelId: preparedData.normalizedRequest.modelId,
         normalizedRequest: preparedData.normalizedRequest,
+        ...(source.assistantMessage
+          ? { preSendAssistantMessageId: source.assistantMessage.id }
+          : {}),
         provider: preparedData.normalizedRequest.provider,
         providerRequestPreview: preparedData.providerRequestPreview,
         userId: auth.userId,
@@ -499,6 +518,14 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
 
       if (isAssistantRunConflictError(error)) {
         return Response.json({ error: "assistant_not_available" }, { status: 409 });
+      }
+
+      if (isMemoryPreparingRunConflictError(error)) {
+        return Response.json({
+          error: error instanceof MemoryPreparingRunConflictError
+            ? error.code
+            : "memory_preparing_run_conflict"
+        }, { status: 409 });
       }
 
       throw error;

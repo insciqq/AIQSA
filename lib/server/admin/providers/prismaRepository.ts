@@ -173,7 +173,7 @@ function conflict(entries: AdminProviderDeleteBlocker[]): AdminProviderDeleteRes
   return entries.length ? { blockers: entries, status: "conflict" } : null;
 }
 
-const activeRunStatuses = ["in_progress", "queued", "streaming"] as const;
+const activeRunStatuses = ["preparing", "in_progress", "queued", "streaming"] as const;
 
 async function cleanupProviderReferences(
   tx: Prisma.TransactionClient,

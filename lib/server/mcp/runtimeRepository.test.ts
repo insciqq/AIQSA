@@ -722,7 +722,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
         runBindings: {
           some: {
             modelRun: {
-              status: { in: ["queued", "streaming", "in_progress"] }
+              status: { in: ["preparing", "queued", "streaming", "in_progress"] }
             }
           }
         }

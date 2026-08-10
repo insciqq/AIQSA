@@ -85,6 +85,14 @@ export type NormalizedRunRequest = {
   modelCapabilities: ProviderModelCapabilities;
   mcp?: McpRunPlanSnapshot;
   modelId: string;
+  personalContext?: Readonly<{
+    approxTokens: number;
+    itemCount: number;
+    memoryGeneration: number;
+    memoryRevision: number;
+    mode: "prefetched";
+    text: string;
+  }>;
   params: Record<string, unknown>;
   prompt: {
     /**

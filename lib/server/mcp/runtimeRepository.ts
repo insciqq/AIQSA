@@ -30,7 +30,7 @@ import type {
   McpRuntimeLaunch
 } from "./runtimeCoordinator";
 
-const ACTIVE_RUN_STATUSES = ["queued", "streaming", "in_progress"] as const;
+const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"] as const;
 const RECENT_ACTIVITY_MS = 15 * 60_000;
 const DRAIN_GRACE_MS = 60_000;
 const INVENTORY_FRESH_MS = 5 * 60_000;
@@ -691,7 +691,7 @@ export function createPrismaMcpRuntimeRepository(input: {
               FROM "McpRunBinding" AS binding
               JOIN "ModelRun" AS run ON run."id" = binding."modelRunId"
               WHERE binding."runtimeGenerationId" = generation."id"
-                AND run."status" IN ('queued', 'streaming', 'in_progress')
+                AND run."status" IN ('preparing', 'queued', 'streaming', 'in_progress')
             )
           )
       `;
@@ -728,7 +728,7 @@ export function createPrismaMcpRuntimeRepository(input: {
               FROM "McpRunBinding" AS binding
               JOIN "ModelRun" AS run ON run."id" = binding."modelRunId"
               WHERE binding."runtimeGenerationId" = generation."id"
-                AND run."status" IN ('queued', 'streaming', 'in_progress')
+                AND run."status" IN ('preparing', 'queued', 'streaming', 'in_progress')
             )
           )
       `;
@@ -760,7 +760,7 @@ export function createPrismaMcpRuntimeRepository(input: {
               FROM "McpRunBinding" AS binding
               JOIN "ModelRun" AS run ON run."id" = binding."modelRunId"
               WHERE binding."runtimeGenerationId" = generation."id"
-                AND run."status" IN ('queued', 'streaming', 'in_progress')
+                AND run."status" IN ('preparing', 'queued', 'streaming', 'in_progress')
             )
           )
       `;

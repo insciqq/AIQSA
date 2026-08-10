@@ -32,7 +32,7 @@ import {
   type McpOAuthPurpose
 } from "./oauthPolicy";
 
-const ACTIVE_RUN_STATUSES = ["queued", "streaming", "in_progress"] as const;
+const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"] as const;
 const MAX_OAUTH_ENVELOPE_JSON_BYTES = 512 * 1_024;
 
 type StoredClientMetadata = {

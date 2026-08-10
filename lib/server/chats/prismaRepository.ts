@@ -1070,7 +1070,7 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
           where: {
             chatId,
             status: {
-              in: ["streaming", "queued", "in_progress"]
+              in: ["preparing", "streaming", "queued", "in_progress"]
             }
           }
         });
@@ -1530,7 +1530,7 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
             where: {
               chatId,
               status: {
-                in: ["streaming", "queued", "in_progress"]
+                in: ["preparing", "streaming", "queued", "in_progress"]
               }
             }
           });

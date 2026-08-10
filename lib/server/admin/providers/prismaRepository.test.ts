@@ -747,7 +747,11 @@ describe("Prisma admin provider repository", () => {
       where: {
         AND: [
           { credentialId: "credential-1" },
-          { modelRun: { status: { notIn: ["in_progress", "queued", "streaming"] } } },
+          {
+            modelRun: {
+              status: { notIn: ["preparing", "in_progress", "queued", "streaming"] }
+            }
+          },
           {
             OR: [
               { recoverableUntil: null },

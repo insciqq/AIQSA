@@ -38,6 +38,10 @@ import type {
   ProviderModelCapabilities
 } from "../providers/types";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
+import type {
+  MemoryPreparingAttemptResult,
+  MemoryPreparingSettingsSnapshot
+} from "./preparingRun";
 
 export type RunAttachmentRecord = ProviderAttachment & {
   storageKey: string;
@@ -212,7 +216,71 @@ export type PersistedRunUsageAttribution = RunUsageAttribution & {
 
 export type ProviderResponseIdPublication = "cancelled" | "published" | "terminal";
 
+export type CreateRunInput = {
+  assistant?: AcceptedAssistantRun;
+  chatId: string;
+  content: { blocks: unknown[] };
+  defaults?: AcceptedRunDefaults;
+  expectedActiveLeafId: string | null;
+  knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
+  mcpBindings?: McpRunPlanBinding[];
+  modelId: string;
+  normalizedRequest: NormalizedRunRequest;
+  providerAdmissionPlan?: ProviderAdmissionPlan;
+  provider: string;
+  providerRequestPreview: Record<string, unknown>;
+  userId: string;
+};
+
+export type CreateRegenerationRunInput = {
+  assistant?: AcceptedAssistantRun;
+  chatId: string;
+  defaults?: AcceptedRunDefaults;
+  knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
+  mcpBindings?: McpRunPlanBinding[];
+  modelId: string;
+  normalizedRequest: NormalizedRunRequest;
+  /** The assistant being replaced. Omission is accepted only by the legacy
+   * compatibility wrapper, which resolves the currently active sibling. */
+  preSendAssistantMessageId?: string;
+  providerAdmissionPlan?: ProviderAdmissionPlan;
+  provider: string;
+  providerRequestPreview: Record<string, unknown>;
+  userId: string;
+  userMessageId: string;
+};
+
+export type PreparingRunAdmissionInput =
+  | (CreateRunInput & { admissionKind: "NORMAL_SEND" })
+  | (CreateRegenerationRunInput & { admissionKind: "REGENERATE" });
+
+export type PreparingRunAdmissionResult = Readonly<{
+  assistantMessageId: string;
+  attemptId: string;
+  runId: string;
+  settingsSnapshot: MemoryPreparingSettingsSnapshot;
+  userMessageId: string;
+}>;
+
+export type PreparingRunFinalizationInput = Readonly<{
+  assistant?: AcceptedAssistantRun;
+  attemptId: string;
+  knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
+  mcpBindings?: readonly McpRunPlanBinding[];
+  normalizedRequest: NormalizedRunRequest;
+  providerAdmissionPlan?: ProviderAdmissionPlan;
+  providerRequestPreview: Readonly<Record<string, unknown>>;
+  runId: string;
+  userId: string;
+}>;
+
+export type PreparingRunRecoveryResult =
+  | "finalized"
+  | "not_preparing"
+  | "settled";
+
 export type RunRepository = {
+  admitPreparingRun(input: PreparingRunAdmissionInput): Promise<PreparingRunAdmissionResult>;
   advanceToolLoopCallBatch(input: {
     roundIndex: number;
     runId: string;
@@ -231,6 +299,12 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<BeginToolLoopProviderRoundResult>;
+  beginPreparingRunAttempt(input: Readonly<{
+    attemptId: string;
+    now: Date;
+    runId: string;
+    userId: string;
+  }>): Promise<boolean>;
   cancelPendingToolLoopCalls(input: { runId: string; userId: string }): Promise<number>;
   claimToolLoopCall(input: {
     callId: string;
@@ -243,6 +317,12 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<CancelRunResult>;
+  completePreparingRunAttempt(input: Readonly<{
+    attemptId: string;
+    result: MemoryPreparingAttemptResult;
+    runId: string;
+    userId: string;
+  }>): Promise<boolean>;
   completeRun(input: {
     assistantMessageId: string;
     chatId: string;
@@ -258,39 +338,12 @@ export type RunRepository = {
     usageAttributions?: RunUsageAttribution[];
     userId: string;
   }): Promise<boolean>;
-  createRun(input: {
-    assistant?: AcceptedAssistantRun;
-    chatId: string;
-    content: { blocks: unknown[] };
-    defaults?: AcceptedRunDefaults;
-    expectedActiveLeafId: string | null;
-    knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
-    mcpBindings?: McpRunPlanBinding[];
-    modelId: string;
-    normalizedRequest: NormalizedRunRequest;
-    providerAdmissionPlan?: ProviderAdmissionPlan;
-    provider: string;
-    providerRequestPreview: Record<string, unknown>;
-    userId: string;
-  }): Promise<{
+  createRun(input: CreateRunInput): Promise<{
     assistantMessageId: string;
     runId: string;
     userMessageId: string;
   }>;
-  createRegenerationRun(input: {
-    assistant?: AcceptedAssistantRun;
-    chatId: string;
-    defaults?: AcceptedRunDefaults;
-    knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
-    mcpBindings?: McpRunPlanBinding[];
-    modelId: string;
-    normalizedRequest: NormalizedRunRequest;
-    providerAdmissionPlan?: ProviderAdmissionPlan;
-    provider: string;
-    providerRequestPreview: Record<string, unknown>;
-    userId: string;
-    userMessageId: string;
-  }): Promise<{
+  createRegenerationRun(input: CreateRegenerationRunInput): Promise<{
     assistantMessageId: string;
     runId: string;
     userMessageId: string;
@@ -390,6 +443,7 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }): Promise<PersistedRunUsageAttribution[]>;
+  finalizePreparingRun(input: PreparingRunFinalizationInput): Promise<boolean>;
   loadCheckpointedToolLoopRun(input: {
     runId: string;
     userId: string;
@@ -410,6 +464,28 @@ export type RunRepository = {
     usageAttributions: RunUsageAttribution[];
     userId: string;
   }): Promise<boolean>;
+  recoverPreparingRun(input: Readonly<{
+    now: Date;
+    runId: string;
+    userId: string;
+  }>): Promise<PreparingRunRecoveryResult>;
+  retryPreparingRunAttempt(input: Readonly<{
+    attemptId: string;
+    now: Date;
+    runId: string;
+    userId: string;
+  }>): Promise<Readonly<{
+    attemptId: string;
+    settingsSnapshot: MemoryPreparingSettingsSnapshot;
+  }> | null>;
+  settlePreparingRunFailure(input: Readonly<{
+    attemptId?: string;
+    errorCode: string;
+    message: string;
+    runId: string;
+    state: "CANCELLED" | "EXPIRED" | "FAILED" | "STALE";
+    userId: string;
+  }>): Promise<boolean>;
   settleRecoveredRunError(input: {
     error: { code: string; message: string };
     events: ModelRunSseEvent[];

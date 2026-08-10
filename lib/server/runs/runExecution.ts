@@ -159,6 +159,7 @@ export type RunExecutionRepository = Pick<
   | "createSearchRun"
   | "failRun"
   | "getChatUpdateForRun"
+  | "getRunControlForUser"
   | "isSearchStrategyEnabled"
   | "loadEntitlements"
   | "loadModelConfiguration"
@@ -1127,6 +1128,21 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
       try {
         throwIfAborted(signal);
+        const dispatchControl = await input.repository.getRunControlForUser(
+          runId,
+          input.userId
+        );
+        if (
+          !dispatchControl ||
+          !["streaming", "queued", "in_progress"].includes(dispatchControl.status)
+        ) {
+          throw new RunPipelineError(
+            dispatchControl?.status === "preparing"
+              ? "memory_preparing_run_not_finalized"
+              : "model_run_not_active",
+            "Run is not finalized for provider dispatch"
+          );
+        }
         await emit(controller, encoder, input.repository, runId, sequence, {
           data: {
             modelId: normalizedRequest.modelId,

@@ -40,6 +40,21 @@ Phase 3 runtime authorization migration owns that cutover. The
 installation-only suppression HMAC keyring and restore/automatic-work
 preflights are implemented separately; keys never enter the database.
 
+The dormant two-phase run boundary is now executable for every normal send and
+regeneration. Phase A commits the exact message DAG, ordinary accepted
+provider/Knowledge/MCP evidence, a private `PREPARING` run with null request
+artifacts, the bounded base-request snapshot, and one local-only attempt.
+Current behavior then settles that attempt as `DISABLED` or `EMPTY`; no Memory
+retrieval or utility call is registered. Phase B locks and revalidates the DAG,
+folder and Assistant authority, Memory settings/generation/index, ordinary
+admission plans, and every staged item/source/scope/safety snapshot before it
+atomically consumes the attempt, creates the immutable run binding/items,
+freezes the normalized request and preview, and makes the run dispatchable.
+Only zero-item additive `memoryRevision` drift is accepted, settings/generation
+drift gets at most one fresh attempt, and cancel/failure/expiry/recovery settles
+the owned attempt while freezing the base request. Foreground and recovery
+dispatch both reject `PREPARING`; finalized recovery reuses the frozen request.
+
 There are still no Memory APIs, registered phase handlers, automatic
 coordinator startup or standalone role, retrieval integration, UI surfaces, or
 live Memory provider calls. The default registry is empty, so the coordinator
@@ -48,12 +63,11 @@ it resolves current installation utility or entitled embedding authority,
 accepted egress, exact signed role qualification, immutable provider and
 credential evidence, single-winner start, exactly-once nullable usage,
 outcome-unknown recovery, and post-horizon detach, but no shipped caller can
-dispatch it. The current run adapter refuses to project a `preparing` row
-through the accepted-run wire contract, so the new state cannot dispatch or
-leak before the two-phase runtime slice lands. No non-default Memory content is
-created by ordinary application behavior. Existing chat context and
-folder/project prompt memory keep their current behavior and are not this
-feature.
+dispatch it. The public run projection remains unable to expose a private
+`preparing` row, and the execution/recovery fences prevent answer-provider I/O
+until Phase B commits. No non-default Memory content is created by ordinary
+application behavior. Existing chat context and folder/project prompt memory
+keep their current behavior and are not this feature.
 
 This document owns the durable target contract while implementation lands in
 ordered slices. Executable code, migrations, and tests remain authoritative for

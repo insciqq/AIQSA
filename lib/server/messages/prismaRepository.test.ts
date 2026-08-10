@@ -105,7 +105,9 @@ describe("Prisma message branch repository", () => {
     await prisma.$disconnect();
   });
 
-  it("rejects edit, branch, and delete while the chat has an active run", async () => {
+  it.each(["preparing", "streaming"] as const)(
+    "rejects edit, branch, and delete while the chat has a %s run",
+    async (runStatus) => {
     await withMessageBranchUser(async ({ userId }) => {
       const sourceChat = await prisma.chat.create({
         data: {
@@ -137,19 +139,30 @@ describe("Prisma message branch repository", () => {
           status: "streaming"
         }
       });
-      await prisma.modelRun.create({
-        data: {
-          assistantMessageId: assistantMessage.id,
-          chatId: sourceChat.id,
-          modelId: "fake-qsa",
-          normalizedRequest: {},
-          provider: "fake",
-          providerRequestPreview: {},
-          status: "streaming",
-          userId,
-          userMessageId: userMessage.id
-        }
-      });
+      if (runStatus === "preparing") {
+        await createPrismaRunRepository(prisma).admitPreparingRun({
+          ...createRunInput({
+            chatId: sourceChat.id,
+            expectedActiveLeafId: null,
+            userId
+          }),
+          admissionKind: "NORMAL_SEND"
+        });
+      } else {
+        await prisma.modelRun.create({
+          data: {
+            assistantMessageId: assistantMessage.id,
+            chatId: sourceChat.id,
+            modelId: "fake-qsa",
+            normalizedRequest: {},
+            provider: "fake",
+            providerRequestPreview: {},
+            status: runStatus,
+            userId,
+            userMessageId: userMessage.id
+          }
+        });
+      }
       const repository = createPrismaMessageBranchRepository(prisma);
 
       await expect(
@@ -180,17 +193,18 @@ describe("Prisma message branch repository", () => {
             chatId: sourceChat.id
           }
         })
-      ).resolves.toBe(2);
+      ).resolves.toBe(runStatus === "preparing" ? 4 : 2);
       await expect(
         prisma.modelRun.count({
           where: {
             chatId: sourceChat.id,
-            status: "streaming"
+            status: runStatus
           }
         })
       ).resolves.toBe(1);
-    });
-  });
+      });
+    }
+  );
 
   it("settles message mutations behind a run that wins the chat lock", async () => {
     await withMessageBranchUser(async ({ userId }) => {

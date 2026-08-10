@@ -125,6 +125,7 @@ export type RunRecoveryRepository = Pick<
   | "nextRunEventSequence"
   | "persistToolLoopCallBatch"
   | "recordRunUsageEvents"
+  | "recoverPreparingRun"
   | "resetToolLoopAssistantDraft"
   | "settleRecoveredRunError"
   | "settleToolLoopCall"
@@ -1895,6 +1896,14 @@ export async function reconcileInstallationRuns(
 
   await Promise.allSettled(candidates.map(async (run) => {
     if (deps.registry.has(run.id)) return;
+    if (run.status === "preparing") {
+      await deps.repository.recoverPreparingRun({
+        now,
+        runId: run.id,
+        userId: run.userId
+      });
+      return;
+    }
     const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({
       runId: run.id,
       userId: run.userId
@@ -1925,7 +1934,8 @@ export async function reconcileStaleRuns(
     userId: string;
   }>
 ): Promise<void> {
-  const staleBefore = new Date((input.now ?? new Date()).getTime() - activeRunStaleMs);
+  const now = input.now ?? new Date();
+  const staleBefore = new Date(now.getTime() - activeRunStaleMs);
   const staleRuns = await deps.repository.findStaleActiveRunsForUser({
     chatId: input.chatId,
     runId: input.runId,
@@ -1935,6 +1945,15 @@ export async function reconcileStaleRuns(
 
   for (const run of staleRuns) {
     if (deps.registry.has(run.id)) {
+      continue;
+    }
+
+    if (run.status === "preparing") {
+      await deps.repository.recoverPreparingRun({
+        now,
+        runId: run.id,
+        userId: input.userId
+      });
       continue;
     }
 

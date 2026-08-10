@@ -46,6 +46,10 @@ import {
   ProviderAdmissionConflictError,
   type AcceptedRunDefaults,
   type DurableRunControlRecord,
+  type PreparingRunAdmissionInput,
+  type PreparingRunAdmissionResult,
+  type PreparingRunFinalizationInput,
+  type PreparingRunRecoveryResult,
   type RunAttachmentRecord,
   type RunRepository
 } from "./runRepositoryContract";
@@ -77,6 +81,23 @@ import {
   type ToolLoopCheckpoint,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
+import {
+  MEMORY_PREPARING_ATTEMPT_TTL_MS,
+  MEMORY_PREPARING_QUERY_PLANNER_VERSION,
+  MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION,
+  MemoryPreparingRunConflictError,
+  createMemoryPreparingBaseSnapshot,
+  decodeMemoryPreparingBaseSnapshot,
+  decodeMemoryPreparingSettingsSnapshot,
+  dormantMemoryAttemptResult,
+  memoryPreparingHash,
+  memoryPreparingSettingsSnapshot,
+  memoryPreparingTextHash,
+  sameMemoryPreparingSettings,
+  validateMemoryPreparingAttemptResult,
+  type MemoryPreparingAttemptResult,
+  type MemoryPreparingSettingsSnapshot
+} from "./preparingRun";
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
@@ -676,7 +697,11 @@ async function repeatableReadTransaction<Value>(
   throw new ProviderAdmissionConflictError();
 }
 
-const activeModelRunStatuses: ModelRunStatus[] = ["streaming", "queued", "in_progress"];
+const dispatchableModelRunStatuses: ModelRunStatus[] = ["streaming", "queued", "in_progress"];
+const activeModelRunStatuses: ModelRunStatus[] = [
+  "preparing",
+  ...dispatchableModelRunStatuses
+];
 const activeMessageStatuses: MessageStatus[] = ["streaming", "queued"];
 const recoveredRunTerminalMarker = "recoveryTerminal";
 
@@ -711,7 +736,7 @@ async function lockToolLoopRun(
 }
 
 function activeToolLoopRun(run: LockedToolLoopRun): boolean {
-  return activeModelRunStatuses.includes(run.status) ||
+  return dispatchableModelRunStatuses.includes(run.status) ||
     (run.status === "error" && !isRecoveredRunTerminalPayload(run.errorPayload));
 }
 
@@ -810,6 +835,1485 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
   });
 }
 
+type PreparingSettingsRow = MemoryPreparingSettingsSnapshot & Readonly<{
+  memoryGeneration: number;
+  memoryRevision: number;
+}>;
+
+type LockedPreparingAttempt = Readonly<{
+  admittedAssistantLeafMessageId: string;
+  admittedUserMessageId: string;
+  admissionKind: "NORMAL_SEND" | "REGENERATE";
+  assistantIdSnapshot: string | null;
+  attemptOrdinal: number;
+  baseRequestHash: string;
+  boundedPrivateBaseRequestSnapshot: Prisma.JsonValue | null;
+  boundedSafeQuerySnapshot: string | null;
+  chatId: string;
+  degradationCode: string | null;
+  expiresAt: Date;
+  folderIdSnapshot: string | null;
+  id: string;
+  indexGenerationIdSnapshot: string | null;
+  memoryGenerationSnapshot: number;
+  modelRunId: string;
+  outcome: "USED" | "EMPTY" | "DISABLED" | "DEGRADED" | "FAILED_SAFE" | null;
+  preSendActiveLeafMessageId: string | null;
+  preparedContextHash: string | null;
+  preparedContextText: string | null;
+  preparedContextTokenCount: number | null;
+  queryHash: string;
+  retrievalRevisionSnapshot: number;
+  settingsSnapshot: Prisma.JsonValue;
+  state: "PENDING" | "EXECUTING" | "READY" | "CONSUMED" | "STALE" | "FAILED" | "CANCELLED" | "EXPIRED";
+  userId: string;
+}>;
+
+type LockedPreparingRun = Readonly<{
+  assistantId: string | null;
+  assistantMessageId: string | null;
+  assistantRevisionId: string | null;
+  chatId: string;
+  id: string;
+  modelId: string;
+  normalizedRequest: Prisma.JsonValue | null;
+  provider: string;
+  providerRequestPreview: Prisma.JsonValue | null;
+  status: ModelRunStatus;
+  userId: string;
+  userMessageId: string;
+}>;
+
+async function loadPreparingSettings(
+  tx: Prisma.TransactionClient,
+  userId: string
+): Promise<PreparingSettingsRow> {
+  const settings = await tx.userMemorySettings.findUnique({
+    select: {
+      acceptedUtilityEgressFingerprint: true,
+      acceptedUtilityPolicyVersion: true,
+      activeIndexGenerationId: true,
+      learnAutomatically: true,
+      memoryConsentRevision: true,
+      memoryGeneration: true,
+      memoryRevision: true,
+      referenceChatHistory: true,
+      settingsRevision: true,
+      useMemoryFacts: true
+    },
+    where: { userId }
+  });
+  if (!settings) {
+    throw new MemoryPreparingRunConflictError("memory_owner_unavailable", false);
+  }
+  return {
+    ...memoryPreparingSettingsSnapshot(settings),
+    memoryGeneration: settings.memoryGeneration,
+    memoryRevision: settings.memoryRevision
+  };
+}
+
+async function lockPreparingRun(
+  tx: Prisma.TransactionClient,
+  runId: string,
+  userId: string
+): Promise<LockedPreparingRun | null> {
+  const [run] = await tx.$queryRaw<LockedPreparingRun[]>(Prisma.sql`
+    SELECT
+      "assistantId", "assistantMessageId", "assistantRevisionId", "chatId", "id",
+      "modelId", "normalizedRequest", "provider", "providerRequestPreview",
+      "status", "userId", "userMessageId"
+    FROM "ModelRun"
+    WHERE "id" = ${runId} AND "userId" = ${userId}
+    FOR UPDATE
+  `);
+  return run ?? null;
+}
+
+async function lockPreparingAttempt(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{ attemptId?: string; runId: string; userId: string }>
+): Promise<LockedPreparingAttempt | null> {
+  const attemptPredicate = input.attemptId
+    ? Prisma.sql`AND "id" = ${input.attemptId}`
+    : Prisma.sql`AND "state" IN (
+        'PENDING'::"MemoryRetrievalAttemptState",
+        'EXECUTING'::"MemoryRetrievalAttemptState",
+        'READY'::"MemoryRetrievalAttemptState"
+      )`;
+  const [attempt] = await tx.$queryRaw<LockedPreparingAttempt[]>(Prisma.sql`
+    SELECT
+      "admittedAssistantLeafMessageId", "admittedUserMessageId",
+      "admissionKind"::text AS "admissionKind", "assistantIdSnapshot",
+      "attemptOrdinal",
+      "baseRequestHash", "boundedPrivateBaseRequestSnapshot",
+      "boundedSafeQuerySnapshot", "chatId", "degradationCode", "expiresAt", "folderIdSnapshot",
+      "id", "indexGenerationIdSnapshot", "memoryGenerationSnapshot",
+      "modelRunId", "outcome"::text AS "outcome", "preSendActiveLeafMessageId",
+      "preparedContextHash", "preparedContextText", "preparedContextTokenCount",
+      "queryHash", "retrievalRevisionSnapshot", "settingsSnapshot",
+      "state"::text AS "state", "userId"
+    FROM "MemoryRetrievalAttempt"
+    WHERE "modelRunId" = ${input.runId}
+      AND "userId" = ${input.userId}
+      ${attemptPredicate}
+    ORDER BY "attemptOrdinal" DESC
+    LIMIT 1
+    FOR UPDATE
+  `);
+  return attempt ?? null;
+}
+
+async function createPreparingAttempt(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    admissionKind: "NORMAL_SEND" | "REGENERATE";
+    assistantIdSnapshot: string | null;
+    assistantMessageId: string;
+    attemptOrdinal: number;
+    baseSnapshot: ReturnType<typeof createMemoryPreparingBaseSnapshot>;
+    chatId: string;
+    folderIdSnapshot: string | null;
+    now: Date;
+    preSendActiveLeafMessageId: string | null;
+    runId: string;
+    settings: PreparingSettingsRow;
+    userId: string;
+    userMessageId: string;
+  }>
+): Promise<string> {
+  const attemptId = randomUUID();
+  await tx.memoryRetrievalAttempt.create({
+    data: {
+      admissionKind: input.admissionKind,
+      admittedAssistantLeafMessageId: input.assistantMessageId,
+      admittedUserMessageId: input.userMessageId,
+      assistantIdSnapshot: input.assistantIdSnapshot,
+      attemptOrdinal: input.attemptOrdinal,
+      baseRequestHash: memoryPreparingHash(input.baseSnapshot),
+      boundedPrivateBaseRequestSnapshot: json(input.baseSnapshot),
+      chatId: input.chatId,
+      chatMemoryModeSnapshot: "NORMAL",
+      createdAt: input.now,
+      expiresAt: new Date(input.now.getTime() + MEMORY_PREPARING_ATTEMPT_TTL_MS),
+      externalRolesUsed: [],
+      folderIdSnapshot: input.folderIdSnapshot,
+      id: attemptId,
+      indexGenerationIdSnapshot: input.settings.activeIndexGenerationId,
+      memoryGenerationSnapshot: input.settings.memoryGeneration,
+      modelRunId: input.runId,
+      preSendActiveLeafMessageId: input.preSendActiveLeafMessageId,
+      queryHash: memoryPreparingTextHash(""),
+      retrievalRevisionSnapshot: input.settings.memoryRevision,
+      settingsSnapshot: json(memoryPreparingSettingsSnapshot(input.settings)),
+      state: "PENDING",
+      userId: input.userId,
+      utilityEgressMode: "LOCAL_ONLY"
+    }
+  });
+  return attemptId;
+}
+
+function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void {
+  if (
+    input.normalizedRequest.chatId !== input.chatId ||
+    input.normalizedRequest.modelId !== input.modelId ||
+    input.normalizedRequest.provider !== input.provider ||
+    input.normalizedRequest.personalContext !== undefined ||
+    (input.admissionKind === "NORMAL_SEND" &&
+      memoryPreparingHash(input.normalizedRequest.content) !== memoryPreparingHash(input.content))
+  ) {
+    throw new MemoryPreparingRunConflictError("memory_base_request_invalid", false);
+  }
+}
+
+async function admitPreparingRunWithClient(
+  prismaClient: PrismaClient,
+  input: PreparingRunAdmissionInput
+): Promise<PreparingRunAdmissionResult> {
+  assertPreparingAdmissionInput(input);
+  const baseSnapshot = createMemoryPreparingBaseSnapshot({
+    normalizedRequest: input.normalizedRequest,
+    providerRequestPreview: input.providerRequestPreview
+  });
+  return mapActiveRunConflict(() =>
+    repeatableReadTransaction(prismaClient, async (tx) => {
+      const lockedChats = await tx.$queryRaw<Array<{
+        activeLeafMessageId: string | null;
+        archived: boolean;
+        folderId: string | null;
+        id: string;
+      }>>(Prisma.sql`
+        SELECT "id", "activeLeafMessageId", "archived", "folderId"
+        FROM "Chat"
+        WHERE "id" = ${input.chatId} AND "userId" = ${input.userId}
+        FOR UPDATE
+      `);
+      const lockedChat = lockedChats[0];
+      if (!lockedChat || lockedChat.archived) {
+        throw new ActiveLeafConflictError();
+      }
+
+      if (input.assistant) {
+        await assertAssistantRunProvenance(tx, {
+          assistantId: input.assistant.assistantId,
+          revisionId: input.assistant.revisionId,
+          userId: input.userId
+        });
+      }
+
+      const settings = await loadPreparingSettings(tx, input.userId);
+      let assistantMessageId: string;
+      let preSendActiveLeafMessageId: string | null;
+      let userMessageId: string;
+
+      if (input.admissionKind === "NORMAL_SEND") {
+        if (lockedChat.activeLeafMessageId !== input.expectedActiveLeafId) {
+          throw new ActiveLeafConflictError();
+        }
+        const chat = await tx.chat.findFirst({
+          select: {
+            _count: { select: { messages: true } },
+            id: true,
+            title: true
+          },
+          where: {
+            archived: false,
+            id: input.chatId,
+            userId: input.userId
+          }
+        });
+        if (!chat) throw new ActiveLeafConflictError();
+
+        const userMessage = await tx.message.create({
+          data: {
+            chatId: input.chatId,
+            content: json(input.content),
+            modelId: input.modelId,
+            parentMessageId: input.expectedActiveLeafId,
+            provider: input.provider,
+            role: "user",
+            status: "complete"
+          }
+        });
+        const assistantMessage = await tx.message.create({
+          data: {
+            chatId: input.chatId,
+            content: json(textMessageContent("")),
+            modelId: input.modelId,
+            parentMessageId: userMessage.id,
+            provider: input.provider,
+            role: "assistant",
+            status: "streaming"
+          }
+        });
+        const attachmentIds = unique(input.normalizedRequest.attachmentIds);
+        if (attachmentIds.length > 0) {
+          const linkedAttachments = await tx.attachment.updateMany({
+            data: { chatId: input.chatId, messageId: userMessage.id },
+            where: {
+              chatId: null,
+              id: { in: attachmentIds },
+              messageId: null,
+              status: "ready",
+              userId: input.userId
+            }
+          });
+          if (linkedAttachments.count !== attachmentIds.length) {
+            throw new AttachmentLinkConflictError();
+          }
+        }
+        assistantMessageId = assistantMessage.id;
+        preSendActiveLeafMessageId = input.expectedActiveLeafId;
+        userMessageId = userMessage.id;
+
+        await tx.chat.update({
+          data: {
+            activeLeafMessageId: assistantMessage.id,
+            ...(chat._count.messages === 0 && input.defaults
+              ? { defaultProviderModelId: input.defaults.modelId }
+              : {})
+          },
+          where: { id: input.chatId }
+        });
+        if (chat._count.messages === 0) {
+          await tx.chat.updateMany({
+            data: { title: titleFromMessageContent(input.content) },
+            where: {
+              archived: false,
+              id: input.chatId,
+              title: { in: ["New Chat", "Untitled QSA"] },
+              userId: input.userId
+            }
+          });
+        }
+      } else {
+        const preSendAssistantMessageId = input.preSendAssistantMessageId ??
+          lockedChat.activeLeafMessageId;
+        if (!preSendAssistantMessageId ||
+          lockedChat.activeLeafMessageId !== preSendAssistantMessageId) {
+          throw new ActiveLeafConflictError();
+        }
+        const [source] = await tx.$queryRaw<Array<{
+          assistantParentId: string | null;
+          assistantRole: string;
+          userContent: Prisma.JsonValue;
+          userRole: string;
+        }>>(Prisma.sql`
+          SELECT
+            assistant."parentMessageId" AS "assistantParentId",
+            assistant."role" AS "assistantRole",
+            user_message."content" AS "userContent",
+            user_message."role" AS "userRole"
+          FROM "Message" AS assistant
+          INNER JOIN "Message" AS user_message
+            ON user_message."chatId" = assistant."chatId"
+           AND user_message."id" = ${input.userMessageId}
+          WHERE assistant."chatId" = ${input.chatId}
+            AND assistant."id" = ${preSendAssistantMessageId}
+          FOR SHARE OF assistant, user_message
+        `);
+        if (!source || source.assistantRole !== "assistant" || source.userRole !== "user" ||
+          source.assistantParentId !== input.userMessageId ||
+          memoryPreparingHash(source.userContent) !==
+            memoryPreparingHash(input.normalizedRequest.content)) {
+          throw new ActiveLeafConflictError();
+        }
+        const assistantMessage = await tx.message.create({
+          data: {
+            chatId: input.chatId,
+            content: json(textMessageContent("")),
+            modelId: input.modelId,
+            parentMessageId: input.userMessageId,
+            provider: input.provider,
+            role: "assistant",
+            status: "streaming"
+          }
+        });
+        assistantMessageId = assistantMessage.id;
+        preSendActiveLeafMessageId = preSendAssistantMessageId;
+        userMessageId = input.userMessageId;
+        await tx.chat.update({
+          data: { activeLeafMessageId: assistantMessage.id },
+          where: { id: input.chatId }
+        });
+      }
+
+      const run = await tx.modelRun.create({
+        data: {
+          assistantMessageId,
+          ...(input.assistant
+            ? {
+                assistantId: input.assistant.assistantId,
+                assistantRevisionId: input.assistant.revisionId
+              }
+            : {}),
+          chatId: input.chatId,
+          modelId: input.modelId,
+          provider: input.provider,
+          status: "preparing",
+          userId: input.userId,
+          userMessageId
+        }
+      });
+
+      await insertAcceptedKnowledgeRunBindings(tx, {
+        plan: input.knowledgeAdmissionPlan,
+        runId: run.id,
+        userId: input.userId
+      });
+      await insertAcceptedMcpRunBindings(tx, {
+        bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
+        runId: run.id,
+        userId: input.userId
+      });
+      await insertAcceptedProviderRunBindings(tx, {
+        nativeBackgroundRequested: input.normalizedRequest.params.background === true,
+        plan: input.providerAdmissionPlan,
+        runId: run.id,
+        userId: input.userId
+      });
+      if (input.defaults) {
+        await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
+      }
+
+      const attemptId = await createPreparingAttempt(tx, {
+        admissionKind: input.admissionKind,
+        assistantIdSnapshot: input.assistant?.assistantId ?? null,
+        assistantMessageId,
+        attemptOrdinal: 0,
+        baseSnapshot,
+        chatId: input.chatId,
+        folderIdSnapshot: lockedChat.folderId,
+        now: new Date(),
+        preSendActiveLeafMessageId,
+        runId: run.id,
+        settings,
+        userId: input.userId,
+        userMessageId
+      });
+
+      return {
+        assistantMessageId,
+        attemptId,
+        runId: run.id,
+        settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
+        userMessageId
+      };
+    })
+  );
+}
+
+async function beginPreparingRunAttemptWithClient(
+  prismaClient: PrismaClient,
+  input: Readonly<{ attemptId: string; now: Date; runId: string; userId: string }>
+): Promise<boolean> {
+  const updated = await prismaClient.memoryRetrievalAttempt.updateMany({
+    data: { state: "EXECUTING", updatedAt: input.now },
+    where: {
+      expiresAt: { gt: input.now },
+      id: input.attemptId,
+      modelRunId: input.runId,
+      state: "PENDING",
+      userId: input.userId
+    }
+  });
+  return updated.count === 1;
+}
+
+async function completePreparingRunAttemptWithClient(
+  prismaClient: PrismaClient,
+  input: Readonly<{
+    attemptId: string;
+    result: MemoryPreparingAttemptResult;
+    runId: string;
+    userId: string;
+  }>
+): Promise<boolean> {
+  validateMemoryPreparingAttemptResult(input.result);
+  const now = new Date();
+  return prismaClient.$transaction(async (tx) => {
+    const run = await lockPreparingRun(tx, input.runId, input.userId);
+    const attempt = await lockPreparingAttempt(tx, input);
+    if (!run || run.status !== "preparing" || !attempt ||
+      (attempt.state !== "PENDING" && attempt.state !== "EXECUTING") ||
+      attempt.expiresAt <= now) {
+      return false;
+    }
+
+    const authoritativeItems: Array<{
+      exactSafeText: string;
+      createdByEventId: string;
+      factCategory: string;
+      factCanonicalKey: string;
+      factId: string;
+      factVersionId: string;
+      featureSnapshot: Record<string, unknown>;
+      finalScore: number;
+      languageCode: string;
+      laneRanks: Readonly<Record<string, unknown>>;
+      scopeAssistantId: string | null;
+      scopeChatId: string | null;
+      scopeFolderId: string | null;
+      scopeId: string;
+      scopeTargetIdSnapshot: string | null;
+      scopeType: string;
+      selectionReason: string;
+      sensitivityClass: string;
+      sourceMode: string;
+    }> = [];
+    for (const item of input.result.items ?? []) {
+      const [version] = await tx.$queryRaw<Array<{
+        createdByEventId: string;
+        displayText: string | null;
+        factCanonicalKey: string;
+        factCategory: string;
+        factId: string;
+        languageCode: string;
+        scopeAssistantId: string | null;
+        scopeChatId: string | null;
+        scopeFolderId: string | null;
+        scopeId: string;
+        scopeTargetIdSnapshot: string | null;
+        scopeType: string;
+        sensitivityClass: string;
+        sourceMode: string;
+      }>>(Prisma.sql`
+        SELECT
+          version."createdByEventId", version."displayText",
+          version."factId", version."languageCode",
+          version."sensitivityClass"::text AS "sensitivityClass",
+          version."sourceMode"::text AS "sourceMode",
+          fact."canonicalKey" AS "factCanonicalKey",
+          fact."category" AS "factCategory", fact."scopeId",
+          scope."assistantId" AS "scopeAssistantId",
+          scope."chatId" AS "scopeChatId", scope."folderId" AS "scopeFolderId",
+          scope."scopeType"::text AS "scopeType",
+          scope."targetIdSnapshot" AS "scopeTargetIdSnapshot"
+        FROM "MemoryFactVersion" AS version
+        INNER JOIN "MemoryFact" AS fact
+          ON fact."userId" = version."userId" AND fact."id" = version."factId"
+        INNER JOIN "MemoryScope" AS scope
+          ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+        WHERE version."userId" = ${input.userId}
+          AND version."id" = ${item.factVersionId}
+          AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+          AND version."contentPurgedAt" IS NULL
+          AND fact."state" = 'ACTIVE'::"MemoryFactState"
+          AND fact."currentVersionId" = version."id"
+          AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+        FOR SHARE OF version, fact, scope
+      `);
+      if (!version || version.displayText !== item.exactSafeText) {
+        throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+      }
+      authoritativeItems.push({
+        createdByEventId: version.createdByEventId,
+        exactSafeText: item.exactSafeText,
+        factCanonicalKey: version.factCanonicalKey,
+        factCategory: version.factCategory,
+        factId: version.factId,
+        factVersionId: item.factVersionId,
+        featureSnapshot: {
+          ...(item.featureSnapshot ?? {}),
+          finalScore: item.finalScore
+        },
+        finalScore: item.finalScore,
+        languageCode: version.languageCode,
+        laneRanks: item.laneRanks ?? {},
+        scopeAssistantId: version.scopeAssistantId,
+        scopeChatId: version.scopeChatId,
+        scopeFolderId: version.scopeFolderId,
+        scopeId: version.scopeId,
+        scopeTargetIdSnapshot: version.scopeTargetIdSnapshot,
+        scopeType: version.scopeType,
+        selectionReason: item.selectionReason,
+        sensitivityClass: version.sensitivityClass,
+        sourceMode: version.sourceMode
+      });
+    }
+
+    if (authoritativeItems.length > 0) {
+      await tx.memoryRetrievalAttemptItem.createMany({
+        data: authoritativeItems.map((item, ordinal) => ({
+          exactItemId: item.factVersionId,
+          exactSafeText: item.exactSafeText,
+          factVersionId: item.factVersionId,
+          featureSnapshot: json(item.featureSnapshot),
+          laneRanks: json(item.laneRanks),
+          ordinal,
+          selectionReason: item.selectionReason,
+          sourceSnapshot: json({
+            createdByEventId: item.createdByEventId,
+            schemaVersion: 1,
+            sourceMode: item.sourceMode
+          }),
+          textHash: memoryPreparingTextHash(item.exactSafeText),
+          userId: input.userId,
+          versionSnapshot: json({
+            factCanonicalKey: item.factCanonicalKey,
+            factCategory: item.factCategory,
+            factId: item.factId,
+            factState: "ACTIVE",
+            factVersionId: item.factVersionId,
+            languageCode: item.languageCode,
+            scopeAssistantId: item.scopeAssistantId,
+            scopeChatId: item.scopeChatId,
+            scopeFolderId: item.scopeFolderId,
+            scopeId: item.scopeId,
+            scopeState: "ACTIVE",
+            scopeTargetIdSnapshot: item.scopeTargetIdSnapshot,
+            scopeType: item.scopeType,
+            schemaVersion: 1,
+            sensitivityClass: item.sensitivityClass,
+            versionState: "ACTIVE"
+          }),
+          attemptId: input.attemptId,
+          itemType: "FACT_VERSION"
+        }))
+      });
+    }
+
+    const context = input.result.preparedContext ?? null;
+    const updated = await tx.memoryRetrievalAttempt.updateMany({
+      data: {
+        budgetSnapshot: json(input.result.budgetSnapshot),
+        degradationCode: input.result.degradationCode ?? null,
+        outcome: input.result.outcome,
+        preparedContextHash: context ? memoryPreparingTextHash(context.text) : null,
+        preparedContextText: context?.text ?? null,
+        preparedContextTokenCount: context?.approxTokens ?? null,
+        state: "READY",
+        updatedAt: now
+      },
+      where: {
+        id: input.attemptId,
+        modelRunId: input.runId,
+        state: { in: ["PENDING", "EXECUTING"] },
+        userId: input.userId
+      }
+    });
+    return updated.count === 1;
+  });
+}
+
+async function assertCurrentProviderAdmission(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    plan: ProviderAdmissionPlan | undefined;
+    userId: string;
+  }>
+): Promise<void> {
+  if (!input.plan) return;
+  let current: ProviderAdmissionPlan;
+  try {
+    current = await loadProviderAdmissionPlan(tx, {
+      providerConnectionId: input.plan.selection.providerConnectionId,
+      providerModelId: input.plan.selection.providerModelId,
+      ...(input.plan.requiresClientToolCoexistence
+        ? { requiresClientToolCoexistence: true }
+        : {}),
+      ...(input.plan.requestedSearchPlan
+        ? { searchPlan: input.plan.requestedSearchPlan }
+        : {}),
+      ...(input.plan.requestedSearchPreferenceSource
+        ? {
+            searchPreferencePlan: input.plan.requestedSearchPreferencePlan,
+            searchPreferenceSource: input.plan.requestedSearchPreferenceSource
+          }
+        : {}),
+      searchStrategyId: input.plan.requestedSearchStrategyId,
+      userId: input.userId
+    });
+  } catch (error) {
+    if (error instanceof ProviderAdmissionError) {
+      throw new ProviderAdmissionConflictError();
+    }
+    throw error;
+  }
+  if (!sameProviderAdmissionPlan(input.plan, current)) {
+    throw new ProviderAdmissionConflictError();
+  }
+}
+
+async function assertCurrentKnowledgeAdmission(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    plan: KnowledgeRunAdmissionPlan | undefined;
+    userId: string;
+  }>
+): Promise<void> {
+  if (!input.plan) return;
+  await lockKnowledgeRunAdmissionSources(tx, {
+    plan: input.plan,
+    userId: input.userId
+  });
+  let current: KnowledgeRunAdmissionPlan;
+  try {
+    current = await loadKnowledgeRunAdmissionPlan(tx, {
+      knowledgePlan: input.plan.knowledgePlan,
+      userId: input.userId
+    });
+  } catch (error) {
+    if (error instanceof KnowledgeRunAdmissionError || error instanceof ProviderAdmissionError) {
+      throw new KnowledgeRunPlanConflictError();
+    }
+    throw error;
+  }
+  if (!sameKnowledgeRunAdmissionPlan(input.plan, current)) {
+    throw new KnowledgeRunPlanConflictError();
+  }
+}
+
+async function assertCurrentMcpAdmission(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    bindings: readonly McpRunPlanBinding[] | undefined;
+    runId: string;
+    userId: string;
+  }>
+): Promise<void> {
+  if (input.bindings === undefined) return;
+  const persisted = await tx.mcpRunBinding.findMany({
+    select: {
+      runtimeGenerationFingerprint: true,
+      runtimeGenerationId: true
+    },
+    where: { modelRunId: input.runId },
+    orderBy: { runtimeGenerationId: "asc" }
+  });
+  const expected = [...input.bindings].sort((left, right) =>
+    left.runtimeGenerationId.localeCompare(right.runtimeGenerationId));
+  if (persisted.length !== expected.length || persisted.some((binding, index) =>
+    binding.runtimeGenerationId !== expected[index]?.runtimeGenerationId ||
+    binding.runtimeGenerationFingerprint !== expected[index]?.fingerprint)) {
+    throw new McpRunPlanConflictError();
+  }
+  for (const binding of expected) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT generation."id"
+      FROM "McpRuntimeGeneration" AS generation
+      INNER JOIN "McpUserServer" AS preference
+        ON preference."id" = generation."userServerId"
+      INNER JOIN "McpServer" AS server
+        ON server."id" = preference."serverId"
+      INNER JOIN "User" AS owner ON owner."id" = preference."userId"
+      WHERE owner."id" = ${input.userId}
+        AND owner."status" = 'active'
+        AND preference."enabled" = true
+        AND preference."desiredRuntimeGenerationId" = generation."id"
+        AND server."id" = ${binding.serverId}
+        AND server."enabled" = true
+        AND server."archivedAt" IS NULL
+        AND server."activeRevisionId" = generation."revisionId"
+        AND generation."id" = ${binding.runtimeGenerationId}
+        AND generation."fingerprint" = ${binding.fingerprint}
+        AND generation."state" = 'ready'
+        AND generation."inventory" IS NOT NULL
+        AND generation."inventoryUpdatedAt" IS NOT NULL
+        AND generation."inventoryUpdatedAt" >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+        AND EXISTS (
+          SELECT 1 FROM "McpGrant" AS mcp_grant
+          WHERE mcp_grant."serverId" = server."id" AND mcp_grant."canUse" = true
+            AND (
+              mcp_grant."userId" = ${input.userId}
+              OR mcp_grant."groupId" IN (
+                SELECT membership."groupId"
+                FROM "UserGroup" AS membership
+                INNER JOIN "Group" AS member_group
+                  ON member_group."id" = membership."groupId"
+                 AND member_group."archivedAt" IS NULL
+                WHERE membership."userId" = ${input.userId}
+              )
+            )
+        )
+      FOR SHARE OF generation, preference, server, owner
+    `);
+    if (!rows[0]) throw new McpRunPlanConflictError();
+  }
+}
+
+type PreparingAttemptItemRow = Readonly<{
+  exactSafeText: string;
+  factVersionId: string;
+  featureSnapshot: Prisma.JsonValue;
+  laneRanks: Prisma.JsonValue;
+  ordinal: number;
+  selectionReason: string;
+  sourceSnapshot: Prisma.JsonValue;
+  textHash: string;
+  versionSnapshot: Prisma.JsonValue;
+}>;
+
+async function loadAndValidatePreparingAttemptItems(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    attemptId: string;
+    userId: string;
+  }>
+): Promise<PreparingAttemptItemRow[]> {
+  const items = await tx.memoryRetrievalAttemptItem.findMany({
+    select: {
+      exactSafeText: true,
+      factVersionId: true,
+      featureSnapshot: true,
+      laneRanks: true,
+      ordinal: true,
+      selectionReason: true,
+      sourceSnapshot: true,
+      textHash: true,
+      versionSnapshot: true
+    },
+    where: {
+      attemptId: input.attemptId,
+      userId: input.userId
+    },
+    orderBy: { ordinal: "asc" }
+  });
+  for (let ordinal = 0; ordinal < items.length; ordinal += 1) {
+    const item = items[ordinal]!;
+    const featureSnapshot = isRecord(item.featureSnapshot)
+      ? item.featureSnapshot
+      : null;
+    const versionSnapshot = isRecord(item.versionSnapshot)
+      ? item.versionSnapshot
+      : null;
+    const sourceSnapshot = isRecord(item.sourceSnapshot)
+      ? item.sourceSnapshot
+      : null;
+    const finalScore = featureSnapshot?.finalScore;
+    if (
+      item.ordinal !== ordinal ||
+      memoryPreparingTextHash(item.exactSafeText) !== item.textHash ||
+      typeof finalScore !== "number" ||
+      !Number.isFinite(finalScore) ||
+      finalScore < 0 ||
+      finalScore > 1 ||
+      sourceSnapshot?.schemaVersion !== 1 ||
+      typeof sourceSnapshot.createdByEventId !== "string" ||
+      typeof sourceSnapshot.sourceMode !== "string" ||
+      versionSnapshot?.schemaVersion !== 1 ||
+      versionSnapshot.factVersionId !== item.factVersionId ||
+      versionSnapshot.versionState !== "ACTIVE" ||
+      versionSnapshot.factState !== "ACTIVE" ||
+      versionSnapshot.scopeState !== "ACTIVE"
+    ) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
+    }
+    const [current] = await tx.$queryRaw<Array<{
+      createdByEventId: string;
+      displayText: string | null;
+      factCanonicalKey: string;
+      factCategory: string;
+      factId: string;
+      languageCode: string;
+      scopeAssistantId: string | null;
+      scopeChatId: string | null;
+      scopeFolderId: string | null;
+      scopeId: string;
+      scopeTargetIdSnapshot: string | null;
+      scopeType: string;
+      sensitivityClass: string;
+      sourceMode: string;
+    }>>(Prisma.sql`
+      SELECT
+        version."createdByEventId", version."displayText",
+        version."factId", version."languageCode",
+        version."sensitivityClass"::text AS "sensitivityClass",
+        version."sourceMode"::text AS "sourceMode",
+        fact."canonicalKey" AS "factCanonicalKey",
+        fact."category" AS "factCategory", fact."scopeId",
+        scope."assistantId" AS "scopeAssistantId",
+        scope."chatId" AS "scopeChatId", scope."folderId" AS "scopeFolderId",
+        scope."scopeType"::text AS "scopeType",
+        scope."targetIdSnapshot" AS "scopeTargetIdSnapshot"
+      FROM "MemoryFactVersion" AS version
+      INNER JOIN "MemoryFact" AS fact
+        ON fact."userId" = version."userId" AND fact."id" = version."factId"
+      INNER JOIN "MemoryScope" AS scope
+        ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+      WHERE version."userId" = ${input.userId}
+        AND version."id" = ${item.factVersionId}
+        AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+        AND version."contentPurgedAt" IS NULL
+        AND fact."state" = 'ACTIVE'::"MemoryFactState"
+        AND fact."currentVersionId" = version."id"
+        AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+      FOR SHARE OF version, fact, scope
+    `);
+    if (
+      !current ||
+      current.displayText !== item.exactSafeText ||
+      memoryPreparingHash(sourceSnapshot) !== memoryPreparingHash({
+        createdByEventId: current.createdByEventId,
+        schemaVersion: 1,
+        sourceMode: current.sourceMode
+      }) ||
+      memoryPreparingHash(versionSnapshot) !== memoryPreparingHash({
+        factCanonicalKey: current.factCanonicalKey,
+        factCategory: current.factCategory,
+        factId: current.factId,
+        factState: "ACTIVE",
+        factVersionId: item.factVersionId,
+        languageCode: current.languageCode,
+        scopeAssistantId: current.scopeAssistantId,
+        scopeChatId: current.scopeChatId,
+        scopeFolderId: current.scopeFolderId,
+        scopeId: current.scopeId,
+        scopeState: "ACTIVE",
+        scopeTargetIdSnapshot: current.scopeTargetIdSnapshot,
+        scopeType: current.scopeType,
+        schemaVersion: 1,
+        sensitivityClass: current.sensitivityClass,
+        versionState: "ACTIVE"
+      })
+    ) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+    }
+  }
+  return items;
+}
+
+function validateFinalPreparingRequest(
+  input: PreparingRunFinalizationInput,
+  baseSnapshot: ReturnType<typeof decodeMemoryPreparingBaseSnapshot>,
+  attempt: LockedPreparingAttempt,
+  items: readonly PreparingAttemptItemRow[],
+  finalizedRevision: number
+): void {
+  if (!baseSnapshot) {
+    throw new MemoryPreparingRunConflictError("memory_base_request_invalid", false);
+  }
+  if (
+    input.normalizedRequest.chatId !== baseSnapshot.normalizedRequest.chatId ||
+    input.normalizedRequest.modelId !== baseSnapshot.normalizedRequest.modelId ||
+    input.normalizedRequest.provider !== baseSnapshot.normalizedRequest.provider
+  ) {
+    throw new MemoryPreparingRunConflictError("memory_final_request_invalid", false);
+  }
+  if (attempt.outcome !== "USED") {
+    if (
+      input.normalizedRequest.personalContext !== undefined ||
+      memoryPreparingHash(input.normalizedRequest) !==
+        memoryPreparingHash(baseSnapshot.normalizedRequest) ||
+      memoryPreparingHash(input.providerRequestPreview) !==
+        memoryPreparingHash(baseSnapshot.providerRequestPreview)
+    ) {
+      throw new MemoryPreparingRunConflictError("memory_final_request_invalid", false);
+    }
+    return;
+  }
+
+  const { personalContext, ...withoutPersonalContext } = input.normalizedRequest;
+  if (
+    !personalContext ||
+    memoryPreparingHash(withoutPersonalContext) !==
+      memoryPreparingHash(baseSnapshot.normalizedRequest) ||
+    personalContext.mode !== "prefetched" ||
+    personalContext.text !== attempt.preparedContextText ||
+    personalContext.approxTokens !== attempt.preparedContextTokenCount ||
+    personalContext.itemCount !== items.length ||
+    personalContext.memoryGeneration !== attempt.memoryGenerationSnapshot ||
+    personalContext.memoryRevision !== finalizedRevision
+  ) {
+    throw new MemoryPreparingRunConflictError("memory_final_request_invalid", false);
+  }
+  createMemoryPreparingBaseSnapshot({
+    normalizedRequest: input.normalizedRequest,
+    providerRequestPreview: input.providerRequestPreview
+  });
+}
+
+async function finalizePreparingRunWithClient(
+  prismaClient: PrismaClient,
+  input: PreparingRunFinalizationInput
+): Promise<boolean> {
+  const now = new Date();
+  return repeatableReadTransaction(prismaClient, async (tx) => {
+    const run = await lockPreparingRun(tx, input.runId, input.userId);
+    const attempt = await lockPreparingAttempt(tx, {
+      attemptId: input.attemptId,
+      runId: input.runId,
+      userId: input.userId
+    });
+    if (!run || run.status !== "preparing" || !attempt) return false;
+    if (attempt.state !== "READY") return false;
+    if (attempt.expiresAt <= now) {
+      throw new MemoryPreparingRunConflictError("memory_preparing_attempt_expired", false);
+    }
+    if (
+      run.chatId !== attempt.chatId ||
+      run.userMessageId !== attempt.admittedUserMessageId ||
+      run.assistantMessageId !== attempt.admittedAssistantLeafMessageId ||
+      run.assistantId !== attempt.assistantIdSnapshot ||
+      run.assistantId !== (input.assistant?.assistantId ?? null) ||
+      run.assistantRevisionId !== (input.assistant?.revisionId ?? null)
+    ) {
+      throw new MemoryPreparingRunConflictError("memory_admission_shape_changed", false);
+    }
+
+    const baseSnapshot = decodeMemoryPreparingBaseSnapshot(
+      attempt.boundedPrivateBaseRequestSnapshot
+    );
+    const settingsSnapshot = decodeMemoryPreparingSettingsSnapshot(attempt.settingsSnapshot);
+    if (
+      !baseSnapshot ||
+      memoryPreparingHash(baseSnapshot) !== attempt.baseRequestHash ||
+      !settingsSnapshot
+    ) {
+      throw new MemoryPreparingRunConflictError("memory_admission_snapshot_invalid", false);
+    }
+
+    const [chat] = await tx.$queryRaw<Array<{
+      activeLeafMessageId: string | null;
+      archived: boolean;
+      folderId: string | null;
+    }>>(Prisma.sql`
+      SELECT "activeLeafMessageId", "archived", "folderId"
+      FROM "Chat"
+      WHERE "id" = ${run.chatId} AND "userId" = ${input.userId}
+      FOR UPDATE
+    `);
+    if (
+      !chat ||
+      chat.archived ||
+      chat.activeLeafMessageId !== attempt.admittedAssistantLeafMessageId ||
+      chat.folderId !== attempt.folderIdSnapshot
+    ) {
+      throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
+    }
+
+    const [messages] = await tx.$queryRaw<Array<{
+      assistantParentId: string | null;
+      assistantRole: string;
+      assistantStatus: string;
+      userContent: Prisma.JsonValue;
+      userParentId: string | null;
+      userRole: string;
+      userStatus: string;
+    }>>(Prisma.sql`
+      SELECT
+        assistant."parentMessageId" AS "assistantParentId",
+        assistant."role" AS "assistantRole",
+        assistant."status"::text AS "assistantStatus",
+        user_message."content" AS "userContent",
+        user_message."parentMessageId" AS "userParentId",
+        user_message."role" AS "userRole",
+        user_message."status"::text AS "userStatus"
+      FROM "Message" AS user_message
+      INNER JOIN "Message" AS assistant
+        ON assistant."chatId" = user_message."chatId"
+       AND assistant."id" = ${attempt.admittedAssistantLeafMessageId}
+      WHERE user_message."chatId" = ${run.chatId}
+        AND user_message."id" = ${attempt.admittedUserMessageId}
+      FOR SHARE OF user_message, assistant
+    `);
+    const expectedUserParent = attempt.admissionKind === "NORMAL_SEND"
+      ? attempt.preSendActiveLeafMessageId
+      : messages?.userParentId;
+    if (
+      !messages ||
+      messages.userRole !== "user" ||
+      messages.userStatus !== "complete" ||
+      messages.assistantRole !== "assistant" ||
+      messages.assistantStatus !== "streaming" ||
+      messages.assistantParentId !== attempt.admittedUserMessageId ||
+      memoryPreparingHash(messages.userContent) !==
+        memoryPreparingHash(baseSnapshot.normalizedRequest.content) ||
+      messages.userParentId !== expectedUserParent
+    ) {
+      throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
+    }
+    if (attempt.admissionKind === "REGENERATE") {
+      if (!attempt.preSendActiveLeafMessageId) {
+        throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
+      }
+      const source = await tx.message.findFirst({
+        select: { id: true },
+        where: {
+          chatId: run.chatId,
+          id: attempt.preSendActiveLeafMessageId,
+          parentMessageId: attempt.admittedUserMessageId,
+          role: "assistant"
+        }
+      });
+      if (!source) {
+        throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
+      }
+    }
+
+    if (input.assistant) {
+      await assertAssistantRunProvenance(tx, {
+        assistantId: input.assistant.assistantId,
+        revisionId: input.assistant.revisionId,
+        userId: input.userId
+      });
+    }
+
+    const items = await loadAndValidatePreparingAttemptItems(tx, {
+      attemptId: attempt.id,
+      userId: input.userId
+    });
+    const usedContextIsValid = attempt.outcome === "USED" &&
+      items.length > 0 &&
+      attempt.preparedContextText !== null &&
+      attempt.preparedContextHash === memoryPreparingTextHash(attempt.preparedContextText) &&
+      attempt.preparedContextTokenCount !== null &&
+      Number.isSafeInteger(attempt.preparedContextTokenCount) &&
+      attempt.preparedContextTokenCount >= 0;
+    const emptyContextIsValid = attempt.outcome !== "USED" &&
+      items.length === 0 &&
+      attempt.preparedContextText === null &&
+      attempt.preparedContextHash === null &&
+      attempt.preparedContextTokenCount === null;
+    if (!usedContextIsValid && !emptyContextIsValid) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+    }
+    const currentSettings = await loadPreparingSettings(tx, input.userId);
+    const currentSnapshot = memoryPreparingSettingsSnapshot(currentSettings);
+    if (
+      currentSettings.memoryGeneration !== attempt.memoryGenerationSnapshot ||
+      currentSettings.activeIndexGenerationId !== attempt.indexGenerationIdSnapshot ||
+      !sameMemoryPreparingSettings(settingsSnapshot, currentSnapshot) ||
+      currentSettings.memoryRevision < attempt.retrievalRevisionSnapshot ||
+      (items.length > 0 &&
+        currentSettings.memoryRevision !== attempt.retrievalRevisionSnapshot)
+    ) {
+      throw new MemoryPreparingRunConflictError("memory_admission_settings_changed", true);
+    }
+    if (!attempt.outcome) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+    }
+    validateFinalPreparingRequest(
+      input,
+      baseSnapshot,
+      attempt,
+      items,
+      currentSettings.memoryRevision
+    );
+
+    await assertCurrentProviderAdmission(tx, {
+      plan: input.providerAdmissionPlan,
+      userId: input.userId
+    });
+    await assertCurrentKnowledgeAdmission(tx, {
+      plan: input.knowledgeAdmissionPlan,
+      userId: input.userId
+    });
+    await assertCurrentMcpAdmission(tx, {
+      bindings: input.mcpBindings,
+      runId: input.runId,
+      userId: input.userId
+    });
+
+    const binding = await tx.modelRunMemoryBinding.create({
+      data: {
+        boundedSafeQuerySnapshot: attempt.boundedSafeQuerySnapshot,
+        contextTextHash: attempt.preparedContextHash ?? memoryPreparingTextHash(""),
+        contextTokenCount: attempt.preparedContextTokenCount ?? 0,
+        degradationCode: attempt.degradationCode,
+        finalizedAt: now,
+        finalizedRevisionSnapshot: currentSettings.memoryRevision,
+        indexGenerationId: attempt.indexGenerationIdSnapshot,
+        memoryGenerationSnapshot: attempt.memoryGenerationSnapshot,
+        modelRunId: run.id,
+        outcome: attempt.outcome,
+        queryHash: attempt.queryHash,
+        queryPlannerVersion: MEMORY_PREPARING_QUERY_PLANNER_VERSION,
+        retrievalAttemptId: attempt.id,
+        retrievalPipelineVersion: MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION,
+        retrievalRevisionSnapshot: attempt.retrievalRevisionSnapshot,
+        settingsSnapshot: json(settingsSnapshot),
+        userId: input.userId
+      }
+    });
+    if (items.length > 0) {
+      await tx.modelRunMemoryItem.createMany({
+        data: items.map((item) => ({
+          bindingId: binding.id,
+          factVersionId: item.factVersionId,
+          featureSnapshot: json(item.featureSnapshot),
+          finalScore: (item.featureSnapshot as Record<string, unknown>).finalScore as number,
+          includedText: item.exactSafeText,
+          includedTextHash: item.textHash,
+          itemStateAtAdmission: "ACTIVE",
+          itemType: "FACT_VERSION",
+          laneRanks: json(item.laneRanks),
+          ordinal: item.ordinal,
+          selectionReason: item.selectionReason,
+          sourceMessageIdsSnapshot: [],
+          userId: input.userId
+        }))
+      });
+    }
+    await tx.memoryRetrievalAttempt.update({
+      data: {
+        consumedAt: now,
+        state: "CONSUMED",
+        updatedAt: now
+      },
+      where: { id: attempt.id }
+    });
+    await tx.modelRun.update({
+      data: {
+        normalizedRequest: json(input.normalizedRequest),
+        providerRequestPreview: json(input.providerRequestPreview),
+        status: "streaming"
+      },
+      where: { id: run.id }
+    });
+    return true;
+  });
+}
+
+async function retryPreparingRunAttemptWithClient(
+  prismaClient: PrismaClient,
+  input: Readonly<{
+    attemptId: string;
+    now: Date;
+    runId: string;
+    userId: string;
+  }>
+): Promise<Readonly<{
+  attemptId: string;
+  settingsSnapshot: MemoryPreparingSettingsSnapshot;
+}> | null> {
+  return repeatableReadTransaction(prismaClient, async (tx) => {
+    const run = await lockPreparingRun(tx, input.runId, input.userId);
+    const attempt = await lockPreparingAttempt(tx, input);
+    if (
+      !run ||
+      run.status !== "preparing" ||
+      !attempt ||
+      attempt.attemptOrdinal !== 0 ||
+      !["PENDING", "EXECUTING", "READY"].includes(attempt.state)
+    ) {
+      return null;
+    }
+    const baseSnapshot = decodeMemoryPreparingBaseSnapshot(
+      attempt.boundedPrivateBaseRequestSnapshot
+    );
+    if (!baseSnapshot || memoryPreparingHash(baseSnapshot) !== attempt.baseRequestHash) {
+      throw new MemoryPreparingRunConflictError("memory_admission_snapshot_invalid", false);
+    }
+    const [chat] = await tx.$queryRaw<Array<{
+      activeLeafMessageId: string | null;
+      archived: boolean;
+      folderId: string | null;
+    }>>(Prisma.sql`
+      SELECT "activeLeafMessageId", "archived", "folderId"
+      FROM "Chat"
+      WHERE "id" = ${attempt.chatId} AND "userId" = ${input.userId}
+      FOR UPDATE
+    `);
+    if (
+      !chat ||
+      chat.archived ||
+      chat.activeLeafMessageId !== attempt.admittedAssistantLeafMessageId ||
+      chat.folderId !== attempt.folderIdSnapshot
+    ) {
+      throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
+    }
+    if (run.assistantId && run.assistantRevisionId) {
+      await assertAssistantRunProvenance(tx, {
+        assistantId: run.assistantId,
+        revisionId: run.assistantRevisionId,
+        userId: input.userId
+      });
+    } else if (run.assistantId || run.assistantRevisionId) {
+      throw new MemoryPreparingRunConflictError("memory_admission_shape_changed", false);
+    }
+    const settings = await loadPreparingSettings(tx, input.userId);
+    await tx.memoryRetrievalAttempt.update({
+      data: {
+        errorCode: "memory_admission_settings_changed",
+        state: "STALE",
+        updatedAt: input.now
+      },
+      where: { id: attempt.id }
+    });
+    const nextAttemptId = await createPreparingAttempt(tx, {
+      admissionKind: attempt.admissionKind,
+      assistantIdSnapshot: attempt.assistantIdSnapshot,
+      assistantMessageId: attempt.admittedAssistantLeafMessageId,
+      attemptOrdinal: 1,
+      baseSnapshot,
+      chatId: attempt.chatId,
+      folderIdSnapshot: attempt.folderIdSnapshot,
+      now: input.now,
+      preSendActiveLeafMessageId: attempt.preSendActiveLeafMessageId,
+      runId: attempt.modelRunId,
+      settings,
+      userId: input.userId,
+      userMessageId: attempt.admittedUserMessageId
+    });
+    return {
+      attemptId: nextAttemptId,
+      settingsSnapshot: memoryPreparingSettingsSnapshot(settings)
+    };
+  });
+}
+
+type PreparingSettlementInput = Readonly<{
+  attemptId?: string;
+  errorCode: string;
+  message: string;
+  now?: Date;
+  runId: string;
+  state: "CANCELLED" | "EXPIRED" | "FAILED" | "STALE";
+  userId: string;
+}>;
+
+async function settlePreparingRunInTransaction(
+  tx: Prisma.TransactionClient,
+  input: PreparingSettlementInput
+): Promise<boolean> {
+  const run = await lockPreparingRun(tx, input.runId, input.userId);
+  if (!run || run.status !== "preparing") return false;
+  const attempt = await lockPreparingAttempt(tx, {
+    ...(input.attemptId ? { attemptId: input.attemptId } : {}),
+    runId: input.runId,
+    userId: input.userId
+  });
+  if (!attempt || !["PENDING", "EXECUTING", "READY"].includes(attempt.state)) {
+    return false;
+  }
+  const baseSnapshot = decodeMemoryPreparingBaseSnapshot(
+    attempt.boundedPrivateBaseRequestSnapshot
+  );
+  const normalizedRequest = baseSnapshot?.normalizedRequest ?? {};
+  const providerRequestPreview = baseSnapshot?.providerRequestPreview ?? {};
+  const now = input.now ?? new Date();
+  const errorCode = /^[a-z][a-z0-9_]{0,63}$/u.test(input.errorCode)
+    ? input.errorCode
+    : "memory_preparing_failed";
+  const cancelled = input.state === "CANCELLED";
+  await tx.memoryRetrievalAttempt.update({
+    data: {
+      errorCode,
+      state: input.state,
+      updatedAt: now
+    },
+    where: { id: attempt.id }
+  });
+  await tx.modelRun.update({
+    data: {
+      errorPayload: json({ code: errorCode, message: input.message }),
+      normalizedRequest: json(normalizedRequest),
+      providerRequestPreview: json(providerRequestPreview),
+      status: cancelled ? "cancelled" : "error"
+    },
+    where: { id: run.id }
+  });
+  if (run.assistantMessageId) {
+    await tx.message.updateMany({
+      data: {
+        errorMessage: input.message,
+        status: cancelled ? "cancelled" : "error"
+      },
+      where: {
+        id: run.assistantMessageId,
+        status: { in: activeMessageStatuses }
+      }
+    });
+  }
+  return true;
+}
+
+async function settlePreparingRunFailureWithClient(
+  prismaClient: PrismaClient,
+  input: PreparingSettlementInput
+): Promise<boolean> {
+  return prismaClient.$transaction((tx) => settlePreparingRunInTransaction(tx, input));
+}
+
+async function recoverPreparingRunWithClient(
+  prismaClient: PrismaClient,
+  input: Readonly<{ now: Date; runId: string; userId: string }>
+): Promise<PreparingRunRecoveryResult> {
+  return prismaClient.$transaction(async (tx) => {
+    const run = await lockPreparingRun(tx, input.runId, input.userId);
+    if (!run) return "not_preparing";
+    if (run.status !== "preparing") {
+      const binding = await tx.modelRunMemoryBinding.findUnique({
+        select: { id: true },
+        where: { modelRunId: input.runId }
+      });
+      return binding ? "finalized" : "not_preparing";
+    }
+    const attempt = await lockPreparingAttempt(tx, {
+      runId: input.runId,
+      userId: input.userId
+    });
+    if (!attempt) return "not_preparing";
+    const expired = attempt.expiresAt <= input.now;
+    const settled = await settlePreparingRunInTransaction(tx, {
+      attemptId: attempt.id,
+      errorCode: expired
+        ? "memory_preparing_attempt_expired"
+        : "memory_preparing_recovery_required",
+      message: expired
+        ? "Memory preparation expired before dispatch."
+        : "Memory preparation was interrupted before dispatch.",
+      now: input.now,
+      runId: input.runId,
+      state: expired ? "EXPIRED" : "FAILED",
+      userId: input.userId
+    });
+    return settled ? "settled" : "not_preparing";
+  });
+}
+
+async function createDormantPreparingRun(
+  prismaClient: PrismaClient,
+  admission: PreparingRunAdmissionInput
+): Promise<PreparingRunAdmissionResult> {
+  const created = await admitPreparingRunWithClient(prismaClient, admission);
+  let currentAttemptId = created.attemptId;
+  try {
+    const began = await beginPreparingRunAttemptWithClient(prismaClient, {
+      attemptId: currentAttemptId,
+      now: new Date(),
+      runId: created.runId,
+      userId: admission.userId
+    });
+    if (!began) {
+      throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
+    }
+    const completed = await completePreparingRunAttemptWithClient(prismaClient, {
+      attemptId: currentAttemptId,
+      result: dormantMemoryAttemptResult(created.settingsSnapshot),
+      runId: created.runId,
+      userId: admission.userId
+    });
+    if (!completed) {
+      throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
+    }
+    const finalization: PreparingRunFinalizationInput = {
+      assistant: admission.assistant,
+      attemptId: currentAttemptId,
+      knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan,
+      mcpBindings: admission.mcpBindings,
+      normalizedRequest: admission.normalizedRequest,
+      providerAdmissionPlan: admission.providerAdmissionPlan,
+      providerRequestPreview: admission.providerRequestPreview,
+      runId: created.runId,
+      userId: admission.userId
+    };
+    try {
+      if (await finalizePreparingRunWithClient(prismaClient, finalization)) {
+        return created;
+      }
+      throw new MemoryPreparingRunConflictError("memory_preparing_finalize_conflict", false);
+    } catch (error) {
+      if (!(error instanceof MemoryPreparingRunConflictError) || !error.retryable) {
+        throw error;
+      }
+      const retry = await retryPreparingRunAttemptWithClient(prismaClient, {
+        attemptId: currentAttemptId,
+        now: new Date(),
+        runId: created.runId,
+        userId: admission.userId
+      });
+      if (!retry) throw error;
+      currentAttemptId = retry.attemptId;
+      if (!await beginPreparingRunAttemptWithClient(prismaClient, {
+        attemptId: currentAttemptId,
+        now: new Date(),
+        runId: created.runId,
+        userId: admission.userId
+      }) || !await completePreparingRunAttemptWithClient(prismaClient, {
+        attemptId: currentAttemptId,
+        result: dormantMemoryAttemptResult(retry.settingsSnapshot),
+        runId: created.runId,
+        userId: admission.userId
+      }) || !await finalizePreparingRunWithClient(prismaClient, {
+        ...finalization,
+        attemptId: currentAttemptId
+      })) {
+        throw new MemoryPreparingRunConflictError("memory_preparing_retry_conflict", false);
+      }
+      return {
+        ...created,
+        attemptId: currentAttemptId,
+        settingsSnapshot: retry.settingsSnapshot
+      };
+    }
+  } catch (error) {
+    await settlePreparingRunFailureWithClient(prismaClient, {
+      attemptId: currentAttemptId,
+      errorCode: error instanceof MemoryPreparingRunConflictError
+        ? error.code
+        : "memory_preparing_failed",
+      message: "Memory preparation failed before provider dispatch.",
+      runId: created.runId,
+      state: "FAILED",
+      userId: admission.userId
+    }).catch(() => false);
+    throw error;
+  }
+}
+
 export function createPrismaRunRepository(prismaClient = prisma): RunRepository {
   async function loadConversationPath(
     chatId: string,
@@ -889,6 +2393,19 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
   }
 
   return {
+    admitPreparingRun: (input) => admitPreparingRunWithClient(prismaClient, input),
+    beginPreparingRunAttempt: (input) =>
+      beginPreparingRunAttemptWithClient(prismaClient, input),
+    completePreparingRunAttempt: (input) =>
+      completePreparingRunAttemptWithClient(prismaClient, input),
+    finalizePreparingRun: (input) =>
+      finalizePreparingRunWithClient(prismaClient, input),
+    recoverPreparingRun: (input) =>
+      recoverPreparingRunWithClient(prismaClient, input),
+    retryPreparingRunAttempt: (input) =>
+      retryPreparingRunAttemptWithClient(prismaClient, input),
+    settlePreparingRunFailure: (input) =>
+      settlePreparingRunFailureWithClient(prismaClient, input),
     advanceToolLoopCallBatch: async (input) => {
       if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 0 ||
         input.roundIndex > toolLoopPersistenceLimits.roundIndex) return "conflict";
@@ -1067,7 +2584,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         const runs = await tx.modelRun.findMany({
           select: {
             assistantMessageId: true,
-            id: true
+            id: true,
+            status: true,
+            userId: true
           },
           where: {
             createdAt: {
@@ -1092,7 +2611,20 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           return 0;
         }
 
-        const runIds = runs.map((run) => run.id);
+        let preparedSettled = 0;
+        for (const run of runs) {
+          if (run.status !== "preparing") continue;
+          if (await settlePreparingRunInTransaction(tx, {
+            errorCode: payload.code,
+            message: payload.message,
+            runId: run.id,
+            state: "FAILED",
+            userId: run.userId
+          })) preparedSettled += 1;
+        }
+        const runIds = runs
+          .filter((run) => run.status !== "preparing")
+          .map((run) => run.id);
         const updatedRuns = await tx.modelRun.updateMany({
           data: {
             errorPayload: json(payload),
@@ -1103,14 +2635,17 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
               in: runIds
             },
             status: {
-              in: activeModelRunStatuses
+              in: dispatchableModelRunStatuses
             },
             providerResponseId: null,
             toolLoopState: { equals: Prisma.DbNull }
           }
         });
         const assistantMessageIds = unique(
-          runs.flatMap((run) => (run.assistantMessageId ? [run.assistantMessageId] : []))
+          runs.flatMap((run) =>
+            run.status !== "preparing" && run.assistantMessageId
+              ? [run.assistantMessageId]
+              : [])
         );
 
         if (assistantMessageIds.length > 0) {
@@ -1130,24 +2665,31 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           });
         }
 
-        return updatedRuns.count;
+        return preparedSettled + updatedRuns.count;
       });
     },
     cancelRun: async (input) => {
       return prismaClient.$transaction(async (tx) => {
-        const updatedRun = await tx.modelRun.updateMany({
-          data: {
-            errorPayload: json(input.payload),
-            status: "cancelled"
-          },
-          where: {
-            id: input.runId,
-            status: {
-              in: activeModelRunStatuses
-            },
-            userId: input.userId
-          }
-        });
+        const lockedRun = await lockPreparingRun(tx, input.runId, input.userId);
+        const updatedCount = lockedRun?.status === "preparing"
+          ? Number(await settlePreparingRunInTransaction(tx, {
+              errorCode: input.payload.code,
+              message: input.payload.message,
+              runId: input.runId,
+              state: "CANCELLED",
+              userId: input.userId
+            }))
+          : (await tx.modelRun.updateMany({
+              data: {
+                errorPayload: json(input.payload),
+                status: "cancelled"
+              },
+              where: {
+                id: input.runId,
+                status: { in: dispatchableModelRunStatuses },
+                userId: input.userId
+              }
+            })).count;
         const run = await tx.modelRun.findFirst({
           select: {
             assistantMessageId: true,
@@ -1165,14 +2707,17 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         });
 
         if (!run) {
-          if (updatedRun.count > 0) {
+          if (updatedCount > 0) {
             throw new Error("Cancelled run disappeared before transaction commit");
           }
 
           return { kind: "not_found" } as const;
         }
 
-        if (updatedRun.count === 0) {
+        if (updatedCount === 0) {
+          if (run.status === "preparing") {
+            throw new Error("PREPARING run could not be cancelled safely");
+          }
           return {
             kind: "current",
             run: runControlRecord(run)
@@ -1260,7 +2805,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           FOR UPDATE
         `);
         const activeCompletion = Boolean(
-          existingRun && activeModelRunStatuses.includes(existingRun.status)
+          existingRun && dispatchableModelRunStatuses.includes(existingRun.status)
         );
         const recoveredCompletion = Boolean(
           existingRun &&
@@ -1402,293 +2947,26 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       });
     },
     createRun: async (input) => {
-      return mapActiveRunConflict(() =>
-        repeatableReadTransaction(prismaClient, async (tx) => {
-          const lockedChats = await tx.$queryRaw<
-            Array<{ activeLeafMessageId: string | null; archived: boolean; id: string }>
-          >`
-            SELECT "id", "activeLeafMessageId", "archived"
-            FROM "Chat"
-            WHERE "id" = ${input.chatId}
-              AND "userId" = ${input.userId}
-            FOR UPDATE
-          `;
-          const lockedChat = lockedChats[0];
-          if (
-            !lockedChat ||
-            lockedChat.archived ||
-            lockedChat.activeLeafMessageId !== input.expectedActiveLeafId
-          ) {
-            throw new ActiveLeafConflictError();
-          }
-
-          if (input.assistant) {
-            await assertAssistantRunProvenance(tx, {
-              assistantId: input.assistant.assistantId,
-              revisionId: input.assistant.revisionId,
-              userId: input.userId
-            });
-          }
-
-          const chat = await tx.chat.findFirst({
-            select: {
-              _count: {
-                select: {
-                  messages: true
-                }
-              },
-              activeLeafMessageId: true,
-              id: true,
-              title: true
-            },
-            where: {
-              archived: false,
-              id: input.chatId,
-              userId: input.userId
-            }
-          });
-
-          if (!chat) {
-            throw new Error("Chat not found for run creation");
-          }
-
-          const userMessage = await tx.message.create({
-            data: {
-              chatId: input.chatId,
-              content: json(input.content),
-              modelId: input.modelId,
-              parentMessageId: input.expectedActiveLeafId,
-              provider: input.provider,
-              role: "user",
-              status: "complete"
-            }
-          });
-          const assistantMessage = await tx.message.create({
-            data: {
-              chatId: input.chatId,
-              content: json(textMessageContent("")),
-              modelId: input.modelId,
-              parentMessageId: userMessage.id,
-              provider: input.provider,
-              role: "assistant",
-              status: "streaming"
-            }
-          });
-
-          const attachmentIds = unique(input.normalizedRequest.attachmentIds);
-          if (attachmentIds.length > 0) {
-            const linkedAttachments = await tx.attachment.updateMany({
-              data: {
-                chatId: input.chatId,
-                messageId: userMessage.id
-              },
-              where: {
-                id: {
-                  in: attachmentIds
-                },
-                chatId: null,
-                messageId: null,
-                status: "ready",
-                userId: input.userId
-              }
-            });
-            if (linkedAttachments.count !== attachmentIds.length) {
-              throw new AttachmentLinkConflictError();
-            }
-          }
-
-          const run = await tx.modelRun.create({
-            data: {
-              assistantMessageId: assistantMessage.id,
-              ...(input.assistant
-                ? {
-                    assistantId: input.assistant.assistantId,
-                    assistantRevisionId: input.assistant.revisionId
-                  }
-                : {}),
-              chatId: input.chatId,
-              modelId: input.modelId,
-              normalizedRequest: json(input.normalizedRequest),
-              provider: input.provider,
-              providerRequestPreview: json(input.providerRequestPreview),
-              status: "streaming",
-              userId: input.userId,
-              userMessageId: userMessage.id
-            }
-          });
-
-          await insertAcceptedKnowledgeRunBindings(tx, {
-            plan: input.knowledgeAdmissionPlan,
-            runId: run.id,
-            userId: input.userId
-          });
-
-          await insertAcceptedMcpRunBindings(tx, {
-            bindings: input.mcpBindings,
-            runId: run.id,
-            userId: input.userId
-          });
-
-          await insertAcceptedProviderRunBindings(tx, {
-            nativeBackgroundRequested: input.normalizedRequest.params.background === true,
-            plan: input.providerAdmissionPlan,
-            runId: run.id,
-            userId: input.userId
-          });
-
-          if (input.defaults) {
-            await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
-          }
-
-          await tx.chat.update({
-            data: {
-              activeLeafMessageId: assistantMessage.id,
-              ...(chat._count.messages === 0 && input.defaults
-                ? {
-                    defaultProviderModelId: input.defaults.modelId
-                  }
-                : {})
-            },
-            where: {
-              id: input.chatId
-            }
-          });
-
-          if (chat._count.messages === 0) {
-            await tx.chat.updateMany({
-              data: {
-                title: titleFromMessageContent(input.content)
-              },
-              where: {
-                archived: false,
-                id: input.chatId,
-                title: {
-                  in: ["New Chat", "Untitled QSA"]
-                },
-                userId: input.userId
-              }
-            });
-          }
-
-          return {
-            assistantMessageId: assistantMessage.id,
-            runId: run.id,
-            userMessageId: userMessage.id
-          };
-        })
-      );
+      const created = await createDormantPreparingRun(prismaClient, {
+        ...input,
+        admissionKind: "NORMAL_SEND"
+      });
+      return {
+        assistantMessageId: created.assistantMessageId,
+        runId: created.runId,
+        userMessageId: created.userMessageId
+      };
     },
     createRegenerationRun: async (input) => {
-      return mapActiveRunConflict(() =>
-        repeatableReadTransaction(prismaClient, async (tx) => {
-          const lockedChats = await tx.$queryRaw<Array<{ archived: boolean; id: string }>>`
-            SELECT "id", "archived"
-            FROM "Chat"
-            WHERE "id" = ${input.chatId}
-              AND "userId" = ${input.userId}
-            FOR UPDATE
-          `;
-          if (!lockedChats[0] || lockedChats[0].archived) {
-            throw new ActiveLeafConflictError();
-          }
-
-          if (input.assistant) {
-            await assertAssistantRunProvenance(tx, {
-              assistantId: input.assistant.assistantId,
-              revisionId: input.assistant.revisionId,
-              userId: input.userId
-            });
-          }
-
-          const userMessage = await tx.message.findFirst({
-            select: {
-              chatId: true,
-              id: true
-            },
-            where: {
-              chat: {
-                userId: input.userId
-              },
-              chatId: input.chatId,
-              id: input.userMessageId,
-              role: "user"
-            }
-          });
-
-          if (!userMessage) {
-            throw new Error("User message not found for regeneration");
-          }
-
-          const assistantMessage = await tx.message.create({
-            data: {
-              chatId: input.chatId,
-              content: json(textMessageContent("")),
-              modelId: input.modelId,
-              parentMessageId: input.userMessageId,
-              provider: input.provider,
-              role: "assistant",
-              status: "streaming"
-            }
-          });
-          const run = await tx.modelRun.create({
-            data: {
-              assistantMessageId: assistantMessage.id,
-              ...(input.assistant
-                ? {
-                    assistantId: input.assistant.assistantId,
-                    assistantRevisionId: input.assistant.revisionId
-                  }
-                : {}),
-              chatId: input.chatId,
-              modelId: input.modelId,
-              normalizedRequest: json(input.normalizedRequest),
-              provider: input.provider,
-              providerRequestPreview: json(input.providerRequestPreview),
-              status: "streaming",
-              userId: input.userId,
-              userMessageId: input.userMessageId
-            }
-          });
-
-          await insertAcceptedKnowledgeRunBindings(tx, {
-            plan: input.knowledgeAdmissionPlan,
-            runId: run.id,
-            userId: input.userId
-          });
-
-          await insertAcceptedMcpRunBindings(tx, {
-            bindings: input.mcpBindings,
-            runId: run.id,
-            userId: input.userId
-          });
-
-          await insertAcceptedProviderRunBindings(tx, {
-            nativeBackgroundRequested: input.normalizedRequest.params.background === true,
-            plan: input.providerAdmissionPlan,
-            runId: run.id,
-            userId: input.userId
-          });
-
-          if (input.defaults) {
-            await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
-          }
-
-          await tx.chat.update({
-            data: {
-              activeLeafMessageId: assistantMessage.id
-            },
-            where: {
-              id: input.chatId
-            }
-          });
-
-          return {
-            assistantMessageId: assistantMessage.id,
-            runId: run.id,
-            userMessageId: input.userMessageId
-          };
-        })
-      );
+      const created = await createDormantPreparingRun(prismaClient, {
+        ...input,
+        admissionKind: "REGENERATE"
+      });
+      return {
+        assistantMessageId: created.assistantMessageId,
+        runId: created.runId,
+        userMessageId: created.userMessageId
+      };
     },
     createSearchRun: async (input) => {
       if (input.invocationId) {
@@ -1736,6 +3014,16 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
     },
     failRun: async (runId, assistantMessageId, error, options) => {
       return prismaClient.$transaction(async (tx) => {
+        const [lockedRun] = await tx.$queryRaw<Array<{
+          status: ModelRunStatus;
+          userId: string;
+        }>>(Prisma.sql`
+          SELECT "status", "userId"
+          FROM "ModelRun"
+          WHERE "id" = ${runId}
+          FOR UPDATE
+        `);
+        if (!lockedRun) return false;
         const assistantMessage = await tx.message.findUnique({
           select: { groundedAt: true },
           where: { id: assistantMessageId }
@@ -1744,27 +3032,33 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         const durableError = groundedLiveOnly
           ? { code: error.code, message: "Grounded live-only run failed." }
           : error;
-        const updatedRun = await tx.modelRun.updateMany({
-          data: {
-            errorPayload: json(
-              options?.recoveryTerminal
-                ? recoveredRunErrorPayload(durableError)
-                : durableError
-            ),
-            ...(groundedLiveOnly
-              ? { finalProviderResponsePreview: json(groundedLiveOnlyProviderPreview()) }
-              : {}),
-            status: "error"
-          },
-          where: {
-            id: runId,
-            status: {
-              in: activeModelRunStatuses
-            }
-          }
-        });
+        const updatedCount = lockedRun.status === "preparing"
+          ? Number(await settlePreparingRunInTransaction(tx, {
+              errorCode: durableError.code,
+              message: durableError.message,
+              runId,
+              state: "FAILED",
+              userId: lockedRun.userId
+            }))
+          : (await tx.modelRun.updateMany({
+              data: {
+                errorPayload: json(
+                  options?.recoveryTerminal
+                    ? recoveredRunErrorPayload(durableError)
+                    : durableError
+                ),
+                ...(groundedLiveOnly
+                  ? { finalProviderResponsePreview: json(groundedLiveOnlyProviderPreview()) }
+                  : {}),
+                status: "error"
+              },
+              where: {
+                id: runId,
+                status: { in: dispatchableModelRunStatuses }
+              }
+            })).count;
 
-        if (updatedRun.count === 0) {
+        if (updatedCount === 0) {
           return false;
         }
 
@@ -2070,7 +3364,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             provider: run.provider,
             providerResponseId: run.providerResponseId,
             recoverySettled: isRecoveredRunTerminalPayload(run.errorPayload),
-            status: acceptedRunStatus(run.status)
+            status: run.status
           }
         : null;
     },
@@ -2903,7 +4197,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
 
         if (
           !run ||
-          (!activeModelRunStatuses.includes(run.status) && run.status !== "error") ||
+          (!dispatchableModelRunStatuses.includes(run.status) && run.status !== "error") ||
           isRecoveredRunTerminalPayload(run.errorPayload)
         ) {
           return false;
@@ -3046,7 +4340,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         });
         if (
           run?.assistantMessageId !== input.assistantMessageId ||
-          !activeModelRunStatuses.includes(run.status)
+          !dispatchableModelRunStatuses.includes(run.status)
         ) return false;
 
         const updated = await tx.message.updateMany({

@@ -57,6 +57,7 @@ type RepositoryOptions = Readonly<{
   entitlements?: ResolvedEntitlements;
   failureWins?: boolean;
   modelAvailable?: boolean;
+  runStatus?: string;
   searchStrategyEnabled?: boolean;
   responseIdPublication?: "cancelled" | "published" | "terminal";
   usagePersistenceError?: Error;
@@ -409,6 +410,17 @@ function createRepository(options: RepositoryOptions = {}) {
       chatUpdateLoads += 1;
       return options.chatUpdate ?? null;
     },
+    async getRunControlForUser(runId) {
+      return {
+        assistantMessageId: "assistant-1",
+        chatId: "chat-1",
+        id: runId,
+        modelId: "fake-qsa",
+        provider: "fake",
+        providerResponseId: null,
+        status: options.runStatus ?? "streaming"
+      };
+    },
     async isSearchStrategyEnabled() {
       return options.searchStrategyEnabled ?? true;
     },
@@ -607,6 +619,38 @@ describe("run execution", () => {
 
   afterEach(() => {
     activeRunControllersForTest().clear();
+  });
+
+  it("refuses PREPARING dispatch before any provider or start event", async () => {
+    const repository = createRepository({ runStatus: "preparing" });
+    let providerCalls = 0;
+    const adapter = createAdapter(async function* () {
+      providerCalls += 1;
+      return providerResult();
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      repository: repository.repository
+    })).text());
+
+    expect(providerCalls).toBe(0);
+    expect(repository.persistedEvents.some(({ event }) => event.type === "run_start"))
+      .toBe(false);
+    expect(repository.failedRuns).toEqual([
+      {
+        assistantMessageId: "assistant-1",
+        error: {
+          code: "memory_preparing_run_not_finalized",
+          message: "Run is not finalized for provider dispatch"
+        },
+        runId: "run-1"
+      }
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      data: { code: "memory_preparing_run_not_finalized" },
+      type: "error"
+    });
   });
 
   it("rechecks search enablement immediately before dispatch and fails without calling the provider", async () => {

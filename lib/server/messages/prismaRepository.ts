@@ -19,7 +19,7 @@ function branchChatTitle(title: string): string {
   return next.length > 80 ? `${next.slice(0, 77)}...` : next;
 }
 
-const activeRunStatuses: ModelRunStatus[] = ["streaming", "queued", "in_progress"];
+const activeRunStatuses: ModelRunStatus[] = ["preparing", "streaming", "queued", "in_progress"];
 const activeMessageStatuses: MessageStatus[] = ["streaming", "queued"];
 
 function isActiveMessageStatus(status: MessageStatus): boolean {

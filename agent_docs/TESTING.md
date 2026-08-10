@@ -56,7 +56,7 @@ docker compose -f docker-compose.dev.yml up -d --build
 npm run check:container
 ```
 
-`check:container` executes the complete `npm run check` inside the development app container, including PostgreSQL-backed repository/concurrency cases. A small documentation, pure-domain, component-unit, or deterministic adapter change does not require Compose merely because it changes application code.
+`check:container` executes the complete `npm run check` inside the development app container, including PostgreSQL-backed repository/concurrency cases. Deterministic files remain parallel, while the explicitly classified direct-database and opt-in integration files run in one stateful project without file parallelism because they share the disposable schema. A small documentation, pure-domain, component-unit, or deterministic adapter change does not require Compose merely because it changes application code.
 
 The default `docker-compose.yml` is the persistent operator installation and is never a development or test target. One-off commands are valid only against `docker-compose.dev.yml`. Development data is disposable, but stateful/container checks are not safe to run concurrently.
 

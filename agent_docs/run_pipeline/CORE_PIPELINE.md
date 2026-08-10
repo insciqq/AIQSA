@@ -30,6 +30,17 @@ Streaming is a provider-neutral run capability. Catalog `capabilities.streaming`
    - explicit request parameters;
    - admitted user-owned attachments. [Provider admission](../backend/providers/ADMISSION_AND_BINDINGS.md) owns capability and PDF-route selection; [Runs and streaming](../backend/RUNS_AND_STREAMING.md) owns private materialization, replay, and context-budget mechanics.
 
+   Durable admission uses the feature-dark Native Memory two-phase boundary.
+   Phase A atomically accepts the exact normal-send or regeneration DAG,
+   ordinary dependency bindings, a private `PREPARING` run, the bounded base
+   request, and one local-only retrieval attempt. The currently dormant path
+   stages an explicit empty/disabled result. Phase B then revalidates the DAG,
+   current folder/Assistant, Memory counters/settings/index, provider,
+   Knowledge, MCP, and any exact staged items before it freezes the normalized
+   request/preview and makes the run dispatchable. `PREPARING` never reaches an
+   answer adapter; cancellation and recovery terminally settle its owned
+   attempt, while finalized recovery replays the already frozen request.
+
 2. Optional search and tools
    - optional but first-class Knowledge retrieval, Search, and model-requested MCP tools remain inside the same run;
    - [Search plans and integrations](SEARCH_PLANS.md) owns preference, compatibility, route selection, invocation, evidence, and publication semantics;
@@ -58,16 +69,17 @@ change the grant, effective-inventory, or per-call-approval semantics owned by
 this pipeline.
 
 An accepted run freezes opaque deployment identities and exact provider/Search
-bindings before network I/O. A nonempty Knowledge plan is revalidated for live
+bindings before network I/O. Phase A persists those bindings with the private
+run graph and Phase B immediately revalidates them before dispatch. A nonempty Knowledge plan is revalidated for live
 ownership or active group/installation publication, non-archived base state,
 active index generation, current embedding-model entitlement, exact vector
 space, and usable credential/check evidence. Its ordered base revision,
 generation, vector fingerprint/dimension, and embedding execution snapshot are
-inserted atomically with the run graph; an unknown, unavailable, or access-lost
+inserted atomically with the Phase A run graph; an unknown, unavailable, or access-lost
 base returns the same value-free failure and leaves no partial messages or run.
 A base with zero ready documents is still admitted so later retrieval can expose
 honest empty evidence. Later revocation, archive, reindex, ordinary configuration, or RBAC changes
-affect future admission only. [Provider admission](../backend/providers/ADMISSION_AND_BINDINGS.md)
+after Phase B affect future admission only. [Provider admission](../backend/providers/ADMISSION_AND_BINDINGS.md)
 owns credential resolution, the admission transaction, and revocation guards;
 [runs and streaming](../backend/RUNS_AND_STREAMING.md) owns continuation,
 cancellation, and recovery behavior over the frozen input.

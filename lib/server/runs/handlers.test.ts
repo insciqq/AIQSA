@@ -162,6 +162,9 @@ function createMemoryRepository(
     updatedProviderRequestPreview: null
   };
   const repository: RunRepository = {
+    admitPreparingRun: async () => {
+      throw new Error("preparing_run_not_supported_by_handler_harness");
+    },
     advanceToolLoopCallBatch: async ({ roundIndex }) =>
       state.toolCalls.some((call) => call.roundIndex === roundIndex &&
         call.state !== "complete" && call.state !== "error")
@@ -174,6 +177,7 @@ function createMemoryRepository(
     appendRunEvent: async (_runId, sequence, event) => {
       state.events.push({ event, sequence });
     },
+    beginPreparingRunAttempt: async () => false,
     beginToolLoopProviderRound: async () => "started",
     cancelPendingToolLoopCalls: async () => {
       let cancelled = 0;
@@ -256,6 +260,7 @@ function createMemoryRepository(
         }
       };
     },
+    completePreparingRunAttempt: async () => false,
     completeRun: async (input) => {
       if (state.cancelled || state.completed || state.recoverySettled) {
         return false;
@@ -279,6 +284,10 @@ function createMemoryRepository(
     },
     createRun: async (input) => {
       state.created = input;
+      state.cancelled = null;
+      state.completed = null;
+      state.providerResponseId = null;
+      state.recoverySettled = false;
 
       return {
         assistantMessageId: "assistant-message-1",
@@ -288,6 +297,10 @@ function createMemoryRepository(
     },
     createRegenerationRun: async (input) => {
       state.regenerated = input;
+      state.cancelled = null;
+      state.completed = null;
+      state.providerResponseId = null;
+      state.recoverySettled = false;
       state.created = {
         chatId: input.chatId,
         content: input.normalizedRequest.content,
@@ -309,6 +322,7 @@ function createMemoryRepository(
     createSearchRun: async (input) => {
       state.searchRuns.push(input);
     },
+    finalizePreparingRun: async () => false,
     failRun: async (runId, _assistantMessageId, error, options) => {
       state.failed = { error, runId };
       state.recoverySettled = options?.recoveryTerminal === true;
@@ -380,7 +394,13 @@ function createMemoryRepository(
             provider: state.created?.provider ?? "fake",
             providerResponseId: state.providerResponseId,
             recoverySettled: state.recoverySettled,
-            status: state.cancelled ? "cancelled" : state.completed ? "complete" : state.failed ? "error" : "streaming"
+            status: state.cancelled
+              ? "cancelled"
+              : state.completed
+                ? "complete"
+                : state.failed?.runId === runId
+                  ? "error"
+                  : "streaming"
           }
         : null,
     getRunForUser: async (runId, userId) =>
@@ -485,6 +505,7 @@ function createMemoryRepository(
             ],
           }
         : null,
+    recoverPreparingRun: async () => "not_preparing",
     isSearchStrategyEnabled: async () => true,
     loadSearchStrategyConfiguration: async (searchStrategyId) => ({
       config: {
@@ -615,6 +636,8 @@ function createMemoryRepository(
       return "settled";
     },
     resetToolLoopAssistantDraft: async () => true,
+    retryPreparingRunAttempt: async () => null,
+    settlePreparingRunFailure: async () => false,
     updateRunProviderResponseId: async (_runId, providerResponseId) => {
       state.providerResponseId = providerResponseId;
       return "published";
@@ -5022,7 +5045,8 @@ describe("model run route handlers", () => {
     state.assistantText = "";
     state.recentActiveRun = {
       ...activeRunRecord({
-        chatId: "chat-1"
+        chatId: "chat-1",
+        status: "preparing"
       }),
       updatedAt: new Date()
     };

@@ -623,8 +623,10 @@ describe("Prisma chat repository", () => {
     });
   });
 
-  it("blocks active-leaf checkout and archive while allowing non-branch metadata updates during a run", async () => {
-    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
+  it.each(["preparing", "streaming"] as const)(
+    "blocks active-leaf checkout and archive while allowing non-branch metadata updates during a %s run",
+    async (runStatus) => {
+    await withFolderUser(async ({ fakeProviderConnectionId, fakeProviderModelId, userId }) => {
       const repository = createPrismaChatRepository(prisma);
       const chat = await prisma.chat.create({
         data: {
@@ -658,19 +660,59 @@ describe("Prisma chat repository", () => {
           id: chat.id
         }
       });
-      await prisma.modelRun.create({
-        data: {
-          assistantMessageId: assistantMessage.id,
+      let activeAssistantMessageId = assistantMessage.id;
+      if (runStatus === "preparing") {
+        const content = textMessageContent("Preparing gate");
+        const admitted = await createPrismaRunRepository(prisma).admitPreparingRun({
+          admissionKind: "NORMAL_SEND",
           chatId: chat.id,
+          content,
+          defaults: {
+            controlDefaults: {},
+            modelId: fakeProviderModelId,
+            provider: fakeProviderConnectionId,
+            searchStrategy: "search-disabled",
+            userId
+          },
+          expectedActiveLeafId: assistantMessage.id,
           modelId: "fake-qsa",
-          normalizedRequest: {},
+          normalizedRequest: {
+            attachmentIds: [],
+            chatId: chat.id,
+            content,
+            modelCapabilities: {
+              nativePdfInput: false,
+              nativeSearch: false,
+              pdf: false,
+              reasoning: false,
+              vision: false
+            },
+            modelId: "fake-qsa",
+            params: {},
+            prompt: { developer: null, system: null },
+            provider: "fake",
+            searchStrategy: "search-disabled"
+          },
           provider: "fake",
           providerRequestPreview: {},
-          status: "streaming",
-          userId,
-          userMessageId: userMessage.id
-        }
-      });
+          userId
+        });
+        activeAssistantMessageId = admitted.assistantMessageId;
+      } else {
+        await prisma.modelRun.create({
+          data: {
+            assistantMessageId: assistantMessage.id,
+            chatId: chat.id,
+            modelId: "fake-qsa",
+            normalizedRequest: {},
+            provider: "fake",
+            providerRequestPreview: {},
+            status: runStatus,
+            userId,
+            userMessageId: userMessage.id
+          }
+        });
+      }
 
       await expect(
         repository.updateChat({
@@ -690,7 +732,7 @@ describe("Prisma chat repository", () => {
           userId
         })
       ).resolves.toMatchObject({
-        activeLeafMessageId: assistantMessage.id,
+        activeLeafMessageId: activeAssistantMessageId,
         pinned: true,
         title: "Metadata remains editable"
       });
@@ -705,11 +747,12 @@ describe("Prisma chat repository", () => {
           }
         })
       ).resolves.toEqual({
-        activeLeafMessageId: assistantMessage.id,
+        activeLeafMessageId: activeAssistantMessageId,
         archived: false
       });
-    });
-  });
+      });
+    }
+  );
 
   it("serializes concurrent archive and prepared run creation without an archived active run", async () => {
     await withFolderUser(async ({

@@ -55,10 +55,19 @@ The first send in a blank/new chat derives a short deterministic title from loca
 `lib/domain/modelRunEvents.ts` is the executable owner of the normalized SSE event union and encoder. `runExecution.ts` owns foreground stream/provider/tool behavior, `runFinalization.ts` owns durable event/completion primitives, `runRecovery.ts` owns refresh/orphan settlement, and route handlers own the pre-execution mutation order. Together these boundaries must:
 
 - set `text/event-stream` headers;
-- persist the user message before opening the stream;
-- create an assistant placeholder before first token;
-- create a model run before provider execution;
-- generate provider request preview for inspection;
+- before opening the stream, atomically persist the exact user/assistant DAG,
+  ordinary accepted dependency bindings, a private `PREPARING` model run with
+  null request artifacts, and one bounded local-only Memory attempt;
+- settle the currently dormant attempt as empty/disabled, then atomically
+  revalidate the admitted DAG and mutable authority, consume the attempt,
+  create its immutable run binding, freeze the normalized request/provider
+  preview, and transition to `streaming` before first provider I/O;
+- reject `PREPARING` at the execution fence before `run_start`, provider
+  resolution, or adapter invocation. Cancellation, failure, boot sweep, stale
+  reconciliation, and expiry terminally settle the owned attempt and freeze the
+  base request rather than leaving an active orphan; finalized recovery never
+  retrieves again;
+- expose the finalized provider request preview for inspection;
 - persist streamed event summaries without raw user content by default;
 - batch token persistence: live SSE keeps per-token deltas, while assistant-message partial text and stored token `ModelRunEvent` rows flush as aggregated chunks;
 - require provider-specific terminal proof before durable completion. A truncated or safety-bounded provider stream flushes accepted partial text, then marks the assistant/run `error` without writing `done`; provider-reported usage already observed before failure may still be stored as incomplete-run operational usage, but is never guessed;

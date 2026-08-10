@@ -193,6 +193,7 @@ function createHarness(options: Readonly<{
     }[];
     operations: string[];
     providerResponseIds: { providerResponseId: string; runId: string }[];
+    preparingRecoveries: Parameters<RunRecoveryRepository["recoverPreparingRun"]>[0][];
     recoveredErrors: Parameters<RunRecoveryRepository["settleRecoveredRunError"]>[0][];
     run: {
       providerResponseId: string | null;
@@ -211,6 +212,7 @@ function createHarness(options: Readonly<{
     failed: [],
     operations: [],
     providerResponseIds: [],
+    preparingRecoveries: [],
     recoveredErrors: [],
     run: {
       providerResponseId: initialControl.providerResponseId,
@@ -313,6 +315,10 @@ function createHarness(options: Readonly<{
       if (state.run.status === "complete") return false;
       state.usageAttributions.push(input.usageAttributions);
       return true;
+    },
+    recoverPreparingRun: async (input) => {
+      state.preparingRecoveries.push(input);
+      return "settled";
     },
     resetToolLoopAssistantDraft: async () => false,
     settleRecoveredRunError: async (input) => {
@@ -757,6 +763,28 @@ describe("run recovery", () => {
       })
     ]);
     expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it("settles installation-wide PREPARING rows without resolving a provider", async () => {
+    const refresh = vi.fn();
+    const harness = createHarness({
+      providers: { openai: providerWithRefresh(refresh) }
+    });
+    harness.repository.findInstallationRecoverableRuns = async () => [{
+      ...staleControl({
+        providerResponseId: null,
+        status: "preparing",
+        updatedAt: new Date("2026-07-12T09:00:00.000Z")
+      }),
+      userId
+    }];
+    const now = new Date("2026-07-12T10:00:01.000Z");
+
+    await reconcileInstallationRuns(harness.deps, { now });
+
+    expect(harness.state.preparingRecoveries).toEqual([{ now, runId, userId }]);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(harness.state.failed).toEqual([]);
   });
 
   it("sweeps boot-orphaned runs once with the injected live-run ids", async () => {
@@ -1254,6 +1282,21 @@ describe("run recovery", () => {
       }
     ]);
     expect(harness.state.events.map(({ event }) => event.type)).toEqual(["error"]);
+  });
+
+  it("routes stale PREPARING rows only to their owned-attempt recovery", async () => {
+    const refresh = vi.fn();
+    const now = new Date("2026-07-12T10:00:00.000Z");
+    const harness = createHarness({
+      providers: { openai: providerWithRefresh(refresh) },
+      staleRuns: [staleControl({ providerResponseId: null, status: "preparing" })]
+    });
+
+    await reconcileStaleRuns(harness.deps, { now, userId });
+
+    expect(harness.state.preparingRecoveries).toEqual([{ now, runId, userId }]);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(harness.state.failed).toEqual([]);
   });
 
   it("delegates refreshable stale runs to provider recovery", async () => {

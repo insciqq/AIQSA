@@ -17,7 +17,7 @@
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
     "benchmark:knowledge-ocr": "tsx scripts/benchmark-knowledge-ocr.ts",
-    "check": "prisma generate && npm run docs:check && npm run lint && tsc --noEmit && vitest run",
+    "check": "prisma generate && npm run docs:check && npm run lint && tsc --noEmit && vitest run --config vitest.full.config.ts",
     "check:container": "docker compose -f docker-compose.dev.yml exec -T app npm run check",
     "check:hermetic": "prisma generate && npm run docs:check && npm run lint && tsc --noEmit && vitest run --config vitest.hermetic.config.ts",
     "docs:check": "node scripts/docs-check.mjs",

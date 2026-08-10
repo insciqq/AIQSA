@@ -1726,9 +1726,18 @@ describe("Prisma run repository", () => {
           status: "complete"
         }
       });
+      const sourceAssistant = await prisma.message.create({
+        data: {
+          chatId: regenerationChat.id,
+          content: textMessageContent("Existing answer"),
+          parentMessageId: source.id,
+          role: "assistant",
+          status: "complete"
+        }
+      });
       await prisma.chat.update({
         data: {
-          activeLeafMessageId: source.id
+          activeLeafMessageId: sourceAssistant.id
         },
         where: {
           id: regenerationChat.id
@@ -1797,15 +1806,18 @@ describe("Prisma run repository", () => {
         userId
       });
       await expect(
-        repository.createRegenerationRun(createRegenerationInput(regenerationPrepared, source.id))
+        repository.createRegenerationRun({
+          ...createRegenerationInput(regenerationPrepared, source.id),
+          preSendAssistantMessageId: sourceAssistant.id
+        })
       ).rejects.toThrow("Run defaults persistence failed: not_found");
 
       await expect(chatGraph(regenerationChat.id)).resolves.toEqual({
         _count: {
-          messages: 1,
+          messages: 2,
           modelRuns: 0
         },
-        activeLeafMessageId: source.id,
+        activeLeafMessageId: sourceAssistant.id,
         title: "Regeneration source"
       });
     });
