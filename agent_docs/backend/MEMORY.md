@@ -99,20 +99,38 @@ manifest finds new residual work. Automatic rebuild remains suppression-blocked;
 a later exact explicit Save may revive the logical fact with a new active
 version under fresh authority.
 
+Explicit fact writes now enqueue a content-free `EMBED_ITEMS` job only when
+the selected active generation is already HYBRID; lexical generations retain
+`NOT_APPLICABLE` rows and no embedding dependency. The optional explicit-item
+handler parks work before binding when consent, exact credential authority, or
+signed role qualification is unavailable. An admitted attempt commits one
+job-owned execution binding before its single document-embedding call, records
+one nullable usage event, and applies only to the still-current explicit
+version and active generation with exact content, configuration, dimension,
+and vector-space fingerprints. A compatible credential-version rotation does
+not create a generation. Active `PENDING/FAILED -> READY` and `PENDING ->
+FAILED` settlements each advance the visible revision once, while exact FTS
+remains usable throughout. A lost or uncertain external result degrades to
+`FAILED` and is never blindly replayed; Forget or generation drift prevents
+late vector commit and cannot resurrect a search row.
+
 There are still no later bulk-delete variants, other fact-lifecycle APIs,
-retrieval integration, UI surfaces, or live Memory provider calls. Development
+retrieval integration, UI surfaces, or production-composed live Memory provider
+calls. Development
 starts the coordinator feature-locally from server
 instrumentation, while production uses the same image/code in the private
 no-API `memory-worker` role. Both paths
 preflight the configured suppression keyring against every distinct historical
 key ID before starting. Failure stays local to Memory and does not alter core
 web readiness. The default registry claims `FORGET_PURGE`; other deletion
-operations and all job kinds remain unregistered. The per-call execution boundary resolves current
+operations and all job kinds remain unregistered, so the optional explicit
+embedding handler is inert until a later phase gate composes it with matching
+code-owned qualification. The per-call execution boundary resolves current
 installation utility or entitled embedding authority,
 accepted egress, exact signed role qualification, immutable provider and
 credential evidence, single-winner start, exactly-once nullable usage,
-outcome-unknown recovery, and post-horizon detach, but no shipped caller can
-dispatch it. The public run projection remains unable to expose a private
+outcome-unknown recovery, and post-horizon detach. The public run projection
+remains unable to expose a private
 `preparing` row, and the execution/recovery fences prevent answer-provider I/O
 until Phase B commits. No non-default Memory content is created by ordinary
 application behavior. Existing chat context and folder/project prompt memory

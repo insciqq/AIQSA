@@ -7,6 +7,10 @@ import type {
 } from "../../../contracts/memory";
 import { memoryDerivativePlaintextAllowed } from "../../../domain/memory/safety";
 import { prisma } from "../../prisma";
+import {
+  MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION,
+  memoryExplicitEmbeddingJobFingerprint
+} from "../embedding/contract";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
   consumeMemoryMutationAuthorization,
@@ -481,9 +485,12 @@ async function createSearchEntry(
   versionId: string,
   value: MemoryFactValueInput,
   evidence: MemoryFactEvidenceInput
-): Promise<void> {
+): Promise<Readonly<{
+  embeddingState: "FAILED" | "NOT_APPLICABLE" | "PENDING" | "READY";
+  id: string;
+}>> {
   const safeSearchText = normalizeMemorySearchText(value.displayText);
-  await tx.memorySearchEntry.create({
+  return tx.memorySearchEntry.create({
     data: {
       embeddingState: activeIndex.indexMode === "LEXICAL_ONLY" ? "NOT_APPLICABLE" : "PENDING",
       factVersionId: versionId,
@@ -512,7 +519,35 @@ async function createSearchEntry(
         normalizedValue: safeSearchText
       }),
       userId
-    }
+    },
+    select: { embeddingState: true, id: true }
+  });
+}
+
+async function enqueueExplicitEmbedding(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  input: MemoryFactMutationCommonInput,
+  searchEntry: Readonly<{
+    embeddingState: "FAILED" | "NOT_APPLICABLE" | "PENDING" | "READY";
+    id: string;
+  }> | null
+): Promise<void> {
+  if (
+    input.value.sourceMode !== "EXPLICIT" ||
+    !searchEntry ||
+    (searchEntry.embeddingState !== "PENDING" &&
+      searchEntry.embeddingState !== "FAILED")
+  ) {
+    return;
+  }
+  await enqueueMemoryJob(tx, settings, {
+    idempotencyFingerprint: memoryExplicitEmbeddingJobFingerprint(
+      searchEntry.id,
+      input.idempotencyFingerprint
+    ),
+    kind: "EMBED_ITEMS",
+    pipelineVersion: MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION
   });
 }
 
@@ -767,7 +802,15 @@ export function createPrismaMemoryFactRepository(
           }
         });
         await createEvidence(tx, userId, versionId, eventId, input.evidence);
-        await createSearchEntry(tx, activeIndex, userId, versionId, input.value, input.evidence);
+        const searchEntry = await createSearchEntry(
+          tx,
+          activeIndex,
+          userId,
+          versionId,
+          input.value,
+          input.evidence
+        );
+        await enqueueExplicitEmbedding(tx, settings, input, searchEntry);
         await enqueueWorkingSetRefresh(tx, settings, input, fact.id);
 
         const result = {
@@ -866,6 +909,18 @@ export function createPrismaMemoryFactRepository(
             data: { lastConfirmedAt: input.evidence.observedAt },
             where: { id: existing.id }
           });
+          const searchEntry = await tx.memorySearchEntry.findUnique({
+            select: { embeddingState: true, id: true },
+            where: {
+              userId_indexGenerationId_itemType_factVersionId: {
+                factVersionId: currentVersion.id,
+                indexGenerationId: activeIndex.id,
+                itemType: "FACT_VERSION",
+                userId
+              }
+            }
+          });
+          await enqueueExplicitEmbedding(tx, settings, input, searchEntry);
           await enqueueWorkingSetRefresh(tx, settings, input, existing.id);
           const result = {
             eventId,
@@ -945,7 +1000,15 @@ export function createPrismaMemoryFactRepository(
           }
         });
         await createEvidence(tx, userId, versionId, eventId, input.evidence);
-        await createSearchEntry(tx, activeIndex, userId, versionId, input.value, input.evidence);
+        const searchEntry = await createSearchEntry(
+          tx,
+          activeIndex,
+          userId,
+          versionId,
+          input.value,
+          input.evidence
+        );
+        await enqueueExplicitEmbedding(tx, settings, input, searchEntry);
         await enqueueWorkingSetRefresh(tx, settings, input, factId);
         const result = {
           eventId,

@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import {
   withLockedMemoryTransaction,
+  type LockedMemorySettings,
   type MemoryTransaction
 } from "../persistence/transaction";
 import {
@@ -493,6 +494,7 @@ export function createPrismaMemoryExecutionLifecycle(
         evidence: Readonly<{
           bindingId: string;
           owner: MemoryExecutionOwner;
+          settings: LockedMemorySettings;
         }>
       ) => Promise<Value>
     ): Promise<Value> {
@@ -525,7 +527,8 @@ export function createPrismaMemoryExecutionLifecycle(
         });
         return apply(tx, {
           bindingId: binding.id,
-          owner: storedMemoryExecutionOwner(binding)
+          owner: storedMemoryExecutionOwner(binding),
+          settings
         });
       });
     }
