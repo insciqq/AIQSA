@@ -25,6 +25,7 @@ import {
   decodeMemoryRebuildStatus,
   decodeMemoryScopeSelection,
   decodeMemorySettingsPatch,
+  decodeMemorySettingsMutation,
   decodeMemorySettingsResponse,
   decodeMemoryUpdateInput
 } from "./memory";
@@ -68,6 +69,7 @@ function settingsResponse() {
       acceptedUtilityEgressFingerprint: "accepted-fingerprint-1234",
       acceptedUtilityPolicyVersion: "memory-egress-v1",
       currentUtilityEgressFingerprint: "accepted-fingerprint-1234",
+      currentUtilityPolicyVersion: "memory-egress-v1",
       embeddingDestination: "Embedding deployment",
       remoteRerankerDestination: null,
       reviewRequired: false,
@@ -153,6 +155,36 @@ describe("Memory request contracts", () => {
       expectedMemoryConsentRevision: 3,
       expectedMemoryRevision: 42,
       expectedSettingsRevision: 12
+    })).toMatchObject({ ok: false });
+    expect(decodeMemorySettingsMutation({
+      expectedMemoryRevision: 42,
+      expectedSettingsRevision: 12,
+      useMemoryFacts: true
+    })).toEqual({
+      ok: true,
+      value: {
+        kind: "patch",
+        value: {
+          expectedMemoryRevision: 42,
+          expectedSettingsRevision: 12,
+          useMemoryFacts: true
+        }
+      }
+    });
+    expect(decodeMemorySettingsMutation({
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      currentUtilityEgressFingerprint: "current-fingerprint-1234",
+      currentUtilityPolicyVersion: "memory-egress-v1",
+      expectedMemoryConsentRevision: 3,
+      expectedMemoryRevision: 42,
+      expectedSettingsRevision: 12
+    })).toMatchObject({
+      ok: true,
+      value: { kind: "accept_utility_egress" }
+    });
+    expect(decodeMemorySettingsMutation({
+      expectedSettingsRevision: 12,
+      unknown: true
     })).toMatchObject({ ok: false });
 
     expect(decodeMemoryMutationAuthorizationInput({
@@ -338,6 +370,21 @@ describe("Memory response contracts", () => {
         ...settingsResponse().egress,
         currentUtilityEgressFingerprint: "changed-fingerprint-1234",
         reviewRequired: false
+      }
+    })).toMatchObject({ ok: false });
+    expect(decodeMemorySettingsResponse({
+      ...settingsResponse(),
+      egress: {
+        ...settingsResponse().egress,
+        currentUtilityPolicyVersion: "memory-egress-v2",
+        reviewRequired: false
+      }
+    })).toMatchObject({ ok: false });
+    expect(decodeMemorySettingsResponse({
+      ...settingsResponse(),
+      egress: {
+        ...settingsResponse().egress,
+        reviewRequired: true
       }
     })).toMatchObject({ ok: false });
   });

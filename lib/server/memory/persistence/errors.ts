@@ -1,7 +1,9 @@
 export const MEMORY_PERSISTENCE_ERROR_CODES = [
   "memory_active_generation_invalid",
   "memory_consent_conflict",
+  "memory_consent_policy_changed",
   "memory_counter_contract_invalid",
+  "memory_embedding_unavailable",
   "memory_fact_identity_conflict",
   "memory_fact_not_found",
   "memory_fact_suppressed",

@@ -4,7 +4,15 @@ import {
   type MemoryConsentInput,
   type MemorySettingsPatch
 } from "../../../contracts/memory";
+import {
+  loadEmbeddingProviderRole,
+  ProviderAdmissionError
+} from "../../providerRuntime/admission";
 import { prisma } from "../../prisma";
+import {
+  resolveCurrentMemoryUtilityPolicy,
+  type ResolvedMemoryUtilityPolicy
+} from "../execution/policy";
 import { memoryPersistenceFailure } from "./errors";
 import {
   advanceMemoryMutation,
@@ -52,6 +60,18 @@ const settingsSelect = {
   useMemoryFacts: true,
   userId: true
 } satisfies Prisma.UserMemorySettingsSelect;
+
+type MemorySettingsRepositoryOptions = Readonly<{
+  resolveCurrentUtilityPolicy?: (
+    tx: MemoryTransaction,
+    userId: string,
+    settings: Pick<LockedMemorySettings, "embeddingProviderModelId">
+  ) => Promise<ResolvedMemoryUtilityPolicy>;
+  validateEmbeddingSelection?: (
+    tx: MemoryTransaction,
+    input: Readonly<{ providerModelId: string; userId: string }>
+  ) => Promise<void>;
+}>;
 
 const visibleKeys = [
   "embeddingDeploymentId",
@@ -136,7 +156,17 @@ async function persistedSettings(
   return row;
 }
 
-export function createPrismaMemorySettingsRepository(client: PrismaClient = prisma) {
+export function createPrismaMemorySettingsRepository(
+  client: PrismaClient = prisma,
+  options: MemorySettingsRepositoryOptions = {}
+) {
+  const resolveCurrentUtilityPolicy = options.resolveCurrentUtilityPolicy ??
+    resolveCurrentMemoryUtilityPolicy;
+  const validateEmbeddingSelection = options.validateEmbeddingSelection ??
+    (async (tx, input) => {
+      await loadEmbeddingProviderRole(tx, input);
+    });
+
   return Object.freeze({
     async acceptUtilityEgress(
       userId: string,
@@ -154,12 +184,20 @@ export function createPrismaMemorySettingsRepository(client: PrismaClient = pris
           return memoryPersistenceFailure("memory_consent_conflict");
         }
 
+        const currentPolicy = await resolveCurrentUtilityPolicy(tx, userId, settings);
+        if (
+          currentPolicy.fingerprint !== input.currentUtilityEgressFingerprint ||
+          currentPolicy.policyVersion !== input.currentUtilityPolicyVersion
+        ) {
+          return memoryPersistenceFailure("memory_consent_policy_changed");
+        }
+
         await advanceMemoryMutation(tx, settings, "MEMORY_VISIBLE_SETTING_CHANGE");
         const updated = await tx.userMemorySettings.updateMany({
           data: {
             acceptedUtilityEgressAt: new Date(),
-            acceptedUtilityEgressFingerprint: input.currentUtilityEgressFingerprint,
-            acceptedUtilityPolicyVersion: input.currentUtilityPolicyVersion,
+            acceptedUtilityEgressFingerprint: currentPolicy.fingerprint,
+            acceptedUtilityPolicyVersion: currentPolicy.policyVersion,
             memoryConsentRevision: { increment: 1 },
             settingsRevision: { increment: 1 }
           },
@@ -176,6 +214,25 @@ export function createPrismaMemorySettingsRepository(client: PrismaClient = pris
       });
     },
 
+    async get(userId: string): Promise<MemorySettingsPersistenceSnapshot> {
+      return client.$transaction(async (tx) => {
+        const [owner, settings] = await Promise.all([
+          tx.user.findFirst({
+            select: { id: true },
+            where: { id: userId, status: "active" }
+          }),
+          tx.userMemorySettings.findUnique({
+            select: settingsSelect,
+            where: { userId }
+          })
+        ]);
+        if (!owner || !settings) {
+          return memoryPersistenceFailure("memory_owner_unavailable");
+        }
+        return settings;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    },
+
     async patch(
       userId: string,
       patch: MemorySettingsPatch
@@ -190,6 +247,20 @@ export function createPrismaMemorySettingsRepository(client: PrismaClient = pris
           settings.memoryRevision !== patch.expectedMemoryRevision
         ) {
           return memoryPersistenceFailure("memory_revision_conflict");
+        }
+        const embeddingDeploymentId = patch.embeddingDeploymentId;
+        if (owns(patch, "embeddingDeploymentId") && embeddingDeploymentId != null) {
+          try {
+            await validateEmbeddingSelection(tx, {
+              providerModelId: embeddingDeploymentId,
+              userId
+            });
+          } catch (error) {
+            if (error instanceof ProviderAdmissionError) {
+              return memoryPersistenceFailure("memory_embedding_unavailable");
+            }
+            throw error;
+          }
         }
 
         if (visiblePatchChanges(settings, patch)) {

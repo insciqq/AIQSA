@@ -55,8 +55,21 @@ drift gets at most one fresh attempt, and cancel/failure/expiry/recovery settles
 the owned attempt while freezing the base request. Foreground and recovery
 dispatch both reject `PREPARING`; finalized recovery reuses the frozen request.
 
-There are still no Memory APIs, registered phase handlers, retrieval
-integration, UI surfaces, or live Memory provider calls. Development starts
+The authenticated `GET/PATCH /api/me/memory/settings` route is the first private
+Memory API. It exposes strict bounded settings/capability/current-versus-accepted
+utility-policy projections with `private, no-store`, and accepts either one
+ordinary CAS patch or one explicit consent payload. The three gates and RU/EN
+locale persist independently; a locale-only update advances only the settings
+revision, while a memory-visible update also advances the Memory revision. A
+new embedding selection is admitted through the caller's current exact
+embedding entitlement inside the locked transaction. Consent likewise
+recomputes the current server-owned utility fingerprint in that transaction
+and refuses a stale client observation without partial mutation. Phase release
+capabilities remain fail-closed constants for later composition gates, and the
+route schedules no work.
+
+There are still no fact/lifecycle Memory APIs, registered phase handlers,
+retrieval integration, UI surfaces, or live Memory provider calls. Development starts
 the coordinator feature-locally from server instrumentation, while production
 uses the same image/code in the private no-API `memory-worker` role. Both paths
 preflight the configured suppression keyring against every distinct historical
@@ -372,7 +385,11 @@ provider, endpoint, deployment, account/destination, or policy change pauses
 affected calls in `WAITING_FOR_EGRESS_CONSENT`; already-sent evidence remains
 honest but cannot commit across the changed fence. The answer model is governed
 by ordinary per-run admission and is not silently folded into this static
-fingerprint.
+fingerprint. Settings reads disclose only bounded connection/model labels and
+the non-secret current/accepted fingerprints. Accepting policy never trusts the
+browser's echoed hash: the commit transaction resolves current provider,
+credential-destination, deployment, endpoint/configuration, role, and policy
+authority again and exact-compares it before recording consent.
 
 Initial server-owned tool planning is memory-blind at the wire boundary: direct
 current-user text and, when necessary, bounded prior direct-user text only. It

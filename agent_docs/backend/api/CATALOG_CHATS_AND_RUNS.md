@@ -8,6 +8,16 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
 
 ## Current-User Catalog And Settings
 
+- `/api/me/memory/settings` is a separate authenticated private/no-store
+  settings boundary. GET projects the three independent default-off gates,
+  persisted Memory locale, fail-closed phase capabilities, and bounded
+  current-versus-accepted utility destinations/fingerprints. PATCH accepts
+  exactly one strict ordinary settings-CAS shape or explicit current-copy
+  consent shape. Memory-visible changes require both settings and Memory
+  revisions; locale-only changes require only the settings revision. Embedding
+  selection and utility consent revalidate exact current authority inside the
+  locked mutation, and provider/consent unavailability never disables local
+  management capabilities.
 - The catalog returns the client-safe entitled answer and Search projection
   produced by provider admission, together with personal/installation default
   source facts and presentation preferences. A non-null personal exact

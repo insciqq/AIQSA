@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../prisma";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
+import {
+  MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+  resolveCurrentMemoryUtilityPolicy,
+  type ResolvedMemoryUtilityPolicy
+} from "../execution/policy";
+import { createMemorySettingsService } from "../settings/service";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
 import { createPrismaMemoryDeletionRepository } from "./deletion";
 import { MemoryPersistenceError } from "./errors";
@@ -132,6 +139,157 @@ describe("Prisma Memory persistence", () => {
         id: settings.activeIndexGenerationId,
         indexMode: "LEXICAL_ONLY",
         indexedThroughMemoryRevision: 1,
+        state: "ACTIVE",
+        targetMemoryRevision: 1
+      });
+    } finally {
+      await cleanupUser(userId);
+    }
+  });
+
+  it("persists all independent gate combinations and fences consent policy drift", async () => {
+    const userId = await createActiveUser("settings-matrix");
+    let currentFingerprint = "c".repeat(64);
+    const repository = createPrismaMemorySettingsRepository(prisma, {
+      resolveCurrentUtilityPolicy: async () => ({
+        destinations: [],
+        fingerprint: currentFingerprint,
+        policyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+        targets: new Map()
+      } satisfies ResolvedMemoryUtilityPolicy)
+    });
+    try {
+      await expect(repository.patch(userId, {
+        embeddingDeploymentId: randomUUID(),
+        expectedMemoryRevision: 0,
+        expectedSettingsRevision: 0
+      })).rejects.toMatchObject({ code: "memory_embedding_unavailable" });
+      await expect(repository.get(userId)).resolves.toMatchObject({
+        embeddingProviderModelId: null,
+        memoryRevision: 0,
+        settingsRevision: 0
+      });
+      const initialProjection = await createMemorySettingsService({
+        repository,
+        resolveCurrentUtilityPolicy: (ownerUserId, ownerSettings) =>
+          resolveCurrentMemoryUtilityPolicy(prisma, ownerUserId, ownerSettings)
+      }).get(userId);
+      expect(initialProjection).toMatchObject({
+        capabilities: {
+          automaticLearning: false,
+          explicitMemory: false,
+          historyRecall: false,
+          russianQualified: false
+        },
+        egress: {
+          acceptedAt: null,
+          acceptedUtilityEgressFingerprint: null,
+          acceptedUtilityPolicyVersion: null,
+          reviewRequired: true
+        },
+        settings: {
+          embeddingDeployment: null,
+          settingsRevision: 0
+        }
+      });
+      expect(initialProjection.egress.currentUtilityEgressFingerprint).toMatch(
+        /^[a-f0-9]{64}$/u
+      );
+      expect(JSON.stringify(initialProjection)).not.toMatch(/credential/iu);
+
+      const combinations = [
+        [false, false, false],
+        [false, false, true],
+        [false, true, true],
+        [false, true, false],
+        [true, true, false],
+        [true, true, true],
+        [true, false, true],
+        [true, false, false]
+      ] as const;
+      await expect(repository.get(userId)).resolves.toMatchObject({
+        learnAutomatically: false,
+        referenceChatHistory: false,
+        useMemoryFacts: false
+      });
+      for (let index = 1; index < combinations.length; index += 1) {
+        const [useMemoryFacts, referenceChatHistory, learnAutomatically] =
+          combinations[index]!;
+        const updated = await repository.patch(userId, {
+          expectedMemoryRevision: index - 1,
+          expectedSettingsRevision: index - 1,
+          learnAutomatically,
+          referenceChatHistory,
+          useMemoryFacts
+        });
+        expect(updated).toMatchObject({
+          learnAutomatically,
+          memoryRevision: index,
+          referenceChatHistory,
+          settingsRevision: index,
+          useMemoryFacts
+        });
+      }
+
+      const localeOnly = await repository.patch(userId, {
+        expectedSettingsRevision: 7,
+        memoryUiLocale: "EN"
+      });
+      expect(localeOnly).toMatchObject({
+        memoryRevision: 7,
+        memoryUiLocale: "EN",
+        settingsRevision: 8
+      });
+
+      const observedFingerprint = currentFingerprint;
+      currentFingerprint = "d".repeat(64);
+      await expect(repository.acceptUtilityEgress(userId, {
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        currentUtilityEgressFingerprint: observedFingerprint,
+        currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+        expectedMemoryConsentRevision: 0,
+        expectedMemoryRevision: 7,
+        expectedSettingsRevision: 8
+      })).rejects.toMatchObject({ code: "memory_consent_policy_changed" });
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
+        .resolves.toMatchObject({
+          acceptedUtilityEgressFingerprint: null,
+          memoryConsentRevision: 0,
+          memoryRevision: 7,
+          settingsRevision: 8
+        });
+
+      const accepted = await repository.acceptUtilityEgress(userId, {
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        currentUtilityEgressFingerprint: currentFingerprint,
+        currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+        expectedMemoryConsentRevision: 0,
+        expectedMemoryRevision: 7,
+        expectedSettingsRevision: 8
+      });
+      expect(accepted).toMatchObject({
+        acceptedUtilityEgressFingerprint: currentFingerprint,
+        acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+        memoryConsentRevision: 1,
+        memoryRevision: 8,
+        settingsRevision: 9
+      });
+      await expect(repository.patch(userId, {
+        expectedMemoryRevision: 7,
+        expectedSettingsRevision: 9,
+        useMemoryFacts: false
+      })).rejects.toMatchObject({ code: "memory_revision_conflict" });
+      await expect(repository.get(userId)).resolves.toMatchObject({
+        memoryRevision: 8,
+        settingsRevision: 9,
+        useMemoryFacts: true
+      });
+      const generations = await prisma.memoryIndexGeneration.findMany({
+        where: { userId }
+      });
+      expect(generations).toHaveLength(1);
+      expect(generations[0]).toMatchObject({
+        indexedThroughMemoryRevision: 8,
         state: "ACTIVE",
         targetMemoryRevision: 1
       });

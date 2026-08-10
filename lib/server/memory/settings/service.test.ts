@@ -1,0 +1,250 @@
+import { describe, expect, it, vi } from "vitest";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
+import {
+  MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+  type ResolvedMemoryExecutionTarget,
+  type ResolvedMemoryUtilityPolicy
+} from "../execution/policy";
+import { MemoryPersistenceError } from "../persistence/errors";
+import type { MemorySettingsPersistenceSnapshot } from "../persistence/settings";
+import {
+  createMemorySettingsService,
+  MemorySettingsServiceError,
+  type MemorySettingsRepository
+} from "./service";
+
+const NOW = new Date("2026-08-10T12:00:00.000Z");
+
+function settings(
+  overrides: Partial<MemorySettingsPersistenceSnapshot> = {}
+): MemorySettingsPersistenceSnapshot {
+  return {
+    acceptedUtilityEgressAt: NOW,
+    acceptedUtilityEgressFingerprint: "a".repeat(64),
+    acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+    activeIndexGenerationId: "generation-1",
+    embeddingProviderModelId: "embedding-1",
+    learnAutomatically: false,
+    memoryConsentRevision: 2,
+    memoryGeneration: 0,
+    memoryRevision: 3,
+    memoryUiLocale: "RU",
+    preferredProfileLanguage: "AUTO",
+    referenceChatHistory: true,
+    sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
+    settingsRevision: 4,
+    updatedAt: NOW,
+    useMemoryFacts: true,
+    userId: "user-1",
+    ...overrides
+  };
+}
+
+function executionTarget(input: Readonly<{
+  connection: string;
+  model: string;
+  providerModelId: string;
+}>): ResolvedMemoryExecutionTarget {
+  return {
+    authority: {
+      connectionId: "connection-1",
+      connectionVersion: 2,
+      credentialId: "credential-1",
+      credentialVersionId: "credential-version-1",
+      modelVersion: 3,
+      providerModelId: input.providerModelId
+    },
+    credentialSource: "default",
+    destinationFingerprint: "b".repeat(64),
+    executionTargetFingerprint: "c".repeat(64),
+    policyRevision: 1,
+    qualificationFingerprints: {
+      configFingerprint: "d".repeat(64),
+      deploymentFingerprint: "e".repeat(64),
+      modelFingerprint: "f".repeat(64),
+      providerFingerprint: "1".repeat(64)
+    },
+    snapshot: {
+      connection: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://provider.example.test/v1",
+        responseTimeoutMs: 30_000
+      },
+      connectionDisplayName: input.connection,
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      credentialVersionId: "credential-version-1",
+      model: {
+        adapterKind: "openai_responses_compatible",
+        answerSelectable: true,
+        capabilities: {
+          nativePdfInput: false,
+          nativeSearch: false,
+          pdf: false,
+          reasoning: false,
+          toolCalling: false,
+          vision: false
+        },
+        defaultParams: {},
+        modelClass: "answer",
+        upstreamModelId: input.model
+      },
+      modelDisplayName: input.model,
+      providerFamily: "openai_compatible",
+      providerModelId: input.providerModelId,
+      version: 1
+    }
+  };
+}
+
+function policy(input: Readonly<{
+  fingerprint?: string;
+  withTargets?: boolean;
+}> = {}): ResolvedMemoryUtilityPolicy {
+  const targets = new Map();
+  if (input.withTargets !== false) {
+    const system = executionTarget({
+      connection: "System provider",
+      model: "System model",
+      providerModelId: "system-1"
+    });
+    const embedding = executionTarget({
+      connection: "Embedding provider",
+      model: "Embedding model",
+      providerModelId: "embedding-1"
+    });
+    targets.set("MEMORY_FACT_EXTRACT", system);
+    targets.set("MEMORY_RERANK", system);
+    targets.set("MEMORY_DOCUMENT_EMBED", embedding);
+  }
+  return {
+    destinations: [],
+    fingerprint: input.fingerprint ?? "a".repeat(64),
+    policyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+    targets
+  };
+}
+
+function repository(
+  overrides: Partial<MemorySettingsRepository> = {}
+): MemorySettingsRepository {
+  return {
+    acceptUtilityEgress: vi.fn(async () => settings({
+      memoryConsentRevision: 3,
+      memoryRevision: 4,
+      settingsRevision: 5
+    })),
+    get: vi.fn(async () => settings()),
+    patch: vi.fn(async () => settings()),
+    ...overrides
+  };
+}
+
+describe("Memory settings service", () => {
+  it("projects bounded safe destinations and exact current/accepted policy evidence", async () => {
+    const service = createMemorySettingsService({
+      capabilities: {
+        automaticLearning: false,
+        explicitMemory: true,
+        historyRecall: false,
+        russianQualified: true
+      },
+      repository: repository(),
+      resolveCurrentUtilityPolicy: async () => policy()
+    });
+
+    await expect(service.get("user-1")).resolves.toEqual({
+      capabilities: {
+        automaticLearning: false,
+        explicitMemory: true,
+        historyRecall: false,
+        russianQualified: true
+      },
+      egress: {
+        acceptedAt: NOW.toISOString(),
+        acceptedUtilityEgressFingerprint: "a".repeat(64),
+        acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+        currentUtilityEgressFingerprint: "a".repeat(64),
+        currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+        embeddingDestination: "Embedding provider / Embedding model",
+        remoteRerankerDestination: "System provider / System model",
+        reviewRequired: false,
+        systemModelDestination: "System provider / System model"
+      },
+      settings: {
+        embeddingDeployment: {
+          connectionDisplayName: "Embedding provider",
+          id: "embedding-1",
+          modelDisplayName: "Embedding model"
+        },
+        learnAutomatically: false,
+        memoryConsentRevision: 2,
+        memoryGeneration: 0,
+        memoryRevision: 3,
+        memoryUiLocale: "RU",
+        preferredProfileLanguage: "AUTO",
+        referenceChatHistory: true,
+        sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
+        settingsRevision: 4,
+        updatedAt: NOW.toISOString(),
+        useMemoryFacts: true
+      }
+    });
+  });
+
+  it("reports drift and remains usable when every utility destination is unavailable", async () => {
+    const service = createMemorySettingsService({
+      capabilities: {
+        automaticLearning: false,
+        explicitMemory: true,
+        historyRecall: false,
+        russianQualified: true
+      },
+      repository: repository(),
+      resolveCurrentUtilityPolicy: async () => policy({
+        fingerprint: "9".repeat(64),
+        withTargets: false
+      })
+    });
+
+    const response = await service.get("user-1");
+    expect(response.capabilities.explicitMemory).toBe(true);
+    expect(response.egress).toMatchObject({
+      currentUtilityEgressFingerprint: "9".repeat(64),
+      embeddingDestination: null,
+      remoteRerankerDestination: null,
+      reviewRequired: true,
+      systemModelDestination: null
+    });
+    expect(response.settings.embeddingDeployment).toBeNull();
+  });
+
+  it("maps only stable persistence failures and forwards exact consent", async () => {
+    const acceptUtilityEgress = vi.fn(async () => settings());
+    const service = createMemorySettingsService({
+      repository: repository({
+        acceptUtilityEgress,
+        patch: vi.fn(async () => {
+          throw new MemoryPersistenceError("memory_settings_conflict");
+        })
+      }),
+      resolveCurrentUtilityPolicy: async () => policy()
+    });
+    await expect(service.patch("user-1", {
+      expectedMemoryRevision: 3,
+      expectedSettingsRevision: 4,
+      useMemoryFacts: false
+    })).rejects.toEqual(new MemorySettingsServiceError("memory_version_stale"));
+
+    const consent = {
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      currentUtilityEgressFingerprint: "a".repeat(64),
+      currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+      expectedMemoryConsentRevision: 2,
+      expectedMemoryRevision: 3,
+      expectedSettingsRevision: 4
+    } as const;
+    await service.acceptUtilityEgress("user-1", consent);
+    expect(acceptUtilityEgress).toHaveBeenCalledWith("user-1", consent);
+  });
+});

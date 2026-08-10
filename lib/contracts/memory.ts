@@ -182,6 +182,7 @@ export const MEMORY_RECEIPT_LIFECYCLE_STATES = [
 export type MemoryReceiptLifecycleState = (typeof MEMORY_RECEIPT_LIFECYCLE_STATES)[number];
 
 export const MEMORY_ERROR_CODES = [
+  "memory_contract_invalid",
   "memory_not_enabled",
   "memory_not_found",
   "memory_target_unavailable",
@@ -225,6 +226,14 @@ const cursorSchema = z.string().min(1).max(MEMORY_CURSOR_MAX_LENGTH).refine(
 const hashSchema = z.string().trim().min(16).max(512).refine(
   (value) => !/[\u0000-\u0020\u007f]/u.test(value),
   "invalid hash"
+);
+const utilityEgressFingerprintSchema = z.string().trim().min(16).max(128).refine(
+  (value) => !/[\u0000-\u0020\u007f]/u.test(value),
+  "invalid utility egress fingerprint"
+);
+const utilityPolicyVersionSchema = z.string().trim().min(1).max(64).regex(
+  /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u,
+  "invalid utility policy version"
 );
 const safeText = (maxLength: number) => z.string().min(1).max(maxLength)
   .refine((value) => value.trim().length > 0, "text is blank")
@@ -307,8 +316,8 @@ export function decodeMemorySettingsPatch(
 
 const memoryConsentInputSchema = z.strictObject({
   confirmationCopyVersion: z.literal(MEMORY_CONFIRMATION_COPY_VERSION),
-  currentUtilityEgressFingerprint: hashSchema,
-  currentUtilityPolicyVersion: z.string().trim().min(1).max(128),
+  currentUtilityEgressFingerprint: utilityEgressFingerprintSchema,
+  currentUtilityPolicyVersion: utilityPolicyVersionSchema,
   expectedMemoryConsentRevision: safeInteger,
   expectedMemoryRevision: safeInteger,
   expectedSettingsRevision: safeInteger
@@ -320,6 +329,27 @@ export function decodeMemoryConsentInput(
   value: unknown
 ): MemoryContractDecodeResult<MemoryConsentInput> {
   return decode(memoryConsentInputSchema, value);
+}
+
+export type MemorySettingsMutation =
+  | Readonly<{ kind: "accept_utility_egress"; value: MemoryConsentInput }>
+  | Readonly<{ kind: "patch"; value: MemorySettingsPatch }>;
+
+export function decodeMemorySettingsMutation(
+  value: unknown
+): MemoryContractDecodeResult<MemorySettingsMutation> {
+  const patch = memorySettingsPatchSchema.safeParse(value);
+  const consent = memoryConsentInputSchema.safeParse(value);
+  if (patch.success && !consent.success) {
+    return { ok: true, value: { kind: "patch", value: patch.data } };
+  }
+  if (consent.success && !patch.success) {
+    return {
+      ok: true,
+      value: { kind: "accept_utility_egress", value: consent.data }
+    };
+  }
+  return { code: "memory_contract_invalid", ok: false };
 }
 
 const mutationAuthorizationCommonSchema = z.strictObject({
@@ -587,9 +617,10 @@ const memorySettingsResponseSchema = z.strictObject({
   }),
   egress: z.strictObject({
     acceptedAt: nullableTimestampSchema,
-    acceptedUtilityEgressFingerprint: hashSchema.nullable(),
-    acceptedUtilityPolicyVersion: z.string().trim().min(1).max(128).nullable(),
-    currentUtilityEgressFingerprint: hashSchema,
+    acceptedUtilityEgressFingerprint: utilityEgressFingerprintSchema.nullable(),
+    acceptedUtilityPolicyVersion: utilityPolicyVersionSchema.nullable(),
+    currentUtilityEgressFingerprint: utilityEgressFingerprintSchema,
+    currentUtilityPolicyVersion: utilityPolicyVersionSchema,
     embeddingDestination: safeText(256).nullable(),
     remoteRerankerDestination: safeText(256).nullable(),
     reviewRequired: z.boolean(),
@@ -615,13 +646,19 @@ const memorySettingsResponseSchema = z.strictObject({
   })
 }).superRefine((value, context) => {
   const accepted = value.egress.acceptedUtilityEgressFingerprint;
-  const policy = value.egress.acceptedUtilityPolicyVersion;
+  const acceptedPolicy = value.egress.acceptedUtilityPolicyVersion;
   const acceptedAt = value.egress.acceptedAt;
-  if ((accepted === null) !== (policy === null) || (accepted === null) !== (acceptedAt === null)) {
+  if (
+    (accepted === null) !== (acceptedPolicy === null) ||
+    (accepted === null) !== (acceptedAt === null)
+  ) {
     context.addIssue({ code: "custom", message: "accepted egress evidence is all-or-none" });
   }
-  if (!value.egress.reviewRequired && accepted !== value.egress.currentUtilityEgressFingerprint) {
-    context.addIssue({ code: "custom", message: "unreviewed destination drift" });
+  const reviewRequired = accepted === null ||
+    accepted !== value.egress.currentUtilityEgressFingerprint ||
+    acceptedPolicy !== value.egress.currentUtilityPolicyVersion;
+  if (value.egress.reviewRequired !== reviewRequired) {
+    context.addIssue({ code: "custom", message: "utility egress review state mismatch" });
   }
 });
 
