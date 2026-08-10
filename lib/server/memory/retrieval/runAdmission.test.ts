@@ -383,7 +383,7 @@ describe("Memory run retrieval admission", () => {
     });
   });
 
-  it("blocks external-tool and secret-bearing requests before retrieval or utility calls", async () => {
+  it("retrieves alongside external tools while still blocking a secret-bearing query", async () => {
     const local = repository([chunkCandidate(1)]);
     const utilities = {
       embedQuery: vi.fn(),
@@ -398,9 +398,9 @@ describe("Memory run retrieval admission", () => {
     const secret = await service.retrieve(input(request(
       "My API key is sk-abcdefghijklmnopqrstuvwxyz123456, what did we discuss?"
     )));
-    expect(external).toMatchObject({ outcome: "DISABLED" });
+    expect(external).toMatchObject({ outcome: "USED" });
     expect(secret).toMatchObject({ outcome: "FAILED_SAFE", queryHash: expect.any(String) });
-    expect(local.retrieve).not.toHaveBeenCalled();
+    expect(local.retrieve).toHaveBeenCalledOnce();
     expect(utilities.embedQuery).not.toHaveBeenCalled();
   });
 

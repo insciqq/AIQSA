@@ -22,6 +22,11 @@ general lifecycle families cover archive/exclusion/resume, hard delete,
 Temporary, failure degradation, index and branch fences, account deletion,
 public sharing, historical snapshots, and scoped-target deletion.
 
+The current v2 corpus replaces the former per-request exact-confirmation label
+with destination authorization and removes the two disclosure invariants
+superseded by the accepted Search/tool coexistence policy. The v1 manifests
+remain immutable archaeology and baseline evidence.
+
 The public-benchmark directory contains synthetic behavior probes, not copied
 benchmark examples. See `benchmarks/ATTRIBUTION.md` for pinned provenance and
 license decisions. Its aggregates remain separate from AIQSA holdout evidence

@@ -11,7 +11,8 @@ indexing/manual search, and answer recall. Recall uses exact/RU/EN/simple FTS,
 optional qualified vectors, RRF, temporal qualification, bounded packing, and
 source/suppression rechecks.
 Retained turns and Resume enqueue indexing only with `referenceChatHistory`;
-learning stays independent. HYBRID degrades to lexical without qualified query
+the gate now defaults on for every owner, while learning stays independent and
+defaults off. HYBRID degrades to lexical without qualified query
 embedding. Remote expansion/rerank are opt-in and require exact accepted policy
 plus signed role qualification.
 
@@ -30,11 +31,12 @@ rechecks source, generation, gate, suppressions, and cutoffs before atomically
 committing chunks, joins, FTS rows, and checkpoint. Qualified episodes commit
 safe extractive summaries under the same fence. Learning remains unavailable.
 
-Phase 1 persists default-off settings, facts/evidence/suppressions, indexes,
+The durable foundation persists settings, facts/evidence/suppressions, indexes,
 jobs/deletions, execution/retrieval attempts, and final-run evidence under
 database ownership/shape/current-pointer constraints. The coordinator fences
-claims, retries, blocked deletion, and apply; bootstrap/upgrade schedules no
-work, and suppression HMAC keys stay installation-only.
+claims, retries, blocked deletion, and apply. The current schema and upgrade
+default `useMemoryFacts` and `referenceChatHistory` on for every owner while
+`learnAutomatically` remains off; suppression HMAC keys stay installation-only.
 
 Every normal send and regeneration uses the two-phase run boundary. Phase A
 commits the exact DAG, ordinary dependency evidence, private `PREPARING` run,
@@ -48,9 +50,18 @@ before freezing the untrusted pack, request, binding, and items. Drift gets one
 safe retry. Retrieval may degrade; management cannot invent success. Dispatch
 rejects `PREPARING`; recovery uses only the finalized request.
 
-All answer adapters place personal context after trusted instructions. Phase 2
-withholds it from hosted Search, Knowledge, MCP/external tools, and non-owned
-Assistants; finalization and provider dispatch enforce the same egress fence.
+Tool-capable answers may additionally use the first-party bounded
+`search_my_history` tool. It returns at most 20 private results per page, may
+run at most twice per answer run, applies the same source/suppression/safety
+fences as manual history search, and owns a distinct private receipt joined to
+the exact persisted tool call. Settled receipts replay exactly; a recovered
+RUNNING receipt has unknown outcome and is never repeated.
+
+All answer adapters place labelled personal context after trusted instructions.
+Normal runs may carry that untrusted context together with hosted/client Search,
+Knowledge, and administrator-connected MCP/external tools. Temporary chats
+still carry none, and Memory remains data: it cannot authorize an action,
+enable a tool, or select credentials.
 Each accepted run privately projects its exact frozen Memory outcome/items into
 the originating answer and a passage-free Events digest. Later Forget or source
 loss adds a lifecycle label without replacing admitted text. Save/Edit/Forget
@@ -58,12 +69,14 @@ feedback requires the exact same-run applied operation/tool receipt join;
 ambiguous targets route to Manage Memories without mutation.
 
 Authenticated `GET/PATCH /api/me/memory/settings` exposes bounded, `private,
-no-store` settings/capability and current-versus-accepted utility policy. It
-accepts one CAS patch or consent payload. The three gates and RU/EN locale are
-independent; only memory-visible changes advance Memory revision. Embedding
-selection requires current exact entitlement, and consent recomputes the
-server-owned fingerprint inside the lock. Stale observations fail atomically;
-the route schedules no work; existing users remain default-off.
+no-store` settings/capability and utility-policy state. The three gates and
+RU/EN locale are independent; only memory-visible changes advance Memory
+revision. `AIQSA_MEMORY_EGRESS_CONSENT_MODE` selects installation-owned
+`ADMIN` (default) or retained `PER_USER` consent. In `ADMIN`, the user receives
+only passive administrator-managed status and cannot submit the consent
+mutation; in `PER_USER`, the existing exact fingerprint/CAS acceptance remains.
+Embedding selection still requires current entitlement. Stale observations
+fail atomically.
 
 Explicit management is gate-independent across owned `GLOBAL_USER`, `FOLDER`,
 `ASSISTANT`, and non-Temporary `CHAT` scopes. Short-lived grants bind Save to an
@@ -119,8 +132,8 @@ vectors and consent. Activation rechecks source/config/barriers/revision and
 advances counters once; failure/cancel never serves. Redream jobs are salted,
 source-fenced, and replayable.
 
-Automatic learning/profile retrieval, split Memory/tool synthesis, later bulk
-variants, and an approved production qualification registry remain unavailable.
+Automatic learning/profile retrieval, later bulk variants, and an approved
+production qualification registry remain unavailable.
 Remote lanes require exact consent/qualification and otherwise fail closed while
 local exact/FTS remains available. Web and `memory-worker` share one coordinator
 for purge, Temporary deletion, indexing, episodes, rebuild, history/source
@@ -425,7 +438,7 @@ Old bindings and included item text are immutable and may later show lifecycle
 labels such as `Later forgotten` or `Source deleted` without rebuilding the
 old context from current Memory.
 
-## External Egress And Tool Separation
+## External Egress And Tool Coexistence
 
 Logical utility roles are provider-neutral. Resolution uses current AIQSA
 provider/credential admission, records the accepted destination, and never
@@ -433,39 +446,33 @@ silently substitutes a provider, model, credential, embedding space, or
 reranker. Explicit CRUD/Forget and local exact/FTS operation do not depend on a
 utility model or embedding credential.
 
-User consent binds a non-secret fingerprint of the effective system-memory,
-embedding, and remote-reranker destinations and policy version. A material
-provider, endpoint, deployment, account/destination, or policy change pauses
-affected calls in `WAITING_FOR_EGRESS_CONSENT`; already-sent evidence remains
-honest but cannot commit across the changed fence. The answer model is governed
-by ordinary per-run admission and is not silently folded into this static
-fingerprint. Settings reads disclose only bounded connection/model labels and
-the non-secret current/accepted fingerprints. Accepting policy never trusts the
-browser's echoed hash: the commit transaction resolves current provider,
-credential-destination, deployment, endpoint/configuration, role, and policy
-authority again and exact-compares it before recording consent.
+The installation policy `ADMIN | PER_USER` owns acceptance of the non-secret
+fingerprint for effective system-memory, embedding, and remote-reranker
+destinations. `ADMIN` is the default because those destinations are connected
+by an administrator; `PER_USER` preserves the earlier account-level contract.
+Destination fingerprints, execution bindings, drift checks,
+`WAITING_FOR_EGRESS_CONSENT`, and no-silent-fallback remain. A material
+provider, endpoint, deployment, account/destination, or policy change cannot be
+crossed by an in-flight result. The answer model remains governed by ordinary
+per-run admission rather than the static utility fingerprint.
 
-Initial server-owned tool planning is memory-blind at the wire boundary: direct
-current-user text and, when necessary, bounded prior direct-user text only. It
-contains no personal context, Memory receipt/profile text, assistant message,
-or tool/Search/Knowledge result. A value known only from Memory requires exact
-user confirmation and destination disclosure so it becomes direct current-
-turn input. `SECRET` and `HIGHLY_SENSITIVE` values never take that path.
-Authorization and revocation are checked immediately before dispatch.
+Labelled `personalContext`, ordinary conversation context, prior assistant
+messages, hosted/client Search, Knowledge, and administrator-connected MCP
+tools may coexist in the normal provider/tool loop. No per-request exact-value
+confirmation, memory-blind planning projection, hosted-Search XOR, or mandatory
+split synthesis exists. Storage-time secret screening prevents secret-like
+source windows from becoming Memory content; current user input—not Memory—must
+still authorize actions and tool/credential selection. Temporary chats expose
+no Memory.
 
-When a response needs both external server-owned tools and personal Memory,
-tool execution completes from the memory-blind request first. A separate
-answer synthesis request may then receive frozen safe tool results and
-personal context, but exposes no tool capability and cannot re-enter a tool
-loop. Each request and call has its own immutable receipt.
-
-Provider-hosted Search and `personalContext` are mutually exclusive in one
-provider request because AIQSA cannot fence a provider-internal search subcall.
-A run records either a Memory-bearing mode with hosted Search disabled or a
-hosted-Search mode with personal context omitted and prior Memory-bearing
-assistant turns excluded. Confirmed eligible current-turn values may enter a
-memoryless hosted-Search request; any later Memory synthesis is another
-no-search request.
+Every affected answer-provider or external-tool dispatch writes an owner-bound,
+recovery-idempotent `MemoryToolEgressReceipt` with the actual destination,
+ordinal, mode (`PROVIDER_REQUEST` or `TOOL_CALL`), content hashes, and terminal
+outcome. It stores no Memory/request plaintext and carries no confirmation
+semantics. Destination/configuration authority is rechecked immediately before
+client Search, Knowledge, or MCP execution; passive accepted destination/outcome
+evidence remains immutable while private history-query/result derivatives are
+scrubbed by their deletion obligations.
 
 ## Retrieval And Index Integrity
 
@@ -527,14 +534,14 @@ The source/retention outcomes are:
 
 | Action | Future Memory | Source and derivatives | Historical destinations, shares, external retention |
 | --- | --- | --- | --- |
-| Save/edit explicit | New lexical current version; stale selected versions fail Phase B | Source action remains; vector/profile may follow | Earlier runs and snapshots unchanged; new egress needs accepted policy |
+| Save/edit explicit | New lexical current version; stale selected versions fail Phase B | Source action remains; vector/profile may follow | Earlier runs and snapshots unchanged; new utility egress follows installation policy |
 | Forget one / delete explicit set | Exact versions and unchanged source evidence fenced | Retained chats remain; durable purge and suppression reconcile all affected derivatives | Old destination request/receipt remains immutable and labeled; share prose is not rewritten; provider/backups keep their own retention |
 | Delete learned set | Automatic facts fenced with observed-source barrier | Chats remain; automatic facts/candidates purge | Old destination evidence/prose remains |
 | Clear history index | Chunks/episodes immediately ineligible with source barrier | Chats and semantic facts remain; rebuildable rows purge | Old destination evidence/prose remains |
 | Delete all reusable Memory | All reusable gates fenced with account cutoffs | Raw retained chats remain; reusable tables/indexes purge | Destination runs remain under their owners; no retroactive provider or backup erasure |
 | Turn a gate off | That future read/write stops | Data remains; queued work waits or cancels | Existing evidence/shares unchanged; no new affected egress |
 | Archive/Restore chat | No Memory change | Chat remains eligible | No change |
-| Exclude/Resume source | Exclude fences immediately; Resume obeys barriers | Chat remains; derivatives reconcile or controlled active branch reindexes | Earlier destination evidence/prose remains; resumed egress needs consent |
+| Exclude/Resume source | Exclude fences immediately; Resume obeys barriers | Chat remains; derivatives reconcile or controlled active branch reindexes | Earlier destination evidence/prose remains; resumed utility egress follows installation policy |
 | Branch change | Old selected path fenced | Full DAG remains; active path reconciles | Historical runs/shares and already-sent data remain |
 | Delete scope target | Target scope unavailable | Automatic facts retract; explicit facts become orphaned | Old destination evidence/prose remains |
 | Hard-delete source chat | Source and run graph fenced | Source aggregate deletes, source shares revoke, derivatives reconcile; explicit facts survive by default and CHAT scope orphans | Cross-chat accepted items/prose remain; provider/backups unchanged |
@@ -603,7 +610,7 @@ deletion outbox plus account/source barriers, and audit for resurrection.
 ## Bounded Ownership Map
 
 - This document owns Memory terminology, truth/authority, gates, scopes,
-  counters, state transitions, retrieval safety, egress separation, lifecycle,
+  counters, state transitions, retrieval safety, egress policy, lifecycle,
   and feature-level deletion meaning.
 - [Architecture](../ARCHITECTURE.md) owns the current supported process and
   deployment shape. It changes when the coordinator role actually ships.

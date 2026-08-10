@@ -1,5 +1,8 @@
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
+import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
+import { defaultMemoryToolEgressReceiptService } from "../memory/egress/receipts";
+import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { activeRunControllerRegistry } from "./runExecution";
 import { createPrismaRunRepository } from "./prismaRepository";
@@ -13,7 +16,10 @@ const globalForRecoveryScheduler = globalThis as unknown as {
 export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
   if (!globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler) {
     const deps = {
+      knowledgeAdmission: knowledgeRunAdmissionService,
       knowledgeExecutor: knowledgeToolExecutor,
+      memoryEgress: defaultMemoryToolEgressReceiptService,
+      mcp: defaultMcpRunPlan,
       providerRuntime: providerRuntimeResolver,
       providers: {},
       registry: activeRunControllerRegistry,

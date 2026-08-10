@@ -32,6 +32,8 @@ function serviceErrorStatus(code: MemorySettingsServiceErrorCode): number {
     case "memory_contract_invalid":
     case "memory_embedding_unavailable":
       return 400;
+    case "memory_egress_admin_owned":
+      return 403;
     case "memory_egress_consent_required":
     case "memory_version_stale":
       return 409;

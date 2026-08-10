@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
-  type MemoryHistorySearchInput
+  type MemoryHistorySearchInput,
+  type MemoryHistorySearchResponse
 } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
@@ -25,12 +26,20 @@ import {
   createPrismaMemoryEpisodeRepository,
   memoryEpisodeRedreamJobFingerprint
 } from "./episode";
-import { MEMORY_LEXICAL_NORMALIZATION_VERSION } from "../persistence/lexical";
+import {
+  MEMORY_LEXICAL_NORMALIZATION_VERSION,
+  memorySha256
+} from "../persistence/lexical";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
   MEMORY_TEMPORARY_DELETION_GENERATION,
   MEMORY_TEMPORARY_DELETION_TARGET_TYPE
 } from "../temporaryRetention";
+import { createMemoryHistoryToolExecutor } from "./search/toolExecutor";
+import { MEMORY_HISTORY_SEARCH_TOOL_NAME } from "./search/tool";
+import type { ProviderRunRequest } from "../../providers/types";
+import { createMemoryToolEgressReceiptService } from "../egress/receipts";
+import { purgeMemoryHistoryReceiptDerivatives } from "./purge";
 
 async function mutateSource(
   userId: string,
@@ -246,6 +255,28 @@ function executionContext(now: Date) {
     now: () => now,
     setStage: async (_stage: string) => undefined,
     signal: new AbortController().signal
+  };
+}
+
+function historyToolProviderRequest(chatId: string): ProviderRunRequest {
+  return {
+    attachmentIds: [],
+    attachments: [],
+    chatId,
+    content: textMessageContent("Search my history"),
+    modelCapabilities: {
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      toolCalling: true,
+      vision: false
+    },
+    modelId: "history-test-model",
+    params: {},
+    prompt: { developer: null, system: null },
+    provider: "history-test-provider",
+    searchStrategy: "search-disabled"
   };
 }
 
@@ -1316,6 +1347,438 @@ describe("Memory lexical history index persistence", () => {
       expect(JSON.stringify(evidence)).not.toContain(userId);
       expect(JSON.stringify(evidence)).not.toContain(foreignUserId);
       console.info("memory_phase4_manual_search_qualification", evidence);
+    } finally {
+      await cleanupOwner(foreignUserId);
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("owns bounded history-tool receipts, replays settled calls, and fails safe on ambiguity", async () => {
+    const userId = await createOwner("memory-history-tool-receipt");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "History tool receipts", userId }
+      });
+      const firstTurn = await createTurn({
+        assistantText: "Receipt fixture answer",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T18:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Receipt fixture question"
+      });
+      const response: MemoryHistorySearchResponse = {
+        indexing: {
+          degradationCode: null,
+          lexicalState: "READY",
+          vectorState: "NOT_CONFIGURED"
+        },
+        nextCursor: null,
+        results: [{
+          indexingState: "LEXICAL_READY",
+          itemType: "RECALL_CHUNK",
+          occurredAt: "2026-08-10T17:00:00.000Z",
+          sourceChatId: chat.id,
+          sourceChatTitle: "History tool receipts",
+          sourceFolderId: null,
+          sourceFolderName: null,
+          sourceMessageIds: [firstTurn.userMessage.id],
+          sourceState: "AVAILABLE",
+          snippet: "Receipt fixture question"
+        }]
+      };
+      const search = vi.fn(async () => response);
+      const executor = createMemoryHistoryToolExecutor({
+        client: prisma,
+        service: { search }
+      });
+      const calls = await Promise.all([0, 1, 2].map((ordinal) =>
+        prisma.modelRunToolCall.create({
+          data: {
+            arguments: { query: `receipt query ${ordinal}` },
+            modelRunId: firstTurn.run.id,
+            ordinal,
+            providerCallId: `history-tool-call-${ordinal}`,
+            roundIndex: 0,
+            toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
+          }
+        })
+      ));
+      const context = (persistedToolCallId: string) => ({
+        persistedToolCallId,
+        request: historyToolProviderRequest(chat.id),
+        runId: firstTurn.run.id,
+        userId
+      });
+      const call = (ordinal: number) => ({
+        arguments: { query: `receipt query ${ordinal}` },
+        id: `history-tool-call-${ordinal}`,
+        name: MEMORY_HISTORY_SEARCH_TOOL_NAME
+      });
+
+      const first = await executor.execute(call(0), context(calls[0]!.id));
+      expect(search).toHaveBeenCalledTimes(1);
+      expect(first).toMatchObject({
+        callId: "history-tool-call-0",
+        content: [{
+          value: expect.objectContaining({ results: response.results, untrusted: true })
+        }],
+        status: "complete"
+      });
+      expect(search).toHaveBeenNthCalledWith(1, userId, {
+        chatIds: [],
+        cursor: null,
+        folderId: null,
+        from: null,
+        pageSize: 20,
+        query: "receipt query 0",
+        to: null
+      });
+      await expect(prisma.memoryHistoryRun.findUniqueOrThrow({
+        where: { modelRunToolCallId: calls[0]!.id }
+      })).resolves.toMatchObject({
+        invocationOrdinal: 1,
+        modelRunId: firstTurn.run.id,
+        outcome: "RESULTS",
+        query: "receipt query 0",
+        resultCount: 1,
+        retentionState: "RETAINED",
+        state: "COMPLETE",
+        userId
+      });
+
+      await expect(executor.execute(call(0), context(calls[0]!.id))).resolves.toEqual(first);
+      expect(search).toHaveBeenCalledTimes(1);
+      await expect(executor.execute(call(1), context(calls[1]!.id))).resolves.toMatchObject({
+        status: "complete"
+      });
+      expect(search).toHaveBeenCalledTimes(2);
+      await expect(executor.execute(call(2), context(calls[2]!.id))).resolves.toMatchObject({
+        content: [{ value: { error: "memory_history_call_limit" } }],
+        status: "error"
+      });
+      expect(search).toHaveBeenCalledTimes(2);
+      await expect(prisma.memoryHistoryRun.count({
+        where: { modelRunId: firstTurn.run.id }
+      })).resolves.toBe(2);
+
+      const ambiguousTurn = await createTurn({
+        assistantText: "Ambiguous receipt answer",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T18:01:00.000Z"),
+        parentMessageId: firstTurn.assistantMessage.id,
+        userId,
+        userText: "Ambiguous receipt question"
+      });
+      const ambiguousCall = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { query: "ambiguous query" },
+          modelRunId: ambiguousTurn.run.id,
+          ordinal: 0,
+          providerCallId: "history-tool-call-ambiguous",
+          roundIndex: 0,
+          state: "running",
+          toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
+        }
+      });
+      await prisma.memoryHistoryRun.create({
+        data: {
+          indexingEvidence: {},
+          invocationOrdinal: 1,
+          modelRunId: ambiguousTurn.run.id,
+          modelRunToolCallId: ambiguousCall.id,
+          privateRequest: {
+            chatIds: [],
+            cursor: null,
+            folderId: null,
+            from: null,
+            pageSize: 20,
+            query: "ambiguous query",
+            to: null
+          },
+          query: "ambiguous query",
+          queryHash: memorySha256("ambiguous query"),
+          userId
+        }
+      });
+      await expect(executor.execute({
+        arguments: { query: "ambiguous query" },
+        id: "history-tool-call-ambiguous",
+        name: MEMORY_HISTORY_SEARCH_TOOL_NAME
+      }, {
+        persistedToolCallId: ambiguousCall.id,
+        request: historyToolProviderRequest(chat.id),
+        runId: ambiguousTurn.run.id,
+        userId
+      })).resolves.toMatchObject({
+        content: [{ value: { error: "memory_history_outcome_unknown" } }],
+        status: "error"
+      });
+      expect(search).toHaveBeenCalledTimes(2);
+
+      await expect(executor.execute(call(0), {
+        ...context(calls[0]!.id),
+        userId: "foreign-user"
+      })).resolves.toMatchObject({
+        content: [{ value: { error: "memory_history_authorization_missing" } }],
+        status: "error"
+      });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("cancels and scrubs an in-flight history result before a source purge can race it", async () => {
+    const userId = await createOwner("memory-history-tool-purge-race");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "History purge race", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Race fixture answer",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T18:30:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Race fixture question"
+      });
+      const toolCall = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { query: "private race query" },
+          modelRunId: turn.run.id,
+          ordinal: 0,
+          providerCallId: "history-tool-call-purge-race",
+          roundIndex: 0,
+          toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
+        }
+      });
+      let releaseSearch!: (response: MemoryHistorySearchResponse) => void;
+      let markSearchStarted!: () => void;
+      const searchStarted = new Promise<void>((resolve) => {
+        markSearchStarted = resolve;
+      });
+      const searchResult = new Promise<MemoryHistorySearchResponse>((resolve) => {
+        releaseSearch = resolve;
+      });
+      const executor = createMemoryHistoryToolExecutor({
+        client: prisma,
+        service: {
+          search: vi.fn(() => {
+            markSearchStarted();
+            return searchResult;
+          })
+        }
+      });
+      const execution = executor.execute({
+        arguments: { query: "private race query" },
+        id: "history-tool-call-purge-race",
+        name: MEMORY_HISTORY_SEARCH_TOOL_NAME
+      }, {
+        persistedToolCallId: toolCall.id,
+        request: historyToolProviderRequest(chat.id),
+        runId: turn.run.id,
+        userId
+      });
+      await searchStarted;
+
+      await prisma.$transaction((tx) =>
+        purgeMemoryHistoryReceiptDerivatives(tx, userId, {
+          chatId: chat.id,
+          kind: "SOURCE"
+        })
+      );
+      releaseSearch({
+        indexing: {
+          degradationCode: null,
+          lexicalState: "READY",
+          vectorState: "NOT_CONFIGURED"
+        },
+        nextCursor: null,
+        results: [{
+          indexingState: "LEXICAL_READY",
+          itemType: "RECALL_CHUNK",
+          occurredAt: "2026-08-10T18:30:00.000Z",
+          sourceChatId: chat.id,
+          sourceChatTitle: "History purge race",
+          sourceFolderId: null,
+          sourceFolderName: null,
+          sourceMessageIds: [turn.userMessage.id],
+          sourceState: "AVAILABLE",
+          snippet: "PRIVATE_PURGE_RACE_CANARY"
+        }]
+      });
+
+      await expect(execution).resolves.toMatchObject({
+        content: [{ value: { error: "memory_history_receipt_scrubbed" } }],
+        status: "error"
+      });
+      await expect(prisma.memoryHistoryRun.findUniqueOrThrow({
+        where: { modelRunToolCallId: toolCall.id }
+      })).resolves.toMatchObject({
+        outcome: "FAILED",
+        privateRequest: {},
+        providerResult: null,
+        query: null,
+        results: null,
+        retentionState: "SCRUBBED",
+        state: "CANCELLED"
+      });
+      await expect(prisma.modelRunToolCall.findUniqueOrThrow({
+        where: { id: toolCall.id }
+      })).resolves.toMatchObject({
+        arguments: {},
+        state: "error"
+      });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("persists owner-scoped egress dispatch evidence without request plaintext", async () => {
+    const userId = await createOwner("memory-egress-receipts");
+    const foreignUserId = await createOwner("memory-egress-receipts-foreign");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Egress receipts", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Receipt answer",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T19:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Receipt request"
+      });
+      const toolCall = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { value: "alpha" },
+          modelRunId: turn.run.id,
+          ordinal: 0,
+          providerCallId: "egress-receipt-tool-call",
+          roundIndex: 0,
+          toolName: "mcp_external_submit"
+        }
+      });
+      const service = createMemoryToolEgressReceiptService(prisma);
+      const destinationSnapshot = {
+        fingerprint: "egress-fingerprint",
+        kind: "mcp",
+        serverId: "egress-server",
+        toolName: "mcp_external_submit",
+        version: 1
+      } as const;
+      const directCanary = "DIRECT_REQUEST_PLAINTEXT_CANARY";
+      const previewCanary = "REQUEST_PREVIEW_PLAINTEXT_CANARY";
+      const first = await service.beginDispatch({
+        destinationKind: "mcp",
+        destinationSnapshot,
+        mode: "TOOL_CALL",
+        modelRunToolCallId: toolCall.id,
+        requestEvidence: { current: directCanary },
+        requestPreview: { private: previewCanary },
+        runId: turn.run.id,
+        userId
+      });
+      expect(first.requestOrdinal).toBe(1);
+      await expect(service.beginDispatch({
+        destinationKind: "mcp",
+        destinationSnapshot,
+        mode: "TOOL_CALL",
+        modelRunToolCallId: toolCall.id,
+        requestEvidence: { changed: directCanary },
+        requestPreview: { changed: previewCanary },
+        runId: turn.run.id,
+        userId
+      })).resolves.toEqual(first);
+      await expect(service.completeDispatch(first.id)).resolves.toBe(true);
+      await expect(service.completeDispatch(first.id)).resolves.toBe(false);
+
+      const blocked = await service.recordBlockedDispatch({
+        destinationKind: "answer_provider",
+        destinationSnapshot: { modelId: "unavailable", provider: "test", version: 1 },
+        errorCode: "memory_egress_destination_revoked",
+        mode: "PROVIDER_REQUEST",
+        requestEvidence: { current: directCanary },
+        requestPreview: { private: previewCanary },
+        runId: turn.run.id,
+        userId
+      });
+      expect(blocked.requestOrdinal).toBe(2);
+      const providerDispatch = await service.beginDispatch({
+        destinationKind: "answer_provider",
+        destinationSnapshot: {
+          modelId: "history-test-model",
+          provider: "history-test-provider",
+          version: 1
+        },
+        mode: "PROVIDER_REQUEST",
+        requestEvidence: { current: directCanary },
+        requestPreview: { private: previewCanary },
+        runId: turn.run.id,
+        userId
+      });
+      expect(providerDispatch.requestOrdinal).toBe(3);
+      await expect(service.settleRecoveredProviderDispatch({
+        errorCode: "provider_dispatch_failed",
+        outcome: "FAILED",
+        runId: turn.run.id,
+        userId
+      })).resolves.toBe(true);
+      await expect(service.settleRecoveredProviderDispatch({
+        errorCode: "provider_dispatch_failed",
+        outcome: "FAILED",
+        runId: turn.run.id,
+        userId
+      }))
+        .resolves.toBe(true);
+
+      await expect(service.beginDispatch({
+        destinationKind: "mcp",
+        destinationSnapshot,
+        mode: "PROVIDER_REQUEST",
+        requestEvidence: {},
+        runId: turn.run.id,
+        userId: foreignUserId
+      })).rejects.toThrow("memory_egress_run_not_found");
+      await expect(service.beginDispatch({
+        destinationKind: "mcp",
+        destinationSnapshot: { payload: "x".repeat(33 * 1024) },
+        mode: "PROVIDER_REQUEST",
+        requestEvidence: {},
+        runId: turn.run.id,
+        userId
+      })).rejects.toThrow("memory_egress_destination_too_large");
+
+      const receipts = await prisma.memoryToolEgressReceipt.findMany({
+        orderBy: { requestOrdinal: "asc" },
+        where: { modelRunId: turn.run.id }
+      });
+      expect(receipts).toEqual([
+        expect.objectContaining({
+          destinationFingerprint: memorySha256(destinationSnapshot),
+          dispatchState: "COMPLETED",
+          mode: "TOOL_CALL",
+          modelRunToolCallId: toolCall.id,
+          requestOrdinal: 1,
+          requestEvidenceHash: memorySha256({ current: directCanary }),
+          userId
+        }),
+        expect.objectContaining({
+          dispatchState: "BLOCKED",
+          errorCode: "memory_egress_destination_revoked",
+          mode: "PROVIDER_REQUEST",
+          requestOrdinal: 2,
+          requestEvidenceHash: memorySha256({ current: directCanary })
+        }),
+        expect.objectContaining({
+          dispatchState: "FAILED",
+          errorCode: "provider_dispatch_failed",
+          mode: "PROVIDER_REQUEST",
+          requestOrdinal: 3
+        })
+      ]);
+      expect(JSON.stringify(receipts)).not.toContain(directCanary);
+      expect(JSON.stringify(receipts)).not.toContain(previewCanary);
     } finally {
       await cleanupOwner(foreignUserId);
       await cleanupOwner(userId);

@@ -398,6 +398,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
       return vectorResult();
     });
     const authority = {
+      egressConsentMode: "PER_USER" as const,
       now: () => new Date(clock),
       qualification: {
         corpusHash: CORPUS_HASH,
@@ -669,6 +670,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
       return vectorResult();
     });
     const authority = {
+      egressConsentMode: "PER_USER" as const,
       now: () => new Date(INITIAL_NOW),
       qualification: {
         corpusHash: CORPUS_HASH,

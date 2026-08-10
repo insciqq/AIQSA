@@ -68,13 +68,13 @@ describe("provider-neutral personal context", () => {
     expect(() => assertPersonalContextEgressSafe(request({ searchStrategy: null }))).not.toThrow();
   });
 
-  it("fails closed with hosted Search, MCP, Knowledge, or non-Memory tools", () => {
+  it("coexists with hosted Search, Knowledge, and admin-connected tools", () => {
     expect(() => assertPersonalContextEgressSafe(request({
       searchStrategy: "openai-native-web-search"
-    }))).toThrow("memory_tool_egress_forbidden");
+    }))).not.toThrow();
     expect(() => assertPersonalContextEgressSafe(request({
       knowledgePlan: { baseIds: ["base-1"] }
-    }))).toThrow("memory_tool_egress_forbidden");
+    }))).not.toThrow();
     expect(() => assertPersonalContextEgressSafe(request({
       tools: [{
         capability: "mcp",
@@ -82,6 +82,15 @@ describe("provider-neutral personal context", () => {
         inputSchema: { type: "object" },
         name: "external"
       }]
-    }))).toThrow("memory_tool_egress_forbidden");
+    }))).not.toThrow();
+  });
+
+  it("still rejects an unlabelled personal-context block", () => {
+    expect(() => assertPersonalContextEgressSafe(request({
+      personalContext: {
+        ...request().personalContext!,
+        text: "unlabelled memory"
+      }
+    }))).toThrow("memory_personal_context_invalid");
   });
 });

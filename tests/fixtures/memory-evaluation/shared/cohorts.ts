@@ -20,7 +20,7 @@ const defaults: Omit<MemoryCohortTemplate,
   sensitivity: "NORMAL",
   sourceEligible: true,
   terminalFactState: "ACTIVE",
-  toolEgress: "REQUIRE_EXACT_CONFIRMATION"
+  toolEgress: "REQUIRE_ACCEPTED_DESTINATION"
 };
 
 function localized(

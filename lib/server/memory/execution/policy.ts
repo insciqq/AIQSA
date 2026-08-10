@@ -16,6 +16,7 @@ import type { SearchProbeBinding } from "../../search/probeBinding";
 import type { LockedMemorySettings } from "../persistence/transaction";
 import { memoryExecutionSha256 } from "./canonical";
 import { memoryExecutionFailure } from "./errors";
+import type { MemoryEgressConsentMode } from "./consentMode";
 import {
   MEMORY_EXECUTION_ROLES,
   isMemoryEmbeddingRole,
@@ -299,8 +300,10 @@ export function requireAcceptedMemoryUtilityPolicy(
     "acceptedUtilityEgressFingerprint" |
     "acceptedUtilityPolicyVersion"
   >,
-  policy: ResolvedMemoryUtilityPolicy
+  policy: ResolvedMemoryUtilityPolicy,
+  consentMode: MemoryEgressConsentMode
 ): void {
+  if (consentMode === "ADMIN") return;
   if (
     !settings.acceptedUtilityEgressAt ||
     settings.acceptedUtilityPolicyVersion !== policy.policyVersion ||

@@ -8,7 +8,7 @@ import {
   type MemoryCorpusSplit
 } from "./shared/corpusTypes";
 
-export const MEMORY_ADJUDICATION_MANIFEST_VERSION = "memory-adjudication-manifest-v1";
+export const MEMORY_ADJUDICATION_MANIFEST_VERSION = "memory-adjudication-manifest-v2";
 
 const MEMORY_AMBIGUOUS_ADJUDICATION_COHORTS = new Set([
   "yo-e-equivalence",

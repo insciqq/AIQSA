@@ -144,6 +144,7 @@ function repository(
 describe("Memory settings service", () => {
   it("advertises only the complete Phase 2 surface by default", async () => {
     const service = createMemorySettingsService({
+      egressConsentMode: "PER_USER",
       repository: repository(),
       resolveCurrentUtilityPolicy: async () => policy()
     });
@@ -169,6 +170,7 @@ describe("Memory settings service", () => {
         russianQualified: true,
         temporaryChats: true
       },
+      egressConsentMode: "PER_USER",
       repository: repository(),
       resolveCurrentUtilityPolicy: async () => policy()
     });
@@ -185,6 +187,7 @@ describe("Memory settings service", () => {
         acceptedAt: NOW.toISOString(),
         acceptedUtilityEgressFingerprint: "a".repeat(64),
         acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+        consentMode: "PER_USER",
         currentUtilityEgressFingerprint: "a".repeat(64),
         currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
         embeddingDestination: "Embedding provider / Embedding model",
@@ -222,6 +225,7 @@ describe("Memory settings service", () => {
         russianQualified: true,
         temporaryChats: true
       },
+      egressConsentMode: "PER_USER",
       repository: repository(),
       resolveCurrentUtilityPolicy: async () => policy({
         fingerprint: "9".repeat(64),
@@ -241,9 +245,39 @@ describe("Memory settings service", () => {
     expect(response.settings.embeddingDeployment).toBeNull();
   });
 
+  it("defaults destination consent to administrator ownership", async () => {
+    const acceptUtilityEgress = vi.fn(async () => settings());
+    const service = createMemorySettingsService({
+      egressConsentMode: "ADMIN",
+      repository: repository({
+        acceptUtilityEgress,
+        get: vi.fn(async () => settings({
+          acceptedUtilityEgressAt: null,
+          acceptedUtilityEgressFingerprint: null,
+          acceptedUtilityPolicyVersion: null
+        }))
+      }),
+      resolveCurrentUtilityPolicy: async () => policy({ fingerprint: "9".repeat(64) })
+    });
+
+    await expect(service.get("user-1")).resolves.toMatchObject({
+      egress: { consentMode: "ADMIN", reviewRequired: false }
+    });
+    await expect(service.acceptUtilityEgress("user-1", {
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      currentUtilityEgressFingerprint: "9".repeat(64),
+      currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+      expectedMemoryConsentRevision: 2,
+      expectedMemoryRevision: 3,
+      expectedSettingsRevision: 4
+    })).rejects.toEqual(new MemorySettingsServiceError("memory_egress_admin_owned"));
+    expect(acceptUtilityEgress).not.toHaveBeenCalled();
+  });
+
   it("maps only stable persistence failures and forwards exact consent", async () => {
     const acceptUtilityEgress = vi.fn(async () => settings());
     const service = createMemorySettingsService({
+      egressConsentMode: "PER_USER",
       repository: repository({
         acceptUtilityEgress,
         patch: vi.fn(async () => {

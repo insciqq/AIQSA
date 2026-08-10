@@ -28,6 +28,7 @@ export function memorySettingsFixture(
       acceptedAt: "2026-08-10T08:00:00.000Z",
       acceptedUtilityEgressFingerprint: "accepted-fingerprint-0000000000000001",
       acceptedUtilityPolicyVersion: "memory-policy-v1",
+      consentMode: "ADMIN",
       currentUtilityEgressFingerprint: "accepted-fingerprint-0000000000000001",
       currentUtilityPolicyVersion: "memory-policy-v1",
       embeddingDestination: "Local / multilingual-embed",

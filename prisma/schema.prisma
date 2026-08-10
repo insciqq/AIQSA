@@ -433,6 +433,38 @@ enum MemoryEmbeddingState {
   FAILED
 }
 
+enum MemoryHistoryRunState {
+  RUNNING
+  COMPLETE
+  ERROR
+  CANCELLED
+}
+
+enum MemoryHistoryRunOutcome {
+  RESULTS
+  EMPTY
+  DISABLED
+  DEGRADED
+  FAILED
+}
+
+enum MemoryReceiptRetentionState {
+  RETAINED
+  SCRUBBED
+}
+
+enum MemoryToolEgressMode {
+  PROVIDER_REQUEST
+  TOOL_CALL
+}
+
+enum MemoryToolEgressDispatchState {
+  DISPATCHED
+  COMPLETED
+  BLOCKED
+  FAILED
+}
+
 model User {
   id                            String                             @id @default(uuid())
   email                         String?                            @unique
@@ -1518,7 +1550,7 @@ model Message {
 }
 
 model ModelRun {
-  id                           String                @id @default(uuid())
+  id                           String                    @id @default(uuid())
   chatId                       String
   userId                       String
   userMessageId                String
@@ -1532,31 +1564,33 @@ model ModelRun {
   providerRequestPreview       Json?
   providerResponseId           String?
   finalProviderResponsePreview Json?
-  inputTokens                  Int                   @default(0)
-  cachedInputTokens            Int                   @default(0)
-  cacheWriteInputTokens        Int                   @default(0)
-  outputTokens                 Int                   @default(0)
-  reasoningTokens              Int                   @default(0)
-  totalTokens                  Int                   @default(0)
-  estimatedCostMicros          Int                   @default(0)
+  inputTokens                  Int                       @default(0)
+  cachedInputTokens            Int                       @default(0)
+  cacheWriteInputTokens        Int                       @default(0)
+  outputTokens                 Int                       @default(0)
+  reasoningTokens              Int                       @default(0)
+  totalTokens                  Int                       @default(0)
+  estimatedCostMicros          Int                       @default(0)
   errorPayload                 Json?
   toolLoopState                Json?
-  createdAt                    DateTime              @default(now())
-  updatedAt                    DateTime              @updatedAt
-  assistantMessage             Message?              @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
+  createdAt                    DateTime                  @default(now())
+  updatedAt                    DateTime                  @updatedAt
+  assistantMessage             Message?                  @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
   /// The composite relation proves the accepted revision belongs to the accepted definition; a check constraint keeps both columns present or absent together.
-  assistantRevision            AssistantRevision?    @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
-  chat                         Chat                  @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  assistantRevision            AssistantRevision?        @relation("ModelRunAssistantRevision", fields: [assistantId, assistantRevisionId], references: [assistantId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRun_assistantRevision_fkey")
+  chat                         Chat                      @relation(fields: [chatId], references: [id], onDelete: Cascade)
   events                       ModelRunEvent[]
   mcpRunBindings               McpRunBinding[]
   knowledgeRunBindings         KnowledgeRunBinding[]
   knowledgeRuns                KnowledgeRun[]
+  memoryHistoryRuns            MemoryHistoryRun[]
+  memoryToolEgressReceipts     MemoryToolEgressReceipt[]
   providerRunBindings          ProviderRunBinding[]
   searchRuns                   SearchRun[]
   searchRunBindings            SearchRunBinding[]
   toolCalls                    ModelRunToolCall[]
-  user                         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userMessage                  Message               @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
+  user                         User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userMessage                  Message                   @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
   usageEvents                  UsageEvent[]
 
   @@unique([userId, id])
@@ -1769,23 +1803,25 @@ model McpRunBinding {
 }
 
 model ModelRunToolCall {
-  id              String                @id @default(uuid())
-  modelRunId      String
-  mcpRunBindingId String?
-  roundIndex      Int
-  ordinal         Int
-  providerCallId  String
-  toolName        String
-  arguments       Json
-  state           ModelRunToolCallState @default(pending)
-  result          Json?
-  startedAt       DateTime?
-  completedAt     DateTime?
-  createdAt       DateTime              @default(now())
-  updatedAt       DateTime              @updatedAt
-  mcpRunBinding   McpRunBinding?        @relation(fields: [mcpRunBindingId], references: [id], onDelete: SetNull)
-  modelRun        ModelRun              @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  knowledgeRun    KnowledgeRun?
+  id                       String                    @id @default(uuid())
+  modelRunId               String
+  mcpRunBindingId          String?
+  roundIndex               Int
+  ordinal                  Int
+  providerCallId           String
+  toolName                 String
+  arguments                Json
+  state                    ModelRunToolCallState     @default(pending)
+  result                   Json?
+  startedAt                DateTime?
+  completedAt              DateTime?
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  mcpRunBinding            McpRunBinding?            @relation(fields: [mcpRunBindingId], references: [id], onDelete: SetNull)
+  modelRun                 ModelRun                  @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  knowledgeRun             KnowledgeRun?
+  memoryHistoryRun         MemoryHistoryRun?
+  memoryToolEgressReceipts MemoryToolEgressReceipt[]
 
   @@unique([modelRunId, roundIndex, providerCallId])
   @@unique([modelRunId, roundIndex, ordinal])
@@ -1967,8 +2003,8 @@ model UsageEvent {
 
 model UserMemorySettings {
   userId                           String                         @id
-  useMemoryFacts                   Boolean                        @default(false)
-  referenceChatHistory             Boolean                        @default(false)
+  useMemoryFacts                   Boolean                        @default(true)
+  referenceChatHistory             Boolean                        @default(true)
   learnAutomatically               Boolean                        @default(false)
   memoryGeneration                 Int                            @default(0)
   memoryRevision                   Int                            @default(0)
@@ -2622,4 +2658,69 @@ model ModelRunMemoryItem {
   @@index([userId, factVersionId])
   @@index([userId, episodeId])
   @@index([userId, recallChunkId])
+}
+
+model MemoryHistoryRun {
+  id                  String                      @id @default(uuid())
+  userId              String
+  modelRunId          String
+  modelRunToolCallId  String                      @unique
+  invocationOrdinal   Int
+  state               MemoryHistoryRunState       @default(RUNNING)
+  outcome             MemoryHistoryRunOutcome?
+  query               String?                     @db.VarChar(500)
+  queryHash           String                      @db.VarChar(128)
+  privateRequest      Json
+  indexingEvidence    Json                        @default("{}")
+  executionBindingIds String[]                    @default([])
+  results             Json?
+  providerResult      Json?
+  resultHash          String?                     @db.VarChar(128)
+  resultCount         Int                         @default(0)
+  durationMs          Int?
+  errorCode           String?                     @db.VarChar(128)
+  retentionState      MemoryReceiptRetentionState @default(RETAINED)
+  plaintextPurgedAt   DateTime?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @default(now()) @updatedAt
+  completedAt         DateTime?
+  modelRun            ModelRun                    @relation(fields: [userId, modelRunId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict, map: "MemoryHistoryRun_modelRun_fkey")
+  modelRunToolCall    ModelRunToolCall            @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "MemoryHistoryRun_toolCall_fkey")
+
+  @@unique([userId, id])
+  @@unique([userId, modelRunId, id])
+  @@unique([modelRunId, invocationOrdinal])
+  @@unique([modelRunId, modelRunToolCallId])
+  @@index([userId, createdAt])
+  @@index([userId, retentionState, createdAt])
+  @@index([modelRunId, state])
+}
+
+model MemoryToolEgressReceipt {
+  id                     String                        @id @default(uuid())
+  userId                 String
+  modelRunId             String
+  modelRunToolCallId     String?
+  requestOrdinal         Int
+  mode                   MemoryToolEgressMode
+  destinationKind        String                        @db.VarChar(64)
+  destinationFingerprint String                        @db.VarChar(128)
+  destinationSnapshot    Json
+  requestEvidenceHash    String                        @db.VarChar(128)
+  requestPreviewHash     String?                       @db.VarChar(128)
+  dispatchState          MemoryToolEgressDispatchState @default(DISPATCHED)
+  dispatchStartedAt      DateTime?
+  dispatchCompletedAt    DateTime?
+  errorCode              String?                       @db.VarChar(128)
+  createdAt              DateTime                      @default(now())
+  updatedAt              DateTime                      @default(now()) @updatedAt
+  modelRun               ModelRun                      @relation(fields: [userId, modelRunId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict, map: "MemoryToolEgressReceipt_modelRun_fkey")
+  modelRunToolCall       ModelRunToolCall?             @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "MemoryToolEgressReceipt_toolCall_fkey")
+
+  @@unique([userId, id])
+  @@unique([userId, modelRunId, id])
+  @@unique([modelRunId, requestOrdinal])
+  @@unique([modelRunId, modelRunToolCallId])
+  @@index([userId, dispatchState, createdAt])
+  @@index([modelRunId, mode])
 }

@@ -58,6 +58,7 @@ import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { knowledgeRetrievalTool } from "../knowledge/toolExecutor";
 import { planMemoryAction } from "../memory/actions/intent";
 import { memoryActionToolForPlan } from "../memory/actions/tools";
+import { memoryHistorySearchTool } from "../memory/history/search/tool";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import {
   getRunAttachmentLimits,
@@ -1160,18 +1161,13 @@ export async function prepareRun(
     modelConfiguration.capabilities.toolCalling === true &&
     Boolean(knowledgeAdmissionPlan);
   const mcpToolsEnabled = Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
-  const externalToolsRequested = admittedKnowledgeToolsEnabled ||
-    mcpToolsEnabled ||
-    requestedSearchStrategy !== "search-disabled";
-  if (memoryActionPlan && externalToolsRequested) {
-    return failure(
-      "memory_tool_egress_forbidden",
-      409,
-      "Memory management cannot share a request with Search, Knowledge, or external tools."
-    );
-  }
+  const memoryHistoryToolsRequested =
+    resolvedChatMode.mode === "NORMAL" &&
+    memoryActionPlan === undefined &&
+    body?.tools !== "none" &&
+    modelConfiguration.capabilities.toolCalling === true;
   const requiresClientToolCoexistence = admittedKnowledgeToolsEnabled ||
-    mcpToolsEnabled || memoryActionToolsEnabled;
+    mcpToolsEnabled || memoryActionToolsEnabled || memoryHistoryToolsRequested;
   if (
     admissionPlan &&
     deps.providerAdmission &&
@@ -1238,6 +1234,11 @@ export async function prepareRun(
 
   const { adapter, toolBridge } = previewRuntime;
   const { capabilities: modelCapabilities, defaultParams } = modelConfiguration;
+  const memoryHistoryToolsEnabled =
+    resolvedChatMode.mode === "NORMAL" &&
+    memoryActionPlan === undefined &&
+    body?.tools !== "none" &&
+    modelConfiguration.capabilities.toolCalling === true;
   const knowledgeToolsEnabled =
     body?.tools !== "none" &&
     modelCapabilities.toolCalling === true &&
@@ -1453,6 +1454,9 @@ export async function prepareRun(
     context: { messages: contextMessages, mode: "branch_path" },
     knowledgePlan: { baseIds: [...decodedKnowledgePlan.plan.baseIds] },
     ...(memoryActionPlan ? { memoryActionPlan } : {}),
+    ...(memoryHistoryToolsEnabled
+      ? { memoryHistoryTool: { maxCalls: 2, pageSize: 20 } as const }
+      : {}),
     modelCapabilities,
     modelId: executionModelId,
     ...(mcpPlan?.ok && mcpPlan.snapshot.servers.length ? { mcp: mcpPlan.snapshot } : {}),
@@ -1506,6 +1510,7 @@ export async function prepareRun(
         ...(memoryActionToolsEnabled && memoryActionPlan
           ? [memoryActionToolForPlan(memoryActionPlan)]
           : []),
+        ...(memoryHistoryToolsEnabled ? [memoryHistorySearchTool] : []),
         ...mcpRunTools(unbudgetedNormalizedRequest.mcp)
       ];
   const unbudgetedProviderRequest: ProviderRunRequest = {

@@ -1,6 +1,6 @@
-export const MEMORY_CORPUS_SCHEMA_VERSION = "memory-corpus-schema-v1";
-export const MEMORY_CORPUS_VERSION = "memory-corpus-v1";
-export const MEMORY_CORPUS_GENERATOR_VERSION = "memory-corpus-generator-v1";
+export const MEMORY_CORPUS_SCHEMA_VERSION = "memory-corpus-schema-v2";
+export const MEMORY_CORPUS_VERSION = "memory-corpus-v2";
+export const MEMORY_CORPUS_GENERATOR_VERSION = "memory-corpus-generator-v2";
 export const MEMORY_ADJUDICATION_RUBRIC_VERSION = "memory-adjudication-rubric-v1";
 
 export const MEMORY_CRITICAL_COHORTS = [
@@ -169,7 +169,7 @@ export type MemoryCorpusFixture = Readonly<{
   expectedSafety: Readonly<{
     automaticPromotionAllowed: boolean;
     hardInvariantCodes: readonly string[];
-    toolEgress: "ALLOW" | "DENY" | "REQUIRE_EXACT_CONFIRMATION";
+    toolEgress: "ALLOW" | "DENY" | "REQUIRE_ACCEPTED_DESTINATION";
   }>;
   forbiddenFacts: readonly MemoryCorpusForbiddenFact[];
   groupId: string;

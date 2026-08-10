@@ -21,6 +21,7 @@ import type {
 import type { ProviderToolBridge } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
 import {
   materializePreparedRunData,
@@ -68,6 +69,7 @@ export type RunHandlerDeps = {
   getConfig?: () => AuthConfig;
   knowledgeAdmission?: RunPreparationDeps["knowledgeAdmission"];
   knowledgeExecutor?: KnowledgeToolExecutor;
+  memoryEgress?: MemoryToolEgressReceiptService;
   mcp?: RunPreparationDeps["mcp"];
   providerAdmission?: RunPreparationDeps["providerAdmission"];
   providerRuntime?: ProviderRuntimeResolver;
@@ -114,7 +116,10 @@ function recoveryDeps(
   deps: Pick<
     RunHandlerDeps,
     | "getAttachmentLimits"
+    | "knowledgeAdmission"
     | "knowledgeExecutor"
+    | "memoryEgress"
+    | "mcp"
     | "providerRuntime"
     | "providers"
     | "repository"
@@ -124,7 +129,10 @@ function recoveryDeps(
 ) {
   return {
     ...(deps.getAttachmentLimits ? { getAttachmentLimits: deps.getAttachmentLimits } : {}),
+    ...(deps.knowledgeAdmission ? { knowledgeAdmission: deps.knowledgeAdmission } : {}),
     ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
+    ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
+    ...(deps.mcp ? { mcp: deps.mcp } : {}),
     ...(deps.providerRuntime ? { providerRuntime: deps.providerRuntime } : {}),
     providers: deps.providers,
     registry: activeRunControllerRegistry,
@@ -469,7 +477,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       created,
       prepared: preparedData,
       repository: deps.repository,
+      ...(deps.knowledgeAdmission ? { knowledgeAdmission: deps.knowledgeAdmission } : {}),
       ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
+      ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
+      ...(deps.mcp ? { mcp: deps.mcp } : {}),
       searchAdapter: runtime?.searchAdapter ?? preparation.searchAdapter,
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
@@ -613,7 +624,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       created,
       prepared: preparedData,
       repository: deps.repository,
+      ...(deps.knowledgeAdmission ? { knowledgeAdmission: deps.knowledgeAdmission } : {}),
       ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
+      ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
+      ...(deps.mcp ? { mcp: deps.mcp } : {}),
       searchAdapter: runtime?.searchAdapter ?? preparation.searchAdapter,
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
@@ -627,7 +641,10 @@ export function createGetModelRunHandler(
     RunHandlerDeps,
     | "getConfig"
     | "getAttachmentLimits"
+    | "knowledgeAdmission"
     | "knowledgeExecutor"
+    | "memoryEgress"
+    | "mcp"
     | "providerRuntime"
     | "providers"
     | "repository"

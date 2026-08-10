@@ -33,6 +33,7 @@ export default defineConfig({
       AIQSA_COOKIE_SECURE: "0",
       AIQSA_ENCRYPTION_KEY: encryptionKey,
       AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: fakeProviderTokenDelayMs,
+      AIQSA_LOCAL_DEV_PROFILE_DISABLED: "1",
       AIQSA_TEST_MODE: "1",
       ANTHROPIC_API_KEY: "",
       ANTHROPIC_BASE_URL: "",

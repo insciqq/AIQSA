@@ -30,6 +30,7 @@ export function createPrismaMemoryExecutionService(
 
 export * from "./admission";
 export * from "./authority";
+export * from "./consentMode";
 export * from "./errors";
 export * from "./lifecycle";
 export * from "./owner";

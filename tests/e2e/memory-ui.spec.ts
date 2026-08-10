@@ -102,6 +102,7 @@ async function installMemoryFixture(
         acceptedAt: accepted ? now : null,
         acceptedUtilityEgressFingerprint: accepted ? "current-memory-destination-fingerprint-0001" : null,
         acceptedUtilityPolicyVersion: accepted ? "memory-policy-v1" : null,
+        consentMode: "PER_USER",
         currentUtilityEgressFingerprint: "current-memory-destination-fingerprint-0001",
         currentUtilityPolicyVersion: "memory-policy-v1",
         embeddingDestination: "Local / multilingual-embed",

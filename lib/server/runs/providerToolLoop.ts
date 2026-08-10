@@ -242,6 +242,16 @@ export async function runProviderToolLoop(
       }
       if (publicationFailed) throw publicationError;
       const calls = result.toolCalls ?? [];
+      if (roundRequest.toolChoice === "none" && calls.length > 0) {
+        return {
+          error: {
+            code: "synthesis_tool_call_forbidden",
+            fatal: true,
+            message: "Provider returned a tool call from a no-tool synthesis request."
+          },
+          status: "error" as const
+        };
+      }
       if (calls.length === 0) return { final: result, status: "complete" as const };
       return {
         calls,

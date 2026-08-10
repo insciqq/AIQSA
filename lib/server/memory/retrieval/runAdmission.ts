@@ -15,7 +15,6 @@ import {
 import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import { prisma } from "../../prisma";
 import type { NormalizedRunRequest } from "../../providers/types";
-import { normalizedRequestHasExternalToolCapability } from "../../providers/personalContext";
 import type {
   MemoryPreparingAttemptResult,
   MemoryPreparingItemInput,
@@ -360,9 +359,6 @@ export function createMemoryRunRetrievalService(
       const signal = input.signal ?? new AbortController().signal;
       if (input.expected.chatMemoryMode === "TEMPORARY") {
         return emptyAttempt(input.expected, "DISABLED", "temporary_chat");
-      }
-      if (normalizedRequestHasExternalToolCapability(input.normalizedRequest)) {
-        return emptyAttempt(input.expected, "DISABLED", "external_tool_egress_guard");
       }
       const currentUserText = boundedCurrentUserText(input.normalizedRequest);
       if (memoryExplicitStatementContainsSecret(currentUserText)) {

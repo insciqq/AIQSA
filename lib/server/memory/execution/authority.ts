@@ -17,8 +17,13 @@ import {
 } from "./qualification";
 import type { MemoryExecutionRole } from "./roles";
 import type { MemorySecretFreeExecutionSnapshot } from "./snapshot";
+import {
+  resolveMemoryEgressConsentMode,
+  type MemoryEgressConsentMode
+} from "./consentMode";
 
 export type MemoryExecutionAuthorityDependencies = Readonly<{
+  egressConsentMode?: MemoryEgressConsentMode;
   now?: () => Date;
   qualification: MemoryQualificationAuthority;
 }>;
@@ -53,7 +58,11 @@ export async function resolveCurrentMemoryExecutionAuthority(
   }>
 ): Promise<CurrentMemoryExecutionAuthority> {
   const policy = await resolveCurrentMemoryUtilityPolicy(tx, input.userId, settings);
-  requireAcceptedMemoryUtilityPolicy(settings, policy);
+  requireAcceptedMemoryUtilityPolicy(
+    settings,
+    policy,
+    input.dependencies.egressConsentMode ?? resolveMemoryEgressConsentMode()
+  );
   const target = requireMemoryPolicyTarget(policy, input.role);
   const qualification = qualifyMemoryExecution({
     authority: input.dependencies.qualification,

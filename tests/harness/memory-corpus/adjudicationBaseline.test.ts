@@ -62,7 +62,7 @@ describe("native Memory adjudication and no-memory baseline", () => {
       recordCount: adjudication.records.length,
       resolutionCount: adjudication.records.filter(({ resolution }) => resolution !== null).length,
       rubricVersion: adjudication.rubricVersion
-    }).toEqual(readMemoryCorpusJson("manifests/adjudication-v1.json"));
+    }).toEqual(readMemoryCorpusJson("manifests/adjudication-v2.json"));
   });
 
   it("reproduces sanitized aggregate-only no-memory evidence", () => {
@@ -73,7 +73,7 @@ describe("native Memory adjudication and no-memory baseline", () => {
     });
     const first = build();
     expect(build()).toEqual(first);
-    expect(first).toEqual(readMemoryCorpusJson("manifests/no-memory-baseline-v1.json"));
+    expect(first).toEqual(readMemoryCorpusJson("manifests/no-memory-baseline-v2.json"));
 
     const serialized = JSON.stringify(first);
     expect(serialized).not.toContain("fixture-");

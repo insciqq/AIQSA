@@ -3,7 +3,6 @@ import type { MemorySummary } from "../../../contracts/memory";
 import { estimateApproxTokens } from "../../../domain/contextBudget";
 import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import type { NormalizedRunRequest } from "../../providers/types";
-import { normalizedRequestHasExternalToolCapability } from "../../providers/personalContext";
 import {
   MEMORY_PREPARING_AUTHORITATIVE_EMPTY_LIST,
   MEMORY_PREPARING_CONTEXT_MAX_TOKENS,
@@ -33,8 +32,7 @@ const personalContextPreamble = [
 ].join("\n");
 
 export class ExplicitRunMemoryManagementError extends Error {
-  constructor(readonly code: "memory_action_failed" | "memory_intent_confirmation_required" |
-    "memory_tool_egress_forbidden") {
+  constructor(readonly code: "memory_action_failed" | "memory_intent_confirmation_required") {
     super(code);
     this.name = "ExplicitRunMemoryManagementError";
   }
@@ -212,12 +210,8 @@ export async function retrieveExplicitRunMemory(
   input: ExplicitRunMemoryInput
 ): Promise<MemoryPreparingAttemptResult> {
   const management = input.actionPlan !== undefined;
-  if (normalizedRequestHasExternalToolCapability(input.normalizedRequest)) {
-    if (management) throw new ExplicitRunMemoryManagementError("memory_tool_egress_forbidden");
-    return emptyAttempt(input.settings, "DISABLED", "external_tool_egress_guard");
-  }
   if (!await assistantOwnedByUser(client, input.assistantId, input.userId)) {
-    if (management) throw new ExplicitRunMemoryManagementError("memory_tool_egress_forbidden");
+    if (management) throw new ExplicitRunMemoryManagementError("memory_action_failed");
     return emptyAttempt(input.settings, "DISABLED", "assistant_memory_grant_missing");
   }
 

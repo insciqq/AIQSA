@@ -42,6 +42,7 @@ describe("MemorySettingsSection", () => {
         acceptedAt: null,
         acceptedUtilityEgressFingerprint: null,
         acceptedUtilityPolicyVersion: null,
+        consentMode: "PER_USER",
         currentUtilityEgressFingerprint: "current-destination-fingerprint-00000001",
         reviewRequired: true
       }
@@ -151,6 +152,28 @@ describe("MemorySettingsSection", () => {
     expect(screen.getByRole("button", { name: "Manage Memories" })).toBeDisabled();
     const capabilities = screen.getByRole("heading", { name: "Current capabilities" }).parentElement!;
     expect(within(capabilities).getAllByText("Unavailable")).toHaveLength(4);
+  });
+
+  it("shows only passive administrator-owned destination status in ADMIN mode", async () => {
+    const server = memorySettingsFixture({
+      egress: {
+        acceptedAt: null,
+        acceptedUtilityEgressFingerprint: null,
+        acceptedUtilityPolicyVersion: null,
+        consentMode: "ADMIN",
+        reviewRequired: false
+      }
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(server)));
+
+    render(<MemorySettingsSection {...sectionProps} />);
+
+    expect(await screen.findByText(
+      "Destination trust and renewal are managed by an administrator. No action is required from you."
+    )).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Accept current destinations" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByText("Current destination fingerprint")).not.toBeInTheDocument();
   });
 
   it("reports mutation busy state to the Settings owner", async () => {

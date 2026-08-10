@@ -5,6 +5,7 @@ import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { defaultMcpRunPlan } from "@/lib/server/mcp/defaultRuntime";
 import { knowledgeRunAdmissionService } from "@/lib/server/knowledge/runAdmission";
 import { knowledgeToolExecutor } from "@/lib/server/knowledge/defaultRetrieval";
+import { defaultMemoryToolEgressReceiptService } from "@/lib/server/memory/egress/receipts";
 import { providerAdmissionService } from "@/lib/server/providerRuntime/defaultAdmission";
 import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
 import { createRegenerateModelRunHandler } from "@/lib/server/runs/handlers";
@@ -21,6 +22,7 @@ export const POST = createRegenerateModelRunHandler({
   getConfig: () => getAuthConfig(),
   knowledgeAdmission: knowledgeRunAdmissionService,
   knowledgeExecutor: knowledgeToolExecutor,
+  memoryEgress: defaultMemoryToolEgressReceiptService,
   mcp: defaultMcpRunPlan,
   providerAdmission: providerAdmissionService,
   providerRuntime: providerRuntimeResolver,

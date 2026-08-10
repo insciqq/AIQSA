@@ -10,9 +10,11 @@ import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
+import { mcpRunTools } from "../mcp/toolExecutor";
 import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
 import { buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
 import { ProviderRequestTimeoutError } from "../providers/network";
+import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
   NormalizedRunRequest,
@@ -36,6 +38,7 @@ import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import { knowledgeRetrievalTool, type KnowledgeToolExecutor } from "../knowledge/toolExecutor";
 import type { MemoryActionPlan } from "../memory/actions/intent";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
+import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import {
   KNOWLEDGE_RESULT_VERSION,
   type KnowledgeRetrievalEvidence
@@ -563,8 +566,11 @@ function createRepository(options: RepositoryOptions = {}) {
 
 function executionInput(input: Readonly<{
   adapter: ProviderAdapter;
+  knowledgeAdmission?: RunExecutionInput["knowledgeAdmission"];
   knowledgeExecutor?: KnowledgeToolExecutor;
   memoryActionExecutor?: MemoryActionExecutor;
+  memoryEgress?: MemoryToolEgressReceiptService;
+  mcp?: RunExecutionInput["mcp"];
   mcpRuntime?: RunExecutionInput["mcpRuntime"];
   prepared?: MaterializedPreparedRunData;
   repository: RunExecutionRepository;
@@ -581,13 +587,57 @@ function executionInput(input: Readonly<{
     },
     prepared: input.prepared ?? preparedData(),
     repository: input.repository,
+    ...(input.knowledgeAdmission ? { knowledgeAdmission: input.knowledgeAdmission } : {}),
     ...(input.knowledgeExecutor ? { knowledgeExecutor: input.knowledgeExecutor } : {}),
     ...(input.memoryActionExecutor ? { memoryActionExecutor: input.memoryActionExecutor } : {}),
+    ...(input.memoryEgress ? { memoryEgress: input.memoryEgress } : {}),
+    ...(input.mcp ? { mcp: input.mcp } : {}),
     ...(input.mcpRuntime ? { mcpRuntime: input.mcpRuntime } : {}),
     ...(input.searchAdapter ? { searchAdapter: input.searchAdapter } : {}),
     ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
     userId: "user-1"
   };
+}
+
+function createMemoryEgressRecorder() {
+  type BeginInput = Parameters<MemoryToolEgressReceiptService["beginDispatch"]>[0];
+  type BlockInput = Parameters<MemoryToolEgressReceiptService["recordBlockedDispatch"]>[0];
+  const began: BeginInput[] = [];
+  const blocked: BlockInput[] = [];
+  const completed: string[] = [];
+  const failed: Array<{ errorCode: string; receiptId: string }> = [];
+  const recovered: Array<{
+    errorCode?: string;
+    outcome: "COMPLETED" | "FAILED";
+    runId: string;
+    userId: string;
+  }> = [];
+  let ordinal = 0;
+  const service: MemoryToolEgressReceiptService = {
+    async beginDispatch(input) {
+      began.push(input);
+      ordinal += 1;
+      return { id: `egress-${ordinal}`, requestOrdinal: ordinal };
+    },
+    async recordBlockedDispatch(input) {
+      blocked.push(input);
+      ordinal += 1;
+      return { id: `egress-${ordinal}`, requestOrdinal: ordinal };
+    },
+    async settleRecoveredProviderDispatch(input) {
+      recovered.push(input);
+      return true;
+    },
+    async completeDispatch(receiptId) {
+      completed.push(receiptId);
+      return true;
+    },
+    async failDispatch(receiptId, errorCode) {
+      failed.push({ errorCode, receiptId });
+      return true;
+    }
+  };
+  return { began, blocked, completed, failed, recovered, service };
 }
 
 function parseSse(text: string): ModelRunSseEvent[] {
@@ -924,10 +974,18 @@ describe("run execution", () => {
         searchStrategyRowId: "route-hosted"
       }]
     };
+    const personalContext = {
+      approxTokens: 8,
+      itemCount: 1,
+      memoryGeneration: 2,
+      memoryRevision: 3,
+      mode: "prefetched" as const,
+      text: `${PERSONAL_CONTEXT_HEADING}\nHosted coexistence memory`
+    };
     const prepared: MaterializedPreparedRunData = {
       ...base,
-      normalizedRequest: { ...base.normalizedRequest, searchPlan },
-      providerRequest: { ...base.providerRequest, searchPlan }
+      normalizedRequest: { ...base.normalizedRequest, personalContext, searchPlan },
+      providerRequest: { ...base.providerRequest, personalContext, searchPlan }
     };
     const repository = createRepository({
       entitlements: {
@@ -936,7 +994,9 @@ describe("run execution", () => {
         searchStrategies: new Set([optionId])
       }
     });
-    const adapter = createAdapter(async function* () {
+    const dispatched: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      dispatched.push(request);
       yield {
         data: {
           artifactType: "search",
@@ -950,9 +1010,11 @@ describe("run execution", () => {
       };
       return providerResult();
     });
+    const egress = createMemoryEgressRecorder();
 
     const events = parseSse(await createRunExecutionResponse(executionInput({
       adapter,
+      memoryEgress: egress.service,
       prepared,
       repository: repository.repository
     })).text());
@@ -973,6 +1035,19 @@ describe("run execution", () => {
       type: "artifact"
     });
     expect(repository.persistedEvents.map(({ event }) => event)).toContainEqual(searchEvent);
+    expect(dispatched).toEqual([
+      expect.objectContaining({
+        personalContext: expect.objectContaining({ text: personalContext.text }),
+        searchPlan
+      })
+    ]);
+    expect(egress.began).toEqual([
+      expect.objectContaining({
+        destinationKind: "answer_provider",
+        mode: "PROVIDER_REQUEST"
+      })
+    ]);
+    expect(egress.completed).toEqual(["egress-1"]);
   });
 
   it("keeps grounded output live while persisting only provenance, usage, and a neutral placeholder", async () => {
@@ -1336,7 +1411,7 @@ describe("run execution", () => {
     }]);
   });
 
-  it("does not execute tools or continue rounds after a tool-enabled stream safety failure", async () => {
+  it("persists an ordinary failed provider draft without executing absent tool calls", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     let answerRounds = 0;
     const repository = createRepository({
@@ -2066,7 +2141,9 @@ describe("run execution", () => {
         .filter((event) => event.type === "artifact")
         .map((event) => (event.type === "artifact" ? event.data.artifactType : ""))
     ).toEqual(["reasoning", "tool_call", "search", "tool_result"]);
-    expect(events.some((event) => event.type === "token" && event.data.delta === "discarded draft")).toBe(true);
+    expect(events.some((event) =>
+      event.type === "token" && event.data.delta === "discarded draft"
+    )).toBe(true);
     expect(events.some((event) => event.type === "message_reset")).toBe(true);
     expect(providerRequests).toHaveLength(2);
     expect(providerRequests[1]?.providerToolMessages).toHaveLength(2);
@@ -2632,6 +2709,330 @@ describe("run execution", () => {
     expect(durable).not.toContain("RAW_ANTHROPIC_RESULT_CANARY");
   });
 
+  it("coexists with MCP in one ordinary context and records provider and tool destinations", async () => {
+    const canaries = {
+      assistant: "ASSISTANT_MEMORY_CANARY_8421",
+      attachment: "ATTACHMENT_TEXT_CANARY_8421",
+      attachmentMetadata: "ATTACHMENT_METADATA_CANARY_8421",
+      current: "CURRENT_DIRECT_USER_CANARY_8421",
+      developer: "DEVELOPER_PROMPT_CANARY_8421",
+      personal: "PERSONAL_CONTEXT_CANARY_8421",
+      prior: "PRIOR_DIRECT_USER_CANARY_8421",
+      providerTool: "PRIOR_PROVIDER_TOOL_CANARY_8421",
+      system: "SYSTEM_PROMPT_CANARY_8421"
+    };
+    const namespacedName = "mcp_external_submit_a";
+    const fingerprint = "fingerprint-egress";
+    const mcp: McpRunPlanSnapshot = {
+      servers: [{
+        fingerprint,
+        revisionId: "revision-egress",
+        serverId: "server-egress",
+        serverName: "External destination"
+      }],
+      tools: [{
+        definitionHash: "e".repeat(64),
+        description: "Submit an explicitly supplied value",
+        inputSchema: { type: "object" },
+        name: "submit",
+        namespacedName,
+        originalName: "submit",
+        serverId: "server-egress",
+        serverName: "External destination"
+      }],
+      version: 1
+    };
+    const basePrepared = preparedData({ mcp, modelId: "gpt-tool-model", provider: "openai" });
+    const content = textMessageContent(canaries.current);
+    const context: NonNullable<ProviderRunRequest["context"]> = {
+      messages: [
+        { content: textMessageContent(canaries.prior), id: "prior-direct-user", role: "user" },
+        { content: textMessageContent(canaries.assistant), id: "prior-assistant", role: "assistant" },
+        { content, id: "current-direct-user", role: "user" }
+      ],
+      mode: "branch_path"
+    };
+    const personalContextText = `${PERSONAL_CONTEXT_HEADING}\n${canaries.personal}`;
+    const personalContext = {
+      approxTokens: 12,
+      itemCount: 1,
+      memoryGeneration: 3,
+      memoryRevision: 4,
+      mode: "prefetched" as const,
+      text: personalContextText
+    };
+    const prompt = {
+      developer: canaries.developer,
+      system: canaries.system
+    };
+    const providerRequest: ProviderRunRequest = {
+      ...basePrepared.providerRequest,
+      attachmentIds: ["attachment-egress"],
+      attachments: [{
+        byteSize: 64,
+        extractedText: canaries.attachment,
+        fileName: "private.txt",
+        id: "attachment-egress",
+        kind: "text",
+        metadata: { marker: canaries.attachmentMetadata },
+        mimeType: "text/plain",
+        status: "ready"
+      }],
+      content,
+      context,
+      personalContext,
+      prompt,
+      providerToolMessages: [{ marker: canaries.providerTool }],
+      tools: mcpRunTools(mcp)
+    };
+    const prepared: MaterializedPreparedRunData = {
+      ...basePrepared,
+      normalizedRequest: {
+        ...basePrepared.normalizedRequest,
+        attachmentIds: ["attachment-egress"],
+        content,
+        context,
+        personalContext,
+        prompt
+      },
+      providerRequest
+    };
+    const providerRequests: ProviderRunRequest[] = [];
+    const previewRequests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const egress = createMemoryEgressRecorder();
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        yield { data: { delta: "SUPPRESSED_PLANNER_DRAFT_CANARY" }, type: "token" };
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { value: "alpha" },
+            id: "egress-call-1",
+            name: namespacedName
+          }],
+          usage: usage(2, 1, 0)
+        });
+      }
+      yield { data: { delta: "Safe synthesized answer" }, type: "token" };
+      return providerResult({ finalText: "Safe synthesized answer", usage: usage(3, 2, 0) });
+    }, previewRequests);
+    const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(
+      async (_userId, options) => {
+        expect(options).toEqual({ allowedServerIds: ["server-egress"] });
+        return {
+          bindings: [{
+            fingerprint,
+            runtimeGenerationId: `generation-${fingerprint}`,
+            serverId: "server-egress"
+          }],
+          ok: true,
+          snapshot: mcp
+        };
+      }
+    );
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(
+      async ({ arguments: toolArguments, generationId, name }) => {
+        expect(toolArguments).toEqual({ value: "alpha" });
+        expect(generationId).toBe(`generation-${fingerprint}`);
+        expect(name).toBe("submit");
+        return {
+          isError: false,
+          structuredContent: { accepted: true },
+          text: ["SAFE_MCP_RESULT"],
+          unsupportedContentTypes: []
+        };
+      }
+    );
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      memoryEgress: egress.service,
+      mcp: { prepare },
+      mcpRuntime: {
+        callTool,
+        async ensureAcceptedGeneration(generationId) {
+          return generationId === `generation-${fingerprint}`;
+        }
+      },
+      prepared,
+      repository: repository.repository
+    })).text());
+
+    expect(providerRequests).toHaveLength(2);
+    const planningWire = JSON.stringify(providerRequests[0]);
+    for (const [name, marker] of Object.entries(canaries)) {
+      if (name !== "providerTool") expect(planningWire).toContain(marker);
+    }
+    expect(planningWire).not.toContain(canaries.providerTool);
+    expect(providerRequests[0]).toMatchObject({
+      attachmentIds: ["attachment-egress"],
+      personalContext: { text: personalContextText },
+      toolChoice: "auto",
+      tools: [{ capability: "mcp", name: namespacedName }]
+    });
+
+    expect(providerRequests[1]).toMatchObject({
+      personalContext: { text: personalContextText },
+      toolChoice: "auto",
+      tools: [{ capability: "mcp", name: namespacedName }]
+    });
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain("SAFE_MCP_RESULT");
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(events.some((event) =>
+      event.type === "token" && event.data.delta.includes("SUPPRESSED_PLANNER_DRAFT_CANARY")
+    )).toBe(true);
+
+    expect(egress.began.map((entry) => ({
+      destinationKind: entry.destinationKind,
+      mode: entry.mode,
+      tool: entry.modelRunToolCallId ?? null
+    }))).toEqual([
+      { destinationKind: "answer_provider", mode: "PROVIDER_REQUEST", tool: null },
+      {
+        destinationKind: "mcp",
+        mode: "TOOL_CALL",
+        tool: "persisted-tool-call-1"
+      },
+      { destinationKind: "answer_provider", mode: "PROVIDER_REQUEST", tool: null }
+    ]);
+    expect(egress.completed).toEqual(["egress-1", "egress-2", "egress-3"]);
+    expect(egress.blocked).toEqual([]);
+    expect(egress.failed).toEqual([]);
+    const receiptEvidence = JSON.stringify(egress.began.map((entry) => ({
+      destinationSnapshot: entry.destinationSnapshot,
+      requestEvidence: entry.requestEvidence
+    })));
+    for (const marker of Object.values(canaries)) {
+      expect(receiptEvidence).not.toContain(marker);
+    }
+    expect(previewRequests).toHaveLength(4);
+    expect(repository.completeRuns[0]?.finalText).toBe("Safe synthesized answer");
+  });
+
+  it.each([
+    {
+      arguments: { password: "hunter2-secret-egress" },
+      label: "structured argument",
+      revoked: false
+    },
+    {
+      arguments: { value: "harmless-revocation-value" },
+      label: "destination revocation",
+      revoked: true
+    }
+  ])("uses admin trust for $label while retaining immediate destination drift checks", async ({
+    arguments: toolArguments,
+    revoked
+  }) => {
+    const namespacedName = "mcp_external_submit_blocked";
+    const fingerprint = "fingerprint-blocked";
+    const mcp: McpRunPlanSnapshot = {
+      servers: [{
+        fingerprint,
+        revisionId: "revision-blocked",
+        serverId: "server-blocked",
+        serverName: "Blocked destination"
+      }],
+      tools: [{
+        definitionHash: "f".repeat(64),
+        description: "Submit a direct value",
+        inputSchema: { type: "object" },
+        name: "submit",
+        namespacedName,
+        originalName: "submit",
+        serverId: "server-blocked",
+        serverName: "Blocked destination"
+      }],
+      version: 1
+    };
+    const basePrepared = preparedData({ mcp, modelId: "gpt-tool-model", provider: "openai" });
+    const prepared: MaterializedPreparedRunData = {
+      ...basePrepared,
+      providerRequest: {
+        ...basePrepared.providerRequest,
+        tools: mcpRunTools(mcp)
+      }
+    };
+    const providerRequests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const egress = createMemoryEgressRecorder();
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{ arguments: toolArguments, id: "blocked-call-1", name: namespacedName }]
+        });
+      }
+      return providerResult({ finalText: "Dispatch stayed blocked" });
+    });
+    const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(async () => {
+      const liveFingerprint = revoked ? "changed-fingerprint" : fingerprint;
+      return {
+        bindings: [{
+          fingerprint: liveFingerprint,
+          runtimeGenerationId: `generation-${fingerprint}`,
+          serverId: "server-blocked"
+        }],
+        ok: true,
+        snapshot: {
+          ...mcp,
+          servers: mcp.servers.map((server) => ({ ...server, fingerprint: liveFingerprint }))
+        }
+      };
+    });
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(
+      async () => ({
+        isError: false,
+        structuredContent: { accepted: true },
+        text: ["accepted"],
+        unsupportedContentTypes: []
+      })
+    );
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      memoryEgress: egress.service,
+      mcp: { prepare },
+      mcpRuntime: {
+        callTool,
+        async ensureAcceptedGeneration() {
+          return true;
+        }
+      },
+      prepared,
+      repository: repository.repository
+    })).text());
+
+    expect(callTool).toHaveBeenCalledTimes(revoked ? 0 : 1);
+    expect(egress.blocked).toEqual(revoked
+      ? [expect.objectContaining({
+          destinationKind: "mcp",
+          errorCode: "memory_egress_destination_revoked",
+          mode: "TOOL_CALL",
+          modelRunToolCallId: "persisted-tool-call-1"
+        })]
+      : []);
+    expect(egress.began.map((entry) => entry.mode)).toEqual(revoked
+      ? ["PROVIDER_REQUEST", "PROVIDER_REQUEST"]
+      : ["PROVIDER_REQUEST", "TOOL_CALL", "PROVIDER_REQUEST"]);
+    expect(egress.completed).toEqual(revoked
+      ? ["egress-1", "egress-3"]
+      : ["egress-1", "egress-2", "egress-3"]);
+    expect(egress.failed).toEqual([]);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(providerRequests).toHaveLength(2);
+    expect(providerRequests[1]).toMatchObject({ toolChoice: "auto" });
+    expect(repository.completeRuns[0]?.finalText).toBe("Dispatch stayed blocked");
+    expect([...repository.toolCalls.values()][0]).toMatchObject({
+      state: revoked ? "error" : "complete"
+    });
+    expect(events.some((event) => event.type === "done")).toBe(true);
+  });
+
   it("routes tools from several MCP servers and executes one provider batch in parallel", async () => {
     const firstTool = "mcp_memory_lookup_a";
     const secondTool = "mcp_tasks_list_b";
@@ -2684,7 +3085,7 @@ describe("run execution", () => {
           finalText: "",
           toolCalls: [
             {
-              arguments: { apiKey: "sk-private-runtime-key", query: "AIQSA" },
+              arguments: { query: "AIQSA" },
               id: "memory-call",
               name: firstTool
             },
@@ -2780,11 +3181,10 @@ describe("run execution", () => {
     const toolCallEvent = events.find((event) =>
       event.type === "artifact" && event.data.artifactType === "tool_call"
     );
-    expect(JSON.stringify(toolCallEvent)).not.toContain("sk-private-runtime-key");
     expect(toolCallEvent).toMatchObject({
       data: {
         payload: {
-          argumentsPreview: { apiKey: "[redacted]", query: "AIQSA" },
+          argumentsPreview: { query: "AIQSA" },
           snapshot: { capability: "mcp", serverName: "Memory", toolName: "lookup" }
         }
       }

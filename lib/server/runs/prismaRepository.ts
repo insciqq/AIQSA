@@ -32,7 +32,6 @@ import {
 } from "../providerRuntime/admission";
 import { prisma } from "../prisma";
 import type { ProviderConversationMessage } from "../providers/types";
-import { normalizedRequestHasExternalToolCapability } from "../providers/personalContext";
 import {
   applySettingsUpdateInTransaction,
   type SettingsTransactionClient
@@ -2394,9 +2393,6 @@ async function finalizePreparingRunWithClient(
     }
 
     const contextRequested = input.normalizedRequest.personalContext !== undefined;
-    if (contextRequested && normalizedRequestHasExternalToolCapability(input.normalizedRequest)) {
-      throw new MemoryPreparingRunConflictError("memory_tool_egress_forbidden", false);
-    }
     if (contextRequested && run.assistantId) {
       const ownedAssistant = await tx.assistantDefinition.findFirst({
         select: { id: true },
@@ -3384,6 +3380,36 @@ export function createPrismaRunRepository(
         return { call: persistedToolLoopCall(call), kind: "settled" as const };
       }
       if (call.state === "running") {
+        const history = await tx.memoryHistoryRun.findUnique({
+          select: {
+            completedAt: true,
+            providerResult: true,
+            retentionState: true,
+            state: true
+          },
+          where: { modelRunToolCallId: call.id }
+        });
+        if (
+          history?.retentionState === "RETAINED" &&
+          history.completedAt !== null &&
+          history.providerResult !== null &&
+          (history.state === "COMPLETE" || history.state === "ERROR") &&
+          snapshotToolLoopJson(
+            history.providerResult,
+            toolLoopPersistenceLimits.resultBytes
+          ) !== null
+        ) {
+          call = await tx.modelRunToolCall.update({
+            data: {
+              completedAt: history.completedAt,
+              result: history.providerResult,
+              state: history.state === "COMPLETE" ? "complete" : "error"
+            },
+            include: toolLoopCallInclude,
+            where: { id: call.id }
+          });
+          return { call: persistedToolLoopCall(call), kind: "settled" as const };
+        }
         return { call: persistedToolLoopCall(call), kind: "ambiguous" as const };
       }
       if (call.state === "cancelled") {

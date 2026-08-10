@@ -27,36 +27,6 @@ export function memoryEpisodicRecallDecision(
   return exactCurrentUserQuery && acceptedSensitivePolicy ? "ALLOW_EXACT_MATCH_ONLY" : "DENY";
 }
 
-export const MEMORY_TOOL_VALUE_PROVENANCE = [
-  "DIRECT_CURRENT_USER",
-  "PRIOR_DIRECT_USER",
-  "MEMORY_ONLY",
-  "MEMORY_BEARING_ASSISTANT",
-  "ASSISTANT",
-  "TOOL",
-  "SEARCH",
-  "KNOWLEDGE"
-] as const;
-
-export type MemoryToolValueProvenance = (typeof MEMORY_TOOL_VALUE_PROVENANCE)[number];
-export type MemoryToolEgressDecision = "ALLOW" | "REQUIRE_EXACT_CONFIRMATION" | "DENY";
-
-export function memoryBlindToolPlanningSourceAllowed(provenance: MemoryToolValueProvenance): boolean {
-  return provenance === "DIRECT_CURRENT_USER" || provenance === "PRIOR_DIRECT_USER";
-}
-
-export function memoryToolEgressDecision(
-  provenance: MemoryToolValueProvenance,
-  sensitivity: MemorySensitivityClass
-): MemoryToolEgressDecision {
-  if (sensitivity === "SECRET" || sensitivity === "HIGHLY_SENSITIVE") return "DENY";
-  if (provenance === "DIRECT_CURRENT_USER") return "ALLOW";
-  if (provenance === "MEMORY_ONLY" || provenance === "MEMORY_BEARING_ASSISTANT") {
-    return "REQUIRE_EXACT_CONFIRMATION";
-  }
-  return "DENY";
-}
-
 export const MEMORY_MUTATION_INTENT_ORIGINS = [
   "DIRECT_UI",
   "DIRECT_API",

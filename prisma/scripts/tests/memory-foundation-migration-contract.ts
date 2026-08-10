@@ -14,6 +14,7 @@ const CHAT_SCOPE_MIGRATION = "20260810180000_memory_chat_scope_state";
 const SCOPE_LIFECYCLE_MIGRATION = "20260810190000_memory_scope_lifecycle";
 const TEMPORARY_RETENTION_MIGRATION = "20260810200000_memory_temporary_retention";
 const HISTORY_SCHEMA_MIGRATION = "20260810210000_memory_history_schema";
+const HISTORY_EGRESS_MIGRATION = "20260810220000_memory_history_tool_egress_guard";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -25,6 +26,7 @@ const rollbackDatabase = `aiqsa_memory_rollback_${suffix}`;
 const scopeRollbackDatabase = `aiqsa_memory_scope_rollback_${suffix}`;
 const temporaryRollbackDatabase = `aiqsa_memory_temporary_rollback_${suffix}`;
 const historyRollbackDatabase = `aiqsa_memory_history_rollback_${suffix}`;
+const historyEgressRollbackDatabase = `aiqsa_memory_history_egress_rollback_${suffix}`;
 const createdDatabases = new Set<string>();
 
 type CommandResult = Readonly<{
@@ -1155,7 +1157,7 @@ function assertScopeLifecycleContracts(database: string): void {
     BEGIN;
     SET CONSTRAINTS ALL DEFERRED;
     UPDATE "MemoryFactVersion"
-    SET "state" = 'ORPHANED', "systemTo" = CURRENT_TIMESTAMP + interval '1 millisecond'
+    SET "state" = 'ORPHANED', "systemTo" = "systemFrom" + interval '1 millisecond'
     WHERE "id" = 'memory-scope-version-a';
     UPDATE "MemoryFact"
     SET "state" = 'ORPHANED', "currentVersionId" = NULL
@@ -1812,6 +1814,269 @@ function assertTemporaryRetentionMigrationAtomicRollback(database: string): void
   "pre-migration Temporary mode guard after rollback");
 }
 
+function assertHistoryEgressContracts(database: string): void {
+  requireSuccess(psql(database, `
+    INSERT INTO "User" ("id", "displayName", "role", "status", "updatedAt")
+    VALUES (
+      'memory-r2-default-owner', 'Memory R2 defaults', 'user', 'active',
+      CURRENT_TIMESTAMP
+    );
+  `), "create post-R2 Memory-default owner");
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM "UserMemorySettings"
+         WHERE NOT "useMemoryFacts" OR NOT "referenceChatHistory"),
+        (SELECT concat_ws(':', "useMemoryFacts"::int, "referenceChatHistory"::int,
+          "learnAutomatically"::int)
+         FROM "UserMemorySettings" WHERE "userId" = 'memory-r2-default-owner')
+      );
+    `),
+    "0|1:1:0",
+    "Revision 2 Memory defaults were not applied to existing and new owners"
+  );
+
+  requireSuccess(psql(database, `
+    INSERT INTO "ModelRunToolCall" (
+      "id", "modelRunId", "roundIndex", "ordinal", "providerCallId",
+      "toolName", "arguments", "state", "result", "startedAt", "completedAt", "updatedAt"
+    ) VALUES
+      (
+        'memory-history-tool-call', 'memory-legacy-run', 1, 0,
+        'memory-history-provider-call', 'search_my_history',
+        '{"query":"safe history"}'::jsonb, 'complete', '{}'::jsonb,
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
+        'memory-egress-tool-call', 'memory-legacy-run', 1, 1,
+        'memory-egress-provider-call', 'mcp_safe_lookup',
+        '{"query":"direct user value"}'::jsonb, 'complete', '{}'::jsonb,
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+
+    INSERT INTO "MemoryHistoryRun" (
+      "id", "userId", "modelRunId", "modelRunToolCallId",
+      "invocationOrdinal", "state", "outcome", "query", "queryHash",
+      "privateRequest", "indexingEvidence", "results", "providerResult",
+      "resultHash", "resultCount", "durationMs", "completedAt"
+    ) VALUES (
+      'memory-history-receipt', 'memory-owner-a', 'memory-legacy-run',
+      'memory-history-tool-call', 1, 'COMPLETE', 'RESULTS', 'safe history',
+      repeat('a', 64), '{"query":"safe history","pageSize":20}'::jsonb,
+      '{"lexicalState":"READY","vectorState":"READY"}'::jsonb,
+      '{"results":[{"sourceChatId":"memory-chat-a","sourceMessageIds":["memory-user-message-a"],"snippet":"safe"}]}'::jsonb,
+      '{"callId":"memory-history-provider-call","content":[],"name":"search_my_history","status":"complete"}'::jsonb,
+      repeat('b', 64), 1, 5, CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO "MemoryToolEgressReceipt" (
+      "id", "userId", "modelRunId", "modelRunToolCallId", "requestOrdinal",
+      "mode", "destinationKind", "destinationFingerprint",
+      "destinationSnapshot", "requestEvidenceHash", "requestPreviewHash", "dispatchState",
+      "dispatchStartedAt", "dispatchCompletedAt"
+    ) VALUES
+      (
+        'memory-egress-receipt', 'memory-owner-a', 'memory-legacy-run',
+        'memory-egress-tool-call', 1, 'TOOL_CALL', 'mcp',
+        repeat('c', 64), '{"kind":"mcp","serverId":"safe-server","version":1}'::jsonb,
+        repeat('d', 64), repeat('e', 64), 'COMPLETED',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+
+    INSERT INTO "MemoryToolEgressReceipt" (
+      "id", "userId", "modelRunId", "requestOrdinal", "mode",
+      "destinationKind", "destinationFingerprint", "destinationSnapshot",
+      "requestEvidenceHash", "dispatchState", "dispatchCompletedAt", "errorCode"
+    ) VALUES (
+      'memory-egress-provider-blocked', 'memory-owner-a', 'memory-legacy-run', 2,
+      'PROVIDER_REQUEST', 'answer_provider', repeat('f', 64),
+      '{"kind":"answer_provider","provider":"openai","version":1}'::jsonb,
+      repeat('0', 64), 'BLOCKED', CURRENT_TIMESTAMP,
+      'memory_egress_destination_revoked'
+    );
+
+  `), "create bounded history and egress receipts");
+
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT concat_ws(':', "state", "outcome", "resultCount")
+         FROM "MemoryHistoryRun" WHERE "id" = 'memory-history-receipt'),
+        (SELECT concat_ws(':', "mode", "dispatchState")
+         FROM "MemoryToolEgressReceipt" WHERE "id" = 'memory-egress-receipt'),
+        (SELECT concat_ws(':', "mode", "dispatchState", "errorCode")
+         FROM "MemoryToolEgressReceipt" WHERE "id" = 'memory-egress-provider-blocked')
+      );
+    `),
+    "COMPLETE:RESULTS:1|TOOL_CALL:COMPLETED|PROVIDER_REQUEST:BLOCKED:memory_egress_destination_revoked",
+    "history or egress receipt state was not retained exactly"
+  );
+
+  expectRejected(database, `
+    INSERT INTO "MemoryHistoryRun" (
+      "id", "userId", "modelRunId", "modelRunToolCallId", "invocationOrdinal",
+      "query", "queryHash", "privateRequest"
+    ) VALUES (
+      'memory-history-third-call', 'memory-owner-a', 'memory-legacy-run',
+      'memory-egress-tool-call', 3, 'third', repeat('1', 64), '{}'::jsonb
+    );
+  `, /MemoryHistoryRun_shape_check/u, "third history-tool invocation");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryHistoryRun" (
+      "id", "userId", "modelRunId", "modelRunToolCallId", "invocationOrdinal",
+      "query", "queryHash", "privateRequest"
+    ) VALUES (
+      'memory-history-cross-owner', 'memory-owner-b', 'memory-legacy-run',
+      'memory-egress-tool-call', 2, 'cross owner', repeat('2', 64), '{}'::jsonb
+    );
+  `, /MemoryHistoryRun_modelRun_fkey/u, "cross-owner history receipt");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryHistoryRun" (
+      "id", "userId", "modelRunId", "modelRunToolCallId", "invocationOrdinal",
+      "query", "queryHash", "privateRequest"
+    ) VALUES (
+      'memory-history-oversized', 'memory-owner-a', 'memory-legacy-run',
+      'memory-egress-tool-call', 2, 'oversized', repeat('3', 64),
+      jsonb_build_object('query', repeat('x', 20000))
+    );
+  `, /MemoryHistoryRun_shape_check/u, "oversized private history request");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryToolEgressReceipt" (
+      "id", "userId", "modelRunId", "requestOrdinal", "mode",
+      "destinationKind", "destinationFingerprint", "destinationSnapshot",
+      "requestEvidenceHash", "dispatchState", "dispatchStartedAt"
+    ) VALUES (
+      'memory-egress-invalid-hash', 'memory-owner-a', 'memory-legacy-run', 3,
+      'PROVIDER_REQUEST', 'answer_provider', 'invalid', '{}'::jsonb,
+      repeat('4', 64), 'DISPATCHED', CURRENT_TIMESTAMP
+    );
+  `, /MemoryToolEgressReceipt_shape_check/u, "malformed egress hash");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryToolEgressReceipt" (
+      "id", "userId", "modelRunId", "requestOrdinal", "mode",
+      "destinationKind", "destinationFingerprint", "destinationSnapshot",
+      "requestEvidenceHash", "dispatchState", "dispatchStartedAt"
+    ) VALUES (
+      'memory-egress-cross-owner', 'memory-owner-b', 'memory-legacy-run', 3,
+      'PROVIDER_REQUEST', 'answer_provider', repeat('5', 64), '{}'::jsonb,
+      repeat('6', 64), 'DISPATCHED', CURRENT_TIMESTAMP
+    );
+  `, /MemoryToolEgressReceipt_modelRun_fkey/u, "cross-owner egress receipt");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryToolEgressReceipt" (
+      "id", "userId", "modelRunId", "requestOrdinal", "mode",
+      "destinationKind", "destinationFingerprint", "destinationSnapshot",
+      "requestEvidenceHash", "dispatchState", "dispatchStartedAt"
+    ) VALUES (
+      'memory-egress-ordinal-overflow', 'memory-owner-a', 'memory-legacy-run', 65,
+      'PROVIDER_REQUEST', 'answer_provider', repeat('7', 64), '{}'::jsonb,
+      repeat('8', 64), 'DISPATCHED', CURRENT_TIMESTAMP
+    );
+  `, /MemoryToolEgressReceipt_shape_check/u, "egress request ordinal overflow");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryToolEgressReceipt" (
+      "id", "userId", "modelRunId", "requestOrdinal", "mode",
+      "destinationKind", "destinationFingerprint", "destinationSnapshot",
+      "requestEvidenceHash", "dispatchState", "dispatchStartedAt"
+    ) VALUES (
+      'memory-egress-tool-without-call', 'memory-owner-a', 'memory-legacy-run', 3,
+      'TOOL_CALL', 'mcp', repeat('9', 64), '{}'::jsonb,
+      repeat('a', 64), 'DISPATCHED', CURRENT_TIMESTAMP
+    );
+  `, /MemoryToolEgressReceipt_shape_check/u, "tool receipt without exact tool call");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryToolEgressReceipt" (
+      "id", "userId", "modelRunId", "requestOrdinal", "mode",
+      "destinationKind", "destinationFingerprint", "destinationSnapshot",
+      "requestEvidenceHash", "dispatchState"
+    ) VALUES (
+      'memory-egress-incomplete-completion', 'memory-owner-a', 'memory-legacy-run', 3,
+      'PROVIDER_REQUEST', 'answer_provider', repeat('a', 64), '{}'::jsonb,
+      repeat('b', 64), 'COMPLETED'
+    );
+  `, /MemoryToolEgressReceipt_shape_check/u, "completed receipt without timestamps");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryToolEgressReceipt" (
+      "id", "userId", "modelRunId", "requestOrdinal", "mode",
+      "destinationKind", "destinationFingerprint", "destinationSnapshot",
+      "requestEvidenceHash", "dispatchState", "dispatchStartedAt"
+    ) VALUES (
+      'memory-egress-oversized-snapshot', 'memory-owner-a', 'memory-legacy-run', 3,
+      'PROVIDER_REQUEST', 'answer_provider', repeat('b', 64),
+      jsonb_build_object('value', repeat('x', 40000)), repeat('c', 64),
+      'DISPATCHED', CURRENT_TIMESTAMP
+    );
+  `, /MemoryToolEgressReceipt_shape_check/u, "oversized destination snapshot");
+
+  requireSuccess(psql(database, `
+    UPDATE "MemoryHistoryRun"
+    SET
+      "query" = NULL,
+      "privateRequest" = '{}'::jsonb,
+      "results" = NULL,
+      "providerResult" = NULL,
+      "resultHash" = NULL,
+      "retentionState" = 'SCRUBBED',
+      "plaintextPurgedAt" = CURRENT_TIMESTAMP
+    WHERE "id" = 'memory-history-receipt';
+  `), "scrub private history plaintext");
+
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT concat_ws(':', "retentionState", ("query" IS NULL)::int,
+          ("providerResult" IS NULL)::int)
+         FROM "MemoryHistoryRun" WHERE "id" = 'memory-history-receipt'),
+        (SELECT concat_ws(':', "mode", "dispatchState", ("requestEvidenceHash" IS NOT NULL)::int)
+         FROM "MemoryToolEgressReceipt" WHERE "id" = 'memory-egress-receipt')
+      );
+    `),
+    "SCRUBBED:1:1|TOOL_CALL:COMPLETED:1",
+    "private-history scrub or immutable passive receipt state is invalid"
+  );
+}
+
+function assertHistoryEgressMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE TYPE "MemoryHistoryRunState" AS ENUM ('fixture');
+  `), "install history-egress rollback-conflict fixture");
+
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, HISTORY_EGRESS_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting history-egress migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /type "MemoryHistoryRunState" already exists/u,
+    "history-egress rollback fixture failed for an unexpected reason"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM information_schema.tables
+         WHERE table_schema = current_schema()
+           AND table_name IN ('MemoryHistoryRun', 'MemoryToolEgressReceipt')),
+        (SELECT count(*) FROM pg_type
+         WHERE typname IN (
+           'MemoryHistoryRunOutcome', 'MemoryReceiptRetentionState',
+           'MemoryToolEgressMode', 'MemoryToolEgressDispatchState'
+         ))
+      );
+    `),
+    "0|0",
+    "failed history-egress migration left partial durable state"
+  );
+}
+
 function assertHistorySchemaMigrationAtomicRollback(database: string): void {
   requireSuccess(psql(database, `
     CREATE FUNCTION aiqsa_memory_assert_history_source(text, text)
@@ -1874,6 +2139,8 @@ function main(): void {
     assertScopeLifecycleContracts(upgradeDatabase);
     applyMigrations(upgradeDatabase, [HISTORY_SCHEMA_MIGRATION]);
     assertHistorySchemaContracts(upgradeDatabase, true);
+    applyMigrations(upgradeDatabase, [HISTORY_EGRESS_MIGRATION]);
+    assertHistoryEgressContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
@@ -1893,6 +2160,8 @@ function main(): void {
     assertScopeLifecycleContracts(freshDatabase);
     applyMigrations(freshDatabase, [HISTORY_SCHEMA_MIGRATION]);
     assertHistorySchemaContracts(freshDatabase, false);
+    applyMigrations(freshDatabase, [HISTORY_EGRESS_MIGRATION]);
+    assertHistoryEgressContracts(freshDatabase);
 
     createDatabase(rollbackDatabase);
     applyMigrations(rollbackDatabase, migrationNames((name) => name < CHAT_SCOPE_MIGRATION));
@@ -1918,11 +2187,18 @@ function main(): void {
       migrationNames((name) => name < HISTORY_SCHEMA_MIGRATION)
     );
     assertHistorySchemaMigrationAtomicRollback(historyRollbackDatabase);
+
+    createDatabase(historyEgressRollbackDatabase);
+    applyMigrations(
+      historyEgressRollbackDatabase,
+      migrationNames((name) => name < HISTORY_EGRESS_MIGRATION)
+    );
+    assertHistoryEgressMigrationAtomicRollback(historyEgressRollbackDatabase);
   } finally {
     dropDatabases();
   }
 
-  console.info("Memory migration contract passed through the Phase 4 history schema.");
+  console.info("Memory migration contract passed through the Phase 5 history/egress guard.");
 }
 
 main();

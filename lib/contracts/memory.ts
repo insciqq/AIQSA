@@ -15,6 +15,9 @@ export type MemoryUiLocale = (typeof MEMORY_UI_LOCALES)[number];
 export const MEMORY_CHAT_MODES = ["NORMAL", "EXCLUDED", "TEMPORARY"] as const;
 export type MemoryChatMode = (typeof MEMORY_CHAT_MODES)[number];
 
+export const MEMORY_EGRESS_CONSENT_MODES = ["ADMIN", "PER_USER"] as const;
+export type MemoryEgressConsentMode = (typeof MEMORY_EGRESS_CONSENT_MODES)[number];
+
 export const MEMORY_SCOPE_TYPES = ["GLOBAL_USER", "FOLDER", "ASSISTANT", "CHAT"] as const;
 export type MemoryScopeType = (typeof MEMORY_SCOPE_TYPES)[number];
 
@@ -249,7 +252,7 @@ export const MEMORY_ERROR_CODES = [
   "memory_action_failed",
   "memory_intent_confirmation_required",
   "memory_egress_consent_required",
-  "memory_tool_egress_forbidden",
+  "memory_egress_admin_owned",
   "memory_purge_blocked_requires_admin"
 ] as const;
 export type MemoryErrorCode = (typeof MEMORY_ERROR_CODES)[number];
@@ -672,6 +675,7 @@ const memorySettingsResponseSchema = z.strictObject({
     acceptedAt: nullableTimestampSchema,
     acceptedUtilityEgressFingerprint: utilityEgressFingerprintSchema.nullable(),
     acceptedUtilityPolicyVersion: utilityPolicyVersionSchema.nullable(),
+    consentMode: z.enum(MEMORY_EGRESS_CONSENT_MODES),
     currentUtilityEgressFingerprint: utilityEgressFingerprintSchema,
     currentUtilityPolicyVersion: utilityPolicyVersionSchema,
     embeddingDestination: safeText(256).nullable(),
@@ -707,9 +711,11 @@ const memorySettingsResponseSchema = z.strictObject({
   ) {
     context.addIssue({ code: "custom", message: "accepted egress evidence is all-or-none" });
   }
-  const reviewRequired = accepted === null ||
+  const reviewRequired = value.egress.consentMode === "PER_USER" && (
+    accepted === null ||
     accepted !== value.egress.currentUtilityEgressFingerprint ||
-    acceptedPolicy !== value.egress.currentUtilityPolicyVersion;
+    acceptedPolicy !== value.egress.currentUtilityPolicyVersion
+  );
   if (value.egress.reviewRequired !== reviewRequired) {
     context.addIssue({ code: "custom", message: "utility egress review state mismatch" });
   }

@@ -45,10 +45,18 @@ import {
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import {
+  sameKnowledgeRunAdmissionPlan,
+  type KnowledgeRunAdmissionPlan
+} from "../knowledge/runAdmission";
 import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
 import { decodeMemoryActionPlan } from "../memory/actions/intent";
 import { memoryActionToolForPlan } from "../memory/actions/tools";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
+import { defaultMemoryHistoryToolExecutor } from "../memory/history/search/defaultTool";
+import type { MemoryHistoryToolExecutor } from "../memory/history/search/toolExecutor";
+import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
+import { memorySha256 } from "../memory/persistence/lexical";
 import {
   knowledgeEvidenceFromToolResult,
   knowledgeUsageAttributionsFromToolResult
@@ -62,6 +70,11 @@ import {
 } from "../tools/types";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
+import {
+  memoryEgressRequestEvidence,
+  requestHasHostedSearchCapability,
+  requestHasServerExternalTools
+} from "../providers/memoryEgress";
 import { withPinnedHostedSearchIdentity } from "./searchArtifactIdentity";
 import {
   appendRunEventWithRetry,
@@ -189,7 +202,21 @@ export type RunExecutionInput = Readonly<{
   prepared: MaterializedPreparedRunData;
   repository: RunExecutionRepository;
   knowledgeExecutor?: KnowledgeToolExecutor;
+  knowledgeAdmission?: Readonly<{
+    load(input: {
+      knowledgePlan: NonNullable<ProviderRunRequest["knowledgePlan"]>;
+      userId: string;
+    }): Promise<KnowledgeRunAdmissionPlan>;
+  }>;
   memoryActionExecutor?: MemoryActionExecutor;
+  memoryHistoryToolExecutor?: MemoryHistoryToolExecutor;
+  memoryEgress?: MemoryToolEgressReceiptService;
+  mcp?: Readonly<{
+    prepare(
+      userId: string,
+      options?: Readonly<{ allowedServerIds?: readonly string[] }>
+    ): Promise<import("../mcp/runPlan").McpRunPlanResult>;
+  }>;
   mcpRuntime?: Readonly<{
     callTool(input: {
       arguments: Record<string, unknown>;
@@ -535,6 +562,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const memoryActionEnabled = clientToolsEnabled &&
     normalizedRequest.modelCapabilities.toolCalling === true &&
     memoryActionPlan !== null;
+  const memoryHistoryEnabled = clientToolsEnabled &&
+    normalizedRequest.modelCapabilities.toolCalling === true &&
+    normalizedRequest.memoryHistoryTool?.maxCalls === 2 &&
+    normalizedRequest.memoryHistoryTool.pageSize === 20;
+  const serverExternalToolMode = requestHasServerExternalTools(
+    input.prepared.providerRequest
+  );
+  const hostedSearchMode = requestHasHostedSearchCapability(
+    input.prepared.providerRequest
+  );
+  const egressReceiptRequired = serverExternalToolMode || hostedSearchMode ||
+    input.prepared.providerRequest.personalContext !== undefined;
   activeRunControllers.set(runId, abortController);
 
   const stream = new ReadableStream<Uint8Array>({
@@ -653,7 +692,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       }
 
       async function streamProviderRequest(request: ProviderRunRequest): Promise<ProviderRunResult> {
-        const providerStream = input.adapter.stream(request, { signal });
+        const providerStream = streamAnswerProviderWithEgress(request);
         let lastReportedUsage: ModelRunUsage | null = null;
 
         try {
@@ -676,6 +715,149 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         } catch (error) {
           if (lastReportedUsage) {
             rememberReportedUsage(request.provider, request.modelId, lastReportedUsage);
+          }
+          throw error;
+        }
+      }
+
+      async function currentSearchDispatchAllowed(): Promise<boolean> {
+        const selectedSearchStrategy = normalizedRequest.searchStrategy ?? "search-disabled";
+        const [entitlements, enabled] = await Promise.all([
+          input.repository.loadEntitlements(input.userId),
+          input.repository.isSearchStrategyEnabled(selectedSearchStrategy)
+        ]);
+        return enabled && validateRunAccess(entitlements, {
+          modelId: normalizedRequest.modelId,
+          provider: normalizedRequest.provider,
+          searchStrategy: selectedSearchStrategy
+        }).ok;
+      }
+
+      async function currentKnowledgeDispatchAllowed(): Promise<boolean> {
+        if (!input.knowledgeAdmission || !input.prepared.knowledgeAdmissionPlan) {
+          return process.env.NODE_ENV !== "production";
+        }
+        try {
+          const current = await input.knowledgeAdmission.load({
+            knowledgePlan: normalizedRequest.knowledgePlan ?? { baseIds: [] },
+            userId: input.userId
+          });
+          return sameKnowledgeRunAdmissionPlan(
+            current,
+            input.prepared.knowledgeAdmissionPlan
+          );
+        } catch {
+          return false;
+        }
+      }
+
+      async function currentMcpDispatchAllowed(inputRoute: Readonly<{
+        fingerprint: string;
+        namespacedName: string;
+        originalName: string;
+        serverId: string;
+      }>, generationId: string): Promise<boolean> {
+        if (!input.mcp) return process.env.NODE_ENV !== "production";
+        try {
+          const current = await input.mcp.prepare(input.userId, {
+            allowedServerIds: [inputRoute.serverId]
+          });
+          if (!current.ok) return false;
+          const binding = current.bindings.find((candidate) =>
+            candidate.serverId === inputRoute.serverId);
+          const tool = current.snapshot.tools.find((candidate) =>
+            candidate.serverId === inputRoute.serverId &&
+            candidate.namespacedName === inputRoute.namespacedName &&
+            candidate.originalName === inputRoute.originalName);
+          const server = current.snapshot.servers.find((candidate) =>
+            candidate.serverId === inputRoute.serverId);
+          return Boolean(
+            binding && tool && server &&
+            binding.fingerprint === inputRoute.fingerprint &&
+            server.fingerprint === inputRoute.fingerprint &&
+            binding.runtimeGenerationId === generationId
+          );
+        } catch {
+          return false;
+        }
+      }
+
+      async function* streamAnswerProviderWithEgress(
+        request: ProviderRunRequest,
+        dispatchSignal: AbortSignal = signal
+      ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        if (egressReceiptRequired && !input.memoryEgress &&
+          process.env.NODE_ENV === "production") {
+          throw new RunPipelineError(
+            "memory_egress_receipt_unavailable",
+            "Memory egress evidence is unavailable."
+          );
+        }
+        let preview: Record<string, unknown> | null = null;
+        const requestPreview = () => {
+          preview ??= input.adapter.buildRequestPreview(request);
+          return preview;
+        };
+        if (requestHasHostedSearchCapability(request) &&
+          !(await currentSearchDispatchAllowed())) {
+          await input.memoryEgress?.recordBlockedDispatch({
+            destinationKind: "answer_provider",
+            destinationSnapshot: {
+              modelId: request.modelId,
+              provider: request.provider,
+              searchOptionIds: request.searchPlan?.options.map((option) => option.optionId) ?? [],
+              searchStrategy: request.searchStrategy,
+              version: 1
+            },
+            errorCode: "memory_egress_search_revoked",
+            mode: "PROVIDER_REQUEST",
+            requestEvidence: memoryEgressRequestEvidence(request),
+            requestPreview: requestPreview(),
+            runId,
+            userId: input.userId
+          });
+          throw new RunPipelineError(
+            "search_strategy_not_available",
+            "The selected search destination is no longer available."
+          );
+        }
+        const receipt = input.memoryEgress && egressReceiptRequired
+          ? await input.memoryEgress.beginDispatch({
+              destinationKind: "answer_provider",
+              destinationSnapshot: {
+                modelId: request.modelId,
+                provider: request.provider,
+                searchOptionIds: request.searchPlan?.options.map((option) => option.optionId) ?? [],
+                searchStrategy: request.searchStrategy,
+                version: 1
+              },
+              mode: "PROVIDER_REQUEST",
+              requestEvidence: memoryEgressRequestEvidence(request),
+              requestPreview: requestPreview(),
+              runId,
+              userId: input.userId
+            })
+          : null;
+        const stream = input.adapter.stream(request, { signal: dispatchSignal });
+        try {
+          let next = await stream.next();
+          while (!next.done) {
+            yield next.value;
+            next = await stream.next();
+          }
+          if (receipt && !(await input.memoryEgress!.completeDispatch(receipt.id))) {
+            throw new RunPipelineError(
+              "memory_egress_receipt_conflict",
+              "Provider dispatch evidence could not be completed."
+            );
+          }
+          return next.value;
+        } catch (error) {
+          if (receipt) {
+            await input.memoryEgress!.failDispatch(
+              receipt.id,
+              error instanceof RunPipelineError ? error.code : "provider_dispatch_failed"
+            ).catch(() => undefined);
           }
           throw error;
         }
@@ -723,18 +905,24 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const memoryActionExecutor = memoryActionEnabled
           ? input.memoryActionExecutor ?? defaultMemoryActionExecutor
           : null;
+        const memoryHistoryExecutor = memoryHistoryEnabled
+          ? input.memoryHistoryToolExecutor ?? defaultMemoryHistoryToolExecutor
+          : null;
         const isSearchCall = (name: string) =>
           (searchExecutor !== null && name === searchExecutor.tool.name) ||
           searchPlanRouter?.accepts(name) === true;
         const isKnowledgeCall = (name: string) => knowledgeExecutor?.accepts(name) === true;
         const isMemoryCall = (name: string) =>
           memoryActionPlan !== null && memoryActionExecutor?.accepts(memoryActionPlan, name) === true;
+        const isMemoryHistoryCall = (name: string) =>
+          memoryHistoryExecutor?.accepts(name) === true;
         const tools: RunTool[] = [
           ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
           ...(searchPlanRouter?.tools ?? (searchExecutor ? [perplexityWebSearchTool] : [])),
           ...(memoryActionPlan && memoryActionExecutor
             ? [memoryActionToolForPlan(memoryActionPlan)]
             : []),
+          ...(memoryHistoryExecutor ? [memoryHistoryExecutor.tool] : []),
           ...(clientToolsEnabled ? mcpRunTools(normalizedRequest.mcp) : [])
         ];
         if (tools.length === 0) {
@@ -750,8 +938,16 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           mcpRuntime ??= getDefaultMcpRuntimeCoordinator();
           return mcpRuntime;
         };
+        const egressAdapter: ProviderAdapter = {
+          buildRequestPreview(request) {
+            return input.adapter.buildRequestPreview(request);
+          },
+          stream(request, options) {
+            return streamAnswerProviderWithEgress(request, options?.signal ?? signal);
+          }
+        };
         const outcome = await continueProviderToolLoop({
-          adapter: input.adapter,
+          adapter: egressAdapter,
           afterToolBatch: async ({ round }) => {
             const advanced = await input.repository.advanceToolLoopCallBatch({
               roundIndex: round,
@@ -932,9 +1128,89 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               }
 
               let result: ToolExecutionResult;
+              let externalReceipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
               try {
                 if (hasInvalidProviderToolArguments(call.arguments)) {
                   throw new Error("provider_tool_arguments_invalid");
+                }
+                const externalCall = isKnowledgeCall(call.name) ||
+                  isSearchCall(call.name) ||
+                  (!isMemoryCall(call.name) && !isMemoryHistoryCall(call.name));
+                if (externalCall) {
+                  const destinationSnapshot = isKnowledgeCall(call.name)
+                    ? {
+                        baseIds: normalizedRequest.knowledgePlan?.baseIds ?? [],
+                        kind: "knowledge",
+                        toolName: call.name,
+                        version: 1
+                      }
+                    : isSearchCall(call.name)
+                      ? {
+                          kind: "search",
+                          optionIds: searchPlanRouter?.optionIdsForTool(call.name) ?? [],
+                          provider: searchPolicy?.provider ?? null,
+                          strategy: normalizedRequest.searchStrategy,
+                          toolName: call.name,
+                          version: 1
+                        }
+                      : (() => {
+                          const mcpRoute = resolveMcpRunTool(normalizedRequest.mcp, call.name);
+                          return {
+                            fingerprint: mcpRoute?.fingerprint ?? null,
+                            kind: "mcp",
+                            serverId: mcpRoute?.serverId ?? null,
+                            toolName: call.name,
+                            version: 1
+                          };
+                        })();
+                  const currentAuthorization = await (isKnowledgeCall(call.name)
+                    ? currentKnowledgeDispatchAllowed()
+                    : isSearchCall(call.name)
+                      ? currentSearchDispatchAllowed()
+                      : (() => {
+                          const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
+                          const generationId = claim.call.mcpBinding?.runtimeGenerationId;
+                          return route && generationId
+                            ? currentMcpDispatchAllowed({
+                                fingerprint: route.fingerprint,
+                                namespacedName: call.name,
+                                originalName: route.originalName,
+                                serverId: route.serverId
+                              }, generationId)
+                            : Promise.resolve(false);
+                        })());
+                  if (!currentAuthorization) {
+                    await input.memoryEgress?.recordBlockedDispatch({
+                      destinationKind: String(destinationSnapshot.kind),
+                      destinationSnapshot,
+                      errorCode: "memory_egress_destination_revoked",
+                      mode: "TOOL_CALL",
+                      modelRunToolCallId: claim.call.id,
+                      requestEvidence: memoryEgressRequestEvidence(request),
+                      requestPreview: {
+                        argumentsHash: memorySha256(call.arguments),
+                        toolName: call.name
+                      },
+                      runId,
+                      userId: input.userId
+                    });
+                    throw new Error("memory_egress_destination_revoked");
+                  }
+                  externalReceipt = input.memoryEgress
+                    ? await input.memoryEgress.beginDispatch({
+                        destinationKind: String(destinationSnapshot.kind),
+                        destinationSnapshot,
+                        mode: "TOOL_CALL",
+                        modelRunToolCallId: claim.call.id,
+                        requestEvidence: memoryEgressRequestEvidence(request),
+                        requestPreview: {
+                          argumentsHash: memorySha256(call.arguments),
+                          toolName: call.name
+                        },
+                        runId,
+                        userId: input.userId
+                      })
+                    : null;
                 }
                 if (isKnowledgeCall(call.name)) {
                   result = await knowledgeExecutor!.execute(call, {
@@ -954,10 +1230,25 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     runId,
                     userId: input.userId
                   });
+                } else if (isMemoryHistoryCall(call.name)) {
+                  result = await memoryHistoryExecutor!.execute(call, {
+                    persistedToolCallId: claim.call.id,
+                    request,
+                    runId,
+                    userId: input.userId
+                  });
                 } else if (searchPlanRouter?.accepts(call.name)) {
-                  result = await searchPlanRouter.execute(call, request, { signal: context.signal });
+                  result = await searchPlanRouter.execute(
+                    call,
+                    request,
+                    { signal: context.signal }
+                  );
                 } else if (searchExecutor && call.name === searchExecutor.tool.name) {
-                  result = await searchExecutor.execute(call, { request, runId }, { signal: context.signal });
+                  result = await searchExecutor.execute(
+                    call,
+                    { request, runId },
+                    { signal: context.signal }
+                  );
                 } else {
                   const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
                   const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -977,7 +1268,19 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     signal: context.signal
                   }));
                 }
+                if (externalReceipt &&
+                  !(await input.memoryEgress!.completeDispatch(externalReceipt.id))) {
+                  throw new Error("memory_egress_receipt_conflict");
+                }
               } catch (error) {
+                if (externalReceipt) {
+                  await input.memoryEgress!.failDispatch(
+                    externalReceipt.id,
+                    error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
+                      ? error.message
+                      : "external_tool_dispatch_failed"
+                  ).catch(() => undefined);
+                }
                 if (signal.aborted || isAbortError(error)) throw error;
                 result = toolExecutionErrorResult(
                   call,
@@ -1060,7 +1363,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
                 if (!route && !isSearchCall(call.name) &&
-                  !isKnowledgeCall(call.name) && !isMemoryCall(call.name)) {
+                  !isKnowledgeCall(call.name) && !isMemoryCall(call.name) &&
+                  !isMemoryHistoryCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -1255,7 +1559,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             normalizedRequest.searchStrategy === "perplexity-tool-search"));
         const hasClientTools = hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
-          knowledgeEnabled || memoryActionEnabled;
+          knowledgeEnabled || memoryActionEnabled || memoryHistoryEnabled;
         assertPersonalContextEgressSafe(input.prepared.providerRequest);
         const providerResult = hasClientTools
           ? await runProviderToolLoop(input.prepared.providerRequest)

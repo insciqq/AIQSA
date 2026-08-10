@@ -734,6 +734,205 @@ async function createHistoryDerivative(input: Readonly<{
   };
 }
 
+async function createHistoryReceiptDerivatives(input: Readonly<{
+  activeIndexGenerationId: string;
+  assistantMessageId: string;
+  chatId: string;
+  chunkId: string;
+  sourceMessageId: string;
+  userId: string;
+}>) {
+  const marker = "history receipt marker alpha";
+  const now = new Date("2026-08-10T08:01:00.000Z");
+  const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+    where: { userId: input.userId }
+  });
+  const chunk = await prisma.memoryRecallChunk.findUniqueOrThrow({
+    where: { id: input.chunkId }
+  });
+  const run = await prisma.modelRun.create({
+    data: {
+      assistantMessageId: input.assistantMessageId,
+      chatId: input.chatId,
+      modelId: "memory-history-receipt-model",
+      normalizedRequest: {},
+      provider: "memory-history-receipt-provider",
+      providerRequestPreview: {},
+      status: "complete",
+      userId: input.userId,
+      userMessageId: input.sourceMessageId
+    }
+  });
+  const preparedContext = `Accepted ${marker}`;
+  const { binding } = await prisma.$transaction(async (tx) => {
+    const attempt = await tx.memoryRetrievalAttempt.create({
+      data: {
+        admissionKind: "NORMAL_SEND",
+        admittedAssistantLeafMessageId: input.assistantMessageId,
+        admittedUserMessageId: input.sourceMessageId,
+        attemptOrdinal: 0,
+        baseRequestHash: memorySha256({ marker, type: "base" }),
+        boundedPrivateBaseRequestSnapshot: {},
+        chatId: input.chatId,
+        chatMemoryModeSnapshot: "NORMAL",
+        consumedAt: now,
+        expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+        indexGenerationIdSnapshot: input.activeIndexGenerationId,
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        modelRunId: run.id,
+        outcome: "USED",
+        preparedContextHash: memorySha256(preparedContext),
+        preparedContextText: preparedContext,
+        preparedContextTokenCount: 8,
+        queryHash: memorySha256(marker),
+        retrievalRevisionSnapshot: settings.memoryRevision,
+        settingsSnapshot: {},
+        state: "CONSUMED",
+        userId: input.userId,
+        utilityEgressMode: "LOCAL_ONLY"
+      }
+    });
+    const binding = await tx.modelRunMemoryBinding.create({
+      data: {
+        boundedSafeQuerySnapshot: marker,
+        contextTextHash: memorySha256(preparedContext),
+        contextTokenCount: 8,
+        finalizedAt: now,
+        finalizedRevisionSnapshot: settings.memoryRevision,
+        indexGenerationId: input.activeIndexGenerationId,
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        modelRunId: run.id,
+        outcome: "USED",
+        queryHash: memorySha256(marker),
+        queryPlannerVersion: "history-receipt-fixture-v1",
+        retrievalAttemptId: attempt.id,
+        retrievalPipelineVersion: "history-receipt-fixture-v1",
+        retrievalRevisionSnapshot: settings.memoryRevision,
+        settingsSnapshot: {},
+        userId: input.userId
+      }
+    });
+    return { binding };
+  });
+  const includedText = `Remembered ${marker}`;
+  await prisma.modelRunMemoryItem.create({
+    data: {
+      bindingId: binding.id,
+      exactItemId: input.chunkId,
+      featureSnapshot: {},
+      finalScore: 0.9,
+      includedText,
+      includedTextHash: memorySha256(includedText),
+      itemStateAtAdmission: "ACTIVE",
+      itemType: "RECALL_CHUNK",
+      laneRanks: {},
+      ordinal: 0,
+      recallChunkId: input.chunkId,
+      selectionReason: "history-receipt-fixture",
+      sourceBranchGenerationSnapshot: chunk.branchGeneration,
+      sourceChatIdSnapshot: input.chatId,
+      sourceContentHashSnapshot: chunk.contentHash,
+      sourceMessageIdsSnapshot: [input.sourceMessageId],
+      sourceRevisionSnapshot: chunk.sourceRevisionAtCreation,
+      userId: input.userId
+    }
+  });
+  const destinationSnapshot = {
+    displayName: "Fixture MCP",
+    fingerprint: "fixture-mcp-fingerprint",
+    kind: "mcp" as const,
+    serverId: "fixture-mcp-server",
+    version: 1 as const
+  };
+  const egressReceipt = await prisma.memoryToolEgressReceipt.create({
+    data: {
+      destinationFingerprint: memorySha256(destinationSnapshot),
+      destinationKind: "mcp",
+      destinationSnapshot,
+      dispatchCompletedAt: now,
+      dispatchStartedAt: now,
+      dispatchState: "COMPLETED",
+      mode: "PROVIDER_REQUEST",
+      modelRunId: run.id,
+      requestOrdinal: 1,
+      requestEvidenceHash: memorySha256({ marker, type: "request" }),
+      userId: input.userId
+    }
+  });
+  const toolCall = await prisma.modelRunToolCall.create({
+    data: {
+      arguments: { query: marker },
+      completedAt: now,
+      modelRunId: run.id,
+      ordinal: 0,
+      providerCallId: `history-receipt-call-${randomUUID()}`,
+      result: {
+        callId: "history-receipt-call",
+        content: [{ type: "json", value: { marker } }],
+        name: "search_my_history",
+        status: "complete"
+      },
+      roundIndex: 0,
+      startedAt: now,
+      state: "complete",
+      toolName: "search_my_history"
+    }
+  });
+  const privateResults = {
+    indexing: {
+      degradationCode: null,
+      lexicalState: "READY",
+      vectorState: "NOT_CONFIGURED"
+    },
+    nextCursor: null,
+    results: [{
+      indexingState: "LEXICAL_READY",
+      itemType: "RECALL_CHUNK",
+      occurredAt: now.toISOString(),
+      sourceChatId: input.chatId,
+      sourceChatTitle: "Receipt source",
+      sourceFolderId: null,
+      sourceFolderName: null,
+      sourceMessageIds: [input.sourceMessageId],
+      sourceState: "AVAILABLE",
+      snippet: marker
+    }]
+  };
+  const providerResult = {
+    callId: toolCall.providerCallId,
+    content: [{ type: "json", value: { ...privateResults, untrusted: true } }],
+    name: "search_my_history",
+    status: "complete"
+  };
+  const historyRun = await prisma.memoryHistoryRun.create({
+    data: {
+      completedAt: now,
+      durationMs: 1,
+      indexingEvidence: privateResults.indexing,
+      invocationOrdinal: 1,
+      modelRunId: run.id,
+      modelRunToolCallId: toolCall.id,
+      outcome: "RESULTS",
+      privateRequest: { query: marker },
+      providerResult,
+      query: marker,
+      queryHash: memorySha256(marker),
+      resultCount: 1,
+      resultHash: memorySha256(providerResult),
+      results: privateResults,
+      state: "COMPLETE",
+      userId: input.userId
+    }
+  });
+  return {
+    egressReceiptId: egressReceipt.id,
+    destinationSnapshot,
+    historyRunId: historyRun.id,
+    marker,
+    toolCallId: toolCall.id
+  };
+}
+
 describe("Prisma Memory shadow rebuild and history clear", () => {
   afterAll(async () => {
     await prisma.$disconnect();
@@ -1595,6 +1794,14 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       });
       if (!old.episodeId) throw new Error("episode_fixture_missing");
       const oldEpisodeId = old.episodeId;
+      const receiptDerivatives = await createHistoryReceiptDerivatives({
+        activeIndexGenerationId: initialSettings.activeIndexGenerationId,
+        assistantMessageId: old.assistantMessageId,
+        chatId: old.chatId,
+        chunkId: old.chunkId,
+        sourceMessageId: old.userMessageId,
+        userId
+      });
       const beforeClear = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });
@@ -1681,12 +1888,42 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         await expect(prisma.memorySearchEntry.count({
           where: { recallChunkId: fresh.chunkId, userId }
         })).resolves.toBe(1);
+        const scrubbedHistory = await prisma.memoryHistoryRun.findUniqueOrThrow({
+          where: { id: receiptDerivatives.historyRunId }
+        });
+        expect(scrubbedHistory).toMatchObject({
+          plaintextPurgedAt: expect.any(Date),
+          privateRequest: {},
+          providerResult: null,
+          query: null,
+          resultHash: null,
+          results: null,
+          retentionState: "SCRUBBED",
+          state: "COMPLETE"
+        });
+        expect(JSON.stringify(scrubbedHistory)).not.toContain(receiptDerivatives.marker);
+        const scrubbedCall = await prisma.modelRunToolCall.findUniqueOrThrow({
+          where: { id: receiptDerivatives.toolCallId }
+        });
+        expect(scrubbedCall.arguments).toEqual({});
+        expect(scrubbedCall.result).toMatchObject({
+          content: [{ value: { error: "memory_history_receipt_scrubbed" } }],
+          status: "error"
+        });
+        expect(JSON.stringify(scrubbedCall)).not.toContain(receiptDerivatives.marker);
+        await expect(prisma.memoryToolEgressReceipt.findUniqueOrThrow({
+          where: { id: receiptDerivatives.egressReceiptId }
+        })).resolves.toMatchObject({
+          dispatchState: "COMPLETED",
+          errorCode: null,
+          mode: "PROVIDER_REQUEST"
+        });
       }
       await expect(lifecycle.status(userId, admitted.deletionId)).resolves.toMatchObject({
-        completedUnits: 3,
+        completedUnits: 4,
         operation: "CLEAR_HISTORY_INDEX",
         state: "SUCCEEDED",
-        totalUnits: 3
+        totalUnits: 4
       });
       await expect(explicit.get(userId, fact.memory.id)).resolves.toMatchObject({
         memory: { factState: "ACTIVE" }

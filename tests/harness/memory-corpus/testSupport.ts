@@ -31,7 +31,7 @@ export function loadFrozenMemoryCorpus(): Readonly<{
   return {
     fixtures: [...tuning, ...holdout],
     holdout,
-    manifest: readMemoryCorpusJson<MemoryCorpusManifest>("manifests/corpus-v1.json"),
+    manifest: readMemoryCorpusJson<MemoryCorpusManifest>("manifests/corpus-v2.json"),
     tuning
   };
 }

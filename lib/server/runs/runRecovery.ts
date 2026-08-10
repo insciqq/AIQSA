@@ -9,6 +9,8 @@ import {
   sumTokenUsage
 } from "../../domain/usage";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
+import type { McpRunPlanResult } from "../mcp/runPlan";
+import { validateRunAccess } from "../auth/entitlements";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import { mcpRunTools, mcpToolExecutionResult, resolveMcpRunTool } from "../mcp/toolExecutor";
 import type {
@@ -37,10 +39,15 @@ import {
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
 import { decodeMemoryActionPlan, type MemoryActionPlan } from "../memory/actions/intent";
 import { memoryActionToolForPlan } from "../memory/actions/tools";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
+import { defaultMemoryHistoryToolExecutor } from "../memory/history/search/defaultTool";
+import type { MemoryHistoryToolExecutor } from "../memory/history/search/toolExecutor";
+import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
+import { memorySha256 } from "../memory/persistence/lexical";
 import {
   knowledgeEvidenceFromToolResult,
   knowledgeUsageAttributionsFromToolResult
@@ -65,6 +72,11 @@ import {
 } from "./providerToolLoop";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
+import {
+  memoryEgressRequestEvidence,
+  requestHasHostedSearchCapability,
+  requestHasServerExternalTools
+} from "../providers/memoryEgress";
 import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 import {
   getRunAttachmentLimits,
@@ -137,7 +149,7 @@ export type RunRecoveryRepository = Pick<
   | "sweepBootOrphanedRuns"
   | "updateRunProviderRequestPreview"
   | "updateRunProviderResponseId"
->;
+> & Partial<Pick<RunRepository, "isSearchStrategyEnabled" | "loadEntitlements">>;
 
 export type RunRecoveryMcpRuntime = Readonly<{
   callTool(input: {
@@ -153,8 +165,22 @@ export type RunRecoveryMcpRuntime = Readonly<{
 export type RunRecoveryDeps = Readonly<{
   getAttachmentLimits?: () => RunAttachmentLimits;
   knowledgeExecutor?: KnowledgeToolExecutor;
+  knowledgeAdmission?: Readonly<{
+    load(input: {
+      knowledgePlan: NonNullable<ProviderRunRequest["knowledgePlan"]>;
+      userId: string;
+    }): Promise<KnowledgeRunAdmissionPlan>;
+  }>;
+  memoryEgress?: MemoryToolEgressReceiptService;
   memoryActionExecutor?: MemoryActionExecutor;
+  memoryHistoryToolExecutor?: MemoryHistoryToolExecutor;
   mcpRuntime?: RunRecoveryMcpRuntime;
+  mcp?: Readonly<{
+    prepare(
+      userId: string,
+      options?: Readonly<{ allowedServerIds?: readonly string[] }>
+    ): Promise<McpRunPlanResult>;
+  }>;
   providerRuntime?: ProviderRuntimeResolver;
   providers: Readonly<Record<string, ProviderAdapter>>;
   registry: RunRecoveryRegistry;
@@ -558,6 +584,7 @@ type RecoveryToolContext = Readonly<{
   knowledgeExecutor: KnowledgeToolExecutor | null;
   memoryActionExecutor: MemoryActionExecutor | null;
   memoryActionPlan: MemoryActionPlan | null;
+  memoryHistoryToolExecutor: MemoryHistoryToolExecutor | null;
   searchExecutor: RecoverySearchExecutor | null;
   usageAttributions: RunUsageAttribution[];
 }>;
@@ -573,6 +600,82 @@ function isRecoveredKnowledgeCall(context: RecoveryToolContext, name: string): b
 function isRecoveredMemoryCall(context: RecoveryToolContext, name: string): boolean {
   return context.memoryActionPlan !== null &&
     context.memoryActionExecutor?.accepts(context.memoryActionPlan, name) === true;
+}
+
+function isRecoveredMemoryHistoryCall(
+  context: RecoveryToolContext,
+  name: string
+): boolean {
+  return context.memoryHistoryToolExecutor?.accepts(name) === true;
+}
+
+async function currentRecoverySearchDispatchAllowed(
+  context: RecoveryToolContext
+): Promise<boolean> {
+  if (!context.deps.repository.loadEntitlements ||
+    !context.deps.repository.isSearchStrategyEnabled) {
+    return process.env.NODE_ENV !== "production";
+  }
+  const strategy = context.run.normalizedRequest.searchStrategy ?? "search-disabled";
+  const [entitlements, enabled] = await Promise.all([
+    context.deps.repository.loadEntitlements(context.run.userId),
+    context.deps.repository.isSearchStrategyEnabled(strategy)
+  ]);
+  return enabled && validateRunAccess(entitlements, {
+    modelId: context.run.modelId,
+    provider: context.run.provider,
+    searchStrategy: strategy
+  }).ok;
+}
+
+async function currentRecoveryKnowledgeDispatchAllowed(
+  context: RecoveryToolContext
+): Promise<boolean> {
+  if (!context.deps.knowledgeAdmission) return process.env.NODE_ENV !== "production";
+  try {
+    const expected = context.run.normalizedRequest.knowledgePlan?.baseIds ?? [];
+    const current = await context.deps.knowledgeAdmission.load({
+      knowledgePlan: { baseIds: expected },
+      userId: context.run.userId
+    });
+    return current.bindings.length === expected.length &&
+      current.bindings.every((binding, ordinal) =>
+        binding.knowledgeBaseId === expected[ordinal]);
+  } catch {
+    return false;
+  }
+}
+
+async function currentRecoveryMcpDispatchAllowed(
+  context: RecoveryToolContext,
+  callName: string,
+  generationId: string
+): Promise<boolean> {
+  if (!context.deps.mcp) return process.env.NODE_ENV !== "production";
+  const route = resolveMcpRunTool(context.run.normalizedRequest.mcp, callName);
+  if (!route) return false;
+  try {
+    const current = await context.deps.mcp.prepare(context.run.userId, {
+      allowedServerIds: [route.serverId]
+    });
+    if (!current.ok) return false;
+    const binding = current.bindings.find((candidate) =>
+      candidate.serverId === route.serverId);
+    const server = current.snapshot.servers.find((candidate) =>
+      candidate.serverId === route.serverId);
+    const tool = current.snapshot.tools.find((candidate) =>
+      candidate.serverId === route.serverId &&
+      candidate.namespacedName === callName &&
+      candidate.originalName === route.originalName);
+    return Boolean(
+      binding && server && tool &&
+      binding.fingerprint === route.fingerprint &&
+      server.fingerprint === route.fingerprint &&
+      binding.runtimeGenerationId === generationId
+    );
+  } catch {
+    return false;
+  }
 }
 
 function settledSearchUsageNeedsRecovery(
@@ -701,9 +804,80 @@ async function executePersistedToolCall(
   }
 
   let result: ToolExecutionResult;
+  let externalReceipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
   try {
     if (hasInvalidProviderToolArguments(call.arguments)) {
       throw new Error("provider_tool_arguments_invalid");
+    }
+    const externalCall = !isRecoveredMemoryCall(context, call.name) &&
+      !isRecoveredMemoryHistoryCall(context, call.name);
+    if (externalCall) {
+      if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
+        throw new Error("memory_egress_receipt_unavailable");
+      }
+      const route = resolveMcpRunTool(context.run.normalizedRequest.mcp, call.name);
+      const destinationSnapshot = isRecoveredKnowledgeCall(context, call.name)
+        ? {
+            baseIds: context.run.normalizedRequest.knowledgePlan?.baseIds ?? [],
+            kind: "knowledge",
+            toolName: call.name,
+            version: 1
+          }
+        : isRecoveredSearchCall(context, call.name)
+          ? {
+              kind: "search",
+              provider: context.run.normalizedRequest.searchPolicy?.provider ?? null,
+              strategy: context.run.normalizedRequest.searchStrategy,
+              toolName: call.name,
+              version: 1
+            }
+          : {
+              fingerprint: route?.fingerprint ?? null,
+              kind: "mcp",
+              serverId: route?.serverId ?? null,
+              toolName: call.name,
+              version: 1
+            };
+      const generationId = claim.call.mcpBinding?.runtimeGenerationId;
+      const allowed = isRecoveredKnowledgeCall(context, call.name)
+        ? await currentRecoveryKnowledgeDispatchAllowed(context)
+        : isRecoveredSearchCall(context, call.name)
+          ? await currentRecoverySearchDispatchAllowed(context)
+          : generationId
+            ? await currentRecoveryMcpDispatchAllowed(context, call.name, generationId)
+            : false;
+      if (!allowed) {
+        await context.deps.memoryEgress?.recordBlockedDispatch({
+          destinationKind: String(destinationSnapshot.kind),
+          destinationSnapshot,
+          errorCode: "memory_egress_destination_revoked",
+          mode: "TOOL_CALL",
+          modelRunToolCallId: claim.call.id,
+          requestEvidence: memoryEgressRequestEvidence(context.providerRequest),
+          requestPreview: {
+            argumentsHash: memorySha256(call.arguments),
+            toolName: call.name
+          },
+          runId: context.run.id,
+          userId: context.run.userId
+        });
+        throw new Error("memory_egress_destination_revoked");
+      }
+      externalReceipt = context.deps.memoryEgress
+        ? await context.deps.memoryEgress.beginDispatch({
+            destinationKind: String(destinationSnapshot.kind),
+            destinationSnapshot,
+            mode: "TOOL_CALL",
+            modelRunToolCallId: claim.call.id,
+            requestEvidence: memoryEgressRequestEvidence(context.providerRequest),
+            requestPreview: {
+              argumentsHash: memorySha256(call.arguments),
+              toolName: call.name
+            },
+            runId: context.run.id,
+            userId: context.run.userId
+          })
+        : null;
     }
     if (isRecoveredKnowledgeCall(context, call.name)) {
       result = await context.knowledgeExecutor!.execute(call, {
@@ -733,6 +907,13 @@ async function executePersistedToolCall(
           userId: context.run.userId
         }
       );
+    } else if (isRecoveredMemoryHistoryCall(context, call.name)) {
+      result = await context.memoryHistoryToolExecutor!.execute(call, {
+        persistedToolCallId: claim.call.id,
+        request: context.providerRequest,
+        runId: context.run.id,
+        userId: context.run.userId
+      });
     } else if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       result = await context.searchExecutor.execute(
         call,
@@ -760,7 +941,19 @@ async function executePersistedToolCall(
         signal
       }));
     }
+    if (externalReceipt &&
+      !(await context.deps.memoryEgress!.completeDispatch(externalReceipt.id))) {
+      throw new Error("memory_egress_receipt_conflict");
+    }
   } catch (error) {
+    if (externalReceipt) {
+      await context.deps.memoryEgress!.failDispatch(
+        externalReceipt.id,
+        error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
+          ? error.message
+          : "external_tool_dispatch_failed"
+      ).catch(() => undefined);
+    }
     if (signal.aborted) throw new ToolLoopRecoveryStopped();
     result = toolExecutionErrorResult(
       call,
@@ -951,7 +1144,6 @@ async function recoverCheckpointedToolLoop(
       ...run.normalizedRequest,
       attachments
     };
-    assertPersonalContextEgressSafe(providerRequest);
     const clientToolsEnabled = run.normalizedRequest.toolMode !== "none";
     const memoryActionPlan = run.normalizedRequest.memoryActionPlan === undefined
       ? null
@@ -1063,12 +1255,20 @@ async function recoverCheckpointedToolLoop(
     const memoryActionExecutor = memoryActionEnabled
       ? deps.memoryActionExecutor ?? defaultMemoryActionExecutor
       : null;
+    const memoryHistoryEnabled = clientToolsEnabled &&
+      run.normalizedRequest.modelCapabilities.toolCalling === true &&
+      run.normalizedRequest.memoryHistoryTool?.maxCalls === 2 &&
+      run.normalizedRequest.memoryHistoryTool.pageSize === 20;
+    const memoryHistoryToolExecutor = memoryHistoryEnabled
+      ? deps.memoryHistoryToolExecutor ?? defaultMemoryHistoryToolExecutor
+      : null;
     const tools: RunTool[] = [
       ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
       ...(searchExecutor?.tools ?? []),
       ...(memoryActionPlan && memoryActionExecutor
         ? [memoryActionToolForPlan(memoryActionPlan)]
         : []),
+      ...(memoryHistoryToolExecutor ? [memoryHistoryToolExecutor.tool] : []),
       ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : [])
     ];
     if (tools.length === 0) {
@@ -1077,6 +1277,19 @@ async function recoverCheckpointedToolLoop(
         "The saved run has no recoverable tools."
       );
     }
+    const externalToolsPresent = tools.some((tool) => tool.capability !== "memory");
+    const hostedSearchPresent = requestHasHostedSearchCapability(providerRequest);
+    const egressReceiptRequired = externalToolsPresent ||
+      hostedSearchPresent ||
+      requestHasServerExternalTools(providerRequest) ||
+      providerRequest.personalContext !== undefined;
+    if (egressReceiptRequired && !deps.memoryEgress && process.env.NODE_ENV === "production") {
+      throw new ToolLoopRecoveryError(
+        "memory_egress_receipt_unavailable",
+        "Memory egress evidence is unavailable."
+      );
+    }
+    assertPersonalContextEgressSafe(providerRequest);
     const hasMcpTools = tools.some((tool) => tool.capability === "mcp");
 
     let runtime = deps.mcpRuntime;
@@ -1089,6 +1302,7 @@ async function recoverCheckpointedToolLoop(
       knowledgeExecutor,
       memoryActionExecutor,
       memoryActionPlan,
+      memoryHistoryToolExecutor,
       runtime() {
         runtime ??= getDefaultMcpRuntimeCoordinator();
         return runtime;
@@ -1105,6 +1319,97 @@ async function recoverCheckpointedToolLoop(
       runId: run.id,
       sequence
     });
+
+    async function* streamRecoveredProviderRequest(
+      request: ProviderRunRequest,
+      dispatchSignal: AbortSignal
+    ): ReturnType<ProviderAdapter["stream"]> {
+      if (egressReceiptRequired && !deps.memoryEgress && process.env.NODE_ENV === "production") {
+        throw new ToolLoopRecoveryError(
+          "memory_egress_receipt_unavailable",
+          "Memory egress evidence is unavailable."
+        );
+      }
+      let preview: Record<string, unknown> | null = null;
+      const requestPreview = () => {
+        preview ??= adapter!.buildRequestPreview(request);
+        return preview;
+      };
+      if (requestHasHostedSearchCapability(request) &&
+        !(await currentRecoverySearchDispatchAllowed(context))) {
+        await deps.memoryEgress?.recordBlockedDispatch({
+          destinationKind: "answer_provider",
+          destinationSnapshot: {
+            modelId: request.modelId,
+            provider: request.provider,
+            searchOptionIds: request.searchPlan?.options.map((option) => option.optionId) ?? [],
+            searchStrategy: request.searchStrategy,
+            version: 1
+          },
+          errorCode: "memory_egress_search_revoked",
+          mode: "PROVIDER_REQUEST",
+          requestEvidence: memoryEgressRequestEvidence(request),
+          requestPreview: requestPreview(),
+          runId: run.id,
+          userId: run.userId
+        });
+        throw new ToolLoopRecoveryError(
+          "search_strategy_not_available",
+          "The selected search destination is no longer available."
+        );
+      }
+      const receipt = egressReceiptRequired && deps.memoryEgress
+        ? await deps.memoryEgress.beginDispatch({
+            destinationKind: "answer_provider",
+            destinationSnapshot: {
+              modelId: request.modelId,
+              provider: request.provider,
+              searchOptionIds: request.searchPlan?.options.map((option) => option.optionId) ?? [],
+              searchStrategy: request.searchStrategy,
+              version: 1
+            },
+            mode: "PROVIDER_REQUEST",
+            requestEvidence: memoryEgressRequestEvidence(request),
+            requestPreview: requestPreview(),
+            runId: run.id,
+            userId: run.userId
+          })
+        : null;
+      const stream = adapter!.stream(request, { signal: dispatchSignal });
+      try {
+        let next = await stream.next();
+        while (!next.done) {
+          yield next.value;
+          next = await stream.next();
+        }
+        if (receipt && !(await deps.memoryEgress!.completeDispatch(receipt.id))) {
+          throw new ToolLoopRecoveryError(
+            "memory_egress_receipt_conflict",
+            "Provider dispatch evidence could not be completed."
+          );
+        }
+        return next.value;
+      } catch (error) {
+        if (receipt) {
+          await deps.memoryEgress!.failDispatch(
+            receipt.id,
+            error instanceof ToolLoopRecoveryError
+              ? error.code
+              : "provider_dispatch_failed"
+          ).catch(() => undefined);
+        }
+        throw error;
+      }
+    }
+
+    const egressAdapter: ProviderAdapter = {
+      buildRequestPreview(request) {
+        return adapter!.buildRequestPreview(request);
+      },
+      stream(request, options) {
+        return streamRecoveredProviderRequest(request, options?.signal ?? signal);
+      }
+    };
 
     async function persistCumulativeUsage(
       answerRoundEntry?: PersistedAnswerRoundUsage
@@ -1236,7 +1541,8 @@ async function recoverCheckpointedToolLoop(
           const route = resolveMcpRunTool(run.normalizedRequest.mcp, call.name);
           if (!route && searchExecutor?.accepts(call.name) !== true &&
             knowledgeExecutor?.accepts(call.name) !== true &&
-            !(memoryActionPlan && memoryActionExecutor?.accepts(memoryActionPlan, call.name))) {
+            !(memoryActionPlan && memoryActionExecutor?.accepts(memoryActionPlan, call.name)) &&
+            memoryHistoryToolExecutor?.accepts(call.name) !== true) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`
@@ -1326,6 +1632,20 @@ async function recoverCheckpointedToolLoop(
         for (const event of refreshed.events) await appendEvent(event);
         await tokenBuffer.flush();
         return;
+      }
+      if (egressReceiptRequired && deps.memoryEgress &&
+        !(await deps.memoryEgress.settleRecoveredProviderDispatch({
+          ...(refreshed.result
+            ? {}
+            : { errorCode: refreshed.error?.code ?? "provider_terminal_response_invalid" }),
+          outcome: refreshed.result ? "COMPLETED" : "FAILED",
+          runId: run.id,
+          userId: run.userId
+        }))) {
+        throw new ToolLoopRecoveryError(
+          "memory_egress_receipt_conflict",
+          "Recovered provider dispatch evidence could not be settled."
+        );
       }
       if (!refreshed.result) {
         await settleToolLoopRecoveryError(
@@ -1476,7 +1796,7 @@ async function recoverCheckpointedToolLoop(
     currentProviderResponseId = null;
 
     const outcome = await runProviderToolLoop({
-      adapter,
+      adapter: egressAdapter,
       afterToolBatch: async ({ round }) => {
         const next = await deps.repository.advanceToolLoopCallBatch({
           roundIndex: round,
@@ -1502,7 +1822,11 @@ async function recoverCheckpointedToolLoop(
         }
       },
       bridge,
-      budgets: { maxConcurrency: 4, maxToolCalls: 16, maxToolRounds: 3 },
+      budgets: {
+        maxConcurrency: 4,
+        maxToolCalls: 16,
+        maxToolRounds: 3
+      },
       executeTool: async (call, executionContext) => {
         const persisted = persistedCalls.get(call.id);
         if (!persisted) {

@@ -944,26 +944,32 @@ describe("run preparation", () => {
     });
   });
 
-  it("fails closed when a Memory action would share a request with external tools", async () => {
+  it("lets a direct-user Memory action coexist with admin-connected tools", async () => {
     const harness = createHarness({
       capabilities: {
         ...baseCapabilities,
+        backgroundStreaming: true,
+        nativeBackground: true,
+        parallelToolCalls: true,
         toolCalling: true
       },
+      defaultParams: { background: true, maxOutputTokens: 512, stream: true },
       mcpPlan: readyMcpPlan()
     });
-    const result = await prepareRun(
+    const prepared = preparedFrom(await prepareRun(
       harness.deps,
       sendInput(successBody({
-        content: textMessageContent("Remember that my favorite color is teal")
+        content: textMessageContent("Remember that my favorite color is teal"),
+        modelId: "openai-tool-model",
+        params: { background: true, stream: true },
+        provider: "openai"
       }))
-    );
+    ));
 
-    expect(result).toMatchObject({
-      code: "memory_tool_egress_forbidden",
-      ok: false,
-      status: 409
-    });
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      "save_memory",
+      "mcp_team_lookup_1"
+    ]);
   });
 
   it("accepts the reviewed Temporary policy only on an empty first send", async () => {
@@ -1543,6 +1549,7 @@ describe("run preparation", () => {
       provider: "openai_compatible"
     });
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      "search_my_history",
       "mcp_team_lookup_1"
     ]);
   });
@@ -1571,6 +1578,9 @@ describe("run preparation", () => {
     const prepared = materializePreparedRunData(result.prepared);
     expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
     expect(prepared.providerRequest.searchStrategy).toBe("openai-native-web-search");
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      "search_my_history"
+    ]);
   });
 
   it("re-admits hosted Gemini Search as a client route when MCP tools must coexist", async () => {
@@ -1636,6 +1646,7 @@ describe("run preparation", () => {
     expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain('"type":"google_search"');
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "search_engine_1",
+      "search_my_history",
       "mcp_team_lookup_1"
     ]);
     expect(harness.attachmentLoads).toEqual([{
@@ -1799,7 +1810,8 @@ describe("run preparation", () => {
       expect(prepared.providerRequest.searchStrategy).toBe(optionId);
       expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         "retrieve_knowledge",
-        "search_engine_1"
+        "search_engine_1",
+        "search_my_history"
       ]);
       expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain(
         hostedPreviewMarker
@@ -1850,6 +1862,7 @@ describe("run preparation", () => {
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "retrieve_knowledge",
       "search_engine_1",
+      "search_my_history",
       "mcp_team_lookup_1"
     ]);
   });
@@ -1918,7 +1931,8 @@ describe("run preparation", () => {
     );
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "retrieve_knowledge",
-      "search_engine_1"
+      "search_engine_1",
+      "search_my_history"
     ]);
   });
 
@@ -2020,9 +2034,11 @@ describe("run preparation", () => {
   it.each([
     "gemini_interactions_native" as const,
     "anthropic_messages" as const
-  ])("keeps singleton $0 Search hosted when no client tools are planned", async (adapterKind) => {
-    const { hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
-    const admissionLoad = vi.fn(async () => hosted);
+  ])("re-admits singleton $0 Search so bounded history can coexist", async (adapterKind) => {
+    const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
+    const admissionLoad = vi.fn(async (input: {
+      requiresClientToolCoexistence?: boolean;
+    }) => input.requiresClientToolCoexistence ? client : hosted);
     const harness = createHarness();
     const result = await prepareRun(
       {
@@ -2040,11 +2056,14 @@ describe("run preparation", () => {
 
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledTimes(1);
+    expect(admissionLoad).toHaveBeenCalledTimes(2);
     expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
-      "answer_provider_hosted"
+      "provider_model_client"
     );
-    expect(prepared.providerRequest.tools).toBeUndefined();
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      "search_engine_1",
+      "search_my_history"
+    ]);
   });
 
   it("routes a provider-admitted multi-engine plan without requiring the legacy Perplexity service", async () => {
@@ -2109,7 +2128,8 @@ describe("run preparation", () => {
     const prepared = materializePreparedRunData(result.prepared);
     expect(prepared.normalizedRequest.searchPolicy).toBeUndefined();
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-      "search_selected_engines"
+      "search_selected_engines",
+      "search_my_history"
     ]);
   });
 
@@ -2161,7 +2181,8 @@ describe("run preparation", () => {
         searchStrategyId: "openai-provider-web-search"
       }));
       expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-        "search_engine_1"
+        "search_engine_1",
+        "search_my_history"
       ]);
       expect(JSON.stringify(prepared.providerRequestPreview))
         .toContain("search_engine_1");

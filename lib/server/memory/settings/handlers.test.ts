@@ -26,6 +26,7 @@ const response: MemorySettingsResponse = {
     acceptedAt: null,
     acceptedUtilityEgressFingerprint: null,
     acceptedUtilityPolicyVersion: null,
+    consentMode: "PER_USER",
     currentUtilityEgressFingerprint: "a".repeat(64),
     currentUtilityPolicyVersion: "memory-utility-egress-v1",
     embeddingDestination: null,
@@ -173,6 +174,22 @@ describe("Memory settings handlers", () => {
     expect(conflict.status).toBe(409);
     expectPrivate(conflict);
     await expect(conflict.json()).resolves.toEqual({ error: "memory_version_stale" });
+
+    const adminOwned = await createPatchMemorySettingsHandler(deps(service({
+      acceptUtilityEgress: vi.fn(async () => {
+        throw new MemorySettingsServiceError("memory_egress_admin_owned");
+      })
+    })))(patchRequest({
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      currentUtilityEgressFingerprint: "a".repeat(64),
+      currentUtilityPolicyVersion: "memory-utility-egress-v1",
+      expectedMemoryConsentRevision: 0,
+      expectedMemoryRevision: 0,
+      expectedSettingsRevision: 0
+    }));
+    expect(adminOwned.status).toBe(403);
+    expectPrivate(adminOwned);
+    await expect(adminOwned.json()).resolves.toEqual({ error: "memory_egress_admin_owned" });
 
     const failed = await createGetMemorySettingsHandler(deps(service({
       get: vi.fn(async () => {

@@ -86,6 +86,12 @@ export type NormalizedRunRequest = {
   /** Deterministic plan derived only from the direct current-user message.
    * Provider-visible tool schemas never carry its server-side authorization. */
   memoryActionPlan?: MemoryActionPlan;
+  /** Bounded first-party private-history tool. Its results remain untrusted
+   * data and may coexist with admin-connected Search and tool capabilities. */
+  memoryHistoryTool?: Readonly<{
+    maxCalls: 2;
+    pageSize: 20;
+  }>;
   modelCapabilities: ProviderModelCapabilities;
   mcp?: McpRunPlanSnapshot;
   modelId: string;

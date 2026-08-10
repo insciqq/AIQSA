@@ -71,6 +71,7 @@ function settingsResponse() {
       acceptedAt: now,
       acceptedUtilityEgressFingerprint: "accepted-fingerprint-1234",
       acceptedUtilityPolicyVersion: "memory-egress-v1",
+      consentMode: "PER_USER",
       currentUtilityEgressFingerprint: "accepted-fingerprint-1234",
       currentUtilityPolicyVersion: "memory-egress-v1",
       embeddingDestination: "Embedding deployment",

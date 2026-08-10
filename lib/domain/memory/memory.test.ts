@@ -18,11 +18,9 @@ import {
 } from "./scopes";
 import {
   memoryAutomaticPromotionAllowed,
-  memoryBlindToolPlanningSourceAllowed,
   memoryDerivativePlaintextAllowed,
   memoryEpisodicRecallDecision,
-  memoryMutationIntentAllowed,
-  memoryToolEgressDecision
+  memoryMutationIntentAllowed
 } from "./safety";
 import {
   memoryCandidateTransitionAllowed,
@@ -264,19 +262,5 @@ describe("Memory scope, sensitivity, intent, and tool-taint safety", () => {
     expect(memoryMutationIntentAllowed({ ...directSave, origin: "MODEL_PROPOSAL" })).toBe(false);
     expect(memoryMutationIntentAllowed({ ...directSave, confirmationCopyVersion: "stale" })).toBe(false);
     expect(memoryMutationIntentAllowed({ ...directSave, action: "FORGET" })).toBe(false);
-  });
-
-  it("keeps planning memory-blind and blocks secret or transitive tool egress", () => {
-    expect(memoryBlindToolPlanningSourceAllowed("DIRECT_CURRENT_USER")).toBe(true);
-    expect(memoryBlindToolPlanningSourceAllowed("PRIOR_DIRECT_USER")).toBe(true);
-    expect(memoryBlindToolPlanningSourceAllowed("MEMORY_ONLY")).toBe(false);
-    expect(memoryBlindToolPlanningSourceAllowed("MEMORY_BEARING_ASSISTANT")).toBe(false);
-    expect(memoryToolEgressDecision("DIRECT_CURRENT_USER", "NORMAL")).toBe("ALLOW");
-    expect(memoryToolEgressDecision("MEMORY_ONLY", "NORMAL"))
-      .toBe("REQUIRE_EXACT_CONFIRMATION");
-    expect(memoryToolEgressDecision("MEMORY_BEARING_ASSISTANT", "SENSITIVE"))
-      .toBe("REQUIRE_EXACT_CONFIRMATION");
-    expect(memoryToolEgressDecision("DIRECT_CURRENT_USER", "SECRET")).toBe("DENY");
-    expect(memoryToolEgressDecision("TOOL", "NORMAL")).toBe("DENY");
   });
 });

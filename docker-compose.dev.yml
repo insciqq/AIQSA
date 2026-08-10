@@ -25,6 +25,7 @@ services:
       AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:-QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=}
       # Public deterministic development material; never use this keyring for
       # an installation or any non-disposable data.
+      AIQSA_MEMORY_EGRESS_CONSENT_MODE: ADMIN
       AIQSA_MEMORY_FINGERPRINT_KEYRING: current=v1,v1=CwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSo=
       AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: ${AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS:-10}
       AIQSA_GOOGLE_OAUTH_CLIENT_ID: ""

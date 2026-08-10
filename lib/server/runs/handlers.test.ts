@@ -120,7 +120,7 @@ function createMemoryRepository(
     parallelToolCalls: false,
     pdf: true,
     reasoning: true,
-    toolCalling: true,
+    toolCalling: false,
     vision: true
   }
 ) {
@@ -2898,6 +2898,10 @@ describe("model run route handlers", () => {
         {
           name: "search_via_perplexity",
           type: "function"
+        },
+        {
+          name: "search_my_history",
+          type: "function"
         }
       ]
     });
@@ -2969,6 +2973,12 @@ describe("model run route handlers", () => {
         {
           function: {
             name: "search_via_perplexity"
+          },
+          type: "function"
+        },
+        {
+          function: {
+            name: "search_my_history"
           },
           type: "function"
         }
@@ -3322,6 +3332,10 @@ describe("model run route handlers", () => {
       tools: [
         {
           name: "search_via_perplexity",
+          type: "function"
+        },
+        {
+          name: "search_my_history",
           type: "function"
         }
       ]

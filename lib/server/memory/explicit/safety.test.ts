@@ -9,6 +9,9 @@ describe("explicit Memory secret screening", () => {
     expect(memoryExplicitStatementContainsSecret(
       "For work trips, I prefer hotels near a metro station."
     )).toBe(false);
+    expect(memoryExplicitStatementContainsSecret(
+      "Search my history for large recovery evidence."
+    )).toBe(false);
   });
 
   it.each([

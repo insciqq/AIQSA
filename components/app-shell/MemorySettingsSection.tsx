@@ -304,71 +304,79 @@ function MemorySettings({
         <div className="flex items-start justify-between gap-3">
           <div>
             <h4 className="text-sm font-semibold text-ink" id="memory-destinations-heading">{t(locale, "settings.destinationsHeading")}</h4>
-            <p className="mt-1 text-xs leading-5 text-ink-muted">{t(locale, "settings.destinationsDescription")}</p>
+            <p className="mt-1 text-xs leading-5 text-ink-muted">
+              {t(locale, data.egress.consentMode === "ADMIN"
+                ? "settings.destinationsAdminManaged"
+                : "settings.destinationsDescription")}
+            </p>
           </div>
           <Fingerprint className="size-5 shrink-0 text-ink-muted" aria-hidden="true" />
         </div>
-        {data.egress.reviewRequired ? (
-          <div className="mt-3 flex items-start gap-2 border-l-2 border-caution bg-caution/10 px-3 py-2 text-sm leading-5 text-ink-secondary" role="status">
-            <CircleAlert className="mt-0.5 size-4 shrink-0 text-caution" aria-hidden="true" />
-            {resolveMemoryCopy(locale, "consent.reviewRequired")}
-          </div>
-        ) : null}
-        <div className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
-          <DestinationRow
-            description={resolveMemoryCopy(locale, "consent.answerDestination")}
-            label={t(locale, "settings.answerDestination")}
-            locale={locale}
-            value={t(locale, "settings.selectedAtRun")}
-          />
-          <DestinationRow
-            description={resolveMemoryCopy(locale, "consent.systemDestination")}
-            label={t(locale, "settings.systemDestination")}
-            locale={locale}
-            value={data.egress.systemModelDestination}
-          />
-          <DestinationRow
-            description={resolveMemoryCopy(locale, "consent.embeddingDestination")}
-            label={t(locale, "settings.embeddingDestination")}
-            locale={locale}
-            value={data.egress.embeddingDestination}
-          />
-          <DestinationRow
-            description={resolveMemoryCopy(locale, "consent.rerankerDestination")}
-            label={t(locale, "settings.rerankerDestination")}
-            locale={locale}
-            value={data.egress.remoteRerankerDestination}
-          />
-        </div>
-        <dl className="mt-3 divide-y divide-trace-subtle">
-          <EvidenceRow label={t(locale, "settings.currentFingerprint")}>
-            <code className="break-all font-mono text-xs">{data.egress.currentUtilityEgressFingerprint}</code>
-          </EvidenceRow>
-          <EvidenceRow label={t(locale, "settings.acceptedFingerprint")}>
-            {data.egress.acceptedUtilityEgressFingerprint
-              ? <code className="break-all font-mono text-xs">{data.egress.acceptedUtilityEgressFingerprint}</code>
-              : t(locale, "settings.notAccepted")}
-          </EvidenceRow>
-          <EvidenceRow label={t(locale, "settings.policyVersion")}>
-            <code className="font-mono text-xs">{data.egress.currentUtilityPolicyVersion}</code>
-          </EvidenceRow>
-          <EvidenceRow label={t(locale, "settings.acceptedAt")}>{formatDate(locale, data.egress.acceptedAt)}</EvidenceRow>
-        </dl>
-        {!data.egress.reviewRequired ? (
-          <button className={`${secondaryButton} mt-3`} onClick={() => setReviewOpen((open) => !open)} type="button" aria-expanded={reviewVisible}>
-            <ShieldCheck className="size-4" aria-hidden="true" />
-            {reviewVisible ? t(locale, "settings.cancelReview") : t(locale, "settings.reviewAction")}
-          </button>
-        ) : null}
-        {reviewVisible ? (
-          <div className="mt-3 border-l-2 border-proof bg-proof/5 px-3 py-3" aria-labelledby="memory-consent-title">
-            <h5 className="text-sm font-semibold text-ink" id="memory-consent-title">{resolveMemoryCopy(locale, "consent.title")}</h5>
-            <p className="mt-1 text-xs leading-5 text-ink-secondary">{resolveMemoryCopy(locale, "consent.explanation")}</p>
-            <button className={`${primaryButton} mt-3`} disabled={busy !== null} onClick={accept} type="button">
-              <Check className="size-4" aria-hidden="true" />
-              {busy === "consent" ? t(locale, "manager.saving") : t(locale, "settings.acceptAction")}
-            </button>
-          </div>
+        {data.egress.consentMode === "PER_USER" ? (
+          <>
+            {data.egress.reviewRequired ? (
+              <div className="mt-3 flex items-start gap-2 border-l-2 border-caution bg-caution/10 px-3 py-2 text-sm leading-5 text-ink-secondary" role="status">
+                <CircleAlert className="mt-0.5 size-4 shrink-0 text-caution" aria-hidden="true" />
+                {resolveMemoryCopy(locale, "consent.reviewRequired")}
+              </div>
+            ) : null}
+            <div className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
+              <DestinationRow
+                description={resolveMemoryCopy(locale, "consent.answerDestination")}
+                label={t(locale, "settings.answerDestination")}
+                locale={locale}
+                value={t(locale, "settings.selectedAtRun")}
+              />
+              <DestinationRow
+                description={resolveMemoryCopy(locale, "consent.systemDestination")}
+                label={t(locale, "settings.systemDestination")}
+                locale={locale}
+                value={data.egress.systemModelDestination}
+              />
+              <DestinationRow
+                description={resolveMemoryCopy(locale, "consent.embeddingDestination")}
+                label={t(locale, "settings.embeddingDestination")}
+                locale={locale}
+                value={data.egress.embeddingDestination}
+              />
+              <DestinationRow
+                description={resolveMemoryCopy(locale, "consent.rerankerDestination")}
+                label={t(locale, "settings.rerankerDestination")}
+                locale={locale}
+                value={data.egress.remoteRerankerDestination}
+              />
+            </div>
+            <dl className="mt-3 divide-y divide-trace-subtle">
+              <EvidenceRow label={t(locale, "settings.currentFingerprint")}>
+                <code className="break-all font-mono text-xs">{data.egress.currentUtilityEgressFingerprint}</code>
+              </EvidenceRow>
+              <EvidenceRow label={t(locale, "settings.acceptedFingerprint")}>
+                {data.egress.acceptedUtilityEgressFingerprint
+                  ? <code className="break-all font-mono text-xs">{data.egress.acceptedUtilityEgressFingerprint}</code>
+                  : t(locale, "settings.notAccepted")}
+              </EvidenceRow>
+              <EvidenceRow label={t(locale, "settings.policyVersion")}>
+                <code className="font-mono text-xs">{data.egress.currentUtilityPolicyVersion}</code>
+              </EvidenceRow>
+              <EvidenceRow label={t(locale, "settings.acceptedAt")}>{formatDate(locale, data.egress.acceptedAt)}</EvidenceRow>
+            </dl>
+            {!data.egress.reviewRequired ? (
+              <button className={`${secondaryButton} mt-3`} onClick={() => setReviewOpen((open) => !open)} type="button" aria-expanded={reviewVisible}>
+                <ShieldCheck className="size-4" aria-hidden="true" />
+                {reviewVisible ? t(locale, "settings.cancelReview") : t(locale, "settings.reviewAction")}
+              </button>
+            ) : null}
+            {reviewVisible ? (
+              <div className="mt-3 border-l-2 border-proof bg-proof/5 px-3 py-3" aria-labelledby="memory-consent-title">
+                <h5 className="text-sm font-semibold text-ink" id="memory-consent-title">{resolveMemoryCopy(locale, "consent.title")}</h5>
+                <p className="mt-1 text-xs leading-5 text-ink-secondary">{resolveMemoryCopy(locale, "consent.explanation")}</p>
+                <button className={`${primaryButton} mt-3`} disabled={busy !== null} onClick={accept} type="button">
+                  <Check className="size-4" aria-hidden="true" />
+                  {busy === "consent" ? t(locale, "manager.saving") : t(locale, "settings.acceptAction")}
+                </button>
+              </div>
+            ) : null}
+          </>
         ) : null}
       </section>
 

@@ -3,6 +3,9 @@ import { createArchiveChatHandler, createGetChatHandler, createUpdateChatHandler
 import { createPrismaChatRepository } from "@/lib/server/chats/prismaRepository";
 import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
 import { knowledgeToolExecutor } from "@/lib/server/knowledge/defaultRetrieval";
+import { knowledgeRunAdmissionService } from "@/lib/server/knowledge/runAdmission";
+import { defaultMemoryToolEgressReceiptService } from "@/lib/server/memory/egress/receipts";
+import { defaultMcpRunPlan } from "@/lib/server/mcp/defaultRuntime";
 import { activeRunControllerRegistry } from "@/lib/server/runs/runExecution";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 import { reconcileStaleRuns } from "@/lib/server/runs/runRecovery";
@@ -17,7 +20,10 @@ const storage = createS3StorageAdapter();
 export const GET = createGetChatHandler({
   reconcileRuns: (input) =>
     reconcileStaleRuns({
+      knowledgeAdmission: knowledgeRunAdmissionService,
       knowledgeExecutor: knowledgeToolExecutor,
+      memoryEgress: defaultMemoryToolEgressReceiptService,
+      mcp: defaultMcpRunPlan,
       providerRuntime: providerRuntimeResolver,
       providers: {},
       registry: activeRunControllerRegistry,

@@ -11,6 +11,7 @@ import type {
   ProviderSearchRequest
 } from "../providers/types";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
+import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import type {
   PersistedRunUsageAttribution,
   RunControlRecord,
@@ -47,6 +48,11 @@ import {
   type KnowledgeRetrievalEvidence
 } from "../knowledge/retrievalTypes";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
+import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
+import {
+  MEMORY_HISTORY_SEARCH_TOOL_NAME,
+  memoryHistorySearchTool
+} from "../memory/history/search/tool";
 import {
   activeRunStaleMs,
   reconcileInstallationRuns,
@@ -162,7 +168,11 @@ function createHarness(options: Readonly<{
   failRun?: boolean;
   liveRunIds?: readonly string[];
   knowledgeExecutor?: RunRecoveryDeps["knowledgeExecutor"];
+  knowledgeAdmission?: RunRecoveryDeps["knowledgeAdmission"];
+  memoryEgress?: MemoryToolEgressReceiptService;
   memoryActionExecutor?: MemoryActionExecutor;
+  memoryHistoryToolExecutor?: RunRecoveryDeps["memoryHistoryToolExecutor"];
+  mcp?: RunRecoveryDeps["mcp"];
   mcpRuntime?: RunRecoveryDeps["mcpRuntime"];
   pricing?: {
     inputTokenPriceMicros: number;
@@ -173,6 +183,7 @@ function createHarness(options: Readonly<{
   registry?: RunRecoveryRegistry;
   settleRecoveredRunError?: boolean;
   searchProviders?: RunRecoveryDeps["searchProviders"];
+  searchStrategyEnabled?: boolean;
   staleRuns?: readonly StaleRunControlRecord[];
   storage?: RunRecoveryDeps["storage"];
 }> = {}) {
@@ -300,6 +311,13 @@ function createHarness(options: Readonly<{
     },
     loadAttachments: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
+    isSearchStrategyEnabled: async () => options.searchStrategyEnabled ?? true,
+    loadEntitlements: async () => ({
+      fullAccess: true,
+      modelKeys: new Set<string>(),
+      providerKeys: new Set<string>(),
+      searchStrategies: new Set<string>()
+    }),
     loadModelPricing: async () => {
       if (options.pricingError) throw options.pricingError;
       return options.pricing === undefined
@@ -369,8 +387,14 @@ function createHarness(options: Readonly<{
     ...(options.attachmentLimits
       ? { getAttachmentLimits: () => options.attachmentLimits! }
       : {}),
+    ...(options.knowledgeAdmission ? { knowledgeAdmission: options.knowledgeAdmission } : {}),
     ...(options.knowledgeExecutor ? { knowledgeExecutor: options.knowledgeExecutor } : {}),
+    ...(options.memoryEgress ? { memoryEgress: options.memoryEgress } : {}),
     ...(options.memoryActionExecutor ? { memoryActionExecutor: options.memoryActionExecutor } : {}),
+    ...(options.memoryHistoryToolExecutor
+      ? { memoryHistoryToolExecutor: options.memoryHistoryToolExecutor }
+      : {}),
+    ...(options.mcp ? { mcp: options.mcp } : {}),
     ...(options.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
     providers: options.providers ?? {},
     registry: options.registry ?? registry(options.liveRunIds),
@@ -390,6 +414,47 @@ function createHarness(options: Readonly<{
     },
     state
   };
+}
+
+function createRecoveryMemoryEgressRecorder() {
+  type BeginInput = Parameters<MemoryToolEgressReceiptService["beginDispatch"]>[0];
+  type BlockInput = Parameters<MemoryToolEgressReceiptService["recordBlockedDispatch"]>[0];
+  const began: BeginInput[] = [];
+  const blocked: BlockInput[] = [];
+  const completed: string[] = [];
+  const failed: Array<{ errorCode: string; receiptId: string }> = [];
+  const recovered: Array<{
+    errorCode?: string;
+    outcome: "COMPLETED" | "FAILED";
+    runId: string;
+    userId: string;
+  }> = [];
+  let ordinal = 0;
+  const service: MemoryToolEgressReceiptService = {
+    async beginDispatch(input) {
+      began.push(input);
+      ordinal += 1;
+      return { id: `recovery-egress-${ordinal}`, requestOrdinal: ordinal };
+    },
+    async recordBlockedDispatch(input) {
+      blocked.push(input);
+      ordinal += 1;
+      return { id: `recovery-egress-${ordinal}`, requestOrdinal: ordinal };
+    },
+    async settleRecoveredProviderDispatch(input) {
+      recovered.push(input);
+      return true;
+    },
+    async completeDispatch(receiptId) {
+      completed.push(receiptId);
+      return true;
+    },
+    async failDispatch(receiptId, errorCode) {
+      failed.push({ errorCode, receiptId });
+      return true;
+    }
+  };
+  return { began, blocked, completed, failed, recovered, service };
 }
 
 const recoveryToolName = "mcp_memory_remember_1234567890";
@@ -489,6 +554,71 @@ function normalizedKnowledgeRequest(): NormalizedRunRequest {
   };
 }
 
+function recoveryKnowledgeEvidence(includedText: string): KnowledgeRetrievalEvidence {
+  const draft: KnowledgeRetrievalEvidence = {
+    bases: [{
+      baseContentRevision: 1,
+      baseName: "Recovery knowledge base",
+      candidateCount: 1,
+      indexedContentRevision: 1,
+      indexGenerationId: "knowledge-generation-1",
+      knowledgeBaseId: "knowledge-base-1",
+      ordinal: 0,
+      state: "ready",
+      targetDimension: 1024,
+      vectorSpaceFingerprint: "c".repeat(64)
+    }],
+    candidateCount: 1,
+    candidateLimit: 40,
+    durationMs: 12,
+    embeddingExecutions: [{
+      bindingOrdinals: [0],
+      durationMs: 4,
+      inputTokens: 3,
+      modelId: "embedding-v1",
+      provider: "openai_compatible",
+      providerModelId: "embedding-deployment-1",
+      requestId: null,
+      status: "complete",
+      totalTokens: 3
+    }],
+    fusion: "rrf_k60",
+    invocationOrdinal: 1,
+    outcome: "complete",
+    postRerankOrder: null,
+    preRerankOrder: null,
+    providerText: "pending",
+    query: "direct recovery query",
+    rerankerBinding: null,
+    resultLimit: 8,
+    results: [{
+      annRank: 1,
+      baseName: "Recovery knowledge base",
+      bindingOrdinal: 0,
+      chunkId: "knowledge-chunk-1",
+      chunkIndex: 0,
+      documentId: "knowledge-document-1",
+      documentVersionId: "knowledge-document-version-1",
+      fileName: "recovery.txt",
+      ftsRank: 1,
+      ftsScore: 0.1,
+      fusedScore: 2 / 61,
+      handle: "K1.1",
+      includedText,
+      includedTextBytes: Buffer.byteLength(includedText, "utf8"),
+      knowledgeBaseId: "knowledge-base-1",
+      page: 1,
+      sourceTextBytes: Buffer.byteLength(includedText, "utf8"),
+      textTruncated: false,
+      vectorDistance: 0,
+      vectorScore: 1
+    }],
+    threshold: 0.01,
+    version: KNOWLEDGE_RESULT_VERSION
+  };
+  return { ...draft, providerText: knowledgeToolResultText(draft) };
+}
+
 function normalizedMemoryActionRequest(): NormalizedRunRequest {
   const { mcp: _mcp, ...request } = normalizedToolRequest();
   return {
@@ -505,6 +635,39 @@ function normalizedMemoryActionRequest(): NormalizedRunRequest {
       toolCalling: true
     },
     toolMode: "auto"
+  };
+}
+
+function normalizedMemoryHistoryRequest(): NormalizedRunRequest {
+  const { mcp: _mcp, ...request } = normalizedToolRequest();
+  return {
+    ...request,
+    memoryHistoryTool: { maxCalls: 2, pageSize: 20 },
+    modelCapabilities: {
+      ...request.modelCapabilities,
+      toolCalling: true
+    },
+    toolMode: "auto"
+  };
+}
+
+function normalizedHostedMemoryHistoryRequest(): NormalizedRunRequest {
+  const request = normalizedMemoryHistoryRequest();
+  const option = normalizedLegacySearchRequest().searchPlan!.options[0]!;
+  return {
+    ...request,
+    searchPlan: {
+      mode: "model_choice",
+      options: [{
+        ...option,
+        adapterKind: "answer_provider_hosted",
+        credentialMode: "answer_provider",
+        modelId: request.modelId,
+        provider: request.provider,
+        providerModelId: request.modelId
+      }]
+    },
+    searchStrategy: "openai-native-web-search"
   };
 }
 
@@ -1464,6 +1627,7 @@ describe("run recovery", () => {
 
   it("continues a checkpointed OpenAI background tool round from its response id", async () => {
     const requests: ProviderRunRequest[] = [];
+    const egress = createRecoveryMemoryEgressRecorder();
     const runtimeCall = vi.fn(async () => ({
       isError: false,
       structuredContent: null,
@@ -1507,6 +1671,7 @@ describe("run recovery", () => {
     };
     const harness = createHarness({
       controls: [control({ providerResponseId: "response-tool-1" })],
+      memoryEgress: egress.service,
       mcpRuntime: {
         callTool: runtimeCall,
         ensureAcceptedGeneration: async () => true
@@ -1523,6 +1688,11 @@ describe("run recovery", () => {
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
     expect(runtimeCall).toHaveBeenCalledOnce();
+    expect(egress.recovered).toEqual([{
+      outcome: "COMPLETED",
+      runId,
+      userId
+    }]);
     expect(runtimeCall).toHaveBeenCalledWith(expect.objectContaining({
       inputSchema: { type: "object" },
       name: "remember"
@@ -1552,7 +1722,14 @@ describe("run recovery", () => {
     ]));
     expect(requests).toHaveLength(1);
     expect(requests[0]?.previousProviderResponseId).toBeUndefined();
-    expect(requests[0]).toMatchObject({ parallelToolCalls: true });
+    expect(requests[0]).toMatchObject({
+      parallelToolCalls: true,
+      toolChoice: "auto",
+      tools: [expect.objectContaining({
+        capability: "mcp",
+        name: recoveryToolName
+      })]
+    });
     expect(requests[0]?.providerToolMessages).toEqual([
       {
         arguments: "{\"value\":\"alpha\"}",
@@ -1590,7 +1767,7 @@ describe("run recovery", () => {
       parserDetail: `private-recovery-parser-detail-${code}`,
       partialResult: `private-recovery-partial-result-${code}`
     };
-    const canonicalArguments = { password: argumentMarker, value: "alpha" };
+    const canonicalArguments = { topic: argumentMarker, value: "alpha" };
     const overflow = new McpClientSessionError({ code, operation });
     for (const [key, value] of Object.entries(prohibitedMarkers)) {
       Object.defineProperty(overflow, key, { enumerable: true, value });
@@ -1708,7 +1885,7 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
-  it("appends a recovered provider delta to durable pre-crash assistant text", async () => {
+  it("persists a recovered provider delta as ordinary durable assistant text", async () => {
     const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
       events: [{ data: { delta: "recovered" }, type: "token" }],
       providerResponseId: "response-tool-1",
@@ -1740,11 +1917,7 @@ describe("run recovery", () => {
     expect(refresh).toHaveBeenCalledOnce();
     expect(harness.state.assistantTexts).toEqual(["durable recovered"]);
     expect(harness.state.assistantAppendOptions).toEqual([{ allowErrored: true }]);
-    expect(harness.state.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        event: { data: { delta: "recovered" }, type: "token" }
-      })
-    ]));
+    expect(harness.state.events.some(({ event }) => event.type === "token")).toBe(true);
     expect(harness.state.completed).toBeNull();
     expect(harness.state.recoveredErrors).toEqual([]);
   });
@@ -2680,6 +2853,478 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
+  it("recovers a pending bounded history call through its persisted tool-call identity", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const execute = vi.fn<NonNullable<RunRecoveryDeps["memoryHistoryToolExecutor"]>["execute"]>(
+      async (call, context) => {
+        expect(context).toMatchObject({
+          persistedToolCallId: "stored-call-1",
+          runId,
+          userId
+        });
+        return {
+          callId: call.id,
+          content: [{
+            type: "json",
+            value: {
+              indexing: {
+                degradationCode: null,
+                lexicalState: "READY",
+                vectorState: "READY"
+              },
+              nextCursor: null,
+              results: [],
+              untrusted: true
+            }
+          }],
+          name: call.name,
+          rawPreview: {
+            degradationCode: null,
+            hasNextPage: false,
+            resultCount: 0,
+            resultType: "private_history"
+          },
+          status: "complete"
+        };
+      }
+    );
+    const harness = createHarness({
+      memoryHistoryToolExecutor: {
+        accepts: (name) => name === MEMORY_HISTORY_SEARCH_TOOL_NAME,
+        execute,
+        tool: memoryHistorySearchTool
+      },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered after bounded private-history search",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const historyCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "bounded recovery topic" },
+      mcpBinding: null,
+      toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
+    };
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [historyCall],
+        phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: JSON.stringify(historyCall.arguments),
+          call_id: historyCall.providerCallId,
+          name: historyCall.toolName,
+          type: "function_call"
+        }]
+      }),
+      normalizedRequest: normalizedMemoryHistoryRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(installed.calls()).toEqual([
+      expect.objectContaining({
+        result: expect.any(Object),
+        state: "complete",
+        toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
+      })
+    ]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      MEMORY_HISTORY_SEARCH_TOOL_NAME
+    ]);
+    expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("untrusted");
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered after bounded private-history search"
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("blocks a recovered hosted-Search dispatch when current access was revoked", async () => {
+    const stream = vi.fn<ProviderAdapter["stream"]>(async function* () {
+      return {
+        finalProviderResponsePreview: {},
+        finalText: "must not dispatch",
+        usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+      };
+    });
+    const egress = createRecoveryMemoryEgressRecorder();
+    const execute = vi.fn<NonNullable<RunRecoveryDeps["memoryHistoryToolExecutor"]>["execute"]>(
+      async (call) => ({
+        callId: call.id,
+        content: [{
+          type: "json",
+          value: {
+            indexing: {
+              degradationCode: null,
+              lexicalState: "READY",
+              vectorState: "NOT_CONFIGURED"
+            },
+            nextCursor: null,
+            results: [],
+            untrusted: true
+          }
+        }],
+        name: call.name,
+        status: "complete"
+      })
+    );
+    const harness = createHarness({
+      memoryEgress: egress.service,
+      memoryHistoryToolExecutor: {
+        accepts: (name) => name === MEMORY_HISTORY_SEARCH_TOOL_NAME,
+        execute,
+        tool: memoryHistorySearchTool
+      },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          stream
+        }
+      },
+      searchStrategyEnabled: false
+    });
+    const historyCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "revoked hosted search" },
+      mcpBinding: null,
+      toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
+    };
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [historyCall],
+        phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: JSON.stringify(historyCall.arguments),
+          call_id: historyCall.providerCallId,
+          name: historyCall.toolName,
+          type: "function_call"
+        }]
+      }),
+      normalizedRequest: normalizedHostedMemoryHistoryRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(stream).not.toHaveBeenCalled();
+    expect(egress.blocked).toEqual([
+      expect.objectContaining({
+        destinationKind: "answer_provider",
+        errorCode: "memory_egress_search_revoked",
+        mode: "PROVIDER_REQUEST"
+      })
+    ]);
+    expect(harness.state.recoveredErrors).toEqual([
+      expect.objectContaining({
+        error: expect.objectContaining({ code: "search_strategy_not_available" })
+      })
+    ]);
+  });
+
+  it("recovers pending Knowledge with personal context and ordinary tool-loop receipts", async () => {
+    const canaries = {
+      assistant: "RECOVERY_ASSISTANT_MEMORY_CANARY_731",
+      current: "RECOVERY_CURRENT_DIRECT_CANARY_731",
+      developer: "RECOVERY_DEVELOPER_CANARY_731",
+      personal: "RECOVERY_PERSONAL_CONTEXT_CANARY_731",
+      prior: "RECOVERY_PRIOR_DIRECT_CANARY_731",
+      system: "RECOVERY_SYSTEM_CANARY_731"
+    };
+    const baseRequest = normalizedKnowledgeRequest();
+    const content = { blocks: [{ text: canaries.current, type: "text" }] };
+    const personalContextText = `${PERSONAL_CONTEXT_HEADING}\n${canaries.personal}`;
+    const normalizedRequest: NormalizedRunRequest = {
+      ...baseRequest,
+      content,
+      context: {
+        messages: [
+          {
+            content: { blocks: [{ text: canaries.prior, type: "text" }] },
+            id: "recovery-prior-user",
+            role: "user"
+          },
+          {
+            content: { blocks: [{ text: canaries.assistant, type: "text" }] },
+            id: "recovery-prior-assistant",
+            role: "assistant"
+          },
+          { content, id: "recovery-current-user", role: "user" }
+        ],
+        mode: "branch_path"
+      },
+      personalContext: {
+        approxTokens: 16,
+        itemCount: 1,
+        memoryGeneration: 5,
+        memoryRevision: 8,
+        mode: "prefetched",
+        text: personalContextText
+      },
+      prompt: { developer: canaries.developer, system: canaries.system }
+    };
+    const evidence = recoveryKnowledgeEvidence("SAFE_RECOVERED_KNOWLEDGE_RESULT");
+    const executionRequests: ProviderRunRequest[] = [];
+    const execute = vi.fn<NonNullable<RunRecoveryDeps["knowledgeExecutor"]>["execute"]>(
+      async (call, context) => {
+        executionRequests.push(context.request);
+        return {
+          callId: call.id,
+          content: knowledgeToolResultContent(evidence),
+          name: call.name,
+          rawPreview: {
+            finalProviderResponsePreview: { knowledgeRetrieval: evidence },
+            knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
+            providerCall: true,
+            requestPreview: {}
+          },
+          status: "complete",
+          usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
+        };
+      }
+    );
+    const synthesisRequests: ProviderRunRequest[] = [];
+    const egress = createRecoveryMemoryEgressRecorder();
+    const knowledgeLoad = vi.fn<NonNullable<RunRecoveryDeps["knowledgeAdmission"]>["load"]>(
+      async ({ knowledgePlan, userId: admissionUserId }) => ({
+        bindings: [{
+          baseContentRevision: 1,
+          embeddingCredentialSource: "user",
+          embeddingExecutionSnapshot: {} as never,
+          embeddingProviderModelId: "embedding-deployment-1",
+          indexedContentRevision: 1,
+          indexGenerationId: "knowledge-generation-1",
+          knowledgeBaseId: "knowledge-base-1",
+          ordinal: 0,
+          targetDimension: 1024,
+          vectorSpaceFingerprint: "c".repeat(64)
+        }],
+        fingerprint: "d".repeat(64),
+        knowledgePlan,
+        userId: admissionUserId
+      })
+    );
+    const harness = createHarness({
+      knowledgeAdmission: { load: knowledgeLoad },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        tool: knowledgeRetrievalTool
+      },
+      memoryEgress: egress.service,
+      providers: {
+        openai: {
+          buildRequestPreview: (request) => ({
+            personalContext: request.personalContext ? "present" : "absent",
+            toolChoice: request.toolChoice ?? null
+          }),
+          async *stream(request) {
+            synthesisRequests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered with Memory and Knowledge",
+              usage: { inputTokens: 4, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const knowledgeCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "direct recovery query" },
+      mcpBinding: null,
+      toolName: KNOWLEDGE_TOOL_NAME
+    };
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [knowledgeCall],
+        phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: JSON.stringify(knowledgeCall.arguments),
+          call_id: knowledgeCall.providerCallId,
+          name: knowledgeCall.toolName,
+          type: "function_call"
+        }]
+      }),
+      normalizedRequest
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(knowledgeLoad).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(executionRequests).toHaveLength(1);
+    const externalToolWire = JSON.stringify(executionRequests[0]);
+    for (const marker of Object.values(canaries)) expect(externalToolWire).toContain(marker);
+    expect(executionRequests[0]).toMatchObject({
+      attachmentIds: [],
+      attachments: [],
+      personalContext: { text: personalContextText }
+    });
+
+    expect(synthesisRequests).toHaveLength(1);
+    expect(synthesisRequests[0]).toMatchObject({
+      knowledgePlan: { baseIds: ["knowledge-base-1"] },
+      personalContext: { text: personalContextText },
+      toolChoice: "auto",
+      toolMode: "auto"
+    });
+    expect(JSON.stringify(synthesisRequests[0]?.providerToolMessages))
+      .toContain("SAFE_RECOVERED_KNOWLEDGE_RESULT");
+    expect(egress.began.map((entry) => ({
+      destinationKind: entry.destinationKind,
+      mode: entry.mode,
+      tool: entry.modelRunToolCallId ?? null
+    }))).toEqual([
+      {
+        destinationKind: "knowledge",
+        mode: "TOOL_CALL",
+        tool: "stored-call-1"
+      },
+      { destinationKind: "answer_provider", mode: "PROVIDER_REQUEST", tool: null }
+    ]);
+    expect(egress.completed).toEqual(["recovery-egress-1", "recovery-egress-2"]);
+    expect(egress.blocked).toEqual([]);
+    expect(egress.failed).toEqual([]);
+    const receiptEvidence = JSON.stringify(egress.began.map((entry) => ({
+      destinationSnapshot: entry.destinationSnapshot,
+      requestEvidence: entry.requestEvidence
+    })));
+    for (const marker of Object.values(canaries)) {
+      expect(receiptEvidence).not.toContain(marker);
+    }
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered with Memory and Knowledge"
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it.each([
+    {
+      arguments: { password: "hunter2-secret-recovery-egress" },
+      label: "structured argument",
+      revoked: false
+    },
+    {
+      arguments: { value: "safe-but-revoked" },
+      label: "destination revocation",
+      revoked: true
+    }
+  ])("uses admin trust for recovered MCP $label and rechecks destination drift", async ({
+    arguments: callArguments,
+    revoked
+  }) => {
+    const requests: ProviderRunRequest[] = [];
+    const runtimeCall = vi.fn<NonNullable<RunRecoveryDeps["mcpRuntime"]>["callTool"]>(
+      async () => ({
+        isError: false,
+        structuredContent: { accepted: true },
+        text: ["accepted"],
+        unsupportedContentTypes: []
+      })
+    );
+    const egress = createRecoveryMemoryEgressRecorder();
+    const prepare = vi.fn<NonNullable<RunRecoveryDeps["mcp"]>["prepare"]>(async () => {
+      const liveFingerprint = revoked ? "e".repeat(64) : recoveryFingerprint;
+      const snapshot = normalizedToolRequest().mcp!;
+      return {
+        bindings: [{
+          fingerprint: liveFingerprint,
+          runtimeGenerationId: "generation-1",
+          serverId: "server-1"
+        }],
+        ok: true,
+        snapshot: {
+          ...snapshot,
+          servers: snapshot.servers.map((server) => ({
+            ...server,
+            fingerprint: liveFingerprint
+          }))
+        }
+      };
+    });
+    const harness = createHarness({
+      memoryEgress: egress.service,
+      mcp: { prepare },
+      mcpRuntime: {
+        callTool: runtimeCall,
+        ensureAcceptedGeneration: async () => true
+      },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered dispatch remained blocked",
+              usage: { inputTokens: 2, outputTokens: 2, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const persistedArguments: Record<string, ToolLoopJsonValue> = Object.fromEntries(
+      Object.entries(callArguments).filter((entry): entry is [string, string] =>
+        typeof entry[1] === "string")
+    );
+    const recoveredCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: persistedArguments
+    };
+    installCheckpointState(harness, checkpointedRun({
+      calls: [recoveredCall],
+      phase: "tools_pending",
+      providerToolMessages: [{
+        arguments: JSON.stringify(persistedArguments),
+        call_id: recoveredCall.providerCallId,
+        name: recoveredCall.toolName,
+        type: "function_call"
+      }]
+    }));
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(runtimeCall).toHaveBeenCalledTimes(revoked ? 0 : 1);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(egress.blocked).toEqual(revoked
+      ? [expect.objectContaining({
+          destinationKind: "mcp",
+          errorCode: "memory_egress_destination_revoked",
+          mode: "TOOL_CALL",
+          modelRunToolCallId: "stored-call-1"
+        })]
+      : []);
+    expect(egress.began.map((entry) => ({
+      destinationKind: entry.destinationKind,
+      mode: entry.mode
+    }))).toEqual(revoked
+      ? [{ destinationKind: "answer_provider", mode: "PROVIDER_REQUEST" }]
+      : [
+          { destinationKind: "mcp", mode: "TOOL_CALL" },
+          { destinationKind: "answer_provider", mode: "PROVIDER_REQUEST" }
+        ]);
+    expect(egress.completed).toEqual(revoked
+      ? ["recovery-egress-2"]
+      : ["recovery-egress-1", "recovery-egress-2"]);
+    expect(egress.failed).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ toolChoice: "auto" });
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered dispatch remained blocked"
+    });
+  });
+
   it("rehydrates settled Knowledge evidence and usage without repeating retrieval", async () => {
     const draft: KnowledgeRetrievalEvidence = {
       bases: [{
@@ -3441,7 +4086,7 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
-  it("continues multiple post-recovery OpenAI tool rounds through successive response ids", async () => {
+  it("continues an ordinary recovered tool loop through a second tool round", async () => {
     const requests: ProviderRunRequest[] = [];
     const runtimeCall = vi.fn(async () => ({
       isError: false,
@@ -3487,7 +4132,7 @@ describe("run recovery", () => {
       },
       providers: { openai: adapter }
     });
-    installCheckpointState(
+    const checkpointState = installCheckpointState(
       harness,
       checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" })
     );
@@ -3497,18 +4142,25 @@ describe("run recovery", () => {
     expect(runtimeCall).toHaveBeenCalledTimes(2);
     expect(requests).toHaveLength(2);
     expect(requests[0]?.previousProviderResponseId).toBeUndefined();
+    expect(requests[0]).toMatchObject({
+      parallelToolCalls: true,
+      toolChoice: "auto",
+      tools: [expect.objectContaining({
+        capability: "mcp",
+        name: recoveryToolName
+      })]
+    });
     expect(requests[0]?.providerToolMessages).toEqual([
       expect.objectContaining({ call_id: "provider-call-1", type: "function_call" }),
       expect.objectContaining({ call_id: "provider-call-1", type: "function_call_output" })
     ]);
-    expect(requests[1]?.previousProviderResponseId).toBeUndefined();
-    expect(requests[1]?.providerToolMessages).toEqual([
-      expect.objectContaining({ call_id: "provider-call-1", type: "function_call" }),
-      expect.objectContaining({ call_id: "provider-call-1", type: "function_call_output" }),
+    expect(requests[1]?.providerToolMessages).toEqual(expect.arrayContaining([
       expect.objectContaining({ call_id: "provider-call-2", type: "function_call" }),
       expect.objectContaining({ call_id: "provider-call-2", type: "function_call_output" })
-    ]);
+    ]));
+    expect(checkpointState.calls()).toHaveLength(2);
     expect(harness.state.completed).toMatchObject({ finalText: "two rounds complete" });
+    expect(harness.state.recoveredErrors).toEqual([]);
   });
 
   it("re-budgets the retained tool transcript before a recovered provider continuation", async () => {

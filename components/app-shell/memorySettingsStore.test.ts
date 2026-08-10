@@ -96,6 +96,7 @@ describe("Memory settings store", () => {
         acceptedAt: null,
         acceptedUtilityEgressFingerprint: null,
         acceptedUtilityPolicyVersion: null,
+        consentMode: "PER_USER",
         currentUtilityEgressFingerprint: "current-fingerprint-00000000000000001",
         reviewRequired: true
       }

@@ -224,6 +224,7 @@ describe("Prisma Memory persistence", () => {
         settingsRevision: 0
       });
       const initialProjection = await createMemorySettingsService({
+        egressConsentMode: "PER_USER",
         repository,
         resolveCurrentUtilityPolicy: (ownerUserId, ownerSettings) =>
           resolveCurrentMemoryUtilityPolicy(prisma, ownerUserId, ownerSettings)

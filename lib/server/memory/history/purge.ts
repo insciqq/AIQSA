@@ -366,11 +366,176 @@ async function detachEpisodeSuppressions(
   });
 }
 
+async function receiptSelectionPredicates(
+  tx: MemoryTransaction,
+  userId: string,
+  selection: HistoryPurgeSelection
+): Promise<Readonly<{ history: Prisma.Sql; result: Prisma.Sql; running: Prisma.Sql }>> {
+  if (selection.kind === "SOURCE") {
+    return {
+      history: Prisma.sql`TRUE`,
+      result: Prisma.sql`result ->> 'sourceChatId' = ${selection.chatId}`,
+      running: Prisma.sql`history."state" = 'RUNNING'::"MemoryHistoryRunState"`
+    };
+  }
+  if (selection.kind === "CLEAR") {
+    const barrier = await tx.memorySourceBarrier.findFirst({
+      select: { sourceCreatedAtCutoff: true },
+      where: {
+        id: selection.barrierId,
+        kind: "HISTORY_INDEX",
+        userId
+      }
+    });
+    if (!barrier) {
+      throw new MemoryCoordinatorError("memory_deletion_target_invalid", true);
+    }
+    return {
+      history: Prisma.sql`history."createdAt" <= ${barrier.sourceCreatedAtCutoff}`,
+      result: Prisma.sql`TRUE`,
+      running: Prisma.sql`FALSE`
+    };
+  }
+  const activeSuppression = Prisma.sql`
+    suppression."userId" = ${userId}
+    AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+  `;
+  return {
+    history: Prisma.sql`TRUE`,
+    result: Prisma.sql`
+      EXISTS (
+        SELECT 1
+        FROM "MemorySuppression" AS suppression
+        WHERE ${activeSuppression}
+          AND (
+            suppression."scope" = 'ALL'::"MemorySuppressionScope"
+            OR (
+              suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+              AND suppression."sourceChatId" = result ->> 'sourceChatId'
+              AND result -> 'sourceMessageIds' ? suppression."sourceMessageId"
+            )
+          )
+      )
+    `,
+    running: Prisma.sql`history."state" = 'RUNNING'::"MemoryHistoryRunState"`
+  };
+}
+
+async function historyReceiptDerivativeCounts(
+  tx: MemoryTransaction,
+  userId: string,
+  selection: HistoryPurgeSelection
+): Promise<Readonly<{ historyRuns: number }>> {
+  const predicates = await receiptSelectionPredicates(tx, userId, selection);
+  const historyRows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+    SELECT COUNT(DISTINCT history."id")::integer AS "count"
+    FROM "MemoryHistoryRun" AS history
+    LEFT JOIN LATERAL jsonb_array_elements(
+      COALESCE(history."results" -> 'results', '[]'::jsonb)
+    ) AS result ON TRUE
+    WHERE history."userId" = ${userId}
+      AND history."retentionState" = 'RETAINED'::"MemoryReceiptRetentionState"
+      AND (
+        (${predicates.running})
+        OR ((${predicates.history}) AND (${predicates.result}))
+      )
+  `);
+  const historyRuns = historyRows[0]?.count ?? -1;
+  if (!Number.isSafeInteger(historyRuns) || historyRuns < 0) {
+    throw new MemoryCoordinatorError("memory_purge_incomplete", true);
+  }
+  return { historyRuns };
+}
+
+export async function purgeMemoryHistoryReceiptDerivatives(
+  tx: MemoryTransaction,
+  userId: string,
+  selection: HistoryPurgeSelection
+): Promise<void> {
+  const predicates = await receiptSelectionPredicates(tx, userId, selection);
+  await tx.$executeRaw(Prisma.sql`
+    WITH affected AS MATERIALIZED (
+      SELECT DISTINCT history."id", history."modelRunToolCallId"
+      FROM "MemoryHistoryRun" AS history
+      LEFT JOIN LATERAL jsonb_array_elements(
+        COALESCE(history."results" -> 'results', '[]'::jsonb)
+      ) AS result ON TRUE
+      WHERE history."userId" = ${userId}
+        AND history."retentionState" = 'RETAINED'::"MemoryReceiptRetentionState"
+        AND (
+          (${predicates.running})
+          OR ((${predicates.history}) AND (${predicates.result}))
+        )
+    ), scrubbed_history AS (
+      UPDATE "MemoryHistoryRun" AS history
+      SET
+        "query" = NULL,
+        "privateRequest" = '{}'::jsonb,
+        "results" = NULL,
+        "providerResult" = NULL,
+        "resultHash" = NULL,
+        "state" = CASE
+          WHEN history."state" = 'RUNNING'::"MemoryHistoryRunState"
+            THEN 'CANCELLED'::"MemoryHistoryRunState"
+          ELSE history."state"
+        END,
+        "outcome" = CASE
+          WHEN history."state" = 'RUNNING'::"MemoryHistoryRunState"
+            THEN 'FAILED'::"MemoryHistoryRunOutcome"
+          ELSE history."outcome"
+        END,
+        "completedAt" = CASE
+          WHEN history."state" = 'RUNNING'::"MemoryHistoryRunState"
+            THEN COALESCE(history."completedAt", CURRENT_TIMESTAMP)
+          ELSE history."completedAt"
+        END,
+        "durationMs" = CASE
+          WHEN history."state" = 'RUNNING'::"MemoryHistoryRunState"
+            THEN COALESCE(history."durationMs", 0)
+          ELSE history."durationMs"
+        END,
+        "errorCode" = CASE
+          WHEN history."state" = 'RUNNING'::"MemoryHistoryRunState"
+            THEN 'memory_history_receipt_scrubbed'
+          ELSE history."errorCode"
+        END,
+        "retentionState" = 'SCRUBBED'::"MemoryReceiptRetentionState",
+        "plaintextPurgedAt" = COALESCE(history."plaintextPurgedAt", CURRENT_TIMESTAMP),
+        "updatedAt" = CURRENT_TIMESTAMP
+      FROM affected
+      WHERE history."id" = affected."id"
+      RETURNING history."modelRunToolCallId"
+    )
+    UPDATE "ModelRunToolCall" AS call
+    SET
+      "arguments" = '{}'::jsonb,
+      "state" = 'error'::"ModelRunToolCallState",
+      "completedAt" = COALESCE(call."completedAt", CURRENT_TIMESTAMP),
+      "result" = jsonb_build_object(
+        'callId', call."providerCallId",
+        'content', jsonb_build_array(jsonb_build_object(
+          'type', 'json',
+          'value', jsonb_build_object('error', 'memory_history_receipt_scrubbed')
+        )),
+        'name', call."toolName",
+        'rawPreview', jsonb_build_object(
+          'error', 'memory_history_receipt_scrubbed',
+          'resultType', 'private_history'
+        ),
+        'status', 'error'
+      ),
+      "updatedAt" = CURRENT_TIMESTAMP
+    FROM scrubbed_history
+    WHERE call."id" = scrubbed_history."modelRunToolCallId"
+  `);
+}
+
 export async function purgeMemoryHistorySelection(
   tx: MemoryTransaction,
   userId: string,
   selection: HistoryPurgeSelection
 ): Promise<void> {
+  await purgeMemoryHistoryReceiptDerivatives(tx, userId, selection);
   while (true) {
     const ids = await targetIds(tx, userId, selection);
     if (ids.chunkIds.length === 0 && ids.episodeIds.length === 0) return;
@@ -418,6 +583,7 @@ export async function inspectMemoryHistoryPurge(
   selection: HistoryPurgeSelection
 ): Promise<MemoryHistoryPurgeProgress> {
   const ids = await targetIds(tx, userId, selection);
+  const receiptDerivatives = await historyReceiptDerivativeCounts(tx, userId, selection);
   const itemCount = ids.chunkIds.length + ids.episodeIds.length;
   let referenceCount = 0;
   let searchCount = 0;
@@ -445,8 +611,9 @@ export async function inspectMemoryHistoryPurge(
   }
   const completedUnits = Number(itemCount === 0) +
     Number(referenceCount === 0) +
-    Number(searchCount === 0);
-  return { complete: completedUnits === 3, completedUnits, totalUnits: 3 };
+    Number(searchCount === 0) +
+    Number(receiptDerivatives.historyRuns === 0);
+  return { complete: completedUnits === 4, completedUnits, totalUnits: 4 };
 }
 
 function handler(operation: "BULK_CLEAR" | "SOURCE_PURGE"): MemoryDeletionHandler {

@@ -67,24 +67,8 @@ describe("explicit run-memory eligibility", () => {
       normalizedRequest: request(),
       settings,
       userId: "user-1"
-    })).rejects.toEqual(new ExplicitRunMemoryManagementError("memory_tool_egress_forbidden"));
+    })).rejects.toEqual(new ExplicitRunMemoryManagementError("memory_action_failed"));
     expect(findFirst).toHaveBeenCalledTimes(2);
-  });
-
-  it("injects nothing when the same provider request exposes an external capability", async () => {
-    const client = {} as PrismaClient;
-    await expect(retrieveExplicitRunMemory(client, {
-      normalizedRequest: request({
-        searchStrategy: "openai-native-web-search"
-      }),
-      settings,
-      userId: "user-1"
-    })).resolves.toMatchObject({
-      budgetSnapshot: { reason: "external_tool_egress_guard" },
-      items: [],
-      outcome: "DISABLED",
-      preparedContext: null
-    });
   });
 
   it("withholds a secret-tainted query snapshot while retaining only its hash", async () => {

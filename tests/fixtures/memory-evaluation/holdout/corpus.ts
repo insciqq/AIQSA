@@ -16,7 +16,7 @@ export function loadMemoryHoldoutCorpus(input: {
     throw new Error("memory_holdout_access_denied");
   }
   return generateMemoryCorpusSplit({
-    family: "blind-holdout-family-v1",
+    family: "blind-holdout-family-v2",
     split: "HOLDOUT",
     templates: MEMORY_HOLDOUT_COHORT_TEMPLATES
   });

@@ -1,11 +1,13 @@
 import {
   decodeMemorySettingsResponse,
   type MemoryConsentInput,
+  type MemoryEgressConsentMode,
   type MemorySettingsPatch,
   type MemorySettingsResponse
 } from "../../../contracts/memory";
 import type { ResolvedMemoryUtilityPolicy } from "../execution/policy";
 import type { MemoryExecutionRole } from "../execution/roles";
+import { resolveMemoryEgressConsentMode } from "../execution/consentMode";
 import {
   MemoryPersistenceError,
   type MemoryPersistenceErrorCode
@@ -38,6 +40,7 @@ export type MemorySettingsRepository = Readonly<{
 export type MemorySettingsServiceErrorCode =
   | "memory_action_failed"
   | "memory_contract_invalid"
+  | "memory_egress_admin_owned"
   | "memory_egress_consent_required"
   | "memory_embedding_unavailable"
   | "memory_version_stale";
@@ -125,20 +128,24 @@ function destinationLabel(
 function responseProjection(
   settings: MemorySettingsPersistenceSnapshot,
   policy: ResolvedMemoryUtilityPolicy,
-  capabilities: MemorySettingsCapabilities
+  capabilities: MemorySettingsCapabilities,
+  consentMode: MemoryEgressConsentMode
 ): MemorySettingsResponse {
   const embedding = target(policy, "MEMORY_DOCUMENT_EMBED");
   const acceptedFingerprint = settings.acceptedUtilityEgressFingerprint;
   const acceptedPolicyVersion = settings.acceptedUtilityPolicyVersion;
-  const reviewRequired = !settings.acceptedUtilityEgressAt ||
+  const reviewRequired = consentMode === "PER_USER" && (
+    !settings.acceptedUtilityEgressAt ||
     acceptedFingerprint !== policy.fingerprint ||
-    acceptedPolicyVersion !== policy.policyVersion;
+    acceptedPolicyVersion !== policy.policyVersion
+  );
   const candidate = {
     capabilities,
     egress: {
       acceptedAt: settings.acceptedUtilityEgressAt?.toISOString() ?? null,
       acceptedUtilityEgressFingerprint: acceptedFingerprint,
       acceptedUtilityPolicyVersion: acceptedPolicyVersion,
+      consentMode,
       currentUtilityEgressFingerprint: policy.fingerprint,
       currentUtilityPolicyVersion: policy.policyVersion,
       embeddingDestination: destinationLabel(policy, "MEMORY_DOCUMENT_EMBED"),
@@ -177,6 +184,7 @@ function responseProjection(
 
 export function createMemorySettingsService(input: Readonly<{
   capabilities?: MemorySettingsCapabilities;
+  egressConsentMode?: MemoryEgressConsentMode;
   repository: MemorySettingsRepository;
   resolveCurrentUtilityPolicy(
     userId: string,
@@ -186,17 +194,19 @@ export function createMemorySettingsService(input: Readonly<{
   const capabilities = Object.freeze({
     ...(input.capabilities ?? DEFAULT_MEMORY_SETTINGS_CAPABILITIES)
   });
+  const egressConsentMode = input.egressConsentMode ?? resolveMemoryEgressConsentMode();
 
   async function project(
     userId: string,
     settings: MemorySettingsPersistenceSnapshot
   ): Promise<MemorySettingsResponse> {
     const policy = await input.resolveCurrentUtilityPolicy(userId, settings);
-    return responseProjection(settings, policy, capabilities);
+    return responseProjection(settings, policy, capabilities, egressConsentMode);
   }
 
   return Object.freeze({
     async acceptUtilityEgress(userId, consent) {
+      if (egressConsentMode === "ADMIN") return serviceFailure("memory_egress_admin_owned");
       const settings = await persist(() =>
         input.repository.acceptUtilityEgress(userId, consent)
       );

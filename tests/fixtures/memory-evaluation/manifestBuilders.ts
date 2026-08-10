@@ -13,8 +13,8 @@ import {
   type MemoryCorpusSplit
 } from "./shared/corpusTypes";
 
-export const MEMORY_CORPUS_MANIFEST_VERSION = "memory-corpus-manifest-v1";
-export const MEMORY_NO_MEMORY_BASELINE_VERSION = "memory-no-memory-baseline-v1";
+export const MEMORY_CORPUS_MANIFEST_VERSION = "memory-corpus-manifest-v2";
+export const MEMORY_NO_MEMORY_BASELINE_VERSION = "memory-no-memory-baseline-v2";
 
 type LanguageStatistics = Readonly<{
   adversarialCases: number;
@@ -33,7 +33,7 @@ export type MemoryCorpusSplitManifest = Readonly<{
 export type MemoryCorpusManifest = Readonly<{
   combinedContentHash: string;
   corpusVersion: typeof MEMORY_CORPUS_VERSION;
-  frozenAt: "2026-08-09T00:00:00.000Z";
+  frozenAt: "2026-08-11T00:00:00.000Z";
   generatorVersion: typeof MEMORY_CORPUS_GENERATOR_VERSION;
   manifestVersion: typeof MEMORY_CORPUS_MANIFEST_VERSION;
   schemaVersion: typeof MEMORY_CORPUS_SCHEMA_VERSION;
@@ -98,7 +98,7 @@ export function buildMemoryCorpusManifest(
       tuning: tuning.contentHash
     }),
     corpusVersion: MEMORY_CORPUS_VERSION,
-    frozenAt: "2026-08-09T00:00:00.000Z",
+    frozenAt: "2026-08-11T00:00:00.000Z",
     generatorVersion: MEMORY_CORPUS_GENERATOR_VERSION,
     manifestVersion: MEMORY_CORPUS_MANIFEST_VERSION,
     schemaVersion: MEMORY_CORPUS_SCHEMA_VERSION,
