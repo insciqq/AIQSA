@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memory";
+import {
+  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
+  type MemoryHistorySearchInput
+} from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
@@ -12,6 +15,10 @@ import {
   lockMemorySourceChat
 } from "../sourceState";
 import { createPrismaMemoryHistoryIndexHandler } from "./handler";
+import {
+  createPrismaMemoryHistorySearchRepository,
+  MemoryHistorySearchRepositoryError
+} from "./search";
 import {
   decodeMemoryEpisodeExtraction,
   MEMORY_EPISODE_TOOL_NAME,
@@ -506,6 +513,27 @@ describe("Memory lexical history index persistence", () => {
       });
       expect(after.memoryRevision).toBe(before.memoryRevision + 1);
 
+      const historySearch = createPrismaMemoryHistorySearchRepository(prisma);
+      const searchInput: MemoryHistorySearchInput = {
+        chatIds: [],
+        cursor: null,
+        folderId: null,
+        from: null,
+        pageSize: 20,
+        query: "сине-зелёное развёртывание",
+        to: null
+      };
+      const preparedSearch = await historySearch.prepare(userId, searchInput);
+      const searchResponse = await historySearch.search(preparedSearch, null);
+      expect(searchResponse.results.some((result) =>
+        result.itemType === "EPISODE" && result.snippet === summary
+      )).toBe(true);
+      expect(searchResponse.indexing).toEqual({
+        degradationCode: null,
+        lexicalState: "READY",
+        vectorState: "NOT_CONFIGURED"
+      });
+
       await expect(withLockedMemoryTransaction(
         prisma,
         userId,
@@ -977,6 +1005,273 @@ describe("Memory lexical history index persistence", () => {
       expect(chunks[0]?.safeProjectedText).not.toContain("Grounded answer");
       expect(JSON.stringify(chunks)).not.toContain("transient result");
     } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("searches only current safe owned sources with scope-bound cursor pagination", async () => {
+    const userId = await createOwner("memory-history-manual-search");
+    const foreignUserId = await createOwner("memory-history-manual-search-foreign");
+    try {
+      const folder = await prisma.folder.create({
+        data: { name: "Private infrastructure", userId }
+      });
+      const firstChat = await prisma.chat.create({
+        data: { folderId: folder.id, title: "First private source", userId }
+      });
+      const firstTurn = await createTurn({
+        assistantText: "Manual history marker alpha is confirmed.",
+        chatId: firstChat.id,
+        createdAt: new Date("2026-08-01T10:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Manual history marker alpha belongs to this account."
+      });
+      await mutateSource(userId, firstChat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: firstTurn.assistantMessage.id }
+      });
+      await mutateSource(userId, firstChat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: firstTurn.assistantMessage.id,
+          runId: firstTurn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+
+      const secondChat = await prisma.chat.create({
+        data: { title: "Second private source", userId }
+      });
+      const secondTurn = await createTurn({
+        assistantText: "Manual history marker beta is confirmed.",
+        chatId: secondChat.id,
+        createdAt: new Date("2026-08-02T10:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Manual history marker beta belongs to this account."
+      });
+      await mutateSource(userId, secondChat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: secondTurn.assistantMessage.id }
+      });
+      await mutateSource(userId, secondChat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: secondTurn.assistantMessage.id,
+          runId: secondTurn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+
+      const foreignChat = await prisma.chat.create({
+        data: { title: "Foreign private source", userId: foreignUserId }
+      });
+      const foreignTurn = await createTurn({
+        assistantText: "Manual history marker foreign is confirmed.",
+        chatId: foreignChat.id,
+        createdAt: new Date("2026-08-03T10:00:00.000Z"),
+        parentMessageId: null,
+        userId: foreignUserId,
+        userText: "Manual history marker foreign belongs elsewhere."
+      });
+      await mutateSource(foreignUserId, foreignChat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: foreignTurn.assistantMessage.id }
+      });
+      await mutateSource(foreignUserId, foreignChat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: foreignTurn.assistantMessage.id,
+          runId: foreignTurn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(foreignUserId);
+
+      const repository = createPrismaMemoryHistorySearchRepository(prisma);
+      const baseInput: MemoryHistorySearchInput = {
+        chatIds: [],
+        cursor: null,
+        folderId: null,
+        from: null,
+        pageSize: 1,
+        query: "manual history marker",
+        to: null
+      };
+      const firstPage = await repository.search(
+        await repository.prepare(userId, baseInput),
+        null
+      );
+      expect(firstPage.results).toHaveLength(1);
+      expect(firstPage.nextCursor).not.toBeNull();
+      expect(firstPage.results[0]?.sourceChatId).not.toBe(foreignChat.id);
+
+      const secondPageInput = { ...baseInput, cursor: firstPage.nextCursor };
+      const secondPage = await repository.search(
+        await repository.prepare(userId, secondPageInput),
+        null
+      );
+      expect(secondPage.results).toHaveLength(1);
+      expect(new Set([
+        firstPage.results[0]?.sourceChatId,
+        secondPage.results[0]?.sourceChatId
+      ])).toEqual(new Set([firstChat.id, secondChat.id]));
+      await expect(repository.prepare(userId, {
+        ...secondPageInput,
+        chatIds: [foreignChat.id]
+      })).rejects.toEqual(new MemoryHistorySearchRepositoryError(
+        "memory_contract_invalid"
+      ));
+
+      const folderOnly = await repository.search(
+        await repository.prepare(userId, {
+          ...baseInput,
+          folderId: folder.id,
+          pageSize: 20
+        }),
+        null
+      );
+      expect(folderOnly.results.map((result) => result.sourceChatId))
+        .toEqual([firstChat.id]);
+      const foreignFolder = await repository.search(
+        await repository.prepare(userId, {
+          ...baseInput,
+          folderId: randomUUID(),
+          pageSize: 20
+        }),
+        null
+      );
+      expect(foreignFolder.results).toEqual([]);
+      const boundedTime = await repository.search(
+        await repository.prepare(userId, {
+          ...baseInput,
+          from: "2026-08-02T00:00:00.000Z",
+          pageSize: 20,
+          to: "2026-08-03T00:00:00.000Z"
+        }),
+        null
+      );
+      expect(boundedTime.results.map((result) => result.sourceChatId))
+        .toEqual([secondChat.id]);
+
+      await prisma.chat.update({
+        data: { archived: true },
+        where: { id: firstChat.id }
+      });
+      const archived = await repository.search(
+        await repository.prepare(userId, {
+          ...baseInput,
+          chatIds: [firstChat.id],
+          pageSize: 20,
+          query: "marker alpha"
+        }),
+        null
+      );
+      expect(archived.results).toMatchObject([{ sourceState: "ARCHIVED" }]);
+
+      const firstChunk = await prisma.memoryRecallChunk.findFirstOrThrow({
+        where: { chatId: firstChat.id, state: "ACTIVE", userId }
+      });
+      await prisma.memoryRecallChunk.update({
+        data: {
+          redactionReasonCodes: ["CONTACT_EMAIL_REDACTED"],
+          redactionState: "REDACTED",
+          safetyClass: "SENSITIVE"
+        },
+        where: { id: firstChunk.id }
+      });
+      const safelyRedacted = await repository.search(
+        await repository.prepare(userId, {
+          ...baseInput,
+          chatIds: [firstChat.id],
+          pageSize: 20,
+          query: "marker alpha"
+        }),
+        null
+      );
+      expect(safelyRedacted.results.map((result) => result.sourceChatId))
+        .toEqual([firstChat.id]);
+      await prisma.memoryRecallChunk.update({
+        data: {
+          redactionReasonCodes: [],
+          redactionState: "NOT_NEEDED",
+          safetyClass: "NORMAL"
+        },
+        where: { id: firstChunk.id }
+      });
+
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      await prisma.memorySuppression.create({
+        data: {
+          deletionGeneration: settings.memoryGeneration,
+          fingerprintKeyVersion: "history-search-test-v1",
+          normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+          scope: "SOURCE_MESSAGE",
+          sourceBranchGeneration: firstChunk.branchGeneration,
+          sourceChatId: firstChat.id,
+          sourceMessageId: firstTurn.userMessage.id,
+          userId
+        }
+      });
+      const suppressed = await repository.search(
+        await repository.prepare(userId, {
+          ...baseInput,
+          chatIds: [firstChat.id],
+          pageSize: 20,
+          query: "marker alpha"
+        }),
+        null
+      );
+      expect(suppressed.results).toEqual([]);
+
+      await prisma.memorySuppression.deleteMany({ where: { userId } });
+      await mutateSource(userId, firstChat.id, {
+        mutations: ["BRANCH_PATH_CHANGE"],
+        patch: { activeLeafMessageId: firstTurn.assistantMessage.id }
+      });
+      const staleBranch = await repository.search(
+        await repository.prepare(userId, {
+          ...baseInput,
+          chatIds: [firstChat.id],
+          pageSize: 20,
+          query: "marker alpha"
+        }),
+        null
+      );
+      expect(staleBranch.results).toEqual([]);
+
+      const absentSource = await repository.search(
+        await repository.prepare(userId, {
+          ...baseInput,
+          chatIds: [randomUUID()],
+          pageSize: 20,
+          query: "marker alpha"
+        }),
+        null
+      );
+      expect(absentSource.results).toEqual([]);
+
+      await mutateSource(userId, secondChat.id, {
+        mutations: ["SOURCE_EXCLUDE"],
+        patch: { memoryMode: "EXCLUDED" }
+      });
+      const excluded = await repository.search(
+        await repository.prepare(userId, {
+          ...baseInput,
+          chatIds: [secondChat.id],
+          pageSize: 20,
+          query: "marker beta"
+        }),
+        null
+      );
+      expect(excluded.results).toEqual([]);
+    } finally {
+      await cleanupOwner(foreignUserId);
       await cleanupOwner(userId);
     }
   });

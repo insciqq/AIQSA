@@ -24,6 +24,11 @@ import {
 import { createFolderActions } from "@/components/app-shell/folderActions";
 import { useMessageRunActions } from "@/components/app-shell/messageRunActions";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
+import { navigateMemorySource } from "@/components/app-shell/memorySourceNavigation";
+import {
+  activateMemoryHistorySearchAccount,
+  deactivateMemoryHistorySearchAccount
+} from "@/components/app-shell/memoryHistorySearchStore";
 import {
   refreshMemorySettings,
   useMemorySettingsStore
@@ -185,9 +190,11 @@ export function runCatalogLoadDeduped<T>({
 }
 
 export function PowerAppShell({
+  accountId,
   accountEmail,
   adminEntryVisible = false
 }: {
+  accountId: string;
   accountEmail: string | null;
   adminEntryVisible?: boolean;
 }) {
@@ -207,6 +214,11 @@ export function PowerAppShell({
   const activeChatDetailError = useWorkspaceStore((state) => state.activeChatDetailError);
   const setCatalog = useWorkspaceStore((state) => state.setCatalog);
   const setCatalogError = useWorkspaceStore((state) => state.setCatalogError);
+
+  useEffect(() => {
+    activateMemoryHistorySearchAccount(accountId);
+    return () => deactivateMemoryHistorySearchAccount(accountId);
+  }, [accountId]);
   const activeThread = useThreadStore((state) => selectThreadSnapshot(state, activeChatId));
   const [branchGraph, setBranchGraph] = useState<BranchGraphState | null>(null);
   const branchGraphRequestRef = useRef(0);
@@ -1046,6 +1058,7 @@ export function PowerAppShell({
   };
 
   const sessionView = {
+    accountId,
     accountEmail,
     activeChatId,
     activeChatTitle,
@@ -1177,6 +1190,42 @@ export function PowerAppShell({
     }
   } satisfies ShellWorkspaceView;
 
+  async function navigateMemorySourceChat(
+    chatId: string,
+    fromSettings: boolean
+  ): Promise<void> {
+    let settingsClosed = false;
+    try {
+      await navigateMemorySource(chatId, {
+        activateChat: (sourceChat) => activateChat(sourceChat, { preserveControls: true }),
+        ...(fromSettings ? {
+          closeResolvedOverlay: () => {
+            closeGeneralSettings();
+            settingsClosed = true;
+          }
+        } : {}),
+        findActiveChat: (sourceChatId) =>
+          useWorkspaceStore.getState().chats.find((chat) => chat.id === sourceChatId) ?? null,
+        openArchivedPreview: openArchivedChatPreview,
+        refreshWorkspace: (sourceChatId) =>
+          refreshWorkspace(sourceChatId, { preserveControls: true }),
+        resolveSource: resolveChatSource
+      });
+    } catch {
+      const locale = useMemorySettingsStore.getState().data?.settings.memoryUiLocale ?? "RU";
+      const sourceNotice = {
+        kind: "error" as const,
+        text: memoryUiCopy(locale, "receipt.sourceUnavailable")
+      };
+      if (fromSettings && !settingsClosed) setSettingsNotice(sourceNotice);
+      else setNotice(sourceNotice);
+    }
+  }
+
+  function openMemorySourceFromSettings(chatId: string): Promise<void> {
+    return navigateMemorySourceChat(chatId, true);
+  }
+
   const threadView = {
     activeChatDetailError,
     activeChatDetailLoading,
@@ -1208,24 +1257,7 @@ export function PowerAppShell({
       knowledgeLibraryActions.openEvidence(knowledgeBaseId);
     },
     openMemorySourceChat: (chatId: string) => {
-      void (async () => {
-        try {
-          const resolution = await resolveChatSource(chatId);
-          if (resolution.source.location === "ARCHIVED_PREVIEW") {
-            await openArchivedChatPreview(chatId);
-            return;
-          }
-          const sourceChat = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
-          if (sourceChat) {
-            await activateChat(sourceChat, { preserveControls: true });
-            return;
-          }
-          await refreshWorkspace(chatId, { preserveControls: true });
-        } catch {
-          const locale = useMemorySettingsStore.getState().data?.settings.memoryUiLocale ?? "RU";
-          setNotice({ kind: "error", text: memoryUiCopy(locale, "receipt.sourceUnavailable") });
-        }
-      })();
+      void navigateMemorySourceChat(chatId, false);
     },
     retryActiveChatDetail,
     showJumpToLatest,
@@ -1390,6 +1422,9 @@ export function PowerAppShell({
     openKnowledge: openKnowledgeLibrary,
     openLibrary: openAssistantLibrary,
     openMemory: openMemorySettings,
+    openMemorySourceChat: (chatId: string) => {
+      void openMemorySourceFromSettings(chatId);
+    },
     openMcp: openMcpSettings,
     settings: {
       open: settingsOpen,

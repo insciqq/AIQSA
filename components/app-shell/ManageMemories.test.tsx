@@ -12,6 +12,11 @@ import {
 } from "./memoryTestFixtures";
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
 
+const sourceProps = {
+  accountId: "account-test",
+  onOpenMemorySource: () => undefined
+};
+
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     headers: { "content-type": "application/json" },
@@ -49,6 +54,7 @@ describe("ManageMemories", () => {
     const onDirtyChange = vi.fn();
     render(
       <ManageMemories
+        {...sourceProps}
         locale="EN"
         onBack={onBack}
         onDirtyChange={onDirtyChange}
@@ -88,7 +94,7 @@ describe("ManageMemories", () => {
 
   it("keeps raw chats and accepted runs explicit in the exact bulk confirmation", () => {
     useMemoryManagerStore.setState({ listLoadState: "ready", screen: "list" });
-    render(<ManageMemories locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
 
     fireEvent.click(screen.getByRole("button", { name: "Delete all saved memories" }));
 
@@ -102,7 +108,7 @@ describe("ManageMemories", () => {
   it("renders blocked durable deletion without exposing memory text", async () => {
     const memory = memorySummaryFixture({ displayText: "private value must stay absent" });
     useMemoryManagerStore.setState({ listLoadState: "ready", memories: [memory] });
-    render(<ManageMemories locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
     act(() => {
       useMemoryManagerStore.setState({
         deletionLoadState: "ready",
@@ -123,11 +129,27 @@ describe("ManageMemories", () => {
 
   it("uses one local Settings scroll owner instead of nested list/detail scrollers", () => {
     useMemoryManagerStore.setState({ listLoadState: "ready" });
-    render(<ManageMemories locale="RU" onBack={vi.fn()} useMemoryFacts={false} />);
+    render(<ManageMemories {...sourceProps} locale="RU" onBack={vi.fn()} useMemoryFacts={false} />);
 
     const manager = screen.getByTestId("manage-memories");
     expect(manager.querySelectorAll(".overflow-y-auto")).toHaveLength(0);
     expect(within(manager).getByRole("heading", { name: "Управление памятью" })).toBeVisible();
+  });
+
+  it("enters and returns from distinct history search with deterministic focus", async () => {
+    useMemoryManagerStore.setState({ listLoadState: "ready" });
+    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+
+    const entry = screen.getByRole("button", { name: "Search chat history" });
+    expect(entry).toHaveTextContent("Recover an earlier passage or decision");
+    fireEvent.click(entry);
+    const heading = screen.getByRole("heading", { name: "Search chat history" });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(screen.queryByRole("heading", { name: "Manage Memories" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to saved memories" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Search chat history" })).toHaveFocus());
+    expect(screen.getByRole("heading", { name: "Manage Memories" })).toBeVisible();
   });
 
   it("creates with a reachable Global, folder, chat, and archived-chat scope picker", async () => {
@@ -184,7 +206,7 @@ describe("ManageMemories", () => {
       }
       throw new Error(`unexpected request: ${String(input)}`);
     }));
-    render(<ManageMemories locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
 
     fireEvent.click(screen.getByRole("button", { name: "New memory" }));
     const scope = screen.getByRole("combobox", { name: "Scope" });
@@ -226,7 +248,7 @@ describe("ManageMemories", () => {
         ? json({ assistants: [], publishableGroups: [], viewer: { canPublishInstallation: false } })
         : json({ chats: [], nextCursor: null })
     ));
-    render(<ManageMemories locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
 
     expect(screen.getByText("Source or scope unavailable.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();

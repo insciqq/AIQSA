@@ -75,6 +75,7 @@ async function installMemoryFixture(context: BrowserContext) {
   let memories = [summary("memory-existing", "Любимый цвет — зелёный.")];
   let deletionState: "BLOCKED_REQUIRES_ADMIN" | "PENDING" = "PENDING";
   const searchRequests: Array<{ body: Record<string, unknown>; url: string }> = [];
+  const historySearchRequests: Array<{ body: Record<string, unknown>; url: string }> = [];
   const mutationAuthorizations: Record<string, unknown>[] = [];
 
   function settingsResponse() {
@@ -190,6 +191,37 @@ async function installMemoryFixture(context: BrowserContext) {
         },
         status: 201
       });
+      return;
+    }
+    if (path === "/api/me/memory/history/search" && method === "POST") {
+      historySearchRequests.push({ body, url: request.url() });
+      expect(url.search).toBe("");
+      if (String(body.query).includes("cancel")) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          indexing: {
+            degradationCode: "memory_vector_unavailable",
+            lexicalState: "READY",
+            vectorState: "DEGRADED"
+          },
+          nextCursor: null,
+          results: [{
+            indexingState: "LEXICAL_READY",
+            itemType: "EPISODE",
+            occurredAt: "2026-08-09T08:00:00.000Z",
+            sourceChatId: "chat-history-archived",
+            sourceChatTitle: "Archived architecture source",
+            sourceFolderId: null,
+            sourceFolderName: null,
+            sourceMessageIds: ["history-user", "history-assistant"],
+            sourceState: "ARCHIVED",
+            snippet: "Keep the local lexical index as the safe baseline for retained history."
+          }]
+        }
+      }).catch(() => undefined);
       return;
     }
     if (path === "/api/me/memories/search" && method === "POST") {
@@ -330,8 +362,133 @@ async function installMemoryFixture(context: BrowserContext) {
   }
 
   await context.route(/\/api\/me\/memor(?:y|ies)(?:\/|\?|$)/u, handler);
-  return { mutationAuthorizations, searchRequests };
+  await context.route("**/api/chats/chat-history-archived/source", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        source: {
+          chatId: "chat-history-archived",
+          location: "ARCHIVED_PREVIEW",
+          memoryMode: "NORMAL",
+          sourceRevision: 3,
+          updatedAt: now
+        }
+      }
+    });
+  });
+  await context.route("**/api/chats/chat-history-archived/archive", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        chat: {
+          activeLeafMessageId: "history-assistant",
+          archived: true,
+          contextStats: { approximateActiveBranchInputTokens: 18 },
+          createdAt: now,
+          defaultKnowledgePlan: null,
+          defaultModelId: "gpt-5.5",
+          defaultProvider: "openai",
+          folderId: null,
+          id: "chat-history-archived",
+          memoryMode: "NORMAL",
+          messageCount: 2,
+          messages: [{
+            artifactSummary: null,
+            content: { blocks: [{ text: "Which history index is the safe baseline?", type: "text" }] },
+            createdAt: now,
+            errorMessage: null,
+            id: "history-user",
+            modelId: null,
+            modelRunId: null,
+            parentMessageId: null,
+            provider: null,
+            role: "user",
+            status: "complete"
+          }, {
+            artifactSummary: null,
+            content: { blocks: [{ text: "Keep the local lexical index as the safe baseline.", type: "text" }] },
+            createdAt: now,
+            errorMessage: null,
+            id: "history-assistant",
+            modelId: "gpt-5.5",
+            modelRunId: "history-run",
+            parentMessageId: "history-user",
+            provider: "openai",
+            role: "assistant",
+            status: "complete"
+          }],
+          pageInfo: {
+            activeLeafMessageId: "history-assistant",
+            beforeCursor: null,
+            hasOlder: false,
+            snapshotUpdatedAt: now
+          },
+          pinned: false,
+          sourceRevision: 3,
+          title: "Archived architecture source",
+          updatedAt: now,
+          usageStats: null
+        }
+      }
+    });
+  });
+  return { historySearchRequests, mutationAuthorizations, searchRequests };
 }
+
+test("keeps manual Memory history search private, cancellable, reversible, and archive-safe", async ({ context, page }) => {
+  await page.setViewportSize({ height: 844, width: 390 });
+  await installMatrixCatalogFixture(page);
+  const fixture = await installMemoryFixture(context);
+  await signIn(page);
+
+  await runAccountMenuAction(page, "Settings");
+  const settings = page.getByTestId("settings-dialog");
+  await settings.getByRole("button", { name: "Memory" }).click();
+  await settings.getByRole("radio", { name: "English" }).click();
+  await settings.getByRole("switch", { name: "Reference chat history" }).click();
+  await settings.getByRole("button", { name: "Manage Memories" }).click();
+  const manager = settings.getByTestId("manage-memories");
+  const entry = manager.getByRole("button", { name: "Search chat history" });
+  await expectTouchSafe(entry);
+  await entry.click();
+
+  const history = settings.getByTestId("memory-history-search");
+  await expect(history.getByRole("heading", { name: "Search chat history" })).toBeFocused();
+  await expectWithinViewport(page, settings);
+  await expectNoHorizontalOverflow(page);
+
+  const query = history.getByLabel("History search");
+  await query.fill("cancel this private query");
+  await history.getByRole("button", { name: "Search history" }).click();
+  await history.getByRole("button", { name: "Cancel search" }).click();
+  await expect(history.getByText("Search cancelled. Your query and filters are still here.")).toBeVisible();
+  await expect(query).toHaveValue("cancel this private query");
+
+  await query.fill("architecture decision");
+  await history.getByRole("button", { name: "Search history" }).click();
+  await expect(history.getByText(/local lexical index as the safe baseline/u)).toBeVisible();
+  await expect(history.getByText(/semantic matching is temporarily unavailable/u)).toBeVisible();
+  expect(fixture.historySearchRequests.at(-1)?.url).not.toContain("architecture");
+  expect(fixture.historySearchRequests.at(-1)?.body.query).toBe("architecture decision");
+
+  await history.getByRole("button", { name: "Back to saved memories" }).click();
+  await expect(manager.getByRole("button", { name: "Search chat history" })).toBeFocused();
+
+  await page.setViewportSize({ height: 390, width: 844 });
+  await manager.getByRole("button", { name: "Search chat history" }).click();
+  await expect(history.getByText(/local lexical index as the safe baseline/u)).toBeVisible();
+  await expectWithinViewport(page, settings);
+  await expectNoHorizontalOverflow(page);
+  await history.getByRole("button", { name: "Open archived preview" }).click();
+
+  await expect(settings).toHaveCount(0);
+  const archived = page.getByRole("dialog", { name: "Archived architecture source" });
+  await expect(archived.getByText("Keep the local lexical index as the safe baseline.")).toBeVisible();
+  await expect(archived.getByRole("list", { name: "Archived chat messages" })).toBeVisible();
+  await expect(archived.getByRole("textbox")).toHaveCount(0);
+  await expectWithinViewport(page, archived);
+  await expectNoHorizontalOverflow(page);
+});
 
 test("keeps RU/EN Memory settings, exact CRUD, and durable deletion usable across responsive sessions", async ({ context, page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
@@ -392,7 +549,10 @@ test("keeps RU/EN Memory settings, exact CRUD, and durable deletion usable acros
   await manager.getByRole("button", { name: "Edit" }).click();
   await manager.getByLabel("Exact statement").fill("Always begin with a concise summary.");
   await manager.getByRole("button", { name: "Save changes" }).click();
-  await expect(manager.getByText("Always begin with a concise summary.", { exact: true })).toBeVisible();
+  await expect(manager.getByTestId("memory-detail-pane").getByText(
+    "Always begin with a concise summary.",
+    { exact: true }
+  )).toBeVisible();
 
   await manager.getByRole("button", { name: "Forget" }).click();
   await expect(manager.getByRole("heading", { name: "Forget this memory?" })).toBeVisible();

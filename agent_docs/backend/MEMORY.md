@@ -7,11 +7,15 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 Native Memory is approved. Phases 0–3 implement contracts/evaluation, durable
 coordination, explicit Memory, scoped chat state/UI, and Temporary lifecycle.
-Phase 4 adds safe-source projection, multilingual chunks, local
+Phase 4 adds safe projection, multilingual chunks, local
 `INDEX_HISTORY`, qualified episodes/item vectors, and tenant-filtered
-exact/HNSW leaves. Retained turns and Resume enqueue indexing only with
-`referenceChatHistory`; learning stays independent. Query embedding, fusion,
-packing, and answer-time history retrieval remain unavailable.
+exact/HNSW leaves plus manual history search. It uses exact/Russian/
+English/simple FTS, optional vectors, source/suppression rechecks, and
+degradation states.
+Retained turns and Resume enqueue indexing only with `referenceChatHistory`;
+learning stays independent. With no qualified query-embedding lane, HYBRID
+manual search degrades explicitly to lexical. Fusion, packing, and answer-time
+history retrieval remain unavailable.
 
 Explicit Memory supports owned `GLOBAL_USER`, `FOLDER`, `ASSISTANT`, and
 non-Temporary `CHAT` scopes. Assistant archive pauses its scope; target deletion
@@ -64,9 +68,7 @@ accepts one CAS patch or consent payload. The three gates and RU/EN locale are
 independent; only memory-visible changes advance Memory revision. Embedding
 selection requires current exact entitlement, and consent recomputes the
 server-owned fingerprint inside the lock. Stale observations fail atomically;
-the route schedules no work. Phase 2 advertises explicit Memory and qualified
-RU local retrieval while history recall and automatic learning remain
-unavailable; existing users remain default-off for Memory use.
+the route schedules no work; existing users remain default-off.
 
 Explicit management is gate-independent across owned `GLOBAL_USER`, `FOLDER`,
 `ASSISTANT`, and non-Temporary `CHAT` scopes. Short-lived grants bind Save to an
@@ -130,8 +132,9 @@ alter web readiness. Its registry composes purge, Temporary deletion, local
 indexing, qualified episodes, and optional embeddings. Remote work parks before
 I/O while the fail-closed code registry has no operator-approved qualification.
 Lexical features and the generation-safe vector repository remain live, but
-history is not yet admitted to answers. Per-call execution owns current
-authority, receipts, single-winner start, usage, recovery, and detach. Private
+history is not admitted to answers; manual search is inspection only. Per-call
+execution owns current authority, receipts, single-winner start, usage,
+recovery, and detach. Private
 `preparing` runs never reach public projection or provider I/O.
 Ordinary answers cannot create Memory. Existing chat context and folder/project
 prompt memory are separate retained-chat behavior.

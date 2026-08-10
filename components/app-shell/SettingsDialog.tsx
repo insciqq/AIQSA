@@ -23,18 +23,22 @@ const focusRing =
 const coarsePointerTarget = "[@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
 
 export function SettingsDialog({
+  accountId,
   initialSection = "appearance",
   notice = null,
   onClose,
   onDismissNotice,
+  onOpenMemorySource,
   onThemeChange,
   restoreFocus,
   themeId
 }: {
+  accountId: string;
   initialSection?: GeneralSettingsSection;
   notice?: Notice | null;
   onClose(): void;
   onDismissNotice?(): void;
+  onOpenMemorySource(chatId: string): void;
   onThemeChange(themeId: ThemeId): void;
   restoreFocus?(): HTMLElement | null;
   themeId: ThemeId;
@@ -235,7 +239,12 @@ export function SettingsDialog({
         {activeSection === "mcp" ? (
           <McpSettingsSection onBusyChange={setMcpBusy} onDirtyChange={setMcpDirty} />
         ) : activeSection === "memory" ? (
-          <MemorySettingsSection onBusyChange={setMemoryBusy} onDirtyChange={setMemoryDirty} />
+          <MemorySettingsSection
+            accountId={accountId}
+            onBusyChange={setMemoryBusy}
+            onDirtyChange={setMemoryDirty}
+            onOpenMemorySource={onOpenMemorySource}
+          />
         ) : (
           <section
             className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-6 sm:px-6"

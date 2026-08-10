@@ -1001,6 +1001,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
 
       {settingsState.open && !libraryView && !knowledgeView ? (
         <SettingsDialog
+          accountId={session.accountId}
           initialSection={settingsState.section}
           notice={settingsNotice}
           themeId={settingsState.themeId}
@@ -1011,6 +1012,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
             settings.closeSettings();
           }}
           onDismissNotice={settings.dismissNotice}
+          onOpenMemorySource={settings.openMemorySourceChat}
           onThemeChange={updateTheme}
           restoreFocus={responsiveOverlayRestoreFocus}
         />

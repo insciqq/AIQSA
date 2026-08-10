@@ -42,6 +42,7 @@ export const powerAppShellViewFeatureKeys = [
 ] as const;
 
 export type ShellSessionView = {
+  accountId: string;
   accountEmail: string | null;
   activeChatId: string | null;
   activeChatTitle: string;
@@ -309,6 +310,7 @@ export type ShellSettingsView = {
   openKnowledge(): void;
   openLibrary(): void;
   openMemory(): void;
+  openMemorySourceChat(chatId: string): void;
   openMcp(): void;
   settings: {
     open: boolean;

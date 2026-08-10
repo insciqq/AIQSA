@@ -394,11 +394,15 @@ function MemorySettings({
 }
 
 export function MemorySettingsSection({
+  accountId,
   onBusyChange,
-  onDirtyChange
+  onDirtyChange,
+  onOpenMemorySource
 }: {
+  accountId: string;
   onBusyChange?(busy: boolean): void;
   onDirtyChange?(dirty: boolean): void;
+  onOpenMemorySource(chatId: string): void;
 }) {
   const busy = useMemorySettingsStore((state) => state.busy);
   const data = useMemorySettingsStore((state) => state.data);
@@ -429,10 +433,12 @@ export function MemorySettingsSection({
     >
       {managing && data && locale ? (
         <ManageMemories
+          accountId={accountId}
           locale={locale}
           onBack={() => setManaging(false)}
           onBusyChange={setManagerBusy}
           onDirtyChange={setManagerDirty}
+          onOpenMemorySource={onOpenMemorySource}
           useMemoryFacts={data.settings.useMemoryFacts}
         />
       ) : data && locale ? (

@@ -33,8 +33,10 @@ type SettingsDialogProps = Parameters<typeof SettingsDialog>[0];
 
 function renderDialog(overrides: Partial<SettingsDialogProps> = {}) {
   const props: SettingsDialogProps = {
+    accountId: "account-test",
     initialSection: "appearance",
     onClose: vi.fn(),
+    onOpenMemorySource: vi.fn(),
     onThemeChange: vi.fn(),
     themeId: "aiqsa"
   };

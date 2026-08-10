@@ -17,6 +17,10 @@ function json(value: unknown, status = 200): Response {
 }
 
 describe("MemorySettingsSection", () => {
+  const sectionProps = {
+    accountId: "account-test",
+    onOpenMemorySource: () => undefined
+  };
   beforeEach(() => {
     resetMemorySettingsStoreForTest();
     resetMemoryManagerStoreForTest();
@@ -87,7 +91,7 @@ describe("MemorySettingsSection", () => {
       return json(server);
     }));
 
-    render(<MemorySettingsSection />);
+    render(<MemorySettingsSection {...sectionProps} />);
 
     expect(await screen.findByRole("heading", { name: "Память" })).toBeVisible();
     expect(screen.getByRole("switch", { name: "Использовать факты из памяти" })).toHaveAttribute("aria-checked", "false");
@@ -131,7 +135,7 @@ describe("MemorySettingsSection", () => {
     });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(server)));
 
-    render(<MemorySettingsSection />);
+    render(<MemorySettingsSection {...sectionProps} />);
 
     expect(await screen.findByRole("heading", { name: "Memory" })).toBeVisible();
     const switches = screen.getAllByRole("switch");
@@ -156,7 +160,7 @@ describe("MemorySettingsSection", () => {
       return json(server);
     }));
     const onBusyChange = vi.fn();
-    render(<MemorySettingsSection onBusyChange={onBusyChange} />);
+    render(<MemorySettingsSection {...sectionProps} onBusyChange={onBusyChange} />);
     await screen.findByRole("heading", { name: "Memory" });
 
     fireEvent.click(screen.getByRole("switch", { name: "Use memory facts" }));

@@ -34,6 +34,8 @@ import {
   memorySensitivityLabel,
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
+import { MemoryHistorySearch } from "@/components/app-shell/MemoryHistorySearch";
+import { memoryHistoryUiCopy } from "@/components/app-shell/memoryHistoryUiCopy";
 import {
   MEMORY_MODALITIES,
   MEMORY_QUERY_MAX_LENGTH,
@@ -53,6 +55,7 @@ import {
   Clock3,
   FileClock,
   FolderInput,
+  History,
   Pin,
   PinOff,
   Plus,
@@ -967,23 +970,30 @@ function DetailPane({ locale, screen, useMemoryFacts }: {
 }
 
 export function ManageMemories({
+  accountId,
   locale,
   onBack,
   onBusyChange,
   onDirtyChange,
+  onOpenMemorySource,
   useMemoryFacts
 }: {
+  accountId: string;
   locale: MemoryUiLocale;
   onBack(): void;
   onBusyChange?(busy: boolean): void;
   onDirtyChange?(dirty: boolean): void;
+  onOpenMemorySource(chatId: string): void;
   useMemoryFacts: boolean;
 }) {
   const draftDirty = useMemoryManagerStore((state) => state.draftDirty);
   const mutationState = useMemoryManagerStore((state) => state.mutationState);
   const screen = useMemoryManagerStore((state) => state.screen);
   const [exitConfirmation, setExitConfirmation] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const historyEntryRef = useRef<HTMLButtonElement>(null);
+  const returnToHistoryEntryRef = useRef(false);
 
   useEffect(() => {
     void openMemoryManager();
@@ -999,6 +1009,12 @@ export function ManageMemories({
   useEffect(() => {
     rootRef.current?.querySelector<HTMLElement>("[data-memory-screen-heading]")?.focus({ preventScroll: true });
   }, [screen]);
+  useEffect(() => {
+    if (!historyOpen && returnToHistoryEntryRef.current) {
+      returnToHistoryEntryRef.current = false;
+      historyEntryRef.current?.focus({ preventScroll: true });
+    }
+  }, [historyOpen]);
 
   const deletionStatus = useMemoryManagerStore((state) => state.deletionStatus);
   useEffect(() => {
@@ -1019,6 +1035,22 @@ export function ManageMemories({
     }
     onBack();
   };
+
+  if (historyOpen) {
+    return (
+      <div ref={rootRef} className="mx-auto w-full max-w-5xl" data-testid="manage-memories">
+        <MemoryHistorySearch
+          accountId={accountId}
+          locale={locale}
+          onBack={() => {
+            returnToHistoryEntryRef.current = true;
+            setHistoryOpen(false);
+          }}
+          onOpenSource={onOpenMemorySource}
+        />
+      </div>
+    );
+  }
 
   return (
     <div ref={rootRef} className="mx-auto w-full max-w-5xl" data-testid="manage-memories">
@@ -1069,6 +1101,27 @@ export function ManageMemories({
       ) : null}
 
       <div className="mt-4"><LiveNotice locale={locale} /></div>
+      <button
+        ref={historyEntryRef}
+        aria-label={memoryHistoryUiCopy(locale, "entry")}
+        className={`mt-4 flex min-h-touch w-full items-center gap-3 border-y border-trace-subtle px-2 py-3 text-left hover:bg-control-hover disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 ${coarsePointerTarget} ${focusRing}`}
+        disabled={mutationState !== null || draftDirty}
+        type="button"
+        onClick={() => setHistoryOpen(true)}
+      >
+        <span className="grid size-9 shrink-0 place-items-center rounded-control bg-control-selected text-proof">
+          <History className="size-4" aria-hidden="true" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold text-ink">
+            {memoryHistoryUiCopy(locale, "entry")}
+          </span>
+          <span className="mt-0.5 block text-xs leading-5 text-ink-muted">
+            {memoryHistoryUiCopy(locale, "entryDescription")}
+          </span>
+        </span>
+        <ChevronRight className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
+      </button>
       <div className={`mt-4 border-y border-trace-subtle ${screen === "delete" ? "" : "md:grid md:grid-cols-[minmax(15rem,0.85fr)_minmax(0,1.15fr)]"}`}>
         {screen === "delete" ? null : (
           <div

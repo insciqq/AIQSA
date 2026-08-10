@@ -43,5 +43,11 @@ export default async function Home() {
     redirect("/login");
   }
 
-  return <PowerAppShell accountEmail={user.email} adminEntryVisible={user.role === "admin"} />;
+  return (
+    <PowerAppShell
+      accountEmail={user.email}
+      accountId={session.userId}
+      adminEntryVisible={user.role === "admin"}
+    />
+  );
 }

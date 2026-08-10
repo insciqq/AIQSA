@@ -554,16 +554,54 @@ describe("Memory response contracts", () => {
 
   it("decodes bounded history, rebuild, chat-mode, and stable error responses", () => {
     expect(decodeMemoryHistorySearchResponse({
+      indexing: {
+        degradationCode: null,
+        lexicalState: "READY",
+        vectorState: "NOT_CONFIGURED"
+      },
       nextCursor: null,
       results: [{
+        indexingState: "LEXICAL_READY",
+        itemType: "RECALL_CHUNK",
         occurredAt: now,
         sourceChatId: "chat-1",
         sourceChatTitle: "Database notes",
+        sourceFolderId: null,
+        sourceFolderName: null,
         sourceMessageIds: ["message-1"],
         sourceState: "ARCHIVED",
         snippet: "We discussed pgvector."
       }]
     })).toMatchObject({ ok: true });
+    expect(decodeMemoryHistorySearchResponse({
+      indexing: {
+        degradationCode: "memory_index_unavailable",
+        lexicalState: "UNAVAILABLE",
+        vectorState: "DISABLED"
+      },
+      nextCursor: "scope-expanding-cursor",
+      results: []
+    })).toMatchObject({ ok: false });
+    expect(decodeMemoryHistorySearchResponse({
+      indexing: {
+        degradationCode: null,
+        lexicalState: "READY",
+        vectorState: "NOT_CONFIGURED"
+      },
+      nextCursor: null,
+      results: [{
+        indexingState: "LEXICAL_READY",
+        itemType: "RECALL_CHUNK",
+        occurredAt: now,
+        sourceChatId: "chat-1",
+        sourceChatTitle: "Database notes",
+        sourceFolderId: "foreign-folder",
+        sourceFolderName: null,
+        sourceMessageIds: ["message-1"],
+        sourceState: "AVAILABLE",
+        snippet: "We discussed pgvector."
+      }]
+    })).toMatchObject({ ok: false });
     expect(decodeMemoryRebuildStatus({
       completedUnits: 2,
       createdAt: now,

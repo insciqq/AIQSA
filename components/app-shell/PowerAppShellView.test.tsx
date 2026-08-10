@@ -332,6 +332,7 @@ function baseProps(): PowerAppShellViewProps {
       }
     },
     session: {
+      accountId: "account-test",
       accountEmail: "shell.user@example.com",
       activeChatId: "chat-1",
       activeChatTitle: "Shell test chat",
@@ -350,6 +351,7 @@ function baseProps(): PowerAppShellViewProps {
       openKnowledge: noop,
       openLibrary: noop,
       openMemory: noop,
+      openMemorySourceChat: noop,
       openMcp: noop,
       settings: {
         open: false,

@@ -100,6 +100,16 @@ Foreground token deltas are buffered for React updates and adjacent event aggreg
 
 `settingsDestinationStore` owns the bounded Settings destination (Appearance, Memory, MCP & tools). `memorySettingsStore` owns the strictly decoded account settings/capability/egress projection, coalesced load, one exact CAS mutation, and stale-state reconciliation. `memoryManagerStore` separately owns the explicit `GLOBAL_USER` list/search cursor, selected detail/evidence, exact draft, stale-draft fence, mutation state, and opaque durable-deletion reference/status. Its client controller mints a fresh exact-action authorization immediately before every create/edit/pin/Forget/delete request, refreshes destructive settings/Memory CAS at confirmation, keeps search text in POST bodies, and cannot let background detail/evidence or status work replace a newer task. Settings remains the sole scroll and dirty-exit owner around both stores.
 
+`memoryHistorySearchStore` separately owns the manual retained-history draft,
+exact applied request, opaque cursor, safe result projection, lexical/vector
+state, abort controller lineage, and cancelled/error/empty/loading states. Its
+private cache is bound to the server session's exact account id; a different
+owner or shell unmount aborts and clears it before any late response can apply.
+Closing the nested task preserves only same-owner state. Source navigation
+resolves the current owner-private live/archive destination before Settings is
+dismissed, then delegates archived results to the existing read-only archive
+owner instead of activating an operational chat.
+
 The Assistants surface owns its own focused state: `assistantLibraryStore` holds the open full-screen task (list, editor, history), Discover/Yours mode, filter/category/query, fetched list data, and editor/history drafts, while `assistantLibraryController` owns every surface mutation (create, revise with CAS, archive/restore, duplicate, publish/revoke, pin, restore-as-new-revision) and `Use` application into the composer owner. Editor avatar generation happens exactly once per new draft plus once per explicit `Generate another`, entirely in the browser. Current-composer Assistant selection remains with composer controls; the surface never mutates next-run state except through the atomic apply/remove actions.
 
 Knowledge follows the same focused-owner boundary without sharing Assistant or composer state. `knowledgeLibraryStore` owns its open list/create/detail task, list filter/query, active document query/page, decoded list/detail/ingestion projections, dirty drafts, action identity, and bounded notice; `knowledgeLibraryController` owns loading, server-paged filename search, CAS save, sequential multi-file upload, retry/replace/remove, archive/restore, reindex, publish/revoke, and stale-response fencing. Lifecycle polling refreshes only transient work on the active document query/page, preserves the last useful projection on background failure, and cannot replace a dirty base draft. The Knowledge management surface does not select next-run retrieval; composer binding and persisted run evidence remain with their dedicated run task and owners.

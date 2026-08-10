@@ -162,6 +162,40 @@ export const MEMORY_REBUILD_STATES = [
 ] as const;
 export type MemoryRebuildState = (typeof MEMORY_REBUILD_STATES)[number];
 
+export const MEMORY_ITEM_INDEXING_STATES = [
+  "LEXICAL_READY",
+  "VECTOR_PENDING",
+  "HYBRID_READY",
+  "DEGRADED"
+] as const;
+export type MemoryItemIndexingState = (typeof MEMORY_ITEM_INDEXING_STATES)[number];
+
+export const MEMORY_HISTORY_LEXICAL_STATES = [
+  "READY",
+  "DISABLED",
+  "UNAVAILABLE"
+] as const;
+export type MemoryHistoryLexicalState =
+  (typeof MEMORY_HISTORY_LEXICAL_STATES)[number];
+
+export const MEMORY_HISTORY_VECTOR_STATES = [
+  "READY",
+  "DISABLED",
+  "NOT_CONFIGURED",
+  "DEGRADED"
+] as const;
+export type MemoryHistoryVectorState =
+  (typeof MEMORY_HISTORY_VECTOR_STATES)[number];
+
+export const MEMORY_HISTORY_DEGRADATION_CODES = [
+  "memory_index_unavailable",
+  "memory_vector_generation_stale",
+  "memory_vector_profile_unsupported",
+  "memory_vector_unavailable"
+] as const;
+export type MemoryHistoryDegradationCode =
+  (typeof MEMORY_HISTORY_DEGRADATION_CODES)[number];
+
 export const MEMORY_RECEIPT_OUTCOMES = [
   "USED",
   "EMPTY",
@@ -697,7 +731,7 @@ const memorySummarySchema = z.strictObject({
   displayText: safeText(MEMORY_STATEMENT_MAX_LENGTH).nullable(),
   factState: z.enum(MEMORY_FACT_STATES),
   id: idSchema,
-  indexingState: z.enum(["LEXICAL_READY", "VECTOR_PENDING", "HYBRID_READY", "DEGRADED"]),
+  indexingState: z.enum(MEMORY_ITEM_INDEXING_STATES),
   lastConfirmedAt: nullableTimestampSchema,
   lastUsedAt: nullableTimestampSchema,
   modality: z.enum(MEMORY_MODALITIES),
@@ -918,22 +952,47 @@ export function decodeMemoryActionFeedback(
 }
 
 const memoryHistorySearchResponseSchema = z.strictObject({
+  indexing: z.strictObject({
+    degradationCode: z.enum(MEMORY_HISTORY_DEGRADATION_CODES).nullable(),
+    lexicalState: z.enum(MEMORY_HISTORY_LEXICAL_STATES),
+    vectorState: z.enum(MEMORY_HISTORY_VECTOR_STATES)
+  }),
   nextCursor: cursorSchema,
   results: z.array(z.strictObject({
+    indexingState: z.enum(MEMORY_ITEM_INDEXING_STATES),
+    itemType: z.enum(["EPISODE", "RECALL_CHUNK"]),
     occurredAt: isoTimestampSchema,
-    sourceChatId: idSchema.nullable(),
+    sourceChatId: idSchema,
     sourceChatTitle: safeText(200),
+    sourceFolderId: idSchema.nullable(),
+    sourceFolderName: safeText(200).nullable(),
     sourceMessageIds: z.array(idSchema).min(1).max(50),
-    sourceState: z.enum(["AVAILABLE", "ARCHIVED", "SOURCE_DELETED"]),
+    sourceState: z.enum(["AVAILABLE", "ARCHIVED"]),
     snippet: safeText(MEMORY_SEARCH_SNIPPET_MAX_LENGTH)
   })).max(MEMORY_PAGE_SIZE_MAX)
 }).superRefine((value, context) => {
+  const { degradationCode, lexicalState, vectorState } = value.indexing;
+  const disabled = lexicalState === "DISABLED";
+  const unavailable = lexicalState === "UNAVAILABLE";
+  if (
+    (disabled && (vectorState !== "DISABLED" || degradationCode !== null)) ||
+    (unavailable && (
+      vectorState !== "DISABLED" || degradationCode !== "memory_index_unavailable"
+    )) ||
+    (lexicalState === "READY" && vectorState === "DISABLED") ||
+    (vectorState === "DEGRADED" && (
+      degradationCode === null || degradationCode === "memory_index_unavailable"
+    )) ||
+    (vectorState !== "DEGRADED" && !unavailable && degradationCode !== null)
+  ) {
+    context.addIssue({ code: "custom", message: "history indexing state mismatch" });
+  }
+  if ((disabled || unavailable) && (value.results.length > 0 || value.nextCursor !== null)) {
+    context.addIssue({ code: "custom", message: "inactive history index cannot return results" });
+  }
   for (const result of value.results) {
-    if (result.sourceState === "SOURCE_DELETED" && result.sourceChatId !== null) {
-      context.addIssue({ code: "custom", message: "deleted history source cannot remain linked" });
-    }
-    if (result.sourceState !== "SOURCE_DELETED" && result.sourceChatId === null) {
-      context.addIssue({ code: "custom", message: "available history source requires a link" });
+    if ((result.sourceFolderId === null) !== (result.sourceFolderName === null)) {
+      context.addIssue({ code: "custom", message: "history folder metadata is all-or-none" });
     }
     if (new Set(result.sourceMessageIds).size !== result.sourceMessageIds.length) {
       context.addIssue({ code: "custom", message: "duplicate history source message" });

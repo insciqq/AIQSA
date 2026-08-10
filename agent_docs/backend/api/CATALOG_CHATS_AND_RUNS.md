@@ -32,6 +32,18 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   three Memory gates off. Search accepts private query text only in a strict
   POST body and synchronously uses the active exact/Russian/English/simple
   lexical projection; no provider, worker, or utility consent participates.
+- `POST /api/me/memory/history/search` is the distinct owner-private manual
+  retained-history boundary, not sidebar chat search. It accepts no URL query
+  parameters and requires one strict JSON body with query, page size, optional
+  opaque cursor, chat/folder filters, and half-open UTC bounds; responses are
+  private/no-store and return at most 20 bounded safe chunk/episode snippets.
+  Cursor identity binds the owner, normalized query, filters, page size,
+  serving generation, gate, and Memory revision. Exact and
+  Russian/English/simple FTS remain available without vectors; a qualified
+  optional vector lane can add candidates but cannot bypass the same live
+  owner, source, branch/revision/checkpoint, safety, suppression, barrier, and
+  gate rejoin. Missing or failed vector query work is an explicit degradation,
+  while an unavailable lexical generation returns no result or cursor.
 - `POST /api/me/memory/bulk-delete` admits `DELETE_EXPLICIT` and
   `CLEAR_HISTORY_INDEX`. Both apply their retrieval fence before the `202`
   response and return one durable deletion id; clear-history also installs an
