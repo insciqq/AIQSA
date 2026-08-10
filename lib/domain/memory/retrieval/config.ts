@@ -1,0 +1,73 @@
+export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-retrieval-core-v1";
+export const MEMORY_RETRIEVAL_FEATURE_VERSION = "memory-retrieval-features-v1";
+export const MEMORY_TEMPORAL_RESOLVER_VERSION = "memory-temporal-resolver-v1";
+export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v1";
+
+export const MEMORY_RETRIEVAL_RRF_K = 60;
+export const MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES = 150;
+export const MEMORY_RETRIEVAL_MAX_PARALLEL_LANES = 4;
+export const MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES = 25;
+export const MEMORY_RETRIEVAL_MIN_FINAL_SCORE = 0.018;
+
+export const MEMORY_CONTEXT_TARGET_TOKENS = 2_000;
+export const MEMORY_CONTEXT_HARD_CAP_TOKENS = 2_500;
+export const MEMORY_CONTEXT_MAX_FACTS = 8;
+export const MEMORY_CONTEXT_MAX_SNIPPETS = 4;
+export const MEMORY_CONTEXT_MAX_SOURCE_CHATS = 4;
+
+export const MEMORY_RETRIEVAL_LANE_LIMITS = Object.freeze({
+  FACT_CANONICAL: 20,
+  FACT_EXACT: 20,
+  FACT_FTS_ENGLISH: 25,
+  FACT_FTS_RUSSIAN: 25,
+  FACT_FTS_SIMPLE: 25,
+  FACT_TEMPORAL: 20,
+  FACT_VECTOR: 25,
+  HISTORY_ENTITY_TIME: 20,
+  HISTORY_EPISODE_FTS_ENGLISH: 25,
+  HISTORY_EPISODE_FTS_RUSSIAN: 25,
+  HISTORY_EPISODE_FTS_SIMPLE: 25,
+  HISTORY_EPISODE_VECTOR: 25,
+  HISTORY_RECALL_FTS_ENGLISH: 40,
+  HISTORY_RECALL_FTS_RUSSIAN: 40,
+  HISTORY_RECALL_FTS_SIMPLE: 40,
+  HISTORY_RECALL_VECTOR: 40
+} as const);
+
+export const MEMORY_RETRIEVAL_LANE_ORDER = Object.freeze([
+  "FACT_EXACT",
+  "FACT_CANONICAL",
+  "FACT_FTS_RUSSIAN",
+  "FACT_FTS_ENGLISH",
+  "FACT_FTS_SIMPLE",
+  "FACT_VECTOR",
+  "FACT_TEMPORAL",
+  "HISTORY_ENTITY_TIME",
+  "HISTORY_EPISODE_FTS_RUSSIAN",
+  "HISTORY_EPISODE_FTS_ENGLISH",
+  "HISTORY_EPISODE_FTS_SIMPLE",
+  "HISTORY_EPISODE_VECTOR",
+  "HISTORY_RECALL_FTS_RUSSIAN",
+  "HISTORY_RECALL_FTS_ENGLISH",
+  "HISTORY_RECALL_FTS_SIMPLE",
+  "HISTORY_RECALL_VECTOR"
+] as const);
+
+export type MemoryRetrievalLane = (typeof MEMORY_RETRIEVAL_LANE_ORDER)[number];
+
+export const MEMORY_RETRIEVAL_FEATURE_WEIGHTS = Object.freeze({
+  conflictPenalty: -0.08,
+  currentness: 0.006,
+  directness: 0.004,
+  exactCanonical: 0.05,
+  exactEntity: 0.025,
+  explicitAuthority: 0.012,
+  importance: 0.005,
+  languageMatch: 0.004,
+  pinned: 0.01,
+  scopeAffinity: 0.012,
+  sensitivityPenalty: -0.01,
+  sourceRecency: 0.004,
+  temporalFit: 0.02,
+  temperature: 0.004
+} as const);

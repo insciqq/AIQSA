@@ -308,7 +308,7 @@ function commonPredicates(input: MemoryVectorSearchInput): Prisma.Sql[] {
       FROM "Chat" AS current_chat
       WHERE current_chat."userId" = ${input.userId}
         AND current_chat."id" = ${input.eligibility.chatId}
-        AND current_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+        AND current_chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
     )`);
   }
   return predicates;
@@ -390,19 +390,111 @@ function factEligibility(input: MemoryVectorSearchInput): EligibilitySql {
           AND fact."state" = 'ACTIVE'::"MemoryFactState"
           AND fact."currentVersionId" = version."id"
           AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "MemorySuppression" AS fact_suppression
+            WHERE fact_suppression."userId" = fact."userId"
+              AND fact_suppression."scope" = 'ALL'::"MemorySuppressionScope"
+              AND (
+                fact_suppression."expiresAt" IS NULL
+                OR fact_suppression."expiresAt" > CURRENT_TIMESTAMP
+              )
+          )
           AND (
-            scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
+            version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+            OR EXISTS (
+              SELECT 1
+              FROM "MemoryEvidence" AS support
+              INNER JOIN "Chat" AS evidence_chat
+                ON evidence_chat."userId" = support."userId"
+                AND evidence_chat."id" = support."chatId"
+                AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+                AND evidence_chat."memoryBranchGeneration" = support."branchGeneration"
+              INNER JOIN "Message" AS evidence_message
+                ON evidence_message."chatId" = support."chatId"
+                AND evidence_message."id" = support."messageId"
+                AND evidence_message."role" = 'user'
+              WHERE support."userId" = version."userId"
+                AND support."factVersionId" = version."id"
+                AND support."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
+                AND support."sourceType" = 'MESSAGE'::"MemoryEvidenceSourceType"
+                AND support."sourceRole" = 'user'
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM "MemorySuppression" AS source_suppression
+                  WHERE source_suppression."userId" = support."userId"
+                    AND source_suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+                    AND source_suppression."sourceChatId" = support."chatId"
+                    AND source_suppression."sourceMessageId" = support."messageId"
+                    AND (
+                      source_suppression."sourceBranchGeneration" IS NULL
+                      OR source_suppression."sourceBranchGeneration" = support."branchGeneration"
+                    )
+                    AND (
+                      source_suppression."expiresAt" IS NULL
+                      OR source_suppression."expiresAt" > CURRENT_TIMESTAMP
+                    )
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM "MemorySourceBarrier" AS source_barrier
+                  WHERE source_barrier."userId" = support."userId"
+                    AND source_barrier."kind" IN (
+                      'AUTOMATIC_FACTS'::"MemorySourceBarrierKind",
+                      'ALL_REUSABLE'::"MemorySourceBarrierKind"
+                    )
+                    AND evidence_message."createdAt" <= source_barrier."sourceCreatedAtCutoff"
+                )
+            )
+          )
+          AND (
+            (
+              scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
+              AND scope."targetIdSnapshot" IS NULL
+              AND scope."folderId" IS NULL
+              AND scope."assistantId" IS NULL
+              AND scope."chatId" IS NULL
+            )
             OR (
               scope."scopeType" = 'FOLDER'::"MemoryScopeType"
               AND scope."folderId" = ${input.eligibility.folderId}
+              AND scope."targetIdSnapshot" = scope."folderId"
+              AND scope."assistantId" IS NULL
+              AND scope."chatId" IS NULL
+              AND EXISTS (
+                SELECT 1
+                FROM "Folder" AS scope_folder
+                WHERE scope_folder."userId" = fact."userId"
+                  AND scope_folder."id" = scope."folderId"
+              )
             )
             OR (
               scope."scopeType" = 'ASSISTANT'::"MemoryScopeType"
               AND scope."assistantId" = ${input.eligibility.assistantId}
+              AND scope."targetIdSnapshot" = scope."assistantId"
+              AND scope."folderId" IS NULL
+              AND scope."chatId" IS NULL
+              AND EXISTS (
+                SELECT 1
+                FROM "AssistantDefinition" AS scope_assistant
+                WHERE scope_assistant."ownerUserId" = fact."userId"
+                  AND scope_assistant."id" = scope."assistantId"
+                  AND scope_assistant."archivedAt" IS NULL
+              )
             )
             OR (
               scope."scopeType" = 'CHAT'::"MemoryScopeType"
               AND scope."chatId" = ${input.eligibility.chatId}
+              AND scope."targetIdSnapshot" = scope."chatId"
+              AND scope."folderId" IS NULL
+              AND scope."assistantId" IS NULL
+              AND EXISTS (
+                SELECT 1
+                FROM "Chat" AS scope_chat
+                WHERE scope_chat."userId" = fact."userId"
+                  AND scope_chat."id" = scope."chatId"
+                  AND scope_chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
+              )
             )
           )
       )`
@@ -445,23 +537,50 @@ function chunkEligibility(input: MemoryVectorSearchInput): EligibilitySql {
           AND checkpoint."lastIndexedMessageId" = source_chat."activeLeafMessageId"
           AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
           AND NOT EXISTS (
-            SELECT 1
-            FROM "MemoryRecallChunkMessage" AS chunk_message
-            INNER JOIN "MemorySuppression" AS suppression
-              ON suppression."userId" = chunk_message."userId"
+            SELECT 1 FROM "MemorySuppression" AS suppression
+            LEFT JOIN "MemoryRecallChunkMessage" AS chunk_message
+              ON chunk_message."userId" = chunk."userId"
+              AND chunk_message."chunkId" = chunk."id"
               AND suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
               AND suppression."sourceChatId" = chunk_message."chatId"
               AND suppression."sourceMessageId" = chunk_message."messageId"
-              AND (
-                suppression."sourceBranchGeneration" IS NULL
-                OR suppression."sourceBranchGeneration" = chunk."branchGeneration"
-              )
+            WHERE suppression."userId" = chunk."userId"
               AND (
                 suppression."expiresAt" IS NULL
                 OR suppression."expiresAt" > CURRENT_TIMESTAMP
               )
-            WHERE chunk_message."userId" = chunk."userId"
-              AND chunk_message."chunkId" = chunk."id"
+              AND (
+                suppression."scope" = 'ALL'::"MemorySuppressionScope"
+                OR (
+                  chunk_message."messageId" IS NOT NULL
+                  AND (
+                    suppression."sourceBranchGeneration" IS NULL
+                    OR suppression."sourceBranchGeneration" = chunk."branchGeneration"
+                  )
+                )
+              )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "MemorySourceBarrier" AS barrier
+            WHERE barrier."userId" = chunk."userId"
+              AND barrier."kind" IN (
+                'HISTORY_INDEX'::"MemorySourceBarrierKind",
+                'ALL_REUSABLE'::"MemorySourceBarrierKind"
+              )
+              AND (
+                chunk."createdAt" <= barrier."createdAt"
+                OR EXISTS (
+                  SELECT 1
+                  FROM "MemoryRecallChunkMessage" AS barrier_source
+                  INNER JOIN "Message" AS barrier_message
+                    ON barrier_message."chatId" = barrier_source."chatId"
+                    AND barrier_message."id" = barrier_source."messageId"
+                  WHERE barrier_source."userId" = chunk."userId"
+                    AND barrier_source."chunkId" = chunk."id"
+                    AND barrier_message."createdAt" <= barrier."sourceCreatedAtCutoff"
+                )
+              )
           )
           AND ${Prisma.join(historyPredicates.length > 0
             ? historyPredicates
@@ -510,11 +629,53 @@ function episodeEligibility(input: MemoryVectorSearchInput): EligibilitySql {
             SELECT 1
             FROM "MemorySuppression" AS suppression
             WHERE suppression."userId" = episode."userId"
-              AND suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
-              AND suppression."sourceEpisodeId" = episode."id"
               AND (
                 suppression."expiresAt" IS NULL
                 OR suppression."expiresAt" > CURRENT_TIMESTAMP
+              )
+              AND (
+                suppression."scope" = 'ALL'::"MemorySuppressionScope"
+                OR (
+                  suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
+                  AND suppression."sourceEpisodeId" = episode."id"
+                )
+                OR (
+                  suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+                  AND suppression."sourceChatId" = episode."chatId"
+                  AND (
+                    suppression."sourceBranchGeneration" IS NULL
+                    OR suppression."sourceBranchGeneration" = episode."branchGeneration"
+                  )
+                  AND EXISTS (
+                    SELECT 1
+                    FROM "MemoryEpisodeMessage" AS suppressed_message
+                    WHERE suppressed_message."userId" = episode."userId"
+                      AND suppressed_message."episodeId" = episode."id"
+                      AND suppressed_message."messageId" = suppression."sourceMessageId"
+                  )
+                )
+              )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "MemorySourceBarrier" AS barrier
+            WHERE barrier."userId" = episode."userId"
+              AND barrier."kind" IN (
+                'HISTORY_INDEX'::"MemorySourceBarrierKind",
+                'ALL_REUSABLE'::"MemorySourceBarrierKind"
+              )
+              AND (
+                episode."createdAt" <= barrier."createdAt"
+                OR EXISTS (
+                  SELECT 1
+                  FROM "MemoryEpisodeMessage" AS barrier_source
+                  INNER JOIN "Message" AS barrier_message
+                    ON barrier_message."chatId" = barrier_source."chatId"
+                    AND barrier_message."id" = barrier_source."messageId"
+                  WHERE barrier_source."userId" = episode."userId"
+                    AND barrier_source."episodeId" = episode."id"
+                    AND barrier_message."createdAt" <= barrier."sourceCreatedAtCutoff"
+                )
               )
           )
           AND ${Prisma.join(historyPredicates.length > 0

@@ -151,8 +151,9 @@ Select the script owned by the migration; do not run this list as a generic rele
 
 ### Database and service integrations
 
-Native Memory Phase 4 source settlement, safety projection, lexical/vector/
-episode indexing, rebuild/recovery, manual search, and destructive replay:
+Native Memory Phase 4/5 source settlement, safety projection, lexical/vector/
+episode indexing, local automatic retrieval, rebuild/recovery, manual search,
+and destructive replay:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app \
@@ -163,6 +164,7 @@ docker compose -f docker-compose.dev.yml exec -T app \
   lib/server/memory/history/handler.test.ts \
   lib/server/memory/history/episode/handler.test.ts \
   lib/server/memory/history/repository.prisma.test.ts \
+  lib/server/memory/retrieval/localRepository.prisma.test.ts \
   lib/server/memory/retrieval/vector.prisma.test.ts \
   lib/server/memory/rebuild/prismaRebuild.prisma.test.ts \
   lib/server/memory/lifecycle/prismaLifecycle.prisma.test.ts
@@ -171,9 +173,11 @@ docker compose -f docker-compose.dev.yml exec -T app \
 The vector fixture uses PostgreSQL 16/pgvector 0.8, 5,001 eligible rows and
 closer foreign-tenant rows, plus incompatible generations/dimensions. It emits
 only a sanitized aggregate with Recall@5, exact/HNSW plan booleans, query p95,
-and zero leakage counts. The history fixture emits only searchable-row count
-and enqueue-to-commit job lag. Test fixture IDs and content are explicitly
-excluded from every evidence object.
+and zero leakage counts. The local-retrieval fixture emits sanitized RU/EN
+Recall@5, irrelevant-injection, candidate-bound, isolation, and query-p95
+evidence while exercising temporal and suppression filters. The history fixture
+emits only searchable-row count and enqueue-to-commit job lag. Test fixture IDs
+and content are explicitly excluded from every evidence object.
 
 Authentication admission concurrency/restart:
 
