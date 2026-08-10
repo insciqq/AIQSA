@@ -20,6 +20,11 @@ import { createPrismaMemoryJobRepository } from "./jobs";
 import { createPrismaMemoryScopeRepository } from "./scopes";
 import { createPrismaMemorySettingsRepository } from "./settings";
 import { createPrismaMemorySuppressionRepository } from "./suppressions";
+import {
+  consumeMemoryMutationAuthorization,
+  createPrismaMemoryMutationAuthorizationRepository,
+  memoryMutationNonceHash
+} from "./authorizations";
 
 const keyBytes = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 1));
 const suppressionKeyring = MemorySuppressionKeyring.parse(
@@ -153,6 +158,44 @@ describe("Prisma Memory persistence", () => {
         state: "ACTIVE",
         targetMemoryRevision: 1
       });
+    } finally {
+      await cleanupUser(userId);
+    }
+  });
+
+  it("consumes an authorization monotonically across a backwards wall-clock step", async () => {
+    const userId = await createActiveUser("authorization-clock");
+    const createdAt = new Date("2026-08-10T10:00:00.500Z");
+    const rolledBackAt = new Date("2026-08-10T09:59:59.900Z");
+    const requestId = `memory-clock-${randomUUID()}`;
+    const authorizedPayloadHash = "c".repeat(64);
+    try {
+      const authorization = await createPrismaMemoryMutationAuthorizationRepository(
+        prisma
+      ).mint(userId, {
+        action: "SAVE",
+        authorizedPayloadHash,
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expiresAt: new Date(createdAt.getTime() + 60_000),
+        nonceHash: memoryMutationNonceHash(userId, requestId),
+        requestId
+      }, createdAt);
+
+      await prisma.$transaction((tx) => consumeMemoryMutationAuthorization(
+        tx,
+        userId,
+        {
+          action: "SAVE",
+          authorizationId: authorization.id,
+          authorizedPayloadHash,
+          requestId
+        },
+        rolledBackAt
+      ));
+
+      await expect(prisma.memoryMutationAuthorization.findUniqueOrThrow({
+        where: { id: authorization.id }
+      })).resolves.toMatchObject({ consumedAt: createdAt, createdAt });
     } finally {
       await cleanupUser(userId);
     }

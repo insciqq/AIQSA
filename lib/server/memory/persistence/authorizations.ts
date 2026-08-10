@@ -233,8 +233,12 @@ export async function consumeMemoryMutationAuthorization(
   ) {
     return memoryPersistenceFailure("memory_mutation_authorization_invalid");
   }
+  // Wall clocks can move backwards between mint and consume. Keep the durable
+  // timestamp monotonic with the authorization row while retaining the caller's
+  // clock for the expiry decision above.
+  const consumedAt = now < row.createdAt ? row.createdAt : now;
   const consumed = await tx.memoryMutationAuthorization.updateMany({
-    data: { consumedAt: now },
+    data: { consumedAt },
     where: {
       consumedAt: null,
       expiresAt: { gt: now },

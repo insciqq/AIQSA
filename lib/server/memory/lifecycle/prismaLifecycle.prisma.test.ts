@@ -439,7 +439,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       );
       expect(pending).toMatchObject({
         lastAuditAt: expect.any(Date),
-        progress: { completedUnits: 1, totalUnits: 4 },
+        progress: { completedUnits: 2, totalUnits: 5 },
         state: "PENDING",
       });
 
@@ -500,7 +500,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T12:00:01.000Z")
       );
       expect(succeeded).toMatchObject({
-        progress: { completedUnits: 4, totalUnits: 4 },
+        progress: { completedUnits: 5, totalUnits: 5 },
         state: "SUCCEEDED",
       });
 
@@ -586,7 +586,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T12:02:00.000Z")
       );
       expect(reopened).toMatchObject({
-        progress: { completedUnits: 4, complete: false, totalUnits: 5 },
+        progress: { completedUnits: 5, complete: false, totalUnits: 6 },
         state: "PENDING"
       });
       await commitDeletion(
@@ -603,7 +603,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T12:04:00.000Z")
       );
       expect(upgradedStatus).toMatchObject({
-        progress: { completedUnits: 5, complete: true, totalUnits: 5 },
+        progress: { completedUnits: 6, complete: true, totalUnits: 6 },
         state: "SUCCEEDED"
       });
       await expect(explicit.get(ownerUserId, factId)).resolves.toMatchObject({
@@ -826,10 +826,10 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T13:00:00.000Z")
       );
       await expect(lifecycle.status(userId, status.deletionId)).resolves.toMatchObject({
-        completedUnits: 4,
+        completedUnits: 5,
         memoryRevision: status.memoryRevision,
         state: "SUCCEEDED",
-        totalUnits: 4
+        totalUnits: 5
       });
       await expect(explicit.get(userId, postAdmission.memory.id)).resolves.toMatchObject({
         memory: {
@@ -840,7 +840,6 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       });
 
       for (const operation of [
-        "CLEAR_HISTORY_INDEX",
         "DELETE_ALL_REUSABLE",
         "DELETE_LEARNED"
       ] as const) {

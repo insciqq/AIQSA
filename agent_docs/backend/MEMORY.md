@@ -70,10 +70,11 @@ unavailable; existing users remain default-off for Memory use.
 
 Explicit management is gate-independent across owned `GLOBAL_USER`, `FOLDER`,
 `ASSISTANT`, and non-Temporary `CHAT` scopes. Short-lived grants bind Save to an
-exact statement; Edit/Forget/Move to the owner fact and current version; and
-`DELETE_EXPLICIT` to the operation plus settings/Memory revisions, confirmation
-copy, and nonce. Move separately reauthorizes and locks its exact active target
-scope before the grant is consumed. The serializable
+exact statement; Edit/Forget/Move to one fact; and `DELETE_EXPLICIT`,
+`CLEAR_HISTORY_INDEX`, or `REDREAM_EXISTING_CHATS` to counters,
+operation, confirmation copy, and nonce.
+Move separately reauthorizes and locks its exact active target scope before the
+grant is consumed. The serializable
 mutation consumes the grant; only an exact receipt-matched retry can replay.
 Private list, POST-search, detail, evidence, create, edit, Move, pin, Forget,
 bulk-delete, and status routes rejoin ownership and keep free text out of URLs.
@@ -106,6 +107,8 @@ vector rows, evidence, and unaccepted run context, settling affected
 `PREPARING` runs content-free. Completion audits every contributor and startup/
 status reconciliation reopens stale success with residual work. Suppression
 blocks automatic recreation; fresh explicit authority may create a new version.
+Clear-history fences with an account cutoff and auditable `BULK_CLEAR` while
+retaining chats, facts, and accepted evidence.
 
 Explicit, chunk, and episode writes enqueue content-free `EMBED_ITEMS` only for
 an active HYBRID generation; lexical-only rows stay `NOT_APPLICABLE`. The handler
@@ -114,8 +117,13 @@ Each call has one binding/usage event and exact item/generation/content/config/
 dimension/vector-space apply. READY/FAILED advances revision while FTS stays
 live; unknown results are not replayed, and drift blocks late apply.
 
+Shadow rebuild/re-embed uses non-serving full diff; HYBRID requires
+vectors and consent. Activation rechecks source/config/barriers/revision and
+advances counters once; failure/cancel never serves. Redream jobs are salted,
+source-fenced, and replayable.
+
 Past-chat answers, automatic/profile retrieval, query embedding, fusion,
-reranking, split Memory/tool synthesis, other lifecycle/bulk variants, and
+reranking, split Memory/tool synthesis, later lifecycle/bulk variants, and
 production-qualified utility calls remain unavailable. Development and private
 `memory-worker` production use the same coordinator; Memory failure does not
 alter web readiness. Its registry composes purge, Temporary deletion, local
@@ -137,11 +145,8 @@ text-only schema. Personal context, Memory attempts/executions/bindings/items,
 events, operation/tool receipts, identifiers, sources, and lifecycle metadata
 never enter the public snapshot or response; visible answer prose is preserved.
 
-This document owns the durable target contract while implementation lands in
-ordered slices. Executable code, migrations, and tests remain authoritative for
-what is currently shipped; each slice must update this status and the bounded
-current-behavior owner it crosses. A planned name below is semantic rather than
-permission to expose a route, schema, or control before its dependencies exist.
+Executable code, migrations, tests, and this status own shipped behavior; a
+planned name grants no route, schema, or control before its dependencies exist.
 
 Memory is native to the existing modular monolith. PostgreSQL is the durable
 authority; pgvector, PostgreSQL full-text search, exact matching, temporal

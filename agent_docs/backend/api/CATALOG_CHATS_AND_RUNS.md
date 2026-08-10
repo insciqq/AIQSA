@@ -21,27 +21,39 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
 - `/api/me/memory/mutation-authorizations` and `/api/me/memories` are the
   private explicit-Memory management family and accept only exact `GLOBAL_USER`
   statements and identifiers. Save grants bind the exact statement hash; Edit
-  and Forget grants bind the owner fact/current version; `DELETE_EXPLICIT`
-  grants bind the operation plus exact settings and Memory revisions. All bind
-  current confirmation copy and one caller nonce and are consumed atomically
-  with the mutation. Exact matching receipt retries are idempotent, while
+  and Forget grants bind the owner fact/current version; `DELETE_EXPLICIT`,
+  `CLEAR_HISTORY_INDEX`, and `REDREAM_EXISTING_CHATS` grants bind the exact
+  operation plus settings and Memory revisions. All bind current confirmation
+  copy and one caller nonce and are consumed atomically with the mutation.
+  Exact matching receipt/job retries are idempotent, while
   expired, stale, altered, cross-operation, foreign, or natural-language
   targets fail without mutation. List, detail, bounded evidence, create, edit,
   pin, and `POST /api/me/memories/:memoryId/forget` remain available with all
   three Memory gates off. Search accepts private query text only in a strict
   POST body and synchronously uses the active exact/Russian/English/simple
   lexical projection; no provider, worker, or utility consent participates.
-- `POST /api/me/memory/bulk-delete` currently admits only `DELETE_EXPLICIT`.
-  It applies the retrieval fence and exact suppressions before its `202`
-  response, then returns one durable deletion id. The same request explicitly
-  rejects `DELETE_LEARNED`, `CLEAR_HISTORY_INDEX`, and
-  `DELETE_ALL_REUSABLE` until their owners ship. Authenticated
+- `POST /api/me/memory/bulk-delete` admits `DELETE_EXPLICIT` and
+  `CLEAR_HISTORY_INDEX`. Both apply their retrieval fence before the `202`
+  response and return one durable deletion id; clear-history also installs an
+  account source cutoff, invalidates current chunks/episodes/search rows, and
+  retains chats, facts, and accepted run evidence. The route rejects
+  `DELETE_LEARNED` and `DELETE_ALL_REUSABLE` until their owners ship.
+  Authenticated
   `GET /api/me/memory/deletions/:deletionId` returns only the owner's
-  receipt-bound admission counters, bounded contributor progress, last audit,
+  receipt-bound admission counters, bounded purge progress, last audit,
   and `PENDING | RUNNING | RETRY_WAIT | BLOCKED_REQUIRES_ADMIN | SUCCEEDED`;
   it never returns forgotten text. `SUCCEEDED` means every current versioned
-  purge contributor audited empty, while admission already meant future
+  purge requirement audited empty, while admission already meant future
   retrieval was fenced.
+- `POST /api/me/memory/rebuild` starts exactly one owner-scoped
+  `REBUILD_SEARCH_INDEX`, `REEMBED`, or `REDREAM_EXISTING_CHATS` operation.
+  Re-embed requires the selected current qualified embedding deployment;
+  redream requires its exact single-use confirmation and replays to the same
+  durable job. Authenticated private/no-store
+  `GET /api/me/memory/rebuild/:jobId` returns bounded progress, and
+  `POST /api/me/memory/rebuild/:jobId/cancel` accepts no body. A shadow remains
+  non-serving until full lexical/vector catch-up and one fenced pointer flip;
+  failure or cancellation never changes the active generation.
 - The catalog returns the client-safe entitled answer and Search projection
   produced by provider admission, together with personal/installation default
   source facts and presentation preferences. A non-null personal exact

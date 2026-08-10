@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { prisma } from "../prisma";
 import { createPrismaMemoryCoordinatorRepository } from "./coordinator/prismaRepository";
+import type { MemoryJobClaim } from "./coordinator/types";
 import {
   applyMemorySourceMutations,
   loadMemorySourceSnapshot,
@@ -27,6 +28,49 @@ async function mutateSource(
     if (!chat) throw new Error("source_test_chat_missing");
     return applyMemorySourceMutations(tx, { ...operation, chat });
   });
+}
+
+async function claimOwnedJob(
+  userId: string,
+  kind: "RECONCILE_BRANCH" | "RECONCILE_SOURCE",
+  now: Date
+): Promise<MemoryJobClaim | null> {
+  const job = await prisma.memoryJob.findFirst({
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    where: { kind, state: "QUEUED", userId }
+  });
+  if (!job) return null;
+  const claimToken = `${kind.toLocaleLowerCase("en-US")}-${randomUUID()}`;
+  const leaseExpiresAt = new Date(now.getTime() + 60_000);
+  const claimed = await prisma.memoryJob.update({
+    data: {
+      attemptCount: { increment: 1 },
+      leaseExpiresAt,
+      leaseToken: claimToken,
+      state: "CLAIMED",
+      updatedAt: now
+    },
+    where: { id: job.id }
+  });
+  return {
+    activeLeafMessageId: claimed.activeLeafMessageId,
+    attemptCount: claimed.attemptCount,
+    branchGeneration: claimed.branchGeneration,
+    chatId: claimed.chatId,
+    claimToken,
+    id: claimed.id,
+    idempotencyFingerprint: claimed.idempotencyFingerprint,
+    kind: claimed.kind,
+    leaseExpiresAt,
+    memoryGenerationSnapshot: claimed.memoryGenerationSnapshot,
+    memoryRevisionSnapshot: claimed.memoryRevisionSnapshot,
+    pipelineVersion: claimed.pipelineVersion,
+    recoveredLease: false,
+    sourceHash: claimed.sourceHash,
+    sourceRevision: claimed.sourceRevision,
+    stage: claimed.stage,
+    userId: claimed.userId
+  };
 }
 
 describe("Memory source-state persistence", () => {
@@ -190,12 +234,7 @@ describe("Memory source-state persistence", () => {
       expect(archived.sourceHash).toBe(moved.sourceHash);
 
       const repository = createPrismaMemoryCoordinatorRepository(prisma);
-      const branchClaim = await repository.claimJob({
-        claimToken: `branch-claim-${suffix}`,
-        kinds: ["RECONCILE_BRANCH"],
-        leaseExpiresAt: new Date(now.getTime() + 60_000),
-        now
-      });
+      const branchClaim = await claimOwnedJob(userId, "RECONCILE_BRANCH", now);
       expect(branchClaim).toMatchObject({
         branchGeneration: 1,
         sourceRevision: 3
@@ -217,12 +256,7 @@ describe("Memory source-state persistence", () => {
         state: "STALE"
       });
 
-      const sourceClaim = await repository.claimJob({
-        claimToken: `source-claim-${suffix}`,
-        kinds: ["RECONCILE_SOURCE"],
-        leaseExpiresAt: new Date(now.getTime() + 60_000),
-        now
-      });
+      const sourceClaim = await claimOwnedJob(userId, "RECONCILE_SOURCE", now);
       expect(sourceClaim).toMatchObject({
         branchGeneration: 1,
         sourceRevision: 4,
@@ -251,12 +285,11 @@ describe("Memory source-state persistence", () => {
         mutations: ["FOLDER_MOVE"],
         patch: { folderId: folderA.id }
       });
-      const racedClaim = await repository.claimJob({
-        claimToken: `raced-source-claim-${suffix}`,
-        kinds: ["RECONCILE_SOURCE"],
-        leaseExpiresAt: new Date(now.getTime() + 60_000),
-        now: new Date(now.getTime() + 3_000)
-      });
+      const racedClaim = await claimOwnedJob(
+        userId,
+        "RECONCILE_SOURCE",
+        new Date(now.getTime() + 3_000)
+      );
       expect(racedClaim).toMatchObject({
         sourceHash: refreshed.sourceHash,
         sourceRevision: 5

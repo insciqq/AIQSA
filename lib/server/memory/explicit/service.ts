@@ -385,7 +385,9 @@ export function createExplicitMemoryService(input: Readonly<{
     async mintAuthorization(userId, authorizationInput) {
       if (
         authorizationInput.action === "BULK_DELETE" &&
-        authorizationInput.operation !== "DELETE_EXPLICIT"
+        authorizationInput.operation !== "DELETE_EXPLICIT" &&
+        authorizationInput.operation !== "CLEAR_HISTORY_INDEX" &&
+        authorizationInput.operation !== "REDREAM_EXISTING_CHATS"
       ) {
         return failure("memory_operation_unsupported");
       }

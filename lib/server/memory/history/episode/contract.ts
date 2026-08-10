@@ -21,6 +21,8 @@ export const MEMORY_EPISODE_EXTRACTION_RETRIEVAL_CONFIG_FINGERPRINT =
     version: 1
   });
 export const MEMORY_EPISODE_EXTRACTION_JOB_PREFIX = "extract-episode:";
+export const MEMORY_EPISODE_REDREAM_JOB_PREFIX =
+  "memory-episode-redream-v1:";
 
 export const MEMORY_EPISODE_EXTRACTION_VERSIONS: MemoryExecutionVersions =
   Object.freeze({
@@ -38,6 +40,8 @@ export const MEMORY_EPISODE_MAX_OUTPUT_EPISODES = 8;
 export const MEMORY_EPISODE_MAX_CHUNKS_PER_EPISODE = 2;
 
 const sha256Pattern = /^[a-f0-9]{64}$/u;
+const uuidPattern =
+  /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 
 function validIdentity(value: unknown): value is string {
   return typeof value === "string" &&
@@ -125,6 +129,35 @@ export function memoryEpisodeExtractionJobFingerprint(
   })}`;
 }
 
+export function memoryEpisodeRedreamJobFingerprint(
+  batchId: string,
+  source: MemoryEpisodeSourceIdentity
+): string {
+  if (!uuidPattern.test(batchId)) {
+    throw new Error("memory_episode_redream_batch_invalid");
+  }
+  // Reuse the ordinary source validator before deriving the salted identity.
+  memoryEpisodeExtractionJobFingerprint(source);
+  const candidate = `${MEMORY_EPISODE_REDREAM_JOB_PREFIX}${batchId}:${memorySha256({
+    batchId,
+    pipelineVersion: MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION,
+    source,
+    version: "v1"
+  })}`;
+  if (candidate.length > 128) {
+    throw new Error("memory_episode_redream_identity_invalid");
+  }
+  return candidate;
+}
+
+export function memoryEpisodeRedreamBatchId(
+  fingerprint: string
+): string | null {
+  const match = /^memory-episode-redream-v1:([a-f0-9-]{36}):([a-f0-9]{64})$/u
+    .exec(fingerprint);
+  return match && uuidPattern.test(match[1]!) ? match[1]! : null;
+}
+
 export function memoryEpisodeExtractionClaimIsValid(
   job: MemoryJobDescriptor
 ): job is MemoryJobDescriptor & MemoryEpisodeSourceIdentity {
@@ -143,14 +176,20 @@ export function memoryEpisodeExtractionClaimIsValid(
     !validCounter(job.sourceRevision) ||
     !sha256Pattern.test(job.sourceHash)
   ) return false;
-  return job.idempotencyFingerprint === memoryEpisodeExtractionJobFingerprint({
+  const source = {
     activeLeafMessageId: job.activeLeafMessageId,
     branchGeneration: job.branchGeneration,
     chatId: job.chatId,
     sourceHash: job.sourceHash,
     sourceRevision: job.sourceRevision,
     userId: job.userId
-  });
+  };
+  if (job.idempotencyFingerprint === memoryEpisodeExtractionJobFingerprint(source)) {
+    return true;
+  }
+  const batchId = memoryEpisodeRedreamBatchId(job.idempotencyFingerprint);
+  return batchId !== null &&
+    job.idempotencyFingerprint === memoryEpisodeRedreamJobFingerprint(batchId, source);
 }
 
 export function memoryEpisodeSourceWindowHash(

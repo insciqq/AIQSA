@@ -144,6 +144,11 @@ export const MEMORY_REBUILD_OPERATIONS = [
 ] as const;
 export type MemoryRebuildOperation = (typeof MEMORY_REBUILD_OPERATIONS)[number];
 
+export const MEMORY_CONFIRMABLE_BULK_OPERATIONS = [
+  ...MEMORY_BULK_DELETE_OPERATIONS,
+  "REDREAM_EXISTING_CHATS"
+] as const;
+
 export const MEMORY_REBUILD_STATES = [
   "QUEUED",
   "RUNNING",
@@ -389,7 +394,7 @@ const memoryMutationAuthorizationInputSchema = z.discriminatedUnion("action", [
     action: z.literal("BULK_DELETE"),
     expectedMemoryRevision: safeInteger,
     expectedSettingsRevision: safeInteger,
-    operation: z.enum(MEMORY_BULK_DELETE_OPERATIONS)
+    operation: z.enum(MEMORY_CONFIRMABLE_BULK_OPERATIONS)
   })
 ]);
 
@@ -566,6 +571,9 @@ const memoryRebuildInputSchema = z.strictObject({
   }
   if (value.operation === "REDREAM_EXISTING_CHATS" && !value.mutationAuthorizationId) {
     context.addIssue({ code: "custom", message: "redream requires explicit authorization" });
+  }
+  if (value.operation !== "REDREAM_EXISTING_CHATS" && value.mutationAuthorizationId) {
+    context.addIssue({ code: "custom", message: "authorization is valid only for redream" });
   }
   if (value.operation !== "REEMBED" && Object.hasOwn(value, "embeddingDeploymentId")) {
     context.addIssue({ code: "custom", message: "deployment is valid only for re-embedding" });

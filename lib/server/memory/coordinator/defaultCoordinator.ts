@@ -1,8 +1,4 @@
 import { prisma } from "../../prisma";
-import {
-  MEMORY_CAPABILITY_QUALIFICATION_REGISTRY
-} from "../../../evaluation/memory/qualification";
-import { MEMORY_EVALUATION_SCORER_VERSION } from "../../../evaluation/memory/contracts";
 import { createPrismaMemoryExplicitEmbeddingHandler } from "../embedding/handler";
 import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
 import { createPrismaMemoryEpisodeExtractionHandler } from "../history/episode/handler";
@@ -12,6 +8,12 @@ import { createPrismaMemoryCoordinatorRepository } from "./prismaRepository";
 import { defaultMemoryCoordinatorRegistry } from "./registry";
 import { createS3StorageAdapter } from "../../uploads/storage";
 import { createPrismaTemporaryChatDeletionHandler } from "../temporaryDeletion";
+import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
+import { createPrismaMemoryRebuildHandler } from "../rebuild/handler";
+import {
+  memoryHistoryClearDeletionHandler,
+  memoryHistorySourceDeletionHandler
+} from "../history/purge";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -24,19 +26,8 @@ export const defaultMemoryCoordinatorRepository =
 // an exact signed qualification entry before the handler can leave its durable
 // waiting state. The code-owned registry is empty by default and verification
 // is deliberately fail-closed until an operator-approved authority is wired.
-const defaultMemoryQualificationAuthority = {
-  qualification: {
-    corpusHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    corpusVersion: "memory-qualification-registry-v1",
-    registry: MEMORY_CAPABILITY_QUALIFICATION_REGISTRY,
-    scorerVersion: MEMORY_EVALUATION_SCORER_VERSION,
-    suiteVersion: "memory-explicit-phase2-v1",
-    verifySignature: () => false
-  }
-} as const;
-
 const defaultExplicitEmbeddingHandler = createPrismaMemoryExplicitEmbeddingHandler(
-  defaultMemoryQualificationAuthority,
+  defaultMemoryExecutionAuthority,
   prisma
 );
 
@@ -45,9 +36,10 @@ const defaultTemporaryChatDeletionHandler =
 
 const defaultHistoryIndexHandler = createPrismaMemoryHistoryIndexHandler(prisma);
 const defaultEpisodeExtractionHandler = createPrismaMemoryEpisodeExtractionHandler(
-  defaultMemoryQualificationAuthority,
+  defaultMemoryExecutionAuthority,
   prisma
 );
+const defaultMemoryRebuildHandler = createPrismaMemoryRebuildHandler(prisma);
 
 export function ensureDefaultMemoryPhase2HandlersRegistered(): void {
   ensureDefaultMemoryPurgeHandlerRegistered();
@@ -67,6 +59,18 @@ export function ensureDefaultMemoryPhase2HandlersRegistered(): void {
 
 export function ensureDefaultMemoryPhase4HandlersRegistered(): void {
   ensureDefaultMemoryPhase2HandlersRegistered();
+  const historyClear = defaultMemoryCoordinatorRegistry.deletionHandler("BULK_CLEAR");
+  if (!historyClear) {
+    defaultMemoryCoordinatorRegistry.registerDeletion(memoryHistoryClearDeletionHandler);
+  } else if (historyClear !== memoryHistoryClearDeletionHandler) {
+    throw new Error("memory_default_history_clear_handler_conflict");
+  }
+  const historySource = defaultMemoryCoordinatorRegistry.deletionHandler("SOURCE_PURGE");
+  if (!historySource) {
+    defaultMemoryCoordinatorRegistry.registerDeletion(memoryHistorySourceDeletionHandler);
+  } else if (historySource !== memoryHistorySourceDeletionHandler) {
+    throw new Error("memory_default_history_source_handler_conflict");
+  }
   const history = defaultMemoryCoordinatorRegistry.jobHandler("INDEX_HISTORY");
   if (!history) {
     defaultMemoryCoordinatorRegistry.registerJob(defaultHistoryIndexHandler);
@@ -78,6 +82,12 @@ export function ensureDefaultMemoryPhase4HandlersRegistered(): void {
     defaultMemoryCoordinatorRegistry.registerJob(defaultEpisodeExtractionHandler);
   } else if (episode !== defaultEpisodeExtractionHandler) {
     throw new Error("memory_default_episode_handler_conflict");
+  }
+  const rebuild = defaultMemoryCoordinatorRegistry.jobHandler("REBUILD_INDEX");
+  if (!rebuild) {
+    defaultMemoryCoordinatorRegistry.registerJob(defaultMemoryRebuildHandler);
+  } else if (rebuild !== defaultMemoryRebuildHandler) {
+    throw new Error("memory_default_rebuild_handler_conflict");
   }
 }
 

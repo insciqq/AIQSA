@@ -26,6 +26,8 @@ function configuredMutationRepository(): MemoryLifecycleMutationRepository {
 }
 
 const mutationRepository: MemoryLifecycleMutationRepository = Object.freeze({
+  clearHistory: (userId, input) =>
+    configuredMutationRepository().clearHistory(userId, input),
   deleteExplicit: (userId, input) =>
     configuredMutationRepository().deleteExplicit(userId, input),
   forget: (userId, input) => configuredMutationRepository().forget(userId, input),

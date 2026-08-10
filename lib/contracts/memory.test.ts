@@ -339,6 +339,18 @@ describe("Memory request contracts", () => {
       expectedSettingsRevision: 12,
       operation: "REDREAM_EXISTING_CHATS"
     })).toMatchObject({ ok: false });
+    expect(decodeMemoryRebuildInput({
+      expectedMemoryRevision: 42,
+      expectedSettingsRevision: 12,
+      mutationAuthorizationId: "authorization-1",
+      operation: "REDREAM_EXISTING_CHATS"
+    })).toMatchObject({ ok: true });
+    expect(decodeMemoryRebuildInput({
+      expectedMemoryRevision: 42,
+      expectedSettingsRevision: 12,
+      mutationAuthorizationId: "authorization-1",
+      operation: "REBUILD_SEARCH_INDEX"
+    })).toMatchObject({ ok: false });
   });
 
   it("keeps Temporary immutable and Archive outside memory-mode PATCH", () => {

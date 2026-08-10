@@ -1,5 +1,6 @@
 import { memoryCounterEffectFor } from "../../../domain/memory/counters";
 import { enqueueMemoryJob } from "../persistence/jobs";
+import { enqueueMemoryDeletion } from "../persistence/deletion";
 import {
   advanceMemoryMutation,
   lockMemorySettings,
@@ -12,6 +13,7 @@ import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryIndexJobFingerprint
 } from "./contract";
+import { MEMORY_HISTORY_SOURCE_TARGET_TYPE } from "./purge";
 
 function sourceIdentityChanged(event: MemoryRetainedSourceMutationEvent): boolean {
   return event.previous.activeLeafMessageId !== event.snapshot.activeLeafMessageId ||
@@ -202,6 +204,25 @@ export async function applyMemoryHistorySourceMutation(
     if (invalidated > 0) {
       settings = await lockMemorySettings(tx, event.snapshot.userId, false);
       await settleVisibleMutationCounter(tx, settings, event);
+      const deletion = await enqueueMemoryDeletion(tx, settings, {
+        operation: "SOURCE_PURGE",
+        targetId: event.snapshot.id,
+        targetType: MEMORY_HISTORY_SOURCE_TARGET_TYPE
+      });
+      if (!deletion.created) {
+        await tx.memoryDeletionOutbox.update({
+          data: {
+            completedAt: null,
+            errorCode: null,
+            lastAuditAt: null,
+            leaseExpiresAt: null,
+            leaseToken: null,
+            nextAttemptAt: null,
+            state: "PENDING"
+          },
+          where: { id: deletion.id }
+        });
+      }
     }
     await updateExistingCheckpoint(tx, event);
   }

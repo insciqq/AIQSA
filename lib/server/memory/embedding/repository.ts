@@ -16,6 +16,7 @@ import {
   memorySha256,
   normalizeMemorySearchText
 } from "../persistence/lexical";
+import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
 import {
   memoryItemEmbeddingGenerationMatchesPin,
   type MemoryItemEmbeddingPin,
@@ -136,14 +137,32 @@ async function loadBaseTarget(
       AND owner."status" = 'active'::"UserStatus"
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = entry."userId"
-      AND settings."activeIndexGenerationId" = entry."indexGenerationId"
     INNER JOIN "MemoryIndexGeneration" AS generation
       ON generation."userId" = entry."userId"
       AND generation."id" = entry."indexGenerationId"
-      AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
+      AND generation."state" IN (
+        'ACTIVE'::"MemoryIndexGenerationState",
+        'BUILDING'::"MemoryIndexGenerationState",
+        'CATCHING_UP'::"MemoryIndexGenerationState",
+        'READY'::"MemoryIndexGenerationState"
+      )
       AND generation."indexMode" = 'HYBRID'::"MemoryIndexMode"
     WHERE entry."userId" = ${userId}
       AND entry."id" = ${entryId}
+      AND (
+        (
+          generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
+          AND settings."activeIndexGenerationId" = generation."id"
+        )
+        OR (
+          generation."state" IN (
+            'BUILDING'::"MemoryIndexGenerationState",
+            'CATCHING_UP'::"MemoryIndexGenerationState",
+            'READY'::"MemoryIndexGenerationState"
+          )
+          AND generation."sourceIndexGenerationId" = settings."activeIndexGenerationId"
+        )
+      )
       AND entry."embeddingState" IN (
         'PENDING'::"MemoryEmbeddingState",
         'READY'::"MemoryEmbeddingState",
@@ -174,12 +193,10 @@ async function loadFactTarget(
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId"
       AND scope."id" = fact."scopeId"
-      AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
     WHERE version."userId" = ${row.userId}
       AND version."id" = ${row.factVersionId}
       AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
-      AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
       AND version."systemTo" IS NULL
       AND version."contentPurgedAt" IS NULL
       AND version."displayText" IS NOT NULL
@@ -247,6 +264,27 @@ async function loadRecallChunkTarget(
         'SENSITIVE'::"MemoryDerivedSafetyClass"
       )
       AND chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemorySuppression" AS suppression
+        LEFT JOIN "MemoryRecallChunkMessage" AS source_message
+          ON source_message."userId" = chunk."userId"
+          AND source_message."chunkId" = chunk."id"
+          AND suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+          AND suppression."sourceChatId" = source_message."chatId"
+          AND suppression."sourceMessageId" = source_message."messageId"
+        WHERE suppression."userId" = chunk."userId"
+          AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+          AND (
+            suppression."scope" = 'ALL'::"MemorySuppressionScope"
+            OR (
+              source_message."messageId" IS NOT NULL
+              AND (
+                suppression."sourceBranchGeneration" IS NULL
+                OR suppression."sourceBranchGeneration" = chunk."branchGeneration"
+              )
+            )
+          )
+      )
     LIMIT 1
   `);
   const current = rows[0];
@@ -306,6 +344,31 @@ async function loadEpisodeTarget(
         'SENSITIVE'::"MemoryDerivedSafetyClass"
       )
       AND episode."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemorySuppression" AS suppression
+        LEFT JOIN "MemoryEpisodeMessage" AS source_message
+          ON source_message."userId" = episode."userId"
+          AND source_message."episodeId" = episode."id"
+          AND suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+          AND suppression."sourceChatId" = source_message."chatId"
+          AND suppression."sourceMessageId" = source_message."messageId"
+        WHERE suppression."userId" = episode."userId"
+          AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+          AND (
+            suppression."scope" = 'ALL'::"MemorySuppressionScope"
+            OR (
+              suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
+              AND suppression."sourceEpisodeId" = episode."id"
+            )
+            OR (
+              source_message."messageId" IS NOT NULL
+              AND (
+                suppression."sourceBranchGeneration" IS NULL
+                OR suppression."sourceBranchGeneration" = episode."branchGeneration"
+              )
+            )
+          )
+      )
     LIMIT 1
   `);
   const current = rows[0];
@@ -397,6 +460,45 @@ function exactTargetPredicate(target: MemoryItemEmbeddingTarget): Prisma.Sql {
   }
 }
 
+async function settleEmbeddingMutation(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  generationId: string,
+  outcome: "FAILED" | "READY"
+): Promise<void> {
+  const generation = await tx.memoryIndexGeneration.findFirst({
+    select: { state: true },
+    where: { id: generationId, userId: settings.userId }
+  });
+  if (generation?.state === "ACTIVE") {
+    await advanceMemoryMutation(tx, settings, "ACTIVE_VECTOR_SETTLEMENT");
+    return;
+  }
+  if (
+    generation && ["BUILDING", "CATCHING_UP", "READY"].includes(generation.state)
+  ) {
+    if (outcome === "FAILED") {
+      await tx.memoryIndexGeneration.updateMany({
+        data: { state: "FAILED" },
+        where: {
+          id: generationId,
+          state: { in: ["BUILDING", "CATCHING_UP", "READY"] },
+          userId: settings.userId
+        }
+      });
+      await tx.memorySearchEntry.deleteMany({
+        where: { indexGenerationId: generationId, userId: settings.userId }
+      });
+      return;
+    }
+    await wakeMemoryShadowRebuildInTransaction(
+      tx,
+      settings.userId,
+      generationId
+    );
+  }
+}
+
 export function createPrismaMemoryItemEmbeddingRepository(
   client: PrismaClient = prisma
 ) {
@@ -426,7 +528,7 @@ export function createPrismaMemoryItemEmbeddingRepository(
             AND ${exactTargetPredicate(target)}
         `);
         if (updated !== 1) return "STALE";
-        await advanceMemoryMutation(tx, settings, "ACTIVE_VECTOR_SETTLEMENT");
+        await settleEmbeddingMutation(tx, settings, target.generation.id, "FAILED");
         return "APPLIED";
       });
     },
@@ -470,7 +572,7 @@ export function createPrismaMemoryItemEmbeddingRepository(
           AND ${exactTargetPredicate(target)}
       `);
       if (updated !== 1) return "STALE";
-      await advanceMemoryMutation(tx, settings, "ACTIVE_VECTOR_SETTLEMENT");
+      await settleEmbeddingMutation(tx, settings, target.generation.id, "READY");
       return "APPLIED";
     },
 

@@ -4,6 +4,11 @@ import type {
   MemoryDeletionContributor,
   MemoryDeletionContributorRegistry
 } from "./registry";
+import {
+  inspectMemoryHistoryPurge,
+  purgeMemoryHistorySelection,
+  suppressedMemoryHistoryPurgeSelection
+} from "../history/purge";
 
 function versionTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
   if (target.kind === "MEMORY_FACT") {
@@ -179,6 +184,26 @@ const evidenceContributor: MemoryDeletionContributor = Object.freeze({
   version: "v1"
 });
 
+const historyDerivativesContributor: MemoryDeletionContributor = Object.freeze({
+  async audit(tx, target) {
+    const progress = await inspectMemoryHistoryPurge(
+      tx,
+      target.userId,
+      suppressedMemoryHistoryPurgeSelection
+    );
+    return progress.totalUnits - progress.completedUnits;
+  },
+  id: "history-derivatives",
+  async purge(tx, target) {
+    await purgeMemoryHistorySelection(
+      tx,
+      target.userId,
+      suppressedMemoryHistoryPurgeSelection
+    );
+  },
+  version: "v1"
+});
+
 const searchContributor: MemoryDeletionContributor = Object.freeze({
   async audit(tx, target) {
     const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
@@ -246,6 +271,7 @@ const versionContentContributor: MemoryDeletionContributor = Object.freeze({
 
 export const phase2MemoryDeletionContributors = Object.freeze([
   unacceptedAttemptsContributor,
+  historyDerivativesContributor,
   evidenceContributor,
   searchContributor,
   versionContentContributor

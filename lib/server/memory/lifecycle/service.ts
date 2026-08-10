@@ -31,6 +31,10 @@ export type MemoryLifecycleAuthorizationRepository = Readonly<{
 }>;
 
 export type MemoryLifecycleMutationRepository = Readonly<{
+  clearHistory(
+    userId: string,
+    input: MemoryDeleteExplicitMutationInput
+  ): Promise<MemoryDeleteExplicitMutationResult>;
   deleteExplicit(
     userId: string,
     input: MemoryDeleteExplicitMutationInput
@@ -151,14 +155,15 @@ export function createMemoryLifecycleService(input: Readonly<{
 
   return Object.freeze({
     async deleteExplicit(userId, deleteInput) {
-      if (deleteInput.operation !== "DELETE_EXPLICIT") {
+      const operation = deleteInput.operation;
+      if (operation !== "DELETE_EXPLICIT" && operation !== "CLEAR_HISTORY_INDEX") {
         return failure("memory_operation_unsupported");
       }
       const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
         action: "BULK_DELETE",
         expectedMemoryRevision: deleteInput.expectedMemoryRevision,
         expectedSettingsRevision: deleteInput.expectedSettingsRevision,
-        operation: deleteInput.operation
+        operation
       });
       const authorization = {
         action: "BULK_DELETE" as const,
@@ -169,7 +174,10 @@ export function createMemoryLifecycleService(input: Readonly<{
         input.authorizationRepository.resolveForUse(userId, authorization)
       );
       const now = clock();
-      const admitted = await persisted(() => input.mutationRepository.deleteExplicit(userId, {
+      const mutation = operation === "CLEAR_HISTORY_INDEX"
+        ? input.mutationRepository.clearHistory
+        : input.mutationRepository.deleteExplicit;
+      const admitted = await persisted(() => mutation(userId, {
         authorization,
         expectedMemoryRevision: deleteInput.expectedMemoryRevision,
         expectedSettingsRevision: deleteInput.expectedSettingsRevision,
@@ -179,6 +187,7 @@ export function createMemoryLifecycleService(input: Readonly<{
         ),
         idempotencyPayloadHash: lifecyclePayloadHash("BULK_DELETE", deleteInput),
         now,
+        operation,
         requestId: resolved.requestId
       }));
       kick();

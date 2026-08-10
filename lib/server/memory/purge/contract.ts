@@ -5,6 +5,7 @@ export const MEMORY_DELETE_EXPLICIT_TARGET_ID = "all-explicit";
 
 export const MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS = Object.freeze([
   Object.freeze({ id: "unaccepted-attempts", version: "v1" }),
+  Object.freeze({ id: "history-derivatives", version: "v1" }),
   Object.freeze({ id: "fact-evidence", version: "v1" }),
   Object.freeze({ id: "fact-search", version: "v1" }),
   Object.freeze({ id: "fact-version-content", version: "v1" })

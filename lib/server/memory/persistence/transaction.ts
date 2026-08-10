@@ -11,6 +11,7 @@ import {
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "./lexical";
+import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
 
 const SERIALIZABLE_ATTEMPTS = 3;
 
@@ -229,6 +230,19 @@ export async function advanceMemoryMutation(
       where: { id: activeIndex.id, state: "ACTIVE", userId: settings.userId }
     });
     if (settled.count !== 1) return memoryPersistenceFailure("memory_active_generation_invalid");
+  }
+  if (effect.memoryRevision) {
+    const shadow = await tx.memoryIndexGeneration.findFirst({
+      orderBy: { generation: "desc" },
+      select: { id: true },
+      where: {
+        state: { in: ["BUILDING", "CATCHING_UP", "READY"] },
+        userId: settings.userId
+      }
+    });
+    if (shadow) {
+      await wakeMemoryShadowRebuildInTransaction(tx, settings.userId, shadow.id);
+    }
   }
 
   return {

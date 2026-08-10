@@ -15,8 +15,10 @@ import { createPrismaMemoryHistoryIndexHandler } from "./handler";
 import {
   decodeMemoryEpisodeExtraction,
   MEMORY_EPISODE_TOOL_NAME,
-  createPrismaMemoryEpisodeRepository
+  createPrismaMemoryEpisodeRepository,
+  memoryEpisodeRedreamJobFingerprint
 } from "./episode";
+import { MEMORY_LEXICAL_NORMALIZATION_VERSION } from "../persistence/lexical";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
   MEMORY_TEMPORARY_DELETION_GENERATION,
@@ -125,6 +127,11 @@ async function createOwner(prefix: string) {
     where: { userId }
   });
   return userId;
+}
+
+async function cleanupOwner(userId: string): Promise<void> {
+  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
+  await prisma.user.deleteMany({ where: { id: userId } });
 }
 
 async function claimHistoryJob(userId: string): Promise<MemoryJobClaim> {
@@ -386,7 +393,7 @@ describe("Memory lexical history index persistence", () => {
         where: { chatId: chat.id, state: "INVALIDATED", userId }
       })).resolves.toBe(1);
     } finally {
-      await prisma.user.deleteMany({ where: { id: userId } });
+      await cleanupOwner(userId);
     }
   });
 
@@ -514,8 +521,54 @@ describe("Memory lexical history index persistence", () => {
       await expect(prisma.memoryEpisode.count({ where: { userId } })).resolves.toBe(1);
       await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
         .resolves.toMatchObject({ memoryRevision: after.memoryRevision });
+
+      await prisma.memorySearchEntry.deleteMany({
+        where: { episodeId: episode.id, userId }
+      });
+      await prisma.memoryEpisodeMessage.deleteMany({
+        where: { episodeId: episode.id, userId }
+      });
+      await prisma.memoryEpisode.delete({ where: { id: episode.id } });
+      if (
+        claim.activeLeafMessageId === null ||
+        claim.branchGeneration === null ||
+        claim.chatId === null ||
+        claim.sourceHash === null ||
+        claim.sourceRevision === null
+      ) throw new Error("episode_claim_source_missing");
+      const redreamClaim = {
+        ...claim,
+        idempotencyFingerprint: memoryEpisodeRedreamJobFingerprint(randomUUID(), {
+          activeLeafMessageId: claim.activeLeafMessageId,
+          branchGeneration: claim.branchGeneration,
+          chatId: claim.chatId,
+          sourceHash: claim.sourceHash,
+          sourceRevision: claim.sourceRevision,
+          userId
+        })
+      };
+      await expect(repository.alreadyApplied(
+        redreamClaim,
+        `episode-redream-binding-${randomUUID()}`
+      )).resolves.toBe(false);
+      await prisma.memorySuppression.create({
+        data: {
+          deletionGeneration: after.memoryGeneration,
+          explicitOverrideAllowed: true,
+          fingerprintKeyVersion: "history-test-v1",
+          normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+          scope: "SOURCE_MESSAGE",
+          sourceBranchGeneration: claim.branchGeneration,
+          sourceChatId: claim.chatId,
+          sourceMessageId: prepared.input.chunks[0]!.messageIds[0]!,
+          userId
+        }
+      });
+      await expect(repository.prepare(redreamClaim)).resolves.toMatchObject({
+        decision: { status: "STALE" }
+      });
     } finally {
-      await prisma.user.deleteMany({ where: { id: userId } });
+      await cleanupOwner(userId);
     }
   });
 
@@ -584,7 +637,7 @@ describe("Memory lexical history index persistence", () => {
         where: { itemType: "EPISODE", userId }
       })).resolves.toBe(0);
     } finally {
-      await prisma.user.deleteMany({ where: { id: userId } });
+      await cleanupOwner(userId);
     }
   });
 
@@ -646,7 +699,7 @@ describe("Memory lexical history index persistence", () => {
         where: { userId_chatId: { chatId: chat.id, userId } }
       })).resolves.toMatchObject({ status: "STALE" });
     } finally {
-      await prisma.user.deleteMany({ where: { id: userId } });
+      await cleanupOwner(userId);
     }
   });
 
@@ -772,7 +825,7 @@ describe("Memory lexical history index persistence", () => {
         newTurn.userMessage.id
       ].sort());
     } finally {
-      await prisma.user.deleteMany({ where: { id: userId } });
+      await cleanupOwner(userId);
     }
   });
 
@@ -924,7 +977,7 @@ describe("Memory lexical history index persistence", () => {
       expect(chunks[0]?.safeProjectedText).not.toContain("Grounded answer");
       expect(JSON.stringify(chunks)).not.toContain("transient result");
     } finally {
-      await prisma.user.deleteMany({ where: { id: userId } });
+      await cleanupOwner(userId);
     }
   });
 });

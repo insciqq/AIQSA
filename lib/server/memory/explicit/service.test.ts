@@ -160,7 +160,7 @@ describe("explicit Memory service", () => {
     expect(JSON.stringify(vi.mocked(authorizations.mint).mock.calls)).not.toContain(STATEMENT);
   });
 
-  it("mints Move scope authorization and rejects only unshipped bulk lifecycle actions", async () => {
+  it("mints shipped Move, clear-history, and redream authorizations", async () => {
     const authorizations = authorizationRepository();
     const service = createExplicitMemoryService({
       authorizationRepository: authorizations,
@@ -184,8 +184,24 @@ describe("explicit Memory service", () => {
       expectedSettingsRevision: 2,
       operation: "CLEAR_HISTORY_INDEX",
       requestNonce: "nonce-clear-history"
+    })).resolves.toMatchObject({ mutationAuthorizationId: "authorization-1" });
+    await expect(service.mintAuthorization("user-1", {
+      action: "BULK_DELETE",
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      expectedMemoryRevision: 4,
+      expectedSettingsRevision: 2,
+      operation: "REDREAM_EXISTING_CHATS",
+      requestNonce: "nonce-redream"
+    })).resolves.toMatchObject({ mutationAuthorizationId: "authorization-1" });
+    await expect(service.mintAuthorization("user-1", {
+      action: "BULK_DELETE",
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      expectedMemoryRevision: 4,
+      expectedSettingsRevision: 2,
+      operation: "DELETE_LEARNED",
+      requestNonce: "nonce-delete-learned"
     })).rejects.toEqual(new ExplicitMemoryServiceError("memory_operation_unsupported"));
-    expect(authorizations.mint).toHaveBeenCalledTimes(1);
+    expect(authorizations.mint).toHaveBeenCalledTimes(3);
   });
 
   it("commits the exact display statement through an authorized local lexical write", async () => {

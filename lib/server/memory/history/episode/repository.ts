@@ -39,6 +39,7 @@ import {
   memoryEpisodeExtractionInputHash,
   memoryEpisodeExtractionOutputHash,
   memoryEpisodeId,
+  memoryEpisodeRedreamBatchId,
   memoryEpisodeSourceWindowHash,
   type MemoryEpisodeExtractionInput,
   type MemoryEpisodeExtractionPlan,
@@ -82,6 +83,60 @@ function sourceMatchesJob(
   );
 }
 
+async function sourceHasActiveSuppression(
+  tx: MemoryTransaction,
+  job: MemoryJobDescriptor & MemoryEpisodeSourceIdentity
+): Promise<boolean> {
+  const rows = await tx.$queryRaw<Array<{ suppressed: boolean }>>(Prisma.sql`
+    SELECT EXISTS (
+      SELECT 1
+      FROM "MemorySuppression" AS suppression
+      WHERE suppression."userId" = ${job.userId}
+        AND (
+          suppression."expiresAt" IS NULL
+          OR suppression."expiresAt" > CURRENT_TIMESTAMP
+        )
+        AND (
+          suppression."scope" = 'ALL'::"MemorySuppressionScope"
+          OR (
+            suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+            AND suppression."sourceChatId" = ${job.chatId}
+            AND (
+              suppression."sourceBranchGeneration" IS NULL
+              OR suppression."sourceBranchGeneration" = ${job.branchGeneration}
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM "MemoryRecallChunk" AS chunk
+              INNER JOIN "MemoryRecallChunkMessage" AS source_message
+                ON source_message."userId" = chunk."userId"
+                AND source_message."chunkId" = chunk."id"
+              WHERE chunk."userId" = suppression."userId"
+                AND chunk."chatId" = ${job.chatId}
+                AND chunk."branchGeneration" = ${job.branchGeneration}
+                AND chunk."sourceRevisionAtCreation" = ${job.sourceRevision}
+                AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
+                AND source_message."messageId" = suppression."sourceMessageId"
+            )
+          )
+          OR (
+            suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
+            AND EXISTS (
+              SELECT 1
+              FROM "MemoryEpisode" AS episode
+              WHERE episode."userId" = suppression."userId"
+                AND episode."id" = suppression."sourceEpisodeId"
+                AND episode."chatId" = ${job.chatId}
+                AND episode."branchGeneration" = ${job.branchGeneration}
+                AND episode."sourceRevisionAtCreation" = ${job.sourceRevision}
+            )
+          )
+        )
+    ) AS "suppressed"
+  `);
+  return rows[0]?.suppressed === true;
+}
+
 async function probeWith(
   tx: MemoryTransaction,
   job: MemoryJobDescriptor
@@ -103,6 +158,7 @@ async function probeWith(
     return staleDecision;
   }
   if (!settings.referenceChatHistory) return disabledDecision;
+  if (await sourceHasActiveSuppression(tx, job)) return staleDecision;
   const checkpoint = await tx.chatMemoryCheckpoint.findUnique({
     select: {
       activeLeafMessageId: true,
@@ -320,7 +376,8 @@ async function alreadyAppliedWith(
   const count = await tx.memoryEpisode.count({
     where: { createdByExecutionId: bindingId, userId: job.userId }
   });
-  return count > 0 || checkpoint.lastDreamedMessageId === job.activeLeafMessageId;
+  return count > 0 ||
+    memoryEpisodeRedreamBatchId(job.idempotencyFingerprint) === null;
 }
 
 function expectedEpisodeId(
@@ -382,18 +439,28 @@ async function applyPlan(
       where: { id: { in: ids }, state: "ACTIVE", userId: claim.userId }
     });
   }
+  const plannedIds = plan.episodes.map((_, ordinal) => expectedEpisodeId(plan, ordinal));
+  const suppressedIds = plannedIds.length === 0
+    ? new Set<string>()
+    : new Set((await tx.memorySuppression.findMany({
+        select: { sourceEpisodeId: true },
+        where: {
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+          scope: "SOURCE_EPISODE",
+          sourceEpisodeId: { in: plannedIds },
+          userId: claim.userId
+        }
+      })).flatMap(({ sourceEpisodeId }) => sourceEpisodeId ? [sourceEpisodeId] : []));
   for (let ordinal = 0; ordinal < plan.episodes.length; ordinal += 1) {
     const episode = plan.episodes[ordinal]!;
-    const id = expectedEpisodeId(plan, ordinal);
-    await tx.memoryEpisode.create({
-      data: {
+    const id = plannedIds[ordinal]!;
+    if (suppressedIds.has(id)) continue;
+    const episodeData = {
         branchGeneration: claim.branchGeneration!,
         chatId: claim.chatId!,
-        createdAt: now,
         createdByExecutionId: bindingId,
         entities: [...episode.entities],
         extractorRole: "MEMORY_EPISODE_EXTRACT",
-        id,
         keywords: [...episode.keywords],
         languageCode: episode.languageCode,
         normalizedSafeSearchText: normalizeMemorySearchText(episode.safeSummary),
@@ -409,9 +476,19 @@ async function applyPlan(
         sourceHash: claim.sourceHash!,
         sourceProjectionVersion: episode.sourceProjectionVersion,
         sourceRevisionAtCreation: claim.sourceRevision!,
-        state: "ACTIVE",
+        state: "ACTIVE" as const,
         userId: claim.userId
-      }
+    };
+    await tx.memoryEpisode.upsert({
+      create: { ...episodeData, createdAt: now, id },
+      update: {
+        ...episodeData,
+        invalidatedAt: null
+      },
+      where: { id }
+    });
+    await tx.memoryEpisodeMessage.deleteMany({
+      where: { episodeId: id, userId: claim.userId }
     });
     await tx.memoryEpisodeMessage.createMany({
       data: episode.messageIds.map((messageId, messageOrdinal) => ({

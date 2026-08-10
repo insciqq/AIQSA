@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { MemoryDeletionStatus } from "../../../contracts/memory";
+import type { MemoryBulkDeleteOperation } from "../../../contracts/memory";
 import { prisma } from "../../prisma";
 import type { MemoryMutationAuthorizationUse } from "../persistence/authorizations";
 import { consumeMemoryMutationAuthorization } from "../persistence/authorizations";
@@ -22,6 +23,10 @@ import {
 import { auditMemoryDeletion } from "../purge/reconciliation";
 import type { MemoryDeletionContributorRegistry } from "../purge/registry";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
+import {
+  MEMORY_HISTORY_CLEAR_TARGET_TYPE,
+  auditMemoryHistoryClearDeletion
+} from "../history/purge";
 
 type ActiveFactRow = Readonly<{
   canonicalKey: string;
@@ -64,6 +69,7 @@ export type MemoryForgetMutationInput = LifecycleMutationCommon & Readonly<{
 export type MemoryDeleteExplicitMutationInput = LifecycleMutationCommon & Readonly<{
   expectedMemoryRevision: number;
   expectedSettingsRevision: number;
+  operation: Extract<MemoryBulkDeleteOperation, "CLEAR_HISTORY_INDEX" | "DELETE_EXPLICIT">;
 }>;
 
 export type MemoryForgetMutationResult = Readonly<{
@@ -237,7 +243,11 @@ async function persistReceipt(
       outcome: "APPLIED",
       persistedToolCallId: input.persistedToolCallId,
       requestId: input.requestId,
-      resultCode: action === "FORGET" ? "forgotten" : "delete_explicit_admitted",
+      resultCode: action === "FORGET"
+        ? "forgotten"
+        : "operation" in input && input.operation === "CLEAR_HISTORY_INDEX"
+          ? "clear_history_admitted"
+          : "delete_explicit_admitted",
       resultSnapshot: receiptSnapshot(result, input.idempotencyPayloadHash),
       targetFactId: target?.factId,
       targetVersionId: target?.versionId,
@@ -535,19 +545,6 @@ export async function readPrismaMemoryDeletionStatus(
   if (!boundedIdPattern.test(deletionId)) {
     return memoryPersistenceFailure("memory_input_invalid");
   }
-  const audited = await auditMemoryDeletion(
-    contributors,
-    deletionId,
-    userId,
-    client
-  );
-  if (!audited) return null;
-  if (
-    audited.targetId !== MEMORY_DELETE_EXPLICIT_TARGET_ID ||
-    !audited.targetType.startsWith("EXPLICIT_SET@")
-  ) {
-    return null;
-  }
   const receipts = await client.$queryRaw<Array<{
     resultSnapshot: Prisma.JsonValue;
   }>>(Prisma.sql`
@@ -565,25 +562,59 @@ export async function readPrismaMemoryDeletionStatus(
       typeof receiptValue === "object"
     ? receiptValue as Record<string, Prisma.JsonValue>
     : null;
+  if (!receipt) return null;
+  const memoryRevision = receipt.memoryRevision;
+  const settingsRevision = receipt.settingsRevision;
   if (
-    !receipt ||
-    typeof receipt.memoryRevision !== "number" ||
-    !Number.isSafeInteger(receipt.memoryRevision) ||
-    receipt.memoryRevision < 0 ||
-    typeof receipt.settingsRevision !== "number" ||
-    !Number.isSafeInteger(receipt.settingsRevision) ||
-    receipt.settingsRevision < 0
+    typeof memoryRevision !== "number" ||
+    !Number.isSafeInteger(memoryRevision) ||
+    memoryRevision < 0 ||
+    typeof settingsRevision !== "number" ||
+    !Number.isSafeInteger(settingsRevision) ||
+    settingsRevision < 0
   ) {
     return memoryPersistenceFailure("memory_counter_contract_invalid");
+  }
+  const clear = await auditMemoryHistoryClearDeletion(
+    deletionId,
+    userId,
+    client
+  );
+  if (clear) {
+    return {
+      completedUnits: clear.completedUnits,
+      deletionId,
+      lastAuditAt: clear.lastAuditAt?.toISOString() ?? null,
+      memoryGeneration: clear.memoryGeneration,
+      memoryRevision,
+      operation: "CLEAR_HISTORY_INDEX",
+      settingsRevision,
+      state: clear.state,
+      totalUnits: clear.totalUnits,
+      updatedAt: clear.updatedAt.toISOString()
+    };
+  }
+  const audited = await auditMemoryDeletion(
+    contributors,
+    deletionId,
+    userId,
+    client
+  );
+  if (
+    !audited ||
+    audited.targetId !== MEMORY_DELETE_EXPLICIT_TARGET_ID ||
+    !audited.targetType.startsWith("EXPLICIT_SET@")
+  ) {
+    return null;
   }
   return {
     completedUnits: audited.progress.completedUnits,
     deletionId: audited.id,
     lastAuditAt: audited.lastAuditAt?.toISOString() ?? null,
     memoryGeneration: audited.memoryGeneration,
-    memoryRevision: receipt.memoryRevision,
+    memoryRevision,
     operation: "DELETE_EXPLICIT",
-    settingsRevision: receipt.settingsRevision,
+    settingsRevision,
     state: audited.state,
     totalUnits: audited.progress.totalUnits,
     updatedAt: audited.updatedAt.toISOString()
@@ -596,12 +627,120 @@ export function createPrismaMemoryLifecycleRepository(
   client: PrismaClient = prisma
 ) {
   return Object.freeze({
+    async clearHistory(
+      userId: string,
+      input: MemoryDeleteExplicitMutationInput
+    ): Promise<MemoryDeleteExplicitMutationResult> {
+      validateCommon(input);
+      if (
+        input.operation !== "CLEAR_HISTORY_INDEX" ||
+        input.authorization.action !== "BULK_DELETE" ||
+        !Number.isSafeInteger(input.expectedMemoryRevision) ||
+        input.expectedMemoryRevision < 0 ||
+        !Number.isSafeInteger(input.expectedSettingsRevision) ||
+        input.expectedSettingsRevision < 0
+      ) {
+        return memoryPersistenceFailure("memory_input_invalid");
+      }
+      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        const replay = await replayReceipt(tx, userId, "BULK_DELETE", input);
+        if (replay) return replay as MemoryDeleteExplicitMutationResult;
+        requireBulkCas(settings, input);
+        await consumeMemoryMutationAuthorization(tx, userId, {
+          ...input.authorization,
+          requestId: input.requestId
+        }, input.now);
+        const [chunks, episodes] = await Promise.all([
+          tx.memoryRecallChunk.count({ where: { userId } }),
+          tx.memoryEpisode.count({ where: { userId } })
+        ]);
+        await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
+        const barrierId = randomUUID();
+        await tx.memorySourceBarrier.create({
+          data: {
+            explicitOverrideAllowed: false,
+            id: barrierId,
+            kind: "HISTORY_INDEX",
+            memoryGeneration: settings.memoryGeneration,
+            sourceCreatedAtCutoff: input.now,
+            userId
+          }
+        });
+        await tx.memorySearchEntry.deleteMany({
+          where: {
+            OR: [
+              { episodeId: { not: null } },
+              { recallChunkId: { not: null } }
+            ],
+            userId
+          }
+        });
+        await tx.memoryEpisode.updateMany({
+          data: { invalidatedAt: input.now, state: "INVALIDATED" },
+          where: { state: "ACTIVE", userId }
+        });
+        await tx.memoryRecallChunk.updateMany({
+          data: { invalidatedAt: input.now, state: "INVALIDATED" },
+          where: { state: "ACTIVE", userId }
+        });
+        await tx.chatMemoryCheckpoint.updateMany({
+          data: {
+            lastDreamedMessageId: null,
+            lastErrorCode: "memory_history_cleared",
+            lastIndexedMessageId: null,
+            lastSucceededAt: null,
+            status: "STALE"
+          },
+          where: { userId }
+        });
+        await tx.memoryJob.updateMany({
+          data: {
+            completedAt: input.now,
+            errorCode: "memory_history_cleared",
+            leaseExpiresAt: null,
+            leaseToken: null,
+            nextAttemptAt: null,
+            state: "CANCELLED",
+            updatedAt: input.now
+          },
+          where: {
+            kind: { in: ["EXTRACT_EPISODE", "INDEX_HISTORY"] },
+            state: {
+              in: [
+                "CLAIMED",
+                "QUEUED",
+                "RETRYABLE_FAILED",
+                "WAITING_FOR_EGRESS_CONSENT"
+              ]
+            },
+            userId
+          }
+        });
+        const deletion = await enqueueMemoryDeletion(tx, settings, {
+          operation: "BULK_CLEAR",
+          targetId: barrierId,
+          targetType: MEMORY_HISTORY_CLEAR_TARGET_TYPE
+        });
+        const result: MemoryDeleteExplicitMutationResult = {
+          affectedFacts: chunks + episodes,
+          deletionId: deletion.id,
+          memoryGeneration: settings.memoryGeneration,
+          memoryRevision: settings.memoryRevision,
+          replayed: false,
+          settingsRevision: settings.settingsRevision
+        };
+        await persistReceipt(tx, userId, "BULK_DELETE", input, result);
+        return result;
+      });
+    },
+
     async deleteExplicit(
       userId: string,
       input: MemoryDeleteExplicitMutationInput
     ): Promise<MemoryDeleteExplicitMutationResult> {
       validateCommon(input);
       if (
+        input.operation !== "DELETE_EXPLICIT" ||
         input.authorization.action !== "BULK_DELETE" ||
         !Number.isSafeInteger(input.expectedMemoryRevision) ||
         input.expectedMemoryRevision < 0 ||

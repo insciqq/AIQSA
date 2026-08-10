@@ -488,41 +488,56 @@ export function createPrismaMemoryExplicitEmbeddingHandler(
   return createMemoryExplicitEmbeddingHandler({
     execution: createPrismaMemoryExecutionService(authority, client),
     now,
-    probeAuthority: (userId, versions) => withLockedMemoryTransaction(
+    probeAuthority: (userId, versions) => probeCurrentMemoryEmbeddingPin(
+      authority,
       client,
       userId,
-      async (tx, settings) => {
-        const resolved = await resolveCurrentMemoryExecutionAuthority(tx, settings, {
-          dependencies: authority,
-          now: now(),
-          role: "MEMORY_DOCUMENT_EMBED",
-          userId,
-          versions
-        });
-        const model = resolved.target.snapshot.model;
-        const vectorSpaceFingerprint = memoryVectorSpaceFingerprint(resolved.target);
-        if (
-          model.adapterKind !== "openai_embeddings_compatible" ||
-          model.modelClass !== "embedding" ||
-          !model.embedding ||
-          !vectorSpaceFingerprint
-        ) {
-          throw new MemoryExecutionError("memory_execution_capability_unavailable");
-        }
-        return {
-          configurationFingerprint:
-            resolved.qualification.requirement.configFingerprint,
-          connectionId: resolved.target.authority.connectionId,
-          dimension: model.embedding.targetDimension,
-          providerModelId: resolved.target.authority.providerModelId,
-          vectorSpaceFingerprint
-        };
-      }
+      versions
     ),
     repository: options.repository ??
       createPrismaMemoryItemEmbeddingRepository(client),
     runtime: options.runtime ?? createAcceptedEmbeddingRuntime(client)
   });
+}
+
+export function probeCurrentMemoryEmbeddingPin(
+  authority: MemoryExecutionAuthorityDependencies,
+  client: PrismaClient,
+  userId: string,
+  versions: MemoryExecutionVersions = MEMORY_ITEM_EMBEDDING_VERSIONS
+): Promise<MemoryItemEmbeddingPin> {
+  const now = () => memoryExecutionNow(authority);
+  return withLockedMemoryTransaction(
+    client,
+    userId,
+    async (tx, settings) => {
+      const resolved = await resolveCurrentMemoryExecutionAuthority(tx, settings, {
+        dependencies: authority,
+        now: now(),
+        role: "MEMORY_DOCUMENT_EMBED",
+        userId,
+        versions
+      });
+      const model = resolved.target.snapshot.model;
+      const vectorSpaceFingerprint = memoryVectorSpaceFingerprint(resolved.target);
+      if (
+        model.adapterKind !== "openai_embeddings_compatible" ||
+        model.modelClass !== "embedding" ||
+        !model.embedding ||
+        !vectorSpaceFingerprint
+      ) {
+        throw new MemoryExecutionError("memory_execution_capability_unavailable");
+      }
+      return {
+        configurationFingerprint:
+          resolved.qualification.requirement.configFingerprint,
+        connectionId: resolved.target.authority.connectionId,
+        dimension: model.embedding.targetDimension,
+        providerModelId: resolved.target.authority.providerModelId,
+        vectorSpaceFingerprint
+      };
+    }
+  );
 }
 
 export const createMemoryItemEmbeddingHandler =

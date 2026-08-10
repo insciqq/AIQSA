@@ -56,6 +56,14 @@ function authorizations(): MemoryLifecycleAuthorizationRepository {
 
 function mutations(): MemoryLifecycleMutationRepository {
   return {
+    clearHistory: vi.fn(async () => ({
+      affectedFacts: 0,
+      deletionId: "deletion-1",
+      memoryGeneration: 4,
+      memoryRevision: 8,
+      replayed: false,
+      settingsRevision: 2
+    })),
     deleteExplicit: vi.fn(async () => ({
       affectedFacts: 2,
       deletionId: "deletion-1",
@@ -147,6 +155,35 @@ describe("Memory lifecycle service", () => {
         operation: "DELETE_EXPLICIT"
       })
     });
+  });
+
+  it("dispatches CLEAR_HISTORY_INDEX through its dedicated fenced mutation", async () => {
+    const authorizationRepository = authorizations();
+    const mutationRepository = mutations();
+    const clearStatus: MemoryDeletionStatus = {
+      ...pendingStatus,
+      operation: "CLEAR_HISTORY_INDEX"
+    };
+    const service = createMemoryLifecycleService({
+      authorizationRepository,
+      mutationRepository: {
+        ...mutationRepository,
+        status: vi.fn(async () => clearStatus)
+      },
+      readRepository: { get: vi.fn(async () => forgottenSummary) }
+    });
+
+    await expect(service.deleteExplicit("user-1", {
+      expectedMemoryRevision: 7,
+      expectedSettingsRevision: 2,
+      mutationAuthorizationId: "authorization-clear-1",
+      operation: "CLEAR_HISTORY_INDEX"
+    })).resolves.toEqual(clearStatus);
+    expect(mutationRepository.clearHistory).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({ operation: "CLEAR_HISTORY_INDEX" })
+    );
+    expect(mutationRepository.deleteExplicit).not.toHaveBeenCalled();
   });
 
   it("rejects later bulk variants and hides absent status", async () => {
