@@ -21,6 +21,7 @@ import {
   MemoryExecutionError,
   resolveCurrentMemoryExecutionAuthority,
   type MemoryExecutionAuthorityDependencies,
+  type MemoryExecutionVersions,
   type MemoryReportedUsage,
   type PrismaMemoryExecutionService
 } from "../execution";
@@ -28,19 +29,22 @@ import { memoryExecutionSha256 } from "../execution/canonical";
 import { memoryVectorSpaceFingerprint } from "../execution/policy";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
-  MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION,
   MEMORY_EXPLICIT_EMBEDDING_VERSIONS,
-  memoryExplicitEmbeddingGenerationMatchesPin,
+  MEMORY_ITEM_EMBEDDING_VERSIONS,
   memoryExplicitEmbeddingInputHash,
   memoryExplicitEmbeddingOutputHash,
-  memoryExplicitEmbeddingPinFromSnapshot,
-  parseMemoryExplicitEmbeddingJobFingerprint,
-  type MemoryExplicitEmbeddingPin,
-  type MemoryExplicitEmbeddingTarget
+  memoryItemEmbeddingGenerationMatchesPin,
+  memoryItemEmbeddingInputHash,
+  memoryItemEmbeddingOutputHash,
+  memoryItemEmbeddingPinFromSnapshot,
+  parseMemoryEmbeddingJobFingerprint,
+  type MemoryEmbeddingJobIdentity,
+  type MemoryItemEmbeddingPin,
+  type MemoryItemEmbeddingTarget
 } from "./contract";
 import {
-  createPrismaMemoryExplicitEmbeddingRepository,
-  type MemoryExplicitEmbeddingRepository
+  createPrismaMemoryItemEmbeddingRepository,
+  type MemoryItemEmbeddingRepository
 } from "./repository";
 
 type AcceptedEmbeddingRuntime = ReturnType<
@@ -50,10 +54,16 @@ type AcceptedEmbeddingRuntime = ReturnType<
 export type MemoryExplicitEmbeddingHandlerDependencies = Readonly<{
   execution: PrismaMemoryExecutionService;
   now: () => Date;
-  probeAuthority: (userId: string) => Promise<MemoryExplicitEmbeddingPin>;
-  repository: MemoryExplicitEmbeddingRepository;
+  probeAuthority: (
+    userId: string,
+    versions: MemoryExecutionVersions
+  ) => Promise<MemoryItemEmbeddingPin>;
+  repository: MemoryItemEmbeddingRepository;
   runtime: AcceptedEmbeddingRuntime;
 }>;
+
+export type MemoryItemEmbeddingHandlerDependencies =
+  MemoryExplicitEmbeddingHandlerDependencies;
 
 const unavailableUsage: MemoryReportedUsage = Object.freeze({
   cachedInputTokens: null,
@@ -93,7 +103,7 @@ function resultUsage(result: EmbeddingResult): MemoryReportedUsage {
 
 function terminalResult(
   job: MemoryJobDescriptor,
-  target: MemoryExplicitEmbeddingTarget | null,
+  target: MemoryItemEmbeddingTarget | null,
   reason: string
 ): MemoryJobExecutionResult {
   return {
@@ -101,6 +111,8 @@ function terminalResult(
       domain: "aiqsa.memory.explicit-embedding-local-terminal",
       entryId: target?.entryId ?? null,
       generationId: target?.generation.id ?? null,
+      itemId: target?.itemId ?? null,
+      itemType: target?.itemType ?? null,
       jobId: job.id,
       reason,
       safeContentHash: target?.safeContentHash ?? null,
@@ -139,7 +151,7 @@ function authorityGate(error: unknown) {
 }
 
 function runtimeEvidence(
-  snapshot: Parameters<typeof memoryExplicitEmbeddingPinFromSnapshot>[0]
+  snapshot: Parameters<typeof memoryItemEmbeddingPinFromSnapshot>[0]
 ): AcceptedEmbeddingRuntimeEvidence {
   const provider = snapshot.providerExecutionSnapshot;
   if (!provider.credentialId || !provider.credentialVersionId) {
@@ -155,7 +167,7 @@ function runtimeEvidence(
 }
 
 function maxOrdinal(bindings: Awaited<
-  ReturnType<MemoryExplicitEmbeddingRepository["bindings"]>
+  ReturnType<MemoryItemEmbeddingRepository["bindings"]>
 >): number {
   return bindings.reduce((maximum, binding) =>
     Math.max(maximum, binding.ordinal), -1);
@@ -164,10 +176,10 @@ function maxOrdinal(bindings: Awaited<
 async function settleAbandonedBindings(
   deps: MemoryExplicitEmbeddingHandlerDependencies,
   job: MemoryJobDescriptor,
-  target: MemoryExplicitEmbeddingTarget,
+  target: MemoryItemEmbeddingTarget,
   inputHash: string
 ): Promise<Readonly<{
-  bindings: Awaited<ReturnType<MemoryExplicitEmbeddingRepository["bindings"]>>;
+  bindings: Awaited<ReturnType<MemoryItemEmbeddingRepository["bindings"]>>;
   succeededHash: string | null;
 }>> {
   const bindings = await deps.repository.bindings(job.userId, job.id);
@@ -209,6 +221,31 @@ async function settleAbandonedBindings(
   return { bindings, succeededHash: null };
 }
 
+function contractFor(
+  identity: MemoryEmbeddingJobIdentity,
+  target: MemoryItemEmbeddingTarget
+): Readonly<{
+  inputHash: string;
+  outputHash: (vector: readonly number[]) => string;
+  versions: MemoryExecutionVersions;
+}> | null {
+  if (identity.contract === "EXPLICIT_V1") {
+    if (target.itemType !== "FACT_VERSION") return null;
+    const inputHash = memoryExplicitEmbeddingInputHash(target);
+    return {
+      inputHash,
+      outputHash: (vector) => memoryExplicitEmbeddingOutputHash({ inputHash, vector }),
+      versions: MEMORY_EXPLICIT_EMBEDDING_VERSIONS
+    };
+  }
+  const inputHash = memoryItemEmbeddingInputHash(target);
+  return {
+    inputHash,
+    outputHash: (vector) => memoryItemEmbeddingOutputHash({ inputHash, vector }),
+    versions: MEMORY_ITEM_EMBEDDING_VERSIONS
+  };
+}
+
 export function createMemoryExplicitEmbeddingHandler(
   deps: MemoryExplicitEmbeddingHandlerDependencies
 ): MemoryJobHandler {
@@ -216,12 +253,12 @@ export function createMemoryExplicitEmbeddingHandler(
     kind: "EMBED_ITEMS" as const,
 
     async preflight(job) {
-      const identity = parseMemoryExplicitEmbeddingJobFingerprint(
+      const identity = parseMemoryEmbeddingJobFingerprint(
         job.idempotencyFingerprint
       );
       if (
         job.kind !== "EMBED_ITEMS" ||
-        job.pipelineVersion !== MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION ||
+        job.pipelineVersion !== identity?.pipelineVersion ||
         !identity
       ) {
         return {
@@ -233,10 +270,14 @@ export function createMemoryExplicitEmbeddingHandler(
       if (!target) {
         return { errorCode: "memory_embedding_target_stale", status: "STALE" };
       }
+      const contract = contractFor(identity, target);
+      if (!contract) {
+        return { errorCode: "memory_embedding_target_stale", status: "STALE" };
+      }
       if (target.embeddingState === "READY") return { status: "READY" };
       try {
-        const pin = await deps.probeAuthority(job.userId);
-        if (!memoryExplicitEmbeddingGenerationMatchesPin(target.generation, pin)) {
+        const pin = await deps.probeAuthority(job.userId, contract.versions);
+        if (!memoryItemEmbeddingGenerationMatchesPin(target.generation, pin)) {
           return {
             errorCode: "memory_embedding_generation_changed",
             status: "CANCELLED"
@@ -249,13 +290,17 @@ export function createMemoryExplicitEmbeddingHandler(
     },
 
     async execute(job, context) {
-      const identity = parseMemoryExplicitEmbeddingJobFingerprint(
+      const identity = parseMemoryEmbeddingJobFingerprint(
         job.idempotencyFingerprint
       );
       if (!identity) return terminalResult(job, null, "invalid");
       const target = await deps.repository.loadTarget(job.userId, identity.entryId);
       if (!target) return terminalResult(job, null, "stale");
-      const inputHash = memoryExplicitEmbeddingInputHash(target);
+      const contract = contractFor(identity, target);
+      if (!contract || job.pipelineVersion !== identity.pipelineVersion) {
+        return terminalResult(job, target, "invalid_contract");
+      }
+      const { inputHash } = contract;
       const recovered = await settleAbandonedBindings(
         deps,
         job,
@@ -272,11 +317,14 @@ export function createMemoryExplicitEmbeddingHandler(
         return terminalResult(job, target, "ready");
       }
 
-      const pin = await deps.probeAuthority(job.userId).catch((error: unknown) => {
+      const pin = await deps.probeAuthority(
+        job.userId,
+        contract.versions
+      ).catch((error: unknown) => {
         const decision = authorityGate(error);
         throw new MemoryCoordinatorError(decision.errorCode, true);
       });
-      if (!memoryExplicitEmbeddingGenerationMatchesPin(target.generation, pin)) {
+      if (!memoryItemEmbeddingGenerationMatchesPin(target.generation, pin)) {
         return terminalResult(job, target, "generation_changed");
       }
 
@@ -286,13 +334,13 @@ export function createMemoryExplicitEmbeddingHandler(
         ordinal: maxOrdinal(recovered.bindings) + 1,
         owner: { memoryJobId: job.id, type: "JOB" },
         role: "MEMORY_DOCUMENT_EMBED",
-        versions: MEMORY_EXPLICIT_EMBEDDING_VERSIONS
+        versions: contract.versions
       });
       const started = await deps.execution.admission.start(job.userId, binding.id);
-      const acceptedPin = memoryExplicitEmbeddingPinFromSnapshot(started.snapshot);
+      const acceptedPin = memoryItemEmbeddingPinFromSnapshot(started.snapshot);
       if (
         !acceptedPin ||
-        !memoryExplicitEmbeddingGenerationMatchesPin(target.generation, acceptedPin)
+        !memoryItemEmbeddingGenerationMatchesPin(target.generation, acceptedPin)
       ) {
         await deps.execution.lifecycle.settle(job.userId, binding.id, {
           acceptedOutputHash: null,
@@ -390,7 +438,7 @@ export function createMemoryExplicitEmbeddingHandler(
         await deps.repository.applyFailed(target, deps.now());
         throw new MemoryCoordinatorError("memory_embedding_output_invalid", true);
       }
-      const outputHash = memoryExplicitEmbeddingOutputHash({ inputHash, vector });
+      const outputHash = contract.outputHash(vector);
       await deps.execution.lifecycle.settle(job.userId, binding.id, {
         acceptedOutputHash: outputHash,
         errorCode: null,
@@ -401,7 +449,7 @@ export function createMemoryExplicitEmbeddingHandler(
       if (context.signal.aborted) throw context.signal.reason;
 
       await context.setStage("authorized_apply");
-      let applied: Awaited<ReturnType<MemoryExplicitEmbeddingRepository["applyReady"]>>;
+      let applied: Awaited<ReturnType<MemoryItemEmbeddingRepository["applyReady"]>>;
       try {
         applied = await deps.execution.lifecycle.withAuthorizedResultCommit(
           job.userId,
@@ -432,7 +480,7 @@ export function createPrismaMemoryExplicitEmbeddingHandler(
   authority: MemoryExecutionAuthorityDependencies,
   client: PrismaClient = prisma,
   options: Readonly<{
-    repository?: MemoryExplicitEmbeddingRepository;
+    repository?: MemoryItemEmbeddingRepository;
     runtime?: AcceptedEmbeddingRuntime;
   }> = {}
 ): MemoryJobHandler {
@@ -440,7 +488,7 @@ export function createPrismaMemoryExplicitEmbeddingHandler(
   return createMemoryExplicitEmbeddingHandler({
     execution: createPrismaMemoryExecutionService(authority, client),
     now,
-    probeAuthority: (userId) => withLockedMemoryTransaction(
+    probeAuthority: (userId, versions) => withLockedMemoryTransaction(
       client,
       userId,
       async (tx, settings) => {
@@ -449,7 +497,7 @@ export function createPrismaMemoryExplicitEmbeddingHandler(
           now: now(),
           role: "MEMORY_DOCUMENT_EMBED",
           userId,
-          versions: MEMORY_EXPLICIT_EMBEDDING_VERSIONS
+          versions
         });
         const model = resolved.target.snapshot.model;
         const vectorSpaceFingerprint = memoryVectorSpaceFingerprint(resolved.target);
@@ -472,7 +520,12 @@ export function createPrismaMemoryExplicitEmbeddingHandler(
       }
     ),
     repository: options.repository ??
-      createPrismaMemoryExplicitEmbeddingRepository(client),
+      createPrismaMemoryItemEmbeddingRepository(client),
     runtime: options.runtime ?? createAcceptedEmbeddingRuntime(client)
   });
 }
+
+export const createMemoryItemEmbeddingHandler =
+  createMemoryExplicitEmbeddingHandler;
+export const createPrismaMemoryItemEmbeddingHandler =
+  createPrismaMemoryExplicitEmbeddingHandler;

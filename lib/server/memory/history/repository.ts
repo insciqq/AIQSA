@@ -1,10 +1,15 @@
 import {
   Prisma,
+  type MemoryEmbeddingState,
   type MemoryHistoryItemState,
   type PrismaClient
 } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { MemoryCoordinatorError } from "../coordinator/errors";
+import {
+  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
+  memoryItemEmbeddingJobFingerprint
+} from "../embedding/contract";
 import type {
   MemoryJobClaim,
   MemoryJobDescriptor,
@@ -537,6 +542,15 @@ function chunkMatches(left: CurrentChunkRow, right: MemoryHistoryPreparedChunk):
     left.state === "ACTIVE";
 }
 
+function embeddingStateMatchesIndex(
+  indexMode: MemoryActiveIndex["indexMode"],
+  state: MemoryEmbeddingState
+): boolean {
+  return indexMode === "LEXICAL_ONLY"
+    ? state === "NOT_APPLICABLE"
+    : state === "PENDING" || state === "READY" || state === "FAILED";
+}
+
 async function planAlreadyApplied(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
@@ -624,9 +638,7 @@ async function planAlreadyApplied(
     const entry = entries.find((candidate) => candidate.recallChunkId === chunk.id);
     const expected = expectedSearchEntry(plan, chunk);
     return Boolean(entry) &&
-      entry!.embeddingState === (activeIndex.indexMode === "LEXICAL_ONLY"
-        ? "NOT_APPLICABLE"
-        : "PENDING") &&
+      embeddingStateMatchesIndex(activeIndex.indexMode, entry!.embeddingState) &&
       entry!.languageCode === expected.languageCode &&
       entry!.safeContentHash === expected.safeContentHash &&
       entry!.safeSearchText === expected.safeSearchText &&
@@ -642,7 +654,7 @@ async function persistChunk(
   activeIndex: MemoryActiveIndex,
   plan: MemoryHistoryIndexPlan,
   chunk: MemoryHistoryPreparedChunk
-): Promise<void> {
+): Promise<Readonly<{ embeddingState: MemoryEmbeddingState; id: string }>> {
   await tx.memoryRecallChunk.upsert({
     create: {
       branchGeneration: chunk.branchGeneration,
@@ -711,7 +723,7 @@ async function persistChunk(
     }
   });
   const expected = expectedSearchEntry(plan, chunk);
-  await tx.memorySearchEntry.create({
+  return tx.memorySearchEntry.create({
     data: {
       embeddingState: activeIndex.indexMode === "LEXICAL_ONLY"
         ? "NOT_APPLICABLE"
@@ -727,7 +739,25 @@ async function persistChunk(
       sourceIdentitySnapshot: expected.sourceIdentitySnapshot,
       suppressionIdentitySnapshot: expected.suppressionIdentitySnapshot,
       userId: chunk.userId
-    }
+    },
+    select: { embeddingState: true, id: true }
+  });
+}
+
+async function enqueueChunkEmbedding(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  entry: Readonly<{ embeddingState: MemoryEmbeddingState; id: string }>,
+  triggerIdentity: string
+): Promise<void> {
+  if (entry.embeddingState !== "PENDING") return;
+  await enqueueMemoryJob(tx, settings, {
+    idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
+      entry.id,
+      triggerIdentity
+    ),
+    kind: "EMBED_ITEMS",
+    pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
   });
 }
 
@@ -774,6 +804,19 @@ async function applyPlan(
     throw new MemoryCoordinatorError("memory_history_plan_stale", true);
   }
   if (await planAlreadyApplied(tx, settings, plan)) {
+    const pendingEntries = await tx.memorySearchEntry.findMany({
+      select: { embeddingState: true, id: true },
+      where: {
+        embeddingState: "PENDING",
+        indexGenerationId: settings.activeIndexGenerationId!,
+        itemType: "RECALL_CHUNK",
+        recallChunkId: { in: plan.chunks.map((chunk) => chunk.id) },
+        userId: plan.source.userId
+      }
+    });
+    for (const entry of pendingEntries) {
+      await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
+    }
     if (plan.chunks.length > 0) {
       await enqueueMemoryJob(tx, settings, {
         idempotencyFingerprint: memoryEpisodeExtractionJobFingerprint(plan.source),
@@ -822,7 +865,13 @@ async function applyPlan(
     throw new MemoryCoordinatorError("memory_active_generation_invalid", false);
   }
   for (const chunk of plan.chunks) {
-    await persistChunk(tx, activeIndex!, plan, chunk);
+    const entry = await persistChunk(tx, activeIndex!, plan, chunk);
+    await enqueueChunkEmbedding(
+      tx,
+      settings,
+      entry,
+      plan.resultHash
+    );
   }
   await tx.chatMemoryCheckpoint.upsert({
     create: {

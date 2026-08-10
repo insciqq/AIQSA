@@ -1,10 +1,15 @@
-import type { MemoryEmbeddingState } from "@prisma/client";
+import type {
+  MemoryEmbeddingState,
+  MemorySearchItemType
+} from "@prisma/client";
 import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { memorySha256 } from "../persistence/lexical";
 
+/** Kept executable for queued Phase 2 fact jobs. */
 export const MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION =
   "memory-explicit-embed-v1";
+export const MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION = "memory-item-embed-v1";
 
 export const MEMORY_EXPLICIT_EMBEDDING_VERSIONS = Object.freeze({
   pipelineVersion: MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION,
@@ -14,13 +19,30 @@ export const MEMORY_EXPLICIT_EMBEDDING_VERSIONS = Object.freeze({
   schemaVersion: "memory-document-embed-result-v1"
 });
 
-const jobPrefix = "memory-explicit-embed-v1:";
-const jobPattern = new RegExp(
-  `^${jobPrefix}([a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}):([a-f0-9]{64})$`,
+export const MEMORY_ITEM_EMBEDDING_VERSIONS = Object.freeze({
+  pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
+  policyVersion: "memory-item-embed-policy-v1",
+  promptVersion: "memory-document-embed-v1",
+  retrievalConfigFingerprint:
+    "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v1",
+  schemaVersion: "memory-document-embed-result-v1"
+});
+
+const explicitJobPrefix = "memory-explicit-embed-v1:";
+const itemJobPrefix = "memory-item-embed-v1:";
+const uuidCapture =
+  "([a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})";
+const hashCapture = "([a-f0-9]{64})";
+const explicitJobPattern = new RegExp(
+  `^${explicitJobPrefix}${uuidCapture}:${hashCapture}$`,
+  "u"
+);
+const itemJobPattern = new RegExp(
+  `^${itemJobPrefix}${uuidCapture}:${hashCapture}$`,
   "u"
 );
 
-export type MemoryExplicitEmbeddingGeneration = Readonly<{
+export type MemoryItemEmbeddingGeneration = Readonly<{
   embeddingConfigurationFingerprint: string | null;
   embeddingConnectionId: string | null;
   embeddingDimension: number | null;
@@ -30,19 +52,44 @@ export type MemoryExplicitEmbeddingGeneration = Readonly<{
   vectorSpaceFingerprint: string | null;
 }>;
 
-export type MemoryExplicitEmbeddingTarget = Readonly<{
+type MemoryItemEmbeddingTargetBase = Readonly<{
   embeddingState: MemoryEmbeddingState;
   entryId: string;
-  factId: string;
-  factVersionId: string;
-  generation: MemoryExplicitEmbeddingGeneration;
+  generation: MemoryItemEmbeddingGeneration;
+  itemId: string;
+  itemType: MemorySearchItemType;
   safeContentHash: string;
   safeSearchText: string;
   selectedEmbeddingProviderModelId: string | null;
   userId: string;
 }>;
 
-export type MemoryExplicitEmbeddingPin = Readonly<{
+export type MemoryFactEmbeddingTarget = MemoryItemEmbeddingTargetBase & Readonly<{
+  factId: string;
+  factVersionId: string;
+  itemType: "FACT_VERSION";
+}>;
+
+export type MemoryEpisodeEmbeddingTarget = MemoryItemEmbeddingTargetBase & Readonly<{
+  episodeId: string;
+  itemType: "EPISODE";
+}>;
+
+export type MemoryRecallChunkEmbeddingTarget = MemoryItemEmbeddingTargetBase & Readonly<{
+  itemType: "RECALL_CHUNK";
+  recallChunkId: string;
+}>;
+
+export type MemoryItemEmbeddingTarget =
+  | MemoryEpisodeEmbeddingTarget
+  | MemoryFactEmbeddingTarget
+  | MemoryRecallChunkEmbeddingTarget;
+
+/** Compatibility name for the already shipped explicit-fact surface. */
+export type MemoryExplicitEmbeddingGeneration = MemoryItemEmbeddingGeneration;
+export type MemoryExplicitEmbeddingTarget = MemoryFactEmbeddingTarget;
+
+export type MemoryItemEmbeddingPin = Readonly<{
   configurationFingerprint: string;
   connectionId: string;
   dimension: number;
@@ -50,26 +97,87 @@ export type MemoryExplicitEmbeddingPin = Readonly<{
   vectorSpaceFingerprint: string;
 }>;
 
+export type MemoryExplicitEmbeddingPin = MemoryItemEmbeddingPin;
+
+function jobFingerprint(
+  prefix: string,
+  entryId: string,
+  triggerIdentity: string,
+  domain: string,
+  pattern: RegExp
+): string {
+  const candidate = `${prefix}${entryId}:${memorySha256({
+    domain,
+    triggerIdentity,
+    version: "v1"
+  })}`;
+  if (!pattern.test(candidate) || candidate.length > 128) {
+    throw new Error("memory_item_embedding_job_identity_invalid");
+  }
+  return candidate;
+}
+
 export function memoryExplicitEmbeddingJobFingerprint(
   entryId: string,
   triggerIdentity: string
 ): string {
-  const candidate = `${jobPrefix}${entryId}:${memorySha256({
-    domain: "aiqsa.memory.explicit-embedding-trigger",
+  return jobFingerprint(
+    explicitJobPrefix,
+    entryId,
     triggerIdentity,
-    version: "v1"
-  })}`;
-  if (!jobPattern.test(candidate) || candidate.length > 128) {
-    throw new Error("memory_explicit_embedding_job_identity_invalid");
+    "aiqsa.memory.explicit-embedding-trigger",
+    explicitJobPattern
+  );
+}
+
+export function memoryItemEmbeddingJobFingerprint(
+  entryId: string,
+  triggerIdentity: string
+): string {
+  return jobFingerprint(
+    itemJobPrefix,
+    entryId,
+    triggerIdentity,
+    "aiqsa.memory.item-embedding-trigger",
+    itemJobPattern
+  );
+}
+
+export type MemoryEmbeddingJobIdentity = Readonly<{
+  contract: "EXPLICIT_V1" | "ITEM_V1";
+  entryId: string;
+  pipelineVersion: string;
+  triggerHash: string;
+}>;
+
+export function parseMemoryEmbeddingJobFingerprint(
+  value: string
+): MemoryEmbeddingJobIdentity | null {
+  const explicit = explicitJobPattern.exec(value);
+  if (explicit) {
+    return {
+      contract: "EXPLICIT_V1",
+      entryId: explicit[1]!,
+      pipelineVersion: MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION,
+      triggerHash: explicit[2]!
+    };
   }
-  return candidate;
+  const item = itemJobPattern.exec(value);
+  return item ? {
+    contract: "ITEM_V1",
+    entryId: item[1]!,
+    pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
+    triggerHash: item[2]!
+  } : null;
 }
 
 export function parseMemoryExplicitEmbeddingJobFingerprint(
   value: string
 ): Readonly<{ entryId: string; triggerHash: string }> | null {
-  const match = jobPattern.exec(value);
-  return match ? { entryId: match[1]!, triggerHash: match[2]! } : null;
+  const identity = parseMemoryEmbeddingJobFingerprint(value);
+  return identity?.contract === "EXPLICIT_V1"
+    ? { entryId: identity.entryId, triggerHash: identity.triggerHash }
+    : null;
 }
 
 export function memoryExplicitEmbeddingInputHash(
@@ -80,6 +188,21 @@ export function memoryExplicitEmbeddingInputHash(
     entryId: target.entryId,
     factVersionId: target.factVersionId,
     generation: target.generation,
+    safeContentHash: target.safeContentHash,
+    safeSearchTextHash: memorySha256(target.safeSearchText),
+    version: "v1"
+  });
+}
+
+export function memoryItemEmbeddingInputHash(
+  target: MemoryItemEmbeddingTarget
+): string {
+  return memoryExecutionSha256({
+    domain: "aiqsa.memory.item-embedding-input",
+    entryId: target.entryId,
+    generation: target.generation,
+    itemId: target.itemId,
+    itemType: target.itemType,
     safeContentHash: target.safeContentHash,
     safeSearchTextHash: memorySha256(target.safeSearchText),
     version: "v1"
@@ -98,9 +221,21 @@ export function memoryExplicitEmbeddingOutputHash(input: Readonly<{
   });
 }
 
-export function memoryExplicitEmbeddingPinFromSnapshot(
+export function memoryItemEmbeddingOutputHash(input: Readonly<{
+  inputHash: string;
+  vector: readonly number[];
+}>): string {
+  return memoryExecutionSha256({
+    domain: "aiqsa.memory.item-embedding-output",
+    inputHash: input.inputHash,
+    vector: input.vector,
+    version: "v1"
+  });
+}
+
+export function memoryItemEmbeddingPinFromSnapshot(
   snapshot: MemorySecretFreeExecutionSnapshot
-): MemoryExplicitEmbeddingPin | null {
+): MemoryItemEmbeddingPin | null {
   const provider = snapshot.providerExecutionSnapshot;
   const vectorSpaceFingerprint =
     snapshot.qualificationRequirement.vectorSpaceFingerprint;
@@ -124,9 +259,12 @@ export function memoryExplicitEmbeddingPinFromSnapshot(
   };
 }
 
-export function memoryExplicitEmbeddingGenerationMatchesPin(
-  generation: MemoryExplicitEmbeddingGeneration,
-  pin: MemoryExplicitEmbeddingPin
+export const memoryExplicitEmbeddingPinFromSnapshot =
+  memoryItemEmbeddingPinFromSnapshot;
+
+export function memoryItemEmbeddingGenerationMatchesPin(
+  generation: MemoryItemEmbeddingGeneration,
+  pin: MemoryItemEmbeddingPin
 ): boolean {
   return generation.indexMode === "HYBRID" &&
     generation.embeddingConnectionId === pin.connectionId &&
@@ -135,3 +273,6 @@ export function memoryExplicitEmbeddingGenerationMatchesPin(
     generation.embeddingDimension === pin.dimension &&
     generation.vectorSpaceFingerprint === pin.vectorSpaceFingerprint;
 }
+
+export const memoryExplicitEmbeddingGenerationMatchesPin =
+  memoryItemEmbeddingGenerationMatchesPin;

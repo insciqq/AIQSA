@@ -7,11 +7,11 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 Native Memory is approved. Phases 0–3 implement contracts/evaluation, durable
 coordination, explicit Memory, scoped chat state/UI, and Temporary lifecycle.
-Phase 4 now adds its constrained schema, deterministic safe-source and taint
-projection, bounded multilingual chunks, and local `INDEX_HISTORY`. Completed
-retained turns and explicit Resume enqueue it only with
-`referenceChatHistory`; `learnAutomatically` is independent, and answer-time
-history retrieval remains unavailable.
+Phase 4 adds safe-source projection, multilingual chunks, local
+`INDEX_HISTORY`, qualified episodes/item vectors, and tenant-filtered
+exact/HNSW leaves. Retained turns and Resume enqueue indexing only with
+`referenceChatHistory`; learning stays independent. Query embedding, fusion,
+packing, and answer-time history retrieval remain unavailable.
 
 Explicit Memory supports owned `GLOBAL_USER`, `FOLDER`, `ASSISTANT`, and
 non-Temporary `CHAT` scopes. Assistant archive pauses its scope; target deletion
@@ -25,8 +25,8 @@ Chat, UserMemorySettings; source-job commit locks Chat, UserMemorySettings,
 then its MemoryJob lease. Queued/streaming payload is hash-neutral. Source
 changes invalidate stale active history rows synchronously; `INDEX_HISTORY`
 rechecks source, generation, gate, suppressions, and cutoffs before atomically
-committing chunks, joins, FTS rows, and checkpoint. Episode extraction and
-automatic learning remain unavailable.
+committing chunks, joins, FTS rows, and checkpoint. Qualified episodes commit
+safe extractive summaries under the same fence. Learning remains unavailable.
 
 Phase 1 persists default-off settings, facts/evidence/suppressions, indexes,
 jobs/deletions, execution/retrieval attempts, and final-run evidence under
@@ -107,30 +107,24 @@ vector rows, evidence, and unaccepted run context, settling affected
 status reconciliation reopens stale success with residual work. Suppression
 blocks automatic recreation; fresh explicit authority may create a new version.
 
-Explicit writes enqueue content-free `EMBED_ITEMS` only for an active HYBRID
-generation; lexical-only rows stay `NOT_APPLICABLE`. The optional handler parks
-before binding without consent, exact credential authority, or signed role
-qualification. One admitted call has one job binding/usage event and applies
-only to the exact current version, generation, content, configuration,
-dimension, and vector space. Credential rotation alone creates no generation.
-Visible READY/FAILED settlement advances revision once while FTS remains live;
-unknown results are not replayed, and Forget/generation drift blocks late apply.
+Explicit, chunk, and episode writes enqueue content-free `EMBED_ITEMS` only for
+an active HYBRID generation; lexical-only rows stay `NOT_APPLICABLE`. The handler
+parks without consent, credential authority, or signed contract qualification.
+Each call has one binding/usage event and exact item/generation/content/config/
+dimension/vector-space apply. READY/FAILED advances revision while FTS stays
+live; unknown results are not replayed, and drift blocks late apply.
 
-Past-chat/automatic/profile retrieval, answer-time reranking, split
-Memory-plus-external-tool synthesis, other lifecycle/bulk variants, and
-production-composed qualified utility calls remain unavailable. Development runs the
-feature-local coordinator; production uses the same code in private no-API
-`memory-worker`. Both preflight every historical suppression key ID, and Memory
-failure does not alter web readiness. The default registry composes
-`FORGET_PURGE`, `TEMPORARY_DELETE`, local `INDEX_HISTORY`, and optional
-`EMBED_ITEMS`; embedding parks before provider I/O
-because the code-owned qualification registry is empty and signature
-verification is fail-closed until operator-approved authority is installed.
-Explicit lexical CRUD/retrieval and history lexical indexing remain live;
-history rows are not yet admitted to answer retrieval. Per-call execution owns
-current authority/consent/qualification, immutable destination evidence,
-single-winner start, nullable usage, unknown-outcome recovery, and detach.
-Private `preparing` runs never enter public projection or provider I/O.
+Past-chat answers, automatic/profile retrieval, query embedding, fusion,
+reranking, split Memory/tool synthesis, other lifecycle/bulk variants, and
+production-qualified utility calls remain unavailable. Development and private
+`memory-worker` production use the same coordinator; Memory failure does not
+alter web readiness. Its registry composes purge, Temporary deletion, local
+indexing, qualified episodes, and optional embeddings. Remote work parks before
+I/O while the fail-closed code registry has no operator-approved qualification.
+Lexical features and the generation-safe vector repository remain live, but
+history is not yet admitted to answers. Per-call execution owns current
+authority, receipts, single-winner start, usage, recovery, and detach. Private
+`preparing` runs never reach public projection or provider I/O.
 Ordinary answers cannot create Memory. Existing chat context and folder/project
 prompt memory are separate retained-chat behavior.
 

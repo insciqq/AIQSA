@@ -6,10 +6,14 @@ import { MemoryCoordinatorError } from "../coordinator/errors";
 import { MemoryExecutionError } from "../execution";
 import {
   MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION,
+  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
+  MEMORY_ITEM_EMBEDDING_VERSIONS,
   memoryExplicitEmbeddingJobFingerprint,
   memoryExplicitEmbeddingInputHash,
+  memoryItemEmbeddingJobFingerprint,
   type MemoryExplicitEmbeddingPin,
-  type MemoryExplicitEmbeddingTarget
+  type MemoryExplicitEmbeddingTarget,
+  type MemoryItemEmbeddingTarget
 } from "./contract";
 import {
   createMemoryExplicitEmbeddingHandler,
@@ -21,7 +25,7 @@ const pin: MemoryExplicitEmbeddingPin = Object.freeze({
   connectionId: "connection-1",
   dimension: 2,
   providerModelId: "model-1",
-  vectorSpaceFingerprint: "v".repeat(64)
+  vectorSpaceFingerprint: "d".repeat(64)
 });
 
 function target(
@@ -41,6 +45,8 @@ function target(
       indexMode: "HYBRID",
       vectorSpaceFingerprint: pin.vectorSpaceFingerprint
     },
+    itemId: "version-1",
+    itemType: "FACT_VERSION",
     safeContentHash: "a".repeat(64),
     safeSearchText: "the owner prefers tea",
     selectedEmbeddingProviderModelId: pin.providerModelId,
@@ -68,6 +74,32 @@ function claim(): MemoryJobClaim {
     sourceRevision: null,
     stage: null,
     userId: "user-1"
+  };
+}
+
+function itemClaim(): MemoryJobClaim {
+  const entryId = "22222222-2222-4222-8222-222222222222";
+  return {
+    ...claim(),
+    id: randomUUID(),
+    idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(entryId, "chunk-1"),
+    pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+  };
+}
+
+function chunkTarget(): MemoryItemEmbeddingTarget {
+  const fact = target();
+  return {
+    embeddingState: fact.embeddingState,
+    entryId: "22222222-2222-4222-8222-222222222222",
+    generation: fact.generation,
+    itemId: "chunk-1",
+    itemType: "RECALL_CHUNK",
+    recallChunkId: "chunk-1",
+    safeContentHash: fact.safeContentHash,
+    safeSearchText: fact.safeSearchText,
+    selectedEmbeddingProviderModelId: fact.selectedEmbeddingProviderModelId,
+    userId: fact.userId
   };
 }
 
@@ -107,8 +139,10 @@ function snapshot() {
   };
 }
 
-function dependencies(overrides: Partial<MemoryExplicitEmbeddingHandlerDependencies> = {}) {
-  const current = target();
+function dependencies(
+  overrides: Partial<MemoryExplicitEmbeddingHandlerDependencies> = {},
+  current: MemoryItemEmbeddingTarget = target()
+) {
   const applyReady = vi.fn(async () => "APPLIED" as const);
   const applyFailed = vi.fn(async () => "APPLIED" as const);
   const settle = vi.fn(async () => ({ state: "SUCCEEDED" }));
@@ -219,9 +253,34 @@ describe("explicit Memory vector enrichment handler", () => {
     expect(fixture.applyFailed).not.toHaveBeenCalled();
   });
 
+  it("binds history-item work to the item-vector qualification contract", async () => {
+    const current = chunkTarget();
+    const fixture = dependencies({}, current);
+    const handler = createMemoryExplicitEmbeddingHandler(fixture.base);
+
+    await expect(handler.execute(itemClaim(), context())).resolves.toMatchObject({
+      stage: "vector_ready"
+    });
+    expect(fixture.bind).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({
+        role: "MEMORY_DOCUMENT_EMBED",
+        versions: MEMORY_ITEM_EMBEDDING_VERSIONS
+      })
+    );
+    expect(fixture.embed).toHaveBeenCalledWith({
+      mode: "document",
+      signal: expect.any(AbortSignal),
+      texts: [current.safeSearchText]
+    });
+  });
+
   it("degrades uncertain and recovered calls without replaying provider I/O", async () => {
     const recovered = dependencies();
     const recoveredClaim = claim();
+    if (recovered.current.itemType !== "FACT_VERSION") {
+      throw new Error("memory_embedding_test_target_invalid");
+    }
     const inputHash = memoryExplicitEmbeddingInputHash(recovered.current);
     const recoveredHandler = createMemoryExplicitEmbeddingHandler({
       ...recovered.base,

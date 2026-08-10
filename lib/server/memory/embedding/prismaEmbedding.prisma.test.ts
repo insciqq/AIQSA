@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION
 } from "../../../contracts/memory";
+import { textMessageContent } from "../../../domain/content";
 import type {
   MemoryCapabilityQualification,
   MemoryQualificationRequirement
@@ -32,7 +33,9 @@ import {
   MEMORY_LEXICAL_LANGUAGE_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
-  memorySha256
+  memorySha256,
+  normalizeMemorySearchText,
+  normalizeMemorySearchTextYo
 } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS } from "../purge/contract";
@@ -41,8 +44,13 @@ import { MemoryDeletionContributorRegistry } from "../purge/registry";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
   MEMORY_EXPLICIT_EMBEDDING_VERSIONS,
-  createPrismaMemoryExplicitEmbeddingHandler
+  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
+  MEMORY_ITEM_EMBEDDING_VERSIONS,
+  memoryItemEmbeddingJobFingerprint,
+  createPrismaMemoryExplicitEmbeddingHandler,
+  createPrismaMemoryItemEmbeddingRepository
 } from ".";
+import { createPrismaMemoryJobRepository } from "../persistence/jobs";
 
 const INITIAL_NOW = new Date("2026-08-10T12:00:00.000Z");
 const HMAC_KEY = Buffer.from("memory-explicit-embedding-test-key", "utf8");
@@ -78,9 +86,10 @@ const embeddingConfiguration = {
 function signQualification(
   requirement: MemoryQualificationRequirement
 ): MemoryCapabilityQualification {
+  const contractId = requirement.pipelineVersion.replace(/[^a-z0-9-]/giu, "-");
   const unsigned: MemoryCapabilityQualification = {
     approval: {
-      approvalId: "memory-explicit-embedding-approval-v1",
+      approvalId: `memory-embedding-${contractId}-approval-v1`,
       approved: true,
       approvedAt: "2026-08-10T00:00:00.000Z",
       approvedBy: "memory-test-operator",
@@ -89,7 +98,7 @@ function signQualification(
     },
     evidenceDigest: "e".repeat(64),
     key: requirement,
-    qualificationId: "memory-explicit-embedding-qualification-v1"
+    qualificationId: `memory-embedding-${contractId}-qualification-v1`
   };
   return {
     ...unsigned,
@@ -311,6 +320,13 @@ async function createFixture() {
     suiteVersion: "memory-explicit-embedding-suite-v1",
     vectorSpaceFingerprint
   };
+  const itemRequirement: MemoryQualificationRequirement = {
+    ...requirement,
+    ...MEMORY_ITEM_EMBEDDING_VERSIONS,
+    corpusVersion: "memory-item-embedding-corpus-v1",
+    scorerVersion: "memory-item-embedding-scorer-v1",
+    suiteVersion: "memory-item-embedding-suite-v1"
+  };
   return {
     connectionId,
     credentialId,
@@ -318,7 +334,10 @@ async function createFixture() {
     generationId: generation.id,
     modelId,
     policy,
-    qualification: signQualification(requirement),
+    qualifications: [
+      signQualification(requirement),
+      signQualification(itemRequirement)
+    ],
     userId,
     async cleanup() {
       await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
@@ -383,7 +402,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
       qualification: {
         corpusHash: CORPUS_HASH,
         corpusVersion: "memory-explicit-embedding-corpus-v1",
-        registry: [fixture.qualification],
+        registry: fixture.qualifications,
         scorerVersion: "memory-explicit-embedding-scorer-v1",
         suiteVersion: "memory-explicit-embedding-suite-v1",
         verifySignature: (payload: string, signature: string) =>
@@ -632,4 +651,302 @@ describe("Prisma explicit Memory vector enrichment", () => {
       await fixture.cleanup();
     }
   });
+
+  it("embeds a current chunk and degrades an episode outage without losing lexical rows", async () => {
+    const fixture = await createFixture();
+    const sourceHash = "9".repeat(64);
+    const chunkText = "The release checklist uses a blue-green deployment.";
+    const episodeText = "The deployment review records a bounded episode outage.";
+    const chunkId = memorySha256({ domain: "memory-test-chunk", userId: fixture.userId });
+    const episodeId = memorySha256({ domain: "memory-test-episode", userId: fixture.userId });
+    const chunkEntryId = randomUUID();
+    const episodeEntryId = randomUUID();
+    let chatId: string | null = null;
+    const embed = vi.fn(async (request: { texts: readonly string[] }) => {
+      if (request.texts[0]?.includes("episode outage")) {
+        throw new EmbeddingAdapterError("embedding_provider_http_error");
+      }
+      return vectorResult();
+    });
+    const authority = {
+      now: () => new Date(INITIAL_NOW),
+      qualification: {
+        corpusHash: CORPUS_HASH,
+        corpusVersion: "memory-item-embedding-corpus-v1",
+        registry: fixture.qualifications,
+        scorerVersion: "memory-item-embedding-scorer-v1",
+        suiteVersion: "memory-item-embedding-suite-v1",
+        verifySignature: (payload: string, signature: string) =>
+          createHmac("sha256", HMAC_KEY).update(payload, "utf8").digest("hex") ===
+            signature
+      }
+    };
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob(createPrismaMemoryExplicitEmbeddingHandler(
+      authority,
+      prisma,
+      {
+        runtime: {
+          resolve: vi.fn(async () => ({ adapter: { embed } }))
+        } as never
+      }
+    ));
+    const coordinator = new MemoryCoordinator({
+      now: () => new Date(INITIAL_NOW),
+      policy: {
+        heartbeatMs: 1_000,
+        jobRetryDelaysMs: [1],
+        leaseMs: 5_000,
+        maxJobParallel: 1
+      },
+      registry,
+      repository: createPrismaMemoryCoordinatorRepository(prisma)
+    });
+
+    try {
+      await prisma.userMemorySettings.update({
+        data: {
+          acceptedUtilityEgressAt: INITIAL_NOW,
+          acceptedUtilityEgressFingerprint: fixture.policy.fingerprint,
+          acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+          referenceChatHistory: true
+        },
+        where: { userId: fixture.userId }
+      });
+      const chat = await prisma.chat.create({
+        data: {
+          memorySourceRevision: 1,
+          title: "Memory item embedding",
+          userId: fixture.userId
+        }
+      });
+      chatId = chat.id;
+      const leaf = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Record the release workflow."),
+          role: "user"
+        }
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: leaf.id },
+        where: { id: chat.id }
+      });
+      await prisma.chatMemoryCheckpoint.create({
+        data: {
+          activeLeafMessageId: leaf.id,
+          branchGeneration: 0,
+          chatId: chat.id,
+          lastDreamedMessageId: leaf.id,
+          lastIndexedMessageId: leaf.id,
+          lastSucceededAt: INITIAL_NOW,
+          sourceContentHash: sourceHash,
+          sourceRevision: 1,
+          status: "READY",
+          userId: fixture.userId
+        }
+      });
+      const extractionJob = await prisma.memoryJob.create({
+        data: {
+          acceptedResultHash: "8".repeat(64),
+          activeLeafMessageId: leaf.id,
+          branchGeneration: 0,
+          chatId: chat.id,
+          completedAt: INITIAL_NOW,
+          idempotencyFingerprint: `episode-test:${memorySha256(episodeId)}`,
+          kind: "EXTRACT_EPISODE",
+          memoryGenerationSnapshot: 0,
+          memoryRevisionSnapshot: 0,
+          pipelineVersion: "memory-episode-extraction-v1",
+          sourceHash,
+          sourceRevision: 1,
+          state: "SUCCEEDED",
+          userId: fixture.userId
+        }
+      });
+      const extractionBindingId = randomUUID();
+      await prisma.memoryExecutionBinding.create({
+        data: {
+          acceptedOutputHash: "7".repeat(64),
+          completedAt: INITIAL_NOW,
+          createdAt: INITIAL_NOW,
+          destinationFingerprint: "6".repeat(64),
+          id: extractionBindingId,
+          inputHash: "5".repeat(64),
+          logicalRole: "MEMORY_EPISODE_EXTRACT",
+          memoryJobId: extractionJob.id,
+          ordinal: 0,
+          ownerType: "JOB",
+          pipelineVersion: "memory-episode-extraction-v1",
+          policyVersion: "memory-episode-extractive-policy-v1",
+          promptVersion: "memory-episode-extractive-prompt-v1",
+          providerId: "memory-test-provider",
+          recoverableUntil: INITIAL_NOW,
+          relationsDetachedAt: INITIAL_NOW,
+          schemaVersion: "memory-episode-extractive-schema-v1",
+          secretFreeExecutionSnapshot: {},
+          state: "SUCCEEDED",
+          userId: fixture.userId
+        }
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryRecallChunk.create({
+          data: {
+            branchGeneration: 0,
+            chatId: chat.id,
+            chunkOrdinal: 0,
+            chunkingVersion: "memory-history-chunking-v1",
+            contentHash: memorySha256(chunkText),
+            id: chunkId,
+            languageCode: "en",
+            normalizedSafeSearchText: normalizeMemorySearchText(chunkText),
+            occurredFrom: INITIAL_NOW,
+            occurredTo: INITIAL_NOW,
+            redactionState: "NOT_NEEDED",
+            safeProjectedText: chunkText,
+            safetyClass: "NORMAL",
+            sourceProjectionVersion: "memory-history-source-projection-v1",
+            sourceRevisionAtCreation: 1,
+            userId: fixture.userId
+          }
+        });
+        await tx.memoryEpisode.create({
+          data: {
+            branchGeneration: 0,
+            chatId: chat.id,
+            createdByExecutionId: extractionBindingId,
+            extractorRole: "MEMORY_EPISODE_EXTRACT",
+            id: episodeId,
+            languageCode: "en",
+            normalizedSafeSearchText: normalizeMemorySearchText(episodeText),
+            occurredFrom: INITIAL_NOW,
+            occurredTo: INITIAL_NOW,
+            pipelineVersion: "memory-episode-extraction-v1",
+            redactionState: "NOT_NEEDED",
+            safeSummary: episodeText,
+            safetyClass: "NORMAL",
+            sourceHash,
+            sourceProjectionVersion: "memory-history-source-projection-v1",
+            sourceRevisionAtCreation: 1,
+            userId: fixture.userId
+          }
+        });
+        await tx.memorySearchEntry.createMany({
+          data: [
+            {
+              embeddingState: "PENDING",
+              id: chunkEntryId,
+              indexGenerationId: fixture.generationId,
+              itemType: "RECALL_CHUNK",
+              languageCode: "en",
+              recallChunkId: chunkId,
+              safeContentHash: memorySha256(chunkText),
+              safeSearchText: normalizeMemorySearchText(chunkText),
+              safeSearchTextYoNormalized: normalizeMemorySearchTextYo(chunkText),
+              safetyIdentitySnapshot: "4".repeat(64),
+              sourceIdentitySnapshot: "3".repeat(64),
+              suppressionIdentitySnapshot: "2".repeat(64),
+              userId: fixture.userId
+            },
+            {
+              embeddingState: "PENDING",
+              episodeId,
+              id: episodeEntryId,
+              indexGenerationId: fixture.generationId,
+              itemType: "EPISODE",
+              languageCode: "en",
+              safeContentHash: memorySha256(episodeText),
+              safeSearchText: normalizeMemorySearchText(episodeText),
+              safeSearchTextYoNormalized: normalizeMemorySearchTextYo(episodeText),
+              safetyIdentitySnapshot: "1".repeat(64),
+              sourceIdentitySnapshot: "0".repeat(64),
+              suppressionIdentitySnapshot: "a".repeat(64),
+              userId: fixture.userId
+            }
+          ]
+        });
+      });
+      const itemRepository = createPrismaMemoryItemEmbeddingRepository(prisma);
+      await expect(itemRepository.loadTarget(fixture.userId, chunkEntryId))
+        .resolves.toMatchObject({ itemId: chunkId, itemType: "RECALL_CHUNK" });
+      await expect(itemRepository.loadTarget(fixture.userId, episodeEntryId))
+        .resolves.toMatchObject({ itemId: episodeId, itemType: "EPISODE" });
+      const jobs = createPrismaMemoryJobRepository(prisma);
+      const chunkJob = await jobs.enqueue(fixture.userId, {
+        idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
+          chunkEntryId,
+          chunkId
+        ),
+        kind: "EMBED_ITEMS",
+        pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+      });
+      const episodeJob = await jobs.enqueue(fixture.userId, {
+        idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
+          episodeEntryId,
+          episodeId
+        ),
+        kind: "EMBED_ITEMS",
+        pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+      });
+
+      await coordinator.reconcileNow();
+      await coordinator.reconcileNow();
+
+      const bindings = await prisma.memoryExecutionBinding.findMany({
+        select: { errorCode: true, memoryJobId: true, state: true },
+        where: { memoryJobId: { in: [chunkJob.id, episodeJob.id] } }
+      });
+      expect(bindings).toEqual(expect.arrayContaining([
+        { errorCode: null, memoryJobId: chunkJob.id, state: "SUCCEEDED" },
+        {
+          errorCode: "embedding_provider_http_error",
+          memoryJobId: episodeJob.id,
+          state: "FAILED"
+        }
+      ]));
+      expect(bindings).toHaveLength(2);
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: chunkJob.id }
+      })).resolves.toMatchObject({ state: "SUCCEEDED" });
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        where: { id: episodeJob.id }
+      })).resolves.toMatchObject({ state: "RETRYABLE_FAILED" });
+      await expect(prisma.memorySearchEntry.findUniqueOrThrow({
+        where: { id: chunkEntryId }
+      })).resolves.toMatchObject({
+        embeddingDimension: DIMENSION,
+        embeddingState: "READY",
+        safeSearchText: normalizeMemorySearchText(chunkText)
+      });
+      await expect(prisma.memorySearchEntry.findUniqueOrThrow({
+        where: { id: episodeEntryId }
+      })).resolves.toMatchObject({
+        embeddingDimension: null,
+        embeddingState: "FAILED",
+        safeSearchText: normalizeMemorySearchText(episodeText)
+      });
+      const bindingIds = await prisma.memoryExecutionBinding.findMany({
+        select: { id: true },
+        where: {
+          memoryJobId: { in: [chunkJob.id, episodeJob.id] },
+          userId: fixture.userId
+        }
+      });
+      await expect(prisma.usageEvent.count({
+        where: {
+          memoryExecutionBindingId: { in: bindingIds.map(({ id }) => id) },
+          userId: fixture.userId
+        }
+      })).resolves.toBe(2);
+      expect(embed).toHaveBeenCalledTimes(2);
+    } finally {
+      coordinator.stop();
+      if (chatId) {
+        await prisma.memorySearchEntry.deleteMany({ where: { userId: fixture.userId } });
+        await prisma.memoryEpisode.deleteMany({ where: { userId: fixture.userId } });
+        await prisma.memoryRecallChunk.deleteMany({ where: { userId: fixture.userId } });
+      }
+      await fixture.cleanup();
+    }
+  }, 30_000);
 });

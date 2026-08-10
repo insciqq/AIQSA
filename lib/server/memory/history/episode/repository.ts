@@ -5,6 +5,10 @@ import {
 } from "@prisma/client";
 import { prisma } from "../../../prisma";
 import { MemoryCoordinatorError } from "../../coordinator/errors";
+import {
+  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
+  memoryItemEmbeddingJobFingerprint
+} from "../../embedding/contract";
 import type {
   MemoryJobClaim,
   MemoryJobDescriptor,
@@ -15,6 +19,7 @@ import {
   normalizeMemorySearchText,
   normalizeMemorySearchTextYo
 } from "../../persistence/lexical";
+import { enqueueMemoryJob } from "../../persistence/jobs";
 import {
   advanceMemoryMutation,
   requireActiveMemoryIndex,
@@ -418,7 +423,7 @@ async function applyPlan(
       }))
     });
     const safeContentHash = memorySha256(episode.safeSummary);
-    await tx.memorySearchEntry.create({
+    const searchEntry = await tx.memorySearchEntry.create({
       data: {
         embeddingState: activeIndex!.indexMode === "LEXICAL_ONLY"
           ? "NOT_APPLICABLE"
@@ -447,8 +452,19 @@ async function applyPlan(
         }),
         suppressionIdentitySnapshot: plan.input.suppressionIdentitySnapshot,
         userId: claim.userId
-      }
+      },
+      select: { embeddingState: true, id: true }
     });
+    if (searchEntry.embeddingState === "PENDING") {
+      await enqueueMemoryJob(tx, settings, {
+        idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
+          searchEntry.id,
+          `${plan.outputHash}:${id}`
+        ),
+        kind: "EMBED_ITEMS",
+        pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
+      });
+    }
   }
   await tx.chatMemoryCheckpoint.updateMany({
     data: {
