@@ -13,6 +13,7 @@ import {
 } from "./context";
 import { geminiInteractionStepForWire } from "./geminiInteractionsProtocol";
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
+import { providerInstructionsWithPersonalContext } from "./personalContext";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
 const MAX_INT32 = 2_147_483_647;
@@ -85,12 +86,7 @@ function boundedString(value: unknown, maxLength: number): value is string {
 }
 
 function combineSystemInstruction(request: ProviderRunRequest): string | undefined {
-  const parts = [
-    request.prompt.system,
-    request.prompt.developer ? `Developer instructions:\n${request.prompt.developer}` : null
-  ].filter((part): part is string => Boolean(part?.trim()));
-
-  return parts.length > 0 ? parts.join("\n\n") : undefined;
+  return providerInstructionsWithPersonalContext(request);
 }
 
 function validBase64(value: string): boolean {

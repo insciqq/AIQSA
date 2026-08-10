@@ -9,6 +9,7 @@ import {
   type ProviderReasoningRequestMapping
 } from "../../contracts/providerReasoningRequestMapping";
 import { applyProviderReasoningRequestMapping } from "./reasoningRequestMapping";
+import { providerInstructionsWithPersonalContext } from "./personalContext";
 
 export type OpenAICompatibleChatMessage = {
   content?: null | string | Record<string, unknown>[];
@@ -63,12 +64,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function combineInstructions(request: ProviderRunRequest): string | undefined {
-  const parts = [
-    request.prompt.system,
-    request.prompt.developer ? `Developer instructions:\n${request.prompt.developer}` : null
-  ].filter((part): part is string => Boolean(part?.trim()));
-
-  return parts.length > 0 ? parts.join("\n\n") : undefined;
+  return providerInstructionsWithPersonalContext(request);
 }
 
 function currentUserContent(

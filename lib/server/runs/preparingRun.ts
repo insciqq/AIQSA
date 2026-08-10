@@ -1,18 +1,21 @@
 import { createHash } from "node:crypto";
 import type { MemoryReceiptOutcome } from "@prisma/client";
+import { memoryExplicitStatementContainsSecret } from "../memory/explicit/safety";
 import type { NormalizedRunRequest } from "../providers/types";
 
 export const MEMORY_PREPARING_ATTEMPT_TTL_MS = 10 * 60_000;
 export const MEMORY_PREPARING_BASE_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024;
 export const MEMORY_PREPARING_CONTEXT_MAX_TOKENS = 2_500;
 export const MEMORY_PREPARING_ITEM_LIMIT = 12;
-export const MEMORY_PREPARING_QUERY_PLANNER_VERSION = "memory-query-planner-p1-empty-v1";
-export const MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION = "memory-retrieval-p1-empty-v1";
+export const MEMORY_PREPARING_QUERY_PLANNER_VERSION = "memory-query-planner-p2-explicit-v1";
+export const MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION = "memory-retrieval-p2-explicit-v1";
+export const MEMORY_PREPARING_AUTHORITATIVE_EMPTY_LIST = "AUTHORITATIVE_EMPTY_LIST";
 
 const safeCode = /^[a-z][a-z0-9_]{0,63}$/u;
 const safeSelectionReason = /^[a-z][a-z0-9_.:-]{0,127}$/u;
 const MEMORY_PREPARING_CONTEXT_MAX_BYTES = 64 * 1024;
 const MEMORY_PREPARING_EVIDENCE_JSON_MAX_BYTES = 64 * 1024;
+const MEMORY_PREPARING_SAFE_QUERY_MAX_LENGTH = 2_000;
 
 export type MemoryPreparingSettingsSnapshot = Readonly<{
   acceptedUtilityEgressFingerprint: string | null;
@@ -50,6 +53,9 @@ export type MemoryPreparingAttemptResult = Readonly<{
     approxTokens: number;
     text: string;
   }> | null;
+  /** Optional when the safe query itself is withheld after secret screening. */
+  queryHash?: string;
+  querySnapshot?: string | null;
 }>;
 
 export class MemoryPreparingRunConflictError extends Error {
@@ -125,6 +131,13 @@ function boundedJson(value: unknown, maximumBytes: number): boolean {
   } catch {
     return false;
   }
+}
+
+export function memoryPreparingHasAuthoritativeEmptyList(
+  budgetSnapshot: unknown
+): boolean {
+  return isRecord(budgetSnapshot) &&
+    budgetSnapshot.managementResult === MEMORY_PREPARING_AUTHORITATIVE_EMPTY_LIST;
 }
 
 export function decodeMemoryPreparingBaseSnapshot(
@@ -212,6 +225,21 @@ export function validateMemoryPreparingAttemptResult(
     !safeCode.test(input.degradationCode)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
+  if (input.querySnapshot !== undefined && input.querySnapshot !== null && (
+    input.querySnapshot.length === 0 ||
+    input.querySnapshot.length > MEMORY_PREPARING_SAFE_QUERY_MAX_LENGTH ||
+    input.querySnapshot.includes("\u0000") ||
+    memoryExplicitStatementContainsSecret(input.querySnapshot)
+  )) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+  }
+  if (input.queryHash !== undefined && !/^[a-f0-9]{64}$/u.test(input.queryHash)) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+  }
+  if (input.queryHash !== undefined && input.querySnapshot != null &&
+    input.queryHash !== memoryPreparingTextHash(input.querySnapshot)) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+  }
   if (context && (
     context.text.length === 0 ||
     Buffer.byteLength(context.text, "utf8") > MEMORY_PREPARING_CONTEXT_MAX_BYTES ||
@@ -221,10 +249,23 @@ export function validateMemoryPreparingAttemptResult(
   )) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
-  if (input.outcome === "USED" && (!context || items.length === 0)) {
+  const visibleOutcome = input.outcome === "USED" || input.outcome === "DEGRADED";
+  const authoritativeEmptyList = input.outcome === "EMPTY" &&
+    memoryPreparingHasAuthoritativeEmptyList(input.budgetSnapshot);
+  if (visibleOutcome && (!context || items.length === 0)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
-  if (input.outcome !== "USED" && (context || items.length > 0)) {
+  if (authoritativeEmptyList && (!context || items.length > 0)) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+  }
+  if (memoryPreparingHasAuthoritativeEmptyList(input.budgetSnapshot) &&
+    !authoritativeEmptyList) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+  }
+  if (!visibleOutcome && !authoritativeEmptyList && (context || items.length > 0)) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+  }
+  if ((input.outcome === "DEGRADED") !== Boolean(input.degradationCode)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
   const seenVersions = new Set<string>();

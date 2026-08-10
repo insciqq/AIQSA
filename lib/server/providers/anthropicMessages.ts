@@ -48,6 +48,7 @@ import {
   type ProviderStreamSafetySnapshot
 } from "./streamSafety";
 import type { ProviderAdapter, ProviderAttachment, ProviderRunRequest, ProviderRunResult } from "./types";
+import { providerInstructionsWithPersonalContext } from "./personalContext";
 
 export type AnthropicStreamEvent = Record<string, unknown>;
 
@@ -148,12 +149,7 @@ function normalizeAnthropicMessagesParams(params: Record<string, unknown>): Anth
 }
 
 function combineSystem(request: ProviderRunRequest): string | undefined {
-  const parts = [
-    request.prompt.system,
-    request.prompt.developer ? `Developer instructions:\n${request.prompt.developer}` : null
-  ].filter((part): part is string => Boolean(part?.trim()));
-
-  return parts.length > 0 ? parts.join("\n\n") : undefined;
+  return providerInstructionsWithPersonalContext(request);
 }
 
 function attachmentTextBlock(

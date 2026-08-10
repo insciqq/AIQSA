@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import type { NormalizedRunRequest } from "../providers/types";
 import { MemorySuppressionKeyring } from "../memory/suppressionKeyring";
 import { createPrismaMemoryFactRepository } from "../memory/persistence/facts";
+import { createPrismaMemoryMutationAuthorizationRepository } from "../memory/persistence/authorizations";
 import { createPrismaMemoryScopeRepository } from "../memory/persistence/scopes";
 import { createPrismaMemorySettingsRepository } from "../memory/persistence/settings";
+import { createPrismaExplicitMemoryRepository } from "../memory/explicit/repository";
+import { createExplicitMemoryService } from "../memory/explicit/service";
+import { planMemoryActionFromText } from "../memory/actions/intent";
+import { createMemoryActionExecutor } from "../memory/actions/toolExecutor";
+import { retrieveExplicitRunMemory } from "../memory/retrieval/explicitRun";
 import { createPrismaRunRepository } from "./prismaRepository";
 import {
   MemoryPreparingRunConflictError,
@@ -20,12 +26,23 @@ const suppressionKeyring = MemorySuppressionKeyring.parse(
   ).toString("base64")}`
 );
 
-function normalizedRequest(chatId: string): NormalizedRunRequest {
-  const content = textMessageContent("Remember this preparation boundary.");
+function normalizedRequest(
+  chatId: string,
+  text = "Remember this preparation boundary."
+): NormalizedRunRequest {
+  const content = textMessageContent(text);
   return {
     attachmentIds: [],
     chatId,
     content,
+    context: {
+      messages: [{
+        content,
+        id: "current-user-message",
+        role: "user"
+      }],
+      mode: "branch_path"
+    },
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -68,6 +85,54 @@ async function withPreparingUser<T>(
     await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await prisma.user.deleteMany({ where: { id: userId } });
   }
+}
+
+async function saveExplicitFact(
+  userId: string,
+  scopeId: string,
+  displayText = "My preferred editor is Vim."
+) {
+  return createPrismaMemoryFactRepository(
+    suppressionKeyring,
+    prisma,
+    { consumeExplicitAuthorization: async () => undefined }
+  ).save(
+    userId,
+    {
+      authorization: {
+        action: "SAVE",
+        authorizationId: `preparing-fact-authorization-${randomUUID()}`,
+        authorizedPayloadHash: "f".repeat(64)
+      },
+      evidence: {
+        kind: "EXPLICIT_ACTION",
+        observedAt: new Date("2026-08-10T12:00:00.000Z"),
+        safeExcerpt: displayText,
+        safeSourceHash: "a".repeat(64),
+        safetyClass: "NORMAL",
+        sourceProjectionVersion: "preparing-run-test-v1"
+      },
+      explicitSuppressionOverride: false,
+      idempotencyFingerprint: `preparing-fact-${randomUUID()}`,
+      requestId: `preparing-fact-request-${randomUUID()}`,
+      scopeId,
+      value: {
+        canonicalKey: `profile.preferred_editor.${randomUUID()}`,
+        category: "profile",
+        confidence: 1,
+        directness: "DIRECT",
+        displayText,
+        importance: 0.8,
+        languageCode: "en",
+        modality: "STATE",
+        pipelineVersion: "preparing-run-test-v1",
+        secretTaintedSourceWindow: false,
+        sensitivityClass: "NORMAL",
+        sourceMode: "EXPLICIT",
+        structuredValue: { value: "Vim" }
+      }
+    }
+  );
 }
 
 describe("PREPARING run orchestration", () => {
@@ -179,7 +244,7 @@ describe("PREPARING run orchestration", () => {
     });
   });
 
-  it("allows exactly one fresh attempt after settings drift", async () => {
+  it("allows exactly one fresh attempt after consent drift", async () => {
     await withPreparingUser(async ({ userId }) => {
       const chat = await prisma.chat.create({
         data: { title: "Retry", userId }
@@ -210,7 +275,7 @@ describe("PREPARING run orchestration", () => {
         userId
       });
       await prisma.userMemorySettings.update({
-        data: { settingsRevision: { increment: 1 } },
+        data: { memoryConsentRevision: { increment: 1 } },
         where: { userId }
       });
 
@@ -270,7 +335,7 @@ describe("PREPARING run orchestration", () => {
     });
   });
 
-  it("freezes exact selected item evidence and rejects a stale authoritative version", async () => {
+  it("retrieves explicit facts locally and finalizes immutable run evidence without utility consent", async () => {
     await withPreparingUser(async ({ userId }) => {
       await createPrismaMemorySettingsRepository(prisma).patch(userId, {
         expectedMemoryRevision: 0,
@@ -278,47 +343,390 @@ describe("PREPARING run orchestration", () => {
         useMemoryFacts: true
       });
       const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
-      const fact = await createPrismaMemoryFactRepository(
-        suppressionKeyring,
-        prisma,
-        { consumeExplicitAuthorization: async () => undefined }
-      ).save(
-        userId,
-        {
-          authorization: {
-            action: "SAVE",
-            authorizationId: `preparing-fact-authorization-${randomUUID()}`,
-            authorizedPayloadHash: "f".repeat(64)
-          },
-          evidence: {
-            kind: "EXPLICIT_ACTION",
-            observedAt: new Date("2026-08-10T12:00:00.000Z"),
-            safeExcerpt: "My preferred editor is Vim.",
-            safeSourceHash: "a".repeat(64),
-            safetyClass: "NORMAL",
-            sourceProjectionVersion: "preparing-run-test-v1"
-          },
-          explicitSuppressionOverride: false,
-          idempotencyFingerprint: `preparing-fact-${randomUUID()}`,
-          requestId: `preparing-fact-request-${randomUUID()}`,
-          scopeId: scope.id,
-          value: {
-            canonicalKey: "profile.preferred_editor",
-            category: "profile",
-            confidence: 1,
-            directness: "DIRECT",
-            displayText: "My preferred editor is Vim.",
-            importance: 0.8,
-            languageCode: "en",
-            modality: "STATE",
-            pipelineVersion: "preparing-run-test-v1",
-            secretTaintedSourceWindow: false,
-            sensitivityClass: "NORMAL",
-            sourceMode: "EXPLICIT",
-            structuredValue: { value: "Vim" }
-          }
+      const fact = await saveExplicitFact(userId, scope.id, "My preferred editor\nis  Vim.");
+      const chat = await prisma.chat.create({ data: { title: "Explicit recall", userId } });
+      const request = normalizedRequest(chat.id, "What is my preferred editor?");
+      const repository = createPrismaRunRepository(prisma);
+      const created = await repository.createRun({
+        chatId: chat.id,
+        content: request.content,
+        expectedActiveLeafId: null,
+        memoryMaterializer(personalContext) {
+          const finalRequest: NormalizedRunRequest = {
+            ...request,
+            personalContext
+          };
+          return {
+            contextTruncation: null,
+            normalizedRequest: finalRequest,
+            providerRequest: {
+              ...finalRequest,
+              attachments: []
+            },
+            providerRequestPreview: { personalContext: personalContext.text }
+          };
+        },
+        modelId: request.modelId,
+        normalizedRequest: request,
+        provider: request.provider,
+        providerRequestPreview: { request: "base" },
+        userId
+      });
+
+      const [run, attempt, binding] = await Promise.all([
+        prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId } }),
+        prisma.memoryRetrievalAttempt.findFirstOrThrow({
+          where: { modelRunId: created.runId }
+        }),
+        prisma.modelRunMemoryBinding.findUniqueOrThrow({
+          where: { modelRunId: created.runId }
+        })
+      ]);
+      const items = await prisma.modelRunMemoryItem.findMany({
+        where: { bindingId: binding.id }
+      });
+
+      expect(created.materializedRequest?.normalizedRequest.personalContext).toMatchObject({
+        itemCount: 1,
+        mode: "prefetched",
+        text: expect.stringContaining("My preferred editor is Vim.")
+      });
+      expect(run).toMatchObject({
+        normalizedRequest: expect.objectContaining({
+          personalContext: expect.objectContaining({ itemCount: 1, mode: "prefetched" })
+        }),
+        status: "streaming"
+      });
+      expect(attempt).toMatchObject({
+        acceptedUtilityEgressFingerprint: null,
+        boundedSafeQuerySnapshot: "what is my preferred editor?",
+        externalRolesUsed: [],
+        outcome: "USED",
+        state: "CONSUMED",
+        utilityEgressMode: "LOCAL_ONLY"
+      });
+      expect(binding).toMatchObject({
+        boundedSafeQuerySnapshot: "what is my preferred editor?",
+        outcome: "USED",
+        retrievalAttemptId: attempt.id
+      });
+      expect(items).toEqual([
+        expect.objectContaining({
+          factVersionId: fact.versionId,
+          includedText: "My preferred editor is Vim."
+        })
+      ]);
+    });
+  });
+
+  it("finalizes an authoritative empty list for a non-tool model", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({ data: { title: "Empty Memory list", userId } });
+      const baseRequest = normalizedRequest(chat.id, "What do you remember about me?");
+      const actionPlan = planMemoryActionFromText("What do you remember about me?");
+      if (actionPlan.kind !== "LIST") throw new Error("invalid_memory_action_fixture");
+      const request: NormalizedRunRequest = {
+        ...baseRequest,
+        memoryActionPlan: actionPlan,
+        toolMode: "auto"
+      };
+      const repository = createPrismaRunRepository(prisma);
+      const created = await repository.createRun({
+        chatId: chat.id,
+        content: request.content,
+        expectedActiveLeafId: null,
+        memoryMaterializer(personalContext) {
+          const finalRequest = { ...request, personalContext };
+          return {
+            contextTruncation: null,
+            normalizedRequest: finalRequest,
+            providerRequest: { ...finalRequest, attachments: [] },
+            providerRequestPreview: { personalContext: personalContext.text }
+          };
+        },
+        modelId: request.modelId,
+        normalizedRequest: request,
+        provider: request.provider,
+        providerRequestPreview: { request: "base" },
+        userId
+      });
+
+      const [attempt, binding] = await Promise.all([
+        prisma.memoryRetrievalAttempt.findFirstOrThrow({
+          where: { modelRunId: created.runId }
+        }),
+        prisma.modelRunMemoryBinding.findUniqueOrThrow({
+          where: { modelRunId: created.runId }
+        })
+      ]);
+      const items = await prisma.modelRunMemoryItem.findMany({
+        where: { bindingId: binding.id }
+      });
+      expect(created.materializedRequest?.normalizedRequest.personalContext).toMatchObject({
+        itemCount: 0,
+        text: expect.stringContaining("No active explicit memories are saved.")
+      });
+      expect(attempt).toMatchObject({
+        budgetSnapshot: expect.objectContaining({
+          managementResult: "AUTHORITATIVE_EMPTY_LIST"
+        }),
+        outcome: "EMPTY",
+        preparedContextText: expect.stringContaining("No active explicit memories are saved."),
+        state: "CONSUMED"
+      });
+      expect(binding).toMatchObject({
+        contextTokenCount: expect.any(Number),
+        outcome: "EMPTY"
+      });
+      expect(binding.contextTokenCount).toBeGreaterThan(0);
+      expect(items).toEqual([]);
+    });
+  });
+
+  it("fails non-tool Memory management when authoritative context cannot be materialized", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: { title: "Unmaterialized Memory list", userId }
+      });
+      const baseRequest = normalizedRequest(chat.id, "What do you remember about me?");
+      const actionPlan = planMemoryActionFromText("What do you remember about me?");
+      if (actionPlan.kind !== "LIST") throw new Error("invalid_memory_action_fixture");
+      const request: NormalizedRunRequest = {
+        ...baseRequest,
+        memoryActionPlan: actionPlan,
+        toolMode: "auto"
+      };
+      const repository = createPrismaRunRepository(prisma);
+
+      await expect(repository.createRun({
+        chatId: chat.id,
+        content: request.content,
+        expectedActiveLeafId: null,
+        memoryMaterializer() {
+          return null;
+        },
+        modelId: request.modelId,
+        normalizedRequest: request,
+        provider: request.provider,
+        providerRequestPreview: { request: "base" },
+        userId
+      })).rejects.toMatchObject({
+        code: "memory_action_failed",
+        retryable: false
+      });
+
+      const run = await prisma.modelRun.findFirstOrThrow({ where: { chatId: chat.id } });
+      const attempt = await prisma.memoryRetrievalAttempt.findFirstOrThrow({
+        where: { modelRunId: run.id }
+      });
+      expect(run).toMatchObject({
+        errorPayload: expect.objectContaining({ code: "memory_action_failed" }),
+        normalizedRequest: request,
+        status: "error"
+      });
+      expect(attempt).toMatchObject({
+        errorCode: "memory_action_failed",
+        state: "FAILED"
+      });
+    });
+  });
+
+  it("rejects a secret-tainted query snapshot at the persistence boundary", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({ data: { title: "Secret query", userId } });
+      const request = normalizedRequest(chat.id);
+      const repository = createPrismaRunRepository(prisma);
+      const admitted = await repository.admitPreparingRun({
+        admissionKind: "NORMAL_SEND",
+        chatId: chat.id,
+        content: request.content,
+        expectedActiveLeafId: null,
+        modelId: request.modelId,
+        normalizedRequest: request,
+        provider: request.provider,
+        providerRequestPreview: {},
+        userId
+      });
+
+      await expect(repository.completePreparingRunAttempt({
+        attemptId: admitted.attemptId,
+        result: {
+          ...dormantMemoryAttemptResult(admitted.settingsSnapshot),
+          querySnapshot: "api key: sk-1234567890abcdef"
+        },
+        runId: admitted.runId,
+        userId
+      })).rejects.toMatchObject({
+        code: "memory_attempt_result_invalid",
+        retryable: false
+      });
+      await expect(prisma.memoryRetrievalAttempt.findUniqueOrThrow({
+        where: { id: admitted.attemptId }
+      })).resolves.toMatchObject({
+        boundedSafeQuerySnapshot: null,
+        state: "PENDING"
+      });
+    });
+  });
+
+  it("rejects an authoritative empty list when Memory changes before finalization", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({ data: { title: "Empty list race", userId } });
+      const baseRequest = normalizedRequest(chat.id, "What do you remember about me?");
+      const actionPlan = planMemoryActionFromText("What do you remember about me?");
+      if (actionPlan.kind !== "LIST") throw new Error("invalid_memory_action_fixture");
+      const request: NormalizedRunRequest = {
+        ...baseRequest,
+        memoryActionPlan: actionPlan,
+        toolMode: "auto"
+      };
+      const repository = createPrismaRunRepository(prisma);
+      const admitted = await repository.admitPreparingRun({
+        admissionKind: "NORMAL_SEND",
+        chatId: chat.id,
+        content: request.content,
+        expectedActiveLeafId: null,
+        modelId: request.modelId,
+        normalizedRequest: request,
+        provider: request.provider,
+        providerRequestPreview: { request: "base" },
+        userId
+      });
+      const result = await retrieveExplicitRunMemory(prisma, {
+        actionPlan,
+        normalizedRequest: request,
+        settings: admitted.settingsSnapshot,
+        userId
+      });
+      await repository.completePreparingRunAttempt({
+        attemptId: admitted.attemptId,
+        result,
+        runId: admitted.runId,
+        userId
+      });
+      await prisma.userMemorySettings.update({
+        data: { memoryRevision: { increment: 1 } },
+        where: { userId }
+      });
+      const personalContext = {
+        approxTokens: result.preparedContext!.approxTokens,
+        itemCount: 0,
+        memoryGeneration: admitted.memoryGeneration,
+        memoryRevision: admitted.memoryRevision,
+        mode: "prefetched" as const,
+        text: result.preparedContext!.text
+      };
+
+      await expect(repository.finalizePreparingRun({
+        attemptId: admitted.attemptId,
+        normalizedRequest: { ...request, personalContext },
+        providerRequestPreview: { personalContext: personalContext.text },
+        runId: admitted.runId,
+        userId
+      })).rejects.toMatchObject({
+        code: "memory_admission_settings_changed",
+        retryable: true
+      });
+    });
+  });
+
+  it("binds a committed save receipt to the run authorization and persisted first-party call", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({ data: { title: "Run Memory save", userId } });
+      const source = "Remember that I like tea";
+      const actionPlan = planMemoryActionFromText(source);
+      if (actionPlan.kind !== "SAVE") throw new Error("invalid_memory_action_fixture");
+      const baseRequest = normalizedRequest(chat.id, source);
+      const request: NormalizedRunRequest = {
+        ...baseRequest,
+        memoryActionPlan: actionPlan,
+        modelCapabilities: {
+          ...baseRequest.modelCapabilities,
+          toolCalling: true
         }
-      );
+      };
+      const repository = createPrismaRunRepository(prisma);
+      const created = await repository.createRun({
+        chatId: chat.id,
+        content: request.content,
+        expectedActiveLeafId: null,
+        modelId: request.modelId,
+        normalizedRequest: request,
+        provider: request.provider,
+        providerRequestPreview: {},
+        userId
+      });
+      const toolCall = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { statement: actionPlan.statement },
+          modelRunId: created.runId,
+          ordinal: 0,
+          providerCallId: "provider-save-1",
+          roundIndex: 0,
+          toolName: "save_memory"
+        }
+      });
+      const authorizationRepository = createPrismaMemoryMutationAuthorizationRepository(prisma);
+      const explicitService = createExplicitMemoryService({
+        authorizationRepository,
+        factRepository: createPrismaMemoryFactRepository(suppressionKeyring, prisma),
+        readRepository: createPrismaExplicitMemoryRepository(prisma),
+        scopeRepository: createPrismaMemoryScopeRepository(prisma)
+      });
+      const executor = createMemoryActionExecutor({
+        authorizationRepository,
+        explicitService,
+        lifecycleService: {
+          deleteExplicit: vi.fn(),
+          forget: vi.fn(),
+          status: vi.fn()
+        }
+      });
+
+      const result = await executor.execute(actionPlan, {
+        arguments: { statement: actionPlan.statement },
+        id: "provider-save-1",
+        name: "save_memory"
+      }, {
+        persistedToolCallId: toolCall.id,
+        request: { ...request, attachments: [] },
+        runId: created.runId,
+        userId
+      });
+      const [authorization, receipt] = await Promise.all([
+        prisma.memoryMutationAuthorization.findFirstOrThrow({
+          where: { modelRunId: created.runId, userId }
+        }),
+        prisma.memoryOperationReceipt.findFirstOrThrow({
+          where: { modelRunId: created.runId, userId }
+        })
+      ]);
+
+      expect(result.status).toBe("complete");
+      expect(authorization).toMatchObject({
+        consumedAt: expect.any(Date),
+        persistedToolCallId: toolCall.id,
+        sourceChatId: chat.id,
+        sourceMessageId: created.userMessageId
+      });
+      expect(receipt).toMatchObject({
+        modelRunId: created.runId,
+        operation: "SAVE",
+        outcome: "APPLIED",
+        persistedToolCallId: toolCall.id
+      });
+    });
+  });
+
+  it("freezes exact selected item evidence and rejects changed scope evidence or version authority", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      await createPrismaMemorySettingsRepository(prisma).patch(userId, {
+        expectedMemoryRevision: 0,
+        expectedSettingsRevision: 0,
+        useMemoryFacts: true
+      });
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const fact = await saveExplicitFact(userId, scope.id);
       const repository = createPrismaRunRepository(prisma);
       const createStagedRun = async (title: string) => {
         const chat = await prisma.chat.create({ data: { title, userId } });
@@ -372,6 +780,8 @@ describe("PREPARING run orchestration", () => {
       };
 
       const accepted = await createStagedRun("Exact item");
+      const scopeStale = await createStagedRun("Stale scope");
+      const stale = await createStagedRun("Stale item");
       await expect(repository.finalizePreparingRun({
         attemptId: accepted.admitted.attemptId,
         normalizedRequest: accepted.finalRequest,
@@ -394,7 +804,36 @@ describe("PREPARING run orchestration", () => {
         })
       ]);
 
-      const stale = await createStagedRun("Stale item");
+      const scopeItem = await prisma.memoryRetrievalAttemptItem.findFirstOrThrow({
+        where: { attemptId: scopeStale.admitted.attemptId }
+      });
+      await prisma.memoryRetrievalAttemptItem.update({
+        data: {
+          versionSnapshot: {
+            ...(scopeItem.versionSnapshot as Record<string, unknown>),
+            scopeId: "changed-scope-id"
+          }
+        },
+        where: { id: scopeItem.id }
+      });
+      await expect(repository.finalizePreparingRun({
+        attemptId: scopeStale.admitted.attemptId,
+        normalizedRequest: scopeStale.finalRequest,
+        providerRequestPreview: {},
+        runId: scopeStale.admitted.runId,
+        userId
+      })).rejects.toMatchObject({
+        code: "memory_attempt_item_stale",
+        retryable: true
+      });
+      await repository.settlePreparingRunFailure({
+        attemptId: scopeStale.admitted.attemptId,
+        errorCode: "memory_attempt_item_stale",
+        message: "Selected Memory scope changed.",
+        runId: scopeStale.admitted.runId,
+        state: "STALE",
+        userId
+      });
       const forgottenAt = new Date();
       await prisma.$transaction(async (tx) => {
         await tx.memoryFactVersion.update({

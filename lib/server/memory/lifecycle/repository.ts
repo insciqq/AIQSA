@@ -49,7 +49,9 @@ type LifecycleMutationCommon = Readonly<{
   authorization: MemoryMutationAuthorizationUse;
   idempotencyFingerprint: string;
   idempotencyPayloadHash: string;
+  modelRunId?: string | null;
   now: Date;
+  persistedToolCallId?: string | null;
   requestId: string;
 }>;
 
@@ -92,6 +94,9 @@ function validateCommon(input: LifecycleMutationCommon): void {
     !boundedIdPattern.test(input.requestId) ||
     !boundedIdPattern.test(input.idempotencyFingerprint) ||
     !sha256Pattern.test(input.idempotencyPayloadHash) ||
+    (input.modelRunId != null && !boundedIdPattern.test(input.modelRunId)) ||
+    (input.persistedToolCallId != null && !boundedIdPattern.test(input.persistedToolCallId)) ||
+    ((input.modelRunId == null) !== (input.persistedToolCallId == null)) ||
     !Number.isFinite(input.now.getTime())
   ) {
     return memoryPersistenceFailure("memory_input_invalid");
@@ -204,7 +209,9 @@ async function replayReceipt(
   if (
     receipt.operation !== action ||
     receipt.outcome !== "APPLIED" ||
-    receipt.requestId !== input.requestId
+    receipt.requestId !== input.requestId ||
+    receipt.modelRunId !== (input.modelRunId ?? null) ||
+    receipt.persistedToolCallId !== (input.persistedToolCallId ?? null)
   ) {
     return memoryPersistenceFailure("memory_idempotency_conflict");
   }
@@ -224,8 +231,10 @@ async function persistReceipt(
   await tx.memoryOperationReceipt.create({
     data: {
       idempotencyFingerprint: input.idempotencyFingerprint,
+      modelRunId: input.modelRunId,
       operation: action,
       outcome: "APPLIED",
+      persistedToolCallId: input.persistedToolCallId,
       requestId: input.requestId,
       resultCode: action === "FORGET" ? "forgotten" : "delete_explicit_admitted",
       resultSnapshot: receiptSnapshot(result, input.idempotencyPayloadHash),

@@ -35,8 +35,10 @@ import type {
   NormalizedRunRequest,
   ProviderAttachment,
   ProviderConversationMessage,
-  ProviderModelCapabilities
+  ProviderModelCapabilities,
+  ProviderRunRequest
 } from "../providers/types";
+import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 import type {
   MemoryPreparingAttemptResult,
@@ -225,6 +227,7 @@ export type CreateRunInput = {
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
   modelId: string;
+  memoryMaterializer?: PreparingRunMemoryMaterializer;
   normalizedRequest: NormalizedRunRequest;
   providerAdmissionPlan?: ProviderAdmissionPlan;
   provider: string;
@@ -239,6 +242,7 @@ export type CreateRegenerationRunInput = {
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
   modelId: string;
+  memoryMaterializer?: PreparingRunMemoryMaterializer;
   normalizedRequest: NormalizedRunRequest;
   /** The assistant being replaced. Omission is accepted only by the legacy
    * compatibility wrapper, which resolves the currently active sibling. */
@@ -257,8 +261,28 @@ export type PreparingRunAdmissionInput =
 export type PreparingRunAdmissionResult = Readonly<{
   assistantMessageId: string;
   attemptId: string;
+  memoryGeneration: number;
+  memoryRevision: number;
   runId: string;
   settingsSnapshot: MemoryPreparingSettingsSnapshot;
+  userMessageId: string;
+}>;
+
+export type PreparingRunMaterializedRequest = Readonly<{
+  contextTruncation: ContextTruncationSummary | null;
+  normalizedRequest: NormalizedRunRequest;
+  providerRequest: ProviderRunRequest;
+  providerRequestPreview: Readonly<Record<string, unknown>>;
+}>;
+
+export type PreparingRunMemoryMaterializer = (
+  personalContext: NonNullable<NormalizedRunRequest["personalContext"]>
+) => PreparingRunMaterializedRequest | null;
+
+export type CreatedRun = Readonly<{
+  assistantMessageId: string;
+  materializedRequest?: PreparingRunMaterializedRequest;
+  runId: string;
   userMessageId: string;
 }>;
 
@@ -338,16 +362,8 @@ export type RunRepository = {
     usageAttributions?: RunUsageAttribution[];
     userId: string;
   }): Promise<boolean>;
-  createRun(input: CreateRunInput): Promise<{
-    assistantMessageId: string;
-    runId: string;
-    userMessageId: string;
-  }>;
-  createRegenerationRun(input: CreateRegenerationRunInput): Promise<{
-    assistantMessageId: string;
-    runId: string;
-    userMessageId: string;
-  }>;
+  createRun(input: CreateRunInput): Promise<CreatedRun>;
+  createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {
     artifacts: unknown;
     durationMs?: number;
@@ -476,6 +492,8 @@ export type RunRepository = {
     userId: string;
   }>): Promise<Readonly<{
     attemptId: string;
+    memoryGeneration: number;
+    memoryRevision: number;
     settingsSnapshot: MemoryPreparingSettingsSnapshot;
   }> | null>;
   settlePreparingRunFailure(input: Readonly<{

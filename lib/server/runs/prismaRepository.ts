@@ -32,6 +32,7 @@ import {
 } from "../providerRuntime/admission";
 import { prisma } from "../prisma";
 import type { ProviderConversationMessage } from "../providers/types";
+import { normalizedRequestHasExternalToolCapability } from "../providers/personalContext";
 import {
   applySettingsUpdateInTransaction,
   type SettingsTransactionClient
@@ -49,10 +50,21 @@ import {
   type PreparingRunAdmissionInput,
   type PreparingRunAdmissionResult,
   type PreparingRunFinalizationInput,
+  type PreparingRunMaterializedRequest,
   type PreparingRunRecoveryResult,
   type RunAttachmentRecord,
   type RunRepository
 } from "./runRepositoryContract";
+import { decodeMemoryActionPlan } from "../memory/actions/intent";
+import {
+  MemoryRunActionAuthorizationError,
+  authorizeRunMemoryAction
+} from "../memory/actions/runAuthorization";
+import {
+  ExplicitRunMemoryManagementError,
+  explicitRunSafeFactText,
+  retrieveExplicitRunMemory
+} from "../memory/retrieval/explicitRun";
 import {
   decodeAssistantAvatarRecipe,
   type AssistantAvatarRecipe
@@ -91,6 +103,7 @@ import {
   decodeMemoryPreparingSettingsSnapshot,
   dormantMemoryAttemptResult,
   memoryPreparingHash,
+  memoryPreparingHasAuthoritativeEmptyList,
   memoryPreparingSettingsSnapshot,
   memoryPreparingTextHash,
   sameMemoryPreparingSettings,
@@ -849,6 +862,7 @@ type LockedPreparingAttempt = Readonly<{
   baseRequestHash: string;
   boundedPrivateBaseRequestSnapshot: Prisma.JsonValue | null;
   boundedSafeQuerySnapshot: string | null;
+  budgetSnapshot: Prisma.JsonValue | null;
   chatId: string;
   degradationCode: string | null;
   expiresAt: Date;
@@ -947,7 +961,7 @@ async function lockPreparingAttempt(
       "admissionKind"::text AS "admissionKind", "assistantIdSnapshot",
       "attemptOrdinal",
       "baseRequestHash", "boundedPrivateBaseRequestSnapshot",
-      "boundedSafeQuerySnapshot", "chatId", "degradationCode", "expiresAt", "folderIdSnapshot",
+      "boundedSafeQuerySnapshot", "budgetSnapshot", "chatId", "degradationCode", "expiresAt", "folderIdSnapshot",
       "id", "indexGenerationIdSnapshot", "memoryGenerationSnapshot",
       "modelRunId", "outcome"::text AS "outcome", "preSendActiveLeafMessageId",
       "preparedContextHash", "preparedContextText", "preparedContextTokenCount",
@@ -962,6 +976,33 @@ async function lockPreparingAttempt(
     FOR UPDATE
   `);
   return attempt ?? null;
+}
+
+function baseRequestUsesNonToolMemoryList(
+  baseSnapshot: NonNullable<ReturnType<typeof decodeMemoryPreparingBaseSnapshot>>
+): boolean {
+  const request = baseSnapshot.normalizedRequest;
+  const plan = decodeMemoryActionPlan(request.memoryActionPlan);
+  return plan?.kind === "LIST" && !(
+    request.toolMode !== "none" && request.modelCapabilities.toolCalling === true
+  );
+}
+
+function preparingAttemptIsAuthoritativeEmptyList(
+  attempt: Pick<LockedPreparingAttempt, "budgetSnapshot" | "outcome">,
+  baseSnapshot: NonNullable<ReturnType<typeof decodeMemoryPreparingBaseSnapshot>>
+): boolean {
+  return attempt.outcome === "EMPTY" &&
+    memoryPreparingHasAuthoritativeEmptyList(attempt.budgetSnapshot) &&
+    baseRequestUsesNonToolMemoryList(baseSnapshot);
+}
+
+function preparingAttemptCarriesProviderContext(
+  attempt: Pick<LockedPreparingAttempt, "budgetSnapshot" | "outcome">,
+  baseSnapshot: NonNullable<ReturnType<typeof decodeMemoryPreparingBaseSnapshot>>
+): boolean {
+  return attempt.outcome === "USED" || attempt.outcome === "DEGRADED" ||
+    preparingAttemptIsAuthoritativeEmptyList(attempt, baseSnapshot);
 }
 
 async function createPreparingAttempt(
@@ -1256,6 +1297,8 @@ async function admitPreparingRunWithClient(
       return {
         assistantMessageId,
         attemptId,
+        memoryGeneration: settings.memoryGeneration,
+        memoryRevision: settings.memoryRevision,
         runId: run.id,
         settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
         userMessageId
@@ -1299,6 +1342,14 @@ async function completePreparingRunAttemptWithClient(
       (attempt.state !== "PENDING" && attempt.state !== "EXECUTING") ||
       attempt.expiresAt <= now) {
       return false;
+    }
+    if (memoryPreparingHasAuthoritativeEmptyList(input.result.budgetSnapshot)) {
+      const baseSnapshot = decodeMemoryPreparingBaseSnapshot(
+        attempt.boundedPrivateBaseRequestSnapshot
+      );
+      if (!baseSnapshot || !baseRequestUsesNonToolMemoryList(baseSnapshot)) {
+        throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+      }
     }
 
     const authoritativeItems: Array<{
@@ -1358,13 +1409,20 @@ async function completePreparingRunAttemptWithClient(
         WHERE version."userId" = ${input.userId}
           AND version."id" = ${item.factVersionId}
           AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+          AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+          AND version."sensitivityClass" IN (
+            'NORMAL'::"MemorySensitivityClass",
+            'SENSITIVE'::"MemorySensitivityClass"
+          )
           AND version."contentPurgedAt" IS NULL
           AND fact."state" = 'ACTIVE'::"MemoryFactState"
           AND fact."currentVersionId" = version."id"
           AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+          AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
         FOR SHARE OF version, fact, scope
       `);
-      if (!version || version.displayText !== item.exactSafeText) {
+      if (!version || version.displayText === null ||
+        explicitRunSafeFactText(version.displayText) !== item.exactSafeText) {
         throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
       }
       authoritativeItems.push({
@@ -1435,14 +1493,17 @@ async function completePreparingRunAttemptWithClient(
     }
 
     const context = input.result.preparedContext ?? null;
+    const querySnapshot = input.result.querySnapshot ?? null;
     const updated = await tx.memoryRetrievalAttempt.updateMany({
       data: {
         budgetSnapshot: json(input.result.budgetSnapshot),
+        boundedSafeQuerySnapshot: querySnapshot,
         degradationCode: input.result.degradationCode ?? null,
         outcome: input.result.outcome,
         preparedContextHash: context ? memoryPreparingTextHash(context.text) : null,
         preparedContextText: context?.text ?? null,
         preparedContextTokenCount: context?.approxTokens ?? null,
+        queryHash: input.result.queryHash ?? memoryPreparingTextHash(querySnapshot ?? ""),
         state: "READY",
         updatedAt: now
       },
@@ -1695,15 +1756,22 @@ async function loadAndValidatePreparingAttemptItems(
       WHERE version."userId" = ${input.userId}
         AND version."id" = ${item.factVersionId}
         AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
+        AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+        AND version."sensitivityClass" IN (
+          'NORMAL'::"MemorySensitivityClass",
+          'SENSITIVE'::"MemorySensitivityClass"
+        )
         AND version."contentPurgedAt" IS NULL
         AND fact."state" = 'ACTIVE'::"MemoryFactState"
         AND fact."currentVersionId" = version."id"
         AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+        AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
       FOR SHARE OF version, fact, scope
     `);
     if (
       !current ||
-      current.displayText !== item.exactSafeText ||
+      current.displayText === null ||
+      explicitRunSafeFactText(current.displayText) !== item.exactSafeText ||
       memoryPreparingHash(sourceSnapshot) !== memoryPreparingHash({
         createdByEventId: current.createdByEventId,
         schemaVersion: 1,
@@ -1734,6 +1802,85 @@ async function loadAndValidatePreparingAttemptItems(
   return items;
 }
 
+async function assertCurrentMemoryActionAuthorization(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    attempt: LockedPreparingAttempt;
+    baseRequest: NonNullable<ReturnType<typeof decodeMemoryPreparingBaseSnapshot>>;
+    now: Date;
+    runId: string;
+    userId: string;
+  }>
+): Promise<void> {
+  const value = input.baseRequest.normalizedRequest.memoryActionPlan;
+  if (value === undefined) return;
+  const plan = decodeMemoryActionPlan(value);
+  if (!plan) {
+    throw new MemoryPreparingRunConflictError("memory_action_plan_invalid", false);
+  }
+  if (plan.kind === "LIST") return;
+  const action = plan.kind === "SAVE" ? "SAVE" : plan.kind === "UPDATE" ? "EDIT" : "FORGET";
+  const authorizations = await tx.memoryMutationAuthorization.findMany({
+    select: {
+      consumedAt: true,
+      exactSourceEnd: true,
+      exactSourceStart: true,
+      expectedTargetVersionId: true,
+      expiresAt: true,
+      persistedToolCallId: true,
+      sourceChatId: true,
+      sourceMessageId: true,
+      targetFactId: true
+    },
+    take: 2,
+    where: {
+      action,
+      modelRunId: input.runId,
+      userId: input.userId
+    }
+  });
+  const authorization = authorizations[0];
+  const sourceText = textFromContentBlocks(input.baseRequest.normalizedRequest.content);
+  const expectedSpan = plan.kind === "SAVE" ? plan.statement : plan.targetQuery;
+  const span = authorization?.exactSourceStart !== null &&
+    authorization?.exactSourceStart !== undefined &&
+    authorization.exactSourceEnd !== null
+    ? sourceText.slice(authorization.exactSourceStart, authorization.exactSourceEnd)
+    : null;
+  if (
+    authorizations.length !== 1 ||
+    !authorization ||
+    authorization.consumedAt !== null ||
+    authorization.expiresAt <= input.now ||
+    authorization.persistedToolCallId !== null ||
+    authorization.sourceChatId !== input.attempt.chatId ||
+    authorization.sourceMessageId !== input.attempt.admittedUserMessageId ||
+    authorization.exactSourceStart !== plan.sourceStart ||
+    authorization.exactSourceEnd !== plan.sourceEnd ||
+    span !== expectedSpan
+  ) {
+    throw new MemoryPreparingRunConflictError(
+      "memory_intent_confirmation_required",
+      false
+    );
+  }
+  if (action === "SAVE") {
+    if (authorization.targetFactId !== null ||
+      authorization.expectedTargetVersionId !== null) {
+      throw new MemoryPreparingRunConflictError("memory_action_authorization_invalid", false);
+    }
+    return;
+  }
+  const target = await tx.memoryFact.findFirst({
+    select: { currentVersionId: true, state: true },
+    where: { id: authorization.targetFactId ?? "", userId: input.userId }
+  });
+  if (!target || target.state !== "ACTIVE" ||
+    target.currentVersionId !== authorization.expectedTargetVersionId) {
+    throw new MemoryPreparingRunConflictError("memory_version_stale", false);
+  }
+}
+
 function validateFinalPreparingRequest(
   input: PreparingRunFinalizationInput,
   baseSnapshot: ReturnType<typeof decodeMemoryPreparingBaseSnapshot>,
@@ -1751,7 +1898,11 @@ function validateFinalPreparingRequest(
   ) {
     throw new MemoryPreparingRunConflictError("memory_final_request_invalid", false);
   }
-  if (attempt.outcome !== "USED") {
+  const contextBearingOutcome = preparingAttemptCarriesProviderContext(
+    attempt,
+    baseSnapshot
+  );
+  if (!contextBearingOutcome) {
     if (
       input.normalizedRequest.personalContext !== undefined ||
       memoryPreparingHash(input.normalizedRequest) !==
@@ -1764,11 +1915,30 @@ function validateFinalPreparingRequest(
     return;
   }
 
-  const { personalContext, ...withoutPersonalContext } = input.normalizedRequest;
+  const {
+    context: finalContext,
+    personalContext,
+    ...finalRequestCore
+  } = input.normalizedRequest;
+  const { context: baseContext, ...baseRequestCore } = baseSnapshot.normalizedRequest;
+  const baseMessages = baseContext?.messages ?? [];
+  const finalMessages = finalContext?.messages ?? [];
+  let priorIndex = -1;
+  const contextIsDerived = Boolean(baseContext && finalContext) &&
+    finalContext?.mode === "branch_path" &&
+    finalMessages.length > 0 &&
+    finalMessages.every((message) => {
+      const nextIndex = baseMessages.findIndex((candidate, index) =>
+        index > priorIndex && memoryPreparingHash(candidate) === memoryPreparingHash(message));
+      if (nextIndex < 0) return false;
+      priorIndex = nextIndex;
+      return true;
+    }) &&
+    priorIndex === baseMessages.length - 1;
   if (
     !personalContext ||
-    memoryPreparingHash(withoutPersonalContext) !==
-      memoryPreparingHash(baseSnapshot.normalizedRequest) ||
+    memoryPreparingHash(finalRequestCore) !== memoryPreparingHash(baseRequestCore) ||
+    !contextIsDerived ||
     personalContext.mode !== "prefetched" ||
     personalContext.text !== attempt.preparedContextText ||
     personalContext.approxTokens !== attempt.preparedContextTokenCount ||
@@ -1902,6 +2072,14 @@ async function finalizePreparingRunWithClient(
       }
     }
 
+    await assertCurrentMemoryActionAuthorization(tx, {
+      attempt,
+      baseRequest: baseSnapshot,
+      now,
+      runId: run.id,
+      userId: input.userId
+    });
+
     if (input.assistant) {
       await assertAssistantRunProvenance(tx, {
         assistantId: input.assistant.assistantId,
@@ -1910,18 +2088,46 @@ async function finalizePreparingRunWithClient(
       });
     }
 
+    const contextRequested = input.normalizedRequest.personalContext !== undefined;
+    if (contextRequested && normalizedRequestHasExternalToolCapability(input.normalizedRequest)) {
+      throw new MemoryPreparingRunConflictError("memory_tool_egress_forbidden", false);
+    }
+    if (contextRequested && run.assistantId) {
+      const ownedAssistant = await tx.assistantDefinition.findFirst({
+        select: { id: true },
+        where: {
+          archivedAt: null,
+          id: run.assistantId,
+          ownerUserId: input.userId
+        }
+      });
+      if (!ownedAssistant) {
+        throw new MemoryPreparingRunConflictError("memory_assistant_grant_required", false);
+      }
+    }
+
     const items = await loadAndValidatePreparingAttemptItems(tx, {
       attemptId: attempt.id,
       userId: input.userId
     });
-    const usedContextIsValid = attempt.outcome === "USED" &&
-      items.length > 0 &&
+    const authoritativeEmptyList = preparingAttemptIsAuthoritativeEmptyList(
+      attempt,
+      baseSnapshot
+    );
+    if (memoryPreparingHasAuthoritativeEmptyList(attempt.budgetSnapshot) &&
+      !authoritativeEmptyList) {
+      throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
+    }
+    const visibleOutcome = attempt.outcome === "USED" || attempt.outcome === "DEGRADED";
+    const contextBearingOutcome = visibleOutcome || authoritativeEmptyList;
+    const usedContextIsValid = contextBearingOutcome &&
+      (visibleOutcome ? items.length > 0 : items.length === 0) &&
       attempt.preparedContextText !== null &&
       attempt.preparedContextHash === memoryPreparingTextHash(attempt.preparedContextText) &&
       attempt.preparedContextTokenCount !== null &&
       Number.isSafeInteger(attempt.preparedContextTokenCount) &&
       attempt.preparedContextTokenCount >= 0;
-    const emptyContextIsValid = attempt.outcome !== "USED" &&
+    const emptyContextIsValid = !contextBearingOutcome &&
       items.length === 0 &&
       attempt.preparedContextText === null &&
       attempt.preparedContextHash === null &&
@@ -1936,7 +2142,7 @@ async function finalizePreparingRunWithClient(
       currentSettings.activeIndexGenerationId !== attempt.indexGenerationIdSnapshot ||
       !sameMemoryPreparingSettings(settingsSnapshot, currentSnapshot) ||
       currentSettings.memoryRevision < attempt.retrievalRevisionSnapshot ||
-      (items.length > 0 &&
+      ((items.length > 0 || authoritativeEmptyList) &&
         currentSettings.memoryRevision !== attempt.retrievalRevisionSnapshot)
     ) {
       throw new MemoryPreparingRunConflictError("memory_admission_settings_changed", true);
@@ -2036,6 +2242,8 @@ async function retryPreparingRunAttemptWithClient(
   }>
 ): Promise<Readonly<{
   attemptId: string;
+  memoryGeneration: number;
+  memoryRevision: number;
   settingsSnapshot: MemoryPreparingSettingsSnapshot;
 }> | null> {
   return repeatableReadTransaction(prismaClient, async (tx) => {
@@ -2109,6 +2317,8 @@ async function retryPreparingRunAttemptWithClient(
     });
     return {
       attemptId: nextAttemptId,
+      memoryGeneration: settings.memoryGeneration,
+      memoryRevision: settings.memoryRevision,
       settingsSnapshot: memoryPreparingSettingsSnapshot(settings)
     };
   });
@@ -2227,82 +2437,147 @@ async function recoverPreparingRunWithClient(
 async function createDormantPreparingRun(
   prismaClient: PrismaClient,
   admission: PreparingRunAdmissionInput
-): Promise<PreparingRunAdmissionResult> {
+): Promise<PreparingRunAdmissionResult & Readonly<{
+  materializedRequest?: PreparingRunMaterializedRequest;
+}>> {
   const created = await admitPreparingRunWithClient(prismaClient, admission);
   let currentAttemptId = created.attemptId;
+  let currentSettings = {
+    memoryGeneration: created.memoryGeneration,
+    memoryRevision: created.memoryRevision,
+    settingsSnapshot: created.settingsSnapshot
+  };
   try {
-    const began = await beginPreparingRunAttemptWithClient(prismaClient, {
-      attemptId: currentAttemptId,
-      now: new Date(),
-      runId: created.runId,
-      userId: admission.userId
-    });
-    if (!began) {
-      throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
+    const actionPlanValue = admission.normalizedRequest.memoryActionPlan;
+    const actionPlan = actionPlanValue === undefined
+      ? undefined
+      : decodeMemoryActionPlan(actionPlanValue);
+    if (actionPlanValue !== undefined && !actionPlan) {
+      throw new MemoryPreparingRunConflictError("memory_action_plan_invalid", false);
     }
-    const completed = await completePreparingRunAttemptWithClient(prismaClient, {
-      attemptId: currentAttemptId,
-      result: dormantMemoryAttemptResult(created.settingsSnapshot),
-      runId: created.runId,
-      userId: admission.userId
-    });
-    if (!completed) {
-      throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
-    }
-    const finalization: PreparingRunFinalizationInput = {
-      assistant: admission.assistant,
-      attemptId: currentAttemptId,
-      knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan,
-      mcpBindings: admission.mcpBindings,
-      normalizedRequest: admission.normalizedRequest,
-      providerAdmissionPlan: admission.providerAdmissionPlan,
-      providerRequestPreview: admission.providerRequestPreview,
-      runId: created.runId,
-      userId: admission.userId
-    };
-    try {
-      if (await finalizePreparingRunWithClient(prismaClient, finalization)) {
-        return created;
-      }
-      throw new MemoryPreparingRunConflictError("memory_preparing_finalize_conflict", false);
-    } catch (error) {
-      if (!(error instanceof MemoryPreparingRunConflictError) || !error.retryable) {
-        throw error;
-      }
-      const retry = await retryPreparingRunAttemptWithClient(prismaClient, {
-        attemptId: currentAttemptId,
-        now: new Date(),
-        runId: created.runId,
+    if (actionPlan) {
+      await authorizeRunMemoryAction(prismaClient, {
+        admissionKind: admission.admissionKind,
+        chatId: admission.chatId,
+        modelRunId: created.runId,
+        normalizedRequest: admission.normalizedRequest,
+        plan: actionPlan,
+        sourceMessageId: created.userMessageId,
         userId: admission.userId
       });
-      if (!retry) throw error;
-      currentAttemptId = retry.attemptId;
-      if (!await beginPreparingRunAttemptWithClient(prismaClient, {
-        attemptId: currentAttemptId,
-        now: new Date(),
-        runId: created.runId,
-        userId: admission.userId
-      }) || !await completePreparingRunAttemptWithClient(prismaClient, {
-        attemptId: currentAttemptId,
-        result: dormantMemoryAttemptResult(retry.settingsSnapshot),
-        runId: created.runId,
-        userId: admission.userId
-      }) || !await finalizePreparingRunWithClient(prismaClient, {
-        ...finalization,
-        attemptId: currentAttemptId
-      })) {
-        throw new MemoryPreparingRunConflictError("memory_preparing_retry_conflict", false);
-      }
-      return {
-        ...created,
-        attemptId: currentAttemptId,
-        settingsSnapshot: retry.settingsSnapshot
-      };
     }
+
+    for (let attemptOrdinal = 0; attemptOrdinal < 2; attemptOrdinal += 1) {
+      try {
+        const began = await beginPreparingRunAttemptWithClient(prismaClient, {
+          attemptId: currentAttemptId,
+          now: new Date(),
+          runId: created.runId,
+          userId: admission.userId
+        });
+        if (!began) {
+          throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
+        }
+        let attemptResult = admission.memoryMaterializer
+          ? await retrieveExplicitRunMemory(prismaClient, {
+              ...(actionPlan ? { actionPlan } : {}),
+              ...(admission.assistant
+                ? { assistantId: admission.assistant.assistantId }
+                : {}),
+              normalizedRequest: admission.normalizedRequest,
+              settings: currentSettings.settingsSnapshot,
+              userId: admission.userId
+            })
+          : dormantMemoryAttemptResult(currentSettings.settingsSnapshot);
+        let materializedRequest: PreparingRunMaterializedRequest | undefined;
+        if (attemptResult.preparedContext) {
+          materializedRequest = admission.memoryMaterializer?.({
+            approxTokens: attemptResult.preparedContext.approxTokens,
+            itemCount: attemptResult.items?.length ?? 0,
+            memoryGeneration: currentSettings.memoryGeneration,
+            memoryRevision: currentSettings.memoryRevision,
+            mode: "prefetched",
+            text: attemptResult.preparedContext.text
+          }) ?? undefined;
+          if (!materializedRequest) {
+            if (actionPlan) {
+              throw new ExplicitRunMemoryManagementError("memory_action_failed");
+            }
+            attemptResult = {
+              budgetSnapshot: {
+                ...attemptResult.budgetSnapshot,
+                itemCount: 0,
+                reason: "final_context_budget_unavailable"
+              },
+              items: [],
+              outcome: "FAILED_SAFE",
+              preparedContext: null,
+              querySnapshot: attemptResult.querySnapshot ?? null
+            };
+          }
+        }
+        const completed = await completePreparingRunAttemptWithClient(prismaClient, {
+          attemptId: currentAttemptId,
+          result: attemptResult,
+          runId: created.runId,
+          userId: admission.userId
+        });
+        if (!completed) {
+          throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
+        }
+        const finalized = await finalizePreparingRunWithClient(prismaClient, {
+          ...(admission.assistant ? { assistant: admission.assistant } : {}),
+          attemptId: currentAttemptId,
+          ...(admission.knowledgeAdmissionPlan
+            ? { knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan }
+            : {}),
+          ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
+          normalizedRequest: materializedRequest?.normalizedRequest ?? admission.normalizedRequest,
+          ...(admission.providerAdmissionPlan
+            ? { providerAdmissionPlan: admission.providerAdmissionPlan }
+            : {}),
+          providerRequestPreview:
+            materializedRequest?.providerRequestPreview ?? admission.providerRequestPreview,
+          runId: created.runId,
+          userId: admission.userId
+        });
+        if (!finalized) {
+          throw new MemoryPreparingRunConflictError("memory_preparing_finalize_conflict", false);
+        }
+        return {
+          ...created,
+          attemptId: currentAttemptId,
+          memoryGeneration: currentSettings.memoryGeneration,
+          memoryRevision: currentSettings.memoryRevision,
+          settingsSnapshot: currentSettings.settingsSnapshot,
+          ...(materializedRequest ? { materializedRequest } : {})
+        };
+      } catch (error) {
+        if (
+          !(error instanceof MemoryPreparingRunConflictError) ||
+          !error.retryable ||
+          attemptOrdinal !== 0
+        ) {
+          throw error;
+        }
+        const retry = await retryPreparingRunAttemptWithClient(prismaClient, {
+          attemptId: currentAttemptId,
+          now: new Date(),
+          runId: created.runId,
+          userId: admission.userId
+        });
+        if (!retry) throw error;
+        currentAttemptId = retry.attemptId;
+        currentSettings = retry;
+      }
+    }
+    throw new MemoryPreparingRunConflictError("memory_preparing_retry_conflict", false);
   } catch (error) {
     await settlePreparingRunFailureWithClient(prismaClient, {
       attemptId: currentAttemptId,
-      errorCode: error instanceof MemoryPreparingRunConflictError
+      errorCode: error instanceof MemoryPreparingRunConflictError ||
+        error instanceof ExplicitRunMemoryManagementError ||
+        error instanceof MemoryRunActionAuthorizationError
         ? error.code
         : "memory_preparing_failed",
       message: "Memory preparation failed before provider dispatch.",
@@ -2310,6 +2585,10 @@ async function createDormantPreparingRun(
       state: "FAILED",
       userId: admission.userId
     }).catch(() => false);
+    if (error instanceof ExplicitRunMemoryManagementError ||
+      error instanceof MemoryRunActionAuthorizationError) {
+      throw new MemoryPreparingRunConflictError(error.code, false);
+    }
     throw error;
   }
 }
@@ -2953,6 +3232,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       });
       return {
         assistantMessageId: created.assistantMessageId,
+        ...(created.materializedRequest
+          ? { materializedRequest: created.materializedRequest }
+          : {}),
         runId: created.runId,
         userMessageId: created.userMessageId
       };
@@ -2964,6 +3246,9 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
       });
       return {
         assistantMessageId: created.assistantMessageId,
+        ...(created.materializedRequest
+          ? { materializedRequest: created.materializedRequest }
+          : {}),
         runId: created.runId,
         userMessageId: created.userMessageId
       };

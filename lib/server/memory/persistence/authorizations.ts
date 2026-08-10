@@ -30,8 +30,14 @@ export type MemoryMutationAuthorizationMint = Readonly<{
   confirmationCopyVersion: typeof MEMORY_CONFIRMATION_COPY_VERSION;
   expectedTargetVersionId?: string | null;
   expiresAt: Date;
+  exactSourceEnd?: number | null;
+  exactSourceStart?: number | null;
+  modelRunId?: string | null;
   nonceHash: string;
+  persistedToolCallId?: string | null;
   requestId: string;
+  sourceChatId?: string | null;
+  sourceMessageId?: string | null;
   targetFactId?: string | null;
 }>;
 
@@ -43,10 +49,23 @@ export type MemoryMutationAuthorizationSnapshot = Readonly<{
   createdAt: Date;
   expectedTargetVersionId: string | null;
   expiresAt: Date;
+  exactSourceEnd: number | null;
+  exactSourceStart: number | null;
   id: string;
+  modelRunId: string | null;
   nonceHash: string;
+  persistedToolCallId: string | null;
   requestId: string;
+  sourceChatId: string | null;
+  sourceMessageId: string | null;
   targetFactId: string | null;
+}>;
+
+export type MemoryMutationToolAuthorizationClaim = Readonly<{
+  action: MemoryMutationAction;
+  authorizedPayloadHash?: string;
+  modelRunId: string;
+  persistedToolCallId: string;
 }>;
 
 const authorizationSelect = {
@@ -57,9 +76,15 @@ const authorizationSelect = {
   createdAt: true,
   expectedTargetVersionId: true,
   expiresAt: true,
+  exactSourceEnd: true,
+  exactSourceStart: true,
   id: true,
+  modelRunId: true,
   nonceHash: true,
+  persistedToolCallId: true,
   requestId: true,
+  sourceChatId: true,
+  sourceMessageId: true,
   targetFactId: true
 } satisfies Prisma.MemoryMutationAuthorizationSelect;
 
@@ -84,6 +109,21 @@ function validTargetShape(input: Readonly<{
 }
 
 function validateMint(input: MemoryMutationAuthorizationMint, now: Date): void {
+  const provenanceValues = [
+    input.modelRunId,
+    input.sourceChatId,
+    input.sourceMessageId,
+    input.exactSourceStart,
+    input.exactSourceEnd
+  ];
+  const hasProvenance = provenanceValues.some((value) => value !== undefined && value !== null);
+  const validProvenance = !hasProvenance || (
+    typeof input.modelRunId === "string" && bounded(input.modelRunId, 256) &&
+    typeof input.sourceChatId === "string" && bounded(input.sourceChatId, 256) &&
+    typeof input.sourceMessageId === "string" && bounded(input.sourceMessageId, 256) &&
+    Number.isSafeInteger(input.exactSourceStart) && input.exactSourceStart! >= 0 &&
+    Number.isSafeInteger(input.exactSourceEnd) && input.exactSourceEnd! > input.exactSourceStart!
+  );
   if (
     !bounded(input.authorizedPayloadHash, 128) ||
     input.confirmationCopyVersion !== MEMORY_CONFIRMATION_COPY_VERSION ||
@@ -93,6 +133,8 @@ function validateMint(input: MemoryMutationAuthorizationMint, now: Date): void {
     input.expiresAt <= now ||
     input.expiresAt.getTime() - now.getTime() > MEMORY_MUTATION_AUTHORIZATION_TTL_MS ||
     !validTargetShape(input) ||
+    !validProvenance ||
+    (input.persistedToolCallId != null && !bounded(input.persistedToolCallId, 256)) ||
     (input.targetFactId != null && !bounded(input.targetFactId, 256)) ||
     (input.expectedTargetVersionId != null &&
       !bounded(input.expectedTargetVersionId, 256))
@@ -236,9 +278,15 @@ export function createPrismaMemoryMutationAuthorizationRepository(
             createdAt: now,
             expectedTargetVersionId: input.expectedTargetVersionId,
             expiresAt: input.expiresAt,
+            exactSourceEnd: input.exactSourceEnd,
+            exactSourceStart: input.exactSourceStart,
             id: randomUUID(),
+            modelRunId: input.modelRunId,
             nonceHash: input.nonceHash,
+            persistedToolCallId: input.persistedToolCallId,
             requestId: input.requestId,
+            sourceChatId: input.sourceChatId,
+            sourceMessageId: input.sourceMessageId,
             targetFactId: input.targetFactId,
             userId
           },
@@ -263,6 +311,60 @@ export function createPrismaMemoryMutationAuthorizationRepository(
         return memoryPersistenceFailure("memory_mutation_authorization_invalid");
       }
       return { confirmedAt: row.createdAt, requestId: row.requestId };
+    },
+
+    async claimForTool(
+      userId: string,
+      input: MemoryMutationToolAuthorizationClaim,
+      now = new Date()
+    ): Promise<MemoryMutationAuthorizationSnapshot> {
+      if (
+        !bounded(input.modelRunId, 256) ||
+        !bounded(input.persistedToolCallId, 256) ||
+        (input.authorizedPayloadHash !== undefined &&
+          !bounded(input.authorizedPayloadHash, 128))
+      ) {
+        return memoryPersistenceFailure("memory_input_invalid");
+      }
+      return client.$transaction(async (tx) => {
+        const rows = await tx.memoryMutationAuthorization.findMany({
+          select: authorizationSelect,
+          take: 2,
+          where: {
+            action: input.action,
+            consumedAt: null,
+            expiresAt: { gt: now },
+            modelRunId: input.modelRunId,
+            userId,
+            ...(input.authorizedPayloadHash
+              ? { authorizedPayloadHash: input.authorizedPayloadHash }
+              : {})
+          }
+        });
+        const row = rows[0];
+        if (rows.length !== 1 || !row ||
+          (row.persistedToolCallId !== null &&
+            row.persistedToolCallId !== input.persistedToolCallId)) {
+          return memoryPersistenceFailure("memory_mutation_authorization_invalid");
+        }
+        if (row.persistedToolCallId === null) {
+          const claimed = await tx.memoryMutationAuthorization.updateMany({
+            data: { persistedToolCallId: input.persistedToolCallId },
+            where: {
+              consumedAt: null,
+              expiresAt: { gt: now },
+              id: row.id,
+              persistedToolCallId: null,
+              userId
+            }
+          });
+          if (claimed.count !== 1) {
+            return memoryPersistenceFailure("memory_mutation_authorization_invalid");
+          }
+          return { ...row, persistedToolCallId: input.persistedToolCallId };
+        }
+        return row;
+      });
     }
   });
 }

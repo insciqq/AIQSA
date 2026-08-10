@@ -63,9 +63,15 @@ export type MemoryLifecycleService = Readonly<{
   forget(
     userId: string,
     factId: string,
-    input: MemoryForgetInput
+    input: MemoryForgetInput,
+    execution?: MemoryLifecycleExecutionContext
   ): Promise<MemoryMutationResponse>;
   status(userId: string, deletionId: string): Promise<MemoryDeletionStatus>;
+}>;
+
+export type MemoryLifecycleExecutionContext = Readonly<{
+  modelRunId: string;
+  persistedToolCallId: string;
 }>;
 
 function failure(code: MemoryLifecycleServiceErrorCode): never {
@@ -183,7 +189,7 @@ export function createMemoryLifecycleService(input: Readonly<{
       return checkedDeletion(status);
     },
 
-    async forget(userId, factId, forgetInput) {
+    async forget(userId, factId, forgetInput, execution) {
       const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
         action: "FORGET",
         expectedTargetVersionId: forgetInput.expectedVersionId,
@@ -209,6 +215,12 @@ export function createMemoryLifecycleService(input: Readonly<{
           authorization.authorizationId
         ),
         idempotencyPayloadHash: lifecyclePayloadHash("FORGET", { factId, forgetInput }),
+        ...(execution
+          ? {
+              modelRunId: execution.modelRunId,
+              persistedToolCallId: execution.persistedToolCallId
+            }
+          : {}),
         now,
         requestId: resolved.requestId
       }));

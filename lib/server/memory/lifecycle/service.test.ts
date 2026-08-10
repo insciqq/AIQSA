@@ -94,6 +94,9 @@ describe("Memory lifecycle service", () => {
     await expect(service.forget("user-1", "fact-1", {
       expectedVersionId: "version-1",
       mutationAuthorizationId: "authorization-1"
+    }, {
+      modelRunId: "run-1",
+      persistedToolCallId: "tool-call-1"
     })).resolves.toEqual({ memory: forgottenSummary });
     expect(authorizationRepository.resolveForUse).toHaveBeenCalledWith("user-1", {
       action: "FORGET",
@@ -108,7 +111,12 @@ describe("Memory lifecycle service", () => {
     });
     expect(mutationRepository.forget).toHaveBeenCalledWith(
       "user-1",
-      expect.objectContaining({ expectedVersionId: "version-1", now: NOW })
+      expect.objectContaining({
+        expectedVersionId: "version-1",
+        modelRunId: "run-1",
+        now: NOW,
+        persistedToolCallId: "tool-call-1"
+      })
     );
     expect(kick).toHaveBeenCalledOnce();
   });

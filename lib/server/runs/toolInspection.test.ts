@@ -130,6 +130,26 @@ describe("tool inspection evidence", () => {
     expect(JSON.stringify(resultEvent)).not.toContain("abcdefghijklmnop");
   });
 
+  it("labels first-party Memory actions separately from Search and MCP", () => {
+    const event = toolCallInspectionArtifact({
+      call: {
+        arguments: { statement: "I prefer concise answers" },
+        id: "memory-call-1",
+        name: "save_memory"
+      },
+      ordinal: 0,
+      round: 0
+    });
+
+    expect(event).toMatchObject({
+      data: {
+        payload: {
+          snapshot: { capability: "memory", toolName: "save_memory" }
+        }
+      }
+    });
+  });
+
   it("projects a durable MCP call even when no artifact event was appended", () => {
     const activity = persistedToolCallActivity({
       call: {

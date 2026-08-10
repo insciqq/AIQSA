@@ -46,6 +46,7 @@ import {
   KNOWLEDGE_TOOL_NAME,
   type KnowledgeRetrievalEvidence
 } from "../knowledge/retrievalTypes";
+import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import {
   activeRunStaleMs,
   reconcileInstallationRuns,
@@ -161,6 +162,7 @@ function createHarness(options: Readonly<{
   failRun?: boolean;
   liveRunIds?: readonly string[];
   knowledgeExecutor?: RunRecoveryDeps["knowledgeExecutor"];
+  memoryActionExecutor?: MemoryActionExecutor;
   mcpRuntime?: RunRecoveryDeps["mcpRuntime"];
   pricing?: {
     inputTokenPriceMicros: number;
@@ -368,6 +370,7 @@ function createHarness(options: Readonly<{
       ? { getAttachmentLimits: () => options.attachmentLimits! }
       : {}),
     ...(options.knowledgeExecutor ? { knowledgeExecutor: options.knowledgeExecutor } : {}),
+    ...(options.memoryActionExecutor ? { memoryActionExecutor: options.memoryActionExecutor } : {}),
     ...(options.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
     providers: options.providers ?? {},
     registry: options.registry ?? registry(options.liveRunIds),
@@ -478,6 +481,25 @@ function normalizedKnowledgeRequest(): NormalizedRunRequest {
   return {
     ...request,
     knowledgePlan: { baseIds: ["knowledge-base-1"] },
+    modelCapabilities: {
+      ...request.modelCapabilities,
+      toolCalling: true
+    },
+    toolMode: "auto"
+  };
+}
+
+function normalizedMemoryActionRequest(): NormalizedRunRequest {
+  const { mcp: _mcp, ...request } = normalizedToolRequest();
+  return {
+    ...request,
+    memoryActionPlan: {
+      kind: "SAVE",
+      sourceEnd: 24,
+      sourceStart: 14,
+      statement: "I like tea",
+      version: "memory-action-plan-v1"
+    },
     modelCapabilities: {
       ...request.modelCapabilities,
       toolCalling: true
@@ -2585,6 +2607,75 @@ describe("run recovery", () => {
         provider: "openai_compatible",
         usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3 })
       })])
+    });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("executes a pending first-party Memory action once from its durable recovery call", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const execute = vi.fn<MemoryActionExecutor["execute"]>(async (_plan, call, context) => {
+      expect(context).toMatchObject({
+        persistedToolCallId: "stored-call-1",
+        runId,
+        userId
+      });
+      return {
+        callId: call.id,
+        content: [{ type: "json", value: { operation: "SAVE", result: "applied" } }],
+        name: call.name,
+        rawPreview: { operation: "SAVE", result: "applied" },
+        status: "complete"
+      };
+    });
+    const memoryActionExecutor: MemoryActionExecutor = {
+      accepts: (plan, name) => plan.kind === "SAVE" && name === "save_memory",
+      execute
+    };
+    const harness = createHarness({
+      memoryActionExecutor,
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered after saving Memory",
+              usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const memoryCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { statement: "I like tea" },
+      mcpBinding: null,
+      toolName: "save_memory"
+    };
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [memoryCall],
+        phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: JSON.stringify(memoryCall.arguments),
+          call_id: memoryCall.providerCallId,
+          name: memoryCall.toolName,
+          type: "function_call"
+        }]
+      }),
+      normalizedRequest: normalizedMemoryActionRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(installed.calls()).toEqual([
+      expect.objectContaining({ state: "complete", toolName: "save_memory" })
+    ]);
+    expect(JSON.stringify(requests)).toContain("SAVE");
+    expect(harness.state.completed).toMatchObject({
+      finalText: "Recovered after saving Memory"
     });
     expect(harness.state.recoveredErrors).toEqual([]);
   });

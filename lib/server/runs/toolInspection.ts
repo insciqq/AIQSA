@@ -8,6 +8,7 @@ import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import { isToolLoopJsonValue } from "./toolLoopPersistence";
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";
 import { KNOWLEDGE_TOOL_NAME } from "../knowledge/retrievalTypes";
+import { isMemoryActionToolName } from "../memory/actions/tools";
 
 const sensitiveKey = /(?:api.?key|(?:access|private|ssh|signing|encryption).?key|(?:^|[_.-])key(?:$|[_.-]|id$)|token|auth(?:orization)?|bearer|client.?secret|cookie|credential|passphrase|password|secret|verifier)/iu;
 const bearerValue = /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu;
@@ -70,7 +71,9 @@ function toolSnapshot(mcp: McpRunPlanSnapshot | undefined, name: string) {
   const route = resolveMcpRunTool(mcp, name);
   if (!route) {
     return {
-      capability: name === KNOWLEDGE_TOOL_NAME ? "knowledge" : "web_search",
+      capability: name === KNOWLEDGE_TOOL_NAME
+        ? "knowledge"
+        : isMemoryActionToolName(name) ? "memory" : "web_search",
       toolName: name
     };
   }

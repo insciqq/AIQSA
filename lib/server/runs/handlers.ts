@@ -12,7 +12,12 @@ import {
 } from "../http/requestBody";
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
-import type { ProviderAdapter, ProviderSearchAdapter } from "../providers/types";
+import type {
+  NormalizedRunRequest,
+  ProviderAdapter,
+  ProviderRunRequest,
+  ProviderSearchAdapter
+} from "../providers/types";
 import type { ProviderToolBridge } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
@@ -40,6 +45,11 @@ import {
 } from "./runRepositoryContract";
 import type { RunRepository } from "./runRepositoryContract";
 import { MemoryPreparingRunConflictError } from "./preparingRun";
+import { applyProviderRequestContextBudget } from "./runContextBudget";
+import type {
+  CreatedRun,
+  PreparingRunMemoryMaterializer
+} from "./runRepositoryContract";
 
 export { ActiveLeafConflictError, ActiveRunConflictError };
 export type {
@@ -165,6 +175,59 @@ function isMemoryPreparingRunConflictError(
 ): error is MemoryPreparingRunConflictError {
   return error instanceof MemoryPreparingRunConflictError ||
     (error instanceof Error && error.name === "MemoryPreparingRunConflictError");
+}
+
+function createPreparingMemoryMaterializer(
+  prepared: ReturnType<typeof materializePreparedRunData>,
+  adapter: ProviderAdapter,
+  bridge: ProviderToolBridge | undefined
+): PreparingRunMemoryMaterializer {
+  return (personalContext) => {
+    const normalizedRequest: NormalizedRunRequest = {
+      ...prepared.normalizedRequest,
+      personalContext
+    };
+    const request: ProviderRunRequest = {
+      ...prepared.providerRequest,
+      ...normalizedRequest,
+      personalContext
+    };
+    const budgeted = applyProviderRequestContextBudget({
+      ...(bridge ? { bridge } : {}),
+      request
+    });
+    if (!budgeted.ok || !budgeted.request.context) return null;
+    const finalNormalizedRequest: NormalizedRunRequest = {
+      ...normalizedRequest,
+      context: budgeted.request.context
+    };
+    const providerRequest: ProviderRunRequest = {
+      ...budgeted.request,
+      ...finalNormalizedRequest,
+      attachments: budgeted.request.attachments
+    };
+    return {
+      contextTruncation: budgeted.contextTruncation ?? prepared.contextTruncation,
+      normalizedRequest: finalNormalizedRequest,
+      providerRequest,
+      providerRequestPreview: adapter.buildRequestPreview(providerRequest)
+    };
+  };
+}
+
+function applyPreparingMaterialization(
+  prepared: ReturnType<typeof materializePreparedRunData>,
+  created: CreatedRun
+): ReturnType<typeof materializePreparedRunData> {
+  return created.materializedRequest
+    ? {
+        ...prepared,
+        contextTruncation: created.materializedRequest.contextTruncation,
+        normalizedRequest: created.materializedRequest.normalizedRequest,
+        providerRequest: created.materializedRequest.providerRequest,
+        providerRequestPreview: { ...created.materializedRequest.providerRequestPreview }
+      }
+    : prepared;
 }
 
 async function acceptedRuntimeBinding(
@@ -317,12 +380,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       return runPreparationFailureResponse(preparation);
     }
 
-    const preparedData = materializePreparedRunData(preparation.prepared);
-    let created: {
-      assistantMessageId: string;
-      runId: string;
-      userMessageId: string;
-    };
+    let preparedData = materializePreparedRunData(preparation.prepared);
+    let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
@@ -345,6 +404,11 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           ? { providerAdmissionPlan: preparedData.providerAdmissionPlan }
           : {}),
         modelId: preparedData.normalizedRequest.modelId,
+        memoryMaterializer: createPreparingMemoryMaterializer(
+          preparedData,
+          preparation.adapter,
+          preparation.toolBridge
+        ),
         normalizedRequest: preparedData.normalizedRequest,
         provider: preparedData.normalizedRequest.provider,
         providerRequestPreview: preparedData.providerRequestPreview,
@@ -389,6 +453,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
       throw error;
     }
+    preparedData = applyPreparingMaterialization(preparedData, created);
     const runtime = await acceptedRuntimeBinding(
       deps,
       created.runId,
@@ -460,12 +525,8 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       return runPreparationFailureResponse(preparation);
     }
 
-    const preparedData = materializePreparedRunData(preparation.prepared);
-    let created: {
-      assistantMessageId: string;
-      runId: string;
-      userMessageId: string;
-    };
+    let preparedData = materializePreparedRunData(preparation.prepared);
+    let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
@@ -486,6 +547,11 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           ? { providerAdmissionPlan: preparedData.providerAdmissionPlan }
           : {}),
         modelId: preparedData.normalizedRequest.modelId,
+        memoryMaterializer: createPreparingMemoryMaterializer(
+          preparedData,
+          preparation.adapter,
+          preparation.toolBridge
+        ),
         normalizedRequest: preparedData.normalizedRequest,
         ...(source.assistantMessage
           ? { preSendAssistantMessageId: source.assistantMessage.id }
@@ -530,6 +596,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
 
       throw error;
     }
+    preparedData = applyPreparingMaterialization(preparedData, created);
     const runtime = await acceptedRuntimeBinding(
       deps,
       created.runId,

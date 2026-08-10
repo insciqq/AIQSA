@@ -5,136 +5,104 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 ## Implementation Status And Authority
 
-Native Memory is an approved target capability. The current baseline implements
-the feature-dark Phase 0 contract/evaluation foundation and the Phase 1
-persistence foundation. Phase 0 includes strict wire decoders, pure
-state/counter/safety validators, RU/EN copy parity, a provider-neutral aggregate
-evaluator, frozen scorers, qualification decisions, a development-only
-reference boundary, and a hash-frozen synthetic RU/EN tuning/holdout corpus
-with adjudication and no-Memory baselines. Offline LongMemEval-, LoCoMo-, and
-MINJA-shaped checks use original behavior-only probes with pinned provenance
-and separate sanitized evidence; they contain no upstream benchmark text and
-are not official benchmark scores.
+Native Memory is approved. The current baseline includes the feature-dark
+Phase 0 contract/evaluation harness, Phase 1 persistence and coordination, and
+the explicit-fact run path of Phase 2. Phase 0 has strict decoders, pure
+state/counter/safety validation, RU/EN parity, frozen provider-neutral scoring,
+signed qualification decisions, and a hash-frozen synthetic tuning/holdout
+corpus. Behavior-only benchmark-shaped probes contain no upstream benchmark
+text and are not official benchmark scores.
 
-Phase 1 adds inert per-user settings, typed dormant scopes, fact/version/event
-and evidence ledgers, keyed suppressions/source barriers, mutation authority
-and idempotency evidence, immutable lexical/hybrid generation shape, generated
-RU/EN/simple FTS rows, jobs/deletion obligations, per-call execution evidence,
-two-phase retrieval attempts/staging, final run bindings/items, and the private
-`ModelRun.preparing` state. Composite owner foreign keys, partial uniqueness,
-deferrable fact/current-version and settings/active-generation checks, request
-shape, execution/vector shape, and account-deletion restriction are enforced by
-the database. Bounded production repositories now implement settings CAS,
-global scopes, explicit fact/version/evidence/receipt writes, suppressions,
-lexical projection, jobs/deletion obligations, and per-call execution
-admission/lifecycle. A feature-local process coordinator now claims only
-explicitly registered job kinds and deletion operations, applies independent
-durable owner rotation, renews bounded leases, reconciles consent waiting and
-retryable work, and fences authoritative apply to the exact unexpired claim.
-Its one deletion claimant never terminally abandons an obligation: exhausted
-fast retries become visible blocked state and continue on the slow schedule.
-Every new user receives a default-off settings row;
-upgrades, bootstrap, and the local seed are inert and schedule no work.
-Non-global scope activation is rejected by a temporary database guard until the
-Phase 3 runtime authorization migration owns that cutover. The
-installation-only suppression HMAC keyring and restore/automatic-work
-preflights are implemented separately; keys never enter the database.
+Phase 1 persists default-off settings; dormant typed scopes; fact, version,
+event, evidence, suppression, mutation, generation, job/deletion, execution,
+retrieval-attempt, and final-run evidence. Database ownership, uniqueness,
+current-pointer, active-generation, request/execution/vector shape, and account
+deletion constraints are authoritative. Production repositories and the
+feature-local coordinator fence claims, retries, slow-schedule blocked deletion
+work, and apply. New-user/bootstrap/upgrade paths schedule no work. Non-global
+scope activation remains database-blocked until Phase 3. Suppression HMAC keys
+stay installation-only and are preflighted before restore or automatic work.
 
-The dormant two-phase run boundary is now executable for every normal send and
-regeneration. Phase A commits the exact message DAG, ordinary accepted
-provider/Knowledge/MCP evidence, a private `PREPARING` run with null request
-artifacts, the bounded base-request snapshot, and one local-only attempt.
-Current behavior then settles that attempt as `DISABLED` or `EMPTY`; no Memory
-retrieval or utility call is registered. Phase B locks and revalidates the DAG,
-folder and Assistant authority, Memory settings/generation/index, ordinary
-admission plans, and every staged item/source/scope/safety snapshot before it
-atomically consumes the attempt, creates the immutable run binding/items,
-freezes the normalized request and preview, and makes the run dispatchable.
-Only zero-item additive `memoryRevision` drift is accepted, settings/generation
-drift gets at most one fresh attempt, and cancel/failure/expiry/recovery settles
-the owned attempt while freezing the base request. Foreground and recovery
-dispatch both reject `PREPARING`; finalized recovery reuses the frozen request.
+Every normal send and regeneration uses the two-phase run boundary. Phase A
+commits the exact DAG, ordinary dependency evidence, private `PREPARING` run,
+bounded base request, and local-only attempt. Eligible current explicit
+`GLOBAL_USER` facts come from local exact/FTS and enter the shared budget as
+clearly untrusted personal context with no utility consent. Phase B revalidates
+the DAG, folder/Assistant, settings/generation/index, ordinary admission, and
+each staged version/source/scope/safety snapshot before freezing the request,
+preview, binding, and items. Drift gets at most one safe fresh attempt; stale
+mutation authority fails. Ordinary retrieval may degrade without Memory, but
+management fails actionably. Dispatch rejects `PREPARING`, and recovery reuses
+only a finalized request.
 
-The authenticated `GET/PATCH /api/me/memory/settings` route is the first private
-Memory API. It exposes strict bounded settings/capability/current-versus-accepted
-utility-policy projections with `private, no-store`, and accepts either one
-ordinary CAS patch or one explicit consent payload. The three gates and RU/EN
-locale persist independently; a locale-only update advances only the settings
-revision, while a memory-visible update also advances the Memory revision. A
-new embedding selection is admitted through the caller's current exact
-embedding entitlement inside the locked transaction. Consent likewise
-recomputes the current server-owned utility fingerprint in that transaction
-and refuses a stale client observation without partial mutation. Phase release
-capabilities remain fail-closed constants for later composition gates, and the
-route schedules no work.
+All answer adapters place personal context after trusted instructions. Phase 2
+withholds it from hosted Search, Knowledge, MCP/external tools, and non-owned
+Assistants; finalization and provider dispatch enforce the same egress fence.
 
-Authenticated explicit management is now available independently of those
-three gates for `GLOBAL_USER` facts. A short-lived mutation-authorization route
-binds Save to the exact statement hash; Edit and Forget to the exact owner
-fact/current version; and `DELETE_EXPLICIT` to the exact operation plus current
-settings and Memory revisions. Every grant also binds current confirmation copy
-and caller nonce. It is consumed in the same serializable transaction as the
-mutation, while an exact retry may replay only its matching durable receipt.
-Private list, POST-search, detail, evidence, create, edit, pin, Forget,
-bulk-delete, and deletion-status routes authoritatively rejoin ownership and
-keep free-form content out of URLs. Every successful explicit write
-synchronously creates or advances the active exact/Russian/English/simple
-lexical projection without a worker, model, embedding call, or utility egress.
-The current API rejects non-global scope and secret-like statements and exposes
-no internal owner, canonical-key, authorization-request, or suppression
-identity.
+Authenticated `GET/PATCH /api/me/memory/settings` exposes bounded, `private,
+no-store` settings/capability and current-versus-accepted utility policy. It
+accepts one CAS patch or consent payload. The three gates and RU/EN locale are
+independent; only memory-visible changes advance Memory revision. Embedding
+selection requires current exact entitlement, and consent recomputes the
+server-owned fingerprint inside the lock. Stale observations fail atomically;
+phase capabilities remain fail-closed and the route schedules no work.
 
-Forget now commits its generation/revision fence, forgotten fact/version state,
-null current pointer, exact fact/value/source suppressions, plaintext-free event,
-lexical-row invalidation, and one `FORGET_PURGE` obligation atomically before
-returning. `DELETE_EXPLICIT` applies the same fence to the exact admission-time
-set and returns private bounded status; a genuinely new later explicit save is
-outside that obligation. The registered versioned purge contributors scrub
-forgotten version content, lexical/vector rows, evidence, and unaccepted
-retrieval items/context. Affected `PREPARING` runs and assistant messages settle
-to a content-free error in the same purge transaction. Completion audits every
-required contributor, missing or residual leaves cannot succeed, and startup or
-status reconciliation reopens an old success when the current contributor
-manifest finds new residual work. Automatic rebuild remains suppression-blocked;
-a later exact explicit Save may revive the logical fact with a new active
-version under fresh authority.
+Explicit `GLOBAL_USER` management is gate-independent. Short-lived grants bind
+Save to an exact statement; Edit/Forget to owner fact/current version; and
+`DELETE_EXPLICIT` to the operation plus settings/Memory revisions, confirmation
+copy, and nonce. The serializable mutation consumes the grant; only an exact
+receipt-matched retry can replay. Private list, POST-search, detail, evidence,
+create, edit, pin, Forget, bulk-delete, and status routes rejoin ownership and
+keep free text out of URLs. Writes synchronously update exact/RU/EN/simple FTS
+without utility egress. Non-global scope and secret-like statements are
+rejected; internal owner/canonical/authorization/suppression identities stay
+private.
 
-Explicit fact writes now enqueue a content-free `EMBED_ITEMS` job only when
-the selected active generation is already HYBRID; lexical generations retain
-`NOT_APPLICABLE` rows and no embedding dependency. The optional explicit-item
-handler parks work before binding when consent, exact credential authority, or
-signed role qualification is unavailable. An admitted attempt commits one
-job-owned execution binding before its single document-embedding call, records
-one nullable usage event, and applies only to the still-current explicit
-version and active generation with exact content, configuration, dimension,
-and vector-space fingerprints. A compatible credential-version rotation does
-not create a generation. Active `PENDING/FAILED -> READY` and `PENDING ->
-FAILED` settlements each advance the visible revision once, while exact FTS
-remains usable throughout. A lost or uncertain external result degrades to
-`FAILED` and is never blindly replayed; Forget or generation drift prevents
-late vector commit and cannot resurrect a search row.
+Deterministic direct-current-user intent may expose exactly one strict
+first-party `save_memory`, `list_memories`, `update_memory`, or `forget_memory`
+tool. Mutation schemas contain no authority token: PREPARING mints one hidden,
+short-lived run/source-span authorization, update and Forget bind it to exactly
+one current version, and execution claims it with the persisted tool call before
+the existing mutation transaction consumes it. Successful Save/Edit/Forget
+receipts retain the exact run/tool-call join. Quoted, embedded, Assistant,
+retrieved, ambiguous, regenerated mutation, and provider-paraphrased authority
+cannot mutate. A tool-capable management run must actually attempt its planned
+first-party action before completing; a non-tool model may prefetch a read-only
+list, including an authoritative itemless result that is invalidated by any
+intervening Memory revision, but mutation intent returns the
+confirmation-required error.
 
-There are still no later bulk-delete variants, other fact-lifecycle APIs,
-retrieval integration, UI surfaces, or production-composed live Memory provider
-calls. Development
-starts the coordinator feature-locally from server
-instrumentation, while production uses the same image/code in the private
-no-API `memory-worker` role. Both paths
-preflight the configured suppression keyring against every distinct historical
-key ID before starting. Failure stays local to Memory and does not alter core
-web readiness. The default registry claims `FORGET_PURGE`; other deletion
-operations and all job kinds remain unregistered, so the optional explicit
-embedding handler is inert until a later phase gate composes it with matching
-code-owned qualification. The per-call execution boundary resolves current
-installation utility or entitled embedding authority,
-accepted egress, exact signed role qualification, immutable provider and
-credential evidence, single-winner start, exactly-once nullable usage,
-outcome-unknown recovery, and post-horizon detach. The public run projection
-remains unable to expose a private
-`preparing` row, and the execution/recovery fences prevent answer-provider I/O
-until Phase B commits. No non-default Memory content is created by ordinary
-application behavior. Existing chat context and folder/project prompt memory
-keep their current behavior and are not this feature.
+Forget atomically fences generation/revision, clears the current pointer,
+forgets fact/version state, installs exact fact/value/source suppressions,
+invalidates lexical data, records a plaintext-free event, and creates one
+`FORGET_PURGE` obligation. `DELETE_EXPLICIT` fences its exact admitted set; a
+later new Save is outside it. Versioned contributors scrub content, lexical/
+vector rows, evidence, and unaccepted run context, settling affected
+`PREPARING` runs content-free. Completion audits every contributor and startup/
+status reconciliation reopens stale success with residual work. Suppression
+blocks automatic recreation; fresh explicit authority may create a new version.
+
+Explicit writes enqueue content-free `EMBED_ITEMS` only for an active HYBRID
+generation; lexical-only rows stay `NOT_APPLICABLE`. The optional handler parks
+before binding without consent, exact credential authority, or signed role
+qualification. One admitted call has one job binding/usage event and applies
+only to the exact current version, generation, content, configuration,
+dimension, and vector space. Credential rotation alone creates no generation.
+Visible READY/FAILED settlement advances revision once while FTS remains live;
+unknown results are not replayed, and Forget/generation drift blocks late apply.
+
+Past-chat/automatic/profile retrieval, answer-time reranking, split
+Memory-plus-external-tool synthesis, other lifecycle/bulk variants, and
+production-composed utility calls remain unavailable. Development runs the
+feature-local coordinator; production uses the same code in private no-API
+`memory-worker`. Both preflight every historical suppression key ID, and Memory
+failure does not alter web readiness. The default registry claims only
+`FORGET_PURGE`; optional embedding remains uncomposed. Per-call execution owns
+current authority/consent/qualification, immutable destination evidence,
+single-winner start, nullable usage, unknown-outcome recovery, and detach.
+Private `preparing` runs never enter public projection or provider I/O.
+Ordinary answers cannot create Memory. Existing chat context and folder/project
+prompt memory are separate behavior.
 
 This document owns the durable target contract while implementation lands in
 ordered slices. Executable code, migrations, and tests remain authoritative for

@@ -296,7 +296,8 @@ export function applyProviderRequestContextBudget(input: Readonly<{
   const currentMessageId = budgetMessages.at(-1)?.id;
   const fixedExtraTokens =
     estimateApproxTokens(providerFacingSerializedTools(input.request, input.bridge)) +
-    estimateApproxTokens(input.request.providerToolMessages ?? []);
+    estimateApproxTokens(input.request.providerToolMessages ?? []) +
+    estimateApproxTokens(input.request.personalContext?.text ?? "");
   const attachmentFit = fitProviderAttachmentText({ fixedExtraTokens, request: input.request });
   if (!attachmentFit.ok) {
     return {

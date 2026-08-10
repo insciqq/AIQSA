@@ -45,6 +45,10 @@ import {
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
+import { decodeMemoryActionPlan } from "../memory/actions/intent";
+import { memoryActionToolForPlan } from "../memory/actions/tools";
+import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import {
   knowledgeEvidenceFromToolResult,
   knowledgeUsageAttributionsFromToolResult
@@ -57,6 +61,7 @@ import {
   type ToolExecutionResult
 } from "../tools/types";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { withPinnedHostedSearchIdentity } from "./searchArtifactIdentity";
 import {
   appendRunEventWithRetry,
@@ -184,6 +189,7 @@ export type RunExecutionInput = Readonly<{
   prepared: MaterializedPreparedRunData;
   repository: RunExecutionRepository;
   knowledgeExecutor?: KnowledgeToolExecutor;
+  memoryActionExecutor?: MemoryActionExecutor;
   mcpRuntime?: Readonly<{
     callTool(input: {
       arguments: Record<string, unknown>;
@@ -516,10 +522,19 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const abortController = new AbortController();
   const runId = input.created.runId;
   const normalizedRequest = input.prepared.normalizedRequest;
+  const memoryActionPlan = normalizedRequest.memoryActionPlan === undefined
+    ? null
+    : decodeMemoryActionPlan(normalizedRequest.memoryActionPlan);
+  if (normalizedRequest.memoryActionPlan !== undefined && !memoryActionPlan) {
+    throw new Error("memory_action_plan_invalid");
+  }
   const clientToolsEnabled = normalizedRequest.toolMode !== "none";
   const knowledgeEnabled = clientToolsEnabled &&
     normalizedRequest.modelCapabilities.toolCalling === true &&
     (normalizedRequest.knowledgePlan?.baseIds.length ?? 0) > 0;
+  const memoryActionEnabled = clientToolsEnabled &&
+    normalizedRequest.modelCapabilities.toolCalling === true &&
+    memoryActionPlan !== null;
   activeRunControllers.set(runId, abortController);
 
   const stream = new ReadableStream<Uint8Array>({
@@ -705,13 +720,21 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           );
         }
         const knowledgeExecutor = knowledgeEnabled ? input.knowledgeExecutor ?? null : null;
+        const memoryActionExecutor = memoryActionEnabled
+          ? input.memoryActionExecutor ?? defaultMemoryActionExecutor
+          : null;
         const isSearchCall = (name: string) =>
           (searchExecutor !== null && name === searchExecutor.tool.name) ||
           searchPlanRouter?.accepts(name) === true;
         const isKnowledgeCall = (name: string) => knowledgeExecutor?.accepts(name) === true;
+        const isMemoryCall = (name: string) =>
+          memoryActionPlan !== null && memoryActionExecutor?.accepts(memoryActionPlan, name) === true;
         const tools: RunTool[] = [
           ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
           ...(searchPlanRouter?.tools ?? (searchExecutor ? [perplexityWebSearchTool] : [])),
+          ...(memoryActionPlan && memoryActionExecutor
+            ? [memoryActionToolForPlan(memoryActionPlan)]
+            : []),
           ...(clientToolsEnabled ? mcpRunTools(normalizedRequest.mcp) : [])
         ];
         if (tools.length === 0) {
@@ -720,6 +743,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
         const persistedCalls = new Map<string, PersistedToolLoopCall>();
         const toolDurations = new Map<string, number>();
+        let memoryActionAttempted = false;
         const hasMcpTools = tools.some((tool) => tool.capability === "mcp");
         let mcpRuntime = input.mcpRuntime ?? null;
         const runtime = () => {
@@ -919,6 +943,17 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     runId,
                     userId: input.userId
                   }, { signal: context.signal });
+                } else if (isMemoryCall(call.name)) {
+                  if (memoryActionAttempted) {
+                    throw new Error("memory_action_already_attempted");
+                  }
+                  memoryActionAttempted = true;
+                  result = await memoryActionExecutor!.execute(memoryActionPlan!, call, {
+                    persistedToolCallId: claim.call.id,
+                    request,
+                    runId,
+                    userId: input.userId
+                  });
                 } else if (searchPlanRouter?.accepts(call.name)) {
                   result = await searchPlanRouter.execute(call, request, { signal: context.signal });
                 } else if (searchExecutor && call.name === searchExecutor.tool.name) {
@@ -1024,7 +1059,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
-                if (!route && !isSearchCall(call.name) && !isKnowledgeCall(call.name)) {
+                if (!route && !isSearchCall(call.name) &&
+                  !isKnowledgeCall(call.name) && !isMemoryCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -1117,6 +1153,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             streamSafetyReport?.message ??
               (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
             streamSafetyReport
+          );
+        }
+        if (memoryActionPlan && !memoryActionAttempted) {
+          throw new RunPipelineError(
+            "memory_action_required",
+            "The requested Memory operation was not executed."
           );
         }
         return {
@@ -1212,7 +1254,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           (!normalizedRequest.searchPlan &&
             normalizedRequest.searchStrategy === "perplexity-tool-search"));
         const hasClientTools = hasClientSearch ||
-          (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) || knowledgeEnabled;
+          (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
+          knowledgeEnabled || memoryActionEnabled;
+        assertPersonalContextEgressSafe(input.prepared.providerRequest);
         const providerResult = hasClientTools
           ? await runProviderToolLoop(input.prepared.providerRequest)
           : await streamProviderRequest(input.prepared.providerRequest);

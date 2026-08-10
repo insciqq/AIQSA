@@ -12,6 +12,7 @@ import type {
   ValidatedSearchQuery
 } from "../../domain/search";
 import type { KnowledgePlan } from "../../contracts/knowledge";
+import type { MemoryActionPlan } from "../memory/actions/intent";
 
 export type NormalizedSearchPlanOption = Readonly<{
   adapterKind: SearchAdapterKind;
@@ -82,6 +83,9 @@ export type NormalizedRunRequest = {
     };
   };
   knowledgePlan?: KnowledgePlan;
+  /** Deterministic plan derived only from the direct current-user message.
+   * Provider-visible tool schemas never carry its server-side authorization. */
+  memoryActionPlan?: MemoryActionPlan;
   modelCapabilities: ProviderModelCapabilities;
   mcp?: McpRunPlanSnapshot;
   modelId: string;

@@ -34,6 +34,8 @@ import type { RunChatUpdateRecord, RunRepository } from "./runRepositoryContract
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import { knowledgeRetrievalTool, type KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import type { MemoryActionPlan } from "../memory/actions/intent";
+import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import {
   KNOWLEDGE_RESULT_VERSION,
   type KnowledgeRetrievalEvidence
@@ -150,6 +152,7 @@ function preparedData(input: Readonly<{
   chatId?: string;
   contextTruncation?: ContextTruncationSummary | null;
   knowledgeBaseIds?: string[];
+  memoryActionPlan?: MemoryActionPlan;
   mcp?: McpRunPlanSnapshot;
   modelId?: string;
   provider?: string;
@@ -228,6 +231,7 @@ function preparedData(input: Readonly<{
       vision: true
     },
     knowledgePlan: { baseIds: input.knowledgeBaseIds ?? [] },
+    ...(input.memoryActionPlan ? { memoryActionPlan: input.memoryActionPlan } : {}),
     ...(input.mcp ? { mcp: input.mcp } : {}),
     modelId,
     params: {},
@@ -560,6 +564,7 @@ function createRepository(options: RepositoryOptions = {}) {
 function executionInput(input: Readonly<{
   adapter: ProviderAdapter;
   knowledgeExecutor?: KnowledgeToolExecutor;
+  memoryActionExecutor?: MemoryActionExecutor;
   mcpRuntime?: RunExecutionInput["mcpRuntime"];
   prepared?: MaterializedPreparedRunData;
   repository: RunExecutionRepository;
@@ -577,6 +582,7 @@ function executionInput(input: Readonly<{
     prepared: input.prepared ?? preparedData(),
     repository: input.repository,
     ...(input.knowledgeExecutor ? { knowledgeExecutor: input.knowledgeExecutor } : {}),
+    ...(input.memoryActionExecutor ? { memoryActionExecutor: input.memoryActionExecutor } : {}),
     ...(input.mcpRuntime ? { mcpRuntime: input.mcpRuntime } : {}),
     ...(input.searchAdapter ? { searchAdapter: input.searchAdapter } : {}),
     ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
@@ -1670,6 +1676,110 @@ describe("run execution", () => {
     expect(requests[0]?.tools).toBeUndefined();
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.failedRuns).toHaveLength(0);
+  });
+
+  it("executes the exact first-party Memory action through the durable tool loop", async () => {
+    const repository = createRepository();
+    const providerRequests: ProviderRunRequest[] = [];
+    const plan: MemoryActionPlan = {
+      kind: "SAVE",
+      sourceEnd: 24,
+      sourceStart: 14,
+      statement: "I like tea",
+      version: "memory-action-plan-v1"
+    };
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { statement: "I like tea" },
+            id: "memory-call-1",
+            name: "save_memory"
+          }]
+        });
+      }
+      return providerResult({ finalText: "I saved that memory." });
+    });
+    const execute = vi.fn<MemoryActionExecutor["execute"]>(async (_plan, call, context) => {
+      expect(context).toMatchObject({
+        persistedToolCallId: "persisted-tool-call-1",
+        runId: "run-1",
+        userId: "user-1"
+      });
+      return {
+        callId: call.id,
+        content: [{ type: "json", value: { operation: "SAVE", result: "applied" } }],
+        name: call.name,
+        rawPreview: { operation: "SAVE", result: "applied" },
+        status: "complete"
+      };
+    });
+    const memoryActionExecutor: MemoryActionExecutor = {
+      accepts: (candidate, name) => candidate.kind === "SAVE" && name === "save_memory",
+      execute
+    };
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      memoryActionExecutor,
+      prepared: preparedData({
+        memoryActionPlan: plan,
+        modelId: "openai-answer-model",
+        provider: "openai"
+      }),
+      repository: repository.repository
+    })).text();
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(providerRequests).toHaveLength(2);
+    expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["save_memory"]);
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain("operation");
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain("SAVE");
+    expect([...repository.toolCalls.values()][0]).toMatchObject({
+      state: "complete",
+      toolName: "save_memory"
+    });
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(repository.failedRuns).toHaveLength(0);
+  });
+
+  it("fails honestly when a provider answers without executing the requested Memory action", async () => {
+    const repository = createRepository();
+    const plan: MemoryActionPlan = {
+      kind: "SAVE",
+      sourceEnd: 24,
+      sourceStart: 14,
+      statement: "I like tea",
+      version: "memory-action-plan-v1"
+    };
+    const adapter = createAdapter(async function* () {
+      return providerResult({ finalText: "I saved that memory without calling the tool." });
+    });
+    const memoryActionExecutor: MemoryActionExecutor = {
+      accepts: (_candidate, name) => name === "save_memory",
+      execute: vi.fn()
+    };
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      memoryActionExecutor,
+      prepared: preparedData({
+        memoryActionPlan: plan,
+        modelId: "openai-answer-model",
+        provider: "openai"
+      }),
+      repository: repository.repository
+    })).text();
+
+    expect(memoryActionExecutor.execute).not.toHaveBeenCalled();
+    expect(repository.completeRuns).toHaveLength(0);
+    expect(repository.failedRuns).toEqual([
+      expect.objectContaining({
+        error: expect.objectContaining({ code: "memory_action_required" })
+      })
+    ]);
   });
 
   it("wires accepted Knowledge retrieval through the durable tool loop and usage ledger", async () => {

@@ -52,6 +52,8 @@ import type { ProviderToolBridge } from "../tools/types";
 import { perplexityWebSearchTool } from "../tools/perplexitySearch";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { knowledgeRetrievalTool } from "../knowledge/toolExecutor";
+import { planMemoryAction } from "../memory/actions/intent";
+import { memoryActionToolForPlan } from "../memory/actions/tools";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import {
   getRunAttachmentLimits,
@@ -1060,12 +1062,50 @@ export async function prepareRun(
       ? await deps.mcp.prepare(input.userId)
       : null;
 
+  const memoryActionIntent = planMemoryAction(content);
+  if (memoryActionIntent.kind === "AMBIGUOUS") {
+    return failure(
+      "memory_intent_confirmation_required",
+      409,
+      "Choose a specific saved memory or provide the exact statement to save."
+    );
+  }
+  const memoryActionPlan = memoryActionIntent.kind === "NONE"
+    ? undefined
+    : memoryActionIntent;
+  const memoryMutationRequested = memoryActionPlan !== undefined &&
+    memoryActionPlan.kind !== "LIST";
+  const memoryActionToolsEnabled = memoryActionPlan !== undefined &&
+    body?.tools !== "none" &&
+    modelConfiguration.capabilities.toolCalling === true;
+  if (
+    memoryMutationRequested &&
+    (input.source.kind === "regenerate" || !memoryActionToolsEnabled)
+  ) {
+    return failure(
+      "memory_intent_confirmation_required",
+      409,
+      "Use a tool-capable model or Manage Memories to confirm this change."
+    );
+  }
+
   const admittedKnowledgeToolsEnabled =
     body?.tools !== "none" &&
     modelConfiguration.capabilities.toolCalling === true &&
     Boolean(knowledgeAdmissionPlan);
   const mcpToolsEnabled = Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
-  const requiresClientToolCoexistence = admittedKnowledgeToolsEnabled || mcpToolsEnabled;
+  const externalToolsRequested = admittedKnowledgeToolsEnabled ||
+    mcpToolsEnabled ||
+    requestedSearchStrategy !== "search-disabled";
+  if (memoryActionPlan && externalToolsRequested) {
+    return failure(
+      "memory_tool_egress_forbidden",
+      409,
+      "Memory management cannot share a request with Search, Knowledge, or external tools."
+    );
+  }
+  const requiresClientToolCoexistence = admittedKnowledgeToolsEnabled ||
+    mcpToolsEnabled || memoryActionToolsEnabled;
   if (
     admissionPlan &&
     deps.providerAdmission &&
@@ -1343,6 +1383,7 @@ export async function prepareRun(
     content,
     context: { messages: contextMessages, mode: "branch_path" },
     knowledgePlan: { baseIds: [...decodedKnowledgePlan.plan.baseIds] },
+    ...(memoryActionPlan ? { memoryActionPlan } : {}),
     modelCapabilities,
     modelId: executionModelId,
     ...(mcpPlan?.ok && mcpPlan.snapshot.servers.length ? { mcp: mcpPlan.snapshot } : {}),
@@ -1393,6 +1434,9 @@ export async function prepareRun(
           : searchStrategy === perplexityToolSearchStrategyId
             ? [perplexityWebSearchTool]
             : []),
+        ...(memoryActionToolsEnabled && memoryActionPlan
+          ? [memoryActionToolForPlan(memoryActionPlan)]
+          : []),
         ...mcpRunTools(unbudgetedNormalizedRequest.mcp)
       ];
   const unbudgetedProviderRequest: ProviderRunRequest = {

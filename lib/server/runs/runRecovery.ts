@@ -37,6 +37,10 @@ import {
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
+import { decodeMemoryActionPlan, type MemoryActionPlan } from "../memory/actions/intent";
+import { memoryActionToolForPlan } from "../memory/actions/tools";
+import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import {
   knowledgeEvidenceFromToolResult,
   knowledgeUsageAttributionsFromToolResult
@@ -60,6 +64,7 @@ import {
   type ProviderToolLoopContinuation
 } from "./providerToolLoop";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 import {
   getRunAttachmentLimits,
@@ -148,6 +153,7 @@ export type RunRecoveryMcpRuntime = Readonly<{
 export type RunRecoveryDeps = Readonly<{
   getAttachmentLimits?: () => RunAttachmentLimits;
   knowledgeExecutor?: KnowledgeToolExecutor;
+  memoryActionExecutor?: MemoryActionExecutor;
   mcpRuntime?: RunRecoveryMcpRuntime;
   providerRuntime?: ProviderRuntimeResolver;
   providers: Readonly<Record<string, ProviderAdapter>>;
@@ -550,6 +556,8 @@ type RecoveryToolContext = Readonly<{
   run: CheckpointedToolLoopRun;
   runtime(): RunRecoveryMcpRuntime;
   knowledgeExecutor: KnowledgeToolExecutor | null;
+  memoryActionExecutor: MemoryActionExecutor | null;
+  memoryActionPlan: MemoryActionPlan | null;
   searchExecutor: RecoverySearchExecutor | null;
   usageAttributions: RunUsageAttribution[];
 }>;
@@ -560,6 +568,11 @@ function isRecoveredSearchCall(context: RecoveryToolContext, name: string): bool
 
 function isRecoveredKnowledgeCall(context: RecoveryToolContext, name: string): boolean {
   return context.knowledgeExecutor?.accepts(name) === true;
+}
+
+function isRecoveredMemoryCall(context: RecoveryToolContext, name: string): boolean {
+  return context.memoryActionPlan !== null &&
+    context.memoryActionExecutor?.accepts(context.memoryActionPlan, name) === true;
 }
 
 function settledSearchUsageNeedsRecovery(
@@ -709,6 +722,17 @@ async function executePersistedToolCall(
       if (evidence) {
         context.usageAttributions.push(...knowledgeUsageAttributionsFromToolResult(result));
       }
+    } else if (isRecoveredMemoryCall(context, call.name)) {
+      result = await context.memoryActionExecutor!.execute(
+        context.memoryActionPlan!,
+        call,
+        {
+          persistedToolCallId: claim.call.id,
+          request: context.providerRequest,
+          runId: context.run.id,
+          userId: context.run.userId
+        }
+      );
     } else if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       result = await context.searchExecutor.execute(
         call,
@@ -927,7 +951,17 @@ async function recoverCheckpointedToolLoop(
       ...run.normalizedRequest,
       attachments
     };
+    assertPersonalContextEgressSafe(providerRequest);
     const clientToolsEnabled = run.normalizedRequest.toolMode !== "none";
+    const memoryActionPlan = run.normalizedRequest.memoryActionPlan === undefined
+      ? null
+      : decodeMemoryActionPlan(run.normalizedRequest.memoryActionPlan);
+    if (run.normalizedRequest.memoryActionPlan !== undefined && !memoryActionPlan) {
+      throw new ToolLoopRecoveryError(
+        "memory_action_plan_invalid",
+        "The saved Memory action plan is invalid."
+      );
+    }
     const searchEnabled = clientToolsEnabled && !run.normalizedRequest.searchPlan &&
       run.normalizedRequest.searchStrategy === "perplexity-tool-search";
     const searchPolicy = run.normalizedRequest.searchPolicy;
@@ -1023,9 +1057,18 @@ async function recoverCheckpointedToolLoop(
       );
     }
     const knowledgeExecutor = knowledgeEnabled ? deps.knowledgeExecutor ?? null : null;
+    const memoryActionEnabled = memoryActionPlan !== null &&
+      clientToolsEnabled &&
+      run.normalizedRequest.modelCapabilities.toolCalling === true;
+    const memoryActionExecutor = memoryActionEnabled
+      ? deps.memoryActionExecutor ?? defaultMemoryActionExecutor
+      : null;
     const tools: RunTool[] = [
       ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
       ...(searchExecutor?.tools ?? []),
+      ...(memoryActionPlan && memoryActionExecutor
+        ? [memoryActionToolForPlan(memoryActionPlan)]
+        : []),
       ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : [])
     ];
     if (tools.length === 0) {
@@ -1044,6 +1087,8 @@ async function recoverCheckpointedToolLoop(
       providerRequest,
       run,
       knowledgeExecutor,
+      memoryActionExecutor,
+      memoryActionPlan,
       runtime() {
         runtime ??= getDefaultMcpRuntimeCoordinator();
         return runtime;
@@ -1190,7 +1235,8 @@ async function recoverCheckpointedToolLoop(
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(run.normalizedRequest.mcp, call.name);
           if (!route && searchExecutor?.accepts(call.name) !== true &&
-            knowledgeExecutor?.accepts(call.name) !== true) {
+            knowledgeExecutor?.accepts(call.name) !== true &&
+            !(memoryActionPlan && memoryActionExecutor?.accepts(memoryActionPlan, call.name))) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`
@@ -1584,6 +1630,14 @@ async function recoverCheckpointedToolLoop(
         outcome.failure.streamSafetyReport?.message ??
           (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
         outcome.failure.streamSafetyReport
+      );
+    }
+    if (memoryActionPlan && memoryActionExecutor &&
+      ![...persistedCalls.values()].some((call) =>
+        memoryActionExecutor?.accepts(memoryActionPlan, call.toolName) === true)) {
+      throw new ToolLoopRecoveryError(
+        "memory_action_required",
+        "The requested Memory operation was not executed."
       );
     }
     await tokenBuffer.flush();

@@ -104,7 +104,11 @@ export class ExplicitMemoryServiceError extends Error {
 }
 
 export type ExplicitMemoryService = Readonly<{
-  create(userId: string, input: MemoryCreateInput): Promise<MemoryMutationResponse>;
+  create(
+    userId: string,
+    input: MemoryCreateInput,
+    execution?: MemoryOperationExecutionContext
+  ): Promise<MemoryMutationResponse>;
   evidence(
     userId: string,
     factId: string,
@@ -120,8 +124,14 @@ export type ExplicitMemoryService = Readonly<{
   update(
     userId: string,
     factId: string,
-    input: MemoryUpdateInput
+    input: MemoryUpdateInput,
+    execution?: MemoryOperationExecutionContext
   ): Promise<MemoryMutationResponse>;
+}>;
+
+export type MemoryOperationExecutionContext = Readonly<{
+  modelRunId: string;
+  persistedToolCallId: string;
 }>;
 
 function failure(code: ExplicitMemoryServiceErrorCode): never {
@@ -315,7 +325,7 @@ export function createExplicitMemoryService(input: Readonly<{
   }
 
   return Object.freeze({
-    async create(userId, createInput) {
+    async create(userId, createInput, execution) {
       requireGlobalScope(createInput.scope);
       requireStatement(createInput.statement);
       const authorizedPayloadHash = memorySha256(createInput.statement);
@@ -335,6 +345,12 @@ export function createExplicitMemoryService(input: Readonly<{
         explicitSuppressionOverride: true,
         idempotencyFingerprint: idempotencyFingerprint(authorization),
         idempotencyPayloadHash: idempotencyPayloadHash("SAVE", createInput),
+        ...(execution
+          ? {
+              modelRunId: execution.modelRunId,
+              persistedToolCallId: execution.persistedToolCallId
+            }
+          : {}),
         requestId: resolved.requestId,
         scopeId: scope.id,
         value: valueFor({
@@ -437,7 +453,7 @@ export function createExplicitMemoryService(input: Readonly<{
       ));
     },
 
-    async update(userId, factId, updateInput) {
+    async update(userId, factId, updateInput, execution) {
       if (updateInput.scope) requireGlobalScope(updateInput.scope);
       const current = await persisted(() =>
         input.readRepository.getEditable(userId, factId)
@@ -481,6 +497,12 @@ export function createExplicitMemoryService(input: Readonly<{
           factId,
           input: updateInput
         }),
+        ...(execution
+          ? {
+              modelRunId: execution.modelRunId,
+              persistedToolCallId: execution.persistedToolCallId
+            }
+          : {}),
         pinned: updateInput.pinned,
         requestId: resolved.requestId,
         scopeId: current.scopeId,

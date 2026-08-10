@@ -897,6 +897,71 @@ describe("run preparation", () => {
     expect(opaqueBuffer.toString()).toBe("leave-buffer-mutable");
   });
 
+  it("plans an exact direct-user Memory save and exposes only its first-party tool", async () => {
+    const harness = createHarness({
+      capabilities: {
+        ...baseCapabilities,
+        toolCalling: true
+      }
+    });
+    const prepared = preparedFrom(await prepareRun(
+      harness.deps,
+      sendInput(successBody({
+        content: textMessageContent("Remember that my favorite color is teal")
+      }))
+    ));
+
+    expect(prepared.normalizedRequest.memoryActionPlan).toEqual({
+      kind: "SAVE",
+      sourceEnd: 39,
+      sourceStart: 14,
+      statement: "my favorite color is teal",
+      version: "memory-action-plan-v1"
+    });
+    expect(prepared.providerRequest.tools).toEqual([
+      expect.objectContaining({ capability: "memory", name: "save_memory", strict: true })
+    ]);
+    expect(prepared.providerRequest.tools?.[0]?.inputSchema).not.toHaveProperty("authorization");
+    expect(prepared.providerRequest.tools?.[0]?.inputSchema).not.toHaveProperty("token");
+  });
+
+  it("requires explicit confirmation when a Memory mutation cannot use a first-party tool", async () => {
+    const result = await prepareRun(
+      createHarness().deps,
+      sendInput(successBody({
+        content: textMessageContent("Remember that my favorite color is teal")
+      }))
+    );
+
+    expect(result).toMatchObject({
+      code: "memory_intent_confirmation_required",
+      ok: false,
+      status: 409
+    });
+  });
+
+  it("fails closed when a Memory action would share a request with external tools", async () => {
+    const harness = createHarness({
+      capabilities: {
+        ...baseCapabilities,
+        toolCalling: true
+      },
+      mcpPlan: readyMcpPlan()
+    });
+    const result = await prepareRun(
+      harness.deps,
+      sendInput(successBody({
+        content: textMessageContent("Remember that my favorite color is teal")
+      }))
+    );
+
+    expect(result).toMatchObject({
+      code: "memory_tool_egress_forbidden",
+      ok: false,
+      status: 409
+    });
+  });
+
   it("keeps send and regeneration preparation in parity while using their server-owned context sources", async () => {
     const sendHarness = createHarness();
     const regenerateHarness = createHarness();
