@@ -159,27 +159,35 @@ export function MessageDeleteConfirmationDialog({
 }
 
 export function DiscardChangesConfirmationDialog({
+  copy,
   label,
   onCancel,
   onConfirm
 }: {
+  copy?: Readonly<{
+    body: string;
+    cancelLabel: string;
+    confirmLabel: string;
+    dialogLabel: string;
+    title: string;
+  }>;
   label: string;
   onCancel(): void;
   onConfirm(): void;
 }) {
   return (
     <ConfirmationDialog
-      cancelLabel="Keep editing"
-      confirmLabel="Discard changes"
-      dialogLabel={`Discard ${label} changes`}
+      cancelLabel={copy?.cancelLabel ?? "Keep editing"}
+      confirmLabel={copy?.confirmLabel ?? "Discard changes"}
+      dialogLabel={copy?.dialogLabel ?? `Discard ${label} changes`}
       icon="x"
       onCancel={onCancel}
       onConfirm={onConfirm}
       testId="discard-changes-confirmation"
-      title="Discard changes?"
+      title={copy?.title ?? "Discard changes?"}
       tone="warning"
     >
-      Unsaved edits will be lost.
+      {copy?.body ?? "Unsaved edits will be lost."}
     </ConfirmationDialog>
   );
 }

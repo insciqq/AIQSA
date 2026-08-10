@@ -252,6 +252,7 @@ export function PowerAppShell({
   const setShowToolActivity = useComposerControlStore((state) => state.setShowToolActivity);
   const settingsOpen = useSettingsDestinationStore((state) => state.settingsOpen);
   const settingsSection = useSettingsDestinationStore((state) => state.settingsSection);
+  const openMemorySettings = useSettingsDestinationStore((state) => state.openMemorySettings);
   const openMcpSettings = useSettingsDestinationStore((state) => state.openMcpSettings);
   const openGeneralSettings = useSettingsDestinationStore((state) => state.openSettings);
   const closeGeneralSettings = useSettingsDestinationStore((state) => state.closeSettings);
@@ -1246,6 +1247,7 @@ export function PowerAppShell({
     open: openGeneralSettings,
     openKnowledge: openKnowledgeLibrary,
     openLibrary: openAssistantLibrary,
+    openMemory: openMemorySettings,
     openMcp: openMcpSettings,
     settings: {
       open: settingsOpen,

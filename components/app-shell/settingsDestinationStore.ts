@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type SettingsSection = "appearance" | "mcp";
+export type SettingsSection = "appearance" | "memory" | "mcp";
 
 export type SettingsDestinationSnapshot = {
   settingsOpen: boolean;
@@ -9,6 +9,7 @@ export type SettingsDestinationSnapshot = {
 
 export type SettingsDestinationStore = SettingsDestinationSnapshot & {
   closeSettings(): void;
+  openMemorySettings(): void;
   openMcpSettings(): void;
   openSettings(): void;
 };
@@ -22,6 +23,9 @@ export const useSettingsDestinationStore = create<SettingsDestinationStore>((set
   ...initialSettingsDestinationSnapshot,
   closeSettings() {
     set({ settingsOpen: false });
+  },
+  openMemorySettings() {
+    set({ settingsOpen: true, settingsSection: "memory" });
   },
   openMcpSettings() {
     set({ settingsOpen: true, settingsSection: "mcp" });

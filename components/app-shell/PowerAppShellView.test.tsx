@@ -338,6 +338,7 @@ function baseProps(): PowerAppShellViewProps {
       open: noop,
       openKnowledge: noop,
       openLibrary: noop,
+      openMemory: noop,
       openMcp: noop,
       settings: {
         open: false,

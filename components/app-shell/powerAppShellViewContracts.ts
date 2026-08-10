@@ -290,6 +290,7 @@ export type ShellSettingsView = {
   open(): void;
   openKnowledge(): void;
   openLibrary(): void;
+  openMemory(): void;
   openMcp(): void;
   settings: {
     open: boolean;
