@@ -5,6 +5,7 @@ import type {
   MemoryQualificationRequirement
 } from "../../../evaluation/memory/qualification";
 import { canonicalMemoryQualificationPayload } from "../../../evaluation/memory/qualification";
+import { createAdminMemoryEgressService } from "../../admin/memory/egressService";
 import { prisma } from "../../prisma";
 import { createFakeEmbeddingAdapter } from "../../providers/embeddings";
 import { createPrismaMemoryJobRepository } from "../persistence/jobs";
@@ -13,7 +14,8 @@ import { MemoryExecutionError } from "./errors";
 import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   memoryVectorSpaceFingerprint,
-  resolveCurrentMemoryUtilityPolicy
+  resolveCurrentMemoryUtilityPolicy,
+  type ResolvedMemoryExecutionTarget
 } from "./policy";
 
 const INITIAL_NOW = new Date("2026-08-10T12:00:00.000Z");
@@ -50,7 +52,8 @@ const embeddingConfiguration = {
 } as const;
 
 function signQualification(
-  requirement: MemoryQualificationRequirement
+  requirement: MemoryQualificationRequirement,
+  qualificationId = "memory-execution-qualification-v1"
 ): MemoryCapabilityQualification {
   const unsigned: MemoryCapabilityQualification = {
     approval: {
@@ -63,7 +66,7 @@ function signQualification(
     },
     evidenceDigest: "e".repeat(64),
     key: requirement,
-    qualificationId: "memory-execution-qualification-v1"
+    qualificationId
   };
   return {
     ...unsigned,
@@ -290,6 +293,7 @@ describe("Prisma Memory execution", () => {
         where: { userId: fixture.userId }
       });
       const service = createPrismaMemoryExecutionService({
+        egressConsentMode: "PER_USER",
         now: () => new Date(clock),
         qualification: {
           corpusHash: CORPUS_HASH,
@@ -502,6 +506,153 @@ describe("Prisma Memory execution", () => {
       expect(JSON.stringify(detached)).not.toContain("test-only-envelope");
       expect(JSON.stringify(detached)).not.toContain(privateInputCanary);
     } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("parks ADMIN work on destination drift and resumes after exact administrator acknowledgment", async () => {
+    const fixture = await createEmbeddingFixture();
+    const qualifications: MemoryCapabilityQualification[] = [];
+    const authority = {
+      corpusHash: CORPUS_HASH,
+      corpusVersion: "memory-test-corpus-v1",
+      registry: qualifications,
+      scorerVersion: "memory-test-scorer-v1",
+      suiteVersion: "memory-test-suite-v1",
+      verifySignature: (payload: string, signature: string) =>
+        createHmac("sha256", HMAC_KEY).update(payload, "utf8").digest("hex") === signature
+    };
+    let coordinatorKicks = 0;
+    const adminPolicy = createAdminMemoryEgressService(prisma, {
+      consentMode: "ADMIN",
+      onAcknowledged: () => {
+        coordinatorKicks += 1;
+      }
+    });
+
+    const qualify = (target: ResolvedMemoryExecutionTarget) => {
+      const requirement: MemoryQualificationRequirement = {
+        ...target.qualificationFingerprints,
+        corpusHash: CORPUS_HASH,
+        corpusVersion: "memory-test-corpus-v1",
+        language: "RU",
+        pipelineVersion: VERSIONS.pipelineVersion,
+        policyVersion: VERSIONS.policyVersion,
+        promptVersion: VERSIONS.promptVersion,
+        retrievalConfigFingerprint: VERSIONS.retrievalConfigFingerprint,
+        role: "MEMORY_DOCUMENT_EMBED",
+        schemaVersion: VERSIONS.schemaVersion,
+        scorerVersion: "memory-test-scorer-v1",
+        suiteVersion: "memory-test-suite-v1",
+        vectorSpaceFingerprint: memoryVectorSpaceFingerprint(target)
+      };
+      qualifications.push(signQualification(
+        requirement,
+        `memory-execution-admin-qualification-${qualifications.length + 1}`
+      ));
+    };
+    const accept = async () => {
+      const observed = await adminPolicy.get();
+      expect(observed.reviewRequired).toBe(true);
+      const accepted = await adminPolicy.acknowledge(fixture.userId, {
+        currentFingerprint: observed.currentFingerprint,
+        expectedVersion: observed.version
+      });
+      expect(accepted.reviewRequired).toBe(false);
+    };
+    const currentTarget = async () => prisma.$transaction(async (tx) => {
+      const settings = await tx.userMemorySettings.findUniqueOrThrow({
+        where: { userId: fixture.userId }
+      });
+      const policy = await resolveCurrentMemoryUtilityPolicy(tx, fixture.userId, settings);
+      return policy.targets.get("MEMORY_DOCUMENT_EMBED")!;
+    });
+
+    try {
+      await prisma.memoryEgressAdminPolicy.update({
+        data: {
+          acceptedAt: null,
+          acceptedByUserId: null,
+          acceptedDestinations: [],
+          acceptedFingerprint: null,
+          acceptedPolicyVersion: null,
+          version: { increment: 1 }
+        },
+        where: { id: "installation" }
+      });
+      const initialTarget = await currentTarget();
+      qualify(initialTarget);
+      const service = createPrismaMemoryExecutionService({
+        egressConsentMode: "ADMIN",
+        now: () => INITIAL_NOW,
+        qualification: authority
+      }, prisma);
+      const job = await createPrismaMemoryJobRepository(prisma).enqueue(fixture.userId, {
+        idempotencyFingerprint: `memory-admin-consent-job-${randomUUID()}`,
+        kind: "EMBED_ITEMS",
+        pipelineVersion: VERSIONS.pipelineVersion
+      });
+      const bind = (ordinal: number) => service.admission.bind(fixture.userId, {
+        inputHash: String(ordinal + 1).repeat(64),
+        ordinal,
+        owner: { memoryJobId: job.id, type: "JOB" },
+        role: "MEMORY_DOCUMENT_EMBED",
+        versions: VERSIONS
+      });
+
+      await expect(bind(0)).rejects.toMatchObject({
+        code: "memory_execution_egress_consent_required"
+      });
+      await accept();
+      await expect(bind(0)).resolves.toMatchObject({ state: "PENDING" });
+
+      const changedConfiguration = {
+        allowPrivateNetwork: false,
+        apiRoot: "https://memory-provider-rotated.example.test/v1",
+        responseTimeoutMs: 30_000
+      };
+      await prisma.providerConnection.update({
+        data: {
+          activeConfig: changedConfiguration,
+          activeVersion: 2
+        },
+        where: { id: fixture.connectionId }
+      });
+      await prisma.providerModelCredentialCheck.create({
+        data: {
+          checkedAt: INITIAL_NOW,
+          connectionId: fixture.connectionId,
+          connectionVersion: 2,
+          credentialId: fixture.credentialId,
+          credentialVersionId: fixture.credentialVersionId,
+          evidence: { detail: "ok" },
+          modelVersion: 1,
+          providerModelId: fixture.modelId,
+          status: "available"
+        }
+      });
+      const driftedTarget = await currentTarget();
+      expect(driftedTarget.destinationFingerprint).not.toBe(initialTarget.destinationFingerprint);
+      qualify(driftedTarget);
+
+      await expect(bind(1)).rejects.toMatchObject({
+        code: "memory_execution_egress_consent_required"
+      });
+      await accept();
+      await expect(bind(1)).resolves.toMatchObject({ state: "PENDING" });
+      expect(coordinatorKicks).toBe(2);
+    } finally {
+      await prisma.memoryEgressAdminPolicy.updateMany({
+        data: {
+          acceptedAt: null,
+          acceptedByUserId: null,
+          acceptedDestinations: [],
+          acceptedFingerprint: null,
+          acceptedPolicyVersion: null,
+          version: { increment: 1 }
+        },
+        where: { id: "installation" }
+      });
       await fixture.cleanup();
     }
   });

@@ -492,6 +492,7 @@ model User {
   knowledgeBasePublications     KnowledgeBasePublication[]         @relation("KnowledgeBasePublicationPublisher")
   knowledgeBases                KnowledgeBase[]                    @relation("KnowledgeBaseOwner")
   knowledgePolicyUpdates        KnowledgePolicy[]                  @relation("KnowledgePolicyUpdater")
+  memoryEgressPolicyUpdates     MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
   mcpGrants                     McpGrant[]
   mcpActivationJobs             McpActivationJob[]
   mcpOAuthConnections           McpOAuthConnection[]
@@ -778,6 +779,21 @@ model SystemModelPolicy {
 
   @@index([providerModelId])
   @@index([updatedByUserId])
+}
+
+model MemoryEgressAdminPolicy {
+  id                         String   @id
+  acceptedFingerprint        String?  @db.VarChar(128)
+  acceptedPolicyVersion      String?  @db.VarChar(64)
+  acceptedDestinations       Json     @default("[]")
+  acceptedAt                 DateTime?
+  acceptedByUserId           String?
+  version                    Int      @default(1)
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @default(now()) @updatedAt
+  acceptedBy                 User?    @relation("MemoryEgressAdminPolicyUpdater", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([acceptedByUserId])
 }
 
 model AccessGrant {

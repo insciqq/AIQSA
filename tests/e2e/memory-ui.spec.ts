@@ -64,14 +64,18 @@ function summary(
 
 async function installMemoryFixture(
   context: BrowserContext,
-  options: Readonly<{ operationsEnabled?: boolean }> = {}
+  options: Readonly<{
+    consentMode?: "ADMIN" | "PER_USER";
+    defaultsOn?: boolean;
+    operationsEnabled?: boolean;
+  }> = {}
 ) {
   let settingsRevision = 12;
   let memoryRevision = 8;
   let memoryConsentRevision = 4;
   let locale: "EN" | "RU" = "RU";
-  let useMemoryFacts = false;
-  let referenceChatHistory = false;
+  let useMemoryFacts = options.defaultsOn === true;
+  let referenceChatHistory = options.defaultsOn === true;
   let learnAutomatically = false;
   let accepted = false;
   let versionOrdinal = 1;
@@ -102,12 +106,12 @@ async function installMemoryFixture(
         acceptedAt: accepted ? now : null,
         acceptedUtilityEgressFingerprint: accepted ? "current-memory-destination-fingerprint-0001" : null,
         acceptedUtilityPolicyVersion: accepted ? "memory-policy-v1" : null,
-        consentMode: "PER_USER",
+        consentMode: options.consentMode ?? "PER_USER",
         currentUtilityEgressFingerprint: "current-memory-destination-fingerprint-0001",
         currentUtilityPolicyVersion: "memory-policy-v1",
         embeddingDestination: "Local / multilingual-embed",
         remoteRerankerDestination: null,
-        reviewRequired: !accepted,
+        reviewRequired: (options.consentMode ?? "PER_USER") === "PER_USER" && !accepted,
         systemModelDestination: "Local / memory-extract"
       },
       settings: {
@@ -798,5 +802,36 @@ test("keeps RU/EN Memory settings, exact CRUD, and durable deletion usable acros
     action: "BULK_DELETE",
     operation: "DELETE_EXPLICIT"
   });
+  await expectNoHorizontalOverflow(page);
+});
+
+test("shows default-on Memory information without user consent in ADMIN mode", async ({ context, page }) => {
+  await page.setViewportSize({ height: 844, width: 390 });
+  await installMatrixCatalogFixture(page);
+  await installMemoryFixture(context, { consentMode: "ADMIN", defaultsOn: true });
+  await signIn(page);
+
+  await runAccountMenuAction(page, "Settings");
+  const settings = page.getByTestId("settings-dialog");
+  await settings.getByRole("button", { name: "Memory" }).click();
+
+  await expect(settings.getByRole("heading", { exact: true, name: "Память" })).toBeVisible();
+  await expect(settings.getByRole("switch", { name: "Использовать факты из памяти" }))
+    .toHaveAttribute("aria-checked", "true");
+  await expect(settings.getByRole("switch", { name: "Ссылаться на историю чатов" }))
+    .toHaveAttribute("aria-checked", "true");
+  await expect(settings.getByRole("heading", { name: "Как Память использует ваши данные" }))
+    .toBeVisible();
+  await expect(settings.getByText(/Временные чаты не используют Память/u)).toBeVisible();
+  await expect(settings.getByText(/От вас ничего не требуется/u)).toBeVisible();
+  await expect(settings.getByRole("button", { name: /принять текущие назначения/i })).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
+
+  await settings.getByRole("radio", { name: "English" }).click();
+  await expect(settings.getByRole("heading", { name: "How Memory uses your data" })).toBeVisible();
+  await expect(settings.getByText(/Temporary chats do not use Memory/u)).toBeVisible();
+  await expect(settings.getByText(/No action is required from you/u)).toBeVisible();
+  await expect(settings.getByRole("button", { name: "Accept current destinations" })).toHaveCount(0);
+  await expectWithinViewport(page, settings);
   await expectNoHorizontalOverflow(page);
 });

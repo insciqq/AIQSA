@@ -72,6 +72,7 @@ function createBootstrapTransaction(input: {
     groupFindUnique: record("group.findUnique", null),
     groupUpdate: record("group.update", { id: "group-id" }),
     knowledgePolicyUpsert: record("knowledgePolicy.upsert", { id: "installation" }),
+    memoryEgressAdminPolicyUpsert: record("memoryEgressAdminPolicy.upsert", { id: "installation" }),
     mcpGrantUpsert: record("mcpGrant.upsert", { id: "mcp-grant-id" }),
     mcpServerFindMany: record("mcpServer.findMany", []),
     modelPolicyUpsert: record("modelPolicy.upsert", { id: "installation" }),
@@ -106,6 +107,9 @@ function createBootstrapTransaction(input: {
     },
     knowledgePolicy: {
       upsert: spies.knowledgePolicyUpsert
+    },
+    memoryEgressAdminPolicy: {
+      upsert: spies.memoryEgressAdminPolicyUpsert
     },
     mcpGrant: {
       upsert: spies.mcpGrantUpsert
@@ -346,6 +350,11 @@ describe("installation bootstrap", () => {
       where: { id: "installation" }
     });
     expect(fixture.spies.knowledgePolicyUpsert).toHaveBeenCalledWith({
+      create: { id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
+    expect(fixture.spies.memoryEgressAdminPolicyUpsert).toHaveBeenCalledWith({
       create: { id: "installation" },
       update: {},
       where: { id: "installation" }

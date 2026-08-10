@@ -238,6 +238,23 @@ function MemorySettings({
         </div>
       </div>
 
+      <section className="mt-4 border-l-2 border-proof/60 bg-proof/[0.04] px-3 py-3" aria-labelledby="memory-information-heading">
+        <div className="flex items-start gap-2">
+          <ShieldCheck className="mt-0.5 size-4 shrink-0 text-proof" aria-hidden="true" />
+          <div>
+            <h4 className="text-sm font-semibold text-ink" id="memory-information-heading">
+              {t(locale, "settings.informationHeading")}
+            </h4>
+            <ul className="mt-2 grid gap-1.5 text-xs leading-5 text-ink-secondary">
+              <li>{t(locale, "settings.informationManage")}</li>
+              <li>{t(locale, "settings.informationTemporary")}</li>
+              <li>{t(locale, "settings.informationDestinations")}</li>
+              <li>{t(locale, "settings.informationRisk")}</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
       <section className="mt-6" aria-labelledby="memory-locale-heading">
         <div className="flex items-start gap-3">
           <Languages className="mt-0.5 size-4 shrink-0 text-ink-muted" aria-hidden="true" />

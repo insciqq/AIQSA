@@ -538,6 +538,13 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
     update: {},
     where: { id: "installation" }
   });
+  await tx.memoryEgressAdminPolicy.upsert({
+    create: { id: "installation" },
+    // Bootstrap adoption repairs only a missing row. An accepted destination
+    // snapshot is administrator-owned and must never be reset on rerun.
+    update: {},
+    where: { id: "installation" }
+  });
   await tx.systemModelPolicy.upsert({
     create: {
       id: "installation",

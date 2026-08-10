@@ -21,11 +21,13 @@ import {
   resolveMemoryEgressConsentMode,
   type MemoryEgressConsentMode
 } from "./consentMode";
+import { requireAdminAcceptedMemoryDestination } from "./adminConsent";
 
 export type MemoryExecutionAuthorityDependencies = Readonly<{
   egressConsentMode?: MemoryEgressConsentMode;
   now?: () => Date;
   qualification: MemoryQualificationAuthority;
+  requireAdminAcceptedDestination?: typeof requireAdminAcceptedMemoryDestination;
 }>;
 
 export type CurrentMemoryExecutionAuthority = Readonly<{
@@ -34,7 +36,8 @@ export type CurrentMemoryExecutionAuthority = Readonly<{
   target: ResolvedMemoryExecutionTarget;
 }>;
 
-type AuthorityPrisma = Parameters<typeof resolveCurrentMemoryUtilityPolicy>[0];
+type AuthorityPrisma = Parameters<typeof resolveCurrentMemoryUtilityPolicy>[0] &
+  Pick<Prisma.TransactionClient, "memoryEgressAdminPolicy">;
 
 export function memoryExecutionNow(
   dependencies: MemoryExecutionAuthorityDependencies
@@ -58,12 +61,17 @@ export async function resolveCurrentMemoryExecutionAuthority(
   }>
 ): Promise<CurrentMemoryExecutionAuthority> {
   const policy = await resolveCurrentMemoryUtilityPolicy(tx, input.userId, settings);
-  requireAcceptedMemoryUtilityPolicy(
-    settings,
-    policy,
-    input.dependencies.egressConsentMode ?? resolveMemoryEgressConsentMode()
-  );
   const target = requireMemoryPolicyTarget(policy, input.role);
+  const consentMode = input.dependencies.egressConsentMode ??
+    resolveMemoryEgressConsentMode();
+  if (consentMode === "ADMIN") {
+    await (
+      input.dependencies.requireAdminAcceptedDestination ??
+      requireAdminAcceptedMemoryDestination
+    )(tx, { role: input.role, target });
+  } else {
+    requireAcceptedMemoryUtilityPolicy(settings, policy, consentMode);
+  }
   const qualification = qualifyMemoryExecution({
     authority: input.dependencies.qualification,
     now: input.now,

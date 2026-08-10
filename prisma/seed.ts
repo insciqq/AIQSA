@@ -515,6 +515,12 @@ async function main() {
     update: {},
     where: { id: "installation" }
   });
+  await prisma.memoryEgressAdminPolicy.upsert({
+    create: { id: "installation" },
+    // Local reseeding must not overwrite administrator-owned acceptance.
+    update: {},
+    where: { id: "installation" }
+  });
   await prisma.systemModelPolicy.upsert({
     create: {
       id: "installation",

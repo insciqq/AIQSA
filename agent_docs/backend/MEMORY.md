@@ -72,9 +72,9 @@ Authenticated `GET/PATCH /api/me/memory/settings` exposes bounded, `private,
 no-store` settings/capability and utility-policy state. The three gates and
 RU/EN locale are independent; only memory-visible changes advance Memory
 revision. `AIQSA_MEMORY_EGRESS_CONSENT_MODE` selects installation-owned
-`ADMIN` (default) or retained `PER_USER` consent. In `ADMIN`, the user receives
-only passive administrator-managed status and cannot submit the consent
-mutation; in `PER_USER`, the existing exact fingerprint/CAS acceptance remains.
+`ADMIN` (default) or retained `PER_USER` consent. `ADMIN` gives users passive
+status only; administrators own its four-row exact-fingerprint action.
+`PER_USER` retains the existing fingerprint/CAS acceptance.
 Embedding selection still requires current entitlement. Stale observations
 fail atomically.
 
@@ -450,11 +450,13 @@ The installation policy `ADMIN | PER_USER` owns acceptance of the non-secret
 fingerprint for effective system-memory, embedding, and remote-reranker
 destinations. `ADMIN` is the default because those destinations are connected
 by an administrator; `PER_USER` preserves the earlier account-level contract.
-Destination fingerprints, execution bindings, drift checks,
-`WAITING_FOR_EGRESS_CONSENT`, and no-silent-fallback remain. A material
-provider, endpoint, deployment, account/destination, or policy change cannot be
-crossed by an in-flight result. The answer model remains governed by ordinary
-per-run admission rather than the static utility fingerprint.
+`ADMIN` stores canonical exact role/destination fingerprints plus policy/audit
+metadata in one secret-free singleton. Optimistic acknowledgment kicks
+coordinator reconciliation. Bindings, drift checks,
+`WAITING_FOR_EGRESS_CONSENT`, and no-silent-fallback remain: only a changed
+call target waits, while aggregate additions/removals still require review.
+In-flight results cannot cross drift. The answer model remains under per-run
+admission, outside the static utility fingerprint.
 
 Labelled `personalContext`, ordinary conversation context, prior assistant
 messages, hosted/client Search, Knowledge, and administrator-connected MCP

@@ -15,6 +15,7 @@ const SCOPE_LIFECYCLE_MIGRATION = "20260810190000_memory_scope_lifecycle";
 const TEMPORARY_RETENTION_MIGRATION = "20260810200000_memory_temporary_retention";
 const HISTORY_SCHEMA_MIGRATION = "20260810210000_memory_history_schema";
 const HISTORY_EGRESS_MIGRATION = "20260810220000_memory_history_tool_egress_guard";
+const ADMIN_EGRESS_MIGRATION = "20260811120000_memory_admin_egress_consent";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -27,6 +28,7 @@ const scopeRollbackDatabase = `aiqsa_memory_scope_rollback_${suffix}`;
 const temporaryRollbackDatabase = `aiqsa_memory_temporary_rollback_${suffix}`;
 const historyRollbackDatabase = `aiqsa_memory_history_rollback_${suffix}`;
 const historyEgressRollbackDatabase = `aiqsa_memory_history_egress_rollback_${suffix}`;
+const adminEgressRollbackDatabase = `aiqsa_memory_admin_egress_rollback_${suffix}`;
 const createdDatabases = new Set<string>();
 
 type CommandResult = Readonly<{
@@ -2077,6 +2079,109 @@ function assertHistoryEgressMigrationAtomicRollback(database: string): void {
   );
 }
 
+function assertAdminEgressContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM "MemoryEgressAdminPolicy"),
+        (SELECT concat_ws(':', "id", "version", jsonb_array_length("acceptedDestinations"),
+          ("acceptedFingerprint" IS NULL)::int, ("acceptedAt" IS NULL)::int)
+         FROM "MemoryEgressAdminPolicy" WHERE "id" = 'installation'),
+        (SELECT count(*) FROM pg_constraint
+         WHERE conname = 'MemoryEgressAdminPolicy_shape_check' AND convalidated),
+        (SELECT count(*) FROM pg_indexes
+         WHERE schemaname = current_schema()
+           AND indexname = 'MemoryEgressAdminPolicy_acceptedByUserId_idx')
+      );
+    `),
+    "1|installation:1:0:1:1|1|1",
+    "administrator Memory egress singleton is incomplete"
+  );
+
+  requireSuccess(psql(database, `
+    INSERT INTO "User" (
+      "id", "displayName", "role", "status", "updatedAt"
+    ) VALUES (
+      'memory-egress-admin', 'Memory egress admin', 'admin', 'active', CURRENT_TIMESTAMP
+    );
+    UPDATE "MemoryEgressAdminPolicy"
+    SET
+      "acceptedFingerprint" = repeat('a', 64),
+      "acceptedPolicyVersion" = 'memory-utility-egress-v1',
+      "acceptedDestinations" = jsonb_build_array(jsonb_build_object(
+        'destinationFingerprint', repeat('b', 64),
+        'role', 'MEMORY_DOCUMENT_EMBED'
+      )),
+      "acceptedAt" = CURRENT_TIMESTAMP,
+      "acceptedByUserId" = 'memory-egress-admin',
+      "version" = "version" + 1;
+  `), "accept an administrator-owned Memory destination snapshot");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryEgressAdminPolicy" ("id") VALUES ('second-installation');
+  `, /MemoryEgressAdminPolicy_shape_check/u, "second installation Memory policy");
+  expectRejected(database, `
+    UPDATE "MemoryEgressAdminPolicy"
+    SET "acceptedFingerprint" = 'invalid'
+    WHERE "id" = 'installation';
+  `, /MemoryEgressAdminPolicy_shape_check/u, "malformed administrator fingerprint");
+  expectRejected(database, `
+    UPDATE "MemoryEgressAdminPolicy"
+    SET "acceptedDestinations" = '{}'::jsonb
+    WHERE "id" = 'installation';
+  `, /MemoryEgressAdminPolicy_shape_check/u, "non-array administrator destinations");
+
+  requireSuccess(psql(database, `
+    DELETE FROM "User" WHERE "id" = 'memory-egress-admin';
+  `), "remove the acknowledging administrator");
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        ("acceptedByUserId" IS NULL)::int,
+        ("acceptedFingerprint" = repeat('a', 64))::int,
+        jsonb_array_length("acceptedDestinations"),
+        "version")
+      FROM "MemoryEgressAdminPolicy" WHERE "id" = 'installation';
+    `),
+    "1|1|1|2",
+    "administrator deletion rewrote accepted destination evidence"
+  );
+}
+
+function assertAdminEgressMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE TABLE "MemoryEgressAdminPolicy" ("fixture" TEXT);
+  `), "install administrator-egress rollback-conflict fixture");
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, ADMIN_EGRESS_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting administrator-egress migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /relation "MemoryEgressAdminPolicy" already exists/u,
+    "administrator-egress rollback fixture failed for an unexpected reason"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'MemoryEgressAdminPolicy' AND column_name = 'fixture'),
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'MemoryEgressAdminPolicy' AND column_name = 'id'),
+        (SELECT count(*) FROM pg_constraint
+         WHERE conname = 'MemoryEgressAdminPolicy_shape_check'),
+        (SELECT count(*) FROM pg_indexes
+         WHERE indexname = 'MemoryEgressAdminPolicy_acceptedByUserId_idx')
+      );
+    `),
+    "1|0|0|0",
+    "failed administrator-egress migration left partial durable state"
+  );
+}
+
 function assertHistorySchemaMigrationAtomicRollback(database: string): void {
   requireSuccess(psql(database, `
     CREATE FUNCTION aiqsa_memory_assert_history_source(text, text)
@@ -2141,6 +2246,8 @@ function main(): void {
     assertHistorySchemaContracts(upgradeDatabase, true);
     applyMigrations(upgradeDatabase, [HISTORY_EGRESS_MIGRATION]);
     assertHistoryEgressContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [ADMIN_EGRESS_MIGRATION]);
+    assertAdminEgressContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
@@ -2162,6 +2269,8 @@ function main(): void {
     assertHistorySchemaContracts(freshDatabase, false);
     applyMigrations(freshDatabase, [HISTORY_EGRESS_MIGRATION]);
     assertHistoryEgressContracts(freshDatabase);
+    applyMigrations(freshDatabase, [ADMIN_EGRESS_MIGRATION]);
+    assertAdminEgressContracts(freshDatabase);
 
     createDatabase(rollbackDatabase);
     applyMigrations(rollbackDatabase, migrationNames((name) => name < CHAT_SCOPE_MIGRATION));
@@ -2194,11 +2303,18 @@ function main(): void {
       migrationNames((name) => name < HISTORY_EGRESS_MIGRATION)
     );
     assertHistoryEgressMigrationAtomicRollback(historyEgressRollbackDatabase);
+
+    createDatabase(adminEgressRollbackDatabase);
+    applyMigrations(
+      adminEgressRollbackDatabase,
+      migrationNames((name) => name < ADMIN_EGRESS_MIGRATION)
+    );
+    assertAdminEgressMigrationAtomicRollback(adminEgressRollbackDatabase);
   } finally {
     dropDatabases();
   }
 
-  console.info("Memory migration contract passed through the Phase 5 history/egress guard.");
+  console.info("Memory migration contract passed through administrator-owned egress consent.");
 }
 
 main();

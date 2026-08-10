@@ -52,6 +52,8 @@ resurrection review owned by the Memory lifecycle contract.
 
 The executable model inventory is `prisma/schema.prisma`. Its current categories are identity/session/approval, users/groups/settings/grants, folders/chats/message DAGs, Assistant definitions/revisions/publications/pins, provider/search catalog, runs/events/usage, MCP definitions/revisions/grants/user state/runtime evidence/tool calls, attachments plus their durable processing queue and purpose-built deletion outbox, per-pipeline document-processing fairness cursors, Native Memory settings/authority/derivative/operational evidence, and immutable share snapshots. Living prose records only cross-table constraints that affect behavior.
 
+`MemoryEgressAdminPolicy` is the `ADMIN` singleton; `PER_USER` remains.
+
 Native Memory scope identity is immutable. A typed `FOLDER`, `ASSISTANT`, or
 `CHAT` scope carries both its owner and its restrictive live-target relation;
 the Assistant relation additionally proves the same owner at the database

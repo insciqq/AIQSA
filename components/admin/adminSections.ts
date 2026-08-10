@@ -2,6 +2,7 @@ import {
   BarChart3,
   BookOpenText,
   Boxes,
+  BrainCircuit,
   Globe2,
   Link2,
   Mail,
@@ -19,6 +20,7 @@ export type AdminSectionId =
   | "email"
   | "invites"
   | "knowledge"
+  | "memory"
   | "mcp"
   | "providers"
   | "search"
@@ -68,6 +70,13 @@ export const adminSections = [
     group: "ai-setup",
     id: "knowledge",
     label: "Knowledge"
+  },
+  {
+    Icon: BrainCircuit,
+    description: "Review and acknowledge exact external destinations used by Memory utilities.",
+    group: "ai-setup",
+    id: "memory",
+    label: "Memory"
   },
   {
     Icon: Users,

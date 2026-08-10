@@ -27,6 +27,7 @@ const adminSections = [
   { id: "providers", label: "Providers" },
   { id: "search", label: "Search" },
   { id: "knowledge", label: "Knowledge" },
+  { id: "memory", label: "Memory" },
   { id: "users", label: "Users" },
   { id: "access", label: "Access & groups" },
   { id: "invites", label: "Invites" },

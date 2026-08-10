@@ -16,6 +16,7 @@ import { AdminFeedbackMessages } from "@/components/admin/AdminFeedbackMessages"
 import { AdminEmailSection } from "@/components/admin/AdminEmailSection";
 import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
 import { AdminKnowledgeSection } from "@/components/admin/AdminKnowledgeSection";
+import { AdminMemorySection } from "@/components/admin/AdminMemorySection";
 import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
 import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
 import { AdminProvidersExperience } from "@/components/admin/AdminProvidersExperience";
@@ -194,6 +195,8 @@ function AdminSectionContent({
           onMutationCommitted={onMutationCommitted}
         />
       );
+    case "memory":
+      return <AdminMemorySection active />;
     case "invites":
       return invites.sectionProps ? <AdminInvitesSection {...invites.sectionProps} /> : null;
     case "access-rules":

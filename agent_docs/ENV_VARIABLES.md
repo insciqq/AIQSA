@@ -112,12 +112,17 @@ AIQSA_MEMORY_EGRESS_CONSENT_MODE=ADMIN
 
 This installation policy accepts exact uppercase `ADMIN` or `PER_USER` and
 defaults to `ADMIN` when absent or blank. `ADMIN` treats administrator-connected
-Memory utility destinations as installation-trusted: ordinary users see only a
-passive status and cannot perform the account consent mutation. `PER_USER`
-preserves account-level acceptance of the current aggregate utility fingerprint.
-In both modes, destination fingerprints, per-call execution bindings, immediate
-drift reauthorization, `WAITING_FOR_EGRESS_CONSENT`, and no-silent-fallback
-remain authoritative.
+Memory utility destinations as installation-owned: ordinary users see only a
+passive status and cannot perform the account consent mutation. An active
+administrator reviews and optimistically acknowledges the current secret-free
+destination fingerprint in Control Center → Memory. Until the exact logical
+role/destination has been acknowledged, only affected external Memory work
+waits; local CRUD/Forget and lexical retrieval continue. A successful
+acknowledgment kicks coordinator reconciliation. `PER_USER` preserves
+account-level acceptance of the current aggregate utility fingerprint. In both
+modes, destination fingerprints, per-call execution bindings, immediate drift
+reauthorization, `WAITING_FOR_EGRESS_CONSENT`, and no-silent-fallback remain
+authoritative.
 
 An invalid non-blank value fails safely to `PER_USER`, so a typo cannot silently
 relax an intended account-level consent boundary. Compose forwards the policy to

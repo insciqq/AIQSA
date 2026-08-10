@@ -1,9 +1,9 @@
 # BACKEND API — ADMIN CONTROL PLANE
 
 Owner: Server API contract maintainers
-Scope: Observable administrator transitions for team access, releases, providers, Search, and MCP.
-Read when: Changing administrator users/groups/invites, release state, provider setup, Search configuration, MCP administration, or control-plane mutations.
-Code owners: Administrator route handlers and repositories under `lib/server/admin/`, plus provider/Search/MCP admin owners.
+Scope: Observable administrator transitions for team access, releases, providers, Search, Memory, and MCP.
+Read when: Changing administrator users/groups/invites, release state, provider setup, Search configuration, Memory destination trust, MCP administration, or control-plane mutations.
+Code owners: Administrator route handlers and repositories under `lib/server/admin/`, plus provider/Search/Memory/MCP admin owners.
 Not owned here: Browser Control Center interaction, auth threat controls, current-user catalogs, or chat/run execution.
 
 ## Administrator Control Plane
@@ -42,6 +42,12 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 
 - The singleton installation Knowledge policy is administrator-only and optimistic-versioned. Its read/update projection contains only bounded retrieval candidate/result limits, score threshold, updater/time metadata, code-owned bounds, and effective read-only ingestion ceilings. It never returns private base, owner, publication, document, filename, passage, vector, generation, or receipt facts.
 - Each future retrieval invocation resolves the current policy before embedding or search and persists the exact candidate limit, result limit, and threshold in its existing immutable receipt. A missing or invalid policy fails that tool invocation before provider I/O; migration, bootstrap, and seed create or repair only the missing default row and never overwrite an administrator's saved values.
+
+### Memory
+
+- `GET /api/admin/memory` returns a private/no-store, administrator-only, secret-free installation projection: consent mode, exact current/accepted aggregate fingerprints and policy versions, optimistic version, bounded acknowledgment actor/time, waiting-job count, and exactly four product rows for answer provider, system Memory model, embedding, and remote reranker. Current utility destinations are aggregated across active owners without returning owner identity, settings, endpoint, credential, Memory content, request text, or execution evidence.
+- `PATCH /api/admin/memory` accepts only `expectedVersion` and the observed `currentFingerprint`. It is available only in `ADMIN` mode, locks the singleton, recomputes current policy inside a serializable transaction, rejects stale or drifted observations, stores the canonical exact logical-role/destination set with audit metadata, increments the version, and kicks coordinator reconciliation after commit. It does not mutate provider configuration, grant access, select a model, or weaken per-call binding and qualification.
+- Runtime admission checks the exact role/destination needed by each external Memory call. A new or changed destination waits with the existing consent-required outcome; unchanged acknowledged destinations continue. The aggregate admin projection may remain `Review required` for additions or removals until explicitly acknowledged. `PER_USER` retains the user-owned acceptance path and makes the admin projection read-only.
 
 ### MCP
 

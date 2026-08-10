@@ -55,7 +55,7 @@ export type ResolvedMemoryExecutionTarget = Readonly<{
   snapshot: ProviderExecutionSnapshot;
 }>;
 
-type MemoryPolicyDestination =
+export type MemoryPolicyDestination =
   | Readonly<{
       kind: "AVAILABLE";
       role: MemoryExecutionRole;
