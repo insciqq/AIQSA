@@ -64,7 +64,8 @@ function settingsResponse() {
       automaticLearning: true,
       explicitMemory: true,
       historyRecall: true,
-      russianQualified: true
+      russianQualified: true,
+      temporaryChats: true
     },
     egress: {
       acceptedAt: now,
@@ -411,6 +412,25 @@ describe("Memory response contracts", () => {
     expect(decodeMemoryMutationResponse({ memory: memorySummary() })).toMatchObject({ ok: true });
     expect(decodeMemoryListResponse({
       memories: [{ ...memorySummary(), ownerUserId: "other" }],
+      nextCursor: null
+    })).toMatchObject({ ok: false });
+    expect(decodeMemoryListResponse({
+      memories: [{
+        ...memorySummary(),
+        actionVersionId: "version-orphaned",
+        currentVersionId: null,
+        factState: "ORPHANED",
+        versionState: "ORPHANED"
+      }],
+      nextCursor: null
+    })).toMatchObject({ ok: true });
+    expect(decodeMemoryListResponse({
+      memories: [{
+        ...memorySummary(),
+        currentVersionId: null,
+        factState: "ORPHANED",
+        versionState: "ORPHANED"
+      }],
       nextCursor: null
     })).toMatchObject({ ok: false });
   });

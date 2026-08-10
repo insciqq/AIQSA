@@ -5,11 +5,17 @@ type StateUpdate<T> = T | ((current: T) => T);
 
 const blankRootSessionKey = "blank:root" as const;
 const blankFolderSessionPrefix = "blank:folder:";
+const temporaryRootSessionKey = "blank:temporary:root" as const;
+const temporaryFolderSessionPrefix = "blank:temporary:folder:";
 const savedChatSessionPrefix = "chat:";
+
+export type ComposerBlankMemoryMode = "NORMAL" | "TEMPORARY";
 
 export type ComposerSessionKey =
   | typeof blankRootSessionKey
   | `blank:folder:${string}`
+  | typeof temporaryRootSessionKey
+  | `blank:temporary:folder:${string}`
   | `chat:${string}`;
 
 export type ComposerPendingEdit = {
@@ -135,15 +141,25 @@ function decodeKeySegment(value: string): string | null {
 
 export function composerSessionKey(
   chatId: string | null,
-  folderId: string | null = null
+  folderId: string | null = null,
+  memoryMode: ComposerBlankMemoryMode = "NORMAL"
 ): ComposerSessionKey {
   if (chatId) {
     return `${savedChatSessionPrefix}${encodeURIComponent(chatId)}`;
   }
 
-  return folderId
-    ? `${blankFolderSessionPrefix}${encodeURIComponent(folderId)}`
-    : blankRootSessionKey;
+  if (memoryMode === "TEMPORARY") {
+    return folderId
+      ? `${temporaryFolderSessionPrefix}${encodeURIComponent(folderId)}`
+      : temporaryRootSessionKey;
+  }
+  return folderId ? `${blankFolderSessionPrefix}${encodeURIComponent(folderId)}` : blankRootSessionKey;
+}
+
+export function composerSessionModeFromKey(key: ComposerSessionKey): ComposerBlankMemoryMode {
+  return key === temporaryRootSessionKey || key.startsWith(temporaryFolderSessionPrefix)
+    ? "TEMPORARY"
+    : "NORMAL";
 }
 
 export function chatIdFromComposerSessionKey(key: ComposerSessionKey): string | null {
@@ -153,6 +169,9 @@ export function chatIdFromComposerSessionKey(key: ComposerSessionKey): string | 
 }
 
 export function folderIdFromComposerSessionKey(key: ComposerSessionKey): string | null {
+  if (key.startsWith(temporaryFolderSessionPrefix)) {
+    return decodeKeySegment(key.slice(temporaryFolderSessionPrefix.length));
+  }
   return key.startsWith(blankFolderSessionPrefix)
     ? decodeKeySegment(key.slice(blankFolderSessionPrefix.length))
     : null;

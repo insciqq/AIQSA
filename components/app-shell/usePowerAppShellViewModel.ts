@@ -27,6 +27,7 @@ import type { ComposerAttachment } from "@/components/chat/Composer";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "@/lib/domain/contextBudget";
 import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
 import { useMemo } from "react";
+import { workspaceNavigationChats } from "@/components/app-shell/workspaceStore";
 
 type PowerAppShellViewModelInput = {
   activeChatId: string | null;
@@ -179,13 +180,14 @@ export function usePowerAppShellViewModel({
     return userTurnStart?.id ?? tail.id;
   }, [visibleMessages]);
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) ?? null, [activeChatId, chats]);
+  const navigationChats = useMemo(() => workspaceNavigationChats(chats), [chats]);
   const chatGroups = useMemo(
-    () => buildChatGroups(folders, chats, chatQuery, chatContentMatchIds),
-    [chatContentMatchIds, chatQuery, chats, folders]
+    () => buildChatGroups(folders, navigationChats, chatQuery, chatContentMatchIds),
+    [chatContentMatchIds, chatQuery, folders, navigationChats]
   );
   const commandChatGroups = useMemo(
-    () => buildChatGroups(folders, chats, "", new Set()),
-    [chats, folders]
+    () => buildChatGroups(folders, navigationChats, "", new Set()),
+    [folders, navigationChats]
   );
   const liveArtifactSummary = useMemo(
     () => summarizeThreadArtifacts(runEvents, lastRun?.searchRuns, lastRun?.toolCalls, lastRun?.status),

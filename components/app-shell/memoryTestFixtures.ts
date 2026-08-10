@@ -20,7 +20,8 @@ export function memorySettingsFixture(
       automaticLearning: true,
       explicitMemory: true,
       historyRecall: true,
-      russianQualified: true
+      russianQualified: true,
+      temporaryChats: true
     },
     egress: {
       acceptedAt: "2026-08-10T08:00:00.000Z",

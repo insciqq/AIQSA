@@ -17,7 +17,9 @@ import {
   MEMORY_STATEMENT_MAX_LENGTH,
   type MemoryDeletionStatus,
   type MemoryEvidenceItem,
+  type MemoryFactState,
   type MemoryModality,
+  type MemoryScopeSelection,
   type MemorySummary
 } from "@/lib/contracts/memory";
 import { create } from "zustand";
@@ -28,12 +30,14 @@ export type MemoryManagerScreen =
   | "detail"
   | "edit"
   | "forget"
+  | "move"
   | "list";
 export type MemoryManagerLoadState = "error" | "idle" | "loading" | "ready";
 export type MemoryManagerMutationState =
   | "deleting"
   | "forgetting"
   | "pinning"
+  | "moving"
   | "saving"
   | null;
 export type MemoryManagerNotice =
@@ -45,6 +49,7 @@ export type MemoryManagerNotice =
 export type MemoryDraft = {
   category: string;
   modality: MemoryModality;
+  scope: MemoryScopeSelection;
   statement: string;
 };
 
@@ -62,6 +67,7 @@ type MemoryManagerStore = {
   evidenceError: string | null;
   evidenceLoadState: MemoryManagerLoadState;
   evidenceNextCursor: string | null;
+  factStateFilter: Extract<MemoryFactState, "ACTIVE" | "ORPHANED">;
   listError: string | null;
   listLoadState: MemoryManagerLoadState;
   memories: MemorySummary[];
@@ -73,16 +79,18 @@ type MemoryManagerStore = {
   queryInput: string;
   screen: MemoryManagerScreen;
   setDraft(patch: Partial<MemoryDraft>): void;
+  setFactStateFilter(value: Extract<MemoryFactState, "ACTIVE" | "ORPHANED">): void;
   setQueryInput(value: string): void;
 };
 
 const emptyDraft: MemoryDraft = {
   category: "",
   modality: "STATE",
+  scope: { type: "GLOBAL_USER" },
   statement: ""
 };
 
-const initialState: Omit<MemoryManagerStore, "setDraft" | "setQueryInput"> = {
+const initialState: Omit<MemoryManagerStore, "setDraft" | "setFactStateFilter" | "setQueryInput"> = {
   activeMemory: null,
   deletionError: null,
   deletionLoadState: "idle",
@@ -96,6 +104,7 @@ const initialState: Omit<MemoryManagerStore, "setDraft" | "setQueryInput"> = {
   evidenceError: null,
   evidenceLoadState: "idle",
   evidenceNextCursor: null,
+  factStateFilter: "ACTIVE",
   listError: null,
   listLoadState: "idle",
   memories: [],
@@ -118,6 +127,9 @@ export const useMemoryManagerStore = create<MemoryManagerStore>((set) => ({
       mutationError: null,
       notice: null
     }));
+  },
+  setFactStateFilter(factStateFilter) {
+    set({ factStateFilter });
   },
   setQueryInput(queryInput) {
     set({ queryInput });
@@ -148,6 +160,7 @@ function draftFromMemory(memory: MemorySummary): MemoryDraft {
   return {
     category: memory.category,
     modality: memory.modality,
+    scope: memory.scope,
     statement: memory.displayText ?? ""
   };
 }
@@ -193,8 +206,8 @@ export async function refreshMemoryList(
   });
   try {
     const response = queryApplied
-      ? await searchMemories(queryApplied, cursor)
-      : await listMemories(cursor);
+      ? await searchMemories(queryApplied, cursor, { state: current.factStateFilter })
+      : await listMemories(cursor, { state: current.factStateFilter });
     if (generation !== listRequestGeneration) return;
     useMemoryManagerStore.setState((state) => ({
       listError: null,
@@ -341,6 +354,30 @@ export function beginEditMemory(): void {
   });
 }
 
+export function beginMoveMemory(): void {
+  const memory = useMemoryManagerStore.getState().activeMemory;
+  if (!memory?.actionVersionId && !memory?.currentVersionId) return;
+  useMemoryManagerStore.setState({
+    draft: draftFromMemory(memory),
+    draftDirty: false,
+    draftStale: false,
+    mutationError: null,
+    screen: "move"
+  });
+}
+
+export async function changeMemoryFactState(
+  factStateFilter: Extract<MemoryFactState, "ACTIVE" | "ORPHANED">
+): Promise<void> {
+  useMemoryManagerStore.setState({
+    factStateFilter,
+    nextCursor: null,
+    queryApplied: "",
+    queryInput: ""
+  });
+  await refreshMemoryList({ appliedQuery: "" });
+}
+
 export function cancelMemoryDraft(): void {
   const memory = useMemoryManagerStore.getState().activeMemory;
   useMemoryManagerStore.setState({
@@ -367,7 +404,7 @@ export async function saveNewMemory(useMemoryFacts: boolean): Promise<void> {
       ...(draft.category.trim() ? { category: draft.category.trim() } : {}),
       modality: draft.modality,
       mutationAuthorizationId: authorization.mutationAuthorizationId,
-      scope: { type: "GLOBAL_USER" },
+      scope: draft.scope,
       statement: draft.statement
     });
     useMemoryManagerStore.setState((state) => ({
@@ -388,7 +425,10 @@ export async function saveNewMemory(useMemoryFacts: boolean): Promise<void> {
   }
 }
 
-async function reconcileCurrentMemoryKeepingDraft(memoryId: string): Promise<void> {
+async function reconcileCurrentMemoryKeepingDraft(
+  memoryId: string,
+  screen: Extract<MemoryManagerScreen, "edit" | "move"> = "edit"
+): Promise<void> {
   const draft = useMemoryManagerStore.getState().draft;
   try {
     const response = await loadMemory(memoryId);
@@ -400,11 +440,11 @@ async function reconcileCurrentMemoryKeepingDraft(memoryId: string): Promise<voi
       memories: state.memories.map((memory) =>
         memory.id === response.memory.id ? response.memory : memory
       ),
-      screen: "edit"
+      screen
     }));
     void loadEvidence(memoryId).catch(() => undefined);
   } catch {
-    useMemoryManagerStore.setState({ draft, draftDirty: true, draftStale: true, screen: "edit" });
+    useMemoryManagerStore.setState({ draft, draftDirty: true, draftStale: true, screen });
   }
 }
 
@@ -479,6 +519,48 @@ export async function toggleMemoryPinned(): Promise<void> {
   }
 }
 
+export async function moveMemoryScope(): Promise<void> {
+  const { activeMemory, draft } = useMemoryManagerStore.getState();
+  const expectedVersionId = activeMemory?.actionVersionId ?? activeMemory?.currentVersionId;
+  if (!activeMemory || !expectedVersionId) return;
+  if (JSON.stringify(activeMemory.scope) === JSON.stringify(draft.scope)) return;
+  useMemoryManagerStore.setState({ mutationError: null, mutationState: "moving" });
+  try {
+    const authorization = await authorizeMemoryMutation({
+      action: "MOVE_SCOPE",
+      expectedTargetVersionId: expectedVersionId,
+      targetFactId: activeMemory.id
+    });
+    const response = await updateMemory(activeMemory.id, {
+      expectedVersionId,
+      mutationAuthorizationId: authorization.mutationAuthorizationId,
+      scope: draft.scope
+    });
+    useMemoryManagerStore.setState((state) => ({
+      activeMemory: response.memory,
+      draft: draftFromMemory(response.memory),
+      draftDirty: false,
+      draftStale: false,
+      memories: uniqueMemories([
+        response.memory,
+        ...state.memories.filter((memory) => memory.id !== activeMemory.id)
+      ]),
+      mutationError: null,
+      mutationState: null,
+      notice: "saved",
+      screen: "detail"
+    }));
+    void loadEvidence(response.memory.id).catch(() => undefined);
+    void refreshMemoryList().catch(() => undefined);
+  } catch (error) {
+    useMemoryManagerStore.setState({ mutationError: errorName(error), mutationState: null });
+    if (error instanceof MemoryApiError && error.code === "memory_version_stale") {
+      await reconcileCurrentMemoryKeepingDraft(activeMemory.id, "move");
+    }
+    throw error;
+  }
+}
+
 export function beginForgetMemory(): void {
   if (!useMemoryManagerStore.getState().activeMemory) return;
   useMemoryManagerStore.setState({ mutationError: null, screen: "forget" });
@@ -486,16 +568,17 @@ export function beginForgetMemory(): void {
 
 export async function confirmForgetMemory(): Promise<void> {
   const memory = useMemoryManagerStore.getState().activeMemory;
-  if (!memory?.currentVersionId) return;
+  const expectedVersionId = memory?.actionVersionId ?? memory?.currentVersionId;
+  if (!memory || !expectedVersionId) return;
   useMemoryManagerStore.setState({ mutationError: null, mutationState: "forgetting" });
   try {
     const authorization = await authorizeMemoryMutation({
       action: "FORGET",
-      expectedTargetVersionId: memory.currentVersionId,
+      expectedTargetVersionId: expectedVersionId,
       targetFactId: memory.id
     });
     await forgetMemory(memory.id, {
-      expectedVersionId: memory.currentVersionId,
+      expectedVersionId,
       mutationAuthorizationId: authorization.mutationAuthorizationId
     });
     useMemoryManagerStore.setState((state) => ({

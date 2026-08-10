@@ -562,4 +562,19 @@ describe("thread actions", () => {
       text: "Send a message before sharing."
     });
   });
+
+  it.each([
+    { memoryMode: "TEMPORARY" as const },
+    { pendingInitialMemoryMode: "TEMPORARY" as const }
+  ])("never opens sharing for a Temporary chat", (temporaryState) => {
+    const { actions, notices, openShareDialog } = createActionsForTest();
+
+    actions.shareChat(chatSummary({ activeLeafMessageId: "leaf", ...temporaryState }));
+
+    expect(openShareDialog).not.toHaveBeenCalled();
+    expect(notices.at(-1)).toEqual({
+      kind: "error",
+      text: "Temporary Chats cannot be shared."
+    });
+  });
 });

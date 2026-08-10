@@ -9,6 +9,7 @@ import {
   decodeChatDetailResponse,
   decodeChatLifecycleRequest,
   decodeChatLifecycleResponse,
+  decodeChatMemoryStateResponse,
   decodeChatMessagesPageResponse,
   decodeChatSourceResolutionResponse,
   decodeChatSummaryResponse,
@@ -768,6 +769,28 @@ describe("chat wire contracts", () => {
       .toEqual({ chats: [archivedSummary], nextCursor: "opaque" });
     expect(decodeArchivedChatDetailResponse(archivedDetail)).toEqual(archivedDetail);
     expect(decodeChatSourceResolutionResponse(source)).toEqual(source);
+    expect(decodeChatMemoryStateResponse({
+      chat: {
+        archived: false,
+        chatId: summary.id,
+        mode: "TEMPORARY",
+        sourceRevision: 8,
+        temporaryRetentionDeadline: "2026-07-15T08:01:00.000Z",
+        temporaryRetentionPolicyVersion: "temporary-24h-v1",
+        updatedAt: summary.updatedAt
+      }
+    })).not.toBeNull();
+    expect(decodeChatMemoryStateResponse({
+      chat: {
+        archived: false,
+        chatId: summary.id,
+        mode: "TEMPORARY",
+        sourceRevision: 8,
+        temporaryRetentionDeadline: null,
+        temporaryRetentionPolicyVersion: "temporary-24h-v1",
+        updatedAt: summary.updatedAt
+      }
+    })).toBeNull();
 
     expect(decodeChatLifecycleResponse({
       chat: { ...lifecycle.chat, memoryMode: "TEMPORARY" }

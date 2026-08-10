@@ -190,7 +190,8 @@ describe("Prisma Memory persistence", () => {
           automaticLearning: false,
           explicitMemory: true,
           historyRecall: false,
-          russianQualified: true
+          russianQualified: true,
+          temporaryChats: true
         },
         egress: {
           acceptedAt: null,

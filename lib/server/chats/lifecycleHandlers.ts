@@ -5,6 +5,7 @@ import {
   type ArchivedChatSummaryWire,
   type ArchivedChatsResponseWire,
   type ChatLifecycleResponseWire,
+  type ChatMemoryStateResponseWire,
   type ChatSourceResolutionResponseWire,
   type RetainedChatMemoryMode
 } from "../../contracts/chats";
@@ -50,6 +51,16 @@ export type ChatLifecycleStateRecord = Readonly<{
   updatedAt: Date | string;
 }>;
 
+export type ChatMemoryStateRecord = Readonly<{
+  archived: boolean;
+  chatId: string;
+  mode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+  sourceRevision: number;
+  temporaryRetentionDeadline: Date | string | null;
+  temporaryRetentionPolicyVersion: "temporary-24h-v1" | null;
+  updatedAt: Date | string;
+}>;
+
 export type ChatSourceResolutionRecord = Readonly<{
   chatId: string;
   location: "ACTIVE_CHAT" | "ARCHIVED_PREVIEW";
@@ -85,6 +96,7 @@ export type ChatMemoryModeMutationResult =
 
 export type ChatLifecycleRepository = Readonly<{
   getArchivedChat(input: { chatId: string; userId: string }): Promise<ArchivedChatDetailRecord | null>;
+  getChatMemoryState(input: { chatId: string; userId: string }): Promise<ChatMemoryStateRecord | null>;
   getArchivedMessagesPage(input: {
     before: string;
     chatId: string;
@@ -174,6 +186,22 @@ function serializeLifecycleState(chat: ChatLifecycleStateRecord): ChatLifecycleR
       id: chat.id,
       memoryMode: chat.memoryMode,
       sourceRevision: chat.sourceRevision,
+      updatedAt: iso(chat.updatedAt)
+    }
+  };
+}
+
+function serializeMemoryState(chat: ChatMemoryStateRecord): ChatMemoryStateResponseWire {
+  return {
+    chat: {
+      archived: chat.archived,
+      chatId: chat.chatId,
+      mode: chat.mode,
+      sourceRevision: chat.sourceRevision,
+      temporaryRetentionDeadline: chat.temporaryRetentionDeadline === null
+        ? null
+        : iso(chat.temporaryRetentionDeadline),
+      temporaryRetentionPolicyVersion: chat.temporaryRetentionPolicyVersion,
       updatedAt: iso(chat.updatedAt)
     }
   };
@@ -366,5 +394,19 @@ export function createPatchChatMemoryModeHandler(deps: ChatLifecycleHandlerDeps)
       case "resume_blocked":
         return json({ error: "memory_action_failed" }, 503);
     }
+  };
+}
+
+export function createGetChatMemoryModeHandler(deps: ChatLifecycleHandlerDeps) {
+  return async function GET(request: Request, context: ChatRouteContext): Promise<Response> {
+    const resolved = await authenticated(request, deps);
+    if (!resolved.ok) return resolved.response;
+    if (!noSearchParams(request)) return json({ error: "memory_contract_invalid" }, 400);
+    const chatId = routeId((await context.params).chatId);
+    if (!chatId) return json({ error: "memory_contract_invalid" }, 400);
+    const chat = await deps.repository.getChatMemoryState({ chatId, userId: resolved.userId });
+    return chat
+      ? json(serializeMemoryState(chat))
+      : json({ error: "memory_not_found" }, 404);
   };
 }

@@ -1,4 +1,7 @@
-import { AlertTriangle, Trash2, X } from "lucide-react";
+import { AlertTriangle, Archive, Trash2, X } from "lucide-react";
+import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
+import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
+import type { MemoryUiLocale } from "@/lib/contracts/memory";
 import { useDialogFocus } from "./useDialogFocus";
 
 type ConfirmationTone = "destructive" | "warning";
@@ -6,9 +9,10 @@ type ConfirmationTone = "destructive" | "warning";
 type ConfirmationDialogProps = {
   cancelLabel?: string;
   children: string;
+  confirmAriaLabel?: string;
   confirmLabel: string;
   dialogLabel: string;
-  icon?: "trash" | "x";
+  icon?: "archive" | "trash" | "x";
   onCancel(): void;
   onConfirm(): void;
   testId: string;
@@ -19,6 +23,7 @@ type ConfirmationDialogProps = {
 export function ConfirmationDialog({
   cancelLabel = "Cancel",
   children,
+  confirmAriaLabel,
   confirmLabel,
   dialogLabel,
   icon = "trash",
@@ -39,7 +44,7 @@ export function ConfirmationDialog({
           button: "bg-critical text-proof-contrast hover:opacity-90",
           icon: "border-critical/35 bg-critical/10 text-critical"
         };
-  const ConfirmIcon = icon === "x" ? X : Trash2;
+  const ConfirmIcon = icon === "x" ? X : icon === "archive" ? Archive : Trash2;
 
   return (
     <div
@@ -79,7 +84,7 @@ export function ConfirmationDialog({
               toneClasses.button
             ].join(" ")}
             type="button"
-            aria-label={`Confirm ${confirmLabel.toLowerCase()}`}
+            aria-label={confirmAriaLabel ?? `Confirm ${confirmLabel.toLowerCase()}`}
             onClick={onConfirm}
           >
             <ConfirmIcon className="size-3.5" aria-hidden="true" />
@@ -93,23 +98,31 @@ export function ConfirmationDialog({
 
 export function ChatDeleteConfirmationDialog({
   chatTitle,
+  locale: localeOverride,
   onCancel,
   onConfirm
 }: {
   chatTitle: string;
+  locale?: MemoryUiLocale;
   onCancel(): void;
   onConfirm(): void;
 }) {
+  const storedLocale = useMemorySettingsStore((state) => state.data?.settings.memoryUiLocale ?? "RU");
+  const locale = localeOverride ?? storedLocale;
   return (
     <ConfirmationDialog
-      confirmLabel="Delete chat"
-      dialogLabel={`Delete chat ${chatTitle}`}
+      cancelLabel={locale === "RU" ? "Отмена" : "Cancel"}
+      confirmAriaLabel={locale === "RU" ? "Подтвердить архивирование" : "Confirm archive"}
+      confirmLabel={resolveMemoryCopy(locale, "archive.action")}
+      dialogLabel={locale === "RU" ? `Архивировать чат ${chatTitle}` : `Archive chat ${chatTitle}`}
+      icon="archive"
       onCancel={onCancel}
       onConfirm={onConfirm}
-      testId="delete-chat-confirmation"
-      title="Delete chat?"
+      testId="archive-chat-confirmation"
+      title={locale === "RU" ? "Архивировать чат?" : "Archive chat?"}
+      tone="warning"
     >
-      {`"${chatTitle}" will be archived and removed from the workspace list.`}
+      {`${resolveMemoryCopy(locale, "archive.explanation")} “${chatTitle}”`}
     </ConfirmationDialog>
   );
 }

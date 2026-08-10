@@ -4,8 +4,10 @@ import {
   beginDeleteExplicitMemories,
   beginEditMemory,
   beginForgetMemory,
+  beginMoveMemory,
   cancelMemoryDraft,
   clearMemorySearch,
+  changeMemoryFactState,
   confirmDeleteExplicitMemories,
   confirmForgetMemory,
   discardMemoryManagerDraft,
@@ -13,6 +15,7 @@ import {
   memoryDraftIsValid,
   openMemoryDetail,
   openMemoryManager,
+  moveMemoryScope,
   refreshMemoryDeletionStatus,
   refreshMemoryList,
   saveMemoryChanges,
@@ -22,6 +25,9 @@ import {
   useMemoryManagerStore,
   type MemoryManagerScreen
 } from "@/components/app-shell/memoryManagerStore";
+import { useWorkspaceStore, workspaceNavigationChats } from "@/components/app-shell/workspaceStore";
+import { fetchAssistantList } from "@/components/assistants/assistantsApi";
+import { listArchivedChats } from "@/components/app-shell/chatLifecycleApi";
 import {
   memoryFactStateLabel,
   memoryModalityLabel,
@@ -35,6 +41,7 @@ import {
   type MemoryDeletionStatus,
   type MemoryEvidenceItem,
   type MemorySummary,
+  type MemoryScopeSelection,
   type MemoryUiLocale
 } from "@/lib/contracts/memory";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
@@ -45,6 +52,7 @@ import {
   CircleAlert,
   Clock3,
   FileClock,
+  FolderInput,
   Pin,
   PinOff,
   Plus,
@@ -56,6 +64,7 @@ import {
 } from "lucide-react";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -106,6 +115,14 @@ function indexingLabel(locale: MemoryUiLocale, value: MemorySummary["indexingSta
   return labels[value];
 }
 
+function scopeLabel(locale: MemoryUiLocale, scope: MemoryScopeSelection): string {
+  if (scope.type === "GLOBAL_USER") return t(locale, "manager.global");
+  const labels = locale === "RU"
+    ? { ASSISTANT: "Ассистент", CHAT: "Чат", FOLDER: "Папка" }
+    : { ASSISTANT: "Assistant", CHAT: "Chat", FOLDER: "Folder" };
+  return `${labels[scope.type]} · ${scope.targetId}`;
+}
+
 function mutationErrorText(locale: MemoryUiLocale, code: string | null): string | null {
   if (!code) return null;
   if (code === "memory_secret_rejected") return t(locale, "manager.secretRejected");
@@ -141,8 +158,151 @@ function LiveNotice({ locale }: { locale: MemoryUiLocale }) {
   );
 }
 
+type ScopeTargetOption = Readonly<{
+  archived?: boolean;
+  id: string;
+  label: string;
+  type: Exclude<MemoryScopeSelection["type"], "GLOBAL_USER">;
+}>;
+
+function encodedScope(scope: MemoryScopeSelection): string {
+  return scope.type === "GLOBAL_USER" ? "GLOBAL_USER" : `${scope.type}:${scope.targetId}`;
+}
+
+function decodedScope(value: string): MemoryScopeSelection | null {
+  if (value === "GLOBAL_USER") return { type: "GLOBAL_USER" };
+  const separator = value.indexOf(":");
+  const type = value.slice(0, separator);
+  const targetId = value.slice(separator + 1);
+  return separator > 0 && targetId && ["FOLDER", "ASSISTANT", "CHAT"].includes(type)
+    ? { targetId, type: type as "FOLDER" | "ASSISTANT" | "CHAT" }
+    : null;
+}
+
+function MemoryScopePicker({
+  id,
+  locale,
+  onChange,
+  value
+}: {
+  id: string;
+  locale: MemoryUiLocale;
+  onChange(scope: MemoryScopeSelection): void;
+  value: MemoryScopeSelection;
+}) {
+  const folders = useWorkspaceStore((state) => state.folders);
+  const workspaceChats = useWorkspaceStore((state) => state.chats);
+  const chats = useMemo(() => workspaceNavigationChats(workspaceChats), [workspaceChats]);
+  const [remoteTargets, setRemoteTargets] = useState<ScopeTargetOption[]>([]);
+  const [loading, setLoading] = useState(true);
+  const ru = locale === "RU";
+
+  useEffect(() => {
+    let active = true;
+    async function loadTargets(): Promise<void> {
+      const archivedPromise = (async (): Promise<ScopeTargetOption[]> => {
+        const options: ScopeTargetOption[] = [];
+        let cursor: string | null = null;
+        let pages = 0;
+        do {
+          const page = await listArchivedChats(cursor);
+          options.push(...page.chats.map((chat) => ({
+            archived: true,
+            id: chat.id,
+            label: chat.title,
+            type: "CHAT" as const
+          })));
+          cursor = page.nextCursor;
+          pages += 1;
+        } while (cursor && pages < 25);
+        return options;
+      })().catch(() => []);
+      const [assistants, archivedTargets] = await Promise.all([
+        fetchAssistantList(),
+        archivedPromise
+      ]);
+      const options = [...archivedTargets];
+      if (assistants.ok) {
+        options.push(...assistants.data.assistants
+          .filter((assistant) => assistant.owned && !assistant.archived)
+          .map((assistant) => ({ id: assistant.id, label: assistant.name, type: "ASSISTANT" as const })));
+      }
+      if (active) setRemoteTargets(options);
+    }
+    void loadTargets().catch(() => undefined).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const targets = useMemo<ScopeTargetOption[]>(() => [
+    ...folders.map((folder) => ({ id: folder.id, label: folder.name, type: "FOLDER" as const })),
+    ...chats.map((chat) => ({ id: chat.id, label: chat.title, type: "CHAT" as const })),
+    ...remoteTargets
+  ].filter((target, index, all) =>
+    all.findIndex((candidate) => candidate.type === target.type && candidate.id === target.id) === index
+  ), [chats, folders, remoteTargets]);
+  const current = encodedScope(value);
+  const currentAvailable = value.type === "GLOBAL_USER" || targets.some(
+    (target) => encodedScope({ targetId: target.id, type: target.type }) === current
+  );
+
+  return (
+    <div>
+      <label className="text-sm font-semibold text-ink" htmlFor={id}>
+        {t(locale, "manager.scope")}
+      </label>
+      <select
+        className={`mt-2 min-h-control w-full rounded-control border border-trace-subtle bg-control-surface px-3 text-sm text-ink ${coarsePointerTarget} ${focusRing}`}
+        id={id}
+        value={current}
+        onChange={(event) => {
+          const scope = decodedScope(event.target.value);
+          if (scope) onChange(scope);
+        }}
+      >
+        <option value="GLOBAL_USER">{t(locale, "manager.global")}</option>
+        {!currentAvailable ? (
+          <option value={current} disabled>{ru ? "Источник или область недоступны" : "Source or scope unavailable"}</option>
+        ) : null}
+        {folders.length ? (
+          <optgroup label={ru ? "Папки" : "Folders"}>
+            {targets.filter((target) => target.type === "FOLDER").map((target) => (
+              <option key={`folder:${target.id}`} value={encodedScope({ targetId: target.id, type: "FOLDER" })}>{target.label}</option>
+            ))}
+          </optgroup>
+        ) : null}
+        {targets.some((target) => target.type === "ASSISTANT") ? (
+          <optgroup label={ru ? "Ассистенты" : "Assistants"}>
+            {targets.filter((target) => target.type === "ASSISTANT").map((target) => (
+              <option key={`assistant:${target.id}`} value={encodedScope({ targetId: target.id, type: "ASSISTANT" })}>{target.label}</option>
+            ))}
+          </optgroup>
+        ) : null}
+        {targets.some((target) => target.type === "CHAT") ? (
+          <optgroup label={ru ? "Чаты" : "Chats"}>
+            {targets.filter((target) => target.type === "CHAT").map((target) => (
+              <option key={`chat:${target.id}`} value={encodedScope({ targetId: target.id, type: "CHAT" })}>
+                {target.label}{target.archived ? (ru ? " (архив)" : " (archived)") : ""}
+              </option>
+            ))}
+          </optgroup>
+        ) : null}
+      </select>
+      <p className="mt-1 text-xs leading-5 text-ink-muted">
+        {loading
+          ? (ru ? "Загрузка доступных областей…" : "Loading available scopes…")
+          : (ru ? "Область определяет, где это воспоминание доступно." : "Scope controls where this memory is available.")}
+      </p>
+    </div>
+  );
+}
+
 function MemoryListPane({ locale }: { locale: MemoryUiLocale }) {
   const deletionStatus = useMemoryManagerStore((state) => state.deletionStatus);
+  const factStateFilter = useMemoryManagerStore((state) => state.factStateFilter);
   const listError = useMemoryManagerStore((state) => state.listError);
   const listLoadState = useMemoryManagerStore((state) => state.listLoadState);
   const memories = useMemoryManagerStore((state) => state.memories);
@@ -193,6 +353,26 @@ function MemoryListPane({ locale }: { locale: MemoryUiLocale }) {
           </button>
         </div>
       </form>
+
+      <div className="flex gap-1 border-b border-trace-subtle px-3 py-2" role="group" aria-label={locale === "RU" ? "Состояние воспоминаний" : "Memory state"}>
+        {(["ACTIVE", "ORPHANED"] as const).map((state) => (
+          <button
+            className={`min-h-control rounded-control px-3 text-xs font-semibold ${
+              factStateFilter === state
+                ? "bg-control-selected text-proof"
+                : "text-ink-secondary hover:bg-control-hover hover:text-ink"
+            } ${focusRing}`}
+            key={state}
+            type="button"
+            aria-pressed={factStateFilter === state}
+            onClick={() => void changeMemoryFactState(state).catch(() => undefined)}
+          >
+            {state === "ACTIVE"
+              ? (locale === "RU" ? "Активные" : "Active")
+              : (locale === "RU" ? "Недоступная область" : "Unavailable scope")}
+          </button>
+        ))}
+      </div>
 
       <div aria-live="polite" aria-busy={listLoadState === "loading"}>
         {listLoadState === "loading" && memories.length === 0 ? (
@@ -403,21 +583,31 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
           <h3 className="text-base font-semibold text-ink" data-memory-screen-heading tabIndex={-1}>
             {t(locale, "manager.detail")}
           </h3>
-          <p className="mt-1 text-xs text-ink-muted">{t(locale, "manager.explicit")} · {t(locale, "manager.global")}</p>
+          <p className="mt-1 text-xs text-ink-muted">{t(locale, "manager.explicit")} · {scopeLabel(locale, memory.scope)}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
-            className={secondaryButton}
-            disabled={mutationState !== null}
-            type="button"
-            onClick={() => void toggleMemoryPinned().catch(() => undefined)}
-          >
-            {memory.pinned ? <PinOff className="size-4" aria-hidden="true" /> : <Pin className="size-4" aria-hidden="true" />}
-            {memory.pinned ? t(locale, "manager.unpin") : t(locale, "manager.pin")}
-          </button>
-          <button className={secondaryButton} disabled={mutationState !== null} onClick={beginEditMemory} type="button">
-            {t(locale, "manager.edit")}
-          </button>
+          {memory.factState === "ACTIVE" ? (
+            <>
+              <button
+                className={secondaryButton}
+                disabled={mutationState !== null}
+                type="button"
+                onClick={() => void toggleMemoryPinned().catch(() => undefined)}
+              >
+                {memory.pinned ? <PinOff className="size-4" aria-hidden="true" /> : <Pin className="size-4" aria-hidden="true" />}
+                {memory.pinned ? t(locale, "manager.unpin") : t(locale, "manager.pin")}
+              </button>
+              <button className={secondaryButton} disabled={mutationState !== null} onClick={beginEditMemory} type="button">
+                {t(locale, "manager.edit")}
+              </button>
+            </>
+          ) : null}
+          {(memory.actionVersionId ?? memory.currentVersionId) ? (
+            <button className={secondaryButton} disabled={mutationState !== null} onClick={beginMoveMemory} type="button">
+              <FolderInput className="size-4" aria-hidden="true" />
+              {locale === "RU" ? "Переместить область" : "Move scope"}
+            </button>
+          ) : null}
           <button
             className={`inline-flex min-h-touch items-center gap-2 rounded-control px-3 text-sm font-semibold text-critical hover:bg-critical/10 disabled:opacity-60 sm:min-h-control ${coarsePointerTarget} ${focusRing}`}
             disabled={mutationState !== null}
@@ -430,12 +620,17 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
         </div>
       </div>
       {errorText ? <p className="mt-3 text-sm text-critical" role="alert">{errorText}</p> : null}
+      {memory.factState === "ORPHANED" ? (
+        <div className="mt-3 border-y border-caution/35 bg-caution/10 px-3 py-2 text-sm leading-6 text-ink-secondary" role="status">
+          {locale === "RU" ? "Источник или область недоступны." : "Source or scope unavailable."}
+        </div>
+      ) : null}
       <p className="mt-5 whitespace-pre-wrap border-y border-trace-subtle bg-answer-paper px-3 py-4 text-base leading-7 text-ink">
         {memory.displayText}
       </p>
       <dl className="mt-3 divide-y divide-trace-subtle">
         <MetadataRow label={t(locale, "manager.authority")}>{t(locale, "manager.explicit")}</MetadataRow>
-        <MetadataRow label={t(locale, "manager.scope")}>{t(locale, "manager.global")}</MetadataRow>
+        <MetadataRow label={t(locale, "manager.scope")}>{scopeLabel(locale, memory.scope)}</MetadataRow>
         <MetadataRow label={t(locale, "manager.state")}>{memoryFactStateLabel(locale, memory.factState)}</MetadataRow>
         <MetadataRow label={t(locale, "manager.index")}>{indexingLabel(locale, memory.indexingState)}</MetadataRow>
         <MetadataRow label={t(locale, "manager.category")}><code className="font-mono text-xs">{memory.category}</code></MetadataRow>
@@ -448,7 +643,7 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
         <MetadataRow label={t(locale, "manager.lastUsed")}>{formatDate(locale, memory.lastUsedAt)}</MetadataRow>
         <MetadataRow label={t(locale, "manager.validity")}>{validity}</MetadataRow>
         <MetadataRow label={t(locale, "manager.currentVersion")}>
-          <code className="break-all font-mono text-xs">{memory.currentVersionId ?? t(locale, "manager.notSet")}</code>
+          <code className="break-all font-mono text-xs">{memory.currentVersionId ?? memory.actionVersionId ?? t(locale, "manager.notSet")}</code>
         </MetadataRow>
       </dl>
       <MemoryEvidence locale={locale} memory={memory} />
@@ -556,6 +751,14 @@ function MemoryForm({ locale, screen, useMemoryFacts }: {
             <p className="mt-1 text-xs leading-5 text-ink-muted" id="memory-modality-help">{t(locale, "manager.modalityHelp")}</p>
           </div>
         </div>
+        {creating ? (
+          <MemoryScopePicker
+            id="memory-scope"
+            locale={locale}
+            value={draft.scope}
+            onChange={(scope) => setDraft({ scope })}
+          />
+        ) : null}
         <div className="flex flex-wrap justify-end gap-2 border-t border-trace-subtle pt-4">
           <button className={secondaryButton} disabled={mutationState !== null} onClick={cancelMemoryDraft} type="button">
             {t(locale, "manager.cancel")}
@@ -564,6 +767,60 @@ function MemoryForm({ locale, screen, useMemoryFacts }: {
             {mutationState === "saving"
               ? t(locale, "manager.saving")
               : creating ? t(locale, "manager.saveNew") : t(locale, "manager.saveChanges")}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function MoveMemoryScope({ locale }: { locale: MemoryUiLocale }) {
+  const memory = useMemoryManagerStore((state) => state.activeMemory);
+  const draft = useMemoryManagerStore((state) => state.draft);
+  const mutationError = useMemoryManagerStore((state) => state.mutationError);
+  const mutationState = useMemoryManagerStore((state) => state.mutationState);
+  const setDraft = useMemoryManagerStore((state) => state.setDraft);
+  if (!memory) return null;
+  const unchanged = encodedScope(memory.scope) === encodedScope(draft.scope);
+  return (
+    <div>
+      <ScreenBack locale={locale} onClick={cancelMemoryDraft} />
+      <FolderInput className="mt-2 size-6 text-proof" aria-hidden="true" />
+      <h3 className="mt-3 text-base font-semibold text-ink" data-memory-screen-heading tabIndex={-1}>
+        {locale === "RU" ? "Переместить область воспоминания" : "Move memory scope"}
+      </h3>
+      <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-secondary">
+        {locale === "RU"
+          ? "Создаёт новую активную запись в выбранной области; прежняя запись остаётся историческим свидетельством перемещения."
+          : "Creates a new active record in the selected scope; the prior record remains as historical move evidence."}
+      </p>
+      {memory.factState === "ORPHANED" ? (
+        <p className="mt-3 border-y border-caution/35 bg-caution/10 px-3 py-2 text-sm text-ink-secondary">
+          {locale === "RU" ? "Источник или область недоступны. Выберите доступную область для восстановления." : "Source or scope unavailable. Choose an available scope to repair it."}
+        </p>
+      ) : null}
+      {mutationError ? <p className="mt-3 text-sm text-critical" role="alert">{mutationErrorText(locale, mutationError)}</p> : null}
+      <form
+        className="mt-5 space-y-5"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!unchanged) void moveMemoryScope().catch(() => undefined);
+        }}
+      >
+        <MemoryScopePicker
+          id="memory-move-scope"
+          locale={locale}
+          value={draft.scope}
+          onChange={(scope) => setDraft({ scope })}
+        />
+        <div className="flex flex-wrap justify-end gap-2 border-t border-trace-subtle pt-4">
+          <button className={secondaryButton} disabled={mutationState !== null} onClick={cancelMemoryDraft} type="button">
+            {t(locale, "manager.cancel")}
+          </button>
+          <button className={primaryButton} disabled={mutationState !== null || unchanged} type="submit">
+            {mutationState === "moving"
+              ? (locale === "RU" ? "Перемещение…" : "Moving…")
+              : (locale === "RU" ? "Переместить" : "Move")}
           </button>
         </div>
       </form>
@@ -704,6 +961,7 @@ function DetailPane({ locale, screen, useMemoryFacts }: {
     return <MemoryForm locale={locale} screen={screen} useMemoryFacts={useMemoryFacts} />;
   }
   if (screen === "forget") return <ForgetMemory locale={locale} />;
+  if (screen === "move") return <MoveMemoryScope locale={locale} />;
   if (screen === "delete") return <DeleteMemories locale={locale} />;
   return <MemoryDetail locale={locale} />;
 }

@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   beginCreateMemory,
   beginDeleteExplicitMemories,
+  beginForgetMemory,
+  beginMoveMemory,
   confirmDeleteExplicitMemories,
+  confirmForgetMemory,
+  moveMemoryScope,
   refreshMemoryDeletionStatus,
   resetMemoryManagerStoreForTest,
   saveMemoryChanges,
@@ -119,6 +123,7 @@ describe("Memory manager store", () => {
       draft: {
         category: "preference",
         modality: "PREFERENCE",
+        scope: { type: "GLOBAL_USER" },
         statement: "My unsaved exact draft"
       },
       draftDirty: true,
@@ -134,6 +139,124 @@ describe("Memory manager store", () => {
       draftDirty: true,
       draftStale: true,
       screen: "edit"
+    });
+  });
+
+  it("moves an ORPHANED fact append-only with its exact action version", async () => {
+    const orphaned = memorySummaryFixture({
+      actionVersionId: "memory-version-orphaned",
+      currentVersionId: null,
+      factState: "ORPHANED",
+      scope: { targetId: "chat-gone", type: "CHAT" },
+      versionState: "ORPHANED"
+    });
+    const moved = memorySummaryFixture({
+      actionVersionId: "memory-version-moved",
+      currentVersionId: "memory-version-moved",
+      id: "memory-fact-moved",
+      scope: { targetId: "folder-live", type: "FOLDER" }
+    });
+    const calls: Array<{ body: Record<string, unknown>; path: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      calls.push({ body, path });
+      if (path === "/api/me/memory/mutation-authorizations") {
+        return json({
+          expiresAt: "2026-08-10T08:05:00.000Z",
+          mutationAuthorizationId: "memory-authorization-move"
+        }, 201);
+      }
+      if (path === `/api/me/memories/${orphaned.id}` && init?.method === "PATCH") {
+        return json({ memory: moved });
+      }
+      if (path.endsWith("/evidence")) return json(memoryEvidenceFixture());
+      if (path.startsWith("/api/me/memories?")) return json({ memories: [], nextCursor: null });
+      throw new Error(`unexpected request: ${path}`);
+    }));
+    useMemoryManagerStore.setState({
+      activeMemory: orphaned,
+      detailLoadState: "ready",
+      memories: [orphaned],
+      screen: "detail"
+    });
+
+    beginMoveMemory();
+    useMemoryManagerStore.getState().setDraft({
+      scope: { targetId: "folder-live", type: "FOLDER" }
+    });
+    await moveMemoryScope();
+
+    expect(calls[0]?.body).toMatchObject({
+      action: "MOVE_SCOPE",
+      expectedTargetVersionId: "memory-version-orphaned",
+      targetFactId: orphaned.id
+    });
+    expect(calls[1]).toEqual({
+      body: {
+        expectedVersionId: "memory-version-orphaned",
+        mutationAuthorizationId: "memory-authorization-move",
+        scope: { targetId: "folder-live", type: "FOLDER" }
+      },
+      path: `/api/me/memories/${orphaned.id}`
+    });
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      activeMemory: moved,
+      draftDirty: false,
+      memories: [moved],
+      notice: "saved",
+      screen: "detail"
+    });
+  });
+
+  it("forgets an ORPHANED fact with its exact non-current action version", async () => {
+    const orphaned = memorySummaryFixture({
+      actionVersionId: "memory-version-orphaned",
+      currentVersionId: null,
+      factState: "ORPHANED",
+      scope: { targetId: "assistant-gone", type: "ASSISTANT" },
+      versionState: "ORPHANED"
+    });
+    const forgotten = memorySummaryFixture({
+      actionVersionId: null,
+      currentVersionId: null,
+      factState: "FORGOTTEN",
+      versionState: "FORGOTTEN"
+    });
+    const calls: Array<{ body: Record<string, unknown>; path: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      calls.push({ body, path });
+      if (path === "/api/me/memory/mutation-authorizations") {
+        return json({
+          expiresAt: "2026-08-10T08:05:00.000Z",
+          mutationAuthorizationId: "memory-authorization-forget"
+        }, 201);
+      }
+      if (path.endsWith("/forget")) return json({ memory: forgotten });
+      if (path.startsWith("/api/me/memories?")) return json({ memories: [], nextCursor: null });
+      throw new Error(`unexpected request: ${path}`);
+    }));
+    useMemoryManagerStore.setState({ activeMemory: orphaned, memories: [orphaned], screen: "detail" });
+
+    beginForgetMemory();
+    await confirmForgetMemory();
+
+    expect(calls[0]?.body).toMatchObject({
+      action: "FORGET",
+      expectedTargetVersionId: "memory-version-orphaned",
+      targetFactId: orphaned.id
+    });
+    expect(calls[1]?.body).toEqual({
+      expectedVersionId: "memory-version-orphaned",
+      mutationAuthorizationId: "memory-authorization-forget"
+    });
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      activeMemory: null,
+      memories: [],
+      notice: "forgotten",
+      screen: "list"
     });
   });
 

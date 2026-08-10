@@ -1,6 +1,7 @@
 "use client";
 
 import { CommandPalette } from "@/components/command-palette/CommandPalette";
+import { ArchivedChatsDialog } from "@/components/app-shell/ArchivedChatsDialog";
 import {
   ChatDeleteConfirmationDialog,
   FolderDeleteConfirmationDialog,
@@ -638,6 +639,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     settingsState.open ||
     Boolean(libraryView) ||
     Boolean(knowledgeView) ||
+    workspace.archived.open ||
     palette.open ||
     Boolean(deleteChatConfirmation) ||
     Boolean(deleteFolderConfirmation) ||
@@ -807,6 +809,7 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
               detailsOpen={inspectorMode !== "closed"}
               newChatDisabled={!workspace.pane.state.workspaceReady || workspace.pane.state.creatingChat}
               pipeline={pipeline}
+              shareAvailable={composer.memory.mode !== "TEMPORARY"}
               onCopyThread={() => void copyVisibleThread()}
               onOpenDetails={() => {
                 if (inspectorMode === "closed") {
@@ -1013,9 +1016,17 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
         />
       ) : null}
 
+      {workspace.archived.open ? (
+        <ArchivedChatsDialog
+          locale={composer.memory.locale}
+          onRestored={workspace.archived.onRestored}
+        />
+      ) : null}
+
       {deleteChatConfirmation ? (
         <ChatDeleteConfirmationDialog
           chatTitle={deleteChatConfirmation.title}
+          locale={composer.memory.locale}
           onCancel={cancelDeleteChat}
           onConfirm={confirmDeleteChat}
         />

@@ -155,7 +155,8 @@ describe("Memory settings service", () => {
       automaticLearning: false,
       explicitMemory: true,
       historyRecall: false,
-      russianQualified: true
+      russianQualified: true,
+      temporaryChats: true
     });
   });
 
@@ -165,7 +166,8 @@ describe("Memory settings service", () => {
         automaticLearning: false,
         explicitMemory: true,
         historyRecall: false,
-        russianQualified: true
+        russianQualified: true,
+        temporaryChats: true
       },
       repository: repository(),
       resolveCurrentUtilityPolicy: async () => policy()
@@ -176,7 +178,8 @@ describe("Memory settings service", () => {
         automaticLearning: false,
         explicitMemory: true,
         historyRecall: false,
-        russianQualified: true
+        russianQualified: true,
+        temporaryChats: true
       },
       egress: {
         acceptedAt: NOW.toISOString(),
@@ -216,7 +219,8 @@ describe("Memory settings service", () => {
         automaticLearning: false,
         explicitMemory: true,
         historyRecall: false,
-        russianQualified: true
+        russianQualified: true,
+        temporaryChats: true
       },
       repository: repository(),
       resolveCurrentUtilityPolicy: async () => policy({

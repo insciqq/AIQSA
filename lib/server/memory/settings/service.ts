@@ -19,7 +19,8 @@ export const DEFAULT_MEMORY_SETTINGS_CAPABILITIES: MemorySettingsCapabilities =
     automaticLearning: false,
     explicitMemory: true,
     historyRecall: false,
-    russianQualified: true
+    russianQualified: true,
+    temporaryChats: true
   });
 
 export type MemorySettingsRepository = Readonly<{

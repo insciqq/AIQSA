@@ -4,11 +4,13 @@ import { attachmentRetryAvailable } from "@/components/app-shell/attachmentLifec
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import {
   chatIdFromComposerSessionKey,
+  composerSessionModeFromKey,
   folderIdFromComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore,
   type ComposerSessionKey
 } from "@/components/app-shell/composerSessionStore";
+import { loadChatMemoryState } from "@/components/app-shell/chatLifecycleApi";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
 import { editMessageBranchAction } from "@/components/app-shell/messageEditAction";
 import { shellFetch } from "@/components/app-shell/shellApi";
@@ -40,6 +42,7 @@ import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import type { ComposerKnowledgePlanSource } from "@/components/app-shell/composerControlStore";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
 
 type MutableRef<T> = { current: T };
 
@@ -219,6 +222,47 @@ export function useMessageRunActions({
       return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
     } catch {
       return undefined;
+    }
+  }
+
+  function temporaryAdmissionPayload(
+    sessionKey: ComposerSessionKey,
+    chatId: string | null
+  ): Readonly<{
+    chatMode: "TEMPORARY";
+    temporaryRetentionPolicyVersion: typeof MEMORY_TEMPORARY_RETENTION_POLICY_VERSION;
+  }> | Record<string, never> {
+    const pending = chatId
+      ? useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId)
+          ?.pendingInitialMemoryMode === "TEMPORARY"
+      : composerSessionModeFromKey(sessionKey) === "TEMPORARY";
+    return pending
+      ? {
+          chatMode: "TEMPORARY",
+          temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+        }
+      : {};
+  }
+
+  async function reconcileTemporaryAdmission(chatId: string): Promise<void> {
+    try {
+      const response = await loadChatMemoryState(chatId);
+      useWorkspaceStore.getState().updateChats((chats) => chats.map((chat) =>
+        chat.id === chatId
+          ? {
+              ...chat,
+              memoryMode: response.chat.mode,
+              memorySourceRevision: response.chat.sourceRevision,
+              pendingInitialMemoryMode: response.chat.mode === "TEMPORARY"
+                ? undefined
+                : chat.pendingInitialMemoryMode,
+              temporaryRetentionDeadline: response.chat.temporaryRetentionDeadline
+            }
+          : chat
+      ));
+    } catch {
+      // Keep the pending intent on ambiguous transport failures. A retry then
+      // repeats the exact reviewed admission payload instead of silently downgrading.
     }
   }
 
@@ -538,6 +582,15 @@ export function useMessageRunActions({
       return;
     }
     const sourceComposerChatId = chatIdFromComposerSessionKey(sourceSessionKey);
+    const initialMemoryPayload = temporaryAdmissionPayload(
+      sourceSessionKey,
+      sourceComposerChatId
+    );
+    const temporaryRun = Object.hasOwn(initialMemoryPayload, "chatMode") || Boolean(
+      sourceComposerChatId && useWorkspaceStore.getState().chats.find(
+        (chat) => chat.id === sourceComposerChatId
+      )?.memoryMode === "TEMPORARY"
+    );
     const startedFromBlankWorkspace = sourceComposerChatId === null;
     if (sourceComposerChatId !== activeChatId) {
       return;
@@ -701,6 +754,7 @@ export function useMessageRunActions({
                 blocks: contentBlocks
               },
               expectedActiveLeafId: parentLeafForSend,
+              ...initialMemoryPayload,
               ...sendControlPayload
             }),
             headers: {
@@ -737,6 +791,9 @@ export function useMessageRunActions({
       });
       if (result.failureCode === "memory_intent_confirmation_required") {
         await showMemoryTargetSelection();
+      }
+      if (temporaryRun) {
+        await reconcileTemporaryAdmission(chatIdForSend);
       }
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
       sendFailureMessage = result.failureMessage ?? null;
@@ -785,6 +842,15 @@ export function useMessageRunActions({
       return;
     }
     const sourceComposerChatId = chatIdFromComposerSessionKey(sourceSessionKey);
+    const initialMemoryPayload = temporaryAdmissionPayload(
+      sourceSessionKey,
+      sourceComposerChatId
+    );
+    const temporaryRun = Object.hasOwn(initialMemoryPayload, "chatMode") || Boolean(
+      sourceComposerChatId && useWorkspaceStore.getState().chats.find(
+        (chat) => chat.id === sourceComposerChatId
+      )?.memoryMode === "TEMPORARY"
+    );
     if (sourceComposerChatId !== activeChatId) {
       return;
     }
@@ -909,6 +975,7 @@ export function useMessageRunActions({
             body: JSON.stringify({
               content: { blocks: contentBlocks },
               expectedActiveLeafId: parentLeafForSend,
+              ...initialMemoryPayload,
               ...starterControlPayload
             }),
             headers: { "content-type": "application/json" },
@@ -933,6 +1000,9 @@ export function useMessageRunActions({
       });
       if (result.failureCode === "memory_intent_confirmation_required") {
         await showMemoryTargetSelection();
+      }
+      if (temporaryRun) {
+        await reconcileTemporaryAdmission(chatIdForSend);
       }
     } catch (error) {
       setNotice({ kind: "error", text: errorMessage(error) });

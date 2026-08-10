@@ -10,6 +10,7 @@ import {
   memoryEvidenceFixture,
   memorySummaryFixture
 } from "./memoryTestFixtures";
+import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -19,10 +20,14 @@ function json(value: unknown, status = 200): Response {
 }
 
 describe("ManageMemories", () => {
-  beforeEach(() => resetMemoryManagerStoreForTest());
+  beforeEach(() => {
+    resetMemoryManagerStoreForTest();
+    resetWorkspaceStoreForTest();
+  });
   afterEach(() => {
     cleanup();
     resetMemoryManagerStoreForTest();
+    resetWorkspaceStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -123,5 +128,114 @@ describe("ManageMemories", () => {
     const manager = screen.getByTestId("manage-memories");
     expect(manager.querySelectorAll(".overflow-y-auto")).toHaveLength(0);
     expect(within(manager).getByRole("heading", { name: "Управление памятью" })).toBeVisible();
+  });
+
+  it("creates with a reachable Global, folder, chat, and archived-chat scope picker", async () => {
+    useMemoryManagerStore.setState({ listLoadState: "ready" });
+    useWorkspaceStore.setState({
+      chats: [{
+        activeLeafMessageId: null,
+        createdAt: "2026-08-10T08:00:00.000Z",
+        defaultModelId: "model",
+        defaultProvider: "provider",
+        folderId: null,
+        id: "chat-live",
+        memoryMode: "NORMAL",
+        messageCount: 1,
+        title: "Live chat",
+        updatedAt: "2026-08-10T08:00:00.000Z"
+      }],
+      folders: [{
+        id: "folder-live",
+        name: "Research",
+        parentId: null,
+        projectMemory: "",
+        sortOrder: 0
+      }]
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/me/assistants") {
+        return json({
+          assistants: [],
+          publishableGroups: [],
+          viewer: { canPublishInstallation: false }
+        });
+      }
+      if (String(input) === "/api/chats/archived") {
+        return json({
+          chats: [{
+            activeLeafMessageId: "message-1",
+            archived: true,
+            createdAt: "2026-08-10T08:00:00.000Z",
+            defaultKnowledgePlan: null,
+            defaultModelId: null,
+            defaultProvider: null,
+            folderId: null,
+            id: "chat-archived",
+            memoryMode: "NORMAL",
+            messageCount: 1,
+            pinned: false,
+            sourceRevision: 2,
+            title: "Archived chat",
+            updatedAt: "2026-08-10T08:00:00.000Z"
+          }],
+          nextCursor: null
+        });
+      }
+      throw new Error(`unexpected request: ${String(input)}`);
+    }));
+    render(<ManageMemories locale="EN" onBack={vi.fn()} useMemoryFacts />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New memory" }));
+    const scope = screen.getByRole("combobox", { name: "Scope" });
+    expect(scope).toHaveValue("GLOBAL_USER");
+    expect(await screen.findByRole("option", { name: "Archived chat (archived)" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Research" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Live chat" })).toBeVisible();
+
+    fireEvent.change(scope, { target: { value: "FOLDER:folder-live" } });
+    expect(useMemoryManagerStore.getState().draft.scope).toEqual({
+      targetId: "folder-live",
+      type: "FOLDER"
+    });
+  });
+
+  it("makes ORPHANED scope repair and Forget explicit while hiding ordinary edit controls", async () => {
+    const orphaned = memorySummaryFixture({
+      actionVersionId: "memory-version-orphaned",
+      currentVersionId: null,
+      factState: "ORPHANED",
+      scope: { targetId: "chat-gone", type: "CHAT" },
+      versionState: "ORPHANED"
+    });
+    useMemoryManagerStore.setState({
+      activeMemory: orphaned,
+      detailLoadState: "ready",
+      draft: {
+        category: orphaned.category,
+        modality: orphaned.modality,
+        scope: orphaned.scope,
+        statement: orphaned.displayText ?? ""
+      },
+      listLoadState: "ready",
+      memories: [orphaned],
+      screen: "detail"
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input) === "/api/me/assistants"
+        ? json({ assistants: [], publishableGroups: [], viewer: { canPublishInstallation: false } })
+        : json({ chats: [], nextCursor: null })
+    ));
+    render(<ManageMemories locale="EN" onBack={vi.fn()} useMemoryFacts />);
+
+    expect(screen.getByText("Source or scope unavailable.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pin" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Forget" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Move scope" }));
+
+    expect(await screen.findByRole("heading", { name: "Move memory scope" })).toBeVisible();
+    expect(screen.getByText(/prior record remains as historical move evidence/)).toBeVisible();
+    expect(screen.getByText(/Choose an available scope to repair it/)).toBeVisible();
   });
 });

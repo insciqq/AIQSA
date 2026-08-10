@@ -181,6 +181,14 @@ describe("TopRail", () => {
     expect(screen.getByRole("button", { name: "Open details" })).toBeEnabled();
   });
 
+  it("removes sharing from Temporary conversation controls", () => {
+    renderTopRail({ shareAvailable: false });
+
+    expect(screen.queryByRole("button", { name: "Share anonymously" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Conversation actions" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open details" })).toBeVisible();
+  });
+
   it("marks the compact Workspace entry when its Account footer needs attention", () => {
     const { props, rerender } = renderTopRail({ workspaceAttention: true });
     const workspace = screen.getByRole("button", { name: "Open workspace" });

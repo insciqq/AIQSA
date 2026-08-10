@@ -41,10 +41,15 @@ import { mergeThreadMessages } from "@/components/app-shell/runState";
 import {
   chatIdFromComposerSessionKey,
   composerSessionKey,
+  composerSessionModeFromKey,
   folderIdFromComposerSessionKey,
   type ComposerSessionKey,
   useComposerSessionStore
 } from "@/components/app-shell/composerSessionStore";
+import {
+  archiveChat as archiveChatRequest,
+  loadChatMemoryState
+} from "@/components/app-shell/chatLifecycleApi";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import {
@@ -705,9 +710,42 @@ export function useWorkspaceActions({
         }
 
         const nextChats = body.chats.map(chatSummaryFromApi);
+        const targetActiveChatId = nextActiveChatId ?? storedActiveChatId();
+        let recoveredTemporaryDetail: ChatDetail | null = null;
+        let recoveredTemporarySummary: ChatSummary | null = null;
+        if (targetActiveChatId && !nextChats.some((chat) => chat.id === targetActiveChatId)) {
+          try {
+            const memoryState = await loadChatMemoryState(targetActiveChatId);
+            if (memoryState.chat.mode === "TEMPORARY" && !memoryState.chat.archived) {
+              const detailResponse = await shellFetch(
+                `/api/chats/${encodeURIComponent(targetActiveChatId)}`
+              );
+              if (!detailResponse.ok) {
+                throw new Error(`chat_detail_failed_${detailResponse.status}`);
+              }
+              const wireDetail = chatDetailBodyFromUnknown(await detailResponse.json());
+              if (!wireDetail || wireDetail.id !== targetActiveChatId) {
+                throw new Error("chat_detail_malformed");
+              }
+              recoveredTemporaryDetail = chatDetailFromApi(wireDetail);
+              recoveredTemporarySummary = {
+                ...summaryFromDetail(recoveredTemporaryDetail),
+                memoryMode: "TEMPORARY",
+                memorySourceRevision: memoryState.chat.sourceRevision,
+                temporaryRetentionDeadline: memoryState.chat.temporaryRetentionDeadline
+              };
+            }
+          } catch {
+            // A remembered hidden chat is optional recovery state. Archived,
+            // expired, deleted, or inaccessible targets fall back to a blank workspace.
+          }
+        }
+        const ownedChats = recoveredTemporarySummary
+          ? [...nextChats, recoveredTemporarySummary]
+          : nextChats;
         useWorkspaceStore.getState().setFolders(body.folders);
-        useWorkspaceStore.getState().setChats(sortChatsByFavoriteThenUpdatedAt(nextChats));
-        const nextChatIds = new Set(nextChats.map((chat) => chat.id));
+        useWorkspaceStore.getState().setChats(sortChatsByFavoriteThenUpdatedAt(ownedChats));
+        const nextChatIds = new Set(ownedChats.map((chat) => chat.id));
         const nextFolderIds = new Set(body.folders.map((folder) => folder.id));
         const composerSessionKeys = Object.keys(
           useComposerSessionStore.getState().sessionsByKey
@@ -740,12 +778,14 @@ export function useWorkspaceActions({
         useWorkspaceStore.getState().setWorkspaceError(null);
         useWorkspaceStore.getState().setWorkspaceReady(true);
 
-        const targetActiveChatId = nextActiveChatId ?? storedActiveChatId();
         const activationCatalog = options.catalogOverride ?? useWorkspaceStore.getState().catalog;
 
         if (targetActiveChatId) {
-          const nextActive = nextChats.find((chat) => chat.id === targetActiveChatId);
+          const nextActive = ownedChats.find((chat) => chat.id === targetActiveChatId);
           if (nextActive) {
+            if (recoveredTemporaryDetail?.id === nextActive.id) {
+              cacheChatDetail(recoveredTemporaryDetail);
+            }
             return await activateChat(nextActive, {
               catalogOverride: activationCatalog,
               preserveControls: options.preserveControls,
@@ -806,7 +846,15 @@ export function useWorkspaceActions({
       if (!apiChat) {
         throw new Error("chat_create_malformed");
       }
-      const summary = chatSummaryFromApi(apiChat);
+      const initialMemoryMode = sourceSessionKey
+        ? composerSessionModeFromKey(sourceSessionKey)
+        : "NORMAL";
+      const summary: ChatSummary = {
+        ...chatSummaryFromApi(apiChat),
+        ...(initialMemoryMode === "TEMPORARY"
+          ? { pendingInitialMemoryMode: "TEMPORARY" as const }
+          : {})
+      };
       useWorkspaceStore.getState().upsertChat(summary);
 
       if (sourceSessionKey) {
@@ -875,7 +923,7 @@ export function useWorkspaceActions({
     if (chatHasActiveStream(chat.id)) {
       setNotice({
         kind: "error",
-        text: "Stop the running response before deleting this chat."
+        text: "Stop the running response before archiving this chat."
       });
       return;
     }
@@ -885,13 +933,11 @@ export function useWorkspaceActions({
     }
 
     try {
-      const response = await shellFetch(`/api/chats/${chat.id}`, {
-        method: "DELETE"
-      });
-
-      if (!response.ok) {
-        throw new Error(`chat_delete_failed_${response.status}`);
+      const memoryState = await loadChatMemoryState(chat.id);
+      if (memoryState.chat.mode === "TEMPORARY") {
+        throw new Error("memory_temporary_chat_forbidden");
       }
+      await archiveChatRequest(chat.id, memoryState.chat.sourceRevision);
 
       const nextActive = useWorkspaceStore.getState().chats.find((candidate) => candidate.id !== chat.id) ?? null;
       useWorkspaceStore.getState().updateChats((current) => current.filter((candidate) => candidate.id !== chat.id));
@@ -902,7 +948,7 @@ export function useWorkspaceActions({
       chatMutation.closeActions();
       setNotice({
         kind: "success",
-        text: `Deleted: ${chat.title}`
+        text: `Archived: ${chat.title}`
       });
 
       if (activeChatIdRef.current === chat.id) {

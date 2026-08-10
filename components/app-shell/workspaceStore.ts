@@ -118,10 +118,22 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   },
   upsertChat(chat) {
     set((state) => ({
-      chats: sortChatsByFavoriteThenUpdatedAt([chat, ...state.chats.filter((candidate) => candidate.id !== chat.id)])
+      chats: sortChatsByFavoriteThenUpdatedAt([
+        {
+          ...state.chats.find((candidate) => candidate.id === chat.id),
+          ...chat
+        },
+        ...state.chats.filter((candidate) => candidate.id !== chat.id)
+      ])
     }));
   }
 }));
+
+export function workspaceNavigationChats(chats: readonly WorkspaceChatSummary[]): WorkspaceChatSummary[] {
+  return chats.filter(
+    (chat) => chat.memoryMode !== "TEMPORARY" && chat.pendingInitialMemoryMode !== "TEMPORARY"
+  );
+}
 
 export function resetWorkspaceStoreForTest() {
   useWorkspaceStore.setState({

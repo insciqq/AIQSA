@@ -13,6 +13,8 @@ import {
 } from "@/components/app-shell/composerControlStore";
 import {
   chatIdFromComposerSessionKey,
+  composerSessionKey,
+  composerSessionModeFromKey,
   folderIdFromComposerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
@@ -22,7 +24,10 @@ import {
 import { createFolderActions } from "@/components/app-shell/folderActions";
 import { useMessageRunActions } from "@/components/app-shell/messageRunActions";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
-import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
+import {
+  refreshMemorySettings,
+  useMemorySettingsStore
+} from "@/components/app-shell/memorySettingsStore";
 import { PowerAppShellView } from "@/components/app-shell/PowerAppShellView";
 import type {
   ShellComposerView,
@@ -89,6 +94,16 @@ import { useWorkspaceInteractionController } from "@/components/app-shell/useWor
 import { useWorkspaceActions } from "@/components/app-shell/workspaceActions";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import {
+  openArchivedChats,
+  openArchivedChatPreview,
+  useArchivedChatsStore
+} from "@/components/app-shell/archivedChatsStore";
+import {
+  loadChatMemoryState,
+  patchChatMemoryMode,
+  resolveChatSource
+} from "@/components/app-shell/chatLifecycleApi";
+import {
   selectThreadRenderActiveLeafId,
   selectThreadSnapshot,
   selectThreadVisibleMessages,
@@ -105,6 +120,7 @@ import type {
 } from "@/components/app-shell/types";
 import { decodeCatalogResponse } from "@/lib/contracts/catalog";
 import { decodeChatBranchesResponse } from "@/lib/contracts/chats";
+import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   resolveModelControlDefaults,
@@ -184,7 +200,9 @@ export function PowerAppShell({
   const workspaceReady = useWorkspaceStore((state) => state.workspaceReady);
   const activeChatId = useWorkspaceStore((state) => state.activeChatId);
   const pendingChatFolderId = useWorkspaceStore((state) => state.pendingChatFolderId);
+  const memorySettings = useMemorySettingsStore((state) => state.data);
   const creatingChat = useWorkspaceStore((state) => state.creatingChat);
+  const archivedChatsOpen = useArchivedChatsStore((state) => state.open);
   const activeChatDetailLoading = useWorkspaceStore((state) => state.activeChatDetailLoading);
   const activeChatDetailError = useWorkspaceStore((state) => state.activeChatDetailError);
   const setCatalog = useWorkspaceStore((state) => state.setCatalog);
@@ -313,6 +331,7 @@ export function PowerAppShell({
   }, [openMcpSettings]);
   const activeChatIdRef = useRef<string | null>(null);
   const activeStreamAbortRef = useRef<Map<string, AbortController>>(new Map());
+  const memorySourceMutationIdsRef = useRef(new Set<string>());
   const chatDetailRequestsRef = useRef<Map<string, Promise<ChatDetail | null>>>(new Map());
   const loadingChatDetailIdRef = useRef<string | null>(null);
   const [pendingBranchCheckouts] = useState(
@@ -405,6 +424,30 @@ export function PowerAppShell({
     selectedSearchStrategy,
     visibleMessages
   });
+
+  const memoryLocale = memorySettings?.settings.memoryUiLocale ?? "RU";
+  const composerTemporary = activeChat
+    ? activeChat.memoryMode === "TEMPORARY" ||
+      activeChat.pendingInitialMemoryMode === "TEMPORARY"
+    : composerSessionModeFromKey(activeComposerSessionKey) === "TEMPORARY";
+  const canToggleTemporary = Boolean(memorySettings?.capabilities.temporaryChats) &&
+    !activeChat &&
+    !composerSession.pendingSend &&
+    !activeChatStreaming;
+
+  useEffect(() => {
+    if (!workspaceReady || memorySettings) return;
+    void refreshMemorySettings().catch(() => undefined);
+  }, [memorySettings, workspaceReady]);
+
+  function toggleTemporaryComposer(): void {
+    if (!canToggleTemporary) return;
+    useComposerSessionStore.getState().activateSession(composerSessionKey(
+      null,
+      pendingChatFolderId,
+      composerTemporary ? "NORMAL" : "TEMPORARY"
+    ));
+  }
 
   const attachmentLimitContextsRef = useRef(new Map<string, string>());
 
@@ -1012,6 +1055,60 @@ export function PowerAppShell({
     shareActiveBranch
   } satisfies ShellSessionView;
 
+  async function toggleChatMemorySource(chat: ChatSummary): Promise<void> {
+    if (memorySourceMutationIdsRef.current.has(chat.id)) return;
+    memorySourceMutationIdsRef.current.add(chat.id);
+    try {
+      const [source, settings] = await Promise.all([
+        loadChatMemoryState(chat.id),
+        refreshMemorySettings(true)
+      ]);
+      if (source.chat.mode === "TEMPORARY") {
+        throw new Error("memory_temporary_chat_forbidden");
+      }
+      const mode = source.chat.mode === "EXCLUDED" ? "NORMAL" : "EXCLUDED";
+      const response = await patchChatMemoryMode({
+        chatId: chat.id,
+        expectedChatRevision: source.chat.sourceRevision,
+        mode,
+        settings
+      });
+      useWorkspaceStore.getState().updateChats((current) => current.map((candidate) =>
+        candidate.id === chat.id
+          ? {
+              ...candidate,
+              memoryMode: response.mode,
+              memorySourceRevision: response.sourceRevision
+            }
+          : candidate
+      ));
+      useMemorySettingsStore.setState((current) => current.data
+        ? {
+            data: {
+              ...current.data,
+              settings: {
+                ...current.data.settings,
+                memoryGeneration: response.memoryGeneration,
+                memoryRevision: response.memoryRevision
+              }
+            }
+          }
+        : {});
+      workspaceInteraction.chatMutation.closeActions();
+      setNotice({
+        kind: "success",
+        text: resolveMemoryCopy(
+          settings.settings.memoryUiLocale,
+          response.mode === "EXCLUDED" ? "exclude.action" : "resume.action"
+        )
+      });
+    } catch (error) {
+      setNotice({ kind: "error", text: errorMessage(error) });
+    } finally {
+      memorySourceMutationIdsRef.current.delete(chat.id);
+    }
+  }
+
   const workspacePaneView = {
     actions: {
       ...workspaceInteraction.paneActions,
@@ -1024,10 +1121,15 @@ export function PowerAppShell({
       exportChat,
       moveChat: updateChatFolder,
       moveFolder: updateFolderParent,
+      openArchivedChats: () => {
+        shellOverlays.mobileWorkspace.close();
+        void openArchivedChats().catch(() => undefined);
+      },
       retry: retryWorkspace,
       saveChatTitle: renameChat,
       saveFolder: renameFolder,
       shareChat,
+      toggleChatMemorySource,
       toggleChatFavorite
     },
     state: {
@@ -1047,6 +1149,12 @@ export function PowerAppShell({
   } satisfies ShellWorkspacePaneView;
 
   const workspaceView = {
+    archived: {
+      onRestored: async (chatId: string) => {
+        await refreshWorkspace(chatId, { preserveControls: true });
+      },
+      open: archivedChatsOpen
+    },
     mobile: {
       close: shellOverlays.mobileWorkspace.close,
       dialogRef: shellOverlays.mobileWorkspace.dialogRef,
@@ -1100,13 +1208,24 @@ export function PowerAppShell({
       knowledgeLibraryActions.openEvidence(knowledgeBaseId);
     },
     openMemorySourceChat: (chatId: string) => {
-      const sourceChat = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
-      if (!sourceChat) {
-        const locale = useMemorySettingsStore.getState().data?.settings.memoryUiLocale ?? "RU";
-        setNotice({ kind: "error", text: memoryUiCopy(locale, "receipt.sourceUnavailable") });
-        return;
-      }
-      void activateChat(sourceChat, { preserveControls: true });
+      void (async () => {
+        try {
+          const resolution = await resolveChatSource(chatId);
+          if (resolution.source.location === "ARCHIVED_PREVIEW") {
+            await openArchivedChatPreview(chatId);
+            return;
+          }
+          const sourceChat = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
+          if (sourceChat) {
+            await activateChat(sourceChat, { preserveControls: true });
+            return;
+          }
+          await refreshWorkspace(chatId, { preserveControls: true });
+        } catch {
+          const locale = useMemorySettingsStore.getState().data?.settings.memoryUiLocale ?? "RU";
+          setNotice({ kind: "error", text: memoryUiCopy(locale, "receipt.sourceUnavailable") });
+        }
+      })();
     },
     retryActiveChatDetail,
     showJumpToLatest,
@@ -1172,6 +1291,17 @@ export function PowerAppShell({
       source: knowledgePlanSource
     },
     maxOutputTokens,
+    memory: {
+      canToggleTemporary,
+      explanation: resolveMemoryCopy(memoryLocale, "temporary.explanation"),
+      externalRetention: resolveMemoryCopy(memoryLocale, "temporary.externalRetention"),
+      label: resolveMemoryCopy(memoryLocale, "temporary.label"),
+      locale: memoryLocale,
+      mode: composerTemporary ? "TEMPORARY" : "NORMAL",
+      retention: resolveMemoryCopy(memoryLocale, "temporary.retention"),
+      retentionDeadline: activeChat?.temporaryRetentionDeadline ?? null,
+      toggleTemporary: toggleTemporaryComposer
+    },
     makeModelDefault,
     notificationSoundEnabled,
     operationError: composerSession.operationError,

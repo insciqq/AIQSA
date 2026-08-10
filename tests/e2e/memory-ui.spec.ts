@@ -83,7 +83,8 @@ async function installMemoryFixture(context: BrowserContext) {
         automaticLearning: false,
         explicitMemory: true,
         historyRecall: false,
-        russianQualified: true
+        russianQualified: true,
+        temporaryChats: true
       },
       egress: {
         acceptedAt: accepted ? now : null,
@@ -377,6 +378,7 @@ test("keeps RU/EN Memory settings, exact CRUD, and durable deletion usable acros
   await manager.getByRole("button", { name: "Clear search" }).click();
 
   await manager.getByRole("button", { name: "New memory" }).click();
+  await expect(manager.getByLabel("Scope")).toHaveValue("GLOBAL_USER");
   await manager.getByLabel("Exact statement").fill("  Всегда начинай с краткого итога.  ");
   await manager.getByLabel("Category").fill("workflow");
   await manager.getByLabel("Kind").selectOption("WORKFLOW");

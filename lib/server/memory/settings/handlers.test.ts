@@ -19,7 +19,8 @@ const response: MemorySettingsResponse = {
     automaticLearning: false,
     explicitMemory: false,
     historyRecall: false,
-    russianQualified: false
+    russianQualified: false,
+    temporaryChats: false
   },
   egress: {
     acceptedAt: null,

@@ -44,6 +44,90 @@ function limitUsage(
 }
 
 describe("Composer", () => {
+  it("keeps the capability-gated Normal and Temporary consequence copy in one composer", () => {
+    const toggleTemporary = vi.fn();
+    const { rerender } = render(
+      <Composer
+        attachments={[]}
+        memory={{
+          canToggleTemporary: true,
+          explanation: "Temporary chats do not use Memory and cannot become sources.",
+          externalRetention: "Provider and tool retention is separate.",
+          label: "Temporary Chat",
+          locale: "EN",
+          mode: "NORMAL",
+          retention: "AIQSA deletes this chat after 24 hours.",
+          retentionDeadline: null,
+          toggleTemporary
+        }}
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        value="Normal draft"
+      />
+    );
+
+    expect(screen.getByTestId("composer-memory-mode")).toHaveAttribute("data-memory-mode", "NORMAL");
+    expect(screen.getByText("Normal chat")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Temporary Chat" }));
+    expect(toggleTemporary).toHaveBeenCalledOnce();
+
+    rerender(
+      <Composer
+        attachments={[]}
+        memory={{
+          canToggleTemporary: true,
+          explanation: "Temporary chats do not use Memory and cannot become sources.",
+          externalRetention: "Provider and tool retention is separate.",
+          label: "Temporary Chat",
+          locale: "EN",
+          mode: "TEMPORARY",
+          retention: "AIQSA deletes this chat after 24 hours.",
+          retentionDeadline: "2026-06-11T00:00:00.000Z",
+          toggleTemporary
+        }}
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        value="Temporary draft"
+      />
+    );
+
+    expect(screen.getByTestId("composer-memory-mode")).toHaveAttribute("data-memory-mode", "TEMPORARY");
+    expect(screen.getByText("Temporary chats do not use Memory and cannot become sources.")).toBeVisible();
+    expect(screen.getByText("AIQSA deletes this chat after 24 hours.")).toBeVisible();
+    expect(screen.getByText("Provider and tool retention is separate.")).toBeVisible();
+    expect(screen.getByTestId("temporary-retention-deadline")).toHaveTextContent("Current deletion deadline:");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Temporary" }));
+    expect(toggleTemporary).toHaveBeenCalledTimes(2);
+  });
+
+  it("hides admission when the Temporary deletion-proof capability is unavailable", () => {
+    render(
+      <Composer
+        attachments={[]}
+        memory={{
+          canToggleTemporary: false,
+          explanation: "Temporary chats do not use Memory.",
+          externalRetention: "External retention is separate.",
+          label: "Temporary Chat",
+          locale: "EN",
+          mode: "NORMAL",
+          retention: "Deleted after 24 hours.",
+          retentionDeadline: null,
+          toggleTemporary: vi.fn()
+        }}
+        onChange={() => undefined}
+        onRemoveAttachment={() => undefined}
+        onSend={() => undefined}
+        value=""
+      />
+    );
+
+    expect(screen.getByText("Normal chat")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Temporary Chat" })).not.toBeInTheDocument();
+  });
+
   it("keeps writing, controls, attachments, and the labeled send action in one composer surface", () => {
     render(
       <Composer

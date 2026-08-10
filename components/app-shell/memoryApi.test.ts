@@ -54,7 +54,6 @@ describe("Memory API client", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       pageSize: 20,
       query: "секретный любимый цвет",
-      scope: { type: "GLOBAL_USER" },
       state: "ACTIVE"
     });
   });

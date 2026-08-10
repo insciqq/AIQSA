@@ -214,6 +214,7 @@ export function TopRail({
   onShare,
   onStartNewChat,
   pipeline,
+  shareAvailable = true,
   workspaceButtonRef,
   workspaceAttention = false
 }: {
@@ -230,6 +231,7 @@ export function TopRail({
   onShare(): void;
   onStartNewChat(): void;
   pipeline: PipelineSnapshot | null;
+  shareAvailable?: boolean;
   workspaceButtonRef?: Ref<HTMLButtonElement>;
   workspaceAttention?: boolean;
 }) {
@@ -317,7 +319,7 @@ export function TopRail({
             aria-label="Conversation controls"
             data-testid="conversation-controls"
           >
-            <button
+            {shareAvailable ? <button
               className={[
                 "inline-flex size-11 shrink-0 items-center justify-center rounded-pill text-ink-muted hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled disabled:opacity-60 min-[1281px]:h-9 min-[1281px]:w-auto min-[1281px]:min-w-9 min-[1281px]:gap-2 min-[1281px]:px-3 min-[1281px]:text-xs min-[1281px]:font-medium min-[1281px]:text-ink-secondary [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",
                 actionFocusClass
@@ -329,7 +331,7 @@ export function TopRail({
             >
               <Share2 className="size-4" aria-hidden="true" />
               <span className="hidden min-[1281px]:inline">Share</span>
-            </button>
+            </button> : null}
             <button
               className={[
                 "inline-flex size-11 shrink-0 items-center justify-center rounded-pill min-[1281px]:h-9 min-[1281px]:w-auto min-[1281px]:min-w-9 min-[1281px]:gap-2 min-[1281px]:px-3 min-[1281px]:text-xs min-[1281px]:font-medium [@media(hover:none)]:!size-11 [@media(pointer:coarse)]:!size-11",

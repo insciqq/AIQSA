@@ -414,6 +414,13 @@ export function createThreadActions({
   }
 
   function shareChat(chat: ChatSummary) {
+    if (chat.memoryMode === "TEMPORARY" || chat.pendingInitialMemoryMode === "TEMPORARY") {
+      setNotice({
+        kind: "error",
+        text: "Temporary Chats cannot be shared."
+      });
+      return;
+    }
     if (!chat.activeLeafMessageId) {
       setNotice({
         kind: "error",

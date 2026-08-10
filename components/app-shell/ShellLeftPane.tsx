@@ -86,6 +86,7 @@ export function ShellLeftPane({
       onMoveChat={(chatId, folderId) => void actions.moveChat(chatId, folderId)}
       onMoveFolder={(folder, folderId) => void actions.moveFolder(folder, folderId)}
       onNewFolderNameChange={actions.changeNewFolderName}
+      onOpenArchivedChats={actions.openArchivedChats}
       onOpenProjectSettings={(folder) => {
         actions.closeMenus();
         window.setTimeout(() => actions.openProjectSettings(folder), 0);
@@ -99,6 +100,7 @@ export function ShellLeftPane({
       onStartSubfolder={actions.startSubfolder}
       onSubfolderNameChange={actions.changeSubfolderName}
       onToggleChatFavorite={(chat) => void actions.toggleChatFavorite(currentChat(chat))}
+      onToggleChatMemorySource={(chat) => void actions.toggleChatMemorySource(currentChat(chat))}
       onToggleFolderCollapsed={actions.toggleFolderCollapsed}
       workspaceToggleRef={workspaceToggleRef}
     />

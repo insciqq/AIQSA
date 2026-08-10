@@ -1626,7 +1626,7 @@ describe("MainThreadPane", () => {
     }
   });
 
-  it("renders the custom chat delete confirmation dialog", () => {
+  it("renders the custom chat archive confirmation dialog", () => {
     const chat: ChatSummary = {
       activeLeafMessageId: null,
       createdAt: "2026-06-10T00:00:00.000Z",
@@ -1649,13 +1649,13 @@ describe("MainThreadPane", () => {
       />
     );
 
-    expect(screen.getByRole("dialog", { name: "Delete chat Planning notes" })).toBeInTheDocument();
-    expect(screen.getByTestId("delete-chat-confirmation")).toHaveTextContent("Planning notes");
+    expect(screen.getByRole("dialog", { name: "Архивировать чат Planning notes" })).toBeInTheDocument();
+    expect(screen.getByTestId("archive-chat-confirmation")).toHaveTextContent("Planning notes");
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
     expect(onCancel).toHaveBeenCalledOnce();
 
-    fireEvent.click(screen.getByRole("button", { name: "Confirm delete chat" }));
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить архивирование" }));
     expect(onConfirm).toHaveBeenCalledOnce();
   });
 

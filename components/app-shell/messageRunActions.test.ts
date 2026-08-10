@@ -1004,6 +1004,120 @@ describe("message run actions", () => {
     expect(actions.resetThreadToLatest).not.toHaveBeenCalled();
   });
 
+  it("sends the exact reviewed Temporary admission only from the keyed first-send draft", async () => {
+    const createdChat = { ...chat(), id: "chat-temporary" };
+    const createChat = vi.fn(async () => createdChat);
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) =>
+      String(url).endsWith("/memory-mode")
+        ? Response.json({
+            chat: {
+              archived: false,
+              chatId: createdChat.id,
+              mode: "TEMPORARY",
+              sourceRevision: 1,
+              temporaryRetentionDeadline: "2026-06-11T00:00:00.000Z",
+              temporaryRetentionPolicyVersion: "temporary-24h-v1",
+              updatedAt: "2026-06-10T00:00:00.000Z"
+            }
+          })
+        : new Response("", { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: null,
+      activeChatId: null,
+      attachments: [],
+      createChat,
+      draft: "Normal draft must stay isolated"
+    });
+    const temporaryKey = composerSessionKey(null, null, "TEMPORARY");
+    useComposerSessionStore.getState().activateSession(temporaryKey);
+    useComposerSessionStore.getState().setDraft("Temporary question");
+
+    await actions.submitComposer();
+
+    expect(createChat).toHaveBeenCalledWith(null, temporaryKey);
+    const post = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/messages"));
+    expect(post).toBeDefined();
+    expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({
+      chatMode: "TEMPORARY",
+      temporaryRetentionPolicyVersion: "temporary-24h-v1"
+    });
+    expect(actions.session(composerSessionKey(null)).draft).toBe("Normal draft must stay isolated");
+  });
+
+  it("preserves and repeats a reviewed Temporary intent after ambiguous admission failure", async () => {
+    const pendingTemporary = {
+      ...chat(),
+      pendingInitialMemoryMode: "TEMPORARY" as const
+    };
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) =>
+      String(url).endsWith("/memory-mode")
+        ? Response.json({ error: "memory_unavailable" }, { status: 503 })
+        : Response.json({ error: "run_rejected" }, { status: 409 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: pendingTemporary,
+      attachments: [],
+      draft: "Temporary retry"
+    });
+
+    await actions.submitComposer();
+    expect(useWorkspaceStore.getState().chats[0]?.pendingInitialMemoryMode).toBe("TEMPORARY");
+    expect(actions.session(composerSessionKey("chat-a")).draft).toBe("Temporary retry");
+    await actions.submitComposer();
+
+    const postBodies = fetchMock.mock.calls
+      .filter(([url]) => String(url).endsWith("/messages"))
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(postBodies).toHaveLength(2);
+    for (const body of postBodies) {
+      expect(body).toMatchObject({
+        chatMode: "TEMPORARY",
+        temporaryRetentionPolicyVersion: "temporary-24h-v1"
+      });
+    }
+  });
+
+  it("omits first-send fields from subsequent Temporary runs", async () => {
+    const existingTemporary = {
+      ...chat(),
+      memoryMode: "TEMPORARY" as const,
+      memorySourceRevision: 2,
+      messageCount: 2,
+      temporaryRetentionDeadline: "2026-06-11T00:00:00.000Z"
+    };
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) =>
+      String(url).endsWith("/memory-mode")
+        ? Response.json({
+            chat: {
+              archived: false,
+              chatId: existingTemporary.id,
+              mode: "TEMPORARY",
+              sourceRevision: 2,
+              temporaryRetentionDeadline: existingTemporary.temporaryRetentionDeadline,
+              temporaryRetentionPolicyVersion: "temporary-24h-v1",
+              updatedAt: existingTemporary.updatedAt
+            }
+          })
+        : new Response("", { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      activeChat: existingTemporary,
+      attachments: [],
+      draft: "Follow-up"
+    });
+
+    await actions.submitComposer();
+
+    const post = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/messages"));
+    const body = JSON.parse(String(post?.[1]?.body));
+    expect(body).not.toHaveProperty("chatMode");
+    expect(body).not.toHaveProperty("temporaryRetentionPolicyVersion");
+  });
+
   it("suppresses persisted MCP tools for a model without tool calling", async () => {
     const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

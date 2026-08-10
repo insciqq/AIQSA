@@ -7,7 +7,7 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 Native Memory is approved. The baseline includes Phase 0 contracts/evaluation,
 Phase 1 persistence/coordination, complete Phase 2 explicit Memory, and the
-implemented Phase 3 source/scoped-target plus backend Temporary lifecycle.
+implemented Phase 3 source, scope, chat UI, and Temporary lifecycle.
 Explicit Saved Memories may
 use owned `GLOBAL_USER`, `FOLDER`, `ASSISTANT`, and non-Temporary `CHAT` scopes.
 Assistant archive pauses its scope without changing identity; target deletion

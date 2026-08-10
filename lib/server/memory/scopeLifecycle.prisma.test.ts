@@ -495,6 +495,8 @@ describe("Memory scoped-target lifecycle", () => {
       })).resolves.toMatchObject({
         memories: expect.arrayContaining([
           expect.objectContaining({
+            actionVersionId: folderMoved.memory.currentVersionId,
+            currentVersionId: null,
             displayText: "Use the folder deployment preference.",
             id: folderMoved.memory.id,
             versionState: "ORPHANED"

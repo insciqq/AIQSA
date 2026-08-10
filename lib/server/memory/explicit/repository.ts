@@ -20,6 +20,7 @@ const DEFAULT_PAGE_SIZE = 20;
 const SEARCH_OFFSET_MAX = 10_000;
 
 type SummaryRow = Readonly<{
+  actionVersionId: string | null;
   category: string;
   createdAt: Date;
   currentVersionId: string | null;
@@ -212,10 +213,14 @@ function summaryFromRow(row: SummaryRow): MemorySummary {
     return memoryPersistenceFailure("memory_counter_contract_invalid");
   }
   const active = row.factState === "ACTIVE";
-  if (active && (!row.currentVersionId || !row.displayText)) {
+  if (
+    (active && (!row.currentVersionId || !row.displayText || !row.actionVersionId)) ||
+    (row.factState === "ORPHANED" && (!row.actionVersionId || !row.displayText))
+  ) {
     return memoryPersistenceFailure("memory_counter_contract_invalid");
   }
   return {
+    actionVersionId: active || row.factState === "ORPHANED" ? row.actionVersionId : null,
     category: row.category,
     createdAt: row.createdAt.toISOString(),
     currentVersionId: active ? row.currentVersionId : null,
@@ -258,6 +263,7 @@ async function summariesByIds(
       scope."scopeType"::text AS "scopeType",
       scope."targetIdSnapshot" AS "scopeTargetIdSnapshot",
       version."displayText",
+      version."id" AS "actionVersionId",
       version."modality",
       version."sourceMode",
       version."sensitivityClass",
@@ -279,7 +285,19 @@ async function summariesByIds(
       FROM "MemoryFactVersion" AS candidate
       WHERE candidate."userId" = fact."userId"
         AND candidate."factId" = fact."id"
-        AND (fact."currentVersionId" IS NULL OR candidate."id" = fact."currentVersionId")
+        AND (
+          (fact."currentVersionId" IS NOT NULL AND candidate."id" = fact."currentVersionId")
+          OR (
+            fact."currentVersionId" IS NULL
+            AND (
+              fact."state" <> 'ORPHANED'::"MemoryFactState"
+              OR (
+                candidate."state" = 'ORPHANED'::"MemoryFactVersionState"
+                AND candidate."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+              )
+            )
+          )
+        )
       ORDER BY candidate."systemFrom" DESC, candidate."id" DESC
       LIMIT 1
     ) AS version ON true

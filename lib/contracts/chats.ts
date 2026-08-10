@@ -20,6 +20,7 @@ import {
 } from "./toolActivity";
 import { decodeKnowledgePlan, type KnowledgePlan } from "./knowledge";
 import {
+  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
   decodeMemoryActionFeedback,
   decodeMemoryReceipt,
   type MemoryActionFeedback,
@@ -170,7 +171,12 @@ export type WorkspaceChatSummary = {
   folderId: string | null;
   id: string;
   messageCount: number;
+  /** Client-owned lifecycle metadata loaded from the private Memory state route. */
+  memoryMode?: MemoryChatMode;
+  memorySourceRevision?: number;
+  pendingInitialMemoryMode?: "TEMPORARY";
   pinned?: boolean;
+  temporaryRetentionDeadline?: string | null;
   title: string;
   updatedAt: string;
 };
@@ -221,7 +227,13 @@ export type ChatMessageWire = {
 
 export type WorkspaceChatSummaryWire = Omit<
   WorkspaceChatSummary,
-  "defaultModelId" | "defaultProvider" | "pinned"
+  | "defaultModelId"
+  | "defaultProvider"
+  | "memoryMode"
+  | "memorySourceRevision"
+  | "pendingInitialMemoryMode"
+  | "pinned"
+  | "temporaryRetentionDeadline"
 > & {
   defaultModelId: string | null;
   defaultProvider: string | null;
@@ -282,6 +294,20 @@ export type ChatLifecycleStateWire = {
 
 export type ChatLifecycleResponseWire = {
   chat: ChatLifecycleStateWire;
+};
+
+export type ChatMemoryStateWire = {
+  archived: boolean;
+  chatId: string;
+  mode: MemoryChatMode;
+  sourceRevision: number;
+  temporaryRetentionDeadline: string | null;
+  temporaryRetentionPolicyVersion: typeof MEMORY_TEMPORARY_RETENTION_POLICY_VERSION | null;
+  updatedAt: string;
+};
+
+export type ChatMemoryStateResponseWire = {
+  chat: ChatMemoryStateWire;
 };
 
 export type ArchivedChatSummaryWire = WorkspaceChatSummaryWire & {
@@ -1169,6 +1195,64 @@ export function decodeChatLifecycleResponse(value: unknown): ChatLifecycleRespon
   if (!isRecord(value) || !hasExactKeys(value, ["chat"])) return null;
   const chat = decodeChatLifecycleState(value.chat);
   return chat ? { chat } : null;
+}
+
+export function decodeChatMemoryStateResponse(
+  value: unknown
+): ChatMemoryStateResponseWire | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["chat"]) || !isRecord(value.chat)) {
+    return null;
+  }
+  const chat = value.chat;
+  if (!hasExactKeys(chat, [
+    "archived",
+    "chatId",
+    "mode",
+    "sourceRevision",
+    "temporaryRetentionDeadline",
+    "temporaryRetentionPolicyVersion",
+    "updatedAt"
+  ])) return null;
+  const chatId = requiredString(chat.chatId);
+  const mode = chat.mode === "NORMAL" || chat.mode === "EXCLUDED" || chat.mode === "TEMPORARY"
+    ? chat.mode
+    : null;
+  const sourceRevision = nonNegativeInteger(chat.sourceRevision);
+  const temporaryRetentionDeadline = chat.temporaryRetentionDeadline === null
+    ? null
+    : isoTimestamp(chat.temporaryRetentionDeadline);
+  const updatedAt = isoTimestamp(chat.updatedAt);
+  if (
+    !chatId ||
+    !mode ||
+    sourceRevision === null ||
+    !Number.isSafeInteger(sourceRevision) ||
+    !updatedAt ||
+    typeof chat.archived !== "boolean"
+  ) return null;
+  if (mode === "TEMPORARY") {
+    if (
+      chat.archived ||
+      chat.temporaryRetentionPolicyVersion !== MEMORY_TEMPORARY_RETENTION_POLICY_VERSION ||
+      !temporaryRetentionDeadline
+    ) return null;
+  } else if (
+    chat.temporaryRetentionDeadline !== null ||
+    chat.temporaryRetentionPolicyVersion !== null
+  ) return null;
+  return {
+    chat: {
+      archived: chat.archived,
+      chatId,
+      mode,
+      sourceRevision,
+      temporaryRetentionDeadline,
+      temporaryRetentionPolicyVersion: mode === "TEMPORARY"
+        ? MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+        : null,
+      updatedAt
+    }
+  };
 }
 
 function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | null {

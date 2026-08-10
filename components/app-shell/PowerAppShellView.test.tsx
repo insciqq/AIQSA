@@ -247,6 +247,17 @@ function baseProps(): PowerAppShellViewProps {
         source: "off"
       },
       maxOutputTokens: "1024",
+      memory: {
+        canToggleTemporary: true,
+        explanation: "Temporary chats do not use Memory.",
+        externalRetention: "External retention is separate.",
+        label: "Temporary Chat",
+        locale: "EN",
+        mode: "NORMAL",
+        retention: "Deleted after 24 hours.",
+        retentionDeadline: null,
+        toggleTemporary: noop
+      },
       notificationSoundEnabled: false,
       operationError: null,
       operationErrorLive: true,
@@ -378,6 +389,10 @@ function baseProps(): PowerAppShellViewProps {
       visibleMessages: []
     },
     workspace: {
+      archived: {
+        onRestored: noop,
+        open: false
+      },
       mobile: {
         close: noop,
         dialogRef: { current: null },
@@ -403,6 +418,7 @@ function baseProps(): PowerAppShellViewProps {
           exportChat: noop,
           moveChat: noop,
           moveFolder: noop,
+          openArchivedChats: noop,
           openProjectSettings: noop,
           retry: noop,
           saveChatTitle: noop,
@@ -413,6 +429,7 @@ function baseProps(): PowerAppShellViewProps {
           startSubfolder: noop,
           toggleChatActions: noop,
           toggleChatFavorite: noop,
+          toggleChatMemorySource: noop,
           toggleFolderCollapsed: noop,
           toggleFolderMenu: noop
         },
@@ -568,6 +585,7 @@ function StatefulWorkspaceView() {
     <PowerAppShellView
       {...props}
       workspace={{
+        archived: props.workspace.archived,
         mobile: {
           ...props.workspace.mobile,
           close: () => setMobileWorkspaceOpen(false),
@@ -1543,7 +1561,7 @@ describe("PowerAppShellView mobile Workspace composition", () => {
     const workspace = screen.getByTestId("workspace-pane-mobile");
     expect(workspace).toHaveAttribute("aria-hidden", "true");
     expect(workspace).toHaveAttribute("inert");
-    expect(screen.getByRole("dialog", { name: "Delete chat Delete me" })).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "Archive chat Delete me" })).toBeVisible();
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
   });
 
@@ -1645,13 +1663,13 @@ describe("PowerAppShellView mobile Workspace composition", () => {
       )
     );
     render(<StatefulConfirmedWorkspaceView />);
-    expect(screen.getByRole("dialog", { name: "Delete chat Mobile delete" })).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "Archive chat Mobile delete" })).toBeVisible();
 
     act(() => {
       viewportListeners.forEach((listener) => listener({ matches: true } as MediaQueryListEvent));
     });
 
-    expect(screen.queryByRole("dialog", { name: "Delete chat Mobile delete" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Archive chat Mobile delete" })).not.toBeInTheDocument();
     expect(screen.getByTestId("workspace-pane-mobile")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByTestId("workspace-pane-mobile")).not.toBeInTheDocument());
   });

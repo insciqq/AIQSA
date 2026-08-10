@@ -15,6 +15,8 @@ import {
   type MemoryEvidenceResponse,
   type MemoryForgetInput,
   type MemoryListResponse,
+  type MemoryFactState,
+  type MemoryScopeSelection,
   type MemoryMutationAuthorizationInput,
   type MemoryMutationAuthorizationResponse,
   type MemoryMutationResponse,
@@ -138,9 +140,17 @@ export async function acceptMemoryDestinations(
 
 export async function listMemories(
   cursor: string | null = null,
+  filters: Readonly<{
+    scope?: MemoryScopeSelection;
+    state?: MemoryFactState;
+  }> = {},
   signal?: AbortSignal
 ): Promise<MemoryListResponse> {
-  const query = new URLSearchParams({ pageSize: "20", scope: "GLOBAL_USER", state: "ACTIVE" });
+  const query = new URLSearchParams({ pageSize: "20", state: filters.state ?? "ACTIVE" });
+  if (filters.scope) {
+    query.set("scope", filters.scope.type);
+    if (filters.scope.type !== "GLOBAL_USER") query.set("targetId", filters.scope.targetId);
+  }
   if (cursor) query.set("cursor", cursor);
   return memoryRequest(
     `/api/me/memories?${query.toString()}`,
@@ -152,6 +162,10 @@ export async function listMemories(
 export async function searchMemories(
   query: string,
   cursor: string | null = null,
+  filters: Readonly<{
+    scope?: MemoryScopeSelection;
+    state?: MemoryFactState;
+  }> = {},
   signal?: AbortSignal
 ): Promise<MemoryListResponse> {
   return memoryRequest(
@@ -161,8 +175,8 @@ export async function searchMemories(
         ...(cursor ? { cursor } : {}),
         pageSize: 20,
         query,
-        scope: { type: "GLOBAL_USER" },
-        state: "ACTIVE"
+        ...(filters.scope ? { scope: filters.scope } : {}),
+        state: filters.state ?? "ACTIVE"
       }),
       method: "POST",
       signal

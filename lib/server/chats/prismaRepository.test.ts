@@ -966,6 +966,19 @@ describe("Prisma chat repository", () => {
         where: { userId }
       });
 
+      await expect(repository.getChatMemoryState({ chatId: chat.id, userId })).resolves.toMatchObject({
+        archived: false,
+        chatId: chat.id,
+        mode: "NORMAL",
+        sourceRevision: 0,
+        temporaryRetentionDeadline: null,
+        temporaryRetentionPolicyVersion: null
+      });
+      await expect(repository.getChatMemoryState({
+        chatId: chat.id,
+        userId: `foreign-${userId}`
+      })).resolves.toBeNull();
+
       await expect(repository.setArchived({
         archived: true,
         chatId: chat.id,
@@ -974,6 +987,11 @@ describe("Prisma chat repository", () => {
       })).resolves.toMatchObject({
         chat: { archived: true, id: chat.id, sourceRevision: 0 },
         kind: "ok"
+      });
+      await expect(repository.getChatMemoryState({ chatId: chat.id, userId })).resolves.toMatchObject({
+        archived: true,
+        mode: "NORMAL",
+        sourceRevision: 0
       });
       await expect(repository.getChat({ chatId: chat.id, userId })).resolves.toBeNull();
       const preview = await repository.getArchivedChat({ chatId: chat.id, userId });

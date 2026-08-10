@@ -7,6 +7,7 @@ import {
   createArchiveChatExplicitHandler,
   createGetArchivedChatHandler,
   createGetArchivedChatMessagesPageHandler,
+  createGetChatMemoryModeHandler,
   createListArchivedChatsHandler,
   createPatchChatMemoryModeHandler,
   createResolveChatSourceHandler,
@@ -65,6 +66,7 @@ function repository(
 ): ChatLifecycleRepository {
   return {
     getArchivedChat: async () => null,
+    getChatMemoryState: async () => null,
     getArchivedMessagesPage: async () => ({ kind: "not_found" }),
     listArchivedChats: async () => ({ chats: [], kind: "ok", nextCursor: null }),
     resolveChatSource: async () => null,
@@ -296,5 +298,40 @@ describe("chat lifecycle handlers", () => {
     expect(blocked.status).toBe(503);
     await expect(blocked.json()).resolves.toEqual({ error: "memory_action_failed" });
     expectPrivate(blocked);
+  });
+
+  it("reads Temporary mode without reading reusable Memory state", async () => {
+    const getChatMemoryState = vi.fn<ChatLifecycleRepository["getChatMemoryState"]>(async () => ({
+      archived: false,
+      chatId: "chat-temp",
+      mode: "TEMPORARY",
+      sourceRevision: 1,
+      temporaryRetentionDeadline: "2026-08-11T08:00:00.000Z",
+      temporaryRetentionPolicyVersion: "temporary-24h-v1",
+      updatedAt
+    }));
+    const response = await createGetChatMemoryModeHandler({
+      repository: repository({ getChatMemoryState }),
+      resolveAuth: auth.resolveAuth
+    })(request("/api/me/chats/chat-temp/memory-mode"), {
+      params: { chatId: "chat-temp" }
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      chat: {
+        archived: false,
+        chatId: "chat-temp",
+        mode: "TEMPORARY",
+        sourceRevision: 1,
+        temporaryRetentionDeadline: "2026-08-11T08:00:00.000Z",
+        temporaryRetentionPolicyVersion: "temporary-24h-v1",
+        updatedAt
+      }
+    });
+    expect(getChatMemoryState).toHaveBeenCalledWith({
+      chatId: "chat-temp",
+      userId: config.bootstrapUserId
+    });
+    expectPrivate(response);
   });
 });

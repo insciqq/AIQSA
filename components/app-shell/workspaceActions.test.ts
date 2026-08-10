@@ -14,7 +14,11 @@ import {
   useThreadStore,
   type ThreadHistoryState
 } from "./threadStore";
-import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
+import {
+  resetWorkspaceStoreForTest,
+  useWorkspaceStore,
+  workspaceNavigationChats
+} from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/chat/Composer";
 import type { Catalog, ChatDetail, ChatSummary, ThreadMessage } from "./types";
 
@@ -82,6 +86,36 @@ function apiChatSummary(summary: ChatSummary) {
     pinned: summary.pinned ?? false,
     title: summary.title,
     updatedAt: summary.updatedAt
+  };
+}
+
+function apiChatMemoryState(
+  summary: ChatSummary,
+  mode: "NORMAL" | "EXCLUDED" | "TEMPORARY" = "NORMAL",
+  sourceRevision = 0
+) {
+  return {
+    chat: {
+      archived: false,
+      chatId: summary.id,
+      mode,
+      sourceRevision,
+      temporaryRetentionDeadline: mode === "TEMPORARY" ? "2026-06-11T00:00:00.000Z" : null,
+      temporaryRetentionPolicyVersion: mode === "TEMPORARY" ? "temporary-24h-v1" : null,
+      updatedAt: summary.updatedAt
+    }
+  };
+}
+
+function apiArchivedChat(summary: ChatSummary, sourceRevision = 1) {
+  return {
+    chat: {
+      archived: true,
+      id: summary.id,
+      memoryMode: "NORMAL",
+      sourceRevision,
+      updatedAt: summary.updatedAt
+    }
   };
 }
 
@@ -374,7 +408,7 @@ describe("workspace actions", () => {
     expect(state.session(blankFolderKey).draft).toBe("Folder draft");
   });
 
-  it("deletes chats with a functional list update so concurrent rows survive", async () => {
+  it("archives chats with a functional list update so concurrent rows survive", async () => {
     const state = useWorkspaceActionsForTest({
       activeChatId: "chat-b",
       attachments: [],
@@ -397,7 +431,11 @@ describe("workspace actions", () => {
       data: { runId: "run-b" },
       type: "run_start"
     });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string | URL | Request) =>
+      String(url).endsWith("/memory-mode")
+        ? Response.json(apiChatMemoryState(state.chatA))
+        : Response.json(apiArchivedChat(state.chatA))
+    ));
 
     await state.actions.deleteChat(state.chatA);
 
@@ -409,7 +447,7 @@ describe("workspace actions", () => {
     expect(useComposerSessionStore.getState().sessionsByKey[composerSessionKey("chat-a")]).toBeUndefined();
   });
 
-  it("blocks deletion of an inactive chat while that chat owns a stream", async () => {
+  it("blocks archiving an inactive chat while that chat owns a stream", async () => {
     const state = useWorkspaceActionsForTest({
       activeChatId: "chat-b",
       activeStreamChatIds: ["chat-a"],
@@ -427,19 +465,22 @@ describe("workspace actions", () => {
     expect(state.chats().map((candidate) => candidate.id)).toEqual(["chat-a", "chat-b"]);
     expect(state.setNotice).toHaveBeenCalledWith({
       kind: "error",
-      text: "Stop the running response before deleting this chat."
+      text: "Stop the running response before archiving this chat."
     });
   });
 
-  it("does not let an older detail response resurrect a deleted chat", async () => {
+  it("does not let an older detail response resurrect an archived chat", async () => {
     const state = useWorkspaceActionsForTest({
       attachments: [],
       draft: ""
     });
     let resolveDetail!: (response: Response) => void;
-    const fetchMock = vi.fn((url: string | URL | Request, init?: RequestInit) => {
-      if (String(url) === "/api/chats/chat-a" && init?.method === "DELETE") {
-        return Promise.resolve(new Response(null, { status: 204 }));
+    const fetchMock = vi.fn((url: string | URL | Request) => {
+      if (String(url).endsWith("/memory-mode")) {
+        return Promise.resolve(Response.json(apiChatMemoryState(state.chatA)));
+      }
+      if (String(url) === "/api/chats/chat-a/archive") {
+        return Promise.resolve(Response.json(apiArchivedChat(state.chatA)));
       }
 
       return new Promise<Response>((resolve) => {
@@ -823,6 +864,26 @@ describe("workspace actions", () => {
     });
     expect(state.setSelectedModelId).not.toHaveBeenCalled();
     expect(state.setSelectedProvider).not.toHaveBeenCalled();
+  });
+
+  it("marks a chat created from a Temporary draft pending and keeps it out of navigation", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    const sourceKey = composerSessionKey(null, "folder-1", "TEMPORARY");
+    useComposerSessionStore.getState().activateSession(sourceKey);
+    useComposerSessionStore.getState().setDraft("Temporary first send");
+    const created = chat({ folderId: "folder-1", id: "chat-temporary", title: "Temporary" });
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ chat: apiChatSummary(created) })));
+
+    await expect(state.actions.createChat("folder-1", sourceKey)).resolves.toMatchObject({
+      id: "chat-temporary",
+      pendingInitialMemoryMode: "TEMPORARY"
+    });
+
+    const stored = useWorkspaceStore.getState().chats.find((candidate) => candidate.id === created.id);
+    expect(stored).toMatchObject({ pendingInitialMemoryMode: "TEMPORARY" });
+    expect(workspaceNavigationChats(useWorkspaceStore.getState().chats))
+      .not.toContainEqual(expect.objectContaining({ id: created.id }));
+    expect(state.session(composerSessionKey(created.id)).draft).toBe("Temporary first send");
   });
 
   it("still applies saved defaults during ordinary chat activation", async () => {
@@ -1716,7 +1777,9 @@ describe("workspace actions", () => {
     });
     let resolveWorkspace: ((response: Response) => void) | undefined;
     const fetchMock = vi.fn(
-      () =>
+      (url: string | URL | Request) => String(url) !== "/api/chats"
+        ? Promise.resolve(Response.json({ error: "memory_not_found" }, { status: 404 }))
+        :
         new Promise<Response>((resolve) => {
           resolveWorkspace = resolve;
         })
@@ -1736,6 +1799,8 @@ describe("workspace actions", () => {
     );
     await Promise.all([first, second]);
 
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
     expect(useWorkspaceStore.getState()).toMatchObject({
       chats: [],
       folders: [],
@@ -1744,6 +1809,56 @@ describe("workspace actions", () => {
       workspaceReady: true
     });
     expect(state.setNotice).not.toHaveBeenCalled();
+  });
+
+  it("recovers the exact remembered Temporary chat without exposing it or pruning its draft", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "Temporary draft" });
+    const temporary = {
+      ...state.chatA,
+      memoryMode: "TEMPORARY" as const,
+      memorySourceRevision: 2,
+      temporaryRetentionDeadline: "2026-06-11T00:00:00.000Z"
+    };
+    useWorkspaceStore.setState({ activeChatId: temporary.id, chats: [temporary, state.chatB] });
+    useComposerSessionStore.getState().activateSession(composerSessionKey(temporary.id));
+    useComposerSessionStore.getState().setDraft("Temporary draft");
+    useThreadStore.getState().replaceThread(temporary.id, {
+      activeLeafId: null,
+      messages: [],
+      sourceUpdatedAt: temporary.updatedAt,
+      usageStats: null
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/chats") {
+        return Response.json({
+          chats: [apiChatSummary(state.chatB)],
+          contentMatches: [],
+          folders: []
+        });
+      }
+      if (path === `/api/me/chats/${temporary.id}/memory-mode`) {
+        return Response.json(apiChatMemoryState(temporary, "TEMPORARY", 2));
+      }
+      if (path === `/api/chats/${temporary.id}`) {
+        return Response.json({ chat: apiChatDetail(temporary, []) });
+      }
+      return Response.json({ error: "unexpected_request" }, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await state.actions.refreshWorkspace(temporary.id, { resumeRuns: false });
+
+    expect(useWorkspaceStore.getState().activeChatId).toBe(temporary.id);
+    expect(state.session(composerSessionKey(temporary.id)).draft).toBe("Temporary draft");
+    expect(useThreadStore.getState().threadsByChatId[temporary.id]).toBeDefined();
+    expect(workspaceNavigationChats(useWorkspaceStore.getState().chats).map((chat) => chat.id))
+      .toEqual([state.chatB.id]);
+    expect(useWorkspaceStore.getState().chats.find((chat) => chat.id === temporary.id))
+      .toMatchObject({
+        memoryMode: "TEMPORARY",
+        temporaryRetentionDeadline: "2026-06-11T00:00:00.000Z"
+      });
   });
 
   it("prunes remotely removed threads and clears a missing active selection", async () => {

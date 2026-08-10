@@ -1,7 +1,12 @@
 import { ComposerOptionPicker } from "@/components/app-shell/ComposerOptionPicker";
+import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
+import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
+import { loadChatMemoryState } from "@/components/app-shell/chatLifecycleApi";
+import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { isImeCompositionEvent } from "@/components/keyboard";
 import type { ChatGroup, ChatSummary, FolderSummary } from "@/components/app-shell/types";
 import {
+  Archive,
   Check,
   ChevronDown,
   ChevronRight,
@@ -74,6 +79,7 @@ type LeftChatPaneProps = {
   onMoveChat(chatId: string, folderId: string | null): void;
   onMoveFolder(folder: FolderSummary, folderId: string | null): void;
   onNewFolderNameChange(value: string): void;
+  onOpenArchivedChats?(): void;
   onOpenProjectSettings(folder: FolderSummary): void;
   onRetryWorkspace(): void;
   onSaveChatTitle(chat: ChatSummary): void;
@@ -84,6 +90,7 @@ type LeftChatPaneProps = {
   onStartSubfolder(folder: FolderSummary): void;
   onSubfolderNameChange(value: string): void;
   onToggleChatFavorite(chat: ChatSummary): void;
+  onToggleChatMemorySource?(chat: ChatSummary): void;
   onToggleFolderCollapsed(folderId: string): void;
   scrollTopRef?: { current: number | undefined };
   subfolderName: string;
@@ -229,6 +236,7 @@ function LeftChatPaneComponent({
   onMoveChat,
   onMoveFolder,
   onNewFolderNameChange,
+  onOpenArchivedChats,
   onOpenProjectSettings,
   onRetryWorkspace,
   onSaveChatTitle,
@@ -239,6 +247,7 @@ function LeftChatPaneComponent({
   onStartSubfolder,
   onSubfolderNameChange,
   onToggleChatFavorite,
+  onToggleChatMemorySource,
   onToggleFolderCollapsed,
   scrollTopRef,
   subfolderName,
@@ -249,6 +258,7 @@ function LeftChatPaneComponent({
   workspaceToggleRef
 }: LeftChatPaneProps) {
   const idPrefix = layout === "mobile" ? "mobile-" : "";
+  const memoryLocale = useMemorySettingsStore((state) => state.data?.settings.memoryUiLocale ?? "RU");
   const touchTarget =
     layout === "mobile"
       ? "min-h-touch"
@@ -284,16 +294,50 @@ function LeftChatPaneComponent({
   const query = chatQuery.trim().toLocaleLowerCase();
   const queryActive = Boolean(query);
   const [folderComposerOpen, setFolderComposerOpen] = useState(false);
+  const [memoryModeLoadingId, setMemoryModeLoadingId] = useState<string | null>(null);
+  const [memoryModeErrorId, setMemoryModeErrorId] = useState<string | null>(null);
   const activeRowRefs = useRef(new Map<string, HTMLDivElement>());
   const folderComposerTriggerRef = useRef<HTMLButtonElement>(null);
   const lastMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const menuSurfaceRefs = useRef(new Map<string, HTMLDivElement>());
+  const memoryModeRequestRef = useRef(0);
   const navigationRef = useRef<HTMLElement>(null);
   const newChatTriggerRef = useRef<HTMLButtonElement>(null);
   const previousMenuKeyRef = useRef<string | null>(null);
   const skipInitialActiveScrollRef = useRef(false);
   const subfolderInputRef = useRef<HTMLInputElement>(null);
   const subfolderTriggerRef = useRef<HTMLButtonElement>(null);
+
+  function toggleChatActions(chat: ChatSummary) {
+    const opening = chatActionId !== chat.id;
+    onChatActionToggle(chat.id);
+    if (!opening || chat.memoryMode) return;
+    const requestId = memoryModeRequestRef.current + 1;
+    memoryModeRequestRef.current = requestId;
+    setMemoryModeLoadingId(chat.id);
+    setMemoryModeErrorId(null);
+    void loadChatMemoryState(chat.id).then(
+      (response) => {
+        useWorkspaceStore.getState().updateChats((current) => current.map((candidate) =>
+          candidate.id === chat.id
+            ? {
+                ...candidate,
+                memoryMode: response.chat.mode,
+                memorySourceRevision: response.chat.sourceRevision,
+                temporaryRetentionDeadline: response.chat.temporaryRetentionDeadline
+              }
+            : candidate
+        ));
+        if (memoryModeRequestRef.current !== requestId) return;
+        setMemoryModeLoadingId(null);
+      },
+      () => {
+        if (memoryModeRequestRef.current !== requestId) return;
+        setMemoryModeLoadingId(null);
+        setMemoryModeErrorId(chat.id);
+      }
+    );
+  }
 
   function cancelSubfolder() {
     onCancelSubfolder();
@@ -656,6 +700,15 @@ function LeftChatPaneComponent({
             </button>
           ) : null}
         </div>
+        <button
+          className={`mt-2 flex ${toolbarTarget} w-full items-center gap-2 rounded-control px-3 text-left text-sm font-medium text-ink-secondary hover:bg-control-hover hover:text-ink disabled:text-ink-disabled ${focusRing}`}
+          type="button"
+          disabled={!workspaceReady}
+          onClick={onOpenArchivedChats}
+        >
+          <Archive className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
+          <span>{memoryLocale === "RU" ? "Архив чатов" : "Archived chats"}</span>
+        </button>
       </div>
 
       <nav
@@ -1213,7 +1266,7 @@ function LeftChatPaneComponent({
                                 data-left-pane-menu-trigger="true"
                                 onClick={(event) => {
                                   lastMenuTriggerRef.current = event.currentTarget;
-                                  onChatActionToggle(chat.id);
+                                  toggleChatActions(chat);
                                 }}
                               >
                                 <MoreHorizontal className="size-4" aria-hidden="true" />
@@ -1319,14 +1372,48 @@ function LeftChatPaneComponent({
                               <Download className="size-4 text-ink-muted" aria-hidden="true" />
                               Export
                             </button>
+                            <div className="mt-1 border-t border-trace-subtle px-2 pb-1 pt-2">
+                              <p className="text-xs font-semibold text-ink-secondary">
+                                {memoryLocale === "RU" ? "Источник Памяти" : "Memory source"}
+                              </p>
+                              {memoryModeLoadingId === chat.id ? (
+                                <p className="mt-1 flex items-center gap-2 text-xs text-ink-muted" role="status">
+                                  <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />
+                                  {memoryLocale === "RU" ? "Проверка состояния…" : "Checking state…"}
+                                </p>
+                              ) : memoryModeErrorId === chat.id ? (
+                                <p className="mt-1 text-xs text-critical" role="alert">
+                                  {memoryLocale === "RU" ? "Состояние источника недоступно." : "Source state unavailable."}
+                                </p>
+                              ) : chat.memoryMode === "NORMAL" || chat.memoryMode === "EXCLUDED" ? (
+                                <>
+                                  <p className="mt-1 text-xs leading-5 text-ink-muted">
+                                    {resolveMemoryCopy(
+                                      memoryLocale,
+                                      chat.memoryMode === "EXCLUDED" ? "resume.explanation" : "exclude.explanation"
+                                    )}
+                                  </p>
+                                  <button
+                                    className={`mt-1 flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left font-semibold text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`}
+                                    type="button"
+                                    onClick={() => onToggleChatMemorySource?.(chat)}
+                                  >
+                                    {resolveMemoryCopy(
+                                      memoryLocale,
+                                      chat.memoryMode === "EXCLUDED" ? "resume.action" : "exclude.action"
+                                    )}
+                                  </button>
+                                </>
+                              ) : null}
+                            </div>
                             <div className="mt-1 border-t border-trace-subtle pt-1">
                               <button
-                                className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-critical hover:bg-critical/10 ${focusRing}`}
+                                className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`}
                                 type="button"
                                 onClick={() => onDeleteChat(chat)}
                               >
-                                <Trash2 className="size-4" aria-hidden="true" />
-                                Delete chat
+                                <Archive className="size-4 text-ink-muted" aria-hidden="true" />
+                                {resolveMemoryCopy(memoryLocale, "archive.action")}
                               </button>
                             </div>
                           </div>

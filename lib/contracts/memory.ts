@@ -623,7 +623,8 @@ const memorySettingsResponseSchema = z.strictObject({
     automaticLearning: z.boolean(),
     explicitMemory: z.boolean(),
     historyRecall: z.boolean(),
-    russianQualified: z.boolean()
+    russianQualified: z.boolean(),
+    temporaryChats: z.boolean()
   }),
   egress: z.strictObject({
     acceptedAt: nullableTimestampSchema,
@@ -681,6 +682,7 @@ export function decodeMemorySettingsResponse(
 }
 
 const memorySummarySchema = z.strictObject({
+  actionVersionId: idSchema.nullable().optional(),
   category: categorySchema,
   createdAt: isoTimestampSchema,
   currentVersionId: idSchema.nullable(),
@@ -716,8 +718,21 @@ const memorySummarySchema = z.strictObject({
     if (value.currentVersionId === null || value.displayText === null) {
       context.addIssue({ code: "custom", message: "active fact requires current visible version" });
     }
+    if (value.actionVersionId !== undefined && value.actionVersionId !== value.currentVersionId) {
+      context.addIssue({ code: "custom", message: "active action version must be current" });
+    }
   } else if (value.currentVersionId !== null) {
     context.addIssue({ code: "custom", message: "non-active fact cannot have a current version" });
+  }
+  if (value.factState === "ORPHANED" && !value.actionVersionId) {
+    context.addIssue({ code: "custom", message: "orphaned fact requires an exact action version" });
+  }
+  if (
+    value.factState !== "ACTIVE" &&
+    value.factState !== "ORPHANED" &&
+    value.actionVersionId != null
+  ) {
+    context.addIssue({ code: "custom", message: "inactive fact cannot expose an action version" });
   }
   if (value.validFrom && value.validTo && Date.parse(value.validFrom) >= Date.parse(value.validTo)) {
     context.addIssue({ code: "custom", message: "invalid fact validity interval" });

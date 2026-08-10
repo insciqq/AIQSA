@@ -95,6 +95,7 @@ export type ShellWorkspacePaneActions = {
   exportChat(chat: ChatSummary): void;
   moveChat(chatId: string, folderId: string | null): Promise<void> | void;
   moveFolder(folder: FolderSummary, folderId: string | null): Promise<void> | void;
+  openArchivedChats(): void;
   openProjectSettings(folder: FolderSummary): void;
   retry(): Promise<unknown> | void;
   saveChatTitle(chat: ChatSummary): Promise<void> | void;
@@ -104,6 +105,7 @@ export type ShellWorkspacePaneActions = {
   startFolderEdit(folder: FolderSummary): void;
   startSubfolder(folder: FolderSummary): void;
   toggleChatActions(chatId: string): void;
+  toggleChatMemorySource(chat: ChatSummary): Promise<void> | void;
   toggleChatFavorite(chat: ChatSummary): Promise<void> | void;
   toggleFolderCollapsed(folderId: string): void;
   toggleFolderMenu(folderId: string): void;
@@ -115,6 +117,10 @@ export type ShellWorkspacePaneView = {
 };
 
 export type ShellWorkspaceView = {
+  archived: {
+    onRestored(chatId: string): Promise<void> | void;
+    open: boolean;
+  };
   mobile: {
     close(): void;
     dialogRef: RefObject<HTMLDivElement | null>;
@@ -229,6 +235,17 @@ export type ShellComposerView = {
     source: ComposerKnowledgePlanSource;
   };
   maxOutputTokens: string;
+  memory: {
+    canToggleTemporary: boolean;
+    explanation: string;
+    externalRetention: string;
+    label: string;
+    locale: "RU" | "EN";
+    mode: "NORMAL" | "TEMPORARY";
+    retention: string;
+    retentionDeadline: string | null;
+    toggleTemporary(): void;
+  };
   makeModelDefault?(model: CatalogModel): void;
   notificationSoundEnabled: boolean;
   operationError: string | null;

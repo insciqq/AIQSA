@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   chatIdFromComposerSessionKey,
   composerSessionKey,
+  composerSessionModeFromKey,
   emptyComposerSessionSnapshot,
   folderIdFromComposerSessionKey,
   resetComposerSessionStoreForTest,
@@ -67,6 +68,35 @@ describe("composer session store", () => {
     const missing = composerSessionKey("missing");
     expect(session(missing)).toBe(emptyComposerSessionSnapshot);
     expect(session(missing)).toBe(session(composerSessionKey("also-missing")));
+  });
+
+  it("keeps Normal and Temporary root and folder drafts in distinct keyed sessions", () => {
+    const normalRoot = composerSessionKey(null);
+    const temporaryRoot = composerSessionKey(null, null, "TEMPORARY");
+    const normalFolder = composerSessionKey(null, "folder/one");
+    const temporaryFolder = composerSessionKey(null, "folder/one", "TEMPORARY");
+    const store = useComposerSessionStore.getState();
+
+    expect(new Set([normalRoot, temporaryRoot, normalFolder, temporaryFolder]).size).toBe(4);
+    expect(composerSessionModeFromKey(normalRoot)).toBe("NORMAL");
+    expect(composerSessionModeFromKey(temporaryRoot)).toBe("TEMPORARY");
+    expect(composerSessionModeFromKey(temporaryFolder)).toBe("TEMPORARY");
+    expect(folderIdFromComposerSessionKey(temporaryFolder)).toBe("folder/one");
+
+    for (const [key, draft] of [
+      [normalRoot, "Normal root"],
+      [temporaryRoot, "Temporary root"],
+      [normalFolder, "Normal folder"],
+      [temporaryFolder, "Temporary folder"]
+    ] as const) {
+      store.activateSession(key);
+      store.setDraft(draft);
+    }
+
+    expect(session(normalRoot).draft).toBe("Normal root");
+    expect(session(temporaryRoot).draft).toBe("Temporary root");
+    expect(session(normalFolder).draft).toBe("Normal folder");
+    expect(session(temporaryFolder).draft).toBe("Temporary folder");
   });
 
   it("atomically owns send content across upload exclusion, transfer, failure, and newer work", () => {

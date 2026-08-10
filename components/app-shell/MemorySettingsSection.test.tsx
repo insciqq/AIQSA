@@ -120,7 +120,8 @@ describe("MemorySettingsSection", () => {
         automaticLearning: false,
         explicitMemory: false,
         historyRecall: false,
-        russianQualified: false
+        russianQualified: false,
+        temporaryChats: false
       },
       settings: {
         learnAutomatically: true,

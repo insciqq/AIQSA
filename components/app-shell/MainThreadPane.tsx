@@ -109,6 +109,7 @@ export type MainThreadPaneProps = {
   persistedRunsById: Readonly<Record<string, PersistedRun>>;
   liveArtifactSummary: ThreadArtifactSummary | null;
   maxOutputTokens: string;
+  memory?: ShellComposerView["memory"];
   makeModelDefault?(model: CatalogModel): void;
   notificationSoundEnabled: boolean;
   operationError: string | null;
@@ -206,6 +207,7 @@ export function MainThreadPane({
   persistedRunsById,
   liveArtifactSummary,
   maxOutputTokens,
+  memory,
   makeModelDefault,
   notificationSoundEnabled,
   operationError,
@@ -888,6 +890,7 @@ export function MainThreadPane({
           disabledHintTone={activeDisabledHintTone}
           editing={Boolean(editingMessageId)}
           editPending={editingMessagePending}
+          memory={memory}
           operationError={operationError}
           operationErrorLive={operationErrorLive}
           promptFirst={centeredEmptyConversation}

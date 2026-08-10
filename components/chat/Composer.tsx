@@ -86,6 +86,17 @@ export type ComposerProps = {
   disabledHintTone?: ComposerHintTone;
   editing?: boolean;
   editPending?: boolean;
+  memory?: {
+    canToggleTemporary: boolean;
+    explanation: string;
+    externalRetention: string;
+    label: string;
+    locale: "RU" | "EN";
+    mode: "NORMAL" | "TEMPORARY";
+    retention: string;
+    retentionDeadline: string | null;
+    toggleTemporary(): void;
+  };
   onChange(value: string): void;
   onAttachmentCountLimitExceeded?(input: {
     attemptedCount: number;
@@ -159,6 +170,7 @@ export function Composer({
   disabledHintTone = "caution",
   editing = false,
   editPending = false,
+  memory,
   onChange,
   onAttachmentCountLimitExceeded,
   onCancelEdit,
@@ -573,6 +585,56 @@ export function Composer({
               >
                 Cancel edit
               </button>
+            </div>
+          ) : null}
+
+          {!editing && memory ? (
+            <div
+              className={`border-b px-3 py-2 text-xs ${
+                memory.mode === "TEMPORARY"
+                  ? "border-caution/25 bg-caution/[0.07] text-ink-secondary"
+                  : "border-trace-subtle bg-control-surface/45 text-ink-muted"
+              }`}
+              data-memory-mode={memory.mode}
+              data-testid="composer-memory-mode"
+            >
+              <div className="flex min-w-0 items-center justify-between gap-3">
+                <span className="min-w-0 font-semibold text-ink">
+                  {memory.mode === "TEMPORARY"
+                    ? memory.label
+                    : memory.locale === "RU" ? "Обычный чат" : "Normal chat"}
+                </span>
+                {memory.canToggleTemporary ? (
+                  <button
+                    className="min-h-control shrink-0 rounded-control border border-trace-subtle bg-control-surface px-3 font-semibold text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch"
+                    type="button"
+                    aria-pressed={memory.mode === "TEMPORARY"}
+                    onClick={memory.toggleTemporary}
+                  >
+                    {memory.mode === "TEMPORARY"
+                      ? memory.locale === "RU" ? "Отменить временный режим" : "Cancel Temporary"
+                      : memory.label}
+                  </button>
+                ) : null}
+              </div>
+              {memory.mode === "TEMPORARY" ? (
+                <div className="mt-1 space-y-1 leading-5">
+                  <p>{memory.explanation}</p>
+                  <p>{memory.retention}</p>
+                  <p>{memory.externalRetention}</p>
+                  {memory.retentionDeadline ? (
+                    <p className="font-semibold text-caution" data-testid="temporary-retention-deadline">
+                      {memory.locale === "RU" ? "Текущий срок удаления: " : "Current deletion deadline: "}
+                      {new Intl.DateTimeFormat(memory.locale === "RU" ? "ru-RU" : "en-US", {
+                        dateStyle: "medium",
+                        timeStyle: "short"
+                      }).format(new Date(memory.retentionDeadline))}
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="mt-1 leading-5">{memory.explanation}</p>
+              )}
             </div>
           ) : null}
 

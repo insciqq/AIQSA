@@ -26,7 +26,10 @@ import {
   type ChatContextStats
 } from "../../contracts/chats";
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
+import {
+  MEMORY_CONFIRMATION_COPY_VERSION,
+  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+} from "../../contracts/memory";
 import { prisma } from "../prisma";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { persistedToolCallActivity } from "../runs/toolInspection";
@@ -1540,6 +1543,41 @@ export function createPrismaChatRepository(
           messages
         });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    },
+    getChatMemoryState: async ({ chatId, userId }) => {
+      const chat = await prismaClient.chat.findFirst({
+        select: {
+          archived: true,
+          id: true,
+          memoryMode: true,
+          memorySourceRevision: true,
+          temporaryRetentionDeadline: true,
+          temporaryRetentionPolicyVersion: true,
+          updatedAt: true
+        },
+        where: { id: chatId, userId }
+      });
+      if (!chat) return null;
+      if (
+        chat.memoryMode === "TEMPORARY" &&
+        (!chat.temporaryRetentionDeadline ||
+          chat.temporaryRetentionPolicyVersion !== MEMORY_TEMPORARY_RETENTION_POLICY_VERSION)
+      ) {
+        throw new Error("temporary_chat_lifecycle_integrity_invalid");
+      }
+      return {
+        archived: chat.archived,
+        chatId: chat.id,
+        mode: chat.memoryMode,
+        sourceRevision: chat.memorySourceRevision,
+        temporaryRetentionDeadline: chat.memoryMode === "TEMPORARY"
+          ? chat.temporaryRetentionDeadline
+          : null,
+        temporaryRetentionPolicyVersion: chat.memoryMode === "TEMPORARY"
+          ? MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+          : null,
+        updatedAt: chat.updatedAt
+      };
     },
     getMessagesPage: async ({ before, chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {

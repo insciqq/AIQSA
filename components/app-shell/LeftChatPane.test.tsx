@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LeftChatPane } from "./LeftChatPane";
+import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
 import type { ChatGroup, FolderSummary } from "./types";
 
 const folder: FolderSummary = {
@@ -22,6 +23,8 @@ const chatGroups: ChatGroup[] = [
         defaultProvider: "fake",
         folderId: null,
         id: "chat-1",
+        memoryMode: "NORMAL",
+        memorySourceRevision: 0,
         messageCount: 0,
         title: "Planning",
         updatedAt: "2026-06-10T00:00:00.000Z"
@@ -84,6 +87,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof LeftChatPane>> = {}
     onMoveChat: vi.fn(),
     onMoveFolder: vi.fn(),
     onNewFolderNameChange: vi.fn(),
+    onOpenArchivedChats: vi.fn(),
     onOpenProjectSettings: vi.fn(),
     onRetryWorkspace: vi.fn(),
     onSaveChatTitle: vi.fn(),
@@ -94,6 +98,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof LeftChatPane>> = {}
     onStartSubfolder: vi.fn(),
     onSubfolderNameChange: vi.fn(),
     onToggleChatFavorite: vi.fn(),
+    onToggleChatMemorySource: vi.fn(),
     onToggleFolderCollapsed: vi.fn(),
     subfolderName: "",
     subfolderParentId: null,
@@ -103,10 +108,20 @@ function renderPane(overrides: Partial<ComponentProps<typeof LeftChatPane>> = {}
     ...overrides
   };
 
+  useWorkspaceStore.setState({
+    chats: props.chatGroups.flatMap((group) => group.chats)
+  });
+
   return { ...props, ...render(<LeftChatPane {...props} />) };
 }
 
 describe("LeftChatPane", () => {
+  afterEach(() => {
+    resetWorkspaceStoreForTest();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it("closes an open chat menu on Escape or outside pointerdown", () => {
     const onCloseMenus = vi.fn();
     renderPane({ chatActionId: "chat-1", onCloseMenus });
@@ -260,8 +275,61 @@ describe("LeftChatPane", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add to favorites" }));
     expect(onToggleChatFavorite).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
+    fireEvent.click(screen.getByRole("button", { name: "Архивировать" }));
     expect(onDeleteChat).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }));
+  });
+
+  it("keeps Archive and Memory source eligibility as separate reachable actions", () => {
+    const onDeleteChat = vi.fn();
+    const onOpenArchivedChats = vi.fn();
+    const onToggleChatMemorySource = vi.fn();
+    renderPane({
+      chatActionId: "chat-1",
+      onDeleteChat,
+      onOpenArchivedChats,
+      onToggleChatMemorySource
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Архив чатов" }));
+    expect(onOpenArchivedChats).toHaveBeenCalledOnce();
+    expect(screen.getByText("Источник Памяти")).toBeVisible();
+    expect(screen.getByText(/Сохраняет чат, но немедленно прекращает/)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Исключить этот чат из памяти" }));
+    expect(onToggleChatMemorySource).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "chat-1", memoryMode: "NORMAL" })
+    );
+    expect(onDeleteChat).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Архивировать" }));
+    expect(onDeleteChat).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }));
+    expect(screen.queryByRole("button", { name: /Удалить чат|Delete chat/ })).not.toBeInTheDocument();
+  });
+
+  it("presents Resume disclosure for an excluded chat without changing Archive state", () => {
+    const excludedGroups = chatGroups.map((group) => ({
+      ...group,
+      chats: group.chats.map((candidate) => ({
+        ...candidate,
+        memoryMode: "EXCLUDED" as const,
+        memorySourceRevision: 3
+      }))
+    }));
+    const onToggleChatMemorySource = vi.fn();
+    renderPane({
+      chatActionId: "chat-1",
+      chatGroups: excludedGroups,
+      onToggleChatMemorySource
+    });
+
+    expect(screen.getByText(/Разрешает контролируемую переиндексацию/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", {
+      name: "Снова использовать этот чат как источник памяти"
+    }));
+    expect(onToggleChatMemorySource).toHaveBeenCalledWith(
+      expect.objectContaining({ memoryMode: "EXCLUDED", memorySourceRevision: 3 })
+    );
+    expect(screen.getByRole("button", { name: "Архивировать" })).toBeVisible();
   });
 
   it("does not activate a chat when its overflow action is used", () => {
@@ -513,7 +581,7 @@ describe("LeftChatPane", () => {
       "overscroll-contain",
       "max-h-[min(25rem,calc(100dvh-12rem))]"
     );
-    for (const name of ["Add to favorites", "Rename", "Share", "Export", "Delete chat"]) {
+    for (const name of ["Add to favorites", "Rename", "Share", "Export", "Архивировать"]) {
       expect(screen.getByRole("button", { name })).toHaveClass("min-h-touch");
     }
     const mobileMoveChat = screen.getByRole("button", { name: "Move chat Planning to folder" });
@@ -532,7 +600,7 @@ describe("LeftChatPane", () => {
 
     chatView.unmount();
     renderPane({ chatActionId: "chat-1" });
-    for (const name of ["Add to favorites", "Rename", "Share", "Export", "Delete chat"]) {
+    for (const name of ["Add to favorites", "Rename", "Share", "Export", "Архивировать"]) {
       expect(screen.getByRole("button", { name })).toHaveClass("min-h-10");
       expect(screen.getByRole("button", { name })).not.toHaveClass("min-h-touch");
     }
