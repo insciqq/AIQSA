@@ -70,28 +70,44 @@ route schedules no work.
 
 Authenticated explicit management is now available independently of those
 three gates for `GLOBAL_USER` facts. A short-lived mutation-authorization route
-binds Save to the exact statement hash and Edit to the exact owner fact/current
-version, current confirmation copy, and caller nonce; the grant is consumed in
-the same serializable transaction as the fact mutation, while an exact retry
-may replay only its matching durable receipt. Private list, POST-search,
-detail, evidence, create, edit, and pin routes preserve exact display text,
-append versions, fence stale writes, authoritatively rejoin ownership, and keep
-free-form queries out of URLs. Every successful explicit write synchronously
-creates or advances the active lexical projection, including exact,
-`ё`/`е`-normalized, Russian, English, and simple PostgreSQL search, without a
-worker, model, embedding call, or utility egress. The first API slice rejects
-non-global scope and secret-like statements and exposes no internal owner,
-canonical-key, authorization-request, or suppression identity.
+binds Save to the exact statement hash; Edit and Forget to the exact owner
+fact/current version; and `DELETE_EXPLICIT` to the exact operation plus current
+settings and Memory revisions. Every grant also binds current confirmation copy
+and caller nonce. It is consumed in the same serializable transaction as the
+mutation, while an exact retry may replay only its matching durable receipt.
+Private list, POST-search, detail, evidence, create, edit, pin, Forget,
+bulk-delete, and deletion-status routes authoritatively rejoin ownership and
+keep free-form content out of URLs. Every successful explicit write
+synchronously creates or advances the active exact/Russian/English/simple
+lexical projection without a worker, model, embedding call, or utility egress.
+The current API rejects non-global scope and secret-like statements and exposes
+no internal owner, canonical-key, authorization-request, or suppression
+identity.
 
-There are still no Forget/bulk-delete or other fact-lifecycle APIs, registered
-phase handlers, retrieval integration, UI surfaces, or live Memory provider
-calls. Development starts the coordinator feature-locally from server
+Forget now commits its generation/revision fence, forgotten fact/version state,
+null current pointer, exact fact/value/source suppressions, plaintext-free event,
+lexical-row invalidation, and one `FORGET_PURGE` obligation atomically before
+returning. `DELETE_EXPLICIT` applies the same fence to the exact admission-time
+set and returns private bounded status; a genuinely new later explicit save is
+outside that obligation. The registered versioned purge contributors scrub
+forgotten version content, lexical/vector rows, evidence, and unaccepted
+retrieval items/context. Affected `PREPARING` runs and assistant messages settle
+to a content-free error in the same purge transaction. Completion audits every
+required contributor, missing or residual leaves cannot succeed, and startup or
+status reconciliation reopens an old success when the current contributor
+manifest finds new residual work. Automatic rebuild remains suppression-blocked;
+a later exact explicit Save may revive the logical fact with a new active
+version under fresh authority.
+
+There are still no later bulk-delete variants, other fact-lifecycle APIs,
+retrieval integration, UI surfaces, or live Memory provider calls. Development
+starts the coordinator feature-locally from server
 instrumentation, while production uses the same image/code in the private
 no-API `memory-worker` role. Both paths
 preflight the configured suppression keyring against every distinct historical
 key ID before starting. Failure stays local to Memory and does not alter core
-web readiness. The default registry is empty, so startup schedules no work and
-the feature remains dark. The per-call execution boundary resolves current
+web readiness. The default registry claims `FORGET_PURGE`; other deletion
+operations and all job kinds remain unregistered. The per-call execution boundary resolves current
 installation utility or entitled embedding authority,
 accepted egress, exact signed role qualification, immutable provider and
 credential evidence, single-winner start, exactly-once nullable usage,

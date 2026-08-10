@@ -56,6 +56,7 @@ async function jsonBody(request: Request): Promise<unknown | Response> {
 function serviceErrorStatus(code: ExplicitMemoryServiceErrorCode): number {
   switch (code) {
     case "memory_contract_invalid":
+    case "memory_operation_unsupported":
     case "memory_scope_invalid":
     case "memory_secret_rejected":
     case "memory_statement_invalid":

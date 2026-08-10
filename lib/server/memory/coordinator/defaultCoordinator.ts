@@ -1,4 +1,5 @@
 import { prisma } from "../../prisma";
+import { ensureDefaultMemoryPurgeHandlerRegistered } from "../purge/defaultPurge";
 import { MemoryCoordinator } from "./coordinator";
 import { createPrismaMemoryCoordinatorRepository } from "./prismaRepository";
 import { defaultMemoryCoordinatorRegistry } from "./registry";
@@ -11,6 +12,7 @@ export const defaultMemoryCoordinatorRepository =
   createPrismaMemoryCoordinatorRepository(prisma);
 
 function createDefaultMemoryCoordinator(): MemoryCoordinator {
+  ensureDefaultMemoryPurgeHandlerRegistered();
   return new MemoryCoordinator({
     registry: defaultMemoryCoordinatorRegistry,
     repository: defaultMemoryCoordinatorRepository

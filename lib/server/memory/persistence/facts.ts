@@ -816,6 +816,7 @@ export function createPrismaMemoryFactRepository(
         let currentVersion: Awaited<ReturnType<typeof tx.memoryFactVersion.findFirst<{
           select: typeof currentVersionSelect;
         }>>> = null;
+        let revivalVersionId: string | null = null;
         if (existing?.state === "ACTIVE" && existing.currentVersionId) {
           currentVersion = await tx.memoryFactVersion.findFirst({
             select: currentVersionSelect,
@@ -831,7 +832,20 @@ export function createPrismaMemoryFactRepository(
             return memoryPersistenceFailure("memory_fact_identity_conflict");
           }
         } else if (existing) {
-          return memoryPersistenceFailure("memory_fact_identity_conflict");
+          if (
+            existing.state !== "FORGOTTEN" ||
+            input.value.sourceMode !== "EXPLICIT" ||
+            !input.explicitSuppressionOverride
+          ) {
+            return memoryPersistenceFailure("memory_fact_identity_conflict");
+          }
+          const prior = await tx.memoryFactVersion.findFirst({
+            orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
+            select: { id: true },
+            where: { factId: existing.id, userId }
+          });
+          if (!prior) return memoryPersistenceFailure("memory_fact_version_stale");
+          revivalVersionId = prior.id;
         }
 
         const activeIndex = await prepareFactWrite(tx, settings, keyring, input);
@@ -866,20 +880,36 @@ export function createPrismaMemoryFactRepository(
         }
 
         const eventId = randomUUID();
-        const factId = randomUUID();
+        const factId = existing?.id ?? randomUUID();
         const versionId = randomUUID();
-        await tx.memoryFact.create({
-          data: {
-            canonicalKey: input.value.canonicalKey,
-            category: input.value.category,
-            currentVersionId: versionId,
-            id: factId,
-            lastConfirmedAt: input.evidence.observedAt,
-            scopeId: input.scopeId,
-            state: "ACTIVE",
-            userId
+        if (existing) {
+          const revived = await tx.memoryFact.updateMany({
+            data: {
+              category: input.value.category,
+              currentVersionId: versionId,
+              forgottenAt: null,
+              lastConfirmedAt: input.evidence.observedAt,
+              state: "ACTIVE"
+            },
+            where: { id: existing.id, state: "FORGOTTEN", userId }
+          });
+          if (revived.count !== 1) {
+            return memoryPersistenceFailure("memory_fact_version_stale");
           }
-        });
+        } else {
+          await tx.memoryFact.create({
+            data: {
+              canonicalKey: input.value.canonicalKey,
+              category: input.value.category,
+              currentVersionId: versionId,
+              id: factId,
+              lastConfirmedAt: input.evidence.observedAt,
+              scopeId: input.scopeId,
+              state: "ACTIVE",
+              userId
+            }
+          });
+        }
         await createEvent(
           tx,
           userId,
@@ -908,6 +938,7 @@ export function createPrismaMemoryFactRepository(
             sourceMode: input.value.sourceMode,
             state: "ACTIVE",
             structuredValue: input.value.structuredValue,
+            supersedesVersionId: revivalVersionId,
             userId,
             validFrom: input.value.validFrom,
             validTo: input.value.validTo

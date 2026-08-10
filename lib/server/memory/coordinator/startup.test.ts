@@ -13,16 +13,21 @@ const KEY_V2 = encodedKey(83);
 describe("Memory coordinator feature-local startup", () => {
   it("starts only after every referenced suppression key passes preflight", async () => {
     const start = vi.fn();
+    const reconcileDeletionAudits = vi.fn(async () => undefined);
     const result = await startMemoryCoordinatorFeatureLocally({
       env: {
         AIQSA_MEMORY_FINGERPRINT_KEYRING:
           `current=v2,v1=${KEY_V1},v2=${KEY_V2}`
       },
       listRequiredKeyIds: async () => ["v2", "v1", "v1"],
+      reconcileDeletionAudits,
       start
     });
 
     expect(result).toEqual({ status: "ready" });
+    expect(reconcileDeletionAudits).toHaveBeenCalledOnce();
+    expect(reconcileDeletionAudits.mock.invocationCallOrder[0])
+      .toBeLessThan(start.mock.invocationCallOrder[0]!);
     expect(start).toHaveBeenCalledOnce();
   });
 

@@ -336,6 +336,59 @@ function suppressionFingerprintData(
   };
 }
 
+export async function createMemorySuppressionInTransaction(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  keyring: MemorySuppressionKeyring,
+  input: MemorySuppressionCreateInput,
+  options: Readonly<{ advanceMemory?: boolean }> = {}
+): Promise<MemorySuppressionCreateResult> {
+  const normalizationVersion = validateCreateInput(input);
+  const prior = await tx.memorySuppression.findUnique({ where: { id: input.suppressionId } });
+  if (prior) {
+    if (
+      prior.userId !== settings.userId ||
+      !existingSuppressionMatches(keyring, prior, input, normalizationVersion)
+    ) {
+      return memoryPersistenceFailure("memory_idempotency_conflict");
+    }
+    return { created: false, deletionGeneration: prior.deletionGeneration, id: prior.id };
+  }
+  if (input.scope === "SOURCE_MESSAGE" &&
+    !(await sourceOwnerIsValid(tx, settings.userId, input))) {
+    return memoryPersistenceFailure("memory_scope_unavailable");
+  }
+
+  if (options.advanceMemory ?? true) {
+    await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
+  }
+  const fingerprint = suppressionFingerprintData(
+    keyring,
+    settings.userId,
+    input,
+    normalizationVersion
+  );
+  const created = await tx.memorySuppression.create({
+    data: {
+      ...fingerprint,
+      deletionGeneration: settings.memoryGeneration,
+      expiresAt: input.expiresAt,
+      explicitOverrideAllowed: input.explicitOverrideAllowed,
+      id: input.suppressionId,
+      normalizationVersion,
+      scope: input.scope,
+      sourceBranchGeneration: input.scope === "SOURCE_MESSAGE"
+        ? input.branchGeneration
+        : null,
+      sourceChatId: input.scope === "SOURCE_MESSAGE" ? input.chatId : null,
+      sourceMessageId: input.scope === "SOURCE_MESSAGE" ? input.messageId : null,
+      userId: settings.userId
+    },
+    select: { deletionGeneration: true, id: true }
+  });
+  return { ...created, created: true };
+}
+
 export function createPrismaMemorySuppressionRepository(
   keyring: MemorySuppressionKeyring,
   client: PrismaClient = prisma
@@ -345,50 +398,9 @@ export function createPrismaMemorySuppressionRepository(
       userId: string,
       input: MemorySuppressionCreateInput
     ): Promise<MemorySuppressionCreateResult> {
-      const normalizationVersion = validateCreateInput(input);
-      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
-        const prior = await tx.memorySuppression.findUnique({ where: { id: input.suppressionId } });
-        if (prior) {
-          if (
-            prior.userId !== userId ||
-            !existingSuppressionMatches(keyring, prior, input, normalizationVersion)
-          ) {
-            return memoryPersistenceFailure("memory_idempotency_conflict");
-          }
-          return { created: false, deletionGeneration: prior.deletionGeneration, id: prior.id };
-        }
-        if (input.scope === "SOURCE_MESSAGE" &&
-          !(await sourceOwnerIsValid(tx, userId, input))) {
-          return memoryPersistenceFailure("memory_scope_unavailable");
-        }
-
-        await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
-        const fingerprint = suppressionFingerprintData(
-          keyring,
-          userId,
-          input,
-          normalizationVersion
-        );
-        const created = await tx.memorySuppression.create({
-          data: {
-            ...fingerprint,
-            deletionGeneration: settings.memoryGeneration,
-            expiresAt: input.expiresAt,
-            explicitOverrideAllowed: input.explicitOverrideAllowed,
-            id: input.suppressionId,
-            normalizationVersion,
-            scope: input.scope,
-            sourceBranchGeneration: input.scope === "SOURCE_MESSAGE"
-              ? input.branchGeneration
-              : null,
-            sourceChatId: input.scope === "SOURCE_MESSAGE" ? input.chatId : null,
-            sourceMessageId: input.scope === "SOURCE_MESSAGE" ? input.messageId : null,
-            userId
-          },
-          select: { deletionGeneration: true, id: true }
-        });
-        return { ...created, created: true };
-      });
+      validateCreateInput(input);
+      return withLockedMemoryTransaction(client, userId, (tx, settings) =>
+        createMemorySuppressionInTransaction(tx, settings, keyring, input));
     },
 
     async matching(userId: string, input: MemorySuppressionMatchInput): Promise<MemorySuppression[]> {

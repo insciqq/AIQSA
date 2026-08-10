@@ -144,6 +144,8 @@ export function memoryMutationNonceHash(userId: string, requestNonce: string): s
 
 export function memoryTargetAuthorizationPayloadHash(input: Readonly<{
   action: Exclude<MemoryMutationAction, "SAVE">;
+  expectedMemoryRevision?: number;
+  expectedSettingsRevision?: number;
   expectedTargetVersionId?: string;
   operation?: string;
   targetFactId?: string;
@@ -151,6 +153,8 @@ export function memoryTargetAuthorizationPayloadHash(input: Readonly<{
   return memorySha256({
     action: input.action,
     domain: "aiqsa.memory.mutation-authorization.payload",
+    expectedMemoryRevision: input.expectedMemoryRevision ?? null,
+    expectedSettingsRevision: input.expectedSettingsRevision ?? null,
     expectedTargetVersionId: input.expectedTargetVersionId ?? null,
     operation: input.operation ?? null,
     targetFactId: input.targetFactId ?? null,

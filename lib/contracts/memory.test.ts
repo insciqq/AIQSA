@@ -195,6 +195,20 @@ describe("Memory request contracts", () => {
       requestNonce: "nonce-1"
     })).toMatchObject({ ok: true });
     expect(decodeMemoryMutationAuthorizationInput({
+      action: "BULK_DELETE",
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      expectedMemoryRevision: 42,
+      expectedSettingsRevision: 12,
+      operation: "DELETE_EXPLICIT",
+      requestNonce: "nonce-bulk-1"
+    })).toMatchObject({ ok: true });
+    expect(decodeMemoryMutationAuthorizationInput({
+      action: "BULK_DELETE",
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      operation: "DELETE_EXPLICIT",
+      requestNonce: "nonce-bulk-missing-revisions"
+    })).toMatchObject({ ok: false });
+    expect(decodeMemoryMutationAuthorizationInput({
       action: "FORGET",
       confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
       expectedTargetVersionId: "version-1",

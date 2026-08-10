@@ -381,6 +381,8 @@ const memoryMutationAuthorizationInputSchema = z.discriminatedUnion("action", [
   }),
   mutationAuthorizationCommonSchema.extend({
     action: z.literal("BULK_DELETE"),
+    expectedMemoryRevision: safeInteger,
+    expectedSettingsRevision: safeInteger,
     operation: z.enum(MEMORY_BULK_DELETE_OPERATIONS)
   })
 ]);

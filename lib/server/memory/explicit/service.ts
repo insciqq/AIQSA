@@ -86,6 +86,7 @@ export type ExplicitMemoryServiceErrorCode =
   | "memory_index_unavailable"
   | "memory_intent_confirmation_required"
   | "memory_not_found"
+  | "memory_operation_unsupported"
   | "memory_scope_invalid"
   | "memory_scope_unavailable"
   | "memory_secret_rejected"
@@ -331,7 +332,7 @@ export function createExplicitMemoryService(input: Readonly<{
       const saved = await persisted(() => input.factRepository.save(userId, {
         authorization,
         evidence: evidenceFor(createInput.statement, observedAt),
-        explicitSuppressionOverride: false,
+        explicitSuppressionOverride: true,
         idempotencyFingerprint: idempotencyFingerprint(authorization),
         idempotencyPayloadHash: idempotencyPayloadHash("SAVE", createInput),
         requestId: resolved.requestId,
@@ -368,13 +369,17 @@ export function createExplicitMemoryService(input: Readonly<{
     },
 
     async mintAuthorization(userId, authorizationInput) {
-      if (
-        authorizationInput.action !== "SAVE" &&
-        authorizationInput.action !== "EDIT"
-      ) {
-        return failure("memory_contract_invalid");
+      if (authorizationInput.action === "MOVE_SCOPE") {
+        return failure("memory_operation_unsupported");
       }
-      const target = authorizationInput.action === "SAVE"
+      if (
+        authorizationInput.action === "BULK_DELETE" &&
+        authorizationInput.operation !== "DELETE_EXPLICIT"
+      ) {
+        return failure("memory_operation_unsupported");
+      }
+      const target = authorizationInput.action === "SAVE" ||
+        authorizationInput.action === "BULK_DELETE"
         ? null
         : {
             expectedTargetVersionId: authorizationInput.expectedTargetVersionId,
@@ -395,7 +400,16 @@ export function createExplicitMemoryService(input: Readonly<{
         ? authorizationInput.exactStatementHash
         : memoryTargetAuthorizationPayloadHash({
             action: authorizationInput.action,
+            expectedMemoryRevision: authorizationInput.action === "BULK_DELETE"
+              ? authorizationInput.expectedMemoryRevision
+              : undefined,
+            expectedSettingsRevision: authorizationInput.action === "BULK_DELETE"
+              ? authorizationInput.expectedSettingsRevision
+              : undefined,
             expectedTargetVersionId: target?.expectedTargetVersionId,
+            operation: authorizationInput.action === "BULK_DELETE"
+              ? authorizationInput.operation
+              : undefined,
             targetFactId: target?.targetFactId
           });
       const minted = await persisted(() => input.authorizationRepository.mint(userId, {

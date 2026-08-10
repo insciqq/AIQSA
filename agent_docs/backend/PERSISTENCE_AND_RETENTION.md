@@ -88,12 +88,23 @@ owner, state, token, and unexpired lease. Consent waiting carries neither lease
 nor fallback authority. Job apply and success settle in one transaction.
 Deletion apply and success do likewise; failures release to bounded retry and
 then `BLOCKED_REQUIRES_ADMIN` with a slow due time and audit timestamp, never a
-terminal abandoned state. The default registry is empty, so these rows remain
-dormant until a later handler-owning slice opts in. Development starts the
-feature-local coordinator from server instrumentation; production runs the
-same coordinator code in the private `memory-worker` role. Both preflight the
-suppression keyring and every referenced historical key ID before starting
-claims.
+terminal abandoned state. The default registry now claims only `FORGET_PURGE`.
+Its typed manifest requires versioned contributors for unaccepted retrieval
+attempts, fact evidence, fact search rows (including their vectors/FTS), and
+forgotten version content. All leaves and the final completeness audit execute
+inside the claim's apply/success transaction, so a crash or failing leaf rolls
+the complete purge attempt back. Scrubbing an item from a nonterminal Memory
+attempt also settles its `PREPARING` run and assistant message atomically, which
+preserves the deferred run/attempt guard. Missing contributors refuse claims;
+residual audits refuse success. Status audits and startup reconciliation can
+move an earlier `SUCCEEDED` row back to `PENDING` when a later versioned
+contributor discovers work, and startup drains the pre-start success set in
+bounded batches before claims begin. Other deletion operations and every job
+kind remain dormant until their owning slices register handlers. Development
+starts the feature-local coordinator from server instrumentation; production
+runs the same coordinator code in the private `memory-worker` role. Both
+preflight the suppression keyring and every referenced historical key ID before
+reconciliation and claims.
 
 `User.role`/`User.status`, identity/session/token/rule/invite relations, and exact normalized email/domain matching implement the auth state machine. The schema owns field/enumeration shape; the bounded owners routed by `SECURITY.md` own the threat and session contract.
 

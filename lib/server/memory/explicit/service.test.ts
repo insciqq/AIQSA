@@ -142,7 +142,7 @@ describe("explicit Memory service", () => {
     expect(JSON.stringify(vi.mocked(authorizations.mint).mock.calls)).not.toContain(STATEMENT);
   });
 
-  it("rejects lifecycle authorizations that this API slice cannot consume", async () => {
+  it("rejects only lifecycle authorizations without a shipped consumer", async () => {
     const authorizations = authorizationRepository();
     const service = createExplicitMemoryService({
       authorizationRepository: authorizations,
@@ -153,12 +153,20 @@ describe("explicit Memory service", () => {
     });
 
     await expect(service.mintAuthorization("user-1", {
-      action: "FORGET",
+      action: "MOVE_SCOPE",
       confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
       expectedTargetVersionId: "version-1",
-      requestNonce: "nonce-forget",
+      requestNonce: "nonce-move",
       targetFactId: "fact-1"
-    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_contract_invalid"));
+    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_operation_unsupported"));
+    await expect(service.mintAuthorization("user-1", {
+      action: "BULK_DELETE",
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      expectedMemoryRevision: 4,
+      expectedSettingsRevision: 2,
+      operation: "CLEAR_HISTORY_INDEX",
+      requestNonce: "nonce-clear-history"
+    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_operation_unsupported"));
     expect(authorizations.mint).not.toHaveBeenCalled();
   });
 

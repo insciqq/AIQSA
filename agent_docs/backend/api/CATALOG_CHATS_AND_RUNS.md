@@ -19,17 +19,29 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   locked mutation, and provider/consent unavailability never disables local
   management capabilities.
 - `/api/me/memory/mutation-authorizations` and `/api/me/memories` are the
-  private explicit-Memory management family. The first release accepts only
-  exact `GLOBAL_USER` statements and identifiers. Save grants bind the exact
-  statement hash; Edit grants bind the owner fact and current version; both
-  bind the current confirmation copy and one caller nonce and are consumed
-  atomically with the append-only mutation. Exact matching receipt retries are
-  idempotent, while expired, stale, altered, replayed-for-another-operation,
-  foreign, or natural-language targets fail without mutation. List, detail,
-  bounded evidence, create, edit, and pin remain available with all three
-  Memory gates off. Search accepts private query text only in a strict POST
-  body and synchronously uses the active exact/Russian/English/simple lexical
-  projection; no provider, worker, or utility consent participates.
+  private explicit-Memory management family and accept only exact `GLOBAL_USER`
+  statements and identifiers. Save grants bind the exact statement hash; Edit
+  and Forget grants bind the owner fact/current version; `DELETE_EXPLICIT`
+  grants bind the operation plus exact settings and Memory revisions. All bind
+  current confirmation copy and one caller nonce and are consumed atomically
+  with the mutation. Exact matching receipt retries are idempotent, while
+  expired, stale, altered, cross-operation, foreign, or natural-language
+  targets fail without mutation. List, detail, bounded evidence, create, edit,
+  pin, and `POST /api/me/memories/:memoryId/forget` remain available with all
+  three Memory gates off. Search accepts private query text only in a strict
+  POST body and synchronously uses the active exact/Russian/English/simple
+  lexical projection; no provider, worker, or utility consent participates.
+- `POST /api/me/memory/bulk-delete` currently admits only `DELETE_EXPLICIT`.
+  It applies the retrieval fence and exact suppressions before its `202`
+  response, then returns one durable deletion id. The same request explicitly
+  rejects `DELETE_LEARNED`, `CLEAR_HISTORY_INDEX`, and
+  `DELETE_ALL_REUSABLE` until their owners ship. Authenticated
+  `GET /api/me/memory/deletions/:deletionId` returns only the owner's
+  receipt-bound admission counters, bounded contributor progress, last audit,
+  and `PENDING | RUNNING | RETRY_WAIT | BLOCKED_REQUIRES_ADMIN | SUCCEEDED`;
+  it never returns forgotten text. `SUCCEEDED` means every current versioned
+  purge contributor audited empty, while admission already meant future
+  retrieval was fenced.
 - The catalog returns the client-safe entitled answer and Search projection
   produced by provider admission, together with personal/installation default
   source facts and presentation preferences. A non-null personal exact

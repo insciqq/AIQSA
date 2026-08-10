@@ -5,6 +5,10 @@ import {
   preflightMemorySuppressionKeys
 } from "../suppressionKeyring";
 import { startDefaultMemoryCoordinator } from "./defaultCoordinator";
+import {
+  ensureDefaultMemoryPurgeHandlerRegistered,
+  reconcileDefaultCompletedMemoryDeletionAudits
+} from "../purge/defaultPurge";
 
 export type MemoryCoordinatorStartupBlockCode =
   | "memory_coordinator_startup_failed"
@@ -48,6 +52,7 @@ export async function listRequiredMemorySuppressionKeyIds(
 export async function startMemoryCoordinatorFeatureLocally(input: Readonly<{
   env?: Record<string, string | undefined>;
   listRequiredKeyIds: () => Promise<readonly string[]>;
+  reconcileDeletionAudits?: () => Promise<void>;
   start: () => void;
 }>): Promise<MemoryCoordinatorStartupResult> {
   try {
@@ -64,6 +69,7 @@ export async function startMemoryCoordinatorFeatureLocally(input: Readonly<{
         status: "blocked"
       });
     }
+    await input.reconcileDeletionAudits?.();
     input.start();
     return Object.freeze({ status: "ready" });
   } catch {
@@ -89,8 +95,10 @@ export function startDefaultMemoryCoordinatorFeatureLocally(): Promise<MemoryCoo
   }
 
   scope.__aiqsaMemoryCoordinatorStartupStatus = Object.freeze({ status: "starting" });
+  ensureDefaultMemoryPurgeHandlerRegistered();
   const pending = startMemoryCoordinatorFeatureLocally({
     listRequiredKeyIds: () => listRequiredMemorySuppressionKeyIds(prisma),
+    reconcileDeletionAudits: reconcileDefaultCompletedMemoryDeletionAudits,
     start: startDefaultMemoryCoordinator
   });
   scope.__aiqsaMemoryCoordinatorStartupPromise = pending;
