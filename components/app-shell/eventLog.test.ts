@@ -419,6 +419,27 @@ describe("summarizeInspectorEvents", () => {
     expect(JSON.stringify(summaries)).not.toContain("includedText");
   });
 
+  it("renders a passage-free Memory outcome without private item evidence", () => {
+    const summaries = summarizeInspectorEvents([{
+      data: {
+        degradationCode: "memory_vector_unavailable",
+        itemCount: 2,
+        outcome: "DEGRADED"
+      },
+      type: "memory_retrieval"
+    }]);
+
+    expect(summaries).toEqual([expect.objectContaining({
+      detail: "Reason: Memory vector unavailable",
+      label: "Memory",
+      stage: "M",
+      tone: "warning",
+      value: "2 memories included · degraded safely"
+    })]);
+    expect(JSON.stringify(summaries)).not.toContain("includedText");
+    expect(JSON.stringify(summaries)).not.toContain("versionId");
+  });
+
   it("shows reasoning artifacts as neutral summaries instead of warnings or raw JSON", () => {
     const summaries = summarizeInspectorEvents([
       {

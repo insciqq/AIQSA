@@ -27,8 +27,14 @@ import type {
   CatalogModel,
   ChatDetail,
   ChatSummary,
+  Notice,
   ThreadMessage
 } from "@/components/app-shell/types";
+import {
+  refreshMemorySettings,
+  useMemorySettingsStore
+} from "@/components/app-shell/memorySettingsStore";
+import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
 import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
@@ -75,6 +81,7 @@ type MessageRunActionsInput = {
   currentModel: CatalogModel | undefined;
   fetchRun(runId: string, chatId: string): Promise<unknown>;
   notifyAnswerReady(): Promise<void>;
+  openMemorySettings(): void;
   persistActiveLeaf(chatId: string, messageId: string | null): Promise<unknown>;
   primeAnswerSound(): Promise<void>;
   refreshActiveChat(
@@ -82,7 +89,7 @@ type MessageRunActionsInput = {
     options?: { forceDetail?: boolean; preserveControls?: boolean; resumeRuns?: boolean }
   ): Promise<ChatDetail | null>;
   resetThreadToLatest(): void;
-  setNotice(input: { kind: "error"; text: string }): void;
+  setNotice(input: Notice): void;
   activeChatStreaming: boolean;
 };
 
@@ -119,12 +126,32 @@ export function useMessageRunActions({
   currentModel,
   fetchRun,
   notifyAnswerReady,
+  openMemorySettings,
   persistActiveLeaf,
   primeAnswerSound,
   refreshActiveChat,
   resetThreadToLatest,
   setNotice
 }: MessageRunActionsInput) {
+  async function showMemoryTargetSelection(): Promise<void> {
+    let locale = useMemorySettingsStore.getState().data?.settings.memoryUiLocale ?? "RU";
+    try {
+      locale = (await refreshMemorySettings()).settings.memoryUiLocale;
+    } catch {
+      // The feature contract defaults to a complete RU surface when the
+      // account preference cannot be refreshed; never mix per-key fallbacks.
+    }
+    setNotice({
+      action: {
+        label: memoryUiCopy(locale, "action.manage"),
+        onClick: openMemorySettings
+      },
+      kind: "error",
+      persistent: true,
+      text: memoryUiCopy(locale, "action.ambiguous")
+    });
+  }
+
   function captureRunControlSnapshot(): MessageRunControlSnapshot {
     const {
       selectedAssistant,
@@ -282,7 +309,7 @@ export function useMessageRunActions({
       resetThreadToLatest();
     }
 
-    await executeMessageRunLifecycle({
+    const result = await executeMessageRunLifecycle({
       activeChatIdRef,
       activeStreamAbortRef,
       chatId,
@@ -328,6 +355,9 @@ export function useMessageRunActions({
       // The committed branch keeps the readable failed tail: rollback would hide
       // the edited question again, and the stranded-leaf reconcile owns retry.
     });
+    if (result.failureCode === "memory_intent_confirmation_required") {
+      await showMemoryTargetSelection();
+    }
   }
 
   async function submitComposer() {
@@ -705,6 +735,9 @@ export function useMessageRunActions({
           }
         }
       });
+      if (result.failureCode === "memory_intent_confirmation_required") {
+        await showMemoryTargetSelection();
+      }
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
       sendFailureMessage = result.failureMessage ?? null;
     } catch (error) {
@@ -831,7 +864,7 @@ export function useMessageRunActions({
         resetThreadToLatest();
       }
 
-      await executeMessageRunLifecycle({
+      const result = await executeMessageRunLifecycle({
         activeChatIdRef,
         activeStreamAbortRef,
         chatId: chatIdForSend,
@@ -898,6 +931,9 @@ export function useMessageRunActions({
           await reconcileAmbiguousRun(chatIdForSend);
         }
       });
+      if (result.failureCode === "memory_intent_confirmation_required") {
+        await showMemoryTargetSelection();
+      }
     } catch (error) {
       setNotice({ kind: "error", text: errorMessage(error) });
     }
@@ -949,7 +985,7 @@ export function useMessageRunActions({
     updateStreamChatActiveLeaf(chatIdForRegenerate, assistantId);
     resetThreadToLatest();
 
-    await executeMessageRunLifecycle({
+    const result = await executeMessageRunLifecycle({
       activeChatIdRef,
       activeStreamAbortRef,
       chatId: chatIdForRegenerate,
@@ -1006,6 +1042,9 @@ export function useMessageRunActions({
         await reconcileAmbiguousRun(chatIdForRegenerate);
       }
     });
+    if (result.failureCode === "memory_intent_confirmation_required") {
+      await showMemoryTargetSelection();
+    }
   }
 
   return {

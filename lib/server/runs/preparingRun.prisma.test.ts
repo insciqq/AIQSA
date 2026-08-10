@@ -416,6 +416,56 @@ describe("PREPARING run orchestration", () => {
           includedText: "My preferred editor is Vim."
         })
       ]);
+
+      const initialInspection = await repository.getRunForUser(created.runId, userId);
+      expect(initialInspection?.memoryReceipt).toMatchObject({
+        itemCount: 1,
+        items: [expect.objectContaining({
+          includedText: "My preferred editor is Vim.",
+          lifecycleState: "CURRENT",
+          versionId: fact.versionId
+        })],
+        outcome: "USED"
+      });
+      const memoryEvent = initialInspection?.events.find(
+        ({ eventType }) => eventType === "memory_retrieval"
+      );
+      expect(memoryEvent?.payload).toEqual({
+        degradationCode: null,
+        itemCount: 1,
+        outcome: "USED"
+      });
+      expect(JSON.stringify(memoryEvent)).not.toContain("My preferred editor is Vim.");
+
+      const chatUpdate = await repository.getChatUpdateForRun({
+        assistantMessageId: created.assistantMessageId,
+        chatId: chat.id,
+        userId,
+        userMessageId: created.userMessageId
+      });
+      expect(chatUpdate?.messages.find(({ id }) => id === created.assistantMessageId)
+        ?.artifactSummary?.memoryReceipt?.items[0]).toMatchObject({
+          includedText: "My preferred editor is Vim.",
+          versionId: fact.versionId
+        });
+
+      const forgottenAt = new Date();
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryFactVersion.update({
+          data: { state: "FORGOTTEN", systemTo: forgottenAt },
+          where: { id: fact.versionId }
+        });
+        await tx.memoryFact.update({
+          data: { currentVersionId: null, forgottenAt, state: "FORGOTTEN" },
+          where: { id: fact.factId }
+        });
+      });
+      expect((await repository.getRunForUser(created.runId, userId))
+        ?.memoryReceipt?.items[0]).toMatchObject({
+          includedText: "My preferred editor is Vim.",
+          lifecycleState: "LATER_FORGOTTEN",
+          versionId: fact.versionId
+        });
     });
   });
 
@@ -715,6 +765,10 @@ describe("PREPARING run orchestration", () => {
         outcome: "APPLIED",
         persistedToolCallId: toolCall.id
       });
+      expect((await repository.getRunForUser(created.runId, userId))?.memoryAction).toEqual({
+        operation: "SAVE",
+        status: "COMMITTED"
+      });
     });
   });
 
@@ -837,7 +891,7 @@ describe("PREPARING run orchestration", () => {
       const forgottenAt = new Date();
       await prisma.$transaction(async (tx) => {
         await tx.memoryFactVersion.update({
-          data: { state: "RETRACTED", systemTo: forgottenAt },
+          data: { state: "FORGOTTEN", systemTo: forgottenAt },
           where: { id: fact.versionId }
         });
         await tx.memoryFact.update({

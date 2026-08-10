@@ -1,6 +1,12 @@
 import type { ErrorResponse, SessionErrorCode } from "./http";
 import { decodeThreadToolActivity, type ThreadToolActivity } from "./toolActivity";
 import { decodeKnowledgePlan, type KnowledgePlan } from "./knowledge";
+import {
+  decodeMemoryActionFeedback,
+  decodeMemoryReceipt,
+  type MemoryActionFeedback,
+  type MemoryReceipt
+} from "./memory";
 
 export type RunEventView = {
   data: unknown;
@@ -109,6 +115,8 @@ export type ModelRunResponseProjection = {
   knowledgeBindings?: KnowledgeRunBindingProjection[];
   knowledgePlan?: KnowledgePlan;
   knowledgeRuns?: KnowledgeRunProjection[];
+  memoryAction?: MemoryActionFeedback;
+  memoryReceipt?: MemoryReceipt;
   modelId: string;
   outputTokens: number;
   provider: string;
@@ -529,6 +537,19 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
     };
   }
 
+  let memoryAction: MemoryActionFeedback | undefined;
+  if (run.memoryAction !== undefined) {
+    const decoded = decodeMemoryActionFeedback(run.memoryAction);
+    if (!decoded.ok) return null;
+    memoryAction = decoded.value;
+  }
+  let memoryReceipt: MemoryReceipt | undefined;
+  if (run.memoryReceipt !== undefined) {
+    const decoded = decodeMemoryReceipt(run.memoryReceipt);
+    if (!decoded.ok) return null;
+    memoryReceipt = decoded.value;
+  }
+
   const cachedInputTokens = finiteNumber(run.cachedInputTokens) ?? 0;
   const cacheWriteInputTokens = finiteNumber(run.cacheWriteInputTokens) ?? 0;
   const estimatedCostMicros = finiteNumber(run.estimatedCostMicros);
@@ -551,6 +572,8 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
     ),
     knowledgePlan: decodedKnowledgePlan.plan,
     knowledgeRuns: decodedKnowledgeRuns,
+    ...(memoryAction ? { memoryAction } : {}),
+    ...(memoryReceipt ? { memoryReceipt } : {}),
     modelId,
     outputTokens,
     provider,

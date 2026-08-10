@@ -672,4 +672,49 @@ describe("chat wire contracts", () => {
       }
     })).toBeNull();
   });
+
+  it("strictly decodes message-bound Memory receipt and committed action feedback", () => {
+    const artifactSummary = {
+      citationCount: 0,
+      citations: [],
+      memoryAction: { operation: "UPDATE", status: "COMMITTED" },
+      memoryReceipt: {
+        degradationCode: null,
+        itemCount: 1,
+        items: [{
+          includedText: "Frozen answer-bound memory.",
+          itemType: "FACT_VERSION",
+          lifecycleState: "LATER_FORGOTTEN",
+          ordinal: 0,
+          scopeType: "GLOBAL_USER",
+          selectionReason: "explicit_lexical_relevance",
+          sourceChatId: null,
+          sourceMessageIds: [],
+          sourceMode: "EXPLICIT",
+          versionId: "version-1"
+        }],
+        outcome: "USED",
+        summary: "memory_receipt:used:1"
+      },
+      reasoningCount: 0,
+      reasoningText: [],
+      searchCount: 0,
+      searchStrategy: null,
+      toolCallCount: 0,
+      toolCalls: []
+    };
+    const decode = (value: unknown) => decodeChatDetailResponse({
+      chat: detailChat({ messages: [{ ...message, artifactSummary: value }], usageStats })
+    });
+
+    expect(decode(artifactSummary)?.messages[0]?.artifactSummary).toEqual(artifactSummary);
+    expect(decode({
+      ...artifactSummary,
+      memoryReceipt: { ...artifactSummary.memoryReceipt, itemCount: 2 }
+    })).toBeNull();
+    expect(decode({
+      ...artifactSummary,
+      memoryAction: { ...artifactSummary.memoryAction, targetId: "private" }
+    })).toBeNull();
+  });
 });

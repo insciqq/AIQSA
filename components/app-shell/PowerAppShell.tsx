@@ -21,6 +21,8 @@ import {
 } from "@/components/app-shell/composerSessionStore";
 import { createFolderActions } from "@/components/app-shell/folderActions";
 import { useMessageRunActions } from "@/components/app-shell/messageRunActions";
+import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
+import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
 import { PowerAppShellView } from "@/components/app-shell/PowerAppShellView";
 import type {
   ShellComposerView,
@@ -934,6 +936,7 @@ export function PowerAppShell({
     currentModel,
     fetchRun,
     notifyAnswerReady,
+    openMemorySettings,
     persistActiveLeaf,
     primeAnswerSound,
     refreshActiveChat,
@@ -1095,6 +1098,15 @@ export function PowerAppShell({
       assistantLibraryActions.closeLibrary();
       closeGeneralSettings();
       knowledgeLibraryActions.openEvidence(knowledgeBaseId);
+    },
+    openMemorySourceChat: (chatId: string) => {
+      const sourceChat = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
+      if (!sourceChat) {
+        const locale = useMemorySettingsStore.getState().data?.settings.memoryUiLocale ?? "RU";
+        setNotice({ kind: "error", text: memoryUiCopy(locale, "receipt.sourceUnavailable") });
+        return;
+      }
+      void activateChat(sourceChat, { preserveControls: true });
     },
     retryActiveChatDetail,
     showJumpToLatest,

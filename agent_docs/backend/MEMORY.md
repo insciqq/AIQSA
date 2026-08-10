@@ -7,7 +7,7 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 Native Memory is approved. The current baseline includes the feature-dark
 Phase 0 contract/evaluation harness, Phase 1 persistence and coordination, and
-the explicit-fact run path of Phase 2. Phase 0 has strict decoders, pure
+the complete explicit Saved Memories vertical slice of Phase 2. Phase 0 has strict decoders, pure
 state/counter/safety validation, RU/EN parity, frozen provider-neutral scoring,
 signed qualification decisions, and a hash-frozen synthetic tuning/holdout
 corpus. Behavior-only benchmark-shaped probes contain no upstream benchmark
@@ -38,6 +38,11 @@ only a finalized request.
 All answer adapters place personal context after trusted instructions. Phase 2
 withholds it from hosted Search, Knowledge, MCP/external tools, and non-owned
 Assistants; finalization and provider dispatch enforce the same egress fence.
+Each accepted run privately projects its exact frozen Memory outcome/items into
+the originating answer and a passage-free Events digest. Later Forget or source
+loss adds a lifecycle label without replacing admitted text. Save/Edit/Forget
+feedback requires the exact same-run applied operation/tool receipt join;
+ambiguous targets route to Manage Memories without mutation.
 
 Authenticated `GET/PATCH /api/me/memory/settings` exposes bounded, `private,
 no-store` settings/capability and current-versus-accepted utility policy. It
@@ -45,7 +50,9 @@ accepts one CAS patch or consent payload. The three gates and RU/EN locale are
 independent; only memory-visible changes advance Memory revision. Embedding
 selection requires current exact entitlement, and consent recomputes the
 server-owned fingerprint inside the lock. Stale observations fail atomically;
-phase capabilities remain fail-closed and the route schedules no work.
+the route schedules no work. Phase 2 advertises explicit Memory and qualified
+RU local retrieval while history recall and automatic learning remain
+unavailable; existing users remain default-off for Memory use.
 
 Explicit `GLOBAL_USER` management is gate-independent. Short-lived grants bind
 Save to an exact statement; Edit/Forget to owner fact/current version; and
@@ -93,16 +100,24 @@ unknown results are not replayed, and Forget/generation drift blocks late apply.
 
 Past-chat/automatic/profile retrieval, answer-time reranking, split
 Memory-plus-external-tool synthesis, other lifecycle/bulk variants, and
-production-composed utility calls remain unavailable. Development runs the
+production-composed qualified utility calls remain unavailable. Development runs the
 feature-local coordinator; production uses the same code in private no-API
 `memory-worker`. Both preflight every historical suppression key ID, and Memory
-failure does not alter web readiness. The default registry claims only
-`FORGET_PURGE`; optional embedding remains uncomposed. Per-call execution owns
+failure does not alter web readiness. The default Phase 2 registry composes
+`FORGET_PURGE` and optional `EMBED_ITEMS`; embedding parks before provider I/O
+because the code-owned qualification registry is empty and signature
+verification is fail-closed until operator-approved authority is installed.
+Lexical CRUD and retrieval remain live. Per-call execution owns
 current authority/consent/qualification, immutable destination evidence,
 single-winner start, nullable usage, unknown-outcome recovery, and detach.
 Private `preparing` runs never enter public projection or provider I/O.
 Ordinary answers cannot create Memory. Existing chat context and folder/project
 prompt memory are separate behavior.
+
+Anonymous share creation and reads re-project through the positive public
+text-only schema. Personal context, Memory attempts/executions/bindings/items,
+events, operation/tool receipts, identifiers, sources, and lifecycle metadata
+never enter the public snapshot or response; visible answer prose is preserved.
 
 This document owns the durable target contract while implementation lands in
 ordered slices. Executable code, migrations, and tests remain authoritative for

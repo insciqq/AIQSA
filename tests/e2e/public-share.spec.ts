@@ -133,3 +133,63 @@ test("contains a long sanitized public snapshot in the dark theme", async ({ bas
     await prisma.sharedChatSnapshot.delete({ where: { id: share.id } });
   }
 });
+
+test("re-projects legacy share JSON without exposing private Memory artifacts", async ({ baseURL, page }) => {
+  expect(baseURL).toBeTruthy();
+  const owner = await prisma.user.findUnique({
+    select: { id: true },
+    where: { email: LOCAL_OPERATOR_EMAIL }
+  });
+  expect(owner).toBeTruthy();
+
+  const token = `public-share-memory-${randomUUID()}`;
+  const privateValues = [
+    "private-personal-context-sentinel",
+    "private-memory-binding-sentinel",
+    "private-memory-version-sentinel",
+    "private-memory-source-sentinel",
+    "private-attempt-execution-event-tool-receipt-sentinel"
+  ];
+  const snapshot = {
+    attempts: privateValues[4],
+    messages: [{
+      content: {
+        bindings: privateValues[1],
+        blocks: [{
+          sourceId: privateValues[3],
+          text: "Only this answer prose is public.",
+          type: "text",
+          versionId: privateValues[2]
+        }],
+        personalContext: privateValues[0]
+      },
+      memoryReceipt: privateValues[4],
+      role: "assistant"
+    }],
+    title: "Legacy Memory share",
+    version: 1
+  };
+  const share = await prisma.sharedChatSnapshot.create({
+    data: {
+      ownerUserId: owner!.id,
+      slugHash: hashShareToken(token),
+      snapshot: snapshot as unknown as Prisma.InputJsonValue,
+      title: snapshot.title
+    },
+    select: { id: true }
+  });
+
+  try {
+    const response = await page.goto(`/s/${token}`);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByText("Only this answer prose is public.", { exact: true })).toBeVisible();
+    const responseText = await response!.text();
+    const documentText = await page.content();
+    for (const privateValue of privateValues) {
+      expect(responseText).not.toContain(privateValue);
+      expect(documentText).not.toContain(privateValue);
+    }
+  } finally {
+    await prisma.sharedChatSnapshot.delete({ where: { id: share.id } });
+  }
+});

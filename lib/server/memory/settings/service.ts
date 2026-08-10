@@ -17,9 +17,9 @@ export type MemorySettingsCapabilities = MemorySettingsResponse["capabilities"];
 export const DEFAULT_MEMORY_SETTINGS_CAPABILITIES: MemorySettingsCapabilities =
   Object.freeze({
     automaticLearning: false,
-    explicitMemory: false,
+    explicitMemory: true,
     historyRecall: false,
-    russianQualified: false
+    russianQualified: true
   });
 
 export type MemorySettingsRepository = Readonly<{

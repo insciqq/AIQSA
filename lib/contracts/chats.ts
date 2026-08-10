@@ -19,6 +19,12 @@ import {
   type ThreadToolActivityStatus
 } from "./toolActivity";
 import { decodeKnowledgePlan, type KnowledgePlan } from "./knowledge";
+import {
+  decodeMemoryActionFeedback,
+  decodeMemoryReceipt,
+  type MemoryActionFeedback,
+  type MemoryReceipt
+} from "./memory";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -85,6 +91,8 @@ export type ThreadArtifactSummary = {
   knowledgeCitations?: ThreadKnowledgeCitation[];
   knowledgeInvocationCount?: number;
   knowledgeOutcomes?: ThreadKnowledgeOutcome[];
+  memoryAction?: MemoryActionFeedback;
+  memoryReceipt?: MemoryReceipt;
   reasoningCount: number;
   reasoningText: string[];
   searchActivity?: ThreadSearchActivity[];
@@ -698,6 +706,19 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     );
   }
 
+  let memoryAction: MemoryActionFeedback | undefined;
+  if (value.memoryAction !== undefined) {
+    const decoded = decodeMemoryActionFeedback(value.memoryAction);
+    if (!decoded.ok) return null;
+    memoryAction = decoded.value;
+  }
+  let memoryReceipt: MemoryReceipt | undefined;
+  if (value.memoryReceipt !== undefined) {
+    const decoded = decodeMemoryReceipt(value.memoryReceipt);
+    if (!decoded.ok) return null;
+    memoryReceipt = decoded.value;
+  }
+
   return {
     citationCount,
     citations: citations.filter((citation): citation is ThreadCitation => citation !== null),
@@ -709,6 +730,8 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
         (outcome): outcome is ThreadKnowledgeOutcome => outcome !== null
       )
     } : {}),
+    ...(memoryAction ? { memoryAction } : {}),
+    ...(memoryReceipt ? { memoryReceipt } : {}),
     reasoningCount,
     reasoningText: value.reasoningText as string[],
     ...(searchActivity !== undefined ? { searchActivity } : {}),

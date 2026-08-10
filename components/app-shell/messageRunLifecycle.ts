@@ -60,6 +60,7 @@ export type MessageRunLifecycleResult = {
   assistantMessageId: string;
   cancelled: boolean;
   failed: boolean;
+  failureCode?: string;
   failureMessage?: string;
   receivedChatUpdate: boolean;
   runId: string | null;
@@ -160,6 +161,7 @@ export async function executeMessageRunLifecycle({
   let cancelled = false;
   let failed = false;
   let failureMessage: string | null = null;
+  let failureCode: string | null = null;
   let receivedChatUpdate = false;
   let runId: string | null = null;
   let serverRejectedRequest = false;
@@ -187,6 +189,7 @@ export async function executeMessageRunLifecycle({
         response,
         `${failurePrefix}_${response.status}`
       );
+      failureCode = details.code ?? null;
       userFacingFailureMessage = details.preserveForComposer ? details.message : null;
       throw new Error(details.message);
     }
@@ -288,6 +291,7 @@ export async function executeMessageRunLifecycle({
     assistantMessageId,
     cancelled,
     failed,
+    ...(failureCode ? { failureCode } : {}),
     ...(failureMessage ? { failureMessage } : {}),
     receivedChatUpdate,
     runId

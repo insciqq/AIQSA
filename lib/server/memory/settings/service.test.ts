@@ -9,6 +9,7 @@ import { MemoryPersistenceError } from "../persistence/errors";
 import type { MemorySettingsPersistenceSnapshot } from "../persistence/settings";
 import {
   createMemorySettingsService,
+  DEFAULT_MEMORY_SETTINGS_CAPABILITIES,
   MemorySettingsServiceError,
   type MemorySettingsRepository
 } from "./service";
@@ -141,6 +142,23 @@ function repository(
 }
 
 describe("Memory settings service", () => {
+  it("advertises only the complete Phase 2 surface by default", async () => {
+    const service = createMemorySettingsService({
+      repository: repository(),
+      resolveCurrentUtilityPolicy: async () => policy()
+    });
+
+    const response = await service.get("user-1");
+
+    expect(response.capabilities).toEqual(DEFAULT_MEMORY_SETTINGS_CAPABILITIES);
+    expect(response.capabilities).toEqual({
+      automaticLearning: false,
+      explicitMemory: true,
+      historyRecall: false,
+      russianQualified: true
+    });
+  });
+
   it("projects bounded safe destinations and exact current/accepted policy evidence", async () => {
     const service = createMemorySettingsService({
       capabilities: {

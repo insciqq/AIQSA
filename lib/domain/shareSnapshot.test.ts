@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPublicShareSnapshot,
   GroundedContentNotShareableError,
+  projectPublicShareSnapshot,
   type ShareSnapshotMessageInput
 } from "./shareSnapshot";
 
@@ -182,5 +183,69 @@ describe("share snapshots", () => {
     expect(snapshot.messages[0]?.content.blocks).toEqual([{ text: answer, type: "text" }]);
     const serialized = JSON.stringify(snapshot);
     for (const privateValue of privateSentinels) expect(serialized).not.toContain(privateValue);
+  });
+
+  it("strips every Memory surface both when creating and re-reading a stored share", () => {
+    const answer = "Visible generated answer remains byte-for-byte.\nSecond line.";
+    const privateSentinels = [
+      "private-personal-context",
+      "private-memory-binding",
+      "private-memory-item",
+      "private-attempt",
+      "private-execution",
+      "private-memory-event",
+      "private-tool-receipt",
+      "private-version-id",
+      "private-source-chat"
+    ];
+    const created = buildPublicShareSnapshot({
+      activeLeafMessageId: "answer-memory",
+      messages: [{
+        content: {
+          blocks: [
+            { text: answer, type: "text" },
+            { receipt: privateSentinels[2], type: "memory_receipt" }
+          ],
+          personalContext: privateSentinels[0]
+        },
+        id: "answer-memory",
+        memoryEvidence: {
+          attempts: privateSentinels[3],
+          bindings: privateSentinels[1],
+          events: privateSentinels[5],
+          executions: privateSentinels[4],
+          sourceChatId: privateSentinels[8],
+          toolReceipts: privateSentinels[6],
+          versionId: privateSentinels[7]
+        },
+        parentMessageId: null,
+        role: "assistant"
+      }],
+      title: "Memory-safe share"
+    });
+    const reread = projectPublicShareSnapshot({
+      ...created,
+      attempts: privateSentinels[3],
+      messages: created.messages.map((message) => ({
+        ...message,
+        memoryReceipt: privateSentinels[1],
+        content: {
+          ...message.content,
+          bindings: privateSentinels[2],
+          blocks: message.content.blocks.map((block) => ({
+            ...block,
+            sourceChatId: privateSentinels[8],
+            versionId: privateSentinels[7]
+          }))
+        }
+      }))
+    });
+
+    expect(reread).toEqual(created);
+    expect(reread?.messages[0]?.content.blocks).toEqual([{ text: answer, type: "text" }]);
+    for (const privateValue of privateSentinels) {
+      expect(JSON.stringify(created)).not.toContain(privateValue);
+      expect(JSON.stringify(reread)).not.toContain(privateValue);
+    }
   });
 });

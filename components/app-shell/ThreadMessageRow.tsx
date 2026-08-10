@@ -7,6 +7,16 @@ import {
 } from "@/components/app-shell/ThreadArtifacts";
 import { RunReceipt } from "@/components/app-shell/RunReceipt";
 import { KnowledgeEvidenceBlock } from "@/components/app-shell/KnowledgeEvidenceBlock";
+import {
+  MemoryActionConfirmation,
+  MemoryEvidenceBlock,
+  memoryReceiptFact,
+  visibleMemoryReceipt
+} from "@/components/app-shell/MemoryEvidenceBlock";
+import {
+  refreshMemorySettings,
+  useMemorySettingsStore
+} from "@/components/app-shell/memorySettingsStore";
 import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
 import {
   deriveRunReceipt,
@@ -69,7 +79,13 @@ type MessageMenuPlacement = Readonly<{
   top: number;
 }>;
 
-type InlineReceiptDisclosure = "citations" | "knowledge" | "reasoning" | "search" | "tools";
+type InlineReceiptDisclosure =
+  | "citations"
+  | "knowledge"
+  | "memory"
+  | "reasoning"
+  | "search"
+  | "tools";
 
 function ThreadRunActivity({ pipeline }: { pipeline: PipelineSnapshot }) {
   const label = runActivityLabel(pipeline);
@@ -494,6 +510,7 @@ function ThreadMessageRowComponent({
   onEditMessage,
   onLoadPersistedRun,
   onOpenKnowledgeEvidence,
+  onOpenMemorySourceChat,
   onOpenRunDetails,
   onRegenerateMessage,
   onToggleMobileControls,
@@ -518,6 +535,7 @@ function ThreadMessageRowComponent({
   onEditMessage(message: ThreadMessage): void;
   onLoadPersistedRun?(runId: string): Promise<void> | void;
   onOpenKnowledgeEvidence?(knowledgeBaseId: string): void;
+  onOpenMemorySourceChat(chatId: string): void;
   onOpenRunDetails(): void;
   onRegenerateMessage(messageId: string): void;
   onToggleMobileControls?(messageId: string): void;
@@ -539,6 +557,17 @@ function ThreadMessageRowComponent({
   const [expandedDisclosures, setExpandedDisclosures] = useState<ReadonlySet<InlineReceiptDisclosure>>(
     () => new Set()
   );
+  const memorySettings = useMemorySettingsStore((state) => state.data);
+  const memorySettingsLoadState = useMemorySettingsStore((state) => state.loadState);
+  const hasMemoryProjection = Boolean(
+    artifactSummary?.memoryAction || artifactSummary?.memoryReceipt
+  );
+  const memoryLocale = memorySettings?.settings.memoryUiLocale ??
+    (memorySettingsLoadState === "error" ? "RU" : null);
+  useEffect(() => {
+    if (!hasMemoryProjection || memorySettings || memorySettingsLoadState === "loading") return;
+    void refreshMemorySettings().catch(() => undefined);
+  }, [hasMemoryProjection, memorySettings, memorySettingsLoadState]);
   const hasInlineSearch = Boolean(
     artifactSummary?.searchCount || artifactSummary?.searchActivity?.length
   ) &&
@@ -549,6 +578,11 @@ function ThreadMessageRowComponent({
   const hasInlineCitations = showCitations && Boolean(artifactSummary?.citationCount);
   const hasInlineKnowledge = message.status !== "streaming" &&
     Boolean(artifactSummary?.knowledgeInvocationCount);
+  const memoryReceipt = message.status !== "streaming" &&
+    visibleMemoryReceipt(artifactSummary?.memoryReceipt)
+      ? artifactSummary?.memoryReceipt ?? null
+      : null;
+  const hasInlineMemory = Boolean(memoryReceipt && memoryLocale);
   const hasInlineReasoning = showReasoningBlocks && Boolean(artifactSummary?.reasoningCount);
   const exactTerminalPersistedRun = persistedRun &&
     persistedRun.id === message.runId &&
@@ -595,6 +629,10 @@ function ThreadMessageRowComponent({
     }
     if (kind === "knowledge" && hasInlineKnowledge) {
       changeKnowledgeDisclosure(!expandedDisclosures.has("knowledge"));
+      return;
+    }
+    if (kind === "memory" && hasInlineMemory) {
+      changeDisclosure("memory", !expandedDisclosures.has("memory"));
       return;
     }
     if (kind === "citations" && hasInlineCitations) {
@@ -763,6 +801,9 @@ function ThreadMessageRowComponent({
     artifactSummary,
     assistantIdentity: message.assistantIdentity ?? null,
     messageStatus: message.status,
+    memoryFact: memoryReceipt && memoryLocale
+      ? memoryReceiptFact(memoryReceipt, memoryLocale)
+      : null,
     modelLabel: answerModelLabel,
     runActivity,
     runUsage: message.runUsage,
@@ -778,12 +819,14 @@ function ThreadMessageRowComponent({
   if (hasInlineSearch) actionableReceiptSegments.add("search");
   if (hasInlineTools) actionableReceiptSegments.add("tools");
   if (hasInlineKnowledge) actionableReceiptSegments.add("knowledge");
+  if (hasInlineMemory) actionableReceiptSegments.add("memory");
   if (hasInlineCitations) actionableReceiptSegments.add("citations");
   if (hasInlineReasoning) actionableReceiptSegments.add("reasoning");
   const disclosureReceiptSegments = new Set<RunReceiptSegmentKind>();
   if (hasInlineSearch) disclosureReceiptSegments.add("search");
   if (hasInlineTools) disclosureReceiptSegments.add("tools");
   if (hasInlineKnowledge) disclosureReceiptSegments.add("knowledge");
+  if (hasInlineMemory) disclosureReceiptSegments.add("memory");
   if (hasInlineCitations) disclosureReceiptSegments.add("citations");
   if (hasInlineReasoning) disclosureReceiptSegments.add("reasoning");
   const expandedReceiptSegments = new Set<RunReceiptSegmentKind>(expandedDisclosures);
@@ -913,6 +956,9 @@ function ThreadMessageRowComponent({
               />
             </div>
           ) : null}
+          {message.status !== "streaming" && artifactSummary?.memoryAction && memoryLocale ? (
+            <MemoryActionConfirmation action={artifactSummary.memoryAction} locale={memoryLocale} />
+          ) : null}
           {artifactSummary?.groundingDisplay?.provider === "gemini" ? (
             <GeminiSearchSuggestions html={artifactSummary.groundingDisplay.suggestionsHtml} />
           ) : null}
@@ -991,6 +1037,15 @@ function ThreadMessageRowComponent({
               settled={justCompleted}
               onActivate={activateReceiptSegment}
             />
+            {hasInlineMemory && memoryReceipt && memoryLocale ? (
+              <MemoryEvidenceBlock
+                expanded={expandedDisclosures.has("memory")}
+                locale={memoryLocale}
+                receipt={memoryReceipt}
+                onOpenSourceChat={onOpenMemorySourceChat}
+                onExpandedChange={(expanded) => changeDisclosure("memory", expanded)}
+              />
+            ) : null}
             {hasInlineCitations && artifactSummary ? (
               <CitationBlock
                 embedded

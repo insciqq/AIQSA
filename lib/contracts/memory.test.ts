@@ -22,6 +22,7 @@ import {
   decodeMemoryMutationAuthorizationResponse,
   decodeMemoryMutationResponse,
   decodeMemoryReceipt,
+  decodeMemoryActionFeedback,
   decodeMemoryRebuildInput,
   decodeMemoryRebuildStatus,
   decodeMemoryScopeSelection,
@@ -504,6 +505,18 @@ describe("Memory response contracts", () => {
       items: [{ ...item, lifecycleState: "SOURCE_DELETED" }],
       outcome: "USED",
       summary: "Used 1 memory"
+    })).toMatchObject({ ok: false });
+  });
+
+  it("accepts only committed bounded action feedback", () => {
+    expect(decodeMemoryActionFeedback({ operation: "SAVE", status: "COMMITTED" }))
+      .toMatchObject({ ok: true });
+    expect(decodeMemoryActionFeedback({ operation: "EDIT", status: "COMMITTED" }))
+      .toMatchObject({ ok: false });
+    expect(decodeMemoryActionFeedback({
+      operation: "FORGET",
+      status: "COMMITTED",
+      targetFactId: "private-id"
     })).toMatchObject({ ok: false });
   });
 

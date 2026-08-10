@@ -445,4 +445,60 @@ describe("share route handlers", () => {
       expect(serialized).not.toContain(privateValue);
     }
   });
+
+  it("re-projects legacy stored JSON before the anonymous response", async () => {
+    const privateValues = [
+      "private-personal-context",
+      "private-binding-id",
+      "private-version-id",
+      "private-source-id",
+      "private-attempt-execution-event-tool-receipt"
+    ];
+    const repository: ShareRepository = {
+      createChatShare: vi.fn(),
+      findPublicShare: vi.fn(async () => ({
+        id: "share-legacy",
+        snapshot: {
+          attempts: privateValues[4],
+          messages: [{
+            content: {
+              bindings: privateValues[1],
+              blocks: [{
+                sourceId: privateValues[3],
+                text: "Visible answer prose",
+                type: "text",
+                versionId: privateValues[2]
+              }],
+              personalContext: privateValues[0]
+            },
+            memoryReceipt: privateValues[4],
+            role: "assistant"
+          }],
+          title: "Legacy",
+          version: 1
+        } as never,
+        title: "Legacy"
+      })),
+      listChatShares: vi.fn(async () => []),
+      revokeShare: vi.fn()
+    };
+    const GET = createGetPublicShareHandler({ repository });
+    const response = await GET(new Request("http://app.local/api/public-shares/legacy"), {
+      params: { shareToken: "legacy" }
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.share.snapshot).toEqual({
+      messages: [{
+        content: { blocks: [{ text: "Visible answer prose", type: "text" }] },
+        role: "assistant"
+      }],
+      title: "Legacy",
+      version: 1
+    });
+    for (const privateValue of privateValues) {
+      expect(JSON.stringify(body)).not.toContain(privateValue);
+    }
+  });
 });

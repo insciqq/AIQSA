@@ -1,6 +1,10 @@
 import type {
   MemoryFactState,
   MemoryModality,
+  MemoryReceiptItem,
+  MemoryReceiptItemType,
+  MemoryReceiptLifecycleState,
+  MemoryScopeType,
   MemorySensitivityClass,
   MemoryUiLocale
 } from "@/lib/contracts/memory";
@@ -144,6 +148,23 @@ export const MEMORY_UI_COPY_KEYS = [
   "manager.discardBody",
   "manager.keepEditing",
   "manager.discardDraft",
+  "receipt.label",
+  "receipt.usedOne",
+  "receipt.usedMany",
+  "receipt.degraded",
+  "receipt.outcome",
+  "receipt.exactText",
+  "receipt.type",
+  "receipt.source",
+  "receipt.sourceUnavailable",
+  "receipt.scope",
+  "receipt.version",
+  "receipt.selection",
+  "action.saved",
+  "action.updated",
+  "action.forgotten",
+  "action.ambiguous",
+  "action.manage",
   "common.on",
   "common.off",
   "common.available",
@@ -292,6 +313,23 @@ const EN = {
   "manager.discardBody": "The exact statement and metadata in this unsaved draft will be lost.",
   "manager.keepEditing": "Keep editing",
   "manager.discardDraft": "Discard draft",
+  "receipt.label": "Memory",
+  "receipt.usedOne": "1 memory used",
+  "receipt.usedMany": "memories used",
+  "receipt.degraded": "retrieval degraded safely",
+  "receipt.outcome": "Outcome",
+  "receipt.exactText": "Exact included text",
+  "receipt.type": "Type",
+  "receipt.source": "Source",
+  "receipt.sourceUnavailable": "The source conversation is no longer available.",
+  "receipt.scope": "Scope",
+  "receipt.version": "Version",
+  "receipt.selection": "Selection",
+  "action.saved": "Memory saved.",
+  "action.updated": "Memory updated.",
+  "action.forgotten": "Memory forgotten and fenced from future use.",
+  "action.ambiguous": "Choose the exact saved memory before AIQSA changes anything.",
+  "action.manage": "Manage Memories",
   "common.on": "On",
   "common.off": "Off",
   "common.available": "Available",
@@ -437,6 +475,23 @@ const RU = {
   "manager.discardBody": "Точный текст и метаданные этого несохранённого черновика будут потеряны.",
   "manager.keepEditing": "Продолжить редактирование",
   "manager.discardDraft": "Отменить изменения",
+  "receipt.label": "Память",
+  "receipt.usedOne": "Использовано 1 воспоминание",
+  "receipt.usedMany": "Использовано воспоминаний",
+  "receipt.degraded": "поиск безопасно продолжен в ограниченном режиме",
+  "receipt.outcome": "Результат",
+  "receipt.exactText": "Точный добавленный текст",
+  "receipt.type": "Тип",
+  "receipt.source": "Источник",
+  "receipt.sourceUnavailable": "Исходный разговор больше недоступен.",
+  "receipt.scope": "Область",
+  "receipt.version": "Версия",
+  "receipt.selection": "Причина выбора",
+  "action.saved": "Воспоминание сохранено.",
+  "action.updated": "Воспоминание обновлено.",
+  "action.forgotten": "Воспоминание забыто и исключено из будущего использования.",
+  "action.ambiguous": "Выберите точное сохранённое воспоминание, прежде чем AIQSA что-либо изменит.",
+  "action.manage": "Управление памятью",
   "common.on": "Вкл.",
   "common.off": "Выкл.",
   "common.available": "Доступно",
@@ -526,4 +581,98 @@ export function memorySensitivityLabel(
   value: MemorySensitivityClass
 ): string {
   return SENSITIVITY_LABELS[locale][value];
+}
+
+const RECEIPT_ITEM_TYPE_LABELS: Readonly<
+  Record<MemoryUiLocale, Readonly<Record<MemoryReceiptItemType, string>>>
+> = {
+  EN: {
+    EPISODE: "Previous-chat episode",
+    FACT_VERSION: "Saved fact version",
+    PROFILE: "Memory summary",
+    RECALL_CHUNK: "Previous-chat excerpt"
+  },
+  RU: {
+    EPISODE: "Эпизод из предыдущего чата",
+    FACT_VERSION: "Версия сохранённого факта",
+    PROFILE: "Сводка Памяти",
+    RECALL_CHUNK: "Фрагмент предыдущего чата"
+  }
+};
+
+const RECEIPT_SOURCE_MODE_LABELS: Readonly<
+  Record<MemoryUiLocale, Readonly<Record<MemoryReceiptItem["sourceMode"], string>>>
+> = {
+  EN: {
+    AUTOMATIC: "Automatically learned evidence",
+    EXPLICIT: "Explicit user action",
+    HISTORY: "Retained chat history",
+    PROFILE: "Derived Memory summary"
+  },
+  RU: {
+    AUTOMATIC: "Автоматически изученные данные",
+    EXPLICIT: "Явное действие пользователя",
+    HISTORY: "Сохранённая история чатов",
+    PROFILE: "Производная сводка Памяти"
+  }
+};
+
+const RECEIPT_SCOPE_LABELS: Readonly<
+  Record<MemoryUiLocale, Readonly<Record<MemoryScopeType, string>>>
+> = {
+  EN: {
+    ASSISTANT: "Assistant",
+    CHAT: "Chat",
+    FOLDER: "Folder",
+    GLOBAL_USER: "Your account"
+  },
+  RU: {
+    ASSISTANT: "Ассистент",
+    CHAT: "Чат",
+    FOLDER: "Папка",
+    GLOBAL_USER: "Ваша учётная запись"
+  }
+};
+
+const RECEIPT_LIFECYCLE_LABELS: Readonly<
+  Record<MemoryUiLocale, Readonly<Record<MemoryReceiptLifecycleState, string>>>
+> = {
+  EN: {
+    CURRENT: "Current",
+    LATER_FORGOTTEN: "Later forgotten",
+    SOURCE_DELETED: "Source deleted"
+  },
+  RU: {
+    CURRENT: "Текущее",
+    LATER_FORGOTTEN: "Позже забыто",
+    SOURCE_DELETED: "Источник удалён"
+  }
+};
+
+export function memoryReceiptItemTypeLabel(
+  locale: MemoryUiLocale,
+  value: MemoryReceiptItemType
+): string {
+  return RECEIPT_ITEM_TYPE_LABELS[locale][value];
+}
+
+export function memoryReceiptSourceModeLabel(
+  locale: MemoryUiLocale,
+  value: MemoryReceiptItem["sourceMode"]
+): string {
+  return RECEIPT_SOURCE_MODE_LABELS[locale][value];
+}
+
+export function memoryReceiptScopeLabel(
+  locale: MemoryUiLocale,
+  value: MemoryScopeType
+): string {
+  return RECEIPT_SCOPE_LABELS[locale][value];
+}
+
+export function memoryReceiptLifecycleLabel(
+  locale: MemoryUiLocale,
+  value: MemoryReceiptLifecycleState
+): string {
+  return RECEIPT_LIFECYCLE_LABELS[locale][value];
 }

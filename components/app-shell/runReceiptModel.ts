@@ -12,6 +12,7 @@ export type RunReceiptFactKind =
   | "citations"
   | "context"
   | "knowledge"
+  | "memory"
   | "model"
   | "reasoning"
   | "search"
@@ -39,6 +40,7 @@ export type RunReceiptInput = Readonly<{
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
   messageStatus: ThreadMessage["status"];
+  memoryFact?: RunReceiptFact | null;
   modelLabel: string | null;
   runUsage?: ThreadRunUsage | null;
   runActivity?: PipelineSnapshot | null;
@@ -103,6 +105,7 @@ export function deriveRunReceipt({
   artifactSummary,
   assistantIdentity,
   messageStatus,
+  memoryFact,
   modelLabel,
   runActivity,
   runUsage,
@@ -131,6 +134,10 @@ export function deriveRunReceipt({
         kind: "knowledge",
         label: countLabel(knowledgeInvocationCount, "Knowledge retrieval", "Knowledge retrievals")
       });
+    }
+
+    if (memoryFact?.kind === "memory") {
+      facts.push(memoryFact);
     }
 
     const searchCount = factualCount(artifactSummary.searchCount);

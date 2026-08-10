@@ -1,8 +1,12 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersistedRun, ThreadArtifactSummary, ThreadMessage } from "./types";
 import { ThreadMessageRow } from "./ThreadMessageRow";
+import {
+  resetMemorySettingsStoreForTest,
+  useMemorySettingsStore
+} from "./memorySettingsStore";
 
 function assistantMessage(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
@@ -62,6 +66,7 @@ function renderRow(overrides: Partial<ComponentProps<typeof ThreadMessageRow>> =
     onCopyMessage: vi.fn(),
     onDeleteMessage: vi.fn(),
     onEditMessage: vi.fn(),
+    onOpenMemorySourceChat: vi.fn(),
     onOpenRunDetails: vi.fn(),
     onRegenerateMessage: vi.fn(),
     ...overrides
@@ -77,6 +82,11 @@ async function revealRunDetails() {
 }
 
 describe("ThreadMessageRow", () => {
+  afterEach(() => {
+    cleanup();
+    resetMemorySettingsStoreForTest();
+  });
+
   it("uses one highlighted reading surface and the same positioned action dock for both roles", async () => {
     const { container, unmount } = renderRow({
       message: assistantMessage({ id: "assistant-readable" })
@@ -639,6 +649,7 @@ describe("ThreadMessageRow", () => {
         onCopyMessage={vi.fn()}
         onDeleteMessage={vi.fn()}
         onEditMessage={vi.fn()}
+        onOpenMemorySourceChat={vi.fn()}
         onOpenRunDetails={vi.fn()}
         onRegenerateMessage={vi.fn()}
       />
@@ -662,6 +673,7 @@ describe("ThreadMessageRow", () => {
         onCopyMessage={vi.fn()}
         onDeleteMessage={vi.fn()}
         onEditMessage={vi.fn()}
+        onOpenMemorySourceChat={vi.fn()}
         onOpenRunDetails={vi.fn()}
         onRegenerateMessage={vi.fn()}
       />
@@ -1085,5 +1097,105 @@ describe("ThreadMessageRow", () => {
     expect(screen.getByRole("list", { name: "Message attachments" })).toBeInTheDocument();
     expect(screen.getByText("diagram.png")).toBeInTheDocument();
     expect(screen.getByText("notes.md")).toBeInTheDocument();
+  });
+
+  it("mounts one default-collapsed exact Memory segment only on its settled answer", async () => {
+    useMemorySettingsStore.setState({
+      data: { settings: { memoryUiLocale: "EN" } } as never,
+      loadState: "ready"
+    });
+    const onOpenMemorySourceChat = vi.fn();
+    const memoryReceipt = {
+      degradationCode: "vector_unavailable",
+      itemCount: 1,
+      items: [{
+        includedText: "Exact frozen value from this run.",
+        itemType: "FACT_VERSION" as const,
+        lifecycleState: "LATER_FORGOTTEN" as const,
+        ordinal: 0,
+        scopeType: "GLOBAL_USER" as const,
+        selectionReason: "explicit_lexical_relevance",
+        sourceChatId: "chat-memory-source",
+        sourceMessageIds: ["message-memory-source"],
+        sourceMode: "EXPLICIT" as const,
+        versionId: "version-frozen-1"
+      }],
+      outcome: "DEGRADED" as const,
+      summary: "memory_receipt:degraded:1"
+    };
+    renderRow({
+      artifactSummary: artifactSummary({ memoryReceipt }),
+      message: assistantMessage({ runId: "run-memory" }),
+      onOpenMemorySourceChat
+    });
+
+    expect(screen.queryByTestId("thread-memory-evidence")).not.toBeInTheDocument();
+    await revealRunDetails();
+    expect(document.querySelectorAll('[data-run-fact="memory"]')).toHaveLength(1);
+    expect(screen.getByTestId("run-receipt")).toHaveTextContent(
+      "1 memory used · retrieval degraded safely"
+    );
+    const disclosure = screen.getByRole("button", {
+      name: "Memory. 1 memory used · retrieval degraded safely"
+    });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("thread-memory-details")).not.toBeInTheDocument();
+    fireEvent.click(disclosure);
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("thread-memory-details")).toHaveTextContent(
+      "Exact frozen value from this run."
+    );
+    expect(screen.getByTestId("thread-memory-details")).toHaveTextContent("Later forgotten");
+    expect(screen.getByTestId("thread-memory-details")).toHaveTextContent("version-frozen-1");
+    fireEvent.click(within(screen.getByTestId("thread-memory-details")).getByRole("button", {
+      name: "Source · 1"
+    }));
+    expect(onOpenMemorySourceChat).toHaveBeenCalledWith("chat-memory-source");
+  });
+
+  it("keeps disabled Memory outcomes out of the receipt row", async () => {
+    useMemorySettingsStore.setState({
+      data: { settings: { memoryUiLocale: "EN" } } as never,
+      loadState: "ready"
+    });
+    renderRow({
+      artifactSummary: artifactSummary({
+        memoryReceipt: {
+          degradationCode: null,
+          itemCount: 0,
+          items: [],
+          outcome: "DISABLED",
+          summary: "memory_receipt:disabled:0"
+        }
+      })
+    });
+    await revealRunDetails();
+
+    expect(document.querySelector('[data-run-fact="memory"]')).not.toBeInTheDocument();
+    expect(screen.queryByTestId("thread-memory-evidence")).not.toBeInTheDocument();
+  });
+
+  it("announces only durable action feedback with the persisted Memory locale", () => {
+    useMemorySettingsStore.setState({
+      data: { settings: { memoryUiLocale: "RU" } } as never,
+      loadState: "ready"
+    });
+    const { props, rerender } = renderRow({
+      artifactSummary: artifactSummary({
+        memoryAction: { operation: "FORGET", status: "COMMITTED" }
+      })
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Воспоминание забыто и исключено из будущего использования."
+    );
+    rerender(<ThreadMessageRow
+      {...props}
+      artifactSummary={artifactSummary({
+        memoryAction: { operation: "FORGET", status: "COMMITTED" }
+      })}
+      message={assistantMessage({ status: "streaming" })}
+    />);
+    expect(screen.queryByTestId("memory-action-confirmation")).not.toBeInTheDocument();
   });
 });

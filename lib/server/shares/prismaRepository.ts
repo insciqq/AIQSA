@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import {
   buildPublicShareSnapshot,
   GroundedContentNotShareableError,
+  projectPublicShareSnapshot,
   type PublicShareSnapshot
 } from "../../domain/shareSnapshot";
 import { prisma } from "../prisma";
@@ -9,10 +10,6 @@ import type { ShareRepository } from "./handlers";
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
-}
-
-function publicSnapshot(value: unknown): PublicShareSnapshot {
-  return value as PublicShareSnapshot;
 }
 
 export function createPrismaShareRepository(prismaClient = prisma): ShareRepository {
@@ -104,11 +101,13 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
       if (!share) {
         return null;
       }
+      const snapshot = projectPublicShareSnapshot(share.snapshot);
+      if (!snapshot) return null;
 
       return {
         createdAt: share.createdAt,
         id: share.id,
-        snapshot: publicSnapshot(share.snapshot),
+        snapshot,
         title: share.title
       };
     },

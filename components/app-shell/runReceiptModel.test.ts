@@ -97,6 +97,25 @@ describe("deriveRunReceipt", () => {
     });
   });
 
+  it("places one caller-projected Memory fact with its exact message artifacts", () => {
+    const receipt = deriveRunReceipt({
+      artifactSummary: summary(),
+      memoryFact: {
+        detail: "retrieval degraded safely",
+        kind: "memory",
+        label: "Memories used: 2"
+      },
+      messageStatus: "complete",
+      modelLabel: null
+    });
+
+    expect(receipt.facts).toEqual([{
+      detail: "retrieval degraded safely",
+      kind: "memory",
+      label: "Memories used: 2"
+    }]);
+  });
+
   it("omits unavailable facts instead of inventing defaults", () => {
     const receipt = deriveRunReceipt({
       messageStatus: "complete",

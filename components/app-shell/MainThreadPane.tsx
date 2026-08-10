@@ -116,6 +116,7 @@ export type MainThreadPaneProps = {
   olderMessagesError?: string | null;
   openMcpSettings(): void;
   openKnowledgeEvidence?(knowledgeBaseId: string): void;
+  openMemorySourceChat(chatId: string): void;
   openRunDetails(): void;
   pipeline?: PipelineSnapshot | null;
   reasoningEffort: string;
@@ -212,6 +213,7 @@ export function MainThreadPane({
   olderMessagesError = null,
   openMcpSettings,
   openKnowledgeEvidence,
+  openMemorySourceChat,
   openRunDetails,
   pipeline = null,
   reasoningEffort,
@@ -755,6 +757,7 @@ export function MainThreadPane({
                 onOpenRunDetails={openRunDetails}
                 onLoadPersistedRun={loadRunReceipt}
                 onOpenKnowledgeEvidence={openKnowledgeEvidence}
+                onOpenMemorySourceChat={openMemorySourceChat}
                 onRegenerateMessage={handleRegenerateMessage}
                 onToggleMobileControls={toggleMobileMessageControls}
               />

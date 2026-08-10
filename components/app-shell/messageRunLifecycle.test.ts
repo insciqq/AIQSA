@@ -251,7 +251,11 @@ describe("message run lifecycle", () => {
       settleFailedRunState
     });
 
-    expect(result).toMatchObject({ cancelled: false, failed: true });
+    expect(result).toMatchObject({
+      cancelled: false,
+      failed: true,
+      failureCode: "regenerate_failed_503"
+    });
     expect(flush).toHaveBeenCalledOnce();
     expect(surfaceEvents()).toEqual([
       {

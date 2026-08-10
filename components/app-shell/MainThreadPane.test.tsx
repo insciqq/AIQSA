@@ -298,6 +298,7 @@ function renderPane(overrides: Partial<ComponentProps<typeof MainThreadPane>> = 
     notificationSoundEnabled: false,
     operationError: null,
     operationErrorLive: true,
+    openMemorySourceChat: vi.fn(),
     openRunDetails: vi.fn(),
     openMcpSettings: vi.fn(),
     persistedRunsById: {},

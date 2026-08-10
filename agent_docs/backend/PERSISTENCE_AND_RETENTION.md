@@ -88,7 +88,8 @@ owner, state, token, and unexpired lease. Consent waiting carries neither lease
 nor fallback authority. Job apply and success settle in one transaction.
 Deletion apply and success do likewise; failures release to bounded retry and
 then `BLOCKED_REQUIRES_ADMIN` with a slow due time and audit timestamp, never a
-terminal abandoned state. The default registry now claims only `FORGET_PURGE`.
+terminal abandoned state. The default Phase 2 registry claims `FORGET_PURGE`
+and the optional fail-closed `EMBED_ITEMS` leaf.
 Its typed manifest requires versioned contributors for unaccepted retrieval
 attempts, fact evidence, fact search rows (including their vectors/FTS), and
 forgotten version content. All leaves and the final completeness audit execute

@@ -1994,6 +1994,15 @@ describe("Prisma run repository", () => {
         cacheWriteInputTokens: 0,
         events: [
           {
+            eventType: "memory_retrieval",
+            payload: {
+              degradationCode: null,
+              itemCount: 0,
+              outcome: "DISABLED"
+            },
+            sequence: 0
+          },
+          {
             eventType: "token",
             sequence: 1
           },

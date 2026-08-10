@@ -72,6 +72,8 @@ import {
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { decodeKnowledgeRunProjection } from "../../contracts/runs";
 import { projectKnowledgeInspectionEvents } from "./knowledgeInspectionEvents";
+import { projectMemoryInspectionEvents } from "./memoryInspectionEvents";
+import { loadMemoryRunEvidence } from "../memory/receipts/projection";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
 import {
   KnowledgeRunAdmissionError,
@@ -3692,6 +3694,10 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         return null;
       }
       const publicRunStatus = acceptedRunStatus(run.status);
+      const memoryEvidence = (await loadMemoryRunEvidence(prismaClient, {
+        runIds: [run.id],
+        userId
+      })).get(run.id) ?? null;
 
       const knowledgeRuns = run.knowledgeRuns.map((receipt) => {
         const projection = decodeKnowledgeRunProjection({
@@ -3719,7 +3725,7 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         if (!projection) throw new Error("knowledge_run_receipt_invalid");
         return projection;
       });
-      const events = projectKnowledgeInspectionEvents({
+      const knowledgeEvents = projectKnowledgeInspectionEvents({
         events: run.events.map((event) => ({
           createdAt: event.createdAt.toISOString(),
           eventType: event.eventType,
@@ -3728,6 +3734,10 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         })),
         knowledgeRuns,
         toolCalls: run.toolCalls
+      });
+      const events = projectMemoryInspectionEvents({
+        events: knowledgeEvents,
+        receipt: memoryEvidence?.receipt ?? null
       });
 
       return {
@@ -3763,6 +3773,8 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
         })),
         knowledgePlan: knowledgePlanFromNormalizedRequest(run.normalizedRequest),
         knowledgeRuns,
+        ...(memoryEvidence?.action ? { memoryAction: memoryEvidence.action } : {}),
+        ...(memoryEvidence?.receipt ? { memoryReceipt: memoryEvidence.receipt } : {}),
         modelId: run.modelId,
         normalizedRequest: run.normalizedRequest,
         outputTokens: run.outputTokens,
@@ -3913,10 +3925,15 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
           return null;
         }
 
-        const { contextStats, usageStats } = await loadChatBranchSnapshotStats(tx, {
-          activeLeafMessageId: chat.activeLeafMessageId,
-          chatId
-        });
+        const runIds = chat.messages.flatMap((message) =>
+          message.assistantModelRuns[0]?.id ? [message.assistantModelRuns[0].id] : []);
+        const [{ contextStats, usageStats }, memoryEvidenceByRun] = await Promise.all([
+          loadChatBranchSnapshotStats(tx, {
+            activeLeafMessageId: chat.activeLeafMessageId,
+            chatId
+          }),
+          loadMemoryRunEvidence(tx, { runIds, userId })
+        ]);
 
         return {
           chat: {
@@ -3938,7 +3955,13 @@ export function createPrismaRunRepository(prismaClient = prisma): RunRepository 
             const modelRun = message.assistantModelRuns[0];
 
             return {
-              artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun, message.content) : null,
+              artifactSummary: modelRun
+                ? summarizeMessageRunArtifacts(
+                    modelRun,
+                    message.content,
+                    memoryEvidenceByRun.get(modelRun.id) ?? null
+                  )
+                : null,
               assistantIdentity: serializeRunAssistantIdentity(modelRun),
               content: message.content,
               createdAt: message.createdAt,

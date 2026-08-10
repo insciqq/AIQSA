@@ -155,6 +155,40 @@ describe("decodeGetModelRunResponse", () => {
     });
   });
 
+  it("strictly preserves private Memory receipt and committed action evidence", () => {
+    const memoryReceipt = {
+      degradationCode: "vector_unavailable",
+      itemCount: 1,
+      items: [{
+        includedText: "Exact old value.",
+        itemType: "FACT_VERSION",
+        lifecycleState: "LATER_FORGOTTEN",
+        ordinal: 0,
+        scopeType: "GLOBAL_USER",
+        selectionReason: "explicit_lexical_relevance",
+        sourceChatId: null,
+        sourceMessageIds: [],
+        sourceMode: "EXPLICIT",
+        versionId: "version-1"
+      }],
+      outcome: "DEGRADED",
+      summary: "memory_receipt:degraded:1"
+    };
+    const run = {
+      ...requiredRunFields(),
+      memoryAction: { operation: "FORGET", status: "COMMITTED" },
+      memoryReceipt
+    };
+
+    expect(decodeGetModelRunResponse({ run })).toMatchObject({
+      memoryAction: run.memoryAction,
+      memoryReceipt
+    });
+    expect(decodeGetModelRunResponse({
+      run: { ...run, memoryReceipt: { ...memoryReceipt, degradationCode: null } }
+    })).toBeNull();
+  });
+
   it("decodes exact ordered Knowledge evidence and rejects plan/binding drift", () => {
     const binding = {
       baseContentRevision: 7,

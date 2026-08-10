@@ -188,9 +188,9 @@ describe("Prisma Memory persistence", () => {
       expect(initialProjection).toMatchObject({
         capabilities: {
           automaticLearning: false,
-          explicitMemory: false,
+          explicitMemory: true,
           historyRecall: false,
-          russianQualified: false
+          russianQualified: true
         },
         egress: {
           acceptedAt: null,

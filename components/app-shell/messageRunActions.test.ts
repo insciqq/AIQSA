@@ -20,6 +20,11 @@ import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore"
 import type { ComposerAttachment } from "@/components/chat/Composer";
 import type { Catalog, CatalogModel, ChatDetail, ChatSummary } from "./types";
 import type { SavedControlDraft } from "./powerAppShellData";
+import { memorySettingsFixture } from "./memoryTestFixtures";
+import {
+  resetMemorySettingsStoreForTest,
+  useMemorySettingsStore
+} from "./memorySettingsStore";
 
 const hostedSearchOptionId = "hosted-openai-search";
 const clientSearchOptionId = "client-openai-search";
@@ -226,6 +231,7 @@ function useMessageRunActionsForTest(input: {
   draft?: string;
   editingMessageId?: string | null;
   model?: CatalogModel;
+  openMemorySettings?: () => void;
   pendingChatFolderId?: string | null;
   persistActiveLeaf?: (chatId: string, messageId: string | null) => Promise<unknown>;
   refreshActiveChat?: (
@@ -239,6 +245,7 @@ function useMessageRunActionsForTest(input: {
   resetComposerSessionStoreForTest();
   resetThreadStoreForTest();
   resetWorkspaceStoreForTest();
+  resetMemorySettingsStoreForTest();
   const activeChat = input.activeChat === undefined ? chat() : input.activeChat;
   const activeChatId = input.activeChatId === undefined ? activeChat?.id ?? null : input.activeChatId;
   const activeChatIdRef = { current: activeChatId };
@@ -320,6 +327,7 @@ function useMessageRunActionsForTest(input: {
     currentModel: input.model ?? model,
     fetchRun,
     notifyAnswerReady,
+    openMemorySettings: input.openMemorySettings ?? vi.fn(),
     persistActiveLeaf: input.persistActiveLeaf ?? vi.fn(async () => null),
     primeAnswerSound,
     refreshActiveChat,
@@ -352,8 +360,43 @@ describe("message run actions", () => {
     resetComposerSessionStoreForTest();
     resetThreadStoreForTest();
     resetWorkspaceStoreForTest();
+    resetMemorySettingsStoreForTest();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("routes an ambiguous Memory target to Manage Memories without claiming a mutation", async () => {
+    const openMemorySettings = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      error: "memory_intent_confirmation_required"
+    }, { status: 409 })));
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      draft: "Forget the preference I mentioned.",
+      openMemorySettings
+    });
+    useMemorySettingsStore.setState({
+      data: memorySettingsFixture({}, "EN"),
+      error: null,
+      loadState: "ready"
+    });
+
+    await actions.submitComposer();
+
+    expect(actions.setNotice).toHaveBeenCalledWith(expect.objectContaining({
+      action: expect.objectContaining({ label: "Manage Memories" }),
+      kind: "error",
+      persistent: true,
+      text: "Choose the exact saved memory before AIQSA changes anything."
+    }));
+    const notice = actions.setNotice.mock.calls.at(-1)?.[0];
+    expect(notice?.kind).toBe("error");
+    notice?.action?.onClick();
+    expect(openMemorySettings).toHaveBeenCalledOnce();
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      draft: "Forget the preference I mentioned.",
+      pendingSend: null
+    });
   });
 
   it.each([

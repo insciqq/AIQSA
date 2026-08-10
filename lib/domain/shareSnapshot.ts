@@ -5,6 +5,8 @@ export type ShareSnapshotMessageInput = BranchMessage & {
   groundedAt?: Date | string | null;
   /** Private run inspection fields are accepted only so the sanitizer can explicitly ignore them. */
   knowledgeEvidence?: unknown;
+  /** Memory bindings, receipts, executions, and sources are never public. */
+  memoryEvidence?: unknown;
 };
 
 export class GroundedContentNotShareableError extends Error {
@@ -69,6 +71,44 @@ function sanitizeContent(content: unknown): PublicShareSnapshot["messages"][numb
       return [];
     })
   };
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/**
+ * Re-projects stored/legacy JSON through the public schema. This deliberately
+ * ignores every extra field rather than trusting a historical cast.
+ */
+export function projectPublicShareSnapshot(value: unknown): PublicShareSnapshot | null {
+  const candidate = record(value);
+  if (
+    !candidate || candidate.version !== 1 || typeof candidate.title !== "string" ||
+    !Array.isArray(candidate.messages)
+  ) return null;
+
+  const messages: PublicShareSnapshot["messages"] = [];
+  for (const rawMessage of candidate.messages) {
+    const message = record(rawMessage);
+    if (!message || (message.role !== "assistant" && message.role !== "user")) return null;
+    const content = record(message.content);
+    if (!content || !Array.isArray(content.blocks)) return null;
+    messages.push({
+      content: {
+        blocks: content.blocks.flatMap((rawBlock) => {
+          const block = record(rawBlock);
+          return block?.type === "text" && typeof block.text === "string"
+            ? [textBlock(block.text)]
+            : [];
+        })
+      },
+      role: message.role
+    });
+  }
+  return { messages, title: candidate.title, version: 1 };
 }
 
 export function buildPublicShareSnapshot(input: {

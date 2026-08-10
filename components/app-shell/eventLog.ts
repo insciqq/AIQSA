@@ -714,6 +714,33 @@ export function summarizeInspectorEvents(
       return;
     }
 
+    if (event.type === "memory_retrieval") {
+      const outcome = stringField(event.data, "outcome") ?? "FAILED_SAFE";
+      const itemCount = Math.max(0, Math.floor(numberField(event.data, "itemCount") ?? 0));
+      const degradationCode = stringField(event.data, "degradationCode");
+      const included = `${itemCount} ${itemCount === 1 ? "memory" : "memories"} included`;
+      const value = outcome === "USED"
+        ? included
+        : outcome === "DEGRADED"
+          ? `${included} · degraded safely`
+          : outcome === "EMPTY"
+            ? "No memory included"
+            : outcome === "DISABLED"
+              ? "Memory use was off"
+              : "Memory unavailable; answer continued safely";
+      summaries.push({
+        detail: degradationCode ? `Reason: ${readableIdentifier(degradationCode)}` : undefined,
+        id: `memory-${eventIndex}`,
+        label: "Memory",
+        stage: "M",
+        tone: outcome === "USED" ? "success" :
+          outcome === "EMPTY" || outcome === "DISABLED" ? "default" : "warning",
+        value
+      });
+      currentStage = "M";
+      return;
+    }
+
     if (event.type === "usage" && isRecord(event.data)) {
       if (!usageGroup) {
         usageGroup = { count: 1, summaryIndex: summaries.length };

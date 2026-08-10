@@ -25,6 +25,12 @@ For every model run, the app can show:
   receipt, including generated query, revision/generation fence, explicit
   negative outcome, candidate/threshold facts, real scores, exact private
   source mapping, included-text truncation, embedding usage, and duration;
+- the exact accepted Memory binding and immutable item projection for that run,
+  including outcome/degradation, admitted text and version/source/scope
+  snapshots, plus a later lifecycle annotation; current Memory may label old
+  evidence forgotten or source-deleted but never rewrites it;
+- a committed explicit Memory action only when its `APPLIED` operation receipt
+  rejoins the exact same run and persisted first-party tool call;
 - attachment references and preprocessing summaries;
 - streamed event log;
 - final response preview;
@@ -40,7 +46,7 @@ Knowledge provider text contains only opaque citation handles, pages, and
 bounded passages; private base/document labels and database/storage identities
 remain authenticated inspection evidence.
 
-Details Events reduces the already-consumed normalized event stream into a chronological digest without changing the event schema or persistence contract. Repeated provider/search/tool/artifact/token/usage categories update the row created at their first occurrence; raw token deltas and internal message ids stay hidden, while counts, latest meaningful status, long failures, cancellation, and successful completion remain inspectable. Historical request/response payloads continue to live in the model-run APIs.
+Details Events reduces the already-consumed normalized event stream into a chronological digest without changing the event schema or persistence contract. Repeated provider/search/tool/artifact/token/usage categories update the row created at their first occurrence; raw token deltas and internal message ids stay hidden, while counts, latest meaningful status, long failures, cancellation, and successful completion remain inspectable. Memory contributes only outcome, included-item count, and degradation code to Events; its exact text remains in the answer-bound private receipt. Historical request/response payloads continue to live in the model-run APIs.
 
 ## Provider Strategy
 
@@ -60,7 +66,7 @@ Adapter defaults and cache/wire details are routed by `BACKEND.md`; externally v
 
 ## Sharing
 
-`Share (anonymously)` creates a sanitized public snapshot of the active visible branch. It must not expose raw provider payloads, private attachments, API keys, internal run ids, private folder metadata, auth data, or any structured Knowledge plan, binding, query, citation, candidate, included passage, score, revision, or receipt. The positive public schema preserves answer text exactly while dropping every non-text Knowledge block and message/run evidence field; Knowledge-bearing branches remain shareable. A branch containing hosted-answer Gemini grounded live-only provenance is rejected rather than publishing its placeholder or reconstructing content. Ordinary normalized client-Search findings are governed by the existing sanitized snapshot projection. The public snapshot does not mutate when the private chat changes.
+`Share (anonymously)` creates a sanitized public snapshot of the active visible branch. It must not expose raw provider payloads, private attachments, API keys, internal run ids, private folder metadata, auth data, structured Knowledge evidence, or any Memory personal context, attempt, execution, binding, item, event, operation/tool receipt, identifier, source, or lifecycle metadata. Creation and every anonymous read both apply the same positive public schema: only user/assistant text blocks and the public title/version survive, preserving visible answer prose exactly while dropping unknown legacy fields. Knowledge- or Memory-bearing branches remain shareable because their private evidence is omitted. A branch containing hosted-answer Gemini grounded live-only provenance is rejected rather than publishing its placeholder or reconstructing content. Ordinary normalized client-Search findings are governed by the existing sanitized snapshot projection. The public snapshot does not mutate when the private chat changes.
 
 Publishing requires an explicit confirmation: the Share action opens a dialog that explains the sanitized-snapshot semantics, and a link exists only after the confirming create action. Each snapshot records its source chat, and the chat's live links remain listed in that dialog with per-link revocation, so links are not immortal once the creation notice is dismissed. Stored tokens remain hashes; the full URL is visible only immediately after creation. Legacy snapshots created before the chat link existed are not listed and can be revoked only by their original id.
 

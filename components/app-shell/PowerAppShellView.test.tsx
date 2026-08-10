@@ -370,6 +370,7 @@ function baseProps(): PowerAppShellViewProps {
       liveArtifactSummary: null,
       olderMessagesError: null,
       openKnowledgeEvidence: noop,
+      openMemorySourceChat: noop,
       persistedRunsById: {},
       retryActiveChatDetail: noop,
       showJumpToLatest: false,

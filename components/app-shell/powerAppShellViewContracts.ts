@@ -161,6 +161,7 @@ export type ShellThreadView = {
   liveArtifactSummary: ThreadArtifactSummary | null;
   olderMessagesError: string | null;
   openKnowledgeEvidence(knowledgeBaseId: string): void;
+  openMemorySourceChat(chatId: string): void;
   retryActiveChatDetail(): void;
   showJumpToLatest: boolean;
   threadScrollRef: RefObject<HTMLDivElement | null>;

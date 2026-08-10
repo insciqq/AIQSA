@@ -181,6 +181,10 @@ export const MEMORY_RECEIPT_LIFECYCLE_STATES = [
 ] as const;
 export type MemoryReceiptLifecycleState = (typeof MEMORY_RECEIPT_LIFECYCLE_STATES)[number];
 
+export const MEMORY_ACTION_FEEDBACK_OPERATIONS = ["SAVE", "UPDATE", "FORGET"] as const;
+export type MemoryActionFeedbackOperation =
+  (typeof MEMORY_ACTION_FEEDBACK_OPERATIONS)[number];
+
 export const MEMORY_ERROR_CODES = [
   "memory_contract_invalid",
   "memory_not_enabled",
@@ -873,6 +877,19 @@ export function decodeMemoryReceipt(
   value: unknown
 ): MemoryContractDecodeResult<MemoryReceipt> {
   return decode(memoryReceiptSchema, value);
+}
+
+const memoryActionFeedbackSchema = z.strictObject({
+  operation: z.enum(MEMORY_ACTION_FEEDBACK_OPERATIONS),
+  status: z.literal("COMMITTED")
+});
+
+export type MemoryActionFeedback = z.infer<typeof memoryActionFeedbackSchema>;
+
+export function decodeMemoryActionFeedback(
+  value: unknown
+): MemoryContractDecodeResult<MemoryActionFeedback> {
+  return decode(memoryActionFeedbackSchema, value);
 }
 
 const memoryHistorySearchResponseSchema = z.strictObject({

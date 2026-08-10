@@ -4,7 +4,10 @@ import {
   requestBodyErrorResponse
 } from "../http/requestBody";
 import { createShareToken, hashShareToken } from "./tokens";
-import type { PublicShareSnapshot } from "../../domain/shareSnapshot";
+import {
+  projectPublicShareSnapshot,
+  type PublicShareSnapshot
+} from "../../domain/shareSnapshot";
 import { applyPublicSharePrivacyHeaders } from "./privacy";
 
 export type ShareRecord = {
@@ -60,10 +63,12 @@ function serializeShare(record: CreatedShareRecord) {
 }
 
 function serializePublicShare(record: ShareRecord) {
+  const snapshot = projectPublicShareSnapshot(record.snapshot);
+  if (!snapshot) return null;
   return {
     createdAt: record.createdAt instanceof Date ? record.createdAt.toISOString() : record.createdAt,
     id: record.id,
-    snapshot: record.snapshot,
+    snapshot,
     title: record.title
   };
 }
@@ -172,9 +177,13 @@ export function createGetPublicShareHandler(deps: Pick<ShareHandlerDeps, "reposi
       return response;
     }
 
-    const response = Response.json({
-      share: serializePublicShare(share)
-    });
+    const serialized = serializePublicShare(share);
+    if (!serialized) {
+      const response = Response.json({ error: "share_not_found" }, { status: 404 });
+      applyPublicSharePrivacyHeaders(response.headers);
+      return response;
+    }
+    const response = Response.json({ share: serialized });
     applyPublicSharePrivacyHeaders(response.headers);
     return response;
   };

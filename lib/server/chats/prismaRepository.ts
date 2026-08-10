@@ -38,6 +38,10 @@ import type {
 } from "./handlers";
 import { loadChatCreationDefaults } from "./chatCreationDefaults";
 import { defaultChatTitle } from "./titlePolicy";
+import {
+  loadMemoryRunEvidence,
+  type MemoryRunEvidenceProjection
+} from "../memory/receipts/projection";
 
 const assistantRunDetailSelect = {
   assistantId: true,
@@ -164,6 +168,10 @@ const chatSummarySelect = {
 
 type ChatSummaryRow = Prisma.ChatGetPayload<{ select: typeof chatSummarySelect }>;
 type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }>;
+type HydratedMessagePath = Readonly<{
+  memoryEvidenceByRun: ReadonlyMap<string, MemoryRunEvidenceProjection>;
+  messages: HydratedMessageRow[];
+}>;
 type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
 type ArtifactSummaryRun = {
   events: { payload: unknown }[];
@@ -315,9 +323,12 @@ function pageCursor(input: {
 async function hydrateMessagePath(
   tx: Prisma.TransactionClient,
   chatId: string,
-  messages: Array<{ id: string }>
-): Promise<HydratedMessageRow[]> {
-  if (messages.length === 0) return [];
+  messages: Array<{ id: string }>,
+  userId: string
+): Promise<HydratedMessagePath> {
+  if (messages.length === 0) {
+    return { memoryEvidenceByRun: new Map(), messages: [] };
+  }
   const hydrated = await tx.message.findMany({
     select: hydratedMessageSelect,
     where: {
@@ -326,10 +337,16 @@ async function hydrateMessagePath(
     }
   });
   const byId = new Map(hydrated.map((message) => [message.id, message]));
-  return messages.flatMap((message) => {
+  const ordered = messages.flatMap((message) => {
     const found = byId.get(message.id);
     return found ? [found] : [];
   });
+  const runIds = ordered.flatMap((message) =>
+    message.assistantModelRuns[0]?.id ? [message.assistantModelRuns[0].id] : []);
+  return {
+    memoryEvidenceByRun: await loadMemoryRunEvidence(tx, { runIds, userId }),
+    messages: ordered
+  };
 }
 
 async function approximateActiveBranchInputTokens(
@@ -469,10 +486,19 @@ function summarizeChatUsageStats(input: {
   );
 }
 
-function serializeHydratedMessage(message: HydratedMessageRow): ChatDetailRecord["messages"][number] {
+function serializeHydratedMessage(
+  message: HydratedMessageRow,
+  memoryEvidenceByRun: ReadonlyMap<string, MemoryRunEvidenceProjection>
+): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0];
   return {
-    artifactSummary: modelRun ? summarizeMessageRunArtifacts(modelRun, message.content) : null,
+    artifactSummary: modelRun
+      ? summarizeMessageRunArtifacts(
+          modelRun,
+          message.content,
+          memoryEvidenceByRun.get(modelRun.id) ?? null
+        )
+      : null,
     assistantIdentity: serializeAssistantIdentity(modelRun),
     content: message.content,
     createdAt: message.createdAt,
@@ -502,7 +528,7 @@ function serializeChatDetail(input: {
   contextInputTokens: number;
   hasOlder: boolean;
   lightweightMessages: LightweightMessageRow[];
-  messages: HydratedMessageRow[];
+  messages: HydratedMessagePath;
 }): ChatDetailRecord {
   const chat = input.chat;
   return {
@@ -517,12 +543,13 @@ function serializeChatDetail(input: {
       approximateActiveBranchInputTokens: input.contextInputTokens
     },
     messageCount: chat._count.messages,
-    messages: input.messages.map(serializeHydratedMessage),
+    messages: input.messages.messages.map((message) =>
+      serializeHydratedMessage(message, input.messages.memoryEvidenceByRun)),
     pageInfo: {
       activeLeafMessageId: chat.activeLeafMessageId,
       beforeCursor: pageCursor({
         activeLeafMessageId: chat.activeLeafMessageId,
-        beforeMessageId: input.messages[0]?.id,
+        beforeMessageId: input.messages.messages[0]?.id,
         chatId: chat.id,
         chatUpdatedAt: chat.updatedAt,
         hasOlder: input.hasOlder
@@ -751,7 +778,8 @@ function knowledgeCitation(value: unknown): NonNullable<ThreadArtifactSummary["k
 
 export function summarizeMessageRunArtifacts(
   run: ArtifactSummaryRun,
-  answerContent?: unknown
+  answerContent?: unknown,
+  memoryEvidence: MemoryRunEvidenceProjection | null = null
 ): ThreadArtifactSummary | null {
   const artifactPayloads = run.events.map((event) => event.payload);
   const searchPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "search");
@@ -870,7 +898,8 @@ export function summarizeMessageRunArtifacts(
     .slice(0, 24);
 
   if (searchCount === 0 && reasoningPayloads.length === 0 && citationCount === 0 &&
-    !contextTruncation && toolCalls.length === 0 && knowledgeRuns.length === 0) {
+    !contextTruncation && toolCalls.length === 0 && knowledgeRuns.length === 0 &&
+    !memoryEvidence?.action && !memoryEvidence?.receipt) {
     return null;
   }
 
@@ -884,6 +913,8 @@ export function summarizeMessageRunArtifacts(
       invocationOrdinal: receipt.invocationOrdinal,
       outcome: receipt.outcome!
     })),
+    ...(memoryEvidence?.action ? { memoryAction: memoryEvidence.action } : {}),
+    ...(memoryEvidence?.receipt ? { memoryReceipt: memoryEvidence.receipt } : {}),
     reasoningCount,
     reasoningText: reasoningSnippets,
     searchActivity,
@@ -1195,7 +1226,7 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
         const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
         const pageMessages = activeMessages.slice(-CHAT_HISTORY_PAGE_SIZE);
         const [messages, contextInputTokens] = await Promise.all([
-          hydrateMessagePath(tx, chatId, pageMessages),
+          hydrateMessagePath(tx, chatId, pageMessages, userId),
           approximateActiveBranchInputTokens(tx, activeMessages)
         ]);
         return serializeChatDetail({
@@ -1239,17 +1270,18 @@ export function createPrismaChatRepository(prismaClient = prisma): ChatRepositor
         if (boundary <= 0) return { kind: "stale" as const };
         const start = Math.max(0, boundary - CHAT_HISTORY_PAGE_SIZE);
         const pagePath = activeMessages.slice(start, boundary);
-        const messages = await hydrateMessagePath(tx, chatId, pagePath);
+        const messages = await hydrateMessagePath(tx, chatId, pagePath, userId);
         const hasOlder = start > 0;
         return {
           kind: "ok" as const,
           page: {
-            messages: messages.map(serializeHydratedMessage),
+            messages: messages.messages.map((message) =>
+              serializeHydratedMessage(message, messages.memoryEvidenceByRun)),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,
               beforeCursor: pageCursor({
                 activeLeafMessageId: chat.activeLeafMessageId,
-                beforeMessageId: messages[0]?.id,
+                beforeMessageId: messages.messages[0]?.id,
                 chatId,
                 chatUpdatedAt: chat.updatedAt,
                 hasOlder

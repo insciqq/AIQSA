@@ -121,6 +121,7 @@ function actionLabel(action: string): string {
 }
 
 export type ResponseErrorMessageDetails = {
+  code?: string;
   message: string;
   preserveForComposer: boolean;
 };
@@ -154,12 +155,14 @@ export async function responseErrorMessageDetails(
         !/[\u0000-\u001f\u007f]/u.test(body.message)
       ) {
         return {
+          code: body.error,
           message: body.message,
           preserveForComposer: true
         };
       }
 
       return {
+        code: body.error,
         message: humanizeErrorCode(body.error),
         preserveForComposer: false
       };
