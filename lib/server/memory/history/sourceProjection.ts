@@ -45,6 +45,7 @@ export type MemoryHistorySourceRole =
   | "user";
 
 export type MemoryHistoryMessageProvenanceInput = Readonly<{
+  assistantId: string | null;
   complete: boolean;
   influencedByMessageIds: readonly string[];
   modelRunId: string | null;
@@ -84,6 +85,7 @@ export type MemoryHistoryProjectedMessage = Readonly<{
   languageCode: MemoryTextLanguage;
   providerSafeText: string;
   provenance: Readonly<{
+    assistantId: string | null;
     influencedByMessageIds: readonly string[];
     modelRunId: string | null;
     origin: "DIRECT_USER" | "VISIBLE_ASSISTANT";
@@ -109,6 +111,7 @@ export type MemoryHistoryRecallTurnGroup = Readonly<{
   redactionState: "NOT_NEEDED" | "REDACTED";
   safeTextHash: string;
   safetyClass: "NORMAL" | "SENSITIVE";
+  sourceAssistantId: string | null;
   userMessageId: string;
 }>;
 
@@ -384,6 +387,7 @@ function evaluateMessages(
       !Array.isArray(provenance.influencedByMessageIds) ||
       !Array.isArray(provenance.taintSources) ||
       provenance.taintSources.some((source) => !taintSourceSet.has(source)) ||
+      !validIdentity(provenance.assistantId) ||
       !validIdentity(provenance.modelRunId)
     ) {
       reasons.add("PROVENANCE_INCOMPLETE");
@@ -392,7 +396,11 @@ function evaluateMessages(
       reasons.add("SOURCE_ORIGIN_INELIGIBLE");
     }
     if (input.role === "user") {
-      if (influencedByMessageIds.length > 0 || provenance.modelRunId !== null) {
+      if (
+        influencedByMessageIds.length > 0 ||
+        provenance.assistantId !== null ||
+        provenance.modelRunId !== null
+      ) {
         reasons.add("DIRECT_USER_PROVENANCE_INVALID");
       }
     } else if (input.role === "assistant") {
@@ -441,6 +449,7 @@ function evaluateMessages(
           languageCode: detectMemoryTextLanguage(safety.safeText),
           providerSafeText: safety.providerSafeText,
           provenance: {
+            assistantId: provenance.assistantId,
             influencedByMessageIds,
             modelRunId: provenance.modelRunId,
             origin: origin as "DIRECT_USER" | "VISIBLE_ASSISTANT"
@@ -535,6 +544,7 @@ function recallTurnGroups(evaluated: EvaluatedMessage[]): MemoryHistoryRecallTur
       redactionState: reasonCodes.length > 0 ? "REDACTED" : "NOT_NEEDED",
       safeTextHash: memorySha256(combinedText),
       safetyClass: strongestSafetyClass(messages),
+      sourceAssistantId: assistant.projected.provenance.assistantId,
       userMessageId: user.input.id
     });
     index += 1;
@@ -605,6 +615,7 @@ export function buildMemorySafeSourceSnapshot(
       id: message.input.id,
       parentMessageId: message.input.parentMessageId,
       provenance: {
+        assistantId: message.input.provenance.assistantId,
         complete: message.input.provenance.complete,
         influencedByMessageIds: message.influencedByMessageIds,
         modelRunId: message.input.provenance.modelRunId,

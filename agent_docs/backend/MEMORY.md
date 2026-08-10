@@ -5,28 +5,28 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 ## Implementation Status And Authority
 
-Native Memory is approved. The baseline includes Phase 0 contracts/evaluation,
-Phase 1 persistence/coordination, complete Phase 2 explicit Memory, and the
-implemented Phase 3 source, scope, chat UI, and Temporary lifecycle.
-Explicit Saved Memories may
-use owned `GLOBAL_USER`, `FOLDER`, `ASSISTANT`, and non-Temporary `CHAT` scopes.
-Assistant archive pauses its scope without changing identity; target deletion
-tombstones the scope, retracts automatic current versions, and orphans explicit
-current versions for Move or Forget. Move appends same-owner cross-fact lineage
-and retains the source identity/history. The dormant chat hard-delete hook has
-no public surface. Phase 3 also persists chat mode/counters and Temporary
-metadata and routes every production DAG/source writer through one transaction
-helper. Exact active-path hashes bind source jobs;
-generation, leaf, branch, revision, and hash are rechecked under the chat lock
-immediately before apply, with stale claims settling without partial writes.
-Source mutations lock an affected target Folder when needed, then Chat, then
-UserMemorySettings; source-job commit locks Chat, UserMemorySettings, then the
-MemoryJob lease row. This order is part of the deadlock-avoidance contract.
-Branch and folder changes enqueue final-state reconciliation snapshots, while
-queued/streaming assistant payload is normalized out of the source projection
-so ordinary token flushes remain counter- and hash-neutral. Past-chat and
-automatic lifecycle execution and scoped answer retrieval remain unavailable
-until their later gates.
+Native Memory is approved. Phases 0–3 implement contracts/evaluation, durable
+coordination, explicit Memory, scoped chat state/UI, and Temporary lifecycle.
+Phase 4 now adds its constrained schema, deterministic safe-source and taint
+projection, bounded multilingual chunks, and local `INDEX_HISTORY`. Completed
+retained turns and explicit Resume enqueue it only with
+`referenceChatHistory`; `learnAutomatically` is independent, and answer-time
+history retrieval remains unavailable.
+
+Explicit Memory supports owned `GLOBAL_USER`, `FOLDER`, `ASSISTANT`, and
+non-Temporary `CHAT` scopes. Assistant archive pauses its scope; target deletion
+retracts automatic current versions and orphans explicit ones for Move or
+Forget. The dormant chat hard-delete hook has no public surface.
+
+One transaction helper owns production DAG/source writes and exact active-path
+hashes. Apply rechecks generation, leaf, branch, revision, and hash under the
+chat lock; drift settles without partial writes. Lock order is affected Folder,
+Chat, UserMemorySettings; source-job commit locks Chat, UserMemorySettings,
+then its MemoryJob lease. Queued/streaming payload is hash-neutral. Source
+changes invalidate stale active history rows synchronously; `INDEX_HISTORY`
+rechecks source, generation, gate, suppressions, and cutoffs before atomically
+committing chunks, joins, FTS rows, and checkpoint. Episode extraction and
+automatic learning remain unavailable.
 
 Phase 1 persists default-off settings, facts/evidence/suppressions, indexes,
 jobs/deletions, execution/retrieval attempts, and final-run evidence under
@@ -122,10 +122,12 @@ production-composed qualified utility calls remain unavailable. Development runs
 feature-local coordinator; production uses the same code in private no-API
 `memory-worker`. Both preflight every historical suppression key ID, and Memory
 failure does not alter web readiness. The default registry composes
-`FORGET_PURGE`, `TEMPORARY_DELETE`, and optional `EMBED_ITEMS`; embedding parks before provider I/O
+`FORGET_PURGE`, `TEMPORARY_DELETE`, local `INDEX_HISTORY`, and optional
+`EMBED_ITEMS`; embedding parks before provider I/O
 because the code-owned qualification registry is empty and signature
 verification is fail-closed until operator-approved authority is installed.
-Lexical CRUD and retrieval remain live. Per-call execution owns
+Explicit lexical CRUD/retrieval and history lexical indexing remain live;
+history rows are not yet admitted to answer retrieval. Per-call execution owns
 current authority/consent/qualification, immutable destination evidence,
 single-winner start, nullable usage, unknown-outcome recovery, and detach.
 Private `preparing` runs never enter public projection or provider I/O.

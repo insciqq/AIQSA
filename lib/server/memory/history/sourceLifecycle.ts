@@ -1,0 +1,225 @@
+import { memoryCounterEffectFor } from "../../../domain/memory/counters";
+import { enqueueMemoryJob } from "../persistence/jobs";
+import {
+  advanceMemoryMutation,
+  lockMemorySettings,
+  requireActiveMemoryIndex,
+  type LockedMemorySettings,
+  type MemoryTransaction
+} from "../persistence/transaction";
+import type { MemoryRetainedSourceMutationEvent } from "../sourceState";
+import {
+  MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+  memoryHistoryIndexJobFingerprint
+} from "./contract";
+
+function sourceIdentityChanged(event: MemoryRetainedSourceMutationEvent): boolean {
+  return event.previous.activeLeafMessageId !== event.snapshot.activeLeafMessageId ||
+    event.previous.folderId !== event.snapshot.folderId ||
+    event.previous.memoryBranchGeneration !== event.snapshot.memoryBranchGeneration ||
+    event.previous.memoryMode !== event.snapshot.memoryMode ||
+    event.previous.memorySourceRevision !== event.snapshot.memorySourceRevision;
+}
+
+function parentMutationAdvancedMemoryRevision(
+  event: MemoryRetainedSourceMutationEvent
+): boolean {
+  return event.mutations.some((mutation) =>
+    memoryCounterEffectFor(mutation).memoryRevision);
+}
+
+function shouldIndex(event: MemoryRetainedSourceMutationEvent): boolean {
+  if (
+    event.snapshot.memoryMode !== "NORMAL" ||
+    event.snapshot.activeLeafMessageId === null
+  ) {
+    return false;
+  }
+  if (event.mutations.includes("SOURCE_RESUME")) return true;
+  return event.mutations.includes("TERMINAL_SETTLEMENT") &&
+    event.settlement?.status === "complete" &&
+    event.settlement.assistantMessageId === event.snapshot.activeLeafMessageId;
+}
+
+async function invalidateVisibleHistory(
+  tx: MemoryTransaction,
+  event: MemoryRetainedSourceMutationEvent,
+  now: Date
+): Promise<number> {
+  const chunks = await tx.memoryRecallChunk.findMany({
+    select: { id: true },
+    where: {
+      chatId: event.snapshot.id,
+      state: "ACTIVE",
+      userId: event.snapshot.userId
+    }
+  });
+  const episodes = await tx.memoryEpisode.findMany({
+    select: { id: true },
+    where: {
+      chatId: event.snapshot.id,
+      state: "ACTIVE",
+      userId: event.snapshot.userId
+    }
+  });
+  if (chunks.length === 0 && episodes.length === 0) return 0;
+
+  await tx.memorySearchEntry.deleteMany({
+    where: {
+      OR: [
+        ...(chunks.length > 0
+          ? [{ recallChunkId: { in: chunks.map((chunk) => chunk.id) } }]
+          : []),
+        ...(episodes.length > 0
+          ? [{ episodeId: { in: episodes.map((episode) => episode.id) } }]
+          : [])
+      ],
+      userId: event.snapshot.userId
+    }
+  });
+  if (chunks.length > 0) {
+    await tx.memoryRecallChunk.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: {
+        id: { in: chunks.map((chunk) => chunk.id) },
+        state: "ACTIVE",
+        userId: event.snapshot.userId
+      }
+    });
+  }
+  if (episodes.length > 0) {
+    await tx.memoryEpisode.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: {
+        id: { in: episodes.map((episode) => episode.id) },
+        state: "ACTIVE",
+        userId: event.snapshot.userId
+      }
+    });
+  }
+  return chunks.length + episodes.length;
+}
+
+async function settleVisibleMutationCounter(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  event: MemoryRetainedSourceMutationEvent
+): Promise<void> {
+  if (!parentMutationAdvancedMemoryRevision(event)) {
+    await advanceMemoryMutation(tx, settings, "CHUNK_OR_EPISODE_VISIBILITY_CHANGE");
+    return;
+  }
+  const activeIndex = await requireActiveMemoryIndex(tx, settings);
+  if (!activeIndex) return;
+  const settled = await tx.memoryIndexGeneration.updateMany({
+    data: { indexedThroughMemoryRevision: settings.memoryRevision },
+    where: {
+      id: activeIndex.id,
+      state: "ACTIVE",
+      userId: settings.userId
+    }
+  });
+  if (settled.count !== 1) {
+    throw new Error("memory_active_generation_invalid");
+  }
+}
+
+async function updateExistingCheckpoint(
+  tx: MemoryTransaction,
+  event: MemoryRetainedSourceMutationEvent
+): Promise<void> {
+  if (event.snapshot.activeLeafMessageId === null) {
+    await tx.chatMemoryCheckpoint.deleteMany({
+      where: { chatId: event.snapshot.id, userId: event.snapshot.userId }
+    });
+    return;
+  }
+  await tx.chatMemoryCheckpoint.updateMany({
+    data: {
+      activeLeafMessageId: event.snapshot.activeLeafMessageId,
+      branchGeneration: event.snapshot.memoryBranchGeneration,
+      lastErrorCode: event.snapshot.memoryMode === "NORMAL"
+        ? null
+        : "memory_source_ineligible",
+      ...(event.previous.memoryBranchGeneration !==
+          event.snapshot.memoryBranchGeneration
+        ? { lastDreamedMessageId: null }
+        : {}),
+      lastIndexedMessageId: null,
+      lastSucceededAt: null,
+      sourceContentHash: event.snapshot.sourceHash,
+      sourceRevision: event.snapshot.memorySourceRevision,
+      status: event.snapshot.memoryMode === "NORMAL" ? "PENDING" : "STALE"
+    },
+    where: { chatId: event.snapshot.id, userId: event.snapshot.userId }
+  });
+}
+
+async function ensurePendingCheckpoint(
+  tx: MemoryTransaction,
+  event: MemoryRetainedSourceMutationEvent
+): Promise<void> {
+  const activeLeafMessageId = event.snapshot.activeLeafMessageId;
+  if (!activeLeafMessageId) return;
+  await tx.chatMemoryCheckpoint.upsert({
+    create: {
+      activeLeafMessageId,
+      branchGeneration: event.snapshot.memoryBranchGeneration,
+      chatId: event.snapshot.id,
+      sourceContentHash: event.snapshot.sourceHash,
+      sourceRevision: event.snapshot.memorySourceRevision,
+      status: "PENDING",
+      userId: event.snapshot.userId
+    },
+    update: {
+      activeLeafMessageId,
+      branchGeneration: event.snapshot.memoryBranchGeneration,
+      lastErrorCode: null,
+      lastIndexedMessageId: null,
+      lastSucceededAt: null,
+      sourceContentHash: event.snapshot.sourceHash,
+      sourceRevision: event.snapshot.memorySourceRevision,
+      status: "PENDING"
+    },
+    where: {
+      userId_chatId: {
+        chatId: event.snapshot.id,
+        userId: event.snapshot.userId
+      }
+    }
+  });
+}
+
+export async function applyMemoryHistorySourceMutation(
+  tx: MemoryTransaction,
+  event: MemoryRetainedSourceMutationEvent
+): Promise<void> {
+  const changed = sourceIdentityChanged(event);
+  let settings: LockedMemorySettings | null = null;
+  if (changed) {
+    const now = new Date();
+    const invalidated = await invalidateVisibleHistory(tx, event, now);
+    if (invalidated > 0) {
+      settings = await lockMemorySettings(tx, event.snapshot.userId, false);
+      await settleVisibleMutationCounter(tx, settings, event);
+    }
+    await updateExistingCheckpoint(tx, event);
+  }
+
+  if (!shouldIndex(event)) return;
+  settings ??= await lockMemorySettings(tx, event.snapshot.userId, false);
+  if (!settings.referenceChatHistory) return;
+  await ensurePendingCheckpoint(tx, event);
+  await enqueueMemoryJob(tx, settings, {
+    idempotencyFingerprint: memoryHistoryIndexJobFingerprint(event.snapshot),
+    kind: "INDEX_HISTORY",
+    pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+    source: {
+      activeLeafMessageId: event.snapshot.activeLeafMessageId!,
+      branchGeneration: event.snapshot.memoryBranchGeneration,
+      chatId: event.snapshot.id,
+      sourceHash: event.snapshot.sourceHash,
+      sourceRevision: event.snapshot.memorySourceRevision
+    }
+  });
+}

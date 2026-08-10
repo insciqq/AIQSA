@@ -23,6 +23,11 @@ export type MemoryHistoryChunkingOptions = Readonly<{
   overlapTurnGroups: number;
 }>;
 
+export type MemoryHistoryChunkAdmission = Readonly<{
+  excludedMessageIds?: readonly string[];
+  sourceCreatedAtCutoff?: string | null;
+}>;
+
 export const DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS: MemoryHistoryChunkingOptions =
   Object.freeze({
     maxApproxTokens: 768,
@@ -61,6 +66,7 @@ export type MemoryRecallChunkProjection = Readonly<{
   redactionState: "NOT_NEEDED" | "REDACTED";
   safeProjectedText: string;
   safetyClass: "NORMAL" | "SENSITIVE";
+  sourceAssistantId: string | null;
   sourceContentHash: string;
   sourceProjectionVersion: typeof MEMORY_HISTORY_SOURCE_PROJECTION_VERSION;
   sourceRevision: number;
@@ -94,6 +100,7 @@ type RenderedPieces = Readonly<{
   redactionReasonCodes: readonly string[];
   redactionState: "NOT_NEEDED" | "REDACTED";
   safetyClass: "NORMAL" | "SENSITIVE";
+  sourceAssistantId: string | null;
   text: string;
   turnGroupIds: readonly string[];
 }>;
@@ -192,6 +199,7 @@ function renderPieces(pieces: readonly Piece[]): RenderedPieces {
     safetyClass: groups.some((group) => group.safetyClass === "SENSITIVE")
       ? "SENSITIVE"
       : "NORMAL",
+    sourceAssistantId: groups[0]?.sourceAssistantId ?? null,
     text,
     turnGroupIds: groups.map((group) => group.id)
   };
@@ -309,6 +317,8 @@ function groupIsSafe(group: MemoryHistoryRecallTurnGroup): boolean {
     group.messages[1].role !== "assistant" ||
     group.userMessageId !== group.messages[0].id ||
     group.assistantMessageId !== group.messages[1].id ||
+    group.messages[0].provenance.assistantId !== null ||
+    group.sourceAssistantId !== group.messages[1].provenance.assistantId ||
     group.messages.some((message) =>
       !sha256Pattern.test(message.contentHash) ||
       memorySha256(message.safeText) !== message.safeTextHash ||
@@ -348,6 +358,25 @@ function validateSnapshot(snapshot: MemorySafeSourceSnapshot): void {
   }
 }
 
+function admittedGroups(
+  groups: readonly MemoryHistoryRecallTurnGroup[],
+  admission: MemoryHistoryChunkAdmission | undefined
+): readonly MemoryHistoryRecallTurnGroup[] {
+  if (!admission) return groups;
+  const excluded = new Set(admission.excludedMessageIds ?? []);
+  const cutoff = admission.sourceCreatedAtCutoff === null ||
+      admission.sourceCreatedAtCutoff === undefined
+    ? null
+    : new Date(admission.sourceCreatedAtCutoff);
+  if (cutoff && !Number.isFinite(cutoff.getTime())) {
+    fail("memory_history_chunk_admission_invalid");
+  }
+  return groups.filter((group) =>
+    group.messages.every((message) =>
+      !excluded.has(message.id) &&
+      (cutoff === null || new Date(message.createdAt) > cutoff)));
+}
+
 function planChunks(
   groups: readonly MemoryHistoryRecallTurnGroup[],
   options: MemoryHistoryChunkingOptions
@@ -368,6 +397,12 @@ function planChunks(
 
   for (const group of groups) {
     const unit = fullGroupUnit(group);
+    if (
+      currentUnits.length > 0 &&
+      currentUnits[0]?.group.sourceAssistantId !== group.sourceAssistantId
+    ) {
+      flush();
+    }
     if (!fits(unit.pieces, options)) {
       flush();
       chunks.push(...splitGroup(group, options));
@@ -397,12 +432,16 @@ function planChunks(
 
 export function chunkMemoryRecallProjection(
   snapshot: MemorySafeSourceSnapshot,
-  options?: Partial<MemoryHistoryChunkingOptions>
+  options?: Partial<MemoryHistoryChunkingOptions>,
+  admission?: MemoryHistoryChunkAdmission
 ): readonly MemoryRecallChunkProjection[] {
   validateSnapshot(snapshot);
   if (snapshot.mode !== "NORMAL") return [];
   const resolvedOptions = optionsWithDefaults(options);
-  const safeGroups = snapshot.recallEpisodeProjection.turnGroups.filter(groupIsSafe);
+  const safeGroups = admittedGroups(
+    snapshot.recallEpisodeProjection.turnGroups.filter(groupIsSafe),
+    admission
+  );
   const planned = planChunks(safeGroups, resolvedOptions).filter((chunk) => {
     const rendered = renderPieces(chunk.pieces);
     return chunkTextPassesSafety(rendered.text);
@@ -447,6 +486,7 @@ export function chunkMemoryRecallProjection(
       redactionState: rendered.redactionState,
       safeProjectedText: rendered.text,
       safetyClass: rendered.safetyClass,
+      sourceAssistantId: rendered.sourceAssistantId,
       sourceContentHash: snapshot.sourceContentHash,
       sourceProjectionVersion: snapshot.projectionVersion,
       sourceRevision: snapshot.sourceRevision,

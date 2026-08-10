@@ -4,6 +4,7 @@ import {
 } from "../../../evaluation/memory/qualification";
 import { MEMORY_EVALUATION_SCORER_VERSION } from "../../../evaluation/memory/contracts";
 import { createPrismaMemoryExplicitEmbeddingHandler } from "../embedding/handler";
+import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
 import { ensureDefaultMemoryPurgeHandlerRegistered } from "../purge/defaultPurge";
 import { MemoryCoordinator } from "./coordinator";
 import { createPrismaMemoryCoordinatorRepository } from "./prismaRepository";
@@ -36,6 +37,8 @@ const defaultExplicitEmbeddingHandler = createPrismaMemoryExplicitEmbeddingHandl
 const defaultTemporaryChatDeletionHandler =
   createPrismaTemporaryChatDeletionHandler(createS3StorageAdapter(), prisma);
 
+const defaultHistoryIndexHandler = createPrismaMemoryHistoryIndexHandler(prisma);
+
 export function ensureDefaultMemoryPhase2HandlersRegistered(): void {
   ensureDefaultMemoryPurgeHandlerRegistered();
   const deletion = defaultMemoryCoordinatorRegistry.deletionHandler("TEMPORARY_DELETE");
@@ -52,8 +55,16 @@ export function ensureDefaultMemoryPhase2HandlersRegistered(): void {
   defaultMemoryCoordinatorRegistry.registerJob(defaultExplicitEmbeddingHandler);
 }
 
-function createDefaultMemoryCoordinator(): MemoryCoordinator {
+export function ensureDefaultMemoryPhase4HandlersRegistered(): void {
   ensureDefaultMemoryPhase2HandlersRegistered();
+  const existing = defaultMemoryCoordinatorRegistry.jobHandler("INDEX_HISTORY");
+  if (existing === defaultHistoryIndexHandler) return;
+  if (existing) throw new Error("memory_default_history_index_handler_conflict");
+  defaultMemoryCoordinatorRegistry.registerJob(defaultHistoryIndexHandler);
+}
+
+function createDefaultMemoryCoordinator(): MemoryCoordinator {
+  ensureDefaultMemoryPhase4HandlersRegistered();
   return new MemoryCoordinator({
     registry: defaultMemoryCoordinatorRegistry,
     repository: defaultMemoryCoordinatorRepository

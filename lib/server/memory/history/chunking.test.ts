@@ -15,7 +15,8 @@ const SOURCE_HASH = "b".repeat(64);
 
 function multiTurnSnapshot(
   count: number,
-  textFor?: (role: "assistant" | "user", ordinal: number) => string
+  textFor?: (role: "assistant" | "user", ordinal: number) => string,
+  assistantIdFor?: (ordinal: number) => string | null
 ): MemorySafeSourceSnapshot {
   const messages: MemoryHistorySourceMessageInput[] = [];
   let parentMessageId: string | null = null;
@@ -33,6 +34,7 @@ function multiTurnSnapshot(
       id: userId,
       parentMessageId,
       provenance: {
+        assistantId: null,
         complete: true,
         influencedByMessageIds: [],
         modelRunId: null,
@@ -51,6 +53,7 @@ function multiTurnSnapshot(
       id: assistantId,
       parentMessageId: userId,
       provenance: {
+        assistantId: assistantIdFor?.(ordinal) ?? null,
         complete: true,
         influencedByMessageIds: [userId],
         modelRunId: `run-${ordinal}`,
@@ -209,6 +212,42 @@ describe("Memory history recall chunking", () => {
 
     expect(snapshot.recallEpisodeProjection.turnGroups).toHaveLength(2);
     expect(chunkMemoryRecallProjection(snapshot)).toEqual([]);
+  });
+
+  it("applies source cutoffs and message suppressions before forming chunks", () => {
+    const snapshot = multiTurnSnapshot(3);
+    const groups = snapshot.recallEpisodeProjection.turnGroups;
+    const chunks = chunkMemoryRecallProjection(snapshot, undefined, {
+      excludedMessageIds: [groups[2]!.userMessageId],
+      sourceCreatedAtCutoff: groups[0]!.occurredTo
+    });
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.turnGroupIds).toEqual([groups[1]!.id]);
+    expect(chunks[0]?.safeProjectedText).not.toContain("Поворот 0");
+    expect(chunks[0]?.safeProjectedText).not.toContain("Поворот 2");
+  });
+
+  it("never overlaps chunks across owned Assistant source identities", () => {
+    const snapshot = multiTurnSnapshot(
+      3,
+      undefined,
+      (ordinal) => ordinal === 0 ? "assistant-a" : "assistant-b"
+    );
+    const chunks = chunkMemoryRecallProjection(snapshot, {
+      maxApproxTokens: 512,
+      maxCharacters: 1_000,
+      maxMessagesPerChunk: 6,
+      maxTurnGroupsPerChunk: 3,
+      overlapTurnGroups: 1
+    });
+
+    expect(chunks.map((chunk) => chunk.sourceAssistantId)).toEqual([
+      "assistant-a",
+      "assistant-b"
+    ]);
+    expect(chunks.map((chunk) => chunk.turnGroupIds.length)).toEqual([1, 2]);
+    expect(chunks[1]?.overlapFromPreviousTurnGroupIds).toEqual([]);
   });
 
   it("rejects unbounded or overlap-only chunking configurations", () => {

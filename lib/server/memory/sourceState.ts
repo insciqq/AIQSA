@@ -92,8 +92,19 @@ export type MemoryTemporaryFinalizationEvent = Readonly<{
   snapshot: MemorySourceSnapshot;
 }>;
 
+export type MemoryRetainedSourceMutationEvent = Readonly<{
+  mutations: readonly MemorySourceMutation[];
+  previous: LockedMemorySourceChat;
+  settlement?: MemoryTerminalSettlement;
+  snapshot: MemorySourceSnapshot;
+}>;
+
 /** Feature leaves attach here instead of adding independent writes to chat/run repositories. */
 export type MemorySourceMutationHooks = Readonly<{
+  onRetainedSourceMutated?: (
+    tx: MemoryTransaction,
+    event: MemoryRetainedSourceMutationEvent
+  ) => Promise<void>;
   onScopedTargetLifecycle?: (
     tx: MemoryTransaction,
     event: MemoryScopedTargetLifecycleEvent
@@ -486,6 +497,16 @@ export async function applyMemorySourceMutations(
   }
 
   const hooks = input.hooks ?? NOOP_MEMORY_SOURCE_MUTATION_HOOKS;
+  if (snapshot.memoryMode !== "TEMPORARY") {
+    await hooks.onRetainedSourceMutated?.(tx, {
+      mutations: input.mutations,
+      previous: input.chat,
+      ...(input.terminalSettlement
+        ? { settlement: input.terminalSettlement }
+        : {}),
+      snapshot
+    });
+  }
   if (snapshot.memoryMode !== "TEMPORARY" && input.mutations.some((mutation) =>
     mutation === "FOLDER_MOVE" ||
     mutation === "SCOPE_TARGET_DELETE" ||

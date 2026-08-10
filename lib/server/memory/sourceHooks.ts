@@ -7,6 +7,7 @@ import {
   applyMemoryScopeTargetDeletion
 } from "./scopeLifecycle";
 import { applyTemporaryRunFinalized } from "./temporaryRetention";
+import { applyMemoryHistorySourceMutation } from "./history/sourceLifecycle";
 
 /**
  * Feature-local Memory leaves compose here. Shared chat/message/run repositories
@@ -15,6 +16,7 @@ import { applyTemporaryRunFinalized } from "./temporaryRetention";
 export const defaultMemorySourceMutationHooks: MemorySourceMutationHooks =
   Object.freeze({
     ...NOOP_MEMORY_SOURCE_MUTATION_HOOKS,
+    onRetainedSourceMutated: applyMemoryHistorySourceMutation,
     onTemporaryRunFinalized: applyTemporaryRunFinalized,
     async onScopedTargetOwnerLifecycle(tx, event) {
       if (event.kind === "ASSISTANT_ACCESS_CHANGE") {

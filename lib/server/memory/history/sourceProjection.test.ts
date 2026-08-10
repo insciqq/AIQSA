@@ -25,6 +25,7 @@ function userMessage(input: Readonly<{
     id: input.id,
     parentMessageId: input.parentMessageId,
     provenance: {
+      assistantId: null,
       complete: true,
       influencedByMessageIds: [],
       modelRunId: null,
@@ -51,6 +52,7 @@ function assistantMessage(input: Readonly<{
     id: input.id,
     parentMessageId: input.parentMessageId,
     provenance: {
+      assistantId: null,
       complete: true,
       influencedByMessageIds: input.influencedByMessageIds ?? [input.parentMessageId],
       modelRunId: `run-${input.id}`,
@@ -268,6 +270,7 @@ describe("Memory safe source snapshot", () => {
         id: `message-${origin.toLowerCase()}`,
         parentMessageId: null,
         provenance: {
+          assistantId: null,
           complete: true,
           influencedByMessageIds: [],
           modelRunId: role === "assistant" ? `run-${origin.toLowerCase()}` : null,
