@@ -11,5 +11,6 @@ This file is a routing index, not a security contract owner. Read the mandatory 
 | Local test auth, Compose exposure, deployment ports, dependency installation, lifecycle scripts, or audits | [Deployment and dependencies](security/DEPLOYMENT_AND_DEPENDENCIES.md) |
 | MCP OAuth, source trust, local workloads, ToolHive lifecycle, runtime cleanup, grants, tokens, or tool evidence | [MCP runtime trust](security/MCP_RUNTIME.md) |
 | Uploads, attachments, Knowledge ingestion/embedding egress, object storage, extraction, provider discovery, catalogs, or provider-controlled input | [Uploads and provider trust](security/UPLOADS_AND_PROVIDER_TRUST.md) |
+| Native Memory safety projection, private evidence/logging, utility egress, suppression, lifecycle, or deletion | [Memory](backend/MEMORY.md), [persistence and retention](backend/PERSISTENCE_AND_RETENTION.md), and [testing](TESTING.md) |
 
 Non-negotiable safety boundaries remain in [critical invariants](CRITICAL_INVARIANTS.md). Observable authentication and upload/share transitions are routed through [backend API and auth](backend/API_AND_AUTH.md), persistence rules through [persistence and retention](backend/PERSISTENCE_AND_RETENTION.md), and verification permissions through [testing](TESTING.md).

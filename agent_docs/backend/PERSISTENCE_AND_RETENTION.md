@@ -97,11 +97,12 @@ owner, state, token, and unexpired lease. Consent waiting carries neither lease
 nor fallback authority. Job apply and success settle in one transaction.
 Deletion apply and success do likewise; failures release to bounded retry and
 then `BLOCKED_REQUIRES_ADMIN` with a slow due time and audit timestamp, never a
-terminal abandoned state. The default registry claims `FORGET_PURGE`,
-`TEMPORARY_DELETE`, and the optional fail-closed `EMBED_ITEMS` leaf.
-Its typed manifest requires versioned contributors for unaccepted retrieval
-attempts, fact evidence, fact search rows (including their vectors/FTS), and
-forgotten version content. All leaves and the final completeness audit execute
+terminal abandoned state. The Phase 4 registry claims `FORGET_PURGE`,
+`TEMPORARY_DELETE`, `BULK_CLEAR`, and `SOURCE_PURGE` deletion plus `EMBED_ITEMS`,
+`INDEX_HISTORY`, `EXTRACT_EPISODE`, and `REBUILD_INDEX` jobs. Utility leaves fail
+closed before provider I/O. Versioned `FORGET_PURGE` contributors cover
+unaccepted attempts, fact evidence/search/content, and history derivatives. All
+leaves and the final completeness audit execute
 inside the claim's apply/success transaction, so a crash or failing leaf rolls
 the complete purge attempt back. Scrubbing an item from a nonterminal Memory
 attempt also settles its `PREPARING` run and assistant message atomically, which
@@ -109,8 +110,8 @@ preserves the deferred run/attempt guard. Missing contributors refuse claims;
 residual audits refuse success. Status audits and startup reconciliation can
 move an earlier `SUCCEEDED` row back to `PENDING` when a later versioned
 contributor discovers work, and startup drains the pre-start success set in
-bounded batches before claims begin. Other deletion operations and every job
-kind remain dormant until their owning slices register handlers. Development
+bounded batches before claims begin. Unregistered later operations/jobs remain
+dormant. Development
 starts the feature-local coordinator from server instrumentation; production
 runs the same coordinator code in the private `memory-worker` role. Both
 preflight the suppression keyring and every referenced historical key ID before

@@ -1,23 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MEMORY_PHASE4_COORDINATOR_MANIFEST,
   ensureDefaultMemoryPhase4HandlersRegistered
 } from "./defaultCoordinator";
 import { defaultMemoryCoordinatorRegistry } from "./registry";
 
 describe("default Memory coordinator composition", () => {
-  it("registers purge, history, episode, and optional vector leaves idempotently", () => {
+  it("registers the exact Phase 4 job and deletion manifest idempotently", () => {
     ensureDefaultMemoryPhase4HandlersRegistered();
     ensureDefaultMemoryPhase4HandlersRegistered();
 
-    expect(defaultMemoryCoordinatorRegistry.deletionOperations()).toContain("FORGET_PURGE");
-    expect(defaultMemoryCoordinatorRegistry.deletionOperations()).toContain("TEMPORARY_DELETE");
-    expect(defaultMemoryCoordinatorRegistry.jobKinds()).toContain("EMBED_ITEMS");
-    expect(defaultMemoryCoordinatorRegistry.jobKinds()).toContain("INDEX_HISTORY");
-    expect(defaultMemoryCoordinatorRegistry.jobKinds()).toContain("EXTRACT_EPISODE");
-    expect(defaultMemoryCoordinatorRegistry.jobHandler("EMBED_ITEMS")?.kind).toBe("EMBED_ITEMS");
-    expect(defaultMemoryCoordinatorRegistry.jobHandler("INDEX_HISTORY")?.kind)
-      .toBe("INDEX_HISTORY");
-    expect(defaultMemoryCoordinatorRegistry.jobHandler("EXTRACT_EPISODE")?.kind)
-      .toBe("EXTRACT_EPISODE");
+    expect(new Set(defaultMemoryCoordinatorRegistry.deletionOperations())).toEqual(
+      new Set(DEFAULT_MEMORY_PHASE4_COORDINATOR_MANIFEST.deletionOperations)
+    );
+    expect(new Set(defaultMemoryCoordinatorRegistry.jobKinds())).toEqual(
+      new Set(DEFAULT_MEMORY_PHASE4_COORDINATOR_MANIFEST.jobKinds)
+    );
+    for (const operation of DEFAULT_MEMORY_PHASE4_COORDINATOR_MANIFEST
+      .deletionOperations) {
+      expect(defaultMemoryCoordinatorRegistry.deletionHandler(operation)?.operation)
+        .toBe(operation);
+    }
+    for (const kind of DEFAULT_MEMORY_PHASE4_COORDINATOR_MANIFEST.jobKinds) {
+      expect(defaultMemoryCoordinatorRegistry.jobHandler(kind)?.kind).toBe(kind);
+    }
   });
 });

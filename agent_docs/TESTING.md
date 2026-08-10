@@ -115,6 +115,7 @@ Add only evidence justified by the changed boundary:
 | Dependency or security boundary | Run focused threat tests. Run `npm run security:deps` for dependency changes and review lockfile/lifecycle impact; automated remediation is never implicit authority for a breaking change. |
 | Provider adapter | Run deterministic adapter/fake tests first. A real-provider smoke is optional evidence only under the permission and data limits below. |
 | Retention or destructive data behavior | Run the focused migration contract and dry run first; execute deletion only when the requested scope explicitly authorizes it and only against the intended target. |
+| Native Memory phase gate | Run pure source/safety/handler fixtures first, then the exact stateful phase matrix below against disposable PostgreSQL/pgvector. Evidence may contain only aggregate counts, booleans, versions, plan names, Recall@k, latency, and job lag—never source text, embeddings, account IDs, or provider bodies. |
 | MCP, ToolHive, or auth durability | Run focused deterministic tests first, then only the relevant opt-in integration command below against the disposable stack. External package pulls, hosted consent, and live OAuth require their own authority. |
 | Document parser protocol or sidecar topology | Run deterministic routing/bounds/decoder fakes first, build the locally derived Docling image from its digest/checksum-pinned inputs, then run the parser smoke against that image and digest-pinned Tika in the disposable dev stack. Stop both parsers and prove feature-local unavailability while app readiness remains healthy. |
 
@@ -149,6 +150,30 @@ npm run db:document-processing-fairness:migration:contract
 Select the script owned by the migration; do not run this list as a generic release suite.
 
 ### Database and service integrations
+
+Native Memory Phase 4 source settlement, safety projection, lexical/vector/
+episode indexing, rebuild/recovery, manual search, and destructive replay:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T app \
+  npx vitest run --config vitest.full.config.ts \
+  lib/server/memory/coordinator/defaultCoordinator.test.ts \
+  lib/server/memory/history/sourceProjection.test.ts \
+  lib/server/memory/history/chunking.test.ts \
+  lib/server/memory/history/handler.test.ts \
+  lib/server/memory/history/episode/handler.test.ts \
+  lib/server/memory/history/repository.prisma.test.ts \
+  lib/server/memory/retrieval/vector.prisma.test.ts \
+  lib/server/memory/rebuild/prismaRebuild.prisma.test.ts \
+  lib/server/memory/lifecycle/prismaLifecycle.prisma.test.ts
+```
+
+The vector fixture uses PostgreSQL 16/pgvector 0.8, 5,001 eligible rows and
+closer foreign-tenant rows, plus incompatible generations/dimensions. It emits
+only a sanitized aggregate with Recall@5, exact/HNSW plan booleans, query p95,
+and zero leakage counts. The history fixture emits only searchable-row count
+and enqueue-to-commit job lag. Test fixture IDs and content are explicitly
+excluded from every evidence object.
 
 Authentication admission concurrency/restart:
 

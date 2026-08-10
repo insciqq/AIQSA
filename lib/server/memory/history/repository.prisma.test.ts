@@ -344,6 +344,32 @@ describe("Memory lexical history index persistence", () => {
       });
       expect(settingsAfter.activeIndexGenerationId).toBe(generation.id);
       expect(settingsAfter.memoryRevision).toBe(settingsBefore.memoryRevision + 1);
+      if (!checkpoint.lastSucceededAt) {
+        throw new Error("memory_history_qualification_checkpoint_missing");
+      }
+      const indexedJob = await prisma.memoryJob.findUniqueOrThrow({
+        select: { createdAt: true },
+        where: { id: claim.id }
+      });
+      const jobLagMs = checkpoint.lastSucceededAt.getTime() -
+        indexedJob.createdAt.getTime();
+      const evidence = Object.freeze({
+        evidenceVersion: "memory-phase4-history-qualification-v1",
+        jobLagMs,
+        learningEnabled: settingsAfter.learnAutomatically,
+        maximumJobLagMs: 15 * 60 * 1_000,
+        sanitizedAggregatesOnly: true,
+        searchableChunkCount: chunks.length
+      });
+      expect(evidence).toMatchObject({
+        learningEnabled: false,
+        sanitizedAggregatesOnly: true,
+        searchableChunkCount: 1
+      });
+      expect(evidence.jobLagMs).toBeGreaterThanOrEqual(0);
+      expect(evidence.jobLagMs).toBeLessThan(evidence.maximumJobLagMs);
+      expect(JSON.stringify(evidence)).not.toContain(userId);
+      console.info("memory_phase4_history_qualification", evidence);
 
       const lexical = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT entry."id"
@@ -1270,6 +1296,26 @@ describe("Memory lexical history index persistence", () => {
         null
       );
       expect(excluded.results).toEqual([]);
+      const evidence = Object.freeze({
+        crossTenantLeakageCount: firstPage.results.filter((result) =>
+          result.sourceChatId === foreignChat.id).length,
+        evidenceVersion: "memory-phase4-manual-search-qualification-v1",
+        excludedSourceHitCount: excluded.results.length,
+        sanitizedAggregatesOnly: true,
+        staleBranchHitCount: staleBranch.results.length,
+        suppressedSourceHitCount: suppressed.results.length
+      });
+      expect(evidence).toEqual({
+        crossTenantLeakageCount: 0,
+        evidenceVersion: "memory-phase4-manual-search-qualification-v1",
+        excludedSourceHitCount: 0,
+        sanitizedAggregatesOnly: true,
+        staleBranchHitCount: 0,
+        suppressedSourceHitCount: 0
+      });
+      expect(JSON.stringify(evidence)).not.toContain(userId);
+      expect(JSON.stringify(evidence)).not.toContain(foreignUserId);
+      console.info("memory_phase4_manual_search_qualification", evidence);
     } finally {
       await cleanupOwner(foreignUserId);
       await cleanupOwner(userId);

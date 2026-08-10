@@ -129,8 +129,10 @@ reranking, split Memory/tool synthesis, later lifecycle/bulk variants, and
 production-qualified utility calls remain unavailable. Development and private
 `memory-worker` production use the same coordinator; Memory failure does not
 alter web readiness. Its registry composes purge, Temporary deletion, local
-indexing, qualified episodes, and optional embeddings. Remote work parks before
-I/O while the fail-closed code registry has no operator-approved qualification.
+history indexing, qualified episodes, shadow rebuild, history clear/source
+purge, and optional embeddings under one exact manifest. Remote work parks
+before I/O while the fail-closed code registry has no operator-approved
+qualification.
 Lexical features and the generation-safe vector repository remain live, but
 history is not admitted to answers; manual search is inspection only. Per-call
 execution owns current authority, receipts, single-winner start, usage,

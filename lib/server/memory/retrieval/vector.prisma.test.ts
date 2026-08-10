@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
@@ -55,6 +56,12 @@ const embeddingConfiguration = {
 
 function queryVector(dimension: 1_024 | 1_536 = 1_024): number[] {
   return Array.from({ length: dimension }, (_, index) => index === 0 ? 1 : 0);
+}
+
+function percentile95(values: readonly number[]): number {
+  if (values.length === 0) throw new Error("memory_vector_latency_sample_missing");
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.ceil(sorted.length * 0.95) - 1]!;
 }
 
 async function createHistoryFixture(
@@ -480,9 +487,72 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${exactStatement}
       `);
     });
-    expect(JSON.stringify(exactPlan)).not.toContain(
+    const annPlanJson = JSON.stringify(annPlan);
+    const exactPlanJson = JSON.stringify(exactPlan);
+    expect(exactPlanJson).not.toContain(
       "MemorySearchEntry_embedding_1024_hnsw_idx"
     );
-    expect(JSON.stringify(exactPlan)).toMatch(/Sort|Seq Scan/u);
+    expect(exactPlanJson).toMatch(/Sort|Seq Scan/u);
+
+    const repository = createPrismaMemoryVectorRepository(prisma);
+    await repository.search(searchInput(annFixture));
+    await repository.search(searchInput(exactFixture));
+    const sampleCount = 12;
+    const annLatenciesMs: number[] = [];
+    const exactLatenciesMs: number[] = [];
+    let qualifiedAnnResult: Awaited<ReturnType<typeof repository.search>> | null = null;
+    for (let sample = 0; sample < sampleCount; sample += 1) {
+      let startedAt = performance.now();
+      qualifiedAnnResult = await repository.search(searchInput(annFixture));
+      annLatenciesMs.push(performance.now() - startedAt);
+      startedAt = performance.now();
+      await repository.search(searchInput(exactFixture));
+      exactLatenciesMs.push(performance.now() - startedAt);
+    }
+    if (!qualifiedAnnResult || qualifiedAnnResult.status !== "READY") {
+      throw new Error("memory_vector_qualification_result_unavailable");
+    }
+    const expected = new Set(Array.from(
+      { length: 5 },
+      (_, index) => `memory-vector-ann-${suffix}-entry-${index + 1}`
+    ));
+    const recallAt5 = qualifiedAnnResult.hits.filter(({ entryId }) =>
+      expected.has(entryId)).length / expected.size;
+    const crossTenantLeakageCount = qualifiedAnnResult.hits.filter(({ itemId }) =>
+      !itemId.startsWith(`memory-vector-ann-${suffix}-chunk-`)).length;
+    const incompatibleSpaceLeakageCount = qualifiedAnnResult.hits.filter(({ entryId }) =>
+      entryId.includes("incompatible")).length;
+    const evidence = Object.freeze({
+      annEligibleRows: MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1,
+      annP95LatencyMs: Math.round(percentile95(annLatenciesMs) * 100) / 100,
+      crossTenantLeakageCount,
+      evidenceVersion: "memory-phase4-vector-qualification-v1",
+      exactEligibleRows: 32,
+      exactP95LatencyMs: Math.round(percentile95(exactLatenciesMs) * 100) / 100,
+      exactPlanBounded: !exactPlanJson.includes(
+        "MemorySearchEntry_embedding_1024_hnsw_idx"
+      ),
+      hnswIndexUsed: annPlanJson.includes(
+        "MemorySearchEntry_embedding_1024_hnsw_idx"
+      ),
+      incompatibleSpaceLeakageCount,
+      pgvectorVersion: versions[0]!.pgvector,
+      postgresqlMajorMinor: "16.14",
+      recallAt5,
+      sampleCount,
+      sanitizedAggregatesOnly: true
+    });
+    expect(evidence).toMatchObject({
+      crossTenantLeakageCount: 0,
+      exactPlanBounded: true,
+      hnswIndexUsed: true,
+      incompatibleSpaceLeakageCount: 0,
+      recallAt5: 1,
+      sanitizedAggregatesOnly: true
+    });
+    expect(evidence.annP95LatencyMs).toBeLessThan(150);
+    expect(evidence.exactP95LatencyMs).toBeLessThan(150);
+    expect(JSON.stringify(evidence)).not.toContain(suffix);
+    console.info("memory_phase4_vector_qualification", evidence);
   }, 120_000);
 });
