@@ -110,6 +110,16 @@ resolves the current owner-private live/archive destination before Settings is
 dismissed, then delegates archived results to the existing read-only archive
 owner instead of activating an operational chat.
 
+`memoryOperationsStore` owns the account-bound history-operation confirmation,
+admission/cancellation mutation, and separate clear/rebuild status projections.
+It reloads current Memory/settings CAS immediately before admission, keeps a
+stale confirmation recoverable, and stores only account-keyed opaque deletion
+or rebuild ids in tab-scoped storage so authoritative server status can be
+restored after reload. Polls and late admission/status responses are fenced to
+the exact account generation. Clear admission and successful generation
+replacement invalidate only derived manual-history results; neither path
+persists private query or source text.
+
 The Assistants surface owns its own focused state: `assistantLibraryStore` holds the open full-screen task (list, editor, history), Discover/Yours mode, filter/category/query, fetched list data, and editor/history drafts, while `assistantLibraryController` owns every surface mutation (create, revise with CAS, archive/restore, duplicate, publish/revoke, pin, restore-as-new-revision) and `Use` application into the composer owner. Editor avatar generation happens exactly once per new draft plus once per explicit `Generate another`, entirely in the browser. Current-composer Assistant selection remains with composer controls; the surface never mutates next-run state except through the atomic apply/remove actions.
 
 Knowledge follows the same focused-owner boundary without sharing Assistant or composer state. `knowledgeLibraryStore` owns its open list/create/detail task, list filter/query, active document query/page, decoded list/detail/ingestion projections, dirty drafts, action identity, and bounded notice; `knowledgeLibraryController` owns loading, server-paged filename search, CAS save, sequential multi-file upload, retry/replace/remove, archive/restore, reindex, publish/revoke, and stale-response fencing. Lifecycle polling refreshes only transient work on the active document query/page, preserves the last useful projection on background failure, and cannot replace a dirty base draft. The Knowledge management surface does not select next-run retrieval; composer binding and persisted run evidence remain with their dedicated run task and owners.

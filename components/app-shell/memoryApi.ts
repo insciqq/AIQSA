@@ -7,6 +7,7 @@ import {
   decodeMemoryListResponse,
   decodeMemoryMutationAuthorizationResponse,
   decodeMemoryMutationResponse,
+  decodeMemoryRebuildStatus,
   decodeMemorySettingsResponse,
   type MemoryBulkDeleteInput,
   type MemoryConsentInput,
@@ -20,6 +21,8 @@ import {
   type MemoryMutationAuthorizationInput,
   type MemoryMutationAuthorizationResponse,
   type MemoryMutationResponse,
+  type MemoryRebuildInput,
+  type MemoryRebuildStatus,
   type MemorySettingsPatch,
   type MemorySettingsResponse,
   type MemoryUpdateInput
@@ -263,6 +266,12 @@ export async function forgetMemory(
 export async function startExplicitMemoryDeletion(
   body: MemoryBulkDeleteInput
 ): Promise<MemoryDeletionStatus> {
+  return startMemoryBulkDeletion(body);
+}
+
+export async function startMemoryBulkDeletion(
+  body: MemoryBulkDeleteInput
+): Promise<MemoryDeletionStatus> {
   return memoryRequest(
     "/api/me/memory/bulk-delete",
     { body: JSON.stringify(body), method: "POST" },
@@ -278,5 +287,36 @@ export async function loadMemoryDeletionStatus(
     `/api/me/memory/deletions/${encodeURIComponent(deletionId)}`,
     { method: "GET", signal },
     decodeMemoryDeletionStatus
+  );
+}
+
+export async function startMemoryRebuild(
+  body: MemoryRebuildInput
+): Promise<MemoryRebuildStatus> {
+  return memoryRequest(
+    "/api/me/memory/rebuild",
+    { body: JSON.stringify(body), method: "POST" },
+    decodeMemoryRebuildStatus
+  );
+}
+
+export async function loadMemoryRebuildStatus(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<MemoryRebuildStatus> {
+  return memoryRequest(
+    `/api/me/memory/rebuild/${encodeURIComponent(jobId)}`,
+    { method: "GET", signal },
+    decodeMemoryRebuildStatus
+  );
+}
+
+export async function cancelMemoryRebuild(
+  jobId: string
+): Promise<MemoryRebuildStatus> {
+  return memoryRequest(
+    `/api/me/memory/rebuild/${encodeURIComponent(jobId)}/cancel`,
+    { method: "POST" },
+    decodeMemoryRebuildStatus
   );
 }

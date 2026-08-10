@@ -26,6 +26,18 @@ Not owned here: Server resource authorization/retrieval, Control Center administ
   read-only Archived preview. Entry and return restore deterministic focus,
   and Settings remains the only scroll owner at portrait and short-landscape
   sizes.
+- History operations is a separate reversible nested task reached directly
+  from Memory Settings. Rebuild, re-embed, and explicit reprocessing remain
+  distinct actions whose availability is derived from the current history,
+  deployment, learning, and utility-egress projection. Confirmation refreshes
+  exact Memory/settings CAS authority; clear-history and reprocessing also
+  consume an operation-bound one-time authorization. Rebuild status preserves
+  the active-generation/shadow boundary and offers cancellation only for a
+  nonterminal shadow job. Clear-history reports the committed retrieval fence
+  separately from pending physical purge, never offers cancellation after the
+  fence, and keeps retry, administrator-blocked, and audited completion states
+  visible. A browser session retains only account-keyed opaque operation ids
+  for reload recovery; errors and progress never contain private source text.
 - `Delete all saved memories` refreshes settings/Memory CAS authority at confirmation, mints current-copy `DELETE_EXPLICIT` authorization, and distinguishes the immediate future-retrieval fence from asynchronous plaintext purge. Its recoverable status exposes pending/running/retry/blocked/succeeded progress without saved text and says precisely that retained raw chats, immutable accepted destination runs, provider retention, and operator backups are not rewritten. A browser session retains only the opaque active deletion reference for reload navigation; server ownership and status remain authoritative.
 - MCP & tools lists only entitled enabled installation definitions with active revisions. Each row separately presents persistent Enabled/Disabled, readiness, setup/OAuth actions, administrator-enabled tool names, declared personal fields, and a safe account/workspace label. Disabled names and the complete upstream inventory are administrator-only; endpoints, commands, packages, environment/header targets, OAuth client policy, grants, and secret values never render.
 - Several servers may be enabled together. The UI warns that conversation-derived data may reach tools and rejects a known effective enabled-inventory total above the 128-tool run limit, while the server remains authoritative for schemas, bytes, freshness, and races. A ready server with every discovered tool disabled remains ready but contributes zero tools.

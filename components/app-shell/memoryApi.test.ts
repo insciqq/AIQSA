@@ -2,13 +2,22 @@ import { cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   authorizeMemoryMutation,
+  cancelMemoryRebuild,
   loadMemorySettings,
+  loadMemoryRebuildStatus,
   MemoryApiError,
   memoryStatementHash,
-  searchMemories
+  searchMemories,
+  startMemoryBulkDeletion,
+  startMemoryRebuild
 } from "./memoryApi";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
-import { memoryListFixture, memorySettingsFixture } from "./memoryTestFixtures";
+import {
+  memoryDeletionFixture,
+  memoryListFixture,
+  memoryRebuildFixture,
+  memorySettingsFixture
+} from "./memoryTestFixtures";
 
 describe("Memory API client", () => {
   afterEach(() => {
@@ -98,5 +107,46 @@ describe("Memory API client", () => {
       code: "memory_action_failed",
       status: 409
     });
+  });
+
+  it("uses strict body-only operation routes and an explicitly empty cancel request", async () => {
+    const deletion = memoryDeletionFixture({ operation: "CLEAR_HISTORY_INDEX" });
+    const rebuild = memoryRebuildFixture();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(deletion), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(rebuild), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(rebuild), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...rebuild, state: "CANCELLED" }), {
+        status: 200
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await startMemoryBulkDeletion({
+      expectedMemoryRevision: 8,
+      expectedSettingsRevision: 12,
+      mutationAuthorizationId: "clear-authorization",
+      operation: "CLEAR_HISTORY_INDEX"
+    });
+    await startMemoryRebuild({
+      expectedMemoryRevision: 8,
+      expectedSettingsRevision: 12,
+      operation: "REBUILD_SEARCH_INDEX"
+    });
+    await loadMemoryRebuildStatus("job/private");
+    await cancelMemoryRebuild("job/private");
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/me/memory/bulk-delete",
+      "/api/me/memory/rebuild",
+      "/api/me/memory/rebuild/job%2Fprivate",
+      "/api/me/memory/rebuild/job%2Fprivate/cancel"
+    ]);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "POST" });
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "POST" });
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: "GET" });
+    const cancelInit = fetchMock.mock.calls[3]?.[1] as RequestInit;
+    expect(cancelInit.method).toBe("POST");
+    expect(cancelInit.body).toBeUndefined();
+    expect(new Headers(cancelInit.headers).get("content-type")).toBeNull();
   });
 });

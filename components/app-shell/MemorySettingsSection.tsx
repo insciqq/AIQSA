@@ -1,5 +1,12 @@
 import { ManageMemories } from "@/components/app-shell/ManageMemories";
+import { MemoryOperations } from "@/components/app-shell/MemoryOperations";
 import { MemoryApiError } from "@/components/app-shell/memoryApi";
+import {
+  activateMemoryOperationsAccount,
+  deactivateMemoryOperationsAccount,
+  useMemoryOperationsStore
+} from "@/components/app-shell/memoryOperationsStore";
+import { memoryOperationsUiCopy } from "@/components/app-shell/memoryOperationsUiCopy";
 import {
   acceptCurrentMemoryDestinations,
   refreshMemorySettings,
@@ -16,13 +23,14 @@ import {
   Check,
   CircleAlert,
   Database,
+  DatabaseZap,
   Fingerprint,
   Languages,
   ListChecks,
   RotateCw,
   ShieldCheck
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
@@ -159,12 +167,16 @@ function MemorySettings({
   data,
   locale,
   onManage,
-  onNotice
+  onNotice,
+  onOperations,
+  operationsEntryRef
 }: {
   data: MemorySettingsResponse;
   locale: MemoryUiLocale;
   onManage(): void;
   onNotice(notice: SettingsNotice): void;
+  onOperations(): void;
+  operationsEntryRef: RefObject<HTMLButtonElement | null>;
 }) {
   const busy = useMemorySettingsStore((state) => state.busy);
   const [reviewOpen, setReviewOpen] = useState(data.egress.reviewRequired);
@@ -376,6 +388,32 @@ function MemorySettings({
         </div>
       </section>
 
+      <section className="mt-4 border-y border-trace-subtle py-4" aria-labelledby="memory-operations-heading">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <DatabaseZap className="mt-0.5 size-5 shrink-0 text-proof" aria-hidden="true" />
+            <div>
+              <h4 className="text-sm font-semibold text-ink" id="memory-operations-heading">
+                {memoryOperationsUiCopy(locale, "entry")}
+              </h4>
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted">
+                {memoryOperationsUiCopy(locale, "entryDescription")}
+              </p>
+            </div>
+          </div>
+          <button
+            className={secondaryButton}
+            disabled={busy !== null}
+            onClick={onOperations}
+            ref={operationsEntryRef}
+            type="button"
+          >
+            {memoryOperationsUiCopy(locale, "entry")}
+            <ArrowRight className="size-4" aria-hidden="true" />
+          </button>
+        </div>
+      </section>
+
       <section className="mt-7" aria-labelledby="memory-capabilities-heading">
         <h4 className="text-sm font-semibold text-ink" id="memory-capabilities-heading">{t(locale, "settings.capabilitiesHeading")}</h4>
         <ul className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
@@ -407,22 +445,41 @@ export function MemorySettingsSection({
   const busy = useMemorySettingsStore((state) => state.busy);
   const data = useMemorySettingsStore((state) => state.data);
   const loadState = useMemorySettingsStore((state) => state.loadState);
+  const operationsBusy = useMemoryOperationsStore((state) => state.busy);
   const [managerBusy, setManagerBusy] = useState(false);
   const [managerDirty, setManagerDirty] = useState(false);
   const [managing, setManaging] = useState(false);
+  const [operationsOpen, setOperationsOpen] = useState(false);
   const [notice, setNotice] = useState<SettingsNotice>(null);
+  const memoryScrollRef = useRef<HTMLElement>(null);
+  const operationsEntryRef = useRef<HTMLButtonElement>(null);
+  const returnToOperationsEntryRef = useRef(false);
+  const returnToOperationsScrollTopRef = useRef(0);
 
   useEffect(() => {
     void refreshMemorySettings().catch(() => undefined);
   }, []);
   useEffect(() => {
-    onBusyChange?.(busy !== null || managerBusy);
+    void activateMemoryOperationsAccount(accountId);
+    return () => deactivateMemoryOperationsAccount(accountId);
+  }, [accountId]);
+  useEffect(() => {
+    onBusyChange?.(busy !== null || managerBusy || operationsBusy !== null);
     return () => onBusyChange?.(false);
-  }, [busy, managerBusy, onBusyChange]);
+  }, [busy, managerBusy, onBusyChange, operationsBusy]);
   useEffect(() => {
     onDirtyChange?.(managerDirty);
     return () => onDirtyChange?.(false);
   }, [managerDirty, onDirtyChange]);
+  useEffect(() => {
+    if (!operationsOpen && returnToOperationsEntryRef.current) {
+      returnToOperationsEntryRef.current = false;
+      if (memoryScrollRef.current) {
+        memoryScrollRef.current.scrollTop = returnToOperationsScrollTopRef.current;
+      }
+      operationsEntryRef.current?.focus({ preventScroll: true });
+    }
+  }, [operationsOpen]);
 
   const locale = data?.settings.memoryUiLocale ?? null;
   return (
@@ -430,8 +487,18 @@ export function MemorySettingsSection({
       className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-6 sm:px-6"
       aria-labelledby={managing ? undefined : "memory-heading"}
       data-testid="settings-memory-scroll"
+      ref={memoryScrollRef}
     >
-      {managing && data && locale ? (
+      {operationsOpen && data && locale ? (
+        <MemoryOperations
+          data={data}
+          locale={locale}
+          onBack={() => {
+            returnToOperationsEntryRef.current = true;
+            setOperationsOpen(false);
+          }}
+        />
+      ) : managing && data && locale ? (
         <ManageMemories
           accountId={accountId}
           locale={locale}
@@ -444,7 +511,18 @@ export function MemorySettingsSection({
       ) : data && locale ? (
         <>
           <SettingNotice locale={locale} notice={notice} />
-          <MemorySettings data={data} locale={locale} onManage={() => setManaging(true)} onNotice={setNotice} />
+          <MemorySettings
+            data={data}
+            locale={locale}
+            onManage={() => setManaging(true)}
+            onNotice={setNotice}
+            onOperations={() => {
+              returnToOperationsScrollTopRef.current = memoryScrollRef.current?.scrollTop ?? 0;
+              if (memoryScrollRef.current) memoryScrollRef.current.scrollTop = 0;
+              setOperationsOpen(true);
+            }}
+            operationsEntryRef={operationsEntryRef}
+          />
         </>
       ) : loadState === "error" ? (
         <div className="mx-auto max-w-3xl py-10 text-center">

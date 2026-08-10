@@ -275,6 +275,20 @@ export function cancelMemoryHistorySearch(): void {
   }
 }
 
+export function invalidateMemoryHistorySearchResults(accountId?: string): void {
+  const current = useMemoryHistorySearchStore.getState();
+  if (accountId !== undefined && current.accountId !== accountId) return;
+  abortActiveRequest();
+  useMemoryHistorySearchStore.setState({
+    applied: null,
+    error: null,
+    indexing: null,
+    loadState: "idle",
+    nextCursor: null,
+    results: []
+  });
+}
+
 export function resetMemoryHistorySearchStoreForTest(): void {
   abortActiveRequest();
   useMemoryHistorySearchStore.setState(accountState(null));

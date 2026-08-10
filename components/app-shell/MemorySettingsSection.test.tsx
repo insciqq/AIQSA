@@ -6,6 +6,7 @@ import {
   useMemorySettingsStore
 } from "./memorySettingsStore";
 import { resetMemoryManagerStoreForTest } from "./memoryManagerStore";
+import { resetMemoryOperationsStoreForTest } from "./memoryOperationsStore";
 import { memorySettingsFixture } from "./memoryTestFixtures";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
 
@@ -24,11 +25,13 @@ describe("MemorySettingsSection", () => {
   beforeEach(() => {
     resetMemorySettingsStoreForTest();
     resetMemoryManagerStoreForTest();
+    resetMemoryOperationsStoreForTest();
   });
   afterEach(() => {
     cleanup();
     resetMemorySettingsStoreForTest();
     resetMemoryManagerStoreForTest();
+    resetMemoryOperationsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -167,5 +170,26 @@ describe("MemorySettingsSection", () => {
     await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(true));
     resolvePatch(json(memorySettingsFixture({ settings: { useMemoryFacts: true } })));
     await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
+  });
+
+  it("enters and returns from the history-operations task with deterministic focus", async () => {
+    const server = memorySettingsFixture({ settings: { referenceChatHistory: true } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(server)));
+    render(<MemorySettingsSection {...sectionProps} />);
+
+    const entry = await screen.findByRole("button", { name: "History operations" });
+    const scrollOwner = screen.getByTestId("settings-memory-scroll");
+    scrollOwner.scrollTop = 240;
+    fireEvent.click(entry);
+    const heading = screen.getByRole("heading", { name: "History operations" });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(scrollOwner.scrollTop).toBe(0);
+    expect(scrollOwner.querySelectorAll(".overflow-y-auto"))
+      .toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to Memory settings" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "History operations" })).toHaveFocus());
+    expect(scrollOwner.scrollTop).toBe(240);
+    expect(screen.getByRole("heading", { name: "Memory" })).toBeVisible();
   });
 });

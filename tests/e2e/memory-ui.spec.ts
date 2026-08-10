@@ -62,7 +62,10 @@ function summary(
   };
 }
 
-async function installMemoryFixture(context: BrowserContext) {
+async function installMemoryFixture(
+  context: BrowserContext,
+  options: Readonly<{ operationsEnabled?: boolean }> = {}
+) {
   let settingsRevision = 12;
   let memoryRevision = 8;
   let memoryConsentRevision = 4;
@@ -74,16 +77,24 @@ async function installMemoryFixture(context: BrowserContext) {
   let versionOrdinal = 1;
   let memories = [summary("memory-existing", "Любимый цвет — зелёный.")];
   let deletionState: "BLOCKED_REQUIRES_ADMIN" | "PENDING" = "PENDING";
+  let clearDeletionMayComplete = false;
+  let clearDeletionState: "BLOCKED_REQUIRES_ADMIN" | "PENDING" | "SUCCEEDED" = "PENDING";
+  let rebuildState: "CANCELLED" | "QUEUED" | "RUNNING" = "QUEUED";
+  let rebuildOperation: "REBUILD_SEARCH_INDEX" | "REDREAM_EXISTING_CHATS" | "REEMBED" =
+    "REBUILD_SEARCH_INDEX";
   const searchRequests: Array<{ body: Record<string, unknown>; url: string }> = [];
   const historySearchRequests: Array<{ body: Record<string, unknown>; url: string }> = [];
+  const bulkDeletionRequests: Record<string, unknown>[] = [];
   const mutationAuthorizations: Record<string, unknown>[] = [];
+  const rebuildRequests: Record<string, unknown>[] = [];
+  const rebuildCancellations: string[] = [];
 
   function settingsResponse() {
     return {
       capabilities: {
-        automaticLearning: false,
+        automaticLearning: options.operationsEnabled === true,
         explicitMemory: true,
-        historyRecall: false,
+        historyRecall: options.operationsEnabled === true,
         russianQualified: true,
         temporaryChats: true
       },
@@ -307,6 +318,36 @@ async function installMemoryFixture(context: BrowserContext) {
       return;
     }
     if (path === "/api/me/memory/bulk-delete" && method === "POST") {
+      bulkDeletionRequests.push(body);
+      if (body.operation === "CLEAR_HISTORY_INDEX") {
+        expect(body).toMatchObject({
+          expectedMemoryRevision: memoryRevision,
+          expectedSettingsRevision: settingsRevision,
+          mutationAuthorizationId: expect.stringMatching(/^authorization-/u),
+          operation: "CLEAR_HISTORY_INDEX"
+        });
+        memoryRevision += 1;
+        settingsRevision += 1;
+        clearDeletionMayComplete = false;
+        clearDeletionState = "PENDING";
+        await route.fulfill({
+          contentType: "application/json",
+          json: {
+            completedUnits: 0,
+            deletionId: "memory-clear-e2e",
+            lastAuditAt: null,
+            memoryGeneration: 4,
+            memoryRevision,
+            operation: "CLEAR_HISTORY_INDEX",
+            settingsRevision,
+            state: clearDeletionState,
+            totalUnits: 6,
+            updatedAt: now
+          },
+          status: 202
+        });
+        return;
+      }
       expect(body).toMatchObject({
         expectedMemoryRevision: memoryRevision,
         expectedSettingsRevision: settingsRevision,
@@ -334,6 +375,25 @@ async function installMemoryFixture(context: BrowserContext) {
       });
       return;
     }
+    if (path === "/api/me/memory/deletions/memory-clear-e2e" && method === "GET") {
+      clearDeletionState = clearDeletionMayComplete ? "SUCCEEDED" : "BLOCKED_REQUIRES_ADMIN";
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          completedUnits: clearDeletionState === "SUCCEEDED" ? 6 : 4,
+          deletionId: "memory-clear-e2e",
+          lastAuditAt: clearDeletionState === "SUCCEEDED" ? now : null,
+          memoryGeneration: 4,
+          memoryRevision,
+          operation: "CLEAR_HISTORY_INDEX",
+          settingsRevision,
+          state: clearDeletionState,
+          totalUnits: 6,
+          updatedAt: now
+        }
+      });
+      return;
+    }
     if (path === "/api/me/memory/deletions/memory-deletion-e2e" && method === "GET") {
       deletionState = "BLOCKED_REQUIRES_ADMIN";
       await route.fulfill({
@@ -348,6 +408,65 @@ async function installMemoryFixture(context: BrowserContext) {
           settingsRevision,
           state: deletionState,
           totalUnits: 4,
+          updatedAt: now
+        }
+      });
+      return;
+    }
+    if (path === "/api/me/memory/rebuild" && method === "POST") {
+      expect(body).toMatchObject({
+        expectedMemoryRevision: memoryRevision,
+        expectedSettingsRevision: settingsRevision
+      });
+      rebuildRequests.push(body);
+      rebuildOperation = body.operation as typeof rebuildOperation;
+      rebuildState = "QUEUED";
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          completedUnits: 0,
+          createdAt: now,
+          errorCode: null,
+          jobId: "memory-rebuild-e2e",
+          operation: rebuildOperation,
+          state: rebuildState,
+          totalUnits: null,
+          updatedAt: now
+        },
+        status: 202
+      });
+      return;
+    }
+    if (path === "/api/me/memory/rebuild/memory-rebuild-e2e" && method === "GET") {
+      if (rebuildState !== "CANCELLED") rebuildState = "RUNNING";
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          completedUnits: rebuildState === "RUNNING" ? 3 : 0,
+          createdAt: now,
+          errorCode: null,
+          jobId: "memory-rebuild-e2e",
+          operation: rebuildOperation,
+          state: rebuildState,
+          totalUnits: 10,
+          updatedAt: now
+        }
+      });
+      return;
+    }
+    if (path === "/api/me/memory/rebuild/memory-rebuild-e2e/cancel" && method === "POST") {
+      rebuildCancellations.push(path);
+      rebuildState = "CANCELLED";
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          completedUnits: 3,
+          createdAt: now,
+          errorCode: null,
+          jobId: "memory-rebuild-e2e",
+          operation: rebuildOperation,
+          state: rebuildState,
+          totalUnits: 10,
           updatedAt: now
         }
       });
@@ -432,7 +551,17 @@ async function installMemoryFixture(context: BrowserContext) {
       }
     });
   });
-  return { historySearchRequests, mutationAuthorizations, searchRequests };
+  return {
+    bulkDeletionRequests,
+    completeClearDeletion() {
+      clearDeletionMayComplete = true;
+    },
+    historySearchRequests,
+    mutationAuthorizations,
+    rebuildCancellations,
+    rebuildRequests,
+    searchRequests
+  };
 }
 
 test("keeps manual Memory history search private, cancellable, reversible, and archive-safe", async ({ context, page }) => {
@@ -488,6 +617,98 @@ test("keeps manual Memory history search private, cancellable, reversible, and a
   await expect(archived.getByRole("textbox")).toHaveCount(0);
   await expectWithinViewport(page, archived);
   await expectNoHorizontalOverflow(page);
+});
+
+test("keeps Memory history operations exact, recoverable, cancellable, and responsive", async ({ context, page }) => {
+  await page.setViewportSize({ height: 844, width: 390 });
+  await installMatrixCatalogFixture(page);
+  const fixture = await installMemoryFixture(context, { operationsEnabled: true });
+  await signIn(page);
+
+  await runAccountMenuAction(page, "Settings");
+  let settings = page.getByTestId("settings-dialog");
+  await settings.getByRole("button", { name: "Memory" }).click();
+  await expect(settings.getByRole("button", { name: "Операции с историей" })).toBeVisible();
+  await settings.getByRole("radio", { name: "English" }).click();
+  await settings.getByRole("button", { name: "Accept current destinations" }).click();
+  await settings.getByRole("switch", { name: "Reference chat history" }).click();
+
+  const entry = settings.getByRole("button", { name: "History operations" });
+  await expectTouchSafe(entry);
+  await entry.click();
+  let operations = settings.getByTestId("memory-operations");
+  const operationsHeading = operations.getByRole("heading", { name: "History operations" });
+  await expect(operationsHeading).toBeFocused();
+  await expectWithinViewport(page, operationsHeading);
+  await expect(operations.getByRole("button", { name: "Review action" })).toHaveCount(4);
+  await expectWithinViewport(page, settings);
+  await expectNoHorizontalOverflow(page);
+
+  const rebuildRow = operations.getByRole("listitem").filter({
+    hasText: "Build or rebuild search index"
+  });
+  await rebuildRow.getByRole("button", { name: "Review action" }).click();
+  await expect(operations.getByRole("heading", { name: "Confirm history operation" })).toBeFocused();
+  let confirmation = operations.getByRole("region", { name: "Confirm history operation" });
+  await expect(confirmation.getByText(/current active index/u)).toBeVisible();
+  await confirmation.getByRole("button", { name: "Confirm and start" }).click();
+  await expect(operations.getByText("The shadow job is queued.")).toBeVisible();
+  expect(fixture.rebuildRequests.at(-1)).toEqual({
+    expectedMemoryRevision: 9,
+    expectedSettingsRevision: 15,
+    operation: "REBUILD_SEARCH_INDEX"
+  });
+  await expect(operations.getByText(/shadow operation is running/u)).toBeVisible();
+  await operations.getByRole("button", { name: "Cancel shadow job" }).click();
+  await expect(operations.getByText(/shadow operation was cancelled/u)).toBeVisible();
+  expect(fixture.rebuildCancellations).toEqual([
+    "/api/me/memory/rebuild/memory-rebuild-e2e/cancel"
+  ]);
+  await operations.getByRole("button", { name: "Dismiss completed status" }).click();
+
+  await operations.getByRole("button", { name: "Review action" }).last().click();
+  confirmation = operations.getByRole("region", { name: "Confirm history operation" });
+  await expectWithinViewport(page, confirmation.getByRole("heading", { name: "Confirm history operation" }));
+  await expect(confirmation.getByText(/immediate retrieval fence/u)).toBeVisible();
+  await expect(confirmation.getByText(/Raw retained chats/u)).toBeVisible();
+  await confirmation.getByRole("button", { name: "Confirm and start" }).click();
+  await expect(operations.getByText(/Retrieval is fenced.*queued/u)).toBeVisible();
+  expect(fixture.mutationAuthorizations.at(-1)).toMatchObject({
+    action: "BULK_DELETE",
+    expectedMemoryRevision: 9,
+    expectedSettingsRevision: 15,
+    operation: "CLEAR_HISTORY_INDEX"
+  });
+  expect(fixture.bulkDeletionRequests.at(-1)).toEqual({
+    expectedMemoryRevision: 9,
+    expectedSettingsRevision: 15,
+    mutationAuthorizationId: "authorization-1",
+    operation: "CLEAR_HISTORY_INDEX"
+  });
+
+  await page.reload();
+  await runAccountMenuAction(page, "Settings");
+  settings = page.getByTestId("settings-dialog");
+  await settings.getByRole("button", { name: "Memory" }).click();
+  await settings.getByRole("button", { name: "History operations" }).click();
+  operations = settings.getByTestId("memory-operations");
+  await expect(operations.getByText(/administrator attention is required/u)).toBeVisible();
+  await expect(operations.getByText("4 / 6", { exact: false })).toBeVisible();
+  await expect(operations.getByRole("button", { name: "Cancel shadow job" })).toHaveCount(0);
+
+  fixture.completeClearDeletion();
+  await page.setViewportSize({ height: 390, width: 844 });
+  await operations.getByRole("button", { name: "Check status" }).click();
+  await expect(operations.getByText(/passed the durable deletion audit/u)).toBeVisible();
+  await expect(operations.getByText("6 / 6", { exact: false })).toBeVisible();
+  await expect(
+    operations.getByText("Last deletion audit").locator("..").getByText("Aug 10, 2026", { exact: false })
+  ).toBeVisible();
+  await expectWithinViewport(page, settings);
+  await expectNoHorizontalOverflow(page);
+
+  await operations.getByRole("button", { name: "Back to Memory settings" }).click();
+  await expect(settings.getByRole("button", { name: "History operations" })).toBeFocused();
 });
 
 test("keeps RU/EN Memory settings, exact CRUD, and durable deletion usable across responsive sessions", async ({ context, page }) => {

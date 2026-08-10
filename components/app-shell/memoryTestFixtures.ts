@@ -2,6 +2,7 @@ import type {
   MemoryDeletionStatus,
   MemoryEvidenceResponse,
   MemoryListResponse,
+  MemoryRebuildStatus,
   MemorySettingsResponse,
   MemorySummary,
   MemoryUiLocale
@@ -122,6 +123,22 @@ export function memoryDeletionFixture(
     settingsRevision: 13,
     state: "PENDING",
     totalUnits: 4,
+    updatedAt: "2026-08-10T08:00:00.000Z",
+    ...overrides
+  };
+}
+
+export function memoryRebuildFixture(
+  overrides: Partial<MemoryRebuildStatus> = {}
+): MemoryRebuildStatus {
+  return {
+    completedUnits: 0,
+    createdAt: "2026-08-10T08:00:00.000Z",
+    errorCode: null,
+    jobId: "memory-rebuild-1",
+    operation: "REBUILD_SEARCH_INDEX",
+    state: "QUEUED",
+    totalUnits: null,
     updatedAt: "2026-08-10T08:00:00.000Z",
     ...overrides
   };
