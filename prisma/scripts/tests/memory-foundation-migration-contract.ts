@@ -17,6 +17,7 @@ const HISTORY_SCHEMA_MIGRATION = "20260810210000_memory_history_schema";
 const HISTORY_EGRESS_MIGRATION = "20260810220000_memory_history_tool_egress_guard";
 const ADMIN_EGRESS_MIGRATION = "20260811120000_memory_admin_egress_consent";
 const FACT_CANDIDATE_MIGRATION = "20260811130000_memory_fact_candidates";
+const FACT_CONSOLIDATION_MIGRATION = "20260811140000_memory_fact_consolidation";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -31,6 +32,8 @@ const historyRollbackDatabase = `aiqsa_memory_history_rollback_${suffix}`;
 const historyEgressRollbackDatabase = `aiqsa_memory_history_egress_rollback_${suffix}`;
 const adminEgressRollbackDatabase = `aiqsa_memory_admin_egress_rollback_${suffix}`;
 const factCandidateRollbackDatabase = `aiqsa_memory_fact_candidate_rollback_${suffix}`;
+const factConsolidationRollbackDatabase =
+  `aiqsa_memory_fact_consolidation_rollback_${suffix}`;
 const createdDatabases = new Set<string>();
 
 type CommandResult = Readonly<{
@@ -2385,6 +2388,239 @@ function assertFactCandidateMigrationAtomicRollback(database: string): void {
   );
 }
 
+function assertFactConsolidationContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+         FROM pg_enum WHERE enumtypid = '"MemoryConsolidationOperation"'::regtype),
+        (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+         FROM pg_enum WHERE enumtypid = '"MemoryCandidateDecisionState"'::regtype),
+        (SELECT count(*) FROM information_schema.tables
+         WHERE table_schema = current_schema()
+           AND table_name = 'MemoryCandidateDecision'),
+        (SELECT count(*) FROM pg_constraint
+         WHERE conname IN (
+           'MemoryCandidateDecision_shape_check',
+           'MemoryCandidateDecision_candidate_fkey',
+           'MemoryCandidateDecision_consolidation_job_fkey',
+           'MemoryCandidateDecision_consolidation_execution_fkey',
+           'MemoryCandidateDecision_verification_job_fkey',
+           'MemoryCandidateDecision_verification_execution_fkey',
+           'MemoryCandidateDecision_target_fact_fkey',
+           'MemoryCandidateDecision_target_version_fkey'
+         ) AND convalidated),
+        (SELECT count(*) FROM pg_trigger
+         WHERE tgname IN (
+           'MemoryCandidateDecision_authority_trigger',
+           'MemoryCandidateDecision_immutable_trigger'
+         ) AND NOT tgisinternal)
+      );
+    `),
+    "ADD,REINFORCE,SUPERSEDE,CONFLICT,EXPIRE,NOOP,DEFER|" +
+      "PENDING_VERIFICATION,APPLIED,REJECTED,STALE|1|8|2",
+    "fact-consolidation decision authority is incomplete"
+  );
+
+  requireSuccess(psql(database, `
+    INSERT INTO "MemoryJob" (
+      "id", "userId", "chatId", "activeLeafMessageId", "branchGeneration",
+      "sourceRevision", "sourceHash", "kind", "state", "pipelineVersion",
+      "memoryGenerationSnapshot", "memoryRevisionSnapshot",
+      "idempotencyFingerprint", "acceptedResultHash", "completedAt"
+    ) VALUES (
+      'memory-fact-consolidation-job', 'memory-owner-a', 'memory-chat-a',
+      'memory-assistant-message-a', 0, 0, repeat('a', 64),
+      'CONSOLIDATE_CANDIDATE', 'SUCCEEDED', 'memory-fact-consolidation-v1',
+      0, 0,
+      'consolidate-candidate:' || repeat('1', 64) || ':0:' || repeat('a', 24),
+      repeat('8', 64), CURRENT_TIMESTAMP
+    );
+    INSERT INTO "MemoryExecutionBinding" (
+      "id", "userId", "ownerType", "memoryJobId", "logicalRole", "ordinal",
+      "state", "providerId", "destinationFingerprint", "policyVersion",
+      "promptVersion", "schemaVersion", "pipelineVersion",
+      "secretFreeExecutionSnapshot", "inputHash", "acceptedOutputHash",
+      "usageCompleteness", "recoverableUntil", "relationsDetachedAt", "completedAt"
+    ) VALUES (
+      'memory-fact-consolidation-binding', 'memory-owner-a', 'JOB',
+      'memory-fact-consolidation-job', 'MEMORY_CONSOLIDATE', 0, 'SUCCEEDED',
+      'openai_compatible', repeat('d', 64), 'memory-fact-consolidation-policy-v1',
+      'memory-fact-consolidation-prompt-v1', 'memory-fact-consolidation-schema-v1',
+      'memory-fact-consolidation-v1', '{}'::jsonb, repeat('7', 64),
+      repeat('8', 64), 'UNAVAILABLE', CURRENT_TIMESTAMP - interval '1 second',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+  `), "create exact consolidation authority");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryCandidateDecision" (
+      "id", "userId", "candidateId", "consolidationJobId",
+      "consolidationExecutionId", "operation", "reasonCode",
+      "requiresVerification", "state", "relatedSnapshotHash",
+      "consolidationInputHash", "consolidationOutputHash", "resolvedAt"
+    ) VALUES (
+      repeat('2', 64), 'memory-owner-a', repeat('1', 64),
+      'memory-fact-consolidation-job', 'memory-fact-candidate-binding', 'ADD',
+      'new_supported_fact', false, 'APPLIED', repeat('6', 64), repeat('7', 64),
+      repeat('8', 64), CURRENT_TIMESTAMP
+    );
+  `, /exact consolidation authority/u, "unrelated consolidation binding");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryCandidateDecision" (
+      "id", "userId", "candidateId", "consolidationJobId",
+      "consolidationExecutionId", "operation", "targetFactId", "targetVersionId",
+      "reasonCode", "requiresVerification", "state", "relatedSnapshotHash",
+      "consolidationInputHash", "consolidationOutputHash", "resolvedAt"
+    ) VALUES (
+      repeat('2', 64), 'memory-owner-a', repeat('1', 64),
+      'memory-fact-consolidation-job', 'memory-fact-consolidation-binding', 'ADD',
+      'memory-fact-a', 'memory-version-a', 'new_supported_fact', false, 'APPLIED',
+      repeat('6', 64), repeat('7', 64), repeat('8', 64), CURRENT_TIMESTAMP
+    );
+  `, /MemoryCandidateDecision_shape_check/u, "ADD decision with a target");
+
+  requireSuccess(psql(database, `
+    INSERT INTO "MemoryCandidateDecision" (
+      "id", "userId", "candidateId", "consolidationJobId",
+      "consolidationExecutionId", "operation", "reasonCode",
+      "requiresVerification", "state", "relatedSnapshotHash",
+      "consolidationInputHash", "consolidationOutputHash", "resolvedAt"
+    ) VALUES (
+      repeat('2', 64), 'memory-owner-a', repeat('1', 64),
+      'memory-fact-consolidation-job', 'memory-fact-consolidation-binding', 'ADD',
+      'new_supported_fact', false, 'APPLIED', repeat('6', 64), repeat('7', 64),
+      repeat('8', 64), CURRENT_TIMESTAMP
+    );
+  `), "persist one exact applied consolidation decision");
+
+  requireSuccess(psql(database, `
+    BEGIN;
+    INSERT INTO "MemoryCandidate" (
+      "id", "userId", "jobId", "chatId", "branchGeneration", "sourceRevision",
+      "sourceHash", "sourceProjectionHash", "sourceProjectionVersion",
+      "createdByExecutionId", "proposedCanonicalKey", "proposedDisplayText",
+      "proposedValue", "proposedCategory", "proposedModality", "proposedScope",
+      "sourceTimezone", "proposedDirectness", "proposedSensitivity", "languageCode",
+      "importance", "confidence", "negated", "state", "pipelineVersion"
+    ) VALUES (
+      repeat('5', 64), 'memory-owner-a', 'memory-fact-candidate-job',
+      'memory-chat-a', 0, 0, repeat('a', 64), repeat('4', 64),
+      'memory-fact-source-projection-v1', 'memory-fact-candidate-binding',
+      'user.preference.other', 'I prefer water.', '{"drink":"water"}'::jsonb,
+      'preference', 'PREFERENCE',
+      '{"type":"CHAT","target_id":"memory-chat-a"}'::jsonb, 'UTC', 'DIRECT',
+      'NORMAL', 'en', 0.8, 0.9, false, 'PENDING', 'memory-fact-extraction-v1'
+    );
+    INSERT INTO "MemoryCandidateMessage" (
+      "userId", "candidateId", "chatId", "messageId", "ordinal",
+      "startOffset", "endOffset", "sourceTextHash"
+    ) VALUES (
+      'memory-owner-a', repeat('5', 64), 'memory-chat-a', 'memory-user-message-a',
+      0, 0, 13, repeat('3', 64)
+    );
+    INSERT INTO "MemoryJob" (
+      "id", "userId", "chatId", "activeLeafMessageId", "branchGeneration",
+      "sourceRevision", "sourceHash", "kind", "state", "pipelineVersion",
+      "memoryGenerationSnapshot", "memoryRevisionSnapshot",
+      "idempotencyFingerprint", "acceptedResultHash", "completedAt"
+    ) VALUES
+      (
+        'memory-fact-consolidation-job-verify', 'memory-owner-a', 'memory-chat-a',
+        'memory-assistant-message-a', 0, 0, repeat('a', 64),
+        'CONSOLIDATE_CANDIDATE', 'SUCCEEDED', 'memory-fact-consolidation-v1', 0, 0,
+        'consolidate-candidate:' || repeat('5', 64) || ':0:' || repeat('a', 24),
+        repeat('8', 64), CURRENT_TIMESTAMP
+      ),
+      (
+        'memory-fact-verification-job', 'memory-owner-a', 'memory-chat-a',
+        'memory-assistant-message-a', 0, 0, repeat('a', 64),
+        'VERIFY_CANDIDATE', 'SUCCEEDED', 'memory-fact-verification-v1', 0, 0,
+        'verify-candidate:' || repeat('9', 64), repeat('6', 64), CURRENT_TIMESTAMP
+      );
+    INSERT INTO "MemoryExecutionBinding" (
+      "id", "userId", "ownerType", "memoryJobId", "logicalRole", "ordinal",
+      "state", "providerId", "destinationFingerprint", "policyVersion",
+      "promptVersion", "schemaVersion", "pipelineVersion",
+      "secretFreeExecutionSnapshot", "inputHash", "acceptedOutputHash",
+      "usageCompleteness", "recoverableUntil", "relationsDetachedAt", "completedAt"
+    ) VALUES
+      (
+        'memory-fact-consolidation-binding-verify', 'memory-owner-a', 'JOB',
+        'memory-fact-consolidation-job-verify', 'MEMORY_CONSOLIDATE', 0,
+        'SUCCEEDED', 'openai_compatible', repeat('d', 64),
+        'memory-fact-consolidation-policy-v1', 'memory-fact-consolidation-prompt-v1',
+        'memory-fact-consolidation-schema-v1', 'memory-fact-consolidation-v1',
+        '{}'::jsonb, repeat('7', 64), repeat('8', 64), 'UNAVAILABLE',
+        CURRENT_TIMESTAMP - interval '1 second', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
+        'memory-fact-verification-binding', 'memory-owner-a', 'JOB',
+        'memory-fact-verification-job', 'MEMORY_VERIFY', 0, 'SUCCEEDED',
+        'openai_compatible', repeat('d', 64), 'memory-fact-verification-policy-v1',
+        'memory-fact-verification-prompt-v1', 'memory-fact-verification-schema-v1',
+        'memory-fact-verification-v1', '{}'::jsonb, repeat('4', 64),
+        repeat('6', 64), 'UNAVAILABLE', CURRENT_TIMESTAMP - interval '1 second',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+    INSERT INTO "MemoryCandidateDecision" (
+      "id", "userId", "candidateId", "consolidationJobId",
+      "consolidationExecutionId", "operation", "reasonCode",
+      "requiresVerification", "state", "relatedSnapshotHash",
+      "consolidationInputHash", "consolidationOutputHash",
+      "verificationJobId", "verificationInputHash"
+    ) VALUES (
+      repeat('9', 64), 'memory-owner-a', repeat('5', 64),
+      'memory-fact-consolidation-job-verify',
+      'memory-fact-consolidation-binding-verify', 'ADD', 'new_supported_fact',
+      true, 'PENDING_VERIFICATION', repeat('6', 64), repeat('7', 64),
+      repeat('8', 64), 'memory-fact-verification-job', repeat('4', 64)
+    );
+    UPDATE "MemoryCandidateDecision"
+    SET "state" = 'APPLIED', "resolvedAt" = CURRENT_TIMESTAMP,
+      "verificationExecutionId" = 'memory-fact-verification-binding',
+      "verificationOutputHash" = repeat('6', 64)
+    WHERE "id" = repeat('9', 64);
+    COMMIT;
+  `), "persist and verify one selective consolidation decision");
+
+  expectRejected(database, `
+    UPDATE "MemoryCandidateDecision" SET "reasonCode" = 'changed'
+    WHERE "id" = repeat('9', 64);
+  `, /decision authority is immutable/u, "mutated consolidation authority");
+}
+
+function assertFactConsolidationMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE FUNCTION aiqsa_memory_candidate_decision_authority_trigger()
+    RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+  `), "install fact-consolidation rollback-conflict fixture");
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, FACT_CONSOLIDATION_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting fact-consolidation migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /function "aiqsa_memory_candidate_decision_authority_trigger" already exists/u,
+    "fact-consolidation rollback fixture failed for an unexpected reason"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM information_schema.tables
+         WHERE table_schema = current_schema()
+           AND table_name = 'MemoryCandidateDecision'),
+        (SELECT count(*) FROM pg_type
+         WHERE typname IN ('MemoryConsolidationOperation', 'MemoryCandidateDecisionState'))
+      );
+    `),
+    "0|0",
+    "failed fact-consolidation migration left partial durable state"
+  );
+}
+
 function main(): void {
   requireSuccess(compose(["up", "-d", POSTGRES_SERVICE]), "start disposable PostgreSQL service");
   try {
@@ -2416,6 +2652,8 @@ function main(): void {
     assertAdminEgressContracts(upgradeDatabase);
     applyMigrations(upgradeDatabase, [FACT_CANDIDATE_MIGRATION]);
     assertFactCandidateContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [FACT_CONSOLIDATION_MIGRATION]);
+    assertFactConsolidationContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
@@ -2441,6 +2679,8 @@ function main(): void {
     assertAdminEgressContracts(freshDatabase);
     applyMigrations(freshDatabase, [FACT_CANDIDATE_MIGRATION]);
     assertFactCandidateContracts(freshDatabase);
+    applyMigrations(freshDatabase, [FACT_CONSOLIDATION_MIGRATION]);
+    assertFactConsolidationContracts(freshDatabase);
 
     createDatabase(rollbackDatabase);
     applyMigrations(rollbackDatabase, migrationNames((name) => name < CHAT_SCOPE_MIGRATION));
@@ -2487,11 +2727,18 @@ function main(): void {
       migrationNames((name) => name < FACT_CANDIDATE_MIGRATION)
     );
     assertFactCandidateMigrationAtomicRollback(factCandidateRollbackDatabase);
+
+    createDatabase(factConsolidationRollbackDatabase);
+    applyMigrations(
+      factConsolidationRollbackDatabase,
+      migrationNames((name) => name < FACT_CONSOLIDATION_MIGRATION)
+    );
+    assertFactConsolidationMigrationAtomicRollback(factConsolidationRollbackDatabase);
   } finally {
     dropDatabases();
   }
 
-  console.info("Memory migration contract passed through source-grounded fact candidates.");
+  console.info("Memory migration contract passed through verified fact consolidation.");
 }
 
 main();

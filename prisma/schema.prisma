@@ -177,6 +177,23 @@ enum MemoryCandidateState {
   STALE
 }
 
+enum MemoryConsolidationOperation {
+  ADD
+  REINFORCE
+  SUPERSEDE
+  CONFLICT
+  EXPIRE
+  NOOP
+  DEFER
+}
+
+enum MemoryCandidateDecisionState {
+  PENDING_VERIFICATION
+  APPLIED
+  REJECTED
+  STALE
+}
+
 enum MemoryTemperatureClass {
   HOT
   WARM
@@ -2251,6 +2268,37 @@ model MemoryCandidateMessage {
   @@id([candidateId, messageId])
   @@unique([candidateId, ordinal])
   @@index([userId, chatId, messageId])
+}
+
+model MemoryCandidateDecision {
+  id                       String                       @id
+  userId                   String
+  candidateId              String
+  consolidationJobId       String
+  consolidationExecutionId String
+  operation                MemoryConsolidationOperation
+  targetFactId             String?
+  targetVersionId          String?
+  effectiveFrom            DateTime?
+  reasonCode               String                       @db.VarChar(64)
+  requiresVerification     Boolean
+  state                    MemoryCandidateDecisionState
+  relatedSnapshotHash      String                       @db.VarChar(64)
+  consolidationInputHash   String                       @db.VarChar(64)
+  consolidationOutputHash  String                       @db.VarChar(64)
+  verificationJobId        String?
+  verificationInputHash    String?                      @db.VarChar(64)
+  verificationExecutionId  String?
+  verificationOutputHash   String?                      @db.VarChar(64)
+  createdAt                DateTime                     @default(now())
+  resolvedAt               DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, candidateId])
+  @@index([userId, state, createdAt])
+  @@index([userId, consolidationJobId])
+  @@index([userId, verificationJobId])
+  @@index([userId, targetFactId, targetVersionId])
 }
 
 model MemoryFact {

@@ -39,6 +39,14 @@ const expectedConstraintNames = [
   "KnowledgePolicy_singleton_check",
   "KnowledgePolicy_version_check",
   "Message_chatId_parentMessageId_fkey",
+  "MemoryCandidateDecision_candidate_fkey",
+  "MemoryCandidateDecision_consolidation_execution_fkey",
+  "MemoryCandidateDecision_consolidation_job_fkey",
+  "MemoryCandidateDecision_shape_check",
+  "MemoryCandidateDecision_target_fact_fkey",
+  "MemoryCandidateDecision_target_version_fkey",
+  "MemoryCandidateDecision_verification_execution_fkey",
+  "MemoryCandidateDecision_verification_job_fkey",
   "MemoryDeletionOutbox_user_fkey",
   "MemoryCandidateMessage_candidate_fkey",
   "MemoryCandidate_shape_check",
@@ -222,6 +230,14 @@ async function assertConstraintCatalog(): Promise<void> {
       'KnowledgePolicy_singleton_check',
       'KnowledgePolicy_version_check',
       'Message_chatId_parentMessageId_fkey',
+      'MemoryCandidateDecision_candidate_fkey',
+      'MemoryCandidateDecision_consolidation_execution_fkey',
+      'MemoryCandidateDecision_consolidation_job_fkey',
+      'MemoryCandidateDecision_shape_check',
+      'MemoryCandidateDecision_target_fact_fkey',
+      'MemoryCandidateDecision_target_version_fkey',
+      'MemoryCandidateDecision_verification_execution_fkey',
+      'MemoryCandidateDecision_verification_job_fkey',
       'MemoryDeletionOutbox_user_fkey',
       'MemoryCandidateMessage_candidate_fkey',
       'MemoryCandidate_shape_check',
@@ -684,7 +700,7 @@ async function main() {
   await assertGrantShapes();
   await assertStatusEnums();
   console.log(
-    "AIQSA schema integrity smoke ok: validated constraints, tenant-safe pointers, direct-USER Memory candidates, Knowledge ingestion/indexes, six grant shapes, and lifecycle enums."
+    "AIQSA schema integrity smoke ok: validated constraints, tenant-safe pointers, direct-USER Memory candidates and fact decisions, Knowledge ingestion/indexes, six grant shapes, and lifecycle enums."
   );
 }
 

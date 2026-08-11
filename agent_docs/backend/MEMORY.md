@@ -30,7 +30,8 @@ then its MemoryJob lease. Queued/streaming payload is hash-neutral. Source
 changes invalidate stale active history rows synchronously; `INDEX_HISTORY`
 rechecks source, generation, gate, suppressions, and cutoffs before atomically
 committing chunks, joins, FTS rows, and checkpoint. Qualified episodes commit
-safe extractive summaries under the same fence. Learning remains unavailable.
+safe extractive summaries under the same fence. Automatic learning remains
+rollout-disabled.
 
 The durable foundation persists settings, facts/evidence/suppressions, indexes,
 jobs/deletions, execution/retrieval attempts, and final-run evidence under
@@ -133,16 +134,12 @@ vectors and consent. Activation rechecks source/config/barriers/revision and
 advances counters once; failure/cancel never serves. Redream jobs are salted,
 source-fenced, and replayable.
 
-Candidate extraction is feature-dark; consolidation/profile, later bulk
-variants, and production qualification remain unavailable.
-Remote lanes require exact consent/qualification and otherwise fail closed while
-local exact/FTS remains available. Web and `memory-worker` share one coordinator
-for purge, Temporary deletion, indexing, episodes, rebuild, history/source
-cleanup, and optional embeddings; Memory failure does not alter web readiness.
-Manual search remains inspection-only; answer recall admits safe frozen history
-through its own PREPARING attempt. Per-call
-execution owns current authority, receipts, single-winner start, usage,
-recovery, and detach. Private
+Candidate extraction/consolidation are feature-dark; profile and rollout remain
+unavailable. Remote lanes require exact admin authorization/qualification and
+fail closed; local exact/FTS stays available. Web and `memory-worker` share one
+coordinator. Manual search remains
+inspection-only; answer recall admits safe frozen history through PREPARING.
+Each provider call owns exact authority, usage, and recovery. Private
 `preparing` runs never reach public projection or provider I/O.
 Ordinary answers cannot create Memory. Existing chat context and folder/project
 prompt memory are separate retained-chat behavior.
@@ -341,26 +338,30 @@ drift; it rechecks its exact source/fact/version preconditions.
 
 ## Fact And Operational State
 
-Candidate, logical-fact, and fact-version state are different authorities:
+Candidate, decision, logical-fact, and fact-version states are separate:
 
 - candidate: `PENDING`, `DEFERRED`, `PROMOTED`, `REJECTED`, `STALE`;
+- decision: `PENDING_VERIFICATION`, `APPLIED`, `REJECTED`, `STALE`;
 - fact: `ACTIVE`, `CONFLICTED`, `ORPHANED`, `EXPIRED`, `RETRACTED`,
   `FORGOTTEN`;
 - version: `ACTIVE`, `CONFLICTING`, `ORPHANED`, `SUPERSEDED`, `EXPIRED`,
   `RETRACTED`, `FORGOTTEN`.
 
-Candidates are never answer-retrievable. Every non-purged active candidate is
-bound to its exact source job, succeeded extraction, and direct-USER message
-relation; authority drift rejects commit, while later invalidation makes it
-`STALE` and schedules source purge.
+Candidates are never answer-retrievable. Each is bound to succeeded extraction
+and direct-USER evidence. Consolidation sees at most 12 same-scope exact or
+entity/lexical facts, time-ranked, and three versions each, then proposes one
+`ADD|REINFORCE|SUPERSEDE|CONFLICT|EXPIRE|NOOP|DEFER` decision. The server
+rechecks source, suppression, explicit precedence, target pointer, and evidence;
+risky transitions require a separate exact-bound verifier. Unknown calls are
+not replayed. Drift stales the decision and schedules source purge.
 
 An active fact has exactly one same-owner active current version. Conflicted,
 orphaned, expired, retracted, and forgotten facts have no unqualified current
 pointer. Corrections append versions and preserve system-time and valid-time
-history. Conflict clears the pointer; explicit resolution appends a new
-explicit version. Age alone never expires a stable preference. Source
-invalidation retracts only unsupported automatic claims; remaining admissible
-claims are normalized back to zero, one, or multiple incompatible truths.
+history. Conflict clears the pointer; explicit resolution appends a version.
+Age alone never expires a stable preference. Source invalidation removes only
+inadmissible support, then atomically restores one supported claim, keeps two or
+more incompatible claims conflicted, or retracts the fact when none remain.
 Forget always wins over automatic proposals, and only a later explicit save
 with an allowed suppression override may revive the same logical identity.
 

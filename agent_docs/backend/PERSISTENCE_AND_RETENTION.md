@@ -88,35 +88,31 @@ partial Knowledge predicates because the supported Prisma version cannot
 represent partial-index conditions. The focused migration contract pins those
 predicates and proves their bounded owner-range query plans.
 
-The Memory coordinator uses the same short cursor transaction for
-registered `MemoryJob` kinds and registered `MemoryDeletionOutbox` operations.
-Jobs require a currently active owner; queued, retryable, waiting, or
-expired-claimed work for an unavailable owner is cancelled with a stable code.
-Deletion obligations deliberately remain claimable after owner disablement or
-account teardown. Claims increment attempts and carry random lease tokens;
-heartbeat, stage, retry, gate settlement, and final apply compare the exact
-owner, state, token, and unexpired lease. Consent waiting carries neither lease
-nor fallback authority. Job apply and success settle in one transaction.
-Deletion apply and success do likewise; failures release to bounded retry and
-then `BLOCKED_REQUIRES_ADMIN`, never abandonment. Registered work comprises
+The Memory coordinator uses one short cursor transaction for registered jobs
+and deletion operations. Jobs require an active owner; unavailable-owner work
+is cancelled, while deletion remains claimable through disablement or teardown.
+Claims use random lease tokens; heartbeat, retry, gate settlement, and apply
+compare exact owner/state/token/expiry. Consent waiting has no lease or fallback.
+Apply and success share one transaction. Deletion retries are bounded and then
+become `BLOCKED_REQUIRES_ADMIN`, never abandoned. Registered work comprises
 `FORGET_PURGE`, `TEMPORARY_DELETE`, `BULK_CLEAR`, `SOURCE_PURGE`, `EMBED_ITEMS`,
-`INDEX_HISTORY`, `EXTRACT_EPISODE`, `EXTRACT_FACTS`, and `REBUILD_INDEX`.
-Versioned Forget leaves cover attempts, candidates, fact content/evidence/search,
-and history. Leaves and the final audit execute
-inside the claim's apply/success transaction, so a crash or failing leaf rolls
-the complete purge attempt back. Scrubbing an item from a nonterminal Memory
-attempt also settles its `PREPARING` run and assistant message atomically, which
-preserves the deferred run/attempt guard. Missing contributors refuse claims;
-residual audits refuse success. Status audits and startup reconciliation can
-move an earlier `SUCCEEDED` row back to `PENDING` when a later versioned
-contributor discovers work, and startup drains prior successes before claims.
+`INDEX_HISTORY`, `EXTRACT_EPISODE`, `EXTRACT_FACTS`, `CONSOLIDATE_CANDIDATE`,
+`VERIFY_CANDIDATE`, and `REBUILD_INDEX`. Versioned Forget leaves and their audit
+share claim-success, so failure rolls back the attempt. Scrubbing a nonterminal
+attempt also settles its `PREPARING` run/message. Missing contributors or
+residuals refuse success; reconciliation may reopen stale `SUCCEEDED` work.
 Unregistered work is dormant. Development starts the coordinator from server
 instrumentation; production uses the private `memory-worker` role. Both
 preflight the keyring and referenced historical key IDs.
 
-`MemoryCandidate` is quarantine. Rows bind source job and extraction to
-direct-USER evidence. Forget scrubs candidates; source purge deletes invalid
-rows.
+`MemoryCandidate` is quarantine bound to succeeded extraction and direct-USER
+evidence. `MemoryCandidateDecision` immutably binds its candidate, operation,
+related/input/output hashes, exact succeeded consolidator execution, and, when
+required, exact verifier job/execution. Shape, tenant, role, and execution
+authority are database-checked. Apply atomically writes fact/version/evidence/
+event/search/current-pointer state and closes the candidate/decision. Source
+loss stales pending decisions and deterministically normalizes supported claims.
+Forget scrubs candidates and pending decisions; source purge deletes invalid rows.
 
 Temporary is a guarded first-send transition from an empty `NORMAL` chat. It
 atomically writes policy `temporary-24h-v1`, deadline, first graph, and exactly

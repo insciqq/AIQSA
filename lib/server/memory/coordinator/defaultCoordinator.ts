@@ -17,6 +17,8 @@ import {
 } from "../history/purge";
 import { reconcileMemoryHistoryBackfills } from "../history/backfill";
 import { createPrismaMemoryFactExtractionHandler } from "../learning/extraction/handler";
+import { createPrismaMemoryFactDecisionHandlers } from "../learning/consolidation/handler";
+import { reconcileMemoryFactCandidateJobs } from "../learning/consolidation/repository";
 import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
@@ -35,6 +37,8 @@ export const DEFAULT_MEMORY_PHASE4_COORDINATOR_MANIFEST = Object.freeze({
     "INDEX_HISTORY",
     "EXTRACT_EPISODE",
     "EXTRACT_FACTS",
+    "CONSOLIDATE_CANDIDATE",
+    "VERIFY_CANDIDATE",
     "REBUILD_INDEX"
   ] satisfies readonly MemoryJobKind[])
 });
@@ -60,6 +64,10 @@ const defaultEpisodeExtractionHandler = createPrismaMemoryEpisodeExtractionHandl
   prisma
 );
 const defaultFactExtractionHandler = createPrismaMemoryFactExtractionHandler(
+  defaultMemoryExecutionAuthority,
+  prisma
+);
+const defaultFactDecisionHandlers = createPrismaMemoryFactDecisionHandlers(
   defaultMemoryExecutionAuthority,
   prisma
 );
@@ -124,6 +132,14 @@ export function ensureDefaultMemoryPhase4HandlersRegistered(): void {
     "memory_default_fact_extraction_handler_conflict"
   );
   ensureJobHandlerRegistered(
+    defaultFactDecisionHandlers.consolidation,
+    "memory_default_fact_consolidation_handler_conflict"
+  );
+  ensureJobHandlerRegistered(
+    defaultFactDecisionHandlers.verification,
+    "memory_default_fact_verification_handler_conflict"
+  );
+  ensureJobHandlerRegistered(
     defaultMemoryRebuildHandler,
     "memory_default_rebuild_handler_conflict"
   );
@@ -133,7 +149,10 @@ function createDefaultMemoryCoordinator(): MemoryCoordinator {
   ensureDefaultMemoryPhase4HandlersRegistered();
   return new MemoryCoordinator({
     reconcileWork: async () => {
-      await reconcileMemoryHistoryBackfills(prisma);
+      await Promise.all([
+        reconcileMemoryHistoryBackfills(prisma),
+        reconcileMemoryFactCandidateJobs(prisma)
+      ]);
     },
     registry: defaultMemoryCoordinatorRegistry,
     repository: defaultMemoryCoordinatorRepository

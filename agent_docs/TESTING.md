@@ -151,9 +151,9 @@ Select the script owned by the migration; do not run this list as a generic rele
 
 ### Database and service integrations
 
-Native Memory Phase 4/5 source settlement, safety projection, lexical/vector/
-episode indexing, local automatic retrieval, rebuild/recovery, manual search,
-and destructive replay:
+Native Memory Phase 4-6 source settlement, safety projection, lexical/vector/
+episode indexing, candidate extraction/consolidation, local automatic retrieval,
+rebuild/recovery, manual search, and destructive replay:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app \
@@ -165,6 +165,7 @@ docker compose -f docker-compose.dev.yml exec -T app \
   lib/server/memory/history/episode/handler.test.ts \
   lib/server/memory/history/repository.prisma.test.ts \
   lib/server/memory/learning/extraction/repository.prisma.test.ts \
+  lib/server/memory/learning/consolidation/repository.prisma.test.ts \
   lib/server/memory/retrieval/localRepository.prisma.test.ts \
   lib/server/memory/retrieval/vector.prisma.test.ts \
   lib/server/memory/rebuild/prismaRebuild.prisma.test.ts \

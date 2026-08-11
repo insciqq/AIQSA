@@ -123,6 +123,13 @@ const candidateDerivativesContributor: MemoryDeletionContributor = Object.freeze
             WHERE source_message."userId" = candidate."userId"
               AND source_message."candidateId" = candidate."id"
           )
+          OR EXISTS (
+            SELECT 1 FROM "MemoryCandidateDecision" AS decision
+            WHERE decision."userId" = candidate."userId"
+              AND decision."candidateId" = candidate."id"
+              AND decision."state" =
+                'PENDING_VERIFICATION'::"MemoryCandidateDecisionState"
+          )
         )
     `);
     return countFrom(rows);
@@ -137,6 +144,14 @@ const candidateDerivativesContributor: MemoryDeletionContributor = Object.freeze
     `);
     const ids = rows.map(({ id }) => id);
     if (ids.length === 0) return;
+    await tx.memoryCandidateDecision.updateMany({
+      data: { resolvedAt: new Date(), state: "STALE" },
+      where: {
+        candidateId: { in: ids },
+        state: "PENDING_VERIFICATION",
+        userId: target.userId
+      }
+    });
     await tx.memoryCandidate.updateMany({
       data: {
         confidence: null,

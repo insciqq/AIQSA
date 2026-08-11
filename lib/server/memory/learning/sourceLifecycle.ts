@@ -11,6 +11,7 @@ import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   memoryFactExtractionJobFingerprint
 } from "./extraction/contract";
+import { normalizeMemoryFactsForSourceMutation } from "./consolidation/normalization";
 
 function invalidatesCandidates(event: MemoryRetainedSourceMutationEvent): boolean {
   return event.previous.folderId !== event.snapshot.folderId ||
@@ -60,9 +61,31 @@ export async function applyMemoryLearningSourceMutation(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent
 ): Promise<void> {
-  let settings: LockedMemorySettings | null = null;
+  let settings: LockedMemorySettings | null =
+    await normalizeMemoryFactsForSourceMutation(tx, event);
+  if (settings) {
+    await reopenSourcePurge(tx, settings, event.snapshot.id);
+  }
   if (invalidatesCandidates(event)) {
     const now = new Date();
+    const candidates = await tx.memoryCandidate.findMany({
+      select: { id: true },
+      where: {
+        chatId: event.snapshot.id,
+        state: { in: ["PENDING", "DEFERRED"] },
+        userId: event.snapshot.userId
+      }
+    });
+    if (candidates.length > 0) {
+      await tx.memoryCandidateDecision.updateMany({
+        data: { resolvedAt: now, state: "STALE" },
+        where: {
+          candidateId: { in: candidates.map(({ id }) => id) },
+          state: "PENDING_VERIFICATION",
+          userId: event.snapshot.userId
+        }
+      });
+    }
     const invalidated = await tx.memoryCandidate.updateMany({
       data: {
         reasonCode: "source_invalidated",
