@@ -2488,7 +2488,7 @@ describe("run execution", () => {
     });
   });
 
-  it("persists only normalized Anthropic client Search evidence with exact usage attribution", async () => {
+  it("coexists with personal context while persisting normalized client Search evidence", async () => {
     const providerRequests: ProviderRunRequest[] = [];
     const searchRequests: ProviderSearchRequest[] = [];
     const repository = createRepository({
@@ -2571,6 +2571,16 @@ describe("run execution", () => {
       provider: "openai",
       searchStrategy: "anthropic-web-search"
     });
+    const personalContextText =
+      `${PERSONAL_CONTEXT_HEADING}\nCLIENT_SEARCH_MEMORY_CANARY_5521`;
+    const personalContext = {
+      approxTokens: 10,
+      itemCount: 1,
+      memoryGeneration: 3,
+      memoryRevision: 5,
+      mode: "prefetched" as const,
+      text: personalContextText
+    };
     const searchPlan = {
       mode: "model_choice" as const,
       options: [{
@@ -2609,12 +2619,14 @@ describe("run execution", () => {
     };
     const prepared: MaterializedPreparedRunData = {
       ...base,
-      normalizedRequest: { ...base.normalizedRequest, searchPlan },
-      providerRequest: { ...base.providerRequest, searchPlan }
+      normalizedRequest: { ...base.normalizedRequest, personalContext, searchPlan },
+      providerRequest: { ...base.providerRequest, personalContext, searchPlan }
     };
+    const egress = createMemoryEgressRecorder();
 
     const events = parseSse(await createRunExecutionResponse(executionInput({
       adapter: answerAdapter,
+      memoryEgress: egress.service,
       prepared,
       repository: repository.repository,
       searchRuntimes: {
@@ -2641,8 +2653,27 @@ describe("run execution", () => {
     });
     expect(JSON.stringify(searchRequests[0])).not.toContain("Current question");
     expect(providerRequests).toHaveLength(2);
+    expect(providerRequests).toEqual([
+      expect.objectContaining({
+        personalContext: expect.objectContaining({ text: personalContextText })
+      }),
+      expect.objectContaining({
+        personalContext: expect.objectContaining({ text: personalContextText })
+      })
+    ]);
     expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
       .toContain("The current run evidence is verified.");
+    expect(egress.began.map((entry) => ({
+      destinationKind: entry.destinationKind,
+      mode: entry.mode,
+      tool: entry.modelRunToolCallId ?? null
+    }))).toEqual([
+      { destinationKind: "answer_provider", mode: "PROVIDER_REQUEST", tool: null },
+      { destinationKind: "search", mode: "TOOL_CALL", tool: "persisted-tool-call-1" },
+      { destinationKind: "answer_provider", mode: "PROVIDER_REQUEST", tool: null }
+    ]);
+    expect(egress.completed).toEqual(["egress-1", "egress-2", "egress-3"]);
+    expect(JSON.stringify(egress.began)).not.toContain("CLIENT_SEARCH_MEMORY_CANARY_5521");
     expect(repository.searchRuns).toEqual([
       expect.objectContaining({
         artifacts: expect.objectContaining({

@@ -79,8 +79,10 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('source_chat."memoryBranchGeneration" = chunk."branchGeneration"');
     expect(result.snapshot.historySuppressionIdentitySnapshot).toMatch(/^[a-f0-9]{64}$/u);
     expect(sql).toContain('"MemorySourceBarrier"');
-    expect(sql).toContain("websearch_to_tsquery('russian'");
-    expect(sql).toContain("websearch_to_tsquery('simple'");
+    expect(sql).toContain("plainto_tsquery('russian'");
+    expect(sql).toContain("plainto_tsquery('simple'");
+    expect(sql).toContain(" || ");
+    expect(sql).not.toContain("websearch_to_tsquery");
     expect(sql).not.toContain('message."content"');
     expect(sql).not.toContain('attachment."extractedText"');
   });

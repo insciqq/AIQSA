@@ -2,6 +2,7 @@ import {
   MEMORY_CAPABILITY_ROLES,
   MEMORY_EVALUATION_ADAPTER_KINDS,
   MEMORY_EVALUATION_EVIDENCE_VERSION,
+  MEMORY_EVALUATION_GATE_PROFILES,
   MEMORY_EVALUATION_LANGUAGES,
   MEMORY_EVALUATION_SCORER_VERSION,
   MEMORY_EVALUATION_SPLITS,
@@ -11,6 +12,7 @@ import {
   type MemoryEvaluationAdapterKind,
   type MemoryEvaluationConfig,
   type MemoryEvaluationFixture,
+  type MemoryEvaluationGateProfile,
   type MemoryEvaluationLanguage,
   type MemoryEvaluationSplit,
   type MemoryEvaluationSystemFingerprint,
@@ -26,6 +28,8 @@ import {
 import {
   MEMORY_BETA_REQUIRED_BINARY_METRICS,
   MEMORY_BETA_REQUIRED_RANKED_METRICS,
+  MEMORY_RECALL_RELEASE_REQUIRED_BINARY_METRICS,
+  MEMORY_RECALL_RELEASE_REQUIRED_RANKED_METRICS,
   scoreMemoryBinaryOutcomes,
   scoreMemoryHardInvariants,
   scoreMemoryOperations,
@@ -79,6 +83,11 @@ export type MemoryEvaluationEvidence = Readonly<{
     gatedMetricCount: number;
     observedGatesPassed: boolean;
     ranked: readonly MemoryRankedScore[];
+    recallReleaseCoverageComplete: boolean;
+    recallReleaseGatePassed: boolean;
+    selectedGateProfile: MemoryEvaluationGateProfile;
+    selectedProfileCoverageComplete: boolean;
+    selectedProfileGatePassed: boolean;
   }>;
   sanitizedAggregatesOnly: true;
   versions: Readonly<{
@@ -113,6 +122,7 @@ function validateConfig(config: MemoryEvaluationConfig): void {
     !Number.isSafeInteger(config.randomSeed) ||
     config.randomSeed < 0 ||
     config.randomSeed > 0xffff_ffff ||
+    !MEMORY_EVALUATION_GATE_PROFILES.includes(config.gateProfile) ||
     config.scorerVersion !== MEMORY_EVALUATION_SCORER_VERSION ||
     ![
       config.corpusVersion,
@@ -235,6 +245,38 @@ function uniqueSorted<T extends string>(values: readonly T[]): T[] {
   return [...new Set(values)].sort(compareMemoryEvaluationText);
 }
 
+type GateProfileStatus = Readonly<{
+  coverageComplete: boolean;
+  gatePassed: boolean;
+}>;
+
+function gateProfileStatus(
+  binary: readonly MemoryBinaryScore[],
+  ranked: readonly MemoryRankedScore[],
+  requiredBinary: readonly MemoryBinaryScore["metric"][],
+  requiredRanked: readonly MemoryRankedScore["metric"][]
+): GateProfileStatus {
+  const coverageComplete = MEMORY_EVALUATION_LANGUAGES.every((language) =>
+    requiredBinary.every((metric) =>
+      binary.some((score) =>
+        score.cohort === "overall" && score.language === language && score.metric === metric
+      )
+    ) && requiredRanked.every((metric) =>
+      ranked.some((score) =>
+        score.cohort === "overall" && score.language === language && score.metric === metric
+      )
+    )
+  );
+  const relevantScores = [
+    ...binary.filter(({ metric }) => requiredBinary.includes(metric)),
+    ...ranked.filter(({ metric }) => requiredRanked.includes(metric))
+  ];
+  return {
+    coverageComplete,
+    gatePassed: coverageComplete && relevantScores.every(({ gatePassed }) => gatePassed === true)
+  };
+}
+
 export async function runMemoryEvaluation<Input>(input: {
   adapter: MemoryEvaluationAdapter<Input>;
   config: MemoryEvaluationConfig;
@@ -301,19 +343,21 @@ export async function runMemoryEvaluation<Input>(input: {
   const invariantScores = scoreMemoryHardInvariants(hardInvariants);
   const gatedScores = [...binary, ...ranked].filter(({ gate }) => gate !== null);
   const observedGatesPassed = gatedScores.every(({ gatePassed }) => gatePassed === true);
-  const automaticLearningBetaCoverageComplete = MEMORY_EVALUATION_LANGUAGES.every((language) =>
-    MEMORY_BETA_REQUIRED_BINARY_METRICS.every((metric) =>
-      binary.some((score) =>
-        score.cohort === "overall" && score.language === language && score.metric === metric
-      )
-    ) && MEMORY_BETA_REQUIRED_RANKED_METRICS.every((metric) =>
-      ranked.some((score) =>
-        score.cohort === "overall" && score.language === language && score.metric === metric
-      )
-    )
+  const recallRelease = gateProfileStatus(
+    binary,
+    ranked,
+    MEMORY_RECALL_RELEASE_REQUIRED_BINARY_METRICS,
+    MEMORY_RECALL_RELEASE_REQUIRED_RANKED_METRICS
   );
-  const automaticLearningBetaGatePassed =
-    automaticLearningBetaCoverageComplete && observedGatesPassed;
+  const automaticLearningBeta = gateProfileStatus(
+    binary,
+    ranked,
+    MEMORY_BETA_REQUIRED_BINARY_METRICS,
+    MEMORY_BETA_REQUIRED_RANKED_METRICS
+  );
+  const selectedProfile = input.config.gateProfile === "RECALL_RELEASE"
+    ? recallRelease
+    : automaticLearningBeta;
 
   return {
     adapter: {
@@ -332,14 +376,19 @@ export async function runMemoryEvaluation<Input>(input: {
     evidenceVersion: MEMORY_EVALUATION_EVIDENCE_VERSION,
     hardInvariants: invariantScores,
     operations: scoreMemoryOperations(operations),
-    passed: invariantScores.passed && automaticLearningBetaGatePassed,
+    passed: invariantScores.passed && selectedProfile.gatePassed,
     quality: {
-      automaticLearningBetaCoverageComplete,
-      automaticLearningBetaGatePassed,
+      automaticLearningBetaCoverageComplete: automaticLearningBeta.coverageComplete,
+      automaticLearningBetaGatePassed: automaticLearningBeta.gatePassed,
       binary,
       gatedMetricCount: gatedScores.length,
       observedGatesPassed,
-      ranked
+      ranked,
+      recallReleaseCoverageComplete: recallRelease.coverageComplete,
+      recallReleaseGatePassed: recallRelease.gatePassed,
+      selectedGateProfile: input.config.gateProfile,
+      selectedProfileCoverageComplete: selectedProfile.coverageComplete,
+      selectedProfileGatePassed: selectedProfile.gatePassed
     },
     sanitizedAggregatesOnly: true,
     versions: {

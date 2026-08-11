@@ -43,6 +43,7 @@ function config(fixtures: readonly MemoryEvaluationFixture<unknown>[]): MemoryEv
     bootstrapSamples: 200,
     corpusHash: hashMemoryEvaluationCorpus(fixtures),
     corpusVersion: "live-corpus-v1",
+    gateProfile: "RECALL_RELEASE",
     pgvectorVersion: "0.8.5",
     pipelineVersion: "pipeline-v1",
     policyVersion: "policy-v1",

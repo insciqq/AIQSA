@@ -33,12 +33,14 @@ function fixture(
 }
 
 function config(
-  fixtures: readonly MemoryEvaluationFixture<unknown>[]
+  fixtures: readonly MemoryEvaluationFixture<unknown>[],
+  gateProfile: MemoryEvaluationConfig["gateProfile"] = "AUTOMATIC_LEARNING_BETA"
 ): MemoryEvaluationConfig {
   return {
     bootstrapSamples: 500,
     corpusHash: hashMemoryEvaluationCorpus(fixtures),
     corpusVersion: "memory-corpus-v1",
+    gateProfile,
     pgvectorVersion: "0.8.5",
     pipelineVersion: "memory-pipeline-v1",
     policyVersion: "memory-policy-v1",
@@ -110,6 +112,29 @@ function betaObservation(
   };
 }
 
+function recallReleaseObservation(
+  current: MemoryEvaluationFixture<unknown>,
+  recallScore = 1
+): MemoryEvaluationObservation {
+  return {
+    binaryOutcomes: Array.from({ length: 100 }, () => ({
+      cohort: "overall",
+      metric: "IRRELEVANT_AUTOMATIC_INJECTION_RATE" as const,
+      positive: false
+    })),
+    fixtureId: current.id,
+    hardInvariants: zeroMemoryHardInvariantObservations(),
+    language: current.language,
+    operations: [],
+    rankedOutcomes: Array.from({ length: 100 }, (_, index) => ({
+      cohort: "overall",
+      metric: "CURATED_RECALL_AT_5" as const,
+      score: recallScore,
+      stratum: index % 2 === 0 ? "temporal" : "updates"
+    }))
+  };
+}
+
 describe("provider-neutral Memory evaluation harness", () => {
   it("reproduces the same sanitized evidence for fixed corpus, versions, and seed", async () => {
     const fixtures = [fixture("ru-one", "RU"), fixture("en-one", "EN")];
@@ -137,13 +162,63 @@ describe("provider-neutral Memory evaluation harness", () => {
       quality: {
         automaticLearningBetaCoverageComplete: false,
         automaticLearningBetaGatePassed: false,
-        observedGatesPassed: true
+        observedGatesPassed: true,
+        recallReleaseCoverageComplete: false,
+        recallReleaseGatePassed: false,
+        selectedGateProfile: "AUTOMATIC_LEARNING_BETA",
+        selectedProfileGatePassed: false
       },
       sanitizedAggregatesOnly: true,
       versions: { randomSeed: 4_242, scorer: MEMORY_EVALUATION_SCORER_VERSION }
     });
     expect(JSON.stringify(first)).not.toContain("synthetic-ru-one");
     expect(JSON.stringify(first)).not.toContain("ru-one");
+  });
+
+  it("releases recall independently from the automatic-learning beta profile", async () => {
+    const fixtures = [fixture("ru-recall", "RU"), fixture("en-recall", "EN")];
+    const adapter = createAiqsaNativeEvaluationAdapter({
+      adapterVersion: "native-recall-fake-v1",
+      fingerprints: [],
+      liveProvider: false,
+      run: async (current) => recallReleaseObservation(current)
+    });
+    const evidence = await runMemoryEvaluation({
+      adapter,
+      config: config(fixtures, "RECALL_RELEASE"),
+      fixtures
+    });
+    expect(evidence).toMatchObject({
+      passed: true,
+      quality: {
+        automaticLearningBetaCoverageComplete: false,
+        automaticLearningBetaGatePassed: false,
+        recallReleaseCoverageComplete: true,
+        recallReleaseGatePassed: true,
+        selectedGateProfile: "RECALL_RELEASE",
+        selectedProfileCoverageComplete: true,
+        selectedProfileGatePassed: true
+      }
+    });
+  });
+
+  it("does not average a failing recall language into a passing release", async () => {
+    const fixtures = [fixture("ru-recall", "RU"), fixture("en-recall", "EN")];
+    const adapter = createAiqsaNativeEvaluationAdapter({
+      adapterVersion: "native-recall-language-fake-v1",
+      fingerprints: [],
+      liveProvider: false,
+      run: async (current) => recallReleaseObservation(current, current.language === "RU" ? 1 : 0)
+    });
+    const evidence = await runMemoryEvaluation({
+      adapter,
+      config: config(fixtures, "RECALL_RELEASE"),
+      fixtures
+    });
+    expect(evidence.passed).toBe(false);
+    expect(evidence.quality.recallReleaseGatePassed).toBe(false);
+    expect(evidence.quality.ranked.find(({ language }) => language === "EN"))
+      .toMatchObject({ gatePassed: false, point: 0 });
   });
 
   it("requires complete independently passing RU and EN beta evidence", async () => {

@@ -1,7 +1,14 @@
 import { z } from "zod";
 
-export const MEMORY_EVALUATION_EVIDENCE_VERSION = "memory-evaluation-evidence-v1";
-export const MEMORY_EVALUATION_SCORER_VERSION = "memory-scorers-v1";
+export const MEMORY_EVALUATION_EVIDENCE_VERSION = "memory-evaluation-evidence-v2";
+export const MEMORY_EVALUATION_SCORER_VERSION = "memory-scorers-v2";
+
+export const MEMORY_EVALUATION_GATE_PROFILES = [
+  "RECALL_RELEASE",
+  "AUTOMATIC_LEARNING_BETA"
+] as const;
+export type MemoryEvaluationGateProfile =
+  (typeof MEMORY_EVALUATION_GATE_PROFILES)[number];
 
 export const MEMORY_EVALUATION_ADAPTER_KINDS = [
   "AIQSA_NATIVE",
@@ -206,6 +213,7 @@ export type MemoryEvaluationConfig = Readonly<{
   bootstrapSamples: number;
   corpusHash: string;
   corpusVersion: string;
+  gateProfile: MemoryEvaluationGateProfile;
   pgvectorVersion: string;
   pipelineVersion: string;
   policyVersion: string;

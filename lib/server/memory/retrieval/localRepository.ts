@@ -31,7 +31,7 @@ import {
 } from "./vector";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v1";
+  "memory-local-retrieval-repository-v2";
 
 export type MemoryLocalRetrievalStatus = "DISABLED" | "READY" | "UNAVAILABLE";
 
@@ -642,10 +642,19 @@ function ftsConfiguration(lane: MemoryRetrievalLane): Readonly<{
 }
 
 function ftsQuerySql(configuration: ReturnType<typeof ftsConfiguration>, plan: MemoryRetrievalPlan): Prisma.Sql {
-  const query = configuration.query === "english" ? plan.normalizedQuery : plan.normalizedYoQuery;
-  if (configuration.query === "russian") return Prisma.sql`websearch_to_tsquery('russian', ${query})`;
-  if (configuration.query === "english") return Prisma.sql`websearch_to_tsquery('english', ${query})`;
-  return Prisma.sql`websearch_to_tsquery('simple', ${query})`;
+  const terms = [...new Set(plan.queryTerms.flatMap((term) =>
+    term.match(/[\p{L}\p{N}]+/gu) ?? []
+  ).map((term) => configuration.query === "english" ? term : term.replace(/ё/gu, "е")))];
+  const queries = terms.map((term) => {
+    if (configuration.query === "russian") {
+      return Prisma.sql`plainto_tsquery('russian', ${term})`;
+    }
+    if (configuration.query === "english") {
+      return Prisma.sql`plainto_tsquery('english', ${term})`;
+    }
+    return Prisma.sql`plainto_tsquery('simple', ${term})`;
+  });
+  return Prisma.sql`(${Prisma.join(queries, " || ")})`;
 }
 
 function ftsVectorSql(configuration: ReturnType<typeof ftsConfiguration>): Prisma.Sql {
@@ -1064,9 +1073,9 @@ function temporalFactLaneSql(
   return Prisma.sql`
     WITH query_terms AS (
       SELECT
-        websearch_to_tsquery('russian', ${plan.normalizedYoQuery}) AS query_ru,
-        websearch_to_tsquery('english', ${plan.normalizedQuery}) AS query_en,
-        websearch_to_tsquery('simple', ${plan.normalizedYoQuery}) AS query_simple
+        ${ftsQuerySql({ query: "russian", vector: "searchVectorRussian" }, plan)} AS query_ru,
+        ${ftsQuerySql({ query: "english", vector: "searchVectorEnglish" }, plan)} AS query_en,
+        ${ftsQuerySql({ query: "simple", vector: "searchVectorSimple" }, plan)} AS query_simple
     ),
     eligible AS MATERIALIZED (
       SELECT

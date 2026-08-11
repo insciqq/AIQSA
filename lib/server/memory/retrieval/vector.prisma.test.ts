@@ -9,7 +9,9 @@ import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
   createPrismaMemoryVectorRepository,
+  memoryVectorAuthoritativeRejoinSql,
   memoryVectorCandidateSql,
+  memoryVectorEligibleCountSql,
   type MemoryVectorProfile,
   type MemoryVectorSearchInput
 } from "./vector";
@@ -62,6 +64,22 @@ function percentile95(values: readonly number[]): number {
   if (values.length === 0) throw new Error("memory_vector_latency_sample_missing");
   const sorted = [...values].sort((left, right) => left - right);
   return sorted[Math.ceil(sorted.length * 0.95) - 1]!;
+}
+
+function explainExecutionTimeMs(rows: readonly unknown[]): number {
+  const first = rows[0];
+  if (!first || typeof first !== "object" || Array.isArray(first)) {
+    throw new Error("memory_vector_explain_invalid");
+  }
+  const payload = (first as Record<string, unknown>)["QUERY PLAN"];
+  if (!Array.isArray(payload) || !payload[0] || typeof payload[0] !== "object") {
+    throw new Error("memory_vector_explain_invalid");
+  }
+  const value = (payload[0] as Record<string, unknown>)["Execution Time"];
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error("memory_vector_explain_invalid");
+  }
+  return value;
 }
 
 async function createHistoryFixture(
@@ -465,6 +483,7 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
       limit: 40
     });
     const annPlan = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL plan_cache_mode = force_custom_plan`;
       await tx.$executeRaw`SET LOCAL hnsw.iterative_scan = 'strict_order'`;
       await tx.$executeRaw`SET LOCAL hnsw.ef_search = 100`;
       await tx.$executeRaw`SET LOCAL hnsw.max_scan_tuples = 20000`;
@@ -475,7 +494,29 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
     expect(JSON.stringify(annPlan)).toContain(
       "MemorySearchEntry_embedding_1024_hnsw_idx"
     );
-
+    const annRejoinPlan = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL plan_cache_mode = force_custom_plan`;
+      await tx.$executeRaw`SET LOCAL hnsw.iterative_scan = 'strict_order'`;
+      await tx.$executeRaw`SET LOCAL hnsw.ef_search = 100`;
+      await tx.$executeRaw`SET LOCAL hnsw.max_scan_tuples = 20000`;
+      const candidates = await tx.$queryRaw<Array<{ entryId: string }>>(
+        annStatement
+      );
+      return tx.$queryRaw<unknown[]>(Prisma.sql`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        ${memoryVectorAuthoritativeRejoinSql({
+          candidateIds: candidates.map(({ entryId }) => entryId),
+          input: searchInput(annFixture),
+          itemType: "RECALL_CHUNK"
+        })}
+      `);
+    });
+    const annCountPlan = await prisma.$queryRaw<unknown[]>(Prisma.sql`
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${memoryVectorEligibleCountSql({
+        input: searchInput(annFixture),
+        itemType: "RECALL_CHUNK"
+      })}
+    `);
     const exactStatement = memoryVectorCandidateSql({
       input: searchInput(exactFixture),
       itemType: "RECALL_CHUNK",
@@ -522,8 +563,14 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
       !itemId.startsWith(`memory-vector-ann-${suffix}-chunk-`)).length;
     const incompatibleSpaceLeakageCount = qualifiedAnnResult.hits.filter(({ entryId }) =>
       entryId.includes("incompatible")).length;
+    const annLane = qualifiedAnnResult.lanes[0];
+    if (!annLane) throw new Error("memory_vector_qualification_lane_missing");
     const evidence = Object.freeze({
       annEligibleRows: MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1,
+      annCandidateExecutionMs: explainExecutionTimeMs(annPlan),
+      annCountExecutionMs: explainExecutionTimeMs(annCountPlan),
+      annRejoinExecutionMs: explainExecutionTimeMs(annRejoinPlan),
+      annExactFallbackUsed: annLane.exactFallbackUsed,
       annP95LatencyMs: Math.round(percentile95(annLatenciesMs) * 100) / 100,
       crossTenantLeakageCount,
       evidenceVersion: "memory-phase4-vector-qualification-v1",
@@ -543,6 +590,7 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
       sanitizedAggregatesOnly: true
     });
     expect(evidence).toMatchObject({
+      annExactFallbackUsed: false,
       crossTenantLeakageCount: 0,
       exactPlanBounded: true,
       hnswIndexUsed: true,
@@ -550,9 +598,9 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
       recallAt5: 1,
       sanitizedAggregatesOnly: true
     });
+    console.info("memory_phase4_vector_qualification", evidence);
     expect(evidence.annP95LatencyMs).toBeLessThan(150);
     expect(evidence.exactP95LatencyMs).toBeLessThan(150);
     expect(JSON.stringify(evidence)).not.toContain(suffix);
-    console.info("memory_phase4_vector_qualification", evidence);
   }, 120_000);
 });

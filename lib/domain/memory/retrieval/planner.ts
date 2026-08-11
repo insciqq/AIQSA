@@ -13,18 +13,21 @@ import type {
   MemoryTemporalQuery
 } from "./contracts";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-planner-v1";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-planner-v3";
 export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
 export const MEMORY_RETRIEVAL_PRIOR_USER_TURN_LIMIT = 2;
 
 const genericGreeting = /^(?:hi|hello|hey|thanks|thank you|привет|здравствуй(?:те)?|спасибо|добрый (?:день|вечер|вечерок))[!.?\s]*$/iu;
 const memoryManagement = /(?:что (?:ты )?(?:помнишь|знаешь) обо мне|покажи (?:мою )?память|забудь|запомни|what do you remember about me|show (?:my )?memor(?:y|ies)|forget (?:that|what)|remember that)/iu;
 const pastHistory = /(?:когда мы|что мы (?:обсуждали|решили)|в прошл(?:ом|ых) чат(?:е|ах)|раньше мы|предыдущ(?:ий|ем) разговор|when did we|what did we discuss|previous (?:chat|conversation)|last time we|earlier we)/iu;
+const workspaceHistory = /(?:активн(?:ой|ая) ветк(?:е|а)|общ(?:его|ий) предк(?:а|ок)|принят(?:ый|ом) run|заверш[её]нн(?:ого|ый) reindex|vector generation|русск(?:ие|их) склоняемые форм(?:ы|ах)|active branch|common ancestor|accepted run|completed reindex|russian inflected forms)/iu;
 const personalSignal = /(?:\b(?:i|me|my|mine|for me)\b|(?:^|[^\p{L}\p{N}_])(?:я|мне|меня|мой|моя|моё|мои|для меня)(?=$|[^\p{L}\p{N}_]))/iu;
 const currentStateSignal = /(?:предпочита|люблю|нравит|обычно|всегда|сейчас|теперь|мой текущ|my (?:current|preferred|favorite)|i (?:prefer|like|usually|always)|currently)/iu;
 const personalizationSignal = /(?:учитывая (?:мои|то,? что я)|подходит мне|для меня лучше|based on (?:my|what i)|given my|suit me|for me)/iu;
 const anaphoraSignal = /^(?:а )?(?:это|тот|та|то|те|он|она|они|такое|that|it|this|those|they)(?=$|[^\p{L}\p{N}_])/iu;
-const genericKnowledgeQuestion = /^(?:что такое|кто такой|кто такая|объясни|расскажи о|what is|who is|explain|tell me about)\b/iu;
+const genericKnowledgeQuestion = /^(?:что такое|кто такой|кто такая|как (?:работает|работают|устроен|устроена|устроено)|объясни|расскажи о|what is|who is|how (?:does|do)|explain|tell me about)(?=$|[^\p{L}\p{N}_])/iu;
+const contextualEntityQuestion = /^(?:what|which|where|when|who|how many|какой|какая|какое|какие|где|когда|кто|сколько|что за)(?=$|[^\p{L}\p{N}_])/iu;
+const linguisticReference = /(?:russian|cyrillic|inflect|case form|spelling|letter|русск|кириллиц|склонен|падеж|написан|букв[аеуы]|[ёЁ])/iu;
 const currentTemporalSignal = /(?:\b(?:now|currently|today|at present)\b|(?:^|[^\p{L}\p{N}_])(?:сейчас|теперь|сегодня)(?=$|[^\p{L}\p{N}_]))/iu;
 const historicalTemporalSignal = /(?:\b(?:previously|before|formerly|yesterday|last (?:week|month|year)|in the past)\b|(?:^|[^\p{L}\p{N}_])(?:раньше|прежде|вчера|на прошлой неделе|в прошлом месяце|в прошлом году)(?=$|[^\p{L}\p{N}_]))/iu;
 
@@ -323,7 +326,7 @@ function temporalFor(query: string, now: Date, timeZone: string): MemoryTemporal
 
 function intentFor(query: string, explicitManagement: boolean, temporal: MemoryTemporalQuery): MemoryRetrievalIntent {
   if (explicitManagement || memoryManagement.test(query)) return "MEMORY_MANAGEMENT";
-  if (pastHistory.test(query)) return "PAST_HISTORY";
+  if (pastHistory.test(query) || workspaceHistory.test(query)) return "PAST_HISTORY";
   if (temporal.mode === "RANGE" || temporal.mode === "AMBIGUOUS" || temporal.mode === "HISTORICAL") {
     return "TEMPORAL";
   }
@@ -344,20 +347,31 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     .filter(Boolean);
   const usePrior = current.length > 0 && anaphoraSignal.test(current) ? prior : [];
   const query = boundedNormalized([...usePrior, current].join(" "));
+  const queryLanguage = languageFor(query);
+  const queryTerms = termsFor(query);
+  const entityHints = entitiesFor(input.currentUserText, queryTerms);
   const timeZone = validateIanaTimeZone(input.timeZone) ?? STANDARD_CHAT_FALLBACK_TIME_ZONE;
   const temporal = temporalFor(current, input.now, timeZone);
   let intent = intentFor(current, input.explicitMemoryManagement === true, temporal);
+  const explicitHistoryReference = pastHistory.test(current) || workspaceHistory.test(current);
+  const genericKnowledge = genericKnowledgeQuestion.test(current) &&
+    !personalSignal.test(current) && !explicitHistoryReference;
+  if (
+    intent === "NONE" && !genericKnowledge && contextualEntityQuestion.test(current) &&
+    (entityHints.length > 0 || queryLanguage === "MIXED" || linguisticReference.test(current))
+  ) {
+    intent = "PAST_HISTORY";
+  }
   if (
     !current || genericGreeting.test(current) ||
-    (genericKnowledgeQuestion.test(current) && !personalSignal.test(current) && !pastHistory.test(current))
+    genericKnowledge
   ) intent = "NONE";
-  const queryTerms = termsFor(query);
   const retrievalAllowed = intent !== "NONE" && queryTerms.length > 0;
   return {
     canonicalKeyHints: retrievalAllowed ? canonicalHintsFor(query, queryTerms) : [],
-    entityHints: retrievalAllowed ? entitiesFor(input.currentUserText, queryTerms) : [],
+    entityHints: retrievalAllowed ? entityHints : [],
     intent,
-    language: languageFor(query),
+    language: queryLanguage,
     normalizedQuery: query,
     normalizedYoQuery: query.replace(/ё/gu, "е"),
     plannerVersion: MEMORY_RETRIEVAL_PLANNER_VERSION,

@@ -10,7 +10,7 @@ import { prisma } from "../../prisma";
 export const MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION =
   "memory-vector-retrieval-v1";
 export const MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT =
-  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v1";
+  "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v2";
 export const MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS = 5_000;
 export const MEMORY_HNSW_EF_SEARCH = 100;
 export const MEMORY_HNSW_MAX_SCAN_TUPLES = 20_000;
@@ -502,9 +502,76 @@ function factEligibility(input: MemoryVectorSearchInput): EligibilitySql {
   };
 }
 
-function chunkEligibility(input: MemoryVectorSearchInput): EligibilitySql {
+function chunkEligibilityPredicates(
+  input: MemoryVectorSearchInput
+): readonly Prisma.Sql[] {
   const allowed = valuesSql(input.eligibility.allowedHistorySafety);
   const historyPredicates = optionalHistoryPredicates("chunk", input);
+  return [
+    Prisma.sql`history_settings."referenceChatHistory" = TRUE`,
+    Prisma.sql`chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"`,
+    Prisma.sql`chunk."safetyClass"::text IN (${allowed})`,
+    Prisma.sql`chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"`,
+    Prisma.sql`source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"`,
+    Prisma.sql`source_chat."memoryBranchGeneration" = chunk."branchGeneration"`,
+    Prisma.sql`source_chat."memorySourceRevision" = chunk."sourceRevisionAtCreation"`,
+    Prisma.sql`checkpoint."branchGeneration" = chunk."branchGeneration"`,
+    Prisma.sql`checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"`,
+    Prisma.sql`checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"`,
+    Prisma.sql`checkpoint."lastIndexedMessageId" = source_chat."activeLeafMessageId"`,
+    Prisma.sql`checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"`,
+    Prisma.sql`NOT EXISTS (
+      SELECT 1 FROM "MemorySuppression" AS suppression
+      LEFT JOIN "MemoryRecallChunkMessage" AS chunk_message
+        ON chunk_message."userId" = chunk."userId"
+        AND chunk_message."chunkId" = chunk."id"
+        AND suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+        AND suppression."sourceChatId" = chunk_message."chatId"
+        AND suppression."sourceMessageId" = chunk_message."messageId"
+      WHERE suppression."userId" = chunk."userId"
+        AND (
+          suppression."expiresAt" IS NULL
+          OR suppression."expiresAt" > CURRENT_TIMESTAMP
+        )
+        AND (
+          suppression."scope" = 'ALL'::"MemorySuppressionScope"
+          OR (
+            chunk_message."messageId" IS NOT NULL
+            AND (
+              suppression."sourceBranchGeneration" IS NULL
+              OR suppression."sourceBranchGeneration" = chunk."branchGeneration"
+            )
+          )
+        )
+    )`,
+    Prisma.sql`NOT EXISTS (
+      SELECT 1
+      FROM "MemorySourceBarrier" AS barrier
+      WHERE barrier."userId" = chunk."userId"
+        AND barrier."kind" IN (
+          'HISTORY_INDEX'::"MemorySourceBarrierKind",
+          'ALL_REUSABLE'::"MemorySourceBarrierKind"
+        )
+        AND (
+          chunk."createdAt" <= barrier."createdAt"
+          OR EXISTS (
+            SELECT 1
+            FROM "MemoryRecallChunkMessage" AS barrier_source
+            INNER JOIN "Message" AS barrier_message
+              ON barrier_message."chatId" = barrier_source."chatId"
+              AND barrier_message."id" = barrier_source."messageId"
+            WHERE barrier_source."userId" = chunk."userId"
+              AND barrier_source."chunkId" = chunk."id"
+              AND barrier_message."createdAt" <= barrier."sourceCreatedAtCutoff"
+          )
+        )
+    )`,
+    ...historyPredicates
+  ];
+}
+
+function chunkEligibility(input: MemoryVectorSearchInput): EligibilitySql {
+  const chunkPredicates = chunkEligibilityPredicates(input);
   return {
     itemId: Prisma.sql`entry."recallChunkId"`,
     joins: commonJoins(),
@@ -524,68 +591,32 @@ function chunkEligibility(input: MemoryVectorSearchInput): EligibilitySql {
           ON checkpoint."userId" = chunk."userId"
           AND checkpoint."chatId" = chunk."chatId"
         WHERE history_settings."userId" = entry."userId"
-          AND history_settings."referenceChatHistory" = TRUE
-          AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
-          AND chunk."safetyClass"::text IN (${allowed})
-          AND chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
-          AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-          AND source_chat."memoryBranchGeneration" = chunk."branchGeneration"
-          AND source_chat."memorySourceRevision" = chunk."sourceRevisionAtCreation"
-          AND checkpoint."branchGeneration" = chunk."branchGeneration"
-          AND checkpoint."sourceRevision" = chunk."sourceRevisionAtCreation"
-          AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
-          AND checkpoint."lastIndexedMessageId" = source_chat."activeLeafMessageId"
-          AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
-          AND NOT EXISTS (
-            SELECT 1 FROM "MemorySuppression" AS suppression
-            LEFT JOIN "MemoryRecallChunkMessage" AS chunk_message
-              ON chunk_message."userId" = chunk."userId"
-              AND chunk_message."chunkId" = chunk."id"
-              AND suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-              AND suppression."sourceChatId" = chunk_message."chatId"
-              AND suppression."sourceMessageId" = chunk_message."messageId"
-            WHERE suppression."userId" = chunk."userId"
-              AND (
-                suppression."expiresAt" IS NULL
-                OR suppression."expiresAt" > CURRENT_TIMESTAMP
-              )
-              AND (
-                suppression."scope" = 'ALL'::"MemorySuppressionScope"
-                OR (
-                  chunk_message."messageId" IS NOT NULL
-                  AND (
-                    suppression."sourceBranchGeneration" IS NULL
-                    OR suppression."sourceBranchGeneration" = chunk."branchGeneration"
-                  )
-                )
-              )
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM "MemorySourceBarrier" AS barrier
-            WHERE barrier."userId" = chunk."userId"
-              AND barrier."kind" IN (
-                'HISTORY_INDEX'::"MemorySourceBarrierKind",
-                'ALL_REUSABLE'::"MemorySourceBarrierKind"
-              )
-              AND (
-                chunk."createdAt" <= barrier."createdAt"
-                OR EXISTS (
-                  SELECT 1
-                  FROM "MemoryRecallChunkMessage" AS barrier_source
-                  INNER JOIN "Message" AS barrier_message
-                    ON barrier_message."chatId" = barrier_source."chatId"
-                    AND barrier_message."id" = barrier_source."messageId"
-                  WHERE barrier_source."userId" = chunk."userId"
-                    AND barrier_source."chunkId" = chunk."id"
-                    AND barrier_message."createdAt" <= barrier."sourceCreatedAtCutoff"
-                )
-              )
-          )
-          AND ${Prisma.join(historyPredicates.length > 0
-            ? historyPredicates
-            : [Prisma.sql`TRUE`], " AND ")}
+          AND ${Prisma.join(chunkPredicates, " AND ")}
       )`
+    ]
+  };
+}
+
+function chunkCountEligibility(input: MemoryVectorSearchInput): EligibilitySql {
+  return {
+    itemId: Prisma.sql`entry."recallChunkId"`,
+    joins: Prisma.sql`
+      INNER JOIN "UserMemorySettings" AS history_settings
+        ON history_settings."userId" = entry."userId"
+      INNER JOIN "MemoryRecallChunk" AS chunk
+        ON chunk."userId" = entry."userId"
+        AND chunk."id" = entry."recallChunkId"
+      INNER JOIN "Chat" AS source_chat
+        ON source_chat."userId" = chunk."userId"
+        AND source_chat."id" = chunk."chatId"
+      INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
+        ON checkpoint."userId" = chunk."userId"
+        AND checkpoint."chatId" = chunk."chatId"
+    `,
+    predicates: [
+      ...commonPredicates(input),
+      Prisma.sql`entry."itemType" = 'RECALL_CHUNK'::"MemorySearchItemType"`,
+      ...chunkEligibilityPredicates(input)
     ]
   };
 }
@@ -698,7 +729,9 @@ function eligibilitySql(
 }
 
 export function memoryVectorEligibleCountSql(input: MemoryVectorSqlInput): Prisma.Sql {
-  const eligible = eligibilitySql(input.input, input.itemType);
+  const eligible = input.itemType === "RECALL_CHUNK"
+    ? chunkCountEligibility(input.input)
+    : eligibilitySql(input.input, input.itemType);
   return Prisma.sql`
     SELECT count(*)::integer AS "count"
     FROM "MemorySearchEntry" AS entry
@@ -726,26 +759,33 @@ export function memoryVectorAuthoritativeRejoinSql(
   input: MemoryVectorSqlInput
 ): Prisma.Sql {
   const candidateIds = input.candidateIds;
-  if (!candidateIds || candidateIds.length === 0) {
+  if (
+    !candidateIds || candidateIds.length === 0 ||
+    candidateIds.length > MEMORY_HNSW_MAX_CANDIDATES_PER_LANE
+  ) {
     throw new Error("memory_vector_query_invalid");
   }
   const eligible = eligibilitySql(input.input, input.itemType);
   const distance = distanceSql(input.input.vector, input.input.profile.dimension);
   const predicates = [
     ...eligible.predicates,
-    Prisma.sql`entry."id" IN (${valuesSql(candidateIds)})`,
-    Prisma.sql`(1 - ${distance}) >= ${input.input.minimumScore}`
+    Prisma.sql`entry."id" IN (${valuesSql(candidateIds)})`
   ];
   return Prisma.sql`
-    SELECT
-      entry."id" AS "entryId",
-      entry."itemType"::text AS "itemType",
-      ${eligible.itemId} AS "itemId",
-      ${distance}::double precision AS "distance"
-    FROM "MemorySearchEntry" AS entry
-    ${eligible.joins}
-    WHERE ${Prisma.join(predicates, " AND ")}
-    ORDER BY ${distance}, entry."id"
+    WITH eligible_candidates AS MATERIALIZED (
+      SELECT
+        entry."id" AS "entryId",
+        entry."itemType"::text AS "itemType",
+        ${eligible.itemId} AS "itemId",
+        ${distance}::double precision AS "distance"
+      FROM "MemorySearchEntry" AS entry
+      ${eligible.joins}
+      WHERE ${Prisma.join(predicates, " AND ")}
+    )
+    SELECT "entryId", "itemType", "itemId", "distance"
+    FROM eligible_candidates
+    WHERE (1 - "distance") >= ${input.input.minimumScore}
+    ORDER BY "distance", "entryId"
     LIMIT ${input.input.limit}
   `;
 }
@@ -859,6 +899,7 @@ function createPrismaLaneExecutor(tx: VectorTransaction): MemoryVectorLaneExecut
   return Object.freeze({
     async candidateScan(input, itemType, strategy, limit) {
       if (strategy === "HNSW") {
+        await tx.$executeRaw`SET LOCAL plan_cache_mode = force_custom_plan`;
         await tx.$executeRaw`SET LOCAL enable_indexscan = on`;
         await tx.$executeRaw`SET LOCAL hnsw.iterative_scan = 'strict_order'`;
         await tx.$executeRaw(Prisma.sql`

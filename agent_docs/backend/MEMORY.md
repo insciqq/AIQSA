@@ -8,8 +8,9 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 Native Memory is approved. Shipped foundations cover evaluation, durable
 coordination, scoped explicit Memory, Temporary lifecycle, safe history
 indexing/manual search, and answer recall. Recall uses exact/RU/EN/simple FTS,
-optional qualified vectors, RRF, temporal qualification, bounded packing, and
-source/suppression rechecks.
+optional qualified vectors, RRF, bounded per-term language ORs,
+temporal/contextual probes, bounded packing, and exact source/suppression
+rechecks; generic knowledge queries need a personal/history signal.
 Retained turns and Resume enqueue indexing only with `referenceChatHistory`;
 the gate now defaults on for every owner, while learning stays independent and
 defaults off. HYBRID degrades to lexical without qualified query
@@ -178,9 +179,9 @@ use two-sided 95% Wilson intervals; ranked retrieval uses deterministic
 stratified-bootstrap 95% intervals. Gates compare unrounded values, while
 display values round to three decimals. Missing hard-invariant coverage fails,
 and one deterministic privacy, lifecycle, run, or safety violation fails the
-suite rather than being averaged away. Automatic-learning beta evidence is
-incomplete until every frozen overall quality gate is independently present
-and passing for RU and EN.
+suite rather than being averaged away. `RECALL_RELEASE` and
+`AUTOMATIC_LEARNING_BETA` are independent: each needs its complete RU/EN gates;
+passing recall cannot imply beta, and missing selected-profile coverage fails.
 
 `MemoryCapabilityQualification` is fail-closed authority, not advisory
 metadata. It matches the exact role, language, provider/model/deployment/config
@@ -469,21 +470,20 @@ source windows from becoming Memory content; current user input—not Memory—m
 still authorize actions and tool/credential selection. Temporary chats expose
 no Memory.
 
-Every affected answer-provider or external-tool dispatch writes an owner-bound,
-recovery-idempotent `MemoryToolEgressReceipt` with the actual destination,
-ordinal, mode (`PROVIDER_REQUEST` or `TOOL_CALL`), content hashes, and terminal
-outcome. It stores no Memory/request plaintext and carries no confirmation
-semantics. Destination/configuration authority is rechecked immediately before
-client Search, Knowledge, or MCP execution; passive accepted destination/outcome
-evidence remains immutable while private history-query/result derivatives are
-scrubbed by their deletion obligations.
+Each Memory-affected answer-provider/tool dispatch writes an owner-bound,
+recovery-idempotent `MemoryToolEgressReceipt` with destination, ordinal, mode,
+content hashes, and terminal outcome—never plaintext or confirmation state.
+Destination authority is rechecked before client Search, Knowledge, or MCP.
+Accepted destination/outcome stays immutable; deletion scrubs private
+query/result derivatives after resolving message/episode result provenance,
+preventing stranded query/result/tool-argument text.
 
 ## Retrieval And Index Integrity
 
-Lexical-only is a complete supported mode. Every authoritative visible item
-gets synchronous Russian, English, and simple FTS projections in the active
-generation; optional compatible vectors enrich them asynchronously. Search
-entries are rebuildable and never become truth.
+Lexical-only is complete. Visible items synchronously get RU/EN/simple FTS;
+compatible vectors are asynchronous. Rebuildable entries never become truth.
+Queries OR bounded normalized terms per projection before exact tenant,
+generation, lifecycle, scope, safety, and relevance fences.
 
 An immutable generation pins index mode, source/target revisions, language,
 normalization, chunking, pipeline, and, for hybrid mode, the exact embedding
@@ -494,11 +494,11 @@ proof, exact current configuration and barriers, then atomically flips the
 pointer and advances generation/revision fences. Partial generations never
 serve and vector spaces never mix.
 
-Vector retrieval uses direct, dimension-specific cosine HNSW scans whose SQL
-contains user, active generation, vector readiness, authoritative state,
-scope/source/safety, and same-owner joins before final ranking. It does not put
-a materialized CTE ahead of the ANN scan or trust candidates before the exact
-authoritative rejoin. Initial plan constants are:
+Vector retrieval directly scans dimension-specific cosine HNSW with tenant,
+generation, readiness, state, scope, source, and safety predicates. ANN forces a
+custom plan; a bounded materialized authoritative rejoin rechecks candidates,
+and a predicate-identical direct count selects exact/HNSW. No CTE precedes ANN.
+Initial plan constants are:
 
 ```text
 EXACT_VECTOR_MAX_ELIGIBLE_ROWS = 5000

@@ -9,7 +9,7 @@
   },
   "randomSeed": 4242,
   "sanitizedAggregatesOnly": true,
-  "scorerVersion": "memory-scorers-v1",
+  "scorerVersion": "memory-scorers-v2",
   "splits": {
     "HOLDOUT": {
       "byLanguage": {

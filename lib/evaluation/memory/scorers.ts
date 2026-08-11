@@ -108,6 +108,14 @@ export const MEMORY_BETA_REQUIRED_RANKED_METRICS = [
   "CURATED_RECALL_AT_5"
 ] as const satisfies readonly MemoryRankedMetric[];
 
+export const MEMORY_RECALL_RELEASE_REQUIRED_BINARY_METRICS = [
+  "IRRELEVANT_AUTOMATIC_INJECTION_RATE"
+] as const satisfies readonly MemoryBinaryMetric[];
+
+export const MEMORY_RECALL_RELEASE_REQUIRED_RANKED_METRICS = [
+  "CURATED_RECALL_AT_5"
+] as const satisfies readonly MemoryRankedMetric[];
+
 export function compareMemoryMetricUnrounded(
   value: number,
   direction: MemoryThresholdDirection,

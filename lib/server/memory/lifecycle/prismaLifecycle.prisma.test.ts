@@ -148,6 +148,7 @@ function normalizedRequest(
 
 async function createUnacceptedAttemptItem(input: Readonly<{
   factVersionId: string;
+  requestContent?: string;
   statement: string;
   userId: string;
 }>): Promise<Readonly<{
@@ -164,7 +165,7 @@ async function createUnacceptedAttemptItem(input: Readonly<{
       userId: input.userId
     }
   });
-  const request = normalizedRequest(chat.id);
+  const request = normalizedRequest(chat.id, input.requestContent);
   const admitted = await createPrismaRunRepository(prisma).admitPreparingRun({
     admissionKind: "NORMAL_SEND",
     chatId: chat.id,
@@ -208,6 +209,278 @@ async function createUnacceptedAttemptItem(input: Readonly<{
     messageId: admitted.userMessageId,
     runId: admitted.runId
   };
+}
+
+type AcceptedReceiptDerivatives = Readonly<{
+  attemptId: string;
+  attemptItemId: string;
+  bindingId: string;
+  egressReceiptId: string;
+  historyRunId: string;
+  marker: string;
+  memoryItemId: string;
+  toolCallId: string;
+}>;
+
+async function createAcceptedReceiptDerivatives(input: Readonly<{
+  assistantMessageId: string;
+  attemptId: string;
+  chatId: string;
+  factVersionId: string;
+  modelRunId: string;
+  sourceMessageId: string;
+  statement: string;
+  userId: string;
+}>): Promise<AcceptedReceiptDerivatives> {
+  const now = new Date("2026-08-10T14:01:00.000Z");
+  const marker = input.statement;
+  const preparedContext = `Accepted memory: ${marker}`;
+  let attemptItem = await prisma.memoryRetrievalAttemptItem.findFirst({
+    where: {
+      attemptId: input.attemptId,
+      factVersionId: input.factVersionId,
+      userId: input.userId
+    }
+  });
+  attemptItem ??= await prisma.memoryRetrievalAttemptItem.create({
+    data: {
+      attemptId: input.attemptId,
+      exactItemId: input.factVersionId,
+      exactSafeText: marker,
+      factVersionId: input.factVersionId,
+      featureSnapshot: {},
+      itemType: "FACT_VERSION",
+      laneRanks: {},
+      ordinal: 0,
+      selectionReason: "memory-lifecycle-accepted-receipt-test",
+      sourceBranchGenerationSnapshot: 0,
+      sourceChatIdSnapshot: input.chatId,
+      sourceContentHashSnapshot: memorySha256(marker),
+      sourceRevisionSnapshot: 0,
+      sourceSnapshot: {},
+      textHash: memorySha256(marker),
+      userId: input.userId,
+      versionSnapshot: {}
+    }
+  });
+  const { attempt, binding } = await prisma.$transaction(async (tx) => {
+    const attempt = await tx.memoryRetrievalAttempt.update({
+      data: {
+        boundedSafeQuerySnapshot: marker,
+        consumedAt: now,
+        outcome: "USED",
+        preparedContextHash: memorySha256(preparedContext),
+        preparedContextText: preparedContext,
+        preparedContextTokenCount: 8,
+        state: "CONSUMED"
+      },
+      where: { id: input.attemptId }
+    });
+    await tx.modelRun.update({
+      data: {
+        normalizedRequest: { request: "accepted" },
+        providerRequestPreview: { request: "accepted" },
+        status: "complete"
+      },
+      where: { id: input.modelRunId }
+    });
+    const binding = await tx.modelRunMemoryBinding.create({
+      data: {
+        boundedSafeQuerySnapshot: marker,
+        contextTextHash: memorySha256(preparedContext),
+        contextTokenCount: 8,
+        finalizedAt: now,
+        finalizedRevisionSnapshot: attempt.retrievalRevisionSnapshot,
+        indexGenerationId: attempt.indexGenerationIdSnapshot,
+        memoryGenerationSnapshot: attempt.memoryGenerationSnapshot,
+        modelRunId: input.modelRunId,
+        outcome: "USED",
+        queryHash: memorySha256(marker),
+        queryPlannerVersion: "memory-lifecycle-receipt-test-v1",
+        retrievalAttemptId: input.attemptId,
+        retrievalPipelineVersion: "memory-lifecycle-receipt-test-v1",
+        retrievalRevisionSnapshot: attempt.retrievalRevisionSnapshot,
+        settingsSnapshot: {},
+        userId: input.userId
+      }
+    });
+    return { attempt, binding };
+  });
+  const memoryItem = await prisma.modelRunMemoryItem.create({
+    data: {
+      bindingId: binding.id,
+      exactItemId: input.factVersionId,
+      factVersionId: input.factVersionId,
+      featureSnapshot: {},
+      finalScore: 0.9,
+      includedText: marker,
+      includedTextHash: memorySha256(marker),
+      itemStateAtAdmission: "ACTIVE",
+      itemType: "FACT_VERSION",
+      laneRanks: {},
+      ordinal: 0,
+      selectionReason: "memory-lifecycle-accepted-receipt-test",
+      sourceBranchGenerationSnapshot: 0,
+      sourceChatIdSnapshot: input.chatId,
+      sourceContentHashSnapshot: memorySha256(marker),
+      sourceMessageIdsSnapshot: [input.sourceMessageId],
+      sourceRevisionSnapshot: 0,
+      userId: input.userId
+    }
+  });
+  const toolCall = await prisma.modelRunToolCall.create({
+    data: {
+      arguments: { query: marker },
+      completedAt: now,
+      modelRunId: input.modelRunId,
+      ordinal: 0,
+      providerCallId: `memory-lifecycle-history-${randomUUID()}`,
+      result: {
+        callId: "memory-lifecycle-history",
+        content: [{ type: "json", value: { marker } }],
+        name: "search_my_history",
+        status: "complete"
+      },
+      roundIndex: 0,
+      startedAt: now,
+      state: "complete",
+      toolName: "search_my_history"
+    }
+  });
+  const destinationSnapshot = {
+    fingerprint: "memory-lifecycle-answer-provider",
+    kind: "answer_provider" as const,
+    version: 1 as const
+  };
+  const egressReceipt = await prisma.memoryToolEgressReceipt.create({
+    data: {
+      destinationFingerprint: memorySha256(destinationSnapshot),
+      destinationKind: "answer_provider",
+      destinationSnapshot,
+      dispatchCompletedAt: now,
+      dispatchStartedAt: now,
+      dispatchState: "COMPLETED",
+      mode: "PROVIDER_REQUEST",
+      modelRunId: input.modelRunId,
+      requestOrdinal: 1,
+      requestEvidenceHash: memorySha256({ marker, type: "provider-request" }),
+      userId: input.userId
+    }
+  });
+  const privateResults = {
+    indexing: {
+      degradationCode: null,
+      lexicalState: "READY",
+      vectorState: "NOT_CONFIGURED"
+    },
+    nextCursor: null,
+    results: [{
+      indexingState: "LEXICAL_READY",
+      itemType: "RECALL_CHUNK",
+      occurredAt: now.toISOString(),
+      sourceChatId: input.chatId,
+      sourceChatTitle: "Memory lifecycle receipt source",
+      sourceFolderId: null,
+      sourceFolderName: null,
+      sourceMessageIds: [input.sourceMessageId],
+      sourceState: "AVAILABLE",
+      snippet: marker
+    }]
+  };
+  const providerResult = {
+    callId: toolCall.providerCallId,
+    content: [{ type: "json", value: { ...privateResults, untrusted: true } }],
+    name: "search_my_history",
+    status: "complete"
+  };
+  const historyRun = await prisma.memoryHistoryRun.create({
+    data: {
+      completedAt: now,
+      durationMs: 1,
+      indexingEvidence: privateResults.indexing,
+      invocationOrdinal: 1,
+      modelRunId: input.modelRunId,
+      modelRunToolCallId: toolCall.id,
+      outcome: "RESULTS",
+      privateRequest: { query: marker },
+      providerResult,
+      query: marker,
+      queryHash: memorySha256(marker),
+      resultCount: 1,
+      resultHash: memorySha256(providerResult),
+      results: privateResults,
+      state: "COMPLETE",
+      userId: input.userId
+    }
+  });
+  return {
+    attemptId: attempt.id,
+    attemptItemId: attemptItem.id,
+    bindingId: binding.id,
+    egressReceiptId: egressReceipt.id,
+    historyRunId: historyRun.id,
+    marker,
+    memoryItemId: memoryItem.id,
+    toolCallId: toolCall.id
+  };
+}
+
+async function expectAcceptedReceiptDerivatives(
+  receipt: AcceptedReceiptDerivatives,
+  historyState: "RETAINED" | "SCRUBBED"
+): Promise<void> {
+  const history = await prisma.memoryHistoryRun.findUniqueOrThrow({
+    where: { id: receipt.historyRunId }
+  });
+  const toolCall = await prisma.modelRunToolCall.findUniqueOrThrow({
+    where: { id: receipt.toolCallId }
+  });
+  if (historyState === "SCRUBBED") {
+    expect(history).toMatchObject({
+      plaintextPurgedAt: expect.any(Date),
+      privateRequest: {},
+      providerResult: null,
+      query: null,
+      resultHash: null,
+      results: null,
+      retentionState: "SCRUBBED"
+    });
+    expect(JSON.stringify(history)).not.toContain(receipt.marker);
+    expect(toolCall.arguments).toEqual({});
+    expect(toolCall.result).toMatchObject({
+      content: [{ value: { error: "memory_history_receipt_scrubbed" } }],
+      status: "error"
+    });
+    expect(JSON.stringify(toolCall)).not.toContain(receipt.marker);
+  } else {
+    expect(history).toMatchObject({
+      plaintextPurgedAt: null,
+      retentionState: "RETAINED",
+      state: "COMPLETE"
+    });
+    expect(JSON.stringify(history)).toContain(receipt.marker);
+    expect(toolCall).toMatchObject({ state: "complete" });
+    expect(JSON.stringify(toolCall)).toContain(receipt.marker);
+  }
+  await expect(prisma.memoryRetrievalAttempt.findUniqueOrThrow({
+    where: { id: receipt.attemptId }
+  })).resolves.toMatchObject({ outcome: "USED", state: "CONSUMED" });
+  await expect(prisma.memoryRetrievalAttemptItem.findUniqueOrThrow({
+    where: { id: receipt.attemptItemId }
+  })).resolves.toMatchObject({ exactSafeText: receipt.marker });
+  await expect(prisma.modelRunMemoryBinding.findUniqueOrThrow({
+    where: { id: receipt.bindingId }
+  })).resolves.toMatchObject({ outcome: "USED" });
+  await expect(prisma.modelRunMemoryItem.findUniqueOrThrow({
+    where: { id: receipt.memoryItemId }
+  })).resolves.toMatchObject({ includedText: receipt.marker });
+  await expect(prisma.memoryToolEgressReceipt.findUniqueOrThrow({
+    where: { id: receipt.egressReceiptId }
+  })).resolves.toMatchObject({
+    dispatchState: "COMPLETED",
+    errorCode: null,
+    mode: "PROVIDER_REQUEST"
+  });
 }
 
 async function claimDeletion(
@@ -664,12 +937,28 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         scopeId: scope.id,
         value: automaticValue("learned.travel.mode", statement)
       });
+      const receipt = await createAcceptedReceiptDerivatives({
+        assistantMessageId: admitted.assistantMessageId,
+        attemptId: admitted.attemptId,
+        chatId: chat.id,
+        factVersionId: created.versionId,
+        modelRunId: admitted.runId,
+        sourceMessageId: admitted.userMessageId,
+        statement,
+        userId
+      });
       const authorization = await explicit.mintAuthorization(userId, {
         action: "FORGET",
         confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
         expectedTargetVersionId: created.versionId,
         requestNonce: "automatic-source-forget",
         targetFactId: created.factId
+      });
+      await expect(lifecycle.forget(userId, created.factId, {
+        expectedVersionId: created.versionId,
+        mutationAuthorizationId: authorization.mutationAuthorizationId
+      })).resolves.toMatchObject({
+        memory: { displayText: null, factState: "FORGOTTEN" }
       });
       await expect(lifecycle.forget(userId, created.factId, {
         expectedVersionId: created.versionId,
@@ -722,6 +1011,23 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         deletion.id,
         new Date("2026-08-10T14:02:00.000Z")
       );
+      await expectAcceptedReceiptDerivatives(receipt, "SCRUBBED");
+      for (const auditedAt of [
+        new Date("2026-08-10T14:03:00.000Z"),
+        new Date("2026-08-10T14:04:00.000Z")
+      ]) {
+        await expect(auditMemoryDeletion(
+          registry,
+          deletion.id,
+          userId,
+          prisma,
+          auditedAt
+        )).resolves.toMatchObject({
+          progress: { complete: true },
+          state: "SUCCEEDED"
+        });
+        await expectAcceptedReceiptDerivatives(receipt, "SCRUBBED");
+      }
       await expect(prisma.memoryFactVersion.findUniqueOrThrow({
         where: { id: created.versionId }
       })).resolves.toMatchObject({
@@ -744,7 +1050,13 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
     const userId = await createActiveUser("bulk");
     const { explicit, lifecycle } = services(registry);
     try {
-      await saveExplicit(explicit, userId, "My preferred editor is Helix.", "bulk-a");
+      const retainedStatement = "My preferred editor is Helix.";
+      const retainedFact = await saveExplicit(
+        explicit,
+        userId,
+        retainedStatement,
+        "bulk-a"
+      );
       await saveExplicit(explicit, userId, "I prefer compact answers.", "bulk-b");
       const staleSettings = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
@@ -758,6 +1070,22 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         requestNonce: "bulk-stale"
       });
       await saveExplicit(explicit, userId, "My timezone is Europe/Moscow.", "bulk-c");
+      const acceptedAttempt = await createUnacceptedAttemptItem({
+        factVersionId: retainedFact.memory.currentVersionId!,
+        requestContent: retainedStatement,
+        statement: retainedStatement,
+        userId
+      });
+      const receipt = await createAcceptedReceiptDerivatives({
+        assistantMessageId: acceptedAttempt.assistantMessageId,
+        attemptId: acceptedAttempt.attemptId,
+        chatId: acceptedAttempt.chatId,
+        factVersionId: retainedFact.memory.currentVersionId!,
+        modelRunId: acceptedAttempt.runId,
+        sourceMessageId: acceptedAttempt.messageId,
+        statement: retainedStatement,
+        userId
+      });
       await expect(lifecycle.deleteExplicit(userId, {
         expectedMemoryRevision: staleSettings.memoryRevision,
         expectedSettingsRevision: staleSettings.settingsRevision,
@@ -831,6 +1159,18 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         state: "SUCCEEDED",
         totalUnits: 5
       });
+      await expectAcceptedReceiptDerivatives(receipt, "RETAINED");
+      await expect(auditMemoryDeletion(
+        registry,
+        status.deletionId,
+        userId,
+        prisma,
+        new Date("2026-08-10T13:01:00.000Z")
+      )).resolves.toMatchObject({
+        progress: { complete: true },
+        state: "SUCCEEDED"
+      });
+      await expectAcceptedReceiptDerivatives(receipt, "RETAINED");
       await expect(explicit.get(userId, postAdmission.memory.id)).resolves.toMatchObject({
         memory: {
           currentVersionId: postAdmission.memory.currentVersionId,

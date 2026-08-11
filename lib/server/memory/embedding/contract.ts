@@ -24,7 +24,7 @@ export const MEMORY_ITEM_EMBEDDING_VERSIONS = Object.freeze({
   policyVersion: "memory-item-embed-policy-v1",
   promptVersion: "memory-document-embed-v1",
   retrievalConfigFingerprint:
-    "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v1",
+    "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v2",
   schemaVersion: "memory-document-embed-result-v1"
 });
 

@@ -1,4 +1,4 @@
-export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-retrieval-core-v1";
+export const MEMORY_RETRIEVAL_PIPELINE_VERSION = "memory-retrieval-core-v3";
 export const MEMORY_RETRIEVAL_FEATURE_VERSION = "memory-retrieval-features-v1";
 export const MEMORY_TEMPORAL_RESOLVER_VERSION = "memory-temporal-resolver-v1";
 export const MEMORY_CONTEXT_PACKER_VERSION = "memory-context-packer-v1";

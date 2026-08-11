@@ -414,6 +414,17 @@ async function receiptSelectionPredicates(
               AND suppression."sourceChatId" = result ->> 'sourceChatId'
               AND result -> 'sourceMessageIds' ? suppression."sourceMessageId"
             )
+            OR (
+              suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
+              AND EXISTS (
+                SELECT 1
+                FROM "MemoryEpisodeMessage" AS episode_message
+                WHERE episode_message."userId" = suppression."userId"
+                  AND episode_message."episodeId" = suppression."sourceEpisodeId"
+                  AND episode_message."chatId" = result ->> 'sourceChatId'
+                  AND result -> 'sourceMessageIds' ? episode_message."messageId"
+              )
+            )
           )
       )
     `,

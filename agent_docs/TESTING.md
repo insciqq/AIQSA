@@ -179,6 +179,30 @@ evidence while exercising temporal and suppression filters. The history fixture
 emits only searchable-row count and enqueue-to-commit job lag. Test fixture IDs
 and content are explicitly excluded from every evidence object.
 
+The recall release profile additionally has a frozen synthetic RU/EN holdout
+runner. It exercises PostgreSQL lexical scoring plus the exactly selected
+embedding deployment, and emits only hashes, version fingerprints, aggregate
+Recall@5/bootstrap intervals, irrelevant-injection/Wilson intervals, source
+diversity, latency, usage, cost completeness, and provider request-ID presence.
+Its checked-in sanitized manifest is pinned by
+`tests/harness/memory-corpus/recallReleaseEvidence.test.ts`. A live rerun is not
+part of routine checks and requires fresh explicit operator authorization, the
+exact frozen corpus hash, and the exact upstream model:
+
+```bash
+npx tsx scripts/memory-recall-release-evaluation.ts \
+  --split=holdout \
+  --authorized-live-provider \
+  --holdout-corpus-hash=AUTHORIZED_HOLDOUT_SHA256 \
+  --upstream-model=AUTHORIZED_UPSTREAM_MODEL
+```
+
+Use `AIQSA_MEMORY_EVALUATION_USER_ID` only to disambiguate the already
+authorized owner; the runner otherwise requires exactly one active admin. It
+never grants provider authority by itself and never emits account/model IDs,
+source text, vectors, raw provider bodies, or credentials. This
+`RECALL_RELEASE` evidence does not satisfy `AUTOMATIC_LEARNING_BETA`.
+
 Authentication admission concurrency/restart:
 
 ```bash

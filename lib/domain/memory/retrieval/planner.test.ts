@@ -12,7 +12,9 @@ describe("Memory retrieval planner", () => {
     "Привет!",
     "Спасибо",
     "What is photosynthesis?",
-    "Что такое PostgreSQL?"
+    "Что такое PostgreSQL?",
+    "How does PostgreSQL indexing work?",
+    "Как работает PostgreSQL?"
   ])("skips generic or non-personal input: %s", (currentUserText) => {
     expect(planMemoryRetrieval({ currentUserText, now })).toMatchObject({
       canonicalKeyHints: [],
@@ -50,6 +52,31 @@ describe("Memory retrieval planner", () => {
     expect(plan.language).toBe("EN");
     expect(plan.entityHints).toContain("gpt-5.2");
     expect(plan.entityHints.length).toBeLessThanOrEqual(12);
+  });
+
+  it.each([
+    "Что выбрано в активной ветке для прототипа?",
+    "Which palette does the old accepted run retain?",
+    "Which configuration format is available after completed reindex?",
+    "How many vector generations should one recall use?",
+    "Which device appears in the Russian inflected forms?"
+  ])("admits an explicit workspace-history reference: %s", (currentUserText) => {
+    expect(planMemoryRetrieval({ currentUserText, now })).toMatchObject({
+      intent: "PAST_HISTORY",
+      retrievalAllowed: true
+    });
+  });
+
+  it.each([
+    "Where does synthetic Dana's team meet?",
+    "Which notebook did Mira choose?",
+    "Which Russian spelling used «всё»?",
+    "Какой вариант PostgreSQL был выбран?"
+  ])("admits a bounded contextual entity probe: %s", (currentUserText) => {
+    expect(planMemoryRetrieval({ currentUserText, now })).toMatchObject({
+      intent: "PAST_HISTORY",
+      retrievalAllowed: true
+    });
   });
 
   it("adds bounded cross-script aliases for product entities", () => {

@@ -88,10 +88,17 @@ async function openAnswerDetails(page: Page, answerId: string) {
 }
 
 test("keeps exact Memory receipts and committed actions answer-bound", async ({ page }) => {
-  const firstReceipt = receipt("First answer frozen memory.", "version-first");
+  const firstReceiptBase = receipt("First answer frozen memory.", "version-first");
+  const firstReceipt: MemoryReceipt = {
+    ...firstReceiptBase,
+    items: [{
+      ...firstReceiptBase.items[0]!,
+      lifecycleState: "LATER_FORGOTTEN"
+    }]
+  };
   const secondReceipt = receipt("Second answer frozen memory.", "version-second", {
     degradationCode: "memory_vector_unavailable",
-    itemCount: 2,
+    itemCount: 3,
     items: [{
       ...receipt("Deleted-source previous-chat excerpt.", "unused").items[0]!,
       itemType: "RECALL_CHUNK",
@@ -101,11 +108,21 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
       sourceMode: "HISTORY",
       versionId: null
     }, {
+      ...receipt("Current previous-chat chunk.", "unused").items[0]!,
+      itemType: "RECALL_CHUNK",
+      lifecycleState: "CURRENT",
+      ordinal: 1,
+      scopeType: "CHAT",
+      sourceChatId: "chat-memory-source-archived",
+      sourceMessageIds: ["source-message-chunk"],
+      sourceMode: "HISTORY",
+      versionId: null
+    }, {
       ...receipt("Archived previous-chat episode.", "unused").items[0]!,
       includedText: "Archived previous-chat episode.",
       itemType: "EPISODE",
       lifecycleState: "CURRENT",
-      ordinal: 1,
+      ordinal: 2,
       scopeType: "CHAT",
       sourceChatId: "chat-memory-source-archived",
       sourceMessageIds: ["source-message-archived"],
@@ -203,7 +220,7 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
               id: "archived-source-assistant",
               parentMessageId: "archived-source-user",
               role: "assistant",
-              text: "Archived previous-chat episode."
+              text: "Current previous-chat chunk. Archived previous-chat episode."
             })
           ],
           pageInfo: {
@@ -234,7 +251,9 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
   await expect(first.getByText("First answer frozen memory.", { exact: true })).toHaveCount(0);
   await firstDisclosure.click();
   await expect(first.getByText("First answer frozen memory.", { exact: true })).toBeVisible();
+  await expect(first.getByText("Later forgotten", { exact: true })).toBeVisible();
   await expect(first.getByText("Second answer frozen memory.", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("details-pane")).toHaveCount(0);
 
   const second = await openAnswerDetails(page, "assistant-update");
   const secondDisclosure = second.getByRole("button", {
@@ -244,14 +263,27 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
   await secondDisclosure.click();
   await expect(second.getByText("Deleted-source previous-chat excerpt.", { exact: true }))
     .toBeVisible();
+  await expect(second.getByText("Current previous-chat chunk.", { exact: true })).toBeVisible();
   await expect(second.getByText("Archived previous-chat episode.", { exact: true }))
     .toBeVisible();
   await expect(second.getByText("Source deleted", { exact: true })).toBeVisible();
-  await second.getByRole("button", { name: "Source · 1" }).click();
+  await expect(second.getByText("memory_vector_unavailable", { exact: true })).toBeVisible();
+  const receiptItems = second.getByTestId("thread-memory-details").getByRole("listitem");
+  const chunkItem = receiptItems.filter({ hasText: "Current previous-chat chunk." });
+  const episodeItem = receiptItems.filter({ hasText: "Archived previous-chat episode." });
+  await expect(chunkItem.getByRole("button", { name: "Source · 1" })).toBeVisible();
+  await expect(episodeItem.getByRole("button", { name: "Source · 1" })).toBeVisible();
+  await chunkItem.getByRole("button", { name: "Source · 1" }).click();
   const archived = page.getByRole("dialog", { name: "Archived Memory source" });
+  await expect(archived.getByText(/Current previous-chat chunk\./u)).toBeVisible();
   await expect(archived.getByText("Archived previous-chat episode.", { exact: true }))
-    .toBeVisible();
+    .toHaveCount(0);
+  await archived.getByRole("button", { name: "Close archive" }).click();
+  await episodeItem.getByRole("button", { name: "Source · 1" }).click();
+  const reopenedArchived = page.getByRole("dialog", { name: "Archived Memory source" });
+  await expect(reopenedArchived.getByText(/Archived previous-chat episode\./u)).toBeVisible();
   await expect(second.getByText("First answer frozen memory.", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("details-pane")).toHaveCount(0);
 });
 
 test("offers Manage Memories for an ambiguous target without claiming success", async ({ page }) => {

@@ -815,7 +815,7 @@ async function createHistoryReceiptDerivatives(input: Readonly<{
     return { binding };
   });
   const includedText = `Remembered ${marker}`;
-  await prisma.modelRunMemoryItem.create({
+  const memoryItem = await prisma.modelRunMemoryItem.create({
     data: {
       bindingId: binding.id,
       exactItemId: input.chunkId,
@@ -925,12 +925,58 @@ async function createHistoryReceiptDerivatives(input: Readonly<{
     }
   });
   return {
+    bindingId: binding.id,
     egressReceiptId: egressReceipt.id,
     destinationSnapshot,
     historyRunId: historyRun.id,
     marker,
+    memoryItemId: memoryItem.id,
     toolCallId: toolCall.id
   };
+}
+
+async function expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(
+  receipt: Awaited<ReturnType<typeof createHistoryReceiptDerivatives>>
+): Promise<void> {
+  const scrubbedHistory = await prisma.memoryHistoryRun.findUniqueOrThrow({
+    where: { id: receipt.historyRunId }
+  });
+  expect(scrubbedHistory).toMatchObject({
+    plaintextPurgedAt: expect.any(Date),
+    privateRequest: {},
+    providerResult: null,
+    query: null,
+    resultHash: null,
+    results: null,
+    retentionState: "SCRUBBED",
+    state: "COMPLETE"
+  });
+  expect(JSON.stringify(scrubbedHistory)).not.toContain(receipt.marker);
+  const scrubbedCall = await prisma.modelRunToolCall.findUniqueOrThrow({
+    where: { id: receipt.toolCallId }
+  });
+  expect(scrubbedCall.arguments).toEqual({});
+  expect(scrubbedCall.result).toMatchObject({
+    content: [{ value: { error: "memory_history_receipt_scrubbed" } }],
+    status: "error"
+  });
+  expect(JSON.stringify(scrubbedCall)).not.toContain(receipt.marker);
+  await expect(prisma.memoryToolEgressReceipt.findUniqueOrThrow({
+    where: { id: receipt.egressReceiptId }
+  })).resolves.toMatchObject({
+    dispatchState: "COMPLETED",
+    errorCode: null,
+    mode: "PROVIDER_REQUEST"
+  });
+  await expect(prisma.modelRunMemoryBinding.findUniqueOrThrow({
+    where: { id: receipt.bindingId }
+  })).resolves.toMatchObject({ outcome: "USED" });
+  await expect(prisma.modelRunMemoryItem.findUniqueOrThrow({
+    where: { id: receipt.memoryItemId }
+  })).resolves.toMatchObject({
+    includedText: expect.stringContaining(receipt.marker),
+    itemType: "RECALL_CHUNK"
+  });
 }
 
 describe("Prisma Memory shadow rebuild and history clear", () => {
@@ -1536,6 +1582,14 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         userId
       });
       if (!history.episodeId) throw new Error("episode_fixture_missing");
+      const receiptDerivatives = await createHistoryReceiptDerivatives({
+        activeIndexGenerationId: initial.activeIndexGenerationId,
+        assistantMessageId: history.assistantMessageId,
+        chatId: history.chatId,
+        chunkId: history.chunkId,
+        sourceMessageId: history.userMessageId,
+        userId
+      });
       await prisma.$transaction(async (tx) => {
         const chat = await lockMemorySourceChat(tx, {
           chatId: history.chatId,
@@ -1593,6 +1647,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         await expect(prisma.memoryEpisode.count({
           where: { id: history.episodeId, userId }
         })).resolves.toBe(0);
+        await expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(receiptDerivatives);
       }
       await expect(prisma.memoryExecutionBinding.findFirstOrThrow({
         where: { logicalRole: "MEMORY_EPISODE_EXTRACT", userId }
@@ -1656,6 +1711,14 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         userId
       });
       if (!history.episodeId) throw new Error("episode_fixture_missing");
+      const receiptDerivatives = await createHistoryReceiptDerivatives({
+        activeIndexGenerationId: initial.activeIndexGenerationId,
+        assistantMessageId: history.assistantMessageId,
+        chatId: history.chatId,
+        chunkId: history.chunkId,
+        sourceMessageId: history.userMessageId,
+        userId
+      });
       await prisma.memorySuppression.create({
         data: {
           deletionGeneration: initial.memoryGeneration,
@@ -1716,6 +1779,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
             userId
           }
         })).resolves.toBe(1);
+        await expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(receiptDerivatives);
       }
 
       const beforeRebuild = await prisma.userMemorySettings.findUniqueOrThrow({
@@ -1888,36 +1952,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         await expect(prisma.memorySearchEntry.count({
           where: { recallChunkId: fresh.chunkId, userId }
         })).resolves.toBe(1);
-        const scrubbedHistory = await prisma.memoryHistoryRun.findUniqueOrThrow({
-          where: { id: receiptDerivatives.historyRunId }
-        });
-        expect(scrubbedHistory).toMatchObject({
-          plaintextPurgedAt: expect.any(Date),
-          privateRequest: {},
-          providerResult: null,
-          query: null,
-          resultHash: null,
-          results: null,
-          retentionState: "SCRUBBED",
-          state: "COMPLETE"
-        });
-        expect(JSON.stringify(scrubbedHistory)).not.toContain(receiptDerivatives.marker);
-        const scrubbedCall = await prisma.modelRunToolCall.findUniqueOrThrow({
-          where: { id: receiptDerivatives.toolCallId }
-        });
-        expect(scrubbedCall.arguments).toEqual({});
-        expect(scrubbedCall.result).toMatchObject({
-          content: [{ value: { error: "memory_history_receipt_scrubbed" } }],
-          status: "error"
-        });
-        expect(JSON.stringify(scrubbedCall)).not.toContain(receiptDerivatives.marker);
-        await expect(prisma.memoryToolEgressReceipt.findUniqueOrThrow({
-          where: { id: receiptDerivatives.egressReceiptId }
-        })).resolves.toMatchObject({
-          dispatchState: "COMPLETED",
-          errorCode: null,
-          mode: "PROVIDER_REQUEST"
-        });
+        await expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(receiptDerivatives);
       }
       await expect(lifecycle.status(userId, admitted.deletionId)).resolves.toMatchObject({
         completedUnits: 4,
