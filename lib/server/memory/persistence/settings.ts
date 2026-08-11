@@ -13,6 +13,10 @@ import {
   resolveCurrentMemoryUtilityPolicy,
   type ResolvedMemoryUtilityPolicy
 } from "../execution/policy";
+import {
+  authorizeMemoryHistoryTerminalRetries,
+  seedMemoryHistoryBackfill
+} from "../history/backfill";
 import { memoryPersistenceFailure } from "./errors";
 import {
   advanceMemoryMutation,
@@ -239,6 +243,7 @@ export function createPrismaMemorySettingsRepository(
     ): Promise<MemorySettingsPersistenceSnapshot> {
       validatePatchShape(patch);
       return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        const historyWasEnabled = settings.referenceChatHistory;
         if (settings.settingsRevision !== patch.expectedSettingsRevision) {
           return memoryPersistenceFailure("memory_settings_conflict");
         }
@@ -291,6 +296,13 @@ export function createPrismaMemorySettingsRepository(
         });
         if (updated.count !== 1) return memoryPersistenceFailure("memory_settings_conflict");
         settings.settingsRevision += 1;
+        if (owns(patch, "referenceChatHistory")) {
+          settings.referenceChatHistory = patch.referenceChatHistory!;
+        }
+        if (!historyWasEnabled && settings.referenceChatHistory) {
+          await authorizeMemoryHistoryTerminalRetries(tx, settings);
+          await seedMemoryHistoryBackfill(tx, settings);
+        }
         return persistedSettings(tx, userId);
       });
     }

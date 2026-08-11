@@ -199,7 +199,22 @@ export async function lockMemorySourceChat(
   tx: MemoryTransaction,
   input: Readonly<{ chatId: string; lock: "SHARE" | "UPDATE"; userId: string }>
 ): Promise<LockedMemorySourceChat | null> {
-  const lock = input.lock === "UPDATE" ? Prisma.sql`FOR UPDATE` : Prisma.sql`FOR SHARE`;
+  return readMemorySourceChat(tx, input);
+}
+
+async function readMemorySourceChat(
+  tx: MemoryTransaction,
+  input: Readonly<{
+    chatId: string;
+    lock: "NONE" | "SHARE" | "UPDATE";
+    userId: string;
+  }>
+): Promise<LockedMemorySourceChat | null> {
+  const lock = input.lock === "UPDATE"
+    ? Prisma.sql`FOR UPDATE`
+    : input.lock === "SHARE"
+      ? Prisma.sql`FOR SHARE`
+      : Prisma.empty;
   const rows = await tx.$queryRaw<LockedMemorySourceChat[]>(Prisma.sql`
     SELECT
       "id", "userId", "activeLeafMessageId", "folderId", "archived",
@@ -293,9 +308,13 @@ function sourceMessageProjection(message: SourcePathRow): Readonly<Record<string
 
 export async function loadMemorySourceSnapshot(
   tx: MemoryTransaction,
-  input: Readonly<{ chatId: string; lock?: "SHARE" | "UPDATE"; userId: string }>
+  input: Readonly<{
+    chatId: string;
+    lock?: "NONE" | "SHARE" | "UPDATE";
+    userId: string;
+  }>
 ): Promise<MemorySourceSnapshot | null> {
-  const chat = await lockMemorySourceChat(tx, {
+  const chat = await readMemorySourceChat(tx, {
     chatId: input.chatId,
     lock: input.lock ?? "SHARE",
     userId: input.userId

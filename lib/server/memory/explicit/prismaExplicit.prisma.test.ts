@@ -107,8 +107,8 @@ describe("Prisma explicit Memory API", () => {
       });
       expect(initialSettings).toMatchObject({
         learnAutomatically: false,
-        referenceChatHistory: false,
-        useMemoryFacts: false
+        referenceChatHistory: true,
+        useMemoryFacts: true
       });
 
       const pendingAuthorization = await saveAuthorization(
@@ -161,7 +161,13 @@ describe("Prisma explicit Memory API", () => {
       });
       await expect(prisma.memoryExecutionBinding.count({ where: { userId } }))
         .resolves.toBe(0);
-      await expect(prisma.memoryJob.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryJob.findMany({
+        select: { kind: true, state: true },
+        where: { userId }
+      })).resolves.toEqual([{
+        kind: "RECALCULATE_WORKING_SET",
+        state: "QUEUED"
+      }]);
 
       const replay = await memoryService.create(userId, created.input);
       expect(replay.memory).toMatchObject({ id: factId, currentVersionId: versionId });

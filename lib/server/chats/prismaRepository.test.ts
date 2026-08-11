@@ -1198,6 +1198,12 @@ describe("Prisma chat repository", () => {
           memoryGenerationSnapshot: 1,
           memoryRevisionSnapshot: 2,
           sourceRevision: 2
+        },
+        {
+          kind: "INDEX_HISTORY",
+          memoryGenerationSnapshot: 1,
+          memoryRevisionSnapshot: 2,
+          sourceRevision: 2
         }
       ]);
       await expect(prisma.memorySourceBarrier.findUnique({

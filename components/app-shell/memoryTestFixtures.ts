@@ -12,6 +12,7 @@ export function memorySettingsFixture(
   overrides: Readonly<{
     capabilities?: Partial<MemorySettingsResponse["capabilities"]>;
     egress?: Partial<MemorySettingsResponse["egress"]>;
+    historyIndexing?: Partial<MemorySettingsResponse["historyIndexing"]>;
     settings?: Partial<MemorySettingsResponse["settings"]>;
   }> = {},
   locale: MemoryUiLocale = "EN"
@@ -36,6 +37,11 @@ export function memorySettingsFixture(
       reviewRequired: false,
       systemModelDestination: "Local / memory-extract"
     },
+    historyIndexing: {
+      completedChats: 0,
+      state: "DISABLED",
+      totalChats: 0
+    },
     settings: {
       embeddingDeployment: {
         connectionDisplayName: "Local",
@@ -55,12 +61,19 @@ export function memorySettingsFixture(
       useMemoryFacts: false
     }
   };
+  const settings = { ...base.settings, ...overrides.settings };
+  const defaultHistoryIndexing: MemorySettingsResponse["historyIndexing"] = {
+    completedChats: 0,
+    state: settings.referenceChatHistory ? "READY" : "DISABLED",
+    totalChats: 0
+  };
   return {
     ...base,
     ...overrides,
     capabilities: { ...base.capabilities, ...overrides.capabilities },
     egress: { ...base.egress, ...overrides.egress },
-    settings: { ...base.settings, ...overrides.settings }
+    historyIndexing: { ...defaultHistoryIndexing, ...overrides.historyIndexing },
+    settings
   };
 }
 

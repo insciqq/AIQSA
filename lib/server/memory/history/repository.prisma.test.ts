@@ -40,6 +40,12 @@ import { MEMORY_HISTORY_SEARCH_TOOL_NAME } from "./search/tool";
 import type { ProviderRunRequest } from "../../providers/types";
 import { createMemoryToolEgressReceiptService } from "../egress/receipts";
 import { purgeMemoryHistoryReceiptDerivatives } from "./purge";
+import {
+  MEMORY_HISTORY_BACKFILL_WINDOW,
+  readMemoryHistoryIndexingProgress,
+  reconcileMemoryHistoryBackfills
+} from "./backfill";
+import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 
 async function mutateSource(
   userId: string,
@@ -300,6 +306,340 @@ async function processHistoryJob(userId: string) {
 describe("Memory lexical history index persistence", () => {
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it("automatically backfills retained chats newest-first through a bounded idempotent window", async () => {
+    const userId = await createOwner("memory-history-auto-backfill");
+    try {
+      await prisma.userMemorySettings.update({
+        data: { referenceChatHistory: false },
+        where: { userId }
+      });
+      const eligible: Array<{ chatId: string; updatedAt: Date }> = [];
+      let excludedChatId = "";
+      for (let ordinal = 0; ordinal < 6; ordinal += 1) {
+        const updatedAt = new Date(`2026-08-10T${String(ordinal + 8).padStart(2, "0")}:00:00.000Z`);
+        const excluded = ordinal === 5;
+        const chat = await prisma.chat.create({
+          data: {
+            memoryMode: excluded ? "EXCLUDED" : "NORMAL",
+            title: `Backfill ${ordinal}`,
+            userId
+          }
+        });
+        const turn = await createTurn({
+          assistantText: `Backfill assistant ${ordinal}`,
+          chatId: chat.id,
+          createdAt: updatedAt,
+          parentMessageId: null,
+          userId,
+          userText: `Backfill user ${ordinal}`
+        });
+        await prisma.chat.update({
+          data: {
+            activeLeafMessageId: turn.assistantMessage.id,
+            updatedAt
+          },
+          where: { id: chat.id }
+        });
+        if (excluded) excludedChatId = chat.id;
+        else eligible.push({ chatId: chat.id, updatedAt });
+      }
+      const repository = createPrismaMemorySettingsRepository(prisma);
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      await repository.patch(userId, {
+        expectedMemoryRevision: before.memoryRevision,
+        expectedSettingsRevision: before.settingsRevision,
+        referenceChatHistory: true
+      });
+
+      const initialJobs = await prisma.memoryJob.findMany({
+        orderBy: [{ nextAttemptAt: "asc" }, { id: "asc" }],
+        where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
+      });
+      expect(initialJobs).toHaveLength(MEMORY_HISTORY_BACKFILL_WINDOW);
+      expect(initialJobs.map((job) => job.chatId)).toEqual(
+        [...eligible]
+          .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime())
+          .slice(0, MEMORY_HISTORY_BACKFILL_WINDOW)
+          .map((candidate) => candidate.chatId)
+      );
+      expect(initialJobs.some((job) => job.chatId === excludedChatId)).toBe(false);
+      await expect(readMemoryHistoryIndexingProgress(
+        prisma,
+        userId,
+        true
+      )).resolves.toEqual({
+        completedChats: 0,
+        state: "INDEXING",
+        totalChats: eligible.length
+      });
+
+      for (let attempt = 0; attempt < eligible.length + 2; attempt += 1) {
+        const queued = await prisma.memoryJob.count({
+          where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
+        });
+        if (queued === 0) break;
+        await processHistoryJob(userId);
+        await reconcileMemoryHistoryBackfills(prisma);
+      }
+
+      await expect(readMemoryHistoryIndexingProgress(
+        prisma,
+        userId,
+        true
+      )).resolves.toEqual({
+        completedChats: eligible.length,
+        state: "READY",
+        totalChats: eligible.length
+      });
+      await expect(prisma.memoryJob.count({
+        where: { kind: "INDEX_HISTORY", userId }
+      })).resolves.toBe(eligible.length);
+      await expect(prisma.memoryJob.count({
+        where: { kind: { in: ["EXTRACT_FACTS", "GLOBAL_DREAM"] }, userId }
+      })).resolves.toBe(0);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "EMBED_ITEMS", userId }
+      })).resolves.toBe(0);
+
+      const enabled = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const disabled = await repository.patch(userId, {
+        expectedMemoryRevision: enabled.memoryRevision,
+        expectedSettingsRevision: enabled.settingsRevision,
+        referenceChatHistory: false
+      });
+      await expect(readMemoryHistoryIndexingProgress(
+        prisma,
+        userId,
+        false
+      )).resolves.toMatchObject({ state: "DISABLED" });
+      await repository.patch(userId, {
+        expectedMemoryRevision: disabled.memoryRevision,
+        expectedSettingsRevision: disabled.settingsRevision,
+        referenceChatHistory: true
+      });
+      await expect(prisma.memoryJob.count({
+        where: { kind: "INDEX_HISTORY", userId }
+      })).resolves.toBe(eligible.length);
+
+      const catchupChat = await prisma.chat.create({
+        data: { title: "Already-enabled catch-up", userId }
+      });
+      const catchupTurn = await createTurn({
+        assistantText: "Catch-up assistant",
+        chatId: catchupChat.id,
+        createdAt: new Date("2026-08-10T15:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Catch-up user"
+      });
+      await prisma.chat.update({
+        data: {
+          activeLeafMessageId: catchupTurn.assistantMessage.id,
+          updatedAt: new Date("2026-08-10T15:01:00.000Z")
+        },
+        where: { id: catchupChat.id }
+      });
+      await reconcileMemoryHistoryBackfills(prisma);
+      await reconcileMemoryHistoryBackfills(prisma);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "INDEX_HISTORY", userId }
+      })).resolves.toBe(eligible.length + 1);
+      await expect(prisma.memoryJob.findFirstOrThrow({
+        where: { chatId: catchupChat.id, kind: "INDEX_HISTORY", userId }
+      })).resolves.toMatchObject({ state: "QUEUED" });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("replays automatic backfill behind a populated history barrier without resurrection", async () => {
+    const userId = await createOwner("memory-history-auto-barrier");
+    try {
+      await prisma.userMemorySettings.update({
+        data: { referenceChatHistory: false },
+        where: { userId }
+      });
+      const chat = await prisma.chat.create({
+        data: { title: "Barrier backfill", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Old assistant text remains forgotten.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T10:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Old user text remains forgotten."
+      });
+      await prisma.chat.update({
+        data: {
+          activeLeafMessageId: turn.assistantMessage.id,
+          updatedAt: new Date("2026-08-10T10:01:00.000Z")
+        },
+        where: { id: chat.id }
+      });
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      await prisma.memorySourceBarrier.create({
+        data: {
+          kind: "HISTORY_INDEX",
+          memoryGeneration: before.memoryGeneration,
+          sourceCreatedAtCutoff: new Date("2026-08-10T11:00:00.000Z"),
+          userId
+        }
+      });
+      const repository = createPrismaMemorySettingsRepository(prisma);
+      await repository.patch(userId, {
+        expectedMemoryRevision: before.memoryRevision,
+        expectedSettingsRevision: before.settingsRevision,
+        referenceChatHistory: true
+      });
+      await processHistoryJob(userId);
+
+      await expect(prisma.memoryRecallChunk.count({ where: { userId } }))
+        .resolves.toBe(0);
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({
+        lastIndexedMessageId: turn.assistantMessage.id,
+        status: "READY"
+      });
+
+      await prisma.chatMemoryCheckpoint.update({
+        data: {
+          lastIndexedMessageId: null,
+          lastSucceededAt: null,
+          status: "STALE"
+        },
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      });
+      const enabled = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const disabled = await repository.patch(userId, {
+        expectedMemoryRevision: enabled.memoryRevision,
+        expectedSettingsRevision: enabled.settingsRevision,
+        referenceChatHistory: false
+      });
+      await repository.patch(userId, {
+        expectedMemoryRevision: disabled.memoryRevision,
+        expectedSettingsRevision: disabled.settingsRevision,
+        referenceChatHistory: true
+      });
+      await expect(prisma.memoryJob.findFirstOrThrow({
+        where: { kind: "INDEX_HISTORY", userId }
+      })).resolves.toMatchObject({ state: "QUEUED" });
+      await expect(prisma.memoryJob.count({
+        where: { kind: "INDEX_HISTORY", userId }
+      })).resolves.toBe(1);
+
+      await processHistoryJob(userId);
+      await expect(prisma.memoryRecallChunk.count({ where: { userId } }))
+        .resolves.toBe(0);
+      await expect(prisma.memorySearchEntry.count({ where: { userId } }))
+        .resolves.toBe(0);
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({ status: "READY" });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("continues past terminal failures and retries them only after history is re-enabled", async () => {
+    const userId = await createOwner("memory-history-terminal-backfill");
+    try {
+      for (let ordinal = 0; ordinal < 6; ordinal += 1) {
+        const updatedAt = new Date(
+          `2026-08-10T${String(ordinal + 8).padStart(2, "0")}:00:00.000Z`
+        );
+        const chat = await prisma.chat.create({
+          data: { title: `Terminal backfill ${ordinal}`, userId }
+        });
+        const turn = await createTurn({
+          assistantText: `Terminal assistant ${ordinal}`,
+          chatId: chat.id,
+          createdAt: updatedAt,
+          parentMessageId: null,
+          userId,
+          userText: `Terminal user ${ordinal}`
+        });
+        await prisma.chat.update({
+          data: { activeLeafMessageId: turn.assistantMessage.id, updatedAt },
+          where: { id: chat.id }
+        });
+      }
+
+      await reconcileMemoryHistoryBackfills(prisma);
+      const initialWindow = await prisma.memoryJob.findMany({
+        select: { id: true },
+        where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
+      });
+      expect(initialWindow).toHaveLength(MEMORY_HISTORY_BACKFILL_WINDOW);
+      const failedAt = new Date("2026-08-10T16:00:00.000Z");
+      await prisma.memoryJob.updateMany({
+        data: {
+          completedAt: failedAt,
+          errorCode: "memory_history_terminal_test",
+          nextAttemptAt: null,
+          state: "TERMINAL_FAILED"
+        },
+        where: { id: { in: initialWindow.map(({ id }) => id) } }
+      });
+
+      await reconcileMemoryHistoryBackfills(prisma);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
+      })).resolves.toBe(2);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "INDEX_HISTORY", state: "TERMINAL_FAILED", userId }
+      })).resolves.toBe(MEMORY_HISTORY_BACKFILL_WINDOW);
+
+      const repository = createPrismaMemorySettingsRepository(prisma);
+      const enabled = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const disabled = await repository.patch(userId, {
+        expectedMemoryRevision: enabled.memoryRevision,
+        expectedSettingsRevision: enabled.settingsRevision,
+        referenceChatHistory: false
+      });
+      const reenabled = await repository.patch(userId, {
+        expectedMemoryRevision: disabled.memoryRevision,
+        expectedSettingsRevision: disabled.settingsRevision,
+        referenceChatHistory: true
+      });
+      await expect(prisma.memoryJob.count({
+        where: {
+          id: { in: initialWindow.map(({ id }) => id) },
+          memoryGenerationSnapshot: reenabled.memoryGeneration,
+          state: "QUEUED",
+          userId
+        }
+      })).resolves.toBe(2);
+      await expect(prisma.memoryJob.count({
+        where: {
+          id: { in: initialWindow.map(({ id }) => id) },
+          state: "STALE",
+          userId
+        }
+      })).resolves.toBe(2);
+      await expect(prisma.memoryJob.count({
+        where: {
+          id: { in: initialWindow.map(({ id }) => id) },
+          state: "TERMINAL_FAILED",
+          userId
+        }
+      })).resolves.toBe(0);
+    } finally {
+      await cleanupOwner(userId);
+    }
   });
 
   it("indexes a settled chat with learning off and replays idempotently", async () => {

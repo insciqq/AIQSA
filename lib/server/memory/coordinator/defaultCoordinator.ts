@@ -15,6 +15,7 @@ import {
   memoryHistoryClearDeletionHandler,
   memoryHistorySourceDeletionHandler
 } from "../history/purge";
+import { reconcileMemoryHistoryBackfills } from "../history/backfill";
 import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
@@ -121,6 +122,9 @@ export function ensureDefaultMemoryPhase4HandlersRegistered(): void {
 function createDefaultMemoryCoordinator(): MemoryCoordinator {
   ensureDefaultMemoryPhase4HandlersRegistered();
   return new MemoryCoordinator({
+    reconcileWork: async () => {
+      await reconcileMemoryHistoryBackfills(prisma);
+    },
     registry: defaultMemoryCoordinatorRegistry,
     repository: defaultMemoryCoordinatorRepository
   });

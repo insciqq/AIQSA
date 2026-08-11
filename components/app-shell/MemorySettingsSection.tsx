@@ -78,6 +78,7 @@ function GateRow({
   locale,
   name,
   onChange,
+  progress,
   value
 }: {
   busy: MemorySettingsMutation | null;
@@ -87,6 +88,7 @@ function GateRow({
   locale: MemoryUiLocale;
   name: MemorySettingsMutation;
   onChange(next: boolean): void;
+  progress?: string;
   value: boolean;
 }) {
   const descriptionId = `memory-${name}-description`;
@@ -102,6 +104,11 @@ function GateRow({
         >
           {capability ? t(locale, "settings.capabilityReady") : t(locale, "settings.capabilityUnavailable")}
         </p>
+        {progress ? (
+          <p className="mt-1 text-xs font-medium text-proof" role="status">
+            {progress}
+          </p>
+        ) : null}
       </div>
       <button
         className={`inline-flex min-h-touch min-w-20 shrink-0 items-center justify-center rounded-control px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control ${value ? "bg-control-selected text-ink" : "bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink"} ${coarsePointerTarget} ${focusRing}`}
@@ -161,6 +168,16 @@ function formatDate(locale: MemoryUiLocale, value: string | null): string {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(new Date(value));
+}
+
+function historyIndexingCopy(
+  locale: MemoryUiLocale,
+  progress: MemorySettingsResponse["historyIndexing"]
+): string | undefined {
+  if (progress.state !== "INDEXING") return undefined;
+  return t(locale, "settings.historyIndexing")
+    .replace("{completed}", String(progress.completedChats))
+    .replace("{total}", String(progress.totalChats));
 }
 
 function MemorySettings({
@@ -301,6 +318,7 @@ function MemorySettings({
             label={resolveMemoryCopy(locale, "settings.referenceHistory.label")}
             locale={locale}
             name="referenceChatHistory"
+            progress={historyIndexingCopy(locale, data.historyIndexing)}
             value={data.settings.referenceChatHistory}
             onChange={(value) => updateGate("referenceChatHistory", value)}
           />
@@ -484,6 +502,13 @@ export function MemorySettingsSection({
   useEffect(() => {
     void refreshMemorySettings().catch(() => undefined);
   }, []);
+  useEffect(() => {
+    if (data?.historyIndexing.state !== "INDEXING" || busy !== null) return;
+    const timer = setInterval(() => {
+      void refreshMemorySettings(true).catch(() => undefined);
+    }, 2_000);
+    return () => clearInterval(timer);
+  }, [busy, data?.historyIndexing.state]);
   useEffect(() => {
     void activateMemoryOperationsAccount(accountId);
     return () => deactivateMemoryOperationsAccount(accountId);

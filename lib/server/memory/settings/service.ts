@@ -129,7 +129,8 @@ function responseProjection(
   settings: MemorySettingsPersistenceSnapshot,
   policy: ResolvedMemoryUtilityPolicy,
   capabilities: MemorySettingsCapabilities,
-  consentMode: MemoryEgressConsentMode
+  consentMode: MemoryEgressConsentMode,
+  historyIndexing: MemorySettingsResponse["historyIndexing"]
 ): MemorySettingsResponse {
   const embedding = target(policy, "MEMORY_DOCUMENT_EMBED");
   const acceptedFingerprint = settings.acceptedUtilityEgressFingerprint;
@@ -153,6 +154,7 @@ function responseProjection(
       reviewRequired,
       systemModelDestination: destinationLabel(policy, "MEMORY_FACT_EXTRACT")
     },
+    historyIndexing,
     settings: {
       embeddingDeployment: embedding
         ? {
@@ -185,6 +187,11 @@ function responseProjection(
 export function createMemorySettingsService(input: Readonly<{
   capabilities?: MemorySettingsCapabilities;
   egressConsentMode?: MemoryEgressConsentMode;
+  kick?: () => void;
+  readHistoryIndexing?: (
+    userId: string,
+    settings: MemorySettingsPersistenceSnapshot
+  ) => Promise<MemorySettingsResponse["historyIndexing"]>;
   repository: MemorySettingsRepository;
   resolveCurrentUtilityPolicy(
     userId: string,
@@ -195,13 +202,35 @@ export function createMemorySettingsService(input: Readonly<{
     ...(input.capabilities ?? DEFAULT_MEMORY_SETTINGS_CAPABILITIES)
   });
   const egressConsentMode = input.egressConsentMode ?? resolveMemoryEgressConsentMode();
+  const readHistoryIndexing = input.readHistoryIndexing ?? (async (_userId, settings) => ({
+    completedChats: 0,
+    state: settings.referenceChatHistory ? "READY" as const : "DISABLED" as const,
+    totalChats: 0
+  }));
+
+  function kick(): void {
+    try {
+      input.kick?.();
+    } catch {
+      // The durable queue and coordinator timer remain authoritative.
+    }
+  }
 
   async function project(
     userId: string,
     settings: MemorySettingsPersistenceSnapshot
   ): Promise<MemorySettingsResponse> {
-    const policy = await input.resolveCurrentUtilityPolicy(userId, settings);
-    return responseProjection(settings, policy, capabilities, egressConsentMode);
+    const [policy, historyIndexing] = await Promise.all([
+      input.resolveCurrentUtilityPolicy(userId, settings),
+      readHistoryIndexing(userId, settings)
+    ]);
+    return responseProjection(
+      settings,
+      policy,
+      capabilities,
+      egressConsentMode,
+      historyIndexing
+    );
   }
 
   return Object.freeze({
@@ -220,6 +249,7 @@ export function createMemorySettingsService(input: Readonly<{
 
     async patch(userId, patch) {
       const settings = await persist(() => input.repository.patch(userId, patch));
+      if (patch.referenceChatHistory === true) kick();
       return project(userId, settings);
     }
   });

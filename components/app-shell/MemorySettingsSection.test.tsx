@@ -154,6 +154,42 @@ describe("MemorySettingsSection", () => {
     expect(within(capabilities).getAllByText("Unavailable")).toHaveLength(4);
   });
 
+  it("shows passive lexical indexing progress in the selected RU/EN locale", async () => {
+    let server = memorySettingsFixture({
+      historyIndexing: {
+        completedChats: 2,
+        state: "INDEXING",
+        totalChats: 5
+      },
+      settings: { referenceChatHistory: true }
+    }, "RU");
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PATCH") {
+        server = memorySettingsFixture({
+          historyIndexing: server.historyIndexing,
+          settings: {
+            ...server.settings,
+            memoryUiLocale: "EN",
+            settingsRevision: server.settings.settingsRevision + 1
+          }
+        }, "EN");
+      }
+      return json(server);
+    }));
+
+    render(<MemorySettingsSection {...sectionProps} />);
+
+    expect(await screen.findByText("Индексируется 2 из 5 чатов")).toHaveAttribute(
+      "role",
+      "status"
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "English" }));
+    expect(await screen.findByText("Indexing 2 of 5 chats")).toHaveAttribute(
+      "role",
+      "status"
+    );
+  });
+
   it("shows only passive administrator-owned destination status in ADMIN mode", async () => {
     const server = memorySettingsFixture({
       egress: {

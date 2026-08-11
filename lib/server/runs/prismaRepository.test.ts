@@ -2034,7 +2034,7 @@ describe("Prisma run repository", () => {
             payload: {
               degradationCode: null,
               itemCount: 0,
-              outcome: "DISABLED"
+              outcome: "EMPTY"
             },
             sequence: 0
           },

@@ -302,6 +302,7 @@ async function createPreparingEmbeddingAuthority(userId: string): Promise<Readon
     where: { userId }
   });
   const authority: MemoryExecutionAuthorityDependencies = {
+    egressConsentMode: "PER_USER",
     now: () => new Date(now),
     qualification: {
       corpusHash: requirement.corpusHash,
@@ -393,6 +394,10 @@ async function saveExplicitFact(
 }
 
 async function createPreparingHistoryFixture(userId: string) {
+  await prisma.userMemorySettings.update({
+    data: { referenceChatHistory: false },
+    where: { userId }
+  });
   await createPrismaMemorySettingsRepository(prisma).patch(userId, {
     expectedMemoryRevision: 0,
     expectedSettingsRevision: 0,
@@ -617,6 +622,10 @@ describe("PREPARING run orchestration", () => {
 
   it("admits a nullable-predecessor send and atomically consumes one dormant attempt", async () => {
     await withPreparingUser(async ({ userId }) => {
+      await prisma.userMemorySettings.update({
+        data: { referenceChatHistory: false, useMemoryFacts: false },
+        where: { userId }
+      });
       const chat = await prisma.chat.create({
         data: {
           defaultProviderModelId: providerTemplateIds.fakeModel,

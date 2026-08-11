@@ -34,6 +34,11 @@ const response: MemorySettingsResponse = {
     reviewRequired: true,
     systemModelDestination: null
   },
+  historyIndexing: {
+    completedChats: 0,
+    state: "DISABLED",
+    totalChats: 0
+  },
   settings: {
     embeddingDeployment: null,
     learnAutomatically: false,

@@ -67,6 +67,7 @@ async function installMemoryFixture(
   options: Readonly<{
     consentMode?: "ADMIN" | "PER_USER";
     defaultsOn?: boolean;
+    historyIndexing?: Readonly<{ completedChats: number; totalChats: number }>;
     operationsEnabled?: boolean;
   }> = {}
 ) {
@@ -113,6 +114,16 @@ async function installMemoryFixture(
         remoteRerankerDestination: null,
         reviewRequired: (options.consentMode ?? "PER_USER") === "PER_USER" && !accepted,
         systemModelDestination: "Local / memory-extract"
+      },
+      historyIndexing: {
+        completedChats: options.historyIndexing?.completedChats ?? 0,
+        state: !referenceChatHistory
+          ? "DISABLED"
+          : (options.historyIndexing?.completedChats ?? 0) <
+              (options.historyIndexing?.totalChats ?? 0)
+            ? "INDEXING"
+            : "READY",
+        totalChats: options.historyIndexing?.totalChats ?? 0
       },
       settings: {
         embeddingDeployment: {
@@ -808,7 +819,11 @@ test("keeps RU/EN Memory settings, exact CRUD, and durable deletion usable acros
 test("shows default-on Memory information without user consent in ADMIN mode", async ({ context, page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await installMatrixCatalogFixture(page);
-  await installMemoryFixture(context, { consentMode: "ADMIN", defaultsOn: true });
+  await installMemoryFixture(context, {
+    consentMode: "ADMIN",
+    defaultsOn: true,
+    historyIndexing: { completedChats: 2, totalChats: 5 }
+  });
   await signIn(page);
 
   await runAccountMenuAction(page, "Settings");
@@ -824,6 +839,7 @@ test("shows default-on Memory information without user consent in ADMIN mode", a
     .toBeVisible();
   await expect(settings.getByText(/Временные чаты не используют Память/u)).toBeVisible();
   await expect(settings.getByText(/От вас ничего не требуется/u)).toBeVisible();
+  await expect(settings.getByText("Индексируется 2 из 5 чатов")).toBeVisible();
   await expect(settings.getByRole("button", { name: /принять текущие назначения/i })).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
 
@@ -831,6 +847,7 @@ test("shows default-on Memory information without user consent in ADMIN mode", a
   await expect(settings.getByRole("heading", { name: "How Memory uses your data" })).toBeVisible();
   await expect(settings.getByText(/Temporary chats do not use Memory/u)).toBeVisible();
   await expect(settings.getByText(/No action is required from you/u)).toBeVisible();
+  await expect(settings.getByText("Indexing 2 of 5 chats")).toBeVisible();
   await expect(settings.getByRole("button", { name: "Accept current destinations" })).toHaveCount(0);
   await expectWithinViewport(page, settings);
   await expectNoHorizontalOverflow(page);

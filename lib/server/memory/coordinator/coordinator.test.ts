@@ -100,6 +100,50 @@ function coordinator(
 }
 
 describe("Memory coordinator", () => {
+  it("discovers bounded durable work after servicing the existing shared budget", async () => {
+    const callOrder: string[] = [];
+    const reconcileWork = vi.fn(async () => {
+      callOrder.push("reconcile");
+    });
+    const claimJob = vi.fn(async () => {
+      callOrder.push("claim");
+      return null;
+    });
+    const claimDeletion = vi.fn(async () => {
+      callOrder.push("delete");
+      return null;
+    });
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({
+      execute: vi.fn(),
+      kind: "RECALCULATE_WORKING_SET",
+      preflight: async () => ({ status: "READY" })
+    });
+    registry.registerDeletion({
+      execute: vi.fn(),
+      operation: "TEMPORARY_DELETE"
+    });
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      policy: {
+        heartbeatMs: 10,
+        intervalMs: 10_000,
+        leaseMs: 100,
+        maxDeletionParallel: 1,
+        maxJobParallel: 1
+      },
+      reconcileWork,
+      registry,
+      repository: repository({ claimDeletion, claimJob })
+    });
+
+    await service.reconcileNow();
+    service.stop();
+
+    expect(reconcileWork).toHaveBeenCalledOnce();
+    expect(callOrder).toEqual(["claim", "delete", "reconcile"]);
+  });
+
   it("preflights before and after work, persists stages, and commits through the lease fence", async () => {
     const claim = jobClaim();
     const claimJob = vi.fn()

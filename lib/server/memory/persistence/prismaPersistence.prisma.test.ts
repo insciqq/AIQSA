@@ -127,12 +127,12 @@ describe("Prisma Memory persistence", () => {
         repository.patch(userId, {
           expectedMemoryRevision: 0,
           expectedSettingsRevision: 0,
-          useMemoryFacts: true
+          useMemoryFacts: false
         }),
         repository.patch(userId, {
           expectedMemoryRevision: 0,
           expectedSettingsRevision: 0,
-          referenceChatHistory: true
+          referenceChatHistory: false
         })
       ]);
       const fulfilled = results.filter((result) => result.status === "fulfilled");
@@ -254,19 +254,19 @@ describe("Prisma Memory persistence", () => {
       expect(JSON.stringify(initialProjection)).not.toMatch(/credential/iu);
 
       const combinations = [
+        [true, true, false],
+        [false, true, false],
         [false, false, false],
         [false, false, true],
         [false, true, true],
-        [false, true, false],
-        [true, true, false],
         [true, true, true],
         [true, false, true],
         [true, false, false]
       ] as const;
       await expect(repository.get(userId)).resolves.toMatchObject({
         learnAutomatically: false,
-        referenceChatHistory: false,
-        useMemoryFacts: false
+        referenceChatHistory: true,
+        useMemoryFacts: true
       });
       for (let index = 1; index < combinations.length; index += 1) {
         const [useMemoryFacts, referenceChatHistory, learnAutomatically] =

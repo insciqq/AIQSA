@@ -683,6 +683,11 @@ const memorySettingsResponseSchema = z.strictObject({
     reviewRequired: z.boolean(),
     systemModelDestination: safeText(256).nullable()
   }),
+  historyIndexing: z.strictObject({
+    completedChats: safeInteger,
+    state: z.enum(["DISABLED", "INDEXING", "READY"]),
+    totalChats: safeInteger
+  }),
   settings: z.strictObject({
     embeddingDeployment: z.strictObject({
       connectionDisplayName: safeText(128),
@@ -718,6 +723,17 @@ const memorySettingsResponseSchema = z.strictObject({
   );
   if (value.egress.reviewRequired !== reviewRequired) {
     context.addIssue({ code: "custom", message: "utility egress review state mismatch" });
+  }
+  if (value.historyIndexing.completedChats > value.historyIndexing.totalChats) {
+    context.addIssue({ code: "custom", message: "history indexing progress exceeds total" });
+  }
+  const expectedHistoryState = !value.settings.referenceChatHistory
+    ? "DISABLED"
+    : value.historyIndexing.completedChats < value.historyIndexing.totalChats
+      ? "INDEXING"
+      : "READY";
+  if (value.historyIndexing.state !== expectedHistoryState) {
+    context.addIssue({ code: "custom", message: "history indexing state mismatch" });
   }
 });
 

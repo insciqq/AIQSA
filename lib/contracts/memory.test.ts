@@ -79,6 +79,11 @@ function settingsResponse() {
       reviewRequired: false,
       systemModelDestination: "System model"
     },
+    historyIndexing: {
+      completedChats: 4,
+      state: "INDEXING",
+      totalChats: 9
+    },
     settings: {
       embeddingDeployment: {
         connectionDisplayName: "Provider",
@@ -415,6 +420,22 @@ describe("Memory response contracts", () => {
       egress: {
         ...settingsResponse().egress,
         reviewRequired: true
+      }
+    })).toMatchObject({ ok: false });
+    expect(decodeMemorySettingsResponse({
+      ...settingsResponse(),
+      historyIndexing: {
+        completedChats: 10,
+        state: "READY",
+        totalChats: 9
+      }
+    })).toMatchObject({ ok: false });
+    expect(decodeMemorySettingsResponse({
+      ...settingsResponse(),
+      historyIndexing: {
+        completedChats: 0,
+        state: "DISABLED",
+        totalChats: 9
       }
     })).toMatchObject({ ok: false });
   });

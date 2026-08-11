@@ -48,6 +48,7 @@ export class MemoryCoordinator {
   readonly #policy: MemoryCoordinatorPolicy;
   readonly #registry: MemoryCoordinatorRegistry;
   readonly #repository: MemoryCoordinatorRepository;
+  readonly #reconcileWork: (() => Promise<void>) | null;
   #pending: Promise<void> | null = null;
   #rerun = false;
   #stopped = false;
@@ -56,11 +57,13 @@ export class MemoryCoordinator {
   constructor(input: Readonly<{
     now?: () => Date;
     policy?: Partial<MemoryCoordinatorPolicy>;
+    reconcileWork?: () => Promise<void>;
     registry: MemoryCoordinatorRegistry;
     repository: MemoryCoordinatorRepository;
   }>) {
     this.#now = input.now ?? (() => new Date());
     this.#policy = resolveMemoryCoordinatorPolicy(input.policy);
+    this.#reconcileWork = input.reconcileWork ?? null;
     this.#registry = input.registry;
     this.#repository = input.repository;
   }
@@ -116,6 +119,12 @@ export class MemoryCoordinator {
         )
       ]);
       await this.#reconcileJobs();
+      try {
+        await this.#reconcileWork?.();
+      } catch {
+        // The timer retries optional durable work discovery after existing
+        // jobs and privacy-critical deletions have had their pass.
+      }
     } while (this.#rerun && !this.#stopped);
   }
 

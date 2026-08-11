@@ -202,7 +202,8 @@ The feature has four independently understandable layers:
 - a derived profile/working set that may summarize only supported current
   facts.
 
-Three account gates are independent and default off for existing users:
+The gates are independent. Facts/history default on for new and migrated
+owners; automatic learning defaults off:
 
 | Gate | Reads | Writes | Turning it off |
 | --- | --- | --- | --- |
@@ -210,16 +211,17 @@ Three account gates are independent and default off for existing users:
 | `referenceChatHistory` | Eligible chunks and episodes | Incremental history index only | Stops history recall/index work and retains data |
 | `learnAutomatically` | Source evidence needed by learning | Candidates and automatic facts | Stops learning work and retains data |
 
-Explicit list, save, edit, and Forget remain available under every combination.
-An explicit save while fact use is off commits synchronously and discloses that
-it will not be used yet. History opt-in is either new-chat-only or an explicit
-bounded backfill; no migration or toggle silently backfills an account.
+Explicit CRUD and Forget work under every gate; saving while fact use is off
+commits with disclosure. History enablement/default migration fills a
+newest-first four-job `INDEX_HISTORY` window after existing jobs/deletions get a
+coordinator pass. Settings shows progress; vectors enrich through the admitted
+pipeline. `REDREAM_EXISTING_CHATS` stays explicit. Terminal failures retry only
+after an off/on history cycle.
 
-Feature-owned UI copy has a persisted `RU | EN` account locale, initially RU.
-Russian is an independent release gate for retrieval, extraction, temporal
-reasoning, safety, lifecycle, visible and accessible copy; English success
-cannot mask a Russian failure. Display text preserves the source language and
-search copies may normalize NFKC, case, spacing, punctuation, and `ё`/`е`
+Memory UI locale is persisted `RU | EN`, initially RU. Russian independently
+gates retrieval, extraction, temporal/safety/lifecycle behavior, and accessible
+copy. Display preserves source language; search may normalize NFKC, case,
+spacing, punctuation, and `ё`/`е`
 equivalence without changing the displayed original.
 
 These lifecycle actions are not aliases:

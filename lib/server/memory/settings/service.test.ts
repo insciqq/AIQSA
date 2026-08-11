@@ -195,6 +195,11 @@ describe("Memory settings service", () => {
         reviewRequired: false,
         systemModelDestination: "System provider / System model"
       },
+      historyIndexing: {
+        completedChats: 0,
+        state: "READY",
+        totalChats: 0
+      },
       settings: {
         embeddingDeployment: {
           connectionDisplayName: "Embedding provider",
@@ -272,6 +277,37 @@ describe("Memory settings service", () => {
       expectedSettingsRevision: 4
     })).rejects.toEqual(new MemorySettingsServiceError("memory_egress_admin_owned"));
     expect(acceptUtilityEgress).not.toHaveBeenCalled();
+  });
+
+  it("projects bounded history progress and wakes automatic enablement", async () => {
+    const kick = vi.fn();
+    const readHistoryIndexing = vi.fn(async () => ({
+      completedChats: 2,
+      state: "INDEXING" as const,
+      totalChats: 5
+    }));
+    const service = createMemorySettingsService({
+      kick,
+      readHistoryIndexing,
+      repository: repository(),
+      resolveCurrentUtilityPolicy: async () => policy()
+    });
+
+    await expect(service.get("user-1")).resolves.toMatchObject({
+      historyIndexing: {
+        completedChats: 2,
+        state: "INDEXING",
+        totalChats: 5
+      }
+    });
+    await service.patch("user-1", {
+      expectedMemoryRevision: 3,
+      expectedSettingsRevision: 4,
+      referenceChatHistory: true
+    });
+
+    expect(readHistoryIndexing).toHaveBeenCalledTimes(2);
+    expect(kick).toHaveBeenCalledOnce();
   });
 
   it("maps only stable persistence failures and forwards exact consent", async () => {
