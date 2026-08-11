@@ -164,6 +164,7 @@ docker compose -f docker-compose.dev.yml exec -T app \
   lib/server/memory/history/handler.test.ts \
   lib/server/memory/history/episode/handler.test.ts \
   lib/server/memory/history/repository.prisma.test.ts \
+  lib/server/memory/learning/extraction/repository.prisma.test.ts \
   lib/server/memory/retrieval/localRepository.prisma.test.ts \
   lib/server/memory/retrieval/vector.prisma.test.ts \
   lib/server/memory/rebuild/prismaRebuild.prisma.test.ts \

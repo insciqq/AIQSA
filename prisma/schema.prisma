@@ -169,6 +169,14 @@ enum MemoryFactState {
   FORGOTTEN
 }
 
+enum MemoryCandidateState {
+  PENDING
+  DEFERRED
+  PROMOTED
+  REJECTED
+  STALE
+}
+
 enum MemoryTemperatureClass {
   HOT
   WARM
@@ -2185,6 +2193,66 @@ model MemoryEpisodeMessage {
   @@index([userId, chatId, messageId])
 }
 
+model MemoryCandidate {
+  id                         String                  @id
+  userId                     String
+  jobId                      String
+  chatId                     String
+  branchGeneration           Int
+  sourceRevision             Int
+  sourceHash                 String                  @db.VarChar(128)
+  sourceProjectionHash       String                  @db.VarChar(128)
+  sourceProjectionVersion    String                  @db.VarChar(64)
+  createdByExecutionId       String
+  proposedCanonicalKey       String?                 @db.VarChar(256)
+  proposedDisplayText        String?
+  proposedValue              Json?
+  proposedCategory           String?                 @db.VarChar(64)
+  proposedModality           MemoryFactModality?
+  proposedScope              Json?
+  proposedValidFrom          DateTime?
+  proposedValidTo            DateTime?
+  rawTemporalExpression      String?                 @db.VarChar(512)
+  sourceTimezone             String?                 @db.VarChar(64)
+  temporalResolverVersion    String?                 @db.VarChar(64)
+  temporalResolutionEvidence Json?
+  proposedDirectness         MemoryDirectness?
+  proposedSensitivity        MemorySensitivityClass?
+  languageCode               String?                 @db.VarChar(35)
+  importance                 Float?
+  confidence                 Float?
+  negated                    Boolean?
+  state                      MemoryCandidateState    @default(PENDING)
+  reasonCode                 String?                 @db.VarChar(64)
+  pipelineVersion            String                  @db.VarChar(64)
+  resolvedFactId             String?
+  createdAt                  DateTime                @default(now())
+  resolvedAt                 DateTime?
+  contentPurgedAt            DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, chatId, id])
+  @@index([userId, jobId])
+  @@index([userId, chatId, state, branchGeneration, sourceRevision])
+  @@index([userId, createdByExecutionId])
+  @@index([userId, resolvedFactId])
+}
+
+model MemoryCandidateMessage {
+  userId         String
+  candidateId    String
+  chatId         String
+  messageId      String
+  ordinal        Int
+  startOffset    Int
+  endOffset      Int
+  sourceTextHash String @db.VarChar(128)
+
+  @@id([candidateId, messageId])
+  @@unique([candidateId, ordinal])
+  @@index([userId, chatId, messageId])
+}
+
 model MemoryFact {
   id               String                 @id @default(uuid())
   userId           String
@@ -2468,6 +2536,7 @@ model MemoryJob {
 
   @@unique([userId, id])
   @@unique([userId, idempotencyFingerprint])
+  @@unique([userId, id, chatId, branchGeneration, sourceRevision, sourceHash], map: "MemoryJob_source_identity_key")
   @@index([userId, state, nextAttemptAt, createdAt])
   @@index([userId, chatId, branchGeneration, sourceRevision])
 }

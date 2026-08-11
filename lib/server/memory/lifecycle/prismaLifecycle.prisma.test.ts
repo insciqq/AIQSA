@@ -34,6 +34,13 @@ import {
   MemoryDeletionContributorRegistry
 } from "../purge/registry";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
+import {
+  MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_EXTRACTION_POLICY_VERSION,
+  MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
+  MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION
+} from "../learning/extraction/contract";
 import { createPrismaMemoryLifecycleRepository } from "./repository";
 import {
   createMemoryLifecycleService,
@@ -209,6 +216,123 @@ async function createUnacceptedAttemptItem(input: Readonly<{
     messageId: admitted.userMessageId,
     runId: admitted.runId
   };
+}
+
+async function createFactCandidateFixture(input: Readonly<{
+  activeLeafMessageId: string;
+  canonicalKey: string;
+  chatId: string;
+  displayText: string;
+  messageId: string;
+  userId: string;
+}>): Promise<string> {
+  const jobId = randomUUID();
+  const bindingId = randomUUID();
+  const candidateId = memorySha256({
+    canonicalKey: input.canonicalKey,
+    chatId: input.chatId,
+    messageId: input.messageId,
+    nonce: randomUUID(),
+    userId: input.userId
+  });
+  const sourceHash = memorySha256({
+    activeLeafMessageId: input.activeLeafMessageId,
+    chatId: input.chatId,
+    userId: input.userId
+  });
+  const now = new Date();
+  const createdAt = new Date(now.getTime() - 1_000);
+  const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+    where: { userId: input.userId }
+  });
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryJob.create({
+      data: {
+        acceptedResultHash: memorySha256({ candidateId, result: "accepted" }),
+        activeLeafMessageId: input.activeLeafMessageId,
+        branchGeneration: 0,
+        chatId: input.chatId,
+        completedAt: now,
+        id: jobId,
+        idempotencyFingerprint: memorySha256({ candidateId, job: "extract" }),
+        kind: "EXTRACT_FACTS",
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        memoryRevisionSnapshot: settings.memoryRevision,
+        pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+        sourceHash,
+        sourceRevision: 0,
+        state: "SUCCEEDED",
+        userId: input.userId
+      }
+    });
+    await tx.memoryExecutionBinding.create({
+      data: {
+        acceptedOutputHash: memorySha256({ candidateId, output: "accepted" }),
+        completedAt: now,
+        createdAt,
+        destinationFingerprint: memorySha256({ candidateId, destination: "test" }),
+        id: bindingId,
+        inputHash: memorySha256({ candidateId, input: "test" }),
+        logicalRole: "MEMORY_FACT_EXTRACT",
+        memoryJobId: jobId,
+        ordinal: 0,
+        ownerType: "JOB",
+        pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+        policyVersion: MEMORY_FACT_EXTRACTION_POLICY_VERSION,
+        promptVersion: MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
+        providerId: "openai_compatible",
+        recoverableUntil: now,
+        relationsDetachedAt: now,
+        schemaVersion: MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
+        secretFreeExecutionSnapshot: {},
+        startedAt: createdAt,
+        state: "SUCCEEDED",
+        userId: input.userId
+      }
+    });
+    await tx.memoryCandidate.create({
+      data: {
+        branchGeneration: 0,
+        chatId: input.chatId,
+        confidence: 0.9,
+        createdByExecutionId: bindingId,
+        id: candidateId,
+        importance: 0.5,
+        jobId,
+        languageCode: "en",
+        negated: false,
+        pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+        proposedCanonicalKey: input.canonicalKey,
+        proposedCategory: "preference",
+        proposedDirectness: "DIRECT",
+        proposedDisplayText: input.displayText,
+        proposedModality: "PREFERENCE",
+        proposedScope: { target_id: null, type: "GLOBAL_USER" },
+        proposedSensitivity: "NORMAL",
+        proposedValue: { text: input.displayText },
+        sourceHash,
+        sourceProjectionHash: memorySha256({ candidateId, projection: "safe" }),
+        sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+        sourceRevision: 0,
+        sourceTimezone: "UTC",
+        state: "PENDING",
+        userId: input.userId
+      }
+    });
+    await tx.memoryCandidateMessage.create({
+      data: {
+        candidateId,
+        chatId: input.chatId,
+        endOffset: input.displayText.length,
+        messageId: input.messageId,
+        ordinal: 0,
+        sourceTextHash: memorySha256(input.displayText),
+        startOffset: 0,
+        userId: input.userId
+      }
+    });
+  });
+  return candidateId;
 }
 
 type AcceptedReceiptDerivatives = Readonly<{
@@ -630,6 +754,18 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         statement,
         userId: ownerUserId
       });
+      const canonicalKey = await prisma.memoryFact.findUniqueOrThrow({
+        select: { canonicalKey: true },
+        where: { id: factId }
+      });
+      const candidateId = await createFactCandidateFixture({
+        activeLeafMessageId: attempt.assistantMessageId,
+        canonicalKey: canonicalKey.canonicalKey,
+        chatId: attempt.chatId,
+        displayText: statement,
+        messageId: attempt.messageId,
+        userId: ownerUserId
+      });
       const before = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId: ownerUserId }
       });
@@ -654,6 +790,15 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         pinned: false,
         versionState: "FORGOTTEN"
       });
+      const claimedDeletion = await prisma.memoryDeletionOutbox.findFirstOrThrow({
+        where: { operation: "FORGET_PURGE", userId: ownerUserId }
+      });
+      const failedAt = new Date("2026-08-10T11:58:00.000Z");
+      const failedClaim = await claimDeletion(
+        ownerUserId,
+        claimedDeletion.id,
+        failedAt
+      );
       await expect(lifecycle.forget(ownerUserId, factId, forgetInput)).resolves
         .toEqual(forgotten);
 
@@ -712,8 +857,8 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       );
       expect(pending).toMatchObject({
         lastAuditAt: expect.any(Date),
-        progress: { completedUnits: 2, totalUnits: 5 },
-        state: "PENDING",
+        progress: { completedUnits: 2, totalUnits: 6 },
+        state: "RUNNING",
       });
 
       const failureRegistry = new MemoryDeletionContributorRegistry({
@@ -732,8 +877,6 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         },
         version: "v1"
       });
-      const failedAt = new Date("2026-08-10T11:58:00.000Z");
-      const failedClaim = await claimDeletion(ownerUserId, deletion.id, failedAt);
       const failedExecution = await failureRegistry.handler().execute(failedClaim, {
         now: () => failedAt,
         signal: new AbortController().signal
@@ -752,6 +895,13 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       await expect(prisma.memoryRetrievalAttemptItem.count({
         where: { attemptId: attempt.attemptId, userId: ownerUserId }
       })).resolves.toBe(1);
+      await expect(prisma.memoryCandidate.findUniqueOrThrow({
+        where: { id: candidateId }
+      })).resolves.toMatchObject({
+        contentPurgedAt: null,
+        proposedDisplayText: statement,
+        state: "PENDING"
+      });
       await expect(createPrismaMemoryCoordinatorRepository(prisma).retryDeletion({
         blocked: false,
         claim: failedClaim,
@@ -773,7 +923,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T12:00:01.000Z")
       );
       expect(succeeded).toMatchObject({
-        progress: { completedUnits: 5, totalUnits: 5 },
+        progress: { completedUnits: 6, totalUnits: 6 },
         state: "SUCCEEDED",
       });
 
@@ -814,6 +964,52 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       })).resolves.toBe(0);
       await expect(prisma.memoryEvidence.count({ where: { userId: ownerUserId } }))
         .resolves.toBe(0);
+      await expect(prisma.memoryCandidate.findUniqueOrThrow({
+        where: { id: candidateId }
+      })).resolves.toMatchObject({
+        contentPurgedAt: expect.any(Date),
+        proposedCanonicalKey: null,
+        proposedDisplayText: null,
+        proposedValue: null,
+        reasonCode: "forgotten_or_suppressed",
+        state: "STALE"
+      });
+      await expect(prisma.memoryCandidateMessage.count({
+        where: { candidateId, userId: ownerUserId }
+      })).resolves.toBe(0);
+
+      const delayedCandidateId = await createFactCandidateFixture({
+        activeLeafMessageId: attempt.assistantMessageId,
+        canonicalKey: canonicalKey.canonicalKey,
+        chatId: attempt.chatId,
+        displayText: statement,
+        messageId: attempt.messageId,
+        userId: ownerUserId
+      });
+      const replayed = await auditMemoryDeletion(
+        registry,
+        deletion.id,
+        ownerUserId,
+        prisma,
+        new Date("2026-08-10T12:00:02.000Z")
+      );
+      expect(replayed).toMatchObject({
+        progress: { completedUnits: 5, complete: false, totalUnits: 6 },
+        state: "PENDING"
+      });
+      await commitDeletion(
+        registry,
+        ownerUserId,
+        deletion.id,
+        new Date("2026-08-10T12:00:03.000Z")
+      );
+      await expect(prisma.memoryCandidate.findUniqueOrThrow({
+        where: { id: delayedCandidateId }
+      })).resolves.toMatchObject({
+        contentPurgedAt: expect.any(Date),
+        proposedDisplayText: null,
+        state: "STALE"
+      });
 
       const scope = await createPrismaMemoryScopeRepository(prisma)
         .ensureGlobal(ownerUserId);
@@ -859,7 +1055,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T12:02:00.000Z")
       );
       expect(reopened).toMatchObject({
-        progress: { completedUnits: 5, complete: false, totalUnits: 6 },
+        progress: { completedUnits: 6, complete: false, totalUnits: 7 },
         state: "PENDING"
       });
       await commitDeletion(
@@ -876,7 +1072,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T12:04:00.000Z")
       );
       expect(upgradedStatus).toMatchObject({
-        progress: { completedUnits: 6, complete: true, totalUnits: 6 },
+        progress: { completedUnits: 7, complete: true, totalUnits: 7 },
         state: "SUCCEEDED"
       });
       await expect(explicit.get(ownerUserId, factId)).resolves.toMatchObject({
@@ -1076,6 +1272,18 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         statement: retainedStatement,
         userId
       });
+      const retainedCanonicalKey = await prisma.memoryFact.findUniqueOrThrow({
+        select: { canonicalKey: true },
+        where: { id: retainedFact.memory.id }
+      });
+      const candidateId = await createFactCandidateFixture({
+        activeLeafMessageId: acceptedAttempt.assistantMessageId,
+        canonicalKey: retainedCanonicalKey.canonicalKey,
+        chatId: acceptedAttempt.chatId,
+        displayText: retainedStatement,
+        messageId: acceptedAttempt.messageId,
+        userId
+      });
       const receipt = await createAcceptedReceiptDerivatives({
         assistantMessageId: acceptedAttempt.assistantMessageId,
         attemptId: acceptedAttempt.attemptId,
@@ -1154,11 +1362,21 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T13:00:00.000Z")
       );
       await expect(lifecycle.status(userId, status.deletionId)).resolves.toMatchObject({
-        completedUnits: 5,
+        completedUnits: 6,
         memoryRevision: status.memoryRevision,
         state: "SUCCEEDED",
-        totalUnits: 5
+        totalUnits: 6
       });
+      await expect(prisma.memoryCandidate.findUniqueOrThrow({
+        where: { id: candidateId }
+      })).resolves.toMatchObject({
+        contentPurgedAt: expect.any(Date),
+        proposedDisplayText: null,
+        state: "STALE"
+      });
+      await expect(prisma.memoryCandidateMessage.count({
+        where: { candidateId, userId }
+      })).resolves.toBe(0);
       await expectAcceptedReceiptDerivatives(receipt, "RETAINED");
       await expect(auditMemoryDeletion(
         registry,

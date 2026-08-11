@@ -40,6 +40,138 @@ function countFrom(rows: readonly Readonly<{ count: number }>[]): number {
   return count;
 }
 
+function candidateTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
+  const factTarget = target.kind === "MEMORY_FACT"
+    ? Prisma.sql`
+        candidate."resolvedFactId" = ${target.targetId}
+        OR candidate."proposedCanonicalKey" = (
+          SELECT fact."canonicalKey"
+          FROM "MemoryFact" AS fact
+          WHERE fact."userId" = ${target.userId} AND fact."id" = ${target.targetId}
+        )
+      `
+    : Prisma.sql`
+        EXISTS (
+          SELECT 1
+          FROM "MemoryFact" AS fact
+          WHERE fact."userId" = candidate."userId"
+            AND (
+              candidate."resolvedFactId" = fact."id"
+              OR candidate."proposedCanonicalKey" = fact."canonicalKey"
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM "MemoryFactVersion" AS explicit_version
+              WHERE explicit_version."userId" = fact."userId"
+                AND explicit_version."factId" = fact."id"
+                AND explicit_version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+                AND explicit_version."state" = 'FORGOTTEN'::"MemoryFactVersionState"
+            )
+        )
+      `;
+  return Prisma.sql`
+    candidate."userId" = ${target.userId}
+    AND (
+      (${factTarget})
+      OR EXISTS (
+        SELECT 1
+        FROM "MemorySuppression" AS suppression
+        LEFT JOIN "MemoryCandidateMessage" AS source_message
+          ON source_message."userId" = candidate."userId"
+          AND source_message."candidateId" = candidate."id"
+        WHERE suppression."userId" = candidate."userId"
+          AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+          AND (
+            suppression."scope" = 'ALL'::"MemorySuppressionScope"
+            OR (
+              suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+              AND suppression."sourceChatId" = source_message."chatId"
+              AND suppression."sourceMessageId" = source_message."messageId"
+              AND (
+                suppression."sourceBranchGeneration" IS NULL
+                OR suppression."sourceBranchGeneration" = candidate."branchGeneration"
+              )
+            )
+          )
+      )
+    )
+  `;
+}
+
+const candidateDerivativesContributor: MemoryDeletionContributor = Object.freeze({
+  async audit(tx, target) {
+    const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+      SELECT COUNT(DISTINCT candidate."id")::integer AS "count"
+      FROM "MemoryCandidate" AS candidate
+      WHERE ${candidateTargetCondition(target)}
+        AND (
+          candidate."contentPurgedAt" IS NULL
+          OR num_nonnulls(
+            candidate."proposedCanonicalKey", candidate."proposedDisplayText",
+            candidate."proposedValue", candidate."proposedCategory",
+            candidate."proposedModality", candidate."proposedScope",
+            candidate."proposedValidFrom", candidate."proposedValidTo",
+            candidate."rawTemporalExpression", candidate."sourceTimezone",
+            candidate."temporalResolverVersion",
+            candidate."temporalResolutionEvidence",
+            candidate."proposedDirectness", candidate."proposedSensitivity",
+            candidate."languageCode", candidate."importance",
+            candidate."confidence", candidate."negated"
+          ) > 0
+          OR EXISTS (
+            SELECT 1 FROM "MemoryCandidateMessage" AS source_message
+            WHERE source_message."userId" = candidate."userId"
+              AND source_message."candidateId" = candidate."id"
+          )
+        )
+    `);
+    return countFrom(rows);
+  },
+  id: "candidate-derivatives",
+  async purge(tx, target) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT DISTINCT candidate."id"
+      FROM "MemoryCandidate" AS candidate
+      WHERE ${candidateTargetCondition(target)}
+      ORDER BY candidate."id"
+    `);
+    const ids = rows.map(({ id }) => id);
+    if (ids.length === 0) return;
+    await tx.memoryCandidate.updateMany({
+      data: {
+        confidence: null,
+        contentPurgedAt: new Date(),
+        importance: null,
+        languageCode: null,
+        negated: null,
+        proposedCanonicalKey: null,
+        proposedCategory: null,
+        proposedDirectness: null,
+        proposedDisplayText: null,
+        proposedModality: null,
+        proposedScope: Prisma.DbNull,
+        proposedSensitivity: null,
+        proposedValidFrom: null,
+        proposedValidTo: null,
+        proposedValue: Prisma.DbNull,
+        rawTemporalExpression: null,
+        reasonCode: "forgotten_or_suppressed",
+        resolvedFactId: null,
+        resolvedAt: new Date(),
+        sourceTimezone: null,
+        state: "STALE",
+        temporalResolutionEvidence: Prisma.DbNull,
+        temporalResolverVersion: null
+      },
+      where: { id: { in: ids }, userId: target.userId }
+    });
+    await tx.memoryCandidateMessage.deleteMany({
+      where: { candidateId: { in: ids }, userId: target.userId }
+    });
+  },
+  version: "v1"
+});
+
 const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
   async audit(tx, target) {
     const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
@@ -272,6 +404,7 @@ const versionContentContributor: MemoryDeletionContributor = Object.freeze({
 export const phase2MemoryDeletionContributors = Object.freeze([
   unacceptedAttemptsContributor,
   historyDerivativesContributor,
+  candidateDerivativesContributor,
   evidenceContributor,
   searchContributor,
   versionContentContributor

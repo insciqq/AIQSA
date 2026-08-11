@@ -1,11 +1,12 @@
 import type { MemoryDeletionOperation } from "@prisma/client";
 
-export const MEMORY_PHASE2_PURGE_MANIFEST_VERSION = "memory-p2-purge-v1";
+export const MEMORY_PHASE2_PURGE_MANIFEST_VERSION = "memory-p6-purge-v2";
 export const MEMORY_DELETE_EXPLICIT_TARGET_ID = "all-explicit";
 
 export const MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS = Object.freeze([
   Object.freeze({ id: "unaccepted-attempts", version: "v1" }),
   Object.freeze({ id: "history-derivatives", version: "v1" }),
+  Object.freeze({ id: "candidate-derivatives", version: "v1" }),
   Object.freeze({ id: "fact-evidence", version: "v1" }),
   Object.freeze({ id: "fact-search", version: "v1" }),
   Object.freeze({ id: "fact-version-content", version: "v1" })

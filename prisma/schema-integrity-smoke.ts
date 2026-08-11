@@ -40,6 +40,8 @@ const expectedConstraintNames = [
   "KnowledgePolicy_version_check",
   "Message_chatId_parentMessageId_fkey",
   "MemoryDeletionOutbox_user_fkey",
+  "MemoryCandidateMessage_candidate_fkey",
+  "MemoryCandidate_shape_check",
   "MemoryExecutionBinding_shape_check",
   "MemoryEpisode_shape_check",
   "MemoryFact_current_version_fkey",
@@ -221,6 +223,8 @@ async function assertConstraintCatalog(): Promise<void> {
       'KnowledgePolicy_version_check',
       'Message_chatId_parentMessageId_fkey',
       'MemoryDeletionOutbox_user_fkey',
+      'MemoryCandidateMessage_candidate_fkey',
+      'MemoryCandidate_shape_check',
       'MemoryExecutionBinding_shape_check',
       'MemoryEpisode_shape_check',
       'MemoryFact_current_version_fkey',
@@ -455,6 +459,113 @@ async function assertSameChatRelations(): Promise<void> {
   });
 }
 
+async function assertMemoryCandidateSourceAuthority(): Promise<void> {
+  await expectDatabaseRejection(
+    "assistant Memory candidate source",
+    "exact settled direct USER message",
+    async (tx) => {
+      const hash = () =>
+        `${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
+      const { chats, user } = await createUserAndChats(tx, 1);
+      const userMessage = await createMessage(tx, { chatId: chats[0].id });
+      const assistantMessage = await createMessage(tx, {
+        chatId: chats[0].id,
+        parentMessageId: userMessage.id,
+        role: "assistant"
+      });
+      const sourceHash = hash();
+      const pipelineVersion = "memory-fact-extraction-v1";
+      const job = await tx.memoryJob.create({
+        data: {
+          acceptedResultHash: hash(),
+          activeLeafMessageId: assistantMessage.id,
+          branchGeneration: 0,
+          chatId: chats[0].id,
+          completedAt: new Date(),
+          id: randomUUID(),
+          idempotencyFingerprint: hash(),
+          kind: "EXTRACT_FACTS",
+          memoryGenerationSnapshot: 0,
+          memoryRevisionSnapshot: 0,
+          pipelineVersion,
+          sourceHash,
+          sourceRevision: 0,
+          state: "SUCCEEDED",
+          userId: user.id
+        }
+      });
+      const createdAt = new Date(Date.now() - 10_000);
+      const completedAt = new Date(Date.now() - 1_000);
+      const execution = await tx.memoryExecutionBinding.create({
+        data: {
+          acceptedOutputHash: hash(),
+          completedAt,
+          createdAt,
+          destinationFingerprint: hash(),
+          id: randomUUID(),
+          inputHash: hash(),
+          logicalRole: "MEMORY_FACT_EXTRACT",
+          memoryJobId: job.id,
+          ordinal: 0,
+          ownerType: "JOB",
+          pipelineVersion,
+          policyVersion: "memory-fact-policy-v1",
+          promptVersion: "memory-fact-prompt-v1",
+          providerId: "fake",
+          recoverableUntil: new Date(createdAt.getTime() + 1_000),
+          relationsDetachedAt: completedAt,
+          schemaVersion: "memory-fact-schema-v1",
+          secretFreeExecutionSnapshot: json({}),
+          state: "SUCCEEDED",
+          userId: user.id
+        }
+      });
+      const candidateId = hash();
+      await tx.memoryCandidate.create({
+        data: {
+          branchGeneration: 0,
+          chatId: chats[0].id,
+          confidence: 0.9,
+          createdByExecutionId: execution.id,
+          id: candidateId,
+          importance: 0.5,
+          jobId: job.id,
+          languageCode: "en",
+          negated: false,
+          pipelineVersion,
+          proposedCanonicalKey: "user.preference.drink",
+          proposedCategory: "preference",
+          proposedDirectness: "DIRECT",
+          proposedDisplayText: "I prefer tea.",
+          proposedModality: "PREFERENCE",
+          proposedScope: json({ target_id: chats[0].id, type: "CHAT" }),
+          proposedSensitivity: "NORMAL",
+          proposedValue: json({ drink: "tea" }),
+          sourceHash,
+          sourceProjectionHash: hash(),
+          sourceProjectionVersion: "memory-fact-source-projection-v1",
+          sourceRevision: 0,
+          sourceTimezone: "UTC",
+          state: "PENDING",
+          userId: user.id
+        }
+      });
+      await tx.memoryCandidateMessage.create({
+        data: {
+          candidateId,
+          chatId: chats[0].id,
+          endOffset: 4,
+          messageId: assistantMessage.id,
+          ordinal: 0,
+          sourceTextHash: hash(),
+          startOffset: 0,
+          userId: user.id
+        }
+      });
+    }
+  );
+}
+
 async function assertGrantShapes(): Promise<void> {
   await expectDatabaseRejection("grant with two principals", "AccessGrant_subject_check", async (tx) => {
     const { user } = await createUserAndChats(tx, 0);
@@ -569,10 +680,11 @@ async function main() {
   await assertConstraintCatalog();
   await assertSearchOptionSources();
   await assertSameChatRelations();
+  await assertMemoryCandidateSourceAuthority();
   await assertGrantShapes();
   await assertStatusEnums();
   console.log(
-    "AIQSA schema integrity smoke ok: validated constraints, tenant-safe pointers, Knowledge ingestion/indexes, six grant shapes, and lifecycle enums."
+    "AIQSA schema integrity smoke ok: validated constraints, tenant-safe pointers, direct-USER Memory candidates, Knowledge ingestion/indexes, six grant shapes, and lifecycle enums."
   );
 }
 

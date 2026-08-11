@@ -133,8 +133,8 @@ vectors and consent. Activation rechecks source/config/barriers/revision and
 advances counters once; failure/cancel never serves. Redream jobs are salted,
 source-fenced, and replayable.
 
-Automatic learning/profile retrieval, later bulk variants, and an approved
-production qualification registry remain unavailable.
+Candidate extraction is feature-dark; consolidation/profile, later bulk
+variants, and production qualification remain unavailable.
 Remote lanes require exact consent/qualification and otherwise fail closed while
 local exact/FTS remains available. Web and `memory-worker` share one coordinator
 for purge, Temporary deletion, indexing, episodes, rebuild, history/source
@@ -165,33 +165,23 @@ filters, and reciprocal-rank fusion are retrieval tools below that authority.
 No external memory service owns chat branches, accepted-run evidence, access,
 deletion, retention, or truth.
 
-Hindsight is absent from production. It may appear only behind a disabled,
-development/evaluation adapter using synthetic or explicitly approved data,
-with a pinned upstream version and recorded configuration. Production code
-must not import it, and comparison results never define AIQSA truth. Behavior-
-level reimplementation is preferred; copied code requires license and
-attribution review.
+Hindsight is absent from production but may guide behavior and architecture for
+complex components. Only a disabled, pinned evaluation adapter may use synthetic
+or explicitly approved data; results never define AIQSA truth. Copied code
+requires license and attribution review.
 
-Evaluation evidence binds the exact adapter/deployment/config/vector
-fingerprints, corpus hash, suite/corpus/scorer and pipeline/policy/prompt/schema
-versions, PostgreSQL/pgvector profile, and fixed random seed. Proportion metrics
-use two-sided 95% Wilson intervals; ranked retrieval uses deterministic
-stratified-bootstrap 95% intervals. Gates compare unrounded values, while
-display values round to three decimals. Missing hard-invariant coverage fails,
-and one deterministic privacy, lifecycle, run, or safety violation fails the
-suite rather than being averaged away. `RECALL_RELEASE` and
-`AUTOMATIC_LEARNING_BETA` are independent: each needs its complete RU/EN gates;
-passing recall cannot imply beta, and missing selected-profile coverage fails.
+Evaluation binds exact runtime/version/vector fingerprints, corpus hash,
+PostgreSQL profile, and seed. Proportions use two-sided 95% Wilson intervals;
+ranking uses deterministic stratified-bootstrap intervals. Gates compare
+unrounded values and display three decimals. Missing hard-invariant or selected-
+profile coverage fails. `RECALL_RELEASE` and `AUTOMATIC_LEARNING_BETA` require
+independent complete RU/EN gates.
 
-`MemoryCapabilityQualification` is fail-closed authority, not advisory
-metadata. It matches the exact role, language, provider/model/deployment/config
-and vector fingerprints, retrieval configuration, and material version/hash
-set; approval must be signature-verified, already effective, and unexpired.
-Missing, stale, ambiguous, unapproved, expired, or unverifiable qualification
-cannot enable the affected role. A live evaluation has no ambient permission:
-it requires an explicit operator authorization bound to the exact native
-adapter and evaluation configuration, accepts only synthetic HOLDOUT fixtures,
-and returns sanitized aggregates without fixture or provider bodies.
+`MemoryCapabilityQualification` is fail-closed authority over the exact role,
+language, runtime/config/vector fingerprints, retrieval configuration, and
+material versions. Approval is signed, effective, and unexpired. Live
+evaluation separately requires exact operator authorization, synthetic HOLDOUT
+fixtures, and sanitized aggregates without fixture/provider bodies.
 
 ## Product Vocabulary And Independent Controls
 
@@ -212,18 +202,18 @@ owners; automatic learning defaults off:
 | `referenceChatHistory` | Eligible chunks and episodes | Incremental history index only | Stops history recall/index work and retains data |
 | `learnAutomatically` | Source evidence needed by learning | Candidates and automatic facts | Stops learning work and retains data |
 
-Explicit CRUD and Forget work under every gate; saving while fact use is off
-commits with disclosure. History enablement/default migration fills a
-newest-first four-job `INDEX_HISTORY` window after existing jobs/deletions get a
-coordinator pass. Settings shows progress; vectors enrich through the admitted
-pipeline. `REDREAM_EXISTING_CHATS` stays explicit. Terminal failures retry only
-after an off/on history cycle.
+Explicit CRUD and Forget work under every gate. Enabling history fills a
+newest-first four-job `INDEX_HISTORY` window after a coordinator pass; Settings
+shows progress and vectors enrich asynchronously. Terminal failures retry only
+after an off/on cycle.
 
-Memory UI locale is persisted `RU | EN`, initially RU. Russian independently
-gates retrieval, extraction, temporal/safety/lifecycle behavior, and accessible
-copy. Display preserves source language; search may normalize NFKC, case,
-spacing, punctuation, and `ё`/`е`
-equivalence without changing the displayed original.
+Eligible terminal sources independently enqueue `EXTRACT_FACTS` only while
+learning is on; history is not a prerequisite and existing chats still require
+explicit `REDREAM_EXISTING_CHATS`.
+
+Memory UI locale persists as `RU | EN` (initially RU). Russian independently
+gates behavior and accessible copy. Display preserves source language; search
+may normalize NFKC, case, spacing, punctuation, and `ё`/`е` equivalence.
 
 These lifecycle actions are not aliases:
 
@@ -255,6 +245,13 @@ Every derived assertion remains rebuildable or retractable and cannot outrank
 its admissible evidence. Assistant, web, MCP, tool, Knowledge, and attachment
 text do not establish a user fact by default. Secret-tainted source windows are
 excluded before derivative persistence or external Memory I/O.
+
+Fact extraction receives only bounded, storage-time-safe, complete direct USER
+messages from the active branch. Local screening removes secrets/disallowed
+sensitivity and excludes instruction- or hypothetical-shaped input before
+extractor egress. Exact model quotes become server-validated spans; relational
+messages—not model JSON—own source authority. This adds no general egress-time
+DLP dependency.
 
 Memory is untrusted data. It cannot become system/developer instruction,
 authorize an action, enable MCP, bypass confirmation, choose a provider or
@@ -351,6 +348,11 @@ Candidate, logical-fact, and fact-version state are different authorities:
   `FORGOTTEN`;
 - version: `ACTIVE`, `CONFLICTING`, `ORPHANED`, `SUPERSEDED`, `EXPIRED`,
   `RETRACTED`, `FORGOTTEN`.
+
+Candidates are never answer-retrievable. Every non-purged active candidate is
+bound to its exact source job, succeeded extraction, and direct-USER message
+relation; authority drift rejects commit, while later invalidation makes it
+`STALE` and schedules source purge.
 
 An active fact has exactly one same-owner active current version. Conflicted,
 orphaned, expired, retracted, and forgotten facts have no unqualified current

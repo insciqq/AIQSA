@@ -16,6 +16,7 @@ import {
   memoryHistorySourceDeletionHandler
 } from "../history/purge";
 import { reconcileMemoryHistoryBackfills } from "../history/backfill";
+import { createPrismaMemoryFactExtractionHandler } from "../learning/extraction/handler";
 import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
@@ -33,6 +34,7 @@ export const DEFAULT_MEMORY_PHASE4_COORDINATOR_MANIFEST = Object.freeze({
     "EMBED_ITEMS",
     "INDEX_HISTORY",
     "EXTRACT_EPISODE",
+    "EXTRACT_FACTS",
     "REBUILD_INDEX"
   ] satisfies readonly MemoryJobKind[])
 });
@@ -54,6 +56,10 @@ const defaultTemporaryChatDeletionHandler =
 
 const defaultHistoryIndexHandler = createPrismaMemoryHistoryIndexHandler(prisma);
 const defaultEpisodeExtractionHandler = createPrismaMemoryEpisodeExtractionHandler(
+  defaultMemoryExecutionAuthority,
+  prisma
+);
+const defaultFactExtractionHandler = createPrismaMemoryFactExtractionHandler(
   defaultMemoryExecutionAuthority,
   prisma
 );
@@ -112,6 +118,10 @@ export function ensureDefaultMemoryPhase4HandlersRegistered(): void {
   ensureJobHandlerRegistered(
     defaultEpisodeExtractionHandler,
     "memory_default_episode_handler_conflict"
+  );
+  ensureJobHandlerRegistered(
+    defaultFactExtractionHandler,
+    "memory_default_fact_extraction_handler_conflict"
   );
   ensureJobHandlerRegistered(
     defaultMemoryRebuildHandler,

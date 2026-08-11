@@ -16,6 +16,7 @@ const TEMPORARY_RETENTION_MIGRATION = "20260810200000_memory_temporary_retention
 const HISTORY_SCHEMA_MIGRATION = "20260810210000_memory_history_schema";
 const HISTORY_EGRESS_MIGRATION = "20260810220000_memory_history_tool_egress_guard";
 const ADMIN_EGRESS_MIGRATION = "20260811120000_memory_admin_egress_consent";
+const FACT_CANDIDATE_MIGRATION = "20260811130000_memory_fact_candidates";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -29,6 +30,7 @@ const temporaryRollbackDatabase = `aiqsa_memory_temporary_rollback_${suffix}`;
 const historyRollbackDatabase = `aiqsa_memory_history_rollback_${suffix}`;
 const historyEgressRollbackDatabase = `aiqsa_memory_history_egress_rollback_${suffix}`;
 const adminEgressRollbackDatabase = `aiqsa_memory_admin_egress_rollback_${suffix}`;
+const factCandidateRollbackDatabase = `aiqsa_memory_fact_candidate_rollback_${suffix}`;
 const createdDatabases = new Set<string>();
 
 type CommandResult = Readonly<{
@@ -2219,6 +2221,170 @@ function assertHistorySchemaMigrationAtomicRollback(database: string): void {
   );
 }
 
+function assertFactCandidateContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+         FROM pg_enum WHERE enumtypid = '"MemoryCandidateState"'::regtype),
+        (SELECT count(*) FROM information_schema.tables
+         WHERE table_schema = current_schema()
+           AND table_name IN ('MemoryCandidate', 'MemoryCandidateMessage')),
+        (SELECT count(*) FROM pg_constraint
+         WHERE conname IN (
+           'MemoryCandidate_shape_check',
+           'MemoryCandidate_job_source_fkey',
+           'MemoryCandidateMessage_candidate_fkey',
+           'MemoryCandidateMessage_message_fkey'
+         ) AND convalidated),
+        (SELECT count(*) FROM pg_trigger
+         WHERE tgname IN (
+           'MemoryCandidate_authority_trigger',
+           'MemoryCandidateMessage_authority_trigger',
+           'MemoryCandidate_evidence_trigger',
+           'MemoryCandidateMessage_evidence_trigger',
+           'Message_memory_candidate_authority_trigger',
+           'MemoryExecutionBinding_candidate_authority_trigger',
+           'MemoryJob_candidate_authority_trigger'
+         ) AND NOT tgisinternal)
+      );
+    `),
+    "PENDING,DEFERRED,PROMOTED,REJECTED,STALE|2|4|7",
+    "fact-candidate schema authority is incomplete"
+  );
+
+  requireSuccess(psql(database, `
+    BEGIN;
+    INSERT INTO "MemoryJob" (
+      "id", "userId", "chatId", "activeLeafMessageId", "branchGeneration",
+      "sourceRevision", "sourceHash", "kind", "state", "pipelineVersion",
+      "memoryGenerationSnapshot", "memoryRevisionSnapshot",
+      "idempotencyFingerprint", "acceptedResultHash", "completedAt"
+    ) VALUES (
+      'memory-fact-candidate-job', 'memory-owner-a', 'memory-chat-a',
+      'memory-assistant-message-a', 0, 0, repeat('a', 64), 'EXTRACT_FACTS',
+      'SUCCEEDED', 'memory-fact-extraction-v1', 0, 0, repeat('b', 64),
+      repeat('c', 64), CURRENT_TIMESTAMP
+    );
+    INSERT INTO "MemoryExecutionBinding" (
+      "id", "userId", "ownerType", "memoryJobId", "logicalRole", "ordinal",
+      "state", "providerId", "destinationFingerprint", "policyVersion",
+      "promptVersion", "schemaVersion", "pipelineVersion",
+      "secretFreeExecutionSnapshot", "inputHash", "acceptedOutputHash",
+      "usageCompleteness", "recoverableUntil", "relationsDetachedAt", "completedAt"
+    ) VALUES (
+      'memory-fact-candidate-binding', 'memory-owner-a', 'JOB',
+      'memory-fact-candidate-job', 'MEMORY_FACT_EXTRACT', 0, 'SUCCEEDED',
+      'openai_compatible', repeat('d', 64), 'memory-fact-policy-v1',
+      'memory-fact-prompt-v1', 'memory-fact-schema-v1',
+      'memory-fact-extraction-v1', '{}'::jsonb, repeat('e', 64), repeat('f', 64),
+      'UNAVAILABLE', CURRENT_TIMESTAMP - interval '1 second', CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP
+    );
+    INSERT INTO "MemoryCandidate" (
+      "id", "userId", "jobId", "chatId", "branchGeneration", "sourceRevision",
+      "sourceHash", "sourceProjectionHash", "sourceProjectionVersion",
+      "createdByExecutionId", "proposedCanonicalKey", "proposedDisplayText",
+      "proposedValue", "proposedCategory", "proposedModality", "proposedScope",
+      "sourceTimezone", "proposedDirectness", "proposedSensitivity", "languageCode",
+      "importance", "confidence", "negated", "state", "pipelineVersion"
+    ) VALUES (
+      repeat('1', 64), 'memory-owner-a', 'memory-fact-candidate-job',
+      'memory-chat-a', 0, 0, repeat('a', 64), repeat('2', 64),
+      'memory-fact-source-projection-v1', 'memory-fact-candidate-binding',
+      'user.preference.drink', 'I prefer tea.', '{"drink":"tea"}'::jsonb,
+      'preference', 'PREFERENCE',
+      '{"type":"CHAT","target_id":"memory-chat-a"}'::jsonb, 'UTC', 'DIRECT',
+      'NORMAL', 'en', 0.5, 0.9, false, 'PENDING', 'memory-fact-extraction-v1'
+    );
+    INSERT INTO "MemoryCandidateMessage" (
+      "userId", "candidateId", "chatId", "messageId", "ordinal",
+      "startOffset", "endOffset", "sourceTextHash"
+    ) VALUES (
+      'memory-owner-a', repeat('1', 64), 'memory-chat-a', 'memory-user-message-a',
+      0, 0, 13, repeat('3', 64)
+    );
+    COMMIT;
+  `), "persist one exact direct-USER fact candidate");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryCandidateMessage" (
+      "userId", "candidateId", "chatId", "messageId", "ordinal",
+      "startOffset", "endOffset", "sourceTextHash"
+    ) VALUES (
+      'memory-owner-a', repeat('1', 64), 'memory-chat-a',
+      'memory-assistant-message-a', 1, 0, 4, repeat('4', 64)
+    );
+  `, /exact settled direct USER message/u, "assistant fact-candidate evidence");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryCandidateMessage" (
+      "userId", "candidateId", "chatId", "messageId", "ordinal",
+      "startOffset", "endOffset", "sourceTextHash"
+    ) VALUES (
+      'memory-owner-b', repeat('1', 64), 'memory-chat-b',
+      'memory-user-message-b', 1, 0, 4, repeat('4', 64)
+    );
+  `, /exact settled direct USER message|MemoryCandidateMessage_candidate_fkey/u,
+  "cross-owner fact-candidate evidence");
+
+  expectRejected(database, `
+    UPDATE "Message" SET "role" = 'assistant'
+    WHERE "chatId" = 'memory-chat-a' AND "id" = 'memory-user-message-a';
+  `, /must remain a settled direct USER message/u, "fact source role mutation");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryCandidate" (
+      "id", "userId", "jobId", "chatId", "branchGeneration", "sourceRevision",
+      "sourceHash", "sourceProjectionHash", "sourceProjectionVersion",
+      "createdByExecutionId", "proposedCanonicalKey", "proposedDisplayText",
+      "proposedValue", "proposedCategory", "proposedModality", "proposedScope",
+      "sourceTimezone", "proposedDirectness", "proposedSensitivity", "languageCode",
+      "importance", "confidence", "negated", "state", "pipelineVersion"
+    ) VALUES (
+      repeat('5', 64), 'memory-owner-a', 'memory-fact-candidate-job',
+      'memory-chat-a', 0, 0, repeat('a', 64), repeat('6', 64),
+      'memory-fact-source-projection-v1', 'memory-execution-usage-binding',
+      'user.preference.other', 'I prefer tea.', '{}'::jsonb, 'preference',
+      'PREFERENCE', '{"type":"CHAT","target_id":"memory-chat-a"}'::jsonb,
+      'UTC', 'DIRECT', 'NORMAL', 'en', 0.5, 0.9, false, 'PENDING',
+      'memory-fact-extraction-v1'
+    );
+  `, /exact succeeded fact-extraction authority/u, "unrelated extraction binding");
+}
+
+function assertFactCandidateMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE FUNCTION aiqsa_memory_candidate_authority_trigger() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+  `), "install fact-candidate rollback-conflict fixture");
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, FACT_CANDIDATE_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting fact-candidate migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /function "aiqsa_memory_candidate_authority_trigger" already exists/u,
+    "fact-candidate rollback fixture failed for an unexpected reason"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM information_schema.tables
+         WHERE table_schema = current_schema()
+           AND table_name IN ('MemoryCandidate', 'MemoryCandidateMessage')),
+        (SELECT count(*) FROM pg_type WHERE typname = 'MemoryCandidateState'),
+        (SELECT count(*) FROM pg_indexes
+         WHERE schemaname = current_schema()
+           AND indexname = 'MemoryJob_source_identity_key')
+      );
+    `),
+    "0|0|0",
+    "failed fact-candidate migration left partial durable state"
+  );
+}
+
 function main(): void {
   requireSuccess(compose(["up", "-d", POSTGRES_SERVICE]), "start disposable PostgreSQL service");
   try {
@@ -2248,6 +2414,8 @@ function main(): void {
     assertHistoryEgressContracts(upgradeDatabase);
     applyMigrations(upgradeDatabase, [ADMIN_EGRESS_MIGRATION]);
     assertAdminEgressContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [FACT_CANDIDATE_MIGRATION]);
+    assertFactCandidateContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
@@ -2271,6 +2439,8 @@ function main(): void {
     assertHistoryEgressContracts(freshDatabase);
     applyMigrations(freshDatabase, [ADMIN_EGRESS_MIGRATION]);
     assertAdminEgressContracts(freshDatabase);
+    applyMigrations(freshDatabase, [FACT_CANDIDATE_MIGRATION]);
+    assertFactCandidateContracts(freshDatabase);
 
     createDatabase(rollbackDatabase);
     applyMigrations(rollbackDatabase, migrationNames((name) => name < CHAT_SCOPE_MIGRATION));
@@ -2310,11 +2480,18 @@ function main(): void {
       migrationNames((name) => name < ADMIN_EGRESS_MIGRATION)
     );
     assertAdminEgressMigrationAtomicRollback(adminEgressRollbackDatabase);
+
+    createDatabase(factCandidateRollbackDatabase);
+    applyMigrations(
+      factCandidateRollbackDatabase,
+      migrationNames((name) => name < FACT_CANDIDATE_MIGRATION)
+    );
+    assertFactCandidateMigrationAtomicRollback(factCandidateRollbackDatabase);
   } finally {
     dropDatabases();
   }
 
-  console.info("Memory migration contract passed through administrator-owned egress consent.");
+  console.info("Memory migration contract passed through source-grounded fact candidates.");
 }
 
 main();

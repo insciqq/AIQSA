@@ -8,6 +8,7 @@ import {
 } from "./scopeLifecycle";
 import { applyTemporaryRunFinalized } from "./temporaryRetention";
 import { applyMemoryHistorySourceMutation } from "./history/sourceLifecycle";
+import { applyMemoryLearningSourceMutation } from "./learning/sourceLifecycle";
 
 /**
  * Feature-local Memory leaves compose here. Shared chat/message/run repositories
@@ -16,7 +17,10 @@ import { applyMemoryHistorySourceMutation } from "./history/sourceLifecycle";
 export const defaultMemorySourceMutationHooks: MemorySourceMutationHooks =
   Object.freeze({
     ...NOOP_MEMORY_SOURCE_MUTATION_HOOKS,
-    onRetainedSourceMutated: applyMemoryHistorySourceMutation,
+    async onRetainedSourceMutated(tx, event) {
+      await applyMemoryHistorySourceMutation(tx, event);
+      await applyMemoryLearningSourceMutation(tx, event);
+    },
     onTemporaryRunFinalized: applyTemporaryRunFinalized,
     async onScopedTargetOwnerLifecycle(tx, event) {
       if (event.kind === "ASSISTANT_ACCESS_CHANGE") {

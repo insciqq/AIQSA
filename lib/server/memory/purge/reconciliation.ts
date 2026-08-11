@@ -111,11 +111,15 @@ export async function reconcileCompletedMemoryDeletionAudits(input: Readonly<{
     select: { id: true, userId: true },
     take: limit,
     where: {
-      OR: [
-        { targetType: { startsWith: "MEMORY_FACT@" } },
-        { targetType: { startsWith: "EXPLICIT_SET@" } }
+      AND: [
+        { OR: [{ lastAuditAt: null }, { lastAuditAt: { lt: now } }] },
+        {
+          OR: [
+            { targetType: { startsWith: "MEMORY_FACT@" } },
+            { targetType: { startsWith: "EXPLICIT_SET@" } }
+          ]
+        }
       ],
-      lastAuditAt: { lt: now },
       operation: "FORGET_PURGE",
       state: "SUCCEEDED"
     }

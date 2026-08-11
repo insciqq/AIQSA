@@ -23,6 +23,7 @@ type HistoryPurgeSelection =
   | Readonly<{ kind: "SUPPRESSED" }>;
 
 type HistoryTargetIds = Readonly<{
+  candidateIds: readonly string[];
   chunkIds: readonly string[];
   episodeIds: readonly string[];
 }>;
@@ -107,6 +108,7 @@ async function targetIds(
       ORDER BY episode."id"
     `);
     return {
+      candidateIds: [],
       chunkIds: chunks.map(({ id }) => id),
       episodeIds: episodes.map(({ id }) => id)
     };
@@ -144,7 +146,29 @@ async function targetIds(
         )
       ORDER BY episode."id"
     `);
+    const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT candidate."id"
+      FROM "MemoryCandidate" AS candidate
+      LEFT JOIN "Chat" AS chat
+        ON chat."userId" = candidate."userId" AND chat."id" = candidate."chatId"
+      WHERE candidate."userId" = ${userId}
+        AND candidate."chatId" = ${selection.chatId}
+        AND (
+          candidate."state" = 'STALE'::"MemoryCandidateState"
+          OR chat."id" IS NULL
+          OR chat."memoryMode" <> 'NORMAL'::"MemoryChatMode"
+          OR chat."memoryBranchGeneration" <> candidate."branchGeneration"
+          OR (
+            candidate."proposedScope" ->> 'type' = 'FOLDER'
+            AND candidate."proposedScope" ->> 'target_id'
+              IS DISTINCT FROM chat."folderId"
+          )
+        )
+      ORDER BY candidate."id"
+      FOR UPDATE OF candidate
+    `);
     return {
+      candidateIds: candidates.map(({ id }) => id),
       chunkIds: chunks.map(({ id }) => id),
       episodeIds: episodes.map(({ id }) => id)
     };
@@ -202,7 +226,32 @@ async function targetIds(
       AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
     ORDER BY episode."id"
   `);
+  const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT DISTINCT candidate."id"
+    FROM "MemoryCandidate" AS candidate
+    LEFT JOIN "MemoryCandidateMessage" AS source_message
+      ON source_message."userId" = candidate."userId"
+      AND source_message."candidateId" = candidate."id"
+    INNER JOIN "MemorySuppression" AS suppression
+      ON suppression."userId" = candidate."userId"
+      AND (
+        suppression."scope" = 'ALL'::"MemorySuppressionScope"
+        OR (
+          suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+          AND suppression."sourceChatId" = source_message."chatId"
+          AND suppression."sourceMessageId" = source_message."messageId"
+          AND (
+            suppression."sourceBranchGeneration" IS NULL
+            OR suppression."sourceBranchGeneration" = candidate."branchGeneration"
+          )
+        )
+      )
+    WHERE candidate."userId" = ${userId}
+      AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+    ORDER BY candidate."id"
+  `);
   return {
+    candidateIds: candidates.map(({ id }) => id),
     chunkIds: chunks.map(({ id }) => id),
     episodeIds: episodes.map(({ id }) => id)
   };
@@ -549,7 +598,11 @@ export async function purgeMemoryHistorySelection(
   await purgeMemoryHistoryReceiptDerivatives(tx, userId, selection);
   while (true) {
     const ids = await targetIds(tx, userId, selection);
-    if (ids.chunkIds.length === 0 && ids.episodeIds.length === 0) return;
+    if (
+      ids.candidateIds.length === 0 &&
+      ids.chunkIds.length === 0 &&
+      ids.episodeIds.length === 0
+    ) return;
     await settleAttemptItems(tx, userId, ids);
     await tx.memorySearchEntry.deleteMany({
       where: {
@@ -584,6 +637,14 @@ export async function purgeMemoryHistorySelection(
         where: { id: { in: [...ids.chunkIds] }, userId }
       });
     }
+    if (ids.candidateIds.length > 0) {
+      await tx.memoryCandidateMessage.deleteMany({
+        where: { candidateId: { in: [...ids.candidateIds] }, userId }
+      });
+      await tx.memoryCandidate.deleteMany({
+        where: { id: { in: [...ids.candidateIds] }, userId }
+      });
+    }
     if (selection.kind !== "SUPPRESSED") return;
   }
 }
@@ -595,7 +656,7 @@ export async function inspectMemoryHistoryPurge(
 ): Promise<MemoryHistoryPurgeProgress> {
   const ids = await targetIds(tx, userId, selection);
   const receiptDerivatives = await historyReceiptDerivativeCounts(tx, userId, selection);
-  const itemCount = ids.chunkIds.length + ids.episodeIds.length;
+  const itemCount = ids.candidateIds.length + ids.chunkIds.length + ids.episodeIds.length;
   let referenceCount = 0;
   let searchCount = 0;
   if (itemCount > 0) {
@@ -727,3 +788,59 @@ export async function auditMemoryHistoryClearDeletion(
 export const suppressedMemoryHistoryPurgeSelection = Object.freeze({
   kind: "SUPPRESSED" as const
 });
+
+export async function reconcileCompletedMemoryHistorySourceDeletionAudits(
+  client: PrismaClient = prisma,
+  options: Readonly<{ limit?: number; now?: Date }> = {}
+): Promise<Readonly<{ checked: number; reopened: number }>> {
+  const limit = options.limit ?? 100;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+    throw new Error("memory_history_source_audit_limit_invalid");
+  }
+  const now = options.now ?? new Date();
+  const rows = await client.memoryDeletionOutbox.findMany({
+    orderBy: [{ lastAuditAt: "asc" }, { id: "asc" }],
+    select: { id: true, targetId: true, userId: true },
+    take: limit,
+    where: {
+      OR: [{ lastAuditAt: null }, { lastAuditAt: { lt: now } }],
+      operation: "SOURCE_PURGE",
+      state: "SUCCEEDED",
+      targetType: MEMORY_HISTORY_SOURCE_TARGET_TYPE
+    }
+  });
+  let reopened = 0;
+  for (const row of rows) {
+    const wasReopened = await client.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ state: string }>>(Prisma.sql`
+        SELECT "state"::text AS "state"
+        FROM "MemoryDeletionOutbox"
+        WHERE "id" = ${row.id} AND "userId" = ${row.userId}
+        FOR UPDATE
+      `);
+      if (locked[0]?.state !== "SUCCEEDED") return false;
+      const progress = await inspectMemoryHistoryPurge(tx, row.userId, {
+        chatId: row.targetId,
+        kind: "SOURCE"
+      });
+      await tx.memoryDeletionOutbox.update({
+        data: progress.complete
+          ? { lastAuditAt: now, updatedAt: now }
+          : {
+              completedAt: null,
+              errorCode: "memory_purge_incomplete",
+              lastAuditAt: now,
+              leaseExpiresAt: null,
+              leaseToken: null,
+              nextAttemptAt: null,
+              state: "PENDING",
+              updatedAt: now
+            },
+        where: { id: row.id }
+      });
+      return !progress.complete;
+    });
+    if (wasReopened) reopened += 1;
+  }
+  return { checked: rows.length, reopened };
+}
