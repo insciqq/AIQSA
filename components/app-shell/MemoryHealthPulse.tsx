@@ -21,7 +21,7 @@ const actionButton =
   `inline-flex min-h-touch items-center justify-center gap-2 rounded-control border border-trace-subtle bg-control-surface px-3 text-sm font-semibold text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`;
 
 function formatDate(locale: MemoryUiLocale, value: string): string {
-  return new Intl.DateTimeFormat(locale === "RU" ? "ru-RU" : "en-US", {
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(new Date(value));

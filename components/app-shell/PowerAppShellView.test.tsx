@@ -342,10 +342,12 @@ function baseProps(): PowerAppShellViewProps {
       shareActiveBranch: noop,
     },
     settings: {
+      closeMemory: noop,
       closeSettings: noop,
       dismissNotice: noop,
       knowledge: null,
       library: null,
+      memory: { open: false },
       notice: null,
       open: noop,
       openKnowledge: noop,

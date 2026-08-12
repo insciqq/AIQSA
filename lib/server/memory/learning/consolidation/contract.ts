@@ -15,7 +15,7 @@ export const MEMORY_FACT_VERIFICATION_PIPELINE_VERSION =
 export const MEMORY_FACT_VERIFICATION_POLICY_VERSION =
   "memory-fact-verification-policy-v1";
 export const MEMORY_FACT_VERIFICATION_PROMPT_VERSION =
-  "memory-fact-verification-prompt-v1";
+  "memory-fact-verification-prompt-v2";
 export const MEMORY_FACT_VERIFICATION_SCHEMA_VERSION =
   "memory-fact-verification-schema-v1";
 

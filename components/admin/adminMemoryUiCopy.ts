@@ -128,7 +128,8 @@ const COPY: Readonly<Record<AdminMemoryLocale, Copy>> = {
 };
 
 export function adminMemoryCopy(locale: AdminMemoryLocale): Copy {
-  return COPY[locale];
+  void locale;
+  return COPY.EN;
 }
 
 export function adminMemoryOverallCopy(
@@ -173,7 +174,8 @@ export function adminMemoryOverallCopy(
       }
     }
   } as const;
-  return copy[locale][overall];
+  void locale;
+  return copy.EN[overall];
 }
 
 export function adminMemoryStateCopy(
@@ -211,23 +213,26 @@ export function adminMemoryStateCopy(
       WORKING: domain === "deletion" ? "Очистка выполняется" : "Обработка идёт нормально"
     }
   };
-  return values[locale][state] ?? state;
+  void locale;
+  return values.EN[state] ?? state;
 }
 
 export function adminMemoryCountCopy(
   locale: AdminMemoryLocale,
   band: AdminMemoryHealth["queue"]["active"]
 ): string {
+  void locale;
   return ({
     EN: { MANY: "Many", NONE: "None", SOME: "Some", UNKNOWN: "Unknown" },
     RU: { MANY: "Много", NONE: "Нет", SOME: "Есть", UNKNOWN: "Неизвестно" }
-  } as const)[locale][band];
+  } as const).EN[band];
 }
 
 export function adminMemoryLagCopy(
   locale: AdminMemoryLocale,
   lag: AdminMemoryHealth["queue"]["oldestLag"]
 ): string {
+  void locale;
   return ({
     EN: {
       NONE: "No active queue",
@@ -247,13 +252,14 @@ export function adminMemoryLagCopy(
       UNDER_5_MINUTES: "Менее 5 минут",
       UNKNOWN: "Неизвестно"
     }
-  } as const)[locale][lag];
+  } as const).EN[lag];
 }
 
 export function adminMemoryDestinationCopy(
   locale: AdminMemoryLocale,
   id: AdminMemoryDestinationId
 ): Readonly<{ description: string; label: string }> {
+  void locale;
   const rows = {
     EN: {
       answer_provider: {
@@ -292,13 +298,14 @@ export function adminMemoryDestinationCopy(
       }
     }
   } as const;
-  return rows[locale][id];
+  return rows.EN[id];
 }
 
 export function adminMemoryDestinationStateCopy(
   locale: AdminMemoryLocale,
   state: "AVAILABLE" | "BOUND_PER_RUN" | "REVIEW_REQUIRED" | "UNAVAILABLE"
 ): string {
+  void locale;
   return ({
     EN: {
       AVAILABLE: "Available",
@@ -312,5 +319,5 @@ export function adminMemoryDestinationStateCopy(
       REVIEW_REQUIRED: "Нужна проверка",
       UNAVAILABLE: "Не настроено"
     }
-  } as const)[locale][state];
+  } as const).EN[state];
 }

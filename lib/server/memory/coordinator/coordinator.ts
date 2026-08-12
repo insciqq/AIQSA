@@ -56,8 +56,9 @@ export class MemoryCoordinator {
   readonly #scheduler: MemoryScheduler;
   #pending: Promise<void> | null = null;
   #rerun = false;
+  #running = false;
   #stopped = false;
-  #timer: ReturnType<typeof setInterval> | null = null;
+  #timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(input: Readonly<{
     now?: () => Date;
@@ -79,17 +80,17 @@ export class MemoryCoordinator {
   }
 
   start(): void {
-    if (this.#timer) return;
+    if (this.#running) return;
+    this.#running = true;
     this.#stopped = false;
-    this.#timer = setInterval(() => this.kick(), this.#policy.intervalMs);
-    this.#timer.unref?.();
     this.kick();
   }
 
   stop(): void {
-    if (this.#timer) clearInterval(this.#timer);
+    if (this.#timer) clearTimeout(this.#timer);
     this.#timer = null;
     this.#rerun = false;
+    this.#running = false;
     this.#stopped = true;
     for (const controller of this.#activeControllers) {
       controller.abort(new Error("memory_coordinator_stopped"));
@@ -97,12 +98,33 @@ export class MemoryCoordinator {
   }
 
   kick(): void {
+    this.#schedule(true);
+  }
+
+  #armTimer(): void {
+    if (!this.#running || this.#stopped || this.#pending || this.#timer) return;
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      this.#schedule(false);
+    }, this.#policy.intervalMs);
+    this.#timer.unref?.();
+  }
+
+  #schedule(rerunIfPending: boolean): void {
     if (this.#stopped) return;
-    this.#rerun = true;
-    if (this.#pending) return;
+    if (this.#pending) {
+      if (rerunIfPending) this.#rerun = true;
+      return;
+    }
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = null;
     this.#pending = this.#drain().finally(() => {
       this.#pending = null;
-      if (this.#rerun) this.kick();
+      if (this.#rerun) {
+        this.kick();
+      } else {
+        this.#armTimer();
+      }
     });
   }
 

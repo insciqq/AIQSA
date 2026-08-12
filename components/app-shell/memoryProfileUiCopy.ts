@@ -1,4 +1,5 @@
 import type { MemoryUiLocale } from "@/lib/contracts/memory";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 
 const COPY = {
   EN: {
@@ -64,8 +65,8 @@ const COPY = {
 type MemoryProfileCopyKey = keyof typeof COPY.EN;
 
 export function memoryProfileUiCopy(
-  locale: MemoryUiLocale,
+  _locale: MemoryUiLocale,
   key: MemoryProfileCopyKey
 ): string {
-  return COPY[locale][key];
+  return COPY[MEMORY_PRESENTATION_LOCALE][key];
 }

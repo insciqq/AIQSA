@@ -24,6 +24,7 @@ describe("Memory coordinator policy", () => {
       AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_COST_MICROS: "900000",
       AIQSA_MEMORY_BACKGROUND_USER_DAILY_CALLS: "20",
       AIQSA_MEMORY_BACKGROUND_USER_DAILY_COST_MICROS: "90000",
+      AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: "30000",
       AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS: "20",
       AIQSA_MEMORY_DELETION_PARALLELISM: "2",
       AIQSA_MEMORY_JOB_CLAIMS_PER_PASS: "10",
@@ -35,6 +36,7 @@ describe("Memory coordinator policy", () => {
       backgroundInstallDailyCostMicrosLimit: 900_000,
       backgroundUserDailyCallLimit: 20,
       backgroundUserDailyCostMicrosLimit: 90_000,
+      intervalMs: 30_000,
       maxDeletionClaimsPerWorkerPass: 20,
       maxDeletionParallel: 2,
       maxJobClaimsPerWorkerPass: 10,
@@ -47,6 +49,7 @@ describe("Memory coordinator policy", () => {
     { AIQSA_MEMORY_JOB_PARALLELISM: "0" },
     { AIQSA_MEMORY_JOB_PARALLELISM: "1.5" },
     { AIQSA_MEMORY_JOB_PARALLELISM: " 2" },
+    { AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: "999" },
     {
       AIQSA_MEMORY_JOB_PARALLELISM: "2",
       AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "3"

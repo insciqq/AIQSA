@@ -68,6 +68,8 @@ const expectedConstraintNames = [
   "SearchOption_sourceConnectionId_fkey",
   "SearchStrategy_searchOptionId_fkey",
   "SystemModelPolicy_providerModelId_fkey",
+  "SystemModelPolicy_reasoningEffort_check",
+  "SystemModelPolicy_reasoning_target_check",
   "SystemModelPolicy_singleton_check",
   "SystemModelPolicy_version_check",
   "UsageEvent_knowledge_shape_check"
@@ -259,6 +261,8 @@ async function assertConstraintCatalog(): Promise<void> {
       'SearchOption_sourceConnectionId_fkey',
       'SearchStrategy_searchOptionId_fkey',
       'SystemModelPolicy_providerModelId_fkey',
+      'SystemModelPolicy_reasoningEffort_check',
+      'SystemModelPolicy_reasoning_target_check',
       'SystemModelPolicy_singleton_check',
       'SystemModelPolicy_version_check',
       'UsageEvent_knowledge_shape_check'

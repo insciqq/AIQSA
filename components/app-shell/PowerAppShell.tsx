@@ -85,6 +85,7 @@ import {
   type BranchCheckoutSettlement
 } from "@/components/app-shell/threadActions";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 import { useAnswerNotification } from "@/components/app-shell/useAnswerNotification";
 import { useChatContentSearch } from "@/components/app-shell/useChatContentSearch";
 import { useCommandPaletteActions } from "@/components/app-shell/useCommandPaletteActions";
@@ -289,6 +290,8 @@ export function PowerAppShell({
   const setShowToolActivity = useComposerControlStore((state) => state.setShowToolActivity);
   const settingsOpen = useSettingsDestinationStore((state) => state.settingsOpen);
   const settingsSection = useSettingsDestinationStore((state) => state.settingsSection);
+  const memoryOpen = useSettingsDestinationStore((state) => state.memoryOpen);
+  const closeMemoryWorkspace = useSettingsDestinationStore((state) => state.closeMemory);
   const openMemorySettings = useSettingsDestinationStore((state) => state.openMemorySettings);
   const openMcpSettings = useSettingsDestinationStore((state) => state.openMcpSettings);
   const openGeneralSettings = useSettingsDestinationStore((state) => state.openSettings);
@@ -315,7 +318,7 @@ export function PowerAppShell({
     },
     blockers: {
       projectSettingsOpen: Boolean(projectSettingsFolderId),
-      settingsOpen: settingsOpen || librarySnapshot.open || knowledgeSnapshot.open
+      settingsOpen: settingsOpen || memoryOpen || librarySnapshot.open || knowledgeSnapshot.open
     },
     onMobileWorkspaceClosed: workspaceInteraction.mobileWorkspaceClosed
   });
@@ -442,7 +445,7 @@ export function PowerAppShell({
     visibleMessages
   });
 
-  const memoryLocale = memorySettings?.settings.memoryUiLocale ?? "RU";
+  const memoryLocale = MEMORY_PRESENTATION_LOCALE;
   const composerTemporary = activeChat
     ? activeChat.memoryMode === "TEMPORARY" ||
       activeChat.pendingInitialMemoryMode === "TEMPORARY"
@@ -860,12 +863,26 @@ export function PowerAppShell({
     setShellNotice: setNotice
   });
   const openAssistantLibrary = () => {
+    closeMemoryWorkspace();
+    closeGeneralSettings();
     knowledgeLibraryActions.closeLibrary();
     assistantLibraryActions.openLibrary("discover");
   };
   const openKnowledgeLibrary = () => {
+    closeMemoryWorkspace();
+    closeGeneralSettings();
     assistantLibraryActions.closeLibrary();
     knowledgeLibraryActions.openLibrary();
+  };
+  const openMemoryWorkspace = () => {
+    assistantLibraryActions.closeLibrary();
+    knowledgeLibraryActions.closeLibrary();
+    openMemorySettings();
+  };
+  const openSettingsDestination = () => {
+    assistantLibraryActions.closeLibrary();
+    knowledgeLibraryActions.closeLibrary();
+    openGeneralSettings();
   };
   const [assistantPickerOpen, setAssistantPickerOpen] = useState(false);
   const [recentAssistantIds, setRecentAssistantIds] = useState<string[]>([]);
@@ -952,9 +969,11 @@ export function PowerAppShell({
     inspectorMode,
     inspectorPinningAvailable,
     knowledgeOpen: knowledgeSnapshot.open,
+    memoryOpen,
     openKnowledge: openKnowledgeLibrary,
     openLibrary: openAssistantLibrary,
-    openSettings: openGeneralSettings,
+    openMemory: openMemoryWorkspace,
+    openSettings: openSettingsDestination,
     searchOptions,
     selectModel,
     selectSearchStrategy,
@@ -1023,7 +1042,7 @@ export function PowerAppShell({
     currentModel,
     fetchRun,
     notifyAnswerReady,
-    openMemorySettings,
+    openMemorySettings: openMemoryWorkspace,
     persistActiveLeaf,
     primeAnswerSound,
     refreshActiveChat,
@@ -1143,7 +1162,7 @@ export function PowerAppShell({
       setNotice({
         kind: "success",
         text: resolveMemoryCopy(
-          settings.settings.memoryUiLocale,
+          MEMORY_PRESENTATION_LOCALE,
           response.mode === "EXCLUDED" ? "exclude.action" : "resume.action"
         )
       });
@@ -1232,7 +1251,7 @@ export function PowerAppShell({
         activateChat: (sourceChat) => activateChat(sourceChat, { preserveControls: true }),
         ...(fromSettings ? {
           closeResolvedOverlay: () => {
-            closeGeneralSettings();
+            closeMemoryWorkspace();
             settingsClosed = true;
           }
         } : {}),
@@ -1244,10 +1263,9 @@ export function PowerAppShell({
         resolveSource: resolveChatSource
       });
     } catch {
-      const locale = useMemorySettingsStore.getState().data?.settings.memoryUiLocale ?? "RU";
       const sourceNotice = {
         kind: "error" as const,
-        text: memoryUiCopy(locale, "receipt.sourceUnavailable")
+        text: memoryUiCopy(MEMORY_PRESENTATION_LOCALE, "receipt.sourceUnavailable")
       };
       if (fromSettings && !settingsClosed) setSettingsNotice(sourceNotice);
       else setNotice(sourceNotice);
@@ -1426,6 +1444,7 @@ export function PowerAppShell({
   } satisfies ShellDetailsView;
 
   const settingsView = {
+    closeMemory: closeMemoryWorkspace,
     closeSettings: closeGeneralSettings,
     dismissNotice: () => setSettingsNotice(null),
     knowledge: buildKnowledgeLibraryView(knowledgeLibraryActions, knowledgeSnapshot),
@@ -1450,10 +1469,11 @@ export function PowerAppShell({
       librarySnapshot
     ),
     notice: settingsNotice,
-    open: openGeneralSettings,
+    memory: { open: memoryOpen },
+    open: openSettingsDestination,
     openKnowledge: openKnowledgeLibrary,
     openLibrary: openAssistantLibrary,
-    openMemory: openMemorySettings,
+    openMemory: openMemoryWorkspace,
     openMemorySourceChat: (chatId: string) => {
       void openMemorySourceFromSettings(chatId);
     },

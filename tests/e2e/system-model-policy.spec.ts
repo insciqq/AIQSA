@@ -29,7 +29,9 @@ const capabilities = {
   nativePdfInput: false,
   nativeSearch: false,
   pdf: false,
-  reasoning: false,
+  defaultReasoningEffort: "medium",
+  reasoning: true,
+  reasoningEfforts: ["low", "medium", "high", "xhigh"],
   streaming: true,
   toolCalling: false,
   vision: false
@@ -44,6 +46,7 @@ const modelConfiguration = {
 
 let originalPolicy: {
   providerModelId: string | null;
+  reasoningEffort: string | null;
   updatedByUserId: string | null;
 } | null = null;
 
@@ -56,6 +59,7 @@ test.describe("system model policy", () => {
     });
     originalPolicy = {
       providerModelId: policy.providerModelId,
+      reasoningEffort: policy.reasoningEffort,
       updatedByUserId: policy.updatedByUserId
     };
     const now = new Date();
@@ -153,6 +157,7 @@ test.describe("system model policy", () => {
       await tx.systemModelPolicy.update({
         data: {
           providerModelId: null,
+          reasoningEffort: null,
           updatedByUserId: null,
           version: { increment: 1 }
         },
@@ -168,6 +173,7 @@ test.describe("system model policy", () => {
         await tx.systemModelPolicy.update({
           data: {
             providerModelId: originalPolicy!.providerModelId,
+            reasoningEffort: originalPolicy!.reasoningEffort,
             updatedByUserId: originalPolicy!.updatedByUserId,
             version: { increment: 1 }
           },
@@ -205,6 +211,7 @@ test.describe("system model policy", () => {
     await service.update({
       expectedVersion: initial.policy.version,
       providerModelId: fixture.modelId,
+      reasoningEffort: "xhigh",
       userId: fixture.adminId
     });
     const resolved = await resolver.resolve();
@@ -212,6 +219,7 @@ test.describe("system model policy", () => {
       credentialScope: "installation",
       ok: true,
       providerModelId: fixture.modelId,
+      reasoningEffort: "xhigh",
       role: {
         authority: {
           credentialId: fixture.credentialId,
@@ -257,6 +265,7 @@ test.describe("system model policy", () => {
     await service.update({
       expectedVersion: selected.policy.version,
       providerModelId: null,
+      reasoningEffort: null,
       userId: fixture.adminId
     });
     await expect(resolver.resolve()).resolves.toEqual({ code: SYSTEM_MODEL_ABSENT, ok: false });
@@ -269,6 +278,7 @@ test.describe("system model policy", () => {
     const deployment = page.getByLabel("Active answer model deployment");
     await expect(deployment).toBeVisible();
     await deployment.selectOption(fixture.modelId);
+    await expect(page.getByLabel("Reasoning effort")).toHaveValue("xhigh");
     await page.getByRole("button", { name: "Save system model" }).click();
     await expect(page.getByText("System model updated.", { exact: true })).toBeVisible();
     await expect(page.getByText("Status: Available.", { exact: true })).toBeVisible();
@@ -278,6 +288,7 @@ test.describe("system model policy", () => {
     await expect(response.json()).resolves.toMatchObject({
       systemModelPolicy: {
         policy: {
+          reasoningEffort: "xhigh",
           systemModel: { available: true, id: fixture.modelId }
         }
       }

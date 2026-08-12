@@ -49,7 +49,7 @@ describe("MemorySettingsSection", () => {
     vi.unstubAllGlobals();
   });
 
-  it("persists RU/EN locale, submits independent gates, and accepts exact current destinations", async () => {
+  it("presents English over a retained RU preference and submits independent gates", async () => {
     let server = memorySettingsFixture({
       egress: {
         acceptedAt: null,
@@ -67,17 +67,7 @@ describe("MemorySettingsSection", () => {
       if (init?.method === "GET") return json(server);
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       bodies.push(body);
-      if (body.memoryUiLocale === "EN") {
-        server = memorySettingsFixture({
-          capabilities: server.capabilities,
-          egress: server.egress,
-          settings: {
-            ...server.settings,
-            memoryUiLocale: "EN",
-            settingsRevision: server.settings.settingsRevision + 1
-          }
-        }, "EN");
-      } else if (typeof body.useMemoryFacts === "boolean") {
+      if (typeof body.useMemoryFacts === "boolean") {
         server = memorySettingsFixture({
           capabilities: server.capabilities,
           egress: server.egress,
@@ -87,7 +77,7 @@ describe("MemorySettingsSection", () => {
             settingsRevision: server.settings.settingsRevision + 1,
             useMemoryFacts: body.useMemoryFacts
           }
-        }, "EN");
+        }, "RU");
       } else {
         server = memorySettingsFixture({
           capabilities: server.capabilities,
@@ -103,35 +93,36 @@ describe("MemorySettingsSection", () => {
             memoryConsentRevision: server.settings.memoryConsentRevision + 1,
             settingsRevision: server.settings.settingsRevision + 1
           }
-        }, "EN");
+        }, "RU");
       }
       return json(server);
     }));
 
     render(<MemorySettingsSection {...sectionProps} />);
 
-    expect(await screen.findByRole("heading", { name: "Память" })).toBeVisible();
-    expect(screen.getByRole("switch", { name: "Использовать факты из памяти" })).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByText("current-destination-fingerprint-00000001")).not.toBeVisible();
-    fireEvent.click(screen.getByText("Расширенный режим", { exact: true }));
-    expect(screen.getByText("Текущий отпечаток назначений")).toBeVisible();
-    expect(screen.getByText("current-destination-fingerprint-00000001")).toBeVisible();
-    expect(screen.getByText("Перед продолжением внешней обработки Памяти требуется проверка.")).toBeVisible();
-
-    fireEvent.click(screen.getByRole("radio", { name: "English" }));
     expect(await screen.findByRole("heading", { name: "Memory" })).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Use memory facts" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByRole("radio", { name: "English" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Memory language")).not.toBeInTheDocument();
+    expect(screen.getByText("current-destination-fingerprint-00000001")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Advanced", { exact: true }));
+    expect(screen.getByText("Current destination fingerprint")).toBeVisible();
+    expect(screen.getByText("current-destination-fingerprint-00000001")).toBeVisible();
+    expect(screen.getByText(
+      "Review the current destinations before any affected external Memory processing continues."
+    )).toBeVisible();
+
     fireEvent.click(screen.getByRole("switch", { name: "Use memory facts" }));
     await waitFor(() => expect(screen.getByRole("switch", { name: "Use memory facts" })).toHaveAttribute("aria-checked", "true"));
     fireEvent.click(screen.getByRole("button", { name: "Accept current destinations" }));
     await waitFor(() => expect(screen.getByText("Current Memory destinations accepted.")).toBeVisible());
 
-    expect(bodies[0]).toEqual({ expectedSettingsRevision: 12, memoryUiLocale: "EN" });
-    expect(bodies[1]).toMatchObject({
+    expect(bodies[0]).toMatchObject({
       expectedMemoryRevision: 8,
-      expectedSettingsRevision: 13,
+      expectedSettingsRevision: 12,
       useMemoryFacts: true
     });
-    expect(bodies[2]).toMatchObject({
+    expect(bodies[1]).toMatchObject({
       confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
       currentUtilityEgressFingerprint: "current-destination-fingerprint-00000001"
     });
@@ -170,8 +161,8 @@ describe("MemorySettingsSection", () => {
     expect(within(capabilities).getAllByText("Unavailable")).toHaveLength(4);
   });
 
-  it("shows passive lexical indexing progress in the selected RU/EN locale", async () => {
-    let server = memorySettingsFixture({
+  it("shows passive lexical indexing progress in English over retained RU state", async () => {
+    const server = memorySettingsFixture({
       historyIndexing: {
         completedChats: 2,
         state: "INDEXING",
@@ -179,27 +170,10 @@ describe("MemorySettingsSection", () => {
       },
       settings: { referenceChatHistory: true }
     }, "RU");
-    vi.stubGlobal("fetch", withHealth(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === "PATCH") {
-        server = memorySettingsFixture({
-          historyIndexing: server.historyIndexing,
-          settings: {
-            ...server.settings,
-            memoryUiLocale: "EN",
-            settingsRevision: server.settings.settingsRevision + 1
-          }
-        }, "EN");
-      }
-      return json(server);
-    }));
+    vi.stubGlobal("fetch", withHealth(async () => json(server)));
 
     render(<MemorySettingsSection {...sectionProps} />);
 
-    expect(await screen.findByText("Индексируется 2 из 5 чатов")).toHaveAttribute(
-      "role",
-      "status"
-    );
-    fireEvent.click(screen.getByRole("radio", { name: "English" }));
     expect(await screen.findByText("Indexing 2 of 5 chats")).toHaveAttribute(
       "role",
       "status"

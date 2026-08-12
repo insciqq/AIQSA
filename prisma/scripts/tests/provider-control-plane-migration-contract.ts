@@ -12,6 +12,7 @@ const DISABLE_FAKE_MIGRATION = "20260731120000_disable_production_fake_provider"
 const MODEL_POLICY_MIGRATION = "20260808120000_model_default_policy";
 const SYSTEM_MODEL_POLICY_MIGRATION = "20260808130000_system_model_policy";
 const EMBEDDING_MODEL_CLASS_MIGRATION = "20260808140000_embedding_model_class";
+const SYSTEM_MODEL_REASONING_MIGRATION = "20260812193000_system_model_reasoning_effort";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -708,19 +709,52 @@ function runSystemModelPolicyMigrationChecks(): void {
       `UPDATE "SystemModelPolicy" SET "version" = 0 WHERE "id" = 'installation';`,
       /SystemModelPolicy_version_check/u
     );
+    requireSuccess(
+      psql(database, migrationSql(SYSTEM_MODEL_REASONING_MIGRATION)),
+      "apply system model reasoning migration"
+    );
+    assert.equal(
+      scalar(database, `SELECT COALESCE("reasoningEffort", 'null')
+        FROM "SystemModelPolicy" WHERE "id" = 'installation';`),
+      "null"
+    );
+    expectDatabaseRejection(
+      database,
+      "system model reasoning without a target",
+      `UPDATE "SystemModelPolicy" SET "reasoningEffort" = 'xhigh'
+       WHERE "id" = 'installation';`,
+      /SystemModelPolicy_reasoning_target_check/u
+    );
     requireSuccess(psql(database, `
       UPDATE "SystemModelPolicy"
       SET "providerModelId" = 'system-policy-model',
+          "reasoningEffort" = 'xhigh',
           "updatedByUserId" = 'system-policy-admin',
           "updatedAt" = CURRENT_TIMESTAMP
       WHERE "id" = 'installation';
+    `), "set system model target and reasoning effort");
+    expectDatabaseRejection(
+      database,
+      "invalid system model reasoning effort",
+      `UPDATE "SystemModelPolicy" SET "reasoningEffort" = ' xhigh'
+       WHERE "id" = 'installation';`,
+      /SystemModelPolicy_reasoningEffort_check/u
+    );
+    expectDatabaseRejection(
+      database,
+      "clear system model while reasoning remains selected",
+      `UPDATE "SystemModelPolicy" SET "providerModelId" = NULL
+       WHERE "id" = 'installation';`,
+      /SystemModelPolicy_reasoning_target_check/u
+    );
+    requireSuccess(psql(database, `
       DELETE FROM "User" WHERE "id" = 'system-policy-admin';
-    `), "set system model target and delete its administrator");
+    `), "delete the system model policy administrator");
     assert.equal(
       scalar(database, `SELECT concat_ws('|',
-        "providerModelId", COALESCE("updatedByUserId", 'null')
+        "providerModelId", "reasoningEffort", COALESCE("updatedByUserId", 'null')
       ) FROM "SystemModelPolicy" WHERE "id" = 'installation';`),
-      "system-policy-model|null"
+      "system-policy-model|xhigh|null"
     );
     expectDatabaseRejection(
       database,
@@ -860,7 +894,7 @@ function main(): void {
   }
 
   process.stdout.write(
-    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, composite lineage, Fake withdrawal, installation model-policy foundations, and embedding model classes verified.\n"
+    "AIQSA provider migration contract ok: fail-closed legacy conversion, context repair, run-profile mapping, composite lineage, Fake withdrawal, installation model-policy and reasoning foundations, and embedding model classes verified.\n"
   );
 }
 

@@ -1,4 +1,5 @@
 import type { MemoryUiLocale } from "@/lib/contracts/memory";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 
 const COPY = {
   EN: {
@@ -78,8 +79,8 @@ const COPY = {
 export type PermanentChatDeletionUiCopyKey = keyof typeof COPY.EN;
 
 export function permanentChatDeletionUiCopy(
-  locale: MemoryUiLocale,
+  _locale: MemoryUiLocale,
   key: PermanentChatDeletionUiCopyKey
 ): string {
-  return COPY[locale][key];
+  return COPY[MEMORY_PRESENTATION_LOCALE][key];
 }

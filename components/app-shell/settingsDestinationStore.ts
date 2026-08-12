@@ -1,13 +1,15 @@
 import { create } from "zustand";
 
-export type SettingsSection = "appearance" | "memory" | "mcp";
+export type SettingsSection = "appearance" | "mcp";
 
 export type SettingsDestinationSnapshot = {
+  memoryOpen: boolean;
   settingsOpen: boolean;
   settingsSection: SettingsSection;
 };
 
 export type SettingsDestinationStore = SettingsDestinationSnapshot & {
+  closeMemory(): void;
   closeSettings(): void;
   openMemorySettings(): void;
   openMcpSettings(): void;
@@ -15,23 +17,27 @@ export type SettingsDestinationStore = SettingsDestinationSnapshot & {
 };
 
 export const initialSettingsDestinationSnapshot: SettingsDestinationSnapshot = {
+  memoryOpen: false,
   settingsOpen: false,
   settingsSection: "appearance"
 };
 
 export const useSettingsDestinationStore = create<SettingsDestinationStore>((set) => ({
   ...initialSettingsDestinationSnapshot,
+  closeMemory() {
+    set({ memoryOpen: false });
+  },
   closeSettings() {
     set({ settingsOpen: false });
   },
   openMemorySettings() {
-    set({ settingsOpen: true, settingsSection: "memory" });
+    set({ memoryOpen: true, settingsOpen: false });
   },
   openMcpSettings() {
-    set({ settingsOpen: true, settingsSection: "mcp" });
+    set({ memoryOpen: false, settingsOpen: true, settingsSection: "mcp" });
   },
   openSettings() {
-    set({ settingsOpen: true, settingsSection: "appearance" });
+    set({ memoryOpen: false, settingsOpen: true, settingsSection: "appearance" });
   }
 }));
 

@@ -301,10 +301,14 @@ export type ShellDetailsView = {
 };
 
 export type ShellSettingsView = {
+  closeMemory(): void;
   closeSettings(): void;
   dismissNotice(): void;
   knowledge: KnowledgeLibraryView | null;
   library: AssistantLibraryView | null;
+  memory: {
+    open: boolean;
+  };
   notice: Notice | null;
   open(): void;
   openKnowledge(): void;

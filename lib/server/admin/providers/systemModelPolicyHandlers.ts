@@ -75,13 +75,19 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         !(value.providerModelId === null || typeof value.providerModelId === "string" &&
           value.providerModelId.trim() === value.providerModelId &&
           value.providerModelId.length > 0 && value.providerModelId.length <= 256 &&
-          !/[\u0000-\u001f\u007f]/u.test(value.providerModelId))) {
+          !/[\u0000-\u001f\u007f]/u.test(value.providerModelId)) ||
+        !(value.reasoningEffort === null || typeof value.reasoningEffort === "string" &&
+          value.reasoningEffort.trim() === value.reasoningEffort &&
+          value.reasoningEffort.length > 0 && value.reasoningEffort.length <= 32 &&
+          !/[\u0000-\u001f\u007f]/u.test(value.reasoningEffort)) ||
+        value.providerModelId === null && value.reasoningEffort !== null) {
         return Response.json({ error: "system_model_policy_update_invalid" }, { status: 400 });
       }
       try {
         await input.service.update({
           expectedVersion: Number(value.expectedVersion),
           providerModelId: value.providerModelId,
+          reasoningEffort: value.reasoningEffort,
           userId: auth.session.userId
         });
         return Response.json({ systemModelPolicy: await input.service.list() });

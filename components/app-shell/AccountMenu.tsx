@@ -1,4 +1,4 @@
-import { BookOpen, ChevronDown, ChevronUp, Command, LogOut, ScrollText, Settings, Shield, UserRound } from "lucide-react";
+import { BookOpen, Brain, ChevronDown, ChevronUp, Command, LogOut, ScrollText, Settings, Shield, UserRound } from "lucide-react";
 import {
   forwardRef,
   useEffect,
@@ -131,6 +131,7 @@ export type AccountMenuProps = {
   onClose(): void;
   onOpenKnowledge(): void;
   onOpenLibrary(): void;
+  onOpenMemory(): void;
   onOpenPalette(): void;
   onOpenSettings(): void;
   onSignOut(): void;
@@ -157,6 +158,7 @@ export function AccountMenu({
   onClose,
   onOpenKnowledge,
   onOpenLibrary,
+  onOpenMemory,
   onOpenPalette,
   onOpenSettings,
   onSignOut,
@@ -333,6 +335,16 @@ export function AccountMenu({
         >
           <BookOpen className="size-4 text-ink-muted" aria-hidden="true" />
           Knowledge
+        </button>
+        <button
+          className={menuItemClass}
+          type="button"
+          role="menuitem"
+          disabled={signingOut}
+          onClick={() => replaceMenuWith(onOpenMemory)}
+        >
+          <Brain className="size-4 text-ink-muted" aria-hidden="true" />
+          Memory
         </button>
         <button
           className={menuItemClass}

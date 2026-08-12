@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const LEGACY_PRIVATE_PATHS = [
+  "agent_docs/PRD",
   "agent_docs/active_tasks",
   "agent_docs/backlog",
   "agent_docs/done_tasks",

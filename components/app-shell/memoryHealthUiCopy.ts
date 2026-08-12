@@ -1,5 +1,6 @@
 import type { MemoryUiLocale } from "@/lib/contracts/memory";
 import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 
 export const MEMORY_HEALTH_UI_COPY_KEYS = [
   "checking",
@@ -165,10 +166,10 @@ const RU = {
 } satisfies Copy;
 
 export function memoryHealthUiCopy(
-  locale: MemoryUiLocale,
+  _locale: MemoryUiLocale,
   key: MemoryHealthUiCopyKey
 ): string {
-  return (locale === "RU" ? RU : EN)[key];
+  return (MEMORY_PRESENTATION_LOCALE === "EN" ? EN : RU)[key];
 }
 
 export function memoryHealthStateCopy(

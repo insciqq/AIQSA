@@ -27,7 +27,7 @@ function formatDate(locale: MemoryUiLocale, value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? ""
-    : new Intl.DateTimeFormat(locale === "RU" ? "ru-RU" : "en-US", {
+    : new Intl.DateTimeFormat("en-US", {
         dateStyle: "medium",
         timeStyle: "short"
       }).format(date);
@@ -55,7 +55,7 @@ export function ArchivedChatsDialog({
     (state) => Boolean(state.target) || state.statusOpen
   );
   const dialogRef = useDialogFocus<HTMLDivElement>({ onClose: closeArchivedChats });
-  const ru = locale === "RU";
+  const ru = false;
 
   async function restore(): Promise<void> {
     const chatId = await restoreArchivedChat();

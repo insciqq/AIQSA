@@ -44,6 +44,7 @@ export function getAdminSystemModelPolicy(fetcher: Fetcher = fetch) {
 export function updateAdminSystemModelPolicy(input: Readonly<{
   expectedVersion: number;
   providerModelId: string | null;
+  reasoningEffort: string | null;
 }>, fetcher: Fetcher = fetch) {
   return request({
     body: JSON.stringify(input),
@@ -57,6 +58,7 @@ export function adminSystemModelPolicyErrorMessage(code: string): string {
     network_error: "The system model policy could not be reached.",
     system_model_policy_admin_action_failed: "The system model policy could not be updated.",
     system_model_policy_response_invalid: "The system model policy response was invalid.",
+    system_model_policy_reasoning_unavailable: "Choose a reasoning effort advertised by the selected system model.",
     system_model_policy_stale: "The system model changed elsewhere. Reload and apply your choice again.",
     system_model_policy_target_unavailable: "Choose an answer model available through your administrator provider access."
   };

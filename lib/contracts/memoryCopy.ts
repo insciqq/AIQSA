@@ -3,6 +3,7 @@ import {
   MEMORY_UI_LOCALES,
   type MemoryUiLocale
 } from "./memory";
+import { MEMORY_PRESENTATION_LOCALE } from "./memoryPresentation";
 
 export { MEMORY_CONFIRMATION_COPY_VERSION };
 
@@ -161,7 +162,7 @@ export function resolveMemoryCopy(
   if (!memoryCopyCatalogIsComplete(catalog)) {
     throw new MemoryCopyContractError(locale, key);
   }
-  const value = catalog[locale][key];
+  const value = catalog[MEMORY_PRESENTATION_LOCALE][key];
   if (!value) throw new MemoryCopyContractError(locale, key);
   return value;
 }

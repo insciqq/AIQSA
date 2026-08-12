@@ -1,4 +1,5 @@
 import type { MemoryUiLocale } from "@/lib/contracts/memory";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 
 export const MEMORY_HISTORY_UI_COPY_KEYS = [
   "entry",
@@ -148,8 +149,8 @@ const COPY: Readonly<Record<MemoryUiLocale, MemoryHistoryUiCopyLocale>> =
   Object.freeze({ EN: Object.freeze(EN), RU: Object.freeze(RU) });
 
 export function memoryHistoryUiCopy(
-  locale: MemoryUiLocale,
+  _locale: MemoryUiLocale,
   key: MemoryHistoryUiCopyKey
 ): string {
-  return COPY[locale][key];
+  return COPY[MEMORY_PRESENTATION_LOCALE][key];
 }

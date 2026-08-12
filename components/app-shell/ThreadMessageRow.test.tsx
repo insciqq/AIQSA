@@ -1175,7 +1175,7 @@ describe("ThreadMessageRow", () => {
     expect(screen.queryByTestId("thread-memory-evidence")).not.toBeInTheDocument();
   });
 
-  it("announces only durable action feedback with the persisted Memory locale", () => {
+  it("announces durable action feedback in English over a retained RU locale", () => {
     useMemorySettingsStore.setState({
       data: { settings: { memoryUiLocale: "RU" } } as never,
       loadState: "ready"
@@ -1187,7 +1187,7 @@ describe("ThreadMessageRow", () => {
     });
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Забыто."
+      "Forgotten."
     );
     rerender(<ThreadMessageRow
       {...props}

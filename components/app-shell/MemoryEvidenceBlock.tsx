@@ -21,6 +21,7 @@ import type {
   MemoryReceipt,
   MemoryUiLocale
 } from "@/lib/contracts/memory";
+import { memoryPresentationIsRussian } from "@/lib/contracts/memoryPresentation";
 import { Brain, Check, ChevronDown, ChevronRight, Pencil, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -71,7 +72,7 @@ export function MemoryEvidenceBlock({
       item.feedbackState === "RECORDED" ? "RECORDED" : "AVAILABLE"
     ])));
   const [feedbackUndo, setFeedbackUndo] = useState<Record<number, string>>({});
-  const ru = locale === "RU";
+  const ru = memoryPresentationIsRussian(locale);
 
   const markIncorrect = async (item: MemoryReceipt["items"][number]) => {
     if (!item.factId || !item.versionId || !item.runId || !item.runItemId) return;

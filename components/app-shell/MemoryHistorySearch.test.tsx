@@ -71,7 +71,7 @@ describe("MemoryHistorySearch", () => {
     vi.unstubAllGlobals();
   });
 
-  it("focuses the nested task, localizes filters, and cancels an abortable private request", async () => {
+  it("keeps English controls over retained RU data and cancels an abortable private request", async () => {
     const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
@@ -87,18 +87,18 @@ describe("MemoryHistorySearch", () => {
       />
     );
 
-    const heading = screen.getByRole("heading", { name: "Поиск по истории чатов" });
+    const heading = screen.getByRole("heading", { name: "Search chat history" });
     await waitFor(() => expect(heading).toHaveFocus());
-    fireEvent.click(screen.getByText("Ограничить источники"));
-    fireEvent.change(screen.getByLabelText("Поиск по истории"), {
+    fireEvent.click(screen.getByText("Limit the source trail"));
+    fireEvent.change(screen.getByLabelText("History search"), {
       target: { value: "закрытое архитектурное решение" }
     });
-    fireEvent.change(screen.getByLabelText("Чат"), { target: { value: "chat-live" } });
-    fireEvent.change(screen.getByLabelText("Папка"), { target: { value: "folder-1" } });
-    fireEvent.change(screen.getByLabelText("Начиная с даты"), { target: { value: "2026-08-01" } });
-    fireEvent.click(screen.getByRole("button", { name: "Найти в истории" }));
+    fireEvent.change(screen.getByLabelText("Chat"), { target: { value: "chat-live" } });
+    fireEvent.change(screen.getByLabelText("Folder"), { target: { value: "folder-1" } });
+    fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-08-01" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search history" }));
 
-    expect(await screen.findByRole("button", { name: "Отменить поиск" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Cancel search" })).toBeVisible();
     const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(path).toBe("/api/me/memory/history/search");
     expect(path).not.toContain("архитектурное");
@@ -108,9 +108,9 @@ describe("MemoryHistorySearch", () => {
       from: "2026-08-01T00:00:00.000Z",
       query: "закрытое архитектурное решение"
     });
-    fireEvent.click(screen.getByRole("button", { name: "Отменить поиск" }));
-    expect(await screen.findByText("Поиск отменён. Запрос и фильтры сохранены.")).toBeVisible();
-    expect(screen.getByLabelText("Поиск по истории")).toHaveValue("закрытое архитектурное решение");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel search" }));
+    expect(await screen.findByText("Search cancelled. Your query and filters are still here.")).toBeVisible();
+    expect(screen.getByLabelText("History search")).toHaveValue("закрытое архитектурное решение");
   });
 
   it("renders a flat source trail and opens an archived owner-only preview target", async () => {

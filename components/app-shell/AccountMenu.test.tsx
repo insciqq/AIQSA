@@ -13,6 +13,7 @@ type HarnessProps = {
   adminHref?: string | null;
   onOpenKnowledge?(): void;
   onOpenLibrary?(): void;
+  onOpenMemory?(): void;
   onOpenPalette?(): void;
   onOpenSettings?(): void;
   onSignOut?(): void;
@@ -25,6 +26,7 @@ function DesktopAccountHarness({
   adminHref = null,
   onOpenKnowledge = () => undefined,
   onOpenLibrary = () => undefined,
+  onOpenMemory = () => undefined,
   onOpenPalette = () => undefined,
   onOpenSettings = () => undefined,
   onSignOut = () => undefined,
@@ -66,6 +68,7 @@ function DesktopAccountHarness({
           onClose={() => setOpen(false)}
           onOpenKnowledge={onOpenKnowledge}
           onOpenLibrary={onOpenLibrary}
+          onOpenMemory={onOpenMemory}
           onOpenPalette={onOpenPalette}
           onOpenSettings={onOpenSettings}
           onSignOut={onSignOut}
@@ -109,6 +112,7 @@ function MobileAccountHarness({ signingOut = false }: { signingOut?: boolean }) 
           onClose={() => setOpen(false)}
           onOpenKnowledge={() => undefined}
           onOpenLibrary={() => undefined}
+          onOpenMemory={() => undefined}
           onOpenPalette={() => undefined}
           onOpenSettings={() => undefined}
           onSignOut={() => undefined}

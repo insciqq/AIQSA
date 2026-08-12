@@ -100,6 +100,6 @@ describe("Memory UI copy", () => {
     expect(memoryReceiptUsageLabel("EN", receipt))
       .toBe("1 memory and 1 previous chat used");
     expect(memoryReceiptUsageLabel("RU", receipt))
-      .toBe("Использовано: 1 воспоминание и 1 предыдущий чат");
+      .toBe("1 memory and 1 previous chat used");
   });
 });

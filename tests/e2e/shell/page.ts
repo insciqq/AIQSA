@@ -2,7 +2,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 export async function runAccountMenuAction(
   page: Page,
-  name: "Command palette" | "Assistants" | "Knowledge" | "Settings"
+  name: "Command palette" | "Assistants" | "Knowledge" | "Memory" | "Settings"
 ): Promise<Locator> {
   const railTrigger = page.getByTestId("workspace-icon-rail").getByRole("button", { name: "Account" });
   if (await railTrigger.isVisible()) {

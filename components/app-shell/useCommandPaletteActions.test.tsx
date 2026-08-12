@@ -7,12 +7,13 @@ function renderActions(
   mode: InspectorMode,
   pinningAvailable = false,
   workspaceReady = true,
-  surface: "assistants" | "knowledge" | "settings" | null = null
+  surface: "assistants" | "knowledge" | "memory" | "settings" | null = null
 ) {
   const setInspectorMode = vi.fn();
   const closePalette = vi.fn();
   const openKnowledge = vi.fn();
   const openLibrary = vi.fn();
+  const openMemory = vi.fn();
   const openSettings = vi.fn();
   const { result } = renderHook(() =>
     useCommandPaletteActions({
@@ -28,8 +29,10 @@ function renderActions(
       inspectorMode: mode,
       inspectorPinningAvailable: pinningAvailable,
       knowledgeOpen: surface === "knowledge",
+      memoryOpen: surface === "memory",
       openKnowledge,
       openLibrary,
+      openMemory,
       openSettings,
       searchOptions: [],
       selectModel: vi.fn(),
@@ -42,7 +45,7 @@ function renderActions(
     })
   );
 
-  return { closePalette, openKnowledge, openLibrary, openSettings, result, setInspectorMode };
+  return { closePalette, openKnowledge, openLibrary, openMemory, openSettings, result, setInspectorMode };
 }
 
 describe("useCommandPaletteActions", () => {
@@ -102,6 +105,7 @@ describe("useCommandPaletteActions", () => {
   it.each([
     ["assistants", "action:open-library"],
     ["knowledge", "action:open-knowledge"],
+    ["memory", "action:open-memory"],
     ["settings", "action:open-settings"]
   ] as const)("marks only the active %s workspace destination current", (surface, currentId) => {
     const current = renderActions("closed", false, true, surface).result.current.commandItems
@@ -193,8 +197,10 @@ describe("useCommandPaletteActions", () => {
         inspectorMode: "closed",
         inspectorPinningAvailable: false,
         knowledgeOpen: false,
+        memoryOpen: false,
         openKnowledge,
         openLibrary,
+        openMemory: vi.fn(),
         openSettings: vi.fn(),
         searchOptions: catalog.searchStrategies,
         selectModel,

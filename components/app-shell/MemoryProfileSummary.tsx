@@ -29,7 +29,7 @@ function t(locale: MemoryUiLocale, key: Parameters<typeof memoryProfileUiCopy>[1
 function updatedLabel(locale: MemoryUiLocale, value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat(locale === "RU" ? "ru-RU" : "en-US", {
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(date);

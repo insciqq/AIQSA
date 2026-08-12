@@ -14,7 +14,9 @@ const activeConfiguration = {
     nativePdfInput: false,
     nativeSearch: false,
     pdf: false,
-    reasoning: false,
+    defaultReasoningEffort: "medium",
+    reasoning: true,
+    reasoningEfforts: ["low", "medium", "high", "xhigh"],
     vision: false
   },
   defaultParams: {},
@@ -60,6 +62,7 @@ describe("administrator system model policy service", () => {
         findUnique: vi.fn().mockResolvedValue({
           providerModel: target,
           providerModelId: "model-old",
+          reasoningEffort: "xhigh",
           updatedAt: NOW,
           updatedBy: { displayName: "Administrator", id: "admin-1" },
           version: 4
@@ -73,16 +76,21 @@ describe("administrator system model policy service", () => {
       candidates: [{
         connectionDisplayName: "Answer provider",
         connectionId: "connection-1",
+        defaultReasoningEffort: "medium",
         displayName: "Answer model",
-        id: "model-1"
+        id: "model-1",
+        reasoningEfforts: ["low", "medium", "high", "xhigh"]
       }],
       policy: {
+        reasoningEffort: "xhigh",
         systemModel: {
           available: false,
           connectionDisplayName: "Answer provider",
           connectionId: "connection-1",
+          defaultReasoningEffort: "medium",
           displayName: "Answer model",
-          id: "model-old"
+          id: "model-old",
+          reasoningEfforts: ["low", "medium", "high", "xhigh"]
         },
         updatedAt: NOW.toISOString(),
         updatedBy: { displayName: "Administrator", id: "admin-1" },
@@ -99,6 +107,7 @@ describe("administrator system model policy service", () => {
         findUnique: vi.fn().mockResolvedValue({
           providerModel: target,
           providerModelId: "model-1",
+          reasoningEffort: "xhigh",
           updatedAt: NOW,
           updatedBy: { displayName: "Administrator", id: "admin-1" },
           version: 5
@@ -113,6 +122,7 @@ describe("administrator system model policy service", () => {
         ok: true,
         policyVersion: 5,
         providerModelId: "model-1",
+        reasoningEffort: "xhigh",
         role
       })
     }).list()).resolves.toMatchObject({
@@ -121,7 +131,9 @@ describe("administrator system model policy service", () => {
   });
 
   it("locks, revalidates administrator access, and validates installation authority", async () => {
-    const loadRole = vi.fn().mockResolvedValue({});
+    const loadRole = vi.fn().mockResolvedValue({
+      snapshot: { model: { capabilities: { reasoning: true, reasoningEfforts: ["xhigh"] } } }
+    });
     const update = vi.fn().mockResolvedValue({});
     const tx = {
       $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]),
@@ -135,6 +147,7 @@ describe("administrator system model policy service", () => {
     await createAdminSystemModelPolicyService(prisma, { loadRole }).update({
       expectedVersion: 3,
       providerModelId: "model-1",
+      reasoningEffort: "xhigh",
       userId: "admin-1"
     });
 
@@ -144,11 +157,64 @@ describe("administrator system model policy service", () => {
     expect(update).toHaveBeenCalledWith({
       data: {
         providerModelId: "model-1",
+        reasoningEffort: "xhigh",
         updatedByUserId: "admin-1",
         version: { increment: 1 }
       },
       where: { id: "installation" }
     });
+  });
+
+  it("rejects a reasoning effort the selected deployment does not advertise", async () => {
+    const update = vi.fn();
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]),
+      systemModelPolicy: { update },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) => operation(tx))
+    } as unknown as PrismaClient;
+
+    await expect(createAdminSystemModelPolicyService(prisma, {
+      loadRole: vi.fn().mockResolvedValue({
+        snapshot: {
+          model: {
+            capabilities: { reasoning: true, reasoningEfforts: ["low", "medium"] }
+          }
+        }
+      })
+    }).update({
+      expectedVersion: 3,
+      providerModelId: "model-1",
+      reasoningEffort: "xhigh",
+      userId: "admin-1"
+    })).rejects.toEqual(
+      new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable")
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("rejects reasoning without a selected system model", async () => {
+    const update = vi.fn();
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]),
+      systemModelPolicy: { update },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) => operation(tx))
+    } as unknown as PrismaClient;
+
+    await expect(createAdminSystemModelPolicyService(prisma).update({
+      expectedVersion: 3,
+      providerModelId: null,
+      reasoningEffort: "xhigh",
+      userId: "admin-1"
+    })).rejects.toEqual(
+      new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable")
+    );
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("rejects stale state and unavailable administrator model access", async () => {
@@ -164,6 +230,7 @@ describe("administrator system model policy service", () => {
     await expect(createAdminSystemModelPolicyService(stalePrisma).update({
       expectedVersion: 1,
       providerModelId: null,
+      reasoningEffort: null,
       userId: "admin-1"
     })).rejects.toEqual(new AdminSystemModelPolicyServiceError("system_model_policy_stale"));
 
@@ -181,6 +248,7 @@ describe("administrator system model policy service", () => {
     }).update({
       expectedVersion: 2,
       providerModelId: "model-1",
+      reasoningEffort: null,
       userId: "admin-1"
     })).rejects.toEqual(
       new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable")
@@ -201,6 +269,7 @@ describe("administrator system model policy service", () => {
       await expect(createAdminSystemModelPolicyService(prisma).update({
         expectedVersion: 1,
         providerModelId: null,
+        reasoningEffort: null,
         userId: "admin-1"
       })).rejects.toEqual(new AdminSystemModelPolicyServiceError(expected));
     }

@@ -25,6 +25,7 @@ export function AdminProviderSystemModelTask({
 }>) {
   const [catalog, setCatalog] = useState<AdminSystemModelPolicyCatalog | null>(null);
   const [selectedId, setSelectedId] = useState("");
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,10 +43,20 @@ export function AdminProviderSystemModelTask({
   const deploymentLabel = (deployment: AdminSystemModelPolicyCatalog["candidates"][number]) =>
     `${connectionLabels.get(deployment.connectionId) ?? deployment.connectionDisplayName} / ${deployment.displayName}`;
   const currentId = catalog?.policy.systemModel?.id ?? "";
-  const draftDirty = Boolean(catalog) && selectedId !== currentId;
+  const currentReasoningEffort = catalog?.policy.reasoningEffort ?? "";
+  const selectedDeployment = selectedId
+    ? catalog?.candidates.find((candidate) => candidate.id === selectedId) ??
+      (catalog?.policy.systemModel?.id === selectedId ? catalog.policy.systemModel : null)
+    : null;
+  const draftDirty = Boolean(catalog) && (
+    selectedId !== currentId || selectedReasoningEffort !== currentReasoningEffort
+  );
   const requestDraftDiscard = useAdminDraftProtection({
     dirty: draftDirty,
-    onDiscard: () => setSelectedId(currentId),
+    onDiscard: () => {
+      setSelectedId(currentId);
+      setSelectedReasoningEffort(currentReasoningEffort);
+    },
     owner: "provider-system-model-policy",
     pending: draftDirty && busy
   });
@@ -53,6 +64,7 @@ export function AdminProviderSystemModelTask({
   const apply = useCallback((next: AdminSystemModelPolicyCatalog) => {
     setCatalog(next);
     setSelectedId(next.policy.systemModel?.id ?? "");
+    setSelectedReasoningEffort(next.policy.reasoningEffort ?? "");
   }, []);
 
   const refresh = useCallback(async () => {
@@ -84,14 +96,15 @@ export function AdminProviderSystemModelTask({
     };
   }, [active, catalog, loading, refresh]);
 
-  const save = async (providerModelId: string | null) => {
+  const save = async (providerModelId: string | null, reasoningEffort: string | null) => {
     if (!catalog || busy) return;
     setBusy(true);
     setError(null);
     setNotice(null);
     const result = await updateAdminSystemModelPolicy({
       expectedVersion: catalog.policy.version,
-      providerModelId
+      providerModelId,
+      reasoningEffort
     });
     setBusy(false);
     if (!result.ok) {
@@ -104,8 +117,28 @@ export function AdminProviderSystemModelTask({
   };
 
   const canSave = Boolean(catalog) && (
-    selectedId !== currentId || Boolean(catalog?.policy.systemModel?.available === false)
+    selectedId !== currentId || selectedReasoningEffort !== currentReasoningEffort ||
+    Boolean(catalog?.policy.systemModel?.available === false)
   );
+
+  function selectDeployment(providerModelId: string) {
+    setSelectedId(providerModelId);
+    if (!providerModelId) {
+      setSelectedReasoningEffort("");
+      return;
+    }
+    const deployment = catalog?.candidates.find((candidate) => candidate.id === providerModelId) ??
+      (catalog?.policy.systemModel?.id === providerModelId ? catalog.policy.systemModel : null);
+    if (!deployment) {
+      setSelectedReasoningEffort("");
+      return;
+    }
+    setSelectedReasoningEffort((current) => {
+      if (current && deployment.reasoningEfforts.includes(current)) return current;
+      if (deployment.reasoningEfforts.includes("xhigh")) return "xhigh";
+      return deployment.defaultReasoningEffort ?? "";
+    });
+  }
 
   return (
     <section
@@ -142,7 +175,7 @@ export function AdminProviderSystemModelTask({
             <div className="border-l-2 border-proof/60 pl-3 text-xs leading-5 text-ink-secondary">
               <p>
                 Current: {catalog.policy.systemModel
-                  ? deploymentLabel(catalog.policy.systemModel)
+                  ? `${deploymentLabel(catalog.policy.systemModel)} · reasoning ${catalog.policy.reasoningEffort ?? "provider default"}`
                   : "None"}.
               </p>
               {catalog.policy.systemModel ? (
@@ -156,7 +189,7 @@ export function AdminProviderSystemModelTask({
               <p>Policy version: {catalog.policy.version}.</p>
               {catalog.policy.updatedBy ? (
                 <p>
-                  Provider access resolves as {catalog.policy.updatedBy.displayName}, the administrator who last saved this role.
+                  Last saved by {catalog.policy.updatedBy.displayName}.
                 </p>
               ) : null}
             </div>
@@ -167,7 +200,7 @@ export function AdminProviderSystemModelTask({
                 className={inputClass}
                 disabled={busy || loading}
                 id="system-model-deployment"
-                onChange={(event) => setSelectedId(event.currentTarget.value)}
+                onChange={(event) => selectDeployment(event.currentTarget.value)}
                 value={selectedId}
               >
                 <option value="">No system model</option>
@@ -185,15 +218,37 @@ export function AdminProviderSystemModelTask({
               </select>
             </label>
 
+            <label className="grid gap-1.5 text-xs font-medium text-ink-secondary" htmlFor="system-model-reasoning-effort">
+              Reasoning effort
+              <select
+                className={inputClass}
+                disabled={busy || loading || !selectedDeployment}
+                id="system-model-reasoning-effort"
+                onChange={(event) => setSelectedReasoningEffort(event.currentTarget.value)}
+                value={selectedReasoningEffort}
+              >
+                <option value="">Provider default</option>
+                {selectedReasoningEffort &&
+                  !selectedDeployment?.reasoningEfforts.includes(selectedReasoningEffort) ? (
+                    <option disabled value={selectedReasoningEffort}>
+                      Unavailable — {selectedReasoningEffort}
+                    </option>
+                  ) : null}
+                {(selectedDeployment?.reasoningEfforts ?? []).map((effort) => (
+                  <option key={effort} value={effort}>{effort}</option>
+                ))}
+              </select>
+            </label>
+
             <p className="text-xs leading-5 text-ink-muted">
-              Re-saving binds credential resolution to your current direct, group, or connection-default administrator access.
+              Runtime uses the selected connection&apos;s installation-default credential. Reasoning choices are limited to capabilities advertised by that deployment.
             </p>
 
             <div className="flex flex-wrap items-center gap-2">
               <button
                 className={primaryButton}
                 disabled={busy || !canSave}
-                onClick={() => void save(selectedId || null)}
+                onClick={() => void save(selectedId || null, selectedId ? selectedReasoningEffort || null : null)}
                 type="button"
               >
                 Save system model
@@ -201,7 +256,7 @@ export function AdminProviderSystemModelTask({
               <button
                 className={quietButton}
                 disabled={busy || catalog.policy.systemModel === null}
-                onClick={() => void save(null)}
+                onClick={() => void save(null, null)}
                 type="button"
               >
                 Clear system model

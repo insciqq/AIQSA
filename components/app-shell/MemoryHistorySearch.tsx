@@ -54,7 +54,7 @@ function t(locale: MemoryUiLocale, key: MemoryHistoryUiCopyKey): string {
 function formattedDate(locale: MemoryUiLocale, value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(locale === "RU" ? "ru-RU" : "en-US", {
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(date);
@@ -184,7 +184,7 @@ export function MemoryHistorySearch({
               <button
                 className={`absolute right-1 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
                 type="button"
-                aria-label={locale === "RU" ? "Очистить запрос" : "Clear query"}
+                aria-label="Clear query"
                 onClick={() => setQuery("")}
               >
                 <X className="size-4" aria-hidden="true" />

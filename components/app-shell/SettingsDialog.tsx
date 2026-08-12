@@ -1,14 +1,10 @@
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
-import { MemorySettingsSection } from "@/components/app-shell/MemorySettingsSection";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
-import { discardMemoryManagerDraft } from "@/components/app-shell/memoryManagerStore";
-import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
-import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
 import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import { AIQSA_THEMES, type ThemeId } from "@/components/app-shell/theme";
 import type { Notice } from "@/components/app-shell/types";
-import { BookMarked, Check, Palette, Wrench, X } from "lucide-react";
+import { Check, Palette, Wrench, X } from "lucide-react";
 import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useDialogFocus } from "./useDialogFocus";
 
@@ -23,37 +19,30 @@ const focusRing =
 const coarsePointerTarget = "[@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
 
 export function SettingsDialog({
-  accountId,
   initialSection = "appearance",
   notice = null,
   onClose,
   onDismissNotice,
-  onOpenMemorySource,
   onThemeChange,
   restoreFocus,
   themeId
 }: {
-  accountId: string;
   initialSection?: GeneralSettingsSection;
   notice?: Notice | null;
   onClose(): void;
   onDismissNotice?(): void;
-  onOpenMemorySource(chatId: string): void;
   onThemeChange(themeId: ThemeId): void;
   restoreFocus?(): HTMLElement | null;
   themeId: ThemeId;
 }) {
   const [activeSection, setActiveSection] = useState<GeneralSettingsSection>(initialSection);
   const [discardIntent, setDiscardIntent] = useState<DiscardIntent | null>(null);
-  const [memoryBusy, setMemoryBusy] = useState(false);
-  const [memoryDirty, setMemoryDirty] = useState(false);
   const [mcpBusy, setMcpBusy] = useState(false);
   const [mcpDirty, setMcpDirty] = useState(false);
   const themeRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const discardConfirmationOpen = discardIntent !== null;
-  const memoryLocale = useMemorySettingsStore((state) => state.data?.settings.memoryUiLocale ?? "RU");
-  const settingsBusy = mcpBusy || memoryBusy;
-  const settingsDirty = activeSection === "mcp" ? mcpDirty : activeSection === "memory" && memoryDirty;
+  const settingsBusy = mcpBusy;
+  const settingsDirty = activeSection === "mcp" && mcpDirty;
 
   const requestClose = () => {
     if (settingsBusy) {
@@ -92,15 +81,10 @@ export function SettingsDialog({
     }
 
     if (intent.kind === "close") {
-      if (activeSection === "memory") discardMemoryManagerDraft();
       onClose();
       return;
     }
     if (activeSection === "mcp") setMcpDirty(false);
-    if (activeSection === "memory") {
-      discardMemoryManagerDraft();
-      setMemoryDirty(false);
-    }
     setActiveSection(intent.section);
   }
 
@@ -151,14 +135,14 @@ export function SettingsDialog({
         <header className="relative z-10 flex min-h-16 shrink-0 items-center justify-between gap-4 border-b border-trace-subtle bg-overlay-surface px-4 sm:px-5">
           <div className="min-w-0">
             <h2 className="text-lg font-semibold text-ink">Settings</h2>
-            <p className="mt-0.5 truncate text-xs text-ink-muted">Appearance, personal Memory, and tool connections</p>
+            <p className="mt-0.5 truncate text-xs text-ink-muted">Appearance and personal tool connections</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {settingsBusy || settingsDirty ? (
               <span className="hidden text-xs font-medium text-caution sm:inline" role="status">
                 {settingsBusy
-                  ? activeSection === "memory" ? "Updating Memory…" : "Updating MCP settings…"
-                  : activeSection === "memory" ? memoryUiCopy(memoryLocale, "manager.closeDraftWarning") : "Unsaved MCP values"}
+                  ? "Updating MCP settings…"
+                  : "Unsaved MCP values"}
               </span>
             ) : null}
             <button
@@ -167,7 +151,7 @@ export function SettingsDialog({
               aria-label="Close settings"
               disabled={settingsBusy}
               title={settingsBusy
-                ? activeSection === "memory" ? "Wait for the Memory update to finish" : "Wait for the MCP update to finish"
+                ? "Wait for the MCP update to finish"
                 : "Close settings"}
               onClick={requestClose}
             >
@@ -198,21 +182,6 @@ export function SettingsDialog({
           <button
             className={[
               `flex min-h-touch min-w-0 flex-1 items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-control sm:flex-none sm:justify-start ${coarsePointerTarget} ${focusRing}`,
-              activeSection === "memory"
-                ? "bg-control-selected text-ink"
-                : "text-ink-secondary hover:bg-control-hover hover:text-ink"
-            ].join(" ")}
-            type="button"
-            aria-current={activeSection === "memory" ? "page" : undefined}
-            disabled={settingsBusy && activeSection !== "memory"}
-            onClick={() => requestSection("memory")}
-          >
-            <BookMarked className="size-4 text-ink-muted" aria-hidden="true" />
-            Memory
-          </button>
-          <button
-            className={[
-              `flex min-h-touch min-w-0 flex-1 items-center justify-center gap-2 rounded-control px-3 text-sm font-medium disabled:cursor-not-allowed disabled:text-ink-disabled sm:min-h-control sm:flex-none sm:justify-start ${coarsePointerTarget} ${focusRing}`,
               activeSection === "mcp"
                 ? "bg-control-selected text-ink"
                 : "text-ink-secondary hover:bg-control-hover hover:text-ink"
@@ -238,13 +207,6 @@ export function SettingsDialog({
 
         {activeSection === "mcp" ? (
           <McpSettingsSection onBusyChange={setMcpBusy} onDirtyChange={setMcpDirty} />
-        ) : activeSection === "memory" ? (
-          <MemorySettingsSection
-            accountId={accountId}
-            onBusyChange={setMemoryBusy}
-            onDirtyChange={setMemoryDirty}
-            onOpenMemorySource={onOpenMemorySource}
-          />
         ) : (
           <section
             className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-6 sm:px-6"
@@ -321,14 +283,7 @@ export function SettingsDialog({
 
       {discardConfirmationOpen ? (
         <DiscardChangesConfirmationDialog
-          copy={activeSection === "memory" ? {
-            body: memoryUiCopy(memoryLocale, "manager.discardBody"),
-            cancelLabel: memoryUiCopy(memoryLocale, "manager.keepEditing"),
-            confirmLabel: memoryUiCopy(memoryLocale, "manager.discardDraft"),
-            dialogLabel: memoryUiCopy(memoryLocale, "manager.discardTitle"),
-            title: memoryUiCopy(memoryLocale, "manager.discardTitle")
-          } : undefined}
-          label={activeSection === "memory" ? "Memory draft" : "MCP settings"}
+          label="MCP settings"
           onCancel={() => setDiscardIntent(null)}
           onConfirm={confirmDiscard}
         />

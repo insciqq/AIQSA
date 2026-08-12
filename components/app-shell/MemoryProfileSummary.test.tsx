@@ -99,7 +99,7 @@ describe("MemoryProfileSummary", () => {
     await waitFor(() => expect(onOpenDetails).toHaveBeenCalledWith("memory-fact-2"));
   });
 
-  it("uses complete Russian copy and returns to the private default view on account change", async () => {
+  it("keeps English presentation over retained RU data and resets on account change", async () => {
     readyProfile();
     const props = {
       locale: "RU" as const,
@@ -112,17 +112,17 @@ describe("MemoryProfileSummary", () => {
       <MemoryProfileSummary accountId="account-1" {...props} />
     );
 
-    const advanced = screen.getByRole("button", { name: "Расширенный режим" });
+    const advanced = screen.getByRole("button", { name: "Advanced view" });
     fireEvent.click(advanced);
-    expect(screen.getByText(/Источник: Сохранено вами/u)).toBeVisible();
+    expect(screen.getByText(/Source: Saved by you/u)).toBeVisible();
 
     rerender(<MemoryProfileSummary accountId="account-2" {...props} />);
     await waitFor(() => expect(screen.getByRole("button", {
-      name: "Расширенный режим"
+      name: "Advanced view"
     })).toHaveAttribute("aria-expanded", "false"));
-    expect(screen.queryByText(/Источник: Сохранено вами/u)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Source: Saved by you/u)).not.toBeInTheDocument();
     expect(screen.getByRole("button", {
-      name: `Удалить: ${contributors[0]!.displayText}`
+      name: `Delete: ${contributors[0]!.displayText}`
     })).toBeVisible();
   });
 

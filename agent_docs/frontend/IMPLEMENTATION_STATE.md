@@ -16,7 +16,7 @@ This document is a semantic ownership map, not a file inventory. Exact modules r
 | Shell actions/controllers | focused app-shell action and controller modules | Async mutation coordination, navigation/focus lifetimes, reconciliation, and semantic feature ports. |
 | Conversation presentation | app-shell and `components/chat/` leaves | Thread rows, artifacts, receipts, Markdown, composer, Details, rails, menus, and dialogs. |
 | Account and public share | `components/auth/` and `components/share/` | Mode-driven authentication and sanitized anonymous read-only rendering. |
-| Reusable resource workspaces | `components/assistants/` and `components/knowledge/` plus focused app-shell stores/controllers | Full-screen Assistant and Knowledge list/detail workflows, decoded API projections, lifecycle mutations, and navigation-safe reconciliation. |
+| Resource workspaces | Memory app-shell components, `components/assistants/`, and `components/knowledge/` plus focused stores/controllers | Full-screen Memory, Assistant, and Knowledge workflows, decoded API projections, lifecycle mutations, and navigation-safe reconciliation. |
 | Control Center | `components/admin/` | Administrator shell, resource controllers, index/detail tasks, write-only configuration UI, and decoded admin API clients. |
 | Resource availability | `components/resource-lifecycle/` | Neutral shared Enabled/Disabled presentation and restoration-action tone across app and admin features. |
 | Theme | app-shell theme owner plus root layout | Browser-local palette registry, cookie-backed first paint, and synchronized theme/color-scheme attributes. |
@@ -36,7 +36,7 @@ Server-backed state includes:
 - the effective personal-or-installation model-default source, saved Search preferences, presentation toggles, and per-model run-control drafts;
 - lightweight chat summaries, nested folders/projects, and project instructions;
 - lazily loaded keyed thread snapshots with a bounded active-branch page, older-page state, full-branch usage/context facts, and safe artifacts; plus an explicit lazy compact branch-graph projection outside the thread store;
-- Assistant summaries, details, revisions, publications, and per-user pins; Knowledge base summaries/details, document-version ingestion status, reindex progress, publication projections, and entitled embedding choices; plus current-user MCP catalog/readiness;
+- Memory settings, capability/health, summary, exact facts, history-search and operation projections; Assistant summaries, details, revisions, publications, and per-user pins; Knowledge base summaries/details, document-version ingestion status, reindex progress, publication projections, and entitled embedding choices; plus current-user MCP catalog/readiness;
 - persisted model-run inspection and usage evidence.
 
 Exact response decoders run before store mutation. Workspace summaries contain no messages or usage graph, even if a future server response carries unknown fields. Thread data enters only the thread owner; run inspection enters only the run-surface owner.
@@ -46,7 +46,7 @@ Exact response decoders run before store mutation. Workspace summaries contain n
 Browser-local state includes:
 
 - auth drafts and the bounded tab-scoped text-only re-authentication handoff;
-- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, Assistant/Knowledge surface navigation and dirty resource drafts, browser-local persistent wide Workspace-pane visibility under the legacy `aiqsa.workspaceRail` key, and focus restoration;
+- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, Memory/Assistant/Knowledge surface navigation and dirty resource drafts, browser-local persistent wide Workspace-pane visibility under the legacy `aiqsa.workspaceRail` key, and focus restoration;
 - keyed composer drafts, edit intent, staged attachments, async operation tokens, and local feedback;
 - foreground text buffering and controller ownership;
 - manual Details mode/tab, its current-chat compact branch projection, folder collapse, local notices, and theme choice.
@@ -96,10 +96,11 @@ owns the visible action and branch outcome.
 
 Foreground token deltas are buffered for React updates and adjacent event aggregation. Historical rows, Markdown/artifacts, and workspace summaries do not repaint for token-only changes. Malformed SSE frames are skipped, later frames continue, and one readable warning appears in the UI/Details.
 
-### Assistants, Knowledge, Settings, and MCP workflows
+### Memory, Assistants, Knowledge, Settings, and MCP workflows
 
-`settingsDestinationStore` owns the bounded Settings destination (Appearance,
-Memory, MCP & tools). `memorySettingsStore` owns the strictly decoded account
+`settingsDestinationStore` owns mutually exclusive Memory and bounded Settings
+destinations; Settings contains Appearance and MCP & tools, while Memory opens
+the full-screen workspace. `memorySettingsStore` owns the strictly decoded account
 settings/capability/egress projection, coalesced load, one exact CAS mutation,
 and stale-state reconciliation. `memoryHealthStore` separately owns the
 private/no-store user-health pulse: activation clears a different account,
@@ -113,8 +114,9 @@ exact-action authorization immediately before every create/edit/pin/Forget/delet
 request, refreshes profile/list projections after exact contributor mutations,
 refreshes destructive settings/Memory CAS at confirmation, keeps search text
 in POST bodies, and cannot let background profile/detail/evidence or status
-work replace a newer account or task. Settings remains the sole scroll and
-dirty-exit owner around these stores.
+work replace a newer account or task. The Memory workspace remains the sole
+scroll and dirty-exit owner around these stores and renders fixed English UI
+over the retained compatibility locale without changing multilingual data.
 
 `memoryHistorySearchStore` separately owns the manual retained-history draft,
 exact applied request, opaque cursor, safe result projection, lexical/vector
@@ -122,7 +124,7 @@ state, abort controller lineage, and cancelled/error/empty/loading states. Its
 private cache is bound to the server session's exact account id; a different
 owner or shell unmount aborts and clears it before any late response can apply.
 Closing the nested task preserves only same-owner state. Source navigation
-resolves the current owner-private live/archive destination before Settings is
+resolves the current owner-private live/archive destination before Memory is
 dismissed, then delegates archived results to the existing read-only archive
 owner instead of activating an operational chat.
 
@@ -157,7 +159,7 @@ Knowledge follows the same focused-owner boundary without sharing Assistant or c
 
 MCP settings owns its coalesced catalog refresh, mutation replacement, OAuth outcome, readiness polling, and last ready/error presentation. Personal input values remain leaf-local and write-only. Background reads do not flash an empty catalog over last-known useful state.
 
-General-shell and Settings notices are separate channels. Closing Settings clears only Settings feedback. Persistent workflow notices remain in flow; transient notices stay bounded and dismissible.
+General-shell and settings-destination notices are separate channels. Settings and Memory render that destination channel and clear it on exit. Persistent workflow notices remain in flow; transient notices stay bounded and dismissible.
 
 ## PowerAppShell Boundary
 

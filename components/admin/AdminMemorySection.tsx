@@ -36,7 +36,7 @@ const focusRing =
 
 function formatDate(locale: AdminMemoryLocale, value: string | null): string {
   if (!value) return adminMemoryCopy(locale).fingerprintNever;
-  return new Intl.DateTimeFormat(locale === "RU" ? "ru-RU" : "en-US", {
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(new Date(value));
@@ -119,7 +119,7 @@ export function AdminMemorySection({ active }: Readonly<{ active: boolean }>) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const autoLoadAttemptedRef = useRef(false);
-  const locale = payload?.memoryHealth.requestLocale ?? "EN";
+  const locale = "EN" as const;
   const copy = adminMemoryCopy(locale);
 
   const refresh = useCallback(async () => {
@@ -168,7 +168,7 @@ export function AdminMemorySection({ active }: Readonly<{ active: boolean }>) {
       return;
     }
     setPayload(result.data);
-    setNotice(adminMemoryCopy(result.data.memoryHealth.requestLocale).notice);
+    setNotice(adminMemoryCopy("EN").notice);
   };
 
   const health = payload?.memoryHealth ?? null;
@@ -299,7 +299,7 @@ export function AdminMemorySection({ active }: Readonly<{ active: boolean }>) {
                 <div className="min-w-0"><dt className="text-ink-muted">{copy.acknowledgedFingerprint}</dt><dd className="mt-1 break-all font-mono text-ink-secondary">{settings.acceptedFingerprint ?? copy.fingerprintNever}</dd></div>
                 <div><dt className="text-ink-muted">{copy.currentPolicy}</dt><dd className="mt-1 font-medium text-ink-secondary">{settings.currentPolicyVersion} · {settings.consentMode}</dd></div>
                 <div><dt className="text-ink-muted">{copy.lastAcknowledgment}</dt><dd className="mt-1 font-medium text-ink-secondary">{formatDate(locale, settings.acceptedAt)}{settings.acceptedBy ? ` · ${settings.acceptedBy.displayName}` : ""}</dd></div>
-                <div><dt className="text-ink-muted">{copy.waitingJobs}</dt><dd className="mt-1 font-medium text-ink-secondary">{settings.waitingJobCount.toLocaleString(locale === "RU" ? "ru-RU" : "en-US")}</dd></div>
+                <div><dt className="text-ink-muted">{copy.waitingJobs}</dt><dd className="mt-1 font-medium text-ink-secondary">{settings.waitingJobCount.toLocaleString("en-US")}</dd></div>
                 <div><dt className="text-ink-muted">{copy.policyRevision}</dt><dd className="mt-1 font-medium text-ink-secondary">{settings.version}</dd></div>
               </dl>
             </details>

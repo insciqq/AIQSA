@@ -5,6 +5,7 @@ import {
   ProviderAdmissionError
 } from "../../providerRuntime/admission";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
+import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
 import {
   adminAnswerModelAvailable,
   serializeAdminAnswerModel,
@@ -12,6 +13,7 @@ import {
 } from "./modelPolicyService";
 
 export type AdminSystemModelPolicyServiceErrorCode =
+  | "system_model_policy_reasoning_unavailable"
   | "system_model_policy_stale"
   | "system_model_policy_target_unavailable";
 
@@ -23,6 +25,39 @@ export class AdminSystemModelPolicyServiceError extends Error {
 }
 
 type RoleLoader = typeof loadInstallationAnswerProviderRole;
+
+function serializeSystemModel(row: AdminAnswerModelRow) {
+  let reasoningEfforts: string[] = [];
+  let defaultReasoningEffort: string | null = null;
+  try {
+    const capabilities = normalizeProviderModelConfiguration(row.activeConfig).capabilities;
+    if (capabilities.reasoning) {
+      reasoningEfforts = [...(capabilities.reasoningEfforts ?? [])];
+      defaultReasoningEffort = capabilities.defaultReasoningEffort &&
+        reasoningEfforts.includes(capabilities.defaultReasoningEffort)
+        ? capabilities.defaultReasoningEffort
+        : null;
+    }
+  } catch {
+    // An unavailable retained target remains inspectable without trusting its
+    // stale or malformed capability payload.
+  }
+  return {
+    ...serializeAdminAnswerModel(row),
+    defaultReasoningEffort,
+    reasoningEfforts
+  };
+}
+
+function supportsReasoningEffort(
+  role: Awaited<ReturnType<RoleLoader>>,
+  effort: string
+): boolean {
+  const capabilities = role.snapshot.model.capabilities;
+  return capabilities.reasoning === true &&
+    Array.isArray(capabilities.reasoningEfforts) &&
+    capabilities.reasoningEfforts.includes(effort);
+}
 
 export function createAdminSystemModelPolicyService(
   prisma: PrismaClient,
@@ -61,11 +96,12 @@ export function createAdminSystemModelPolicyService(
       return {
         candidates: models
           .filter(adminAnswerModelAvailable)
-          .map(serializeAdminAnswerModel),
+          .map(serializeSystemModel),
         policy: {
+          reasoningEffort: policy.reasoningEffort,
           systemModel: policy.providerModel
             ? {
-                ...serializeAdminAnswerModel(
+                ...serializeSystemModel(
                   policy.providerModel as AdminAnswerModelRow
                 ),
                 available: resolution.ok &&
@@ -83,6 +119,7 @@ export function createAdminSystemModelPolicyService(
     async update(input: Readonly<{
       expectedVersion: number;
       providerModelId: string | null;
+      reasoningEffort: string | null;
       userId: string;
     }>): Promise<void> {
       try {
@@ -108,12 +145,25 @@ export function createAdminSystemModelPolicyService(
             );
           }
 
+          if (input.providerModelId === null && input.reasoningEffort !== null) {
+            throw new AdminSystemModelPolicyServiceError(
+              "system_model_policy_reasoning_unavailable"
+            );
+          }
+
           if (input.providerModelId !== null) {
             try {
-              await loadRole(tx, {
+              const role = await loadRole(tx, {
                 providerModelId: input.providerModelId
               });
+              if (input.reasoningEffort !== null &&
+                !supportsReasoningEffort(role, input.reasoningEffort)) {
+                throw new AdminSystemModelPolicyServiceError(
+                  "system_model_policy_reasoning_unavailable"
+                );
+              }
             } catch (error) {
+              if (error instanceof AdminSystemModelPolicyServiceError) throw error;
               if (error instanceof ProviderAdmissionError) {
                 throw new AdminSystemModelPolicyServiceError(
                   "system_model_policy_target_unavailable"
@@ -126,6 +176,7 @@ export function createAdminSystemModelPolicyService(
           await tx.systemModelPolicy.update({
             data: {
               providerModelId: input.providerModelId,
+              reasoningEffort: input.reasoningEffort,
               updatedByUserId: input.userId,
               version: { increment: 1 }
             },

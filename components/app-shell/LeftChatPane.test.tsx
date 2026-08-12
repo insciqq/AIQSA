@@ -284,7 +284,7 @@ describe("LeftChatPane", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add to favorites" }));
     expect(onToggleChatFavorite).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Архивировать" }));
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
     expect(onDeleteChat).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }));
   });
 
@@ -299,18 +299,18 @@ describe("LeftChatPane", () => {
       onToggleChatMemorySource
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Архив чатов" }));
+    fireEvent.click(screen.getByRole("button", { name: "Archived chats" }));
     expect(onOpenArchivedChats).toHaveBeenCalledOnce();
-    expect(screen.getByText("Источник Памяти")).toBeVisible();
-    expect(screen.getByText(/Сохраняет чат, но немедленно прекращает/)).toBeVisible();
+    expect(screen.getByText("Memory source")).toBeVisible();
+    expect(screen.getByText(/Keeps the chat but immediately stops using it/)).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Исключить этот чат из памяти" }));
+    fireEvent.click(screen.getByRole("button", { name: "Exclude this chat from memory" }));
     expect(onToggleChatMemorySource).toHaveBeenCalledWith(
       expect.objectContaining({ id: "chat-1", memoryMode: "NORMAL" })
     );
     expect(onDeleteChat).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Архивировать" }));
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
     expect(onDeleteChat).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }));
     expect(screen.queryByRole("button", { name: /Удалить чат|Delete chat/ })).not.toBeInTheDocument();
   });
@@ -357,14 +357,14 @@ describe("LeftChatPane", () => {
       onToggleChatMemorySource
     });
 
-    expect(screen.getByText(/Разрешает контролируемую переиндексацию/)).toBeVisible();
+    expect(screen.getByText(/Allows a controlled active-branch reindex/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", {
-      name: "Снова использовать этот чат как источник памяти"
+      name: "Resume using this chat as a memory source"
     }));
     expect(onToggleChatMemorySource).toHaveBeenCalledWith(
       expect.objectContaining({ memoryMode: "EXCLUDED", memorySourceRevision: 3 })
     );
-    expect(screen.getByRole("button", { name: "Архивировать" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Archive" })).toBeVisible();
   });
 
   it("does not activate a chat when its overflow action is used", () => {
@@ -616,7 +616,7 @@ describe("LeftChatPane", () => {
       "overscroll-contain",
       "max-h-[min(25rem,calc(100dvh-12rem))]"
     );
-    for (const name of ["Add to favorites", "Rename", "Share", "Export", "Архивировать"]) {
+    for (const name of ["Add to favorites", "Rename", "Share", "Export", "Archive"]) {
       expect(screen.getByRole("button", { name })).toHaveClass("min-h-touch");
     }
     const mobileMoveChat = screen.getByRole("button", { name: "Move chat Planning to folder" });
@@ -635,7 +635,7 @@ describe("LeftChatPane", () => {
 
     chatView.unmount();
     renderPane({ chatActionId: "chat-1" });
-    for (const name of ["Add to favorites", "Rename", "Share", "Export", "Архивировать"]) {
+    for (const name of ["Add to favorites", "Rename", "Share", "Export", "Archive"]) {
       expect(screen.getByRole("button", { name })).toHaveClass("min-h-10");
       expect(screen.getByRole("button", { name })).not.toHaveClass("min-h-touch");
     }

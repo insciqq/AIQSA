@@ -9,6 +9,7 @@ import type {
   MemorySensitivityClass,
   MemoryUiLocale
 } from "@/lib/contracts/memory";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 
 export const MEMORY_UI_COPY_KEYS = [
   "settings.heading",
@@ -650,7 +651,7 @@ export const MEMORY_UI_COPY: Readonly<Record<MemoryUiLocale, MemoryUiCopyLocale>
   Object.freeze({ EN: Object.freeze(EN), RU: Object.freeze(RU) });
 
 export function memoryUiCopy(locale: MemoryUiLocale, key: MemoryUiCopyKey): string {
-  const value = MEMORY_UI_COPY[locale][key];
+  const value = MEMORY_UI_COPY[MEMORY_PRESENTATION_LOCALE][key];
   if (!value) throw new Error(`memory_ui_copy_missing:${locale}:${key}`);
   return value;
 }
@@ -717,18 +718,21 @@ const SENSITIVITY_LABELS: Readonly<
 };
 
 export function memoryFactStateLabel(locale: MemoryUiLocale, value: MemoryFactState): string {
-  return FACT_STATE_LABELS[locale][value];
+  void locale;
+  return FACT_STATE_LABELS[MEMORY_PRESENTATION_LOCALE][value];
 }
 
 export function memoryModalityLabel(locale: MemoryUiLocale, value: MemoryModality): string {
-  return MODALITY_LABELS[locale][value];
+  void locale;
+  return MODALITY_LABELS[MEMORY_PRESENTATION_LOCALE][value];
 }
 
 export function memorySensitivityLabel(
   locale: MemoryUiLocale,
   value: MemorySensitivityClass
 ): string {
-  return SENSITIVITY_LABELS[locale][value];
+  void locale;
+  return SENSITIVITY_LABELS[MEMORY_PRESENTATION_LOCALE][value];
 }
 
 const RECEIPT_ITEM_TYPE_LABELS: Readonly<
@@ -801,49 +805,40 @@ export function memoryReceiptItemTypeLabel(
   locale: MemoryUiLocale,
   value: MemoryReceiptItemType
 ): string {
-  return RECEIPT_ITEM_TYPE_LABELS[locale][value];
+  void locale;
+  return RECEIPT_ITEM_TYPE_LABELS[MEMORY_PRESENTATION_LOCALE][value];
 }
 
 export function memoryReceiptSourceModeLabel(
   locale: MemoryUiLocale,
   value: MemoryReceiptItem["sourceMode"]
 ): string {
-  return RECEIPT_SOURCE_MODE_LABELS[locale][value];
+  void locale;
+  return RECEIPT_SOURCE_MODE_LABELS[MEMORY_PRESENTATION_LOCALE][value];
 }
 
 export function memoryReceiptScopeLabel(
   locale: MemoryUiLocale,
   value: MemoryScopeType
 ): string {
-  return RECEIPT_SCOPE_LABELS[locale][value];
+  void locale;
+  return RECEIPT_SCOPE_LABELS[MEMORY_PRESENTATION_LOCALE][value];
 }
 
 export function memoryReceiptLifecycleLabel(
   locale: MemoryUiLocale,
   value: MemoryReceiptLifecycleState
 ): string {
-  return RECEIPT_LIFECYCLE_LABELS[locale][value];
+  void locale;
+  return RECEIPT_LIFECYCLE_LABELS[MEMORY_PRESENTATION_LOCALE][value];
 }
 
-function russianCount(
-  count: number,
-  forms: Readonly<[string, string, string]>
-): string {
-  const modulo100 = count % 100;
-  const modulo10 = count % 10;
-  const form = modulo100 >= 11 && modulo100 <= 14
-    ? forms[2]
-    : modulo10 === 1 ? forms[0] : modulo10 >= 2 && modulo10 <= 4
-      ? forms[1]
-      : forms[2];
-  return `${count} ${form}`;
-}
-
-/** Compact, locale-aware evidence summary without exposing source identities. */
+/** Compact English evidence summary without exposing source identities. */
 export function memoryReceiptUsageLabel(
   locale: MemoryUiLocale,
   receipt: MemoryReceipt
 ): string {
+  locale = MEMORY_PRESENTATION_LOCALE;
   const reusableCount = receipt.items.filter((item) =>
     item.itemType === "FACT_VERSION" || item.itemType === "PROFILE").length;
   const historyItems = receipt.items.filter((item) =>
@@ -857,20 +852,6 @@ export function memoryReceiptUsageLabel(
     return reusableCount === 1
       ? memoryUiCopy(locale, "receipt.usedOne")
       : `${memoryUiCopy(locale, "receipt.usedMany")}: ${reusableCount}`;
-  }
-  if (locale === "RU") {
-    const history = russianCount(historyCount, [
-      "предыдущий чат",
-      "предыдущих чата",
-      "предыдущих чатов"
-    ]);
-    if (reusableCount === 0) return `Использовано: ${history}`;
-    const reusable = russianCount(reusableCount, [
-      "воспоминание",
-      "воспоминания",
-      "воспоминаний"
-    ]);
-    return `Использовано: ${reusable} и ${history}`;
   }
   const history = `${historyCount} previous ${historyCount === 1 ? "chat" : "chats"}`;
   if (reusableCount === 0) return `${history} used`;

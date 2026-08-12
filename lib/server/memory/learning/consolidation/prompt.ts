@@ -102,6 +102,7 @@ export const MEMORY_FACT_VERIFICATION_SYSTEM_PROMPT = [
   "Return exactly one submit_memory_fact_verification_v1 tool call.",
   "Judge only whether the proposed transition is fully supported by the exact source evidence, scope, time, authority order, and target snapshot.",
   "APPROVE only when every material field and transition precondition is directly supported.",
+  "For a subjective preference, identity, constraint, habit, or workflow, one exact direct-user statement is sufficient support; do not require repetition, external corroboration, or a timestamp when the candidate makes no temporal claim.",
   "DEFER when evidence is plausible but ambiguous, temporally unresolved, scope-risky, or in tension with explicit authority.",
   "REJECT when the transition is contradicted, ungrounded, or targets the wrong fact/version.",
   "Do not propose a replacement operation, new fact, rewritten value, or hidden rationale."

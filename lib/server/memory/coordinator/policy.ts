@@ -48,6 +48,11 @@ const ENVIRONMENT_POLICY_FIELDS = Object.freeze({
     max: 60 * 60_000,
     min: 1_000
   }),
+  AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: Object.freeze({
+    field: "intervalMs" as const,
+    max: 60_000,
+    min: 1_000
+  }),
   AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_CALLS: Object.freeze({
     field: "backgroundInstallDailyCallLimit" as const,
     max: 1_000_000,

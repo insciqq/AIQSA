@@ -289,7 +289,7 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
 });
 
 for (const locale of ["EN", "RU"] as const) {
-  test(`edits and undoes the exact saved paraphrase inline in ${locale}`, async ({ page }) => {
+  test(`keeps English controls while editing ${locale} Memory content inline`, async ({ page }) => {
     const action: MemoryActionFeedback = {
       factId: "memory-fact-paraphrase",
       operation: "SAVE",
@@ -328,27 +328,18 @@ for (const locale of ["EN", "RU"] as const) {
       updatedAt: timestamp,
       usageStats: null
     };
-    const copy = locale === "RU"
-      ? {
-          changed: "Сохранённый текст обновлён.",
-          edit: "Изменить",
-          edited: "Я предпочитаю краткие ответы с техническими деталями.",
-          removed: "Сохранённое воспоминание удалено.",
-          restore: "Восстановить",
-          restored: "Воспоминание восстановлено.",
-          save: "Сохранить",
-          undo: "Отменить"
-        }
-      : {
-          changed: "Saved text updated.",
-          edit: "Edit",
-          edited: "I prefer concise answers with technical detail.",
-          removed: "Saved memory removed.",
-          restore: "Restore",
-          restored: "Memory restored.",
-          save: "Save",
-          undo: "Undo"
-        };
+    const copy = {
+      changed: "Saved text updated.",
+      edit: "Edit",
+      edited: locale === "RU"
+        ? "Я предпочитаю краткие ответы с техническими деталями."
+        : "I prefer concise answers with technical detail.",
+      removed: "Saved memory removed.",
+      restore: "Restore",
+      restored: "Memory restored.",
+      save: "Save",
+      undo: "Undo"
+    };
     await page.addInitScript((chatId) => {
       window.localStorage.setItem("aiqsa.activeChatId", chatId);
     }, chat.id);
@@ -582,7 +573,7 @@ test("offers Manage Memories for an ambiguous target without claiming success", 
   await expect(notice).not.toContainText("Memory forgotten");
   await expect(composer).toHaveValue("Forget the preference I mentioned.");
   await notice.getByRole("button", { name: "Manage Memories" }).click();
-  const settings = page.getByTestId("settings-dialog");
-  await expect(settings.getByRole("heading", { exact: true, name: "Memory" })).toBeVisible();
-  await expect(settings.getByRole("button", { name: "Manage Memories" })).toBeVisible();
+  const memory = page.getByTestId("memory-workspace");
+  await expect(memory.getByRole("heading", { level: 1, name: "Memory" })).toBeVisible();
+  await expect(memory.getByRole("button", { name: "Manage Memories" })).toBeVisible();
 });

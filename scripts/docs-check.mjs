@@ -24,6 +24,8 @@ const DISCOVERY_EXCLUDED_PREFIXES = [
   ".next/",
   ".turbo/",
   ".aiqsa/",
+  "agent_docs/PRD/",
+  "agent_docs/backlog/",
   "agent_docs/generated/",
   "build/",
   "coverage/",
@@ -39,7 +41,6 @@ const OBSOLETE_HARNESS_DIRECTORIES = [
   "agent_docs/ADR",
   "agent_docs/active_tasks",
   "agent_docs/archive",
-  "agent_docs/backlog",
   "agent_docs/done_tasks",
   "agent_docs/exec_plans",
   "agent_docs/exec-plans"
@@ -149,7 +150,7 @@ function obsoleteHarnessErrors(root, markdown) {
     { pattern: /\bactive_tasks\b/u, label: "active_tasks directory" },
     { pattern: /\bdone_tasks\b/u, label: "done_tasks directory" },
     { pattern: /\bexec[_-]plans?\b/u, label: "separate execution-plan directory" },
-    { pattern: /agent_docs\/(?:backlog|archive)(?:\/|\b)/u, label: "separate backlog/archive directory" }
+    { pattern: /agent_docs\/archive(?:\/|\b)/u, label: "separate archive directory" }
   ];
 
   for (const filename of markdown) {
@@ -170,7 +171,7 @@ function currentSourceReferenceErrors(root, files) {
     /\bactive_tasks\b/u,
     /\bdone_tasks\b/u,
     /\bexec[_-]plans?\b/u,
-    /agent_docs\/(?:backlog|archive)(?:\/|\b)/u
+    /agent_docs\/archive(?:\/|\b)/u
   ];
 
   for (const relative of files) {

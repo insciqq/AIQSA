@@ -1,4 +1,4 @@
-import { BookOpen, LoaderCircle, MessageSquareText, ScrollText, Settings, Shield, SquarePen } from "lucide-react";
+import { BookOpen, Brain, LoaderCircle, MessageSquareText, ScrollText, Settings, Shield, SquarePen } from "lucide-react";
 import {
   useId,
   useState,
@@ -100,10 +100,12 @@ export type WorkspaceIconRailProps = {
   controlCenterRef?: Ref<HTMLAnchorElement>;
   creatingChat: boolean;
   knowledgeRef?: Ref<HTMLButtonElement>;
+  memoryRef?: Ref<HTMLButtonElement>;
   newChatRef?: Ref<HTMLButtonElement>;
   onNewChat(): void;
   onOpenAssistants(): void;
   onOpenKnowledge(): void;
+  onOpenMemory(): void;
   onOpenSettings(): void;
   onRestoreChats(): void;
   paneHidden: boolean;
@@ -120,10 +122,12 @@ export function WorkspaceIconRail({
   controlCenterRef,
   creatingChat,
   knowledgeRef,
+  memoryRef,
   newChatRef,
   onNewChat,
   onOpenAssistants,
   onOpenKnowledge,
+  onOpenMemory,
   onOpenSettings,
   onRestoreChats,
   paneHidden,
@@ -248,6 +252,31 @@ export function WorkspaceIconRail({
               onKeyDown={(event) => guardUnavailableKey(event, signingOut)}
             >
               <RailControlContent icon={<BookOpen className="size-4" />} label="Knowledge" />
+            </button>
+          )}
+        </RailEntry>
+
+        <RailEntry description="Control and inspect personal Memory">
+          {(tooltipId) => (
+            <button
+              ref={memoryRef}
+              className={actionClass({ unavailable: signingOut })}
+              type="button"
+              aria-disabled={signingOut || undefined}
+              aria-describedby={tooltipId}
+              aria-label="Memory"
+              data-desktop-navigation-control="memory"
+              title="Memory"
+              onClick={(event) => {
+                if (signingOut) {
+                  event.preventDefault();
+                  return;
+                }
+                onOpenMemory();
+              }}
+              onKeyDown={(event) => guardUnavailableKey(event, signingOut)}
+            >
+              <RailControlContent icon={<Brain className="size-4" />} label="Memory" />
             </button>
           )}
         </RailEntry>

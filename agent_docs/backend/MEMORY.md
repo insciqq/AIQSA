@@ -156,10 +156,9 @@ filters, and reciprocal-rank fusion are retrieval tools below that authority.
 No external memory service owns chat branches, accepted-run evidence, access,
 deletion, retention, or truth.
 
-Hindsight is absent from production but may guide behavior and architecture for
-complex components. Only a disabled, pinned evaluation adapter may use synthetic
-or explicitly approved data; results never define AIQSA truth. Copied code
-requires license and attribution review.
+Hindsight is a reference for complex components, not a production
+dependency. Its pinned evaluator uses only synthetic or approved data;
+results are not AIQSA truth, and copied code needs license review.
 
 Evaluation binds exact runtime/version/vector fingerprints, corpus hash,
 PostgreSQL profile, and seed. Proportions use two-sided 95% Wilson intervals;
@@ -203,9 +202,9 @@ Eligible terminal sources independently enqueue `EXTRACT_FACTS` only while
 learning is on; history is not a prerequisite and existing chats still require
 explicit `REDREAM_EXISTING_CHATS`.
 
-Memory UI locale persists as `RU | EN` (initially RU). Russian independently
-gates behavior and accessible copy. Display preserves source language; search
-may normalize NFKC, case, spacing, punctuation, and `ё`/`е` equivalence.
+`memoryUiLocale` remains `RU | EN`; UI is fixed English with
+no picker. Source storage/retrieval stays multilingual, including
+NFKC, punctuation, case, and `ё`/`е` normalization.
 
 These lifecycle actions are not aliases:
 
@@ -299,9 +298,8 @@ Four counters have separate jobs:
   index change. Additive drift may omit new items from an admitted run only
   after every already-selected item is revalidated.
 
-`settingsRevision` separately provides optimistic concurrency for every
-settings mutation. Locale-only changes advance that settings revision but do
-not change Memory visibility counters.
+`settingsRevision` owns settings CAS. A compatibility-locale-only write
+advances it without changing Memory counters or fixed-English presentation.
 
 The authoritative mutation matrix is:
 
@@ -323,7 +321,7 @@ The authoritative mutation matrix is:
 | Folder move / Assistant access or archive change | – | + for chat move | – | + | current target and access |
 | Delete Folder, Assistant, or Chat scope target | – | + where source changes | + | + | target and affected items |
 | Change read/learning/safety/egress setting | – | – | – | + | settings, fingerprints, selected items |
-| Change only Memory UI locale | – | – | – | – | settings-revision compare-and-set |
+| Change only compatibility Memory UI locale | – | – | – | – | settings-revision compare-and-set |
 | Shadow-row, catch-up, or physical-purge progress | – | – | – | – | job/outbox fence |
 | Activate/reset an index generation | – | – | + | + | exact revision, config, barriers |
 
@@ -343,14 +341,14 @@ Candidate, decision, logical-fact, and fact-version states are separate:
 - version: `ACTIVE`, `CONFLICTING`, `ORPHANED`, `SUPERSEDED`, `EXPIRED`,
   `RETRACTED`, `FORGOTTEN`.
 
-Candidates are never answer-retrievable. Each is bound to succeeded extraction
-and direct-USER evidence. Consolidation sees at most 12 same-scope exact or
-entity/lexical facts, time-ranked, and three versions each, then proposes one
-`ADD|REINFORCE|SUPERSEDE|CONFLICT|EXPIRE|NOOP|DEFER` decision. The server
-rechecks source, suppression, explicit precedence, target pointer, and evidence;
-risky transitions require one exact-bound required tool; text terminals fail.
-Unknown calls are not replayed. Drift stales the decision and schedules source
-purge.
+Candidates never reach answers; each binds to succeeded extraction and
+direct-USER evidence. Consolidation gets at most 12 same-scope facts and three
+versions each, then proposes
+`ADD|REINFORCE|SUPERSEDE|CONFLICT|EXPIRE|NOOP|DEFER`. Server rechecks source,
+suppression, explicit precedence, targets, and evidence. One direct-user
+statement supports its subjective preference; ambiguous scope, time, or
+authority defers. Risky transitions require one exact-bound tool. Text terminals
+fail, unknown calls are not replayed, and drift schedules source purge.
 
 An active fact has exactly one same-owner active current version. Conflicted,
 orphaned, expired, retracted, and forgotten facts have no unqualified current
@@ -448,6 +446,10 @@ provider/credential admission, records the accepted destination, and never
 silently substitutes a provider, model, credential, embedding space, or
 reranker. Explicit CRUD/Forget and local exact/FTS operation do not depend on a
 utility model or embedding credential.
+
+Memory applies System reasoning to a copied snapshot. Effort and policy
+revision fence starts via the execution fingerprint without changing
+consent identity; unsupported effort is unavailable.
 
 The installation policy `ADMIN | PER_USER` owns acceptance of the non-secret
 fingerprint for effective system-memory, embedding, and remote-reranker

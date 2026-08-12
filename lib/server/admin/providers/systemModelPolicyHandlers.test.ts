@@ -37,7 +37,11 @@ describe("administrator system model policy handlers", () => {
     const response = await handlers.PATCH(new Request(
       "http://local.test/api/admin/providers/system-model-policy",
       {
-        body: JSON.stringify({ expectedVersion: 2, providerModelId: "model-1" }),
+        body: JSON.stringify({
+          expectedVersion: 2,
+          providerModelId: "model-1",
+          reasoningEffort: "xhigh"
+        }),
         headers: { "content-type": "application/json" },
         method: "PATCH"
       }
@@ -47,6 +51,7 @@ describe("administrator system model policy handlers", () => {
     expect(service.update).toHaveBeenCalledWith({
       expectedVersion: 2,
       providerModelId: "model-1",
+      reasoningEffort: "xhigh",
       userId: "user-1"
     });
   });
@@ -55,6 +60,7 @@ describe("administrator system model policy handlers", () => {
     const catalog = {
       candidates: [],
       policy: {
+        reasoningEffort: null,
         systemModel: null,
         updatedAt: "2026-08-08T00:00:00.000Z",
         updatedBy: { displayName: "Admin", id: "user-1" },
@@ -72,7 +78,7 @@ describe("administrator system model policy handlers", () => {
     const response = await handlers.PATCH(new Request(
       "http://local.test/api/admin/providers/system-model-policy",
       {
-        body: JSON.stringify({ expectedVersion: 2, providerModelId: null }),
+        body: JSON.stringify({ expectedVersion: 2, providerModelId: null, reasoningEffort: null }),
         headers: { "content-type": "application/json" },
         method: "PATCH"
       }

@@ -1,9 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserMcpServer } from "@/lib/contracts/mcp";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetMemoryManagerStoreForTest } from "./memoryManagerStore";
-import { resetMemorySettingsStoreForTest, useMemorySettingsStore } from "./memorySettingsStore";
-import { memorySettingsFixture } from "./memoryTestFixtures";
 import { resetMcpSettingsStoreForTest, useMcpSettingsStore } from "./mcpSettingsStore";
 import { SettingsDialog } from "./SettingsDialog";
 
@@ -33,10 +30,8 @@ type SettingsDialogProps = Parameters<typeof SettingsDialog>[0];
 
 function renderDialog(overrides: Partial<SettingsDialogProps> = {}) {
   const props: SettingsDialogProps = {
-    accountId: "account-test",
     initialSection: "appearance",
     onClose: vi.fn(),
-    onOpenMemorySource: vi.fn(),
     onThemeChange: vi.fn(),
     themeId: "aiqsa"
   };
@@ -57,21 +52,17 @@ function confirmDiscard() {
 describe("SettingsDialog", () => {
   beforeEach(() => {
     resetMcpSettingsStoreForTest();
-    resetMemoryManagerStoreForTest();
-    resetMemorySettingsStoreForTest();
     useMcpSettingsStore.setState({ loadState: "ready" });
   });
 
   afterEach(() => {
     cleanup();
     resetMcpSettingsStoreForTest();
-    resetMemoryManagerStoreForTest();
-    resetMemorySettingsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
-  it("contains Appearance, Memory, and MCP settings and can open each section directly", () => {
+  it("contains Appearance and MCP settings while Memory remains a separate workspace", () => {
     const appearanceView = renderDialog();
     const settings = screen.getByRole("dialog", { name: "Settings" });
     const navigation = within(settings).getByRole("navigation", { name: "Settings sections" });
@@ -83,7 +74,7 @@ describe("SettingsDialog", () => {
       "page"
     );
     expect(within(navigation).getByRole("button", { name: "MCP & tools" })).toBeVisible();
-    expect(within(navigation).getByRole("button", { name: "Memory" })).toBeVisible();
+    expect(within(navigation).queryByRole("button", { name: "Memory" })).not.toBeInTheDocument();
     expect(within(navigation).queryByRole("button", { name: "Prompts" })).not.toBeInTheDocument();
     expect(screen.queryByText("Prompt library")).not.toBeInTheDocument();
 
@@ -94,16 +85,6 @@ describe("SettingsDialog", () => {
     expect(screen.getByRole("button", { name: "MCP & tools" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByText("No MCP servers available")).toBeVisible();
 
-    cleanup();
-    useMemorySettingsStore.setState({
-      data: memorySettingsFixture(),
-      error: null,
-      loadState: "ready"
-    });
-    renderDialog({ initialSection: "memory" });
-
-    expect(screen.getByRole("heading", { name: /^Memory$/u })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Memory" })).toHaveAttribute("aria-current", "page");
   });
 
   it("keeps the bounded overlay safe in short viewports with local scrolling and a clean backdrop close", () => {

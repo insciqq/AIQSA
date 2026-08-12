@@ -54,6 +54,7 @@ import {
   type MemoryUiLocale
 } from "@/lib/contracts/memory";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
+import { memoryPresentationIsRussian } from "@/lib/contracts/memoryPresentation";
 import {
   ArrowLeft,
   Check,
@@ -102,14 +103,14 @@ function formatDate(locale: MemoryUiLocale, value: string | null): string {
   if (!value) return t(locale, "manager.never");
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return t(locale, "manager.notSet");
-  return new Intl.DateTimeFormat(locale === "RU" ? "ru-RU" : "en-US", {
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(date);
 }
 
 function indexingLabel(locale: MemoryUiLocale, value: MemorySummary["indexingState"]): string {
-  const labels = locale === "RU"
+  const labels = memoryPresentationIsRussian(locale)
     ? {
         DEGRADED: "Только резервный поиск",
         HYBRID_READY: "Лексический и векторный поиск готовы",
@@ -129,7 +130,7 @@ function versionStateLabel(
   locale: MemoryUiLocale,
   value: "ACTIVE" | "CONFLICTING" | "ORPHANED" | "SUPERSEDED" | "EXPIRED" | "RETRACTED" | "FORGOTTEN"
 ): string {
-  const labels = locale === "RU"
+  const labels = memoryPresentationIsRussian(locale)
     ? {
         ACTIVE: "Текущая",
         CONFLICTING: "Конфликтующая",
@@ -155,7 +156,7 @@ function feedbackTypeLabel(
   locale: MemoryUiLocale,
   value: "CORRECT" | "INCORRECT" | "NOT_USEFUL" | "WRONG_SCOPE" | "OUTDATED" | "TOO_SENSITIVE"
 ): string {
-  const labels = locale === "RU"
+  const labels = memoryPresentationIsRussian(locale)
     ? {
         CORRECT: "Верно",
         INCORRECT: "Неверно",
@@ -196,12 +197,12 @@ function lifecycleOperationLabel(locale: MemoryUiLocale, value: string): string 
     USER_FEEDBACK: ["Private feedback", "Приватный отзыв"]
   };
   const label = labels[value];
-  return label ? label[locale === "RU" ? 1 : 0] : value;
+  return label ? label[memoryPresentationIsRussian(locale) ? 1 : 0] : value;
 }
 
 function scopeLabel(locale: MemoryUiLocale, scope: MemoryScopeSelection): string {
   if (scope.type === "GLOBAL_USER") return t(locale, "manager.global");
-  const labels = locale === "RU"
+  const labels = memoryPresentationIsRussian(locale)
     ? { ASSISTANT: "Ассистент", CHAT: "Чат", FOLDER: "Папка" }
     : { ASSISTANT: "Assistant", CHAT: "Chat", FOLDER: "Folder" };
   return `${labels[scope.type]} · ${scope.targetId}`;
@@ -336,7 +337,7 @@ function MemoryScopePicker({
   const chats = useMemo(() => workspaceNavigationChats(workspaceChats), [workspaceChats]);
   const [remoteTargets, setRemoteTargets] = useState<ScopeTargetOption[]>([]);
   const [loading, setLoading] = useState(true);
-  const ru = locale === "RU";
+  const ru = memoryPresentationIsRussian(locale);
 
   useEffect(() => {
     let active = true;
@@ -495,7 +496,7 @@ function MemoryListPane({ locale }: { locale: MemoryUiLocale }) {
         </div>
       </form>
 
-      <div className="flex gap-1 overflow-x-auto border-b border-trace-subtle px-3 py-2" role="group" aria-label={locale === "RU" ? "Состояние воспоминаний" : "Memory state"}>
+      <div className="flex gap-1 overflow-x-auto border-b border-trace-subtle px-3 py-2" role="group" aria-label={memoryPresentationIsRussian(locale) ? "Состояние воспоминаний" : "Memory state"}>
         {MANAGE_MEMORY_STATES.map((state) => (
           <button
             className={`min-h-control shrink-0 rounded-control px-3 text-xs font-semibold ${
@@ -789,7 +790,7 @@ function MemoryFeedbackHistory({ locale }: { locale: MemoryUiLocale }) {
   return (
     <section className="mt-6 border-t border-trace-subtle pt-5" aria-labelledby="memory-feedback-history-heading">
       <h4 className="text-sm font-semibold text-ink" id="memory-feedback-history-heading">
-        {locale === "RU" ? "Приватные отзывы" : "Private feedback"}
+        {memoryPresentationIsRussian(locale) ? "Приватные отзывы" : "Private feedback"}
       </h4>
       <ul className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
         {feedback.map((item) => (
@@ -957,7 +958,7 @@ function MemoryLifecycle({ locale }: { locale: MemoryUiLocale }) {
                 <span className="font-medium text-ink-secondary">
                   {lifecycleOperationLabel(locale, event.operation)}
                   {!event.sourceAvailable
-                    ? ` · ${locale === "RU" ? "источник недоступен" : "source unavailable"}`
+                    ? ` · ${memoryPresentationIsRussian(locale) ? "источник недоступен" : "source unavailable"}`
                     : ""}
                 </span>
                 <span className="text-xs text-ink-muted">{formatDate(locale, event.createdAt)}</span>
@@ -1033,7 +1034,7 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
           (memory.actionVersionId ?? memory.currentVersionId) ? (
             <button className={secondaryButton} disabled={mutationState !== null} onClick={beginMoveMemory} type="button">
               <FolderInput className="size-4" aria-hidden="true" />
-              {locale === "RU" ? "Переместить область" : "Move scope"}
+              {memoryPresentationIsRussian(locale) ? "Переместить область" : "Move scope"}
             </button>
           ) : null}
           {memory.factState !== "CONFLICTED" && (memory.actionVersionId ?? memory.currentVersionId) ? (
@@ -1054,14 +1055,14 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
       {errorText ? <p className="mt-3 text-sm text-critical" role="alert">{errorText}</p> : null}
       {memory.factState === "ORPHANED" ? (
         <div className="mt-3 border-y border-caution/35 bg-caution/10 px-3 py-2 text-sm leading-6 text-ink-secondary" role="status">
-          {locale === "RU" ? "Источник или область недоступны." : "Source or scope unavailable."}
+          {memoryPresentationIsRussian(locale) ? "Источник или область недоступны." : "Source or scope unavailable."}
         </div>
       ) : null}
       {memory.factState === "EXPIRED" || memory.factState === "RETRACTED" ? (
         <div className="mt-3 border-y border-trace-subtle bg-control-surface px-3 py-2 text-sm leading-6 text-ink-secondary" role="status">
           {memory.factState === "EXPIRED"
-            ? (locale === "RU" ? "Срок действия этой версии истёк; она остаётся только в истории." : "This version expired and remains only in history.")
-            : (locale === "RU" ? "Эта версия была отозвана и больше не участвует в ответах." : "This version was retracted and no longer participates in answers.")}
+            ? (memoryPresentationIsRussian(locale) ? "Срок действия этой версии истёк; она остаётся только в истории." : "This version expired and remains only in history.")
+            : (memoryPresentationIsRussian(locale) ? "Эта версия была отозвана и больше не участвует в ответах." : "This version was retracted and no longer participates in answers.")}
         </div>
       ) : null}
       <p className="mt-5 whitespace-pre-wrap border-y border-trace-subtle bg-answer-paper px-3 py-4 text-base leading-7 text-ink">
@@ -1248,16 +1249,16 @@ function MoveMemoryScope({ locale }: { locale: MemoryUiLocale }) {
       <ScreenBack locale={locale} onClick={cancelMemoryDraft} />
       <FolderInput className="mt-2 size-6 text-proof" aria-hidden="true" />
       <h3 className="mt-3 text-base font-semibold text-ink" data-memory-screen-heading tabIndex={-1}>
-        {locale === "RU" ? "Переместить область воспоминания" : "Move memory scope"}
+        {memoryPresentationIsRussian(locale) ? "Переместить область воспоминания" : "Move memory scope"}
       </h3>
       <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-secondary">
-        {locale === "RU"
+        {memoryPresentationIsRussian(locale)
           ? "Создаёт новую активную запись в выбранной области; прежняя запись остаётся историческим свидетельством перемещения."
           : "Creates a new active record in the selected scope; the prior record remains as historical move evidence."}
       </p>
       {memory.factState === "ORPHANED" ? (
         <p className="mt-3 border-y border-caution/35 bg-caution/10 px-3 py-2 text-sm text-ink-secondary">
-          {locale === "RU" ? "Источник или область недоступны. Выберите доступную область для восстановления." : "Source or scope unavailable. Choose an available scope to repair it."}
+          {memoryPresentationIsRussian(locale) ? "Источник или область недоступны. Выберите доступную область для восстановления." : "Source or scope unavailable. Choose an available scope to repair it."}
         </p>
       ) : null}
       {mutationError ? <p className="mt-3 text-sm text-critical" role="alert">{mutationErrorText(locale, mutationError)}</p> : null}
@@ -1280,8 +1281,8 @@ function MoveMemoryScope({ locale }: { locale: MemoryUiLocale }) {
           </button>
           <button className={primaryButton} disabled={mutationState !== null || unchanged} type="submit">
             {mutationState === "moving"
-              ? (locale === "RU" ? "Перемещение…" : "Moving…")
-              : (locale === "RU" ? "Переместить" : "Move")}
+              ? (memoryPresentationIsRussian(locale) ? "Перемещение…" : "Moving…")
+              : (memoryPresentationIsRussian(locale) ? "Переместить" : "Move")}
           </button>
         </div>
       </form>
@@ -1296,7 +1297,7 @@ function deletionStateText(locale: MemoryUiLocale, status: MemoryDeletionStatus)
     case "RETRY_WAIT": return t(locale, "manager.deleteRetry");
     case "BLOCKED_REQUIRES_ADMIN": return resolveMemoryCopy(locale, "deletion.blockedAdmin");
     case "SUCCEEDED": return t(locale, "manager.deleteSucceeded");
-    case "CANCELLED": return locale === "RU" ? "Удаление отменено." : "Deletion cancelled.";
+    case "CANCELLED": return memoryPresentationIsRussian(locale) ? "Удаление отменено." : "Deletion cancelled.";
   }
 }
 

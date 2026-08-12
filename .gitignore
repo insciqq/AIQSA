@@ -24,7 +24,6 @@ test-results/
 /ops/deploy/
 /sa.json
 /sa.json:Zone.Identifier
-
-
-AIQSA-native-memory-engine-PRD.md
-evidence-aware-model-comparison-revised-PRD.md
+# Operator-local reference material outside the active task ledger.
+/agent_docs/PRD/**
+/agent_docs/backlog/**

@@ -1,18 +1,18 @@
 # FRONTEND SETTINGS, ASSISTANTS, AND KNOWLEDGE
 
 Owner: Account and Control Center UI maintainers
-Scope: Settings, MCP tools, Assistant and Knowledge resource management/publication, focus, appearance, and project-setting interaction contracts.
-Read when: Changing Settings, user MCP tools, Assistants or Knowledge surfaces, resource publication, focus, appearance, or project settings.
-Code owners: Settings, Assistant, and Knowledge components, routes, stores, and client-side reconciliation.
+Scope: Settings, Memory, MCP tools, Assistant and Knowledge resource management/publication, focus, appearance, and project-setting interaction contracts.
+Read when: Changing Settings, Memory, user MCP tools, Assistants or Knowledge surfaces, resource publication, focus, appearance, or project settings.
+Code owners: Settings, Memory, Assistant, and Knowledge components, routes, stores, and client-side reconciliation.
 Not owned here: Server resource authorization/retrieval, Control Center administration, authentication, public sharing, or visual recipes.
 
-## Settings, Assistants, And Knowledge
+## Settings, Memory, Assistants, And Knowledge
 
 ### Settings, Memory, and MCP tools
 
-- Global Settings contains Appearance, Memory, and `MCP & tools`. It is reached directly from the desktop icon rail or through Account/Command palette, and remains a bounded dialog on roomy viewports and a safe-area-aware locally scrolling sheet on compact/short viewports. Unsaved MCP values or Memory drafts require their localized discard confirmation; an in-flight mutation blocks close or section replacement until it settles.
-- Memory uses the account-persisted RU/EN locale with complete feature-owned
-  copy. Above its controls, one compact Memory pulse explains the current
+- Global Settings contains Appearance and `MCP & tools`. It is reached directly from the desktop icon rail or through Account/Command palette, and remains a bounded dialog on roomy viewports and a safe-area-aware locally scrolling sheet on compact/short viewports. Unsaved MCP values require an English discard confirmation; an in-flight mutation blocks close or section replacement until it settles.
+- Memory is a separate safe-area-aware full-screen workspace reached directly from the desktop rail, Account, or Command palette. It has an explicit `Back to chat`, no scrim or backdrop dismissal, one local scroll owner, and the same dirty-draft/in-flight-mutation exit protection as before. Memory controls, confirmations, dates, health, operations, and evidence render in English regardless of the retained compatibility locale; there is no language picker until application localization exists. Source text, RU/EN/mixed processing, and retrieval remain multilingual.
+- Above the Memory controls, one compact pulse explains the current
   owner-scoped state and next action in ordinary language; technical learning,
   indexing, cleanup, destination, and capability evidence stays collapsed in a
   keyboard-native Advanced disclosure. Blocked durable deletion and overdue
@@ -29,24 +29,24 @@ Not owned here: Server resource authorization/retrieval, Control Center administ
   `PER_USER` installations retain their version-bound review surface, while
   fingerprints/policy/time are Advanced evidence. Utility unavailability or
   unaccepted destinations never blocks explicit saved-memory CRUD or Forget.
-- The same non-modal RU/EN information block explains that explicit and learned memories remain manageable, toggles are non-destructive, Temporary chats do not use Memory, deletion does not rewrite retained chats or accepted historical runs, selected snippets may coexist with administrator-connected Search/Knowledge/MCP/tools at the answer provider, and administrator connection is the trust decision with residual prompt-injection/disclosure risk. It requires no acknowledgment and never becomes a first-enablement dialog.
-- Manage Memories is a Settings-owned nested task for explicit and automatically learned `GLOBAL_USER`, `FOLDER`, owned live `ASSISTANT`, and retained `CHAT` facts, not a top-level application or Details tab. It opens with a source-grounded Memory Summary written as exact human-readable facts: ordinary view shows no provenance, temperature, internal id, or journal vocabulary, while an explicit Advanced view adds source class, use priority, pinned state, and a path to source/history. Summary Edit and Delete always target the exact contributing fact version; one-item Delete uses the common immediate Forget plus bounded Undo rather than editing an opaque profile string. Below the summary, one Settings scroll owner contains the wide list/detail evidence ledger and compact single-pane Back flow. POST search keeps free text out of URLs; cursor/query/list/state-filter state survives detail navigation. Create defaults visibly to global scope and its accessible picker names available folders, owned unarchived Assistants, active retained chats, and archived retained chats without treating labels as authorization. Exact statement, explicit/automatic authority, scope, ACTIVE/CONFLICTED/ORPHANED/EXPIRED/RETRACTED state, deferred-candidate count, time/source/index metadata, bounded evidence, why remembered, append-only history, active feedback, create/edit/pin/Forget, and strict malformed-response failure remain visible without hidden reasoning. Move scope appends a replacement under the selected authorized target instead of rewriting history; an ORPHANED item exposes its unavailable scope and remains repairable by Move or removable by Forget. A stale edit or conflict resolution reloads the current version while preserving a correction draft. One exact-item Forget commits immediately without a pre-confirmation screen and exposes the common bounded Undo action; the item remains absent until the exact revival succeeds.
-- Incorrect/not-useful review feedback commits on the deliberate click and exposes a transient Undo action; Undo appends a `RETRACT` record and never rewrites the fact. A conflict presents competing evidence and lets the user choose one claim or submit a correction as a single explicit commit without a follow-up confirmation. `Keep unresolved` performs no write, while Forget uses the common Forget lifecycle and its shared UX rather than a review-specific delete path. All committed/error/Undo states have complete RU/EN live-region and accessible-name coverage.
+- The same non-modal English information block explains that explicit and learned memories remain manageable, toggles are non-destructive, Temporary chats do not use Memory, deletion does not rewrite retained chats or accepted historical runs, selected snippets may coexist with administrator-connected Search/Knowledge/MCP/tools at the answer provider, and administrator connection is the trust decision with residual prompt-injection/disclosure risk. It requires no acknowledgment and never becomes a first-enablement dialog.
+- Manage Memories is a Memory-workspace nested task for explicit and automatically learned `GLOBAL_USER`, `FOLDER`, owned live `ASSISTANT`, and retained `CHAT` facts, not a separate application or Details tab. It opens with a source-grounded Memory Summary written as exact human-readable facts: ordinary view shows no provenance, temperature, internal id, or journal vocabulary, while an explicit Advanced view adds source class, use priority, pinned state, and a path to source/history. Summary Edit and Delete always target the exact contributing fact version; one-item Delete uses the common immediate Forget plus bounded Undo rather than editing an opaque profile string. Below the summary, the workspace scroll owner contains the wide list/detail evidence ledger and compact single-pane Back flow. POST search keeps free text out of URLs; cursor/query/list/state-filter state survives detail navigation. Create defaults visibly to global scope and its accessible picker names available folders, owned unarchived Assistants, active retained chats, and archived retained chats without treating labels as authorization. Exact statement, explicit/automatic authority, scope, ACTIVE/CONFLICTED/ORPHANED/EXPIRED/RETRACTED state, deferred-candidate count, time/source/index metadata, bounded evidence, why remembered, append-only history, active feedback, create/edit/pin/Forget, and strict malformed-response failure remain visible without hidden reasoning. Move scope appends a replacement under the selected authorized target instead of rewriting history; an ORPHANED item exposes its unavailable scope and remains repairable by Move or removable by Forget. A stale edit or conflict resolution reloads the current version while preserving a correction draft. One exact-item Forget commits immediately without a pre-confirmation screen and exposes the common bounded Undo action; the item remains absent until the exact revival succeeds.
+- Incorrect/not-useful review feedback commits on the deliberate click and exposes a transient Undo action; Undo appends a `RETRACT` record and never rewrites the fact. A conflict presents competing evidence and lets the user choose one claim or submit a correction as a single explicit commit without a follow-up confirmation. `Keep unresolved` performs no write, while Forget uses the common Forget lifecycle and its shared UX rather than a review-specific delete path. All committed/error/Undo states have complete English live-region and accessible-name coverage.
 - Manual chat-history search is a second reversible nested task reached from
   Manage Memories, not the explicit-fact query and not sidebar search. Its
-  persisted Memory locale covers query, chat/folder/date filters, loading,
+  fixed English presentation covers query, chat/folder/date filters, loading,
   cancellation, error, empty, pagination, lexical/vector state, and source
   actions. The private query exists only in the POST body. Its result cache and
   in-flight lineage belong to the exact account id; account transition/logout
   aborts work and discards result/cursor state, while ordinary Back preserves
   the same-owner query. Results form a flat safe source trail rather than a
   card grid. A live source opens the operational chat, but an archived source
-  first resolves owner/location, closes Settings, and opens the existing
+  first resolves owner/location, closes the Memory workspace, and opens the existing
   read-only Archived preview. Entry and return restore deterministic focus,
-  and Settings remains the only scroll owner at portrait and short-landscape
+  and Memory remains the only scroll owner at portrait and short-landscape
   sizes.
 - Memory operations is a separate reversible nested task reached directly
-  from Memory Settings. Rebuild, re-embed, and explicit reprocessing remain
+  from the Memory overview. Rebuild, re-embed, and explicit reprocessing remain
   distinct actions whose availability is derived from the current history,
   deployment, learning, and utility-egress projection. Confirmation refreshes
   exact Memory/settings CAS authority; delete-all-reusable, delete-learned,
@@ -101,7 +101,7 @@ Not owned here: Server resource authorization/retrieval, Control Center administ
 
 ### Focus, appearance, and project settings
 
-- Settings uses dialog focus containment, Escape/backdrop close, opener restoration, and an inert shell. Assistants and Knowledge exit only through Back to chat and keep the covered shell inert without a scrim. Each captures the exact direct-rail or Account invoker; if a responsive crossing hides that desktop-navigation opener, exit uses visible compact `Open workspace` and conditionally returns to the remembered desktop source under the shell focus-transfer rule. Nested confirmations own focus/Escape before returning to their surviving invoker.
+- Settings uses dialog focus containment, Escape/backdrop close, opener restoration, and an inert shell. Memory, Assistants, and Knowledge exit only through Back to chat and keep the covered shell inert without a scrim. Each captures the exact direct-rail or Account invoker; if a responsive crossing hides that desktop-navigation opener, exit uses visible compact `Open workspace` and conditionally returns to the remembered desktop source under the shell focus-transfer rule. Nested confirmations own focus/Escape before returning to their surviving invoker.
 - Appearance presents the palette registry in stable order: AIQSA, Graphite, Verdant, Classic Dark, Classic Light, Paper. It is a calm divided comparison list at every width. Selection applies immediately.
 - Appearance selection delegates to the browser-local theme owner in
   [frontend implementation state](../IMPLEMENTATION_STATE.md); Settings neither

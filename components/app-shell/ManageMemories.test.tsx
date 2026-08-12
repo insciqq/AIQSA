@@ -196,7 +196,7 @@ describe("ManageMemories", () => {
 
     const manager = screen.getByTestId("manage-memories");
     expect(manager.querySelectorAll(".overflow-y-auto")).toHaveLength(0);
-    expect(within(manager).getByRole("heading", { name: "Управление памятью" })).toBeVisible();
+    expect(within(manager).getByRole("heading", { name: "Manage Memories" })).toBeVisible();
   });
 
   it("enters and returns from distinct history search with deterministic focus", async () => {

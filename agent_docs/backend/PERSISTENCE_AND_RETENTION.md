@@ -162,16 +162,20 @@ deletion may clear a child policy in the same serializable transaction,
 incrementing its version; disablement or readiness loss never retargets it.
 
 `SystemModelPolicy` is the separate singleton installation-owned
-optimistic-versioned system utility role. Its nullable restrictive foreign key
-stores one exact answer-selectable `ProviderModel`; migration, bootstrap, and
-the development seed create an empty foundation and never infer a target. The
-row's `updatedByUserId` is audit metadata only. Resolution uses the selected
+versioned system utility role. Its restrictive foreign key
+stores an exact answer-selectable `ProviderModel`; migration, bootstrap, and
+canonical seed start null. Its
+bounded nullable `reasoningEffort` is atomic with the target, null without one,
+and means provider default when unset; a value must be advertised by the
+selected revision. The row's
+`updatedByUserId` is audit metadata only. Resolution uses the selected
 model's explicit installation default credential plus the exact current
 availability check, regardless of ordinary unassigned-user policy, and does not
 consult direct-user or group assignments. It does not require or grant model
 entitlement. A null target returns `system_model_absent`; a disabled/deleted
-target, invalid configuration, or missing/unusable default credential or exact
-check returns `system_model_unavailable`. Resolution never chooses another
+target, invalid configuration, unsupported retained reasoning effort, or
+missing/unusable default credential or exact check returns
+`system_model_unavailable`. Resolution never chooses another
 model, administrator, or credential tier. Deactivating, demoting, or deleting
 the saving administrator may change or null the audit reference but cannot
 change role availability. Individual model deletion is blocked by the

@@ -6,10 +6,13 @@ const response = {
     candidates: [{
       connectionDisplayName: "Provider",
       connectionId: "connection-1",
+      defaultReasoningEffort: "medium",
       displayName: "Model",
-      id: "model-1"
+      id: "model-1",
+      reasoningEfforts: ["low", "medium", "high", "xhigh"]
     }],
     policy: {
+      reasoningEffort: null,
       systemModel: null,
       updatedAt: "2026-08-08T00:00:00.000Z",
       updatedBy: null,
@@ -36,9 +39,27 @@ describe("administrator system model policy contract", () => {
     expect(decodeAdminSystemModelPolicyResponse({
       systemModelPolicy: {
         ...response.systemModelPolicy,
+        candidates: [{
+          ...response.systemModelPolicy.candidates[0],
+          defaultReasoningEffort: "max"
+        }]
+      }
+    })).toBeNull();
+    expect(decodeAdminSystemModelPolicyResponse({
+      systemModelPolicy: {
+        ...response.systemModelPolicy,
         policy: {
           ...response.systemModelPolicy.policy,
           updatedBy: { displayName: "", id: "admin-1" }
+        }
+      }
+    })).toBeNull();
+    expect(decodeAdminSystemModelPolicyResponse({
+      systemModelPolicy: {
+        ...response.systemModelPolicy,
+        policy: {
+          ...response.systemModelPolicy.policy,
+          reasoningEffort: "xhigh"
         }
       }
     })).toBeNull();

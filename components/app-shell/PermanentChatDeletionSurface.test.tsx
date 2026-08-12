@@ -107,8 +107,8 @@ describe("PermanentChatDeletionSurface", () => {
     });
     render(<PermanentChatDeletionSurface locale="RU" />);
 
-    expect(screen.getByRole("status")).toHaveTextContent("Чат удалён · завершается очистка");
-    fireEvent.click(screen.getByRole("button", { name: "Посмотреть прогресс" }));
-    expect(screen.getByRole("dialog", { name: "Безвозвратное удаление" })).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Chat deleted · cleanup is finishing");
+    fireEvent.click(screen.getByRole("button", { name: "View progress" }));
+    expect(screen.getByRole("dialog", { name: "Permanent deletion" })).toBeVisible();
   });
 });

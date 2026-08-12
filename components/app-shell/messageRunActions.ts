@@ -43,6 +43,7 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import type { ComposerKnowledgePlanSource } from "@/components/app-shell/composerControlStore";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 
 type MutableRef<T> = { current: T };
 
@@ -137,21 +138,19 @@ export function useMessageRunActions({
   setNotice
 }: MessageRunActionsInput) {
   async function showMemoryTargetSelection(): Promise<void> {
-    let locale = useMemorySettingsStore.getState().data?.settings.memoryUiLocale ?? "RU";
     try {
-      locale = (await refreshMemorySettings()).settings.memoryUiLocale;
+      await refreshMemorySettings();
     } catch {
-      // The feature contract defaults to a complete RU surface when the
-      // account preference cannot be refreshed; never mix per-key fallbacks.
+      // Copy is local and complete even when the settings refresh fails.
     }
     setNotice({
       action: {
-        label: memoryUiCopy(locale, "action.manage"),
+        label: memoryUiCopy(MEMORY_PRESENTATION_LOCALE, "action.manage"),
         onClick: openMemorySettings
       },
       kind: "error",
       persistent: true,
-      text: memoryUiCopy(locale, "action.ambiguous")
+      text: memoryUiCopy(MEMORY_PRESENTATION_LOCALE, "action.ambiguous")
     });
   }
 

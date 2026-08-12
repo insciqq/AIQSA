@@ -5,13 +5,16 @@ import { AdminProviderSystemModelTask } from "./AdminProviderSystemModelTask";
 const candidate = {
   connectionDisplayName: "Provider A",
   connectionId: "connection-a",
+  defaultReasoningEffort: "medium",
   displayName: "Model A",
-  id: "model-a"
+  id: "model-a",
+  reasoningEfforts: ["low", "medium", "high", "xhigh"]
 };
 
 const catalog = {
   candidates: [candidate],
   policy: {
+    reasoningEffort: null,
     systemModel: null,
     updatedAt: "2026-08-08T00:00:00.000Z",
     updatedBy: null,
@@ -35,6 +38,7 @@ describe("administrator provider system model task", () => {
           ...catalog,
           policy: {
             ...catalog.policy,
+            reasoningEffort: "xhigh",
             systemModel: { ...candidate, available: true },
             updatedBy: { displayName: "Administrator", id: "admin-1" },
             version: 2
@@ -46,14 +50,16 @@ describe("administrator provider system model task", () => {
     render(<AdminProviderSystemModelTask active />);
     const select = await screen.findByLabelText("Active answer model deployment");
     fireEvent.change(select, { target: { value: "model-a" } });
+    expect(screen.getByLabelText("Reasoning effort")).toHaveValue("xhigh");
     fireEvent.click(screen.getByRole("button", { name: "Save system model" }));
 
     await screen.findByText("System model updated.");
-    expect(screen.getByText(/Provider access resolves as Administrator/)).toBeVisible();
+    expect(screen.getByText(/Last saved by Administrator/)).toBeVisible();
     const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({
       expectedVersion: 1,
-      providerModelId: "model-a"
+      providerModelId: "model-a",
+      reasoningEffort: "xhigh"
     });
   });
 
@@ -68,6 +74,7 @@ describe("administrator provider system model task", () => {
       }],
       policy: {
         ...catalog.policy,
+        reasoningEffort: null,
         systemModel: unavailableCurrent
       }
     };
@@ -93,6 +100,7 @@ describe("administrator provider system model task", () => {
       candidates: [candidate],
       policy: {
         systemModel: { ...candidate, available: false },
+        reasoningEffort: "xhigh",
         updatedAt: "2026-08-08T00:00:00.000Z",
         updatedBy: { displayName: "Former administrator", id: "admin-old" },
         version: 4
@@ -108,6 +116,7 @@ describe("administrator provider system model task", () => {
           ...unavailable,
           policy: {
             ...unavailable.policy,
+            reasoningEffort: "xhigh",
             systemModel: { ...candidate, available: true },
             updatedBy: { displayName: "Current administrator", id: "admin-new" },
             version: 5
@@ -122,7 +131,7 @@ describe("administrator provider system model task", () => {
     expect(save).toBeEnabled();
     fireEvent.click(save);
     await screen.findByText("System model updated.");
-    expect(screen.getByText(/Provider access resolves as Current administrator/)).toBeVisible();
+    expect(screen.getByText(/Last saved by Current administrator/)).toBeVisible();
   });
 
   it("keeps a stale edit visible and actionable", async () => {

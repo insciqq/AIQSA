@@ -1649,13 +1649,13 @@ describe("MainThreadPane", () => {
       />
     );
 
-    expect(screen.getByRole("dialog", { name: "Архивировать чат Planning notes" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Archive chat Planning notes" })).toBeInTheDocument();
     expect(screen.getByTestId("archive-chat-confirmation")).toHaveTextContent("Planning notes");
 
-    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onCancel).toHaveBeenCalledOnce();
 
-    fireEvent.click(screen.getByRole("button", { name: "Подтвердить архивирование" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm archive" }));
     expect(onConfirm).toHaveBeenCalledOnce();
   });
 

@@ -23,6 +23,8 @@ const FORGET_UNDO_MIGRATION = "20260811160000_memory_forget_undo_window";
 const FORGET_UNDO_SHAPE_MIGRATION = "20260811161000_memory_forget_undo_outbox_shape";
 const WORKING_SET_PROFILE_MIGRATION = "20260811170000_memory_working_set_profile";
 const PERMANENT_CHAT_DELETE_MIGRATION = "20260812100000_memory_permanent_chat_delete";
+const VERIFICATION_AUTHORITY_V2_MIGRATION =
+  "20260812194000_memory_verification_authority_v2";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -2632,6 +2634,24 @@ function assertFactConsolidationMigrationAtomicRollback(database: string): void 
   );
 }
 
+function assertVerificationAuthorityV2Contracts(database: string): void {
+  const functionDefinition = scalar(database, `
+    SELECT pg_get_functiondef(
+      'aiqsa_memory_candidate_decision_authority_trigger()'::regprocedure
+    );
+  `);
+  assert.match(
+    functionDefinition,
+    /memory-fact-verification-v1/u,
+    "verification authority upgrade dropped in-flight v1 compatibility"
+  );
+  assert.match(
+    functionDefinition,
+    /memory-fact-verification-v2/u,
+    "verification authority upgrade did not admit the current v2 pipeline"
+  );
+}
+
 function assertLearningReviewContracts(
   database: string,
   verifyBehavior = true
@@ -3564,6 +3584,8 @@ function main(): void {
     assertWorkingSetProfileContracts(upgradeDatabase);
     applyMigrations(upgradeDatabase, [PERMANENT_CHAT_DELETE_MIGRATION]);
     assertPermanentChatDeleteContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [VERIFICATION_AUTHORITY_V2_MIGRATION]);
+    assertVerificationAuthorityV2Contracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
@@ -3602,6 +3624,8 @@ function main(): void {
     assertWorkingSetProfileContracts(freshDatabase);
     applyMigrations(freshDatabase, [PERMANENT_CHAT_DELETE_MIGRATION]);
     assertPermanentChatDeleteContracts(freshDatabase);
+    applyMigrations(freshDatabase, [VERIFICATION_AUTHORITY_V2_MIGRATION]);
+    assertVerificationAuthorityV2Contracts(freshDatabase);
 
     createDatabase(rollbackDatabase);
     applyMigrations(rollbackDatabase, migrationNames((name) => name < CHAT_SCOPE_MIGRATION));
@@ -3680,7 +3704,9 @@ function main(): void {
     dropDatabases();
   }
 
-  console.info("Memory migration contract passed through permanent-chat deletion fences.");
+  console.info(
+    "Memory migration contract passed through verification-authority v2 fences."
+  );
 }
 
 main();

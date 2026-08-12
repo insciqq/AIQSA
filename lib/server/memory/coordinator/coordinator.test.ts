@@ -107,6 +107,53 @@ function coordinator(
 }
 
 describe("Memory coordinator", () => {
+  it("does not turn timer ticks during a slow pass into a continuous catch-up loop", async () => {
+    vi.useFakeTimers();
+    let releasePass!: () => void;
+    let markPassStarted!: () => void;
+    const passStarted = new Promise<void>((resolve) => {
+      markPassStarted = resolve;
+    });
+    const passGate = new Promise<void>((resolve) => {
+      releasePass = resolve;
+    });
+    const reconcileWork = vi.fn(async () => {
+      markPassStarted();
+      await passGate;
+    });
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      policy: {
+        heartbeatMs: 10,
+        intervalMs: 10,
+        leaseMs: 100,
+        maxDeletionParallel: 1,
+        maxJobParallel: 1
+      },
+      reconcileWork,
+      registry: new MemoryCoordinatorRegistry(),
+      repository: repository()
+    });
+
+    try {
+      service.start();
+      await passStarted;
+      await vi.advanceTimersByTimeAsync(35);
+      releasePass();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reconcileWork).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(9);
+      expect(reconcileWork).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reconcileWork).toHaveBeenCalledTimes(2);
+    } finally {
+      service.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("discovers bounded durable work after servicing the existing shared budget", async () => {
     const callOrder: string[] = [];
     const reconcileWork = vi.fn(async () => {

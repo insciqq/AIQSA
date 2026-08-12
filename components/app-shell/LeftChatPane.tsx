@@ -2,6 +2,7 @@ import { ComposerOptionPicker } from "@/components/app-shell/ComposerOptionPicke
 import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
 import { openPermanentChatDeletion } from "@/components/app-shell/permanentChatDeletionStore";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 import { loadChatMemoryState } from "@/components/app-shell/chatLifecycleApi";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { isImeCompositionEvent } from "@/components/keyboard";
@@ -259,7 +260,7 @@ function LeftChatPaneComponent({
   workspaceToggleRef
 }: LeftChatPaneProps) {
   const idPrefix = layout === "mobile" ? "mobile-" : "";
-  const memoryLocale = useMemorySettingsStore((state) => state.data?.settings.memoryUiLocale ?? "RU");
+  const memoryLocale = MEMORY_PRESENTATION_LOCALE;
   const permanentChatDeletionAvailable = useMemorySettingsStore(
     (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
   );
@@ -711,7 +712,7 @@ function LeftChatPaneComponent({
           onClick={onOpenArchivedChats}
         >
           <Archive className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
-          <span>{memoryLocale === "RU" ? "Архив чатов" : "Archived chats"}</span>
+          <span>Archived chats</span>
         </button>
       </div>
 
@@ -1378,16 +1379,16 @@ function LeftChatPaneComponent({
                             </button>
                             <div className="mt-1 border-t border-trace-subtle px-2 pb-1 pt-2">
                               <p className="text-xs font-semibold text-ink-secondary">
-                                {memoryLocale === "RU" ? "Источник Памяти" : "Memory source"}
+                                Memory source
                               </p>
                               {memoryModeLoadingId === chat.id ? (
                                 <p className="mt-1 flex items-center gap-2 text-xs text-ink-muted" role="status">
                                   <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />
-                                  {memoryLocale === "RU" ? "Проверка состояния…" : "Checking state…"}
+                                  Checking state…
                                 </p>
                               ) : memoryModeErrorId === chat.id ? (
                                 <p className="mt-1 text-xs text-critical" role="alert">
-                                  {memoryLocale === "RU" ? "Состояние источника недоступно." : "Source state unavailable."}
+                                  Source state unavailable.
                                 </p>
                               ) : chat.memoryMode === "NORMAL" || chat.memoryMode === "EXCLUDED" ? (
                                 <>
@@ -1437,7 +1438,7 @@ function LeftChatPaneComponent({
                                   }}
                                 >
                                   <Trash2 className="size-4" aria-hidden="true" />
-                                  {memoryLocale === "RU" ? "Удалить навсегда" : "Delete permanently"}
+                                  Delete permanently
                                 </button>
                               ) : null}
                             </div>

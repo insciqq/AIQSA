@@ -31,26 +31,28 @@ describe("MemoryOperations", () => {
     vi.unstubAllGlobals();
   });
 
-  it("focuses the nested task, exposes exact capability reasons, and keeps clear available", async () => {
+  it("keeps English controls over retained RU data and exposes exact capability reasons", async () => {
     const data = memorySettingsFixture({
       capabilities: { automaticLearning: false, historyRecall: false },
       settings: { embeddingDeployment: null, referenceChatHistory: true }
     }, "RU");
     render(<MemoryOperations data={data} locale="RU" onBack={vi.fn()} />);
 
-    const heading = screen.getByRole("heading", { name: "Операции Памяти" });
+    const heading = screen.getByRole("heading", { name: "Memory operations" });
     await waitFor(() => expect(heading).toHaveFocus());
-    expect(screen.getByText(/Обычная перестройка останется только лексической/u)).toBeVisible();
-    expect(screen.getAllByText(/Индексирование истории недоступно/u)).toHaveLength(3);
-    const actionButtons = screen.getAllByRole("button", { name: "Проверить действие" });
+    expect(screen.getByText(/normal rebuild remains lexical-only/u)).toBeVisible();
+    expect(screen.getAllByText(/History indexing is unavailable/u)).toHaveLength(3);
+    const actionButtons = screen.getAllByRole("button", { name: "Review action" });
     expect(actionButtons.slice(0, 3).every((button) => button.hasAttribute("disabled"))).toBe(true);
     expect(actionButtons.at(-1)).toBeEnabled();
 
     fireEvent.click(actionButtons.at(-1)!);
-    const confirmation = screen.getByRole("heading", { name: "Подтвердите операцию Памяти" });
+    const confirmation = screen.getByRole("heading", { name: "Confirm Memory operation" });
     await waitFor(() => expect(confirmation).toHaveFocus());
-    expect(screen.getAllByText(/Исходные сохранённые чаты/u)).toHaveLength(2);
-    expect(screen.getByText(/немедленный барьер извлечения/u)).toBeVisible();
+    expect(screen.getAllByText(/Raw retained chats/u)).toHaveLength(2);
+    expect(within(confirmation.closest("section")!).getByText(
+      /^Commit the immediate retrieval fence/u
+    )).toBeVisible();
   });
 
   it("distinguishes learned-memory deletion from retained chats and indexed history", async () => {

@@ -602,7 +602,7 @@ export function Composer({
                 <span className="min-w-0 font-semibold text-ink">
                   {memory.mode === "TEMPORARY"
                     ? memory.label
-                    : memory.locale === "RU" ? "Обычный чат" : "Normal chat"}
+                    : "Normal chat"}
                 </span>
                 {memory.canToggleTemporary ? (
                   <button
@@ -612,7 +612,7 @@ export function Composer({
                     onClick={memory.toggleTemporary}
                   >
                     {memory.mode === "TEMPORARY"
-                      ? memory.locale === "RU" ? "Отменить временный режим" : "Cancel Temporary"
+                      ? "Cancel Temporary"
                       : memory.label}
                   </button>
                 ) : null}
@@ -624,8 +624,8 @@ export function Composer({
                   <p>{memory.externalRetention}</p>
                   {memory.retentionDeadline ? (
                     <p className="font-semibold text-caution" data-testid="temporary-retention-deadline">
-                      {memory.locale === "RU" ? "Текущий срок удаления: " : "Current deletion deadline: "}
-                      {new Intl.DateTimeFormat(memory.locale === "RU" ? "ru-RU" : "en-US", {
+                      Current deletion deadline:{" "}
+                      {new Intl.DateTimeFormat("en-US", {
                         dateStyle: "medium",
                         timeStyle: "short"
                       }).format(new Date(memory.retentionDeadline))}

@@ -47,8 +47,10 @@ type CommandPaletteActionsInput = {
   inspectorMode: InspectorMode;
   inspectorPinningAvailable: boolean;
   knowledgeOpen: boolean;
+  memoryOpen: boolean;
   openKnowledge(): void;
   openLibrary(): void;
+  openMemory(): void;
   openSettings(): void;
   searchOptions: CatalogSearchStrategy[];
   selectModel(model: CatalogModel): void;
@@ -73,8 +75,10 @@ export function useCommandPaletteActions({
   inspectorMode,
   inspectorPinningAvailable,
   knowledgeOpen,
+  memoryOpen,
   openKnowledge,
   openLibrary,
+  openMemory,
   openSettings,
   searchOptions,
   selectModel,
@@ -129,6 +133,14 @@ export function useCommandPaletteActions({
         keywords: ["knowledge", "bases", "documents", "retrieval", "library"],
         label: "Open Knowledge",
         subtitle: "Retrieval bases and documents"
+      },
+      {
+        current: memoryOpen,
+        id: "action:open-memory",
+        kind: "action",
+        keywords: ["memory", "remember", "saved", "personalization", "evidence"],
+        label: "Open Memory",
+        subtitle: "Saved context and controls"
       }
     );
 
@@ -199,6 +211,7 @@ export function useCommandPaletteActions({
     inspectorMode,
     inspectorPinningAvailable,
     knowledgeOpen,
+    memoryOpen,
     searchOptions,
     selectedModelId,
     selectedProvider,
@@ -264,6 +277,12 @@ export function useCommandPaletteActions({
     if (item.id === "action:open-knowledge") {
       closePalette();
       window.setTimeout(openKnowledge, 0);
+      return;
+    }
+
+    if (item.id === "action:open-memory") {
+      closePalette();
+      window.setTimeout(openMemory, 0);
       return;
     }
 

@@ -11,10 +11,13 @@ const role = {
   credentialSource: "default",
   modelConfiguration: {
     adapterKind: "openai_responses_compatible",
-    capabilities: {},
+    capabilities: { reasoning: true, reasoningEfforts: ["low", "xhigh"] },
     defaultParams: {}
   },
-  snapshot: { providerModelId: "model-1" }
+  snapshot: {
+    model: { capabilities: { reasoning: true, reasoningEfforts: ["low", "xhigh"] } },
+    providerModelId: "model-1"
+  }
 } as unknown as ProviderAdmissionRole;
 
 function database(policy: unknown) {
@@ -32,6 +35,7 @@ describe("system model role resolver", () => {
       .resolves.toEqual({ code: SYSTEM_MODEL_ABSENT, ok: false });
     await expect(createSystemModelRoleResolver(database({
       providerModelId: null,
+      reasoningEffort: null,
       updatedByUserId: null,
       version: 1
     }), { loadRole }).resolve()).resolves.toEqual({ code: SYSTEM_MODEL_ABSENT, ok: false });
@@ -48,6 +52,7 @@ describe("system model role resolver", () => {
       const loadRole = vi.fn().mockResolvedValue(role);
       await expect(createSystemModelRoleResolver(database({
         providerModelId: "model-1",
+        reasoningEffort: "xhigh",
         updatedByUserId,
         version: 2
       }), { loadRole }).resolve()).resolves.toEqual({
@@ -55,6 +60,7 @@ describe("system model role resolver", () => {
         ok: true,
         policyVersion: 2,
         providerModelId: "model-1",
+        reasoningEffort: "xhigh",
         role
       });
       expect(loadRole).toHaveBeenCalledWith(expect.anything(), {
@@ -74,6 +80,7 @@ describe("system model role resolver", () => {
       );
       await expect(createSystemModelRoleResolver(database({
         providerModelId: "model-1",
+        reasoningEffort: null,
         updatedByUserId: "admin-1",
         version: 3
       }), { loadRole }).resolve()).resolves.toEqual({
@@ -90,6 +97,7 @@ describe("system model role resolver", () => {
     const loadRole = vi.fn().mockResolvedValue(role);
     await expect(createSystemModelRoleResolver(database({
       providerModelId: "model-1",
+      reasoningEffort: "xhigh",
       updatedByUserId: "admin-1",
       version: 7
     }), { loadRole }).resolve()).resolves.toEqual({
@@ -97,7 +105,21 @@ describe("system model role resolver", () => {
       ok: true,
       policyVersion: 7,
       providerModelId: "model-1",
+      reasoningEffort: "xhigh",
       role
+    });
+  });
+
+  it("fails closed when a retained reasoning effort is no longer advertised", async () => {
+    const loadRole = vi.fn().mockResolvedValue(role);
+    await expect(createSystemModelRoleResolver(database({
+      providerModelId: "model-1",
+      reasoningEffort: "max",
+      updatedByUserId: "admin-1",
+      version: 8
+    }), { loadRole }).resolve()).resolves.toEqual({
+      code: SYSTEM_MODEL_UNAVAILABLE,
+      ok: false
     });
   });
 });

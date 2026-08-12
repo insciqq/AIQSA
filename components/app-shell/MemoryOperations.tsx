@@ -57,7 +57,7 @@ function formatDate(locale: MemoryUiLocale, value: string | null): string {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat(locale === "RU" ? "ru-RU" : "en-US", {
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(date);
@@ -133,7 +133,7 @@ function deletionStateText(
     case "SUCCEEDED": return t(locale, kind === "all"
       ? "stateAllSucceeded"
       : kind === "learned" ? "stateLearnedSucceeded" : "stateClearSucceeded");
-    case "CANCELLED": return locale === "RU" ? "Удаление отменено." : "Deletion cancelled.";
+    case "CANCELLED": return "Deletion cancelled.";
   }
 }
 

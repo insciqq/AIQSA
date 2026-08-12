@@ -108,10 +108,38 @@ function endpointOrigin(snapshot: ProviderExecutionSnapshot): string {
   }
 }
 
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function applySystemModelReasoningEffort(
+  snapshot: ProviderExecutionSnapshot,
+  reasoningEffort: string | null
+): ProviderExecutionSnapshot {
+  if (reasoningEffort === null) return snapshot;
+  const currentReasoning = record(snapshot.model.defaultParams.reasoning)
+    ? snapshot.model.defaultParams.reasoning
+    : {};
+  return {
+    ...snapshot,
+    model: {
+      ...snapshot.model,
+      defaultParams: {
+        ...snapshot.model.defaultParams,
+        reasoning: {
+          ...currentReasoning,
+          effort: reasoningEffort
+        }
+      }
+    }
+  };
+}
+
 function targetFor(
   role: MemoryExecutionRole,
   admitted: ProviderAdmissionRole | EmbeddingProviderAdmissionRole,
-  policyRevision: number | null
+  policyRevision: number | null,
+  reasoningEffort: string | null = null
 ): ResolvedMemoryExecutionTarget | null {
   const authority = exactAuthority(admitted.authority);
   const snapshot = admitted.snapshot;
@@ -144,6 +172,7 @@ function targetFor(
     upstreamModelId: snapshot.model.upstreamModelId
   };
   const destinationFingerprint = memoryExecutionSha256(destination);
+  const executionSnapshot = applySystemModelReasoningEffort(snapshot, reasoningEffort);
   return {
     authority,
     credentialSource: admitted.credentialSource,
@@ -152,7 +181,7 @@ function targetFor(
       destination,
       credentialVersionId: authority.credentialVersionId,
       policyRevision,
-      snapshot
+      snapshot: executionSnapshot
     }),
     policyRevision,
     qualificationFingerprints: {
@@ -180,7 +209,7 @@ function targetFor(
         providerFamily: snapshot.providerFamily
       })
     },
-    snapshot
+    snapshot: executionSnapshot
   };
 }
 
@@ -251,7 +280,12 @@ export async function resolveCurrentMemoryUtilityPolicy(
     }
 
     const target = systemResolution.ok
-      ? targetFor(role, systemResolution.role, systemResolution.policyVersion)
+      ? targetFor(
+          role,
+          systemResolution.role,
+          systemResolution.policyVersion,
+          systemResolution.reasoningEffort
+        )
       : null;
     if (target) {
       targets.set(role, target);

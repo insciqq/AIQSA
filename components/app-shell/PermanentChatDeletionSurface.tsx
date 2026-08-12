@@ -39,7 +39,7 @@ function formattedDate(locale: MemoryUiLocale, value: string | null): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? "—"
-    : new Intl.DateTimeFormat(locale === "RU" ? "ru-RU" : "en-US", {
+    : new Intl.DateTimeFormat("en-US", {
         dateStyle: "medium",
         timeStyle: "short"
       }).format(date);

@@ -19,6 +19,7 @@ export type SystemModelRoleResolution =
       ok: true;
       policyVersion: number;
       providerModelId: string;
+      reasoningEffort: string | null;
       role: ProviderAdmissionRole;
     }>;
 
@@ -39,6 +40,7 @@ export function createSystemModelRoleResolver(
       const policy = await db.systemModelPolicy.findUnique({
         select: {
           providerModelId: true,
+          reasoningEffort: true,
           version: true
         },
         where: { id: "installation" }
@@ -50,11 +52,19 @@ export function createSystemModelRoleResolver(
         const role = await loadRole(db, {
           providerModelId: policy.providerModelId
         });
+        if (policy.reasoningEffort !== null) {
+          const capabilities = role.snapshot.model.capabilities;
+          if (capabilities.reasoning !== true ||
+            !capabilities.reasoningEfforts?.includes(policy.reasoningEffort)) {
+            return { code: SYSTEM_MODEL_UNAVAILABLE, ok: false };
+          }
+        }
         return {
           credentialScope: "installation",
           ok: true,
           policyVersion: policy.version,
           providerModelId: policy.providerModelId,
+          reasoningEffort: policy.reasoningEffort,
           role
         };
       } catch (error) {

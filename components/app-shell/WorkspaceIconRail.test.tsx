@@ -15,6 +15,7 @@ function baseProps(): ComponentProps<typeof WorkspaceIconRail> {
     onNewChat: vi.fn(),
     onOpenAssistants: vi.fn(),
     onOpenKnowledge: vi.fn(),
+    onOpenMemory: vi.fn(),
     onOpenSettings: vi.fn(),
     onRestoreChats: vi.fn(),
     paneHidden: false,
@@ -41,6 +42,7 @@ describe("WorkspaceIconRail", () => {
       "Account",
       "Assistants",
       "Knowledge",
+      "Memory",
       "Settings",
       "Control Center"
     ]);
@@ -127,6 +129,7 @@ describe("WorkspaceIconRail", () => {
       screen.getByRole("button", { name: "New chat" }),
       screen.getByRole("button", { name: "Assistants" }),
       screen.getByRole("button", { name: "Knowledge" }),
+      screen.getByRole("button", { name: "Memory" }),
       screen.getByRole("button", { name: "Settings" }),
       screen.getByRole("link", { name: "Control Center" })
     ];
@@ -143,6 +146,7 @@ describe("WorkspaceIconRail", () => {
     expect(props.onNewChat).not.toHaveBeenCalled();
     expect(props.onOpenAssistants).not.toHaveBeenCalled();
     expect(props.onOpenKnowledge).not.toHaveBeenCalled();
+    expect(props.onOpenMemory).not.toHaveBeenCalled();
     expect(props.onOpenSettings).not.toHaveBeenCalled();
   });
 
@@ -154,11 +158,13 @@ describe("WorkspaceIconRail", () => {
     fireEvent.click(within(navigation).getByRole("button", { name: "New chat" }));
     fireEvent.click(within(navigation).getByRole("button", { name: "Assistants" }));
     fireEvent.click(within(navigation).getByRole("button", { name: "Knowledge" }));
+    fireEvent.click(within(navigation).getByRole("button", { name: "Memory" }));
     fireEvent.click(within(navigation).getByRole("button", { name: "Settings" }));
 
     expect(props.onNewChat).toHaveBeenCalledOnce();
     expect(props.onOpenAssistants).toHaveBeenCalledOnce();
     expect(props.onOpenKnowledge).toHaveBeenCalledOnce();
+    expect(props.onOpenMemory).toHaveBeenCalledOnce();
     expect(props.onOpenSettings).toHaveBeenCalledOnce();
   });
 
@@ -166,7 +172,7 @@ describe("WorkspaceIconRail", () => {
     render(<WorkspaceIconRail {...baseProps()} adminHref="/admin" />);
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
 
-    for (const label of ["New chat", "Chats", "Account", "Assistants", "Knowledge", "Settings", "Admin"]) {
+    for (const label of ["New chat", "Chats", "Account", "Assistants", "Knowledge", "Memory", "Settings", "Admin"]) {
       expect(within(navigation).getByText(label)).toBeVisible();
     }
   });

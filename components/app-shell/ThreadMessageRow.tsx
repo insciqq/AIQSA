@@ -17,6 +17,7 @@ import {
   refreshMemorySettings,
   useMemorySettingsStore
 } from "@/components/app-shell/memorySettingsStore";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 import { AssistantAvatar } from "@/components/assistants/AssistantAvatar";
 import {
   deriveRunReceipt,
@@ -562,8 +563,7 @@ function ThreadMessageRowComponent({
   const hasMemoryProjection = Boolean(
     artifactSummary?.memoryAction || artifactSummary?.memoryReceipt
   );
-  const memoryLocale = memorySettings?.settings.memoryUiLocale ??
-    (memorySettingsLoadState === "error" ? "RU" : null);
+  const memoryLocale = MEMORY_PRESENTATION_LOCALE;
   useEffect(() => {
     if (!hasMemoryProjection || memorySettings || memorySettingsLoadState === "loading") return;
     void refreshMemorySettings().catch(() => undefined);

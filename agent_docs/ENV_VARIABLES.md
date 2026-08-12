@@ -143,6 +143,7 @@ AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS=64
 AIQSA_MEMORY_BACKGROUND_BUDGET_REFRESH_MS=60000
 AIQSA_MEMORY_BACKGROUND_USER_DAILY_CALLS=64
 AIQSA_MEMORY_BACKGROUND_USER_DAILY_COST_MICROS=500000
+AIQSA_MEMORY_COORDINATOR_INTERVAL_MS=1000
 AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_CALLS=4096
 AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_COST_MICROS=25000000
 ```
@@ -153,6 +154,12 @@ one for the same user, and one independent deletion handler. Claim-pass limits
 bound one scheduler tick rather than truncate durable backlog. The job policy
 weights safety reconciliation, still gives ordinary and background tiers a
 bounded turn, and retains PostgreSQL owner rotation within every tier.
+
+`AIQSA_MEMORY_COORDINATOR_INTERVAL_MS` bounds periodic durable reconciliation
+between 1 and 60 seconds. Explicit lifecycle/settings/job kicks remain
+immediate. Production compose keeps the one-second worker default; development
+compose uses 30 seconds because Next development tracing retains substantially
+more state per background pass than the standalone worker.
 
 The two daily limits are soft UTC-day ceilings for `GLOBAL_DREAM` and
 `RECALCULATE_WORKING_SET` only. Calls count their persisted execution bindings;
@@ -531,9 +538,9 @@ The dev/test fake adapter paces tokens by 10 ms by default so streaming and canc
 Dev Compose also honors the canonical `AIQSA_APP_MEMORY_LIMIT`, with a 3 GiB
 development default instead of the release stack's 2 GiB default, plus
 `AIQSA_APP_CPU_LIMIT`, with a four-CPU default. These are hard cgroup boundaries
-for long-lived Turbopack and one-shot app containers, so a stale compiler cache
-cannot consume host memory without bound or monopolize every CPU. The container
-check additionally uses a uniquely named fresh one-shot app container with
+for long-lived Turbopack and one-shot app containers. Dev disables Turbopack's
+persistent filesystem cache so broad bind-mount changes cannot preserve a stale
+compiler loop across restarts. The container check additionally uses a uniquely named fresh one-shot app container with
 fixed 4 GiB and two-CPU cgroup boundaries, a 3 GiB Node heap, and one Vitest
 worker; a second concurrent check fails to start, and the toolchain never enters
 the warmed dev server.

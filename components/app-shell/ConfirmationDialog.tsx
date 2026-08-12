@@ -1,7 +1,7 @@
 import { AlertTriangle, Archive, Trash2, X } from "lucide-react";
-import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import type { MemoryUiLocale } from "@/lib/contracts/memory";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 import { useDialogFocus } from "./useDialogFocus";
 
 type ConfirmationTone = "destructive" | "warning";
@@ -107,19 +107,19 @@ export function ChatDeleteConfirmationDialog({
   onCancel(): void;
   onConfirm(): void;
 }) {
-  const storedLocale = useMemorySettingsStore((state) => state.data?.settings.memoryUiLocale ?? "RU");
-  const locale = localeOverride ?? storedLocale;
+  void localeOverride;
+  const locale = MEMORY_PRESENTATION_LOCALE;
   return (
     <ConfirmationDialog
-      cancelLabel={locale === "RU" ? "Отмена" : "Cancel"}
-      confirmAriaLabel={locale === "RU" ? "Подтвердить архивирование" : "Confirm archive"}
+      cancelLabel="Cancel"
+      confirmAriaLabel="Confirm archive"
       confirmLabel={resolveMemoryCopy(locale, "archive.action")}
-      dialogLabel={locale === "RU" ? `Архивировать чат ${chatTitle}` : `Archive chat ${chatTitle}`}
+      dialogLabel={`Archive chat ${chatTitle}`}
       icon="archive"
       onCancel={onCancel}
       onConfirm={onConfirm}
       testId="archive-chat-confirmation"
-      title={locale === "RU" ? "Архивировать чат?" : "Archive chat?"}
+      title="Archive chat?"
       tone="warning"
     >
       {`${resolveMemoryCopy(locale, "archive.explanation")} “${chatTitle}”`}

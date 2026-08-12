@@ -18,7 +18,6 @@ import {
   acceptCurrentMemoryDestinations,
   refreshMemorySettings,
   updateMemoryGate,
-  updateMemoryLocale,
   useMemorySettingsStore,
   type MemorySettingsMutation
 } from "@/components/app-shell/memorySettingsStore";
@@ -26,6 +25,7 @@ import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { MemorySettingsResponse, MemoryUiLocale } from "@/lib/contracts/memory";
 import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
+import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 import {
   ArrowRight,
   Check,
@@ -33,7 +33,6 @@ import {
   Database,
   DatabaseZap,
   Fingerprint,
-  Languages,
   ListChecks,
   RotateCw,
   ShieldCheck
@@ -172,7 +171,7 @@ function EvidenceRow({ label, children }: { label: string; children: ReactNode }
 
 function formatDate(locale: MemoryUiLocale, value: string | null): string {
   if (!value) return t(locale, "settings.notAccepted");
-  return new Intl.DateTimeFormat(locale === "RU" ? "ru-RU" : "en-US", {
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(new Date(value));
@@ -233,17 +232,6 @@ function MemorySettings({
     );
   };
 
-  const updateLocale = (next: MemoryUiLocale) => {
-    if (next === locale || busy) return;
-    onNotice(null);
-    void updateMemoryLocale(next).then(
-      () => onNotice("saved"),
-      (error: unknown) => onNotice(
-        error instanceof MemoryApiError && error.code === "memory_version_stale" ? "stale" : "error"
-      )
-    );
-  };
-
   const accept = () => {
     onNotice(null);
     void acceptCurrentMemoryDestinations().then(
@@ -268,7 +256,7 @@ function MemorySettings({
   ] as const;
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="mx-auto w-full max-w-5xl">
       <div className="flex items-start gap-3">
         <ListChecks className="mt-0.5 size-5 shrink-0 text-proof" aria-hidden="true" />
         <div>
@@ -343,31 +331,6 @@ function MemorySettings({
               <li>{t(locale, "settings.informationRisk")}</li>
             </ul>
           </div>
-        </div>
-      </section>
-
-      <section className="mt-6" aria-labelledby="memory-locale-heading">
-        <div className="flex items-start gap-3">
-          <Languages className="mt-0.5 size-4 shrink-0 text-ink-muted" aria-hidden="true" />
-          <div>
-            <h4 className="text-sm font-semibold text-ink" id="memory-locale-heading">{t(locale, "settings.localeHeading")}</h4>
-            <p className="mt-1 text-xs leading-5 text-ink-muted">{t(locale, "settings.localeDescription")}</p>
-          </div>
-        </div>
-        <div className="mt-3 inline-flex rounded-control border border-trace-subtle bg-control-surface p-1" role="radiogroup" aria-label={t(locale, "settings.localeHeading")}>
-          {(["RU", "EN"] as const).map((candidate) => (
-            <button
-              className={`min-h-control rounded-control px-4 text-sm font-semibold ${candidate === locale ? "bg-control-selected text-ink" : "text-ink-secondary hover:bg-control-hover hover:text-ink"} ${coarsePointerTarget} ${focusRing}`}
-              key={candidate}
-              type="button"
-              role="radio"
-              aria-checked={candidate === locale}
-              disabled={busy !== null}
-              onClick={() => updateLocale(candidate)}
-            >
-              {candidate === "RU" ? t(locale, "settings.localeRu") : t(locale, "settings.localeEn")}
-            </button>
-          ))}
         </div>
       </section>
 
@@ -597,7 +560,7 @@ export function MemorySettingsSection({
     }
   }, [operationsOpen]);
 
-  const locale = data?.settings.memoryUiLocale ?? null;
+  const locale = MEMORY_PRESENTATION_LOCALE;
   return (
     <section
       className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-6 sm:px-6"
@@ -605,7 +568,7 @@ export function MemorySettingsSection({
       data-testid="settings-memory-scroll"
       ref={memoryScrollRef}
     >
-      {operationsOpen && data && locale ? (
+      {operationsOpen && data ? (
         <MemoryOperations
           data={data}
           locale={locale}
@@ -615,7 +578,7 @@ export function MemorySettingsSection({
             void refreshMemoryHealth().catch(() => undefined);
           }}
         />
-      ) : managing && data && locale ? (
+      ) : managing && data ? (
         <ManageMemories
           accountId={accountId}
           locale={locale}
@@ -625,7 +588,7 @@ export function MemorySettingsSection({
           onOpenMemorySource={onOpenMemorySource}
           useMemoryFacts={data.settings.useMemoryFacts}
         />
-      ) : data && locale ? (
+      ) : data ? (
         <>
           <SettingNotice locale={locale} notice={notice} />
           <MemorySettings
@@ -649,15 +612,15 @@ export function MemorySettingsSection({
         </>
       ) : loadState === "error" ? (
         <div className="mx-auto max-w-3xl py-10 text-center">
-          <p className="text-sm text-critical" role="alert">Память не загрузилась / Memory could not be loaded.</p>
+          <p className="text-sm text-critical" role="alert">Memory could not be loaded.</p>
           <button className={`${secondaryButton} mt-3`} type="button" onClick={() => void refreshMemorySettings(true).catch(() => undefined)}>
             <RotateCw className="size-4" aria-hidden="true" />
-            Повторить / Retry
+            Retry
           </button>
         </div>
       ) : (
         <p className="mx-auto max-w-3xl py-10 text-center text-sm text-ink-muted" role="status">
-          Загрузка Памяти… / Loading Memory…
+          Loading Memory…
         </p>
       )}
     </section>

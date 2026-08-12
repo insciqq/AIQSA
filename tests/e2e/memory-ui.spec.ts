@@ -1183,29 +1183,29 @@ test("keeps permanent chat deletion distinct, exact, recoverable, and responsive
   const workspace = page.getByTestId("workspace-pane-mobile");
   await workspace.getByRole("button", { name: "Chat actions Deletion source" }).click();
   const menu = workspace.getByRole("dialog", { name: "Actions for Deletion source" });
-  await expect(menu.getByRole("button", { name: "Архивировать" })).toBeVisible();
-  const permanentAction = menu.getByRole("button", { name: "Удалить навсегда" });
+  await expect(menu.getByRole("button", { name: "Archive" })).toBeVisible();
+  const permanentAction = menu.getByRole("button", { name: "Delete permanently" });
   await expectTouchSafe(permanentAction);
   await permanentAction.click();
 
-  let deletion = page.getByRole("dialog", { name: "Удалить этот чат навсегда?" });
-  await expect(deletion.getByText(/исчезнет сразу/u)).toBeVisible();
-  await expect(deletion.getByLabel(/Также забыть сохранённые воспоминания/u)).not.toBeChecked();
-  await expect(deletion.getByText(/AI-провайдеру/u)).not.toBeVisible();
-  await deletion.getByText("Расширенные сведения").click();
-  await expect(deletion.getByText(/AI-провайдеру/u)).toBeVisible();
-  await expect(deletion.getByText(/резервных копиях/u)).toBeVisible();
-  await deletion.getByLabel(/Также забыть сохранённые воспоминания/u).check();
+  let deletion = page.getByRole("dialog", { name: "Delete this chat permanently?" });
+  await expect(deletion.getByText(/disappear immediately/u)).toBeVisible();
+  await expect(deletion.getByLabel(/Also forget saved memories/u)).not.toBeChecked();
+  await expect(deletion.getByText(/AI provider or external tool/u)).not.toBeVisible();
+  await deletion.getByText("Advanced details").click();
+  await expect(deletion.getByText(/AI provider or external tool/u)).toBeVisible();
+  await expect(deletion.getByText(/Operator backups/u)).toBeVisible();
+  await deletion.getByLabel(/Also forget saved memories/u).check();
   await expectWithinViewport(page, deletion);
   await expectNoHorizontalOverflow(page);
 
-  await deletion.getByRole("button", { name: "Удалить навсегда" }).click();
-  await expect(deletion.getByText(/Чат изменился/u)).toBeVisible();
+  await deletion.getByRole("button", { name: "Delete permanently" }).click();
+  await expect(deletion.getByText(/The chat changed/u)).toBeVisible();
   expect(fixture.permanentChatDeletionAdmissions).toHaveLength(0);
-  await deletion.getByRole("button", { name: "Удалить навсегда" }).click();
+  await deletion.getByRole("button", { name: "Delete permanently" }).click();
 
-  deletion = page.getByRole("dialog", { name: "Безвозвратное удаление" });
-  await expect(deletion.getByText(/внимание администратора/u)).toBeVisible();
+  deletion = page.getByRole("dialog", { name: "Permanent deletion" });
+  await expect(deletion.getByText(/administrator attention/u)).toBeVisible();
   expect(fixture.permanentChatDeletionAuthorizations).toHaveLength(2);
   expect(fixture.permanentChatDeletionAuthorizations[1]).toMatchObject({
     alsoForgetOriginMemories: true,
@@ -1219,20 +1219,20 @@ test("keeps permanent chat deletion distinct, exact, recoverable, and responsive
     expectedChatRevision: 4,
     mutationAuthorizationId: "chat-delete-authorization-e2e"
   }]);
-  await deletion.getByRole("button", { name: "Закрыть" }).last().click();
+  await deletion.getByRole("button", { name: "Close" }).last().click();
   await expect(page.getByRole("alert").filter({
-    hasText: "очистке требуется внимание"
+    hasText: "cleanup needs attention"
   })).toBeVisible();
 
   await page.reload();
   await expect(page.getByRole("alert").filter({
-    hasText: "очистке требуется внимание"
+    hasText: "cleanup needs attention"
   })).toBeVisible();
   await expect(page.getByText("Deletion source", { exact: true })).toHaveCount(0);
   await page.setViewportSize({ height: 390, width: 844 });
-  await page.getByRole("button", { name: "Посмотреть прогресс" }).click();
-  deletion = page.getByRole("dialog", { name: "Безвозвратное удаление" });
-  await deletion.getByText("Расширенные сведения").click();
+  await page.getByRole("button", { name: "View progress" }).click();
+  deletion = page.getByRole("dialog", { name: "Permanent deletion" });
+  await deletion.getByText("Advanced details").click();
   await expect(deletion.getByText("chat-permanent-deletion-e2e")).toBeVisible();
   await expect(deletion.getByText("memory_cleanup_residual")).toBeVisible();
   await expectWithinViewport(page, deletion);
@@ -1245,10 +1245,8 @@ test("keeps manual Memory history search private, cancellable, reversible, and a
   const fixture = await installMemoryFixture(context);
   await signIn(page);
 
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-dialog");
-  await settings.getByRole("button", { name: "Memory" }).click();
-  await settings.getByRole("radio", { name: "English" }).click();
+  await runAccountMenuAction(page, "Memory");
+  const settings = page.getByTestId("memory-workspace");
   await settings.getByRole("switch", { name: "Reference chat history" }).click();
   await settings.getByRole("button", { name: "Manage Memories" }).click();
   const manager = settings.getByTestId("manage-memories");
@@ -1324,36 +1322,35 @@ test("keeps Memory health simple, safety-prominent, advanced, and responsive", a
   });
   await signIn(page);
 
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-dialog");
-  await settings.getByRole("button", { name: "Memory" }).click();
+  await runAccountMenuAction(page, "Memory");
+  const settings = page.getByTestId("memory-workspace");
   const pulse = settings.getByTestId("memory-health-pulse");
   await expect(pulse.getByRole("heading", {
-    name: "Очистке Памяти требуется внимание администратора"
+    name: "Memory cleanup needs administrator attention"
   })).toBeVisible();
-  await expect(pulse.getByText(/ограждены от повторного использования/u)).toBeVisible();
-  await expect(pulse.getByText(/истёк срок удаления временного чата/u)).toBeVisible();
-  await expect(pulse.getByText("Физическая очистка")).toBeHidden();
+  await expect(pulse.getByText(/remains fenced from reuse/u)).toBeVisible();
+  await expect(pulse.getByText(/past its retention deadline/u)).toBeVisible();
+  await expect(pulse.getByText("Physical cleanup")).toBeHidden();
 
-  const advanced = pulse.getByText("Расширенный режим", { exact: true });
+  const advanced = pulse.getByText("Advanced", { exact: true });
   await expectTouchSafe(advanced);
   await advanced.focus();
   await advanced.press("Enter");
-  await expect(pulse.getByText("Физическая очистка")).toBeVisible();
-  await expect(pulse.getByText("Нужно внимание администратора")).toBeVisible();
+  await expect(pulse.getByText("Physical cleanup")).toBeVisible();
+  await expect(pulse.getByText("Administrator attention required")).toBeVisible();
   await expectWithinViewport(page, advanced);
   await expectNoHorizontalOverflow(page);
 
   await page.setViewportSize({ height: 390, width: 844 });
   await expect(pulse).toBeVisible();
   await expectNoHorizontalOverflow(page);
-  const operations = pulse.getByRole("button", { name: "Открыть операции Памяти" });
+  const operations = pulse.getByRole("button", { name: "Open Memory operations" });
   await expectTouchSafe(operations);
   await operations.click();
-  await expect(settings.getByRole("heading", { exact: true, name: "Операции Памяти" })).toBeFocused();
+  await expect(settings.getByRole("heading", { exact: true, name: "Memory operations" })).toBeFocused();
   await expectNoHorizontalOverflow(page);
-  await settings.getByRole("button", { name: "Назад к настройкам Памяти" }).click();
-  await expect(pulse.getByRole("button", { name: "Открыть операции Памяти" })).toBeFocused();
+  await settings.getByRole("button", { name: "Back to Memory settings" }).click();
+  await expect(pulse.getByRole("button", { name: "Open Memory operations" })).toBeFocused();
 });
 
 test("keeps Memory operations exact, recoverable, cancellable, and responsive", async ({ context, page }) => {
@@ -1362,11 +1359,9 @@ test("keeps Memory operations exact, recoverable, cancellable, and responsive", 
   const fixture = await installMemoryFixture(context, { operationsEnabled: true });
   await signIn(page);
 
-  await runAccountMenuAction(page, "Settings");
-  let settings = page.getByTestId("settings-dialog");
-  await settings.getByRole("button", { name: "Memory" }).click();
-  await expect(settings.getByRole("button", { name: "Операции Памяти" })).toBeVisible();
-  await settings.getByRole("radio", { name: "English" }).click();
+  await runAccountMenuAction(page, "Memory");
+  let settings = page.getByTestId("memory-workspace");
+  await expect(settings.getByRole("button", { name: "Memory operations" })).toBeVisible();
   await settings.getByRole("button", { name: "Accept current destinations" }).click();
   await settings.getByRole("switch", { name: "Reference chat history" }).click();
 
@@ -1392,7 +1387,7 @@ test("keeps Memory operations exact, recoverable, cancellable, and responsive", 
   await expect(operations.getByText("The shadow job is queued.")).toBeVisible();
   expect(fixture.rebuildRequests.at(-1)).toEqual({
     expectedMemoryRevision: 9,
-    expectedSettingsRevision: 15,
+    expectedSettingsRevision: 14,
     operation: "REBUILD_SEARCH_INDEX"
   });
   await expect(operations.getByText(/shadow operation is running/u)).toBeVisible();
@@ -1416,12 +1411,12 @@ test("keeps Memory operations exact, recoverable, cancellable, and responsive", 
   expect(fixture.mutationAuthorizations.at(-1)).toMatchObject({
     action: "BULK_DELETE",
     expectedMemoryRevision: 9,
-    expectedSettingsRevision: 15,
+    expectedSettingsRevision: 14,
     operation: "DELETE_LEARNED"
   });
   expect(fixture.bulkDeletionRequests.at(-1)).toEqual({
     expectedMemoryRevision: 9,
-    expectedSettingsRevision: 15,
+    expectedSettingsRevision: 14,
     mutationAuthorizationId: "authorization-1",
     operation: "DELETE_LEARNED"
   });
@@ -1442,20 +1437,19 @@ test("keeps Memory operations exact, recoverable, cancellable, and responsive", 
   expect(fixture.mutationAuthorizations.at(-1)).toMatchObject({
     action: "BULK_DELETE",
     expectedMemoryRevision: 10,
-    expectedSettingsRevision: 16,
+    expectedSettingsRevision: 15,
     operation: "CLEAR_HISTORY_INDEX"
   });
   expect(fixture.bulkDeletionRequests.at(-1)).toEqual({
     expectedMemoryRevision: 10,
-    expectedSettingsRevision: 16,
+    expectedSettingsRevision: 15,
     mutationAuthorizationId: "authorization-2",
     operation: "CLEAR_HISTORY_INDEX"
   });
 
   await page.reload();
-  await runAccountMenuAction(page, "Settings");
-  settings = page.getByTestId("settings-dialog");
-  await settings.getByRole("button", { name: "Memory" }).click();
+  await runAccountMenuAction(page, "Memory");
+  settings = page.getByTestId("memory-workspace");
   await settings.getByRole("button", { name: "Memory operations" }).click();
   operations = settings.getByTestId("memory-operations");
   await expect(operations.getByText(/administrator attention is required/u)).toBeVisible();
@@ -1489,12 +1483,12 @@ test("keeps Memory operations exact, recoverable, cancellable, and responsive", 
   expect(fixture.mutationAuthorizations.at(-1)).toMatchObject({
     action: "BULK_DELETE",
     expectedMemoryRevision: 11,
-    expectedSettingsRevision: 17,
+    expectedSettingsRevision: 16,
     operation: "DELETE_ALL_REUSABLE"
   });
   expect(fixture.bulkDeletionRequests.at(-1)).toEqual({
     expectedMemoryRevision: 11,
-    expectedSettingsRevision: 17,
+    expectedSettingsRevision: 16,
     mutationAuthorizationId: "authorization-3",
     operation: "DELETE_ALL_REUSABLE"
   });
@@ -1503,9 +1497,8 @@ test("keeps Memory operations exact, recoverable, cancellable, and responsive", 
   await expect(operations.getByText("8 / 11", { exact: false })).toBeVisible();
 
   await page.reload();
-  await runAccountMenuAction(page, "Settings");
-  settings = page.getByTestId("settings-dialog");
-  await settings.getByRole("button", { name: "Memory" }).click();
+  await runAccountMenuAction(page, "Memory");
+  settings = page.getByTestId("memory-workspace");
   await settings.getByRole("button", { name: "Memory operations" }).click();
   operations = settings.getByTestId("memory-operations");
   await expect(operations.getByText(/Memory stays off.*administrator attention/u)).toBeVisible();
@@ -1524,36 +1517,34 @@ test("keeps Memory operations exact, recoverable, cancellable, and responsive", 
     .toHaveAttribute("aria-checked", "false");
 });
 
-test("keeps RU/EN Memory settings, exact CRUD, and durable deletion usable across responsive sessions", async ({ context, page }) => {
+test("keeps English Memory UI and multilingual data usable across responsive sessions", async ({ context, page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await installMatrixCatalogFixture(page);
   const fixture = await installMemoryFixture(context);
   await signIn(page);
 
-  await runAccountMenuAction(page, "Settings");
-  let settings = page.getByTestId("settings-dialog");
-  await settings.getByRole("button", { name: "Memory" }).click();
-  await expect(settings.getByRole("heading", { exact: true, name: "Память" })).toBeVisible();
-  await expect(settings.getByRole("heading", { name: "Память в порядке" })).toBeVisible();
-  await expect(settings.getByRole("switch", { name: "Использовать факты из памяти" })).toHaveAttribute("aria-checked", "false");
+  await runAccountMenuAction(page, "Memory");
+  let settings = page.getByTestId("memory-workspace");
+  await expect(settings.getByRole("heading", { level: 1, name: "Memory" })).toBeVisible();
+  await expect(settings.getByRole("heading", { name: "Memory is up to date" })).toBeVisible();
+  await expect(settings.getByRole("switch", { name: "Use memory facts" })).toHaveAttribute("aria-checked", "false");
   await expect(settings.getByText("current-memory-destination-fingerprint-0001")).toBeHidden();
-  await settings.getByText("Расширенный режим", { exact: true }).click();
+  await settings.getByText("Advanced", { exact: true }).click();
   await expect(settings.getByText("current-memory-destination-fingerprint-0001")).toBeVisible();
+  await expect(settings.getByText("Memory language")).toHaveCount(0);
   await expectWithinViewport(page, settings);
   await expectNoHorizontalOverflow(page);
 
-  await settings.getByRole("radio", { name: "English" }).click();
-  await expect(settings.getByRole("heading", { exact: true, name: "Memory" })).toBeVisible();
+  await expect(settings.getByRole("heading", { level: 1, name: "Memory" })).toBeVisible();
   await settings.getByRole("button", { name: "Accept current destinations" }).click();
   await expect(settings.getByText("Current Memory destinations accepted.")).toBeVisible();
 
   const secondPage = await context.newPage();
   await installMatrixCatalogFixture(secondPage);
   await secondPage.goto("/");
-  await runAccountMenuAction(secondPage, "Settings");
-  const secondSettings = secondPage.getByTestId("settings-dialog");
-  await secondSettings.getByRole("button", { name: "Memory" }).click();
-  await expect(secondSettings.getByRole("heading", { exact: true, name: "Memory" })).toBeVisible();
+  await runAccountMenuAction(secondPage, "Memory");
+  const secondSettings = secondPage.getByTestId("memory-workspace");
+  await expect(secondSettings.getByRole("heading", { level: 1, name: "Memory" })).toBeVisible();
   await secondPage.close();
 
   await settings.getByRole("button", { name: "Manage Memories" }).click();
@@ -1631,10 +1622,8 @@ test("reviews automatic Memory and resolves conflicts without confirmation cerem
   });
   await signIn(page);
 
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-dialog");
-  await settings.getByRole("button", { name: "Memory" }).click();
-  await settings.getByRole("radio", { name: "English" }).click();
+  await runAccountMenuAction(page, "Memory");
+  const settings = page.getByTestId("memory-workspace");
   await settings.getByRole("button", { name: "Manage Memories" }).click();
   const manager = settings.getByTestId("manage-memories");
 
@@ -1701,29 +1690,21 @@ test("shows default-on Memory information without user consent in ADMIN mode", a
   });
   await signIn(page);
 
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-dialog");
-  await settings.getByRole("button", { name: "Memory" }).click();
+  await runAccountMenuAction(page, "Memory");
+  const settings = page.getByTestId("memory-workspace");
 
-  await expect(settings.getByRole("heading", { exact: true, name: "Память" })).toBeVisible();
-  await expect(settings.getByRole("switch", { name: "Использовать факты из памяти" }))
+  await expect(settings.getByRole("heading", { level: 1, name: "Memory" })).toBeVisible();
+  await expect(settings.getByRole("switch", { name: "Use memory facts" }))
     .toHaveAttribute("aria-checked", "true");
-  await expect(settings.getByRole("switch", { name: "Ссылаться на историю чатов" }))
+  await expect(settings.getByRole("switch", { name: "Reference chat history" }))
     .toHaveAttribute("aria-checked", "true");
-  await expect(settings.getByRole("heading", { name: "Как Память использует ваши данные" }))
+  await expect(settings.getByRole("heading", { name: "How Memory uses your data" }))
     .toBeVisible();
-  await expect(settings.getByText(/Временные чаты не используют Память/u)).toBeVisible();
-  await expect(settings.getByText(/От вас ничего не требуется/u)).toBeVisible();
-  await expect(settings.getByText("Индексируется 2 из 5 чатов")).toBeVisible();
-  await expect(settings.getByRole("button", { name: /принять текущие назначения/i })).toHaveCount(0);
-  await expectNoHorizontalOverflow(page);
-
-  await settings.getByRole("radio", { name: "English" }).click();
-  await expect(settings.getByRole("heading", { name: "How Memory uses your data" })).toBeVisible();
   await expect(settings.getByText(/Temporary chats do not use Memory/u)).toBeVisible();
   await expect(settings.getByText(/No action is required from you/u)).toBeVisible();
   await expect(settings.getByText("Indexing 2 of 5 chats")).toBeVisible();
   await expect(settings.getByRole("button", { name: "Accept current destinations" })).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
 
   await settings.getByRole("button", { name: "Manage Memories" }).click();
   const manager = settings.getByTestId("manage-memories");

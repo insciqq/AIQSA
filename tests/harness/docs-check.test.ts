@@ -27,7 +27,7 @@ function fixture() {
   writeFileSync(path.join(root, ".env.example"), "EXAMPLE_KEY=value\n");
   writeFileSync(
     path.join(root, ".gitignore"),
-    "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n/agent_docs/task_archive/*\n!/agent_docs/task_archive/README.md\n"
+    "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n/agent_docs/task_archive/*\n!/agent_docs/task_archive/README.md\n/agent_docs/PRD/**\n/agent_docs/backlog/**\n"
   );
   writeFileSync(path.join(root, "README.md"), "# README\n\n[Architecture](agent_docs/ARCHITECTURE.md)\n");
   mkdirSync(path.join(root, "app/api/health"), { recursive: true });
@@ -143,6 +143,22 @@ describe("current documentation and harness sanity check", () => {
 
     expect(result.stderr).not.toContain("docs: obsolete top-level human-docs directory");
     expect(result.stderr).toContain("agent_docs/done_tasks: obsolete harness directory");
+  });
+
+  it("allows ignored operator-local PRD and backlog directories outside the task ledger", () => {
+    const root = fixture();
+    mkdirSync(path.join(root, "agent_docs/PRD"), { recursive: true });
+    mkdirSync(path.join(root, "agent_docs/backlog"), { recursive: true });
+    writeFileSync(
+      path.join(root, "agent_docs/PRD/private.md"),
+      "Private reference with agent_docs/ADR/0001-old.md.\n"
+    );
+    writeFileSync(
+      path.join(root, "agent_docs/backlog/private.md"),
+      "Private backlog with agent_docs/archive/old.md.\n"
+    );
+
+    expect(check(root).status).toBe(0);
   });
 
   it("scans tracked and unignored Markdown anywhere in the repository", () => {

@@ -817,6 +817,7 @@ model ModelPolicy {
 model SystemModelPolicy {
   id              String         @id
   providerModelId String?
+  reasoningEffort String?        @db.VarChar(32)
   version         Int            @default(1)
   updatedByUserId String?
   createdAt       DateTime       @default(now())

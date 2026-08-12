@@ -25,7 +25,7 @@ describe("MemoryHealthPulse", () => {
     expect(screen.getByText("Technical capability evidence")).toBeVisible();
   });
 
-  it("distinguishes retrieval fencing from overdue physical cleanup in RU", () => {
+  it("keeps English presentation when a retained RU locale is supplied", () => {
     const onOpenOperations = vi.fn();
     render(
       <MemoryHealthPulse
@@ -49,11 +49,11 @@ describe("MemoryHealthPulse", () => {
 
     const pulse = screen.getByTestId("memory-health-pulse");
     expect(within(pulse).getByRole("heading", {
-      name: "Очистке Памяти требуется внимание администратора"
+      name: "Memory cleanup needs administrator attention"
     })).toBeVisible();
-    expect(within(pulse).getByText(/ограждены от повторного использования/u)).toBeVisible();
-    expect(within(pulse).getByText(/истёк срок удаления временного чата/u)).toBeVisible();
-    fireEvent.click(within(pulse).getByRole("button", { name: "Открыть операции Памяти" }));
+    expect(within(pulse).getByText(/remains fenced from reuse/u)).toBeVisible();
+    expect(within(pulse).getByText(/past its retention deadline/u)).toBeVisible();
+    fireEvent.click(within(pulse).getByRole("button", { name: "Open Memory operations" }));
     expect(onOpenOperations).toHaveBeenCalledOnce();
   });
 

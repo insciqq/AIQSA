@@ -69,6 +69,33 @@ export const DEFAULT_MEMORY_COORDINATOR_MANIFEST = Object.freeze({
 export const defaultMemoryCoordinatorRepository =
   createPrismaMemoryCoordinatorRepository(prisma);
 
+type DefaultMemoryReconciliationWork = Readonly<{
+  candidates: () => Promise<unknown>;
+  dream: () => Promise<unknown>;
+  history: () => Promise<unknown>;
+  profile: () => Promise<unknown>;
+}>;
+
+const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
+  Object.freeze({
+    candidates: () => reconcileMemoryFactCandidateJobs(prisma),
+    dream: () => reconcileGlobalDreamJobs(prisma),
+    history: () => reconcileMemoryHistoryBackfills(prisma),
+    profile: () => reconcileMemoryWorkingSetJobs(prisma)
+  });
+
+export async function reconcileDefaultMemoryWork(
+  work: DefaultMemoryReconciliationWork = defaultMemoryReconciliationWork
+): Promise<void> {
+  // Every discovery path takes the same owner-local SERIALIZABLE settings lock.
+  // Running them concurrently creates self-conflicts, retries, and retained dev
+  // tracing allocations without increasing useful owner-level throughput.
+  await work.history();
+  await work.candidates();
+  await work.dream();
+  await work.profile();
+}
+
 // The current coordinator composes the optional vector leaf, but an installation needs
 // an exact signed qualification entry before the handler can leave its durable
 // waiting state. Registry absence, expiry, or drift remains deliberately fail-closed.
@@ -208,14 +235,7 @@ function createDefaultMemoryCoordinator(): MemoryCoordinator {
   const runtime = getDefaultMemoryCoordinatorRuntime();
   return new MemoryCoordinator({
     policy: runtime.policy,
-    reconcileWork: async () => {
-      await Promise.all([
-        reconcileMemoryHistoryBackfills(prisma),
-        reconcileMemoryFactCandidateJobs(prisma),
-        reconcileGlobalDreamJobs(prisma),
-        reconcileMemoryWorkingSetJobs(prisma)
-      ]);
-    },
+    reconcileWork: reconcileDefaultMemoryWork,
     registry: defaultMemoryCoordinatorRegistry,
     repository: defaultMemoryCoordinatorRepository,
     scheduler: runtime.scheduler

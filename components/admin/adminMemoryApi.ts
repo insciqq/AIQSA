@@ -55,6 +55,7 @@ export function adminMemoryErrorMessage(
   code: string,
   locale: "EN" | "RU" = "EN"
 ): string {
+  void locale;
   const en: Record<string, string> = {
     forbidden: "Your account can no longer manage installation Memory destinations.",
     memory_admin_egress_action_failed: "Memory destination policy could not be loaded.",
@@ -67,19 +68,5 @@ export function adminMemoryErrorMessage(
     network_error: "Memory destination policy could not be reached.",
     unauthorized: "Your administrator session has expired. Sign in again to continue."
   };
-  const ru: Record<string, string> = {
-    forbidden: "Ваша учётная запись больше не может управлять назначениями Памяти установки.",
-    memory_admin_egress_action_failed: "Не удалось загрузить политику назначений Памяти.",
-    memory_admin_egress_input_invalid: "Проверка назначений Памяти устарела. Обновите данные и повторите попытку.",
-    memory_admin_egress_per_user_mode: "В этой установке назначения проверяет каждый пользователь.",
-    memory_admin_egress_policy_changed: "Назначения Памяти изменились во время проверки. Обновите данные перед подтверждением.",
-    memory_admin_egress_policy_missing: "Политика назначений Памяти установки недоступна.",
-    memory_admin_egress_response_invalid: "Сервер вернул некорректное состояние Памяти.",
-    memory_admin_egress_stale: "Другой администратор обновил назначения Памяти. Сначала обновите данные.",
-    network_error: "Не удалось связаться с политикой назначений Памяти.",
-    unauthorized: "Сессия администратора истекла. Войдите снова."
-  };
-  return (locale === "RU" ? ru : en)[code] ?? (locale === "RU"
-    ? "Не удалось обновить политику назначений Памяти."
-    : "Memory destination policy could not be updated.");
+  return en[code] ?? "Memory destination policy could not be updated.";
 }
