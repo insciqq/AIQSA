@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import {
   MEMORY_FORGET_TOOL_NAME,
+  MEMORY_MARK_INCORRECT_TOOL_NAME,
   MEMORY_SAVE_TOOL_NAME,
   MEMORY_UPDATE_TOOL_NAME
 } from "../actions/tools";
@@ -20,6 +21,8 @@ type MemoryReceiptClient = Pick<
   | "memoryEpisode"
   | "memoryFact"
   | "memoryFactVersion"
+  | "memoryFeedback"
+  | "memoryDeletionOutbox"
   | "memoryOperationReceipt"
   | "memoryRecallChunk"
   | "memoryRetrievalAttemptItem"
@@ -71,9 +74,47 @@ function receiptItemType(value: string): MemoryReceiptItemType | null {
   return itemTypes.has(value) ? value as MemoryReceiptItemType : null;
 }
 
-function actionFeedback(operation: string): MemoryActionFeedback | null {
+function snapshotString(value: unknown, key: string): string | null {
+  const candidate = record(value)?.[key];
+  return typeof candidate === "string" ? candidate : null;
+}
+
+function actionFeedback(
+  receipt: Readonly<{
+    operation: string;
+    resultSnapshot: unknown;
+    targetFactId: string | null;
+    targetVersionId: string | null;
+  }>,
+  version: Readonly<{
+    contentPurgedAt: Date | null;
+    displayText: string | null;
+    factId: string;
+    id: string;
+    state: string;
+  }> | null,
+  undoPending: boolean
+): MemoryActionFeedback | null {
+  const targetStateMatches = version && (receipt.operation === "FORGET"
+    ? version.state === "FORGOTTEN"
+    : version.state === "ACTIVE");
+  const target = version && targetStateMatches && !version.contentPurgedAt && version.displayText &&
+      receipt.targetFactId === version.factId && receipt.targetVersionId === version.id
+    ? {
+        factId: version.factId,
+        statement: version.displayText,
+        versionId: version.id
+      }
+    : null;
   const candidate = {
-    operation: operation === "EDIT" ? "UPDATE" : operation,
+    ...(target ?? {}),
+    ...(receipt.operation === "FORGET" && undoPending && target
+      ? {
+          deletionId: snapshotString(receipt.resultSnapshot, "deletionId") ?? undefined,
+          expiresAt: snapshotString(receipt.resultSnapshot, "undoExpiresAt") ?? undefined
+        }
+      : {}),
+    operation: receipt.operation === "EDIT" ? "UPDATE" : receipt.operation,
     status: "COMMITTED"
   };
   const decoded = decodeMemoryActionFeedback(candidate);
@@ -124,6 +165,7 @@ export async function loadMemoryRunEvidence(
             episodeId: true,
             factVersionId: true,
             includedText: true,
+            id: true,
             itemType: true,
             laneRanks: true,
             ordinal: true,
@@ -152,7 +194,10 @@ export async function loadMemoryRunEvidence(
       select: {
         modelRunId: true,
         operation: true,
-        persistedToolCallId: true
+        persistedToolCallId: true,
+        resultSnapshot: true,
+        targetFactId: true,
+        targetVersionId: true
       },
       where: {
         modelRunId: { in: runIds },
@@ -164,8 +209,11 @@ export async function loadMemoryRunEvidence(
     })
   ]);
 
-  const factVersionIds = [...new Set(items.flatMap((item) =>
-    item.factVersionId ? [item.factVersionId] : []))];
+  const factVersionIds = [...new Set([
+    ...items.flatMap((item) => item.factVersionId ? [item.factVersionId] : []),
+    ...operationReceipts.flatMap((receipt) =>
+      receipt.targetVersionId ? [receipt.targetVersionId] : [])
+  ])];
   const episodeIds = [...new Set(items.flatMap((item) =>
     item.episodeId ? [item.episodeId] : []))];
   const recallChunkIds = [...new Set(items.flatMap((item) =>
@@ -174,11 +222,34 @@ export async function loadMemoryRunEvidence(
     item.sourceChatIdSnapshot ? [item.sourceChatIdSnapshot] : []))];
   const toolCallIds = [...new Set(operationReceipts.flatMap((receipt) =>
     receipt.persistedToolCallId ? [receipt.persistedToolCallId] : []))];
-  const [versions, episodes, recallChunks, liveChats, toolCalls] = await Promise.all([
+  const actionDeletionIds = [...new Set(operationReceipts.flatMap((receipt) => {
+    const deletionId = snapshotString(receipt.resultSnapshot, "deletionId");
+    return deletionId ? [deletionId] : [];
+  }))];
+  const pendingUndoDeletions = actionDeletionIds.length > 0
+    ? await client.memoryDeletionOutbox.findMany({
+        select: { id: true, nextAttemptAt: true, state: true },
+        where: {
+          id: { in: actionDeletionIds },
+          operation: "FORGET_PURGE",
+          userId: input.userId
+        }
+      })
+    : [];
+  const runItemIds = items.map(({ id }) => id);
+  const [
+    versions,
+    episodes,
+    recallChunks,
+    liveChats,
+    toolCalls,
+    provenanceFeedbackRows
+  ] = await Promise.all([
     factVersionIds.length > 0
       ? client.memoryFactVersion.findMany({
           select: {
             contentPurgedAt: true,
+            displayText: true,
             factId: true,
             id: true,
             sourceMode: true,
@@ -202,19 +273,80 @@ export async function loadMemoryRunEvidence(
     sourceChatIds.length > 0
       ? client.chat.findMany({
           select: { id: true },
-          where: { id: { in: sourceChatIds }, userId: input.userId }
+          where: {
+            id: { in: sourceChatIds },
+            permanentDeletionAt: null,
+            userId: input.userId
+          }
         })
       : Promise.resolve([]),
     toolCallIds.length > 0
       ? client.modelRunToolCall.findMany({
           select: { id: true, modelRunId: true, toolName: true },
           where: {
-            id: { in: toolCallIds },
-            modelRunId: { in: runIds }
+            modelRunId: { in: runIds },
+            OR: [
+              { id: { in: toolCallIds } },
+              { toolName: MEMORY_MARK_INCORRECT_TOOL_NAME }
+            ]
+          }
+        })
+      : client.modelRunToolCall.findMany({
+          select: { id: true, modelRunId: true, toolName: true },
+          where: {
+            modelRunId: { in: runIds },
+            toolName: MEMORY_MARK_INCORRECT_TOOL_NAME
+          }
+        }),
+    runIds.length > 0
+      ? client.memoryFeedback.findMany({
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          select: {
+            feedbackType: true,
+            id: true,
+            modelRunId: true,
+            modelRunMemoryItemId: true,
+            modelRunToolCallId: true,
+            retractsFeedbackId: true
+          },
+          where: {
+            contentPurgedAt: null,
+            OR: [
+              ...(runItemIds.length > 0
+                ? [{ modelRunMemoryItemId: { in: runItemIds } }]
+                : []),
+              { modelRunId: { in: runIds }, modelRunToolCallId: { not: null } }
+            ],
+            userId: input.userId
           }
         })
       : Promise.resolve([])
   ]);
+  const retractableFeedbackIds = provenanceFeedbackRows.flatMap((feedback) =>
+    feedback.feedbackType === "INCORRECT" ? [feedback.id] : []);
+  const retractionRows = retractableFeedbackIds.length > 0
+    ? await client.memoryFeedback.findMany({
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: {
+          feedbackType: true,
+          id: true,
+          modelRunId: true,
+          modelRunMemoryItemId: true,
+          modelRunToolCallId: true,
+          retractsFeedbackId: true
+        },
+        where: {
+          contentPurgedAt: null,
+          feedbackType: "RETRACT",
+          retractsFeedbackId: { in: retractableFeedbackIds },
+          userId: input.userId
+        }
+      })
+    : [];
+  const feedbackRows = [...new Map(
+    [...provenanceFeedbackRows, ...retractionRows].map((feedback) =>
+      [feedback.id, feedback] as const)
+  ).values()];
   const factIds = [...new Set(versions.map(({ factId }) => factId))];
   const facts = factIds.length > 0
     ? await client.memoryFact.findMany({
@@ -238,6 +370,20 @@ export async function loadMemoryRunEvidence(
   const factById = new Map(facts.map((fact) => [fact.id, fact] as const));
   const liveChatIds = new Set(liveChats.map(({ id }) => id));
   const toolCallById = new Map(toolCalls.map((call) => [call.id, call] as const));
+  const pendingUndoById = new Map(pendingUndoDeletions.map((deletion) => [
+    deletion.id,
+    deletion.state === "PENDING" && deletion.nextAttemptAt !== null &&
+      deletion.nextAttemptAt > new Date()
+  ] as const));
+  const retractedFeedbackIds = new Set(feedbackRows.flatMap((feedback) =>
+    feedback.feedbackType === "RETRACT" && feedback.retractsFeedbackId
+      ? [feedback.retractsFeedbackId]
+      : []));
+  const feedbackItemIds = new Set(feedbackRows.flatMap((feedback) =>
+    feedback.feedbackType === "INCORRECT" && !retractedFeedbackIds.has(feedback.id) &&
+      feedback.modelRunMemoryItemId
+      ? [feedback.modelRunMemoryItemId]
+      : []));
   const actionsByRun = new Map<string, MemoryActionFeedback[]>();
   for (const operationReceipt of operationReceipts) {
     const runId = operationReceipt.modelRunId;
@@ -247,11 +393,35 @@ export async function loadMemoryRunEvidence(
       !runId || !toolCallId || !toolCall || toolCall.modelRunId !== runId ||
       toolCall.toolName !== expectedActionToolName(operationReceipt.operation)
     ) continue;
-    const feedback = actionFeedback(operationReceipt.operation);
+    const actionVersion = operationReceipt.targetVersionId
+      ? versionById.get(operationReceipt.targetVersionId) ?? null
+      : null;
+    const deletionId = snapshotString(operationReceipt.resultSnapshot, "deletionId");
+    const feedback = actionFeedback(
+      operationReceipt,
+      actionVersion,
+      deletionId ? pendingUndoById.get(deletionId) === true : false
+    );
     if (!feedback) continue;
     const actions = actionsByRun.get(runId) ?? [];
     actions.push(feedback);
     actionsByRun.set(runId, actions);
+  }
+  for (const feedback of feedbackRows) {
+    if (
+      feedback.feedbackType !== "INCORRECT" ||
+      retractedFeedbackIds.has(feedback.id) ||
+      !feedback.modelRunId || !feedback.modelRunToolCallId
+    ) continue;
+    const toolCall = toolCallById.get(feedback.modelRunToolCallId);
+    if (
+      !toolCall ||
+      toolCall.modelRunId !== feedback.modelRunId ||
+      toolCall.toolName !== MEMORY_MARK_INCORRECT_TOOL_NAME
+    ) continue;
+    const actions = actionsByRun.get(feedback.modelRunId) ?? [];
+    actions.push({ operation: "MARK_INCORRECT", status: "COMMITTED" });
+    actionsByRun.set(feedback.modelRunId, actions);
   }
 
   const projected = new Map<string, MemoryRunEvidenceProjection>();
@@ -287,18 +457,28 @@ export async function loadMemoryRunEvidence(
             ? "HISTORY"
             : "EXPLICIT");
 
+      const lifecycleState = sourceDeleted
+        ? "SOURCE_DELETED" as const
+        : laterForgotten ? "LATER_FORGOTTEN" as const : "CURRENT" as const;
       return {
+        factId: version?.factId ?? null,
+        feedbackState: feedbackItemIds.has(item.id)
+          ? "RECORDED" as const
+          : itemType === "FACT_VERSION" && sourceMode === "AUTOMATIC" &&
+              lifecycleState === "CURRENT"
+            ? "AVAILABLE" as const
+            : "UNAVAILABLE" as const,
         includedText: item.includedText,
         itemType,
-        lifecycleState: sourceDeleted
-          ? "SOURCE_DELETED"
-          : laterForgotten ? "LATER_FORGOTTEN" : "CURRENT",
+        lifecycleState,
         ordinal: item.ordinal,
         scopeType: frozenScopeType(snapshot?.versionSnapshot),
         selectionReason: item.selectionReason,
         sourceChatId: sourceDeleted ? null : item.sourceChatIdSnapshot,
         sourceMessageIds: item.sourceMessageIdsSnapshot,
         sourceMode,
+        runItemId: item.id,
+        runId: binding.modelRunId,
         versionId: item.factVersionId
       };
     });

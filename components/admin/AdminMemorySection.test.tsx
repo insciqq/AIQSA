@@ -22,6 +22,27 @@ function payload(overrides: Record<string, unknown> = {}) {
       version: 1,
       waitingJobCount: 2,
       ...overrides
+    },
+    memoryHealth: {
+      deletion: { active: "NONE", blocked: "NONE", state: "CLEAR" },
+      observedAt: "2026-08-12T10:00:00.000Z",
+      overall: overrides.reviewRequired === false ? "HEALTHY" : "ACTION_REQUIRED",
+      provider: {
+        failedRecent: "NONE",
+        outcomeUnknown: "NONE",
+        state: "READY",
+        usageIncomplete: "NONE"
+      },
+      queue: {
+        active: "SOME",
+        failed: "NONE",
+        oldestLag: "UNDER_15_MINUTES",
+        state: "DELAYED",
+        waitingForReview: "SOME"
+      },
+      requestLocale: "EN",
+      scheduler: { resetAt: "2026-08-13T00:00:00.000Z", state: "READY" },
+      temporary: { overdue: "NONE", state: "CLEAR" }
     }
   };
 }
@@ -57,10 +78,13 @@ describe("AdminMemorySection", () => {
 
     render(<AdminMemorySection active />);
 
-    expect(await screen.findByRole("heading", { name: "Memory destinations" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Memory health" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Memory needs attention" })).toBeVisible();
+    expect(screen.getByText("System connection / System model")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Advanced", { exact: true }));
     const matrix = screen.getByRole("list", { name: "Memory destination matrix" });
     expect(within(matrix).getAllByRole("listitem", { hidden: false }).length).toBeGreaterThanOrEqual(4);
-    expect(screen.getByText("Review required.")).toBeVisible();
+    expect(screen.getByText(/Destination review required/u)).toBeVisible();
     expect(screen.getByText("System connection / System model")).toBeVisible();
     expect(screen.getByText("2", { selector: "dd" })).toBeVisible();
 
@@ -86,5 +110,23 @@ describe("AdminMemorySection", () => {
     expect(await screen.findByText(/uses per-user destination review/u)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Acknowledge current destinations" }))
       .not.toBeInTheDocument();
+  });
+
+  it("keeps blocked cleanup prominent while technical evidence stays collapsed", async () => {
+    const server = payload();
+    server.memoryHealth = {
+      ...server.memoryHealth,
+      deletion: { active: "SOME", blocked: "SOME", state: "ATTENTION_REQUIRED" },
+      overall: "ACTION_REQUIRED",
+      temporary: { overdue: "SOME", state: "OVERDUE" }
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(server)));
+    render(<AdminMemorySection active />);
+
+    expect((await screen.findByText(/exhausted fast retries/u)).closest("[role='alert']"))
+      .toBeInTheDocument();
+    expect(screen.getByText(/past its retention deadline/u).closest("[role='alert']"))
+      .toBeInTheDocument();
+    expect(screen.getByText("System connection / System model")).not.toBeVisible();
   });
 });

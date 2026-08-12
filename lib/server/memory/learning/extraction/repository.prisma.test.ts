@@ -468,6 +468,10 @@ describe("Prisma Memory fact extraction", () => {
         where: { id: deletion.id }
       });
       const deletionClaim: MemoryDeletionClaim = {
+        admissionAuthorizationId: running.admissionAuthorizationId,
+        admittedActiveLeafMessageId: running.admittedActiveLeafMessageId,
+        admittedChatSourceRevision: running.admittedChatSourceRevision,
+        alsoForgetOriginMemories: running.alsoForgetOriginMemories,
         attemptCount: running.attemptCount,
         claimToken,
         id: running.id,

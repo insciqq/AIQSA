@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import {
   buildMemorySafeSourceSnapshot,
+  memoryBindingCarriesProviderPayload,
+  memoryRuntimeInfluenceTaintSources,
   MemoryHistorySourceProjectionError,
   type MemoryHistorySourceMessageInput,
   type MemoryHistorySourceOrigin,
@@ -85,6 +87,25 @@ function snapshotInput(
 }
 
 describe("Memory safe source snapshot", () => {
+  it("taints only a Memory binding that contributed provider-visible context", () => {
+    expect(memoryBindingCarriesProviderPayload(0)).toBe(false);
+    expect(memoryBindingCarriesProviderPayload(1)).toBe(true);
+    expect(memoryRuntimeInfluenceTaintSources({
+      attachment: false,
+      knowledgeRunCount: 0,
+      memoryContextTokenCount: 0,
+      searchRunCount: 0,
+      toolCallCount: 0
+    })).toEqual([]);
+    expect(memoryRuntimeInfluenceTaintSources({
+      attachment: true,
+      knowledgeRunCount: 1,
+      memoryContextTokenCount: 1,
+      searchRunCount: 1,
+      toolCallCount: 1
+    })).toEqual(["ATTACHMENT", "KNOWLEDGE", "PROVIDER_PAYLOAD", "SEARCH", "TOOL"]);
+  });
+
   it("projects only the deterministic active branch into complete recall turns", () => {
     const user = userMessage({
       id: "user-active",

@@ -32,6 +32,7 @@ export const MEMORY_COUNTER_MUTATIONS = [
   "AUTOMATIC_VERSION_TRANSITION",
   "CHUNK_OR_EPISODE_VISIBILITY_CHANGE",
   "ACTIVE_VECTOR_SETTLEMENT",
+  "WORKING_SET_RECALCULATION",
   "PROFILE_REPLACEMENT",
   "FORGET_OR_BULK_CLEAR",
   "SOURCE_HARD_DELETE",
@@ -219,6 +220,13 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       memoryGeneration: false,
       memoryRevision: false,
       sourceRevision: true
+    }),
+    WORKING_SET_RECALCULATION: Object.freeze({
+      branchGeneration: false,
+      check: "VERSION_CURRENT_POINTER",
+      memoryGeneration: false,
+      memoryRevision: true,
+      sourceRevision: false
     })
   });
 

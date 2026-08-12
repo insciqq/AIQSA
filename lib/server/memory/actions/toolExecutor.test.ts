@@ -60,7 +60,10 @@ describe("first-party Memory tool executor", () => {
       kind: "LIST",
       query: null,
       version: "memory-action-plan-v1"
-    }).inputSchema).not.toHaveProperty("required");
+    }).inputSchema).toMatchObject({
+      properties: { query: { type: ["string", "null"] } },
+      required: ["query"]
+    });
   });
 
   it("claims hidden run authority and binds a save receipt to the persisted call", async () => {
@@ -74,14 +77,17 @@ describe("first-party Memory tool executor", () => {
         get: vi.fn(),
         list: vi.fn(),
         mintAuthorization: vi.fn(),
+        resolveConflict: vi.fn(),
         search: vi.fn(),
+        undoForget: vi.fn(),
         update: vi.fn()
       },
       lifecycleService: {
         deleteExplicit: vi.fn(),
         forget: vi.fn(),
         status: vi.fn()
-      }
+      },
+      reviewService: { feedback: vi.fn() }
     });
     const plan = {
       kind: "SAVE" as const,
@@ -104,7 +110,6 @@ describe("first-party Memory tool executor", () => {
     expect(result.status).toBe("complete");
     expect(claimForTool).toHaveBeenCalledWith("user-1", {
       action: "SAVE",
-      authorizedPayloadHash: memorySha256("I like tea"),
       modelRunId: "run-1",
       persistedToolCallId: "persisted-call-1"
     });
@@ -113,15 +118,16 @@ describe("first-party Memory tool executor", () => {
       scope: { type: "GLOBAL_USER" },
       statement: "I like tea"
     }, {
+      authorizedPayloadHash: memorySha256("I like tea"),
       modelRunId: "run-1",
       persistedToolCallId: "persisted-call-1",
       userId: "user-1"
     });
   });
 
-  it("rejects model paraphrases before claiming or mutating", async () => {
-    const claimForTool = vi.fn();
-    const create = vi.fn();
+  it("commits a bounded model paraphrase through the current-turn authorization", async () => {
+    const claimForTool = vi.fn(async () => authorization());
+    const create = vi.fn(async () => ({ memory: { id: "fact-1" } } as never));
     const executor = createMemoryActionExecutor({
       authorizationRepository: { claimForTool },
       explicitService: {
@@ -130,14 +136,17 @@ describe("first-party Memory tool executor", () => {
         get: vi.fn(),
         list: vi.fn(),
         mintAuthorization: vi.fn(),
+        resolveConflict: vi.fn(),
         search: vi.fn(),
+        undoForget: vi.fn(),
         update: vi.fn()
       },
       lifecycleService: {
         deleteExplicit: vi.fn(),
         forget: vi.fn(),
         status: vi.fn()
-      }
+      },
+      reviewService: { feedback: vi.fn() }
     });
     const result = await executor.execute({
       kind: "SAVE",
@@ -146,7 +155,7 @@ describe("first-party Memory tool executor", () => {
       statement: "I like tea",
       version: "memory-action-plan-v1"
     }, {
-      arguments: { statement: "The user loves tea" },
+      arguments: { statement: "The user likes tea." },
       id: "provider-call-1",
       name: "save_memory"
     }, {
@@ -156,11 +165,22 @@ describe("first-party Memory tool executor", () => {
       userId: "user-1"
     });
 
-    expect(result).toMatchObject({ status: "error", rawPreview: {
-      error: "memory_intent_confirmation_required"
-    } });
-    expect(claimForTool).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "complete" });
+    expect(claimForTool).toHaveBeenCalledWith("user-1", expect.objectContaining({
+      action: "SAVE",
+      modelRunId: "run-1",
+      persistedToolCallId: "persisted-call-1"
+    }));
+    expect(create).toHaveBeenCalledWith("user-1", {
+      mutationAuthorizationId: "authorization-1",
+      scope: { type: "GLOBAL_USER" },
+      statement: "The user likes tea."
+    }, {
+      authorizedPayloadHash: memorySha256("I like tea"),
+      modelRunId: "run-1",
+      persistedToolCallId: "persisted-call-1",
+      userId: "user-1"
+    });
   });
 
   it("lists authoritative first-party data without mutation authority", async () => {
@@ -174,21 +194,24 @@ describe("first-party Memory tool executor", () => {
         get: vi.fn(),
         list,
         mintAuthorization: vi.fn(),
+        resolveConflict: vi.fn(),
         search: vi.fn(),
+        undoForget: vi.fn(),
         update: vi.fn()
       },
       lifecycleService: {
         deleteExplicit: vi.fn(),
         forget: vi.fn(),
         status: vi.fn()
-      }
+      },
+      reviewService: { feedback: vi.fn() }
     });
     const result = await executor.execute({
       kind: "LIST",
       query: null,
       version: "memory-action-plan-v1"
     }, {
-      arguments: {},
+      arguments: { query: null },
       id: "provider-list-1",
       name: "list_memories"
     }, {
@@ -244,14 +267,17 @@ describe("first-party Memory tool executor", () => {
         get: vi.fn(),
         list: vi.fn(),
         mintAuthorization: vi.fn(),
+        resolveConflict: vi.fn(),
         search: vi.fn(),
+        undoForget: vi.fn(),
         update
       },
       lifecycleService: {
         deleteExplicit: vi.fn(),
         forget,
         status: vi.fn()
-      }
+      },
+      reviewService: { feedback: vi.fn() }
     });
 
     const updated = await executor.execute(updatePlan, {
@@ -292,5 +318,87 @@ describe("first-party Memory tool executor", () => {
       modelRunId: "run-1",
       persistedToolCallId: "persisted-call-1"
     }));
+  });
+
+  it("marks one automatic fact incorrect through consumed target authority without changing truth", async () => {
+    const source = "Mark the memory that I prefer coffee as incorrect";
+    const plan = planMemoryActionFromText(source);
+    if (plan.kind !== "MARK_INCORRECT") throw new Error("invalid_memory_action_fixture");
+    const claimForTool = vi.fn(async () => authorization({
+      action: "EDIT",
+      authorizedPayloadHash: memorySha256("automatic-target"),
+      exactSourceEnd: plan.sourceEnd,
+      exactSourceStart: plan.sourceStart,
+      expectedTargetVersionId: "automatic-version-1",
+      requestId: "authorization-request-1",
+      targetFactId: "automatic-fact-1"
+    }));
+    const feedback = vi.fn(async () => ({
+      createdAt: "2026-08-11T08:00:00.000Z",
+      feedbackId: "feedback-1",
+      feedbackType: "INCORRECT" as const,
+      retractedFeedbackId: null,
+      targetVersionId: "automatic-version-1"
+    }));
+    const update = vi.fn();
+    const executor = createMemoryActionExecutor({
+      authorizationRepository: { claimForTool },
+      explicitService: {
+        create: vi.fn(),
+        evidence: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn(),
+        mintAuthorization: vi.fn(),
+        resolveConflict: vi.fn(),
+        search: vi.fn(),
+        undoForget: vi.fn(),
+        update
+      },
+      lifecycleService: {
+        deleteExplicit: vi.fn(),
+        forget: vi.fn(),
+        status: vi.fn()
+      },
+      reviewService: { feedback }
+    });
+
+    const result = await executor.execute(plan, {
+      arguments: { exact_query: plan.targetQuery },
+      id: "provider-feedback-1",
+      name: "mark_memory_incorrect"
+    }, {
+      persistedToolCallId: "persisted-call-1",
+      request: { ...request, content: { blocks: [{ text: source, type: "text" }] } },
+      runId: "run-1",
+      userId: "user-1"
+    });
+
+    expect(result.status).toBe("complete");
+    expect(claimForTool).toHaveBeenCalledWith("user-1", {
+      action: "EDIT",
+      modelRunId: "run-1",
+      persistedToolCallId: "persisted-call-1"
+    });
+    expect(feedback).toHaveBeenCalledWith(
+      "user-1",
+      "automatic-fact-1",
+      expect.objectContaining({
+        expectedVersionId: "automatic-version-1",
+        feedbackType: "INCORRECT",
+        modelRunId: "run-1",
+        modelRunToolCallId: "persisted-call-1"
+      }),
+      {
+        authorization: {
+          action: "EDIT",
+          authorizationId: "authorization-1",
+          authorizedPayloadHash: memorySha256("automatic-target"),
+          expectedTargetVersionId: "automatic-version-1",
+          requestId: "authorization-request-1",
+          targetFactId: "automatic-fact-1"
+        }
+      }
+    );
+    expect(update).not.toHaveBeenCalled();
   });
 });

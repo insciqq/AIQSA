@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryOperations } from "./MemoryOperations";
 import {
@@ -38,7 +38,7 @@ describe("MemoryOperations", () => {
     }, "RU");
     render(<MemoryOperations data={data} locale="RU" onBack={vi.fn()} />);
 
-    const heading = screen.getByRole("heading", { name: "Операции с историей" });
+    const heading = screen.getByRole("heading", { name: "Операции Памяти" });
     await waitFor(() => expect(heading).toHaveFocus());
     expect(screen.getByText(/Обычная перестройка останется только лексической/u)).toBeVisible();
     expect(screen.getAllByText(/Индексирование истории недоступно/u)).toHaveLength(3);
@@ -47,10 +47,42 @@ describe("MemoryOperations", () => {
     expect(actionButtons.at(-1)).toBeEnabled();
 
     fireEvent.click(actionButtons.at(-1)!);
-    const confirmation = screen.getByRole("heading", { name: "Подтвердите операцию с историей" });
+    const confirmation = screen.getByRole("heading", { name: "Подтвердите операцию Памяти" });
     await waitFor(() => expect(confirmation).toHaveFocus());
     expect(screen.getAllByText(/Исходные сохранённые чаты/u)).toHaveLength(2);
     expect(screen.getByText(/немедленный барьер извлечения/u)).toBeVisible();
+  });
+
+  it("distinguishes learned-memory deletion from retained chats and indexed history", async () => {
+    render(<MemoryOperations data={memorySettingsFixture()} locale="EN" onBack={vi.fn()} />);
+
+    const actionButtons = screen.getAllByRole("button", { name: "Review action" });
+    fireEvent.click(actionButtons.at(-2)!);
+
+    const confirmation = screen.getByRole("heading", { name: "Confirm Memory operation" });
+    await waitFor(() => expect(confirmation).toHaveFocus());
+    fireEvent.click(within(confirmation.closest("section")!).getByText("What is and is not deleted").closest("summary")!);
+    expect(screen.getAllByText("Delete automatically learned memories")).toHaveLength(2);
+    expect(screen.getAllByText(/explicitly saved memories, raw retained chats/iu)).toHaveLength(2);
+    expect(screen.getByText(/old observed chat content, rebuilds, or delayed work/u)).toBeVisible();
+    expect(screen.getByText(/genuinely new future evidence may be learned/u)).toBeVisible();
+  });
+
+  it("presents a calm all-Memory reset with exact retention details on demand", async () => {
+    render(<MemoryOperations data={memorySettingsFixture()} locale="EN" onBack={vi.fn()} />);
+
+    const label = screen.getByText("Delete everything Memory remembers");
+    fireEvent.click(within(label.closest("li")!).getByRole("button", { name: "Review action" }));
+
+    const confirmation = screen.getByRole("heading", { name: "Confirm Memory operation" });
+    await waitFor(() => expect(confirmation).toHaveFocus());
+    const section = confirmation.closest("section")!;
+    expect(within(section).getByText(/turn off Memory now/iu)).toBeVisible();
+    fireEvent.click(within(section).getByText("What is and is not deleted").closest("summary")!);
+    expect(within(section).getByText(/raw chats remain/u)).toBeVisible();
+    expect(within(section).getByText(/accepted past answers or runs is not rewritten/u)).toBeVisible();
+    expect(within(section).getByText(/old chats do not refill it/u)).toBeVisible();
+    expect(within(section).getByText(/Saved Memory, Reference chat history, and Learn automatically turn off immediately/u)).toBeVisible();
   });
 
   it("keeps blocked deletion prominent and never offers cancellation for a committed fence", () => {

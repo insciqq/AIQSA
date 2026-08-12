@@ -2,11 +2,12 @@ import type {
   MemoryBulkDeleteInput,
   MemoryDeletionStatus,
   MemoryForgetInput,
+  MemoryForgetResponse,
   MemoryMutationResponse
 } from "../../../contracts/memory";
 import {
   decodeMemoryDeletionStatus,
-  decodeMemoryMutationResponse
+  decodeMemoryForgetResponse
 } from "../../../contracts/memory";
 import type { MemoryMutationAuthorizationUse } from "../persistence/authorizations";
 import { memoryTargetAuthorizationPayloadHash } from "../persistence/authorizations";
@@ -35,7 +36,15 @@ export type MemoryLifecycleMutationRepository = Readonly<{
     userId: string,
     input: MemoryDeleteExplicitMutationInput
   ): Promise<MemoryDeleteExplicitMutationResult>;
+  deleteAllReusable(
+    userId: string,
+    input: MemoryDeleteExplicitMutationInput
+  ): Promise<MemoryDeleteExplicitMutationResult>;
   deleteExplicit(
+    userId: string,
+    input: MemoryDeleteExplicitMutationInput
+  ): Promise<MemoryDeleteExplicitMutationResult>;
+  deleteLearned(
     userId: string,
     input: MemoryDeleteExplicitMutationInput
   ): Promise<MemoryDeleteExplicitMutationResult>;
@@ -69,7 +78,7 @@ export type MemoryLifecycleService = Readonly<{
     factId: string,
     input: MemoryForgetInput,
     execution?: MemoryLifecycleExecutionContext
-  ): Promise<MemoryMutationResponse>;
+  ): Promise<MemoryForgetResponse>;
   status(userId: string, deletionId: string): Promise<MemoryDeletionStatus>;
 }>;
 
@@ -129,10 +138,10 @@ function checkedDeletion(value: MemoryDeletionStatus): MemoryDeletionStatus {
   return decoded.value;
 }
 
-function checkedMutation(
-  memory: MemoryMutationResponse["memory"]
-): MemoryMutationResponse {
-  const decoded = decodeMemoryMutationResponse({ memory });
+function checkedForget(
+  response: MemoryForgetResponse
+): MemoryForgetResponse {
+  const decoded = decodeMemoryForgetResponse(response);
   if (!decoded.ok) return failure("memory_action_failed");
   return decoded.value;
 }
@@ -156,7 +165,12 @@ export function createMemoryLifecycleService(input: Readonly<{
   return Object.freeze({
     async deleteExplicit(userId, deleteInput) {
       const operation = deleteInput.operation;
-      if (operation !== "DELETE_EXPLICIT" && operation !== "CLEAR_HISTORY_INDEX") {
+      if (
+        operation !== "DELETE_EXPLICIT" &&
+        operation !== "DELETE_LEARNED" &&
+        operation !== "CLEAR_HISTORY_INDEX" &&
+        operation !== "DELETE_ALL_REUSABLE"
+      ) {
         return failure("memory_operation_unsupported");
       }
       const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
@@ -174,9 +188,13 @@ export function createMemoryLifecycleService(input: Readonly<{
         input.authorizationRepository.resolveForUse(userId, authorization)
       );
       const now = clock();
-      const mutation = operation === "CLEAR_HISTORY_INDEX"
+      const mutation = operation === "DELETE_ALL_REUSABLE"
+        ? input.mutationRepository.deleteAllReusable
+        : operation === "CLEAR_HISTORY_INDEX"
         ? input.mutationRepository.clearHistory
-        : input.mutationRepository.deleteExplicit;
+        : operation === "DELETE_LEARNED"
+          ? input.mutationRepository.deleteLearned
+          : input.mutationRepository.deleteExplicit;
       const admitted = await persisted(() => mutation(userId, {
         authorization,
         expectedMemoryRevision: deleteInput.expectedMemoryRevision,
@@ -238,7 +256,14 @@ export function createMemoryLifecycleService(input: Readonly<{
         input.readRepository.get(userId, forgotten.factId)
       );
       if (!memory) return failure("memory_not_found");
-      return checkedMutation(memory);
+      return checkedForget({
+        memory,
+        undo: {
+          deletionId: forgotten.deletionId,
+          expiresAt: forgotten.undoExpiresAt.toISOString(),
+          versionId: forgotten.versionId
+        }
+      });
     },
 
     async status(userId, deletionId) {

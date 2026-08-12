@@ -90,6 +90,19 @@ export class MemoryDeletionContributorRegistry {
     tx: Prisma.TransactionClient,
     target: MemoryPurgeTarget
   ): Promise<MemoryDeletionProgress> {
+    if (target.kind === "AUTOMATIC_SET" || target.kind === "ALL_REUSABLE") {
+      const barrier = await tx.memorySourceBarrier.findFirst({
+        select: { id: true },
+        where: {
+          id: target.targetId,
+          kind: target.kind === "ALL_REUSABLE" ? "ALL_REUSABLE" : "AUTOMATIC_FACTS",
+          userId: target.userId
+        }
+      });
+      if (!barrier) {
+        throw new MemoryCoordinatorError("memory_deletion_target_invalid", true);
+      }
+    }
     const missing = this.missingContributors();
     let completedUnits = 0;
     for (const requirement of this.#requirements) {

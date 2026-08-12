@@ -197,6 +197,7 @@ export async function applyMemoryHistorySourceMutation(
   event: MemoryRetainedSourceMutationEvent
 ): Promise<void> {
   const changed = sourceIdentityChanged(event);
+  const permanentDelete = event.mutations.includes("SOURCE_HARD_DELETE");
   let settings: LockedMemorySettings | null = null;
   if (changed) {
     const now = new Date();
@@ -204,24 +205,26 @@ export async function applyMemoryHistorySourceMutation(
     if (invalidated > 0) {
       settings = await lockMemorySettings(tx, event.snapshot.userId, false);
       await settleVisibleMutationCounter(tx, settings, event);
-      const deletion = await enqueueMemoryDeletion(tx, settings, {
-        operation: "SOURCE_PURGE",
-        targetId: event.snapshot.id,
-        targetType: MEMORY_HISTORY_SOURCE_TARGET_TYPE
-      });
-      if (!deletion.created) {
-        await tx.memoryDeletionOutbox.update({
-          data: {
-            completedAt: null,
-            errorCode: null,
-            lastAuditAt: null,
-            leaseExpiresAt: null,
-            leaseToken: null,
-            nextAttemptAt: null,
-            state: "PENDING"
-          },
-          where: { id: deletion.id }
+      if (!permanentDelete) {
+        const deletion = await enqueueMemoryDeletion(tx, settings, {
+          operation: "SOURCE_PURGE",
+          targetId: event.snapshot.id,
+          targetType: MEMORY_HISTORY_SOURCE_TARGET_TYPE
         });
+        if (!deletion.created) {
+          await tx.memoryDeletionOutbox.update({
+            data: {
+              completedAt: null,
+              errorCode: null,
+              lastAuditAt: null,
+              leaseExpiresAt: null,
+              leaseToken: null,
+              nextAttemptAt: null,
+              state: "PENDING"
+            },
+            where: { id: deletion.id }
+          });
+        }
       }
     }
     await updateExistingCheckpoint(tx, event);

@@ -3,14 +3,14 @@ import {
   beginCreateMemory,
   beginDeleteExplicitMemories,
   beginEditMemory,
-  beginForgetMemory,
   beginMoveMemory,
   cancelMemoryDraft,
   clearMemorySearch,
   changeMemoryFactState,
   confirmDeleteExplicitMemories,
-  confirmForgetMemory,
   discardMemoryManagerDraft,
+  forgetCurrentMemory,
+  forgetProfileMemory,
   loadMoreMemoryEvidence,
   memoryDraftIsValid,
   openMemoryDetail,
@@ -18,10 +18,15 @@ import {
   moveMemoryScope,
   refreshMemoryDeletionStatus,
   refreshMemoryList,
+  resolveMemoryConflictChoice,
+  resolveMemoryConflictCorrection,
   saveMemoryChanges,
   saveNewMemory,
   showMemoryList,
+  submitMemoryFeedback,
   toggleMemoryPinned,
+  undoLastMemoryFeedback,
+  undoLastForgottenMemory,
   useMemoryManagerStore,
   type MemoryManagerScreen
 } from "@/components/app-shell/memoryManagerStore";
@@ -35,8 +40,10 @@ import {
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
 import { MemoryHistorySearch } from "@/components/app-shell/MemoryHistorySearch";
+import { MemoryProfileSummary } from "@/components/app-shell/MemoryProfileSummary";
 import { memoryHistoryUiCopy } from "@/components/app-shell/memoryHistoryUiCopy";
 import {
+  MEMORY_FEEDBACK_COMMENT_MAX_LENGTH,
   MEMORY_MODALITIES,
   MEMORY_QUERY_MAX_LENGTH,
   MEMORY_STATEMENT_MAX_LENGTH,
@@ -61,8 +68,8 @@ import {
   Plus,
   RotateCw,
   Search,
-  ShieldAlert,
   Trash2,
+  Undo2,
   X
 } from "lucide-react";
 import {
@@ -118,6 +125,80 @@ function indexingLabel(locale: MemoryUiLocale, value: MemorySummary["indexingSta
   return labels[value];
 }
 
+function versionStateLabel(
+  locale: MemoryUiLocale,
+  value: "ACTIVE" | "CONFLICTING" | "ORPHANED" | "SUPERSEDED" | "EXPIRED" | "RETRACTED" | "FORGOTTEN"
+): string {
+  const labels = locale === "RU"
+    ? {
+        ACTIVE: "Текущая",
+        CONFLICTING: "Конфликтующая",
+        EXPIRED: "Срок истёк",
+        FORGOTTEN: "Забыта",
+        ORPHANED: "Источник недоступен",
+        RETRACTED: "Отозвана",
+        SUPERSEDED: "Заменена"
+      }
+    : {
+        ACTIVE: "Current",
+        CONFLICTING: "Conflicting",
+        EXPIRED: "Expired",
+        FORGOTTEN: "Forgotten",
+        ORPHANED: "Source unavailable",
+        RETRACTED: "Retracted",
+        SUPERSEDED: "Superseded"
+      };
+  return labels[value];
+}
+
+function feedbackTypeLabel(
+  locale: MemoryUiLocale,
+  value: "CORRECT" | "INCORRECT" | "NOT_USEFUL" | "WRONG_SCOPE" | "OUTDATED" | "TOO_SENSITIVE"
+): string {
+  const labels = locale === "RU"
+    ? {
+        CORRECT: "Верно",
+        INCORRECT: "Неверно",
+        NOT_USEFUL: "Не пригодилось",
+        OUTDATED: "Устарело",
+        TOO_SENSITIVE: "Слишком чувствительные данные",
+        WRONG_SCOPE: "Неверная область"
+      }
+    : {
+        CORRECT: "Correct",
+        INCORRECT: "Incorrect",
+        NOT_USEFUL: "Not useful",
+        OUTDATED: "Outdated",
+        TOO_SENSITIVE: "Too sensitive",
+        WRONG_SCOPE: "Wrong scope"
+      };
+  return labels[value];
+}
+
+function lifecycleOperationLabel(locale: MemoryUiLocale, value: string): string {
+  const labels: Readonly<Record<string, readonly [string, string]>> = {
+    AUTO_PROPOSE: ["Automatic proposal", "Автоматическое предложение"],
+    CONFLICT: ["Conflict detected", "Обнаружен конфликт"],
+    EDIT: ["User correction", "Исправление пользователя"],
+    EXPIRE: ["Expired", "Срок действия истёк"],
+    EXPLICIT_SAVE: ["Explicit save", "Явное сохранение"],
+    FORGET: ["Forgotten", "Забыто"],
+    INDEX_SWITCH: ["Index switched", "Переключён индекс"],
+    PIN: ["Pinned", "Закреплено"],
+    PROMOTE: ["Promoted", "Повышено до факта"],
+    REBUILD: ["Rebuilt", "Перестроено"],
+    REINFORCE: ["Evidence reinforced", "Подтверждение усилено"],
+    RETRACT: ["Retracted", "Отозвано"],
+    SCOPE_CHANGE: ["Scope changed", "Изменена область"],
+    SOURCE_INVALIDATE: ["Source invalidated", "Источник стал недоступен"],
+    SUPERSEDE: ["Superseded", "Заменено"],
+    UNPIN: ["Unpinned", "Откреплено"],
+    USER_FEEDBACK: ["Private feedback", "Приватный отзыв"]
+  };
+  const label = labels[value];
+  return label ? label[locale === "RU" ? 1 : 0] : value;
+}
+
 function scopeLabel(locale: MemoryUiLocale, scope: MemoryScopeSelection): string {
   if (scope.type === "GLOBAL_USER") return t(locale, "manager.global");
   const labels = locale === "RU"
@@ -144,22 +225,79 @@ function ScreenBack({ locale, onClick }: { locale: MemoryUiLocale; onClick(): vo
 
 function LiveNotice({ locale }: { locale: MemoryUiLocale }) {
   const notice = useMemoryManagerStore((state) => state.notice);
+  const lastFeedbackUndo = useMemoryManagerStore((state) => state.lastFeedbackUndo);
+  const lastForgetUndo = useMemoryManagerStore((state) => state.lastForgetUndo);
+  const mutationState = useMemoryManagerStore((state) => state.mutationState);
+  const [expiredForgetDeletionId, setExpiredForgetDeletionId] = useState<string | null>(null);
+  useEffect(() => {
+    if (notice !== "forgotten" || !lastForgetUndo) return;
+    const remaining = Date.parse(lastForgetUndo.undo.expiresAt) - Date.now();
+    const delay = Number.isFinite(remaining)
+      ? Math.min(Math.max(remaining, 0), 2_147_483_647)
+      : 0;
+    const deletionId = lastForgetUndo.undo.deletionId;
+    const timer = window.setTimeout(() => setExpiredForgetDeletionId(deletionId), delay);
+    return () => window.clearTimeout(timer);
+  }, [lastForgetUndo, notice]);
+  const forgetUndoAvailable = Boolean(
+    notice === "forgotten" &&
+    lastForgetUndo &&
+    expiredForgetDeletionId !== lastForgetUndo.undo.deletionId
+  );
   if (!notice) return <div className="sr-only" aria-live="polite" />;
   const text = notice === "forgotten"
     ? t(locale, "manager.forgotten")
+    : notice === "forget_restored"
+      ? t(locale, "manager.forgetRestored")
     : notice === "saved_use_off"
       ? t(locale, "manager.savedUseOff")
-      : t(locale, "manager.saved");
+      : notice === "feedback_recorded"
+        ? t(locale, "manager.feedbackRecorded")
+        : notice === "feedback_retracted"
+          ? t(locale, "manager.feedbackRetracted")
+          : notice === "resolved"
+            ? t(locale, "manager.resolved")
+            : t(locale, "manager.saved");
   return (
     <div
-      className="flex items-start gap-2 border-y border-positive/30 bg-positive/10 px-3 py-2 text-sm leading-5 text-ink-secondary"
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 border-y border-positive/30 bg-positive/10 px-3 py-2 text-sm leading-5 text-ink-secondary"
       role="status"
     >
       <Check className="mt-0.5 size-4 shrink-0 text-positive" aria-hidden="true" />
-      <span>{text}</span>
+      <span className="min-w-0 flex-1">{text}</span>
+      {notice === "feedback_recorded" && lastFeedbackUndo ? (
+        <button
+          className={`inline-flex min-h-control items-center gap-1.5 rounded-control px-2 font-semibold text-proof hover:bg-positive/15 disabled:opacity-60 ${focusRing}`}
+          disabled={mutationState !== null}
+          type="button"
+          onClick={() => void undoLastMemoryFeedback().catch(() => undefined)}
+        >
+          <Undo2 className="size-3.5" aria-hidden="true" />
+          {t(locale, "manager.undo")}
+        </button>
+      ) : null}
+      {notice === "forgotten" && forgetUndoAvailable ? (
+        <button
+          className={`inline-flex min-h-control items-center gap-1.5 rounded-control px-2 font-semibold text-proof hover:bg-positive/15 disabled:opacity-60 ${focusRing}`}
+          disabled={mutationState !== null}
+          type="button"
+          onClick={() => void undoLastForgottenMemory().catch(() => undefined)}
+        >
+          <Undo2 className="size-3.5" aria-hidden="true" />
+          {t(locale, "manager.undo")}
+        </button>
+      ) : null}
     </div>
   );
 }
+
+const MANAGE_MEMORY_STATES = [
+  "ACTIVE",
+  "CONFLICTED",
+  "ORPHANED",
+  "EXPIRED",
+  "RETRACTED"
+] as const;
 
 type ScopeTargetOption = Readonly<{
   archived?: boolean;
@@ -357,10 +495,10 @@ function MemoryListPane({ locale }: { locale: MemoryUiLocale }) {
         </div>
       </form>
 
-      <div className="flex gap-1 border-b border-trace-subtle px-3 py-2" role="group" aria-label={locale === "RU" ? "Состояние воспоминаний" : "Memory state"}>
-        {(["ACTIVE", "ORPHANED"] as const).map((state) => (
+      <div className="flex gap-1 overflow-x-auto border-b border-trace-subtle px-3 py-2" role="group" aria-label={locale === "RU" ? "Состояние воспоминаний" : "Memory state"}>
+        {MANAGE_MEMORY_STATES.map((state) => (
           <button
-            className={`min-h-control rounded-control px-3 text-xs font-semibold ${
+            className={`min-h-control shrink-0 rounded-control px-3 text-xs font-semibold ${
               factStateFilter === state
                 ? "bg-control-selected text-proof"
                 : "text-ink-secondary hover:bg-control-hover hover:text-ink"
@@ -370,9 +508,7 @@ function MemoryListPane({ locale }: { locale: MemoryUiLocale }) {
             aria-pressed={factStateFilter === state}
             onClick={() => void changeMemoryFactState(state).catch(() => undefined)}
           >
-            {state === "ACTIVE"
-              ? (locale === "RU" ? "Активные" : "Active")
-              : (locale === "RU" ? "Недоступная область" : "Unavailable scope")}
+            {memoryFactStateLabel(locale, state)}
           </button>
         ))}
       </div>
@@ -412,13 +548,21 @@ function MemoryListPane({ locale }: { locale: MemoryUiLocale }) {
                     <span className="flex items-center gap-2">
                       {memory.pinned ? <Pin className="size-3.5 shrink-0 text-proof" aria-label={t(locale, "manager.pinned")} /> : null}
                       <span className="line-clamp-3 whitespace-pre-wrap text-sm font-medium leading-5 text-ink">
-                        {memory.displayText}
+                        {memory.displayText ?? t(locale, "manager.notSet")}
                       </span>
                     </span>
                     <span className="mt-1.5 flex flex-wrap gap-x-2 gap-y-1 text-xs text-ink-muted">
                       <span>{memoryFactStateLabel(locale, memory.factState)}</span>
                       <span aria-hidden="true">·</span>
+                      <span>{memory.sourceMode === "AUTOMATIC" ? t(locale, "manager.automatic") : t(locale, "manager.explicit")}</span>
+                      <span aria-hidden="true">·</span>
                       <span>{memoryModalityLabel(locale, memory.modality)}</span>
+                      {(memory.deferredCandidateCount ?? 0) > 0 ? (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>{memory.deferredCandidateCount} {t(locale, "manager.deferred")}</span>
+                        </>
+                      ) : null}
                       <span aria-hidden="true">·</span>
                       <span>{formatDate(locale, memory.updatedAt)}</span>
                     </span>
@@ -489,7 +633,11 @@ function EvidenceItem({ item, locale }: { item: MemoryEvidenceItem; locale: Memo
           {item.stance === "SUPPORTS" ? t(locale, "manager.supports") : t(locale, "manager.contradicts")}
         </span>
         <span className="text-ink-muted">
-          {item.sourceType === "MESSAGE" ? t(locale, "manager.evidenceMessage") : t(locale, "manager.evidenceAction")}
+          {item.sourceType === "MESSAGE"
+            ? t(locale, "manager.evidenceMessage")
+            : item.sourceType === "EPISODE"
+              ? t(locale, "manager.evidenceEpisode")
+              : t(locale, "manager.evidenceAction")}
         </span>
         <span className="text-ink-muted">· {formatDate(locale, item.observedAt)}</span>
       </div>
@@ -552,6 +700,276 @@ function MemoryEvidence({ locale, memory }: { locale: MemoryUiLocale; memory: Me
   );
 }
 
+function FeedbackActionButtons({
+  comment,
+  locale,
+  onCommitted,
+  versionId
+}: {
+  comment?: string;
+  locale: MemoryUiLocale;
+  onCommitted?(): void;
+  versionId: string;
+}) {
+  const mutationState = useMemoryManagerStore((state) => state.mutationState);
+  const record = (feedbackType: "INCORRECT" | "NOT_USEFUL") => {
+    void submitMemoryFeedback(versionId, feedbackType, comment)
+      .then(() => onCommitted?.())
+      .catch(() => undefined);
+  };
+  return (
+    <div className="flex flex-wrap gap-2">
+      <button
+        className={secondaryButton}
+        disabled={mutationState !== null}
+        type="button"
+        onClick={() => record("INCORRECT")}
+      >
+        {t(locale, "manager.feedbackIncorrect")}
+      </button>
+      <button
+        className={quietButton}
+        disabled={mutationState !== null}
+        type="button"
+        onClick={() => record("NOT_USEFUL")}
+      >
+        {t(locale, "manager.feedbackNotUseful")}
+      </button>
+    </div>
+  );
+}
+
+function MemoryFeedbackPanel({ locale, versionId }: {
+  locale: MemoryUiLocale;
+  versionId: string;
+}) {
+  const [comment, setComment] = useState("");
+  return (
+    <section className="mt-6 border-t border-trace-subtle pt-5" aria-labelledby="memory-feedback-heading">
+      <h4 className="text-sm font-semibold text-ink" id="memory-feedback-heading">
+        {t(locale, "manager.feedbackHeading")}
+      </h4>
+      <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted">
+        {t(locale, "manager.feedbackDescription")}
+      </p>
+      <div className="mt-3 max-w-2xl">
+        <label className="text-xs font-semibold text-ink-secondary" htmlFor="memory-feedback-comment">
+          {t(locale, "manager.feedbackComment")}
+        </label>
+        <textarea
+          className={`mt-2 min-h-20 w-full resize-y rounded-control border border-trace-subtle bg-control-surface px-3 py-2 text-sm leading-5 text-ink ${focusRing}`}
+          id="memory-feedback-comment"
+          maxLength={MEMORY_FEEDBACK_COMMENT_MAX_LENGTH}
+          value={comment}
+          aria-describedby="memory-feedback-comment-help memory-feedback-comment-count"
+          onChange={(event) => setComment(event.target.value)}
+        />
+        <div className="mt-1 flex items-start justify-between gap-3 text-xs leading-5 text-ink-muted">
+          <p id="memory-feedback-comment-help">{t(locale, "manager.feedbackCommentHelp")}</p>
+          <span className="shrink-0 font-mono" id="memory-feedback-comment-count">
+            {comment.length}/{MEMORY_FEEDBACK_COMMENT_MAX_LENGTH}
+          </span>
+        </div>
+        <div className="mt-3">
+          <FeedbackActionButtons
+            comment={comment}
+            locale={locale}
+            onCommitted={() => setComment("")}
+            versionId={versionId}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MemoryFeedbackHistory({ locale }: { locale: MemoryUiLocale }) {
+  const feedback = useMemoryManagerStore((state) => state.feedback);
+  if (feedback.length === 0) return null;
+  return (
+    <section className="mt-6 border-t border-trace-subtle pt-5" aria-labelledby="memory-feedback-history-heading">
+      <h4 className="text-sm font-semibold text-ink" id="memory-feedback-history-heading">
+        {locale === "RU" ? "Приватные отзывы" : "Private feedback"}
+      </h4>
+      <ul className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
+        {feedback.map((item) => (
+          <li className="py-3" key={item.id}>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+              <span className="font-semibold text-ink-secondary">
+                {feedbackTypeLabel(locale, item.feedbackType)}
+              </span>
+              <span className="text-ink-muted">· {formatDate(locale, item.createdAt)}</span>
+              {item.retractedAt ? (
+                <span className="font-semibold text-caution">· {t(locale, "manager.feedbackUndone")}</span>
+              ) : null}
+            </div>
+            {item.comment ? (
+              <p className="mt-1.5 whitespace-pre-wrap text-sm leading-5 text-ink-secondary">{item.comment}</p>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function ConflictReview({ locale, memory }: {
+  locale: MemoryUiLocale;
+  memory: MemorySummary;
+}) {
+  const mutationState = useMemoryManagerStore((state) => state.mutationState);
+  const versions = useMemoryManagerStore((state) => state.versions)
+    .filter(({ state }) => state === "CONFLICTING");
+  const [correction, setCorrection] = useState("");
+  const correctionValid = correction.trim().length > 0 &&
+    correction.length <= MEMORY_STATEMENT_MAX_LENGTH;
+  return (
+    <section
+      className="mt-5 border-y border-caution/40 bg-caution/5 py-4"
+      aria-labelledby="memory-conflict-heading"
+    >
+      <div className="px-3">
+        <h4 className="text-sm font-semibold text-ink" id="memory-conflict-heading">
+          {t(locale, "manager.conflictHeading")}
+        </h4>
+        <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">
+          {t(locale, "manager.conflictDescription")}
+        </p>
+      </div>
+      <ul className="mt-3 divide-y divide-caution/25 border-y border-caution/25">
+        {versions.map((version) => (
+          <li className="px-3 py-4" key={version.id}>
+            <p className="whitespace-pre-wrap text-sm font-medium leading-6 text-ink">
+              {version.displayText ?? t(locale, "manager.notSet")}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-ink-muted">
+              {version.sourceMode === "AUTOMATIC" ? t(locale, "manager.automatic") : t(locale, "manager.explicit")}
+              {` · ${version.sourceCount} ${t(locale, "manager.sources")} · ${formatDate(locale, version.systemFrom)}`}
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                className={secondaryButton}
+                disabled={mutationState !== null}
+                type="button"
+                onClick={() => void resolveMemoryConflictChoice(version.id).catch(() => undefined)}
+              >
+                {t(locale, "manager.conflictChoose")}
+              </button>
+              {version.sourceMode === "AUTOMATIC" ? (
+                <FeedbackActionButtons locale={locale} versionId={version.id} />
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ul>
+      <form
+        className="px-3 pt-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (correctionValid) {
+            void resolveMemoryConflictCorrection(correction).catch(() => undefined);
+          }
+        }}
+      >
+        <label className="text-sm font-semibold text-ink" htmlFor="memory-conflict-correction">
+          {t(locale, "manager.conflictCorrection")}
+        </label>
+        <textarea
+          className={`mt-2 min-h-24 w-full max-w-2xl resize-y rounded-control border border-trace-subtle bg-control-surface px-3 py-2 text-sm leading-6 text-ink ${focusRing}`}
+          id="memory-conflict-correction"
+          maxLength={MEMORY_STATEMENT_MAX_LENGTH}
+          value={correction}
+          aria-describedby="memory-conflict-correction-help"
+          onChange={(event) => setCorrection(event.target.value)}
+        />
+        <p className="mt-1 text-xs leading-5 text-ink-muted" id="memory-conflict-correction-help">
+          {t(locale, "manager.conflictCorrectionHelp")}
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            className={primaryButton}
+            disabled={mutationState !== null || !correctionValid}
+            type="submit"
+          >
+            {mutationState === "resolving"
+              ? t(locale, "manager.conflictResolving")
+              : t(locale, "manager.conflictResolve")}
+          </button>
+          <button className={secondaryButton} disabled={mutationState !== null} onClick={showMemoryList} type="button">
+            {t(locale, "manager.keepUnresolved")}
+          </button>
+          <button
+            className={`inline-flex min-h-touch items-center gap-2 rounded-control px-3 text-sm font-semibold text-critical hover:bg-critical/10 disabled:opacity-60 sm:min-h-control ${coarsePointerTarget} ${focusRing}`}
+            disabled={mutationState !== null}
+            onClick={() => void forgetCurrentMemory().catch(() => undefined)}
+            type="button"
+          >
+            <Trash2 className="size-4" aria-hidden="true" />
+            {mutationState === "forgetting"
+              ? t(locale, "manager.forgetting")
+              : resolveMemoryCopy(locale, "forget.action")}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function MemoryLifecycle({ locale }: { locale: MemoryUiLocale }) {
+  const history = useMemoryManagerStore((state) => state.history);
+  const versions = useMemoryManagerStore((state) => state.versions);
+  if (history.length === 0 && versions.length === 0) return null;
+  return (
+    <section className="mt-6 border-t border-trace-subtle pt-5" aria-labelledby="memory-lifecycle-heading">
+      <h4 className="text-sm font-semibold text-ink" id="memory-lifecycle-heading">
+        {t(locale, "manager.lifecycleHeading")}
+      </h4>
+      <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted">
+        {t(locale, "manager.lifecycleDescription")}
+      </p>
+      {versions.length > 0 ? (
+        <details className="mt-3 border-y border-trace-subtle py-2">
+          <summary className={`min-h-control cursor-pointer py-2 text-sm font-semibold text-ink-secondary ${focusRing}`}>
+            {t(locale, "manager.versionHistory")} · {versions.length}
+          </summary>
+          <ol className="divide-y divide-trace-subtle">
+            {versions.map((version) => (
+              <li className="py-3" key={version.id}>
+                <p className="whitespace-pre-wrap text-sm leading-6 text-ink">
+                  {version.displayText ?? t(locale, "manager.notSet")}
+                </p>
+                <p className="mt-1 text-xs leading-5 text-ink-muted">
+                  {versionStateLabel(locale, version.state)} · {version.sourceMode === "AUTOMATIC" ? t(locale, "manager.automatic") : t(locale, "manager.explicit")} · {formatDate(locale, version.systemFrom)}
+                </p>
+              </li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
+      {history.length > 0 ? (
+        <details className="border-b border-trace-subtle py-2">
+          <summary className={`min-h-control cursor-pointer py-2 text-sm font-semibold text-ink-secondary ${focusRing}`}>
+            {t(locale, "manager.eventHistory")} · {history.length}
+          </summary>
+          <ol className="divide-y divide-trace-subtle">
+            {history.map((event) => (
+              <li className="flex flex-wrap justify-between gap-x-3 gap-y-1 py-3 text-sm" key={event.id}>
+                <span className="font-medium text-ink-secondary">
+                  {lifecycleOperationLabel(locale, event.operation)}
+                  {!event.sourceAvailable
+                    ? ` · ${locale === "RU" ? "источник недоступен" : "source unavailable"}`
+                    : ""}
+                </span>
+                <span className="text-xs text-ink-muted">{formatDate(locale, event.createdAt)}</span>
+              </li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
 function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
   const memory = useMemoryManagerStore((state) => state.activeMemory);
   const detailError = useMemoryManagerStore((state) => state.detailError);
@@ -578,6 +996,12 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
     ? `${memory.validFrom ? formatDate(locale, memory.validFrom) : "−∞"} — ${memory.validTo ? formatDate(locale, memory.validTo) : "+∞"}`
     : t(locale, "manager.notSet");
   const errorText = mutationErrorText(locale, mutationError);
+  const authority = memory.sourceMode === "AUTOMATIC"
+    ? t(locale, "manager.automatic")
+    : t(locale, "manager.explicit");
+  const feedbackVersionId = memory.factState === "ACTIVE" && memory.sourceMode === "AUTOMATIC"
+    ? memory.currentVersionId
+    : null;
   return (
     <div>
       <ScreenBack locale={locale} onClick={showMemoryList} />
@@ -586,7 +1010,7 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
           <h3 className="text-base font-semibold text-ink" data-memory-screen-heading tabIndex={-1}>
             {t(locale, "manager.detail")}
           </h3>
-          <p className="mt-1 text-xs text-ink-muted">{t(locale, "manager.explicit")} · {scopeLabel(locale, memory.scope)}</p>
+          <p className="mt-1 text-xs text-ink-muted">{authority} · {scopeLabel(locale, memory.scope)}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {memory.factState === "ACTIVE" ? (
@@ -605,21 +1029,26 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
               </button>
             </>
           ) : null}
-          {(memory.actionVersionId ?? memory.currentVersionId) ? (
+          {memory.factState !== "CONFLICTED" &&
+          (memory.actionVersionId ?? memory.currentVersionId) ? (
             <button className={secondaryButton} disabled={mutationState !== null} onClick={beginMoveMemory} type="button">
               <FolderInput className="size-4" aria-hidden="true" />
               {locale === "RU" ? "Переместить область" : "Move scope"}
             </button>
           ) : null}
-          <button
-            className={`inline-flex min-h-touch items-center gap-2 rounded-control px-3 text-sm font-semibold text-critical hover:bg-critical/10 disabled:opacity-60 sm:min-h-control ${coarsePointerTarget} ${focusRing}`}
-            disabled={mutationState !== null}
-            onClick={beginForgetMemory}
-            type="button"
-          >
-            <Trash2 className="size-4" aria-hidden="true" />
-            {resolveMemoryCopy(locale, "forget.action")}
-          </button>
+          {memory.factState !== "CONFLICTED" && (memory.actionVersionId ?? memory.currentVersionId) ? (
+            <button
+              className={`inline-flex min-h-touch items-center gap-2 rounded-control px-3 text-sm font-semibold text-critical hover:bg-critical/10 disabled:opacity-60 sm:min-h-control ${coarsePointerTarget} ${focusRing}`}
+              disabled={mutationState !== null}
+              onClick={() => void forgetCurrentMemory().catch(() => undefined)}
+              type="button"
+            >
+              <Trash2 className="size-4" aria-hidden="true" />
+              {mutationState === "forgetting"
+                ? t(locale, "manager.forgetting")
+                : resolveMemoryCopy(locale, "forget.action")}
+            </button>
+          ) : null}
         </div>
       </div>
       {errorText ? <p className="mt-3 text-sm text-critical" role="alert">{errorText}</p> : null}
@@ -628,11 +1057,31 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
           {locale === "RU" ? "Источник или область недоступны." : "Source or scope unavailable."}
         </div>
       ) : null}
+      {memory.factState === "EXPIRED" || memory.factState === "RETRACTED" ? (
+        <div className="mt-3 border-y border-trace-subtle bg-control-surface px-3 py-2 text-sm leading-6 text-ink-secondary" role="status">
+          {memory.factState === "EXPIRED"
+            ? (locale === "RU" ? "Срок действия этой версии истёк; она остаётся только в истории." : "This version expired and remains only in history.")
+            : (locale === "RU" ? "Эта версия была отозвана и больше не участвует в ответах." : "This version was retracted and no longer participates in answers.")}
+        </div>
+      ) : null}
       <p className="mt-5 whitespace-pre-wrap border-y border-trace-subtle bg-answer-paper px-3 py-4 text-base leading-7 text-ink">
-        {memory.displayText}
+        {memory.displayText ?? t(locale, "manager.notSet")}
       </p>
+      {memory.factState === "CONFLICTED" ? (
+        <ConflictReview key={memory.id} locale={locale} memory={memory} />
+      ) : null}
+      <section className="mt-5" aria-labelledby="memory-why-heading">
+        <h4 className="text-sm font-semibold text-ink" id="memory-why-heading">
+          {t(locale, "manager.whyRemembered")}
+        </h4>
+        <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">
+          {memory.sourceMode === "AUTOMATIC"
+            ? t(locale, "manager.whyAutomatic")
+            : t(locale, "manager.whyExplicit")}
+        </p>
+      </section>
       <dl className="mt-3 divide-y divide-trace-subtle">
-        <MetadataRow label={t(locale, "manager.authority")}>{t(locale, "manager.explicit")}</MetadataRow>
+        <MetadataRow label={t(locale, "manager.authority")}>{authority}</MetadataRow>
         <MetadataRow label={t(locale, "manager.scope")}>{scopeLabel(locale, memory.scope)}</MetadataRow>
         <MetadataRow label={t(locale, "manager.state")}>{memoryFactStateLabel(locale, memory.factState)}</MetadataRow>
         <MetadataRow label={t(locale, "manager.index")}>{indexingLabel(locale, memory.indexingState)}</MetadataRow>
@@ -650,6 +1099,15 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
         </MetadataRow>
       </dl>
       <MemoryEvidence locale={locale} memory={memory} />
+      {feedbackVersionId ? (
+        <MemoryFeedbackPanel
+          key={feedbackVersionId}
+          locale={locale}
+          versionId={feedbackVersionId}
+        />
+      ) : null}
+      <MemoryFeedbackHistory locale={locale} />
+      <MemoryLifecycle locale={locale} />
     </div>
   );
 }
@@ -831,43 +1289,6 @@ function MoveMemoryScope({ locale }: { locale: MemoryUiLocale }) {
   );
 }
 
-function ForgetMemory({ locale }: { locale: MemoryUiLocale }) {
-  const mutationError = useMemoryManagerStore((state) => state.mutationError);
-  const mutationState = useMemoryManagerStore((state) => state.mutationState);
-  return (
-    <div>
-      <ScreenBack locale={locale} onClick={() => useMemoryManagerStore.setState({ screen: "detail" })} />
-      <ShieldAlert className="mt-2 size-6 text-critical" aria-hidden="true" />
-      <h3 className="mt-3 text-base font-semibold text-ink" data-memory-screen-heading tabIndex={-1}>
-        {t(locale, "manager.forgetTitle")}
-      </h3>
-      <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-secondary">
-        {resolveMemoryCopy(locale, "forget.explanation")}
-      </p>
-      {mutationError ? <p className="mt-3 text-sm text-critical" role="alert">{mutationErrorText(locale, mutationError)}</p> : null}
-      <div className="mt-5 flex flex-wrap gap-2 border-t border-trace-subtle pt-4">
-        <button
-          className={secondaryButton}
-          disabled={mutationState !== null}
-          type="button"
-          onClick={() => useMemoryManagerStore.setState({ screen: "detail" })}
-        >
-          {t(locale, "manager.cancel")}
-        </button>
-        <button
-          className={destructiveButton}
-          disabled={mutationState !== null}
-          type="button"
-          onClick={() => void confirmForgetMemory().catch(() => undefined)}
-        >
-          <Trash2 className="size-4" aria-hidden="true" />
-          {mutationState === "forgetting" ? t(locale, "manager.forgetting") : t(locale, "manager.forgetConfirm")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function deletionStateText(locale: MemoryUiLocale, status: MemoryDeletionStatus): string {
   switch (status.state) {
     case "PENDING": return t(locale, "manager.deletePending");
@@ -875,6 +1296,7 @@ function deletionStateText(locale: MemoryUiLocale, status: MemoryDeletionStatus)
     case "RETRY_WAIT": return t(locale, "manager.deleteRetry");
     case "BLOCKED_REQUIRES_ADMIN": return resolveMemoryCopy(locale, "deletion.blockedAdmin");
     case "SUCCEEDED": return t(locale, "manager.deleteSucceeded");
+    case "CANCELLED": return locale === "RU" ? "Удаление отменено." : "Deletion cancelled.";
   }
 }
 
@@ -912,7 +1334,7 @@ function DeleteMemories({ locale }: { locale: MemoryUiLocale }) {
             <button className={secondaryButton} onClick={showMemoryList} type="button">
               {t(locale, "manager.backToList")}
             </button>
-            {status.state !== "SUCCEEDED" ? (
+            {status.state !== "SUCCEEDED" && status.state !== "CANCELLED" ? (
               <button
                 className={secondaryButton}
                 disabled={deletionLoadState === "loading"}
@@ -928,8 +1350,15 @@ function DeleteMemories({ locale }: { locale: MemoryUiLocale }) {
       ) : (
         <div className="mt-3">
           <p className="max-w-2xl text-sm leading-6 text-ink-secondary">{t(locale, "manager.deleteExplanation")}</p>
-          <p className="mt-3 max-w-2xl text-sm font-medium leading-6 text-ink">{t(locale, "manager.deleteRetention")}</p>
-          <p className="mt-3 max-w-2xl text-xs leading-5 text-ink-muted">{t(locale, "manager.deleteConfirmation")}</p>
+          <details className="mt-3 max-w-2xl border-y border-trace-subtle py-1">
+            <summary className={`min-h-control cursor-pointer py-2 text-sm font-semibold text-ink-secondary ${focusRing}`}>
+              {t(locale, "manager.deletionDetails")}
+            </summary>
+            <div className="pb-3 text-xs leading-5 text-ink-muted">
+              <p>{t(locale, "manager.deleteRetention")}</p>
+              <p className="mt-2">{t(locale, "manager.deleteConfirmation")}</p>
+            </div>
+          </details>
           {deletionError ? (
             <p className="mt-3 text-sm text-critical" role="alert">
               {stale ? t(locale, "manager.deleteStale") : t(locale, "manager.mutationError")}
@@ -963,7 +1392,6 @@ function DetailPane({ locale, screen, useMemoryFacts }: {
   if (screen === "create" || screen === "edit") {
     return <MemoryForm locale={locale} screen={screen} useMemoryFacts={useMemoryFacts} />;
   }
-  if (screen === "forget") return <ForgetMemory locale={locale} />;
   if (screen === "move") return <MoveMemoryScope locale={locale} />;
   if (screen === "delete") return <DeleteMemories locale={locale} />;
   return <MemoryDetail locale={locale} />;
@@ -996,8 +1424,8 @@ export function ManageMemories({
   const returnToHistoryEntryRef = useRef(false);
 
   useEffect(() => {
-    void openMemoryManager();
-  }, []);
+    void openMemoryManager(accountId);
+  }, [accountId]);
   useEffect(() => {
     onBusyChange?.(mutationState !== null);
     return () => onBusyChange?.(false);
@@ -1018,7 +1446,7 @@ export function ManageMemories({
 
   const deletionStatus = useMemoryManagerStore((state) => state.deletionStatus);
   useEffect(() => {
-    if (!deletionStatus || deletionStatus.state === "SUCCEEDED" || deletionStatus.state === "BLOCKED_REQUIRES_ADMIN") {
+    if (!deletionStatus || deletionStatus.state === "SUCCEEDED" || deletionStatus.state === "CANCELLED" || deletionStatus.state === "BLOCKED_REQUIRES_ADMIN") {
       return;
     }
     const delay = deletionStatus.state === "RETRY_WAIT" ? 5_000 : 1_500;
@@ -1101,6 +1529,21 @@ export function ManageMemories({
       ) : null}
 
       <div className="mt-4"><LiveNotice locale={locale} /></div>
+      {screen === "list" ? (
+        <div className="mt-4">
+          <MemoryProfileSummary
+            accountId={accountId}
+            locale={locale}
+            mutationBusy={mutationState !== null}
+            onDelete={forgetProfileMemory}
+            onEdit={async (factId) => {
+              await openMemoryDetail(factId);
+              beginEditMemory();
+            }}
+            onOpenDetails={openMemoryDetail}
+          />
+        </div>
+      ) : null}
       <button
         ref={historyEntryRef}
         aria-label={memoryHistoryUiCopy(locale, "entry")}

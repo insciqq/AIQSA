@@ -9,7 +9,10 @@ import {
   decodeMemoryFactExtraction,
   MemoryFactDecodeError
 } from "./decoder";
-import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
+import {
+  MEMORY_FACT_EXTRACTION_TOOL_NAME,
+  memoryFactExtractionPromptPayload
+} from "./prompt";
 import { memorySha256 } from "../../persistence/lexical";
 import { detectMemoryTextLanguage } from "../../history/language";
 
@@ -76,6 +79,18 @@ function calls(value: Record<string, unknown>): ModelToolCall[] {
 }
 
 describe("Memory fact extraction decoder", () => {
+  it("supplies exact chat and folder scope targets to the model", () => {
+    const extractionInput = input("I prefer tea.");
+    const payload = JSON.parse(
+      memoryFactExtractionPromptPayload(extractionInput)
+    ) as Record<string, unknown>;
+
+    expect(payload).toMatchObject({
+      chat_id: "chat-1",
+      folder_id: "folder-1"
+    });
+  });
+
   it("accepts an exact durable RU preference with relational evidence bounds", () => {
     const text = "Я всегда предпочитаю зелёный чай.";
     const plan = decodeMemoryFactExtraction(calls(candidate(text, {
@@ -99,6 +114,37 @@ describe("Memory fact extraction decoder", () => {
     }]);
   });
 
+  it("decodes schema-v2 canonical JSON text before grounding the value", () => {
+    const text = "I always prefer cedar tea.";
+    const plan = decodeMemoryFactExtraction(calls(candidate(text, {
+      language: "en",
+      scope: { target_id: null, type: "GLOBAL_USER" },
+      structured_value: JSON.stringify({ drink: "cedar tea" })
+    })), input(text));
+
+    expect(plan.candidates[0]?.proposedValue).toEqual({ drink: "cedar tea" });
+  });
+
+  it("normalizes an unescaped grounded scalar structured value", () => {
+    const text = "For the backend API I prefer PostgreSQL + TypeScript.";
+    const plan = decodeMemoryFactExtraction(calls(candidate(text, {
+      language: "en",
+      structured_value: "PostgreSQL + TypeScript"
+    })), input(text));
+
+    expect(plan.candidates[0]?.proposedValue).toBe("PostgreSQL + TypeScript");
+  });
+
+  it("normalizes mixed-script language metadata from the exact display quote", () => {
+    const text = "Я предпочитаю TypeScript.";
+    const plan = decodeMemoryFactExtraction(calls(candidate(text, {
+      language: "ru",
+      structured_value: JSON.stringify({ tool: "TypeScript" })
+    })), input(text));
+
+    expect(plan.candidates[0]?.languageCode).toBe("mixed");
+  });
+
   it("rejects consideration presented as current STATE", () => {
     const text = "Я рассматриваю покупку MacBook Pro.";
     expect(() => decodeMemoryFactExtraction(calls(candidate(text, {
@@ -111,16 +157,26 @@ describe("Memory fact extraction decoder", () => {
     );
   });
 
-  it("requires explicit RU negation to survive in the normalized candidate", () => {
+  it("does not treat uncertainty about a decision as negation of consideration", () => {
+    const text = "I am only considering a MacBook purchase; I have not decided.";
+    const plan = decodeMemoryFactExtraction(calls(candidate(text, {
+      canonical_key: "user.consideration.macbook",
+      category: "consideration",
+      language: "en",
+      modality: "CONSIDERATION",
+      structured_value: JSON.stringify({ product: "MacBook" })
+    })), input(text));
+
+    expect(plan.candidates[0]?.negated).toBe(false);
+  });
+
+  it("derives explicit RU negation instead of trusting model metadata", () => {
     const text = "Я не люблю кофе.";
-    expect(() => decodeMemoryFactExtraction(calls(candidate(text, {
+    const normalized = decodeMemoryFactExtraction(calls(candidate(text, {
       negated: false,
       structured_value: { drink: "кофе" }
-    })), input(text))).toThrowError(
-      expect.objectContaining<Partial<MemoryFactDecodeError>>({
-        code: "memory_fact_negation_invalid"
-      })
-    );
+    })), input(text));
+    expect(normalized.candidates[0]?.negated).toBe(true);
     const plan = decodeMemoryFactExtraction(calls(candidate(text, {
       negated: true,
       structured_value: { drink: "кофе" }
@@ -153,6 +209,27 @@ describe("Memory fact extraction decoder", () => {
       state: "DEFERRED",
       validFrom: null,
       validTo: null
+    });
+  });
+
+  it("derives deferred state and reason from unresolved temporal evidence", () => {
+    const text = "I am temporarily in Kazan until Friday; it is not my permanent residence.";
+    const plan = decodeMemoryFactExtraction(calls(candidate(text, {
+      canonical_key: "user.location.temporary",
+      category: "location",
+      language: "en",
+      modality: "STATE",
+      raw_temporal_expression: "until Friday",
+      reason_code: null,
+      state: "PENDING",
+      structured_value: JSON.stringify({ city: "Kazan" })
+    })), input(text));
+
+    expect(plan.candidates[0]).toMatchObject({
+      negated: false,
+      rawTemporalExpression: "until Friday",
+      reasonCode: "temporal_unresolved",
+      state: "DEFERRED"
     });
   });
 

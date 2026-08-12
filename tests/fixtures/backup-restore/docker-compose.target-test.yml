@@ -1,0 +1,10 @@
+services:
+  restore-tools:
+    image: ${AIQSA_TEST_TOOLS_IMAGE:-aiqsa-dev-app:latest}
+    working_dir: /app
+    volumes:
+      - ${AIQSA_REPOSITORY_ROOT:?Set the repository root}:/app:ro
+      - target_tools_node_modules:/app/node_modules
+
+volumes:
+  target_tools_node_modules:

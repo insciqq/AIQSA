@@ -189,7 +189,7 @@ export function memoryIndexGenerationBootstrapAllowed(value: Readonly<{
 
 const DELETION_TRANSITIONS: TransitionMap<MemoryDeletionState> = Object.freeze({
   BLOCKED_REQUIRES_ADMIN: ["RUNNING"],
-  PENDING: ["RUNNING"],
+  PENDING: ["RUNNING", "CANCELLED"],
   RETRY_WAIT: ["RUNNING", "BLOCKED_REQUIRES_ADMIN"],
   RUNNING: ["SUCCEEDED", "RETRY_WAIT", "BLOCKED_REQUIRES_ADMIN"]
 });

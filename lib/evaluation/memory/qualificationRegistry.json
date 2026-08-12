@@ -1,0 +1,365 @@
+{
+  "publicKey": "MCowBQYDK2VwAyEA/dg4JZw5wBqQEO0cPo8J4jjcoRNeckNCXP/3OFNfLKc=",
+  "registry": [
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "jVnZrYbQWpwRvtCvNvTevJkEbJaZwwXUgf9YSCWPC7jzKK807iXdcOXAAOjBidiyWooBx8VITAHWpe8WFQQ_AA"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "db59a48612b2b900f7b14a1b5e9721264f696465d43573d3d1d9e6ca681fb14b",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "61f002d6f17561cc286064a0274c13f99b06989969887c689d2e9ee8e4bf93fc",
+        "language": "EN",
+        "modelFingerprint": "931f4d7f7b83cb4db93937225af65fa81c151e0dfd52406051c3a700a58c2fa2",
+        "pipelineVersion": "memory-fact-consolidation-v1",
+        "policyVersion": "memory-fact-consolidation-policy-v1",
+        "promptVersion": "memory-fact-consolidation-prompt-v3",
+        "providerFingerprint": "09659cc70e68fb6a30611355b9ba53c2d33ccaa971c53ca02fcaa3ef34ecf9f6",
+        "retrievalConfigFingerprint": "3f0c9c433cef074f92b262ef24021a7c302a5be37c655ed5c231d62dbc2c99ab",
+        "role": "MEMORY_CONSOLIDATE",
+        "schemaVersion": "memory-fact-consolidation-schema-v1",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": null
+      },
+      "qualificationId": "memory-beta-20260811-memory-consolidate-en"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "kyrFF16DEGUedQ6PjU1eUtIinDTTFwS0NvR47i2MauekL2w1423viObcypc0NyBu_S50FnkotRqlz19gj4MhAw"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "db59a48612b2b900f7b14a1b5e9721264f696465d43573d3d1d9e6ca681fb14b",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "61f002d6f17561cc286064a0274c13f99b06989969887c689d2e9ee8e4bf93fc",
+        "language": "RU",
+        "modelFingerprint": "931f4d7f7b83cb4db93937225af65fa81c151e0dfd52406051c3a700a58c2fa2",
+        "pipelineVersion": "memory-fact-consolidation-v1",
+        "policyVersion": "memory-fact-consolidation-policy-v1",
+        "promptVersion": "memory-fact-consolidation-prompt-v3",
+        "providerFingerprint": "09659cc70e68fb6a30611355b9ba53c2d33ccaa971c53ca02fcaa3ef34ecf9f6",
+        "retrievalConfigFingerprint": "3f0c9c433cef074f92b262ef24021a7c302a5be37c655ed5c231d62dbc2c99ab",
+        "role": "MEMORY_CONSOLIDATE",
+        "schemaVersion": "memory-fact-consolidation-schema-v1",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": null
+      },
+      "qualificationId": "memory-beta-20260811-memory-consolidate-ru"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "-b8FRhUuCwMQdZuH6TNfgJI73H8M85dNxOB5GIJqrg6ymCOFimQqAUtk2XVwPK1HP1EzrxhY2nqDeKcikOY7DA"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "1959d6d9b16d062ae34f4710c220d7f58b0e6903808acbc02759b9bdec7bb6c8",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "6f4efbc85e1ca72299ab666ee03ff30167135811b94eb3037e3a448258e48cd1",
+        "language": "EN",
+        "modelFingerprint": "f64dcdd2a3aea6d2cba8c3203a360e76d8227d7f1b00c6e29a1492045ec7c091",
+        "pipelineVersion": "memory-item-embed-v1",
+        "policyVersion": "memory-item-embed-policy-v1",
+        "promptVersion": "memory-document-embed-v1",
+        "providerFingerprint": "5faab99ec20b141564679c89cffd6755641c85a77422a82182d7626c504b1139",
+        "retrievalConfigFingerprint": "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v2",
+        "role": "MEMORY_DOCUMENT_EMBED",
+        "schemaVersion": "memory-document-embed-result-v1",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": "963308897edfca4152cb521338b2d588e05fe154afaa99133029f4c45ca4ae18"
+      },
+      "qualificationId": "memory-beta-20260811-memory-document-embed-en"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "jVs6i0BE_zRgIaNfjnfJ24NmSuSfTXwSensz5LxjO81NgE1eQKIo2pLz_EBnkYqQE74fXHnpuGpMZ5bMhJXoDQ"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "1959d6d9b16d062ae34f4710c220d7f58b0e6903808acbc02759b9bdec7bb6c8",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "6f4efbc85e1ca72299ab666ee03ff30167135811b94eb3037e3a448258e48cd1",
+        "language": "RU",
+        "modelFingerprint": "f64dcdd2a3aea6d2cba8c3203a360e76d8227d7f1b00c6e29a1492045ec7c091",
+        "pipelineVersion": "memory-item-embed-v1",
+        "policyVersion": "memory-item-embed-policy-v1",
+        "promptVersion": "memory-document-embed-v1",
+        "providerFingerprint": "5faab99ec20b141564679c89cffd6755641c85a77422a82182d7626c504b1139",
+        "retrievalConfigFingerprint": "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v2",
+        "role": "MEMORY_DOCUMENT_EMBED",
+        "schemaVersion": "memory-document-embed-result-v1",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": "963308897edfca4152cb521338b2d588e05fe154afaa99133029f4c45ca4ae18"
+      },
+      "qualificationId": "memory-beta-20260811-memory-document-embed-ru"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "JJN6sZ6YSJNYi-g3KVUQuefVMr6_ZeuO4gFgccxiOqNO4O8oOCTeJylTZLPfy-PTg8E73bk6Uf62SHo0e3s4Bg"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "db59a48612b2b900f7b14a1b5e9721264f696465d43573d3d1d9e6ca681fb14b",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "61f002d6f17561cc286064a0274c13f99b06989969887c689d2e9ee8e4bf93fc",
+        "language": "EN",
+        "modelFingerprint": "931f4d7f7b83cb4db93937225af65fa81c151e0dfd52406051c3a700a58c2fa2",
+        "pipelineVersion": "memory-episode-extraction-v1",
+        "policyVersion": "memory-episode-extractive-policy-v2",
+        "promptVersion": "memory-episode-extractive-prompt-v1",
+        "providerFingerprint": "09659cc70e68fb6a30611355b9ba53c2d33ccaa971c53ca02fcaa3ef34ecf9f6",
+        "retrievalConfigFingerprint": "e6b5dcc0242b2ba5f7328dd691658483bb50e00c3288c69d69c07e55876a81c7",
+        "role": "MEMORY_EPISODE_EXTRACT",
+        "schemaVersion": "memory-episode-extractive-schema-v1",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": null
+      },
+      "qualificationId": "memory-beta-20260811-memory-episode-extract-en"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "WWfIJ4T7GLpONJGU8dVbGUo1YMmMOd2zYkqLuTI1CLAS3Qh232MV-P9MAWV9kN6sDbe6w831XD6rXZSWXIB4Aw"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "db59a48612b2b900f7b14a1b5e9721264f696465d43573d3d1d9e6ca681fb14b",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "61f002d6f17561cc286064a0274c13f99b06989969887c689d2e9ee8e4bf93fc",
+        "language": "RU",
+        "modelFingerprint": "931f4d7f7b83cb4db93937225af65fa81c151e0dfd52406051c3a700a58c2fa2",
+        "pipelineVersion": "memory-episode-extraction-v1",
+        "policyVersion": "memory-episode-extractive-policy-v2",
+        "promptVersion": "memory-episode-extractive-prompt-v1",
+        "providerFingerprint": "09659cc70e68fb6a30611355b9ba53c2d33ccaa971c53ca02fcaa3ef34ecf9f6",
+        "retrievalConfigFingerprint": "e6b5dcc0242b2ba5f7328dd691658483bb50e00c3288c69d69c07e55876a81c7",
+        "role": "MEMORY_EPISODE_EXTRACT",
+        "schemaVersion": "memory-episode-extractive-schema-v1",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": null
+      },
+      "qualificationId": "memory-beta-20260811-memory-episode-extract-ru"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "BMo3FfXh2xGvMupa6n25HZ8pT7fhyKNgNJWHfwBjGa2EnniR1HdnOiqrb1Fjttvnl1w24f2LlQDWZcvnt5FuAw"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "db59a48612b2b900f7b14a1b5e9721264f696465d43573d3d1d9e6ca681fb14b",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "61f002d6f17561cc286064a0274c13f99b06989969887c689d2e9ee8e4bf93fc",
+        "language": "EN",
+        "modelFingerprint": "931f4d7f7b83cb4db93937225af65fa81c151e0dfd52406051c3a700a58c2fa2",
+        "pipelineVersion": "memory-fact-extraction-v1",
+        "policyVersion": "memory-fact-source-grounding-policy-v6",
+        "promptVersion": "memory-fact-source-grounding-prompt-v8",
+        "providerFingerprint": "09659cc70e68fb6a30611355b9ba53c2d33ccaa971c53ca02fcaa3ef34ecf9f6",
+        "retrievalConfigFingerprint": "5aff0225c834e2361660223676f0a658c06fae005f8524d06d6f1ae5188749e4",
+        "role": "MEMORY_FACT_EXTRACT",
+        "schemaVersion": "memory-fact-source-grounding-schema-v2",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": null
+      },
+      "qualificationId": "memory-beta-20260811-memory-fact-extract-en"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "ptB3cWk3cITdB4QTWAi9tAKkt4DJZWIgOJ4pG0VWszo8dgAnfdGFvrEhCB8ueKPNn4Pk796__qWRABmrRkcYCA"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "db59a48612b2b900f7b14a1b5e9721264f696465d43573d3d1d9e6ca681fb14b",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "61f002d6f17561cc286064a0274c13f99b06989969887c689d2e9ee8e4bf93fc",
+        "language": "RU",
+        "modelFingerprint": "931f4d7f7b83cb4db93937225af65fa81c151e0dfd52406051c3a700a58c2fa2",
+        "pipelineVersion": "memory-fact-extraction-v1",
+        "policyVersion": "memory-fact-source-grounding-policy-v6",
+        "promptVersion": "memory-fact-source-grounding-prompt-v8",
+        "providerFingerprint": "09659cc70e68fb6a30611355b9ba53c2d33ccaa971c53ca02fcaa3ef34ecf9f6",
+        "retrievalConfigFingerprint": "5aff0225c834e2361660223676f0a658c06fae005f8524d06d6f1ae5188749e4",
+        "role": "MEMORY_FACT_EXTRACT",
+        "schemaVersion": "memory-fact-source-grounding-schema-v2",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": null
+      },
+      "qualificationId": "memory-beta-20260811-memory-fact-extract-ru"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "sTiteDF6c8GDaMQmH2pK3zkrBkLkXtdJO1pz4_qFsWiQyFXftBw2C0Klol2biyUX3IUQF9RcOxfW6V31dmObAw"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "1959d6d9b16d062ae34f4710c220d7f58b0e6903808acbc02759b9bdec7bb6c8",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "6f4efbc85e1ca72299ab666ee03ff30167135811b94eb3037e3a448258e48cd1",
+        "language": "EN",
+        "modelFingerprint": "f64dcdd2a3aea6d2cba8c3203a360e76d8227d7f1b00c6e29a1492045ec7c091",
+        "pipelineVersion": "memory-query-embedding-v1",
+        "policyVersion": "memory-query-embedding-policy-v1",
+        "promptVersion": "memory-query-embedding-prompt-v1",
+        "providerFingerprint": "5faab99ec20b141564679c89cffd6755641c85a77422a82182d7626c504b1139",
+        "retrievalConfigFingerprint": "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v2",
+        "role": "MEMORY_QUERY_EMBED",
+        "schemaVersion": "memory-query-embedding-result-v1",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": "963308897edfca4152cb521338b2d588e05fe154afaa99133029f4c45ca4ae18"
+      },
+      "qualificationId": "memory-beta-20260811-memory-query-embed-en"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "TybeN7ZhZesJh-FFqXdogu5pbG7bVUPs-ouTuI1PXeRhWfxUMTxAKZArrC_RIKlHo2vAfHIaBplezxI_izxoDw"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "1959d6d9b16d062ae34f4710c220d7f58b0e6903808acbc02759b9bdec7bb6c8",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "6f4efbc85e1ca72299ab666ee03ff30167135811b94eb3037e3a448258e48cd1",
+        "language": "RU",
+        "modelFingerprint": "f64dcdd2a3aea6d2cba8c3203a360e76d8227d7f1b00c6e29a1492045ec7c091",
+        "pipelineVersion": "memory-query-embedding-v1",
+        "policyVersion": "memory-query-embedding-policy-v1",
+        "promptVersion": "memory-query-embedding-prompt-v1",
+        "providerFingerprint": "5faab99ec20b141564679c89cffd6755641c85a77422a82182d7626c504b1139",
+        "retrievalConfigFingerprint": "memory-vector-pg16.14-pgvector0.8.5-filtered-hnsw-v2",
+        "role": "MEMORY_QUERY_EMBED",
+        "schemaVersion": "memory-query-embedding-result-v1",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": "963308897edfca4152cb521338b2d588e05fe154afaa99133029f4c45ca4ae18"
+      },
+      "qualificationId": "memory-beta-20260811-memory-query-embed-ru"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "H6hmpoz6yDI0b0l938wdNwApyoWGW4XZKPgYb7tEKMlclp_5VCM47Kn3ecJbmOIwF9VZPRUAuq9iJjM1sG7xDg"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "db59a48612b2b900f7b14a1b5e9721264f696465d43573d3d1d9e6ca681fb14b",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "61f002d6f17561cc286064a0274c13f99b06989969887c689d2e9ee8e4bf93fc",
+        "language": "EN",
+        "modelFingerprint": "931f4d7f7b83cb4db93937225af65fa81c151e0dfd52406051c3a700a58c2fa2",
+        "pipelineVersion": "memory-fact-verification-v1",
+        "policyVersion": "memory-fact-verification-policy-v1",
+        "promptVersion": "memory-fact-verification-prompt-v1",
+        "providerFingerprint": "09659cc70e68fb6a30611355b9ba53c2d33ccaa971c53ca02fcaa3ef34ecf9f6",
+        "retrievalConfigFingerprint": "a290747db1dbe1c694b02f782d3227abc937292d1d68fa9b847090e9b080518a",
+        "role": "MEMORY_VERIFY",
+        "schemaVersion": "memory-fact-verification-schema-v1",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": null
+      },
+      "qualificationId": "memory-beta-20260811-memory-verify-en"
+    },
+    {
+      "approval": {
+        "approvalId": "memory-beta-rollout-20260811-v5",
+        "approved": true,
+        "approvedAt": "2026-08-11T18:54:05.000Z",
+        "approvedBy": "operator",
+        "expiresAt": "2027-08-11T18:54:05.000Z",
+        "signature": "N2KPRy1AsERO1bdmBlcuxUwq8i36fUU9OF9FukusBej17kzegXbfOung8V0sOPs9eOYsGiobRGxo_umcnkpkDA"
+      },
+      "evidenceDigest": "a44bbcdb98197ec584ae413d9df71cc80dd60b460b76e8e83b4da213828e670f",
+      "key": {
+        "configFingerprint": "db59a48612b2b900f7b14a1b5e9721264f696465d43573d3d1d9e6ca681fb14b",
+        "corpusHash": "85e8eab6184c0c5e7140cc27b907936d1687586e66a02144bbf09ec48ad0c4e3",
+        "corpusVersion": "memory-corpus-v2",
+        "deploymentFingerprint": "61f002d6f17561cc286064a0274c13f99b06989969887c689d2e9ee8e4bf93fc",
+        "language": "RU",
+        "modelFingerprint": "931f4d7f7b83cb4db93937225af65fa81c151e0dfd52406051c3a700a58c2fa2",
+        "pipelineVersion": "memory-fact-verification-v1",
+        "policyVersion": "memory-fact-verification-policy-v1",
+        "promptVersion": "memory-fact-verification-prompt-v1",
+        "providerFingerprint": "09659cc70e68fb6a30611355b9ba53c2d33ccaa971c53ca02fcaa3ef34ecf9f6",
+        "retrievalConfigFingerprint": "a290747db1dbe1c694b02f782d3227abc937292d1d68fa9b847090e9b080518a",
+        "role": "MEMORY_VERIFY",
+        "schemaVersion": "memory-fact-verification-schema-v1",
+        "scorerVersion": "memory-scorers-v2",
+        "suiteVersion": "memory-automatic-learning-beta-v5",
+        "vectorSpaceFingerprint": null
+      },
+      "qualificationId": "memory-beta-20260811-memory-verify-ru"
+    }
+  ]
+}

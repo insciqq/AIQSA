@@ -131,12 +131,11 @@ describe("Memory episode strict decoder", () => {
     expect(plan.outputHash).toMatch(/^[a-f0-9]{64}$/u);
   });
 
-  it("rejects invented text, sourceless output, time drift, language drift, and keywords", () => {
+  it("rejects invented text, sourceless output, time drift, and keywords", () => {
     const mutations: Array<(value: ReturnType<typeof validArguments>) => void> = [
       (value) => { value.episodes[0]!.summary = "Пользователь любит кофе."; },
       (value) => { value.episodes[0]!.source_message_ids = ["made-up-message"]; },
       (value) => { value.episodes[0]!.occurred_to = "2026-08-10T10:00:00.000Z"; },
-      (value) => { value.episodes[0]!.language = "en"; },
       (value) => { value.episodes[0]!.keywords = ["латте"]; },
       (value) => { value.episodes[0]!.keywords = ["---"]; }
     ];
@@ -146,6 +145,15 @@ describe("Memory episode strict decoder", () => {
       expect(() => decodeMemoryEpisodeExtraction([call(value)], input()))
         .toThrow(MemoryEpisodeDecodeError);
     }
+  });
+
+  it("derives language from the exact summary instead of model metadata", () => {
+    const value = validArguments();
+    value.episodes[0]!.language = "en";
+
+    const plan = decodeMemoryEpisodeExtraction([call(value)], input());
+
+    expect(plan.episodes[0]?.languageCode).toBe("ru");
   });
 
   it("rejects free-form, multiple-call, extra-field, overlap, and secret output", () => {

@@ -16,10 +16,11 @@ import {
 
 const response: MemorySettingsResponse = {
   capabilities: {
-    automaticLearning: false,
-    explicitMemory: false,
-    historyRecall: false,
-    russianQualified: false,
+  automaticLearning: false,
+  explicitMemory: false,
+  historyRecall: false,
+  permanentChatDeletion: false,
+  russianQualified: false,
     temporaryChats: false
   },
   egress: {

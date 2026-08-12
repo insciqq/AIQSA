@@ -101,8 +101,13 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import {
   openArchivedChats,
   openArchivedChatPreview,
+  removePermanentlyDeletedArchivedChat,
   useArchivedChatsStore
 } from "@/components/app-shell/archivedChatsStore";
+import {
+  activatePermanentChatDeletionAccount,
+  deactivatePermanentChatDeletionAccount
+} from "@/components/app-shell/permanentChatDeletionStore";
 import {
   loadChatMemoryState,
   patchChatMemoryMode,
@@ -629,6 +634,33 @@ export function PowerAppShell({
   useEffect(() => {
     pruneThreadCacheEvent();
   }, [activeRunChatIdsKey, pendingComposerChatIdsKey, pruneThreadCacheEvent]);
+
+  const reconcilePermanentChatDeletion = useEventCallback(async (chatId: string) => {
+    const workspace = useWorkspaceStore.getState();
+    const wasActive = workspace.activeChatId === chatId;
+    const remaining = workspace.chats.filter((chat) => chat.id !== chatId);
+    workspace.updateChats((current) => current.filter((chat) => chat.id !== chatId));
+    useThreadStore.getState().removeThread(chatId);
+    useRunSurfaceStore.getState().removeSurface(chatId);
+    useComposerSessionStore.getState().removeSession(composerSessionKey(chatId));
+    chatDetailRequestsRef.current.delete(chatId);
+    removePermanentlyDeletedArchivedChat(chatId);
+    workspaceInteraction.chatMutation.closeActions();
+    shellOverlays.mobileWorkspace.close();
+    if (shareDialogTarget?.chat.id === chatId) setShareDialogTarget(null);
+    if (!wasActive) return;
+    const next = remaining[0] ?? null;
+    if (next) await activateChat(next, { preserveControls: true });
+    else activateBlankWorkspace();
+  });
+
+  useEffect(() => {
+    void activatePermanentChatDeletionAccount(
+      accountId,
+      reconcilePermanentChatDeletion
+    );
+    return () => deactivatePermanentChatDeletionAccount(accountId);
+  }, [accountId, reconcilePermanentChatDeletion]);
 
   const loadEarlierMessages = useEventCallback(async () => {
     const sourceChatId = activeChatId;

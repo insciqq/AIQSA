@@ -728,6 +728,12 @@ export function summarizeInspectorEvents(
       const itemCount = Math.max(0, Math.floor(numberField(event.data, "itemCount") ?? 0));
       const degradationCode = stringField(event.data, "degradationCode");
       const retrievalLanes = stringArrayField(event.data, "retrievalLanes");
+      const sourceModes = stringArrayField(event.data, "sourceModes");
+      const lifecycleStates = stringArrayField(event.data, "lifecycleStates");
+      const automaticFactCount = Math.max(
+        0,
+        Math.floor(numberField(event.data, "automaticFactCount") ?? 0)
+      );
       const included = `${itemCount} ${itemCount === 1 ? "memory" : "memories"} included`;
       const value = outcome === "USED"
         ? included
@@ -742,6 +748,13 @@ export function summarizeInspectorEvents(
         detail: [
           retrievalLanes.length > 0
             ? `Lanes: ${retrievalLanes.map(readableIdentifier).join(", ")}`
+            : null,
+          sourceModes.length > 0
+            ? `Authority: ${sourceModes.map(readableIdentifier).join(", ")}`
+            : null,
+          automaticFactCount > 0 ? `Automatic facts: ${automaticFactCount}` : null,
+          lifecycleStates.some((state) => state !== "CURRENT")
+            ? `Lifecycle: ${lifecycleStates.map(readableIdentifier).join(", ")}`
             : null,
           degradationCode ? `Reason: ${readableIdentifier(degradationCode)}` : null
         ].filter((part): part is string => Boolean(part)).join(" · ") || undefined,

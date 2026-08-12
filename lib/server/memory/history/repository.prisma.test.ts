@@ -458,8 +458,10 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("replays automatic backfill behind a populated history barrier without resurrection", async () => {
-    const userId = await createOwner("memory-history-auto-barrier");
+  it.each(["HISTORY_INDEX", "ALL_REUSABLE"] as const)(
+    "replays automatic backfill behind a populated %s barrier without resurrection",
+    async (barrierKind) => {
+    const userId = await createOwner(`memory-history-${barrierKind.toLowerCase()}-barrier`);
     try {
       await prisma.userMemorySettings.update({
         data: { referenceChatHistory: false },
@@ -488,7 +490,7 @@ describe("Memory lexical history index persistence", () => {
       });
       await prisma.memorySourceBarrier.create({
         data: {
-          kind: "HISTORY_INDEX",
+          kind: barrierKind,
           memoryGeneration: before.memoryGeneration,
           sourceCreatedAtCutoff: new Date("2026-08-10T11:00:00.000Z"),
           userId

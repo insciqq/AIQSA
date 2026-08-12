@@ -28,8 +28,11 @@ function directSpan(
 ): string {
   const text = textFromContentBlocks(request.content);
   const span = text.slice(plan.sourceStart, plan.sourceEnd);
-  const expected = plan.kind === "SAVE" ? plan.statement : plan.targetQuery;
-  if (span !== expected) {
+  const exactTarget = plan.kind === "SAVE" ? null : plan.targetQuery;
+  if (
+    !span.trim() ||
+    (exactTarget !== null && span !== exactTarget)
+  ) {
     throw new MemoryRunActionAuthorizationError("memory_intent_confirmation_required");
   }
   return span;
@@ -38,18 +41,19 @@ function directSpan(
 async function exactTarget(
   client: PrismaClient,
   userId: string,
-  query: string
+  query: string,
+  sourceMode: "AUTOMATIC" | "EXPLICIT"
 ): Promise<Readonly<{ factId: string; versionId: string }>> {
   const result = await createPrismaExplicitMemoryRepository(client).search(userId, {
     pageSize: 2,
     query,
     scope: { type: "GLOBAL_USER" },
-    sourceMode: "EXPLICIT",
+    sourceMode,
     state: "ACTIVE"
   });
   const matches = result.memories.filter((memory) =>
     memory.factState === "ACTIVE" &&
-    memory.sourceMode === "EXPLICIT" &&
+    memory.sourceMode === sourceMode &&
     memory.currentVersionId !== null
   );
   const target = matches[0];
@@ -59,8 +63,9 @@ async function exactTarget(
   return { factId: target.id, versionId: target.currentVersionId };
 }
 
-/** Mints one short-lived authorization owned by the admitted run and exact
- * direct-user source span. The model-visible tool never receives its ID. */
+/** Mints one short-lived authorization owned by the admitted run and bounded
+ * direct-user source span. Targeted mutations remain exact; SAVE may persist a
+ * faithful tool-produced paraphrase. The model-visible tool never receives its ID. */
 export async function authorizeRunMemoryAction(
   client: PrismaClient,
   input: Readonly<{
@@ -85,14 +90,23 @@ export async function authorizeRunMemoryAction(
 
   const action = input.plan.kind === "SAVE"
     ? "SAVE" as const
-    : input.plan.kind === "UPDATE" ? "EDIT" as const : "FORGET" as const;
+    : input.plan.kind === "UPDATE" || input.plan.kind === "MARK_INCORRECT"
+      ? "EDIT" as const
+      : "FORGET" as const;
   const target = input.plan.kind === "SAVE"
     ? null
-    : await exactTarget(client, input.userId, input.plan.targetQuery);
+    : await exactTarget(
+        client,
+        input.userId,
+        input.plan.targetQuery,
+        input.plan.kind === "MARK_INCORRECT" ? "AUTOMATIC" : "EXPLICIT"
+      );
   const authorizedPayloadHash = input.plan.kind === "SAVE"
     ? memorySha256(input.plan.statement)
     : memoryTargetAuthorizationPayloadHash({
-        action: input.plan.kind === "UPDATE" ? "EDIT" : "FORGET",
+        action: input.plan.kind === "UPDATE" || input.plan.kind === "MARK_INCORRECT"
+          ? "EDIT"
+          : "FORGET",
         expectedTargetVersionId: target!.versionId,
         targetFactId: target!.factId
       });

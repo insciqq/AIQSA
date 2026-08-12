@@ -221,7 +221,9 @@ async function readMemorySourceChat(
       "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
       "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
     FROM "Chat"
-    WHERE "id" = ${input.chatId} AND "userId" = ${input.userId}
+    WHERE "id" = ${input.chatId}
+      AND "userId" = ${input.userId}
+      AND "permanentDeletionAt" IS NULL
     ${lock}
   `);
   return rows[0] ?? null;

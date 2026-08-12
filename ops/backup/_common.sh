@@ -28,7 +28,42 @@ service_is_running() {
 }
 
 valid_service_name() {
-  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]
+  [[ "${#1}" -le 64 && "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]
+}
+
+valid_restore_project_name() {
+  [[ "$1" =~ ^aiqsa-restore-[a-z0-9][a-z0-9_-]{0,47}$ ]]
+}
+
+valid_bucket_name() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]
+}
+
+compose_has_service() {
+  local service="$1"
+
+  compose --profile restore-tools config --services 2>/dev/null | grep -Fxq "$service"
+}
+
+assert_isolated_restore_project() {
+  local postgres_service="$1"
+  local minio_service="$2"
+  local tools_service="$3"
+  local running service
+
+  valid_restore_project_name "${COMPOSE_PROJECT_NAME:-}" ||
+    die "Set a unique COMPOSE_PROJECT_NAME beginning with aiqsa-restore-."
+  for service in "$postgres_service" "$minio_service" "$tools_service"; do
+    compose_has_service "$service" || die "The isolated restore Compose file is missing a required service."
+  done
+  running="$(compose ps --services --status running 2>/dev/null)" ||
+    die "Could not inspect the isolated restore project."
+  while IFS= read -r service; do
+    [[ -n "$service" ]] || continue
+    if [[ "$service" != "$postgres_service" && "$service" != "$minio_service" ]]; then
+      die "The isolated restore project contains a running service outside the database/object allowlist."
+    fi
+  done <<<"$running"
 }
 
 valid_memory_key_ids() {
@@ -123,6 +158,81 @@ validate_bundle() {
   fi
 
   BACKUP_FORMAT="$format"
+  BACKUP_CREATED_AT_UTC="$created_at"
   BACKUP_MEMORY_SUPPRESSION_KEY_IDS="$memory_key_ids"
   BACKUP_POSTGRES_VERSION_NUM="$postgres_version"
+}
+
+validate_restore_review_state() {
+  local directory="$1"
+  local format state bundle_sha created_at project compose_config_sha postgres_service minio_service
+  local tools_service bucket memory_key_ids restored_at checksum_line
+
+  [[ -d "$directory" && ! -L "$directory" ]] ||
+    die "Restore review state must be a real directory, not a symlink."
+  for filename in review.env SHA256SUMS; do
+    [[ -f "$directory/$filename" && ! -L "$directory/$filename" ]] ||
+      die "Restore review state is incomplete."
+  done
+  checksum_line="$(awk '
+    NF == 2 && $1 ~ /^[0-9a-f]{64}$/ && $2 == "review.env" { count += 1 }
+    END { if (NR != 1 || count != 1) exit 1; print $0 }
+  ' "$directory/SHA256SUMS")" || die "Restore review checksum manifest is invalid."
+  [[ -n "$checksum_line" ]] || die "Restore review checksum manifest is invalid."
+  (
+    cd "$directory"
+    sha256sum --check --strict SHA256SUMS >/dev/null 2>&1
+  ) || die "Restore review checksum verification failed."
+
+  format="$(manifest_value "$directory/review.env" AIQSA_RESTORE_REVIEW_FORMAT)" ||
+    die "Restore review manifest is invalid."
+  state="$(manifest_value "$directory/review.env" REVIEW_STATE)" ||
+    die "Restore review manifest is invalid."
+  bundle_sha="$(manifest_value "$directory/review.env" BACKUP_BUNDLE_SHA256)" ||
+    die "Restore review manifest is invalid."
+  created_at="$(manifest_value "$directory/review.env" BACKUP_CREATED_AT_UTC)" ||
+    die "Restore review manifest is invalid."
+  project="$(manifest_value "$directory/review.env" COMPOSE_PROJECT_NAME)" ||
+    die "Restore review manifest is invalid."
+  compose_config_sha="$(manifest_value "$directory/review.env" COMPOSE_CONFIG_SHA256)" ||
+    die "Restore review manifest is invalid."
+  postgres_service="$(manifest_value "$directory/review.env" POSTGRES_SERVICE)" ||
+    die "Restore review manifest is invalid."
+  minio_service="$(manifest_value "$directory/review.env" MINIO_SERVICE)" ||
+    die "Restore review manifest is invalid."
+  tools_service="$(manifest_value "$directory/review.env" TOOLS_SERVICE)" ||
+    die "Restore review manifest is invalid."
+  bucket="$(manifest_value "$directory/review.env" TARGET_BUCKET)" ||
+    die "Restore review manifest is invalid."
+  memory_key_ids="$(manifest_value "$directory/review.env" MEMORY_SUPPRESSION_KEY_IDS)" ||
+    die "Restore review manifest is invalid."
+  restored_at="$(manifest_value "$directory/review.env" RESTORED_AT_UTC)" ||
+    die "Restore review manifest is invalid."
+
+  [[ "$format" == "1" && "$state" == "PENDING" ]] || die "Restore review manifest is incompatible."
+  [[ "$bundle_sha" =~ ^[0-9a-f]{64}$ ]] || die "Restore review bundle identity is invalid."
+  [[ "$created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+    die "Restore review backup timestamp is invalid."
+  [[ "$restored_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+    die "Restore review timestamp is invalid."
+  valid_restore_project_name "$project" || die "Restore review project identity is invalid."
+  [[ "$compose_config_sha" =~ ^[0-9a-f]{64}$ ]] || die "Restore review Compose identity is invalid."
+  valid_service_name "$postgres_service" || die "Restore review PostgreSQL service is invalid."
+  valid_service_name "$minio_service" || die "Restore review MinIO service is invalid."
+  valid_service_name "$tools_service" || die "Restore review tools service is invalid."
+  [[ "$postgres_service" != "$minio_service" && "$postgres_service" != "$tools_service" &&
+    "$minio_service" != "$tools_service" ]] || die "Restore review service identities conflict."
+  valid_bucket_name "$bucket" || die "Restore review bucket is invalid."
+  valid_memory_key_ids "$memory_key_ids" || die "Restore review Memory key metadata is invalid."
+
+  RESTORE_REVIEW_BUNDLE_SHA256="$bundle_sha"
+  RESTORE_REVIEW_BACKUP_CREATED_AT_UTC="$created_at"
+  RESTORE_REVIEW_PROJECT="$project"
+  RESTORE_REVIEW_COMPOSE_CONFIG_SHA256="$compose_config_sha"
+  RESTORE_REVIEW_POSTGRES_SERVICE="$postgres_service"
+  RESTORE_REVIEW_MINIO_SERVICE="$minio_service"
+  RESTORE_REVIEW_TOOLS_SERVICE="$tools_service"
+  RESTORE_REVIEW_BUCKET="$bucket"
+  RESTORE_REVIEW_MEMORY_KEY_IDS="$memory_key_ids"
+  RESTORE_REVIEW_RESTORED_AT_UTC="$restored_at"
 }

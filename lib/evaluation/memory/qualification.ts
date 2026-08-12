@@ -5,8 +5,10 @@ import {
   type MemoryEvaluationLanguage
 } from "./contracts";
 import { canonicalMemoryEvaluationJson } from "./canonical";
+import qualificationRegistryDocument from "./qualificationRegistry.json";
 
 const safeToken = /^[A-Za-z0-9][A-Za-z0-9._:+@/=-]{0,299}$/u;
+const base64Url = /^[A-Za-z0-9_-]{1,512}$/u;
 const sha256 = /^[a-f0-9]{64}$/u;
 const exactIsoInstant = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 
@@ -69,8 +71,20 @@ export type MemoryQualificationSignatureVerifier = (
   signature: string
 ) => boolean;
 
+const codeOwnedRegistry = qualificationRegistryDocument as unknown as Readonly<{
+  publicKey?: unknown;
+  registry?: unknown;
+}>;
+
+export const MEMORY_CAPABILITY_QUALIFICATION_PUBLIC_KEY =
+  typeof codeOwnedRegistry.publicKey === "string"
+    ? codeOwnedRegistry.publicKey
+    : "";
+
 export const MEMORY_CAPABILITY_QUALIFICATION_REGISTRY: readonly MemoryCapabilityQualification[] =
-  Object.freeze([]);
+  Object.freeze(Array.isArray(codeOwnedRegistry.registry)
+    ? [...codeOwnedRegistry.registry] as MemoryCapabilityQualification[]
+    : []);
 
 function validToken(value: unknown): value is string {
   return typeof value === "string" && safeToken.test(value);
@@ -148,7 +162,8 @@ function qualificationIsValid(value: MemoryCapabilityQualification): boolean {
     validInstant(value.approval.expiresAt) &&
     validToken(value.approval.approvedBy) &&
     validToken(value.approval.approvalId) &&
-    validToken(value.approval.signature);
+    typeof value.approval.signature === "string" &&
+    base64Url.test(value.approval.signature);
 }
 
 function keyFingerprint(key: MemoryQualificationKey): string {

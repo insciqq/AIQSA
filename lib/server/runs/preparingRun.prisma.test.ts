@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 import type {
   MemoryCapabilityQualification,
   MemoryQualificationRequirement
@@ -23,6 +24,11 @@ import {
 } from "../memory/persistence/lexical";
 import { createPrismaExplicitMemoryRepository } from "../memory/explicit/repository";
 import { createExplicitMemoryService } from "../memory/explicit/service";
+import { createPrismaMemoryLifecycleRepository } from "../memory/lifecycle/repository";
+import { createMemoryLifecycleService } from "../memory/lifecycle/service";
+import { MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS } from "../memory/purge/contract";
+import { registerPhase2MemoryDeletionContributors } from "../memory/purge/leaves";
+import { MemoryDeletionContributorRegistry } from "../memory/purge/registry";
 import { createPrismaMemoryExecutionService } from "../memory/execution";
 import type { MemoryExecutionAuthorityDependencies } from "../memory/execution";
 import {
@@ -47,6 +53,15 @@ const suppressionKeyring = MemorySuppressionKeyring.parse(
     Array.from({ length: 32 }, (_, index) => index + 17)
   ).toString("base64")}`
 );
+
+function preparingForgetRegistry(): MemoryDeletionContributorRegistry {
+  const registry = new MemoryDeletionContributorRegistry({
+    operation: "FORGET_PURGE",
+    requirements: MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS
+  });
+  registerPhase2MemoryDeletionContributors(registry);
+  return registry;
+}
 
 const qualificationHmacKey = Buffer.from(
   "preparing-memory-execution-qualification-key",
@@ -1015,7 +1030,14 @@ describe("PREPARING run orchestration", () => {
           versionId: fact.versionId
         });
 
-      const forgottenAt = new Date();
+      const { systemFrom } = await prisma.memoryFactVersion.findUniqueOrThrow({
+        select: { systemFrom: true },
+        where: { id: fact.versionId }
+      });
+      const forgottenAt = new Date(Math.max(
+        Date.now(),
+        systemFrom.getTime() + 1
+      ));
       await prisma.$transaction(async (tx) => {
         await tx.memoryFactVersion.update({
           data: { state: "FORGOTTEN", systemTo: forgottenAt },
@@ -1445,7 +1467,8 @@ describe("PREPARING run orchestration", () => {
           deleteExplicit: vi.fn(),
           forget: vi.fn(),
           status: vi.fn()
-        }
+        },
+        reviewService: { feedback: vi.fn() }
       });
 
       const result = await executor.execute(actionPlan, {
@@ -1480,14 +1503,17 @@ describe("PREPARING run orchestration", () => {
         outcome: "APPLIED",
         persistedToolCallId: toolCall.id
       });
-      expect((await repository.getRunForUser(created.runId, userId))?.memoryAction).toEqual({
+      expect((await repository.getRunForUser(created.runId, userId))?.memoryAction).toMatchObject({
+        factId: receipt.targetFactId,
         operation: "SAVE",
-        status: "COMMITTED"
+        statement: actionPlan.statement,
+        status: "COMMITTED",
+        versionId: receipt.targetVersionId
       });
     });
   });
 
-  it("freezes exact selected item evidence and rejects changed scope evidence or version authority", async () => {
+  it("freezes exact selected evidence and rejects changed scope or a real Forget before finalization", async () => {
     await withPreparingUser(async ({ userId }) => {
       await createPrismaMemorySettingsRepository(prisma).patch(userId, {
         expectedMemoryRevision: 0,
@@ -1603,20 +1629,33 @@ describe("PREPARING run orchestration", () => {
         state: "STALE",
         userId
       });
-      const forgottenAt = new Date();
-      await prisma.$transaction(async (tx) => {
-        await tx.memoryFactVersion.update({
-          data: { state: "FORGOTTEN", systemTo: forgottenAt },
-          where: { id: fact.versionId }
-        });
-        await tx.memoryFact.update({
-          data: {
-            currentVersionId: null,
-            forgottenAt,
-            state: "FORGOTTEN"
-          },
-          where: { id: fact.factId }
-        });
+      const authorizationRepository =
+        createPrismaMemoryMutationAuthorizationRepository(prisma);
+      const readRepository = createPrismaExplicitMemoryRepository(prisma);
+      const explicitService = createExplicitMemoryService({
+        authorizationRepository,
+        factRepository: createPrismaMemoryFactRepository(suppressionKeyring, prisma),
+        readRepository,
+        scopeRepository: createPrismaMemoryScopeRepository(prisma)
+      });
+      const forgetAuthorization = await explicitService.mintAuthorization(userId, {
+        action: "FORGET",
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expectedTargetVersionId: fact.versionId,
+        requestNonce: "preparing-forget-race",
+        targetFactId: fact.factId
+      });
+      await createMemoryLifecycleService({
+        authorizationRepository,
+        mutationRepository: createPrismaMemoryLifecycleRepository(
+          suppressionKeyring,
+          preparingForgetRegistry(),
+          prisma
+        ),
+        readRepository
+      }).forget(userId, fact.factId, {
+        expectedVersionId: fact.versionId,
+        mutationAuthorizationId: forgetAuthorization.mutationAuthorizationId
       });
       await expect(repository.finalizePreparingRun({
         attemptId: stale.admitted.attemptId,

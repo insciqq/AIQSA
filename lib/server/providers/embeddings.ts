@@ -213,7 +213,16 @@ function responseBody(
   if (!isRecord(value) || typeof value.model !== "string" || !model.embedding) {
     throw new EmbeddingAdapterError("embedding_response_invalid");
   }
-  if (value.model !== model.upstreamModelId) {
+  const openRouterModel = model.embedding.providerFamily === "openrouter"
+    ? model.upstreamModelId.toLowerCase()
+    : null;
+  const openRouterSlug = openRouterModel?.split("/").at(-1) ?? null;
+  const responseModel = value.model.toLowerCase();
+  if (
+    value.model !== model.upstreamModelId &&
+    (!openRouterModel || responseModel !== openRouterModel) &&
+    (!openRouterSlug || responseModel !== openRouterSlug)
+  ) {
     throw new EmbeddingAdapterError("embedding_response_model_mismatch");
   }
   return {

@@ -3,6 +3,7 @@ import { listAdminDashboard } from "./adminDashboardQueries";
 import { createAdminGroupGrantCommands } from "./adminGroupGrantCommands";
 import { createAdminInviteRuleCommands } from "./adminInviteRuleCommands";
 import type { AdminRepository } from "./adminRepositoryContract";
+import type { AccountMemoryDeletionRegistry } from "../memory/accountDeletion/registry";
 import { createAdminUserSessionCommands } from "./adminUserSessionCommands";
 
 export type {
@@ -42,9 +43,14 @@ export type {
   AdminUserRecord
 } from "./adminRepositoryContract";
 
-export function createPrismaAdminRepository(prisma: PrismaClient): AdminRepository {
+export function createPrismaAdminRepository(
+  prisma: PrismaClient,
+  options: Readonly<{
+    accountMemoryDeletionRegistry?: AccountMemoryDeletionRegistry;
+  }> = {}
+): AdminRepository {
   return {
-    ...createAdminUserSessionCommands(prisma),
+    ...createAdminUserSessionCommands(prisma, options),
     ...createAdminGroupGrantCommands(prisma),
     ...createAdminInviteRuleCommands(prisma),
     async findAdminUser(userId) {

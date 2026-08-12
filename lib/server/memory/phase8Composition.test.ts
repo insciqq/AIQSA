@@ -1,0 +1,166 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  createPermanentChatDeleteAdmissionHandler,
+  type PermanentChatDeletionHandlerDeps
+} from "../chats/permanentDeletion/handlers";
+import { AccountMemoryDeletionRegistry } from "./accountDeletion/registry";
+import { MemoryCoordinatorRegistry } from "./coordinator/registry";
+import type { MemoryDeletionHandler } from "./coordinator/types";
+import { createMemoryPhase8Composition } from "./phase8Composition";
+
+function handler(
+  operation: "ACCOUNT_MEMORY_DELETE" | "SOURCE_PURGE"
+): MemoryDeletionHandler {
+  return Object.freeze({
+    execute: vi.fn(async () => ({})),
+    operation
+  });
+}
+
+function composition(
+  policy: Readonly<{ account: boolean; permanent: boolean }> = {
+    account: true,
+    permanent: true
+  }
+) {
+  const accountRegistry = new AccountMemoryDeletionRegistry();
+  const coordinatorRegistry = new MemoryCoordinatorRegistry();
+  const accountDeletionHandler = handler("ACCOUNT_MEMORY_DELETE");
+  const sourcePurgeHandler = handler("SOURCE_PURGE");
+  const created = createMemoryPhase8Composition({
+    accountDeletionHandler,
+    accountRegistry,
+    coordinatorRegistry,
+    createAccountHook: ({ admissionEnabled, kick }) => ({
+      advance: vi.fn(async () => ({
+        admitted: admissionEnabled(),
+        readyForUserDeletion: false
+      })),
+      kick
+    }),
+    kick: vi.fn(),
+    policy: {
+      accountMemoryDeletion: {
+        get enabled() { return policy.account; }
+      },
+      permanentChatDeletion: {
+        get enabled() { return policy.permanent; }
+      }
+    },
+    sourcePurgeHandler
+  });
+  return {
+    accountDeletionHandler,
+    accountRegistry,
+    coordinatorRegistry,
+    created,
+    sourcePurgeHandler
+  };
+}
+
+describe("Phase 8 Memory composition", () => {
+  it("is feature-dark before composition and atomically exposes each owner once", () => {
+    const fixture = composition();
+    expect(fixture.created.status()).toEqual({
+      accountAdmissionEnabled: false,
+      accountHandlerReachable: false,
+      accountHookReachable: false,
+      composed: false,
+      permanentChatAdmissionEnabled: false,
+      sourcePurgeHandlerReachable: false
+    });
+    expect(fixture.created.permanentChatDeletionCapability.enabled).toBe(false);
+
+    expect(fixture.created.ensure()).toMatchObject({
+      accountAdmissionEnabled: true,
+      composed: true,
+      permanentChatAdmissionEnabled: true
+    });
+    expect(fixture.created.ensure()).toMatchObject({ composed: true });
+    expect(fixture.coordinatorRegistry.deletionOperations()).toEqual([
+      "SOURCE_PURGE",
+      "ACCOUNT_MEMORY_DELETE"
+    ]);
+    expect(fixture.created.permanentChatDeletionCapability.enabled).toBe(true);
+  });
+
+  it("fails closed on a conflicting leaf without partially registering owners", () => {
+    const fixture = composition();
+    fixture.coordinatorRegistry.registerDeletion(handler("SOURCE_PURGE"));
+
+    expect(() => fixture.created.ensure()).toThrow(
+      "memory_phase8_source_handler_conflict"
+    );
+    expect(fixture.coordinatorRegistry.deletionHandler("ACCOUNT_MEMORY_DELETE"))
+      .toBeNull();
+    expect(fixture.accountRegistry.current()).toBeNull();
+    expect(fixture.created.permanentChatDeletionCapability.enabled).toBe(false);
+  });
+
+  it("allows accepted obligations to remain reachable when new admission rolls back", async () => {
+    const policy = { account: true, permanent: true };
+    const fixture = composition(policy);
+    fixture.created.ensure();
+    policy.account = false;
+    policy.permanent = false;
+
+    expect(fixture.created.status()).toMatchObject({
+      accountAdmissionEnabled: false,
+      accountHandlerReachable: true,
+      accountHookReachable: true,
+      permanentChatAdmissionEnabled: false,
+      sourcePurgeHandlerReachable: true
+    });
+    expect(fixture.coordinatorRegistry.deletionHandler("SOURCE_PURGE"))
+      .toBe(fixture.sourcePurgeHandler);
+    expect(fixture.coordinatorRegistry.deletionHandler("ACCOUNT_MEMORY_DELETE"))
+      .toBe(fixture.accountDeletionHandler);
+    await expect(fixture.accountRegistry.current()!.advance({} as never, {
+      now: new Date("2026-08-12T12:00:00.000Z"),
+      userId: "owner-1"
+    })).resolves.toEqual({ admitted: false, readyForUserDeletion: false });
+  });
+
+  it("keeps the direct permanent-delete API zero-mutation until composition", async () => {
+    const policy = { account: true, permanent: true };
+    const fixture = composition(policy);
+    const admit = vi.fn(async () => ({
+      deletionId: "deletion-1",
+      fencedAt: "2026-08-12T12:00:00.000Z",
+      state: "PENDING" as const
+    }));
+    const handler = createPermanentChatDeleteAdmissionHandler({
+      capability: fixture.created.permanentChatDeletionCapability,
+      mutationRateLimiter: {
+        check: vi.fn(async () => ({ allowed: true as const }))
+      },
+      resolveAuth: vi.fn(async () => ({ userId: "owner-1" })),
+      service: { admit }
+    } as unknown as PermanentChatDeletionHandlerDeps);
+    const request = () => new Request(
+      "https://example.test/api/chats/chat-1/delete-permanently",
+      {
+        body: JSON.stringify({
+          alsoForgetOriginMemories: false,
+          expectedActiveLeafMessageId: "message-1",
+          expectedChatRevision: 1,
+          mutationAuthorizationId: "authorization-1"
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      }
+    );
+    const context = { params: { chatId: "chat-1" } };
+
+    expect((await handler(request(), context)).status).toBe(503);
+    expect(admit).not.toHaveBeenCalled();
+
+    fixture.created.ensure();
+    expect((await handler(request(), context)).status).toBe(202);
+    expect(admit).toHaveBeenCalledOnce();
+
+    policy.permanent = false;
+    expect((await handler(request(), context)).status).toBe(503);
+    expect(admit).toHaveBeenCalledOnce();
+  });
+});

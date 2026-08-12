@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import {
-  MEMORY_CONFIRMATION_COPY_VERSION,
-  type MemoryMutationAuthorizationInput
+  MEMORY_CONFIRMATION_COPY_VERSION
 } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
@@ -13,16 +12,13 @@ import { createPrismaRunRepository } from "../../runs/prismaRepository";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import type { MemoryDeletionClaim } from "../coordinator/types";
 import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
-import {
-  createExplicitMemoryService,
-  ExplicitMemoryServiceError
-} from "../explicit/service";
+import { createExplicitMemoryService } from "../explicit/service";
 import { createPrismaMemoryMutationAuthorizationRepository } from "../persistence/authorizations";
 import {
   createPrismaMemoryFactRepository,
   type MemoryFactValueInput
 } from "../persistence/facts";
-import { memorySha256 } from "../persistence/lexical";
+import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import {
   MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS
@@ -34,6 +30,11 @@ import {
   MemoryDeletionContributorRegistry
 } from "../purge/registry";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
+import {
+  createPrismaMemoryFeedbackRepository,
+  memoryFeedbackIdempotencyFingerprint
+} from "../review/feedbackRepository";
+import { createMemoryReviewService } from "../review/service";
 import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_EXTRACTION_POLICY_VERSION,
@@ -82,24 +83,32 @@ async function createActiveUser(label: string): Promise<string> {
 }
 
 async function cleanupUsers(userIds: readonly string[]): Promise<void> {
+  await prisma.memoryProfileProjectionFact.deleteMany({
+    where: { userId: { in: [...userIds] } }
+  });
   await prisma.memoryDeletionOutbox.deleteMany({
     where: { userId: { in: [...userIds] } }
   });
   await prisma.user.deleteMany({ where: { id: { in: [...userIds] } } });
 }
 
-function services(registry: MemoryDeletionContributorRegistry) {
+function services(
+  registry: MemoryDeletionContributorRegistry,
+  clock?: () => Date
+) {
   const authorizationRepository =
     createPrismaMemoryMutationAuthorizationRepository(prisma);
   const readRepository = createPrismaExplicitMemoryRepository(prisma);
   const explicit = createExplicitMemoryService({
     authorizationRepository,
+    ...(clock ? { clock } : {}),
     factRepository: createPrismaMemoryFactRepository(keyring, prisma),
     readRepository,
     scopeRepository: createPrismaMemoryScopeRepository(prisma)
   });
   const lifecycle = createMemoryLifecycleService({
     authorizationRepository,
+    ...(clock ? { clock } : {}),
     mutationRepository: createPrismaMemoryLifecycleRepository(
       keyring,
       registry,
@@ -551,7 +560,8 @@ async function createAcceptedReceiptDerivatives(input: Readonly<{
 
 async function expectAcceptedReceiptDerivatives(
   receipt: AcceptedReceiptDerivatives,
-  historyState: "RETAINED" | "SCRUBBED"
+  historyState: "RETAINED" | "SCRUBBED",
+  attemptItemState: "PRESENT" | "PURGED" = "PRESENT"
 ): Promise<void> {
   const history = await prisma.memoryHistoryRun.findUniqueOrThrow({
     where: { id: receipt.historyRunId }
@@ -589,9 +599,15 @@ async function expectAcceptedReceiptDerivatives(
   await expect(prisma.memoryRetrievalAttempt.findUniqueOrThrow({
     where: { id: receipt.attemptId }
   })).resolves.toMatchObject({ outcome: "USED", state: "CONSUMED" });
-  await expect(prisma.memoryRetrievalAttemptItem.findUniqueOrThrow({
-    where: { id: receipt.attemptItemId }
-  })).resolves.toMatchObject({ exactSafeText: receipt.marker });
+  if (attemptItemState === "PURGED") {
+    await expect(prisma.memoryRetrievalAttemptItem.findUnique({
+      where: { id: receipt.attemptItemId }
+    })).resolves.toBeNull();
+  } else {
+    await expect(prisma.memoryRetrievalAttemptItem.findUniqueOrThrow({
+      where: { id: receipt.attemptItemId }
+    })).resolves.toMatchObject({ exactSafeText: receipt.marker });
+  }
   await expect(prisma.modelRunMemoryBinding.findUniqueOrThrow({
     where: { id: receipt.bindingId }
   })).resolves.toMatchObject({ outcome: "USED" });
@@ -635,6 +651,10 @@ async function claimDeletion(
     where: { id: deletionId }
   });
   return {
+    admissionAuthorizationId: row.admissionAuthorizationId,
+    admittedActiveLeafMessageId: row.admittedActiveLeafMessageId,
+    admittedChatSourceRevision: row.admittedChatSourceRevision,
+    alsoForgetOriginMemories: row.alsoForgetOriginMemories,
     attemptCount: row.attemptCount,
     claimToken,
     id: deletionId,
@@ -686,6 +706,77 @@ function automaticValue(
     sourceMode: "AUTOMATIC",
     structuredValue: { statement }
   };
+}
+
+async function makeConflictedFact(
+  userId: string,
+  factId: string,
+  firstVersionId: string
+): Promise<readonly [string, string]> {
+  const secondVersionId = randomUUID();
+  const eventId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET CONSTRAINTS ALL DEFERRED`;
+    const first = await tx.memoryFactVersion.findFirstOrThrow({
+      where: { factId, id: firstVersionId, userId }
+    });
+    await tx.memoryEvent.create({
+      data: {
+        actorType: "SYSTEM",
+        factId,
+        factVersionId: secondVersionId,
+        id: eventId,
+        metadata: { schemaVersion: "memory-conflict-forget-test-v1" },
+        operation: "CONFLICT",
+        userId
+      }
+    });
+    await tx.memoryFactVersion.update({
+      data: { state: "CONFLICTING" },
+      where: { id: firstVersionId }
+    });
+    await tx.memoryFactVersion.create({
+      data: {
+        category: first.category,
+        confidence: first.confidence,
+        createdByEventId: eventId,
+        directness: first.directness,
+        displayText: "I prefer long technical explanations.",
+        factId,
+        id: secondVersionId,
+        importance: first.importance,
+        languageCode: first.languageCode,
+        modality: first.modality,
+        normalizedSearchText: "i prefer long technical explanations",
+        pipelineVersion: "memory-conflict-forget-test-v1",
+        rawTemporalExpression: first.rawTemporalExpression,
+        sensitivityClass: first.sensitivityClass,
+        sourceMode: "AUTOMATIC",
+        sourceTimezone: first.sourceTimezone,
+        state: "CONFLICTING",
+        structuredValue: first.structuredValue as Prisma.InputJsonValue,
+        systemFrom: new Date(first.systemFrom.getTime() + 1),
+        temporalResolverVersion: first.temporalResolverVersion,
+        ...(first.temporalResolutionEvidence === null
+          ? {}
+          : {
+              temporalResolutionEvidence:
+                first.temporalResolutionEvidence as Prisma.InputJsonValue
+            }),
+        userId,
+        validFrom: first.validFrom,
+        validTo: first.validTo
+      }
+    });
+    await tx.memoryFact.update({
+      data: { currentVersionId: null, state: "CONFLICTED" },
+      where: { id: factId }
+    });
+    await tx.memorySearchEntry.deleteMany({
+      where: { factVersionId: firstVersionId, userId }
+    });
+  });
+  return [firstVersionId, secondVersionId];
 }
 
 function upgradedRegistry(): MemoryDeletionContributorRegistry {
@@ -749,6 +840,14 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       );
       const factId = created.memory.id;
       const versionId = created.memory.currentVersionId!;
+      const feedback = await createMemoryReviewService(
+        createPrismaMemoryFeedbackRepository(prisma)
+      ).feedback(ownerUserId, factId, {
+        comment: "This fact should be removed with its private feedback.",
+        expectedVersionId: versionId,
+        feedbackType: "NOT_USEFUL",
+        requestId: randomUUID()
+      });
       const attempt = await createUnacceptedAttemptItem({
         factVersionId: versionId,
         statement,
@@ -790,10 +889,17 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         pinned: false,
         versionState: "FORGOTTEN"
       });
+      const fencedDetail = await explicit.get(ownerUserId, factId);
+      expect(fencedDetail.feedback).toEqual([]);
+      expect(fencedDetail.versions.every(({ displayText }) => displayText === null)).toBe(true);
+      await expect(explicit.evidence(ownerUserId, factId, null)).resolves.toEqual({
+        evidence: [],
+        nextCursor: null
+      });
       const claimedDeletion = await prisma.memoryDeletionOutbox.findFirstOrThrow({
         where: { operation: "FORGET_PURGE", userId: ownerUserId }
       });
-      const failedAt = new Date("2026-08-10T11:58:00.000Z");
+      const failedAt = new Date(Date.parse(forgotten.undo.expiresAt) + 1_000);
       const failedClaim = await claimDeletion(
         ownerUserId,
         claimedDeletion.id,
@@ -857,7 +963,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       );
       expect(pending).toMatchObject({
         lastAuditAt: expect.any(Date),
-        progress: { completedUnits: 2, totalUnits: 6 },
+        progress: { completedUnits: 6, totalUnits: 11 },
         state: "RUNNING",
       });
 
@@ -902,6 +1008,14 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         proposedDisplayText: statement,
         state: "PENDING"
       });
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({
+        where: { id: feedback.feedbackId }
+      })).resolves.toMatchObject({
+        comment: "This fact should be removed with its private feedback.",
+        contentPurgedAt: null,
+        memoryFactId: factId,
+        memoryFactVersionId: versionId
+      });
       await expect(createPrismaMemoryCoordinatorRepository(prisma).retryDeletion({
         blocked: false,
         claim: failedClaim,
@@ -923,7 +1037,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T12:00:01.000Z")
       );
       expect(succeeded).toMatchObject({
-        progress: { completedUnits: 6, totalUnits: 6 },
+        progress: { completedUnits: 11, totalUnits: 11 },
         state: "SUCCEEDED",
       });
 
@@ -977,6 +1091,16 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       await expect(prisma.memoryCandidateMessage.count({
         where: { candidateId, userId: ownerUserId }
       })).resolves.toBe(0);
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({
+        where: { id: feedback.feedbackId }
+      })).resolves.toMatchObject({
+        comment: null,
+        contentPurgedAt: expect.any(Date),
+        memoryEventId: null,
+        memoryFactId: null,
+        memoryFactVersionId: null,
+        purgeReason: "fact_forgotten"
+      });
 
       const delayedCandidateId = await createFactCandidateFixture({
         activeLeafMessageId: attempt.assistantMessageId,
@@ -986,6 +1110,44 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         messageId: attempt.messageId,
         userId: ownerUserId
       });
+      const delayedFeedbackId = randomUUID();
+      const delayedFeedbackRequestId = randomUUID();
+      const delayedFeedbackEventId = randomUUID();
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryEvent.create({
+          data: {
+            actorType: "USER",
+            actorUserId: ownerUserId,
+            factId,
+            factVersionId: versionId,
+            id: delayedFeedbackEventId,
+            metadata: {
+              feedbackId: delayedFeedbackId,
+              feedbackType: "INCORRECT",
+              schemaVersion: "memory-feedback-event-v1"
+            },
+            operation: "USER_FEEDBACK",
+            userId: ownerUserId
+          }
+        });
+        await tx.memoryFeedback.create({
+          data: {
+            comment: "Late feedback attached after the old obligation completed.",
+            feedbackType: "INCORRECT",
+            id: delayedFeedbackId,
+            idempotencyFingerprint: memoryFeedbackIdempotencyFingerprint(
+              ownerUserId,
+              delayedFeedbackRequestId
+            ),
+            memoryEventId: delayedFeedbackEventId,
+            memoryFactId: factId,
+            memoryFactVersionId: versionId,
+            requestId: delayedFeedbackRequestId,
+            targetKind: "FACT_VERSION",
+            userId: ownerUserId
+          }
+        });
+      });
       const replayed = await auditMemoryDeletion(
         registry,
         deletion.id,
@@ -994,7 +1156,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T12:00:02.000Z")
       );
       expect(replayed).toMatchObject({
-        progress: { completedUnits: 5, complete: false, totalUnits: 6 },
+        progress: { completedUnits: 9, complete: false, totalUnits: 11 },
         state: "PENDING"
       });
       await commitDeletion(
@@ -1009,6 +1171,15 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         contentPurgedAt: expect.any(Date),
         proposedDisplayText: null,
         state: "STALE"
+      });
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({
+        where: { id: delayedFeedbackId }
+      })).resolves.toMatchObject({
+        comment: null,
+        contentPurgedAt: expect.any(Date),
+        memoryFactId: null,
+        memoryFactVersionId: null,
+        purgeReason: "fact_forgotten"
       });
 
       const scope = await createPrismaMemoryScopeRepository(prisma)
@@ -1055,7 +1226,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T12:02:00.000Z")
       );
       expect(reopened).toMatchObject({
-        progress: { completedUnits: 6, complete: false, totalUnits: 7 },
+        progress: { completedUnits: 11, complete: false, totalUnits: 12 },
         state: "PENDING"
       });
       await commitDeletion(
@@ -1072,7 +1243,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T12:04:00.000Z")
       );
       expect(upgradedStatus).toMatchObject({
-        progress: { completedUnits: 7, complete: true, totalUnits: 7 },
+        progress: { completedUnits: 12, complete: true, totalUnits: 12 },
         state: "SUCCEEDED"
       });
       await expect(explicit.get(ownerUserId, factId)).resolves.toMatchObject({
@@ -1084,6 +1255,166 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       });
     } finally {
       await cleanupUsers([ownerUserId, foreignUserId]);
+    }
+  });
+
+  it("keeps the fence active during the bounded window and atomically cancels purge on Undo", async () => {
+    const registry = phase2Registry();
+    const userId = await createActiveUser("forget-undo");
+    const now = new Date();
+    const { explicit, lifecycle } = services(registry, () => now);
+    const statement = "I prefer aisle seats on daytime flights.";
+    try {
+      const created = await saveExplicit(explicit, userId, statement, "undo-save");
+      const factId = created.memory.id;
+      const versionId = created.memory.currentVersionId!;
+      const authorization = await explicit.mintAuthorization(userId, {
+        action: "FORGET",
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expectedTargetVersionId: versionId,
+        requestNonce: "undo-forget",
+        targetFactId: factId
+      });
+
+      const forgotten = await lifecycle.forget(userId, factId, {
+        expectedVersionId: versionId,
+        mutationAuthorizationId: authorization.mutationAuthorizationId
+      });
+      const expiresAt = new Date(forgotten.undo.expiresAt);
+      expect(expiresAt.getTime() - now.getTime()).toBe(60_000);
+      await expect(explicit.search(userId, {
+        pageSize: 20,
+        query: statement,
+        scope: { type: "GLOBAL_USER" },
+        state: "ACTIVE"
+      })).resolves.toMatchObject({ memories: [] });
+      await expect(createPrismaMemoryCoordinatorRepository(prisma).claimDeletion({
+        claimToken: randomUUID(),
+        leaseExpiresAt: new Date(expiresAt.getTime() + 60_000),
+        now: new Date(expiresAt.getTime() - 1),
+        operations: ["FORGET_PURGE"]
+      })).resolves.toBeNull();
+
+      const undoAuthorization = await explicit.mintAuthorization(userId, {
+        action: "SAVE",
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        exactStatementHash: memorySha256(statement),
+        requestNonce: "undo-restore"
+      });
+      const restored = await explicit.undoForget(userId, factId, {
+        deletionId: forgotten.undo.deletionId,
+        mutationAuthorizationId: undoAuthorization.mutationAuthorizationId
+      });
+      expect(restored.memory).toMatchObject({
+        displayText: statement,
+        factState: "ACTIVE",
+        id: factId,
+        sourceMode: "EXPLICIT"
+      });
+      expect(restored.memory.currentVersionId).not.toBe(versionId);
+      await expect(prisma.memoryDeletionOutbox.findUniqueOrThrow({
+        where: { id: forgotten.undo.deletionId }
+      })).resolves.toMatchObject({
+        completedAt: expect.any(Date),
+        errorCode: "memory_purge_cancelled_by_undo",
+        nextAttemptAt: null,
+        state: "CANCELLED"
+      });
+      await expect(createPrismaMemoryCoordinatorRepository(prisma).claimDeletion({
+        claimToken: randomUUID(),
+        leaseExpiresAt: new Date(expiresAt.getTime() + 120_000),
+        now: new Date(expiresAt.getTime() + 60_000),
+        operations: ["FORGET_PURGE"]
+      })).resolves.toBeNull();
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: versionId }
+      })).resolves.toMatchObject({
+        contentPurgedAt: null,
+        displayText: statement,
+        state: "FORGOTTEN"
+      });
+    } finally {
+      await cleanupUsers([userId]);
+    }
+  });
+
+  it("routes conflict Forget through the common fence and purges every claim", async () => {
+    const registry = phase2Registry();
+    const userId = await createActiveUser("conflict-forget");
+    const { explicit, lifecycle } = services(registry);
+    try {
+      const created = await saveExplicit(
+        explicit,
+        userId,
+        "I prefer concise technical explanations.",
+        "conflict-forget-save"
+      );
+      const factId = created.memory.id;
+      const versionIds = [...await makeConflictedFact(
+        userId,
+        factId,
+        created.memory.currentVersionId!
+      )].sort();
+      const feedback = await createMemoryReviewService(
+        createPrismaMemoryFeedbackRepository(prisma)
+      ).feedback(userId, factId, {
+        comment: "Forget the unresolved conflict and this note.",
+        expectedVersionId: versionIds[1]!,
+        feedbackType: "INCORRECT",
+        requestId: randomUUID()
+      });
+      const authorization = await explicit.mintAuthorization(userId, {
+        action: "FORGET",
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expectedTargetVersionId: versionIds[0]!,
+        requestNonce: "conflict-forget-authorize",
+        targetFactId: factId
+      });
+
+      const forgotten = await lifecycle.forget(userId, factId, {
+        expectedVersionId: versionIds[0]!,
+        mutationAuthorizationId: authorization.mutationAuthorizationId
+      });
+      expect(forgotten.memory).toMatchObject({
+        currentVersionId: null,
+        displayText: null,
+        factState: "FORGOTTEN",
+        id: factId
+      });
+      await expect(prisma.memoryFactVersion.findMany({
+        select: { id: true, state: true },
+        where: { factId, userId }
+      })).resolves.toEqual(expect.arrayContaining(versionIds.map((id) => ({
+        id,
+        state: "FORGOTTEN"
+      }))));
+
+      const deletion = await prisma.memoryDeletionOutbox.findFirstOrThrow({
+        where: { operation: "FORGET_PURGE", targetId: factId, userId }
+      });
+      await commitDeletion(
+        registry,
+        userId,
+        deletion.id,
+        new Date(Date.now() + 1_000)
+      );
+      const purgedVersions = await prisma.memoryFactVersion.findMany({
+        where: { factId, userId }
+      });
+      expect(purgedVersions).toHaveLength(2);
+      expect(purgedVersions.every((version) =>
+        version.contentPurgedAt !== null && version.displayText === null)).toBe(true);
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({
+        where: { id: feedback.feedbackId }
+      })).resolves.toMatchObject({
+        comment: null,
+        contentPurgedAt: expect.any(Date),
+        memoryFactId: null,
+        memoryFactVersionId: null,
+        purgeReason: "fact_forgotten"
+      });
+    } finally {
+      await cleanupUsers([userId]);
     }
   });
 
@@ -1241,7 +1572,261 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
     }
   });
 
-  it("binds DELETE_EXPLICIT to exact counters and rejects later bulk variants", async () => {
+  it("fences, purges, and prevents resurrection of the admitted learned set", async () => {
+    const registry = phase2Registry();
+    const userId = await createActiveUser("delete-learned");
+    const cutoff = new Date(Date.now() + 1_000);
+    const { explicit, lifecycle } = services(registry, () => cutoff);
+    const facts = createPrismaMemoryFactRepository(keyring, prisma);
+    const statement = "I prefer window seats on daytime trains.";
+    try {
+      const retainedExplicit = await saveExplicit(
+        explicit,
+        userId,
+        "My saved home airport is SVO.",
+        "delete-learned-explicit"
+      );
+      const chat = await prisma.chat.create({
+        data: {
+          defaultProviderModelId: providerTemplateIds.fakeModel,
+          title: "Retained learned-delete source",
+          userId
+        }
+      });
+      const oldMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent(statement),
+          createdAt: new Date(cutoff.getTime() - 60_000),
+          role: "user",
+          status: "complete"
+        }
+      });
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const learned = await facts.save(userId, {
+        evidence: {
+          branchGeneration: 0,
+          chatId: chat.id,
+          kind: "MESSAGE",
+          messageId: oldMessage.id,
+          observedAt: oldMessage.createdAt,
+          safeExcerpt: statement,
+          safeSourceHash: memorySha256(statement),
+          safetyClass: "NORMAL",
+          sourceProjectionVersion: "memory-delete-learned-test-v1",
+          sourceRole: "user"
+        },
+        explicitSuppressionOverride: false,
+        idempotencyFingerprint: memorySha256({ operation: "learned-before-delete" }),
+        requestId: randomUUID(),
+        scopeId: scope.id,
+        value: automaticValue("learned.travel.seat", statement)
+      });
+      const review = createMemoryReviewService(
+        createPrismaMemoryFeedbackRepository(prisma)
+      );
+      const feedback = await review.feedback(userId, learned.factId, {
+        comment: "Remove this learned note with its fact.",
+        expectedVersionId: learned.versionId,
+        feedbackType: "NOT_USEFUL",
+        requestId: randomUUID()
+      });
+      const candidateId = await createFactCandidateFixture({
+        activeLeafMessageId: oldMessage.id,
+        canonicalKey: "learned.travel.seat.pending",
+        chatId: chat.id,
+        displayText: "I may prefer aisle seats on overnight trains.",
+        messageId: oldMessage.id,
+        userId
+      });
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const delayedJob = await prisma.memoryJob.create({
+        data: {
+          activeLeafMessageId: oldMessage.id,
+          branchGeneration: 0,
+          chatId: chat.id,
+          idempotencyFingerprint: memorySha256({ operation: "delayed-extraction" }),
+          kind: "EXTRACT_FACTS",
+          memoryGenerationSnapshot: before.memoryGeneration,
+          memoryRevisionSnapshot: before.memoryRevision,
+          pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+          sourceHash: memorySha256({ chatId: chat.id, messageId: oldMessage.id }),
+          sourceRevision: 0,
+          state: "QUEUED",
+          userId
+        }
+      });
+      const authorization = await explicit.mintAuthorization(userId, {
+        action: "BULK_DELETE",
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expectedMemoryRevision: before.memoryRevision,
+        expectedSettingsRevision: before.settingsRevision,
+        operation: "DELETE_LEARNED",
+        requestNonce: "delete-learned-current"
+      });
+      const input = {
+        expectedMemoryRevision: before.memoryRevision,
+        expectedSettingsRevision: before.settingsRevision,
+        mutationAuthorizationId: authorization.mutationAuthorizationId,
+        operation: "DELETE_LEARNED"
+      } as const;
+      const status = await lifecycle.deleteExplicit(userId, input);
+      expect(status).toMatchObject({
+        memoryGeneration: before.memoryGeneration + 1,
+        memoryRevision: before.memoryRevision + 1,
+        operation: "DELETE_LEARNED",
+        state: "PENDING"
+      });
+      await expect(lifecycle.deleteExplicit(userId, input)).resolves.toMatchObject({
+        deletionId: status.deletionId,
+        operation: "DELETE_LEARNED"
+      });
+      await expect(prisma.memoryDeletionOutbox.count({
+        where: {
+          targetType: { startsWith: "AUTOMATIC_SET@" },
+          userId
+        }
+      })).resolves.toBe(1);
+      const barrier = await prisma.memorySourceBarrier.findFirstOrThrow({
+        where: { kind: "AUTOMATIC_FACTS", userId }
+      });
+      expect(barrier.sourceCreatedAtCutoff).toEqual(cutoff);
+      await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: learned.factId } }))
+        .resolves.toMatchObject({ currentVersionId: null, state: "FORGOTTEN" });
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: learned.versionId }
+      })).resolves.toMatchObject({
+        contentPurgedAt: null,
+        displayText: statement,
+        state: "FORGOTTEN"
+      });
+      await expect(prisma.memorySearchEntry.count({
+        where: { factVersionId: learned.versionId, userId }
+      })).resolves.toBe(0);
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: delayedJob.id } }))
+        .resolves.toMatchObject({ errorCode: "memory_learned_deleted", state: "CANCELLED" });
+      await expect(explicit.get(userId, retainedExplicit.memory.id)).resolves.toMatchObject({
+        memory: {
+          currentVersionId: retainedExplicit.memory.currentVersionId,
+          displayText: "My saved home airport is SVO.",
+          factState: "ACTIVE",
+          sourceMode: "EXPLICIT"
+        }
+      });
+
+      await expect(facts.save(userId, {
+        evidence: {
+          branchGeneration: 0,
+          chatId: chat.id,
+          kind: "MESSAGE",
+          messageId: oldMessage.id,
+          observedAt: new Date(cutoff.getTime() + 1_000),
+          safeExcerpt: statement,
+          safeSourceHash: memorySha256(statement),
+          safetyClass: "NORMAL",
+          sourceProjectionVersion: "memory-delete-learned-test-v1",
+          sourceRole: "user"
+        },
+        explicitSuppressionOverride: false,
+        idempotencyFingerprint: memorySha256({ operation: "old-source-replay" }),
+        requestId: randomUUID(),
+        scopeId: scope.id,
+        value: automaticValue("learned.travel.old-replay", statement)
+      })).rejects.toMatchObject({ code: "memory_fact_suppressed" });
+
+      const futureStatement = "I now prefer aisle seats on daytime trains.";
+      const futureMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent(futureStatement),
+          createdAt: new Date(cutoff.getTime() + 1_000),
+          parentMessageId: oldMessage.id,
+          role: "user",
+          status: "complete"
+        }
+      });
+      const futureLearned = await facts.save(userId, {
+        evidence: {
+          branchGeneration: 0,
+          chatId: chat.id,
+          kind: "MESSAGE",
+          messageId: futureMessage.id,
+          observedAt: futureMessage.createdAt,
+          safeExcerpt: futureStatement,
+          safeSourceHash: memorySha256(futureStatement),
+          safetyClass: "NORMAL",
+          sourceProjectionVersion: "memory-delete-learned-test-v1",
+          sourceRole: "user"
+        },
+        explicitSuppressionOverride: false,
+        idempotencyFingerprint: memorySha256({ operation: "new-source-after-delete" }),
+        requestId: randomUUID(),
+        scopeId: scope.id,
+        value: automaticValue("learned.travel.seat", futureStatement)
+      });
+      expect(futureLearned.factId).toBe(learned.factId);
+      expect(futureLearned.versionId).not.toBe(learned.versionId);
+
+      await commitDeletion(
+        registry,
+        userId,
+        status.deletionId,
+        new Date(cutoff.getTime() + 2_000)
+      );
+      await expect(lifecycle.status(userId, status.deletionId)).resolves.toMatchObject({
+        completedUnits: 11,
+        operation: "DELETE_LEARNED",
+        state: "SUCCEEDED",
+        totalUnits: 11
+      });
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: learned.versionId }
+      })).resolves.toMatchObject({
+        contentPurgedAt: expect.any(Date),
+        displayText: null,
+        structuredValue: null
+      });
+      await expect(prisma.memoryEvent.findUniqueOrThrow({
+        where: { id: learned.eventId }
+      })).resolves.toMatchObject({
+        metadata: { schemaVersion: "memory-event-purged-v1" },
+        sourceChatId: null,
+        sourceGeneration: null
+      });
+      await expect(prisma.memoryCandidate.findUniqueOrThrow({
+        where: { id: candidateId }
+      })).resolves.toMatchObject({
+        contentPurgedAt: expect.any(Date),
+        proposedDisplayText: null,
+        reasonCode: "learned_delete",
+        state: "STALE"
+      });
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({
+        where: { id: feedback.feedbackId }
+      })).resolves.toMatchObject({
+        comment: null,
+        contentPurgedAt: expect.any(Date),
+        memoryFactId: null,
+        memoryFactVersionId: null,
+        purgeReason: "learned_delete"
+      });
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: futureLearned.versionId }
+      })).resolves.toMatchObject({
+        contentPurgedAt: null,
+        displayText: futureStatement,
+        state: "ACTIVE"
+      });
+      await expect(prisma.message.findUniqueOrThrow({ where: { id: oldMessage.id } }))
+        .resolves.toMatchObject({ content: textMessageContent(statement) });
+    } finally {
+      await cleanupUsers([userId]);
+    }
+  });
+
+  it("binds DELETE_EXPLICIT to exact counters and preserves post-admission data", async () => {
     const registry = phase2Registry();
     const userId = await createActiveUser("bulk");
     const { explicit, lifecycle } = services(registry);
@@ -1252,6 +1837,19 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         userId,
         retainedStatement,
         "bulk-a"
+      );
+      const review = createMemoryReviewService(
+        createPrismaMemoryFeedbackRepository(prisma)
+      );
+      const retainedFeedback = await review.feedback(
+        userId,
+        retainedFact.memory.id,
+        {
+          comment: "Delete this private note with the admitted explicit set.",
+          expectedVersionId: retainedFact.memory.currentVersionId!,
+          feedbackType: "NOT_USEFUL",
+          requestId: randomUUID()
+        }
       );
       await saveExplicit(explicit, userId, "I prefer compact answers.", "bulk-b");
       const staleSettings = await prisma.userMemorySettings.findUniqueOrThrow({
@@ -1342,6 +1940,16 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         "I added this explicit memory after bulk admission.",
         "bulk-after-admission"
       );
+      const postAdmissionFeedback = await review.feedback(
+        userId,
+        postAdmission.memory.id,
+        {
+          comment: "This post-admission feedback must remain.",
+          expectedVersionId: postAdmission.memory.currentVersionId!,
+          feedbackType: "NOT_USEFUL",
+          requestId: randomUUID()
+        }
+      );
       await expect(lifecycle.status(userId, status.deletionId)).resolves.toMatchObject({
         memoryGeneration: status.memoryGeneration,
         memoryRevision: status.memoryRevision,
@@ -1362,10 +1970,10 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         new Date("2026-08-10T13:00:00.000Z")
       );
       await expect(lifecycle.status(userId, status.deletionId)).resolves.toMatchObject({
-        completedUnits: 6,
+        completedUnits: 11,
         memoryRevision: status.memoryRevision,
         state: "SUCCEEDED",
-        totalUnits: 6
+        totalUnits: 11
       });
       await expect(prisma.memoryCandidate.findUniqueOrThrow({
         where: { id: candidateId }
@@ -1377,6 +1985,23 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       await expect(prisma.memoryCandidateMessage.count({
         where: { candidateId, userId }
       })).resolves.toBe(0);
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({
+        where: { id: retainedFeedback.feedbackId }
+      })).resolves.toMatchObject({
+        comment: null,
+        contentPurgedAt: expect.any(Date),
+        memoryFactId: null,
+        memoryFactVersionId: null,
+        purgeReason: "explicit_delete"
+      });
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({
+        where: { id: postAdmissionFeedback.feedbackId }
+      })).resolves.toMatchObject({
+        comment: "This post-admission feedback must remain.",
+        contentPurgedAt: null,
+        memoryFactId: postAdmission.memory.id,
+        memoryFactVersionId: postAdmission.memory.currentVersionId
+      });
       await expectAcceptedReceiptDerivatives(receipt, "RETAINED");
       await expect(auditMemoryDeletion(
         registry,
@@ -1396,25 +2021,503 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
           factState: "ACTIVE"
         }
       });
-
-      for (const operation of [
-        "DELETE_ALL_REUSABLE",
-        "DELETE_LEARNED"
-      ] as const) {
-        const input: MemoryMutationAuthorizationInput = {
-          action: "BULK_DELETE",
-          confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-          expectedMemoryRevision: current.memoryRevision + 1,
-          expectedSettingsRevision: current.settingsRevision,
-          operation,
-          requestNonce: `unsupported-${operation}`
-        };
-        await expect(explicit.mintAuthorization(userId, input)).rejects.toEqual(
-          new ExplicitMemoryServiceError("memory_operation_unsupported")
-        );
-      }
     } finally {
       await cleanupUsers([userId]);
+    }
+  });
+
+  it("fences and purges all reusable owners without rewriting retained chats or accepted runs", async () => {
+    const registry = phase2Registry();
+    const userId = await createActiveUser("all-reusable-owner");
+    const foreignUserId = await createActiveUser("all-reusable-foreign");
+    let serviceNow = new Date();
+    const cutoff = new Date(serviceNow.getTime() + 60_000);
+    const { explicit, lifecycle } = services(registry, () => serviceNow);
+    const statement = "I prefer short Russian summaries for infrastructure incidents.";
+    try {
+      const saved = await saveExplicit(
+        explicit,
+        userId,
+        statement,
+        "all-reusable-save"
+      );
+      const foreign = await saveExplicit(
+        explicit,
+        foreignUserId,
+        "Foreign memory must remain isolated.",
+        "all-reusable-foreign-save"
+      );
+      const factId = saved.memory.id;
+      const versionId = saved.memory.currentVersionId!;
+      const feedback = await createMemoryReviewService(
+        createPrismaMemoryFeedbackRepository(prisma)
+      ).feedback(userId, factId, {
+        comment: "This populated feedback must lose every private target and comment.",
+        expectedVersionId: versionId,
+        feedbackType: "NOT_USEFUL",
+        requestId: randomUUID()
+      });
+      const acceptedAttempt = await createUnacceptedAttemptItem({
+        factVersionId: versionId,
+        requestContent: statement,
+        statement,
+        userId
+      });
+      const acceptedReceipt = await createAcceptedReceiptDerivatives({
+        assistantMessageId: acceptedAttempt.assistantMessageId,
+        attemptId: acceptedAttempt.attemptId,
+        chatId: acceptedAttempt.chatId,
+        factVersionId: versionId,
+        modelRunId: acceptedAttempt.runId,
+        sourceMessageId: acceptedAttempt.messageId,
+        statement,
+        userId
+      });
+      const unacceptedAttempt = await createUnacceptedAttemptItem({
+        factVersionId: versionId,
+        requestContent: statement,
+        statement,
+        userId
+      });
+      const fact = await prisma.memoryFact.findUniqueOrThrow({
+        where: { id: factId }
+      });
+      const candidateId = await createFactCandidateFixture({
+        activeLeafMessageId: unacceptedAttempt.assistantMessageId,
+        canonicalKey: fact.canonicalKey,
+        chatId: unacceptedAttempt.chatId,
+        displayText: statement,
+        messageId: unacceptedAttempt.messageId,
+        userId
+      });
+      const candidate = await prisma.memoryCandidate.findUniqueOrThrow({
+        select: { createdByExecutionId: true },
+        where: { id: candidateId }
+      });
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const activeGeneration = await prisma.memoryIndexGeneration.findFirstOrThrow({
+        where: { id: settings.activeIndexGenerationId!, userId }
+      });
+      const sourceMessage = await prisma.message.findUniqueOrThrow({
+        where: { id: unacceptedAttempt.messageId }
+      });
+      const sourceChat = await prisma.chat.findUniqueOrThrow({
+        where: { id: unacceptedAttempt.chatId }
+      });
+      const fixtureAt = new Date();
+      const chunkId = randomUUID();
+      const episodeId = randomUUID();
+      const profileId = randomUUID();
+      const shadowGenerationId = randomUUID();
+      const sourceHash = memorySha256({
+        chatId: sourceChat.id,
+        messageId: sourceMessage.id,
+        statement
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.memoryRecallChunk.create({
+          data: {
+            branchGeneration: sourceChat.memoryBranchGeneration,
+            chatId: sourceChat.id,
+            chunkOrdinal: 0,
+            chunkingVersion: "memory-all-reusable-chunk-v1",
+            contentHash: sourceHash,
+            id: chunkId,
+            languageCode: "en",
+            normalizedSafeSearchText: normalizeMemorySearchText(statement),
+            occurredFrom: sourceMessage.createdAt,
+            occurredTo: sourceMessage.createdAt,
+            redactionReasonCodes: [],
+            redactionState: "NOT_NEEDED",
+            safeProjectedText: statement,
+            safetyClass: "NORMAL",
+            sourceProjectionVersion: "memory-all-reusable-source-v1",
+            sourceRevisionAtCreation: sourceChat.memorySourceRevision,
+            state: "ACTIVE",
+            userId
+          }
+        });
+        await tx.memoryRecallChunkMessage.create({
+          data: {
+            chatId: sourceChat.id,
+            chunkId,
+            endOffset: statement.length,
+            messageId: sourceMessage.id,
+            ordinal: 0,
+            role: "user",
+            startOffset: 0,
+            userId
+          }
+        });
+        await tx.memoryEpisode.create({
+          data: {
+            branchGeneration: sourceChat.memoryBranchGeneration,
+            chatId: sourceChat.id,
+            createdByExecutionId: candidate.createdByExecutionId,
+            entities: [],
+            extractorRole: "MEMORY_EPISODE_EXTRACT",
+            id: episodeId,
+            keywords: [],
+            languageCode: "en",
+            normalizedSafeSearchText: normalizeMemorySearchText(statement),
+            occurredFrom: sourceMessage.createdAt,
+            occurredTo: sourceMessage.createdAt,
+            pipelineVersion: "memory-all-reusable-episode-v1",
+            redactionReasonCodes: [],
+            redactionState: "NOT_NEEDED",
+            safeSummary: statement,
+            safetyClass: "NORMAL",
+            sourceHash,
+            sourceProjectionVersion: "memory-all-reusable-source-v1",
+            sourceRevisionAtCreation: sourceChat.memorySourceRevision,
+            state: "ACTIVE",
+            userId
+          }
+        });
+        await tx.memoryEpisodeMessage.create({
+          data: {
+            chatId: sourceChat.id,
+            episodeId,
+            messageId: sourceMessage.id,
+            ordinal: 0,
+            userId
+          }
+        });
+        await tx.memorySearchEntry.createMany({
+          data: [
+            {
+              embeddingState: "NOT_APPLICABLE",
+              id: randomUUID(),
+              indexGenerationId: activeGeneration.id,
+              itemType: "RECALL_CHUNK",
+              languageCode: "en",
+              recallChunkId: chunkId,
+              safeContentHash: memorySha256({ chunkId, statement }),
+              safeSearchText: statement,
+              safeSearchTextYoNormalized: normalizeMemorySearchText(statement),
+              safetyIdentitySnapshot: memorySha256({ chunkId, safety: true }),
+              sourceIdentitySnapshot: memorySha256({ chunkId, source: true }),
+              suppressionIdentitySnapshot: memorySha256({ chunkId, suppression: true }),
+              userId
+            },
+            {
+              embeddingState: "NOT_APPLICABLE",
+              episodeId,
+              id: randomUUID(),
+              indexGenerationId: activeGeneration.id,
+              itemType: "EPISODE",
+              languageCode: "en",
+              safeContentHash: memorySha256({ episodeId, statement }),
+              safeSearchText: statement,
+              safeSearchTextYoNormalized: normalizeMemorySearchText(statement),
+              safetyIdentitySnapshot: memorySha256({ episodeId, safety: true }),
+              sourceIdentitySnapshot: memorySha256({ episodeId, source: true }),
+              suppressionIdentitySnapshot: memorySha256({ episodeId, suppression: true }),
+              userId
+            }
+          ]
+        });
+        await tx.memoryRetrievalAttemptItem.create({
+          data: {
+            attemptId: unacceptedAttempt.attemptId,
+            exactItemId: chunkId,
+            exactSafeText: statement,
+            featureSnapshot: {},
+            itemType: "RECALL_CHUNK",
+            laneRanks: {},
+            ordinal: 1,
+            recallChunkId: chunkId,
+            selectionReason: "memory-all-reusable-history-fixture",
+            sourceBranchGenerationSnapshot: sourceChat.memoryBranchGeneration,
+            sourceChatIdSnapshot: sourceChat.id,
+            sourceContentHashSnapshot: sourceHash,
+            sourceRevisionSnapshot: sourceChat.memorySourceRevision,
+            sourceSnapshot: {},
+            textHash: memorySha256(statement),
+            userId,
+            versionSnapshot: {}
+          }
+        });
+        await tx.chatMemoryCheckpoint.create({
+          data: {
+            activeLeafMessageId: unacceptedAttempt.assistantMessageId,
+            branchGeneration: sourceChat.memoryBranchGeneration,
+            chatId: sourceChat.id,
+            lastDreamedMessageId: sourceMessage.id,
+            lastIndexedMessageId: sourceMessage.id,
+            lastSucceededAt: fixtureAt,
+            sourceContentHash: sourceHash,
+            sourceRevision: sourceChat.memorySourceRevision,
+            status: "READY",
+            userId
+          }
+        });
+        await tx.memoryProfileProjection.create({
+          data: {
+            asOf: fixtureAt,
+            createdAt: fixtureAt,
+            createdByExecutionId: candidate.createdByExecutionId,
+            id: profileId,
+            inputHash: memorySha256({ profileId, type: "input" }),
+            languageCode: "en",
+            memoryGeneration: settings.memoryGeneration,
+            memoryRevision: settings.memoryRevision,
+            outputHash: memorySha256({ profileId, type: "output" }),
+            projectionVersion: "memory-all-reusable-profile-v1",
+            redactionState: "NOT_NEEDED",
+            safeContentHash: memorySha256({ profileId, statement }),
+            safetyClass: "NORMAL",
+            safetyIdentitySnapshot: memorySha256({ profileId, safety: true }),
+            scopeId: fact.scopeId,
+            sourceIdentitySnapshot: memorySha256({ profileId, source: true }),
+            state: "INVALIDATED",
+            summary: statement,
+            suppressionIdentitySnapshot: memorySha256({ profileId, suppression: true }),
+            updatedAt: fixtureAt,
+            userId
+          }
+        });
+        await tx.memoryProfileProjectionFact.create({
+          data: {
+            factId,
+            factVersionContentHash: memorySha256({ statement, versionId }),
+            factVersionId: versionId,
+            ordinal: 0,
+            projectionId: profileId,
+            safetyIdentitySnapshot: memorySha256({ versionId, safety: true }),
+            sourceIdentitySnapshot: memorySha256({ versionId, source: true }),
+            suppressionIdentitySnapshot: memorySha256({ versionId, suppression: true }),
+            userId
+          }
+        });
+        await tx.memorySuppression.create({
+          data: {
+            deletionGeneration: settings.memoryGeneration,
+            explicitOverrideAllowed: false,
+            fingerprintKeyVersion: "lifecycle-v1",
+            normalizationVersion: "memory-normalization-v1",
+            scope: "ALL",
+            userId
+          }
+        });
+        await tx.memoryIndexGeneration.create({
+          data: {
+            chunkingVersion: activeGeneration.chunkingVersion,
+            createdAt: fixtureAt,
+            generation: activeGeneration.generation + 1,
+            id: shadowGenerationId,
+            indexMode: "LEXICAL_ONLY",
+            indexedThroughMemoryRevision: settings.memoryRevision,
+            languageProfile: activeGeneration.languageProfile,
+            normalizationVersion: activeGeneration.normalizationVersion,
+            retrievalPipelineVersion: activeGeneration.retrievalPipelineVersion,
+            sourceIndexGenerationId: activeGeneration.id,
+            state: "BUILDING",
+            targetMemoryRevision: settings.memoryRevision,
+            userId
+          }
+        });
+      });
+
+      serviceNow = cutoff;
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const authorization = await explicit.mintAuthorization(userId, {
+        action: "BULK_DELETE",
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expectedMemoryRevision: before.memoryRevision,
+        expectedSettingsRevision: before.settingsRevision,
+        operation: "DELETE_ALL_REUSABLE",
+        requestNonce: "delete-all-reusable-current"
+      });
+      const deleteInput = {
+        expectedMemoryRevision: before.memoryRevision,
+        expectedSettingsRevision: before.settingsRevision,
+        mutationAuthorizationId: authorization.mutationAuthorizationId,
+        operation: "DELETE_ALL_REUSABLE"
+      } as const;
+      const status = await lifecycle.deleteExplicit(userId, deleteInput);
+      expect(status).toMatchObject({
+        memoryGeneration: before.memoryGeneration + 1,
+        memoryRevision: before.memoryRevision + 1,
+        operation: "DELETE_ALL_REUSABLE",
+        settingsRevision: before.settingsRevision + 1,
+        state: "PENDING",
+        totalUnits: 11
+      });
+      await expect(lifecycle.deleteExplicit(userId, deleteInput)).resolves.toMatchObject({
+        deletionId: status.deletionId,
+        operation: "DELETE_ALL_REUSABLE"
+      });
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
+        .resolves.toMatchObject({
+          activeIndexGenerationId: null,
+          learnAutomatically: false,
+          memoryGeneration: before.memoryGeneration + 1,
+          memoryRevision: before.memoryRevision + 1,
+          referenceChatHistory: false,
+          settingsRevision: before.settingsRevision + 1,
+          useMemoryFacts: false
+        });
+      const barrier = await prisma.memorySourceBarrier.findFirstOrThrow({
+        where: { kind: "ALL_REUSABLE", userId }
+      });
+      expect(barrier.sourceCreatedAtCutoff).toEqual(cutoff);
+      await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: factId } }))
+        .resolves.toMatchObject({ currentVersionId: null, state: "FORGOTTEN" });
+      await expect(prisma.memorySearchEntry.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.chatMemoryCheckpoint.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: activeGeneration.id }
+      })).resolves.toMatchObject({ state: "SUPERSEDED" });
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: shadowGenerationId }
+      })).resolves.toMatchObject({ state: "CANCELLED" });
+
+      const crashAt = new Date(cutoff.getTime() + 1_000);
+      const crashClaim = await claimDeletion(userId, status.deletionId, crashAt);
+      const crashExecution = await registry.handler().execute(crashClaim, {
+        now: () => crashAt,
+        signal: new AbortController().signal
+      });
+      const crashApply = crashExecution.apply;
+      expect(crashApply).toBeDefined();
+      if (!crashApply) {
+        throw new Error("memory_all_reusable_apply_missing");
+      }
+      await expect(prisma.$transaction(async (tx) => {
+        await crashApply(tx, crashClaim);
+        throw new Error("memory_all_reusable_crash_fixture");
+      })).rejects.toThrow("memory_all_reusable_crash_fixture");
+      await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: factId } }))
+        .resolves.toMatchObject({ state: "FORGOTTEN" });
+      await expect(prisma.memoryCandidate.findUniqueOrThrow({ where: { id: candidateId } }))
+        .resolves.toMatchObject({ proposedDisplayText: statement });
+      await expect(createPrismaMemoryCoordinatorRepository(prisma).retryDeletion({
+        blocked: false,
+        claim: crashClaim,
+        errorCode: "memory_all_reusable_crash_fixture",
+        nextAttemptAt: new Date(cutoff.getTime() + 2_000),
+        now: crashAt
+      })).resolves.toBe(true);
+      await commitDeletion(
+        registry,
+        userId,
+        status.deletionId,
+        new Date(cutoff.getTime() + 3_000)
+      );
+
+      await expect(lifecycle.status(userId, status.deletionId)).resolves.toMatchObject({
+        completedUnits: 11,
+        operation: "DELETE_ALL_REUSABLE",
+        state: "SUCCEEDED",
+        totalUnits: 11
+      });
+      const zeroCountOwners = await Promise.all([
+        prisma.memoryFact.count({ where: { userId } }),
+        prisma.memoryFactVersion.count({ where: { userId } }),
+        prisma.memoryEvidence.count({ where: { userId } }),
+        prisma.memoryCandidate.count({ where: { userId } }),
+        prisma.memoryRecallChunk.count({ where: { userId } }),
+        prisma.memoryEpisode.count({ where: { userId } }),
+        prisma.memorySearchEntry.count({ where: { userId } }),
+        prisma.memoryProfileProjection.count({ where: { userId } }),
+        prisma.memoryJob.count({ where: { userId } }),
+        prisma.memorySuppression.count({ where: { userId } }),
+        prisma.memoryScope.count({ where: { userId } })
+      ]);
+      expect(zeroCountOwners).toEqual(Array.from({ length: 11 }, () => 0));
+      await expect(prisma.memoryRetrievalAttempt.findUnique({
+        where: { id: unacceptedAttempt.attemptId }
+      })).resolves.toBeNull();
+      await expect(prisma.memoryFeedback.findUniqueOrThrow({
+        where: { id: feedback.feedbackId }
+      })).resolves.toMatchObject({
+        comment: null,
+        contentPurgedAt: expect.any(Date),
+        memoryEventId: null,
+        memoryFactId: null,
+        memoryFactVersionId: null,
+        purgeReason: "all_reusable_delete"
+      });
+      await expect(prisma.memoryMutationAuthorization.count({
+        where: { action: { not: "BULK_DELETE" }, userId }
+      })).resolves.toBe(0);
+      await expect(prisma.memoryOperationReceipt.findMany({
+        where: { userId }
+      })).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ targetFactId: null, targetVersionId: null })
+      ]));
+
+      await expect(prisma.memoryRetrievalAttempt.findUniqueOrThrow({
+        where: { id: acceptedReceipt.attemptId }
+      })).resolves.toMatchObject({ outcome: "USED", state: "CONSUMED" });
+      await expect(prisma.memoryRetrievalAttemptItem.count({
+        where: { attemptId: acceptedReceipt.attemptId, userId }
+      })).resolves.toBe(0);
+      await expect(prisma.modelRunMemoryBinding.findUniqueOrThrow({
+        where: { id: acceptedReceipt.bindingId }
+      })).resolves.toMatchObject({ outcome: "USED" });
+      await expect(prisma.modelRunMemoryItem.findUniqueOrThrow({
+        where: { id: acceptedReceipt.memoryItemId }
+      })).resolves.toMatchObject({
+        factVersionId: null,
+        includedText: statement
+      });
+      await expectAcceptedReceiptDerivatives(acceptedReceipt, "SCRUBBED", "PURGED");
+      await expect(prisma.message.findUniqueOrThrow({
+        where: { id: acceptedAttempt.messageId }
+      })).resolves.toMatchObject({ content: textMessageContent(statement) });
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: activeGeneration.id }
+      })).resolves.toMatchObject({ state: "SUPERSEDED" });
+      await expect(prisma.memoryIndexGeneration.findUnique({
+        where: { id: shadowGenerationId }
+      })).resolves.toBeNull();
+      await expect(explicit.get(foreignUserId, foreign.memory.id)).resolves.toMatchObject({
+        memory: {
+          currentVersionId: foreign.memory.currentVersionId,
+          displayText: "Foreign memory must remain isolated.",
+          factState: "ACTIVE"
+        }
+      });
+
+      const replacementScope = await createPrismaMemoryScopeRepository(prisma)
+        .ensureGlobal(userId);
+      await expect(createPrismaMemoryFactRepository(keyring, prisma).save(userId, {
+        evidence: {
+          branchGeneration: 0,
+          chatId: acceptedAttempt.chatId,
+          kind: "MESSAGE",
+          messageId: acceptedAttempt.messageId,
+          observedAt: new Date(cutoff.getTime() + 4_000),
+          safeExcerpt: statement,
+          safeSourceHash: memorySha256(statement),
+          safetyClass: "NORMAL",
+          sourceProjectionVersion: "memory-all-reusable-source-v1",
+          sourceRole: "user"
+        },
+        explicitSuppressionOverride: false,
+        idempotencyFingerprint: memorySha256({ operation: "all-reusable-old-source-replay" }),
+        requestId: randomUUID(),
+        scopeId: replacementScope.id,
+        value: automaticValue("learned.all-reusable-replay", statement)
+      })).rejects.toMatchObject({ code: "memory_fact_suppressed" });
+      await expect(auditMemoryDeletion(
+        registry,
+        status.deletionId,
+        userId,
+        prisma,
+        new Date(cutoff.getTime() + 5_000)
+      )).resolves.toMatchObject({
+        progress: { complete: true },
+        state: "SUCCEEDED"
+      });
+    } finally {
+      await cleanupUsers([userId, foreignUserId]);
     }
   });
 });

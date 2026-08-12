@@ -1,0 +1,98 @@
+name: ${COMPOSE_PROJECT_NAME:?Set a unique aiqsa-restore-* project name}
+
+x-restore-logging: &restore-logging
+  driver: json-file
+  options:
+    max-file: "2"
+    max-size: "5m"
+
+services:
+  postgres-restore:
+    image: ghcr.io/insciqq/aiqsa-postgres:16.14-pgvector0.8.5@sha256:db8f80686e188be2abf9507d6a20d1cb230d47b1a4c8334cc7f076610b1d20ee
+    environment:
+      POSTGRES_DB: ${AIQSA_RESTORE_POSTGRES_DB:-aiqsa_restore}
+      POSTGRES_PASSWORD: ${AIQSA_RESTORE_POSTGRES_PASSWORD:?Set a disposable restore database password}
+      POSTGRES_USER: ${AIQSA_RESTORE_POSTGRES_USER:-aiqsa_restore}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    cpus: ${AIQSA_RESTORE_POSTGRES_CPU_LIMIT:-1.0}
+    logging: *restore-logging
+    mem_limit: ${AIQSA_RESTORE_POSTGRES_MEMORY_LIMIT:-1g}
+    restart: "no"
+    stop_grace_period: 60s
+    volumes:
+      - postgres_restore_data:/var/lib/postgresql/data
+
+  minio-restore:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: server /data
+    environment:
+      MINIO_ROOT_PASSWORD: ${AIQSA_RESTORE_S3_SECRET_ACCESS_KEY:?Set disposable restore object credentials}
+      MINIO_ROOT_USER: ${AIQSA_RESTORE_S3_ACCESS_KEY_ID:-aiqsa_restore}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    cpus: ${AIQSA_RESTORE_MINIO_CPU_LIMIT:-1.0}
+    logging: *restore-logging
+    mem_limit: ${AIQSA_RESTORE_MINIO_MEMORY_LIMIT:-1g}
+    restart: "no"
+    stop_grace_period: 30s
+    volumes:
+      - minio_restore_data:/data
+
+  restore-tools:
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    command: ["true"]
+    environment:
+      AIQSA_MEMORY_FINGERPRINT_KEYRING: ${AIQSA_MEMORY_FINGERPRINT_KEYRING:?Recover the Memory suppression keyring separately}
+      AIQSA_RESTORE_MINIO_SERVICE: minio-restore
+      AIQSA_RESTORE_NETWORK_ISOLATED: "YES"
+      AIQSA_RESTORE_POSTGRES_SERVICE: postgres-restore
+      AIQSA_RESTORE_RECONCILIATION: "YES"
+      ANTHROPIC_API_KEY: ""
+      CUSTOM_OPENAI_API_KEY: ""
+      DATABASE_URL: postgresql://${AIQSA_RESTORE_POSTGRES_USER:-aiqsa_restore}:${AIQSA_RESTORE_POSTGRES_PASSWORD:?Set a disposable restore database password}@postgres-restore:5432/${AIQSA_RESTORE_POSTGRES_DB:-aiqsa_restore}?schema=public
+      GEMINI_API_KEY: ""
+      GOOGLE_API_KEY: ""
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=768
+      OPENAI_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      _DEV_CUSTOM_OPENAI_API_KEY: ""
+      _DEV_CUSTOM_OPENAI_ENDPOINT: ""
+      S3_ACCESS_KEY_ID: ${AIQSA_RESTORE_S3_ACCESS_KEY_ID:-aiqsa_restore}
+      S3_BUCKET: ${AIQSA_RESTORE_BUCKET:-aiqsa-restore}
+      S3_ENDPOINT: http://minio-restore:9000
+      S3_REGION: ${AIQSA_RESTORE_S3_REGION:-us-east-1}
+      S3_SECRET_ACCESS_KEY: ${AIQSA_RESTORE_S3_SECRET_ACCESS_KEY:?Set disposable restore object credentials}
+    cpus: ${AIQSA_RESTORE_TOOLS_CPU_LIMIT:-1.0}
+    depends_on:
+      minio-restore:
+        condition: service_healthy
+      postgres-restore:
+        condition: service_healthy
+    init: true
+    logging: *restore-logging
+    mem_limit: ${AIQSA_RESTORE_TOOLS_MEMORY_LIMIT:-1g}
+    profiles:
+      - restore-tools
+    read_only: true
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=128m
+
+networks:
+  default:
+    internal: true
+
+volumes:
+  minio_restore_data:
+  postgres_restore_data:

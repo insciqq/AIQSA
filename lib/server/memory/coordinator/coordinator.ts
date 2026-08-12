@@ -11,6 +11,10 @@ import {
 } from "./policy";
 import type { MemoryCoordinatorRepository } from "./prismaRepository";
 import type { MemoryCoordinatorRegistry } from "./registry";
+import {
+  createEmptyMemorySchedulerUsageSource,
+  MemoryScheduler
+} from "./scheduler";
 import type {
   MemoryDeletionClaim,
   MemoryJobClaim,
@@ -49,6 +53,7 @@ export class MemoryCoordinator {
   readonly #registry: MemoryCoordinatorRegistry;
   readonly #repository: MemoryCoordinatorRepository;
   readonly #reconcileWork: (() => Promise<void>) | null;
+  readonly #scheduler: MemoryScheduler;
   #pending: Promise<void> | null = null;
   #rerun = false;
   #stopped = false;
@@ -60,12 +65,17 @@ export class MemoryCoordinator {
     reconcileWork?: () => Promise<void>;
     registry: MemoryCoordinatorRegistry;
     repository: MemoryCoordinatorRepository;
+    scheduler?: MemoryScheduler;
   }>) {
     this.#now = input.now ?? (() => new Date());
     this.#policy = resolveMemoryCoordinatorPolicy(input.policy);
     this.#reconcileWork = input.reconcileWork ?? null;
     this.#registry = input.registry;
     this.#repository = input.repository;
+    this.#scheduler = input.scheduler ?? new MemoryScheduler({
+      policy: this.#policy,
+      usageSource: createEmptyMemorySchedulerUsageSource()
+    });
   }
 
   start(): void {
@@ -168,29 +178,35 @@ export class MemoryCoordinator {
   }
 
   async #jobWorker(): Promise<void> {
-    while (true) {
+    let claims = 0;
+    while (claims < this.#policy.maxJobClaimsPerWorkerPass) {
       if (this.#stopped) return;
       const kinds = this.#registry.jobKinds();
       if (kinds.length === 0) return;
       const now = this.#clock();
-      let claim: MemoryJobClaim | null;
+      let claim: MemoryJobClaim | null = null;
       try {
-        claim = await this.#repository.claimJob({
-          claimToken: randomUUID(),
-          kinds,
-          leaseExpiresAt: addMilliseconds(now, this.#policy.leaseMs),
-          now
-        });
+        for (const wave of this.#scheduler.claimWaves(kinds)) {
+          claim = await this.#repository.claimJob({
+            claimToken: randomUUID(),
+            kinds: wave,
+            leaseExpiresAt: addMilliseconds(now, this.#policy.leaseMs),
+            now
+          });
+          if (claim) break;
+        }
       } catch {
         return;
       }
       if (!claim) return;
+      claims += 1;
       await this.#processJob(claim);
     }
   }
 
   async #deletionWorker(): Promise<void> {
-    while (true) {
+    let claims = 0;
+    while (claims < this.#policy.maxDeletionClaimsPerWorkerPass) {
       if (this.#stopped) return;
       const operations = this.#registry.deletionOperations();
       if (operations.length === 0) return;
@@ -207,6 +223,7 @@ export class MemoryCoordinator {
         return;
       }
       if (!claim) return;
+      claims += 1;
       await this.#processDeletion(claim);
     }
   }
@@ -256,7 +273,23 @@ export class MemoryCoordinator {
       lostCode: "memory_job_lease_lost"
     });
     let currentStage = claim.stage;
+    let releaseOwner: (() => void) | null = null;
     try {
+      const schedulerDecision = await this.#scheduler.decide(claim, this.#clock());
+      if (schedulerDecision.status === "DEFER") {
+        const accepted = await this.#repository.deferJob({
+          claim,
+          errorCode: schedulerDecision.errorCode,
+          nextAttemptAt: schedulerDecision.nextAttemptAt,
+          now: this.#clock()
+        });
+        if (!accepted) controller.abort(new Error("memory_job_lease_lost"));
+        return;
+      }
+      releaseOwner = await this.#scheduler.acquireOwner(
+        claim.userId,
+        controller.signal
+      );
       const handler = this.#registry.jobHandler(claim.kind);
       if (!handler) throw new MemoryCoordinatorError("memory_job_handler_unavailable", true);
       const decision = await handler.preflight(claim);
@@ -340,6 +373,7 @@ export class MemoryCoordinator {
         }).catch(() => false);
       }
     } finally {
+      releaseOwner?.();
       clearInterval(heartbeat);
       this.#activeControllers.delete(controller);
     }

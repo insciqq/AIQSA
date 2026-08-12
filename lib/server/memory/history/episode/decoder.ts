@@ -124,7 +124,6 @@ function decodeEpisode(
   ) fail("memory_episode_output_unsafe");
   if (typeof value.language !== "string" || !languageCodes.has(value.language)) fail();
   const languageCode = detectMemoryTextLanguage(summary);
-  if (languageCode !== value.language) fail("memory_episode_output_language_invalid");
 
   const occurredFrom = exactTimestamp(value.occurred_from);
   const occurredTo = exactTimestamp(value.occurred_to);

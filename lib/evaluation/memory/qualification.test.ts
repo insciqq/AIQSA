@@ -65,6 +65,18 @@ describe("Memory capability qualification registry", () => {
     });
   });
 
+  it("accepts the complete base64url alphabet at the start of a signature", () => {
+    const entry = qualification({
+      approval: { ...qualification().approval, signature: "-valid_signature" }
+    });
+    expect(decideMemoryCapabilityQualification({
+      now,
+      registry: [entry],
+      requirement: key(),
+      verifySignature: (_payload, signature) => signature === "-valid_signature"
+    })).toMatchObject({ code: "QUALIFIED", qualified: true });
+  });
+
   it("stales every material model, policy, schema, corpus, scorer, and vector change", () => {
     const changedRequirements: MemoryQualificationKey[] = [
       { ...key(), modelFingerprint: "model-v2" },

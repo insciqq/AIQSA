@@ -1170,7 +1170,9 @@ async function admitPreparingRunWithClient(
           "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
           "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
         FROM "Chat"
-        WHERE "id" = ${input.chatId} AND "userId" = ${input.userId}
+        WHERE "id" = ${input.chatId}
+          AND "userId" = ${input.userId}
+          AND "permanentDeletionAt" IS NULL
         FOR UPDATE
       `);
       let lockedChat = lockedChats[0];
@@ -1203,6 +1205,7 @@ async function admitPreparingRunWithClient(
           where: {
             archived: false,
             id: input.chatId,
+            permanentDeletionAt: null,
             userId: input.userId
           }
         });
@@ -1344,6 +1347,7 @@ async function admitPreparingRunWithClient(
             where: {
               archived: false,
               id: input.chatId,
+              permanentDeletionAt: null,
               title: { in: ["New Chat", "Untitled QSA"] },
               userId: input.userId
             }
@@ -1549,6 +1553,7 @@ async function lockMemoryAttemptTargets(
     WHERE "id" = ${attempt.chatId}
       AND "userId" = ${attempt.userId}
       AND "memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
+      AND "permanentDeletionAt" IS NULL
     FOR SHARE
   `);
   if (!chats[0]) {
@@ -2304,7 +2309,9 @@ async function finalizePreparingRunWithClient(
       SELECT "activeLeafMessageId", "archived", "folderId",
         "memoryMode"::text AS "memoryMode"
       FROM "Chat"
-      WHERE "id" = ${run.chatId} AND "userId" = ${input.userId}
+      WHERE "id" = ${run.chatId}
+        AND "userId" = ${input.userId}
+        AND "permanentDeletionAt" IS NULL
       FOR UPDATE
     `);
     if (
@@ -2659,7 +2666,9 @@ async function retryPreparingRunAttemptWithClient(
       SELECT "activeLeafMessageId", "archived", "folderId",
         "memoryMode"::text AS "memoryMode"
       FROM "Chat"
-      WHERE "id" = ${attempt.chatId} AND "userId" = ${input.userId}
+      WHERE "id" = ${attempt.chatId}
+        AND "userId" = ${input.userId}
+        AND "permanentDeletionAt" IS NULL
       FOR UPDATE
     `);
     if (
@@ -3202,6 +3211,7 @@ export function createPrismaRunRepository(
         WHERE chat."id" = ${chatId}
           AND chat."userId" = ${userId}
           AND chat."archived" = false
+          AND chat."permanentDeletionAt" IS NULL
           ${expectedLeafPredicate}
       ),
       "ancestor_path" AS (
@@ -4071,6 +4081,7 @@ export function createPrismaRunRepository(
         where: {
           archived: false,
           id: chatId,
+          permanentDeletionAt: null,
           userId
         }
       }).then((chat) =>
@@ -4200,6 +4211,7 @@ export function createPrismaRunRepository(
         where: {
           chat: {
             archived: false,
+            permanentDeletionAt: null,
             userId
           },
           id: sourceMessageId,
@@ -4562,6 +4574,7 @@ export function createPrismaRunRepository(
         where: {
           archived: false,
           id: chatId,
+          permanentDeletionAt: null,
           userId
         }
         });

@@ -98,7 +98,23 @@ Foreground token deltas are buffered for React updates and adjacent event aggreg
 
 ### Assistants, Knowledge, Settings, and MCP workflows
 
-`settingsDestinationStore` owns the bounded Settings destination (Appearance, Memory, MCP & tools). `memorySettingsStore` owns the strictly decoded account settings/capability/egress projection, coalesced load, one exact CAS mutation, and stale-state reconciliation. `memoryManagerStore` separately owns the explicit `GLOBAL_USER` list/search cursor, selected detail/evidence, exact draft, stale-draft fence, mutation state, and opaque durable-deletion reference/status. Its client controller mints a fresh exact-action authorization immediately before every create/edit/pin/Forget/delete request, refreshes destructive settings/Memory CAS at confirmation, keeps search text in POST bodies, and cannot let background detail/evidence or status work replace a newer task. Settings remains the sole scroll and dirty-exit owner around both stores.
+`settingsDestinationStore` owns the bounded Settings destination (Appearance,
+Memory, MCP & tools). `memorySettingsStore` owns the strictly decoded account
+settings/capability/egress projection, coalesced load, one exact CAS mutation,
+and stale-state reconciliation. `memoryHealthStore` separately owns the
+private/no-store user-health pulse: activation clears a different account,
+aborts the prior request, generation-fences late settlement, preserves
+same-owner last-good data on refresh failure, and clears on unmount/logout.
+`memoryManagerStore` separately owns the explicit `GLOBAL_USER` list/search
+cursor, the account-fenced exact-contributor profile projection, selected
+detail/evidence, exact draft, stale-draft fence, mutation state, and opaque
+durable-deletion reference/status. Its client controller mints a fresh
+exact-action authorization immediately before every create/edit/pin/Forget/delete
+request, refreshes profile/list projections after exact contributor mutations,
+refreshes destructive settings/Memory CAS at confirmation, keeps search text
+in POST bodies, and cannot let background profile/detail/evidence or status
+work replace a newer account or task. Settings remains the sole scroll and
+dirty-exit owner around these stores.
 
 `memoryHistorySearchStore` separately owns the manual retained-history draft,
 exact applied request, opaque cursor, safe result projection, lexical/vector
@@ -110,15 +126,30 @@ resolves the current owner-private live/archive destination before Settings is
 dismissed, then delegates archived results to the existing read-only archive
 owner instead of activating an operational chat.
 
-`memoryOperationsStore` owns the account-bound history-operation confirmation,
-admission/cancellation mutation, and separate clear/rebuild status projections.
-It reloads current Memory/settings CAS immediately before admission, keeps a
-stale confirmation recoverable, and stores only account-keyed opaque deletion
-or rebuild ids in tab-scoped storage so authoritative server status can be
-restored after reload. Polls and late admission/status responses are fenced to
-the exact account generation. Clear admission and successful generation
-replacement invalidate only derived manual-history results; neither path
-persists private query or source text.
+`memoryOperationsStore` owns the account-bound Memory-operation confirmation,
+admission/cancellation mutation, and separate all-reusable, learned, clear, and
+rebuild status projections. It reloads current Memory/settings CAS immediately
+before admission, keeps a stale confirmation recoverable, and stores only
+account-keyed opaque deletion or rebuild ids in tab-scoped storage so
+authoritative server status can be restored after reload. Polls and late
+admission/status responses are fenced to the exact account generation. Clear
+admission and successful generation replacement invalidate only derived
+manual-history results. Global reusable deletion additionally invalidates
+saved-memory list/detail/profile projections at admission and audited success;
+no path persists private query or source text.
+
+`permanentChatDeletionStore` separately owns the capability-gated retained-chat
+confirmation and cleanup status. It binds every request and late response to the
+exact account generation, rereads the current owner-private title, location,
+source revision, and active leaf immediately before minting a single-use
+authorization, and requires a second deliberate confirmation if any of those
+facts changed. The optional origin-memory Forget choice defaults false and is
+bound through authorization and admission. Admission evicts the source from
+workspace, thread, run, composer, share, and Archived owners immediately; a
+tab-scoped account-keyed record persists only opaque chat/deletion ids so status
+can resume after reload. The default status notice remains concise, while
+cleanup ids, attempts, fences, audits, and bounded errors stay behind the
+explicit advanced disclosure.
 
 The Assistants surface owns its own focused state: `assistantLibraryStore` holds the open full-screen task (list, editor, history), Discover/Yours mode, filter/category/query, fetched list data, and editor/history drafts, while `assistantLibraryController` owns every surface mutation (create, revise with CAS, archive/restore, duplicate, publish/revoke, pin, restore-as-new-revision) and `Use` application into the composer owner. Editor avatar generation happens exactly once per new draft plus once per explicit `Generate another`, entirely in the browser. Current-composer Assistant selection remains with composer controls; the surface never mutates next-run state except through the atomic apply/remove actions.
 

@@ -23,7 +23,8 @@ export const MEMORY_STRICT_OUTPUT_ROLES = [
   "MEMORY_EPISODE_EXTRACT",
   "MEMORY_FACT_EXTRACT",
   "MEMORY_CONSOLIDATE",
-  "MEMORY_VERIFY"
+  "MEMORY_VERIFY",
+  "MEMORY_PROFILE"
 ] as const satisfies readonly MemoryExecutionRole[];
 
 export function isMemoryExecutionRole(value: unknown): value is MemoryExecutionRole {

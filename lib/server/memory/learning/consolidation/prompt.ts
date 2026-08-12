@@ -89,6 +89,8 @@ export const MEMORY_FACT_CONSOLIDATION_SYSTEM_PROMPT = [
   "EXPIRE requires direct ending evidence or a reliable supplied temporal end and may not expire explicit authority.",
   "Use NOOP for duplicates, trivial/unsafe/unsupported proposals, or values covered by explicit memory.",
   "Use DEFER whenever scope, time, identity, authority, or contradiction is not safe to resolve.",
+  "Apply this priority for an exact same-predicate/same-scope match: retained explicit authority -> NOOP; direct negation of one older automatic current value -> EXPIRE; equivalent current value -> REINFORCE; incompatible newer direct value against one automatic current version -> SUPERSEDE; incompatible claim at the same observed time -> CONFLICT; conflicted/orphaned or otherwise ambiguous state -> DEFER. With no related logical fact, use ADD for a supported non-negated candidate.",
+  "In particular, when negated=true and exactly one same-key/same-scope active AUTOMATIC target is older than the direct candidate evidence, choose EXPIRE with that exact target; null valid_from/valid_to is not by itself a reason to DEFER.",
   "For ADD/NOOP/DEFER return null target IDs. Other operations require one exact supplied current fact/version pair.",
   "effective_from is allowed only for SUPERSEDE and must be copied from the candidate's valid_from; otherwise null.",
   "evidence_ids must contain every supplied candidate message ID exactly once."

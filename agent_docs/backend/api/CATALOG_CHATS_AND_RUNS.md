@@ -9,7 +9,8 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
 ## Current-User Catalog And Settings
 
 - `/api/me/memory/settings` is a separate authenticated private/no-store
-  settings boundary. GET projects the three independent default-off gates,
+  settings boundary. GET projects the three independent gates—fact/history
+  reads default on and automatic learning defaults off—
   persisted Memory locale, fail-closed phase capabilities, and bounded
   current-versus-accepted utility destinations/fingerprints. PATCH accepts
   exactly one strict ordinary settings-CAS shape or explicit current-copy
@@ -17,13 +18,35 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   revisions; locale-only changes require only the settings revision. Embedding
   selection and utility consent revalidate exact current authority inside the
   locked mutation, and provider/consent unavailability never disables local
-  management capabilities.
+  management capabilities. The production Phase 8 policy permits permanent
+  chat deletion, but the projection becomes true only after the sole shared
+  composition owner proves the exact source-purge and account-cleanup leaves
+  reachable. Before composition, after a conflict, or during policy rollback,
+  the route and UI remain fail-closed.
+- `GET /api/me/memory/health` is a separate authenticated private/no-store,
+  no-query owner projection. It returns one bounded actionable state plus
+  learning, indexing/FTS-only, rebuild, durable-deletion, Temporary-retention,
+  and destination-review status without Memory/query/source text or source
+  identifiers. Counts are capped, physical cleanup is distinct from its
+  already-committed retrieval fence, and scheduler/provider unavailability is
+  feature-local. Owner identity comes only from the session; failures return a
+  stable code and logs contain no underlying private detail.
+- `GET /api/me/memory/profile` is an authenticated private/no-store, no-query
+  summary boundary. It returns the current Memory revision and exactly one of
+  `DISABLED | EMPTY | PENDING | WAITING_FOR_EGRESS_CONSENT | READY |
+  UNAVAILABLE`. Only `READY` may carry a profile: at most six ordered RU or EN
+  contributor-exact lines with fact/version ids, source mode, pin, and
+  hot/warm/cold projection. The read revalidates current scope, generation,
+  fact pointer, search/safety/suppression snapshots, validity, and succeeded
+  usage-backed `MEMORY_PROFILE` authority; stale or uncertain profile text is
+  omitted rather than repaired or returned. Editing remains an explicit
+  fact-level operation through the existing Memory mutation family.
 - `/api/me/memory/mutation-authorizations` and `/api/me/memories` are the
   private explicit-Memory management family and accept only exact `GLOBAL_USER`
   statements and identifiers. Save grants bind the exact statement hash; Edit
   and Forget grants bind the owner fact/current version; `DELETE_EXPLICIT`,
-  `CLEAR_HISTORY_INDEX`, and `REDREAM_EXISTING_CHATS` grants bind the exact
-  operation plus settings and Memory revisions. All bind current confirmation
+  `DELETE_LEARNED`, `CLEAR_HISTORY_INDEX`, and `REDREAM_EXISTING_CHATS` grants
+  bind the exact operation plus settings and Memory revisions. All bind current confirmation
   copy and one caller nonce and are consumed atomically with the mutation.
   Exact matching receipt/job retries are idempotent, while
   expired, stale, altered, cross-operation, foreign, or natural-language
@@ -44,12 +67,16 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   owner, source, branch/revision/checkpoint, safety, suppression, barrier, and
   gate rejoin. Missing or failed vector query work is an explicit degradation,
   while an unavailable lexical generation returns no result or cursor.
-- `POST /api/me/memory/bulk-delete` admits `DELETE_EXPLICIT` and
-  `CLEAR_HISTORY_INDEX`. Both apply their retrieval fence before the `202`
-  response and return one durable deletion id; clear-history also installs an
-  account source cutoff, invalidates current chunks/episodes/search rows, and
-  retains chats, facts, and accepted run evidence. The route rejects
-  `DELETE_LEARNED` and `DELETE_ALL_REUSABLE` until their owners ship.
+- `POST /api/me/memory/bulk-delete` admits `DELETE_EXPLICIT`,
+  `DELETE_LEARNED`, and `CLEAR_HISTORY_INDEX`. Each applies its retrieval fence
+  before the `202` response and returns one durable deletion id. Learned
+  deletion installs an `AUTOMATIC_FACTS` source-created-at cutoff, forgets the
+  admitted automatic set, cancels nonterminal learning work, and retains
+  explicit facts, raw chats, and accepted run evidence; only genuinely later
+  message evidence may be learned again. Clear-history installs its distinct
+  source cutoff, invalidates current chunks/episodes/search rows, and retains
+  chats, facts, and accepted run evidence. The route rejects
+  `DELETE_ALL_REUSABLE` until its owner ships.
   Authenticated
   `GET /api/me/memory/deletions/:deletionId` returns only the owner's
   receipt-bound admission counters, bounded purge progress, last audit,
@@ -88,6 +115,22 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
 ### Workspace and Assistants
 
 - Chat list/create/update/branch mutations return lightweight summaries with `messageCount` and `pinned`, not messages or usage. Server-side new-chat creation snapshots the caller's current effective personal-or-installation model default, or null when none is safely runnable; later default changes never retarget that chat. An ordinary detail read returns at most the newest 50 messages of the active branch in forward order, with an opaque older-page cursor plus the exact active-leaf/`updatedAt` snapshot fence. `messageCount` remains the full DAG count; usage and the approximate active-branch input-token context fact cover the full active branch. Authenticated `GET /api/chats/:chatId/messages?before=...` revalidates ownership, cursor boundary, leaf, and snapshot before returning the next forward-ordered page, with typed invalid-cursor and stale-snapshot failures. `GET /api/chats/:chatId/branches` separately returns the full compact parent graph with bounded plaintext previews; it never hydrates full message bodies or run artifacts. Detail/page reads hydrate content, safe artifacts, and latest assistant run IDs only for the selected page. Archived chats stay hidden from ordinary chat reads and remain non-operational, but owner-private no-store Archived list, preview, bounded page, and source-resolution reads keep them inspectable. Archive and explicit Restore use distinct expected-source-revision transitions, change no Memory counter, and never imply deletion or source exclusion; the legacy chat `DELETE` remains Archive-only. Owner-private no-store `GET /api/me/chats/:chatId/memory-mode` exposes the exact current archived, source-mode/revision, and Temporary policy/deadline state needed to reconcile lifecycle UI. `NORMAL <-> EXCLUDED` uses a separate PATCH on that current-user Memory route: Exclude fences source eligibility before success, while Resume requires current disclosure, suppression-key preflight, and a controlled active-branch reconciliation that preserves every Forget and account source cutoff. Admitted Temporary chats remain owner-readable only by exact private id while they exist; ordinary workspace/Archived lists, global content search, source resolution, archive/restore, branch-to-retained-chat cloning, sharing, and workspace update projection exclude them.
+- Permanent deletion never overloads the legacy Archive route. Owner-only
+  `POST /api/chats/:chatId/delete-permanently/authorization` first mints a
+  five-minute single-use authorization bound to the exact source revision,
+  active leaf, caller nonce, and `alsoForgetOriginMemories` choice. The matching
+  `POST /api/chats/:chatId/delete-permanently` rechecks that fence, rejects
+  Temporary or active-run chats, immediately makes the source and shares
+  unavailable, and returns `202` with a durable deletion id. Private/no-store
+  `GET /api/chats/:chatId/delete-permanently/status?deletionId=...` exposes only
+  state, attempts, timestamps, bounded error code, and completion—not chat or
+  Memory text. Cleanup retries through `BLOCKED_REQUIRES_ADMIN`; accepted runs
+  in other chats retain frozen evidence and show `Source deleted` without a
+  stale source link. Provider-side and backup erasure are outside this route.
+  While the composed Phase 8 capability is unavailable, direct authorization
+  or admission fails before parsing/mutation and no permanent-delete action is
+  projected. Disabling new admission does not hide status or abandon a deletion
+  already accepted while the exact cleanup handler was reachable.
 - Folder operations are current-user scoped. Moves validate ownership and cycles in the same serializable transaction; deleting a folder promotes child folders and unsets chat folders through database relations.
 - `/api/me/assistants` is the concrete Assistant-specific family. Reads project runner-safe summaries and authorized detail: instructions stay inspectable for anyone entitled to run the Assistant, while hidden dependency identities are censored (a model outside the runner's catalog projects as null, MCP ids narrow to the runner's grants, and non-owner Knowledge ids remain hidden) and availability carries only coarse privacy-neutral reasons. Invisible and nonexistent ids share one `assistant_not_available` response. Writes are owner-only with optimistic-version CAS: revise appends an immutable revision and moves the current pointer, archive/restore toggles soft state, and drafts are strictly bounded and validated against the owner's current catalog. Duplicate creates one private exact copy only when the caller independently retains access to every referenced Knowledge Base in the creation transaction; one hidden, archived, or missing base rejects the whole operation with the privacy-neutral Assistant response and creates no definition or revision. Publications pin exact revisions per active group (publisher needs active membership) or installation-wide (active admin); publish-update moves them explicitly, revoke is owner-or-admin, and pins are per-user preference rows granting no access. Saving never advances a publication.
 - Assistant runs resolve server-side at admission: the request carries only the Assistant identity and user content, override fields are rejected, the currently authorized revision (owner current, or the highest active publication pinned revision) is materialized into model, prompts, controls, Search intent, the exact MCP allowlist, and the exact Knowledge allowlist, and the run-creation transaction rechecks access and archive state before atomically persisting `ModelRun.assistantId`/`assistantRevisionId`. Access, archive, and revocation races return a stable privacy-safe conflict; a concurrent revision advance is not a conflict. Assistant runs skip accepted-defaults persistence so saved manual preferences never change.

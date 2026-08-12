@@ -1,32 +1,47 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
+  decodeMemoryDetailResponse,
   decodeMemoryDeletionStatus,
+  decodeMemoryForgetResponse,
+  decodeMemoryMutationResponse,
+  type MemoryConflictResolutionInput,
   decodeMemoryErrorResponse,
   decodeMemoryEvidenceResponse,
+  decodeMemoryFeedbackMutationResponse,
   decodeMemoryListResponse,
   decodeMemoryMutationAuthorizationResponse,
-  decodeMemoryMutationResponse,
+  decodeMemoryProfileResponse,
   decodeMemoryRebuildStatus,
   decodeMemorySettingsResponse,
   type MemoryBulkDeleteInput,
   type MemoryConsentInput,
   type MemoryCreateInput,
   type MemoryDeletionStatus,
+  type MemoryDetailResponse,
   type MemoryEvidenceResponse,
+  type MemoryFeedbackInput,
+  type MemoryFeedbackMutationResponse,
   type MemoryForgetInput,
+  type MemoryForgetResponse,
   type MemoryListResponse,
   type MemoryFactState,
   type MemoryScopeSelection,
   type MemoryMutationAuthorizationInput,
   type MemoryMutationAuthorizationResponse,
   type MemoryMutationResponse,
+  type MemoryProfileResponse,
   type MemoryRebuildInput,
   type MemoryRebuildStatus,
   type MemorySettingsPatch,
   type MemorySettingsResponse,
+  type MemoryUndoForgetInput,
   type MemoryUpdateInput
 } from "@/lib/contracts/memory";
+import {
+  decodeMemoryHealthResponse,
+  type MemoryHealthResponse
+} from "@/lib/contracts/memoryHealth";
 
 export class MemoryApiError extends Error {
   readonly code: string;
@@ -100,6 +115,10 @@ function nonce(): string {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+export function memoryRequestId(): string {
+  return nonce();
+}
+
 export async function memoryStatementHash(statement: string): Promise<string> {
   if (!globalThis.crypto?.subtle) {
     throw new MemoryApiError("memory_client_crypto_unavailable", 500);
@@ -118,6 +137,26 @@ export async function loadMemorySettings(signal?: AbortSignal): Promise<MemorySe
     "/api/me/memory/settings",
     { method: "GET", signal },
     decodeMemorySettingsResponse
+  );
+}
+
+export async function loadMemoryHealth(signal?: AbortSignal): Promise<MemoryHealthResponse> {
+  return memoryRequest(
+    "/api/me/memory/health",
+    { method: "GET", signal },
+    (value): Readonly<{ ok: true; value: MemoryHealthResponse }> | Readonly<{ ok: false }> => {
+      const decoded = decodeMemoryHealthResponse(value);
+      if (!decoded) return { ok: false };
+      return { ok: true, value: decoded };
+    }
+  );
+}
+
+export async function loadMemoryProfile(signal?: AbortSignal): Promise<MemoryProfileResponse> {
+  return memoryRequest(
+    "/api/me/memory/profile",
+    { method: "GET", signal },
+    decodeMemoryProfileResponse
   );
 }
 
@@ -191,11 +230,11 @@ export async function searchMemories(
 export async function loadMemory(
   memoryId: string,
   signal?: AbortSignal
-): Promise<MemoryMutationResponse> {
+): Promise<MemoryDetailResponse> {
   return memoryRequest(
     `/api/me/memories/${encodeURIComponent(memoryId)}`,
     { method: "GET", signal },
-    decodeMemoryMutationResponse
+    decodeMemoryDetailResponse
   );
 }
 
@@ -211,6 +250,28 @@ export async function loadMemoryEvidence(
     `/api/me/memories/${encodeURIComponent(memoryId)}/evidence${suffix}`,
     { method: "GET", signal },
     decodeMemoryEvidenceResponse
+  );
+}
+
+export async function recordMemoryFeedback(
+  memoryId: string,
+  body: MemoryFeedbackInput
+): Promise<MemoryFeedbackMutationResponse> {
+  return memoryRequest(
+    `/api/me/memories/${encodeURIComponent(memoryId)}/feedback`,
+    { body: JSON.stringify(body), method: "POST" },
+    decodeMemoryFeedbackMutationResponse
+  );
+}
+
+export async function resolveMemoryConflict(
+  memoryId: string,
+  body: MemoryConflictResolutionInput
+): Promise<MemoryMutationResponse> {
+  return memoryRequest(
+    `/api/me/memories/${encodeURIComponent(memoryId)}/resolve`,
+    { body: JSON.stringify(body), method: "POST" },
+    decodeMemoryMutationResponse
   );
 }
 
@@ -255,9 +316,20 @@ export async function updateMemory(
 export async function forgetMemory(
   memoryId: string,
   body: MemoryForgetInput
-): Promise<MemoryMutationResponse> {
+): Promise<MemoryForgetResponse> {
   return memoryRequest(
     `/api/me/memories/${encodeURIComponent(memoryId)}/forget`,
+    { body: JSON.stringify(body), method: "POST" },
+    decodeMemoryForgetResponse
+  );
+}
+
+export async function undoForgetMemory(
+  memoryId: string,
+  body: MemoryUndoForgetInput
+): Promise<MemoryMutationResponse> {
+  return memoryRequest(
+    `/api/me/memories/${encodeURIComponent(memoryId)}/undo-forget`,
     { body: JSON.stringify(body), method: "POST" },
     decodeMemoryMutationResponse
   );

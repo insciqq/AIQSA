@@ -5,6 +5,13 @@ import {
   resetArchivedChatsStoreForTest,
   useArchivedChatsStore
 } from "./archivedChatsStore";
+import { memorySettingsFixture } from "./memoryTestFixtures";
+import { resetMemorySettingsStoreForTest, useMemorySettingsStore } from "./memorySettingsStore";
+import {
+  activatePermanentChatDeletionAccount,
+  resetPermanentChatDeletionStoreForTest,
+  usePermanentChatDeletionStore
+} from "./permanentChatDeletionStore";
 
 const updatedAt = "2026-08-10T08:00:00.000Z";
 const summary = {
@@ -27,6 +34,8 @@ const summary = {
 afterEach(() => {
   cleanup();
   resetArchivedChatsStoreForTest();
+  resetPermanentChatDeletionStoreForTest();
+  resetMemorySettingsStoreForTest();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -95,6 +104,58 @@ describe("ArchivedChatsDialog", () => {
     expect(within(dialog).getByRole("button", { name: "Restore" })).toBeVisible();
     expect(within(dialog).getByText(/stops using it as a source/i)).toBeVisible();
     expect(within(dialog).queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("adds a distinct capability-gated permanent action to the owner preview", async () => {
+    useMemorySettingsStore.setState({
+      data: memorySettingsFixture({ capabilities: { permanentChatDeletion: true } }),
+      error: null,
+      loadState: "ready"
+    });
+    await activatePermanentChatDeletionAccount("account-a");
+    useArchivedChatsStore.setState({
+      detail: {
+        activeLeafMessageId: "message-1",
+        archived: true,
+        contextStats: { approximateActiveBranchInputTokens: 2 },
+        createdAt: updatedAt,
+        defaultKnowledgePlan: null,
+        defaultModelId: "",
+        defaultProvider: "",
+        folderId: null,
+        id: "chat-1",
+        memoryMode: "EXCLUDED",
+        messageCount: 1,
+        messages: [],
+        pageInfo: {
+          activeLeafMessageId: "message-1",
+          beforeCursor: null,
+          hasOlder: false,
+          snapshotUpdatedAt: updatedAt
+        },
+        pinned: false,
+        sourceRevision: 4,
+        title: "Archived source",
+        updatedAt,
+        usageStats: null
+      },
+      detailLoadState: "ready",
+      open: true
+    });
+
+    render(<ArchivedChatsDialog locale="EN" onRestored={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+
+    expect(usePermanentChatDeletionStore.getState().target).toEqual({
+      chatId: "chat-1",
+      expectedActiveLeafMessageId: "message-1",
+      expectedChatRevision: 4,
+      location: "ARCHIVED",
+      title: "Archived source"
+    });
+    expect(
+      screen.getByTestId("archived-chats-dialog").querySelector('[role="dialog"]')
+    ).toHaveAttribute("aria-hidden", "true");
   });
 
   it("keeps direct source navigation in an explicit loading state", () => {

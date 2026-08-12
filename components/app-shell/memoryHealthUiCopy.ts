@@ -1,0 +1,213 @@
+import type { MemoryUiLocale } from "@/lib/contracts/memory";
+import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
+
+export const MEMORY_HEALTH_UI_COPY_KEYS = [
+  "checking",
+  "unavailableTitle",
+  "unavailableDescription",
+  "retry",
+  "openOperations",
+  "reviewDestinations",
+  "advanced",
+  "advancedDescription",
+  "lastChecked",
+  "learning",
+  "indexing",
+  "rebuild",
+  "cleanup",
+  "temporaryCleanup",
+  "egress",
+  "yes",
+  "no",
+  "upToDateTitle",
+  "upToDateDescription",
+  "learningDelayedTitle",
+  "learningDelayedDescription",
+  "learningBudgetDescription",
+  "learningAdminDescription",
+  "learningUserDescription",
+  "learningUnavailableDescription",
+  "learningCapabilityDescription",
+  "indexingTitle",
+  "indexingDescription",
+  "ftsOnlyTitle",
+  "ftsOnlyDescription",
+  "rebuildFailedTitle",
+  "rebuildFailedDescription",
+  "deletionTitle",
+  "deletionDescription",
+  "temporaryOverdueTitle",
+  "temporaryOverdueDescription",
+  "blockedTitle",
+  "blockedDescription",
+  "alsoTemporaryOverdue",
+  "stateReady",
+  "stateDisabled",
+  "stateDelayed",
+  "stateInProgress",
+  "stateFailed",
+  "stateFtsOnly",
+  "stateClear",
+  "stateBlocked",
+  "stateOverdue",
+  "stateAdminReview",
+  "stateUserReview"
+] as const;
+
+export type MemoryHealthUiCopyKey =
+  (typeof MEMORY_HEALTH_UI_COPY_KEYS)[number];
+type Copy = Readonly<Record<MemoryHealthUiCopyKey, string>>;
+
+const EN = {
+  advanced: "Advanced",
+  advancedDescription: "Operational status, destinations, and capability evidence.",
+  alsoTemporaryOverdue: "Temporary-chat cleanup is also past its retention deadline.",
+  blockedDescription: "The selected information remains fenced from reuse. Fast retries are exhausted; slow reconciliation continues while an administrator investigates.",
+  blockedTitle: "Memory cleanup needs administrator attention",
+  checking: "Checking Memory status…",
+  cleanup: "Physical cleanup",
+  deletionDescription: "The selected information is already fenced from reuse while physical cleanup continues in the background.",
+  deletionTitle: "Memory cleanup is in progress",
+  egress: "Destination review",
+  ftsOnlyDescription: "Text search continues to work. Semantic matching will return when a compatible embedding index is available.",
+  ftsOnlyTitle: "Memory is using text search",
+  indexing: "History index",
+  indexingDescription: "Existing eligible chats are being indexed in the background. You can keep chatting.",
+  indexingTitle: "Memory is getting ready",
+  lastChecked: "Last checked",
+  learning: "Automatic learning",
+  learningCapabilityDescription: "Automatic learning is enabled as a preference, but this installation has not activated a compatible qualified capability. Explicit Memory actions still work.",
+  learningAdminDescription: "Background learning is waiting for an administrator to review the current destinations. Chat remains available.",
+  learningBudgetDescription: "The daily background-work allowance has been reached. Learning resumes automatically after the reset.",
+  learningDelayedDescription: "Background learning is delayed. Chat and explicit Memory actions remain available.",
+  learningDelayedTitle: "Memory learning is paused",
+  learningUnavailableDescription: "Background scheduling status is temporarily unavailable. Chat and explicit Memory actions remain available.",
+  learningUserDescription: "Background learning is waiting for destination review.",
+  no: "No",
+  openOperations: "Open Memory operations",
+  rebuild: "Rebuild",
+  rebuildFailedDescription: "The last shadow rebuild failed. The previous working index remains active and was not replaced.",
+  rebuildFailedTitle: "Memory needs a retry",
+  retry: "Check again",
+  reviewDestinations: "Review destinations",
+  stateAdminReview: "Administrator review required",
+  stateBlocked: "Administrator attention required",
+  stateClear: "Clear",
+  stateDelayed: "Delayed",
+  stateDisabled: "Off",
+  stateFailed: "Failed",
+  stateFtsOnly: "Text search only",
+  stateInProgress: "In progress",
+  stateOverdue: "Overdue",
+  stateReady: "Ready",
+  stateUserReview: "Review required",
+  temporaryCleanup: "Temporary-chat retention",
+  temporaryOverdueDescription: "A Temporary chat passed its retention deadline. It stays hidden while durable cleanup and administrator reconciliation continue.",
+  temporaryOverdueTitle: "Temporary-chat cleanup is overdue",
+  unavailableDescription: "Your Memory settings are still available, but the current background status could not be checked.",
+  unavailableTitle: "Memory status is unavailable",
+  upToDateDescription: "Your current settings and background Memory work are in sync.",
+  upToDateTitle: "Memory is up to date",
+  yes: "Yes"
+} satisfies Copy;
+
+const RU = {
+  advanced: "Расширенный режим",
+  advancedDescription: "Техническое состояние, назначения и сведения о доступности возможностей.",
+  alsoTemporaryOverdue: "Кроме того, истёк срок удаления временного чата.",
+  blockedDescription: "Выбранные сведения по-прежнему ограждены от повторного использования. Быстрые попытки исчерпаны; медленная сверка продолжается, пока администратор разбирается с причиной.",
+  blockedTitle: "Очистке Памяти требуется внимание администратора",
+  checking: "Проверяем состояние Памяти…",
+  cleanup: "Физическая очистка",
+  deletionDescription: "Выбранные сведения уже ограждены от повторного использования, а физическая очистка продолжается в фоне.",
+  deletionTitle: "Память очищается",
+  egress: "Проверка назначений",
+  ftsOnlyDescription: "Текстовый поиск продолжает работать. Семантический поиск вернётся, когда будет доступен совместимый индекс эмбеддингов.",
+  ftsOnlyTitle: "Память использует текстовый поиск",
+  indexing: "Индекс истории",
+  indexingDescription: "Допустимые существующие чаты индексируются в фоне. Можно продолжать общение.",
+  indexingTitle: "Память подготавливается",
+  lastChecked: "Последняя проверка",
+  learning: "Автоматическое запоминание",
+  learningCapabilityDescription: "Автоматическое запоминание включено в настройках, но установка ещё не активировала совместимую квалифицированную возможность. Явные действия с Памятью продолжают работать.",
+  learningAdminDescription: "Фоновое запоминание ждёт, пока администратор проверит текущие назначения. Чат продолжает работать.",
+  learningBudgetDescription: "Дневной лимит фоновой работы исчерпан. Запоминание возобновится автоматически после сброса лимита.",
+  learningDelayedDescription: "Фоновое запоминание отложено. Чат и явные действия с Памятью продолжают работать.",
+  learningDelayedTitle: "Запоминание приостановлено",
+  learningUnavailableDescription: "Состояние фонового планировщика временно недоступно. Чат и явные действия с Памятью продолжают работать.",
+  learningUserDescription: "Фоновое запоминание ждёт проверки назначений.",
+  no: "Нет",
+  openOperations: "Открыть операции Памяти",
+  rebuild: "Перестройка",
+  rebuildFailedDescription: "Последняя теневая перестройка завершилась ошибкой. Предыдущий рабочий индекс остался активным и не был заменён.",
+  rebuildFailedTitle: "Памяти нужна повторная попытка",
+  retry: "Проверить снова",
+  reviewDestinations: "Проверить назначения",
+  stateAdminReview: "Нужна проверка администратора",
+  stateBlocked: "Нужно внимание администратора",
+  stateClear: "Чисто",
+  stateDelayed: "Отложено",
+  stateDisabled: "Выключено",
+  stateFailed: "Ошибка",
+  stateFtsOnly: "Только текстовый поиск",
+  stateInProgress: "Выполняется",
+  stateOverdue: "Срок истёк",
+  stateReady: "Готово",
+  stateUserReview: "Нужна проверка",
+  temporaryCleanup: "Хранение временных чатов",
+  temporaryOverdueDescription: "Временный чат превысил срок хранения. Он остаётся скрытым, пока продолжаются надёжное удаление и сверка администратором.",
+  temporaryOverdueTitle: "Очистка временного чата просрочена",
+  unavailableDescription: "Настройки Памяти доступны, но текущее состояние фоновой работы проверить не удалось.",
+  unavailableTitle: "Состояние Памяти недоступно",
+  upToDateDescription: "Текущие настройки и фоновая работа Памяти синхронизированы.",
+  upToDateTitle: "Память в порядке",
+  yes: "Да"
+} satisfies Copy;
+
+export function memoryHealthUiCopy(
+  locale: MemoryUiLocale,
+  key: MemoryHealthUiCopyKey
+): string {
+  return (locale === "RU" ? RU : EN)[key];
+}
+
+export function memoryHealthStateCopy(
+  locale: MemoryUiLocale,
+  health: UserMemoryHealth
+): Readonly<{ description: string; title: string }> {
+  const copy = (key: MemoryHealthUiCopyKey) => memoryHealthUiCopy(locale, key);
+  switch (health.state) {
+    case "UP_TO_DATE":
+      return { description: copy("upToDateDescription"), title: copy("upToDateTitle") };
+    case "LEARNING_DELAYED":
+      return {
+        description: health.learning.reason === "CAPABILITY_UNAVAILABLE"
+          ? copy("learningCapabilityDescription")
+          : health.learning.reason === "BUDGET"
+          ? copy("learningBudgetDescription")
+          : health.learning.reason === "SCHEDULER_UNAVAILABLE"
+            ? copy("learningUnavailableDescription")
+            : health.egressReview === "ADMIN_REQUIRED"
+              ? copy("learningAdminDescription")
+              : health.egressReview === "USER_REQUIRED"
+                ? copy("learningUserDescription")
+                : copy("learningDelayedDescription"),
+        title: copy("learningDelayedTitle")
+      };
+    case "INDEXING":
+      return { description: copy("indexingDescription"), title: copy("indexingTitle") };
+    case "FTS_ONLY":
+      return { description: copy("ftsOnlyDescription"), title: copy("ftsOnlyTitle") };
+    case "REBUILD_FAILED":
+      return { description: copy("rebuildFailedDescription"), title: copy("rebuildFailedTitle") };
+    case "DELETION_IN_PROGRESS":
+      return { description: copy("deletionDescription"), title: copy("deletionTitle") };
+    case "TEMPORARY_OVERDUE":
+      return {
+        description: copy("temporaryOverdueDescription"),
+        title: copy("temporaryOverdueTitle")
+      };
+    case "BLOCKED_REQUIRES_ADMIN":
+      return { description: copy("blockedDescription"), title: copy("blockedTitle") };
+  }
+}

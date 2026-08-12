@@ -170,6 +170,19 @@ async function requireCurrentTarget(
   if (fact.state === "ACTIVE" && fact.currentVersionId === input.expectedTargetVersionId) {
     return;
   }
+  if ((input.action === "EDIT" || input.action === "FORGET") &&
+    fact.state === "CONFLICTED") {
+    const claim = await tx.memoryFactVersion.findFirst({
+      select: { id: true },
+      where: {
+        factId: input.targetFactId!,
+        id: input.expectedTargetVersionId!,
+        state: "CONFLICTING",
+        userId
+      }
+    });
+    if (claim) return;
+  }
   if (input.action !== "EDIT" && fact.state === "ORPHANED") {
     const latest = await tx.memoryFactVersion.findFirst({
       orderBy: [{ systemFrom: "desc" }, { id: "desc" }],

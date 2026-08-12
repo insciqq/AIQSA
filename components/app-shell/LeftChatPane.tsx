@@ -1,5 +1,6 @@
 import { ComposerOptionPicker } from "@/components/app-shell/ComposerOptionPicker";
 import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
+import { openPermanentChatDeletion } from "@/components/app-shell/permanentChatDeletionStore";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { loadChatMemoryState } from "@/components/app-shell/chatLifecycleApi";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
@@ -259,6 +260,9 @@ function LeftChatPaneComponent({
 }: LeftChatPaneProps) {
   const idPrefix = layout === "mobile" ? "mobile-" : "";
   const memoryLocale = useMemorySettingsStore((state) => state.data?.settings.memoryUiLocale ?? "RU");
+  const permanentChatDeletionAvailable = useMemorySettingsStore(
+    (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
+  );
   const touchTarget =
     layout === "mobile"
       ? "min-h-touch"
@@ -1415,6 +1419,27 @@ function LeftChatPaneComponent({
                                 <Archive className="size-4 text-ink-muted" aria-hidden="true" />
                                 {resolveMemoryCopy(memoryLocale, "archive.action")}
                               </button>
+                              {permanentChatDeletionAvailable &&
+                              (chat.memoryMode === "NORMAL" || chat.memoryMode === "EXCLUDED") &&
+                              chat.memorySourceRevision !== undefined ? (
+                                <button
+                                  className={`flex ${menuActionTarget} w-full items-center gap-2 rounded-control px-2 text-left font-semibold text-critical hover:bg-critical/10 ${focusRing}`}
+                                  type="button"
+                                  onClick={() => {
+                                    onCloseMenus();
+                                    openPermanentChatDeletion({
+                                      chatId: chat.id,
+                                      expectedActiveLeafMessageId: chat.activeLeafMessageId,
+                                      expectedChatRevision: chat.memorySourceRevision!,
+                                      location: "WORKSPACE",
+                                      title: chat.title
+                                    });
+                                  }}
+                                >
+                                  <Trash2 className="size-4" aria-hidden="true" />
+                                  {memoryLocale === "RU" ? "Удалить навсегда" : "Delete permanently"}
+                                </button>
+                              ) : null}
                             </div>
                           </div>
                         ) : null}

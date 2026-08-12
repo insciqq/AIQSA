@@ -3,6 +3,13 @@ import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LeftChatPane } from "./LeftChatPane";
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
+import { memorySettingsFixture } from "./memoryTestFixtures";
+import { resetMemorySettingsStoreForTest, useMemorySettingsStore } from "./memorySettingsStore";
+import {
+  activatePermanentChatDeletionAccount,
+  resetPermanentChatDeletionStoreForTest,
+  usePermanentChatDeletionStore
+} from "./permanentChatDeletionStore";
 import type { ChatGroup, FolderSummary } from "./types";
 
 const folder: FolderSummary = {
@@ -118,6 +125,8 @@ function renderPane(overrides: Partial<ComponentProps<typeof LeftChatPane>> = {}
 describe("LeftChatPane", () => {
   afterEach(() => {
     resetWorkspaceStoreForTest();
+    resetPermanentChatDeletionStoreForTest();
+    resetMemorySettingsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -304,6 +313,32 @@ describe("LeftChatPane", () => {
     fireEvent.click(screen.getByRole("button", { name: "Архивировать" }));
     expect(onDeleteChat).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }));
     expect(screen.queryByRole("button", { name: /Удалить чат|Delete chat/ })).not.toBeInTheDocument();
+  });
+
+  it("reveals permanent deletion only through the server capability and keeps Archive distinct", async () => {
+    useMemorySettingsStore.setState({
+      data: memorySettingsFixture(
+        { capabilities: { permanentChatDeletion: true } },
+        "EN"
+      ),
+      error: null,
+      loadState: "ready"
+    });
+    await activatePermanentChatDeletionAccount("account-a");
+    const onCloseMenus = vi.fn();
+    renderPane({ chatActionId: "chat-1", onCloseMenus });
+
+    expect(screen.getByRole("button", { name: "Archive" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+
+    expect(onCloseMenus).toHaveBeenCalledOnce();
+    expect(usePermanentChatDeletionStore.getState().target).toEqual({
+      chatId: "chat-1",
+      expectedActiveLeafMessageId: null,
+      expectedChatRevision: 0,
+      location: "WORKSPACE",
+      title: "Planning"
+    });
   });
 
   it("presents Resume disclosure for an excluded chat without changing Archive state", () => {

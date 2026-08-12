@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { MEMORY_EGRESS_CONSENT_MODES } from "./memory";
+import {
+  adminMemoryHealthSchema,
+  type AdminMemoryHealth
+} from "./memoryHealth";
 
 export const ADMIN_MEMORY_DESTINATION_IDS = [
   "answer_provider",
@@ -34,6 +38,7 @@ export type AdminMemoryEgressSettings = Readonly<{
 
 export type AdminMemoryEgressResponse = Readonly<{
   memoryEgress: AdminMemoryEgressSettings;
+  memoryHealth: AdminMemoryHealth;
 }>;
 
 export type AdminMemoryEgressAcknowledgeInput = Readonly<{
@@ -78,7 +83,8 @@ const responseSchema = z.object({
     reviewRequired: z.boolean(),
     version: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
     waitingJobCount: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
-  }).strict()
+  }).strict(),
+  memoryHealth: adminMemoryHealthSchema
 }).strict();
 
 const acknowledgeSchema = z.object({

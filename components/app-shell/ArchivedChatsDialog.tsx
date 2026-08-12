@@ -11,7 +11,12 @@ import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import type { MemoryUiLocale } from "@/lib/contracts/memory";
-import { Archive, ArrowLeft, LoaderCircle, RotateCw, Undo2, X } from "lucide-react";
+import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
+import {
+  openPermanentChatDeletion,
+  usePermanentChatDeletionStore
+} from "@/components/app-shell/permanentChatDeletionStore";
+import { Archive, ArrowLeft, LoaderCircle, RotateCw, Trash2, Undo2, X } from "lucide-react";
 
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
@@ -43,6 +48,12 @@ export function ArchivedChatsDialog({
   const nextCursor = useArchivedChatsStore((state) => state.nextCursor);
   const restoring = useArchivedChatsStore((state) => state.restoring);
   const summaries = useArchivedChatsStore((state) => state.summaries);
+  const permanentChatDeletionAvailable = useMemorySettingsStore(
+    (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
+  );
+  const permanentDialogOpen = usePermanentChatDeletionStore(
+    (state) => Boolean(state.target) || state.statusOpen
+  );
   const dialogRef = useDialogFocus<HTMLDivElement>({ onClose: closeArchivedChats });
   const ru = locale === "RU";
 
@@ -62,7 +73,9 @@ export function ArchivedChatsDialog({
     >
       <div
         ref={dialogRef}
+        aria-hidden={permanentDialogOpen || undefined}
         className="pop-enter flex h-[min(48rem,calc(100dvh-env(safe-area-inset-top)))] w-full max-w-3xl flex-col overflow-hidden rounded-t-panel border border-b-0 border-trace-subtle bg-overlay-surface text-ink shadow-overlay sm:h-[min(44rem,calc(100dvh-1.5rem))] sm:rounded-panel sm:border"
+        inert={permanentDialogOpen || undefined}
         role="dialog"
         aria-modal="true"
         aria-labelledby="archived-chats-heading"
@@ -137,7 +150,24 @@ export function ArchivedChatsDialog({
               </ol>
             </div>
             {detailError ? <p className="border-t border-critical/20 px-4 py-2 text-sm text-critical" role="alert">{detailError}</p> : null}
-            <footer className="flex shrink-0 justify-end border-t border-trace-subtle px-4 pb-[max(.75rem,env(safe-area-inset-bottom))] pt-3 sm:pb-3">
+            <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-trace-subtle px-4 pb-[max(.75rem,env(safe-area-inset-bottom))] pt-3 sm:pb-3">
+              {permanentChatDeletionAvailable ? (
+                <button
+                  className={`${button} border-critical/50 bg-critical/10 text-critical hover:bg-critical/15 hover:text-critical`}
+                  disabled={restoring}
+                  type="button"
+                  onClick={() => openPermanentChatDeletion({
+                    chatId: detail.id,
+                    expectedActiveLeafMessageId: detail.activeLeafMessageId,
+                    expectedChatRevision: detail.sourceRevision,
+                    location: "ARCHIVED",
+                    title: detail.title
+                  })}
+                >
+                  <Trash2 className="size-4" aria-hidden="true" />
+                  {ru ? "Удалить навсегда" : "Delete permanently"}
+                </button>
+              ) : null}
               <button className={button} disabled={restoring} type="button" onClick={() => void restore().catch(() => undefined)}>
                 {restoring ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <Undo2 className="size-4" aria-hidden="true" />}
                 {resolveMemoryCopy(locale, "restore.action")}

@@ -23,6 +23,27 @@ function response() {
       reviewRequired: false,
       version: 2,
       waitingJobCount: 0
+    },
+    memoryHealth: {
+      deletion: { active: "NONE", blocked: "NONE", state: "CLEAR" },
+      observedAt: "2026-08-12T10:00:00.000Z",
+      overall: "HEALTHY",
+      provider: {
+        failedRecent: "NONE",
+        outcomeUnknown: "NONE",
+        state: "IDLE",
+        usageIncomplete: "NONE"
+      },
+      queue: {
+        active: "NONE",
+        failed: "NONE",
+        oldestLag: "NONE",
+        state: "CLEAR",
+        waitingForReview: "NONE"
+      },
+      requestLocale: "EN",
+      scheduler: { resetAt: "2026-08-13T00:00:00.000Z", state: "READY" },
+      temporary: { overdue: "NONE", state: "CLEAR" }
     }
   };
 }
@@ -38,12 +59,14 @@ describe("administrator Memory contracts", () => {
       privateMemoryText: "must not cross the boundary"
     })).toBeNull();
     expect(decodeAdminMemoryEgressResponse({
+      ...response(),
       memoryEgress: {
         ...response().memoryEgress,
         currentFingerprint: "not-a-hash"
       }
     })).toBeNull();
     expect(decodeAdminMemoryEgressResponse({
+      ...response(),
       memoryEgress: {
         ...response().memoryEgress,
         destinations: response().memoryEgress.destinations.map((row, index) =>

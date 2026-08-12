@@ -92,6 +92,18 @@ ops/backup/restore.sh --verify-only /secure/aiqsa-backups/aiqsa-backup-TIMESTAMP
 
 Use an existing protected directory, copy verified bundles to encrypted off-host storage, and back up `AIQSA_ENCRYPTION_KEY` plus `AIQSA_MEMORY_FINGERPRINT_KEYRING` separately from those bundles. The helper stops and restores the web and Memory-worker roles around a durable lease fence; restore validates only the bundle's non-secret key IDs against the separately recovered keyring. The bundled helper supports the bundled private MinIO storage; external S3 requires its own consistent object-backup procedure coordinated with PostgreSQL.
 
+Disaster recovery is deliberately two-step. Provision a unique private
+`aiqsa-restore-*` project with
+[`ops/backup/docker-compose.restore.yml`](ops/backup/docker-compose.restore.yml),
+restore into its empty Postgres/MinIO services with a new mode-0700 review
+directory, then reapply any operator-owned post-backup deletion journal. Run
+`ops/backup/review.sh` with either the applied journal file or an explicit
+no-journal attestation. The review role has no public port or provider
+credentials and writes a private promotion receipt only after keys,
+deletion/account obligations, source barriers, leases, and objects pass. The
+helpers never start the app or perform production cutover; see each script's
+`--help` for the exact environment.
+
 Update an existing checkout with:
 
 ```bash
@@ -105,7 +117,7 @@ curl -fsS http://127.0.0.1:3000/api/health/ready
 
 The startup job applies committed migrations before the application becomes ready. Existing users, settings, chats, and uploaded objects remain in the configured volumes. Pin `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z` in `.env` when a fixed release is preferred over `latest`.
 
-For automated backups, use the colocated [systemd timer templates](ops/systemd/README.md). Restore operations accept only explicitly named disposable targets and never overwrite canonical live services.
+For automated backups, use the colocated [systemd timer templates](ops/systemd/README.md). Restore operations accept only unique disposable review projects and never overwrite canonical live services.
 
 ## Development
 

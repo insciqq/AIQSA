@@ -132,6 +132,40 @@ ownership only. It does not weaken storage-time secret screening, Temporary-chat
 isolation, or the rule that Memory cannot authorize actions or select tools and
 credentials.
 
+## Memory Scheduler And Background Budgets
+
+```text
+AIQSA_MEMORY_JOB_PARALLELISM=2
+AIQSA_MEMORY_JOB_PER_USER_PARALLELISM=1
+AIQSA_MEMORY_JOB_CLAIMS_PER_PASS=16
+AIQSA_MEMORY_DELETION_PARALLELISM=1
+AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS=64
+AIQSA_MEMORY_BACKGROUND_BUDGET_REFRESH_MS=60000
+AIQSA_MEMORY_BACKGROUND_USER_DAILY_CALLS=64
+AIQSA_MEMORY_BACKGROUND_USER_DAILY_COST_MICROS=500000
+AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_CALLS=4096
+AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_COST_MICROS=25000000
+```
+
+These optional bounded integers configure the feature-local coordinator. The
+shipped single-coordinator topology admits two ordinary job handlers, at most
+one for the same user, and one independent deletion handler. Claim-pass limits
+bound one scheduler tick rather than truncate durable backlog. The job policy
+weights safety reconciliation, still gives ordinary and background tiers a
+bounded turn, and retains PostgreSQL owner rotation within every tier.
+
+The two daily limits are soft UTC-day ceilings for `GLOBAL_DREAM` and
+`RECALCULATE_WORKING_SET` only. Calls count their persisted execution bindings;
+cost uses stored operator-priced estimates in micro-units and remains an
+estimate rather than billing truth. Missing cost stays call-bounded. A reached
+user or installation limit defers the background job to the next UTC day
+without spending a provider retry; unavailable usage accounting defers it for
+the refresh interval. Active bounded work can create a small soft-limit
+overshoot. Explicit operations, Forget/purge, Temporary/account deletion, and
+safety reconciliation never consult these budgets. Invalid values block Memory
+coordinator construction with a content-free feature-local error. Compose
+forwards one policy to the web status reader and the standalone worker.
+
 ## Address, Cookies, And Proxy Trust
 
 ```text
@@ -399,6 +433,18 @@ cleanup evidence for an external backend remain operator-owned.
 
 The repository `ops/backup/create.sh` helper deliberately supports only the bundled `http://minio:9000` endpoint and fails closed for external S3. External storage needs the provider's consistent backup/versioning process coordinated with the PostgreSQL backup.
 
+Recovery uses the separate `ops/backup/docker-compose.restore.yml` with a unique
+`COMPOSE_PROJECT_NAME=aiqsa-restore-*`. Ephemeral `AIQSA_RESTORE_POSTGRES_*`,
+`AIQSA_RESTORE_S3_*`, and `AIQSA_RESTORE_BUCKET` values address only its
+disposable database/object target; restore/review additionally require exact
+`AIQSA_RESTORE_DISPOSABLE_TARGET=YES`, service names, and a pre-created
+mode-0700 `AIQSA_RESTORE_REVIEW_DIRECTORY`. The operator recovers
+`AIQSA_MEMORY_FINGERPRINT_KEYRING` separately and should pin `AIQSA_IMAGE` to
+the reviewed compatible release. The restore Compose file has no ports, an
+internal network, bounded one-shot tools, and explicitly empty answer/embedding
+provider credentials. These recovery variables never authorize production
+cutover and do not belong in the normal installation `.env`.
+
 ## Run Attachment Materialization
 
 ```text
@@ -481,6 +527,16 @@ Exact `AIQSA_TEST_MODE=1` plus non-production `NODE_ENV` authorizes the determin
 The repeatable seed has one ignored checkout-local extension point at `.aiqsa/local-dev-profile/post-seed.ts`. It is absent by default and therefore changes nothing for normal checkouts; exact `AIQSA_LOCAL_DEV_PROFILE_DISABLED=1` suppresses even that one file for a seed invocation. This switch is an emergency/testing escape hatch for the development command, not application configuration and not an invitation to pass provider secrets into the long-running runtime.
 
 The dev/test fake adapter paces tokens by 10 ms by default so streaming and cancellation remain observable when Playwright reuses the Compose server. Set `AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS=0` explicitly to disable pacing for a one-off development run.
+
+Dev Compose also honors the canonical `AIQSA_APP_MEMORY_LIMIT`, with a 3 GiB
+development default instead of the release stack's 2 GiB default, plus
+`AIQSA_APP_CPU_LIMIT`, with a four-CPU default. These are hard cgroup boundaries
+for long-lived Turbopack and one-shot app containers, so a stale compiler cache
+cannot consume host memory without bound or monopolize every CPU. The container
+check additionally uses a uniquely named fresh one-shot app container with
+fixed 4 GiB and two-CPU cgroup boundaries, a 3 GiB Node heap, and one Vitest
+worker; a second concurrent check fails to start, and the toolchain never enters
+the warmed dev server.
 
 The dev Compose service hardcodes loopback publication and does not inject provider/SMTP or sign-in OAuth credentials from the normal installation `.env`. A deliberate one-off adapter smoke passes only the required key to the standalone smoke command; `smoke:gemini` may read `GEMINI_API_KEY` from the uncommitted local `.env` when launched from the repository. Routine application runtime always resolves provider credentials from its disposable database.
 

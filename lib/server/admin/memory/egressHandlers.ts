@@ -5,6 +5,8 @@ import {
   AdminMemoryEgressServiceError,
   type createAdminMemoryEgressService
 } from "./egressService";
+import type { MemoryHealthService } from "../../memory/health/service";
+import { unavailableAdminMemoryHealth } from "../../../contracts/memoryHealth";
 
 type Service = ReturnType<typeof createAdminMemoryEgressService>;
 
@@ -43,16 +45,38 @@ function isJsonContentType(value: string | null): boolean {
   return value?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
 }
 
+async function healthProjection(
+  service: MemoryHealthService,
+  adminUserId: string,
+  egressReviewRequired: boolean
+) {
+  try {
+    return await service.admin(adminUserId, { egressReviewRequired });
+  } catch {
+    console.error("memory_admin_health_read_failed");
+    return unavailableAdminMemoryHealth("EN");
+  }
+}
+
 export function createAdminMemoryEgressHandlers(input: Readonly<{
+  healthService: MemoryHealthService;
   resolveAuth: RequestAuthResolver;
   service: Service;
 }>) {
   return Object.freeze({
     async GET(request: Request): Promise<Response> {
       const auth = await requireAdmin(request, input.resolveAuth);
-      if (auth.error) return auth.error;
+      if (auth.error || !auth.session) return auth.error!;
       try {
-        return json({ memoryEgress: await input.service.get() });
+        const memoryEgress = await input.service.get();
+        return json({
+          memoryEgress,
+          memoryHealth: await healthProjection(
+            input.healthService,
+            auth.session.userId,
+            memoryEgress.reviewRequired
+          )
+        });
       } catch (error) {
         return serviceFailure(error);
       }
@@ -74,10 +98,16 @@ export function createAdminMemoryEgressHandlers(input: Readonly<{
       const decoded = decodeAdminMemoryEgressAcknowledgeInput(value);
       if (!decoded) return json({ error: "memory_admin_egress_input_invalid" }, 400);
       try {
+        const memoryEgress = await input.service.acknowledge(
+          auth.session.userId,
+          decoded
+        );
         return json({
-          memoryEgress: await input.service.acknowledge(
+          memoryEgress,
+          memoryHealth: await healthProjection(
+            input.healthService,
             auth.session.userId,
-            decoded
+            memoryEgress.reviewRequired
           )
         });
       } catch (error) {

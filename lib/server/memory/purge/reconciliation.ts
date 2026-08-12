@@ -13,7 +13,7 @@ export type MemoryDeletionAuditSnapshot = Readonly<{
   memoryGeneration: number;
   operation: "FORGET_PURGE";
   progress: MemoryDeletionProgress;
-  state: "BLOCKED_REQUIRES_ADMIN" | "PENDING" | "RETRY_WAIT" | "RUNNING" | "SUCCEEDED";
+  state: "BLOCKED_REQUIRES_ADMIN" | "CANCELLED" | "PENDING" | "RETRY_WAIT" | "RUNNING" | "SUCCEEDED";
   targetId: string;
   targetType: string;
   updatedAt: Date;
@@ -115,6 +115,8 @@ export async function reconcileCompletedMemoryDeletionAudits(input: Readonly<{
         { OR: [{ lastAuditAt: null }, { lastAuditAt: { lt: now } }] },
         {
           OR: [
+            { targetType: { startsWith: "AUTOMATIC_SET@" } },
+            { targetType: { startsWith: "ALL_REUSABLE@" } },
             { targetType: { startsWith: "MEMORY_FACT@" } },
             { targetType: { startsWith: "EXPLICIT_SET@" } }
           ]

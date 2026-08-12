@@ -5,9 +5,10 @@ import {
   resetMemorySettingsStoreForTest,
   useMemorySettingsStore
 } from "./memorySettingsStore";
+import { resetMemoryHealthStoreForTest } from "./memoryHealthStore";
 import { resetMemoryManagerStoreForTest } from "./memoryManagerStore";
 import { resetMemoryOperationsStoreForTest } from "./memoryOperationsStore";
-import { memorySettingsFixture } from "./memoryTestFixtures";
+import { memoryHealthFixture, memorySettingsFixture } from "./memoryTestFixtures";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
 
 function json(value: unknown, status = 200): Response {
@@ -17,18 +18,30 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
+function withHealth(
+  handler: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+  health = memoryHealthFixture()
+) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input) === "/api/me/memory/health"
+      ? json({ health })
+      : handler(input, init));
+}
+
 describe("MemorySettingsSection", () => {
   const sectionProps = {
     accountId: "account-test",
     onOpenMemorySource: () => undefined
   };
   beforeEach(() => {
+    resetMemoryHealthStoreForTest();
     resetMemorySettingsStoreForTest();
     resetMemoryManagerStoreForTest();
     resetMemoryOperationsStoreForTest();
   });
   afterEach(() => {
     cleanup();
+    resetMemoryHealthStoreForTest();
     resetMemorySettingsStoreForTest();
     resetMemoryManagerStoreForTest();
     resetMemoryOperationsStoreForTest();
@@ -48,7 +61,7 @@ describe("MemorySettingsSection", () => {
       }
     }, "RU");
     const bodies: Record<string, unknown>[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal("fetch", withHealth(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path !== "/api/me/memory/settings") throw new Error(`unexpected request: ${path}`);
       if (init?.method === "GET") return json(server);
@@ -99,6 +112,8 @@ describe("MemorySettingsSection", () => {
 
     expect(await screen.findByRole("heading", { name: "Память" })).toBeVisible();
     expect(screen.getByRole("switch", { name: "Использовать факты из памяти" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("current-destination-fingerprint-00000001")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Расширенный режим", { exact: true }));
     expect(screen.getByText("Текущий отпечаток назначений")).toBeVisible();
     expect(screen.getByText("current-destination-fingerprint-00000001")).toBeVisible();
     expect(screen.getByText("Перед продолжением внешней обработки Памяти требуется проверка.")).toBeVisible();
@@ -137,7 +152,7 @@ describe("MemorySettingsSection", () => {
         useMemoryFacts: true
       }
     });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(server)));
+    vi.stubGlobal("fetch", withHealth(async () => json(server)));
 
     render(<MemorySettingsSection {...sectionProps} />);
 
@@ -150,7 +165,8 @@ describe("MemorySettingsSection", () => {
     }
     expect(screen.getAllByText(/Preference is stored; this capability is not active/u)).toHaveLength(3);
     expect(screen.getByRole("button", { name: "Manage Memories" })).toBeDisabled();
-    const capabilities = screen.getByRole("heading", { name: "Current capabilities" }).parentElement!;
+    fireEvent.click(screen.getByText("Advanced", { exact: true }));
+    const capabilities = screen.getByText("Current capabilities").parentElement!;
     expect(within(capabilities).getAllByText("Unavailable")).toHaveLength(4);
   });
 
@@ -163,7 +179,7 @@ describe("MemorySettingsSection", () => {
       },
       settings: { referenceChatHistory: true }
     }, "RU");
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal("fetch", withHealth(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "PATCH") {
         server = memorySettingsFixture({
           historyIndexing: server.historyIndexing,
@@ -200,7 +216,7 @@ describe("MemorySettingsSection", () => {
         reviewRequired: false
       }
     });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(server)));
+    vi.stubGlobal("fetch", withHealth(async () => json(server)));
 
     render(<MemorySettingsSection {...sectionProps} />);
 
@@ -215,7 +231,7 @@ describe("MemorySettingsSection", () => {
   it("reports mutation busy state to the Settings owner", async () => {
     const server = memorySettingsFixture();
     let resolvePatch!: (response: Response) => void;
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal("fetch", withHealth(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "PATCH") {
         return new Promise<Response>((resolve) => { resolvePatch = resolve; });
       }
@@ -231,23 +247,23 @@ describe("MemorySettingsSection", () => {
     await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
   });
 
-  it("enters and returns from the history-operations task with deterministic focus", async () => {
+  it("enters and returns from the Memory-operations task with deterministic focus", async () => {
     const server = memorySettingsFixture({ settings: { referenceChatHistory: true } });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(server)));
+    vi.stubGlobal("fetch", withHealth(async () => json(server)));
     render(<MemorySettingsSection {...sectionProps} />);
 
-    const entry = await screen.findByRole("button", { name: "History operations" });
+    const entry = await screen.findByRole("button", { name: "Memory operations" });
     const scrollOwner = screen.getByTestId("settings-memory-scroll");
     scrollOwner.scrollTop = 240;
     fireEvent.click(entry);
-    const heading = screen.getByRole("heading", { name: "History operations" });
+    const heading = screen.getByRole("heading", { name: "Memory operations" });
     await waitFor(() => expect(heading).toHaveFocus());
     expect(scrollOwner.scrollTop).toBe(0);
     expect(scrollOwner.querySelectorAll(".overflow-y-auto"))
       .toHaveLength(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Back to Memory settings" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "History operations" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Memory operations" })).toHaveFocus());
     expect(scrollOwner.scrollTop).toBe(240);
     expect(screen.getByRole("heading", { name: "Memory" })).toBeVisible();
   });

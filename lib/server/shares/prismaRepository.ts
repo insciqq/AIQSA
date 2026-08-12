@@ -24,6 +24,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
             archived: false,
             id: chatId,
             memoryMode: { not: "TEMPORARY" },
+            permanentDeletionAt: null,
             userId
           }
         });
@@ -94,7 +95,12 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
             {
               OR: [
                 { chatId: null },
-                { chat: { memoryMode: { not: "TEMPORARY" } } }
+                {
+                  chat: {
+                    memoryMode: { not: "TEMPORARY" },
+                    permanentDeletionAt: null
+                  }
+                }
               ]
             }
           ],
@@ -125,7 +131,10 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
         },
         where: {
           OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-          chat: { memoryMode: { not: "TEMPORARY" } },
+          chat: {
+            memoryMode: { not: "TEMPORARY" },
+            permanentDeletionAt: null
+          },
           chatId,
           ownerUserId: userId,
           revokedAt: null

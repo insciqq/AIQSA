@@ -49,7 +49,8 @@ function decodeToolInput(value: Record<string, unknown>): MemoryHistorySearchInp
   const range = value.time_range;
   if (
     range !== undefined &&
-    (typeof range !== "object" || range === null || Array.isArray(range) ||
+    range !== null &&
+    (typeof range !== "object" || Array.isArray(range) ||
       !exactKeys(range as Record<string, unknown>, ["from", "to"]))
   ) {
     return null;

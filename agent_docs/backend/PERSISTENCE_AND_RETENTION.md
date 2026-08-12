@@ -23,30 +23,26 @@ Dry-run performs only bounded reads. Execute mode deletes old events only for te
 
 ## Backup And Restore
 
-`ops/backup/create.sh` is the supported bundled-Postgres/MinIO consistency
-boundary. It records whether `app` and `memory-worker` were running, stops both,
-verifies neither remains live, and then atomically moves every claimed Memory
-job to due `RETRYABLE_FAILED` and every running Memory deletion obligation to
-due `RETRY_WAIT` with the stable `memory_backup_fenced` code. Tokens and lease
-deadlines are cleared in the same transition, so a stale pre-backup claimant
-cannot settle after restart. The transition is conditional on the Memory tables
-existing, allowing the current helper to make the required pre-migration backup
-of an older installation. Only after that fence does it dump PostgreSQL and
-mirror the private bucket; cleanup restarts exactly the writer roles that were
-running before the attempt.
+`ops/backup/create.sh` is the bundled Postgres/MinIO consistency boundary. It
+records, stops, and verifies `app` plus `memory-worker`, then atomically releases
+claimed jobs to due `RETRYABLE_FAILED` and running deletions to due `RETRY_WAIT`
+with `memory_backup_fenced`, clearing their leases. Only then does it copy
+Postgres and the private bucket; cleanup restarts exactly the prior writers.
+The conditional fence supports older pre-Memory schemas. Format 2 stores sorted
+distinct non-secret suppression key IDs, never key material; format 1 remains
+verifiable.
 
-Backup format 2 adds the sorted distinct non-secret
-`MemorySuppression.fingerprintKeyVersion` IDs to `manifest.env`; key material
-never enters the bundle. Format 1 remains structurally verifiable for recovery
-of older pre-activation installations. Restore still accepts only explicitly
-acknowledged empty disposable services and never starts either writer. It first
-validates manifest IDs with the separately recovered keyring, restores the
-database transactionally, reads the authoritative distinct IDs back, checks a
-format-2 manifest match, and repeats key preflight before object restore and
-successful handoff. A missing or invalid key leaves the disposable target
-diagnosable but blocks automatic Memory resume. Production promotion still
-requires the separate deletion-journal, barrier/outbox, bearer-endpoint, and
-resurrection review owned by the Memory lifecycle contract.
+Restore accepts only an acknowledged empty `aiqsa-restore-*` project using the
+internal, no-port `ops/backup/docker-compose.restore.yml`; only Postgres and
+MinIO may run. It preflights manifest IDs, restores transactionally, verifies
+authoritative IDs, repeats key preflight, restores objects, and writes a
+checksummed `PENDING` review manifest without starting an app. `review.sh`
+requires an explicit no-journal attestation or a separately applied external
+journal's SHA-256 identity, then runs a provider-credential-free deletion-only
+coordinator. Unresolved/account deletion, live leases/executions, broken
+barrier-obligation ownership, missing keys, object failure, or changed Compose
+identity blocks the checksummed promotion receipt. Neither helper cuts over or
+promotes production.
 
 ## Core Tables
 
@@ -88,31 +84,40 @@ partial Knowledge predicates because the supported Prisma version cannot
 represent partial-index conditions. The focused migration contract pins those
 predicates and proves their bounded owner-range query plans.
 
-The Memory coordinator uses one short cursor transaction for registered jobs
-and deletion operations. Jobs require an active owner; unavailable-owner work
-is cancelled, while deletion remains claimable through disablement or teardown.
-Claims use random lease tokens; heartbeat, retry, gate settlement, and apply
-compare exact owner/state/token/expiry. Consent waiting has no lease or fallback.
-Apply and success share one transaction. Deletion retries are bounded and then
-become `BLOCKED_REQUIRES_ADMIN`, never abandoned. Registered work comprises
-`FORGET_PURGE`, `TEMPORARY_DELETE`, `BULK_CLEAR`, `SOURCE_PURGE`, `EMBED_ITEMS`,
-`INDEX_HISTORY`, `EXTRACT_EPISODE`, `EXTRACT_FACTS`, `CONSOLIDATE_CANDIDATE`,
-`VERIFY_CANDIDATE`, and `REBUILD_INDEX`. Versioned Forget leaves and their audit
-share claim-success, so failure rolls back the attempt. Scrubbing a nonterminal
-attempt also settles its `PREPARING` run/message. Missing contributors or
-residuals refuse success; reconciliation may reopen stale `SUCCEEDED` work.
-Unregistered work is dormant. Development starts the coordinator from server
-instrumentation; production uses the private `memory-worker` role. Both
-preflight the keyring and referenced historical key IDs.
+The Memory coordinator fair-claims work through a short cursor transaction.
+Jobs require an active owner; deletions survive disablement. Random leases fence
+heartbeat/retry/apply by owner/state/token/expiry; consent waiting has no lease
+or fallback. Apply and success share one transaction. Deletion retries become
+`BLOCKED_REQUIRES_ADMIN`, never abandoned. Registered deletion, indexing,
+learning, verification, embedding, and rebuild kinds are allowlisted. Missing
+residuals refuse success; reconciliation may reopen it. Workers
+preflight key history.
 
-`MemoryCandidate` is quarantine bound to succeeded extraction and direct-USER
-evidence. `MemoryCandidateDecision` immutably binds its candidate, operation,
-related/input/output hashes, exact succeeded consolidator execution, and, when
-required, exact verifier job/execution. Shape, tenant, role, and execution
-authority are database-checked. Apply atomically writes fact/version/evidence/
-event/search/current-pointer state and closes the candidate/decision. Source
-loss stales pending decisions and deterministically normalizes supported claims.
-Forget scrubs candidates and pending decisions; source purge deletes invalid rows.
+Global reusable deletion owns one `ALL_REUSABLE` barrier and one `FORGET_PURGE`.
+Admission disables gates and fences counters/index/work. Versioned contributors
+atomically purge/audit reusable owners and private feedback/receipts. Raw
+messages and accepted run items remain with live references detached; failed
+applies roll back and the cutoff rejects old-source replay.
+
+Permanent retained-chat deletion uses typed
+`SOURCE_PURGE/CHAT@memory-p8-chat-delete-v1`, bound to a consumed authorization,
+revision/leaf, and origin-memory choice. Admission excludes the chat, fences
+work, and revokes shares. Retry-safe cleanup removes exclusive objects and
+source data, retracts unsupported facts, and optionally applies Forget.
+Other-chat evidence stays frozen but shows `Source deleted` without a link;
+database guards prevent resurrection. Provider/backup erasure is not promised.
+
+`MemoryCandidate` quarantines direct-USER evidence from a succeeded extraction.
+Its decision immutably binds operation, hashes, succeeded consolidator, and any
+required verifier authority; database checks enforce shape, tenant, and role.
+Apply atomically writes fact/version/evidence/event/search/current-pointer state
+and closes both rows. Source loss stales decisions; Forget scrubs them and source
+purge removes invalid rows.
+
+`MemoryProfileProjection` and immutable joins are append-only. Guards require
+current scope/counters, one-to-six `NORMAL` contributors, matching text, and
+succeeded usage-backed execution. Only invalidation/purge is allowed; source
+deletion scrubs joins and text first.
 
 Temporary is a guarded first-send transition from an empty `NORMAL` chat. It
 atomically writes policy `temporary-24h-v1`, deadline, first graph, and exactly
@@ -221,11 +226,11 @@ answer-model usage.
 
 Folder names are unique among siblings for each user. Top-level folders use the partial unique index `Folder_userId_top_level_name_key`; child folders use `Folder_userId_parentId_name_key`.
 
-`Group.archivedAt` is the soft-disable flag for ordinary group entitlement administration. Archived groups remain visible to admins for audit/history, but they are excluded from effective entitlement resolution and cannot receive new grants or membership replacement targets. Exactly one non-archived group may have `systemRole = full_access`; database and service guards keep its exact name/lifecycle immutable while membership remains explicit. It cannot be renamed, archived, or deleted, so the ordinary empty-group deletion rule never applies to it. Bootstrap/adoption preserves an ordinary legacy group that already owns the reserved name by moving it to the first available `Full access (custom)` or numbered variant; it never promotes that group to the system role. An active member receives semantic wildcard entitlement to every current/future active provider connection/model and enabled Search option without materializing `AccessGrant` rows, but that wildcard never chooses a provider credential. `AccessGrant` continues to support direct user grants and ordinary group grants for connection-wide, stable model-deployment, and stable Search-option access; its database column remains `searchStrategy` for migration compatibility. Current admin workflows edit ordinary group grants only. PostgreSQL checks require exactly one `userId`/`groupId` principal and exactly one non-empty provider connection/model/Search target. The repeatable seed writes only those stable targets so an existing fixed-id grant cannot retain a stale principal or target.
+`Group.archivedAt` soft-disables an ordinary group: admins retain audit visibility, but the group grants nothing and accepts no new grants or membership replacement. One non-archived group may have `systemRole = full_access`; database/service guards make its name and lifecycle immutable and forbid rename, archive, or deletion while membership stays explicit. Bootstrap renames an ordinary reserved-name collision to the first available `Full access (custom)` variant instead of promoting it. An active member semantically receives every current/future active provider connection/model and enabled Search option without materialized grants or credential selection. `AccessGrant` still supports direct-user and ordinary-group connection/model/Search targets (the schema retains `searchStrategy`); admin workflows edit ordinary-group grants only. Checks require exactly one principal and one nonempty target. The repeatable seed repairs only stable targets, preventing a fixed-id grant from retaining a stale principal or target.
 
 For MCP, `Full access` uses the materialized group-grant path: bootstrap and the development seed ensure one protected `canUse = true`, empty-personal-slot `McpGrant` for every existing server, and the database insert trigger creates the same grant for every future server. Server deletion still cascades through those rows. This grants server use only; personal slot permission, personal encrypted values, user OAuth identity, and other personal secrets remain direct-user state.
 
-Admin hard-delete workflows are intentionally narrow. Stale users can be deleted only when they are not active, are not the acting admin, and retain no chats, folders, runs, uploads, Assistants, settings, shares, usage events, access grants, or authored session-revocation evidence. Groups can be deleted only with zero members, zero enabled grants, and zero Assistant publications. Invites can be deleted only after they are revoked or expired; accepted invites remain audit history by default.
+Admin hard-delete is narrow. Stale users must be inactive, not the acting admin, and have no unrelated owned chats, folders, runs, uploads, Assistants, settings, shares, usage, grants, or authored revocations; those block before Memory mutation. The mandatory default `UserMemorySettings` row is inert. If Memory alone remains and the sole Phase 8 composition exposes its exact hook and handler, admission fences gates/counters, cancels undispatched work, creates one typed `ACCOUNT_MEMORY_DELETE`, and returns the blocker while reconciliation runs. Recoverable/unknown provider calls stay attached; settled usage-backed evidence detaches only after its recovery horizon. After an audited reusable/private purge, the global transaction deletes retained usage/execution/job/outbox evidence, then the user. Replay and drift fail closed and retry. Missing/conflicting composition or a disabled admission policy leaves new Memory cleanup a zero-mutation blocker; policy rollback does not prevent the same hook and handler from resuming or finalizing an already-accepted obligation. Groups require zero members, enabled grants, and Assistant publications. Invites require revocation or expiry; accepted invites remain audit history.
 
 PromptPreset and RunProfile were removed by the reusable-assistants expand/contract cutover. The `20260806210000_prompt_preset_stock_cleanup` migration is the fail-closed prompt data half: it aborts the deployment without mutation when any row deviates from the exact provisioned `Helpful Assistant` signature or an owner holds more than one preset, and otherwise idempotently clears `UserSettings.defaultPromptPresetId`, `Chat.defaultPromptPresetId`, and `Message.promptPresetId` before deleting the verified stock rows. The following transactional `20260806210500_run_profile_stock_cleanup` preflight takes an exclusive table lock, requires exactly the three untouched fixed RunProfile signatures with no operator attribution, version advance, missing/extra row, or non-stock model target, and installs a statement trigger rejecting INSERT, UPDATE, DELETE, and TRUNCATE. A mismatch leaves the remaining legacy schema and every RunProfile row unchanged; after success, the committed trigger seals the approved rows across an interrupted or retried deployment. `20260806211000_reusable_assistants_v1` then drops the drained columns and tables, automatically removing the table trigger, and creates the Assistant aggregate; `20260806211500_drop_run_profile_stock_cleanup_guard` idempotently removes the now-unreferenced trigger function. The supported single-host topology stops the previous app container before `migrate-bootstrap` runs, which remains the required old-process drain for the cutover. Historical accepted runs keep exact prompt evidence inside `ModelRun.normalizedRequest`; ordinary new runs receive the server-owned standard-chat baseline instead of a database prompt row.
 
@@ -237,7 +242,7 @@ Follow the storage/logging invariants in `agent_docs/CRITICAL_INVARIANTS.md`. Pe
 
 Schema changes land as append-only Prisma migrations. The one-shot installation tools service uses `prisma migrate deploy`; never use `prisma db push` for persistent data volumes. Existing pre-migration volumes that already match the baseline are marked once with `prisma migrate resolve --applied 20260610180000_baseline` before normal deploys continue. Each migration owns its compatibility preflight, transactional conversion, and rollback guidance beside the SQL or in its focused contract script; `TESTING.md` routes the disposable-database commands. This document records only the resulting schema and runtime invariants.
 
-`prisma/bootstrap.ts` is the installation fresh-install/adoption entry point. Under one serializable transaction and advisory lock it first distinguishes an empty schema from an already-adopted initial-admin password identity by normalized email. Every other nonempty target fails before catalog or user mutation. Fresh bootstrap requires an explicit valid email and password, defaults the display name when omitted, and generates a user UUID when none is supplied. It creates only the active admin, verified password identity, immutable built-in `Full access` group with owner membership and current MCP grants, default settings with no default folder, inert default-off `UserMemorySettings`, nullable installation model-policy foundation, code-owned provider/Search scaffolding, and the disabled fake test deployment; it creates no Memory content/work, prompt row, run-profile slot, real provider-model deployment, folder, or demo chat. An explicit user UUID is enforced when supplied. An adopted rerun may repair missing inert Memory settings or model-policy foundation and restore the built-in group/membership/current MCP grants, but never overwrites either settings row, the policy target, or creates newly added answer-model deployments; adding a new template therefore has no migration/backfill effect on an existing installation. It may refresh metadata for already-owned catalog rows while preserving catalog enablement and every operator-owned password/user-profile/role/status/settings/folder/prompt/grant value. The plaintext initial password is unnecessary after first adoption. The default Gemini Quick Setup candidate set includes Gemini 3.6 Flash, 3.5 Flash, 3.5 Flash-Lite, and 3.1 Pro Preview; those deployments are created and granted only when that setup runs against a provider catalog that exposes them, never by an upgrade migration or adopted-bootstrap backfill.
+`prisma/bootstrap.ts` is the installation fresh-install/adoption entry point. Under one serializable transaction and advisory lock it first distinguishes an empty schema from an already-adopted initial-admin password identity by normalized email. Every other nonempty target fails before catalog or user mutation. Fresh bootstrap requires an explicit valid email and password, defaults the display name when omitted, and generates a user UUID when none is supplied. It creates only the active admin, verified password identity, immutable built-in `Full access` group with owner membership and current MCP grants, default settings with no default folder, fact/history-on and learning-off `UserMemorySettings`, nullable installation model-policy foundation, code-owned provider/Search scaffolding, and the disabled fake test deployment; it creates no Memory content/work, prompt row, run-profile slot, real provider-model deployment, folder, or demo chat. An explicit user UUID is enforced when supplied. An adopted rerun may repair missing default Memory settings or model-policy foundation and restore the built-in group/membership/current MCP grants, but never overwrites either settings row, the policy target, or creates newly added answer-model deployments; adding a new template therefore has no migration/backfill effect on an existing installation. It may refresh metadata for already-owned catalog rows while preserving catalog enablement and every operator-owned password/user-profile/role/status/settings/folder/prompt/grant value. The plaintext initial password is unnecessary after first adoption. The default Gemini Quick Setup candidate set includes Gemini 3.6 Flash, 3.5 Flash, 3.5 Flash-Lite, and 3.1 Pro Preview; those deployments are created and granted only when that setup runs against a provider catalog that exposes them, never by an upgrade migration or adopted-bootstrap backfill.
 
 The production one-shot role runs migration deploy, then installation
 bootstrap, then the idempotent legacy provider/SMTP/MCP control-plane cutover.
@@ -250,7 +255,7 @@ foundation before the cutover imports any complete legacy environment drafts.
 
 Fake QSA is likewise a disposable development runtime, never an installed provider. Production migration/bootstrap may retain its code-owned connection/model rows solely for referential history, but always disables the connection and model, clears active publication, and excludes the family from Quick setup's configured Connections projection. The development seed explicitly repairs and republishes Fake only inside its guarded disposable environment.
 
-The local seed creates initial settings with no default folder and inert default-off `UserMemorySettings` on fresh volumes, but no Memory content/work, prompt rows, folders, chats, or messages. It repairs `Full access` plus operator owner membership/current MCP grants, while leaving the two ordinary fixture users outside that group. It also repairs a development-only ordinary-user group with Fake QSA access, one shared MCP definition granted through that group, one private MCP definition granted directly to only the MCP Member fixture, and an exact direct personal-slot permission on the shared definition for that member. The Restricted Member has only group `canUse`, no personal-slot authority, and no visibility of the private server. It does not delete an existing folder or chat, overwrite an existing `UserSettings` or `UserMemorySettings`, change the operator display name, or disturb unrelated operator-created records on repeat runs; explicit local identities, role/status foundations, system-group foundation, and fixed seed-owned access fixtures remain repairable.
+The local seed creates initial settings with no default folder and fact/history-on, learning-off `UserMemorySettings` on fresh volumes, but no Memory content/work, prompt rows, folders, chats, or messages. It repairs `Full access` plus operator owner membership/current MCP grants, while leaving the two ordinary fixture users outside that group. It also repairs a development-only ordinary-user group with Fake QSA access, one shared MCP definition granted through that group, one private MCP definition granted directly to only the MCP Member fixture, and an exact direct personal-slot permission on the shared definition for that member. The Restricted Member has only group `canUse`, no personal-slot authority, and no visibility of the private server. It does not delete an existing folder or chat, overwrite an existing `UserSettings` or `UserMemorySettings`, change the operator display name, or disturb unrelated operator-created records on repeat runs; explicit local identities, role/status foundations, system-group foundation, and fixed seed-owned access fixtures remain repairable.
 
 After that canonical seed succeeds, it checks only the exact ignored checkout-local entrypoint `.aiqsa/local-dev-profile/post-seed.ts`. A missing entrypoint or exact `AIQSA_LOCAL_DEV_PROFILE_DISABLED=1` is a no-op, so ordinary developers and CI retain the canonical empty-workspace contract without setup. A regular file must export `run(context)`; the seed passes its existing Prisma client, repository root, and loader-contract version, awaits completion before disconnecting, and fails the seed when an opted-in profile is invalid or fails. The concrete profile, fixtures, provider inputs, and local state remain ignored private checkout data; the tracked loader neither discovers arbitrary scripts nor supplies provider environment fallback to application runtime.
 

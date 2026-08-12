@@ -20,7 +20,8 @@ export const DEFAULT_MEMORY_SETTINGS_CAPABILITIES: MemorySettingsCapabilities =
   Object.freeze({
     automaticLearning: false,
     explicitMemory: true,
-    historyRecall: false,
+    historyRecall: true,
+    permanentChatDeletion: false,
     russianQualified: true,
     temporaryChats: true
   });
@@ -193,12 +194,16 @@ export function createMemorySettingsService(input: Readonly<{
     settings: MemorySettingsPersistenceSnapshot
   ) => Promise<MemorySettingsResponse["historyIndexing"]>;
   repository: MemorySettingsRepository;
+  resolveCapabilities?: (
+    settings: MemorySettingsPersistenceSnapshot,
+    policy: ResolvedMemoryUtilityPolicy
+  ) => MemorySettingsCapabilities;
   resolveCurrentUtilityPolicy(
     userId: string,
     settings: MemorySettingsPersistenceSnapshot
   ): Promise<ResolvedMemoryUtilityPolicy>;
 }>): MemorySettingsService {
-  const capabilities = Object.freeze({
+  const staticCapabilities = Object.freeze({
     ...(input.capabilities ?? DEFAULT_MEMORY_SETTINGS_CAPABILITIES)
   });
   const egressConsentMode = input.egressConsentMode ?? resolveMemoryEgressConsentMode();
@@ -224,6 +229,9 @@ export function createMemorySettingsService(input: Readonly<{
       input.resolveCurrentUtilityPolicy(userId, settings),
       readHistoryIndexing(userId, settings)
     ]);
+    const capabilities = input.resolveCapabilities
+      ? input.resolveCapabilities(settings, policy)
+      : staticCapabilities;
     return responseProjection(
       settings,
       policy,

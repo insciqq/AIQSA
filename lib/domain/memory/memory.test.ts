@@ -119,6 +119,8 @@ describe("Memory state machines", () => {
     expect(memoryDeletionTransitionAllowed("RUNNING", "BLOCKED_REQUIRES_ADMIN")).toBe(true);
     expect(memoryDeletionTransitionAllowed("BLOCKED_REQUIRES_ADMIN", "RUNNING")).toBe(true);
     expect(memoryDeletionTransitionAllowed("BLOCKED_REQUIRES_ADMIN", "SUCCEEDED")).toBe(false);
+    expect(memoryDeletionTransitionAllowed("PENDING", "CANCELLED")).toBe(true);
+    expect(memoryDeletionTransitionAllowed("CANCELLED", "RUNNING")).toBe(false);
   });
 
   it("forbids abandoned deletion jobs and post-I/O consent waiting", () => {

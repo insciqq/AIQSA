@@ -1,12 +1,60 @@
 import type {
   MemoryDeletionStatus,
+  MemoryDetailResponse,
   MemoryEvidenceResponse,
   MemoryListResponse,
+  MemoryProfileProjection,
+  MemoryProfileResponse,
   MemoryRebuildStatus,
   MemorySettingsResponse,
   MemorySummary,
   MemoryUiLocale
 } from "@/lib/contracts/memory";
+import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
+
+export function memoryHealthFixture(
+  overrides: Partial<Omit<
+    UserMemoryHealth,
+    "deletion" | "indexing" | "learning" | "rebuild" | "temporary"
+  >> & Readonly<{
+    deletion?: Partial<UserMemoryHealth["deletion"]>;
+    indexing?: Partial<UserMemoryHealth["indexing"]>;
+    learning?: Partial<UserMemoryHealth["learning"]>;
+    rebuild?: Partial<UserMemoryHealth["rebuild"]>;
+    temporary?: Partial<UserMemoryHealth["temporary"]>;
+  }> = {}
+): UserMemoryHealth {
+  const base: UserMemoryHealth = {
+    action: "NONE",
+    deletion: {
+      activeCount: 0,
+      countTruncated: false,
+      retrievalFenced: false,
+      state: "CLEAR"
+    },
+    egressReview: "NONE",
+    indexing: {
+      completedChats: 0,
+      countTruncated: false,
+      state: "DISABLED",
+      totalChats: 0
+    },
+    learning: { reason: "USER_DISABLED", resumeAt: null, state: "DISABLED" },
+    observedAt: "2026-08-12T10:00:00.000Z",
+    rebuild: { state: "IDLE" },
+    state: "UP_TO_DATE",
+    temporary: { countTruncated: false, overdueCount: 0, state: "CLEAR" }
+  };
+  return {
+    ...base,
+    ...overrides,
+    deletion: { ...base.deletion, ...overrides.deletion },
+    indexing: { ...base.indexing, ...overrides.indexing },
+    learning: { ...base.learning, ...overrides.learning },
+    rebuild: { ...base.rebuild, ...overrides.rebuild },
+    temporary: { ...base.temporary, ...overrides.temporary }
+  };
+}
 
 export function memorySettingsFixture(
   overrides: Readonly<{
@@ -22,6 +70,7 @@ export function memorySettingsFixture(
       automaticLearning: true,
       explicitMemory: true,
       historyRecall: true,
+      permanentChatDeletion: false,
       russianQualified: true,
       temporaryChats: true
     },
@@ -104,6 +153,71 @@ export function memorySummaryFixture(overrides: Partial<MemorySummary> = {}): Me
 
 export function memoryListFixture(memories = [memorySummaryFixture()]): MemoryListResponse {
   return { memories, nextCursor: null };
+}
+
+export function memoryProfileFixture(
+  overrides: Partial<Omit<MemoryProfileResponse, "profile">> & {
+    profile?: Partial<MemoryProfileProjection> | null;
+  } = {}
+): MemoryProfileResponse {
+  const profile: MemoryProfileProjection = {
+    asOf: "2026-08-10T08:00:00.000Z",
+    contributors: [{
+      displayText: "I prefer concise answers in Russian.",
+      factId: "memory-fact-1",
+      factVersionId: "memory-version-1",
+      ordinal: 0,
+      pinned: false,
+      sourceMode: "EXPLICIT",
+      temperatureClass: "HOT"
+    }],
+    createdAt: "2026-08-10T08:01:00.000Z",
+    id: "memory-profile-1",
+    languageCode: "en",
+    memoryRevision: 8,
+    redactionState: "NOT_NEEDED",
+    summary: "I prefer concise answers in Russian."
+  };
+  const state = overrides.state ?? "READY";
+  const resolvedProfile = { ...profile, ...overrides.profile };
+  if (overrides.profile?.contributors && overrides.profile.summary === undefined) {
+    resolvedProfile.summary = overrides.profile.contributors
+      .map(({ displayText }) => displayText)
+      .join("\n");
+  }
+  return {
+    memoryRevision: overrides.memoryRevision ?? 8,
+    profile: overrides.profile === null || state !== "READY"
+      ? null
+      : resolvedProfile,
+    state
+  };
+}
+
+export function memoryDetailFixture(
+  memory = memorySummaryFixture()
+): MemoryDetailResponse {
+  const versionId = memory.currentVersionId ?? memory.actionVersionId ?? null;
+  return {
+    feedback: [],
+    history: [],
+    memory,
+    versions: versionId ? [{
+      category: memory.category,
+      createdAt: memory.createdAt,
+      displayText: memory.displayText,
+      id: versionId,
+      modality: memory.modality,
+      sensitivityClass: memory.sensitivityClass,
+      sourceCount: memory.sourceCount,
+      sourceMode: memory.sourceMode,
+      state: memory.versionState,
+      systemFrom: memory.updatedAt,
+      systemTo: null,
+      validFrom: memory.validFrom,
+      validTo: memory.validTo
+    }] : []
+  };
 }
 
 export function memoryEvidenceFixture(): MemoryEvidenceResponse {

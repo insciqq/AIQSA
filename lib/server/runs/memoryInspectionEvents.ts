@@ -12,16 +12,27 @@ function memoryDigestEvent(
   receipt: MemoryReceipt,
   inspection: MemoryRunEvidenceProjection["inspection"]
 ): StoredInspectionEvent {
+  const sourceModes = [...new Set(receipt.items.map(({ sourceMode }) => sourceMode))].sort();
+  const lifecycleStates = [...new Set(receipt.items.map(({ lifecycleState }) =>
+    lifecycleState))].sort();
   return {
     eventType: "memory_retrieval",
     payload: {
       degradationCode: receipt.degradationCode,
+      automaticFactCount: receipt.items.filter((item) =>
+        item.itemType === "FACT_VERSION" && item.sourceMode === "AUTOMATIC").length,
+      historyItemCount: receipt.items.filter((item) =>
+        item.sourceMode === "HISTORY").length,
       itemCount: receipt.itemCount,
       itemTypes: inspection?.itemTypes ?? [],
+      laterLifecycleCount: receipt.items.filter((item) =>
+        item.lifecycleState !== "CURRENT").length,
+      lifecycleStates,
       outcome: receipt.outcome,
       queryPlannerVersion: inspection?.queryPlannerVersion ?? null,
       retrievalLanes: inspection?.retrievalLanes ?? [],
-      retrievalPipelineVersion: inspection?.retrievalPipelineVersion ?? null
+      retrievalPipelineVersion: inspection?.retrievalPipelineVersion ?? null,
+      sourceModes
     },
     sequence: 0
   };

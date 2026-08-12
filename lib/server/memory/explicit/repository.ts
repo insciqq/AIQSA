@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
+  MemoryDetailResponse,
   MemoryEvidenceItem,
   MemoryEvidenceResponse,
   MemoryListInput,
@@ -15,6 +16,7 @@ import {
   normalizeMemorySearchText,
   normalizeMemorySearchTextYo
 } from "../persistence/lexical";
+import { memoryPurgeTargetType } from "../purge/contract";
 
 const DEFAULT_PAGE_SIZE = 20;
 const SEARCH_OFFSET_MAX = 10_000;
@@ -24,6 +26,7 @@ type SummaryRow = Readonly<{
   category: string;
   createdAt: Date;
   currentVersionId: string | null;
+  deferredCandidateCount: number;
   displayText: string | null;
   embeddingState: "FAILED" | "NOT_APPLICABLE" | "PENDING" | "READY" | null;
   factState: "ACTIVE" | "CONFLICTED" | "EXPIRED" | "FORGOTTEN" | "ORPHANED" | "RETRACTED";
@@ -73,6 +76,36 @@ export type ExplicitMemoryEditable = Readonly<{
   sensitivityClass: MemorySummary["sensitivityClass"];
   validFrom: Date | null;
   validTo: Date | null;
+}>;
+
+export type ExplicitMemoryConflictEditable = Readonly<{
+  canonicalKey: string;
+  category: string;
+  factId: string;
+  pinned: boolean;
+  scope: MemoryScopeSelection;
+  scopeId: string;
+  versions: readonly Readonly<{
+    displayText: string;
+    id: string;
+    modality: MemorySummary["modality"];
+    sensitivityClass: MemorySummary["sensitivityClass"];
+    validFrom: Date | null;
+    validTo: Date | null;
+  }>[];
+}>;
+
+export type ExplicitMemoryForgetUndoCandidate = Readonly<{
+  canonicalKey: string;
+  category: string;
+  displayText: string;
+  expiresAt: Date;
+  modality: MemorySummary["modality"];
+  scopeId: string;
+  sensitivityClass: MemorySummary["sensitivityClass"];
+  validFrom: Date | null;
+  validTo: Date | null;
+  versionId: string;
 }>;
 
 type ListCursor = Readonly<{
@@ -213,18 +246,22 @@ function summaryFromRow(row: SummaryRow): MemorySummary {
     return memoryPersistenceFailure("memory_counter_contract_invalid");
   }
   const active = row.factState === "ACTIVE";
+  const reviewable = active || row.factState === "ORPHANED" ||
+    row.factState === "CONFLICTED";
   if (
     (active && (!row.currentVersionId || !row.displayText || !row.actionVersionId)) ||
-    (row.factState === "ORPHANED" && (!row.actionVersionId || !row.displayText))
+    ((row.factState === "ORPHANED" || row.factState === "CONFLICTED") &&
+      (!row.actionVersionId || !row.displayText))
   ) {
     return memoryPersistenceFailure("memory_counter_contract_invalid");
   }
   return {
-    actionVersionId: active || row.factState === "ORPHANED" ? row.actionVersionId : null,
+    actionVersionId: reviewable ? row.actionVersionId : null,
     category: row.category,
     createdAt: row.createdAt.toISOString(),
     currentVersionId: active ? row.currentVersionId : null,
-    displayText: active || row.factState === "ORPHANED" ? row.displayText : null,
+    deferredCandidateCount: row.deferredCandidateCount,
+    displayText: reviewable ? row.displayText : null,
     factState: row.factState,
     id: row.id,
     indexingState: indexingState(row),
@@ -256,6 +293,7 @@ async function summariesByIds(
       fact."state" AS "factState",
       fact."pinned",
       fact."currentVersionId",
+      COALESCE(deferred."candidateCount", 0)::integer AS "deferredCandidateCount",
       fact."lastUsedAt",
       fact."lastConfirmedAt",
       fact."createdAt",
@@ -307,6 +345,16 @@ async function summariesByIds(
       WHERE item."userId" = fact."userId"
         AND item."factVersionId" = version."id"
     ) AS evidence ON true
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::integer AS "candidateCount"
+      FROM "MemoryCandidate" AS candidate
+      WHERE candidate."userId" = fact."userId"
+        AND candidate."state" = 'DEFERRED'::"MemoryCandidateState"
+        AND (
+          candidate."resolvedFactId" = fact."id"
+          OR candidate."proposedCanonicalKey" = fact."canonicalKey"
+        )
+    ) AS deferred ON true
     LEFT JOIN "UserMemorySettings" AS settings
       ON settings."userId" = fact."userId"
     LEFT JOIN "MemoryIndexGeneration" AS generation
@@ -342,7 +390,11 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
       cursor: string | null
     ): Promise<MemoryEvidenceResponse | null> {
       const visible = await summariesByIds(client, userId, [factId]);
-      if (!visible.has(factId)) return null;
+      const memory = visible.get(factId);
+      if (!memory) return null;
+      if (memory.factState === "FORGOTTEN") {
+        return { evidence: [], nextCursor: null };
+      }
       const factHash = memorySha256({ factId, userId });
       const decodedCursor = cursor ? decodeEvidenceCursor(cursor, factHash) : null;
       const conditions = [
@@ -378,7 +430,11 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
         INNER JOIN "MemoryEvidence" AS evidence
           ON evidence."userId" = version."userId"
           AND evidence."factVersionId" = version."id"
+        LEFT JOIN "Chat" AS source_chat
+          ON source_chat."userId" = evidence."userId"
+          AND source_chat."id" = evidence."chatId"
         WHERE ${Prisma.join(conditions, " AND ")}
+          AND (evidence."chatId" IS NULL OR source_chat."permanentDeletionAt" IS NULL)
         ORDER BY evidence."observedAt" DESC, evidence."id" DESC
         LIMIT ${DEFAULT_PAGE_SIZE + 1}
       `);
@@ -411,6 +467,207 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
     async get(userId: string, factId: string): Promise<MemorySummary | null> {
       const summaries = await summariesByIds(client, userId, [factId]);
       return summaries.get(factId) ?? null;
+    },
+
+    async getForgetUndoCandidate(
+      userId: string,
+      factId: string,
+      deletionId: string,
+      now: Date
+    ): Promise<ExplicitMemoryForgetUndoCandidate | null> {
+      if (!Number.isFinite(now.getTime())) {
+        return memoryPersistenceFailure("memory_input_invalid");
+      }
+      const rows = await client.$queryRaw<ExplicitMemoryForgetUndoCandidate[]>(Prisma.sql`
+        SELECT
+          fact."canonicalKey",
+          fact."category",
+          version."displayText",
+          deletion."nextAttemptAt" AS "expiresAt",
+          version."modality"::text AS "modality",
+          fact."scopeId",
+          version."sensitivityClass"::text AS "sensitivityClass",
+          version."validFrom",
+          version."validTo",
+          version."id" AS "versionId"
+        FROM "MemoryDeletionOutbox" AS deletion
+        INNER JOIN "MemoryFact" AS fact
+          ON fact."userId" = deletion."userId"
+          AND fact."id" = deletion."targetId"
+          AND fact."state" = 'FORGOTTEN'::"MemoryFactState"
+        INNER JOIN "MemoryScope" AS scope
+          ON scope."userId" = fact."userId"
+          AND scope."id" = fact."scopeId"
+          AND scope."state" = 'ACTIVE'::"MemoryScopeState"
+        INNER JOIN "MemoryEvent" AS event
+          ON event."userId" = fact."userId"
+          AND event."factId" = fact."id"
+          AND event."operation" = 'FORGET'::"MemoryEventOperation"
+          AND event."metadata" ->> 'deletionId' = deletion."id"
+        INNER JOIN "MemoryFactVersion" AS version
+          ON version."userId" = event."userId"
+          AND version."factId" = event."factId"
+          AND version."id" = event."factVersionId"
+          AND version."state" = 'FORGOTTEN'::"MemoryFactVersionState"
+          AND version."contentPurgedAt" IS NULL
+          AND version."displayText" IS NOT NULL
+        WHERE deletion."id" = ${deletionId}
+          AND deletion."userId" = ${userId}
+          AND deletion."operation" = 'FORGET_PURGE'::"MemoryDeletionOperation"
+          AND deletion."targetType" = ${memoryPurgeTargetType("MEMORY_FACT")}
+          AND deletion."targetId" = ${factId}
+          AND deletion."state" = 'PENDING'::"MemoryDeletionState"
+          AND deletion."nextAttemptAt" > ${now}
+        ORDER BY event."createdAt" DESC, event."id" DESC
+        LIMIT 1
+      `);
+      return rows[0] ?? null;
+    },
+
+    async detail(userId: string, factId: string): Promise<MemoryDetailResponse | null> {
+      const summaries = await summariesByIds(client, userId, [factId]);
+      const memory = summaries.get(factId);
+      if (!memory) return null;
+      const [versions, events] = await Promise.all([
+        client.memoryFactVersion.findMany({
+          orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
+          select: {
+            category: true,
+            createdAt: true,
+            displayText: true,
+            id: true,
+            modality: true,
+            sensitivityClass: true,
+            sourceMode: true,
+            state: true,
+            systemFrom: true,
+            systemTo: true,
+            validFrom: true,
+            validTo: true
+          },
+          take: 50,
+          where: { factId, userId }
+        }),
+        client.memoryEvent.findMany({
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          select: {
+            actorType: true,
+            createdAt: true,
+            factVersionId: true,
+            id: true,
+            operation: true,
+            sourceChatId: true,
+            sourceDeletedAt: true,
+            sourceGeneration: true
+          },
+          take: 50,
+          where: { factId, userId }
+        })
+      ]);
+      const versionIds = versions.map(({ id }) => id);
+      const [sourceChats, evidenceCounts, feedbackRows] = await Promise.all([
+        client.chat.findMany({
+          select: {
+            id: true,
+            memoryBranchGeneration: true,
+            memoryMode: true
+          },
+          where: {
+            id: { in: events.flatMap(({ sourceChatId }) => sourceChatId ? [sourceChatId] : []) },
+            permanentDeletionAt: null,
+            userId
+          }
+        }),
+        versionIds.length > 0
+          ? client.memoryEvidence.groupBy({
+              _count: { _all: true },
+              by: ["factVersionId"],
+              where: { factVersionId: { in: versionIds }, userId }
+            })
+          : Promise.resolve([]),
+        client.memoryFeedback.findMany({
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          select: {
+            comment: true,
+            createdAt: true,
+            feedbackType: true,
+            id: true,
+            memoryFactVersionId: true
+          },
+          take: 20,
+          where: {
+            contentPurgedAt: null,
+            feedbackType: { not: "RETRACT" },
+            memoryFactId: factId,
+            memoryFactVersionId: { in: versionIds },
+            userId
+          }
+        })
+      ]);
+      const retractions = feedbackRows.length > 0
+        ? await client.memoryFeedback.findMany({
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            select: { createdAt: true, retractsFeedbackId: true },
+            where: {
+              contentPurgedAt: null,
+              feedbackType: "RETRACT",
+              retractsFeedbackId: { in: feedbackRows.map(({ id }) => id) },
+              userId
+            }
+          })
+        : [];
+      const sourceChatById = new Map(sourceChats.map((chat) => [chat.id, chat] as const));
+      const sourceCountByVersion = new Map(evidenceCounts.map((entry) => [
+        entry.factVersionId,
+        entry._count._all
+      ] as const));
+      const retractedAtByFeedback = new Map(retractions.flatMap((entry) =>
+        entry.retractsFeedbackId
+          ? [[entry.retractsFeedbackId, entry.createdAt] as const]
+          : []));
+      return {
+        feedback: memory.factState === "FORGOTTEN"
+          ? []
+          : feedbackRows.flatMap((entry) => entry.memoryFactVersionId ? [{
+              comment: entry.comment,
+              createdAt: entry.createdAt.toISOString(),
+              feedbackType: entry.feedbackType as Exclude<typeof entry.feedbackType, "RETRACT">,
+              id: entry.id,
+              retractedAt: retractedAtByFeedback.get(entry.id)?.toISOString() ?? null,
+              targetVersionId: entry.memoryFactVersionId
+            }] : []),
+        history: events.map((event) => ({
+          actorType: event.actorType,
+          createdAt: event.createdAt.toISOString(),
+          factVersionId: event.factVersionId,
+          id: event.id,
+          operation: event.operation,
+          sourceAvailable: event.sourceDeletedAt === null && (
+            event.sourceChatId === null || (() => {
+            const source = sourceChatById.get(event.sourceChatId);
+            return source?.memoryMode === "NORMAL" &&
+              (event.sourceGeneration === null ||
+                source.memoryBranchGeneration === event.sourceGeneration);
+            })()
+          )
+        })),
+        memory,
+        versions: versions.map((version) => ({
+          category: version.category,
+          createdAt: version.createdAt.toISOString(),
+          displayText: memory.factState === "FORGOTTEN" ? null : version.displayText,
+          id: version.id,
+          modality: version.modality,
+          sensitivityClass: version.sensitivityClass,
+          sourceCount: sourceCountByVersion.get(version.id) ?? 0,
+          sourceMode: version.sourceMode,
+          state: version.state,
+          systemFrom: version.systemFrom.toISOString(),
+          systemTo: version.systemTo?.toISOString() ?? null,
+          validFrom: version.validFrom?.toISOString() ?? null,
+          validTo: version.validTo?.toISOString() ?? null
+        }))
+      };
     },
 
     async getEditable(
@@ -491,7 +748,12 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
             userId
           }
         });
-      if (!scope || !version || !version.displayText || version.sourceMode !== "EXPLICIT") {
+      if (
+        !scope ||
+        !version ||
+        !version.displayText ||
+        (fact.state !== "ACTIVE" && version.sourceMode !== "EXPLICIT")
+      ) {
         return null;
       }
       const selection = scope.scopeType === "GLOBAL_USER"
@@ -515,6 +777,71 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
         sensitivityClass: version.sensitivityClass,
         validFrom: version.validFrom,
         validTo: version.validTo
+      };
+    },
+
+    async getConflict(
+      userId: string,
+      factId: string
+    ): Promise<ExplicitMemoryConflictEditable | null> {
+      const fact = await client.memoryFact.findFirst({
+        select: {
+          canonicalKey: true,
+          category: true,
+          currentVersionId: true,
+          id: true,
+          pinned: true,
+          scopeId: true,
+          state: true
+        },
+        where: { id: factId, userId }
+      });
+      if (!fact || fact.state !== "CONFLICTED" || fact.currentVersionId !== null) {
+        return null;
+      }
+      const [scope, versions] = await Promise.all([
+        client.memoryScope.findFirst({
+          select: { scopeType: true, state: true, targetIdSnapshot: true },
+          where: { id: fact.scopeId, state: "ACTIVE", userId }
+        }),
+        client.memoryFactVersion.findMany({
+          orderBy: { id: "asc" },
+          select: {
+            displayText: true,
+            id: true,
+            modality: true,
+            sensitivityClass: true,
+            validFrom: true,
+            validTo: true
+          },
+          where: {
+            contentPurgedAt: null,
+            factId,
+            state: "CONFLICTING",
+            userId
+          }
+        })
+      ]);
+      if (!scope || versions.length < 2 || versions.some(({ displayText }) => !displayText)) {
+        return null;
+      }
+      const selection = scope.scopeType === "GLOBAL_USER"
+        ? { type: "GLOBAL_USER" as const }
+        : scope.targetIdSnapshot
+          ? { targetId: scope.targetIdSnapshot, type: scope.scopeType }
+          : null;
+      if (!selection) return null;
+      return {
+        canonicalKey: fact.canonicalKey,
+        category: fact.category,
+        factId: fact.id,
+        pinned: fact.pinned,
+        scope: selection,
+        scopeId: fact.scopeId,
+        versions: versions.map((version) => ({
+          ...version,
+          displayText: version.displayText!
+        }))
       };
     },
 
@@ -599,6 +926,63 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
       });
       const cursor = input.cursor ? decodeSearchCursor(input.cursor, filterHash) : null;
       const offset = cursor?.offset ?? 0;
+      const requestedState = input.state ?? "ACTIVE";
+      if (requestedState !== "ACTIVE") {
+        const versionState = requestedState === "CONFLICTED"
+          ? "CONFLICTING"
+          : requestedState;
+        const inactiveConditions = [
+          Prisma.sql`fact."userId" = ${userId}`,
+          Prisma.sql`fact."state" = ${requestedState}::"MemoryFactState"`,
+          Prisma.sql`version."state" = ${versionState}::"MemoryFactVersionState"`,
+          Prisma.sql`version."contentPurgedAt" IS NULL`,
+          Prisma.sql`(
+            version."normalizedSearchText" = ${normalizedQuery}
+            OR strpos(version."normalizedSearchText", ${normalizedQuery}) > 0
+            OR translate(version."normalizedSearchText", 'ё', 'е') = ${normalizedYoQuery}
+            OR strpos(translate(version."normalizedSearchText", 'ё', 'е'), ${normalizedYoQuery}) > 0
+          )`
+        ];
+        if (requestedState === "ORPHANED") {
+          inactiveConditions.push(
+            Prisma.sql`version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"`
+          );
+        }
+        if (input.scope) inactiveConditions.push(scopeFilter(input.scope));
+        if (input.sourceMode) {
+          inactiveConditions.push(
+            Prisma.sql`version."sourceMode" = ${input.sourceMode}::"MemoryFactSourceMode"`
+          );
+        }
+        const rows = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT fact."id"
+          FROM "MemoryFact" AS fact
+          INNER JOIN "User" AS owner
+            ON owner."id" = fact."userId" AND owner."status" = 'active'
+          INNER JOIN "MemoryScope" AS scope
+            ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+          INNER JOIN "MemoryFactVersion" AS version
+            ON version."userId" = fact."userId" AND version."factId" = fact."id"
+          WHERE ${Prisma.join(inactiveConditions, " AND ")}
+          GROUP BY fact."id", fact."updatedAt"
+          ORDER BY
+            MAX((version."normalizedSearchText" = ${normalizedQuery})::integer) DESC,
+            fact."updatedAt" DESC,
+            fact."id" DESC
+          OFFSET ${offset}
+          LIMIT ${pageSize + 1}
+        `);
+        const page = rows.slice(0, pageSize);
+        const ids = page.map(({ id }) => id);
+        const summaries = await summariesByIds(client, userId, ids);
+        const nextOffset = offset + page.length;
+        return {
+          memories: orderedSummaries(ids, summaries),
+          nextCursor: rows.length > pageSize && nextOffset <= SEARCH_OFFSET_MAX
+            ? encodeCursor({ filterHash, kind: "search", offset: nextOffset })
+            : null
+        };
+      }
       const conditions = [
         Prisma.sql`fact."userId" = ${userId}`,
         Prisma.sql`scope."state" = 'ACTIVE'`,

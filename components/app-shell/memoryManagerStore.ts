@@ -6,21 +6,34 @@ import {
   loadMemory,
   loadMemoryDeletionStatus,
   loadMemoryEvidence,
+  loadMemoryProfile,
+  memoryRequestId,
   MemoryApiError,
   memoryStatementHash,
+  recordMemoryFeedback,
+  resolveMemoryConflict,
   searchMemories,
   startExplicitMemoryDeletion,
+  undoForgetMemory,
   updateMemory
 } from "@/components/app-shell/memoryApi";
 import { refreshMemorySettings } from "@/components/app-shell/memorySettingsStore";
 import {
   MEMORY_STATEMENT_MAX_LENGTH,
+  type MemoryDetailResponse,
   type MemoryDeletionStatus,
+  type MemoryFeedbackRecord,
+  type MemoryFeedbackType,
+  type MemoryForgetUndoDescriptor,
   type MemoryEvidenceItem,
   type MemoryFactState,
+  type MemoryLifecycleHistoryItem,
   type MemoryModality,
+  type MemoryProfileContributor,
+  type MemoryProfileResponse,
   type MemoryScopeSelection,
-  type MemorySummary
+  type MemorySummary,
+  type MemoryVersionHistoryItem
 } from "@/lib/contracts/memory";
 import { create } from "zustand";
 
@@ -29,7 +42,6 @@ export type MemoryManagerScreen =
   | "delete"
   | "detail"
   | "edit"
-  | "forget"
   | "move"
   | "list";
 export type MemoryManagerLoadState = "error" | "idle" | "loading" | "ready";
@@ -38,10 +50,17 @@ export type MemoryManagerMutationState =
   | "forgetting"
   | "pinning"
   | "moving"
+  | "restoring"
+  | "reviewing"
+  | "resolving"
   | "saving"
   | null;
 export type MemoryManagerNotice =
+  | "feedback_recorded"
+  | "feedback_retracted"
   | "forgotten"
+  | "forget_restored"
+  | "resolved"
   | "saved"
   | "saved_use_off"
   | null;
@@ -67,7 +86,15 @@ type MemoryManagerStore = {
   evidenceError: string | null;
   evidenceLoadState: MemoryManagerLoadState;
   evidenceNextCursor: string | null;
-  factStateFilter: Extract<MemoryFactState, "ACTIVE" | "ORPHANED">;
+  factStateFilter: Exclude<MemoryFactState, "FORGOTTEN">;
+  feedback: MemoryFeedbackRecord[];
+  history: MemoryLifecycleHistoryItem[];
+  lastFeedbackUndo: Readonly<{ feedbackId: string; versionId: string }> | null;
+  lastForgetUndo: Readonly<{
+    factId: string;
+    statement: string;
+    undo: MemoryForgetUndoDescriptor;
+  }> | null;
   listError: string | null;
   listLoadState: MemoryManagerLoadState;
   memories: MemorySummary[];
@@ -75,11 +102,16 @@ type MemoryManagerStore = {
   mutationState: MemoryManagerMutationState;
   nextCursor: string | null;
   notice: MemoryManagerNotice;
+  profileAccountId: string | null;
+  profileError: string | null;
+  profileLoadState: MemoryManagerLoadState;
+  profileResponse: MemoryProfileResponse | null;
   queryApplied: string;
   queryInput: string;
   screen: MemoryManagerScreen;
+  versions: MemoryVersionHistoryItem[];
   setDraft(patch: Partial<MemoryDraft>): void;
-  setFactStateFilter(value: Extract<MemoryFactState, "ACTIVE" | "ORPHANED">): void;
+  setFactStateFilter(value: Exclude<MemoryFactState, "FORGOTTEN">): void;
   setQueryInput(value: string): void;
 };
 
@@ -105,6 +137,10 @@ const initialState: Omit<MemoryManagerStore, "setDraft" | "setFactStateFilter" |
   evidenceLoadState: "idle",
   evidenceNextCursor: null,
   factStateFilter: "ACTIVE",
+  feedback: [],
+  history: [],
+  lastFeedbackUndo: null,
+  lastForgetUndo: null,
   listError: null,
   listLoadState: "idle",
   memories: [],
@@ -112,9 +148,14 @@ const initialState: Omit<MemoryManagerStore, "setDraft" | "setFactStateFilter" |
   mutationState: null,
   nextCursor: null,
   notice: null,
+  profileAccountId: null,
+  profileError: null,
+  profileLoadState: "idle",
+  profileResponse: null,
   queryApplied: "",
   queryInput: "",
-  screen: "list"
+  screen: "list",
+  versions: []
 };
 
 export const useMemoryManagerStore = create<MemoryManagerStore>((set) => ({
@@ -139,6 +180,7 @@ export const useMemoryManagerStore = create<MemoryManagerStore>((set) => ({
 let listRequestGeneration = 0;
 let detailRequestGeneration = 0;
 let evidenceRequestGeneration = 0;
+let profileRequestGeneration = 0;
 const deletionStorageKey = "aiqsa:memory:explicit-deletion-id";
 
 function errorName(error: unknown): string {
@@ -165,6 +207,31 @@ function draftFromMemory(memory: MemorySummary): MemoryDraft {
   };
 }
 
+function detailFields(response: MemoryDetailResponse) {
+  return {
+    activeMemory: response.memory,
+    feedback: response.feedback,
+    history: response.history,
+    versions: response.versions
+  };
+}
+
+async function reloadOpenMemoryDetail(memoryId: string): Promise<void> {
+  const generation = ++detailRequestGeneration;
+  const response = await loadMemory(memoryId);
+  if (
+    generation !== detailRequestGeneration ||
+    useMemoryManagerStore.getState().activeMemory?.id !== memoryId
+  ) return;
+  useMemoryManagerStore.setState((state) => ({
+    ...detailFields(response),
+    draft: state.draftDirty ? state.draft : draftFromMemory(response.memory),
+    memories: state.memories.map((memory) =>
+      memory.id === response.memory.id ? response.memory : memory
+    )
+  }));
+}
+
 function storedDeletionId(): string | null {
   if (typeof window === "undefined") return null;
   const value = window.sessionStorage.getItem(deletionStorageKey);
@@ -175,7 +242,7 @@ function storedDeletionId(): string | null {
 
 function rememberDeletion(status: MemoryDeletionStatus): void {
   if (typeof window === "undefined") return;
-  if (status.state === "SUCCEEDED") {
+  if (["CANCELLED", "SUCCEEDED"].includes(status.state)) {
     window.sessionStorage.removeItem(deletionStorageKey);
   } else {
     window.sessionStorage.setItem(deletionStorageKey, status.deletionId);
@@ -235,6 +302,44 @@ export async function clearMemorySearch(): Promise<void> {
   await refreshMemoryList({ appliedQuery: "" });
 }
 
+export async function refreshMemoryProfile(accountId: string): Promise<void> {
+  const generation = ++profileRequestGeneration;
+  useMemoryManagerStore.setState({
+    profileAccountId: accountId,
+    profileError: null,
+    profileLoadState: "loading",
+    profileResponse: null
+  });
+  try {
+    const response = await loadMemoryProfile();
+    if (
+      generation !== profileRequestGeneration ||
+      useMemoryManagerStore.getState().profileAccountId !== accountId
+    ) return;
+    useMemoryManagerStore.setState({
+      profileError: null,
+      profileLoadState: "ready",
+      profileResponse: response
+    });
+  } catch (error) {
+    if (
+      generation !== profileRequestGeneration ||
+      useMemoryManagerStore.getState().profileAccountId !== accountId
+    ) return;
+    useMemoryManagerStore.setState({
+      profileError: errorName(error),
+      profileLoadState: "error",
+      profileResponse: null
+    });
+    throw error;
+  }
+}
+
+function refreshOpenMemoryProfile(): void {
+  const accountId = useMemoryManagerStore.getState().profileAccountId;
+  if (accountId) void refreshMemoryProfile(accountId).catch(() => undefined);
+}
+
 async function loadEvidence(memoryId: string, append = false): Promise<void> {
   const generation = ++evidenceRequestGeneration;
   const current = useMemoryManagerStore.getState();
@@ -277,16 +382,20 @@ export async function openMemoryDetail(memoryId: string): Promise<void> {
     evidenceError: null,
     evidenceLoadState: "loading",
     evidenceNextCursor: null,
+    feedback: [],
+    history: [],
+    lastFeedbackUndo: null,
     mutationError: null,
     notice: null,
-    screen: "detail"
+    screen: "detail",
+    versions: []
   });
   const evidencePromise = loadEvidence(memoryId).catch(() => undefined);
   try {
     const response = await loadMemory(memoryId);
     if (generation !== detailRequestGeneration) return;
     useMemoryManagerStore.setState({
-      activeMemory: response.memory,
+      ...detailFields(response),
       detailError: null,
       detailLoadState: "ready",
       draft: draftFromMemory(response.memory),
@@ -325,9 +434,14 @@ export function showMemoryList(): void {
     evidenceError: null,
     evidenceLoadState: "idle",
     evidenceNextCursor: null,
+    feedback: [],
+    history: [],
+    lastFeedbackUndo: null,
     mutationError: null,
-    screen: "list"
+    screen: "list",
+    versions: []
   });
+  refreshOpenMemoryProfile();
 }
 
 export function beginCreateMemory(): void {
@@ -367,7 +481,7 @@ export function beginMoveMemory(): void {
 }
 
 export async function changeMemoryFactState(
-  factStateFilter: Extract<MemoryFactState, "ACTIVE" | "ORPHANED">
+  factStateFilter: Exclude<MemoryFactState, "FORGOTTEN">
 ): Promise<void> {
   useMemoryManagerStore.setState({
     factStateFilter,
@@ -433,7 +547,7 @@ async function reconcileCurrentMemoryKeepingDraft(
   try {
     const response = await loadMemory(memoryId);
     useMemoryManagerStore.setState((state) => ({
-      activeMemory: response.memory,
+      ...detailFields(response),
       draft,
       draftDirty: true,
       draftStale: true,
@@ -446,6 +560,174 @@ async function reconcileCurrentMemoryKeepingDraft(
   } catch {
     useMemoryManagerStore.setState({ draft, draftDirty: true, draftStale: true, screen });
   }
+}
+
+type ReviewFeedbackType = Exclude<MemoryFeedbackType, "RETRACT">;
+
+export async function submitMemoryFeedback(
+  versionId: string,
+  feedbackType: ReviewFeedbackType,
+  comment?: string
+): Promise<void> {
+  const memory = useMemoryManagerStore.getState().activeMemory;
+  if (!memory) return;
+  const normalizedComment = comment?.trim();
+  useMemoryManagerStore.setState({
+    mutationError: null,
+    mutationState: "reviewing",
+    notice: null
+  });
+  try {
+    const response = await recordMemoryFeedback(memory.id, {
+      ...(normalizedComment ? { comment: normalizedComment } : {}),
+      expectedVersionId: versionId,
+      feedbackType,
+      requestId: memoryRequestId()
+    });
+    const feedback: MemoryFeedbackRecord = {
+      comment: normalizedComment ?? null,
+      createdAt: response.createdAt,
+      feedbackType,
+      id: response.feedbackId,
+      retractedAt: null,
+      targetVersionId: response.targetVersionId
+    };
+    useMemoryManagerStore.setState((state) => ({
+      ...(state.activeMemory?.id === memory.id
+        ? {
+            feedback: [feedback, ...state.feedback].slice(0, 20),
+            lastFeedbackUndo: { feedbackId: response.feedbackId, versionId },
+            notice: "feedback_recorded" as const
+          }
+        : {}),
+      mutationError: null,
+      mutationState: null
+    }));
+    if (useMemoryManagerStore.getState().activeMemory?.id === memory.id) {
+      void reloadOpenMemoryDetail(memory.id).catch(() => undefined);
+    } else {
+      void refreshMemoryList().catch(() => undefined);
+    }
+  } catch (error) {
+    useMemoryManagerStore.setState((state) => ({
+      ...(state.activeMemory?.id === memory.id
+        ? { mutationError: errorName(error) }
+        : {}),
+      mutationState: null
+    }));
+    throw error;
+  }
+}
+
+export async function undoLastMemoryFeedback(): Promise<void> {
+  const { activeMemory, lastFeedbackUndo } = useMemoryManagerStore.getState();
+  if (!activeMemory || !lastFeedbackUndo) return;
+  useMemoryManagerStore.setState({ mutationError: null, mutationState: "reviewing" });
+  try {
+    const response = await recordMemoryFeedback(activeMemory.id, {
+      expectedVersionId: lastFeedbackUndo.versionId,
+      feedbackType: "RETRACT",
+      requestId: memoryRequestId(),
+      retractsFeedbackId: lastFeedbackUndo.feedbackId
+    });
+    useMemoryManagerStore.setState((state) => ({
+      ...(state.activeMemory?.id === activeMemory.id
+        ? {
+            feedback: state.feedback.map((feedback) =>
+              feedback.id === response.retractedFeedbackId
+                ? { ...feedback, retractedAt: response.createdAt }
+                : feedback
+            ),
+            lastFeedbackUndo: null,
+            notice: "feedback_retracted" as const
+          }
+        : {}),
+      mutationError: null,
+      mutationState: null
+    }));
+    if (useMemoryManagerStore.getState().activeMemory?.id === activeMemory.id) {
+      void reloadOpenMemoryDetail(activeMemory.id).catch(() => undefined);
+    } else {
+      void refreshMemoryList().catch(() => undefined);
+    }
+  } catch (error) {
+    useMemoryManagerStore.setState((state) => ({
+      ...(state.activeMemory?.id === activeMemory.id
+        ? { mutationError: errorName(error) }
+        : {}),
+      mutationState: null
+    }));
+    throw error;
+  }
+}
+
+async function resolveConflict(
+  resolution: Readonly<{ kind: "CHOOSE"; versionId: string }> |
+    Readonly<{ kind: "CORRECT"; statement: string }>
+): Promise<void> {
+  const { activeMemory, versions } = useMemoryManagerStore.getState();
+  if (!activeMemory || activeMemory.factState !== "CONFLICTED") return;
+  const expectedVersionIds = versions
+    .filter(({ state }) => state === "CONFLICTING")
+    .map(({ id }) => id)
+    .sort();
+  const anchorVersionId = expectedVersionIds[0];
+  if (!anchorVersionId || expectedVersionIds.length < 2) return;
+  useMemoryManagerStore.setState({
+    mutationError: null,
+    mutationState: "resolving",
+    notice: null
+  });
+  try {
+    const authorization = await authorizeMemoryMutation({
+      action: "EDIT",
+      expectedTargetVersionId: anchorVersionId,
+      targetFactId: activeMemory.id
+    });
+    const response = await resolveMemoryConflict(activeMemory.id, {
+      expectedVersionIds,
+      mutationAuthorizationId: authorization.mutationAuthorizationId,
+      resolution
+    });
+    useMemoryManagerStore.setState((state) => ({
+      ...(state.activeMemory?.id === activeMemory.id
+        ? {
+            activeMemory: response.memory,
+            feedback: [],
+            history: [],
+            memories: state.memories.filter((memory) => memory.id !== activeMemory.id),
+            notice: "resolved" as const,
+            versions: []
+          }
+        : {}),
+      mutationError: null,
+      mutationState: null
+    }));
+    if (useMemoryManagerStore.getState().activeMemory?.id === activeMemory.id) {
+      void reloadOpenMemoryDetail(activeMemory.id).catch(() => undefined);
+    }
+    void refreshMemoryList().catch(() => undefined);
+  } catch (error) {
+    const sourceStillOpen = useMemoryManagerStore.getState().activeMemory?.id ===
+      activeMemory.id;
+    useMemoryManagerStore.setState({
+      ...(sourceStillOpen ? { mutationError: errorName(error) } : {}),
+      mutationState: null
+    });
+    if (sourceStillOpen && error instanceof MemoryApiError &&
+      error.code === "memory_version_stale") {
+      await reloadOpenMemoryDetail(activeMemory.id).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+export async function resolveMemoryConflictChoice(versionId: string): Promise<void> {
+  await resolveConflict({ kind: "CHOOSE", versionId });
+}
+
+export async function resolveMemoryConflictCorrection(statement: string): Promise<void> {
+  await resolveConflict({ kind: "CORRECT", statement });
 }
 
 export async function saveMemoryChanges(): Promise<void> {
@@ -561,12 +843,7 @@ export async function moveMemoryScope(): Promise<void> {
   }
 }
 
-export function beginForgetMemory(): void {
-  if (!useMemoryManagerStore.getState().activeMemory) return;
-  useMemoryManagerStore.setState({ mutationError: null, screen: "forget" });
-}
-
-export async function confirmForgetMemory(): Promise<void> {
+export async function forgetCurrentMemory(): Promise<void> {
   const memory = useMemoryManagerStore.getState().activeMemory;
   const expectedVersionId = memory?.actionVersionId ?? memory?.currentVersionId;
   if (!memory || !expectedVersionId) return;
@@ -577,12 +854,19 @@ export async function confirmForgetMemory(): Promise<void> {
       expectedTargetVersionId: expectedVersionId,
       targetFactId: memory.id
     });
-    await forgetMemory(memory.id, {
+    const response = await forgetMemory(memory.id, {
       expectedVersionId,
       mutationAuthorizationId: authorization.mutationAuthorizationId
     });
     useMemoryManagerStore.setState((state) => ({
       activeMemory: null,
+      lastForgetUndo: memory.displayText
+        ? {
+            factId: memory.id,
+            statement: memory.displayText,
+            undo: response.undo
+          }
+        : null,
       memories: state.memories.filter((item) => item.id !== memory.id),
       mutationError: null,
       mutationState: null,
@@ -590,11 +874,90 @@ export async function confirmForgetMemory(): Promise<void> {
       screen: "list"
     }));
     void refreshMemoryList().catch(() => undefined);
+    refreshOpenMemoryProfile();
   } catch (error) {
     useMemoryManagerStore.setState({ mutationError: errorName(error), mutationState: null });
     if (error instanceof MemoryApiError && error.code === "memory_version_stale") {
       await openMemoryDetail(memory.id).catch(() => undefined);
     }
+    throw error;
+  }
+}
+
+export async function forgetProfileMemory(
+  contributor: Pick<MemoryProfileContributor, "displayText" | "factId" | "factVersionId">
+): Promise<void> {
+  if (useMemoryManagerStore.getState().mutationState !== null) return;
+  useMemoryManagerStore.setState({ mutationError: null, mutationState: "forgetting" });
+  try {
+    const authorization = await authorizeMemoryMutation({
+      action: "FORGET",
+      expectedTargetVersionId: contributor.factVersionId,
+      targetFactId: contributor.factId
+    });
+    const response = await forgetMemory(contributor.factId, {
+      expectedVersionId: contributor.factVersionId,
+      mutationAuthorizationId: authorization.mutationAuthorizationId
+    });
+    useMemoryManagerStore.setState((state) => ({
+      activeMemory: state.activeMemory?.id === contributor.factId ? null : state.activeMemory,
+      lastForgetUndo: {
+        factId: contributor.factId,
+        statement: contributor.displayText,
+        undo: response.undo
+      },
+      memories: state.memories.filter((item) => item.id !== contributor.factId),
+      mutationError: null,
+      mutationState: null,
+      notice: "forgotten",
+      screen: "list"
+    }));
+    void refreshMemoryList().catch(() => undefined);
+    refreshOpenMemoryProfile();
+  } catch (error) {
+    useMemoryManagerStore.setState({ mutationError: errorName(error), mutationState: null });
+    if (error instanceof MemoryApiError && error.code === "memory_version_stale") {
+      const accountId = useMemoryManagerStore.getState().profileAccountId;
+      await Promise.allSettled([
+        refreshMemoryList(),
+        ...(accountId ? [refreshMemoryProfile(accountId)] : [])
+      ]);
+    }
+    throw error;
+  }
+}
+
+export async function undoLastForgottenMemory(): Promise<void> {
+  const descriptor = useMemoryManagerStore.getState().lastForgetUndo;
+  if (!descriptor) return;
+  if (Date.parse(descriptor.undo.expiresAt) <= Date.now()) {
+    useMemoryManagerStore.setState({ lastForgetUndo: null });
+    return;
+  }
+  useMemoryManagerStore.setState({ mutationError: null, mutationState: "restoring" });
+  try {
+    const authorization = await authorizeMemoryMutation({
+      action: "SAVE",
+      exactStatementHash: await memoryStatementHash(descriptor.statement)
+    });
+    const response = await undoForgetMemory(descriptor.factId, {
+      deletionId: descriptor.undo.deletionId,
+      mutationAuthorizationId: authorization.mutationAuthorizationId
+    });
+    useMemoryManagerStore.setState((state) => ({
+      lastForgetUndo: null,
+      memories: uniqueMemories([response.memory, ...state.memories]),
+      mutationError: null,
+      mutationState: null,
+      notice: "forget_restored"
+    }));
+    void refreshMemoryList().catch(() => undefined);
+    refreshOpenMemoryProfile();
+  } catch (error) {
+    useMemoryManagerStore.setState({
+      mutationError: errorName(error),
+      mutationState: null
+    });
     throw error;
   }
 }
@@ -657,7 +1020,12 @@ export async function refreshMemoryDeletionStatus(
       deletionStatus: status
     });
     if (status.state === "SUCCEEDED") {
-      await Promise.allSettled([refreshMemorySettings(true), refreshMemoryList()]);
+      const profileAccountId = useMemoryManagerStore.getState().profileAccountId;
+      await Promise.allSettled([
+        refreshMemorySettings(true),
+        refreshMemoryList(),
+        ...(profileAccountId ? [refreshMemoryProfile(profileAccountId)] : [])
+      ]);
     }
   } catch (error) {
     useMemoryManagerStore.setState({
@@ -668,7 +1036,7 @@ export async function refreshMemoryDeletionStatus(
   }
 }
 
-export async function openMemoryManager(): Promise<void> {
+export async function openMemoryManager(accountId: string): Promise<void> {
   const current = useMemoryManagerStore.getState();
   useMemoryManagerStore.setState({
     screen: current.draftDirty ? current.activeMemory ? "edit" : "create" : "list"
@@ -677,15 +1045,52 @@ export async function openMemoryManager(): Promise<void> {
   if (useMemoryManagerStore.getState().listLoadState === "idle") {
     requests.push(refreshMemoryList());
   }
+  if (
+    current.profileAccountId !== accountId ||
+    current.profileLoadState === "error" ||
+    current.profileLoadState === "idle"
+  ) {
+    requests.push(refreshMemoryProfile(accountId));
+  }
   const deletionId = storedDeletionId();
   if (deletionId) requests.push(refreshMemoryDeletionStatus(deletionId));
   await Promise.allSettled(requests);
+}
+
+export function invalidateMemoryManagerData(accountId: string): void {
+  const current = useMemoryManagerStore.getState();
+  if (current.profileAccountId !== null && current.profileAccountId !== accountId) return;
+  listRequestGeneration += 1;
+  detailRequestGeneration += 1;
+  evidenceRequestGeneration += 1;
+  profileRequestGeneration += 1;
+  useMemoryManagerStore.setState({
+    activeMemory: null,
+    detailError: null,
+    detailLoadState: "idle",
+    evidence: [],
+    evidenceError: null,
+    evidenceLoadState: "idle",
+    evidenceNextCursor: null,
+    feedback: [],
+    history: [],
+    listError: null,
+    listLoadState: "idle",
+    memories: [],
+    nextCursor: null,
+    profileAccountId: accountId,
+    profileError: null,
+    profileLoadState: "idle",
+    profileResponse: null,
+    versions: []
+  });
 }
 
 export function resetMemoryManagerStoreForTest(): void {
   listRequestGeneration += 1;
   detailRequestGeneration += 1;
   evidenceRequestGeneration += 1;
+  profileRequestGeneration += 1;
   if (typeof window !== "undefined") window.sessionStorage.removeItem(deletionStorageKey);
   useMemoryManagerStore.setState({
     ...initialState,

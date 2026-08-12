@@ -13,7 +13,7 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 ### Team and access
 
 - The dashboard returns users, groups/grants, grantable catalog, rules, invites, deletion eligibility, provider-reported usage attribution, and a least-data navigation summary. Archived memberships may remain visible for attribution, while archived groups never grant effective access.
-- Administrator actions own approval/rejection/disable, scoped or global session revocation, rules/invites, memberships/grants, guarded stale deletion, and group lifecycle. Disable/reject preserves owned application data. Self-disable, removal of the final active administrator, and deletion with active/owned/member/grant/invite hazards are rejected with stable structured codes.
+- Administrator actions own approval/rejection/disable, scoped or global session revocation, rules/invites, memberships/grants, guarded stale deletion, and group lifecycle. Disable/reject preserves owned application data. Self-disable, removal of the final active administrator, and deletion with active/owned/member/grant/invite hazards are rejected with stable structured codes. Memory-only ownership can enter deletion only through the composed account hook: admission fences first and still returns the ordinary owned-data blocker until its audited obligation succeeds; absent composition or with any unrelated owner, Memory is not mutated.
 - User lifecycle settlement serializes on the user row so stale activation cannot overwrite a committed administrator decision. Approval/provisioning, access-rule replacement, invite creation, guarded deletion, membership replacement, and disable/reject with session revocation use atomic repository transitions. Group-grant replacement remains the documented sequential boundary.
 - Invite mail is post-transaction. Mail unavailability or failure does not undo a created invite; the creation response still returns the only recoverable plaintext URL for manual delivery. The repository stores only its hash.
 
@@ -45,7 +45,17 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 
 ### Memory
 
-- `GET /api/admin/memory` returns a private/no-store, administrator-only, secret-free installation projection: consent mode, exact current/accepted aggregate fingerprints and policy versions, optimistic version, bounded acknowledgment actor/time, waiting-job count, and exactly four product rows for answer provider, system Memory model, embedding, and remote reranker. Current utility destinations are aggregated across active owners without returning owner identity, settings, endpoint, credential, Memory content, request text, or execution evidence.
+- `GET /api/admin/memory` returns a private/no-store, administrator-only,
+  secret-free installation projection. Its health part uses only bounded
+  `none/some/many/unknown` queue, provider-execution, lag, scheduler,
+  deletion, and overdue-Temporary labels; it has no owner drilldown, exact
+  user activity, Memory/query/source text, or source identifiers. The same
+  response retains consent mode, exact current/accepted aggregate fingerprints
+  and policy versions, optimistic version, bounded acknowledgment actor/time,
+  waiting-job count, and exactly four destination rows for answer provider,
+  system Memory model, embedding, and remote reranker. A health-read failure
+  returns an explicit unavailable aggregate without hiding the independently
+  readable destination policy.
 - `PATCH /api/admin/memory` accepts only `expectedVersion` and the observed `currentFingerprint`. It is available only in `ADMIN` mode, locks the singleton, recomputes current policy inside a serializable transaction, rejects stale or drifted observations, stores the canonical exact logical-role/destination set with audit metadata, increments the version, and kicks coordinator reconciliation after commit. It does not mutate provider configuration, grant access, select a model, or weaken per-call binding and qualification.
 - Runtime admission checks the exact role/destination needed by each external Memory call. A new or changed destination waits with the existing consent-required outcome; unchanged acknowledged destinations continue. The aggregate admin projection may remain `Review required` for additions or removals until explicitly acknowledged. `PER_USER` retains the user-owned acceptance path and makes the admin projection read-only.
 

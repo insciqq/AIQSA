@@ -4,6 +4,10 @@ import { MemoryCoordinatorError } from "../coordinator/errors";
 import { MemoryDeletionContributorRegistry } from "./registry";
 
 const targetClaim = {
+  admissionAuthorizationId: null,
+  admittedActiveLeafMessageId: null,
+  admittedChatSourceRevision: null,
+  alsoForgetOriginMemories: null,
   attemptCount: 1,
   claimToken: "claim-1",
   id: "deletion-1",

@@ -80,6 +80,27 @@ function memoryResponse(acknowledged: boolean): AdminMemoryEgressResponse {
       reviewRequired: !acknowledged,
       version: acknowledged ? 2 : 1,
       waitingJobCount: acknowledged ? 0 : 2
+    },
+    memoryHealth: {
+      deletion: { active: "NONE", blocked: "NONE", state: "CLEAR" },
+      observedAt: "2026-08-12T10:00:00.000Z",
+      overall: acknowledged ? "HEALTHY" : "ACTION_REQUIRED",
+      provider: {
+        failedRecent: "NONE",
+        outcomeUnknown: "NONE",
+        state: "READY",
+        usageIncomplete: "NONE"
+      },
+      queue: {
+        active: acknowledged ? "NONE" : "SOME",
+        failed: "NONE",
+        oldestLag: acknowledged ? "NONE" : "UNDER_15_MINUTES",
+        state: acknowledged ? "CLEAR" : "DELAYED",
+        waitingForReview: acknowledged ? "NONE" : "SOME"
+      },
+      requestLocale: "EN",
+      scheduler: { resetAt: "2026-08-13T00:00:00.000Z", state: "READY" },
+      temporary: { overdue: "NONE", state: "CLEAR" }
     }
   };
 }
@@ -105,13 +126,16 @@ test("administrator reviews and acknowledges exact Memory destinations", async (
   await page.goto("/admin?section=memory");
 
   const section = page.getByTestId("admin-section-memory");
-  await expect(section.getByRole("heading", { name: "Memory destinations" })).toBeVisible();
+  await expect(section.getByRole("heading", { name: "Memory health" })).toBeVisible();
+  await expect(section.getByRole("heading", { name: "Memory needs attention" })).toBeVisible();
+  await expect(section.getByText("System connection / System model")).toBeHidden();
+  await section.getByText("Advanced", { exact: true }).click();
   const matrix = section.getByRole("list", { name: "Memory destination matrix" });
   await expect(matrix.getByText("Selected answer model", { exact: true })).toBeVisible();
   await expect(matrix.getByText("System Memory model", { exact: true })).toBeVisible();
   await expect(matrix.getByText("Embedding deployment", { exact: true })).toBeVisible();
   await expect(matrix.getByText("Remote reranker", { exact: true })).toBeVisible();
-  await expect(section.getByText("Review required.")).toBeVisible();
+  await expect(section.getByText(/Destination review required/u)).toBeVisible();
   await expect(section.getByText("2", { exact: true })).toBeVisible();
   const acknowledge = section.getByRole("button", { name: "Acknowledge current destinations" });
   await expectTouchSafe(acknowledge);
@@ -123,6 +147,9 @@ test("administrator reviews and acknowledges exact Memory destinations", async (
   await expectNoHorizontalOverflow(page);
 
   await page.setViewportSize({ height: 844, width: 390 });
+  await expect(section).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await page.setViewportSize({ height: 390, width: 844 });
   await expect(section).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });

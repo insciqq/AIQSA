@@ -8,6 +8,8 @@ export const MEMORY_CURSOR_MAX_LENGTH = 2_048;
 export const MEMORY_PAGE_SIZE_MAX = 20;
 export const MEMORY_RECEIPT_ITEM_TEXT_MAX_LENGTH = 4_000;
 export const MEMORY_SEARCH_SNIPPET_MAX_LENGTH = 1_000;
+export const MEMORY_FEEDBACK_COMMENT_MAX_LENGTH = 1_000;
+export const MEMORY_FORGET_UNDO_WINDOW_MS = 60_000;
 
 export const MEMORY_UI_LOCALES = ["RU", "EN"] as const;
 export type MemoryUiLocale = (typeof MEMORY_UI_LOCALES)[number];
@@ -56,6 +58,17 @@ export type MemoryFactVersionState = (typeof MEMORY_FACT_VERSION_STATES)[number]
 
 export const MEMORY_SOURCE_MODES = ["EXPLICIT", "AUTOMATIC"] as const;
 export type MemorySourceMode = (typeof MEMORY_SOURCE_MODES)[number];
+
+export const MEMORY_FEEDBACK_TYPES = [
+  "CORRECT",
+  "INCORRECT",
+  "NOT_USEFUL",
+  "WRONG_SCOPE",
+  "OUTDATED",
+  "TOO_SENSITIVE",
+  "RETRACT"
+] as const;
+export type MemoryFeedbackType = (typeof MEMORY_FEEDBACK_TYPES)[number];
 
 export const MEMORY_MODALITIES = [
   "STATE",
@@ -128,7 +141,8 @@ export const MEMORY_DELETION_STATES = [
   "RUNNING",
   "RETRY_WAIT",
   "BLOCKED_REQUIRES_ADMIN",
-  "SUCCEEDED"
+  "SUCCEEDED",
+  "CANCELLED"
 ] as const;
 export type MemoryDeletionState = (typeof MEMORY_DELETION_STATES)[number];
 
@@ -223,7 +237,12 @@ export const MEMORY_RECEIPT_LIFECYCLE_STATES = [
 ] as const;
 export type MemoryReceiptLifecycleState = (typeof MEMORY_RECEIPT_LIFECYCLE_STATES)[number];
 
-export const MEMORY_ACTION_FEEDBACK_OPERATIONS = ["SAVE", "UPDATE", "FORGET"] as const;
+export const MEMORY_ACTION_FEEDBACK_OPERATIONS = [
+  "SAVE",
+  "UPDATE",
+  "FORGET",
+  "MARK_INCORRECT"
+] as const;
 export type MemoryActionFeedbackOperation =
   (typeof MEMORY_ACTION_FEEDBACK_OPERATIONS)[number];
 
@@ -251,6 +270,7 @@ export const MEMORY_ERROR_CODES = [
   "memory_rebuild_not_found",
   "memory_action_failed",
   "memory_intent_confirmation_required",
+  "memory_undo_unavailable",
   "memory_egress_consent_required",
   "memory_egress_admin_owned",
   "memory_purge_blocked_requires_admin"
@@ -556,6 +576,19 @@ export function decodeMemoryForgetInput(
   return decode(memoryForgetInputSchema, value);
 }
 
+const memoryUndoForgetInputSchema = z.strictObject({
+  deletionId: idSchema,
+  mutationAuthorizationId: idSchema
+});
+
+export type MemoryUndoForgetInput = z.infer<typeof memoryUndoForgetInputSchema>;
+
+export function decodeMemoryUndoForgetInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryUndoForgetInput> {
+  return decode(memoryUndoForgetInputSchema, value);
+}
+
 const memoryBulkDeleteInputSchema = z.strictObject({
   expectedMemoryRevision: safeInteger,
   expectedSettingsRevision: safeInteger,
@@ -668,6 +701,7 @@ const memorySettingsResponseSchema = z.strictObject({
     automaticLearning: z.boolean(),
     explicitMemory: z.boolean(),
     historyRecall: z.boolean(),
+    permanentChatDeletion: z.boolean(),
     russianQualified: z.boolean(),
     temporaryChats: z.boolean()
   }),
@@ -750,6 +784,7 @@ const memorySummarySchema = z.strictObject({
   category: categorySchema,
   createdAt: isoTimestampSchema,
   currentVersionId: idSchema.nullable(),
+  deferredCandidateCount: safeInteger.optional(),
   displayText: safeText(MEMORY_STATEMENT_MAX_LENGTH).nullable(),
   factState: z.enum(MEMORY_FACT_STATES),
   id: idSchema,
@@ -788,12 +823,14 @@ const memorySummarySchema = z.strictObject({
   } else if (value.currentVersionId !== null) {
     context.addIssue({ code: "custom", message: "non-active fact cannot have a current version" });
   }
-  if (value.factState === "ORPHANED" && !value.actionVersionId) {
-    context.addIssue({ code: "custom", message: "orphaned fact requires an exact action version" });
+  if ((value.factState === "ORPHANED" || value.factState === "CONFLICTED") &&
+    !value.actionVersionId) {
+    context.addIssue({ code: "custom", message: "reviewable fact requires an exact action version" });
   }
   if (
     value.factState !== "ACTIVE" &&
     value.factState !== "ORPHANED" &&
+    value.factState !== "CONFLICTED" &&
     value.actionVersionId != null
   ) {
     context.addIssue({ code: "custom", message: "inactive fact cannot expose an action version" });
@@ -804,6 +841,70 @@ const memorySummarySchema = z.strictObject({
 });
 
 export type MemorySummary = z.infer<typeof memorySummarySchema>;
+
+export const MEMORY_PROFILE_VIEW_STATES = [
+  "DISABLED",
+  "EMPTY",
+  "PENDING",
+  "WAITING_FOR_EGRESS_CONSENT",
+  "READY",
+  "UNAVAILABLE"
+] as const;
+export type MemoryProfileViewState = (typeof MEMORY_PROFILE_VIEW_STATES)[number];
+
+const memoryProfileContributorSchema = z.strictObject({
+  displayText: safeText(500),
+  factId: idSchema,
+  factVersionId: idSchema,
+  ordinal: z.number().int().min(0).max(5),
+  pinned: z.boolean(),
+  sourceMode: z.enum(MEMORY_SOURCE_MODES),
+  temperatureClass: z.enum(["HOT", "WARM", "COLD"])
+});
+
+export type MemoryProfileContributor = z.infer<typeof memoryProfileContributorSchema>;
+
+const memoryProfileProjectionSchema = z.strictObject({
+  asOf: isoTimestampSchema,
+  contributors: z.array(memoryProfileContributorSchema).min(1).max(6),
+  createdAt: isoTimestampSchema,
+  id: idSchema,
+  languageCode: z.enum(["ru", "en"]),
+  memoryRevision: safeInteger,
+  redactionState: z.enum(["NOT_NEEDED", "REDACTED"]),
+  summary: safeText(4_000)
+}).superRefine((value, context) => {
+  const expected = value.contributors.map(({ displayText }) => displayText).join("\n");
+  if (expected !== value.summary) {
+    context.addIssue({ code: "custom", message: "profile summary is not contributor-exact" });
+  }
+  if (value.contributors.some((item, ordinal) => item.ordinal !== ordinal)) {
+    context.addIssue({ code: "custom", message: "profile contributor order is not contiguous" });
+  }
+});
+
+export type MemoryProfileProjection = z.infer<typeof memoryProfileProjectionSchema>;
+
+const memoryProfileResponseSchema = z.strictObject({
+  memoryRevision: safeInteger,
+  profile: memoryProfileProjectionSchema.nullable(),
+  state: z.enum(MEMORY_PROFILE_VIEW_STATES)
+}).superRefine((value, context) => {
+  if ((value.state === "READY") !== (value.profile !== null)) {
+    context.addIssue({ code: "custom", message: "profile readiness mismatch" });
+  }
+  if (value.profile && value.profile.memoryRevision > value.memoryRevision) {
+    context.addIssue({ code: "custom", message: "profile revision is from the future" });
+  }
+});
+
+export type MemoryProfileResponse = z.infer<typeof memoryProfileResponseSchema>;
+
+export function decodeMemoryProfileResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemoryProfileResponse> {
+  return decode(memoryProfileResponseSchema, value);
+}
 
 const memoryListResponseSchema = z.strictObject({
   memories: z.array(memorySummarySchema).max(100),
@@ -825,6 +926,209 @@ export function decodeMemoryMutationResponse(
   value: unknown
 ): MemoryContractDecodeResult<MemoryMutationResponse> {
   return decode(memoryMutationResponseSchema, value);
+}
+
+const memoryForgetUndoDescriptorSchema = z.strictObject({
+  deletionId: idSchema,
+  expiresAt: isoTimestampSchema,
+  versionId: idSchema
+});
+
+export type MemoryForgetUndoDescriptor = z.infer<
+  typeof memoryForgetUndoDescriptorSchema
+>;
+
+const memoryForgetResponseSchema = z.strictObject({
+  memory: memorySummarySchema,
+  undo: memoryForgetUndoDescriptorSchema
+});
+
+export type MemoryForgetResponse = z.infer<typeof memoryForgetResponseSchema>;
+
+export function decodeMemoryForgetResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemoryForgetResponse> {
+  return decode(memoryForgetResponseSchema, value);
+}
+
+const memoryVersionHistoryItemSchema = z.strictObject({
+  category: categorySchema,
+  createdAt: isoTimestampSchema,
+  displayText: safeText(MEMORY_STATEMENT_MAX_LENGTH).nullable(),
+  id: idSchema,
+  modality: z.enum(MEMORY_MODALITIES),
+  sensitivityClass: z.enum(MEMORY_SENSITIVITY_CLASSES),
+  sourceCount: safeInteger,
+  sourceMode: z.enum(MEMORY_SOURCE_MODES),
+  state: z.enum(MEMORY_FACT_VERSION_STATES),
+  systemFrom: isoTimestampSchema,
+  systemTo: nullableTimestampSchema,
+  validFrom: nullableTimestampSchema,
+  validTo: nullableTimestampSchema
+}).superRefine((value, context) => {
+  if (value.systemTo && Date.parse(value.systemTo) <= Date.parse(value.systemFrom)) {
+    context.addIssue({ code: "custom", message: "invalid system interval" });
+  }
+  if (value.validFrom && value.validTo && Date.parse(value.validTo) <= Date.parse(value.validFrom)) {
+    context.addIssue({ code: "custom", message: "invalid valid interval" });
+  }
+});
+
+export type MemoryVersionHistoryItem = z.infer<typeof memoryVersionHistoryItemSchema>;
+
+const memoryLifecycleHistoryItemSchema = z.strictObject({
+  actorType: z.enum(["USER", "SYSTEM", "JOB"]),
+  createdAt: isoTimestampSchema,
+  factVersionId: idSchema.nullable(),
+  id: idSchema,
+  operation: z.enum([
+    "EXPLICIT_SAVE",
+    "AUTO_PROPOSE",
+    "PROMOTE",
+    "REINFORCE",
+    "EDIT",
+    "SUPERSEDE",
+    "CONFLICT",
+    "EXPIRE",
+    "RETRACT",
+    "FORGET",
+    "SOURCE_INVALIDATE",
+    "SCOPE_CHANGE",
+    "PIN",
+    "UNPIN",
+    "USER_FEEDBACK",
+    "INDEX_SWITCH",
+    "REBUILD"
+  ]),
+  sourceAvailable: z.boolean()
+});
+
+export type MemoryLifecycleHistoryItem = z.infer<typeof memoryLifecycleHistoryItemSchema>;
+
+const memoryFeedbackRecordSchema = z.strictObject({
+  comment: safeText(MEMORY_FEEDBACK_COMMENT_MAX_LENGTH).nullable(),
+  createdAt: isoTimestampSchema,
+  feedbackType: z.enum(MEMORY_FEEDBACK_TYPES).exclude(["RETRACT"]),
+  id: idSchema,
+  retractedAt: nullableTimestampSchema,
+  targetVersionId: idSchema
+});
+
+export type MemoryFeedbackRecord = z.infer<typeof memoryFeedbackRecordSchema>;
+
+const memoryDetailResponseSchema = z.strictObject({
+  feedback: z.array(memoryFeedbackRecordSchema).max(MEMORY_PAGE_SIZE_MAX),
+  history: z.array(memoryLifecycleHistoryItemSchema).max(50),
+  memory: memorySummarySchema,
+  versions: z.array(memoryVersionHistoryItemSchema).max(50)
+}).superRefine((value, context) => {
+  const versionIds = new Set(value.versions.map(({ id }) => id));
+  if (value.memory.actionVersionId && !versionIds.has(value.memory.actionVersionId)) {
+    context.addIssue({ code: "custom", message: "action version missing from detail" });
+  }
+  for (const feedback of value.feedback) {
+    if (!versionIds.has(feedback.targetVersionId)) {
+      context.addIssue({ code: "custom", message: "feedback target missing from detail" });
+    }
+  }
+  if (value.memory.factState === "FORGOTTEN" && (
+    value.feedback.length > 0 || value.versions.some(({ displayText }) => displayText !== null)
+  )) {
+    context.addIssue({ code: "custom", message: "forgotten detail must redact private content" });
+  }
+});
+
+export type MemoryDetailResponse = z.infer<typeof memoryDetailResponseSchema>;
+
+export function decodeMemoryDetailResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemoryDetailResponse> {
+  return decode(memoryDetailResponseSchema, value);
+}
+
+const memoryFeedbackInputSchema = z.strictObject({
+  comment: safeText(MEMORY_FEEDBACK_COMMENT_MAX_LENGTH).optional(),
+  expectedVersionId: idSchema,
+  feedbackType: z.enum(MEMORY_FEEDBACK_TYPES),
+  modelRunId: idSchema.optional(),
+  modelRunMemoryItemId: idSchema.optional(),
+  modelRunToolCallId: idSchema.optional(),
+  requestId: idSchema,
+  retractsFeedbackId: idSchema.optional()
+}).superRefine((value, context) => {
+  const provenanceTargets = Number(value.modelRunMemoryItemId !== undefined) +
+    Number(value.modelRunToolCallId !== undefined);
+  if ((value.modelRunId === undefined && provenanceTargets !== 0) ||
+    (value.modelRunId !== undefined && provenanceTargets !== 1)) {
+    context.addIssue({ code: "custom", message: "run feedback provenance is invalid" });
+  }
+  if (value.feedbackType === "RETRACT") {
+    if (!value.retractsFeedbackId || value.comment !== undefined) {
+      context.addIssue({ code: "custom", message: "retraction requires only its target" });
+    }
+  } else if (value.retractsFeedbackId) {
+    context.addIssue({ code: "custom", message: "only retraction names prior feedback" });
+  }
+});
+
+export type MemoryFeedbackInput = z.infer<typeof memoryFeedbackInputSchema>;
+
+export function decodeMemoryFeedbackInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryFeedbackInput> {
+  return decode(memoryFeedbackInputSchema, value);
+}
+
+const memoryFeedbackMutationResponseSchema = z.strictObject({
+  createdAt: isoTimestampSchema,
+  feedbackId: idSchema,
+  feedbackType: z.enum(MEMORY_FEEDBACK_TYPES),
+  retractedFeedbackId: idSchema.nullable(),
+  targetVersionId: idSchema
+}).superRefine((value, context) => {
+  if ((value.feedbackType === "RETRACT") !== (value.retractedFeedbackId !== null)) {
+    context.addIssue({ code: "custom", message: "feedback retraction result is inconsistent" });
+  }
+});
+
+export type MemoryFeedbackMutationResponse = z.infer<
+  typeof memoryFeedbackMutationResponseSchema
+>;
+
+export function decodeMemoryFeedbackMutationResponse(
+  value: unknown
+): MemoryContractDecodeResult<MemoryFeedbackMutationResponse> {
+  return decode(memoryFeedbackMutationResponseSchema, value);
+}
+
+const memoryConflictResolutionInputSchema = z.strictObject({
+  expectedVersionIds: z.array(idSchema).min(2).max(20).refine(
+    (values) => new Set(values).size === values.length,
+    "duplicate conflict version"
+  ).refine(
+    (values) => values.every((value, index) => index === 0 || values[index - 1]! < value),
+    "conflict versions must be sorted"
+  ),
+  mutationAuthorizationId: idSchema,
+  resolution: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("CHOOSE"), versionId: idSchema }),
+    z.strictObject({ kind: z.literal("CORRECT"), statement: memoryStatementSchema })
+  ])
+}).superRefine((value, context) => {
+  if (value.resolution.kind === "CHOOSE" &&
+    !value.expectedVersionIds.includes(value.resolution.versionId)) {
+    context.addIssue({ code: "custom", message: "chosen version is outside conflict snapshot" });
+  }
+});
+
+export type MemoryConflictResolutionInput = z.infer<
+  typeof memoryConflictResolutionInputSchema
+>;
+
+export function decodeMemoryConflictResolutionInput(
+  value: unknown
+): MemoryContractDecodeResult<MemoryConflictResolutionInput> {
+  return decode(memoryConflictResolutionInputSchema, value);
 }
 
 const memoryEvidenceItemSchema = z.strictObject({
@@ -901,6 +1205,8 @@ export function decodeMemoryDeletionStatus(
 }
 
 const memoryReceiptItemSchema = z.strictObject({
+  factId: idSchema.nullable().optional(),
+  feedbackState: z.enum(["AVAILABLE", "RECORDED", "UNAVAILABLE"]).optional(),
   includedText: safeText(MEMORY_RECEIPT_ITEM_TEXT_MAX_LENGTH),
   itemType: z.enum(MEMORY_RECEIPT_ITEM_TYPES),
   lifecycleState: z.enum(MEMORY_RECEIPT_LIFECYCLE_STATES),
@@ -910,6 +1216,8 @@ const memoryReceiptItemSchema = z.strictObject({
   sourceChatId: idSchema.nullable(),
   sourceMessageIds: z.array(idSchema).max(50),
   sourceMode: z.enum(["EXPLICIT", "AUTOMATIC", "HISTORY", "PROFILE"]),
+  runItemId: idSchema.nullable().optional(),
+  runId: idSchema.nullable().optional(),
   versionId: idSchema.nullable()
 }).superRefine((value, context) => {
   if (value.lifecycleState === "SOURCE_DELETED" && value.sourceChatId !== null) {
@@ -917,6 +1225,15 @@ const memoryReceiptItemSchema = z.strictObject({
   }
   if (value.itemType === "FACT_VERSION" && value.versionId === null) {
     context.addIssue({ code: "custom", message: "fact receipt requires a frozen version id" });
+  }
+  if (value.itemType === "FACT_VERSION" && value.factId === null) {
+    context.addIssue({ code: "custom", message: "fact receipt cannot carry a null fact id" });
+  }
+  if (value.itemType !== "FACT_VERSION" && value.factId != null) {
+    context.addIssue({ code: "custom", message: "non-fact receipt cannot carry a fact id" });
+  }
+  if (value.feedbackState !== undefined && (value.runItemId == null || value.runId == null)) {
+    context.addIssue({ code: "custom", message: "feedback state requires run provenance" });
   }
 });
 
@@ -961,8 +1278,27 @@ export function decodeMemoryReceipt(
 }
 
 const memoryActionFeedbackSchema = z.strictObject({
+  deletionId: idSchema.optional(),
+  expiresAt: isoTimestampSchema.optional(),
+  factId: idSchema.optional(),
   operation: z.enum(MEMORY_ACTION_FEEDBACK_OPERATIONS),
+  statement: safeText(MEMORY_STATEMENT_MAX_LENGTH).optional(),
+  versionId: idSchema.optional(),
   status: z.literal("COMMITTED")
+}).superRefine((value, context) => {
+  const targetCount = Number(value.factId !== undefined) +
+    Number(value.statement !== undefined) + Number(value.versionId !== undefined);
+  if (targetCount !== 0 && targetCount !== 3) {
+    context.addIssue({ code: "custom", message: "memory action target is incomplete" });
+  }
+  const undoCount = Number(value.deletionId !== undefined) +
+    Number(value.expiresAt !== undefined);
+  if (
+    (undoCount !== 0 && undoCount !== 2) ||
+    (undoCount === 2 && (value.operation !== "FORGET" || targetCount !== 3))
+  ) {
+    context.addIssue({ code: "custom", message: "memory action undo is invalid" });
+  }
 });
 
 export type MemoryActionFeedback = z.infer<typeof memoryActionFeedbackSchema>;

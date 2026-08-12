@@ -64,8 +64,24 @@ function mutations(): MemoryLifecycleMutationRepository {
       replayed: false,
       settingsRevision: 2
     })),
+    deleteAllReusable: vi.fn(async () => ({
+      affectedFacts: 5,
+      deletionId: "deletion-1",
+      memoryGeneration: 4,
+      memoryRevision: 8,
+      replayed: false,
+      settingsRevision: 3
+    })),
     deleteExplicit: vi.fn(async () => ({
       affectedFacts: 2,
+      deletionId: "deletion-1",
+      memoryGeneration: 4,
+      memoryRevision: 8,
+      replayed: false,
+      settingsRevision: 2
+    })),
+    deleteLearned: vi.fn(async () => ({
+      affectedFacts: 3,
       deletionId: "deletion-1",
       memoryGeneration: 4,
       memoryRevision: 8,
@@ -80,6 +96,7 @@ function mutations(): MemoryLifecycleMutationRepository {
       memoryRevision: 8,
       replayed: false,
       settingsRevision: 2,
+      undoExpiresAt: new Date(NOW.getTime() + 60_000),
       versionId: "version-1"
     })),
     status: vi.fn(async () => pendingStatus)
@@ -105,7 +122,14 @@ describe("Memory lifecycle service", () => {
     }, {
       modelRunId: "run-1",
       persistedToolCallId: "tool-call-1"
-    })).resolves.toEqual({ memory: forgottenSummary });
+    })).resolves.toEqual({
+      memory: forgottenSummary,
+      undo: {
+        deletionId: "deletion-1",
+        expiresAt: "2026-08-10T12:01:00.000Z",
+        versionId: "version-1"
+      }
+    });
     expect(authorizationRepository.resolveForUse).toHaveBeenCalledWith("user-1", {
       action: "FORGET",
       authorizationId: "authorization-1",
@@ -186,13 +210,48 @@ describe("Memory lifecycle service", () => {
     expect(mutationRepository.deleteExplicit).not.toHaveBeenCalled();
   });
 
-  it("rejects later bulk variants and hides absent status", async () => {
+  it("dispatches DELETE_LEARNED through its source-cutoff mutation", async () => {
+    const authorizationRepository = authorizations();
     const mutationRepository = mutations();
+    const learnedStatus: MemoryDeletionStatus = {
+      ...pendingStatus,
+      operation: "DELETE_LEARNED"
+    };
+    const service = createMemoryLifecycleService({
+      authorizationRepository,
+      mutationRepository: {
+        ...mutationRepository,
+        status: vi.fn(async () => learnedStatus)
+      },
+      readRepository: { get: vi.fn(async () => forgottenSummary) }
+    });
+
+    await expect(service.deleteExplicit("user-1", {
+      expectedMemoryRevision: 7,
+      expectedSettingsRevision: 2,
+      mutationAuthorizationId: "authorization-learned-1",
+      operation: "DELETE_LEARNED"
+    })).resolves.toEqual(learnedStatus);
+    expect(mutationRepository.deleteLearned).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({ operation: "DELETE_LEARNED" })
+    );
+    expect(mutationRepository.deleteExplicit).not.toHaveBeenCalled();
+    expect(mutationRepository.clearHistory).not.toHaveBeenCalled();
+  });
+
+  it("dispatches DELETE_ALL_REUSABLE through its global fenced mutation", async () => {
+    const mutationRepository = mutations();
+    const allStatus: MemoryDeletionStatus = {
+      ...pendingStatus,
+      operation: "DELETE_ALL_REUSABLE",
+      settingsRevision: 3
+    };
     const service = createMemoryLifecycleService({
       authorizationRepository: authorizations(),
       mutationRepository: {
         ...mutationRepository,
-        status: vi.fn(async () => null)
+        status: vi.fn(async () => allStatus)
       },
       readRepository: { get: vi.fn(async () => forgottenSummary) }
     });
@@ -201,10 +260,20 @@ describe("Memory lifecycle service", () => {
       expectedMemoryRevision: 7,
       expectedSettingsRevision: 2,
       mutationAuthorizationId: "authorization-bulk-2",
-      operation: "DELETE_LEARNED"
-    })).rejects.toEqual(
-      new MemoryLifecycleServiceError("memory_operation_unsupported")
+      operation: "DELETE_ALL_REUSABLE"
+    })).resolves.toEqual(allStatus);
+    expect(mutationRepository.deleteAllReusable).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({ operation: "DELETE_ALL_REUSABLE" })
     );
+  });
+
+  it("hides absent deletion status", async () => {
+    const service = createMemoryLifecycleService({
+      authorizationRepository: authorizations(),
+      mutationRepository: { ...mutations(), status: vi.fn(async () => null) },
+      readRepository: { get: vi.fn(async () => forgottenSummary) }
+    });
     await expect(service.status("user-1", "foreign-deletion")).rejects.toEqual(
       new MemoryLifecycleServiceError("memory_not_found")
     );

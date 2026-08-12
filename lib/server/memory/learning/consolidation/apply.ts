@@ -45,6 +45,7 @@ type CurrentFactRow = Readonly<{
   category: string;
   currentVersionId: string | null;
   id: string;
+  lastConfirmedAt: Date | null;
   movedToFactId: string | null;
   scopeId: string;
   state: "ACTIVE" | "CONFLICTED" | "EXPIRED" | "ORPHANED" | "RETRACTED";
@@ -299,7 +300,7 @@ async function lockTargetFact(
   const rows = await tx.$queryRaw<CurrentFactRow[]>(Prisma.sql`
     SELECT
       "id", "scopeId", "canonicalKey", "category", "state"::text AS "state",
-      "currentVersionId", "movedToFactId"
+      "currentVersionId", "lastConfirmedAt", "movedToFactId"
     FROM "MemoryFact"
     WHERE "userId" = ${userId} AND "id" = ${factId}
     FOR UPDATE
@@ -345,7 +346,7 @@ async function applyAdd(
   const facts = await tx.$queryRaw<CurrentFactRow[]>(Prisma.sql`
     SELECT
       "id", "scopeId", "canonicalKey", "category", "state"::text AS "state",
-      "currentVersionId", "movedToFactId"
+      "currentVersionId", "lastConfirmedAt", "movedToFactId"
     FROM "MemoryFact"
     WHERE "userId" = ${settings.userId}
       AND "scopeId" = ${scope.id}
@@ -450,8 +451,7 @@ async function applyReinforce(
   decisionId: string,
   executionId: string,
   factId: string,
-  versionId: string,
-  now: Date
+  versionId: string
 ): Promise<SemanticApplyResult | null> {
   const target = await lockTargetFact(tx, settings.userId, factId, versionId);
   if (!target || target.fact.canonicalKey !== candidate.canonicalKey) return null;
@@ -488,7 +488,7 @@ async function applyReinforce(
     skipDuplicates: true
   });
   const confirmedAt = new Date(Math.max(
-    now.getTime(),
+    target.fact.lastConfirmedAt?.getTime() ?? -1,
     ...fresh.map((item) => new Date(item.observedAt).getTime())
   ));
   await tx.memoryFact.update({
@@ -718,8 +718,7 @@ async function applySemanticTransition(
       decisionId,
       executionId,
       plan.targetFactId,
-      plan.targetVersionId,
-      now
+      plan.targetVersionId
     );
   }
   if (["CONFLICT", "EXPIRE", "SUPERSEDE"].includes(plan.operation)) {

@@ -12,7 +12,10 @@ const instrumentation = source("instrumentation.ts");
 const readiness = source("app/api/health/ready/route.ts");
 const createBackup = source("ops/backup/create.sh");
 const restoreBackup = source("ops/backup/restore.sh");
+const reviewRestore = source("ops/backup/review.sh");
+const restoreCompose = source("ops/backup/docker-compose.restore.yml");
 const backupCommon = source("ops/backup/_common.sh");
+const restoreReconciliation = source("scripts/memory-restore-reconcile.ts");
 const packageJson = JSON.parse(source("package.json")) as {
   scripts: Record<string, string>;
 };
@@ -47,6 +50,12 @@ describe("Memory operational boundary", () => {
     expect(worker).toContain(image);
     expect(worker).toContain('command: ["npm", "run", "memory:coordinator"]');
     expect(worker).toContain("AIQSA_MEMORY_FINGERPRINT_KEYRING:");
+    expect(worker).toContain("AIQSA_MEMORY_JOB_PARALLELISM:");
+    expect(worker).toContain("AIQSA_MEMORY_JOB_PER_USER_PARALLELISM:");
+    expect(worker).toContain("AIQSA_MEMORY_BACKGROUND_USER_DAILY_CALLS:");
+    expect(app).toContain("AIQSA_MEMORY_JOB_PARALLELISM:");
+    expect(worker).toContain("cpus: ${AIQSA_MEMORY_WORKER_CPU_LIMIT:-1.0}");
+    expect(worker).toContain("mem_limit: ${AIQSA_MEMORY_WORKER_MEMORY_LIMIT:-1g}");
     expect(worker).toContain("migrate-bootstrap:");
     expect(worker).not.toContain("ports:");
     expect(app).not.toContain("memory-worker:");
@@ -92,6 +101,34 @@ describe("Memory operational boundary", () => {
     expect(secondPreflight).toBeGreaterThan(restore);
     expect(restoreBackup).toContain(
       "required Memory suppression keys are unavailable; automatic Memory resume is blocked"
+    );
+  });
+
+  it("quarantines restore, reconciles deletion-only, and emits a reviewed promotion receipt", () => {
+    expect(restoreCompose).toContain("internal: true");
+    expect(restoreCompose).not.toContain("ports:");
+    expect(restoreCompose).not.toContain("  app:");
+    expect(restoreCompose).not.toContain("  memory-worker:");
+    expect(restoreCompose).toContain('ANTHROPIC_API_KEY: ""');
+    expect(restoreCompose).toContain('OPENAI_API_KEY: ""');
+    expect(restoreCompose).toContain('OPENROUTER_API_KEY: ""');
+    expect(restoreCompose).toContain('_DEV_CUSTOM_OPENAI_API_KEY: ""');
+    expect(backupCommon).toContain("assert_isolated_restore_project");
+    expect(restoreBackup).toContain("AIQSA_RESTORE_REVIEW_DIRECTORY");
+    expect(restoreBackup).toContain("REVIEW_STATE=PENDING");
+    expect(restoreBackup).not.toContain("compose start app");
+    expect(reviewRestore).toContain("--deletion-journal-not-required");
+    expect(reviewRestore).toContain("--deletion-journal-applied");
+    expect(reviewRestore).toContain("memory:restore:reconcile");
+    expect(reviewRestore).toContain("ACCOUNT_MEMORY_DELETE");
+    expect(reviewRestore).toContain("MemorySourceBarrier");
+    expect(reviewRestore).toContain("PROMOTION_STATE=PASSED");
+    expect(reviewRestore).not.toContain("compose start");
+    expect(restoreReconciliation).toContain("new MemoryCoordinatorRegistry()");
+    expect(restoreReconciliation).toContain("maxDeletionParallel: 1");
+    expect(restoreReconciliation).not.toContain("registerJob(");
+    expect(packageJson.scripts["memory:restore:reconcile"]).toBe(
+      "tsx scripts/memory-restore-reconcile.ts"
     );
   });
 });

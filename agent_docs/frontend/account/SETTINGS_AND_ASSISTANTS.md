@@ -11,9 +11,27 @@ Not owned here: Server resource authorization/retrieval, Control Center administ
 ### Settings, Memory, and MCP tools
 
 - Global Settings contains Appearance, Memory, and `MCP & tools`. It is reached directly from the desktop icon rail or through Account/Command palette, and remains a bounded dialog on roomy viewports and a safe-area-aware locally scrolling sheet on compact/short viewports. Unsaved MCP values or Memory drafts require their localized discard confirmation; an in-flight mutation blocks close or section replacement until it settles.
-- Memory uses the account-persisted RU/EN locale with complete feature-owned copy. Its three independent gates submit the exact server state even when a disclosed capability is unavailable; unavailable capability means the preference is stored but cannot start that work. In default `ADMIN` egress mode the section shows at most one passive administrator-managed destination line and no review action; the four-row matrix and blocking review state belong to Control Center → Memory. Explicit `PER_USER` installations retain the current/accepted fingerprint, policy, time, and version-bound review surface. Utility unavailability or unaccepted destinations never blocks explicit saved-memory CRUD or Forget.
+- Memory uses the account-persisted RU/EN locale with complete feature-owned
+  copy. Above its controls, one compact Memory pulse explains the current
+  owner-scoped state and next action in ordinary language; technical learning,
+  indexing, cleanup, destination, and capability evidence stays collapsed in a
+  keyboard-native Advanced disclosure. Blocked durable deletion and overdue
+  Temporary cleanup remain prominent outside that disclosure and distinguish
+  the immediate retrieval fence from physical purge. Health requests are
+  keyed to the active account, cancelled and cleared on account/logout change,
+  private/no-store, last-good preserving, and independently retryable without
+  hiding settings. The three independent gates still submit exact server state
+  even when a disclosed capability is unavailable; unavailable capability
+  means the preference is stored but cannot start that work. In default
+  `ADMIN` egress mode the section shows at most one passive
+  administrator-managed destination line and no review action; the destination
+  matrix and blocking review state belong to Control Center → Memory. Explicit
+  `PER_USER` installations retain their version-bound review surface, while
+  fingerprints/policy/time are Advanced evidence. Utility unavailability or
+  unaccepted destinations never blocks explicit saved-memory CRUD or Forget.
 - The same non-modal RU/EN information block explains that explicit and learned memories remain manageable, toggles are non-destructive, Temporary chats do not use Memory, deletion does not rewrite retained chats or accepted historical runs, selected snippets may coexist with administrator-connected Search/Knowledge/MCP/tools at the answer provider, and administrator connection is the trust decision with residual prompt-injection/disclosure risk. It requires no acknowledgment and never becomes a first-enablement dialog.
-- Manage Memories is a Settings-owned nested task for explicit `GLOBAL_USER`, `FOLDER`, owned live `ASSISTANT`, and retained `CHAT` facts, not a top-level application or Details tab. It keeps one Settings scroll owner, a wide list/detail evidence ledger, and a compact single-pane Back flow. POST search keeps free text out of URLs; cursor/query/list/state-filter state survives detail navigation. Create defaults visibly to global scope and its accessible picker names available folders, owned unarchived Assistants, active retained chats, and archived retained chats without treating labels as authorization. Exact statement, user authority, scope, ACTIVE/ORPHANED state, time/source/index metadata, bounded evidence, create/edit/pin/Forget, and strict malformed-response failure remain visible without hidden reasoning. Move scope appends a replacement under the selected authorized target instead of rewriting history; an ORPHANED item exposes its unavailable scope and remains repairable by Move or removable by Forget. A stale edit reloads the current version but preserves the exact draft.
+- Manage Memories is a Settings-owned nested task for explicit and automatically learned `GLOBAL_USER`, `FOLDER`, owned live `ASSISTANT`, and retained `CHAT` facts, not a top-level application or Details tab. It opens with a source-grounded Memory Summary written as exact human-readable facts: ordinary view shows no provenance, temperature, internal id, or journal vocabulary, while an explicit Advanced view adds source class, use priority, pinned state, and a path to source/history. Summary Edit and Delete always target the exact contributing fact version; one-item Delete uses the common immediate Forget plus bounded Undo rather than editing an opaque profile string. Below the summary, one Settings scroll owner contains the wide list/detail evidence ledger and compact single-pane Back flow. POST search keeps free text out of URLs; cursor/query/list/state-filter state survives detail navigation. Create defaults visibly to global scope and its accessible picker names available folders, owned unarchived Assistants, active retained chats, and archived retained chats without treating labels as authorization. Exact statement, explicit/automatic authority, scope, ACTIVE/CONFLICTED/ORPHANED/EXPIRED/RETRACTED state, deferred-candidate count, time/source/index metadata, bounded evidence, why remembered, append-only history, active feedback, create/edit/pin/Forget, and strict malformed-response failure remain visible without hidden reasoning. Move scope appends a replacement under the selected authorized target instead of rewriting history; an ORPHANED item exposes its unavailable scope and remains repairable by Move or removable by Forget. A stale edit or conflict resolution reloads the current version while preserving a correction draft. One exact-item Forget commits immediately without a pre-confirmation screen and exposes the common bounded Undo action; the item remains absent until the exact revival succeeds.
+- Incorrect/not-useful review feedback commits on the deliberate click and exposes a transient Undo action; Undo appends a `RETRACT` record and never rewrites the fact. A conflict presents competing evidence and lets the user choose one claim or submit a correction as a single explicit commit without a follow-up confirmation. `Keep unresolved` performs no write, while Forget uses the common Forget lifecycle and its shared UX rather than a review-specific delete path. All committed/error/Undo states have complete RU/EN live-region and accessible-name coverage.
 - Manual chat-history search is a second reversible nested task reached from
   Manage Memories, not the explicit-fact query and not sidebar search. Its
   persisted Memory locale covers query, chat/folder/date filters, loading,
@@ -27,19 +45,34 @@ Not owned here: Server resource authorization/retrieval, Control Center administ
   read-only Archived preview. Entry and return restore deterministic focus,
   and Settings remains the only scroll owner at portrait and short-landscape
   sizes.
-- History operations is a separate reversible nested task reached directly
+- Memory operations is a separate reversible nested task reached directly
   from Memory Settings. Rebuild, re-embed, and explicit reprocessing remain
   distinct actions whose availability is derived from the current history,
   deployment, learning, and utility-egress projection. Confirmation refreshes
-  exact Memory/settings CAS authority; clear-history and reprocessing also
-  consume an operation-bound one-time authorization. Rebuild status preserves
-  the active-generation/shadow boundary and offers cancellation only for a
-  nonterminal shadow job. Clear-history reports the committed retrieval fence
-  separately from pending physical purge, never offers cancellation after the
-  fence, and keeps retry, administrator-blocked, and audited completion states
-  visible. A browser session retains only account-keyed opaque operation ids
-  for reload recovery; errors and progress never contain private source text.
-- `Delete all saved memories` refreshes settings/Memory CAS authority at confirmation, mints current-copy `DELETE_EXPLICIT` authorization, and distinguishes the immediate future-retrieval fence from asynchronous plaintext purge. Its recoverable status exposes pending/running/retry/blocked/succeeded progress without saved text and says precisely that retained raw chats, immutable accepted destination runs, provider retention, and operator backups are not rewritten. A browser session retains only the opaque active deletion reference for reload navigation; server ownership and status remain authoritative.
+  exact Memory/settings CAS authority; delete-all-reusable, delete-learned,
+  clear-history, and reprocessing consume operation-bound one-time
+  authorization. Rebuild status
+  preserves the active-generation/shadow boundary and offers cancellation only
+  for a nonterminal shadow job. Delete-learned and clear-history separately
+  report the committed retrieval fence and pending physical purge, cannot be
+  cancelled after admission, and keep retry, administrator-blocked, and audited
+  completion visible. Learned deletion says that explicit memories and raw
+  chats remain, old observed sources cannot recreate the admitted set, and
+  genuinely new evidence may be learned. Their confirmation shows one concise
+  operation sentence and keeps the complete fence/retention/future boundary
+  behind a keyboard-operable details disclosure. A browser session retains only
+  account-keyed opaque operation ids; errors/progress contain no source text.
+- `Delete everything Memory remembers` is the ordinary-language global reset
+  inside Memory operations. Its concise default row says that Memory turns off
+  and saved, learned, summary, and history-index data are removed; internal
+  journal/evidence vocabulary is absent. Confirmation keeps the exact boundary
+  behind the same keyboard-operable details disclosure: all three gates turn
+  off immediately, pre-reset sources cannot refill Memory, raw chats and frozen
+  accepted old answers/runs remain, and provider-held data/operator backups are
+  outside this deletion. Pending/running/retry/blocked/audited status is
+  account-bound and recoverable by opaque id only. Admission and success clear
+  same-account saved-memory/profile/manual-history client projections.
+- `Delete all saved memories` refreshes settings/Memory CAS authority at confirmation, mints current-copy `DELETE_EXPLICIT` authorization, and distinguishes the immediate future-retrieval fence from asynchronous plaintext purge. Its confirmation leads with one concise line; a keyboard-operable details disclosure preserves the exact admitted-set and retained raw-chat/immutable-run/provider/backup boundaries. Recoverable status exposes pending/running/retry/blocked/succeeded progress without saved text. A browser session retains only the opaque active deletion reference for reload navigation; server ownership and status remain authoritative.
 - MCP & tools lists only entitled enabled installation definitions with active revisions. Each row separately presents persistent Enabled/Disabled, readiness, setup/OAuth actions, administrator-enabled tool names, declared personal fields, and a safe account/workspace label. Disabled names and the complete upstream inventory are administrator-only; endpoints, commands, packages, environment/header targets, OAuth client policy, grants, and secret values never render.
 - Several servers may be enabled together. The UI warns that conversation-derived data may reach tools and rejects a known effective enabled-inventory total above the 128-tool run limit, while the server remains authoritative for schemas, bytes, freshness, and races. A ready server with every discovered tool disabled remains ready but contributes zero tools.
 - Readiness refreshes on entry, mutation/OAuth return, and visibility-aware polling while work is transient. `queued`, `starting`, `idle`, and `restarting` are working states; `Needs setup`, authorization, and runtime failure remain distinct actionable facts.

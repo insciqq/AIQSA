@@ -23,6 +23,27 @@ function payload() {
       reviewRequired: true,
       version: 1,
       waitingJobCount: 2
+    },
+    memoryHealth: {
+      deletion: { active: "NONE", blocked: "NONE", state: "CLEAR" },
+      observedAt: "2026-08-12T10:00:00.000Z",
+      overall: "ACTION_REQUIRED",
+      provider: {
+        failedRecent: "NONE",
+        outcomeUnknown: "NONE",
+        state: "IDLE",
+        usageIncomplete: "NONE"
+      },
+      queue: {
+        active: "SOME",
+        failed: "NONE",
+        oldestLag: "UNDER_15_MINUTES",
+        state: "DELAYED",
+        waitingForReview: "SOME"
+      },
+      requestLocale: "EN",
+      scheduler: { resetAt: "2026-08-13T00:00:00.000Z", state: "READY" },
+      temporary: { overdue: "NONE", state: "CLEAR" }
     }
   };
 }
@@ -37,6 +58,11 @@ describe("administrator Memory API client", () => {
     }, fetcher)).resolves.toMatchObject({ ok: true });
 
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/admin/memory");
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      cache: "no-store",
+      credentials: "same-origin",
+      method: "GET"
+    });
     expect(fetcher.mock.calls[1]?.[1]).toMatchObject({
       body: JSON.stringify({
         currentFingerprint: "a".repeat(64),

@@ -26,6 +26,7 @@ import {
 } from "./lexical";
 import { requireActiveOwnedMemoryScope } from "./scopes";
 import { assertMemoryWriteNotSuppressed } from "./suppressions";
+import { memoryPurgeTargetType } from "../purge/contract";
 import {
   advanceMemoryMutation,
   requireActiveMemoryIndex,
@@ -88,6 +89,11 @@ type MemoryFactMutationCommonInput = Readonly<{
 
 export type MemoryFactSaveInput = MemoryFactMutationCommonInput & Readonly<{
   scopeId: string;
+  undoForget?: Readonly<{
+    deletionId: string;
+    expectedVersionId: string;
+    now: Date;
+  }>;
 }>;
 
 export type MemoryFactEditInput = MemoryFactMutationCommonInput & Readonly<{
@@ -101,6 +107,13 @@ export type MemoryFactMoveInput = MemoryFactMutationCommonInput & Readonly<{
   expectedVersionId: string;
   factId: string;
   targetScopeId: string;
+}>;
+
+export type MemoryFactResolveInput = MemoryFactMutationCommonInput & Readonly<{
+  expectedVersionIds: readonly string[];
+  factId: string;
+  scopeId: string;
+  selectedVersionId: string;
 }>;
 
 export type MemoryFactMutationOutcome = "CREATED" | "EDITED" | "MOVED" | "REINFORCED";
@@ -292,7 +305,23 @@ function payloadHash(
       expectedVersionId: (input as MemoryFactMoveInput).expectedVersionId,
       factId: (input as MemoryFactMoveInput).factId,
       targetScopeId: (input as MemoryFactMoveInput).targetScopeId
-    } : null,
+    } : operation === "SAVE"
+      ? (input as MemoryFactSaveInput).undoForget ?? null
+      : null,
+    value: input.value
+  });
+}
+
+function resolvePayloadHash(input: MemoryFactResolveInput): string {
+  if (input.idempotencyPayloadHash) return input.idempotencyPayloadHash;
+  return memorySha256({
+    evidence: input.evidence,
+    expectedVersionIds: input.expectedVersionIds,
+    explicitSuppressionOverride: input.explicitSuppressionOverride,
+    factId: input.factId,
+    operation: "RESOLVE_CONFLICT",
+    scopeId: input.scopeId,
+    selectedVersionId: input.selectedVersionId,
     value: input.value
   });
 }
@@ -598,6 +627,35 @@ function suppressionMatchInput(input: MemoryFactMutationCommonInput) {
   };
 }
 
+async function requireAutomaticEvidenceAfterSourceCutoff(
+  tx: MemoryTransaction,
+  userId: string,
+  input: MemoryFactMutationCommonInput
+): Promise<void> {
+  if (input.value.sourceMode !== "AUTOMATIC" || input.evidence.kind !== "MESSAGE") {
+    return;
+  }
+  const [message, barrier] = await Promise.all([
+    tx.message.findFirst({
+      select: { createdAt: true },
+      where: {
+        chatId: input.evidence.chatId,
+        id: input.evidence.messageId,
+        chat: { userId }
+      }
+    }),
+    tx.memorySourceBarrier.findFirst({
+      orderBy: [{ sourceCreatedAtCutoff: "desc" }, { id: "desc" }],
+      select: { sourceCreatedAtCutoff: true },
+      where: { kind: { in: ["ALL_REUSABLE", "AUTOMATIC_FACTS"] }, userId }
+    })
+  ]);
+  if (!message) return memoryPersistenceFailure("memory_input_invalid");
+  if (barrier && message.createdAt <= barrier.sourceCreatedAtCutoff) {
+    return memoryPersistenceFailure("memory_fact_suppressed");
+  }
+}
+
 async function prepareFactWrite(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
@@ -605,6 +663,7 @@ async function prepareFactWrite(
   input: MemoryFactMutationCommonInput
 ): Promise<MemoryActiveIndex> {
   await requireEvidenceOwner(tx, settings.userId, input.evidence);
+  await requireAutomaticEvidenceAfterSourceCutoff(tx, settings.userId, input);
   await assertMemoryWriteNotSuppressed(
     tx,
     keyring,
@@ -644,6 +703,55 @@ const currentVersionSelect = {
   validFrom: true,
   validTo: true
 } satisfies Prisma.MemoryFactVersionSelect;
+
+async function cancelPendingForgetPurge(
+  tx: MemoryTransaction,
+  userId: string,
+  factId: string,
+  input: NonNullable<MemoryFactSaveInput["undoForget"]>
+): Promise<void> {
+  const pending = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT deletion."id"
+    FROM "MemoryDeletionOutbox" AS deletion
+    WHERE deletion."id" = ${input.deletionId}
+      AND deletion."userId" = ${userId}
+      AND deletion."operation" = 'FORGET_PURGE'::"MemoryDeletionOperation"
+      AND deletion."targetType" = ${memoryPurgeTargetType("MEMORY_FACT")}
+      AND deletion."targetId" = ${factId}
+      AND deletion."state" = 'PENDING'::"MemoryDeletionState"
+      AND deletion."nextAttemptAt" > ${input.now}
+      AND EXISTS (
+        SELECT 1
+        FROM "MemoryEvent" AS event
+        WHERE event."userId" = deletion."userId"
+          AND event."factId" = deletion."targetId"
+          AND event."factVersionId" = ${input.expectedVersionId}
+          AND event."operation" = 'FORGET'::"MemoryEventOperation"
+          AND event."metadata" ->> 'deletionId' = deletion."id"
+      )
+    FOR UPDATE OF deletion
+  `);
+  if (!pending[0]) return memoryPersistenceFailure("memory_undo_unavailable");
+  const cancelled = await tx.memoryDeletionOutbox.updateMany({
+    data: {
+      completedAt: input.now,
+      errorCode: "memory_purge_cancelled_by_undo",
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      state: "CANCELLED"
+    },
+    where: {
+      id: input.deletionId,
+      nextAttemptAt: { gt: input.now },
+      state: "PENDING",
+      userId
+    }
+  });
+  if (cancelled.count !== 1) {
+    return memoryPersistenceFailure("memory_undo_unavailable");
+  }
+}
 
 type MemoryFactRepositoryOptions = Readonly<{
   consumeExplicitAuthorization?: (
@@ -1179,9 +1287,183 @@ export function createPrismaMemoryFactRepository(
       });
     },
 
+    async resolve(
+      userId: string,
+      input: MemoryFactResolveInput
+    ): Promise<MemoryFactMutationResult> {
+      validateMutation(input, "EDIT");
+      if (
+        !validBounded(input.factId, 256) ||
+        !validBounded(input.scopeId, 256) ||
+        input.value.sourceMode !== "EXPLICIT" ||
+        input.expectedVersionIds.length < 2 ||
+        input.expectedVersionIds.length > 20 ||
+        input.expectedVersionIds.some((id, index) =>
+          !validBounded(id, 256) || (index > 0 && input.expectedVersionIds[index - 1]! >= id)) ||
+        !input.expectedVersionIds.includes(input.selectedVersionId) ||
+        input.authorization?.expectedTargetVersionId !== input.expectedVersionIds[0]
+      ) {
+        return memoryPersistenceFailure("memory_input_invalid");
+      }
+      const inputPayloadHash = resolvePayloadHash(input);
+      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        const replay = await replayedReceipt(tx, userId, "EDIT", input, inputPayloadHash);
+        if (replay) return replay;
+        await authorizeExplicitMutation(tx, userId, input);
+        await requireActiveOwnedMemoryScope(tx, userId, input.scopeId);
+
+        const fact = await tx.memoryFact.findFirst({
+          select: {
+            canonicalKey: true,
+            currentVersionId: true,
+            id: true,
+            scopeId: true,
+            state: true
+          },
+          where: { id: input.factId, userId }
+        });
+        if (!fact) return memoryPersistenceFailure("memory_fact_not_found");
+        if (
+          fact.state !== "CONFLICTED" || fact.currentVersionId !== null ||
+          fact.scopeId !== input.scopeId || fact.canonicalKey !== input.value.canonicalKey
+        ) {
+          return memoryPersistenceFailure("memory_fact_version_stale");
+        }
+        const conflicting = await tx.memoryFactVersion.findMany({
+          orderBy: { id: "asc" },
+          select: { id: true, systemFrom: true },
+          where: { factId: fact.id, state: "CONFLICTING", userId }
+        });
+        if (
+          conflicting.length !== input.expectedVersionIds.length ||
+          conflicting.some((version, index) => version.id !== input.expectedVersionIds[index])
+        ) {
+          return memoryPersistenceFailure("memory_fact_version_stale");
+        }
+
+        await requireEvidenceOwner(tx, userId, input.evidence);
+        await assertMemoryWriteNotSuppressed(
+          tx,
+          keyring,
+          userId,
+          suppressionMatchInput(input),
+          { explicitOverrideRequested: input.explicitSuppressionOverride, sourceMode: "EXPLICIT" }
+        );
+        await advanceMemoryMutation(tx, settings, "EXPLICIT_EDIT_PIN_RESCOPE_OR_RESOLVE");
+        const activeIndex = await requireActiveMemoryIndex(tx, settings);
+        if (!activeIndex) return memoryPersistenceFailure("memory_active_generation_invalid");
+
+        const eventId = randomUUID();
+        const versionId = randomUUID();
+        const newestSystemFrom = Math.max(...conflicting.map(({ systemFrom }) =>
+          systemFrom.getTime()));
+        const transitionAt = new Date(Math.max(Date.now(), newestSystemFrom + 1));
+        await createEvent(
+          tx,
+          userId,
+          fact.id,
+          versionId,
+          "EDIT",
+          input.value,
+          input.evidence,
+          eventId
+        );
+        const closed = await tx.memoryFactVersion.updateMany({
+          data: { state: "SUPERSEDED", systemTo: transitionAt },
+          where: {
+            factId: fact.id,
+            id: { in: [...input.expectedVersionIds] },
+            state: "CONFLICTING",
+            systemTo: null,
+            userId
+          }
+        });
+        if (closed.count !== input.expectedVersionIds.length) {
+          return memoryPersistenceFailure("memory_fact_version_stale");
+        }
+        await tx.memoryFactVersion.create({
+          data: {
+            category: input.value.category,
+            confidence: input.value.confidence,
+            createdByEventId: eventId,
+            directness: input.value.directness,
+            displayText: input.value.displayText,
+            factId: fact.id,
+            id: versionId,
+            importance: input.value.importance,
+            languageCode: input.value.languageCode,
+            modality: input.value.modality,
+            normalizedSearchText: normalizeMemorySearchText(input.value.displayText),
+            pipelineVersion: input.value.pipelineVersion,
+            sensitivityClass: input.value.sensitivityClass,
+            sourceMode: "EXPLICIT",
+            state: "ACTIVE",
+            structuredValue: input.value.structuredValue,
+            supersedesVersionId: input.selectedVersionId,
+            systemFrom: transitionAt,
+            userId,
+            validFrom: input.value.validFrom,
+            validTo: input.value.validTo
+          }
+        });
+        const updated = await tx.memoryFact.updateMany({
+          data: {
+            category: input.value.category,
+            currentVersionId: versionId,
+            lastConfirmedAt: input.evidence.observedAt,
+            state: "ACTIVE"
+          },
+          where: {
+            currentVersionId: null,
+            id: fact.id,
+            state: "CONFLICTED",
+            userId
+          }
+        });
+        if (updated.count !== 1) return memoryPersistenceFailure("memory_fact_version_stale");
+        await tx.memorySearchEntry.deleteMany({
+          where: {
+            factVersionId: { in: [...input.expectedVersionIds] },
+            indexGenerationId: activeIndex.id,
+            userId
+          }
+        });
+        await createEvidence(tx, userId, versionId, eventId, input.evidence);
+        const searchEntry = await createSearchEntry(
+          tx,
+          activeIndex,
+          userId,
+          versionId,
+          input.value,
+          input.evidence
+        );
+        await enqueueExplicitEmbedding(tx, settings, input, searchEntry);
+        await enqueueWorkingSetRefresh(tx, settings, input, fact.id);
+        const result = {
+          eventId,
+          factId: fact.id,
+          memoryGeneration: settings.memoryGeneration,
+          memoryRevision: settings.memoryRevision,
+          outcome: "EDITED" as const,
+          versionId
+        };
+        await persistReceipt(tx, userId, "EDIT", input, inputPayloadHash, result);
+        return { ...result, replayed: false };
+      });
+    },
+
     async save(userId: string, input: MemoryFactSaveInput): Promise<MemoryFactMutationResult> {
       validateMutation(input, "SAVE");
-      if (!validBounded(input.scopeId, 256)) {
+      if (
+        !validBounded(input.scopeId, 256) ||
+        (input.undoForget !== undefined && (
+          !validBounded(input.undoForget.deletionId, 256) ||
+          !validBounded(input.undoForget.expectedVersionId, 256) ||
+          !Number.isFinite(input.undoForget.now.getTime()) ||
+          input.value.sourceMode !== "EXPLICIT" ||
+          !input.explicitSuppressionOverride
+        ))
+      ) {
         return memoryPersistenceFailure("memory_input_invalid");
       }
       const inputPayloadHash = payloadHash("SAVE", input);
@@ -1228,20 +1510,39 @@ export function createPrismaMemoryFactRepository(
             return memoryPersistenceFailure("memory_fact_identity_conflict");
           }
         } else if (existing) {
+          const explicitRevival = input.value.sourceMode === "EXPLICIT" &&
+            input.explicitSuppressionOverride;
+          const learnedDeletionRevival = input.value.sourceMode === "AUTOMATIC" &&
+            input.evidence.kind === "MESSAGE" &&
+            !input.explicitSuppressionOverride;
           if (
             existing.state !== "FORGOTTEN" ||
-            input.value.sourceMode !== "EXPLICIT" ||
-            !input.explicitSuppressionOverride
+            (!explicitRevival && !learnedDeletionRevival)
           ) {
             return memoryPersistenceFailure("memory_fact_identity_conflict");
           }
           const prior = await tx.memoryFactVersion.findFirst({
             orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
             select: { id: true },
-            where: { factId: existing.id, userId }
+            where: { factId: existing.id, state: "FORGOTTEN", userId }
           });
           if (!prior) return memoryPersistenceFailure("memory_fact_version_stale");
           revivalVersionId = prior.id;
+        }
+
+        if (input.undoForget) {
+          if (
+            existing?.state !== "FORGOTTEN" ||
+            revivalVersionId !== input.undoForget.expectedVersionId
+          ) {
+            return memoryPersistenceFailure("memory_undo_unavailable");
+          }
+          await cancelPendingForgetPurge(
+            tx,
+            userId,
+            existing.id,
+            input.undoForget
+          );
         }
 
         const activeIndex = await prepareFactWrite(tx, settings, keyring, input);

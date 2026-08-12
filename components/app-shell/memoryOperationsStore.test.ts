@@ -12,11 +12,17 @@ import {
   resetMemoryHistorySearchStoreForTest,
   useMemoryHistorySearchStore
 } from "./memoryHistorySearchStore";
+import {
+  resetMemoryManagerStoreForTest,
+  useMemoryManagerStore
+} from "./memoryManagerStore";
 import { resetMemorySettingsStoreForTest } from "./memorySettingsStore";
 import {
   memoryDeletionFixture,
+  memoryProfileFixture,
   memoryRebuildFixture,
-  memorySettingsFixture
+  memorySettingsFixture,
+  memorySummaryFixture
 } from "./memoryTestFixtures";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
 
@@ -31,12 +37,14 @@ describe("Memory operations store", () => {
   beforeEach(() => {
     resetMemoryOperationsStoreForTest();
     resetMemoryHistorySearchStoreForTest();
+    resetMemoryManagerStoreForTest();
     resetMemorySettingsStoreForTest();
   });
 
   afterEach(() => {
     resetMemoryOperationsStoreForTest();
     resetMemoryHistorySearchStoreForTest();
+    resetMemoryManagerStoreForTest();
     resetMemorySettingsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -124,6 +132,225 @@ describe("Memory operations store", () => {
       deletionId: "history-clear-1",
       state: "SUCCEEDED"
     });
+  });
+
+  it("admits learned deletion with its own exact grant and restores its separate status", async () => {
+    const settings = memorySettingsFixture();
+    const deletion = memoryDeletionFixture({
+      deletionId: "learned-delete-1",
+      operation: "DELETE_LEARNED"
+    });
+    const calls: Array<{ body: Record<string, unknown> | null; path: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
+      calls.push({ body, path });
+      if (path === "/api/me/memory/settings") return json(settings);
+      if (path === "/api/me/memory/mutation-authorizations") {
+        return json({
+          expiresAt: "2026-08-10T08:05:00.000Z",
+          mutationAuthorizationId: "learned-authorization-1"
+        }, 201);
+      }
+      if (path === "/api/me/memory/bulk-delete") return json(deletion, 202);
+      if (path === "/api/me/memory/deletions/learned-delete-1") return json({
+        ...deletion,
+        completedUnits: 7,
+        lastAuditAt: "2026-08-10T08:10:00.000Z",
+        state: "SUCCEEDED",
+        totalUnits: 7
+      });
+      throw new Error(`unexpected request: ${path}`);
+    }));
+
+    await activateMemoryOperationsAccount("account-a");
+    useMemoryHistorySearchStore.setState({
+      accountId: "account-a",
+      loadState: "ready",
+      nextCursor: null,
+      results: [{
+        indexingState: "LEXICAL_READY",
+        itemType: "RECALL_CHUNK",
+        occurredAt: "2026-08-10T08:00:00.000Z",
+        sourceChatId: "chat-retained",
+        sourceChatTitle: "Retained",
+        sourceFolderId: null,
+        sourceFolderName: null,
+        sourceMessageIds: ["message-retained"],
+        sourceState: "AVAILABLE",
+        snippet: "Retained history projection"
+      }]
+    });
+    selectMemoryOperation("DELETE_LEARNED");
+    await confirmSelectedMemoryOperation();
+
+    expect(calls[1]?.body).toMatchObject({
+      action: "BULK_DELETE",
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      expectedMemoryRevision: settings.settings.memoryRevision,
+      expectedSettingsRevision: settings.settings.settingsRevision,
+      operation: "DELETE_LEARNED"
+    });
+    expect(calls[2]).toEqual({
+      body: {
+        expectedMemoryRevision: settings.settings.memoryRevision,
+        expectedSettingsRevision: settings.settings.settingsRevision,
+        mutationAuthorizationId: "learned-authorization-1",
+        operation: "DELETE_LEARNED"
+      },
+      path: "/api/me/memory/bulk-delete"
+    });
+    expect(useMemoryHistorySearchStore.getState().results).toHaveLength(1);
+    expect(JSON.parse(sessionStorage.getItem("aiqsa:memory:operations:v1:account-a") ?? "null"))
+      .toEqual({
+        allDeletionId: null,
+        clearDeletionId: null,
+        learnedDeletionId: "learned-delete-1",
+        rebuildJobId: null,
+        version: 3
+      });
+    expect(useMemoryOperationsStore.getState()).toMatchObject({
+      confirmation: null,
+      learnedStatus: deletion
+    });
+
+    deactivateMemoryOperationsAccount("account-a");
+    await activateMemoryOperationsAccount("account-a");
+    expect(useMemoryOperationsStore.getState().learnedStatus).toMatchObject({
+      deletionId: "learned-delete-1",
+      state: "SUCCEEDED"
+    });
+  });
+
+  it("resets every Memory gate, invalidates private caches, and restores all-data status", async () => {
+    const before = memorySettingsFixture({
+      settings: {
+        learnAutomatically: true,
+        referenceChatHistory: true,
+        useMemoryFacts: true
+      }
+    });
+    const after = memorySettingsFixture({
+      settings: {
+        learnAutomatically: false,
+        memoryGeneration: before.settings.memoryGeneration + 1,
+        memoryRevision: before.settings.memoryRevision + 1,
+        referenceChatHistory: false,
+        settingsRevision: before.settings.settingsRevision + 1,
+        useMemoryFacts: false
+      }
+    });
+    const deletion = memoryDeletionFixture({
+      deletionId: "all-reusable-delete-1",
+      memoryGeneration: after.settings.memoryGeneration,
+      memoryRevision: after.settings.memoryRevision,
+      operation: "DELETE_ALL_REUSABLE",
+      settingsRevision: after.settings.settingsRevision,
+      totalUnits: 11
+    });
+    const calls: Array<{ body: Record<string, unknown> | null; path: string }> = [];
+    let settingsLoads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
+      calls.push({ body, path });
+      if (path === "/api/me/memory/settings") {
+        settingsLoads += 1;
+        return json(settingsLoads === 1 ? before : after);
+      }
+      if (path === "/api/me/memory/mutation-authorizations") {
+        return json({
+          expiresAt: "2026-08-10T08:05:00.000Z",
+          mutationAuthorizationId: "all-reusable-authorization-1"
+        }, 201);
+      }
+      if (path === "/api/me/memory/bulk-delete") return json(deletion, 202);
+      if (path === "/api/me/memory/deletions/all-reusable-delete-1") {
+        return json({
+          ...deletion,
+          completedUnits: 11,
+          lastAuditAt: "2026-08-10T08:10:00.000Z",
+          state: "SUCCEEDED"
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    }));
+
+    await activateMemoryOperationsAccount("account-a");
+    useMemoryHistorySearchStore.setState({
+      accountId: "account-a",
+      loadState: "ready",
+      nextCursor: "private-cursor",
+      results: [{
+        indexingState: "LEXICAL_READY",
+        itemType: "RECALL_CHUNK",
+        occurredAt: "2026-08-10T08:00:00.000Z",
+        sourceChatId: "chat-retained",
+        sourceChatTitle: "Retained",
+        sourceFolderId: null,
+        sourceFolderName: null,
+        sourceMessageIds: ["message-retained"],
+        sourceState: "AVAILABLE",
+        snippet: "Private projection"
+      }]
+    });
+    useMemoryManagerStore.setState({
+      listLoadState: "ready",
+      memories: [memorySummaryFixture()],
+      profileAccountId: "account-a",
+      profileLoadState: "ready",
+      profileResponse: memoryProfileFixture()
+    });
+    selectMemoryOperation("DELETE_ALL_REUSABLE");
+    await confirmSelectedMemoryOperation();
+
+    expect(calls[1]?.body).toMatchObject({
+      action: "BULK_DELETE",
+      expectedMemoryRevision: before.settings.memoryRevision,
+      expectedSettingsRevision: before.settings.settingsRevision,
+      operation: "DELETE_ALL_REUSABLE"
+    });
+    expect(calls[2]).toEqual({
+      body: {
+        expectedMemoryRevision: before.settings.memoryRevision,
+        expectedSettingsRevision: before.settings.settingsRevision,
+        mutationAuthorizationId: "all-reusable-authorization-1",
+        operation: "DELETE_ALL_REUSABLE"
+      },
+      path: "/api/me/memory/bulk-delete"
+    });
+    expect(useMemoryHistorySearchStore.getState()).toMatchObject({
+      nextCursor: null,
+      results: []
+    });
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      listLoadState: "idle",
+      memories: [],
+      profileAccountId: "account-a",
+      profileLoadState: "idle",
+      profileResponse: null
+    });
+    expect(useMemoryOperationsStore.getState()).toMatchObject({
+      allStatus: deletion,
+      confirmation: null
+    });
+    expect(JSON.parse(sessionStorage.getItem("aiqsa:memory:operations:v1:account-a") ?? "null"))
+      .toEqual({
+        allDeletionId: "all-reusable-delete-1",
+        clearDeletionId: null,
+        learnedDeletionId: null,
+        rebuildJobId: null,
+        version: 3
+      });
+
+    deactivateMemoryOperationsAccount("account-a");
+    await activateMemoryOperationsAccount("account-a");
+    expect(useMemoryOperationsStore.getState().allStatus).toMatchObject({
+      deletionId: "all-reusable-delete-1",
+      operation: "DELETE_ALL_REUSABLE",
+      state: "SUCCEEDED"
+    });
+    expect(sessionStorage.getItem("aiqsa:memory:operations:v1:account-a")).toBeNull();
   });
 
   it("preserves an exact confirmation after a stale CAS and never reports optimistic success", async () => {

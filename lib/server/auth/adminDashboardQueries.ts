@@ -1,5 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { adminUserDeletionInfo, adminUserOwnedDataCount } from "./adminDeletionMetadata";
+import {
+  adminUserDeletionInfo,
+  adminUserOwnedDataCountWithMemory
+} from "./adminDeletionMetadata";
+import { loadAccountMemoryOwnedCounts } from "../memory/accountDeletion/inventory";
 import { loadAdminGrantableCatalog } from "./adminCatalogQueries";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
 import type { AdminDashboard, AdminDashboardNavigation } from "./adminRepositoryContract";
@@ -149,7 +153,8 @@ export async function listAdminDashboard(
     grants,
     usageRows,
     mcpServer,
-    smtpConfiguration
+    smtpConfiguration,
+    memoryOwnedCounts
   ] = await Promise.all([
     prisma.user.findMany({
       orderBy: {
@@ -245,7 +250,8 @@ export async function listAdminDashboard(
           }
         ]
       }
-    })
+    }),
+    loadAccountMemoryOwnedCounts(prisma)
   ]);
   const groupNamesById = new Map(groups.map((group) => [group.id, { name: group.name }]));
   const usage = serializeAdminUsageDashboard({
@@ -265,7 +271,10 @@ export async function listAdminDashboard(
 
     return {
       deletion: adminUserDeletionInfo({
-        ownedDataCount: adminUserOwnedDataCount(user),
+        ownedDataCount: adminUserOwnedDataCountWithMemory(
+          user,
+          memoryOwnedCounts.get(user.id) ?? 0
+        ),
         status: user.status
       }),
       displayName: user.displayName,

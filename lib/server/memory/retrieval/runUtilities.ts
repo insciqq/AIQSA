@@ -43,7 +43,7 @@ export const MEMORY_QUERY_EXPANSION_PIPELINE_VERSION =
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
   "memory-remote-rerank-v1";
 
-const queryEmbeddingVersions: MemoryExecutionVersions = Object.freeze({
+export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION,
   policyVersion: "memory-query-embedding-policy-v1",
   promptVersion: "memory-query-embedding-prompt-v1",
@@ -486,7 +486,7 @@ export function createMemoryRunUtilityService(
         input,
         "MEMORY_QUERY_EMBED",
         1,
-        queryEmbeddingVersions,
+        MEMORY_QUERY_EMBEDDING_VERSIONS,
         inputHash
       );
       if (started.status !== "STARTED") return started;

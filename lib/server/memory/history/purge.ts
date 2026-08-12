@@ -7,6 +7,16 @@ import type {
   MemoryDeletionHandler
 } from "../coordinator/types";
 import type { MemoryTransaction } from "../persistence/transaction";
+import {
+  countInvalidMemoryProfileProjections,
+  purgeInvalidMemoryProfileProjections
+} from "../profile/purge";
+import {
+  inspectMemoryFeedbackHistoryClear,
+  inspectMemoryFeedbackInvalidSource,
+  purgeMemoryFeedbackHistoryClear,
+  purgeMemoryFeedbackInvalidSource
+} from "../review/purge";
 
 export const MEMORY_HISTORY_CLEAR_MANIFEST_VERSION =
   "memory-p4-history-clear-v1";
@@ -18,6 +28,7 @@ export const MEMORY_HISTORY_SOURCE_TARGET_TYPE =
   `HISTORY_SOURCE@${MEMORY_HISTORY_SOURCE_PURGE_MANIFEST_VERSION}`;
 
 type HistoryPurgeSelection =
+  | Readonly<{ barrierId: string; kind: "ALL_REUSABLE" }>
   | Readonly<{ barrierId: string; kind: "CLEAR" }>
   | Readonly<{ chatId: string; kind: "SOURCE" }>
   | Readonly<{ kind: "SUPPRESSED" }>;
@@ -63,12 +74,12 @@ async function targetIds(
   userId: string,
   selection: HistoryPurgeSelection
 ): Promise<HistoryTargetIds> {
-  if (selection.kind === "CLEAR") {
+  if (selection.kind === "CLEAR" || selection.kind === "ALL_REUSABLE") {
     const barrier = await tx.memorySourceBarrier.findFirst({
       select: { createdAt: true, sourceCreatedAtCutoff: true },
       where: {
         id: selection.barrierId,
-        kind: "HISTORY_INDEX",
+        kind: selection.kind === "ALL_REUSABLE" ? "ALL_REUSABLE" : "HISTORY_INDEX",
         userId
       }
     });
@@ -427,12 +438,12 @@ async function receiptSelectionPredicates(
       running: Prisma.sql`history."state" = 'RUNNING'::"MemoryHistoryRunState"`
     };
   }
-  if (selection.kind === "CLEAR") {
+  if (selection.kind === "CLEAR" || selection.kind === "ALL_REUSABLE") {
     const barrier = await tx.memorySourceBarrier.findFirst({
-      select: { sourceCreatedAtCutoff: true },
+      select: { createdAt: true, sourceCreatedAtCutoff: true },
       where: {
         id: selection.barrierId,
-        kind: "HISTORY_INDEX",
+        kind: selection.kind === "ALL_REUSABLE" ? "ALL_REUSABLE" : "HISTORY_INDEX",
         userId
       }
     });
@@ -440,7 +451,7 @@ async function receiptSelectionPredicates(
       throw new MemoryCoordinatorError("memory_deletion_target_invalid", true);
     }
     return {
-      history: Prisma.sql`history."createdAt" <= ${barrier.sourceCreatedAtCutoff}`,
+      history: Prisma.sql`history."createdAt" <= ${barrier.createdAt}`,
       result: Prisma.sql`TRUE`,
       running: Prisma.sql`FALSE`
     };
@@ -595,6 +606,29 @@ export async function purgeMemoryHistorySelection(
   userId: string,
   selection: HistoryPurgeSelection
 ): Promise<void> {
+  const initialTargetIds = await targetIds(tx, userId, selection);
+  if (selection.kind === "CLEAR" || selection.kind === "ALL_REUSABLE") {
+    await purgeMemoryFeedbackHistoryClear(
+      tx,
+      userId,
+      initialTargetIds,
+      selection.kind === "ALL_REUSABLE" ? "all_reusable_delete" : "history_clear"
+    );
+  } else if (selection.kind === "SOURCE") {
+    await purgeMemoryFeedbackInvalidSource(
+      tx,
+      userId,
+      selection.chatId,
+      initialTargetIds
+    );
+  } else {
+    await purgeMemoryFeedbackHistoryClear(
+      tx,
+      userId,
+      initialTargetIds,
+      "suppressed_source"
+    );
+  }
   await purgeMemoryHistoryReceiptDerivatives(tx, userId, selection);
   while (true) {
     const ids = await targetIds(tx, userId, selection);
@@ -602,7 +636,7 @@ export async function purgeMemoryHistorySelection(
       ids.candidateIds.length === 0 &&
       ids.chunkIds.length === 0 &&
       ids.episodeIds.length === 0
-    ) return;
+    ) break;
     await settleAttemptItems(tx, userId, ids);
     await tx.memorySearchEntry.deleteMany({
       where: {
@@ -645,7 +679,14 @@ export async function purgeMemoryHistorySelection(
         where: { id: { in: [...ids.candidateIds] }, userId }
       });
     }
-    if (selection.kind !== "SUPPRESSED") return;
+    if (selection.kind !== "SUPPRESSED") break;
+  }
+  if (selection.kind !== "CLEAR" && selection.kind !== "ALL_REUSABLE") {
+    await purgeInvalidMemoryProfileProjections(
+      tx,
+      userId,
+      selection.kind === "SOURCE" ? "source_invalidated" : "suppressed_source"
+    );
   }
 }
 
@@ -656,10 +697,18 @@ export async function inspectMemoryHistoryPurge(
 ): Promise<MemoryHistoryPurgeProgress> {
   const ids = await targetIds(tx, userId, selection);
   const receiptDerivatives = await historyReceiptDerivativeCounts(tx, userId, selection);
-  const itemCount = ids.candidateIds.length + ids.chunkIds.length + ids.episodeIds.length;
+  const feedbackCount = selection.kind === "CLEAR" || selection.kind === "ALL_REUSABLE"
+    ? await inspectMemoryFeedbackHistoryClear(tx, userId, ids)
+    : selection.kind === "SOURCE"
+      ? await inspectMemoryFeedbackInvalidSource(tx, userId, selection.chatId, ids)
+      : await inspectMemoryFeedbackHistoryClear(tx, userId, ids);
+  const historyItemCount = ids.candidateIds.length + ids.chunkIds.length + ids.episodeIds.length;
+  const profileCount = selection.kind === "CLEAR" || selection.kind === "ALL_REUSABLE"
+    ? 0
+    : await countInvalidMemoryProfileProjections(tx, userId);
   let referenceCount = 0;
   let searchCount = 0;
-  if (itemCount > 0) {
+  if (historyItemCount > 0) {
     [referenceCount, searchCount] = await Promise.all([
       tx.memoryRetrievalAttemptItem.count({
         where: {
@@ -681,11 +730,12 @@ export async function inspectMemoryHistoryPurge(
       })
     ]);
   }
-  const completedUnits = Number(itemCount === 0) +
+  const completedUnits = Number(historyItemCount + profileCount === 0) +
     Number(referenceCount === 0) +
     Number(searchCount === 0) +
-    Number(receiptDerivatives.historyRuns === 0);
-  return { complete: completedUnits === 4, completedUnits, totalUnits: 4 };
+    Number(receiptDerivatives.historyRuns === 0) +
+    Number(feedbackCount === 0);
+  return { complete: completedUnits === 5, completedUnits, totalUnits: 5 };
 }
 
 function handler(operation: "BULK_CLEAR" | "SOURCE_PURGE"): MemoryDeletionHandler {
@@ -788,6 +838,15 @@ export async function auditMemoryHistoryClearDeletion(
 export const suppressedMemoryHistoryPurgeSelection = Object.freeze({
   kind: "SUPPRESSED" as const
 });
+
+export function allReusableMemoryHistoryPurgeSelection(
+  barrierId: string
+): HistoryPurgeSelection {
+  if (!validId(barrierId)) {
+    throw new Error("memory_history_all_reusable_barrier_invalid");
+  }
+  return Object.freeze({ barrierId, kind: "ALL_REUSABLE" as const });
+}
 
 export async function reconcileCompletedMemoryHistorySourceDeletionAudits(
   client: PrismaClient = prisma,

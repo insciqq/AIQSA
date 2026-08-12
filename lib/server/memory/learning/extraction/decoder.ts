@@ -33,6 +33,9 @@ const modalities = new Set([
   "CONSIDERATION", "CONSTRAINT", "EVENT", "HABIT", "INTENTION", "PLAN",
   "PREFERENCE", "STATE", "WORKFLOW"
 ]);
+const reasonCodes = new Set([
+  "low_confidence", "scope_ambiguous", "temporal_unresolved"
+]);
 const categoryPattern = /^[a-z][a-z0-9_-]{0,63}$/u;
 const canonicalKeyPattern = /^[a-z0-9][a-z0-9._:-]{0,255}$/u;
 const controlPattern = /[\u0000-\u001f\u007f]/u;
@@ -40,7 +43,7 @@ const considerationPattern = /(?:consider(?:ing)?|thinking about|weighing|unsure
 const intentionPattern = /(?:intend(?:ing)?|want to|would like to|going to|планирую|намерен|намерена|хочу|собираюсь|хотел бы|хотела бы)/iu;
 const planPattern = /(?:my plan|plan to|scheduled to|will (?:start|buy|move|do)|мой план|планирую|запланировал|запланировала|буду (?:делать|покупать|переезжать|начинать))/iu;
 const negationPattern = /(?:^|[^\p{L}\p{N}_])(?:not|never|no longer|don't|doesn't|didn't|cannot|can't|won't|не|никогда|больше не|нет)(?=$|[^\p{L}\p{N}_])/iu;
-const misleadingNegationPattern = /(?:^|[^\p{L}\p{N}_])(?:not only|не только)(?=$|[^\p{L}\p{N}_])/giu;
+const misleadingNegationPattern = /(?:^|[^\p{L}\p{N}_])(?:not only|не только|not (?:yet )?decided|no decision(?: yet)?|решени[ея] (?:ещё )?нет|not (?:a |the |my )?global (?:preference|setting)|не глобальн(?:ая|ое|ый) (?:настройка|предпочтение)|not my permanent residence|did not say|never said|не говорил(?:а)?)(?=$|[^\p{L}\p{N}_])/giu;
 const durableGlobalPattern = /(?:i always|i usually|i prefer|my name is|i am (?:a|an)|i work as|i live in|for all my|я всегда|я обычно|я предпочитаю|меня зовут|я работаю|я живу|для меня всегда)/iu;
 const projectScopePattern = /(?:this project|current project|for the project|in this workspace|этот проект|текущий проект|для проекта|в этом проекте)/iu;
 const relativeTemporalPattern = /(?:today|yesterday|tomorrow|currently|recently|soon|later|this (?:morning|afternoon|evening|weekend|week|month|quarter|year|summer|winter|spring|autumn|fall)|next (?:week|month|quarter|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|last (?:week|month|quarter|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:on )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:in|within) \d+ (?:days?|weeks?|months?|years?)|\d+ (?:days?|weeks?|months?|years?) ago|until (?:the )?end of (?:the )?(?:week|month|quarter|year)|сегодня|вчера|завтра|сейчас|недавно|скоро|позже|этим (?:утром|днём|вечером|летом)|этой (?:ночью|зимой|весной|осенью)|на (?:этих|следующих|прошлых) выходных|на этой неделе|в этом (?:месяце|квартале|году)|на следующей неделе|в следующем (?:месяце|квартале|году)|на прошлой неделе|в прошлом (?:месяце|квартале|году)|в (?:понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)|через \d+ (?:дн(?:я|ей)|недел(?:ю|и|ь)|месяц(?:а|ев)?|год(?:а|лет)?)|\d+ (?:дн(?:я|ей)|недел(?:ю|и|ь)|месяц(?:а|ев)?|год(?:а|лет)?) назад|до конца (?:недели|месяца|квартала|года)|позапрошлом году)|\d{1,4}[./-]\d{1,2}[./-]\d{1,4}/iu;
@@ -129,6 +132,20 @@ function structuredValueStrings(
   }
   return Object.values(value).flatMap((entry) =>
     structuredValueStrings(entry, depth + 1));
+}
+
+function decodeStructuredValue(value: unknown): unknown {
+  // Schema v2 transports arbitrary bounded JSON as text because strict
+  // function schemas cannot admit objects with dynamic property names.
+  // A non-JSON scalar remains safe to normalize as a string because every
+  // leaf is still required to occur in exact source evidence below.
+  // Object/array values remain accepted for deterministic legacy fixtures.
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
 }
 
 function decodeEvidence(
@@ -318,10 +335,10 @@ function decodeCandidate(
     const message = input.messages.find((candidate) => candidate.id === item.messageId)!;
     return message.text.slice(item.startOffset, item.endOffset) === displayText;
   })) fail("memory_fact_output_ungrounded");
-  if (typeof value.language !== "string" || !languageCodes.has(value.language) ||
-    detectMemoryTextLanguage(displayText) !== value.language) {
+  if (typeof value.language !== "string" || !languageCodes.has(value.language)) {
     fail("memory_fact_language_invalid");
   }
+  const languageCode = detectMemoryTextLanguage(displayText);
   const canonicalKey = exactString(value.canonical_key, 256, canonicalKeyPattern);
   const category = exactString(value.category, 64, categoryPattern);
   if (typeof value.modality !== "string" || !modalities.has(value.modality)) fail();
@@ -336,10 +353,10 @@ function decodeCandidate(
   const explicitNegation = negationPattern.test(
     displayText.replace(misleadingNegationPattern, " ")
   );
-  if (typeof value.negated !== "boolean" || value.negated !== explicitNegation) {
+  if (typeof value.negated !== "boolean") {
     fail("memory_fact_negation_invalid");
   }
-  const proposedValue = value.structured_value;
+  const proposedValue = decodeStructuredValue(value.structured_value);
   let encodedValue: string;
   try {
     encodedValue = memoryStableJson(proposedValue);
@@ -366,9 +383,10 @@ function decodeCandidate(
   const confidence = score(value.confidence);
   if (typeof value.state !== "string" ||
     !["PENDING", "DEFERRED"].includes(value.state)) fail();
-  const proposedReason = value.reason_code === null
-    ? null
-    : exactString(value.reason_code, 64);
+  if (value.reason_code !== null && (
+    typeof value.reason_code !== "string" ||
+    !reasonCodes.has(value.reason_code)
+  )) fail("memory_fact_candidate_state_invalid");
   const requiredReason = temporal.deferred
     ? "temporal_unresolved"
     : scope.deferred
@@ -377,9 +395,6 @@ function decodeCandidate(
         ? "low_confidence"
         : null;
   const state = requiredReason === null ? "PENDING" : "DEFERRED";
-  if (value.state !== state || proposedReason !== requiredReason) {
-    fail("memory_fact_candidate_state_invalid");
-  }
   const withoutId: Omit<MemoryExtractedCandidate, "id"> = {
     canonicalKey,
     category,
@@ -388,9 +403,9 @@ function decodeCandidate(
     displayText,
     evidence,
     importance,
-    languageCode: value.language as MemoryExtractedCandidate["languageCode"],
+    languageCode,
     modality,
-    negated: value.negated,
+    negated: explicitNegation,
     proposedValue,
     rawTemporalExpression: temporal.raw,
     reasonCode: requiredReason,

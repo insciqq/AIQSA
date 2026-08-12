@@ -29,6 +29,13 @@ export type MemoryActionPlan =
       sourceStart: number;
       targetQuery: string;
       version: typeof MEMORY_ACTION_PLAN_VERSION;
+    }>
+  | Readonly<{
+      kind: "MARK_INCORRECT";
+      sourceEnd: number;
+      sourceStart: number;
+      targetQuery: string;
+      version: typeof MEMORY_ACTION_PLAN_VERSION;
     }>;
 
 export type MemoryActionIntent =
@@ -85,6 +92,12 @@ const forgetPatterns = [
   /^\s*(?:пожалуйста[,\s]+)?забудь(?:[,\s]+что|\s+память\s+о\s+том[,\s]+что)?[,\s]+(.+?)\s*$/disu
 ] as const;
 
+const incorrectPatterns = [
+  /^\s*\/memory-incorrect\s+(.+?)\s*$/disu,
+  /^\s*(?:please\s+)?mark\s+(?:the\s+)?memory(?:\s+that)?[,\s]+(.+?)\s+as\s+incorrect\s*$/disu,
+  /^\s*(?:пожалуйста[,\s]+)?пометь\s+воспоминание(?:\s+о\s+том[,\s]+что)?[,\s]+(.+?)\s+как\s+неверное\s*$/disu
+] as const;
+
 const updatePatterns = [
   /^\s*\/update-memory\s+(.+?)\s*=>\s*(.+?)\s*$/disu,
   /^\s*(?:please\s+)?update(?:\s+the)?\s+memory(?:\s+that)?[,\s]+(.+?)\s+to\s+(.+?)\s*$/disu,
@@ -108,7 +121,8 @@ const queriedListPatterns = [
 const ambiguousManagementPatterns = [
   /^\s*(?:remember|save\s+this|remember\s+this)[?.!\s]*$/iu,
   /^\s*(?:forget\s+it|forget\s+this|update\s+my\s+memory)[?.!\s]*$/iu,
-  /^\s*(?:запомни|запомни\s+это|забудь|забудь\s+это|обнови\s+память)[?.!\s]*$/iu
+  /^\s*(?:mark\s+(?:this\s+)?memory\s+incorrect)[?.!\s]*$/iu,
+  /^\s*(?:запомни|запомни\s+это|забудь|забудь\s+это|обнови\s+память|пометь\s+воспоминание\s+как\s+неверное)[?.!\s]*$/iu
 ] as const;
 
 /**
@@ -146,6 +160,19 @@ export function planMemoryActionFromText(source: string): MemoryActionIntent {
       kind: "SAVE",
       ...span,
       statement,
+      version: MEMORY_ACTION_PLAN_VERSION
+    };
+  }
+
+  const incorrect = matchCommand(source, incorrectPatterns);
+  if (incorrect) {
+    const targetQuery = boundedText(incorrect[1] ?? "", maximumQueryLength);
+    const span = captureSpan(incorrect, 1);
+    if (!targetQuery || !span) return { kind: "AMBIGUOUS" };
+    return {
+      kind: "MARK_INCORRECT",
+      ...span,
+      targetQuery,
       version: MEMORY_ACTION_PLAN_VERSION
     };
   }
@@ -204,7 +231,7 @@ export function decodeMemoryActionPlan(value: unknown): MemoryActionPlan | null 
       ? candidate as MemoryActionPlan
       : null;
   }
-  if (candidate.kind === "FORGET") {
+  if (candidate.kind === "FORGET" || candidate.kind === "MARK_INCORRECT") {
     return typeof candidate.targetQuery === "string" &&
       boundedText(candidate.targetQuery, maximumQueryLength) === candidate.targetQuery
       ? candidate as MemoryActionPlan

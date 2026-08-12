@@ -116,6 +116,51 @@ describe("OpenAI-compatible embeddings", () => {
     expect(result.requestId).toBe("embedding-request-1");
   });
 
+  it("accepts OpenRouter's exact unnamespaced response slug", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([
+      vector(4_096)
+    ], { model: "qwen3-embedding-8b" }));
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      model: embeddingModel(),
+      network: { fetchFn },
+      secret: "openrouter-key"
+    });
+
+    await expect(adapter.embed({ mode: "document", texts: ["one"] }))
+      .resolves.toMatchObject({ model: "qwen3-embedding-8b" });
+  });
+
+  it("accepts OpenRouter's case-normalized canonical model id", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([
+      vector(4_096)
+    ], { model: "Qwen/Qwen3-Embedding-8B" }));
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      model: embeddingModel(),
+      network: { fetchFn },
+      secret: "openrouter-key"
+    });
+
+    await expect(adapter.embed({ mode: "document", texts: ["one"] }))
+      .resolves.toMatchObject({ model: "Qwen/Qwen3-Embedding-8B" });
+  });
+
+  it("rejects any other namespaced response model", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([
+      vector(4_096)
+    ], { model: "other/qwen3-embedding-8b" }));
+    const adapter = createOpenAICompatibleEmbeddingAdapter({
+      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      model: embeddingModel(),
+      network: { fetchFn },
+      secret: "openrouter-key"
+    });
+
+    await expect(adapter.embed({ mode: "document", texts: ["one"] }))
+      .rejects.toMatchObject({ code: "embedding_response_model_mismatch" });
+  });
+
   it("applies the instruction to queries only and sends documents bare", async () => {
     const bodies: unknown[] = [];
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {

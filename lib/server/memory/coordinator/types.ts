@@ -30,6 +30,10 @@ export type MemoryJobClaim = MemoryJobDescriptor & Readonly<{
 export type MemoryWaitingJob = MemoryJobDescriptor;
 
 export type MemoryDeletionClaim = Readonly<{
+  admissionAuthorizationId: string | null;
+  admittedActiveLeafMessageId: string | null;
+  admittedChatSourceRevision: number | null;
+  alsoForgetOriginMemories: boolean | null;
   attemptCount: number;
   claimToken: string;
   id: string;

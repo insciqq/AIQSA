@@ -18,6 +18,11 @@ const HISTORY_EGRESS_MIGRATION = "20260810220000_memory_history_tool_egress_guar
 const ADMIN_EGRESS_MIGRATION = "20260811120000_memory_admin_egress_consent";
 const FACT_CANDIDATE_MIGRATION = "20260811130000_memory_fact_candidates";
 const FACT_CONSOLIDATION_MIGRATION = "20260811140000_memory_fact_consolidation";
+const LEARNING_REVIEW_MIGRATION = "20260811150000_memory_learning_review";
+const FORGET_UNDO_MIGRATION = "20260811160000_memory_forget_undo_window";
+const FORGET_UNDO_SHAPE_MIGRATION = "20260811161000_memory_forget_undo_outbox_shape";
+const WORKING_SET_PROFILE_MIGRATION = "20260811170000_memory_working_set_profile";
+const PERMANENT_CHAT_DELETE_MIGRATION = "20260812100000_memory_permanent_chat_delete";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -34,6 +39,12 @@ const adminEgressRollbackDatabase = `aiqsa_memory_admin_egress_rollback_${suffix
 const factCandidateRollbackDatabase = `aiqsa_memory_fact_candidate_rollback_${suffix}`;
 const factConsolidationRollbackDatabase =
   `aiqsa_memory_fact_consolidation_rollback_${suffix}`;
+const learningReviewRollbackDatabase =
+  `aiqsa_memory_learning_review_rollback_${suffix}`;
+const workingSetProfileRollbackDatabase =
+  `aiqsa_memory_working_set_profile_rollback_${suffix}`;
+const permanentChatDeleteRollbackDatabase =
+  `aiqsa_memory_permanent_chat_delete_rollback_${suffix}`;
 const createdDatabases = new Set<string>();
 
 type CommandResult = Readonly<{
@@ -2621,6 +2632,894 @@ function assertFactConsolidationMigrationAtomicRollback(database: string): void 
   );
 }
 
+function assertLearningReviewContracts(
+  database: string,
+  verifyBehavior = true
+): void {
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+         FROM pg_enum WHERE enumtypid = '"MemoryFeedbackType"'::regtype),
+        (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+         FROM pg_enum WHERE enumtypid = '"MemoryFeedbackTargetKind"'::regtype),
+        (SELECT count(*) FROM information_schema.tables
+         WHERE table_schema = current_schema() AND table_name = 'MemoryFeedback'),
+        (SELECT count(*) FROM pg_constraint
+         WHERE conname IN (
+           'MemoryFeedback_user_fkey', 'MemoryFeedback_fact_fkey',
+           'MemoryFeedback_version_fkey', 'MemoryFeedback_episode_fkey',
+           'MemoryFeedback_recall_chunk_fkey', 'MemoryFeedback_run_fkey',
+           'MemoryFeedback_run_item_fkey', 'MemoryFeedback_run_tool_fkey',
+           'MemoryFeedback_retracts_fkey', 'MemoryFeedback_event_fkey',
+           'MemoryFeedback_shape_check'
+         ) AND convalidated),
+        (SELECT count(*) FROM pg_trigger
+         WHERE tgname IN (
+           'MemoryFeedback_append_only_guard', 'MemoryFeedback_target_guard'
+         ) AND NOT tgisinternal)
+      );
+    `),
+    "CORRECT,INCORRECT,NOT_USEFUL,WRONG_SCOPE,OUTDATED,TOO_SENSITIVE,RETRACT|" +
+      "FACT_VERSION,EPISODE,RECALL_CHUNK|1|11|2",
+    "learning-review feedback schema is incomplete"
+  );
+  if (!verifyBehavior) return;
+
+  requireSuccess(psql(database, `
+    INSERT INTO "User" ("id", "displayName", "role", "status", "updatedAt")
+    VALUES (
+      'memory-feedback-owner-b', 'Memory feedback B', 'user', 'active',
+      CURRENT_TIMESTAMP
+    );
+    INSERT INTO "MemoryEvent" (
+      "id", "userId", "operation", "actorType", "actorUserId", "factId",
+      "factVersionId", "metadata"
+    ) VALUES
+      (
+        'memory-feedback-event-a', 'memory-owner-a', 'USER_FEEDBACK', 'USER',
+        'memory-owner-a', 'memory-fact-a', 'memory-version-a',
+        jsonb_build_object(
+          'feedbackId', 'memory-feedback-a', 'feedbackType', 'INCORRECT',
+          'schemaVersion', 'memory-feedback-event-v1'
+        )
+      ),
+      (
+        'memory-feedback-event-retract', 'memory-owner-a', 'USER_FEEDBACK', 'USER',
+        'memory-owner-a', 'memory-fact-a', 'memory-version-a',
+        jsonb_build_object(
+          'feedbackId', 'memory-feedback-retract', 'feedbackType', 'RETRACT',
+          'schemaVersion', 'memory-feedback-event-v1'
+        )
+      ),
+      (
+        'memory-feedback-event-run', 'memory-owner-a', 'USER_FEEDBACK', 'USER',
+        'memory-owner-a', 'memory-fact-a', 'memory-version-a',
+        jsonb_build_object(
+          'feedbackId', 'memory-feedback-run', 'feedbackType', 'NOT_USEFUL',
+          'schemaVersion', 'memory-feedback-event-v1'
+        )
+      ),
+      (
+        'memory-feedback-event-wrong-run', 'memory-owner-a', 'USER_FEEDBACK',
+        'USER', 'memory-owner-a', 'memory-fact-a', 'memory-version-a',
+        jsonb_build_object(
+          'feedbackId', 'memory-feedback-wrong-run', 'feedbackType', 'INCORRECT',
+          'schemaVersion', 'memory-feedback-event-v1'
+        )
+      ),
+      (
+        'memory-feedback-event-second-retract', 'memory-owner-a',
+        'USER_FEEDBACK', 'USER', 'memory-owner-a', 'memory-fact-a',
+        'memory-version-a', jsonb_build_object(
+          'feedbackId', 'memory-feedback-second-retract',
+          'feedbackType', 'RETRACT',
+          'schemaVersion', 'memory-feedback-event-v1'
+        )
+      ),
+      (
+        'memory-feedback-event-wrong-signal', 'memory-owner-a',
+        'USER_FEEDBACK', 'SYSTEM', NULL, 'memory-fact-a', 'memory-version-a',
+        jsonb_build_object(
+          'feedbackId', 'memory-feedback-wrong-signal',
+          'feedbackType', 'INCORRECT',
+          'schemaVersion', 'memory-feedback-event-v1'
+        )
+      ),
+      (
+        'memory-feedback-event-wrong-tool', 'memory-owner-a',
+        'USER_FEEDBACK', 'USER', 'memory-owner-a', 'memory-fact-a',
+        'memory-version-a', jsonb_build_object(
+          'feedbackId', 'memory-feedback-wrong-tool',
+          'feedbackType', 'INCORRECT',
+          'schemaVersion', 'memory-feedback-event-v1'
+        )
+      ),
+      (
+        'memory-feedback-event-b', 'memory-feedback-owner-b', 'USER_FEEDBACK',
+        'USER', 'memory-feedback-owner-b', NULL, NULL, jsonb_build_object(
+          'feedbackId', 'memory-feedback-cross-owner',
+          'feedbackType', 'INCORRECT',
+          'schemaVersion', 'memory-feedback-event-v1'
+        )
+      );
+
+    INSERT INTO "ModelRunMemoryItem" (
+      "id", "userId", "bindingId", "ordinal", "itemType", "exactItemId",
+      "factVersionId", "includedText", "includedTextHash",
+      "itemStateAtAdmission", "laneRanks", "featureSnapshot", "finalScore",
+      "selectionReason"
+    ) VALUES (
+      'memory-feedback-run-item', 'memory-owner-a', 'memory-run-binding-1', 99,
+      'FACT_VERSION', 'memory-version-a', 'memory-version-a',
+      'Frozen fact text', repeat('a', 64), 'ACTIVE', '{}'::jsonb, '{}'::jsonb,
+      1, 'learning-review-contract'
+    );
+
+    INSERT INTO "MemoryFeedback" (
+      "id", "userId", "idempotencyFingerprint", "requestId", "feedbackType",
+      "targetKind", "memoryFactId", "memoryFactVersionId", "comment",
+      "memoryEventId"
+    ) VALUES (
+      'memory-feedback-a', 'memory-owner-a', repeat('a', 64),
+      'memory-feedback-request-a', 'INCORRECT', 'FACT_VERSION',
+      'memory-fact-a', 'memory-version-a', 'Private bounded correction note',
+      'memory-feedback-event-a'
+    );
+    INSERT INTO "MemoryFeedback" (
+      "id", "userId", "idempotencyFingerprint", "requestId", "feedbackType",
+      "targetKind", "memoryFactId", "memoryFactVersionId",
+      "retractsFeedbackId", "memoryEventId"
+    ) VALUES (
+      'memory-feedback-retract', 'memory-owner-a', repeat('b', 64),
+      'memory-feedback-request-retract', 'RETRACT', 'FACT_VERSION',
+      'memory-fact-a', 'memory-version-a', 'memory-feedback-a',
+      'memory-feedback-event-retract'
+    );
+    INSERT INTO "MemoryFeedback" (
+      "id", "userId", "idempotencyFingerprint", "requestId", "feedbackType",
+      "targetKind", "memoryFactId", "memoryFactVersionId", "modelRunId",
+      "modelRunMemoryItemId", "memoryEventId"
+    ) VALUES (
+      'memory-feedback-run', 'memory-owner-a', repeat('c', 64),
+      'memory-feedback-request-run', 'NOT_USEFUL', 'FACT_VERSION',
+      'memory-fact-a', 'memory-version-a', 'memory-preparing-run',
+      'memory-feedback-run-item', 'memory-feedback-event-run'
+    );
+  `), "persist append-only feedback, retraction, and exact run provenance");
+
+  expectRejected(database, `
+    UPDATE "MemoryFeedback" SET "comment" = 'mutated'
+    WHERE "id" = 'memory-feedback-a';
+  `, /append-only except for one-way purge/u, "mutated feedback history");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryFeedback" (
+      "id", "userId", "idempotencyFingerprint", "requestId", "feedbackType",
+      "targetKind", "memoryFactId", "memoryFactVersionId", "memoryEventId"
+    ) VALUES (
+      'memory-feedback-wrong-signal', 'memory-owner-a', repeat('0', 64),
+      'memory-feedback-wrong-signal', 'INCORRECT', 'FACT_VERSION',
+      'memory-fact-a', 'memory-version-a', 'memory-feedback-event-wrong-signal'
+    );
+  `, /event must match its immutable signal/u, "feedback bound to a non-user event");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryFeedback" (
+      "id", "userId", "idempotencyFingerprint", "requestId", "feedbackType",
+      "targetKind", "memoryFactId", "memoryFactVersionId", "memoryEventId"
+    ) VALUES (
+      'memory-feedback-cross-owner', 'memory-feedback-owner-b', repeat('d', 64),
+      'memory-feedback-cross-owner', 'INCORRECT', 'FACT_VERSION',
+      'memory-fact-a', 'memory-version-a', 'memory-feedback-event-b'
+    );
+  `, /(event must match its immutable signal|MemoryFeedback_(?:fact|version)_fkey)/u,
+  "cross-owner feedback target");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryFeedback" (
+      "id", "userId", "idempotencyFingerprint", "requestId", "feedbackType",
+      "targetKind", "memoryFactId", "memoryFactVersionId", "modelRunId",
+      "modelRunMemoryItemId", "memoryEventId"
+    ) VALUES (
+      'memory-feedback-wrong-run', 'memory-owner-a', repeat('e', 64),
+      'memory-feedback-wrong-run', 'INCORRECT', 'FACT_VERSION',
+      'memory-fact-a', 'memory-version-a', 'memory-legacy-run',
+      'memory-feedback-run-item', 'memory-feedback-event-wrong-run'
+    );
+  `, /run item must match/u, "run feedback bound to another run");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryFeedback" (
+      "id", "userId", "idempotencyFingerprint", "requestId", "feedbackType",
+      "targetKind", "memoryFactId", "memoryFactVersionId", "modelRunId",
+      "modelRunToolCallId", "memoryEventId"
+    ) VALUES (
+      'memory-feedback-wrong-tool', 'memory-owner-a', repeat('1', 64),
+      'memory-feedback-wrong-tool', 'INCORRECT', 'FACT_VERSION',
+      'memory-fact-a', 'memory-version-a', 'memory-legacy-run',
+      'memory-history-tool-call', 'memory-feedback-event-wrong-tool'
+    );
+  `, /tool provenance must name mark_memory_incorrect/u,
+  "feedback bound to a different first-party tool");
+
+  expectRejected(database, `
+    INSERT INTO "MemoryFeedback" (
+      "id", "userId", "idempotencyFingerprint", "requestId", "feedbackType",
+      "targetKind", "memoryFactId", "memoryFactVersionId",
+      "retractsFeedbackId", "memoryEventId"
+    ) VALUES (
+      'memory-feedback-second-retract', 'memory-owner-a', repeat('f', 64),
+      'memory-feedback-second-retract', 'RETRACT', 'FACT_VERSION',
+      'memory-fact-a', 'memory-version-a', 'memory-feedback-a',
+      'memory-feedback-event-second-retract'
+    );
+  `, /MemoryFeedback_userId_retractsFeedbackId_key/u,
+  "duplicate feedback retraction");
+
+  requireSuccess(psql(database, `
+    UPDATE "MemoryFeedback"
+    SET
+      "memoryFactId" = NULL,
+      "memoryFactVersionId" = NULL,
+      "episodeId" = NULL,
+      "recallChunkId" = NULL,
+      "modelRunId" = NULL,
+      "modelRunMemoryItemId" = NULL,
+      "modelRunToolCallId" = NULL,
+      "sourceChatIdSnapshot" = NULL,
+      "sourceBranchGenerationSnapshot" = NULL,
+      "comment" = NULL,
+      "retractsFeedbackId" = NULL,
+      "memoryEventId" = NULL,
+      "contentPurgedAt" = CURRENT_TIMESTAMP,
+      "purgeReason" = 'contract_purge'
+    WHERE "userId" = 'memory-owner-a';
+  `), "scrub feedback through its one-way purge transition");
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|', count(*),
+        count(*) FILTER (WHERE "contentPurgedAt" IS NOT NULL),
+        count(*) FILTER (WHERE num_nonnulls(
+          "memoryFactId", "memoryFactVersionId", "episodeId", "recallChunkId",
+          "modelRunId", "modelRunMemoryItemId", "modelRunToolCallId",
+          "sourceChatIdSnapshot", "sourceBranchGenerationSnapshot", "comment",
+          "retractsFeedbackId", "memoryEventId"
+        ) = 0))
+      FROM "MemoryFeedback" WHERE "userId" = 'memory-owner-a';
+    `),
+    "3|3|3",
+    "feedback purge retained plaintext or target/provenance joins"
+  );
+  expectRejected(database, `
+    UPDATE "MemoryFeedback"
+    SET "contentPurgedAt" = NULL, "purgeReason" = NULL
+    WHERE "id" = 'memory-feedback-a';
+  `, /append-only except for one-way purge/u, "reversed feedback purge");
+}
+
+function assertLearningReviewMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE FUNCTION aiqsa_memory_feedback_guard()
+    RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+  `), "install learning-review rollback-conflict fixture");
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, LEARNING_REVIEW_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting learning-review migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /function "aiqsa_memory_feedback_guard" already exists/u,
+    "learning-review rollback fixture failed for an unexpected reason"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM information_schema.tables
+         WHERE table_schema = current_schema() AND table_name = 'MemoryFeedback'),
+        (SELECT count(*) FROM pg_type
+         WHERE typname IN ('MemoryFeedbackType', 'MemoryFeedbackTargetKind'))
+      );
+    `),
+    "0|0",
+    "failed learning-review migration left partial durable state"
+  );
+}
+
+function assertForgetUndoContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT count(*)
+      FROM pg_enum enum_value
+      JOIN pg_type enum_type ON enum_type.oid = enum_value.enumtypid
+      WHERE enum_type.typname = 'MemoryDeletionState'
+        AND enum_value.enumlabel = 'CANCELLED';
+    `),
+    "1",
+    "forget Undo migration did not install the terminal cancellation state"
+  );
+  requireSuccess(psql(database, `
+    INSERT INTO "MemoryDeletionOutbox" (
+      "id", "userId", "operation", "targetType", "targetId",
+      "memoryGeneration", "nextAttemptAt"
+    ) VALUES (
+      'memory-forget-undo-contract', 'memory-owner-a', 'FORGET_PURGE',
+      'MEMORY_FACT@contract-v1', 'memory-forget-undo-target', 0,
+      CURRENT_TIMESTAMP + interval '1 minute'
+    );
+    UPDATE "MemoryDeletionOutbox"
+    SET
+      "state" = 'CANCELLED',
+      "nextAttemptAt" = NULL,
+      "completedAt" = CURRENT_TIMESTAMP,
+      "errorCode" = 'memory_purge_cancelled_by_undo'
+    WHERE "id" = 'memory-forget-undo-contract';
+  `), "commit a terminal Forget Undo cancellation");
+  expectRejected(database, `
+    UPDATE "MemoryDeletionOutbox"
+    SET "completedAt" = NULL
+    WHERE "id" = 'memory-forget-undo-contract';
+  `, /MemoryDeletionOutbox_shape_check/u, "cancelled deletion without completion evidence");
+}
+
+function assertWorkingSetProfileContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+         FROM pg_enum WHERE enumtypid = '"MemoryProfileProjectionState"'::regtype),
+        (SELECT count(*) FROM information_schema.tables
+         WHERE table_schema = current_schema()
+           AND table_name IN ('MemoryProfileProjection', 'MemoryProfileProjectionFact')),
+        (SELECT count(*) FROM pg_constraint
+         WHERE conname IN (
+           'MemoryProfileProjection_user_fkey',
+           'MemoryProfileProjection_scope_fkey',
+           'MemoryProfileProjection_execution_fkey',
+           'MemoryProfileProjection_shape_check',
+           'MemoryProfileProjectionFact_projection_fkey',
+           'MemoryProfileProjectionFact_fact_fkey',
+           'MemoryProfileProjectionFact_version_fkey',
+           'MemoryProfileProjectionFact_shape_check'
+         ) AND convalidated),
+        (SELECT count(*) FROM pg_trigger
+         WHERE tgname IN (
+           'MemoryProfileProjection_append_only_guard',
+           'MemoryProfileProjection_authority_guard',
+           'MemoryProfileProjectionFact_immutable_guard',
+           'MemoryProfileProjectionFact_authority_guard'
+         ) AND NOT tgisinternal),
+        (SELECT count(*) FROM pg_indexes
+         WHERE schemaname = current_schema()
+           AND indexname = 'MemoryProfileProjection_active_scope_language_key')
+      );
+    `),
+    "ACTIVE,INVALIDATED|2|8|4|1",
+    "working-set profile schema authority is incomplete"
+  );
+
+  requireSuccess(psql(database, `
+    BEGIN;
+    SET CONSTRAINTS ALL DEFERRED;
+
+    INSERT INTO "MemoryScope" ("id", "userId", "scopeType", "state")
+    SELECT 'memory-profile-global', 'memory-owner-a', 'GLOBAL_USER', 'ACTIVE'
+    WHERE NOT EXISTS (
+      SELECT 1 FROM "MemoryScope"
+      WHERE "userId" = 'memory-owner-a' AND "scopeType" = 'GLOBAL_USER'
+        AND "state" = 'ACTIVE'
+    );
+
+    INSERT INTO "MemoryFact" (
+      "id", "userId", "scopeId", "canonicalKey", "category", "state",
+      "currentVersionId", "temperatureClass", "temperatureScore"
+    ) VALUES (
+      'memory-profile-fact', 'memory-owner-a',
+      (SELECT "id" FROM "MemoryScope"
+       WHERE "userId" = 'memory-owner-a' AND "scopeType" = 'GLOBAL_USER'
+         AND "state" = 'ACTIVE' ORDER BY "createdAt", "id" LIMIT 1),
+      'profile.response.language', 'preference', 'ACTIVE',
+      'memory-profile-version', 'HOT', 1
+    );
+    INSERT INTO "MemoryEvent" (
+      "id", "userId", "operation", "actorType", "actorUserId", "factId",
+      "factVersionId", "metadata"
+    ) VALUES (
+      'memory-profile-event', 'memory-owner-a', 'EXPLICIT_SAVE', 'USER',
+      'memory-owner-a', 'memory-profile-fact', 'memory-profile-version',
+      '{"schemaVersion":"memory-profile-contract-v1"}'::jsonb
+    );
+    INSERT INTO "MemoryFactVersion" (
+      "id", "userId", "factId", "displayText", "normalizedSearchText",
+      "languageCode", "structuredValue", "category", "modality", "sourceMode",
+      "state", "confidence", "importance", "directness", "sensitivityClass",
+      "createdByEventId", "pipelineVersion"
+    ) VALUES (
+      'memory-profile-version', 'memory-owner-a', 'memory-profile-fact',
+      'Отвечай по-русски и сохраняй факты.',
+      'отвечай по русски и сохраняй факты', 'ru',
+      '{"language":"ru"}'::jsonb, 'preference', 'PREFERENCE', 'EXPLICIT',
+      'ACTIVE', 1, 1, 'DIRECT', 'NORMAL', 'memory-profile-event',
+      'memory-profile-fixture-v1'
+    );
+    INSERT INTO "MemoryEvidence" (
+      "id", "userId", "factVersionId", "stance", "sourceType",
+      "memoryEventId", "sourceRole", "safeExcerpt", "safeSourceHash",
+      "sourceProjectionVersion", "safetyClass", "observedAt"
+    ) VALUES (
+      'memory-profile-evidence', 'memory-owner-a', 'memory-profile-version',
+      'SUPPORTS', 'EXPLICIT_ACTION', 'memory-profile-event', 'user',
+      'Отвечай по-русски и сохраняй факты.', repeat('1', 64),
+      'memory-profile-source-v1', 'NORMAL', CURRENT_TIMESTAMP
+    );
+
+    DO $profile_generation$
+    DECLARE
+      active_generation_id TEXT;
+      next_generation INTEGER;
+      current_revision INTEGER;
+    BEGIN
+      SELECT settings."activeIndexGenerationId", settings."memoryRevision"
+      INTO active_generation_id, current_revision
+      FROM "UserMemorySettings" AS settings
+      WHERE settings."userId" = 'memory-owner-a';
+      IF active_generation_id IS NULL THEN
+        SELECT COALESCE(max(generation."generation"), 0) + 1
+        INTO next_generation
+        FROM "MemoryIndexGeneration" AS generation
+        WHERE generation."userId" = 'memory-owner-a';
+        INSERT INTO "MemoryIndexGeneration" (
+          "id", "userId", "generation", "state", "indexMode",
+          "targetMemoryRevision", "indexedThroughMemoryRevision",
+          "languageProfile", "normalizationVersion", "chunkingVersion",
+          "retrievalPipelineVersion", "readyAt", "activatedAt"
+        ) VALUES (
+          'memory-profile-generation', 'memory-owner-a', next_generation,
+          'ACTIVE', 'LEXICAL_ONLY', current_revision, current_revision,
+          'RU_EN_MULTILINGUAL_V1', 'memory-normalization-v1',
+          'memory-chunking-v1', 'memory-retrieval-v1',
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+        UPDATE "UserMemorySettings"
+        SET "activeIndexGenerationId" = 'memory-profile-generation'
+        WHERE "userId" = 'memory-owner-a';
+      END IF;
+    END
+    $profile_generation$;
+
+    INSERT INTO "MemorySearchEntry" (
+      "id", "userId", "indexGenerationId", "itemType", "factVersionId",
+      "safeSearchText", "safeSearchTextYoNormalized", "safeContentHash",
+      "languageCode", "safetyIdentitySnapshot", "sourceIdentitySnapshot",
+      "suppressionIdentitySnapshot", "embeddingState"
+    ) SELECT
+      'memory-profile-search', 'memory-owner-a', settings."activeIndexGenerationId",
+      'FACT_VERSION', 'memory-profile-version',
+      'Отвечай по-русски и сохраняй факты.',
+      'Отвечай по-русски и сохраняй факты.', repeat('a', 64), 'ru',
+      repeat('b', 64), repeat('c', 64), repeat('d', 64), 'NOT_APPLICABLE'
+    FROM "UserMemorySettings" AS settings
+    WHERE settings."userId" = 'memory-owner-a';
+
+    INSERT INTO "ProviderConnection" (
+      "id", "displayName", "family", "enabled", "draftConfig", "draftVersion",
+      "activeConfig", "activeVersion", "activatedAt", "updatedAt"
+    ) VALUES (
+      'memory-profile-connection', 'Memory profile contract',
+      'openai_compatible', true, '{}'::jsonb, 1, '{}'::jsonb, 1,
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "ProviderModel" (
+      "id", "connectionId", "provider", "modelId", "displayName", "modelClass",
+      "contextWindow", "draftConfig", "draftVersion", "activeConfig",
+      "activeVersion", "capabilities", "defaultParams", "activatedAt", "updatedAt"
+    ) VALUES (
+      'memory-profile-model', 'memory-profile-connection', 'openai_compatible',
+      'memory-profile-model', 'Memory profile contract model', 'answer', 32768,
+      '{}'::jsonb, 1, '{}'::jsonb, 1, '{}'::jsonb, '{}'::jsonb,
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "ProviderCredential" (
+      "id", "connectionId", "label", "enabled", "draftVersion",
+      "testedAt", "activatedAt", "updatedAt"
+    ) VALUES (
+      'memory-profile-credential', 'memory-profile-connection',
+      'Memory profile contract credential', true, 1,
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "ProviderCredentialVersion" (
+      "id", "credentialId", "version", "secretEnvelope", "testEvidence",
+      "testedAt", "activatedAt"
+    ) VALUES (
+      'memory-profile-credential-v1', 'memory-profile-credential', 1,
+      'contract-envelope', '{"ok":true}'::jsonb,
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    UPDATE "ProviderCredential"
+    SET "activeVersionId" = 'memory-profile-credential-v1'
+    WHERE "id" = 'memory-profile-credential';
+
+    INSERT INTO "MemoryJob" (
+      "id", "userId", "kind", "state", "pipelineVersion",
+      "memoryGenerationSnapshot", "memoryRevisionSnapshot",
+      "idempotencyFingerprint", "acceptedResultHash", "completedAt"
+    ) SELECT
+      'memory-profile-job', settings."userId", 'RECALCULATE_WORKING_SET',
+      'SUCCEEDED', 'memory-working-set-profile-v1', settings."memoryGeneration",
+      settings."memoryRevision", 'memory-profile:' || repeat('e', 64) || ':' || repeat('9', 24),
+      repeat('f', 64), CURRENT_TIMESTAMP
+    FROM "UserMemorySettings" AS settings
+    WHERE settings."userId" = 'memory-owner-a';
+    INSERT INTO "MemoryExecutionBinding" (
+      "id", "userId", "ownerType", "memoryJobId", "logicalRole", "ordinal",
+      "state", "connectionId", "providerId", "providerModelId", "credentialId",
+      "credentialVersionId", "destinationFingerprint", "policyVersion",
+      "promptVersion", "schemaVersion", "pipelineVersion",
+      "secretFreeExecutionSnapshot", "inputHash", "acceptedOutputHash",
+      "usageCompleteness", "startedAt", "completedAt"
+    ) VALUES (
+      'memory-profile-binding', 'memory-owner-a', 'JOB', 'memory-profile-job',
+      'MEMORY_PROFILE', 0, 'SUCCEEDED', 'memory-profile-connection',
+      'openai_compatible', 'memory-profile-model', 'memory-profile-credential',
+      'memory-profile-credential-v1', repeat('2', 64),
+      'memory-profile-policy-v1', 'memory-profile-prompt-v1',
+      'memory-profile-schema-v1', 'memory-working-set-profile-v1',
+      '{}'::jsonb, repeat('e', 64), repeat('f', 64), 'UNAVAILABLE',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "UsageEvent" (
+      "id", "userId", "provider", "modelId", "providerModelId",
+      "memoryExecutionBindingId"
+    ) VALUES (
+      'memory-profile-usage', 'memory-owner-a', 'openai_compatible',
+      'memory-profile-model', 'memory-profile-model', 'memory-profile-binding'
+    );
+
+    INSERT INTO "MemoryProfileProjection" (
+      "id", "userId", "scopeId", "memoryGeneration", "memoryRevision",
+      "languageCode", "summary", "safeContentHash", "projectionVersion",
+      "safetyClass", "redactionState", "state", "createdByExecutionId",
+      "inputHash", "outputHash", "sourceIdentitySnapshot",
+      "safetyIdentitySnapshot", "suppressionIdentitySnapshot", "asOf"
+    ) SELECT
+      'memory-profile-projection', settings."userId", fact."scopeId",
+      settings."memoryGeneration", settings."memoryRevision", 'ru',
+      'Отвечай по-русски и сохраняй факты.', repeat('3', 64),
+      'memory-profile-projection-v1', 'NORMAL', 'NOT_NEEDED', 'ACTIVE',
+      'memory-profile-binding', repeat('e', 64), repeat('f', 64),
+      repeat('4', 64), repeat('5', 64), repeat('6', 64),
+      CURRENT_TIMESTAMP - interval '1 second'
+    FROM "UserMemorySettings" AS settings
+    INNER JOIN "MemoryFact" AS fact ON fact."userId" = settings."userId"
+      AND fact."id" = 'memory-profile-fact'
+    WHERE settings."userId" = 'memory-owner-a';
+    INSERT INTO "MemoryProfileProjectionFact" (
+      "userId", "projectionId", "factId", "factVersionId", "ordinal",
+      "factVersionContentHash", "sourceIdentitySnapshot",
+      "safetyIdentitySnapshot", "suppressionIdentitySnapshot"
+    ) VALUES (
+      'memory-owner-a', 'memory-profile-projection', 'memory-profile-fact',
+      'memory-profile-version', 0, repeat('a', 64), repeat('c', 64),
+      repeat('b', 64), repeat('d', 64)
+    );
+    COMMIT;
+  `), "persist one exact usage-backed Memory profile");
+
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|', profile."state", profile."languageCode",
+        profile."summary", count(contributor.*))
+      FROM "MemoryProfileProjection" AS profile
+      LEFT JOIN "MemoryProfileProjectionFact" AS contributor
+        ON contributor."userId" = profile."userId"
+        AND contributor."projectionId" = profile."id"
+      WHERE profile."id" = 'memory-profile-projection'
+      GROUP BY profile."id";
+    `),
+    "ACTIVE|ru|Отвечай по-русски и сохраняй факты.|1",
+    "exact Memory profile projection was not retained"
+  );
+
+  expectRejected(database, `
+    BEGIN;
+    SET CONSTRAINTS ALL DEFERRED;
+    INSERT INTO "MemoryProfileProjection" (
+      "id", "userId", "scopeId", "memoryGeneration", "memoryRevision",
+      "languageCode", "summary", "safeContentHash", "projectionVersion",
+      "safetyClass", "redactionState", "state", "createdByExecutionId",
+      "inputHash", "outputHash", "sourceIdentitySnapshot",
+      "safetyIdentitySnapshot", "suppressionIdentitySnapshot", "asOf"
+    ) SELECT
+      'memory-profile-wrong-language', settings."userId", fact."scopeId",
+      settings."memoryGeneration", settings."memoryRevision", 'en',
+      'Отвечай по-русски и сохраняй факты.', repeat('3', 64),
+      'memory-profile-projection-v1', 'NORMAL', 'NOT_NEEDED', 'ACTIVE',
+      'memory-profile-binding', repeat('e', 64), repeat('f', 64),
+      repeat('4', 64), repeat('5', 64), repeat('6', 64),
+      CURRENT_TIMESTAMP - interval '1 second'
+    FROM "UserMemorySettings" AS settings
+    INNER JOIN "MemoryFact" AS fact ON fact."userId" = settings."userId"
+      AND fact."id" = 'memory-profile-fact'
+    WHERE settings."userId" = 'memory-owner-a';
+    INSERT INTO "MemoryProfileProjectionFact" (
+      "userId", "projectionId", "factId", "factVersionId", "ordinal",
+      "factVersionContentHash", "sourceIdentitySnapshot",
+      "safetyIdentitySnapshot", "suppressionIdentitySnapshot"
+    ) VALUES (
+      'memory-owner-a', 'memory-profile-wrong-language', 'memory-profile-fact',
+      'memory-profile-version', 0, repeat('a', 64), repeat('c', 64),
+      repeat('b', 64), repeat('d', 64)
+    );
+    COMMIT;
+  `, /stale, unsafe, or out of scope/u, "profile with a mismatched contributor language");
+
+  expectRejected(database, `
+    UPDATE "MemoryProfileProjection"
+    SET "summary" = 'Unsupported profile text'
+    WHERE "id" = 'memory-profile-projection';
+  `, /append-only except for invalidation and one-way purge/u,
+  "in-place Memory profile rewrite");
+
+  requireSuccess(psql(database, `
+    BEGIN;
+    SET CONSTRAINTS ALL DEFERRED;
+    DELETE FROM "MemoryProfileProjectionFact"
+    WHERE "projectionId" = 'memory-profile-projection';
+    UPDATE "MemoryProfileProjection"
+    SET
+      "state" = 'INVALIDATED',
+      "summary" = NULL,
+      "safeContentHash" = NULL,
+      "redactionState" = 'EXCLUDED',
+      "plaintextPurgedAt" = GREATEST("updatedAt", CURRENT_TIMESTAMP),
+      "purgeReason" = 'fact_forgotten',
+      "updatedAt" = GREATEST("updatedAt", CURRENT_TIMESTAMP)
+    WHERE "id" = 'memory-profile-projection';
+    COMMIT;
+  `), "one-way purge an invalidated Memory profile");
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|', "state", "redactionState",
+        ("summary" IS NULL)::int, ("plaintextPurgedAt" IS NOT NULL)::int,
+        (SELECT count(*) FROM "MemoryProfileProjectionFact"
+         WHERE "projectionId" = 'memory-profile-projection'))
+      FROM "MemoryProfileProjection" WHERE "id" = 'memory-profile-projection';
+    `),
+    "INVALIDATED|EXCLUDED|1|1|0",
+    "Memory profile purge retained plaintext or contributor links"
+  );
+  expectRejected(database, `
+    UPDATE "MemoryProfileProjection"
+    SET "summary" = 'Отвечай по-русски и сохраняй факты.',
+      "safeContentHash" = repeat('3', 64), "plaintextPurgedAt" = NULL,
+      "purgeReason" = NULL, "redactionState" = 'NOT_NEEDED'
+    WHERE "id" = 'memory-profile-projection';
+  `, /append-only except for invalidation and one-way purge/u,
+  "reversed Memory profile purge");
+}
+
+function assertWorkingSetProfileMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE FUNCTION aiqsa_memory_profile_append_only_guard()
+    RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+  `), "install working-set profile rollback-conflict fixture");
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, WORKING_SET_PROFILE_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting working-set profile migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /function "aiqsa_memory_profile_append_only_guard" already exists/u,
+    "working-set profile rollback fixture failed for an unexpected reason"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM information_schema.tables
+         WHERE table_schema = current_schema()
+           AND table_name IN ('MemoryProfileProjection', 'MemoryProfileProjectionFact')),
+        (SELECT count(*) FROM pg_type
+         WHERE typname = 'MemoryProfileProjectionState'));
+    `),
+    "0|0",
+    "failed working-set profile migration left partial durable state"
+  );
+}
+
+function assertPermanentChatDeleteContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'Chat'
+           AND column_name IN ('permanentDeletionAt', 'permanentDeletionOperationId')),
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'MemoryEvent'
+           AND column_name = 'sourceDeletedAt'),
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'MemoryDeletionOutbox'
+           AND column_name IN (
+             'admissionAuthorizationId', 'admittedChatSourceRevision',
+             'admittedActiveLeafMessageId', 'alsoForgetOriginMemories'
+           )),
+        (SELECT count(*) FROM pg_trigger
+         WHERE NOT tgisinternal AND tgname = ANY(ARRAY[
+           'Chat_permanent_deletion_guard',
+           'Message_permanent_chat_write_guard',
+           'ModelRun_permanent_chat_write_guard',
+           'Attachment_permanent_chat_write_guard',
+           'SharedChatSnapshot_permanent_chat_write_guard',
+           'MemoryScope_permanent_chat_write_guard',
+           'ChatMemoryCheckpoint_permanent_chat_write_guard',
+           'MemoryRecallChunk_permanent_chat_write_guard',
+           'MemoryEpisode_permanent_chat_write_guard',
+           'MemoryCandidate_permanent_chat_write_guard',
+           'MemoryEvidence_permanent_chat_write_guard',
+           'MemoryJob_permanent_chat_write_guard',
+           'MemoryRetrievalAttempt_permanent_chat_write_guard',
+           'MemoryEvent_permanent_chat_source_write_guard',
+           'MemorySuppression_permanent_chat_source_write_guard',
+           'MemoryMutationAuthorization_permanent_chat_source_write_guard',
+           'MemoryRetrievalAttemptItem_permanent_source_write_guard',
+           'ModelRunMemoryItem_permanent_source_write_guard',
+           'MemoryFeedback_permanent_source_write_guard',
+           'MemoryDeletionOutbox_admission_immutable_guard',
+           'MemoryEvent_deleted_source_guard'
+         ])))
+    `),
+    "2|1|4|21",
+    "permanent-chat deletion schema or no-resurrection guards are incomplete"
+  );
+
+  requireSuccess(psql(database, `
+    INSERT INTO "Chat" (
+      "id", "userId", "title", "archived", "memoryMode",
+      "memorySourceRevision", "updatedAt"
+    ) VALUES (
+      'memory-p8-chat', 'memory-owner-a', 'Permanent delete fixture', TRUE,
+      'EXCLUDED', 1, CURRENT_TIMESTAMP
+    );
+    INSERT INTO "MemoryEvent" (
+      "id", "userId", "operation", "actorType", "sourceChatId", "metadata"
+    ) VALUES (
+      'memory-p8-source-event', 'memory-owner-a', 'AUTO_PROPOSE', 'JOB',
+      'memory-p8-chat', '{}'::jsonb
+    );
+    INSERT INTO "MemoryDeletionOutbox" (
+      "id", "userId", "operation", "targetType", "targetId",
+      "memoryGeneration", "admissionAuthorizationId",
+      "admittedChatSourceRevision", "admittedActiveLeafMessageId",
+      "alsoForgetOriginMemories"
+    ) SELECT
+      'memory-p8-delete', settings."userId", 'SOURCE_PURGE',
+      'CHAT@memory-p8-chat-delete-v1', 'memory-p8-chat',
+      settings."memoryGeneration", 'memory-p8-authorization', 0, NULL, FALSE
+    FROM "UserMemorySettings" AS settings
+    WHERE settings."userId" = 'memory-owner-a';
+    UPDATE "Chat"
+    SET "permanentDeletionAt" = CURRENT_TIMESTAMP,
+      "permanentDeletionOperationId" = 'memory-p8-delete'
+    WHERE "id" = 'memory-p8-chat';
+  `), "install exact permanent-chat deletion fence fixture");
+
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|', chat."archived"::int, chat."memoryMode",
+        (chat."permanentDeletionAt" IS NOT NULL)::int,
+        deletion."operation", deletion."targetType",
+        deletion."alsoForgetOriginMemories"::int)
+      FROM "Chat" AS chat
+      INNER JOIN "MemoryDeletionOutbox" AS deletion
+        ON deletion."userId" = chat."userId"
+        AND deletion."id" = chat."permanentDeletionOperationId"
+      WHERE chat."id" = 'memory-p8-chat';
+    `),
+    "1|EXCLUDED|1|SOURCE_PURGE|CHAT@memory-p8-chat-delete-v1|0",
+    "permanent-chat fence did not retain its exact durable obligation"
+  );
+
+  expectRejected(database, `
+    INSERT INTO "MemoryDeletionOutbox" (
+      "id", "userId", "operation", "targetType", "targetId", "memoryGeneration"
+    ) VALUES (
+      'memory-p8-malformed', 'memory-owner-a', 'SOURCE_PURGE',
+      'CHAT@memory-p8-chat-delete-v1', 'malformed-chat', 0
+    );
+  `, /MemoryDeletionOutbox_shape_check/u, "untyped permanent-chat deletion obligation");
+  expectRejected(database, `
+    INSERT INTO "MemoryDeletionOutbox" (
+      "id", "userId", "operation", "targetType", "targetId", "memoryGeneration",
+      "admissionAuthorizationId", "admittedChatSourceRevision",
+      "alsoForgetOriginMemories"
+    ) VALUES (
+      'memory-p8-smuggled', 'memory-owner-a', 'BULK_CLEAR',
+      'HISTORY_INDEX@memory-p4-history-clear-v1', 'smuggled', 0,
+      'memory-p8-smuggled-auth', 0, FALSE
+    );
+  `, /MemoryDeletionOutbox_shape_check/u, "admission metadata on a non-chat obligation");
+  expectRejected(database, `
+    INSERT INTO "Message" ("id", "chatId", "role", "content", "updatedAt")
+    VALUES ('memory-p8-late-message', 'memory-p8-chat', 'user', '{}'::jsonb,
+      CURRENT_TIMESTAMP);
+  `, /cannot accept new aggregate children/u, "message resurrection after fence");
+  expectRejected(database, `
+    INSERT INTO "MemoryEvent" (
+      "id", "userId", "operation", "actorType", "sourceChatId", "metadata"
+    ) VALUES (
+      'memory-p8-late-event', 'memory-owner-a', 'AUTO_PROPOSE', 'JOB',
+      'memory-p8-chat', '{}'::jsonb
+    );
+  `, /cannot become a reusable source/u, "Memory source resurrection after fence");
+  expectRejected(database, `
+    UPDATE "MemoryDeletionOutbox"
+    SET "alsoForgetOriginMemories" = TRUE
+    WHERE "id" = 'memory-p8-delete';
+  `, /admission metadata is immutable/iu, "permanent-delete choice rewrite");
+  expectRejected(database, `
+    UPDATE "Chat"
+    SET "permanentDeletionAt" = NULL, "permanentDeletionOperationId" = NULL
+    WHERE "id" = 'memory-p8-chat';
+  `, /deletion fence is immutable/iu, "permanent-delete fence reversal");
+
+  requireSuccess(psql(database, `
+    UPDATE "MemoryEvent"
+    SET "sourceChatId" = NULL, "sourceDeletedAt" = CURRENT_TIMESTAMP
+    WHERE "id" = 'memory-p8-source-event';
+  `), "detach a deleted Memory source once");
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|', ("sourceChatId" IS NULL)::int,
+        ("sourceDeletedAt" IS NOT NULL)::int)
+      FROM "MemoryEvent" WHERE "id" = 'memory-p8-source-event';
+    `),
+    "1|1",
+    "deleted Memory event source was not detached"
+  );
+  expectRejected(database, `
+    UPDATE "MemoryEvent"
+    SET "sourceDeletedAt" = NULL
+    WHERE "id" = 'memory-p8-source-event';
+  `, /Deleted source lifecycle is immutable/u, "deleted-source reversal");
+}
+
+function assertPermanentChatDeleteMigrationAtomicRollback(database: string): void {
+  requireSuccess(psql(database, `
+    CREATE FUNCTION aiqsa_permanent_chat_delete_guard()
+    RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+  `), "install permanent-chat rollback-conflict fixture");
+  const result = psql(
+    database,
+    readFileSync(join(migrationsRoot, PERMANENT_CHAT_DELETE_MIGRATION, "migration.sql"), "utf8")
+  );
+  assert.notEqual(result.status, 0, "conflicting permanent-chat migration unexpectedly succeeded");
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /function "aiqsa_permanent_chat_delete_guard" already exists/u,
+    "permanent-chat rollback fixture failed for an unexpected reason"
+  );
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'Chat'
+           AND column_name IN ('permanentDeletionAt', 'permanentDeletionOperationId')),
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'MemoryEvent'
+           AND column_name = 'sourceDeletedAt'),
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'MemoryDeletionOutbox'
+           AND column_name IN (
+             'admissionAuthorizationId', 'admittedChatSourceRevision',
+             'admittedActiveLeafMessageId', 'alsoForgetOriginMemories'
+           )))
+    `),
+    "0|0|0",
+    "failed permanent-chat migration left partial durable state"
+  );
+}
+
 function main(): void {
   requireSuccess(compose(["up", "-d", POSTGRES_SERVICE]), "start disposable PostgreSQL service");
   try {
@@ -2654,6 +3553,17 @@ function main(): void {
     assertFactCandidateContracts(upgradeDatabase);
     applyMigrations(upgradeDatabase, [FACT_CONSOLIDATION_MIGRATION]);
     assertFactConsolidationContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [LEARNING_REVIEW_MIGRATION]);
+    assertLearningReviewContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [
+      FORGET_UNDO_MIGRATION,
+      FORGET_UNDO_SHAPE_MIGRATION
+    ]);
+    assertForgetUndoContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [WORKING_SET_PROFILE_MIGRATION]);
+    assertWorkingSetProfileContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [PERMANENT_CHAT_DELETE_MIGRATION]);
+    assertPermanentChatDeleteContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
@@ -2681,6 +3591,17 @@ function main(): void {
     assertFactCandidateContracts(freshDatabase);
     applyMigrations(freshDatabase, [FACT_CONSOLIDATION_MIGRATION]);
     assertFactConsolidationContracts(freshDatabase);
+    applyMigrations(freshDatabase, [LEARNING_REVIEW_MIGRATION]);
+    assertLearningReviewContracts(freshDatabase, false);
+    applyMigrations(freshDatabase, [
+      FORGET_UNDO_MIGRATION,
+      FORGET_UNDO_SHAPE_MIGRATION
+    ]);
+    assertForgetUndoContracts(freshDatabase);
+    applyMigrations(freshDatabase, [WORKING_SET_PROFILE_MIGRATION]);
+    assertWorkingSetProfileContracts(freshDatabase);
+    applyMigrations(freshDatabase, [PERMANENT_CHAT_DELETE_MIGRATION]);
+    assertPermanentChatDeleteContracts(freshDatabase);
 
     createDatabase(rollbackDatabase);
     applyMigrations(rollbackDatabase, migrationNames((name) => name < CHAT_SCOPE_MIGRATION));
@@ -2734,11 +3655,32 @@ function main(): void {
       migrationNames((name) => name < FACT_CONSOLIDATION_MIGRATION)
     );
     assertFactConsolidationMigrationAtomicRollback(factConsolidationRollbackDatabase);
+
+    createDatabase(learningReviewRollbackDatabase);
+    applyMigrations(
+      learningReviewRollbackDatabase,
+      migrationNames((name) => name < LEARNING_REVIEW_MIGRATION)
+    );
+    assertLearningReviewMigrationAtomicRollback(learningReviewRollbackDatabase);
+
+    createDatabase(workingSetProfileRollbackDatabase);
+    applyMigrations(
+      workingSetProfileRollbackDatabase,
+      migrationNames((name) => name < WORKING_SET_PROFILE_MIGRATION)
+    );
+    assertWorkingSetProfileMigrationAtomicRollback(workingSetProfileRollbackDatabase);
+
+    createDatabase(permanentChatDeleteRollbackDatabase);
+    applyMigrations(
+      permanentChatDeleteRollbackDatabase,
+      migrationNames((name) => name < PERMANENT_CHAT_DELETE_MIGRATION)
+    );
+    assertPermanentChatDeleteMigrationAtomicRollback(permanentChatDeleteRollbackDatabase);
   } finally {
     dropDatabases();
   }
 
-  console.info("Memory migration contract passed through verified fact consolidation.");
+  console.info("Memory migration contract passed through permanent-chat deletion fences.");
 }
 
 main();

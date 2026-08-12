@@ -3,21 +3,35 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   authorizeMemoryMutation,
   cancelMemoryRebuild,
+  forgetMemory,
+  loadMemoryHealth,
+  loadMemoryProfile,
   loadMemorySettings,
   loadMemoryRebuildStatus,
   MemoryApiError,
   memoryStatementHash,
   searchMemories,
   startMemoryBulkDeletion,
-  startMemoryRebuild
+  startMemoryRebuild,
+  undoForgetMemory
 } from "./memoryApi";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
 import {
   memoryDeletionFixture,
+  memoryHealthFixture,
   memoryListFixture,
+  memoryProfileFixture,
   memoryRebuildFixture,
-  memorySettingsFixture
+  memorySettingsFixture,
+  memorySummaryFixture
 } from "./memoryTestFixtures";
+
+function jsonResponse(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    headers: { "content-type": "application/json" },
+    status
+  });
+}
 
 describe("Memory API client", () => {
   afterEach(() => {
@@ -44,6 +58,46 @@ describe("Memory API client", () => {
       code: "memory_response_invalid",
       status: 502
     });
+  });
+
+  it("loads owner health with no-store semantics and rejects enriched evidence", async () => {
+    const valid = { health: memoryHealthFixture() };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(valid))
+      .mockResolvedValueOnce(jsonResponse({
+        health: { ...valid.health, sourceChatId: "private-chat" }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(loadMemoryHealth()).resolves.toEqual(valid);
+    await expect(loadMemoryHealth()).rejects.toMatchObject({
+      code: "memory_response_invalid",
+      status: 502
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/me/memory/health");
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      cache: "no-store",
+      credentials: "same-origin",
+      method: "GET"
+    });
+  });
+
+  it("loads the private profile without query data and rejects an enriched response", async () => {
+    const valid = memoryProfileFixture();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(valid))
+      .mockResolvedValueOnce(jsonResponse({ ...valid, confidence: 0.91 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(loadMemoryProfile()).resolves.toEqual(valid);
+    await expect(loadMemoryProfile()).rejects.toMatchObject({
+      code: "memory_response_invalid",
+      status: 502
+    });
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/me/memory/profile",
+      "/api/me/memory/profile"
+    ]);
   });
 
   it("keeps saved-memory search text out of URLs and strictly POSTs the bounded query", async () => {
@@ -148,5 +202,40 @@ describe("Memory API client", () => {
     expect(cancelInit.method).toBe("POST");
     expect(cancelInit.body).toBeUndefined();
     expect(new Headers(cancelInit.headers).get("content-type")).toBeNull();
+  });
+
+  it("strictly carries the owner-private Forget deadline into the exact Undo route", async () => {
+    const active = memorySummaryFixture();
+    const forgotten = memorySummaryFixture({
+      currentVersionId: null,
+      displayText: null,
+      factState: "FORGOTTEN",
+      versionState: "FORGOTTEN"
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        memory: forgotten,
+        undo: {
+          deletionId: "forget-deletion",
+          expiresAt: "2026-08-11T08:01:00.000Z",
+          versionId: "memory-version-1"
+        }
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ memory: active }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(forgetMemory("memory/id", {
+      expectedVersionId: "memory-version-1",
+      mutationAuthorizationId: "forget-auth"
+    })).resolves.toMatchObject({ undo: { deletionId: "forget-deletion" } });
+    await expect(undoForgetMemory("memory/id", {
+      deletionId: "forget-deletion",
+      mutationAuthorizationId: "restore-auth"
+    })).resolves.toEqual({ memory: active });
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/me/memories/memory%2Fid/forget",
+      "/api/me/memories/memory%2Fid/undo-forget"
+    ]);
   });
 });

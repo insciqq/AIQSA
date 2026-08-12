@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type {
   MemoryCreateInput,
+  MemoryConflictResolutionInput,
+  MemoryDetailResponse,
   MemoryEvidenceResponse,
   MemoryListInput,
   MemoryListResponse,
@@ -8,9 +10,12 @@ import type {
   MemoryMutationAuthorizationInput,
   MemoryMutationAuthorizationResponse,
   MemoryMutationResponse,
+  MemorySensitivityClass,
+  MemoryUndoForgetInput,
   MemoryUpdateInput
 } from "../../../contracts/memory";
 import {
+  decodeMemoryDetailResponse,
   decodeMemoryEvidenceResponse,
   decodeMemoryListResponse,
   decodeMemoryMutationAuthorizationResponse,
@@ -33,6 +38,7 @@ import type {
   MemoryFactEditInput,
   MemoryFactMoveInput,
   MemoryFactMutationResult,
+  MemoryFactResolveInput,
   MemoryFactSaveInput,
   MemoryFactValueInput
 } from "../persistence/facts";
@@ -41,7 +47,11 @@ import {
   normalizeMemorySearchText
 } from "../persistence/lexical";
 import type { ActiveMemoryScope } from "../persistence/scopes";
-import type { ExplicitMemoryEditable } from "./repository";
+import type {
+  ExplicitMemoryConflictEditable,
+  ExplicitMemoryEditable,
+  ExplicitMemoryForgetUndoCandidate
+} from "./repository";
 import { memoryExplicitStatementContainsSecret } from "./safety";
 
 export const MEMORY_EXPLICIT_PIPELINE_VERSION = "memory-explicit-api-v1";
@@ -63,17 +73,26 @@ export type ExplicitMemoryAuthorizationRepository = Readonly<{
 export type ExplicitMemoryFactRepository = Readonly<{
   edit(userId: string, input: MemoryFactEditInput): Promise<MemoryFactMutationResult>;
   move(userId: string, input: MemoryFactMoveInput): Promise<MemoryFactMutationResult>;
+  resolve(userId: string, input: MemoryFactResolveInput): Promise<MemoryFactMutationResult>;
   save(userId: string, input: MemoryFactSaveInput): Promise<MemoryFactMutationResult>;
 }>;
 
 export type ExplicitMemoryReadRepository = Readonly<{
+  detail(userId: string, factId: string): Promise<MemoryDetailResponse | null>;
   evidence(
     userId: string,
     factId: string,
     cursor: string | null
   ): Promise<MemoryEvidenceResponse | null>;
   get(userId: string, factId: string): Promise<MemoryMutationResponse["memory"] | null>;
+  getConflict(userId: string, factId: string): Promise<ExplicitMemoryConflictEditable | null>;
   getEditable(userId: string, factId: string): Promise<ExplicitMemoryEditable | null>;
+  getForgetUndoCandidate(
+    userId: string,
+    factId: string,
+    deletionId: string,
+    now: Date
+  ): Promise<ExplicitMemoryForgetUndoCandidate | null>;
   list(userId: string, input: MemoryListInput): Promise<MemoryListResponse>;
   search(userId: string, input: MemoryListSearchInput): Promise<MemoryListResponse>;
 }>;
@@ -94,6 +113,7 @@ export type ExplicitMemoryServiceErrorCode =
   | "memory_scope_unavailable"
   | "memory_secret_rejected"
   | "memory_statement_invalid"
+  | "memory_undo_unavailable"
   | "memory_version_stale";
 
 export class ExplicitMemoryServiceError extends Error {
@@ -117,13 +137,23 @@ export type ExplicitMemoryService = Readonly<{
     factId: string,
     cursor: string | null
   ): Promise<MemoryEvidenceResponse>;
-  get(userId: string, factId: string): Promise<MemoryMutationResponse>;
+  get(userId: string, factId: string): Promise<MemoryDetailResponse>;
   list(userId: string, input: MemoryListInput): Promise<MemoryListResponse>;
   mintAuthorization(
     userId: string,
     input: MemoryMutationAuthorizationInput
   ): Promise<MemoryMutationAuthorizationResponse>;
   search(userId: string, input: MemoryListSearchInput): Promise<MemoryListResponse>;
+  resolveConflict(
+    userId: string,
+    factId: string,
+    input: MemoryConflictResolutionInput
+  ): Promise<MemoryMutationResponse>;
+  undoForget(
+    userId: string,
+    factId: string,
+    input: MemoryUndoForgetInput
+  ): Promise<MemoryMutationResponse>;
   update(
     userId: string,
     factId: string,
@@ -133,6 +163,7 @@ export type ExplicitMemoryService = Readonly<{
 }>;
 
 export type MemoryOperationExecutionContext = Readonly<{
+  authorizedPayloadHash?: string;
   modelRunId: string;
   persistedToolCallId: string;
 }>;
@@ -161,6 +192,8 @@ function publicPersistenceCode(
       return "memory_secret_rejected";
     case "memory_active_generation_invalid":
       return "memory_index_unavailable";
+    case "memory_undo_unavailable":
+      return "memory_undo_unavailable";
     case "memory_input_invalid":
       return "memory_contract_invalid";
     default:
@@ -208,6 +241,22 @@ function customCanonicalKey(statement: string): string {
 
 function dateOrNull(value: string | null | undefined): Date | null {
   return value == null ? null : new Date(value);
+}
+
+const sensitivityRank: Readonly<Record<MemorySensitivityClass, number>> = {
+  HIGHLY_SENSITIVE: 2,
+  NORMAL: 0,
+  SECRET: 3,
+  SENSITIVE: 1
+};
+
+function mostRestrictiveSensitivity(
+  values: readonly MemorySensitivityClass[]
+): MemorySensitivityClass {
+  return values.reduce((mostRestrictive, value) =>
+    sensitivityRank[value] > sensitivityRank[mostRestrictive]
+      ? value
+      : mostRestrictive, "NORMAL");
 }
 
 function valueFor(input: Readonly<{
@@ -305,6 +354,12 @@ function checkedEvidence(response: MemoryEvidenceResponse): MemoryEvidenceRespon
   return decoded.value;
 }
 
+function checkedDetail(response: MemoryDetailResponse): MemoryDetailResponse {
+  const decoded = decodeMemoryDetailResponse(response);
+  if (!decoded.ok) return failure("memory_action_failed");
+  return decoded.value;
+}
+
 export function createExplicitMemoryService(input: Readonly<{
   authorizationRepository: ExplicitMemoryAuthorizationRepository;
   clock?: () => Date;
@@ -326,7 +381,8 @@ export function createExplicitMemoryService(input: Readonly<{
   return Object.freeze({
     async create(userId, createInput, execution) {
       requireStatement(createInput.statement);
-      const authorizedPayloadHash = memorySha256(createInput.statement);
+      const authorizedPayloadHash = execution?.authorizedPayloadHash ??
+        memorySha256(createInput.statement);
       const authorization = authorizationUse({
         action: "SAVE",
         authorizationId: createInput.mutationAuthorizationId,
@@ -373,7 +429,9 @@ export function createExplicitMemoryService(input: Readonly<{
     },
 
     async get(userId, factId) {
-      return currentResponse(userId, factId);
+      const detail = await persisted(() => input.readRepository.detail(userId, factId));
+      if (!detail) return failure("memory_not_found");
+      return checkedDetail(detail);
     },
 
     async list(userId, listInput) {
@@ -386,7 +444,9 @@ export function createExplicitMemoryService(input: Readonly<{
       if (
         authorizationInput.action === "BULK_DELETE" &&
         authorizationInput.operation !== "DELETE_EXPLICIT" &&
+        authorizationInput.operation !== "DELETE_LEARNED" &&
         authorizationInput.operation !== "CLEAR_HISTORY_INDEX" &&
+        authorizationInput.operation !== "DELETE_ALL_REUSABLE" &&
         authorizationInput.operation !== "REDREAM_EXISTING_CHATS"
       ) {
         return failure("memory_operation_unsupported");
@@ -447,6 +507,127 @@ export function createExplicitMemoryService(input: Readonly<{
       return checkedList(await persisted(() =>
         input.readRepository.search(userId, searchInput)
       ));
+    },
+
+    async resolveConflict(userId, factId, resolveInput) {
+      const conflict = await persisted(() =>
+        input.readRepository.getConflict(userId, factId));
+      if (!conflict) return failure("memory_not_found");
+      const expectedVersionIds = conflict.versions.map(({ id }) => id);
+      if (
+        expectedVersionIds.length !== resolveInput.expectedVersionIds.length ||
+        expectedVersionIds.some((id, index) => id !== resolveInput.expectedVersionIds[index])
+      ) {
+        return failure("memory_version_stale");
+      }
+      const anchorVersionId = expectedVersionIds[0]!;
+      const selectedVersionId = resolveInput.resolution.kind === "CHOOSE"
+        ? resolveInput.resolution.versionId
+        : anchorVersionId;
+      const selected = conflict.versions.find(({ id }) => id === selectedVersionId);
+      if (!selected) return failure("memory_version_stale");
+      const statement = resolveInput.resolution.kind === "CORRECT"
+        ? resolveInput.resolution.statement
+        : selected.displayText;
+      const sensitivityClass = resolveInput.resolution.kind === "CORRECT"
+        ? mostRestrictiveSensitivity(conflict.versions.map((version) =>
+            version.sensitivityClass))
+        : selected.sensitivityClass;
+      requireStatement(statement);
+      const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash({
+        action: "EDIT",
+        expectedTargetVersionId: anchorVersionId,
+        targetFactId: factId
+      });
+      const authorization = authorizationUse({
+        action: "EDIT",
+        authorizationId: resolveInput.mutationAuthorizationId,
+        authorizedPayloadHash,
+        expectedTargetVersionId: anchorVersionId,
+        targetFactId: factId
+      });
+      const resolved = await persisted(() =>
+        input.authorizationRepository.resolveForUse(userId, authorization));
+      await persisted(() => input.factRepository.resolve(userId, {
+        authorization,
+        evidence: evidenceFor(statement, resolved.confirmedAt, sensitivityClass),
+        expectedVersionIds,
+        explicitSuppressionOverride: false,
+        factId,
+        idempotencyFingerprint: idempotencyFingerprint(authorization),
+        idempotencyPayloadHash: idempotencyPayloadHash("EDIT", {
+          factId,
+          input: resolveInput,
+          operation: "RESOLVE_CONFLICT"
+        }),
+        requestId: resolved.requestId,
+        scopeId: conflict.scopeId,
+        selectedVersionId,
+        value: valueFor({
+          canonicalKey: conflict.canonicalKey,
+          category: conflict.category,
+          modality: selected.modality,
+          sensitivityClass,
+          statement,
+          validFrom: selected.validFrom,
+          validTo: selected.validTo
+        })
+      }));
+      return currentResponse(userId, factId);
+    },
+
+    async undoForget(userId, factId, undoInput) {
+      const now = clock();
+      const candidate = await persisted(() =>
+        input.readRepository.getForgetUndoCandidate(
+          userId,
+          factId,
+          undoInput.deletionId,
+          now
+        )
+      );
+      if (!candidate) return failure("memory_undo_unavailable");
+      requireStatement(candidate.displayText);
+      const authorization = authorizationUse({
+        action: "SAVE",
+        authorizationId: undoInput.mutationAuthorizationId,
+        authorizedPayloadHash: memorySha256(candidate.displayText)
+      });
+      const resolved = await persisted(() =>
+        input.authorizationRepository.resolveForUse(userId, authorization)
+      );
+      const revived = await persisted(() => input.factRepository.save(userId, {
+        authorization,
+        evidence: evidenceFor(
+          candidate.displayText,
+          resolved.confirmedAt,
+          candidate.sensitivityClass
+        ),
+        explicitSuppressionOverride: true,
+        idempotencyFingerprint: idempotencyFingerprint(authorization),
+        idempotencyPayloadHash: idempotencyPayloadHash("SAVE", {
+          deletionId: undoInput.deletionId,
+          factId,
+          operation: "UNDO_FORGET"
+        }),
+        requestId: resolved.requestId,
+        scopeId: candidate.scopeId,
+        undoForget: {
+          deletionId: undoInput.deletionId,
+          expectedVersionId: candidate.versionId,
+          now
+        },
+        value: valueFor({
+          canonicalKey: candidate.canonicalKey,
+          category: candidate.category,
+          modality: candidate.modality,
+          sensitivityClass: candidate.sensitivityClass,
+          statement: candidate.displayText,
+          validFrom: candidate.validFrom,
+          validTo: candidate.validTo
+        })
+      }));
+      return currentResponse(userId, revived.factId);
     },
 
     async update(userId, factId, updateInput, execution) {

@@ -8,6 +8,7 @@ import {
   adminUserDeletionBlock,
   adminUserDeletionInfo,
   adminUserOwnedDataCount,
+  adminUserOwnedDataCountWithMemory,
   type AdminUserOwnedDataSource
 } from "./adminDeletionMetadata";
 
@@ -360,6 +361,7 @@ describe("admin deletion metadata", () => {
     ];
 
     expect(adminUserOwnedDataCount(ownedDataSource())).toBe(0);
+    expect(adminUserOwnedDataCountWithMemory(ownedDataSource(), 3)).toBe(3);
 
     for (const field of countFields) {
       const counts = {
@@ -413,6 +415,7 @@ describe("admin deletion metadata", () => {
         chats: 3,
         folders: 4,
         knowledgeBases: 14,
+        memory: 0,
         mcpGrants: 5,
         mcpOAuthConnections: 6,
         mcpUserServers: 7,

@@ -4,7 +4,10 @@ import {
   type MemoryEvaluationFixture,
   type MemoryEvaluationRunContext
 } from "../../../lib/evaluation/memory/contracts";
-import { createHindsightReferenceAdapter } from "./hindsightReference";
+import {
+  assertExactHindsightReferencePin,
+  createHindsightReferenceAdapter
+} from "./hindsightReference";
 
 const fixture: MemoryEvaluationFixture<{ prompt: string }> = {
   corpusVersion: "corpus-v1",
@@ -36,6 +39,19 @@ const context: MemoryEvaluationRunContext = {
 };
 
 describe("development-only Hindsight Memory reference", () => {
+  it("requires the exact release, source commit, and OCI digest", () => {
+    const expected = {
+      commit: "a".repeat(40),
+      imageDigest: `sha256:${"b".repeat(64)}`,
+      tag: "0.7.0"
+    };
+    expect(() => assertExactHindsightReferencePin(expected, expected)).not.toThrow();
+    expect(() => assertExactHindsightReferencePin({
+      ...expected,
+      imageDigest: `sha256:${"c".repeat(64)}`
+    }, expected)).toThrow("memory_hindsight_reference_pin_mismatch");
+  });
+
   it("is disabled by default and never calls the injected reference executor", async () => {
     const run = vi.fn();
     const adapter = createHindsightReferenceAdapter({

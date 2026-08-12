@@ -61,9 +61,10 @@ export async function applyMemoryLearningSourceMutation(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent
 ): Promise<void> {
+  const permanentDelete = event.mutations.includes("SOURCE_HARD_DELETE");
   let settings: LockedMemorySettings | null =
     await normalizeMemoryFactsForSourceMutation(tx, event);
-  if (settings) {
+  if (settings && !permanentDelete) {
     await reopenSourcePurge(tx, settings, event.snapshot.id);
   }
   if (invalidatesCandidates(event)) {
@@ -98,7 +99,7 @@ export async function applyMemoryLearningSourceMutation(
         userId: event.snapshot.userId
       }
     });
-    if (invalidated.count > 0) {
+    if (invalidated.count > 0 && !permanentDelete) {
       settings = await lockMemorySettings(tx, event.snapshot.userId, false);
       await reopenSourcePurge(tx, settings, event.snapshot.id);
     }

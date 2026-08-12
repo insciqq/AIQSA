@@ -877,6 +877,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       evidenceVersion: "memory-phase5-local-retrieval-qualification-v1",
       irrelevantInjectionRate: irrelevantInjections / irrelevantQueries.length,
       latencyP95Ms: Number(percentile95(latencies).toFixed(2)),
+      maximumLatencyP95Ms: 150,
       maximumCandidateCount,
       recallAt5: recalled / sampleCount,
       sanitizedAggregatesOnly: true,
@@ -891,7 +892,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       sanitizedAggregatesOnly: true,
       sampleCount: 15
     });
-    expect(evidence.latencyP95Ms).toBeLessThan(1_000);
+    expect(evidence.latencyP95Ms).toBeLessThan(evidence.maximumLatencyP95Ms);
     expect(evidence.maximumCandidateCount).toBeLessThanOrEqual(evidence.candidateHardCap);
     expect(JSON.stringify(evidence)).not.toContain(fixture.userId);
     expect(JSON.stringify(evidence)).not.toContain(fixture.safeChunkText);

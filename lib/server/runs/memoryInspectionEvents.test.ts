@@ -27,13 +27,18 @@ describe("Memory inspection events", () => {
       ["done", 3]
     ]);
     expect(events[1]?.payload).toEqual({
+      automaticFactCount: 0,
       degradationCode: null,
+      historyItemCount: 0,
       itemCount: 0,
       itemTypes: [],
+      laterLifecycleCount: 0,
+      lifecycleStates: [],
       outcome: "DISABLED",
       queryPlannerVersion: null,
       retrievalLanes: [],
-      retrievalPipelineVersion: null
+      retrievalPipelineVersion: null,
+      sourceModes: []
     });
     expect(JSON.stringify(events)).not.toMatch(
       /includedText|sourceChat|sourceMessage|bindingId/i
@@ -73,13 +78,18 @@ describe("Memory inspection events", () => {
     });
 
     expect(events[0]?.payload).toEqual({
+      automaticFactCount: 0,
       degradationCode: "memory_vector_unavailable",
+      historyItemCount: 1,
       itemCount: 1,
       itemTypes: ["RECALL_CHUNK"],
+      laterLifecycleCount: 0,
+      lifecycleStates: ["CURRENT"],
       outcome: "DEGRADED",
       queryPlannerVersion: "memory-query-planner-v1",
       retrievalLanes: ["HISTORY_RECALL_FTS_ENGLISH"],
-      retrievalPipelineVersion: "memory-retrieval-pipeline-v1"
+      retrievalPipelineVersion: "memory-retrieval-pipeline-v1",
+      sourceModes: ["HISTORY"]
     });
     expect(JSON.stringify(events)).not.toContain("private passage");
   });

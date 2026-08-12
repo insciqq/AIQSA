@@ -195,6 +195,28 @@ export class MemoryHistorySourceProjectionError extends Error {
   }
 }
 
+export function memoryBindingCarriesProviderPayload(contextTokenCount: number): boolean {
+  return Number.isSafeInteger(contextTokenCount) && contextTokenCount > 0;
+}
+
+export function memoryRuntimeInfluenceTaintSources(input: Readonly<{
+  attachment: boolean;
+  knowledgeRunCount: number;
+  memoryContextTokenCount: number;
+  searchRunCount: number;
+  toolCallCount: number;
+}>): readonly MemoryHistoryTaintSource[] {
+  const sources: MemoryHistoryTaintSource[] = [];
+  if (input.attachment) sources.push("ATTACHMENT");
+  if (input.knowledgeRunCount > 0) sources.push("KNOWLEDGE");
+  if (memoryBindingCarriesProviderPayload(input.memoryContextTokenCount)) {
+    sources.push("PROVIDER_PAYLOAD");
+  }
+  if (input.searchRunCount > 0) sources.push("SEARCH");
+  if (input.toolCallCount > 0) sources.push("TOOL");
+  return sources;
+}
+
 function fail(code: string): never {
   throw new MemoryHistorySourceProjectionError(code);
 }

@@ -1,4 +1,8 @@
-import type { MemoryListResponse, MemoryMutationResponse } from "../../../contracts/memory";
+import type {
+  MemoryFeedbackMutationResponse,
+  MemoryListResponse,
+  MemoryMutationResponse
+} from "../../../contracts/memory";
 import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../../tools/types";
 import type {
@@ -8,10 +12,12 @@ import type {
 import { memorySha256 } from "../persistence/lexical";
 import type { ExplicitMemoryService } from "../explicit/service";
 import type { MemoryLifecycleService } from "../lifecycle/service";
+import type { MemoryReviewService } from "../review/service";
 import { decodeMemoryActionPlan, type MemoryActionPlan } from "./intent";
 import {
   MEMORY_FORGET_TOOL_NAME,
   MEMORY_LIST_TOOL_NAME,
+  MEMORY_MARK_INCORRECT_TOOL_NAME,
   MEMORY_SAVE_TOOL_NAME,
   MEMORY_UPDATE_TOOL_NAME,
   memoryActionToolName
@@ -45,6 +51,7 @@ function complete(
   call: ModelToolCall,
   operation: MemoryActionPlan["kind"],
   value: MemoryListResponse | MemoryMutationResponse
+    | MemoryFeedbackMutationResponse
 ): ToolExecutionResult {
   const itemCount = "memories" in value ? value.memories.length : 1;
   return {
@@ -102,7 +109,13 @@ function requireDirectRunAuthorization(
   context: ToolExecutionContext
 ): void {
   const sourceText = textFromContentBlocks(context.request.content);
-  const expectedSpan = plan.kind === "SAVE" ? plan.statement : plan.targetQuery;
+  const sourceSpan = authorization.exactSourceStart === null ||
+      authorization.exactSourceEnd === null
+    ? ""
+    : sourceText.slice(authorization.exactSourceStart, authorization.exactSourceEnd);
+  const sourceMatches = plan.kind === "SAVE"
+    ? sourceSpan.trim().length > 0
+    : sourceSpan === plan.targetQuery;
   if (
     authorization.modelRunId !== context.runId ||
     authorization.persistedToolCallId !== context.persistedToolCallId ||
@@ -113,7 +126,7 @@ function requireDirectRunAuthorization(
     authorization.exactSourceStart !== plan.sourceStart ||
     authorization.exactSourceEnd !== plan.sourceEnd ||
     authorization.exactSourceEnd <= authorization.exactSourceStart ||
-    sourceText.slice(authorization.exactSourceStart, authorization.exactSourceEnd) !== expectedSpan
+    !sourceMatches
   ) {
     throw new Error("memory_action_authorization_missing");
   }
@@ -123,6 +136,7 @@ export function createMemoryActionExecutor(input: Readonly<{
   authorizationRepository: MemoryActionAuthorizationRepository;
   explicitService: ExplicitMemoryService;
   lifecycleService: MemoryLifecycleService;
+  reviewService: MemoryReviewService;
 }>): MemoryActionExecutor {
   async function claim(
     plan: Exclude<MemoryActionPlan, { kind: "LIST" }>,
@@ -131,7 +145,11 @@ export function createMemoryActionExecutor(input: Readonly<{
   ): Promise<MemoryMutationAuthorizationSnapshot> {
     const identity = executionIdentity(context);
     const authorization = await input.authorizationRepository.claimForTool(identity.userId, {
-      action: plan.kind === "SAVE" ? "SAVE" : plan.kind === "UPDATE" ? "EDIT" : "FORGET",
+      action: plan.kind === "SAVE"
+        ? "SAVE"
+        : plan.kind === "UPDATE" || plan.kind === "MARK_INCORRECT"
+          ? "EDIT"
+          : "FORGET",
       ...(authorizedPayloadHash ? { authorizedPayloadHash } : {}),
       modelRunId: identity.modelRunId,
       persistedToolCallId: identity.persistedToolCallId
@@ -152,9 +170,8 @@ export function createMemoryActionExecutor(input: Readonly<{
       }
       try {
         if (decodedPlan.kind === "LIST") {
-          const expectedKeys = decodedPlan.query === null ? [] : ["query"];
-          if (!exactKeys(call.arguments, expectedKeys) ||
-            (decodedPlan.query !== null && call.arguments.query !== decodedPlan.query)) {
+          if (!exactKeys(call.arguments, ["query"]) ||
+            call.arguments.query !== decodedPlan.query) {
             throw new Error("memory_intent_confirmation_required");
           }
           const identity = executionIdentity(context);
@@ -178,19 +195,18 @@ export function createMemoryActionExecutor(input: Readonly<{
         const identity = executionIdentity(context);
         if (decodedPlan.kind === "SAVE") {
           if (!exactKeys(call.arguments, ["statement"]) ||
-            call.arguments.statement !== decodedPlan.statement) {
+            typeof call.arguments.statement !== "string") {
             throw new Error("memory_intent_confirmation_required");
           }
-          const authorization = await claim(
-            decodedPlan,
-            context,
-            memorySha256(decodedPlan.statement)
-          );
+          const authorization = await claim(decodedPlan, context);
           const result = await input.explicitService.create(identity.userId, {
             mutationAuthorizationId: authorization.id,
             scope: { type: "GLOBAL_USER" },
-            statement: decodedPlan.statement
-          }, identity);
+            statement: call.arguments.statement
+          }, {
+            ...identity,
+            authorizedPayloadHash: authorization.authorizedPayloadHash
+          });
           return complete(call, decodedPlan.kind, result);
         }
 
@@ -204,6 +220,12 @@ export function createMemoryActionExecutor(input: Readonly<{
           throw new Error("memory_intent_confirmation_required");
         }
         if (decodedPlan.kind === "FORGET" && (
+          !exactKeys(call.arguments, ["exact_query"]) ||
+          call.arguments.exact_query !== decodedPlan.targetQuery
+        )) {
+          throw new Error("memory_intent_confirmation_required");
+        }
+        if (decodedPlan.kind === "MARK_INCORRECT" && (
           !exactKeys(call.arguments, ["exact_query"]) ||
           call.arguments.exact_query !== decodedPlan.targetQuery
         )) {
@@ -226,6 +248,35 @@ export function createMemoryActionExecutor(input: Readonly<{
           );
           return complete(call, decodedPlan.kind, result);
         }
+        if (decodedPlan.kind === "MARK_INCORRECT") {
+          const result = await input.reviewService.feedback(
+            identity.userId,
+            authorization.targetFactId,
+            {
+              expectedVersionId: authorization.expectedTargetVersionId,
+              feedbackType: "INCORRECT",
+              modelRunId: identity.modelRunId,
+              modelRunToolCallId: identity.persistedToolCallId,
+              requestId: memorySha256({
+                domain: "aiqsa.memory.mark-incorrect-tool",
+                modelRunId: identity.modelRunId,
+                persistedToolCallId: identity.persistedToolCallId,
+                version: "v1"
+              })
+            },
+            {
+              authorization: {
+                action: "EDIT",
+                authorizationId: authorization.id,
+                authorizedPayloadHash: authorization.authorizedPayloadHash,
+                expectedTargetVersionId: authorization.expectedTargetVersionId,
+                requestId: authorization.requestId,
+                targetFactId: authorization.targetFactId
+              }
+            }
+          );
+          return complete(call, decodedPlan.kind, result);
+        }
         const result = await input.lifecycleService.forget(
           identity.userId,
           authorization.targetFactId,
@@ -245,13 +296,15 @@ export function createMemoryActionExecutor(input: Readonly<{
 
 function authorizationTargetPlan(
   plan: MemoryActionPlan
-): plan is Extract<MemoryActionPlan, { kind: "FORGET" | "UPDATE" }> {
-  return plan.kind === "FORGET" || plan.kind === "UPDATE";
+): plan is Extract<MemoryActionPlan, { kind: "FORGET" | "MARK_INCORRECT" | "UPDATE" }> {
+  return plan.kind === "FORGET" || plan.kind === "MARK_INCORRECT" ||
+    plan.kind === "UPDATE";
 }
 
 export const memoryActionToolNames = Object.freeze([
   MEMORY_SAVE_TOOL_NAME,
   MEMORY_LIST_TOOL_NAME,
   MEMORY_UPDATE_TOOL_NAME,
-  MEMORY_FORGET_TOOL_NAME
+  MEMORY_FORGET_TOOL_NAME,
+  MEMORY_MARK_INCORRECT_TOOL_NAME
 ]);

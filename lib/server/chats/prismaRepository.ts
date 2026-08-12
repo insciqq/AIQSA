@@ -1164,6 +1164,7 @@ export async function loadChatUsageStats(
     where: {
       archived: false,
       id: input.chatId,
+      permanentDeletionAt: null,
       userId: input.userId
     }
   });
@@ -1181,6 +1182,7 @@ export async function loadChatContextStats(
       where: {
         archived: false,
         id: input.chatId,
+        permanentDeletionAt: null,
         userId: input.userId
       }
     });
@@ -1223,6 +1225,7 @@ export function createPrismaChatRepository(
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
+            AND "permanentDeletionAt" IS NULL
           FOR UPDATE
         `;
         if (!chats[0] || chats[0].archived || chats[0].memoryMode === "TEMPORARY") {
@@ -1266,6 +1269,7 @@ export function createPrismaChatRepository(
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
+            AND "permanentDeletionAt" IS NULL
           FOR UPDATE
         `;
         const chat = chats[0];
@@ -1402,7 +1406,9 @@ export function createPrismaChatRepository(
             "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
             "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
           FROM "Chat"
-          WHERE "userId" = ${userId} AND "folderId" = ${folderId}
+          WHERE "userId" = ${userId}
+            AND "folderId" = ${folderId}
+            AND "permanentDeletionAt" IS NULL
           ORDER BY "id"
           FOR UPDATE
         `;
@@ -1434,6 +1440,7 @@ export function createPrismaChatRepository(
             archived: true,
             id: chatId,
             memoryMode: { not: "TEMPORARY" },
+            permanentDeletionAt: null,
             userId
           }
         });
@@ -1469,6 +1476,7 @@ export function createPrismaChatRepository(
             archived: true,
             id: chatId,
             memoryMode: { not: "TEMPORARY" },
+            permanentDeletionAt: null,
             userId
           }
         });
@@ -1521,6 +1529,7 @@ export function createPrismaChatRepository(
           where: {
             archived: false,
             id: chatId,
+            permanentDeletionAt: null,
             userId
           }
         });
@@ -1555,7 +1564,7 @@ export function createPrismaChatRepository(
           temporaryRetentionPolicyVersion: true,
           updatedAt: true
         },
-        where: { id: chatId, userId }
+        where: { id: chatId, permanentDeletionAt: null, userId }
       });
       if (!chat) return null;
       if (
@@ -1587,7 +1596,7 @@ export function createPrismaChatRepository(
             id: true,
             updatedAt: true
           },
-          where: { archived: false, id: chatId, userId }
+          where: { archived: false, id: chatId, permanentDeletionAt: null, userId }
         });
         if (!chat) return { kind: "not_found" as const };
         const cursor = decodeHistoryCursor(before);
@@ -1638,7 +1647,7 @@ export function createPrismaChatRepository(
       return prismaClient.$transaction(async (tx) => {
         const chat = await tx.chat.findFirst({
           select: { activeLeafMessageId: true, updatedAt: true },
-          where: { archived: false, id: chatId, userId }
+          where: { archived: false, id: chatId, permanentDeletionAt: null, userId }
         });
         if (!chat) return null;
         const rows = await tx.$queryRaw<Array<{
@@ -1698,6 +1707,7 @@ export function createPrismaChatRepository(
         WHERE c."userId" = ${userId}
           AND c."archived" = false
           AND c."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
+          AND c."permanentDeletionAt" IS NULL
           AND m."content"::text ILIKE ${pattern}
         GROUP BY m."chatId", c."updatedAt"
         ORDER BY c."updatedAt" DESC
@@ -1802,6 +1812,7 @@ export function createPrismaChatRepository(
         where: {
           archived: true,
           memoryMode: { not: "TEMPORARY" },
+          permanentDeletionAt: null,
           userId,
           ...(cursor
             ? {
@@ -1877,6 +1888,7 @@ export function createPrismaChatRepository(
           where: {
             archived: false,
             memoryMode: { not: "TEMPORARY" },
+            permanentDeletionAt: null,
             userId
           }
         })
@@ -1902,6 +1914,7 @@ export function createPrismaChatRepository(
         where: {
           id: chatId,
           memoryMode: { not: "TEMPORARY" },
+          permanentDeletionAt: null,
           userId
         }
       });
@@ -1938,6 +1951,7 @@ export function createPrismaChatRepository(
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
+            AND "permanentDeletionAt" IS NULL
           FOR UPDATE
         `;
         const chat = chats[0];
@@ -2007,6 +2021,7 @@ export function createPrismaChatRepository(
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
+            AND "permanentDeletionAt" IS NULL
           FOR UPDATE
         `;
         if (!chats[0] || chats[0].archived) {

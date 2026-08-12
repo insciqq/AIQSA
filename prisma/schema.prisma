@@ -210,6 +210,11 @@ enum MemoryFactVersionState {
   FORGOTTEN
 }
 
+enum MemoryProfileProjectionState {
+  ACTIVE
+  INVALIDATED
+}
+
 enum MemoryFactModality {
   STATE
   PREFERENCE
@@ -275,6 +280,22 @@ enum MemoryEventOperation {
   USER_FEEDBACK
   INDEX_SWITCH
   REBUILD
+}
+
+enum MemoryFeedbackType {
+  CORRECT
+  INCORRECT
+  NOT_USEFUL
+  WRONG_SCOPE
+  OUTDATED
+  TOO_SENSITIVE
+  RETRACT
+}
+
+enum MemoryFeedbackTargetKind {
+  FACT_VERSION
+  EPISODE
+  RECALL_CHUNK
 }
 
 enum MemorySuppressionScope {
@@ -420,6 +441,7 @@ enum MemoryDeletionState {
   RETRY_WAIT
   BLOCKED_REQUIRES_ADMIN
   SUCCEEDED
+  CANCELLED
 }
 
 enum MemoryMutationAction {
@@ -807,16 +829,16 @@ model SystemModelPolicy {
 }
 
 model MemoryEgressAdminPolicy {
-  id                         String   @id
-  acceptedFingerprint        String?  @db.VarChar(128)
-  acceptedPolicyVersion      String?  @db.VarChar(64)
-  acceptedDestinations       Json     @default("[]")
-  acceptedAt                 DateTime?
-  acceptedByUserId           String?
-  version                    Int      @default(1)
-  createdAt                  DateTime @default(now())
-  updatedAt                  DateTime @default(now()) @updatedAt
-  acceptedBy                 User?    @relation("MemoryEgressAdminPolicyUpdater", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  id                    String    @id
+  acceptedFingerprint   String?   @db.VarChar(128)
+  acceptedPolicyVersion String?   @db.VarChar(64)
+  acceptedDestinations  Json      @default("[]")
+  acceptedAt            DateTime?
+  acceptedByUserId      String?
+  version               Int       @default(1)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @default(now()) @updatedAt
+  acceptedBy            User?     @relation("MemoryEgressAdminPolicyUpdater", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
 
   @@index([acceptedByUserId])
 }
@@ -1533,6 +1555,8 @@ model Chat {
   memoryMode                      MemoryChatMode       @default(NORMAL)
   memoryBranchGeneration          Int                  @default(0)
   memorySourceRevision            Int                  @default(0)
+  permanentDeletionAt             DateTime?
+  permanentDeletionOperationId    String?              @unique
   temporaryRetentionPolicyVersion String?              @db.VarChar(64)
   temporaryRetentionDeadline      DateTime?
   pinned                          Boolean              @default(false)
@@ -1556,6 +1580,7 @@ model Chat {
   @@index([activeLeafMessageId])
   @@index([defaultProviderModelId])
   @@index([memoryMode, temporaryRetentionDeadline])
+  @@index([userId, permanentDeletionAt])
   @@index([userId, archived, updatedAt])
 }
 
@@ -2391,6 +2416,52 @@ model MemoryEvidence {
   @@index([userId, memoryEventId])
 }
 
+model MemoryProfileProjection {
+  id                          String                       @id @default(uuid())
+  userId                      String
+  scopeId                     String
+  memoryGeneration            Int
+  memoryRevision              Int
+  languageCode                String                       @db.VarChar(35)
+  summary                     String?
+  safeContentHash             String?                      @db.VarChar(128)
+  projectionVersion           String                       @db.VarChar(64)
+  safetyClass                 MemorySensitivityClass
+  redactionState              MemoryRedactionState
+  state                       MemoryProfileProjectionState @default(ACTIVE)
+  createdByExecutionId        String
+  inputHash                   String                       @db.VarChar(128)
+  outputHash                  String                       @db.VarChar(128)
+  sourceIdentitySnapshot      String                       @db.VarChar(128)
+  safetyIdentitySnapshot      String                       @db.VarChar(128)
+  suppressionIdentitySnapshot String                       @db.VarChar(128)
+  asOf                        DateTime
+  plaintextPurgedAt           DateTime?
+  purgeReason                 String?                      @db.VarChar(64)
+  createdAt                   DateTime                     @default(now())
+  updatedAt                   DateTime                     @default(now()) @updatedAt
+
+  @@unique([userId, id])
+  @@index([userId, scopeId, state, languageCode])
+  @@index([userId, createdByExecutionId])
+}
+
+model MemoryProfileProjectionFact {
+  userId                      String
+  projectionId                String
+  factId                      String
+  factVersionId               String
+  ordinal                     Int
+  factVersionContentHash      String @db.VarChar(128)
+  sourceIdentitySnapshot      String @db.VarChar(128)
+  safetyIdentitySnapshot      String @db.VarChar(128)
+  suppressionIdentitySnapshot String @db.VarChar(128)
+
+  @@id([projectionId, ordinal])
+  @@unique([userId, projectionId, factVersionId])
+  @@index([userId, factId, factVersionId])
+}
+
 model MemoryEvent {
   id               String               @id @default(uuid())
   userId           String
@@ -2400,6 +2471,7 @@ model MemoryEvent {
   factId           String?
   factVersionId    String?
   sourceChatId     String?
+  sourceDeletedAt  DateTime?
   sourceGeneration Int?
   metadata         Json                 @default("{}")
   createdAt        DateTime             @default(now())
@@ -2408,6 +2480,40 @@ model MemoryEvent {
   @@index([userId, factId, createdAt])
   @@index([userId, factVersionId])
   @@index([userId, sourceChatId, createdAt])
+}
+
+model MemoryFeedback {
+  id                             String                   @id @default(uuid())
+  userId                         String
+  idempotencyFingerprint         String                   @db.VarChar(128)
+  requestId                      String                   @db.VarChar(256)
+  feedbackType                   MemoryFeedbackType
+  targetKind                     MemoryFeedbackTargetKind
+  memoryFactId                   String?
+  memoryFactVersionId            String?
+  episodeId                      String?
+  recallChunkId                  String?
+  modelRunId                     String?
+  modelRunMemoryItemId           String?
+  modelRunToolCallId             String?
+  sourceChatIdSnapshot           String?
+  sourceBranchGenerationSnapshot Int?
+  comment                        String?                  @db.VarChar(1000)
+  retractsFeedbackId             String?
+  memoryEventId                  String?
+  contentPurgedAt                DateTime?
+  purgeReason                    String?                  @db.VarChar(64)
+  createdAt                      DateTime                 @default(now())
+
+  @@unique([userId, id])
+  @@unique([userId, idempotencyFingerprint])
+  @@unique([userId, retractsFeedbackId])
+  @@index([userId, memoryFactId, memoryFactVersionId, createdAt])
+  @@index([userId, episodeId, createdAt])
+  @@index([userId, recallChunkId, createdAt])
+  @@index([userId, modelRunId, modelRunMemoryItemId])
+  @@index([userId, modelRunId, modelRunToolCallId])
+  @@index([userId, sourceChatIdSnapshot, createdAt])
 }
 
 model MemorySuppression {
@@ -2590,25 +2696,30 @@ model MemoryJob {
 }
 
 model MemoryDeletionOutbox {
-  id               String                  @id @default(uuid())
-  userId           String
-  operation        MemoryDeletionOperation
-  targetType       String                  @db.VarChar(64)
-  targetId         String
-  memoryGeneration Int
-  state            MemoryDeletionState     @default(PENDING)
-  attemptCount     Int                     @default(0)
-  nextAttemptAt    DateTime?
-  leaseToken       String?                 @db.VarChar(128)
-  leaseExpiresAt   DateTime?
-  lastAuditAt      DateTime?
-  completedAt      DateTime?
-  errorCode        String?                 @db.VarChar(64)
-  createdAt        DateTime                @default(now())
-  updatedAt        DateTime                @default(now()) @updatedAt
+  id                          String                  @id @default(uuid())
+  userId                      String
+  operation                   MemoryDeletionOperation
+  targetType                  String                  @db.VarChar(64)
+  targetId                    String
+  memoryGeneration            Int
+  admissionAuthorizationId    String?                 @unique
+  admittedChatSourceRevision  Int?
+  admittedActiveLeafMessageId String?
+  alsoForgetOriginMemories    Boolean?
+  state                       MemoryDeletionState     @default(PENDING)
+  attemptCount                Int                     @default(0)
+  nextAttemptAt               DateTime?
+  leaseToken                  String?                 @db.VarChar(128)
+  leaseExpiresAt              DateTime?
+  lastAuditAt                 DateTime?
+  completedAt                 DateTime?
+  errorCode                   String?                 @db.VarChar(64)
+  createdAt                   DateTime                @default(now())
+  updatedAt                   DateTime                @default(now()) @updatedAt
 
   @@unique([userId, id])
   @@unique([userId, operation, targetType, targetId, memoryGeneration])
+  @@index([userId, operation, targetId, createdAt])
   @@index([userId, state, nextAttemptAt, createdAt])
 }
 

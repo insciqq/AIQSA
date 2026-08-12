@@ -5,11 +5,12 @@ export const MEMORY_SAVE_TOOL_NAME = "save_memory";
 export const MEMORY_LIST_TOOL_NAME = "list_memories";
 export const MEMORY_UPDATE_TOOL_NAME = "update_memory";
 export const MEMORY_FORGET_TOOL_NAME = "forget_memory";
+export const MEMORY_MARK_INCORRECT_TOOL_NAME = "mark_memory_incorrect";
 
 const noAdditionalProperties = { additionalProperties: false, type: "object" } as const;
 
 const listQueryProperties = {
-  query: { maxLength: 500, minLength: 1, type: "string" }
+  query: { maxLength: 500, minLength: 1, type: ["string", "null"] }
 } as const;
 
 const listTool = Object.freeze({
@@ -18,7 +19,8 @@ const listTool = Object.freeze({
     "List the current user's saved memories from AIQSA's authoritative first-party Memory service.",
   inputSchema: {
     ...noAdditionalProperties,
-    properties: listQueryProperties
+    properties: listQueryProperties,
+    required: ["query"]
   },
   name: MEMORY_LIST_TOOL_NAME,
   strict: true
@@ -47,10 +49,22 @@ const tools = Object.freeze({
     strict: true
   } satisfies RunTool),
   LIST: listTool,
+  MARK_INCORRECT: Object.freeze({
+    capability: "memory",
+    description:
+      "Privately mark the one automatic memory resolved and authorized from the user's current direct command as incorrect. This records feedback only; it does not rewrite fact truth.",
+    inputSchema: {
+      ...noAdditionalProperties,
+      properties: { exact_query: { maxLength: 500, minLength: 1, type: "string" } },
+      required: ["exact_query"]
+    },
+    name: MEMORY_MARK_INCORRECT_TOOL_NAME,
+    strict: true
+  } satisfies RunTool),
   SAVE: Object.freeze({
     capability: "memory",
     description:
-      "Save exactly the statement in the user's current direct remember command. Paraphrases and added claims are rejected.",
+      "Save a faithful, self-contained paraphrase of the fact in the user's current direct remember command. Do not add claims or infer missing details.",
     inputSchema: {
       ...noAdditionalProperties,
       properties: { statement: { maxLength: 2_000, minLength: 1, type: "string" } },
@@ -86,5 +100,6 @@ export function isMemoryActionToolName(value: string): boolean {
   return value === MEMORY_SAVE_TOOL_NAME ||
     value === MEMORY_LIST_TOOL_NAME ||
     value === MEMORY_UPDATE_TOOL_NAME ||
-    value === MEMORY_FORGET_TOOL_NAME;
+    value === MEMORY_FORGET_TOOL_NAME ||
+    value === MEMORY_MARK_INCORRECT_TOOL_NAME;
 }

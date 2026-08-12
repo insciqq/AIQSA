@@ -233,7 +233,8 @@ describe("Prisma Memory persistence", () => {
         capabilities: {
           automaticLearning: false,
           explicitMemory: true,
-          historyRecall: false,
+          historyRecall: true,
+          permanentChatDeletion: false,
           russianQualified: true,
           temporaryChats: true
         },
@@ -296,6 +297,27 @@ describe("Prisma Memory persistence", () => {
         memoryUiLocale: "EN",
         settingsRevision: 8
       });
+      const workingSetJobs = await prisma.memoryJob.findMany({
+        orderBy: { createdAt: "asc" },
+        where: { kind: "RECALCULATE_WORKING_SET", userId }
+      });
+      expect(workingSetJobs).toHaveLength(2);
+      expect(workingSetJobs.map((job) => ({
+        fingerprint: job.idempotencyFingerprint.slice(0, 21),
+        memoryRevision: job.memoryRevisionSnapshot,
+        pipelineVersion: job.pipelineVersion
+      }))).toEqual([
+        {
+          fingerprint: "working-set-settings:",
+          memoryRevision: 5,
+          pipelineVersion: "memory-working-set-profile-v1"
+        },
+        {
+          fingerprint: "working-set-settings:",
+          memoryRevision: 7,
+          pipelineVersion: "memory-working-set-profile-v1"
+        }
+      ]);
 
       const observedFingerprint = currentFingerprint;
       currentFingerprint = "d".repeat(64);

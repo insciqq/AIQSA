@@ -7,7 +7,7 @@ export const MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION =
 export const MEMORY_FACT_CONSOLIDATION_POLICY_VERSION =
   "memory-fact-consolidation-policy-v1";
 export const MEMORY_FACT_CONSOLIDATION_PROMPT_VERSION =
-  "memory-fact-consolidation-prompt-v1";
+  "memory-fact-consolidation-prompt-v3";
 export const MEMORY_FACT_CONSOLIDATION_SCHEMA_VERSION =
   "memory-fact-consolidation-schema-v1";
 export const MEMORY_FACT_VERIFICATION_PIPELINE_VERSION =

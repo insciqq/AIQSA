@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { MemoryCoordinator } from "./coordinator";
 import { MemoryCoordinatorError } from "./errors";
+import { resolveMemoryCoordinatorPolicy } from "./policy";
 import type { MemoryCoordinatorRepository } from "./prismaRepository";
 import { MemoryCoordinatorRegistry } from "./registry";
+import { MemoryScheduler } from "./scheduler";
 import type {
   MemoryDeletionClaim,
   MemoryJobClaim,
@@ -43,6 +45,10 @@ function waitingJob(): MemoryWaitingJob {
 
 function deletionClaim(input: Partial<MemoryDeletionClaim> = {}): MemoryDeletionClaim {
   return {
+    admissionAuthorizationId: null,
+    admittedActiveLeafMessageId: null,
+    admittedChatSourceRevision: null,
+    alsoForgetOriginMemories: null,
     attemptCount: 1,
     claimToken: "deletion-claim-token",
     id: "deletion-1",
@@ -67,6 +73,7 @@ function repository(
     claimJob: vi.fn(async () => null),
     commitDeletionSuccess: vi.fn(async () => true),
     commitJobSuccess: vi.fn(async () => true),
+    deferJob: vi.fn(async () => true),
     heartbeatDeletion: vi.fn(async () => true),
     heartbeatJob: vi.fn(async () => true),
     listWaitingJobs: vi.fn(async () => []),
@@ -297,5 +304,183 @@ describe("Memory coordinator", () => {
       errorCode: "memory_purge_incomplete",
       nextAttemptAt: new Date(NOW.getTime() + 15 * 60_000)
     }));
+  });
+
+  it("defers exhausted background work without entering its handler", async () => {
+    const claim = jobClaim({ kind: "GLOBAL_DREAM" });
+    const claimJob = vi.fn()
+      .mockResolvedValueOnce(claim)
+      .mockResolvedValue(null);
+    const deferJob = vi.fn(async () => true);
+    const coordinatorRepository = repository({ claimJob, deferJob });
+    const registry = new MemoryCoordinatorRegistry();
+    const execute = vi.fn();
+    const preflight = vi.fn(async () => ({ status: "READY" as const }));
+    registry.registerJob({ execute, kind: claim.kind, preflight });
+    const policy = resolveMemoryCoordinatorPolicy({
+      backgroundInstallDailyCallLimit: 1,
+      backgroundUserDailyCallLimit: 1,
+      heartbeatMs: 10,
+      intervalMs: 10_000,
+      leaseMs: 100,
+      maxDeletionParallel: 1,
+      maxJobParallel: 1
+    });
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      policy,
+      registry,
+      repository: coordinatorRepository,
+      scheduler: new MemoryScheduler({
+        policy,
+        usageSource: {
+          readDailyBackgroundUsage: async () => ({
+            installation: { calls: 1, costMicros: 0 },
+            users: new Map([[claim.userId, { calls: 1, costMicros: 0 }]])
+          })
+        }
+      })
+    });
+
+    await service.reconcileNow();
+    service.stop();
+
+    expect(preflight).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(deferJob).toHaveBeenCalledWith({
+      claim,
+      errorCode: "memory_scheduler_budget_deferred",
+      nextAttemptAt: new Date("2026-08-11T00:00:00.000Z"),
+      now: NOW
+    });
+  });
+
+  it("bounds claims per worker pass even while the queue stays non-empty", async () => {
+    const claim = jobClaim({ kind: "INDEX_HISTORY" });
+    const claimJob = vi.fn(async () => claim);
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({
+      execute: async () => ({ acceptedResultHash: RESULT_HASH }),
+      kind: claim.kind,
+      preflight: async () => ({ status: "READY" })
+    });
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      policy: {
+        heartbeatMs: 10,
+        intervalMs: 10_000,
+        leaseMs: 100,
+        maxDeletionParallel: 1,
+        maxJobClaimsPerWorkerPass: 1,
+        maxJobParallel: 1
+      },
+      registry,
+      repository: repository({ claimJob })
+    });
+
+    await service.reconcileNow();
+    service.stop();
+
+    expect(claimJob).toHaveBeenCalledOnce();
+  });
+
+  it("serializes same-owner handlers without consuming the second worker", async () => {
+    const claims = [
+      jobClaim({ id: "job-a", kind: "INDEX_HISTORY" }),
+      jobClaim({
+        claimToken: "job-claim-token-b",
+        id: "job-b",
+        idempotencyFingerprint: "job-idempotency-b",
+        kind: "INDEX_HISTORY"
+      })
+    ];
+    const claimJob = vi.fn()
+      .mockResolvedValueOnce(claims[0])
+      .mockResolvedValueOnce(claims[1]);
+    let active = 0;
+    let maximumActive = 0;
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const execute = vi.fn(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      if (execute.mock.calls.length === 1) await firstGate;
+      active -= 1;
+      return { acceptedResultHash: RESULT_HASH };
+    });
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({
+      execute,
+      kind: "INDEX_HISTORY",
+      preflight: async () => ({ status: "READY" })
+    });
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      policy: {
+        heartbeatMs: 10,
+        intervalMs: 10_000,
+        leaseMs: 100,
+        maxDeletionParallel: 1,
+        maxJobClaimsPerWorkerPass: 1,
+        maxJobParallel: 2,
+        maxJobParallelPerUser: 1
+      },
+      registry,
+      repository: repository({ claimJob })
+    });
+
+    const pending = service.reconcileNow();
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    expect(maximumActive).toBe(1);
+    releaseFirst();
+    await pending;
+    service.stop();
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(maximumActive).toBe(1);
+  });
+
+  it("services destructive work while an ordinary job is still running", async () => {
+    const claim = jobClaim({ kind: "INDEX_HISTORY" });
+    const deletion = deletionClaim();
+    const claimJob = vi.fn()
+      .mockResolvedValueOnce(claim)
+      .mockResolvedValue(null);
+    const claimDeletion = vi.fn()
+      .mockResolvedValueOnce(deletion)
+      .mockResolvedValue(null);
+    let releaseJob!: () => void;
+    const jobGate = new Promise<void>((resolve) => {
+      releaseJob = resolve;
+    });
+    const deletionExecute = vi.fn(async () => ({}));
+    const commitDeletionSuccess = vi.fn(async () => true);
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({
+      execute: async () => {
+        await jobGate;
+        return { acceptedResultHash: RESULT_HASH };
+      },
+      kind: claim.kind,
+      preflight: async () => ({ status: "READY" })
+    });
+    registry.registerDeletion({
+      execute: deletionExecute,
+      operation: deletion.operation
+    });
+    const service = coordinator(registry, repository({
+      claimDeletion,
+      claimJob,
+      commitDeletionSuccess
+    }));
+
+    const pending = service.reconcileNow();
+    await vi.waitFor(() => expect(commitDeletionSuccess).toHaveBeenCalledOnce());
+    expect(deletionExecute).toHaveBeenCalledOnce();
+    releaseJob();
+    await pending;
+    service.stop();
   });
 });

@@ -46,6 +46,7 @@ import {
 } from "./contract";
 import {
   buildMemorySafeSourceSnapshot,
+  memoryRuntimeInfluenceTaintSources,
   type MemoryHistorySourceMessageInput,
   type MemoryHistorySourceOrigin,
   type MemoryHistoryTaintSource
@@ -316,10 +317,7 @@ async function prepareWith(
     select: {
       _count: {
         select: {
-          knowledgeRunBindings: true,
           knowledgeRuns: true,
-          mcpRunBindings: true,
-          searchRunBindings: true,
           searchRuns: true,
           toolCalls: true
         }
@@ -329,7 +327,6 @@ async function prepareWith(
       id: true,
       normalizedRequest: true,
       status: true,
-      toolLoopState: true,
       userMessageId: true
     },
     where: {
@@ -342,10 +339,11 @@ async function prepareWith(
   const memoryBindings = runIds.length === 0
     ? []
     : await tx.modelRunMemoryBinding.findMany({
-        select: { modelRunId: true },
+        select: { contextTokenCount: true, modelRunId: true },
         where: { modelRunId: { in: runIds }, userId: source.userId }
       });
-  const memoryBoundRunIds = new Set(memoryBindings.map((binding) => binding.modelRunId));
+  const memoryContextTokensByRun = new Map(memoryBindings.map((binding) =>
+    [binding.modelRunId, binding.contextTokenCount] as const));
   const runAssistantIds = runs.flatMap((run) => run.assistantId ? [run.assistantId] : []);
   const ownedAssistants = runAssistantIds.length === 0
     ? []
@@ -407,20 +405,15 @@ async function prepareWith(
       taint.add("SEARCH");
     }
     if (run) {
-      if (
-        run._count.knowledgeRunBindings > 0 ||
-        run._count.knowledgeRuns > 0
-      ) taint.add("KNOWLEDGE");
-      if (run._count.searchRunBindings > 0 || run._count.searchRuns > 0) {
-        taint.add("SEARCH");
+      for (const source of memoryRuntimeInfluenceTaintSources({
+        attachment: attachmentMessageIds.has(run.userMessageId),
+        knowledgeRunCount: run._count.knowledgeRuns,
+        memoryContextTokenCount: memoryContextTokensByRun.get(run.id) ?? 0,
+        searchRunCount: run._count.searchRuns,
+        toolCallCount: run._count.toolCalls
+      })) {
+        taint.add(source);
       }
-      if (
-        run._count.mcpRunBindings > 0 ||
-        run._count.toolCalls > 0 ||
-        run.toolLoopState !== null
-      ) taint.add("TOOL");
-      if (attachmentMessageIds.has(run.userMessageId)) taint.add("ATTACHMENT");
-      if (memoryBoundRunIds.has(run.id)) taint.add("PROVIDER_PAYLOAD");
       if (run.assistantId && !ownedAssistantIds.has(run.assistantId)) {
         taint.add("DEVELOPER");
       }

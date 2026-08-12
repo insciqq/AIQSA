@@ -10,6 +10,12 @@ import type {
 import { adminProvisioningGroupInputs } from "./adminRepositoryInputs";
 import { provisionActiveUser } from "./provisioning";
 import { lockAuthUser } from "./transactionLocks";
+import { MemoryCoordinatorError } from "../memory/coordinator/errors";
+import { countAccountMemoryOwnedData } from "../memory/accountDeletion/inventory";
+import {
+  defaultAccountMemoryDeletionRegistry,
+  type AccountMemoryDeletionRegistry
+} from "../memory/accountDeletion/registry";
 
 export type AdminUserSessionCommands = Pick<
   AdminRepository,
@@ -21,7 +27,14 @@ export type AdminUserSessionCommands = Pick<
   | "revokeUserSessions"
 >;
 
-export function createAdminUserSessionCommands(prisma: PrismaClient): AdminUserSessionCommands {
+export function createAdminUserSessionCommands(
+  prisma: PrismaClient,
+  options: Readonly<{
+    accountMemoryDeletionRegistry?: AccountMemoryDeletionRegistry;
+  }> = {}
+): AdminUserSessionCommands {
+  const accountMemoryDeletionRegistry = options.accountMemoryDeletionRegistry ??
+    defaultAccountMemoryDeletionRegistry;
   return {
     async approveUser(input) {
       return prisma.$transaction(async (tx) => {
@@ -70,49 +83,68 @@ export function createAdminUserSessionCommands(prisma: PrismaClient): AdminUserS
         return "self_delete_forbidden";
       }
 
-      return prisma.$transaction(async (tx) => {
-        await lockAuthUser(tx, input.userId);
-        const user = await tx.user.findUnique({
-          select: {
-            id: true,
-            status: true
-          },
-          where: {
-            id: input.userId
+      let admittedMemoryDeletion = false;
+      try {
+        const result = await prisma.$transaction(async (tx) => {
+          await lockAuthUser(tx, input.userId);
+          const user = await tx.user.findUnique({
+            select: {
+              id: true,
+              status: true
+            },
+            where: {
+              id: input.userId
+            }
+          });
+
+          if (!user) {
+            return "not_found" as const;
           }
-        });
 
-        if (!user) {
-          return "not_found";
-        }
+          const statusDeletionBlock = adminUserDeletionBlock({
+            ownedDataCount: 0,
+            status: user.status
+          });
 
-        const statusDeletionBlock = adminUserDeletionBlock({
-          ownedDataCount: 0,
-          status: user.status
-        });
-
-        if (statusDeletionBlock) {
-          return statusDeletionBlock;
-        }
-
-        const ownedDataCount = await countUserOwnedAppData(tx, user.id);
-        const deletionBlock = adminUserDeletionBlock({
-          ownedDataCount,
-          status: user.status
-        });
-
-        if (deletionBlock) {
-          return deletionBlock;
-        }
-
-        await tx.user.delete({
-          where: {
-            id: user.id
+          if (statusDeletionBlock) {
+            return statusDeletionBlock;
           }
-        });
 
-        return "deleted";
-      });
+          const ownedData = await countUserOwnedAppData(tx, user.id);
+          if (ownedData.nonMemory > 0) {
+            return "user_has_owned_data" as const;
+          }
+          if (ownedData.memory > 0) {
+            const hook = accountMemoryDeletionRegistry.current();
+            if (!hook) return "user_has_owned_data" as const;
+            const advanced = await hook.advance(tx, {
+              now: new Date(),
+              userId: user.id
+            });
+            if (advanced.admitted) admittedMemoryDeletion = true;
+            if (!advanced.readyForUserDeletion) {
+              return "user_has_owned_data" as const;
+            }
+          }
+
+          await tx.user.delete({
+            where: {
+              id: user.id
+            }
+          });
+
+          return "deleted" as const;
+        });
+        if (admittedMemoryDeletion) {
+          accountMemoryDeletionRegistry.current()?.kick();
+        }
+        return result;
+      } catch (error) {
+        if (error instanceof MemoryCoordinatorError) {
+          return "user_has_owned_data";
+        }
+        throw error;
+      }
     },
     async disableUser(input) {
       if (input.userId === input.revokedByUserId) {
@@ -211,7 +243,10 @@ export function createAdminUserSessionCommands(prisma: PrismaClient): AdminUserS
   };
 }
 
-async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: string): Promise<number> {
+async function countUserOwnedAppData(
+  tx: Prisma.TransactionClient,
+  userId: string
+): Promise<Readonly<{ memory: number; nonMemory: number }>> {
   const [
     accessGrants,
     authSessionsRevoked,
@@ -226,7 +261,8 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
     assistantDefinitions,
     settings,
     sharedSnapshots,
-    usageEvents
+    usageEvents,
+    memory
   ] = await Promise.all([
     tx.accessGrant.count({
       where: {
@@ -295,18 +331,21 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
     }),
     tx.usageEvent.count({
       where: {
+        memoryExecutionBindingId: null,
         userId
       }
-    })
+    }),
+    countAccountMemoryOwnedData(tx, userId)
   ]);
 
-  return adminOwnedAppDataCount({
+  const nonMemory = adminOwnedAppDataCount({
     accessGrants,
     authSessionsRevoked,
     attachments,
     chats,
     folders,
     knowledgeBases,
+    memory: 0,
     mcpGrants,
     mcpOAuthConnections,
     mcpUserServers,
@@ -316,6 +355,7 @@ async function countUserOwnedAppData(tx: Prisma.TransactionClient, userId: strin
     sharedSnapshots,
     usageEvents
   });
+  return { memory, nonMemory };
 }
 
 async function lockActiveAdmins(tx: Prisma.TransactionClient): Promise<{ id: string }[]> {

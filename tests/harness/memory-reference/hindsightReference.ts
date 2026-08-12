@@ -6,6 +6,28 @@ import type {
 
 const exactRelease = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 const exactCommit = /^[a-f0-9]{7,40}$/u;
+const exactFullCommit = /^[a-f0-9]{40}$/u;
+const exactImageDigest = /^sha256:[a-f0-9]{64}$/u;
+
+export type HindsightReferencePin = Readonly<{
+  commit: string;
+  imageDigest: string;
+  tag: string;
+}>;
+
+export function assertExactHindsightReferencePin(
+  input: HindsightReferencePin,
+  expected: HindsightReferencePin
+): void {
+  if (
+    !exactRelease.test(input.tag) ||
+    !exactFullCommit.test(input.commit) ||
+    !exactImageDigest.test(input.imageDigest) ||
+    input.tag !== expected.tag ||
+    input.commit !== expected.commit ||
+    input.imageDigest !== expected.imageDigest
+  ) throw new Error("memory_hindsight_reference_pin_mismatch");
+}
 
 export type HindsightReferenceAdapterOptions<Input> = Readonly<{
   enabled?: boolean;

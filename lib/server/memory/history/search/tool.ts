@@ -13,7 +13,7 @@ export const memoryHistorySearchTool = Object.freeze({
       chat_ids: {
         items: { maxLength: 256, minLength: 1, type: "string" },
         maxItems: 20,
-        type: "array"
+        type: ["array", "null"]
       },
       cursor: { maxLength: 4096, minLength: 1, type: ["string", "null"] },
       folder_id: { maxLength: 256, minLength: 1, type: ["string", "null"] },
@@ -24,10 +24,11 @@ export const memoryHistorySearchTool = Object.freeze({
           from: { format: "date-time", type: ["string", "null"] },
           to: { format: "date-time", type: ["string", "null"] }
         },
-        type: "object"
+        required: ["from", "to"],
+        type: ["object", "null"]
       }
     },
-    required: ["query"],
+    required: ["chat_ids", "cursor", "folder_id", "query", "time_range"],
     type: "object"
   },
   name: MEMORY_HISTORY_SEARCH_TOOL_NAME,

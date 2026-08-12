@@ -274,6 +274,13 @@ function searchInput(
 
 describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () => {
   beforeAll(async () => {
+    // Repeated qualification runs delete their owned fixture rows, but HNSW
+    // can retain dead graph tuples until vacuum. Start from a maintained index
+    // so recall evidence is about the pinned query/profile rather than debris
+    // from an earlier local test invocation.
+    await prisma.$executeRawUnsafe(
+      'VACUUM (ANALYZE) "MemorySearchEntry"'
+    );
     await prisma.providerConnection.create({
       data: {
         activeConfig: {

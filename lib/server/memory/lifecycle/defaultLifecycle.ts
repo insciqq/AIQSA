@@ -28,8 +28,12 @@ function configuredMutationRepository(): MemoryLifecycleMutationRepository {
 const mutationRepository: MemoryLifecycleMutationRepository = Object.freeze({
   clearHistory: (userId, input) =>
     configuredMutationRepository().clearHistory(userId, input),
+  deleteAllReusable: (userId, input) =>
+    configuredMutationRepository().deleteAllReusable(userId, input),
   deleteExplicit: (userId, input) =>
     configuredMutationRepository().deleteExplicit(userId, input),
+  deleteLearned: (userId, input) =>
+    configuredMutationRepository().deleteLearned(userId, input),
   forget: (userId, input) => configuredMutationRepository().forget(userId, input),
   status: (userId, deletionId) => readPrismaMemoryDeletionStatus(
     defaultMemoryDeletionContributorRegistry,

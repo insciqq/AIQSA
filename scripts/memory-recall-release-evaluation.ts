@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Prisma } from "@prisma/client";
 import type { MemoryEvaluationLanguage, MemoryOperationObservation } from "../lib/evaluation/memory/contracts";
@@ -68,6 +69,17 @@ function hasArgument(value: string): boolean {
 function argumentValue(prefix: string): string | null {
   const value = process.argv.slice(2).find((argument) => argument.startsWith(prefix));
   return value?.slice(prefix.length).trim() || null;
+}
+
+function privateEvidenceOutputPath(): string | null {
+  const value = argumentValue("--evidence-output=");
+  if (!value) return null;
+  const privateRoot = resolve(".aiqsa");
+  const target = resolve(value);
+  if (target === privateRoot || !target.startsWith(`${privateRoot}${sep}`)) {
+    throw new Error("memory_recall_evidence_output_invalid");
+  }
+  return target;
 }
 
 function selectedSplit(): Split {
@@ -451,7 +463,26 @@ async function main(): Promise<void> {
     }
   };
   failureStage = "output";
-  process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
+  const persistedEvidence = JSON.parse(JSON.stringify(evidence)) as unknown;
+  const evidenceDigest = memoryEvaluationSha256(persistedEvidence);
+  const outputPath = privateEvidenceOutputPath();
+  if (outputPath) {
+    await mkdir(dirname(outputPath), { mode: 0o700, recursive: true });
+    await writeFile(outputPath, `${JSON.stringify({
+      evidence: persistedEvidence,
+      evidenceDigest
+    }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    process.stdout.write(`${JSON.stringify({
+      evidenceDigest,
+      outputPath: relative(process.cwd(), outputPath),
+      passed: qualityPassed,
+      split,
+      summary: selected.summary,
+      upstreamModelId: authority.providerModelId
+    }, null, 2)}\n`);
+  } else {
+    process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
+  }
   await prisma.$disconnect();
 }
 

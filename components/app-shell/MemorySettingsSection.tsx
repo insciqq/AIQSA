@@ -1,6 +1,13 @@
 import { ManageMemories } from "@/components/app-shell/ManageMemories";
 import { MemoryOperations } from "@/components/app-shell/MemoryOperations";
+import { MemoryHealthPulse } from "@/components/app-shell/MemoryHealthPulse";
 import { MemoryApiError } from "@/components/app-shell/memoryApi";
+import {
+  activateMemoryHealthAccount,
+  deactivateMemoryHealthAccount,
+  refreshMemoryHealth,
+  useMemoryHealthStore
+} from "@/components/app-shell/memoryHealthStore";
 import {
   activateMemoryOperationsAccount,
   deactivateMemoryOperationsAccount,
@@ -17,6 +24,7 @@ import {
 } from "@/components/app-shell/memorySettingsStore";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { MemorySettingsResponse, MemoryUiLocale } from "@/lib/contracts/memory";
+import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import {
   ArrowRight,
@@ -182,17 +190,27 @@ function historyIndexingCopy(
 
 function MemorySettings({
   data,
+  health,
+  healthError,
+  healthLoading,
+  healthOperationsEntryRef,
   locale,
   onManage,
   onNotice,
   onOperations,
+  onRefreshHealth,
   operationsEntryRef
 }: {
   data: MemorySettingsResponse;
+  health: UserMemoryHealth | null;
+  healthError: boolean;
+  healthLoading: boolean;
+  healthOperationsEntryRef: RefObject<HTMLButtonElement | null>;
   locale: MemoryUiLocale;
   onManage(): void;
   onNotice(notice: SettingsNotice): void;
-  onOperations(): void;
+  onOperations(source: "health" | "section"): void;
+  onRefreshHealth(): void;
   operationsEntryRef: RefObject<HTMLButtonElement | null>;
 }) {
   const busy = useMemorySettingsStore((state) => state.busy);
@@ -205,7 +223,10 @@ function MemorySettings({
   ) => {
     onNotice(null);
     void updateMemoryGate(key, value).then(
-      () => onNotice("saved"),
+      () => {
+        onNotice("saved");
+        onRefreshHealth();
+      },
       (error: unknown) => onNotice(
         error instanceof MemoryApiError && error.code === "memory_version_stale" ? "stale" : "error"
       )
@@ -229,6 +250,7 @@ function MemorySettings({
       () => {
         setReviewOpen(false);
         onNotice("consent");
+        onRefreshHealth();
       },
       (error: unknown) => onNotice(
         error instanceof MemoryApiError && (
@@ -254,6 +276,58 @@ function MemorySettings({
           <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">{t(locale, "settings.intro")}</p>
         </div>
       </div>
+
+      <MemoryHealthPulse
+        advancedContent={(
+          <>
+            <section className="mt-4 border-t border-trace-subtle pt-3" aria-labelledby="memory-capabilities-heading">
+              <h5 className="text-xs font-semibold text-ink" id="memory-capabilities-heading">
+                {t(locale, "settings.capabilitiesHeading")}
+              </h5>
+              <ul className="mt-2 divide-y divide-trace-subtle">
+                {capabilities.map(([label, available]) => (
+                  <li className="flex min-h-control items-center justify-between gap-3 py-2" key={label}>
+                    <span className="text-xs text-ink-secondary">{label}</span>
+                    <span className={`text-xs font-semibold ${available ? "text-positive" : "text-ink-muted"}`}>
+                      {available ? t(locale, "common.available") : t(locale, "common.unavailable")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+            {data.egress.consentMode === "PER_USER" ? (
+              <section className="mt-4 border-t border-trace-subtle pt-3" aria-labelledby="memory-egress-evidence-heading">
+                <h5 className="text-xs font-semibold text-ink" id="memory-egress-evidence-heading">
+                  {t(locale, "settings.destinationsHeading")}
+                </h5>
+                <dl className="mt-2 divide-y divide-trace-subtle">
+                  <EvidenceRow label={t(locale, "settings.currentFingerprint")}>
+                    <code className="break-all font-mono text-xs">{data.egress.currentUtilityEgressFingerprint}</code>
+                  </EvidenceRow>
+                  <EvidenceRow label={t(locale, "settings.acceptedFingerprint")}>
+                    {data.egress.acceptedUtilityEgressFingerprint
+                      ? <code className="break-all font-mono text-xs">{data.egress.acceptedUtilityEgressFingerprint}</code>
+                      : t(locale, "settings.notAccepted")}
+                  </EvidenceRow>
+                  <EvidenceRow label={t(locale, "settings.policyVersion")}>
+                    <code className="font-mono text-xs">{data.egress.currentUtilityPolicyVersion}</code>
+                  </EvidenceRow>
+                  <EvidenceRow label={t(locale, "settings.acceptedAt")}>
+                    {formatDate(locale, data.egress.acceptedAt)}
+                  </EvidenceRow>
+                </dl>
+              </section>
+            ) : null}
+          </>
+        )}
+        error={healthError}
+        health={health}
+        loading={healthLoading}
+        locale={locale}
+        onOpenOperations={() => onOperations("health")}
+        onRetry={onRefreshHealth}
+        operationsButtonRef={healthOperationsEntryRef}
+      />
 
       <section className="mt-4 border-l-2 border-proof/60 bg-proof/[0.04] px-3 py-3" aria-labelledby="memory-information-heading">
         <div className="flex items-start gap-2">
@@ -381,20 +455,6 @@ function MemorySettings({
                 value={data.egress.remoteRerankerDestination}
               />
             </div>
-            <dl className="mt-3 divide-y divide-trace-subtle">
-              <EvidenceRow label={t(locale, "settings.currentFingerprint")}>
-                <code className="break-all font-mono text-xs">{data.egress.currentUtilityEgressFingerprint}</code>
-              </EvidenceRow>
-              <EvidenceRow label={t(locale, "settings.acceptedFingerprint")}>
-                {data.egress.acceptedUtilityEgressFingerprint
-                  ? <code className="break-all font-mono text-xs">{data.egress.acceptedUtilityEgressFingerprint}</code>
-                  : t(locale, "settings.notAccepted")}
-              </EvidenceRow>
-              <EvidenceRow label={t(locale, "settings.policyVersion")}>
-                <code className="font-mono text-xs">{data.egress.currentUtilityPolicyVersion}</code>
-              </EvidenceRow>
-              <EvidenceRow label={t(locale, "settings.acceptedAt")}>{formatDate(locale, data.egress.acceptedAt)}</EvidenceRow>
-            </dl>
             {!data.egress.reviewRequired ? (
               <button className={`${secondaryButton} mt-3`} onClick={() => setReviewOpen((open) => !open)} type="button" aria-expanded={reviewVisible}>
                 <ShieldCheck className="size-4" aria-hidden="true" />
@@ -447,7 +507,7 @@ function MemorySettings({
           <button
             className={secondaryButton}
             disabled={busy !== null}
-            onClick={onOperations}
+            onClick={() => onOperations("section")}
             ref={operationsEntryRef}
             type="button"
           >
@@ -457,19 +517,6 @@ function MemorySettings({
         </div>
       </section>
 
-      <section className="mt-7" aria-labelledby="memory-capabilities-heading">
-        <h4 className="text-sm font-semibold text-ink" id="memory-capabilities-heading">{t(locale, "settings.capabilitiesHeading")}</h4>
-        <ul className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
-          {capabilities.map(([label, available]) => (
-            <li className="flex min-h-touch items-center justify-between gap-3 py-2" key={label}>
-              <span className="text-sm text-ink-secondary">{label}</span>
-              <span className={`text-xs font-semibold ${available ? "text-positive" : "text-ink-muted"}`}>
-                {available ? t(locale, "common.available") : t(locale, "common.unavailable")}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </section>
     </div>
   );
 }
@@ -488,6 +535,9 @@ export function MemorySettingsSection({
   const busy = useMemorySettingsStore((state) => state.busy);
   const data = useMemorySettingsStore((state) => state.data);
   const loadState = useMemorySettingsStore((state) => state.loadState);
+  const health = useMemoryHealthStore((state) => state.data);
+  const healthError = useMemoryHealthStore((state) => state.error);
+  const healthLoadState = useMemoryHealthStore((state) => state.loadState);
   const operationsBusy = useMemoryOperationsStore((state) => state.busy);
   const [managerBusy, setManagerBusy] = useState(false);
   const [managerDirty, setManagerDirty] = useState(false);
@@ -495,13 +545,25 @@ export function MemorySettingsSection({
   const [operationsOpen, setOperationsOpen] = useState(false);
   const [notice, setNotice] = useState<SettingsNotice>(null);
   const memoryScrollRef = useRef<HTMLElement>(null);
+  const healthOperationsEntryRef = useRef<HTMLButtonElement>(null);
   const operationsEntryRef = useRef<HTMLButtonElement>(null);
+  const operationsReturnSourceRef = useRef<"health" | "section" | null>(null);
   const returnToOperationsEntryRef = useRef(false);
   const returnToOperationsScrollTopRef = useRef(0);
 
   useEffect(() => {
     void refreshMemorySettings().catch(() => undefined);
   }, []);
+  useEffect(() => {
+    void activateMemoryHealthAccount(accountId).catch(() => undefined);
+    return () => deactivateMemoryHealthAccount(accountId);
+  }, [accountId]);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void refreshMemoryHealth().catch(() => undefined);
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [accountId]);
   useEffect(() => {
     if (data?.historyIndexing.state !== "INDEXING" || busy !== null) return;
     const timer = setInterval(() => {
@@ -527,7 +589,11 @@ export function MemorySettingsSection({
       if (memoryScrollRef.current) {
         memoryScrollRef.current.scrollTop = returnToOperationsScrollTopRef.current;
       }
-      operationsEntryRef.current?.focus({ preventScroll: true });
+      const target = operationsReturnSourceRef.current === "health"
+        ? healthOperationsEntryRef.current
+        : operationsEntryRef.current;
+      target?.focus({ preventScroll: true });
+      operationsReturnSourceRef.current = null;
     }
   }, [operationsOpen]);
 
@@ -546,6 +612,7 @@ export function MemorySettingsSection({
           onBack={() => {
             returnToOperationsEntryRef.current = true;
             setOperationsOpen(false);
+            void refreshMemoryHealth().catch(() => undefined);
           }}
         />
       ) : managing && data && locale ? (
@@ -563,14 +630,20 @@ export function MemorySettingsSection({
           <SettingNotice locale={locale} notice={notice} />
           <MemorySettings
             data={data}
+            health={health}
+            healthError={healthError !== null}
+            healthLoading={healthLoadState === "idle" || healthLoadState === "loading"}
+            healthOperationsEntryRef={healthOperationsEntryRef}
             locale={locale}
             onManage={() => setManaging(true)}
             onNotice={setNotice}
-            onOperations={() => {
+            onOperations={(source) => {
+              operationsReturnSourceRef.current = source;
               returnToOperationsScrollTopRef.current = memoryScrollRef.current?.scrollTop ?? 0;
               if (memoryScrollRef.current) memoryScrollRef.current.scrollTop = 0;
               setOperationsOpen(true);
             }}
+            onRefreshHealth={() => void refreshMemoryHealth().catch(() => undefined)}
             operationsEntryRef={operationsEntryRef}
           />
         </>

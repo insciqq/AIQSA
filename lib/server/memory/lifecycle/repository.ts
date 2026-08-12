@@ -1,17 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { MemoryDeletionStatus } from "../../../contracts/memory";
-import type { MemoryBulkDeleteOperation } from "../../../contracts/memory";
+import {
+  MEMORY_FORGET_UNDO_WINDOW_MS,
+  type MemoryBulkDeleteOperation,
+  type MemoryDeletionStatus
+} from "../../../contracts/memory";
 import { prisma } from "../../prisma";
 import type { MemoryMutationAuthorizationUse } from "../persistence/authorizations";
 import { consumeMemoryMutationAuthorization } from "../persistence/authorizations";
 import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { memoryPersistenceFailure } from "../persistence/errors";
+import { enqueueMemoryJob } from "../persistence/jobs";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { createMemorySuppressionInTransaction } from "../persistence/suppressions";
 import type { MemorySuppressionCreateInput } from "../persistence/suppressions";
 import {
   advanceMemoryMutation,
+  lockMemorySettings,
   type LockedMemorySettings,
   type MemoryTransaction,
   withLockedMemoryTransaction
@@ -22,6 +27,7 @@ import {
 } from "../purge/contract";
 import { auditMemoryDeletion } from "../purge/reconciliation";
 import type { MemoryDeletionContributorRegistry } from "../purge/registry";
+import { MEMORY_PROFILE_PIPELINE_VERSION } from "../profile/contract";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
   MEMORY_HISTORY_CLEAR_TARGET_TYPE,
@@ -34,7 +40,7 @@ type ActiveFactRow = Readonly<{
   currentSourceMode: "AUTOMATIC" | "EXPLICIT";
   currentSystemFrom: Date;
   currentVersionId: string;
-  factState: "ACTIVE" | "ORPHANED";
+  factState: "ACTIVE" | "CONFLICTED" | "ORPHANED";
   factId: string;
   scopeId: string;
 }>;
@@ -69,7 +75,10 @@ export type MemoryForgetMutationInput = LifecycleMutationCommon & Readonly<{
 export type MemoryDeleteExplicitMutationInput = LifecycleMutationCommon & Readonly<{
   expectedMemoryRevision: number;
   expectedSettingsRevision: number;
-  operation: Extract<MemoryBulkDeleteOperation, "CLEAR_HISTORY_INDEX" | "DELETE_EXPLICIT">;
+  operation: Extract<
+    MemoryBulkDeleteOperation,
+    "CLEAR_HISTORY_INDEX" | "DELETE_ALL_REUSABLE" | "DELETE_EXPLICIT" | "DELETE_LEARNED"
+  >;
 }>;
 
 export type MemoryForgetMutationResult = Readonly<{
@@ -80,6 +89,7 @@ export type MemoryForgetMutationResult = Readonly<{
   memoryRevision: number;
   replayed: boolean;
   settingsRevision: number;
+  undoExpiresAt: Date;
   versionId: string;
 }>;
 
@@ -94,6 +104,25 @@ export type MemoryDeleteExplicitMutationResult = Readonly<{
 
 const boundedIdPattern = /^\S{1,256}$/u;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
+
+async function enqueueWorkingSetAfterDeletion(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  deletionId: string
+): Promise<void> {
+  if (!settings.useMemoryFacts) return;
+  await enqueueMemoryJob(tx, settings, {
+    idempotencyFingerprint: `working-set-deletion:${memorySha256({
+      deletionId,
+      memoryGeneration: settings.memoryGeneration,
+      memoryRevision: settings.memoryRevision,
+      userId: settings.userId,
+      version: 1
+    })}`,
+    kind: "RECALCULATE_WORKING_SET",
+    pipelineVersion: MEMORY_PROFILE_PIPELINE_VERSION
+  });
+}
 
 function validateCommon(input: LifecycleMutationCommon): void {
   if (
@@ -130,6 +159,15 @@ function receiptSnapshot(
   result: MemoryDeleteExplicitMutationResult | MemoryForgetMutationResult,
   inputPayloadHash: string
 ): Prisma.InputJsonObject {
+  if ("undoExpiresAt" in result) {
+    const { undoExpiresAt, ...snapshot } = result;
+    return {
+      ...snapshot,
+      inputPayloadHash,
+      replayed: false,
+      undoExpiresAt: undoExpiresAt.toISOString()
+    };
+  }
   return {
     ...result,
     inputPayloadHash,
@@ -157,6 +195,8 @@ function parseForgetReceipt(
     typeof row.memoryGeneration !== "number" ||
     typeof row.memoryRevision !== "number" ||
     typeof row.settingsRevision !== "number" ||
+    typeof row.undoExpiresAt !== "string" ||
+    !Number.isFinite(Date.parse(row.undoExpiresAt)) ||
     typeof row.versionId !== "string"
   ) {
     return memoryPersistenceFailure("memory_idempotency_conflict");
@@ -169,6 +209,7 @@ function parseForgetReceipt(
     memoryRevision: row.memoryRevision,
     replayed: true,
     settingsRevision: row.settingsRevision,
+    undoExpiresAt: new Date(row.undoExpiresAt),
     versionId: row.versionId
   };
 }
@@ -247,7 +288,11 @@ async function persistReceipt(
         ? "forgotten"
         : "operation" in input && input.operation === "CLEAR_HISTORY_INDEX"
           ? "clear_history_admitted"
-          : "delete_explicit_admitted",
+          : "operation" in input && input.operation === "DELETE_LEARNED"
+            ? "delete_learned_admitted"
+            : "operation" in input && input.operation === "DELETE_ALL_REUSABLE"
+              ? "delete_all_reusable_admitted"
+            : "delete_explicit_admitted",
       resultSnapshot: receiptSnapshot(result, input.idempotencyPayloadHash),
       targetFactId: target?.factId,
       targetVersionId: target?.versionId,
@@ -259,7 +304,8 @@ async function persistReceipt(
 async function lockForgettableFact(
   tx: MemoryTransaction,
   userId: string,
-  factId: string
+  factId: string,
+  expectedVersionId: string
 ): Promise<ActiveFactRow | null> {
   const rows = await tx.$queryRaw<ActiveFactRow[]>(Prisma.sql`
     SELECT
@@ -284,6 +330,12 @@ async function lockForgettableFact(
           AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
         )
         OR (
+          fact."state" = 'CONFLICTED'::"MemoryFactState"
+          AND fact."currentVersionId" IS NULL
+          AND version."id" = ${expectedVersionId}
+          AND version."state" = 'CONFLICTING'::"MemoryFactVersionState"
+        )
+        OR (
           fact."state" = 'ORPHANED'::"MemoryFactState"
           AND version."state" = 'ORPHANED'::"MemoryFactVersionState"
           AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
@@ -300,11 +352,12 @@ async function lockForgettableFact(
       AND fact."id" = ${factId}
       AND fact."state" IN (
         'ACTIVE'::"MemoryFactState",
+        'CONFLICTED'::"MemoryFactState",
         'ORPHANED'::"MemoryFactState"
       )
       AND scope."state" = CASE fact."state"
-        WHEN 'ACTIVE'::"MemoryFactState" THEN 'ACTIVE'::"MemoryScopeState"
-        ELSE 'ORPHANED'::"MemoryScopeState"
+        WHEN 'ORPHANED'::"MemoryFactState" THEN 'ORPHANED'::"MemoryScopeState"
+        ELSE 'ACTIVE'::"MemoryScopeState"
       END
     FOR UPDATE OF fact, version
   `);
@@ -313,8 +366,13 @@ async function lockForgettableFact(
 
 async function lockExplicitFacts(
   tx: MemoryTransaction,
-  userId: string
+  userId: string,
+  factIds?: readonly string[]
 ): Promise<ActiveFactRow[]> {
+  if (factIds && factIds.length === 0) return [];
+  const selection = factIds
+    ? Prisma.sql`AND fact."id" IN (${Prisma.join([...factIds])})`
+    : Prisma.empty;
   return tx.$queryRaw<ActiveFactRow[]>(Prisma.sql`
     SELECT
       fact."id" AS "factId",
@@ -351,6 +409,7 @@ async function lockExplicitFacts(
         )
       )
     WHERE fact."userId" = ${userId}
+      ${selection}
       AND fact."state" IN (
         'ACTIVE'::"MemoryFactState",
         'ORPHANED'::"MemoryFactState"
@@ -524,6 +583,307 @@ async function applyForgetFence(
   return events;
 }
 
+/**
+ * Cross-owner adapter for permanent-chat cleanup. It applies the same
+ * suppression and logical fence as ordinary Forget, while the chat deletion
+ * remains the user-visible root operation and each fact gets its own durable
+ * plaintext purge obligation.
+ */
+export async function forgetExplicitOriginFactsForPermanentChatDeletion(
+  tx: MemoryTransaction,
+  keyring: MemorySuppressionKeyring,
+  input: Readonly<{
+    factIds: readonly string[];
+    now: Date;
+    rootDeletionId: string;
+    userId: string;
+  }>
+): Promise<number> {
+  const factIds = [...new Set(input.factIds)].sort();
+  if (factIds.length === 0) return 0;
+  const settings = await lockMemorySettings(tx, input.userId, false);
+  const facts = await lockExplicitFacts(tx, input.userId, factIds);
+  if (facts.length === 0) return 0;
+  await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
+  for (const fact of facts) {
+    const deletion = await enqueueMemoryDeletion(tx, settings, {
+      operation: "FORGET_PURGE",
+      targetId: fact.factId,
+      targetType: memoryPurgeTargetType("MEMORY_FACT")
+    });
+    await applyForgetFence(tx, settings, keyring, [fact], input.now, deletion.id);
+  }
+  await enqueueWorkingSetAfterDeletion(tx, settings, input.rootDeletionId);
+  return facts.length;
+}
+
+function automaticVersionAdmissionCondition(
+  userId: string,
+  barrierId: string
+): Prisma.Sql {
+  return Prisma.sql`
+    version."userId" = ${userId}
+    AND version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+    AND version."createdAt" <= (
+      SELECT barrier."createdAt"
+      FROM "MemorySourceBarrier" AS barrier
+      WHERE barrier."userId" = ${userId}
+        AND barrier."id" = ${barrierId}
+        AND barrier."kind" = 'AUTOMATIC_FACTS'::"MemorySourceBarrierKind"
+    )
+  `;
+}
+
+async function applyLearnedDeletionFence(
+  tx: MemoryTransaction,
+  userId: string,
+  barrierId: string,
+  now: Date
+): Promise<number> {
+  const condition = automaticVersionAdmissionCondition(userId, barrierId);
+  const counts = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+    SELECT COUNT(DISTINCT version."factId")::integer AS "count"
+    FROM "MemoryFactVersion" AS version
+    WHERE ${condition}
+  `);
+  const affectedFacts = counts[0]?.count;
+  if (!Number.isSafeInteger(affectedFacts) || affectedFacts < 0) {
+    return memoryPersistenceFailure("memory_counter_contract_invalid");
+  }
+
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "MemoryFact" AS fact
+    SET
+      "currentVersionId" = NULL,
+      "forgottenAt" = COALESCE(fact."forgottenAt", ${now}),
+      "pinned" = FALSE,
+      "state" = 'FORGOTTEN'::"MemoryFactState",
+      "updatedAt" = ${now}
+    WHERE fact."userId" = ${userId}
+      AND EXISTS (
+        SELECT 1
+        FROM "MemoryFactVersion" AS version
+        WHERE version."factId" = fact."id"
+          AND ${condition}
+      )
+      AND (
+        fact."currentVersionId" IN (
+          SELECT version."id"
+          FROM "MemoryFactVersion" AS version
+          WHERE ${condition}
+        )
+        OR (
+          fact."currentVersionId" IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "MemoryFactVersion" AS explicit_version
+            WHERE explicit_version."userId" = fact."userId"
+              AND explicit_version."factId" = fact."id"
+              AND explicit_version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+              AND explicit_version."contentPurgedAt" IS NULL
+          )
+        )
+      )
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "MemoryFactVersion" AS version
+    SET
+      "state" = 'FORGOTTEN'::"MemoryFactVersionState",
+      "systemTo" = COALESCE(
+        version."systemTo",
+        GREATEST(${now}, version."systemFrom" + INTERVAL '1 millisecond')
+      )
+    WHERE ${condition}
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    DELETE FROM "MemorySearchEntry" AS search
+    USING "MemoryFactVersion" AS version
+    WHERE search."userId" = version."userId"
+      AND search."factVersionId" = version."id"
+      AND ${condition}
+  `);
+  await tx.memoryJob.updateMany({
+    data: {
+      completedAt: now,
+      errorCode: "memory_learned_deleted",
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      state: "CANCELLED",
+      updatedAt: now
+    },
+    where: {
+      kind: {
+        in: [
+          "CONSOLIDATE_CANDIDATE",
+          "EXTRACT_FACTS",
+          "GLOBAL_DREAM",
+          "RECALCULATE_WORKING_SET",
+          "VERIFY_CANDIDATE"
+        ]
+      },
+      state: {
+        in: [
+          "CLAIMED",
+          "QUEUED",
+          "RETRYABLE_FAILED",
+          "WAITING_FOR_EGRESS_CONSENT"
+        ]
+      },
+      userId
+    }
+  });
+  return affectedFacts;
+}
+
+async function applyAllReusableDeletionFence(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  barrierId: string,
+  now: Date
+): Promise<number> {
+  const barrier = await tx.memorySourceBarrier.findFirst({
+    select: { createdAt: true },
+    where: { id: barrierId, kind: "ALL_REUSABLE", userId: settings.userId }
+  });
+  if (!barrier) return memoryPersistenceFailure("memory_counter_contract_invalid");
+
+  const affectedFacts = await tx.memoryFact.count({
+    where: { createdAt: { lte: barrier.createdAt }, userId: settings.userId }
+  });
+
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "MemoryFact" AS fact
+    SET
+      "currentVersionId" = NULL,
+      "forgottenAt" = COALESCE(fact."forgottenAt", ${now}),
+      "pinned" = FALSE,
+      "state" = 'FORGOTTEN'::"MemoryFactState",
+      "temperatureClass" = 'COLD'::"MemoryTemperatureClass",
+      "temperatureScore" = 0,
+      "updatedAt" = ${now}
+    WHERE fact."userId" = ${settings.userId}
+      AND fact."createdAt" <= ${barrier.createdAt}
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "MemoryFactVersion" AS version
+    SET
+      "state" = 'FORGOTTEN'::"MemoryFactVersionState",
+      "systemTo" = COALESCE(
+        version."systemTo",
+        GREATEST(${now}, version."systemFrom" + INTERVAL '1 millisecond')
+      )
+    WHERE version."userId" = ${settings.userId}
+      AND version."createdAt" <= ${barrier.createdAt}
+  `);
+  await tx.memorySearchEntry.deleteMany({
+    where: { createdAt: { lte: barrier.createdAt }, userId: settings.userId }
+  });
+  await tx.memoryEpisode.updateMany({
+    data: { invalidatedAt: now, state: "INVALIDATED" },
+    where: {
+      createdAt: { lte: barrier.createdAt },
+      state: "ACTIVE",
+      userId: settings.userId
+    }
+  });
+  await tx.memoryRecallChunk.updateMany({
+    data: { invalidatedAt: now, state: "INVALIDATED" },
+    where: {
+      createdAt: { lte: barrier.createdAt },
+      state: "ACTIVE",
+      userId: settings.userId
+    }
+  });
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "MemoryProfileProjection" AS profile
+    SET
+      "plaintextPurgedAt" = GREATEST(profile."updatedAt", ${now}),
+      "purgeReason" = 'all_reusable_delete',
+      "redactionState" = 'EXCLUDED'::"MemoryRedactionState",
+      "safeContentHash" = NULL,
+      "state" = 'INVALIDATED'::"MemoryProfileProjectionState",
+      "summary" = NULL,
+      "updatedAt" = GREATEST(profile."updatedAt", ${now})
+    WHERE profile."userId" = ${settings.userId}
+      AND profile."createdAt" <= ${barrier.createdAt}
+      AND profile."plaintextPurgedAt" IS NULL
+  `);
+  await tx.chatMemoryCheckpoint.deleteMany({
+    where: { createdAt: { lte: barrier.createdAt }, userId: settings.userId }
+  });
+  await tx.memoryJob.updateMany({
+    data: {
+      completedAt: now,
+      errorCode: "memory_all_reusable_deleted",
+      errorMessage: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      state: "CANCELLED",
+      updatedAt: now
+    },
+    where: {
+      OR: [
+        { createdAt: { lte: barrier.createdAt } },
+        { memoryGenerationSnapshot: { lt: settings.memoryGeneration } }
+      ],
+      state: {
+        in: [
+          "CLAIMED",
+          "QUEUED",
+          "RETRYABLE_FAILED",
+          "WAITING_FOR_EGRESS_CONSENT"
+        ]
+      },
+      userId: settings.userId
+    }
+  });
+
+  await tx.memoryIndexGeneration.updateMany({
+    data: { state: "SUPERSEDED", supersededAt: now },
+    where: {
+      createdAt: { lte: barrier.createdAt },
+      state: "ACTIVE",
+      userId: settings.userId
+    }
+  });
+  await tx.memoryIndexGeneration.updateMany({
+    data: { state: "CANCELLED" },
+    where: {
+      createdAt: { lte: barrier.createdAt },
+      state: { in: ["BUILDING", "CATCHING_UP", "READY"] },
+      userId: settings.userId
+    }
+  });
+
+  const settingsRevision = settings.settingsRevision + 1;
+  const fenced = await tx.userMemorySettings.updateMany({
+    data: {
+      activeIndexGenerationId: null,
+      learnAutomatically: false,
+      referenceChatHistory: false,
+      settingsRevision,
+      useMemoryFacts: false
+    },
+    where: {
+      memoryGeneration: settings.memoryGeneration,
+      memoryRevision: settings.memoryRevision,
+      settingsRevision: settings.settingsRevision,
+      userId: settings.userId
+    }
+  });
+  if (fenced.count !== 1) {
+    return memoryPersistenceFailure("memory_counter_contract_invalid");
+  }
+  settings.activeIndexGenerationId = null;
+  settings.learnAutomatically = false;
+  settings.referenceChatHistory = false;
+  settings.settingsRevision = settingsRevision;
+  settings.useMemoryFacts = false;
+  return affectedFacts;
+}
+
 function requireBulkCas(
   settings: LockedMemorySettings,
   input: MemoryDeleteExplicitMutationInput
@@ -600,20 +960,23 @@ export async function readPrismaMemoryDeletionStatus(
     userId,
     client
   );
-  if (
-    !audited ||
-    audited.targetId !== MEMORY_DELETE_EXPLICIT_TARGET_ID ||
-    !audited.targetType.startsWith("EXPLICIT_SET@")
-  ) {
-    return null;
-  }
+  if (!audited) return null;
+  const operation = audited.targetType.startsWith("ALL_REUSABLE@")
+    ? "DELETE_ALL_REUSABLE" as const
+    : audited.targetType.startsWith("AUTOMATIC_SET@")
+      ? "DELETE_LEARNED" as const
+    : audited.targetId === MEMORY_DELETE_EXPLICIT_TARGET_ID &&
+        audited.targetType.startsWith("EXPLICIT_SET@")
+      ? "DELETE_EXPLICIT" as const
+      : null;
+  if (!operation) return null;
   return {
     completedUnits: audited.progress.completedUnits,
     deletionId: audited.id,
     lastAuditAt: audited.lastAuditAt?.toISOString() ?? null,
     memoryGeneration: audited.memoryGeneration,
     memoryRevision,
-    operation: "DELETE_EXPLICIT",
+    operation,
     settingsRevision,
     state: audited.state,
     totalUnits: audited.progress.totalUnits,
@@ -734,6 +1097,65 @@ export function createPrismaMemoryLifecycleRepository(
       });
     },
 
+    async deleteAllReusable(
+      userId: string,
+      input: MemoryDeleteExplicitMutationInput
+    ): Promise<MemoryDeleteExplicitMutationResult> {
+      validateCommon(input);
+      if (
+        input.operation !== "DELETE_ALL_REUSABLE" ||
+        input.authorization.action !== "BULK_DELETE" ||
+        !Number.isSafeInteger(input.expectedMemoryRevision) ||
+        input.expectedMemoryRevision < 0 ||
+        !Number.isSafeInteger(input.expectedSettingsRevision) ||
+        input.expectedSettingsRevision < 0
+      ) {
+        return memoryPersistenceFailure("memory_input_invalid");
+      }
+      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        const replay = await replayReceipt(tx, userId, "BULK_DELETE", input);
+        if (replay) return replay as MemoryDeleteExplicitMutationResult;
+        requireBulkCas(settings, input);
+        await consumeMemoryMutationAuthorization(tx, userId, {
+          ...input.authorization,
+          requestId: input.requestId
+        }, input.now);
+        await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
+        const barrier = await tx.memorySourceBarrier.create({
+          data: {
+            explicitOverrideAllowed: false,
+            id: randomUUID(),
+            kind: "ALL_REUSABLE",
+            memoryGeneration: settings.memoryGeneration,
+            sourceCreatedAtCutoff: input.now,
+            userId
+          },
+          select: { id: true }
+        });
+        const deletion = await enqueueMemoryDeletion(tx, settings, {
+          operation: "FORGET_PURGE",
+          targetId: barrier.id,
+          targetType: memoryPurgeTargetType("ALL_REUSABLE")
+        });
+        const affectedFacts = await applyAllReusableDeletionFence(
+          tx,
+          settings,
+          barrier.id,
+          input.now
+        );
+        const result: MemoryDeleteExplicitMutationResult = {
+          affectedFacts,
+          deletionId: deletion.id,
+          memoryGeneration: settings.memoryGeneration,
+          memoryRevision: settings.memoryRevision,
+          replayed: false,
+          settingsRevision: settings.settingsRevision
+        };
+        await persistReceipt(tx, userId, "BULK_DELETE", input, result);
+        return result;
+      });
+    },
+
     async deleteExplicit(
       userId: string,
       input: MemoryDeleteExplicitMutationInput
@@ -765,8 +1187,69 @@ export function createPrismaMemoryLifecycleRepository(
           targetType: memoryPurgeTargetType("EXPLICIT_SET")
         });
         await applyForgetFence(tx, settings, keyring, facts, input.now, deletion.id);
+        await enqueueWorkingSetAfterDeletion(tx, settings, deletion.id);
         const result: MemoryDeleteExplicitMutationResult = {
           affectedFacts: facts.length,
+          deletionId: deletion.id,
+          memoryGeneration: settings.memoryGeneration,
+          memoryRevision: settings.memoryRevision,
+          replayed: false,
+          settingsRevision: settings.settingsRevision
+        };
+        await persistReceipt(tx, userId, "BULK_DELETE", input, result);
+        return result;
+      });
+    },
+
+    async deleteLearned(
+      userId: string,
+      input: MemoryDeleteExplicitMutationInput
+    ): Promise<MemoryDeleteExplicitMutationResult> {
+      validateCommon(input);
+      if (
+        input.operation !== "DELETE_LEARNED" ||
+        input.authorization.action !== "BULK_DELETE" ||
+        !Number.isSafeInteger(input.expectedMemoryRevision) ||
+        input.expectedMemoryRevision < 0 ||
+        !Number.isSafeInteger(input.expectedSettingsRevision) ||
+        input.expectedSettingsRevision < 0
+      ) {
+        return memoryPersistenceFailure("memory_input_invalid");
+      }
+      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
+        const replay = await replayReceipt(tx, userId, "BULK_DELETE", input);
+        if (replay) return replay as MemoryDeleteExplicitMutationResult;
+        requireBulkCas(settings, input);
+        await consumeMemoryMutationAuthorization(tx, userId, {
+          ...input.authorization,
+          requestId: input.requestId
+        }, input.now);
+        await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
+        const barrier = await tx.memorySourceBarrier.create({
+          data: {
+            explicitOverrideAllowed: false,
+            id: randomUUID(),
+            kind: "AUTOMATIC_FACTS",
+            memoryGeneration: settings.memoryGeneration,
+            sourceCreatedAtCutoff: input.now,
+            userId
+          },
+          select: { id: true }
+        });
+        const deletion = await enqueueMemoryDeletion(tx, settings, {
+          operation: "FORGET_PURGE",
+          targetId: barrier.id,
+          targetType: memoryPurgeTargetType("AUTOMATIC_SET")
+        });
+        const affectedFacts = await applyLearnedDeletionFence(
+          tx,
+          userId,
+          barrier.id,
+          input.now
+        );
+        await enqueueWorkingSetAfterDeletion(tx, settings, deletion.id);
+        const result: MemoryDeleteExplicitMutationResult = {
+          affectedFacts,
           deletionId: deletion.id,
           memoryGeneration: settings.memoryGeneration,
           memoryRevision: settings.memoryRevision,
@@ -797,13 +1280,22 @@ export function createPrismaMemoryLifecycleRepository(
           ...input.authorization,
           requestId: input.requestId
         }, input.now);
-        const fact = await lockForgettableFact(tx, userId, input.factId);
+        const fact = await lockForgettableFact(
+          tx,
+          userId,
+          input.factId,
+          input.expectedVersionId
+        );
         if (!fact) return memoryPersistenceFailure("memory_fact_not_found");
         if (fact.currentVersionId !== input.expectedVersionId) {
           return memoryPersistenceFailure("memory_fact_version_stale");
         }
         await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
+        const undoExpiresAt = new Date(
+          input.now.getTime() + MEMORY_FORGET_UNDO_WINDOW_MS
+        );
         const deletion = await enqueueMemoryDeletion(tx, settings, {
+          nextAttemptAt: undoExpiresAt,
           operation: "FORGET_PURGE",
           targetId: fact.factId,
           targetType: memoryPurgeTargetType("MEMORY_FACT")
@@ -818,6 +1310,7 @@ export function createPrismaMemoryLifecycleRepository(
         );
         const eventId = events.get(fact.factId);
         if (!eventId) return memoryPersistenceFailure("memory_counter_contract_invalid");
+        await enqueueWorkingSetAfterDeletion(tx, settings, deletion.id);
         const result: MemoryForgetMutationResult = {
           deletionId: deletion.id,
           eventId,
@@ -826,6 +1319,7 @@ export function createPrismaMemoryLifecycleRepository(
           memoryRevision: settings.memoryRevision,
           replayed: false,
           settingsRevision: settings.settingsRevision,
+          undoExpiresAt,
           versionId: fact.currentVersionId
         };
         await persistReceipt(tx, userId, "FORGET", input, result, {

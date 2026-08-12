@@ -1,9 +1,11 @@
 import {
   MEMORY_CURSOR_MAX_LENGTH,
+  decodeMemoryConflictResolutionInput,
   decodeMemoryCreateInput,
   decodeMemoryListInput,
   decodeMemoryListSearchInput,
   decodeMemoryMutationAuthorizationInput,
+  decodeMemoryUndoForgetInput,
   decodeMemoryUpdateInput
 } from "../../../contracts/memory";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
@@ -65,6 +67,7 @@ function serviceErrorStatus(code: ExplicitMemoryServiceErrorCode): number {
     case "memory_scope_unavailable":
       return 404;
     case "memory_intent_confirmation_required":
+    case "memory_undo_unavailable":
     case "memory_version_stale":
       return 409;
     case "memory_index_unavailable":
@@ -280,6 +283,48 @@ export function createGetMemoryEvidenceHandler(deps: ExplicitMemoryHandlerDeps) 
     }
     try {
       return json(await deps.service.evidence(session.userId, id, cursor));
+    } catch (error) {
+      return serviceError(error);
+    }
+  };
+}
+
+export function createUndoForgetMemoryHandler(deps: ExplicitMemoryHandlerDeps) {
+  return async function POST(request: Request, context: RouteContext): Promise<Response> {
+    const session = await deps.resolveAuth(request);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    if (!hasNoSearchParams(request)) {
+      return json({ error: "memory_contract_invalid" }, 400);
+    }
+    const id = await memoryId(context);
+    if (!id) return json({ error: "memory_contract_invalid" }, 400);
+    const body = await jsonBody(request);
+    if (body instanceof Response) return body;
+    const decoded = decodeMemoryUndoForgetInput(body);
+    if (!decoded.ok) return json({ error: decoded.code }, 400);
+    try {
+      return json(await deps.service.undoForget(session.userId, id, decoded.value));
+    } catch (error) {
+      return serviceError(error);
+    }
+  };
+}
+
+export function createResolveMemoryConflictHandler(deps: ExplicitMemoryHandlerDeps) {
+  return async function POST(request: Request, context: RouteContext): Promise<Response> {
+    const session = await deps.resolveAuth(request);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    if (!hasNoSearchParams(request)) {
+      return json({ error: "memory_contract_invalid" }, 400);
+    }
+    const id = await memoryId(context);
+    if (!id) return json({ error: "memory_contract_invalid" }, 400);
+    const body = await jsonBody(request);
+    if (body instanceof Response) return body;
+    const decoded = decodeMemoryConflictResolutionInput(body);
+    if (!decoded.ok) return json({ error: decoded.code }, 400);
+    try {
+      return json(await deps.service.resolveConflict(session.userId, id, decoded.value));
     } catch (error) {
       return serviceError(error);
     }

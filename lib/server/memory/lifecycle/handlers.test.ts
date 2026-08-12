@@ -61,6 +61,11 @@ function service(overrides: Partial<MemoryLifecycleService> = {}): MemoryLifecyc
         validFrom: null,
         validTo: null,
         versionState: "FORGOTTEN" as const
+      },
+      undo: {
+        deletionId: "deletion-1",
+        expiresAt: "2026-08-10T12:01:00.000Z",
+        versionId: "version-1"
       }
     })),
     status: vi.fn(async () => ({

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { afterAll, describe, expect, it } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
@@ -44,6 +45,7 @@ import {
 } from "../purge/contract";
 import { registerPhase2MemoryDeletionContributors } from "../purge/leaves";
 import { MemoryDeletionContributorRegistry } from "../purge/registry";
+import { memoryFeedbackIdempotencyFingerprint } from "../review/feedbackRepository";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
   applyMemorySourceMutations,
@@ -416,6 +418,10 @@ async function claimDeletion(
     where: { id: deletionId }
   });
   return {
+    admissionAuthorizationId: row.admissionAuthorizationId,
+    admittedActiveLeafMessageId: row.admittedActiveLeafMessageId,
+    admittedChatSourceRevision: row.admittedChatSourceRevision,
+    alsoForgetOriginMemories: row.alsoForgetOriginMemories,
     attemptCount: row.attemptCount,
     claimToken,
     id: row.id,
@@ -734,6 +740,78 @@ async function createHistoryDerivative(input: Readonly<{
   };
 }
 
+type FeedbackFixtureTarget =
+  | Readonly<{ factId: string; kind: "FACT_VERSION"; versionId: string }>
+  | Readonly<{ episodeId: string; kind: "EPISODE" }>
+  | Readonly<{ chunkId: string; kind: "RECALL_CHUNK" }>;
+
+async function createFeedbackFixture(input: Readonly<{
+  comment: string | null;
+  createdAt?: Date;
+  feedbackType?: "NOT_USEFUL" | "RETRACT";
+  retractsFeedbackId?: string;
+  sourceBranchGeneration: number;
+  sourceChatId: string;
+  target: FeedbackFixtureTarget;
+  userId: string;
+}>): Promise<string> {
+  const createdAt = input.createdAt ?? new Date();
+  const feedbackType = input.feedbackType ?? "NOT_USEFUL";
+  const eventId = randomUUID();
+  const feedbackId = randomUUID();
+  const requestId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryEvent.create({
+      data: {
+        actorType: "USER",
+        actorUserId: input.userId,
+        createdAt,
+        factId: input.target.kind === "FACT_VERSION" ? input.target.factId : null,
+        factVersionId: input.target.kind === "FACT_VERSION"
+          ? input.target.versionId
+          : null,
+        id: eventId,
+        metadata: {
+          feedbackId,
+          feedbackType,
+          schemaVersion: "memory-feedback-event-v1"
+        },
+        operation: "USER_FEEDBACK",
+        sourceChatId: input.sourceChatId,
+        userId: input.userId
+      }
+    });
+    await tx.memoryFeedback.create({
+      data: {
+        comment: input.comment,
+        createdAt,
+        episodeId: input.target.kind === "EPISODE" ? input.target.episodeId : null,
+        feedbackType,
+        id: feedbackId,
+        idempotencyFingerprint: memoryFeedbackIdempotencyFingerprint(
+          input.userId,
+          requestId
+        ),
+        memoryEventId: eventId,
+        memoryFactId: input.target.kind === "FACT_VERSION" ? input.target.factId : null,
+        memoryFactVersionId: input.target.kind === "FACT_VERSION"
+          ? input.target.versionId
+          : null,
+        recallChunkId: input.target.kind === "RECALL_CHUNK"
+          ? input.target.chunkId
+          : null,
+        retractsFeedbackId: input.retractsFeedbackId,
+        requestId,
+        sourceBranchGenerationSnapshot: input.sourceBranchGeneration,
+        sourceChatIdSnapshot: input.sourceChatId,
+        targetKind: input.target.kind,
+        userId: input.userId
+      }
+    });
+  });
+  return feedbackId;
+}
+
 async function createHistoryReceiptDerivatives(input: Readonly<{
   activeIndexGenerationId: string;
   assistantMessageId: string;
@@ -998,6 +1076,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       const admissionSettings = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });
+      const rebuildStartedAt = performance.now();
       const admitted = await repository.admit(userId, {
         expectedMemoryRevision: admissionSettings.memoryRevision,
         expectedSettingsRevision: admissionSettings.settingsRevision,
@@ -1072,6 +1151,17 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       });
       expect(entries.some(({ factVersionId }) =>
         factVersionId === forgotten.memory.currentVersionId)).toBe(false);
+      const evidence = Object.freeze({
+        activationCount: 1,
+        evidenceVersion: "memory-phase8-rebuild-latency-v1",
+        maximumRebuildLatencyMs: 15 * 60_000,
+        rebuildLatencyMs: Number((performance.now() - rebuildStartedAt).toFixed(2)),
+        resurrectionCount: 0,
+        sanitizedAggregatesOnly: true
+      });
+      expect(evidence.rebuildLatencyMs).toBeLessThan(evidence.maximumRebuildLatencyMs);
+      expect(JSON.stringify(evidence)).not.toContain(userId);
+      console.info("memory_phase8_rebuild_latency", evidence);
     } finally {
       await cleanupOwner(userId);
     }
@@ -1619,6 +1709,40 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       const deletion = await prisma.memoryDeletionOutbox.findFirstOrThrow({
         where: { operation: "SOURCE_PURGE", targetId: history.chatId, userId }
       });
+      const episodeFeedbackId = await createFeedbackFixture({
+        comment: "Purge this excluded-source episode feedback.",
+        sourceBranchGeneration: 0,
+        sourceChatId: history.chatId,
+        target: { episodeId: history.episodeId, kind: "EPISODE" },
+        userId
+      });
+      const factSourceFeedbackId = await createFeedbackFixture({
+        comment: "Scrub this invalid source join without deleting the explicit fact.",
+        sourceBranchGeneration: 0,
+        sourceChatId: history.chatId,
+        target: {
+          factId: fact.memory.id,
+          kind: "FACT_VERSION",
+          versionId: fact.memory.currentVersionId!
+        },
+        userId
+      });
+      const retainedFeedbackChat = await prisma.chat.create({
+        data: { title: "Retained feedback action", userId }
+      });
+      const factSourceRetractionId = await createFeedbackFixture({
+        comment: null,
+        feedbackType: "RETRACT",
+        retractsFeedbackId: factSourceFeedbackId,
+        sourceBranchGeneration: 0,
+        sourceChatId: retainedFeedbackChat.id,
+        target: {
+          factId: fact.memory.id,
+          kind: "FACT_VERSION",
+          versionId: fact.memory.currentVersionId!
+        },
+        userId
+      });
 
       for (let replay = 0; replay < 2; replay += 1) {
         if (replay > 0) {
@@ -1647,6 +1771,43 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         await expect(prisma.memoryEpisode.count({
           where: { id: history.episodeId, userId }
         })).resolves.toBe(0);
+        await expect(prisma.memoryFeedback.findMany({
+          where: {
+            id: {
+              in: [episodeFeedbackId, factSourceFeedbackId, factSourceRetractionId]
+            },
+            userId
+          }
+        })).resolves.toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            comment: null,
+            contentPurgedAt: expect.any(Date),
+            id: episodeFeedbackId,
+            memoryEventId: null,
+            purgeReason: "source_invalidated",
+            sourceChatIdSnapshot: null
+          }),
+          expect.objectContaining({
+            comment: null,
+            contentPurgedAt: expect.any(Date),
+            id: factSourceFeedbackId,
+            memoryEventId: null,
+            memoryFactId: null,
+            memoryFactVersionId: null,
+            purgeReason: "source_invalidated",
+            sourceChatIdSnapshot: null
+          }),
+          expect.objectContaining({
+            comment: null,
+            contentPurgedAt: expect.any(Date),
+            id: factSourceRetractionId,
+            memoryFactId: null,
+            memoryFactVersionId: null,
+            purgeReason: "source_invalidated",
+            retractsFeedbackId: null,
+            sourceChatIdSnapshot: null
+          })
+        ]));
         await expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(receiptDerivatives);
       }
       await expect(prisma.memoryExecutionBinding.findFirstOrThrow({
@@ -1741,6 +1902,13 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
           userId
         }
       });
+      const delayedFeedbackId = await createFeedbackFixture({
+        comment: "Late feedback attached to the suppressed episode.",
+        sourceBranchGeneration: 0,
+        sourceChatId: history.chatId,
+        target: { episodeId: history.episodeId, kind: "EPISODE" },
+        userId
+      });
 
       for (let replay = 0; replay < 2; replay += 1) {
         if (replay > 0) {
@@ -1779,6 +1947,14 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
             userId
           }
         })).resolves.toBe(1);
+        await expect(prisma.memoryFeedback.findUniqueOrThrow({
+          where: { id: delayedFeedbackId }
+        })).resolves.toMatchObject({
+          comment: null,
+          contentPurgedAt: expect.any(Date),
+          episodeId: null,
+          purgeReason: "suppressed_source"
+        });
         await expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(receiptDerivatives);
       }
 
@@ -1915,6 +2091,31 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         sourceRevision: 2,
         userId
       });
+      const postAdmissionAt = new Date(barrier.createdAt.getTime() + 1_000);
+      const oldChunkFeedbackId = await createFeedbackFixture({
+        comment: "Created after admission but attached to the pre-cutoff chunk.",
+        createdAt: postAdmissionAt,
+        sourceBranchGeneration: 0,
+        sourceChatId: old.chatId,
+        target: { chunkId: old.chunkId, kind: "RECALL_CHUNK" },
+        userId
+      });
+      const oldEpisodeFeedbackId = await createFeedbackFixture({
+        comment: "Created after admission but attached to the pre-cutoff episode.",
+        createdAt: postAdmissionAt,
+        sourceBranchGeneration: 0,
+        sourceChatId: old.chatId,
+        target: { episodeId: oldEpisodeId, kind: "EPISODE" },
+        userId
+      });
+      const freshFeedbackId = await createFeedbackFixture({
+        comment: "Post-cutoff feedback remains with the post-cutoff chunk.",
+        createdAt: postAdmissionAt,
+        sourceBranchGeneration: 0,
+        sourceChatId: fresh.chatId,
+        target: { chunkId: fresh.chunkId, kind: "RECALL_CHUNK" },
+        userId
+      });
 
       for (let replay = 0; replay < 2; replay += 1) {
         if (replay > 0) {
@@ -1952,13 +2153,38 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         await expect(prisma.memorySearchEntry.count({
           where: { recallChunkId: fresh.chunkId, userId }
         })).resolves.toBe(1);
+        await expect(prisma.memoryFeedback.findMany({
+          where: { id: { in: [oldChunkFeedbackId, oldEpisodeFeedbackId] }, userId }
+        })).resolves.toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            comment: null,
+            contentPurgedAt: expect.any(Date),
+            id: oldChunkFeedbackId,
+            purgeReason: "history_clear",
+            recallChunkId: null
+          }),
+          expect.objectContaining({
+            comment: null,
+            contentPurgedAt: expect.any(Date),
+            episodeId: null,
+            id: oldEpisodeFeedbackId,
+            purgeReason: "history_clear"
+          })
+        ]));
+        await expect(prisma.memoryFeedback.findUniqueOrThrow({
+          where: { id: freshFeedbackId }
+        })).resolves.toMatchObject({
+          comment: "Post-cutoff feedback remains with the post-cutoff chunk.",
+          contentPurgedAt: null,
+          recallChunkId: fresh.chunkId
+        });
         await expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(receiptDerivatives);
       }
       await expect(lifecycle.status(userId, admitted.deletionId)).resolves.toMatchObject({
-        completedUnits: 4,
+        completedUnits: 5,
         operation: "CLEAR_HISTORY_INDEX",
         state: "SUCCEEDED",
-        totalUnits: 4
+        totalUnits: 5
       });
       await expect(explicit.get(userId, fact.memory.id)).resolves.toMatchObject({
         memory: { factState: "ACTIVE" }

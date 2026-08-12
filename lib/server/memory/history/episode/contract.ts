@@ -6,7 +6,7 @@ import type { MemoryTextLanguage } from "../language";
 export const MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION =
   "memory-episode-extraction-v1";
 export const MEMORY_EPISODE_EXTRACTION_POLICY_VERSION =
-  "memory-episode-extractive-policy-v1";
+  "memory-episode-extractive-policy-v2";
 export const MEMORY_EPISODE_EXTRACTION_PROMPT_VERSION =
   "memory-episode-extractive-prompt-v1";
 export const MEMORY_EPISODE_EXTRACTION_SCHEMA_VERSION =

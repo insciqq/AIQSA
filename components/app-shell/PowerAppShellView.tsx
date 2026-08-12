@@ -2,6 +2,8 @@
 
 import { CommandPalette } from "@/components/command-palette/CommandPalette";
 import { ArchivedChatsDialog } from "@/components/app-shell/ArchivedChatsDialog";
+import { PermanentChatDeletionSurface } from "@/components/app-shell/PermanentChatDeletionSurface";
+import { usePermanentChatDeletionStore } from "@/components/app-shell/permanentChatDeletionStore";
 import {
   ChatDeleteConfirmationDialog,
   FolderDeleteConfirmationDialog,
@@ -631,6 +633,9 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       onSelectBranch={(messageId) => void checkoutBranch(messageId)}
     />
   );
+  const permanentDeletionDialogOpen = usePermanentChatDeletionStore(
+    (state) => Boolean(state.target) || state.statusOpen
+  );
   const primaryContentInert =
     inspectorMode === "overlay" ||
     mobileWorkspaceOpen ||
@@ -643,7 +648,8 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     palette.open ||
     Boolean(deleteChatConfirmation) ||
     Boolean(deleteFolderConfirmation) ||
-    Boolean(deleteMessageConfirmation);
+    Boolean(deleteMessageConfirmation) ||
+    permanentDeletionDialogOpen;
   const activeDocumentTitle = activeChatId && activeChatTitle.trim()
     ? activeChatTitle.trim()
     : workspace.pane.state.workspaceLoading
@@ -660,7 +666,9 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
     document.title = documentTitle;
   }, [documentTitle]);
   const workspaceChildDialogOpen =
-    mobileWorkspaceOpen && Boolean(deleteChatConfirmation || deleteFolderConfirmation);
+    mobileWorkspaceOpen && Boolean(
+      deleteChatConfirmation || deleteFolderConfirmation || permanentDeletionDialogOpen
+    );
   const shellNotice = notice;
   const persistentNoticeSlot = shellNotice?.persistent ? (
     <div
@@ -1045,6 +1053,8 @@ export function PowerAppShellView(props: PowerAppShellViewProps) {
       {deleteMessageConfirmation ? (
         <MessageDeleteConfirmationDialog onCancel={cancelDeleteMessage} onConfirm={confirmDeleteMessage} />
       ) : null}
+
+      <PermanentChatDeletionSurface locale={composer.memory.locale} />
 
       {palette.open ? (
         <CommandPalette

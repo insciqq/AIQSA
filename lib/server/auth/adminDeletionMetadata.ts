@@ -53,6 +53,7 @@ export type AdminOwnedAppDataCounts = Readonly<{
   chats: number;
   folders: number;
   knowledgeBases: number;
+  memory: number;
   mcpGrants: number;
   mcpOAuthConnections: number;
   mcpUserServers: number;
@@ -213,6 +214,18 @@ export function adminInviteDeletionInfo(invite: AdminInviteDeletionSource, now: 
 export function adminUserOwnedDataCount(user: AdminUserOwnedDataSource): number {
   return adminOwnedAppDataCount({
     ...user._count,
+    memory: 0,
+    settings: user.settings ? 1 : 0
+  });
+}
+
+export function adminUserOwnedDataCountWithMemory(
+  user: AdminUserOwnedDataSource,
+  memory: number
+): number {
+  return adminOwnedAppDataCount({
+    ...user._count,
+    memory,
     settings: user.settings ? 1 : 0
   });
 }
@@ -225,6 +238,7 @@ export function adminOwnedAppDataCount(counts: AdminOwnedAppDataCounts): number 
     counts.chats +
     counts.folders +
     counts.knowledgeBases +
+    counts.memory +
     counts.mcpGrants +
     counts.mcpOAuthConnections +
     counts.mcpUserServers +

@@ -11,6 +11,7 @@ import {
   createListMemoriesHandler,
   createMintMemoryMutationAuthorizationHandler,
   createSearchMemoriesHandler,
+  createUndoForgetMemoryHandler,
   createUpdateMemoryHandler,
   type ExplicitMemoryHandlerDeps
 } from "./handlers";
@@ -62,13 +63,20 @@ function service(overrides: Partial<ExplicitMemoryService> = {}): ExplicitMemory
   return {
     create: vi.fn(async () => memoryResponse),
     evidence: vi.fn(async () => ({ evidence: [], nextCursor: null })),
-    get: vi.fn(async () => memoryResponse),
+    get: vi.fn(async () => ({
+      feedback: [],
+      history: [],
+      memory: memoryResponse.memory,
+      versions: []
+    })),
     list: vi.fn(async () => ({ memories: [memoryResponse.memory], nextCursor: null })),
     mintAuthorization: vi.fn(async () => ({
       expiresAt: "2026-08-10T12:05:00.000Z",
       mutationAuthorizationId: "authorization-1"
     })),
+    resolveConflict: vi.fn(async () => memoryResponse),
     search: vi.fn(async () => ({ memories: [memoryResponse.memory], nextCursor: null })),
+    undoForget: vi.fn(async () => memoryResponse),
     update: vi.fn(async () => memoryResponse),
     ...overrides
   };
@@ -247,5 +255,34 @@ describe("explicit Memory handlers", () => {
     expect(evidence.status).toBe(200);
     expectPrivate(evidence);
     expect(explicitService.evidence).toHaveBeenCalledWith("user-1", "fact-1", null);
+  });
+
+  it("routes a strict owner-scoped Forget Undo without accepting target overrides", async () => {
+    const explicitService = service();
+    const handler = createUndoForgetMemoryHandler(deps(explicitService));
+    const restored = await handler(jsonRequest(
+      "http://localhost/api/me/memories/fact-1/undo-forget",
+      {
+        deletionId: "deletion-1",
+        mutationAuthorizationId: "authorization-undo"
+      }
+    ), context());
+    expect(restored.status).toBe(200);
+    expectPrivate(restored);
+    expect(explicitService.undoForget).toHaveBeenCalledWith("user-1", "fact-1", {
+      deletionId: "deletion-1",
+      mutationAuthorizationId: "authorization-undo"
+    });
+
+    const invalid = await handler(jsonRequest(
+      "http://localhost/api/me/memories/fact-1/undo-forget",
+      {
+        deletionId: "deletion-1",
+        mutationAuthorizationId: "authorization-undo",
+        statement: "replace the forgotten fact"
+      }
+    ), context());
+    expect(invalid.status).toBe(400);
+    expect(explicitService.undoForget).toHaveBeenCalledTimes(1);
   });
 });

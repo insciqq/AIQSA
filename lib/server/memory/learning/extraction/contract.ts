@@ -5,11 +5,11 @@ import type { MemoryTextLanguage } from "../../history/language";
 
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION = "memory-fact-extraction-v1";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-source-grounding-policy-v1";
+  "memory-fact-source-grounding-policy-v6";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-source-grounding-prompt-v1";
+  "memory-fact-source-grounding-prompt-v8";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
-  "memory-fact-source-grounding-schema-v1";
+  "memory-fact-source-grounding-schema-v2";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
   "memory-fact-temporal-conservative-v1";
 export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =

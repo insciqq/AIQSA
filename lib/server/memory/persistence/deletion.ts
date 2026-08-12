@@ -13,6 +13,7 @@ import {
 } from "./transaction";
 
 export type MemoryDeletionEnqueueInput = Readonly<{
+  nextAttemptAt?: Date | null;
   operation: MemoryDeletionOperation;
   targetId: string;
   targetType: string;
@@ -30,7 +31,12 @@ function validTarget(value: string, maxLength: number): boolean {
 }
 
 function validateDeletionInput(input: MemoryDeletionEnqueueInput): void {
-  if (!validTarget(input.targetType, 64) || !validTarget(input.targetId, 512)) {
+  if (
+    !validTarget(input.targetType, 64) ||
+    !validTarget(input.targetId, 512) ||
+    (input.nextAttemptAt !== undefined && input.nextAttemptAt !== null &&
+      !Number.isFinite(input.nextAttemptAt.getTime()))
+  ) {
     return memoryPersistenceFailure("memory_input_invalid");
   }
 }
@@ -59,6 +65,7 @@ export async function enqueueMemoryDeletion(
   const created = await tx.memoryDeletionOutbox.create({
     data: {
       memoryGeneration: settings.memoryGeneration,
+      nextAttemptAt: input.nextAttemptAt,
       operation: input.operation,
       targetId: input.targetId,
       targetType: input.targetType,

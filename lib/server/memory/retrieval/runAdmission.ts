@@ -23,6 +23,7 @@ import type {
 import { MemoryPreparingRunConflictError } from "../../runs/preparingRun";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import type { MemoryExecutionAuthorityDependencies } from "../execution";
+import { MEMORY_PHASE7_CAPABILITY_POLICY } from "../capabilityPolicy";
 import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
 import {
   memorySha256,
@@ -616,7 +617,10 @@ export function createPrismaMemoryRunRetrievalService(
   return createMemoryRunRetrievalService(
     createPrismaLocalMemoryRetrievalRepository(client),
     {
-      ...options,
+      enableQueryExpansion: options.enableQueryExpansion ??
+        MEMORY_PHASE7_CAPABILITY_POLICY.queryExpansion.enabled,
+      enableRemoteRerank: options.enableRemoteRerank ??
+        MEMORY_PHASE7_CAPABILITY_POLICY.remoteReranker.enabled,
       utilities: createPrismaMemoryRunUtilityService(
         authority,
         client

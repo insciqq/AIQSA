@@ -1187,7 +1187,7 @@ describe("ThreadMessageRow", () => {
     });
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Воспоминание забыто и исключено из будущего использования."
+      "Забыто."
     );
     rerender(<ThreadMessageRow
       {...props}

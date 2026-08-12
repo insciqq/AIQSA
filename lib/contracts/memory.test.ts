@@ -11,6 +11,10 @@ import {
   decodeMemoryCreateInput,
   decodeMemoryDeletionStatus,
   decodeMemoryEvidenceResponse,
+  decodeMemoryDetailResponse,
+  decodeMemoryFeedbackInput,
+  decodeMemoryFeedbackMutationResponse,
+  decodeMemoryConflictResolutionInput,
   decodeMemoryErrorResponse,
   decodeMemoryHistorySearchInput,
   decodeMemoryHistorySearchResponse,
@@ -21,6 +25,7 @@ import {
   decodeMemoryMutationAuthorizationInput,
   decodeMemoryMutationAuthorizationResponse,
   decodeMemoryMutationResponse,
+  decodeMemoryProfileResponse,
   decodeMemoryReceipt,
   decodeMemoryActionFeedback,
   decodeMemoryRebuildInput,
@@ -64,6 +69,7 @@ function settingsResponse() {
       automaticLearning: true,
       explicitMemory: true,
       historyRecall: true,
+      permanentChatDeletion: false,
       russianQualified: true,
       temporaryChats: true
     },
@@ -469,6 +475,73 @@ describe("Memory response contracts", () => {
     })).toMatchObject({ ok: false });
   });
 
+  it("accepts only contributor-exact ready Memory profiles", () => {
+    const profile = {
+      asOf: now,
+      contributors: [
+        {
+          displayText: "Отвечай по-русски.",
+          factId: "fact-1",
+          factVersionId: "version-1",
+          ordinal: 0,
+          pinned: true,
+          sourceMode: "EXPLICIT",
+          temperatureClass: "HOT"
+        },
+        {
+          displayText: "Используй короткие примеры.",
+          factId: "fact-2",
+          factVersionId: "version-2",
+          ordinal: 1,
+          pinned: false,
+          sourceMode: "AUTOMATIC",
+          temperatureClass: "WARM"
+        }
+      ],
+      createdAt: now,
+      id: "profile-1",
+      languageCode: "ru",
+      memoryRevision: 41,
+      redactionState: "NOT_NEEDED",
+      summary: "Отвечай по-русски.\nИспользуй короткие примеры."
+    };
+    expect(decodeMemoryProfileResponse({
+      memoryRevision: 42,
+      profile,
+      state: "READY"
+    })).toMatchObject({ ok: true });
+    for (const invalid of [
+      {
+        memoryRevision: 42,
+        profile: { ...profile, summary: "Перефразированное резюме" },
+        state: "READY"
+      },
+      {
+        memoryRevision: 42,
+        profile: {
+          ...profile,
+          contributors: profile.contributors.map((item, index) => ({
+            ...item,
+            ordinal: index + 1
+          }))
+        },
+        state: "READY"
+      },
+      { memoryRevision: 42, profile, state: "PENDING" },
+      { memoryRevision: 40, profile, state: "READY" }
+    ]) {
+      expect(decodeMemoryProfileResponse(invalid)).toEqual({
+        code: "memory_contract_invalid",
+        ok: false
+      });
+    }
+    expect(decodeMemoryProfileResponse({
+      memoryRevision: 42,
+      profile: null,
+      state: "WAITING_FOR_EGRESS_CONSENT"
+    })).toMatchObject({ ok: true });
+  });
+
   it("decodes bounded evidence without accepting impossible source shapes", () => {
     const explicitEvidence = {
       factVersionId: "version-1",
@@ -489,6 +562,118 @@ describe("Memory response contracts", () => {
     expect(decodeMemoryEvidenceResponse({
       evidence: [{ ...explicitEvidence, sourceMessageId: "message-1" }],
       nextCursor: null
+    })).toMatchObject({ ok: false });
+  });
+
+  it("binds review feedback, retraction, detail, and conflict snapshots exactly", () => {
+    const version = {
+      category: "preference",
+      createdAt: now,
+      displayText: "Я предпочитаю русский язык.",
+      id: "version-1",
+      modality: "PREFERENCE",
+      sensitivityClass: "NORMAL",
+      sourceCount: 2,
+      sourceMode: "AUTOMATIC",
+      state: "ACTIVE",
+      systemFrom: now,
+      systemTo: null,
+      validFrom: null,
+      validTo: null
+    };
+    expect(decodeMemoryDetailResponse({
+      feedback: [{
+        comment: "Неверный вывод",
+        createdAt: now,
+        feedbackType: "INCORRECT",
+        id: "feedback-1",
+        retractedAt: null,
+        targetVersionId: "version-1"
+      }],
+      history: [{
+        actorType: "SYSTEM",
+        createdAt: now,
+        factVersionId: "version-1",
+        id: "event-1",
+        operation: "PROMOTE",
+        sourceAvailable: true
+      }],
+      memory: {
+        ...memorySummary(),
+        sourceMode: "AUTOMATIC"
+      },
+      versions: [version]
+    })).toMatchObject({ ok: true });
+    expect(decodeMemoryDetailResponse({
+      feedback: [{
+        comment: null,
+        createdAt: now,
+        feedbackType: "INCORRECT",
+        id: "feedback-1",
+        retractedAt: null,
+        targetVersionId: "version-outside-window"
+      }],
+      history: [],
+      memory: memorySummary(),
+      versions: [version]
+    })).toMatchObject({ ok: false });
+    const forgottenMemory = {
+      ...memorySummary(),
+      currentVersionId: null,
+      displayText: null,
+      factState: "FORGOTTEN",
+      versionState: "FORGOTTEN"
+    };
+    expect(decodeMemoryDetailResponse({
+      feedback: [],
+      history: [],
+      memory: forgottenMemory,
+      versions: [{ ...version, displayText: null, state: "FORGOTTEN" }]
+    })).toMatchObject({ ok: true });
+    expect(decodeMemoryDetailResponse({
+      feedback: [],
+      history: [],
+      memory: forgottenMemory,
+      versions: [{ ...version, state: "FORGOTTEN" }]
+    })).toMatchObject({ ok: false });
+
+    expect(decodeMemoryFeedbackInput({
+      comment: "Неверный вывод",
+      expectedVersionId: "version-1",
+      feedbackType: "INCORRECT",
+      requestId: "feedback-request-1"
+    })).toMatchObject({ ok: true });
+    expect(decodeMemoryFeedbackInput({
+      comment: "cannot survive on retract",
+      expectedVersionId: "version-1",
+      feedbackType: "RETRACT",
+      requestId: "feedback-request-2",
+      retractsFeedbackId: "feedback-1"
+    })).toMatchObject({ ok: false });
+    expect(decodeMemoryFeedbackMutationResponse({
+      createdAt: now,
+      feedbackId: "feedback-1",
+      feedbackType: "INCORRECT",
+      retractedFeedbackId: null,
+      targetVersionId: "version-1"
+    })).toMatchObject({ ok: true });
+    expect(decodeMemoryFeedbackMutationResponse({
+      createdAt: now,
+      feedbackId: "feedback-retract",
+      feedbackType: "RETRACT",
+      retractedFeedbackId: null,
+      targetVersionId: "version-1"
+    })).toMatchObject({ ok: false });
+
+    expect(decodeMemoryConflictResolutionInput({
+      expectedVersionIds: ["version-a", "version-b"],
+      mutationAuthorizationId: "authorization-1",
+      resolution: { kind: "CHOOSE", versionId: "version-b" }
+    })).toMatchObject({ ok: true });
+    expect(decodeMemoryConflictResolutionInput({
+      expectedVersionIds: ["version-b", "version-a"],
+      mutationAuthorizationId: "authorization-1",
+      resolution: { kind: "CHOOSE", versionId: "version-outside" }
     })).toMatchObject({ ok: false });
   });
 
@@ -565,12 +750,26 @@ describe("Memory response contracts", () => {
   it("accepts only committed bounded action feedback", () => {
     expect(decodeMemoryActionFeedback({ operation: "SAVE", status: "COMMITTED" }))
       .toMatchObject({ ok: true });
+    expect(decodeMemoryActionFeedback({
+      deletionId: "deletion-1",
+      expiresAt: "2026-08-11T12:01:00.000Z",
+      factId: "fact-1",
+      operation: "FORGET",
+      statement: "I prefer quiet hotels.",
+      status: "COMMITTED",
+      versionId: "version-1"
+    })).toMatchObject({ ok: true });
     expect(decodeMemoryActionFeedback({ operation: "EDIT", status: "COMMITTED" }))
       .toMatchObject({ ok: false });
     expect(decodeMemoryActionFeedback({
       operation: "FORGET",
       status: "COMMITTED",
       targetFactId: "private-id"
+    })).toMatchObject({ ok: false });
+    expect(decodeMemoryActionFeedback({
+      factId: "fact-1",
+      operation: "SAVE",
+      status: "COMMITTED"
     })).toMatchObject({ ok: false });
   });
 

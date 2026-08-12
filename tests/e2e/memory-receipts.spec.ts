@@ -1,5 +1,8 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { memorySettingsFixture } from "../../components/app-shell/memoryTestFixtures";
+import {
+  memorySettingsFixture,
+  memorySummaryFixture
+} from "../../components/app-shell/memoryTestFixtures";
 import type {
   MemoryActionFeedback,
   MemoryReceipt
@@ -242,8 +245,7 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
 
   await expect(page.getByText("Memory saved.", { exact: true })).toBeVisible();
   await expect(page.getByText("Memory updated.", { exact: true })).toBeVisible();
-  await expect(page.getByText("Memory forgotten and fenced from future use.", { exact: true }))
-    .toBeVisible();
+  await expect(page.getByText("Forgotten.", { exact: true })).toBeVisible();
 
   const first = await openAnswerDetails(page, "assistant-save");
   const firstDisclosure = first.getByRole("button", { name: "Memory. 1 memory used" });
@@ -284,6 +286,258 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
   await expect(reopenedArchived.getByText(/Archived previous-chat episode\./u)).toBeVisible();
   await expect(second.getByText("First answer frozen memory.", { exact: true })).toHaveCount(0);
   await expect(page.getByTestId("details-pane")).toHaveCount(0);
+});
+
+for (const locale of ["EN", "RU"] as const) {
+  test(`edits and undoes the exact saved paraphrase inline in ${locale}`, async ({ page }) => {
+    const action: MemoryActionFeedback = {
+      factId: "memory-fact-paraphrase",
+      operation: "SAVE",
+      statement: locale === "RU"
+        ? "Я предпочитаю краткие технические ответы."
+        : "I prefer concise technical answers.",
+      status: "COMMITTED",
+      versionId: "memory-version-1"
+    };
+    const messages = [
+      message({
+        id: `user-action-${locale}`,
+        parentMessageId: null,
+        role: "user",
+        text: locale === "RU" ? "Запомни моё предпочтение" : "Remember my preference"
+      }),
+      message({
+        action,
+        id: `assistant-action-${locale}`,
+        parentMessageId: `user-action-${locale}`,
+        role: "assistant",
+        text: locale === "RU" ? "Готово." : "Done."
+      })
+    ];
+    const chat = {
+      activeLeafMessageId: `assistant-action-${locale}`,
+      createdAt: timestamp,
+      defaultModelId: "gpt-5.5",
+      defaultProvider: "openai",
+      folderId: null,
+      id: `chat-memory-action-${locale}`,
+      messageCount: messages.length,
+      messages,
+      pinned: false,
+      title: `Memory action ${locale}`,
+      updatedAt: timestamp,
+      usageStats: null
+    };
+    const copy = locale === "RU"
+      ? {
+          changed: "Сохранённый текст обновлён.",
+          edit: "Изменить",
+          edited: "Я предпочитаю краткие ответы с техническими деталями.",
+          removed: "Сохранённое воспоминание удалено.",
+          restore: "Восстановить",
+          restored: "Воспоминание восстановлено.",
+          save: "Сохранить",
+          undo: "Отменить"
+        }
+      : {
+          changed: "Saved text updated.",
+          edit: "Edit",
+          edited: "I prefer concise answers with technical detail.",
+          removed: "Saved memory removed.",
+          restore: "Restore",
+          restored: "Memory restored.",
+          save: "Save",
+          undo: "Undo"
+        };
+    await page.addInitScript((chatId) => {
+      window.localStorage.setItem("aiqsa.activeChatId", chatId);
+    }, chat.id);
+    await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
+    await page.route("**/api/me/memory/settings", async (route: Route) => {
+      await route.fulfill({ json: memorySettingsFixture({}, locale) });
+    });
+    let authorizationOrdinal = 0;
+    await page.route("**/api/me/memory/mutation-authorizations", async (route: Route) => {
+      authorizationOrdinal += 1;
+      await route.fulfill({
+        json: {
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          mutationAuthorizationId: `authorization-${authorizationOrdinal}`
+        },
+        status: 201
+      });
+    });
+    await page.route("**/api/me/memories/memory-fact-paraphrase", async (route: Route) => {
+      await route.fulfill({
+        json: {
+          memory: memorySummaryFixture({
+            currentVersionId: "memory-version-2",
+            displayText: copy.edited,
+            id: "memory-fact-paraphrase"
+          })
+        }
+      });
+    });
+    await page.route("**/api/me/memories/memory-fact-paraphrase/forget", async (route: Route) => {
+      await route.fulfill({
+        json: {
+          memory: memorySummaryFixture({
+            currentVersionId: null,
+            displayText: null,
+            factState: "FORGOTTEN",
+            id: "memory-fact-paraphrase",
+            versionState: "FORGOTTEN"
+          }),
+          undo: {
+            deletionId: "forget-deletion-1",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            versionId: "memory-version-2"
+          }
+        }
+      });
+    });
+    await page.route("**/api/me/memories/memory-fact-paraphrase/undo-forget", async (route: Route) => {
+      await route.fulfill({
+        json: {
+          memory: memorySummaryFixture({
+            currentVersionId: "memory-version-3",
+            displayText: copy.edited,
+            id: "memory-fact-paraphrase"
+          })
+        }
+      });
+    });
+    await signInWithLocalToken(page);
+
+    const answer = page.locator(`[data-message-id="assistant-action-${locale}"]`);
+    await expect(answer.getByTestId("memory-action-statement")).toContainText(action.statement!);
+    await answer.getByRole("button", { name: copy.edit }).click();
+    await answer.getByRole("textbox", { name: copy.edit }).fill(copy.edited);
+    await answer.getByRole("button", { name: copy.save }).click();
+    await expect(answer.getByText(copy.changed, { exact: true })).toBeVisible();
+    await answer.getByRole("button", { name: copy.undo }).click();
+    await expect(answer.getByText(copy.removed, { exact: true })).toBeVisible();
+    await answer.getByRole("button", { name: copy.restore }).click();
+    await expect(answer.getByText(copy.restored, { exact: true })).toBeVisible();
+  });
+}
+
+test("records and retracts exact automatic receipt feedback without pre-confirmation", async ({ page }) => {
+  const automaticBase = receipt(
+    "The user prefers concise evidence-backed answers.",
+    "version-automatic"
+  );
+  const automaticReceipt: MemoryReceipt = {
+    ...automaticBase,
+    items: [{
+      ...automaticBase.items[0]!,
+      factId: "fact-automatic",
+      feedbackState: "AVAILABLE",
+      runId: "run-assistant-automatic",
+      runItemId: "run-item-automatic",
+      selectionReason: "automatic_lexical_relevance",
+      sourceMode: "AUTOMATIC"
+    }]
+  };
+  const messages = [
+    message({
+      id: "user-automatic",
+      parentMessageId: null,
+      role: "user",
+      text: "Give me the concise version."
+    }),
+    message({
+      id: "assistant-automatic",
+      parentMessageId: "user-automatic",
+      receipt: automaticReceipt,
+      role: "assistant",
+      text: "Concise answer"
+    }),
+    message({
+      id: "user-mark-incorrect",
+      parentMessageId: "assistant-automatic",
+      role: "user",
+      text: "Mark that memory as incorrect."
+    }),
+    message({
+      action: { operation: "MARK_INCORRECT", status: "COMMITTED" },
+      id: "assistant-mark-incorrect",
+      parentMessageId: "user-mark-incorrect",
+      role: "assistant",
+      text: "I recorded that feedback."
+    })
+  ];
+  const chat = {
+    activeLeafMessageId: "assistant-mark-incorrect",
+    createdAt: timestamp,
+    defaultModelId: "gpt-5.5",
+    defaultProvider: "openai",
+    folderId: null,
+    id: "chat-memory-feedback-receipt",
+    messageCount: messages.length,
+    messages,
+    pinned: false,
+    title: "Memory feedback receipt",
+    updatedAt: timestamp,
+    usageStats: null
+  };
+  const feedbackRequests: Record<string, unknown>[] = [];
+  await page.addInitScript(() =>
+    window.localStorage.setItem("aiqsa.activeChatId", "chat-memory-feedback-receipt")
+  );
+  await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
+  await page.route("**/api/me/memory/settings", async (route: Route) => {
+    await route.fulfill({ json: memorySettingsFixture({}, "EN") });
+  });
+  await page.route("**/api/me/memories/fact-automatic/feedback", async (route: Route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    feedbackRequests.push(body);
+    await route.fulfill({
+      contentType: "application/json",
+      json: body.feedbackType === "RETRACT"
+        ? {
+            createdAt: "2026-08-10T10:01:00.000Z",
+            feedbackId: "feedback-retract-automatic",
+            feedbackType: "RETRACT",
+            retractedFeedbackId: "feedback-automatic",
+            targetVersionId: "version-automatic"
+          }
+        : {
+            createdAt: timestamp,
+            feedbackId: "feedback-automatic",
+            feedbackType: "INCORRECT",
+            retractedFeedbackId: null,
+            targetVersionId: "version-automatic"
+          },
+      status: 201
+    });
+  });
+  await signInWithLocalToken(page);
+
+  await expect(page.getByText("Incorrect Memory feedback recorded privately.", {
+    exact: true
+  })).toBeVisible();
+  const answer = await openAnswerDetails(page, "assistant-automatic");
+  await answer.getByRole("button", { name: "Memory. 1 memory used" }).click();
+  await answer.getByRole("button", { name: "This is incorrect" }).click();
+  await expect(answer.getByText("Marked incorrect", { exact: true })).toBeVisible();
+  expect(feedbackRequests[0]).toMatchObject({
+    expectedVersionId: "version-automatic",
+    feedbackType: "INCORRECT",
+    modelRunId: "run-assistant-automatic",
+    modelRunMemoryItemId: "run-item-automatic"
+  });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  await answer.getByRole("button", { name: "Undo" }).click();
+  await expect(answer.getByRole("button", { name: "This is incorrect" })).toBeVisible();
+  expect(feedbackRequests[1]).toMatchObject({
+    expectedVersionId: "version-automatic",
+    feedbackType: "RETRACT",
+    modelRunId: "run-assistant-automatic",
+    modelRunMemoryItemId: "run-item-automatic",
+    retractsFeedbackId: "feedback-automatic"
+  });
 });
 
 test("offers Manage Memories for an ambiguous target without claiming success", async ({ page }) => {

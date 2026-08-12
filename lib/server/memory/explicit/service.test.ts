@@ -77,6 +77,15 @@ function factRepository(): ExplicitMemoryFactRepository {
       replayed: false,
       versionId: "version-moved"
     })),
+    resolve: vi.fn(async () => ({
+      eventId: "event-resolve",
+      factId: "fact-1",
+      memoryGeneration: 0,
+      memoryRevision: 2,
+      outcome: "EDITED" as const,
+      replayed: false,
+      versionId: "version-resolved"
+    })),
     save: vi.fn(async () => ({
       eventId: "event-1",
       factId: "fact-1",
@@ -91,8 +100,15 @@ function factRepository(): ExplicitMemoryFactRepository {
 
 function readRepository(): ExplicitMemoryReadRepository {
   return {
+    detail: vi.fn(async () => ({
+      feedback: [],
+      history: [],
+      memory: summary(),
+      versions: []
+    })),
     evidence: vi.fn(async () => ({ evidence: [], nextCursor: null })),
     get: vi.fn(async () => summary()),
+    getConflict: vi.fn(async () => null),
     getEditable: vi.fn(async () => ({
       canonicalKey: "custom.abc",
       category: "preference",
@@ -109,6 +125,7 @@ function readRepository(): ExplicitMemoryReadRepository {
       validFrom: null,
       validTo: null
     })),
+    getForgetUndoCandidate: vi.fn(async () => null),
     list: vi.fn(async () => ({ memories: [summary()], nextCursor: null })),
     search: vi.fn(async () => ({ memories: [summary()], nextCursor: null }))
   };
@@ -160,7 +177,7 @@ describe("explicit Memory service", () => {
     expect(JSON.stringify(vi.mocked(authorizations.mint).mock.calls)).not.toContain(STATEMENT);
   });
 
-  it("mints shipped Move, clear-history, and redream authorizations", async () => {
+  it("mints shipped Move, bulk-delete, clear-history, and redream authorizations", async () => {
     const authorizations = authorizationRepository();
     const service = createExplicitMemoryService({
       authorizationRepository: authorizations,
@@ -200,8 +217,16 @@ describe("explicit Memory service", () => {
       expectedSettingsRevision: 2,
       operation: "DELETE_LEARNED",
       requestNonce: "nonce-delete-learned"
-    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_operation_unsupported"));
-    expect(authorizations.mint).toHaveBeenCalledTimes(3);
+    })).resolves.toMatchObject({ mutationAuthorizationId: "authorization-1" });
+    await expect(service.mintAuthorization("user-1", {
+      action: "BULK_DELETE",
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      expectedMemoryRevision: 4,
+      expectedSettingsRevision: 2,
+      operation: "DELETE_ALL_REUSABLE",
+      requestNonce: "nonce-delete-all-reusable"
+    })).resolves.toMatchObject({ mutationAuthorizationId: "authorization-1" });
+    expect(authorizations.mint).toHaveBeenCalledTimes(5);
   });
 
   it("commits the exact display statement through an authorized local lexical write", async () => {
@@ -245,6 +270,61 @@ describe("explicit Memory service", () => {
         sourceMode: "EXPLICIT"
       })
     }));
+  });
+
+  it("reuses SAVE authority for one exact pending Forget revival", async () => {
+    const authorizations = authorizationRepository();
+    const facts = factRepository();
+    const reads = readRepository();
+    vi.mocked(reads.getForgetUndoCandidate).mockResolvedValue({
+      canonicalKey: "profile.response_style",
+      category: "preference",
+      displayText: STATEMENT,
+      expiresAt: new Date(NOW.getTime() + 60_000),
+      modality: "PREFERENCE",
+      scopeId: "scope-1",
+      sensitivityClass: "NORMAL",
+      validFrom: null,
+      validTo: null,
+      versionId: "version-forgotten"
+    });
+    const service = createExplicitMemoryService({
+      authorizationRepository: authorizations,
+      clock: () => NOW,
+      factRepository: facts,
+      readRepository: reads,
+      scopeRepository: scopeRepository()
+    });
+
+    await expect(service.undoForget("user-1", "fact-1", {
+      deletionId: "deletion-1",
+      mutationAuthorizationId: "authorization-undo"
+    })).resolves.toEqual({ memory: summary() });
+    expect(authorizations.resolveForUse).toHaveBeenCalledWith("user-1", {
+      action: "SAVE",
+      authorizationId: "authorization-undo",
+      authorizedPayloadHash: memorySha256(STATEMENT)
+    });
+    expect(facts.save).toHaveBeenCalledWith("user-1", expect.objectContaining({
+      explicitSuppressionOverride: true,
+      scopeId: "scope-1",
+      undoForget: {
+        deletionId: "deletion-1",
+        expectedVersionId: "version-forgotten",
+        now: NOW
+      },
+      value: expect.objectContaining({
+        canonicalKey: "profile.response_style",
+        displayText: STATEMENT,
+        sourceMode: "EXPLICIT"
+      })
+    }));
+
+    vi.mocked(reads.getForgetUndoCandidate).mockResolvedValue(null);
+    await expect(service.undoForget("user-1", "fact-1", {
+      deletionId: "expired-deletion",
+      mutationAuthorizationId: "authorization-expired"
+    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_undo_unavailable"));
   });
 
   it("preserves omitted fields on edit and leaves stale-version fencing to the transaction", async () => {
@@ -339,6 +419,98 @@ describe("explicit Memory service", () => {
       scope: { targetId: "chat-live", type: "CHAT" }
     })).rejects.toEqual(new ExplicitMemoryServiceError("memory_contract_invalid"));
     expect(facts.move).toHaveBeenCalledTimes(1);
+  });
+
+  it("turns an active automatic correction into an authorized explicit version", async () => {
+    const facts = factRepository();
+    const reads = readRepository();
+    vi.mocked(reads.get).mockResolvedValue(summary({
+      currentVersionId: "version-explicit-2",
+      sourceMode: "EXPLICIT"
+    }));
+    const service = createExplicitMemoryService({
+      authorizationRepository: authorizationRepository(),
+      clock: () => NOW,
+      factRepository: facts,
+      readRepository: reads,
+      scopeRepository: scopeRepository()
+    });
+
+    await expect(service.update("user-1", "fact-1", {
+      expectedVersionId: "version-1",
+      mutationAuthorizationId: "authorization-correct-automatic",
+      statement: "I prefer detailed answers in Russian."
+    })).resolves.toMatchObject({
+      memory: { currentVersionId: "version-explicit-2", sourceMode: "EXPLICIT" }
+    });
+    expect(facts.edit).toHaveBeenCalledWith("user-1", expect.objectContaining({
+      expectedVersionId: "version-1",
+      value: expect.objectContaining({
+        displayText: "I prefer detailed answers in Russian.",
+        sourceMode: "EXPLICIT"
+      })
+    }));
+  });
+
+  it("resolves an exact conflict snapshot once and conservatively labels corrections", async () => {
+    const facts = factRepository();
+    const reads = readRepository();
+    vi.mocked(reads.getConflict).mockResolvedValue({
+      canonicalKey: "preference.response_style",
+      category: "preference",
+      factId: "fact-1",
+      pinned: false,
+      scope: { type: "GLOBAL_USER" },
+      scopeId: "scope-1",
+      versions: [{
+        displayText: "Keep answers concise.",
+        id: "version-a",
+        modality: "PREFERENCE",
+        sensitivityClass: "NORMAL",
+        validFrom: null,
+        validTo: null
+      }, {
+        displayText: "Include private medical detail.",
+        id: "version-b",
+        modality: "PREFERENCE",
+        sensitivityClass: "HIGHLY_SENSITIVE",
+        validFrom: null,
+        validTo: null
+      }]
+    });
+    vi.mocked(reads.get).mockResolvedValue(summary({
+      currentVersionId: "version-resolved",
+      sourceMode: "EXPLICIT"
+    }));
+    const service = createExplicitMemoryService({
+      authorizationRepository: authorizationRepository(),
+      clock: () => NOW,
+      factRepository: facts,
+      readRepository: reads,
+      scopeRepository: scopeRepository()
+    });
+
+    await expect(service.resolveConflict("user-1", "fact-1", {
+      expectedVersionIds: ["version-a", "version-b"],
+      mutationAuthorizationId: "authorization-resolve",
+      resolution: { kind: "CORRECT", statement: "Use a balanced level of detail." }
+    })).resolves.toMatchObject({ memory: { currentVersionId: "version-resolved" } });
+    expect(facts.resolve).toHaveBeenCalledWith("user-1", expect.objectContaining({
+      expectedVersionIds: ["version-a", "version-b"],
+      selectedVersionId: "version-a",
+      value: expect.objectContaining({
+        displayText: "Use a balanced level of detail.",
+        sensitivityClass: "HIGHLY_SENSITIVE",
+        sourceMode: "EXPLICIT"
+      })
+    }));
+
+    await expect(service.resolveConflict("user-1", "fact-1", {
+      expectedVersionIds: ["version-a", "version-stale"],
+      mutationAuthorizationId: "authorization-stale",
+      resolution: { kind: "CHOOSE", versionId: "version-a" }
+    })).rejects.toEqual(new ExplicitMemoryServiceError("memory_version_stale"));
+    expect(facts.resolve).toHaveBeenCalledTimes(1);
   });
 
   it("maps unavailable scoped targets, rejects secrets, and hides authorization failures", async () => {

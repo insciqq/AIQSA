@@ -18,7 +18,8 @@ export const MEMORY_PERSISTENCE_ERROR_CODES = [
   "memory_settings_conflict",
   "memory_suppression_fingerprint_invalid",
   "memory_suppression_historical_key_missing",
-  "memory_suppression_shape_invalid"
+  "memory_suppression_shape_invalid",
+  "memory_undo_unavailable"
 ] as const;
 
 export type MemoryPersistenceErrorCode =

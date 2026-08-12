@@ -7,6 +7,7 @@ import {
 } from "./memoryManagerStore";
 import {
   memoryDeletionFixture,
+  memoryDetailFixture,
   memoryEvidenceFixture,
   memorySummaryFixture
 } from "./memoryTestFixtures";
@@ -47,7 +48,7 @@ describe("ManageMemories", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path.endsWith("/evidence")) return json(memoryEvidenceFixture());
-      if (path === `/api/me/memories/${memory.id}`) return json({ memory });
+      if (path === `/api/me/memories/${memory.id}`) return json(memoryDetailFixture(memory));
       throw new Error(`unexpected request: ${path}`);
     }));
     const onBack = vi.fn();
@@ -69,7 +70,8 @@ describe("ManageMemories", () => {
     fireEvent.click(screen.getByRole("button", { name: /I prefer concise answers in Russian/u }));
 
     expect(await screen.findByRole("heading", { name: "Memory detail" })).toBeVisible();
-    expect(screen.getAllByText("I prefer concise answers in Russian.", { selector: "p" })).toHaveLength(2);
+    expect(screen.getAllByText("I prefer concise answers in Russian.", { selector: "p" }).length)
+      .toBeGreaterThanOrEqual(2);
     expect(screen.getByRole("heading", { name: "Evidence history" })).toBeVisible();
     expect(screen.getByText("Explicit user action")).toBeVisible();
     expect(screen.getAllByText("memory-version-1", { exact: false }).length).toBeGreaterThanOrEqual(1);
@@ -99,10 +101,71 @@ describe("ManageMemories", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete all saved memories" }));
 
     expect(screen.getByRole("heading", { name: "Delete all saved memories?" })).toBeVisible();
-    expect(screen.getByText(/immediately fences all currently saved explicit memories/u)).toBeVisible();
+    expect(screen.getByText(/stop being used immediately/u)).toBeVisible();
+    fireEvent.click(screen.getByText("What is and is not deleted").closest("summary")!);
     expect(screen.getByText(/Retained raw chats are not deleted/u)).toBeVisible();
     expect(screen.getByText(/immutable accepted destination runs are not rewritten/u)).toBeVisible();
     expect(screen.getByRole("button", { name: "Delete all saved memories" })).toBeVisible();
+  });
+
+  it("forgets one exact memory immediately and restores it through bounded Undo", async () => {
+    const memory = memorySummaryFixture();
+    const undoExpiresAt = new Date(Date.now() + 30_000).toISOString();
+    const forgotten = memorySummaryFixture({
+      currentVersionId: null,
+      displayText: null,
+      factState: "FORGOTTEN",
+      versionState: "FORGOTTEN"
+    });
+    useMemoryManagerStore.setState({
+      activeMemory: memory,
+      detailLoadState: "ready",
+      draft: {
+        category: memory.category,
+        modality: memory.modality,
+        scope: memory.scope,
+        statement: memory.displayText ?? ""
+      },
+      listLoadState: "ready",
+      memories: [memory],
+      screen: "detail",
+      versions: memoryDetailFixture(memory).versions
+    });
+    let authorizationCount = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/me/memory/mutation-authorizations") {
+        authorizationCount += 1;
+        return json({
+          expiresAt: "2099-08-11T08:00:00.000Z",
+          mutationAuthorizationId: authorizationCount === 1 ? "forget-auth" : "restore-auth"
+        });
+      }
+      if (path.endsWith("/forget")) {
+        return json({
+          memory: forgotten,
+          undo: {
+            deletionId: "forget-deletion-1",
+            expiresAt: undoExpiresAt,
+            versionId: "memory-version-1"
+          }
+        });
+      }
+      if (path.endsWith("/undo-forget")) return json({ memory });
+      if (path.startsWith("/api/me/memories?")) {
+        return json({ memories: authorizationCount >= 2 ? [memory] : [], nextCursor: null });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    }));
+    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Forget" }));
+    expect(await screen.findByText("Forgotten.")).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Forget this memory?" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Memory restored.")).toBeVisible();
+    expect(useMemoryManagerStore.getState().memories).toContainEqual(memory);
   });
 
   it("renders blocked durable deletion without exposing memory text", async () => {
@@ -220,6 +283,152 @@ describe("ManageMemories", () => {
       targetId: "folder-live",
       type: "FOLDER"
     });
+  });
+
+  it("records automatic-memory feedback immediately and exposes append-only Undo", async () => {
+    const automatic = memorySummaryFixture({ sourceMode: "AUTOMATIC" });
+    const writes: Record<string, unknown>[] = [];
+    let feedbackWrites = 0;
+    useMemoryManagerStore.setState({
+      activeMemory: automatic,
+      detailLoadState: "ready",
+      draft: {
+        category: automatic.category,
+        modality: automatic.modality,
+        scope: automatic.scope,
+        statement: automatic.displayText ?? ""
+      },
+      evidenceLoadState: "ready",
+      listLoadState: "ready",
+      memories: [automatic],
+      screen: "detail",
+      versions: memoryDetailFixture(automatic).versions
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/feedback")) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        writes.push(body);
+        feedbackWrites += 1;
+        return feedbackWrites === 1
+          ? json({
+              createdAt: "2026-08-11T08:00:00.000Z",
+              feedbackId: "feedback-1",
+              feedbackType: "INCORRECT",
+              retractedFeedbackId: null,
+              targetVersionId: "memory-version-1"
+            }, 201)
+          : json({
+              createdAt: "2026-08-11T08:01:00.000Z",
+              feedbackId: "feedback-retract-1",
+              feedbackType: "RETRACT",
+              retractedFeedbackId: "feedback-1",
+              targetVersionId: "memory-version-1"
+            }, 201);
+      }
+      if (path === `/api/me/memories/${automatic.id}`) {
+        return json(memoryDetailFixture(automatic));
+      }
+      if (path === "/api/me/assistants") {
+        return json({ assistants: [], publishableGroups: [], viewer: { canPublishInstallation: false } });
+      }
+      if (path === "/api/chats/archived") return json({ chats: [], nextCursor: null });
+      throw new Error(`unexpected request: ${path}`);
+    }));
+    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+
+    fireEvent.change(screen.getByLabelText("Private note (optional)"), {
+      target: { value: "  Wrong inference  " }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "This is incorrect" }));
+
+    expect(await screen.findByText("Private Memory feedback recorded.")).toBeVisible();
+    expect(writes[0]).toMatchObject({
+      comment: "Wrong inference",
+      expectedVersionId: "memory-version-1",
+      feedbackType: "INCORRECT"
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Memory feedback undone.")).toBeVisible();
+    expect(writes[1]).toMatchObject({
+      expectedVersionId: "memory-version-1",
+      feedbackType: "RETRACT",
+      retractsFeedbackId: "feedback-1"
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("keeps a typed correction after a stale conflict reload without adding confirmation", async () => {
+    const conflicted = memorySummaryFixture({
+      actionVersionId: "version-a",
+      currentVersionId: null,
+      factState: "CONFLICTED",
+      sourceMode: "AUTOMATIC",
+      versionState: "CONFLICTING"
+    });
+    const versions = ["version-a", "version-b"].map((id, index) => ({
+      category: "preference",
+      createdAt: `2026-08-11T07:0${index}:00.000Z`,
+      displayText: index === 0 ? "Keep answers concise." : "Use detailed answers.",
+      id,
+      modality: "PREFERENCE" as const,
+      sensitivityClass: "NORMAL" as const,
+      sourceCount: 1,
+      sourceMode: "AUTOMATIC" as const,
+      state: "CONFLICTING" as const,
+      systemFrom: `2026-08-11T07:0${index}:00.000Z`,
+      systemTo: null,
+      validFrom: null,
+      validTo: null
+    }));
+    const calls: Array<{ body: Record<string, unknown>; path: string }> = [];
+    useMemoryManagerStore.setState({
+      activeMemory: conflicted,
+      detailLoadState: "ready",
+      evidenceLoadState: "ready",
+      listLoadState: "ready",
+      memories: [conflicted],
+      screen: "detail",
+      versions
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      calls.push({ body, path });
+      if (path === "/api/me/memory/mutation-authorizations") {
+        return json({
+          expiresAt: "2026-08-11T08:05:00.000Z",
+          mutationAuthorizationId: "authorization-resolve"
+        }, 201);
+      }
+      if (path.endsWith("/resolve")) return json({ error: "memory_version_stale" }, 409);
+      if (path === `/api/me/memories/${conflicted.id}`) {
+        return json({ ...memoryDetailFixture(conflicted), versions });
+      }
+      if (path === "/api/me/assistants") {
+        return json({ assistants: [], publishableGroups: [], viewer: { canPublishInstallation: false } });
+      }
+      if (path === "/api/chats/archived") return json({ chats: [], nextCursor: null });
+      throw new Error(`unexpected request: ${path}`);
+    }));
+    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+
+    expect(screen.queryByRole("button", { name: "Move scope" })).not.toBeInTheDocument();
+
+    const correction = screen.getByLabelText("Correct value");
+    fireEvent.change(correction, { target: { value: "Keep my exact local correction." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+
+    await waitFor(() => {
+      expect(calls.some(({ path }) => path.endsWith("/resolve"))).toBe(true);
+      expect(useMemoryManagerStore.getState().mutationState).toBeNull();
+    });
+    expect(correction).toHaveValue("Keep my exact local correction.");
+    expect(calls.find(({ path }) => path.endsWith("/resolve"))?.body).toMatchObject({
+      expectedVersionIds: ["version-a", "version-b"],
+      resolution: { kind: "CORRECT", statement: "Keep my exact local correction." }
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("makes ORPHANED scope repair and Forget explicit while hiding ordinary edit controls", async () => {

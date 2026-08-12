@@ -143,6 +143,17 @@ export function showArchivedChatList(): void {
   });
 }
 
+export function removePermanentlyDeletedArchivedChat(chatId: string): void {
+  detailGeneration += 1;
+  useArchivedChatsStore.setState((state) => ({
+    detail: state.detail?.id === chatId ? null : state.detail,
+    detailError: null,
+    detailLoadState: state.detail?.id === chatId ? "idle" : state.detailLoadState,
+    restoring: false,
+    summaries: state.summaries.filter((chat) => chat.id !== chatId)
+  }));
+}
+
 export async function loadEarlierArchivedMessages(): Promise<void> {
   const detail = useArchivedChatsStore.getState().detail;
   const before = detail?.pageInfo.beforeCursor;

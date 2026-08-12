@@ -132,7 +132,8 @@ describe("Memory execution qualification", () => {
       "MEMORY_EPISODE_EXTRACT",
       "MEMORY_FACT_EXTRACT",
       "MEMORY_CONSOLIDATE",
-      "MEMORY_VERIFY"
+      "MEMORY_VERIFY",
+      "MEMORY_PROFILE"
     ]);
   });
 
@@ -168,5 +169,55 @@ describe("Memory execution qualification", () => {
       target: target(false),
       versions
     })).toThrow(new MemoryExecutionError("memory_execution_capability_unavailable"));
+  });
+
+  it("selects the preregistered evidence identity for a Phase-specific role", () => {
+    const capable = target(true);
+    const profileRequirement: MemoryQualificationRequirement = {
+      ...requirementFor(capable),
+      corpusHash: "9".repeat(64),
+      corpusVersion: "memory-corpus-v2",
+      role: "MEMORY_PROFILE",
+      scorerVersion: "memory-scorers-v2",
+      suiteVersion: "memory-phase7-quality-v1"
+    };
+    const qualification = signed(profileRequirement);
+    const authority = {
+      corpusHash: "7".repeat(64),
+      corpusVersion: "memory-corpus-v1",
+      identitiesByRole: {
+        MEMORY_PROFILE: {
+          corpusHash: "9".repeat(64),
+          corpusVersion: "memory-corpus-v2",
+          scorerVersion: "memory-scorers-v2",
+          suiteVersion: "memory-phase7-quality-v1"
+        }
+      },
+      registry: [qualification],
+      scorerVersion: "memory-scorer-v1",
+      suiteVersion: "memory-suite-v1",
+      verifySignature: (payload: string, signature: string) =>
+        createHmac("sha256", KEY).update(payload, "utf8").digest("hex") === signature
+    } as const;
+    expect(qualifyMemoryExecution({
+      authority,
+      now: new Date("2026-08-10T12:00:00.000Z"),
+      role: "MEMORY_PROFILE",
+      settings: { memoryUiLocale: "RU" },
+      target: capable,
+      versions
+    }).requirement).toMatchObject({
+      corpusHash: "9".repeat(64),
+      role: "MEMORY_PROFILE",
+      suiteVersion: "memory-phase7-quality-v1"
+    });
+    expect(() => qualifyMemoryExecution({
+      authority: { ...authority, identitiesByRole: undefined },
+      now: new Date("2026-08-10T12:00:00.000Z"),
+      role: "MEMORY_PROFILE",
+      settings: { memoryUiLocale: "RU" },
+      target: capable,
+      versions
+    })).toThrow(new MemoryExecutionError("memory_execution_qualification_required"));
   });
 });

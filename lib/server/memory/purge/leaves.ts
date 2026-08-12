@@ -5,32 +5,18 @@ import type {
   MemoryDeletionContributorRegistry
 } from "./registry";
 import {
+  allReusableMemoryHistoryPurgeSelection,
   inspectMemoryHistoryPurge,
   purgeMemoryHistorySelection,
   suppressedMemoryHistoryPurgeSelection
 } from "../history/purge";
-
-function versionTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
-  if (target.kind === "MEMORY_FACT") {
-    return Prisma.sql`
-      version."userId" = ${target.userId}
-      AND version."factId" = ${target.targetId}
-      AND version."state" = 'FORGOTTEN'::"MemoryFactVersionState"
-    `;
-  }
-  return Prisma.sql`
-    version."userId" = ${target.userId}
-    AND version."state" = 'FORGOTTEN'::"MemoryFactVersionState"
-    AND EXISTS (
-      SELECT 1
-      FROM "MemoryFactVersion" AS explicit_marker
-      WHERE explicit_marker."userId" = version."userId"
-        AND explicit_marker."factId" = version."factId"
-        AND explicit_marker."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-        AND explicit_marker."state" = 'FORGOTTEN'::"MemoryFactVersionState"
-    )
-  `;
-}
+import { memoryPurgeVersionCondition } from "./selection";
+import { memoryProfileDeletionContributor } from "../profile/purge";
+import {
+  allReusableIndexesContributor,
+  allReusableLedgerContributor,
+  allReusableWorkContributor
+} from "./allReusable";
 
 function countFrom(rows: readonly Readonly<{ count: number }>[]): number {
   const count = rows[0]?.count;
@@ -41,6 +27,61 @@ function countFrom(rows: readonly Readonly<{ count: number }>[]): number {
 }
 
 function candidateTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
+  if (target.kind === "ALL_REUSABLE") {
+    return Prisma.sql`
+      candidate."userId" = ${target.userId}
+      AND (
+        candidate."createdAt" <= (
+          SELECT barrier."createdAt"
+          FROM "MemorySourceBarrier" AS barrier
+          WHERE barrier."userId" = ${target.userId}
+            AND barrier."id" = ${target.targetId}
+            AND barrier."kind" = 'ALL_REUSABLE'::"MemorySourceBarrierKind"
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM "MemoryCandidateMessage" AS candidate_message
+          INNER JOIN "Message" AS source_message
+            ON source_message."chatId" = candidate_message."chatId"
+            AND source_message."id" = candidate_message."messageId"
+          WHERE candidate_message."userId" = candidate."userId"
+            AND candidate_message."candidateId" = candidate."id"
+            AND source_message."createdAt" <= (
+              SELECT barrier."sourceCreatedAtCutoff"
+              FROM "MemorySourceBarrier" AS barrier
+              WHERE barrier."userId" = ${target.userId}
+                AND barrier."id" = ${target.targetId}
+                AND barrier."kind" = 'ALL_REUSABLE'::"MemorySourceBarrierKind"
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM "MemoryJob" AS job
+          WHERE job."userId" = candidate."userId"
+            AND job."id" = candidate."jobId"
+            AND job."memoryGenerationSnapshot" < (
+              SELECT barrier."memoryGeneration"
+              FROM "MemorySourceBarrier" AS barrier
+              WHERE barrier."userId" = ${target.userId}
+                AND barrier."id" = ${target.targetId}
+                AND barrier."kind" = 'ALL_REUSABLE'::"MemorySourceBarrierKind"
+            )
+        )
+      )
+    `;
+  }
+  if (target.kind === "AUTOMATIC_SET") {
+    return Prisma.sql`
+      candidate."userId" = ${target.userId}
+      AND candidate."createdAt" <= (
+        SELECT barrier."createdAt"
+        FROM "MemorySourceBarrier" AS barrier
+        WHERE barrier."userId" = ${target.userId}
+          AND barrier."id" = ${target.targetId}
+          AND barrier."kind" = 'AUTOMATIC_FACTS'::"MemorySourceBarrierKind"
+      )
+    `;
+  }
   const factTarget = target.kind === "MEMORY_FACT"
     ? Prisma.sql`
         candidate."resolvedFactId" = ${target.targetId}
@@ -98,6 +139,53 @@ function candidateTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
   `;
 }
 
+function feedbackTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
+  if (target.kind === "MEMORY_FACT") {
+    return Prisma.sql`feedback."memoryFactId" = ${target.targetId}`;
+  }
+  if (target.kind === "AUTOMATIC_SET") {
+    return Prisma.sql`
+      EXISTS (
+        SELECT 1
+        FROM "MemoryFactVersion" AS version
+        WHERE version."userId" = feedback."userId"
+          AND version."id" = feedback."memoryFactVersionId"
+          AND ${memoryPurgeVersionCondition(target)}
+      )
+    `;
+  }
+  if (target.kind === "ALL_REUSABLE") {
+    return Prisma.sql`
+      (
+        feedback."createdAt" <= (
+          SELECT barrier."createdAt"
+          FROM "MemorySourceBarrier" AS barrier
+          WHERE barrier."userId" = ${target.userId}
+            AND barrier."id" = ${target.targetId}
+            AND barrier."kind" = 'ALL_REUSABLE'::"MemorySourceBarrierKind"
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM "MemoryFactVersion" AS version
+          WHERE version."userId" = feedback."userId"
+            AND version."id" = feedback."memoryFactVersionId"
+            AND ${memoryPurgeVersionCondition(target)}
+        )
+      )
+    `;
+  }
+  return Prisma.sql`
+    EXISTS (
+      SELECT 1
+      FROM "MemoryFactVersion" AS explicit_version
+      WHERE explicit_version."userId" = feedback."userId"
+        AND explicit_version."factId" = feedback."memoryFactId"
+        AND explicit_version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+        AND explicit_version."state" = 'FORGOTTEN'::"MemoryFactVersionState"
+    )
+  `;
+}
+
 const candidateDerivativesContributor: MemoryDeletionContributor = Object.freeze({
   async audit(tx, target) {
     const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
@@ -144,6 +232,15 @@ const candidateDerivativesContributor: MemoryDeletionContributor = Object.freeze
     `);
     const ids = rows.map(({ id }) => id);
     if (ids.length === 0) return;
+    if (target.kind === "ALL_REUSABLE") {
+      await tx.memoryCandidateMessage.deleteMany({
+        where: { candidateId: { in: ids }, userId: target.userId }
+      });
+      await tx.memoryCandidate.deleteMany({
+        where: { id: { in: ids }, userId: target.userId }
+      });
+      return;
+    }
     await tx.memoryCandidateDecision.updateMany({
       data: { resolvedAt: new Date(), state: "STALE" },
       where: {
@@ -170,7 +267,9 @@ const candidateDerivativesContributor: MemoryDeletionContributor = Object.freeze
         proposedValidTo: null,
         proposedValue: Prisma.DbNull,
         rawTemporalExpression: null,
-        reasonCode: "forgotten_or_suppressed",
+        reasonCode: target.kind === "AUTOMATIC_SET"
+          ? "learned_delete"
+          : "forgotten_or_suppressed",
         resolvedFactId: null,
         resolvedAt: new Date(),
         sourceTimezone: null,
@@ -187,8 +286,48 @@ const candidateDerivativesContributor: MemoryDeletionContributor = Object.freeze
   version: "v1"
 });
 
+function allReusableAttemptCondition(target: MemoryPurgeTarget): Prisma.Sql {
+  return Prisma.sql`
+    attempt."userId" = ${target.userId}
+    AND attempt."state" <> 'CONSUMED'::"MemoryRetrievalAttemptState"
+    AND (
+      attempt."createdAt" <= (
+        SELECT barrier."createdAt"
+        FROM "MemorySourceBarrier" AS barrier
+        WHERE barrier."userId" = ${target.userId}
+          AND barrier."id" = ${target.targetId}
+          AND barrier."kind" = 'ALL_REUSABLE'::"MemorySourceBarrierKind"
+      )
+      OR attempt."memoryGenerationSnapshot" < (
+        SELECT barrier."memoryGeneration"
+        FROM "MemorySourceBarrier" AS barrier
+        WHERE barrier."userId" = ${target.userId}
+          AND barrier."id" = ${target.targetId}
+          AND barrier."kind" = 'ALL_REUSABLE'::"MemorySourceBarrierKind"
+      )
+    )
+  `;
+}
+
 const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
   async audit(tx, target) {
+    if (target.kind === "ALL_REUSABLE") {
+      const [attemptRows, itemRows] = await Promise.all([
+        tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+          SELECT COUNT(*)::integer AS "count"
+          FROM "MemoryRetrievalAttempt" AS attempt
+          WHERE ${allReusableAttemptCondition(target)}
+        `),
+        tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+          SELECT COUNT(*)::integer AS "count"
+          FROM "MemoryRetrievalAttemptItem" AS item
+          INNER JOIN "MemoryFactVersion" AS version
+            ON version."userId" = item."userId" AND version."id" = item."factVersionId"
+          WHERE ${memoryPurgeVersionCondition(target)}
+        `)
+      ]);
+      return countFrom(attemptRows) + countFrom(itemRows);
+    }
     const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
       SELECT COUNT(*)::integer AS "count"
       FROM "MemoryRetrievalAttemptItem" AS item
@@ -197,12 +336,85 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
       INNER JOIN "MemoryFactVersion" AS version
         ON version."userId" = item."userId" AND version."id" = item."factVersionId"
       WHERE attempt."state" <> 'CONSUMED'::"MemoryRetrievalAttemptState"
-        AND ${versionTargetCondition(target)}
+        AND ${memoryPurgeVersionCondition(target)}
     `);
     return countFrom(rows);
   },
   id: "unaccepted-attempts",
   async purge(tx, target) {
+    if (target.kind === "ALL_REUSABLE") {
+      await tx.$executeRaw(Prisma.sql`
+        DELETE FROM "MemoryRetrievalAttemptItem" AS item
+        USING "MemoryFactVersion" AS version
+        WHERE version."userId" = item."userId"
+          AND version."id" = item."factVersionId"
+          AND ${memoryPurgeVersionCondition(target)}
+      `);
+      await tx.$executeRaw(Prisma.sql`
+        WITH selected AS MATERIALIZED (
+          SELECT
+            attempt."admittedAssistantLeafMessageId",
+            attempt."boundedPrivateBaseRequestSnapshot",
+            attempt."chatId",
+            attempt."id",
+            attempt."modelRunId",
+            attempt."userId"
+          FROM "MemoryRetrievalAttempt" AS attempt
+          WHERE ${allReusableAttemptCondition(target)}
+        ), settled_runs AS (
+          UPDATE "ModelRun" AS run
+          SET
+            "errorPayload" = jsonb_build_object(
+              'code', 'memory_all_reusable_deleted',
+              'message', 'Memory preparation stopped because reusable Memory was deleted.'
+            ),
+            "normalizedRequest" = COALESCE(
+              run."normalizedRequest",
+              selected."boundedPrivateBaseRequestSnapshot" -> 'normalizedRequest',
+              '{}'::jsonb
+            ),
+            "providerRequestPreview" = COALESCE(
+              run."providerRequestPreview",
+              selected."boundedPrivateBaseRequestSnapshot" -> 'providerRequestPreview',
+              '{}'::jsonb
+            ),
+            "status" = 'error'::"ModelRunStatus",
+            "updatedAt" = CURRENT_TIMESTAMP
+          FROM selected
+          WHERE run."id" = selected."modelRunId"
+            AND run."userId" = selected."userId"
+            AND run."status" = 'preparing'::"ModelRunStatus"
+          RETURNING run."id", run."userId"
+        )
+        UPDATE "Message" AS message
+        SET
+          "errorMessage" = 'Memory preparation stopped because reusable Memory was deleted.',
+          "status" = 'error'::"MessageStatus",
+          "updatedAt" = CURRENT_TIMESTAMP
+        FROM selected
+        INNER JOIN settled_runs AS run
+          ON run."id" = selected."modelRunId" AND run."userId" = selected."userId"
+        WHERE message."id" = selected."admittedAssistantLeafMessageId"
+          AND message."chatId" = selected."chatId"
+          AND message."status" IN ('queued'::"MessageStatus", 'streaming'::"MessageStatus")
+      `);
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "UsageEvent" AS usage
+        SET "memoryExecutionBindingId" = NULL
+        FROM "MemoryExecutionBinding" AS binding
+        INNER JOIN "MemoryRetrievalAttempt" AS attempt
+          ON attempt."userId" = binding."userId"
+          AND attempt."id" = binding."retrievalAttemptId"
+        WHERE usage."userId" = binding."userId"
+          AND usage."memoryExecutionBindingId" = binding."id"
+          AND ${allReusableAttemptCondition(target)}
+      `);
+      await tx.$executeRaw(Prisma.sql`
+        DELETE FROM "MemoryRetrievalAttempt" AS attempt
+        WHERE ${allReusableAttemptCondition(target)}
+      `);
+      return;
+    }
     await tx.$executeRaw(Prisma.sql`
       WITH deleted AS (
         DELETE FROM "MemoryRetrievalAttemptItem" AS item
@@ -212,7 +424,7 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
           AND attempt."state" <> 'CONSUMED'::"MemoryRetrievalAttemptState"
           AND version."userId" = item."userId"
           AND version."id" = item."factVersionId"
-          AND ${versionTargetCondition(target)}
+          AND ${memoryPurgeVersionCondition(target)}
         RETURNING item."userId", item."attemptId"
       ), affected AS (
         SELECT DISTINCT
@@ -314,7 +526,7 @@ const evidenceContributor: MemoryDeletionContributor = Object.freeze({
       INNER JOIN "MemoryFactVersion" AS version
         ON version."userId" = evidence."userId"
         AND version."id" = evidence."factVersionId"
-      WHERE ${versionTargetCondition(target)}
+      WHERE ${memoryPurgeVersionCondition(target)}
     `);
     return countFrom(rows);
   },
@@ -325,7 +537,51 @@ const evidenceContributor: MemoryDeletionContributor = Object.freeze({
       USING "MemoryFactVersion" AS version
       WHERE version."userId" = evidence."userId"
         AND version."id" = evidence."factVersionId"
-        AND ${versionTargetCondition(target)}
+        AND ${memoryPurgeVersionCondition(target)}
+    `);
+  },
+  version: "v1"
+});
+
+const feedbackContributor: MemoryDeletionContributor = Object.freeze({
+  async audit(tx, target) {
+    const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+      SELECT COUNT(*)::integer AS "count"
+      FROM "MemoryFeedback" AS feedback
+      WHERE feedback."userId" = ${target.userId}
+        AND feedback."contentPurgedAt" IS NULL
+        AND ${feedbackTargetCondition(target)}
+    `);
+    return countFrom(rows);
+  },
+  id: "feedback-records",
+  async purge(tx, target) {
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE "MemoryFeedback" AS feedback
+      SET
+        "memoryFactId" = NULL,
+        "memoryFactVersionId" = NULL,
+        "episodeId" = NULL,
+        "recallChunkId" = NULL,
+        "modelRunId" = NULL,
+        "modelRunMemoryItemId" = NULL,
+        "modelRunToolCallId" = NULL,
+        "sourceChatIdSnapshot" = NULL,
+        "sourceBranchGenerationSnapshot" = NULL,
+        "comment" = NULL,
+        "retractsFeedbackId" = NULL,
+        "memoryEventId" = NULL,
+        "contentPurgedAt" = CURRENT_TIMESTAMP,
+        "purgeReason" = ${target.kind === "MEMORY_FACT"
+          ? "fact_forgotten"
+          : target.kind === "AUTOMATIC_SET"
+            ? "learned_delete"
+            : target.kind === "ALL_REUSABLE"
+              ? "all_reusable_delete"
+              : "explicit_delete"}
+      WHERE feedback."userId" = ${target.userId}
+        AND feedback."contentPurgedAt" IS NULL
+        AND ${feedbackTargetCondition(target)}
     `);
   },
   version: "v1"
@@ -333,19 +589,25 @@ const evidenceContributor: MemoryDeletionContributor = Object.freeze({
 
 const historyDerivativesContributor: MemoryDeletionContributor = Object.freeze({
   async audit(tx, target) {
+    if (target.kind === "AUTOMATIC_SET") return 0;
     const progress = await inspectMemoryHistoryPurge(
       tx,
       target.userId,
-      suppressedMemoryHistoryPurgeSelection
+      target.kind === "ALL_REUSABLE"
+        ? allReusableMemoryHistoryPurgeSelection(target.targetId)
+        : suppressedMemoryHistoryPurgeSelection
     );
     return progress.totalUnits - progress.completedUnits;
   },
   id: "history-derivatives",
   async purge(tx, target) {
+    if (target.kind === "AUTOMATIC_SET") return;
     await purgeMemoryHistorySelection(
       tx,
       target.userId,
-      suppressedMemoryHistoryPurgeSelection
+      target.kind === "ALL_REUSABLE"
+        ? allReusableMemoryHistoryPurgeSelection(target.targetId)
+        : suppressedMemoryHistoryPurgeSelection
     );
   },
   version: "v1"
@@ -359,7 +621,7 @@ const searchContributor: MemoryDeletionContributor = Object.freeze({
       INNER JOIN "MemoryFactVersion" AS version
         ON version."userId" = search."userId"
         AND version."id" = search."factVersionId"
-      WHERE ${versionTargetCondition(target)}
+      WHERE ${memoryPurgeVersionCondition(target)}
     `);
     return countFrom(rows);
   },
@@ -370,18 +632,52 @@ const searchContributor: MemoryDeletionContributor = Object.freeze({
       USING "MemoryFactVersion" AS version
       WHERE version."userId" = search."userId"
         AND version."id" = search."factVersionId"
-        AND ${versionTargetCondition(target)}
+        AND ${memoryPurgeVersionCondition(target)}
     `);
   },
   version: "v1"
 });
+
+function eventTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
+  if (target.kind === "ALL_REUSABLE") {
+    return Prisma.sql`
+      event."userId" = ${target.userId}
+      AND (
+        event."createdAt" <= (
+          SELECT barrier."createdAt"
+          FROM "MemorySourceBarrier" AS barrier
+          WHERE barrier."userId" = ${target.userId}
+            AND barrier."id" = ${target.targetId}
+            AND barrier."kind" = 'ALL_REUSABLE'::"MemorySourceBarrierKind"
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM "MemoryFactVersion" AS version
+          WHERE version."userId" = event."userId"
+            AND version."id" = event."factVersionId"
+            AND ${memoryPurgeVersionCondition(target)}
+        )
+      )
+    `;
+  }
+  return Prisma.sql`
+    event."userId" = ${target.userId}
+    AND EXISTS (
+      SELECT 1
+      FROM "MemoryFactVersion" AS version
+      WHERE version."userId" = event."userId"
+        AND version."id" = event."factVersionId"
+        AND ${memoryPurgeVersionCondition(target)}
+    )
+  `;
+}
 
 const versionContentContributor: MemoryDeletionContributor = Object.freeze({
   async audit(tx, target) {
     const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
       SELECT COUNT(*)::integer AS "count"
       FROM "MemoryFactVersion" AS version
-      WHERE ${versionTargetCondition(target)}
+      WHERE ${memoryPurgeVersionCondition(target)}
         AND num_nonnulls(
           version."displayText",
           version."normalizedSearchText",
@@ -390,10 +686,34 @@ const versionContentContributor: MemoryDeletionContributor = Object.freeze({
           version."temporalResolutionEvidence"
         ) > 0
     `);
-    return countFrom(rows);
+    const versionCount = countFrom(rows);
+    if (target.kind !== "AUTOMATIC_SET" && target.kind !== "ALL_REUSABLE") {
+      return versionCount;
+    }
+    const eventRows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+      SELECT COUNT(*)::integer AS "count"
+      FROM "MemoryEvent" AS event
+      WHERE ${eventTargetCondition(target)}
+        AND (
+          event."sourceChatId" IS NOT NULL
+          OR event."sourceGeneration" IS NOT NULL
+          OR event."metadata" <> '{"schemaVersion":"memory-event-purged-v1"}'::jsonb
+        )
+    `);
+    return versionCount + countFrom(eventRows);
   },
   id: "fact-version-content",
   async purge(tx, target) {
+    if (target.kind === "AUTOMATIC_SET" || target.kind === "ALL_REUSABLE") {
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "MemoryEvent" AS event
+        SET
+          "sourceChatId" = NULL,
+          "sourceGeneration" = NULL,
+          "metadata" = '{"schemaVersion":"memory-event-purged-v1"}'::jsonb
+        WHERE ${eventTargetCondition(target)}
+      `);
+    }
     await tx.$executeRaw(Prisma.sql`
       UPDATE "MemoryFactVersion" AS version
       SET
@@ -403,7 +723,7 @@ const versionContentContributor: MemoryDeletionContributor = Object.freeze({
         "rawTemporalExpression" = NULL,
         "temporalResolutionEvidence" = NULL,
         "contentPurgedAt" = COALESCE(version."contentPurgedAt", CURRENT_TIMESTAMP)
-      WHERE ${versionTargetCondition(target)}
+      WHERE ${memoryPurgeVersionCondition(target)}
         AND num_nonnulls(
           version."displayText",
           version."normalizedSearchText",
@@ -420,9 +740,14 @@ export const phase2MemoryDeletionContributors = Object.freeze([
   unacceptedAttemptsContributor,
   historyDerivativesContributor,
   candidateDerivativesContributor,
-  evidenceContributor,
+  feedbackContributor,
   searchContributor,
-  versionContentContributor
+  memoryProfileDeletionContributor,
+  versionContentContributor,
+  allReusableLedgerContributor,
+  evidenceContributor,
+  allReusableWorkContributor,
+  allReusableIndexesContributor
 ]);
 
 export function registerPhase2MemoryDeletionContributors(

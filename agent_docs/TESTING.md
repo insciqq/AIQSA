@@ -56,7 +56,18 @@ docker compose -f docker-compose.dev.yml up -d --build
 npm run check:container
 ```
 
-`check:container` executes the complete `npm run check` inside the development app container, including PostgreSQL-backed repository/concurrency cases. Deterministic files remain parallel, while the explicitly classified direct-database and opt-in integration files run in one stateful project without file parallelism because they share the disposable schema. A small documentation, pure-domain, component-unit, or deterministic adapter change does not require Compose merely because it changes application code.
+`check:container` executes the complete check in a fresh bounded one-shot app
+container, including PostgreSQL-backed repository/concurrency cases. It has
+fixed 4 GiB and two-CPU cgroup boundaries, uses a 3 GiB Node heap and one Vitest
+worker, and never runs the toolchain inside the warmed Next/Turbopack dev
+process. Its unique container name also rejects a concurrent second check. Dev
+Compose caps other app containers with `AIQSA_APP_MEMORY_LIMIT` (3 GiB by
+default) and `AIQSA_APP_CPU_LIMIT` (four CPUs by default).
+Deterministic and direct-database files therefore run sequentially in this
+safety lane; the stateful project also retains its no-file-parallelism rule
+because cases share the disposable schema.
+A small documentation, pure-domain, component-unit, or deterministic adapter
+change does not require Compose merely because it changes application code.
 
 The default `docker-compose.yml` is the persistent operator installation and is never a development or test target. One-off commands are valid only against `docker-compose.dev.yml`. Development data is disposable, but stateful/container checks are not safe to run concurrently.
 
@@ -151,9 +162,10 @@ Select the script owned by the migration; do not run this list as a generic rele
 
 ### Database and service integrations
 
-Native Memory Phase 4-6 source settlement, safety projection, lexical/vector/
-episode indexing, candidate extraction/consolidation, local automatic retrieval,
-rebuild/recovery, manual search, and destructive replay:
+Native Memory source settlement through learning review and feature-dark global
+reconciliation: safety projection, lexical/vector/episode indexing, candidate
+extraction/consolidation, local automatic retrieval, review feedback/conflict
+resolution, rebuild/recovery, manual search, and destructive replay:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app \
@@ -166,10 +178,73 @@ docker compose -f docker-compose.dev.yml exec -T app \
   lib/server/memory/history/repository.prisma.test.ts \
   lib/server/memory/learning/extraction/repository.prisma.test.ts \
   lib/server/memory/learning/consolidation/repository.prisma.test.ts \
+  lib/server/memory/globalDream/repository.prisma.test.ts \
+  lib/server/memory/profile/purge.prisma.test.ts \
+  lib/server/memory/review/repository.prisma.test.ts \
   lib/server/memory/retrieval/localRepository.prisma.test.ts \
   lib/server/memory/retrieval/vector.prisma.test.ts \
   lib/server/memory/rebuild/prismaRebuild.prisma.test.ts \
   lib/server/memory/lifecycle/prismaLifecycle.prisma.test.ts
+```
+
+Owner-isolated and aggregate-only Memory health persistence:
+
+```bash
+docker compose -f docker-compose.dev.yml exec -T \
+  -e AIQSA_MEMORY_HEALTH_INTEGRATION_TEST=1 app \
+  npx vitest run --config vitest.full.config.ts \
+  lib/server/memory/health/prismaRepository.integration.test.ts
+```
+
+Phase 8 composition, bounded populated-queue load, crash recovery, latency,
+usage completeness, deletion/provider cleanup, rebuild, Temporary overdue, and
+health evidence run together against an already healthy disposable development
+PostgreSQL/MinIO stack. Keep Prisma generation and the tests in the same
+one-shot container because its anonymous `node_modules` volume is not shared
+with another `docker compose run` invocation:
+
+```bash
+AIQSA_APP_MEMORY_LIMIT=2g AIQSA_APP_CPU_LIMIT=2 \
+docker compose -f docker-compose.dev.yml run --rm -T --no-deps \
+  -e NODE_OPTIONS=--max-old-space-size=1536 \
+  -e AIQSA_MEMORY_HEALTH_INTEGRATION_TEST=1 \
+  -e AIQSA_MEMORY_OPERATIONAL_INTEGRATION_TEST=1 app sh -c '
+    npx prisma generate >/dev/null &&
+    npx vitest run --config vitest.full.config.ts --maxWorkers=1 \
+      lib/server/memory/phase8Composition.test.ts \
+      lib/server/memory/capabilityPolicy.test.ts \
+      lib/server/memory/coordinator/policy.test.ts \
+      lib/server/memory/coordinator/scheduler.test.ts \
+      lib/server/memory/coordinator/defaultCoordinator.test.ts \
+      lib/server/memory/coordinator/prismaRepository.prisma.test.ts \
+      lib/server/memory/history/repository.prisma.test.ts \
+      lib/server/memory/retrieval/localRepository.prisma.test.ts \
+      lib/server/memory/rebuild/prismaRebuild.prisma.test.ts \
+      lib/server/memory/temporaryRetention.prisma.test.ts \
+      lib/server/chats/permanentDeletion/cleanup.prisma.test.ts \
+      lib/server/memory/accountDeletion/accountDeletion.prisma.test.ts \
+      lib/server/memory/health/prismaRepository.integration.test.ts \
+      lib/server/memory/operational/evidence.test.ts \
+      lib/server/memory/operational/queueLoad.integration.test.ts \
+      tests/harness/memory-operational-contract.test.ts
+  '
+```
+
+The operational evidence schema is strict and aggregate-only. The load case
+uses 24 synthetic owners, 96 jobs, at most two concurrent claims, and one
+expired lease; it rejects an unbounded or larger-than-two-CPU/two-GiB cgroup and
+fails rather than touching a database with unrelated eligible work. The same
+matrix enforces local-retrieval p95 below 150 ms and settled-history lag below
+15 minutes. It never prints owner/job IDs, Memory/query/source text, embeddings,
+storage keys, provider bodies, or credentials.
+
+Write-quiesced backup, wrong-key rejection, empty-target restore, unresolved
+account-obligation rejection, deletion-only review, and private promotion
+receipt use uniquely named disposable source/restore projects and clean their
+volumes on exit:
+
+```bash
+npm run test:backup-restore
 ```
 
 The vector fixture uses PostgreSQL 16/pgvector 0.8, 5,001 eligible rows and
@@ -204,6 +279,45 @@ authorized owner; the runner otherwise requires exactly one active admin. It
 never grants provider authority by itself and never emits account/model IDs,
 source text, vectors, raw provider bodies, or credentials. This
 `RECALL_RELEASE` evidence does not satisfy `AUTOMATIC_LEARNING_BETA`.
+
+The automatic-learning beta has a separate live evaluator. Tuning may use its
+bounded subset flags repeatedly, but HOLDOUT rejects every subset flag and
+requires the exact frozen corpus hash plus the already-passed exact embedding
+HOLDOUT dependency. The runner resolves the persisted System Model and
+embedding deployment, makes no call without explicit authorization, writes the
+sanitized aggregate once with exclusive creation, and runs in a 2 GiB/two-CPU
+one-shot dev container:
+
+```bash
+npm run memory:learning:evaluate -- \
+  --split=holdout \
+  --authorized-live-provider \
+  --holdout-corpus-hash=AUTHORIZED_HOLDOUT_SHA256 \
+  --embedding-holdout-evidence=.aiqsa/PRIVATE_EMBEDDING_EVIDENCE.json \
+  --evidence-output=.aiqsa/PRIVATE_LEARNING_EVIDENCE.json
+```
+
+Only a passed full-split aggregate with complete independent RU/EN gates, zero
+hard-gate counts, both supporting roles, and all six exact role fingerprints
+may be signed. `memory:qualification:build` accepts only evidence and an
+Ed25519 private key below `.aiqsa`, emits the public key plus registry to
+standard output or an exclusively created private `--output`, and never emits
+or copies the private key:
+
+```bash
+npm run memory:qualification:build -- \
+  --evidence=.aiqsa/PRIVATE_LEARNING_EVIDENCE.json \
+  --private-key=.aiqsa/PRIVATE_ED25519_KEY.pem \
+  --approved-at=APPROVED_AT_ISO \
+  --expires-at=EXPIRES_AT_ISO \
+  --approved-by=SAFE_OPERATOR_ID \
+  --approval-id=SAFE_APPROVAL_ID \
+  --output=.aiqsa/PRIVATE_SIGNED_REGISTRY.json
+```
+
+The reviewed sanitized output updates the code-owned
+`lib/evaluation/memory/qualificationRegistry.json`; the private evidence and
+signing key never enter Git, Docker context exports, logs, or test fixtures.
 
 Authentication admission concurrency/restart:
 

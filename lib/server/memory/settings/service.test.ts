@@ -142,7 +142,7 @@ function repository(
 }
 
 describe("Memory settings service", () => {
-  it("advertises only the complete Phase 2 surface by default", async () => {
+  it("advertises released local Memory surfaces and keeps learning gated by default", async () => {
     const service = createMemorySettingsService({
       egressConsentMode: "PER_USER",
       repository: repository(),
@@ -155,10 +155,30 @@ describe("Memory settings service", () => {
     expect(response.capabilities).toEqual({
       automaticLearning: false,
       explicitMemory: true,
-      historyRecall: false,
+      historyRecall: true,
+      permanentChatDeletion: false,
       russianQualified: true,
       temporaryChats: true
     });
+  });
+
+  it("derives rollout capabilities from the current settings and utility policy", async () => {
+    const currentSettings = settings();
+    const currentPolicy = policy();
+    const resolveCapabilities = vi.fn(() => ({
+      ...DEFAULT_MEMORY_SETTINGS_CAPABILITIES,
+      automaticLearning: true
+    }));
+    const service = createMemorySettingsService({
+      repository: repository({ get: vi.fn(async () => currentSettings) }),
+      resolveCapabilities,
+      resolveCurrentUtilityPolicy: async () => currentPolicy
+    });
+
+    await expect(service.get("user-1")).resolves.toMatchObject({
+      capabilities: { automaticLearning: true, historyRecall: true }
+    });
+    expect(resolveCapabilities).toHaveBeenCalledWith(currentSettings, currentPolicy);
   });
 
   it("projects bounded safe destinations and exact current/accepted policy evidence", async () => {
@@ -167,6 +187,7 @@ describe("Memory settings service", () => {
         automaticLearning: false,
         explicitMemory: true,
         historyRecall: false,
+        permanentChatDeletion: false,
         russianQualified: true,
         temporaryChats: true
       },
@@ -180,6 +201,7 @@ describe("Memory settings service", () => {
         automaticLearning: false,
         explicitMemory: true,
         historyRecall: false,
+        permanentChatDeletion: false,
         russianQualified: true,
         temporaryChats: true
       },
@@ -227,6 +249,7 @@ describe("Memory settings service", () => {
         automaticLearning: false,
         explicitMemory: true,
         historyRecall: false,
+        permanentChatDeletion: false,
         russianQualified: true,
         temporaryChats: true
       },

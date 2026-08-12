@@ -8,6 +8,7 @@ import {
   startMemoryRebuild
 } from "@/components/app-shell/memoryApi";
 import { invalidateMemoryHistorySearchResults } from "@/components/app-shell/memoryHistorySearchStore";
+import { invalidateMemoryManagerData } from "@/components/app-shell/memoryManagerStore";
 import { refreshMemorySettings } from "@/components/app-shell/memorySettingsStore";
 import type {
   MemoryDeletionStatus,
@@ -16,18 +17,27 @@ import type {
 } from "@/lib/contracts/memory";
 import { create } from "zustand";
 
-export type MemoryOperationsAction = MemoryRebuildOperation | "CLEAR_HISTORY_INDEX";
+export type MemoryOperationsAction = MemoryRebuildOperation |
+  "CLEAR_HISTORY_INDEX" |
+  "DELETE_ALL_REUSABLE" |
+  "DELETE_LEARNED";
 export type MemoryOperationsLoadState = "error" | "idle" | "loading" | "ready";
 export type MemoryOperationsBusy = "admitting" | "cancelling" | null;
 
 type MemoryOperationsStore = {
   accountId: string | null;
+  allError: string | null;
+  allLoadState: MemoryOperationsLoadState;
+  allStatus: MemoryDeletionStatus | null;
   busy: MemoryOperationsBusy;
   clearError: string | null;
   clearLoadState: MemoryOperationsLoadState;
   clearStatus: MemoryDeletionStatus | null;
   confirmation: MemoryOperationsAction | null;
   confirmationError: string | null;
+  learnedError: string | null;
+  learnedLoadState: MemoryOperationsLoadState;
+  learnedStatus: MemoryDeletionStatus | null;
   rebuildError: string | null;
   rebuildLoadState: MemoryOperationsLoadState;
   rebuildStatus: MemoryRebuildStatus | null;
@@ -35,21 +45,29 @@ type MemoryOperationsStore = {
 };
 
 type StoredOperationReferences = Readonly<{
+  allDeletionId: string | null;
   clearDeletionId: string | null;
+  learnedDeletionId: string | null;
   rebuildJobId: string | null;
-  version: 1;
+  version: 3;
 }>;
 
 const STORAGE_PREFIX = "aiqsa:memory:operations:v1:";
 
 const initialState = {
   accountId: null,
+  allError: null,
+  allLoadState: "idle" as const,
+  allStatus: null,
   busy: null,
   clearError: null,
   clearLoadState: "idle" as const,
   clearStatus: null,
   confirmation: null,
   confirmationError: null,
+  learnedError: null,
+  learnedLoadState: "idle" as const,
+  learnedStatus: null,
   rebuildError: null,
   rebuildLoadState: "idle" as const,
   rebuildStatus: null
@@ -63,7 +81,9 @@ export const useMemoryOperationsStore = create<MemoryOperationsStore>((set) => (
 }));
 
 let operationGeneration = 0;
+let allStatusController: AbortController | null = null;
 let clearStatusController: AbortController | null = null;
+let learnedStatusController: AbortController | null = null;
 let rebuildStatusController: AbortController | null = null;
 
 function validOpaqueId(value: unknown): value is string {
@@ -82,9 +102,11 @@ function storageKey(accountId: string): string {
 
 function readReferences(accountId: string): StoredOperationReferences {
   const empty: StoredOperationReferences = {
+    allDeletionId: null,
     clearDeletionId: null,
+    learnedDeletionId: null,
     rebuildJobId: null,
-    version: 1
+    version: 3
   };
   if (typeof window === "undefined") return empty;
   try {
@@ -93,10 +115,39 @@ function readReferences(accountId: string): StoredOperationReferences {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return empty;
     const value = parsed as Record<string, unknown>;
+    if (value.version === 1 &&
+      Object.keys(value).sort().join(",") === "clearDeletionId,rebuildJobId,version" &&
+      (value.clearDeletionId === null || validOpaqueId(value.clearDeletionId)) &&
+      (value.rebuildJobId === null || validOpaqueId(value.rebuildJobId))) {
+      return {
+        allDeletionId: null,
+        clearDeletionId: value.clearDeletionId as string | null,
+        learnedDeletionId: null,
+        rebuildJobId: value.rebuildJobId as string | null,
+        version: 3
+      };
+    }
+    if (value.version === 2 &&
+      Object.keys(value).sort().join(",") ===
+        "clearDeletionId,learnedDeletionId,rebuildJobId,version" &&
+      (value.clearDeletionId === null || validOpaqueId(value.clearDeletionId)) &&
+      (value.learnedDeletionId === null || validOpaqueId(value.learnedDeletionId)) &&
+      (value.rebuildJobId === null || validOpaqueId(value.rebuildJobId))) {
+      return {
+        allDeletionId: null,
+        clearDeletionId: value.clearDeletionId as string | null,
+        learnedDeletionId: value.learnedDeletionId as string | null,
+        rebuildJobId: value.rebuildJobId as string | null,
+        version: 3
+      };
+    }
     if (
-      Object.keys(value).sort().join(",") !== "clearDeletionId,rebuildJobId,version" ||
-      value.version !== 1 ||
+      Object.keys(value).sort().join(",") !==
+        "allDeletionId,clearDeletionId,learnedDeletionId,rebuildJobId,version" ||
+      value.version !== 3 ||
+      (value.allDeletionId !== null && !validOpaqueId(value.allDeletionId)) ||
       (value.clearDeletionId !== null && !validOpaqueId(value.clearDeletionId)) ||
+      (value.learnedDeletionId !== null && !validOpaqueId(value.learnedDeletionId)) ||
       (value.rebuildJobId !== null && !validOpaqueId(value.rebuildJobId))
     ) return empty;
     return value as StoredOperationReferences;
@@ -107,12 +158,18 @@ function readReferences(accountId: string): StoredOperationReferences {
 
 function writeReferences(
   accountId: string,
-  patch: Partial<Pick<StoredOperationReferences, "clearDeletionId" | "rebuildJobId">>
+  patch: Partial<Pick<
+    StoredOperationReferences,
+    "allDeletionId" | "clearDeletionId" | "learnedDeletionId" | "rebuildJobId"
+  >>
 ): void {
   if (typeof window === "undefined") return;
   try {
-    const next = { ...readReferences(accountId), ...patch, version: 1 as const };
-    if (!next.clearDeletionId && !next.rebuildJobId) {
+    const next = { ...readReferences(accountId), ...patch, version: 3 as const };
+    if (
+      !next.allDeletionId && !next.clearDeletionId &&
+      !next.learnedDeletionId && !next.rebuildJobId
+    ) {
       window.sessionStorage.removeItem(storageKey(accountId));
       return;
     }
@@ -124,9 +181,13 @@ function writeReferences(
 
 function abortStatusRequests(): void {
   operationGeneration += 1;
+  allStatusController?.abort();
   clearStatusController?.abort();
+  learnedStatusController?.abort();
   rebuildStatusController?.abort();
+  allStatusController = null;
   clearStatusController = null;
+  learnedStatusController = null;
   rebuildStatusController = null;
 }
 
@@ -158,8 +219,14 @@ export async function activateMemoryOperationsAccount(accountId: string): Promis
   }
   const references = readReferences(accountId);
   await Promise.allSettled([
+    references.allDeletionId
+      ? refreshMemoryAllStatus(references.allDeletionId)
+      : Promise.resolve(),
     references.clearDeletionId
       ? refreshMemoryClearStatus(references.clearDeletionId)
+      : Promise.resolve(),
+    references.learnedDeletionId
+      ? refreshMemoryLearnedStatus(references.learnedDeletionId)
       : Promise.resolve(),
     references.rebuildJobId
       ? refreshMemoryRebuildStatus(references.rebuildJobId)
@@ -193,7 +260,11 @@ export async function confirmSelectedMemoryOperation(): Promise<void> {
     const expectedMemoryRevision = settings.settings.memoryRevision;
     const expectedSettingsRevision = settings.settings.settingsRevision;
 
-    if (operation === "CLEAR_HISTORY_INDEX") {
+    if (
+      operation === "CLEAR_HISTORY_INDEX" ||
+      operation === "DELETE_ALL_REUSABLE" ||
+      operation === "DELETE_LEARNED"
+    ) {
       const authorization = await authorizeMemoryMutation({
         action: "BULK_DELETE",
         expectedMemoryRevision,
@@ -208,13 +279,38 @@ export async function confirmSelectedMemoryOperation(): Promise<void> {
         operation
       });
       if (!currentAccount(generation, accountId)) return;
-      writeReferences(accountId, { clearDeletionId: status.deletionId });
-      invalidateMemoryHistorySearchResults(accountId);
+      if (status.operation !== operation) {
+        throw new MemoryApiError("memory_deletion_reference_mismatch", 409);
+      }
+      const deletionKind = operation === "DELETE_ALL_REUSABLE"
+        ? "all" as const
+        : operation === "DELETE_LEARNED" ? "learned" as const : "clear" as const;
+      writeReferences(accountId, deletionKind === "all"
+        ? { allDeletionId: status.deletionId }
+        : deletionKind === "learned"
+          ? { learnedDeletionId: status.deletionId }
+          : { clearDeletionId: status.deletionId });
+      if (deletionKind !== "learned") invalidateMemoryHistorySearchResults(accountId);
+      if (deletionKind === "all") invalidateMemoryManagerData(accountId);
       useMemoryOperationsStore.setState({
         busy: null,
-        clearError: null,
-        clearLoadState: "ready",
-        clearStatus: status,
+        ...(deletionKind === "all"
+          ? {
+              allError: null,
+              allLoadState: "ready" as const,
+              allStatus: status
+            }
+          : deletionKind === "learned"
+          ? {
+              learnedError: null,
+              learnedLoadState: "ready" as const,
+              learnedStatus: status
+            }
+          : {
+              clearError: null,
+              clearLoadState: "ready" as const,
+              clearStatus: status
+            }),
         confirmation: null,
         confirmationError: null
       });
@@ -269,6 +365,52 @@ export async function confirmSelectedMemoryOperation(): Promise<void> {
   }
 }
 
+export async function refreshMemoryAllStatus(
+  deletionId = useMemoryOperationsStore.getState().allStatus?.deletionId ?? null
+): Promise<void> {
+  const accountId = useMemoryOperationsStore.getState().accountId;
+  if (!accountId) return;
+  const resolvedId = deletionId ?? readReferences(accountId).allDeletionId;
+  if (!resolvedId) return;
+  allStatusController?.abort();
+  const controller = new AbortController();
+  allStatusController = controller;
+  const generation = operationGeneration;
+  useMemoryOperationsStore.setState({ allError: null, allLoadState: "loading" });
+  try {
+    const status = await loadMemoryDeletionStatus(resolvedId, controller.signal);
+    if (!currentAccount(generation, accountId) || controller.signal.aborted) return;
+    if (status.operation !== "DELETE_ALL_REUSABLE") {
+      throw new MemoryApiError("memory_deletion_reference_mismatch", 409);
+    }
+    allStatusController = null;
+    writeReferences(accountId, { allDeletionId: status.deletionId });
+    useMemoryOperationsStore.setState({
+      allError: null,
+      allLoadState: "ready",
+      allStatus: status
+    });
+    if (["CANCELLED", "SUCCEEDED"].includes(status.state)) {
+      writeReferences(accountId, { allDeletionId: null });
+    }
+    if (status.state === "SUCCEEDED") {
+      invalidateMemoryHistorySearchResults(accountId);
+      invalidateMemoryManagerData(accountId);
+      await refreshMemorySettings(true).catch(() => undefined);
+    }
+  } catch (error) {
+    if (!currentAccount(generation, accountId) || controller.signal.aborted || isAbortError(error)) {
+      return;
+    }
+    allStatusController = null;
+    useMemoryOperationsStore.setState({
+      allError: errorName(error),
+      allLoadState: "error"
+    });
+    throw error;
+  }
+}
+
 export async function refreshMemoryClearStatus(
   deletionId = useMemoryOperationsStore.getState().clearStatus?.deletionId ?? null
 ): Promise<void> {
@@ -284,6 +426,9 @@ export async function refreshMemoryClearStatus(
   try {
     const status = await loadMemoryDeletionStatus(resolvedId, controller.signal);
     if (!currentAccount(generation, accountId) || controller.signal.aborted) return;
+    if (status.operation !== "CLEAR_HISTORY_INDEX") {
+      throw new MemoryApiError("memory_deletion_reference_mismatch", 409);
+    }
     clearStatusController = null;
     writeReferences(accountId, { clearDeletionId: status.deletionId });
     useMemoryOperationsStore.setState({
@@ -291,6 +436,9 @@ export async function refreshMemoryClearStatus(
       clearLoadState: "ready",
       clearStatus: status
     });
+    if (["CANCELLED", "SUCCEEDED"].includes(status.state)) {
+      writeReferences(accountId, { clearDeletionId: null });
+    }
     if (status.state === "SUCCEEDED") {
       invalidateMemoryHistorySearchResults(accountId);
       await refreshMemorySettings(true).catch(() => undefined);
@@ -303,6 +451,50 @@ export async function refreshMemoryClearStatus(
     useMemoryOperationsStore.setState({
       clearError: errorName(error),
       clearLoadState: "error"
+    });
+    throw error;
+  }
+}
+
+export async function refreshMemoryLearnedStatus(
+  deletionId = useMemoryOperationsStore.getState().learnedStatus?.deletionId ?? null
+): Promise<void> {
+  const accountId = useMemoryOperationsStore.getState().accountId;
+  if (!accountId) return;
+  const resolvedId = deletionId ?? readReferences(accountId).learnedDeletionId;
+  if (!resolvedId) return;
+  learnedStatusController?.abort();
+  const controller = new AbortController();
+  learnedStatusController = controller;
+  const generation = operationGeneration;
+  useMemoryOperationsStore.setState({ learnedError: null, learnedLoadState: "loading" });
+  try {
+    const status = await loadMemoryDeletionStatus(resolvedId, controller.signal);
+    if (!currentAccount(generation, accountId) || controller.signal.aborted) return;
+    if (status.operation !== "DELETE_LEARNED") {
+      throw new MemoryApiError("memory_deletion_reference_mismatch", 409);
+    }
+    learnedStatusController = null;
+    writeReferences(accountId, { learnedDeletionId: status.deletionId });
+    useMemoryOperationsStore.setState({
+      learnedError: null,
+      learnedLoadState: "ready",
+      learnedStatus: status
+    });
+    if (["CANCELLED", "SUCCEEDED"].includes(status.state)) {
+      writeReferences(accountId, { learnedDeletionId: null });
+    }
+    if (status.state === "SUCCEEDED") {
+      await refreshMemorySettings(true).catch(() => undefined);
+    }
+  } catch (error) {
+    if (!currentAccount(generation, accountId) || controller.signal.aborted || isAbortError(error)) {
+      return;
+    }
+    learnedStatusController = null;
+    useMemoryOperationsStore.setState({
+      learnedError: errorName(error),
+      learnedLoadState: "error"
     });
     throw error;
   }
@@ -375,13 +567,28 @@ export async function cancelActiveMemoryRebuild(): Promise<void> {
   }
 }
 
-export function dismissMemoryOperationStatus(kind: "clear" | "rebuild"): void {
+export function dismissMemoryOperationStatus(
+  kind: "all" | "clear" | "learned" | "rebuild"
+): void {
   const current = useMemoryOperationsStore.getState();
   const accountId = current.accountId;
   if (!accountId) return;
+  if (kind === "all") {
+    if (
+      !["CANCELLED", "SUCCEEDED"].includes(current.allStatus?.state ?? "") &&
+      !(current.allStatus === null && current.allError !== null)
+    ) return;
+    writeReferences(accountId, { allDeletionId: null });
+    useMemoryOperationsStore.setState({
+      allError: null,
+      allLoadState: "idle",
+      allStatus: null
+    });
+    return;
+  }
   if (kind === "clear") {
     if (
-      current.clearStatus?.state !== "SUCCEEDED" &&
+      !["CANCELLED", "SUCCEEDED"].includes(current.clearStatus?.state ?? "") &&
       !(current.clearStatus === null && current.clearError !== null)
     ) return;
     writeReferences(accountId, { clearDeletionId: null });
@@ -389,6 +596,19 @@ export function dismissMemoryOperationStatus(kind: "clear" | "rebuild"): void {
       clearError: null,
       clearLoadState: "idle",
       clearStatus: null
+    });
+    return;
+  }
+  if (kind === "learned") {
+    if (
+      !["CANCELLED", "SUCCEEDED"].includes(current.learnedStatus?.state ?? "") &&
+      !(current.learnedStatus === null && current.learnedError !== null)
+    ) return;
+    writeReferences(accountId, { learnedDeletionId: null });
+    useMemoryOperationsStore.setState({
+      learnedError: null,
+      learnedLoadState: "idle",
+      learnedStatus: null
     });
     return;
   }

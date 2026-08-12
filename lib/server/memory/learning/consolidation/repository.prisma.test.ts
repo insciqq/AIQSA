@@ -584,6 +584,56 @@ describe("Prisma Memory fact consolidation", () => {
     await prisma.$disconnect();
   });
 
+  it.each(["AUTOMATIC_FACTS", "ALL_REUSABLE"] as const)(
+    "rejects delayed candidate consolidation across a %s cutoff",
+    async (barrierKind) => {
+    const userId = await createOwner(`${barrierKind.toLowerCase()}-cutoff`);
+    try {
+      const sourceAt = new Date("2026-08-11T07:00:00.000Z");
+      const candidate = await createCandidate({
+        createdAt: sourceAt,
+        structuredValue: { drink: "tea" },
+        text: "I prefer tea.",
+        userId
+      });
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      await prisma.memorySourceBarrier.create({
+        data: {
+          explicitOverrideAllowed: false,
+          kind: barrierKind,
+          memoryGeneration: settings.memoryGeneration,
+          sourceCreatedAtCutoff: new Date(sourceAt.getTime() + 60_000),
+          userId
+        }
+      });
+
+      await expect(reconcileMemoryFactCandidateJobs(prisma)).resolves.toBe(1);
+      const job = await prisma.memoryJob.findFirstOrThrow({
+        where: {
+          idempotencyFingerprint: {
+            startsWith: `consolidate-candidate:${candidate.candidateId}:`
+          },
+          kind: "CONSOLIDATE_CANDIDATE",
+          state: "QUEUED",
+          userId
+        }
+      });
+      const claim = await claimJob(job.id);
+      await expect(consolidationRepository().prepareConsolidation(claim))
+        .resolves.toEqual({
+          decision: {
+            errorCode: "memory_fact_candidate_stale",
+            status: "STALE"
+          }
+        });
+      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("atomically adds and reinforces one logical fact without duplicate support", async () => {
     const userId = await createOwner("add-reinforce");
     try {

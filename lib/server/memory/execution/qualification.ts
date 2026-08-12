@@ -24,12 +24,19 @@ export type MemoryExecutionVersions = Readonly<{
   schemaVersion: string;
 }>;
 
-export type MemoryQualificationAuthority = Readonly<{
+export type MemoryQualificationEvidenceIdentity = Readonly<{
   corpusHash: string;
   corpusVersion: string;
-  registry: readonly MemoryCapabilityQualification[];
   scorerVersion: string;
   suiteVersion: string;
+}>;
+
+export type MemoryQualificationAuthority = MemoryQualificationEvidenceIdentity & Readonly<{
+  identitiesByRole?: Readonly<Partial<Record<
+    MemoryExecutionRole,
+    MemoryQualificationEvidenceIdentity
+  >>>;
+  registry: readonly MemoryCapabilityQualification[];
   verifySignature: MemoryQualificationSignatureVerifier;
 }>;
 
@@ -73,11 +80,13 @@ export function qualifyMemoryExecution(input: Readonly<{
   const model = input.target.snapshot.model;
   const embeddingRole = isMemoryEmbeddingRole(input.role);
   const vectorSpaceFingerprint = memoryVectorSpaceFingerprint(input.target);
+  const evidenceIdentity = input.authority.identitiesByRole?.[input.role] ??
+    input.authority;
   if (
-    !sha256.test(input.authority.corpusHash) ||
-    !safeToken.test(input.authority.corpusVersion) ||
-    !safeToken.test(input.authority.scorerVersion) ||
-    !safeToken.test(input.authority.suiteVersion) ||
+    !sha256.test(evidenceIdentity.corpusHash) ||
+    !safeToken.test(evidenceIdentity.corpusVersion) ||
+    !safeToken.test(evidenceIdentity.scorerVersion) ||
+    !safeToken.test(evidenceIdentity.suiteVersion) ||
     !Array.isArray(input.authority.registry) ||
     typeof input.authority.verifySignature !== "function" ||
     embeddingRole !== (vectorSpaceFingerprint !== null) ||
@@ -95,8 +104,8 @@ export function qualifyMemoryExecution(input: Readonly<{
 
   const requirement: MemoryQualificationRequirement = {
     ...input.target.qualificationFingerprints,
-    corpusHash: input.authority.corpusHash,
-    corpusVersion: input.authority.corpusVersion,
+    corpusHash: evidenceIdentity.corpusHash,
+    corpusVersion: evidenceIdentity.corpusVersion,
     language: input.settings.memoryUiLocale,
     pipelineVersion: input.versions.pipelineVersion,
     policyVersion: input.versions.policyVersion,
@@ -104,8 +113,8 @@ export function qualifyMemoryExecution(input: Readonly<{
     retrievalConfigFingerprint: input.versions.retrievalConfigFingerprint,
     role: input.role,
     schemaVersion: input.versions.schemaVersion,
-    scorerVersion: input.authority.scorerVersion,
-    suiteVersion: input.authority.suiteVersion,
+    scorerVersion: evidenceIdentity.scorerVersion,
+    suiteVersion: evidenceIdentity.suiteVersion,
     vectorSpaceFingerprint
   };
   const result = decideMemoryCapabilityQualification({

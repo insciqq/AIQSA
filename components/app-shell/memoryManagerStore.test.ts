@@ -2,15 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   beginCreateMemory,
   beginDeleteExplicitMemories,
-  beginForgetMemory,
   beginMoveMemory,
   confirmDeleteExplicitMemories,
-  confirmForgetMemory,
+  forgetCurrentMemory,
+  forgetProfileMemory,
   moveMemoryScope,
   refreshMemoryDeletionStatus,
+  refreshMemoryProfile,
   resetMemoryManagerStoreForTest,
+  resolveMemoryConflictChoice,
   saveMemoryChanges,
   saveNewMemory,
+  submitMemoryFeedback,
+  undoLastMemoryFeedback,
   useMemoryManagerStore
 } from "./memoryManagerStore";
 import {
@@ -19,7 +23,9 @@ import {
 } from "./memorySettingsStore";
 import {
   memoryDeletionFixture,
+  memoryDetailFixture,
   memoryEvidenceFixture,
+  memoryProfileFixture,
   memorySettingsFixture,
   memorySummaryFixture
 } from "./memoryTestFixtures";
@@ -41,6 +47,124 @@ describe("Memory manager store", () => {
     resetMemorySettingsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("fences delayed profile reads to the current account", async () => {
+    let resolveFirst!: (response: Response) => void;
+    let resolveSecond!: (response: Response) => void;
+    const firstResponse = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondResponse = new Promise<Response>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(firstResponse)
+      .mockReturnValueOnce(secondResponse);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = refreshMemoryProfile("account-a");
+    const second = refreshMemoryProfile("account-b");
+    resolveSecond(json(memoryProfileFixture({ profile: { id: "profile-b" } })));
+    await second;
+    resolveFirst(json(memoryProfileFixture({ profile: { id: "profile-a" } })));
+    await first;
+
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      profileAccountId: "account-b",
+      profileLoadState: "ready",
+      profileResponse: { profile: { id: "profile-b" }, state: "READY" }
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("forgets an exact profile contributor without opening evidence and keeps bounded Undo", async () => {
+    const memory = memorySummaryFixture({
+      actionVersionId: "memory-version-1",
+      currentVersionId: "memory-version-1",
+      id: "memory-fact-1"
+    });
+    const profile = memoryProfileFixture();
+    const contributor = profile.profile!.contributors[0]!;
+    const calls: Array<{ body: Record<string, unknown>; path: string }> = [];
+    useMemoryManagerStore.setState({
+      listLoadState: "ready",
+      memories: [memory],
+      profileAccountId: "account-1",
+      profileLoadState: "ready",
+      profileResponse: profile
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      calls.push({ body, path });
+      if (path === "/api/me/memory/mutation-authorizations") {
+        return json({
+          expiresAt: "2099-08-12T08:05:00.000Z",
+          mutationAuthorizationId: "profile-forget-authorization"
+        }, 201);
+      }
+      if (path === "/api/me/memories/memory-fact-1/forget") {
+        return json({
+          memory: memorySummaryFixture({
+            actionVersionId: null,
+            currentVersionId: null,
+            displayText: null,
+            factState: "FORGOTTEN",
+            id: "memory-fact-1",
+            versionState: "FORGOTTEN"
+          }),
+          undo: {
+            deletionId: "profile-forget-deletion",
+            expiresAt: "2099-08-12T08:06:00.000Z",
+            versionId: "memory-version-1"
+          }
+        });
+      }
+      if (path.startsWith("/api/me/memories?")) {
+        return json({ memories: [], nextCursor: null });
+      }
+      if (path === "/api/me/memory/profile") {
+        return json(memoryProfileFixture({ memoryRevision: 9, profile: null, state: "EMPTY" }));
+      }
+      throw new Error(`unexpected request: ${path}`);
+    }));
+
+    await forgetProfileMemory(contributor);
+
+    expect(calls[0]).toMatchObject({
+      body: {
+        action: "FORGET",
+        expectedTargetVersionId: "memory-version-1",
+        targetFactId: "memory-fact-1"
+      },
+      path: "/api/me/memory/mutation-authorizations"
+    });
+    expect(calls[1]).toMatchObject({
+      body: {
+        expectedVersionId: "memory-version-1",
+        mutationAuthorizationId: "profile-forget-authorization"
+      },
+      path: "/api/me/memories/memory-fact-1/forget"
+    });
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      lastForgetUndo: {
+        factId: "memory-fact-1",
+        statement: "I prefer concise answers in Russian.",
+        undo: { deletionId: "profile-forget-deletion" }
+      },
+      memories: [],
+      mutationState: null,
+      notice: "forgotten",
+      screen: "list"
+    });
+    await vi.waitFor(() => {
+      expect(useMemoryManagerStore.getState()).toMatchObject({
+        profileLoadState: "ready",
+        profileResponse: { profile: null, state: "EMPTY" }
+      });
+    });
+    expect(calls.some(({ path }) => path.endsWith("/evidence"))).toBe(false);
   });
 
   it("creates an exact GLOBAL_USER memory through hash-bound authority and discloses use-off", async () => {
@@ -113,7 +237,7 @@ describe("Memory manager store", () => {
       if (path === `/api/me/memories/${original.id}` && init?.method === "PATCH") {
         return json({ error: "memory_version_stale" }, 409);
       }
-      if (path === `/api/me/memories/${original.id}`) return json({ memory: current });
+      if (path === `/api/me/memories/${original.id}`) return json(memoryDetailFixture(current));
       if (path.includes("/evidence")) return json(memoryEvidenceFixture());
       throw new Error(`unexpected request: ${path}`);
     }));
@@ -234,14 +358,22 @@ describe("Memory manager store", () => {
           mutationAuthorizationId: "memory-authorization-forget"
         }, 201);
       }
-      if (path.endsWith("/forget")) return json({ memory: forgotten });
+      if (path.endsWith("/forget")) {
+        return json({
+          memory: forgotten,
+          undo: {
+            deletionId: "memory-deletion-forget",
+            expiresAt: "2026-08-10T08:01:00.000Z",
+            versionId: "memory-version-orphaned"
+          }
+        });
+      }
       if (path.startsWith("/api/me/memories?")) return json({ memories: [], nextCursor: null });
       throw new Error(`unexpected request: ${path}`);
     }));
     useMemoryManagerStore.setState({ activeMemory: orphaned, memories: [orphaned], screen: "detail" });
 
-    beginForgetMemory();
-    await confirmForgetMemory();
+    await forgetCurrentMemory();
 
     expect(calls[0]?.body).toMatchObject({
       action: "FORGET",
@@ -254,9 +386,224 @@ describe("Memory manager store", () => {
     });
     expect(useMemoryManagerStore.getState()).toMatchObject({
       activeMemory: null,
+      lastForgetUndo: {
+        factId: orphaned.id,
+        statement: orphaned.displayText,
+        undo: {
+          deletionId: "memory-deletion-forget",
+          expiresAt: "2026-08-10T08:01:00.000Z",
+          versionId: "memory-version-orphaned"
+        }
+      },
       memories: [],
       notice: "forgotten",
       screen: "list"
+    });
+  });
+
+  it("commits private feedback immediately and undoes it with an append-only retraction", async () => {
+    const automatic = memorySummaryFixture({ sourceMode: "AUTOMATIC" });
+    const calls: Array<{ body: Record<string, unknown>; path: string }> = [];
+    let feedbackWrites = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      calls.push({ body, path });
+      if (path.endsWith("/feedback")) {
+        feedbackWrites += 1;
+        return feedbackWrites === 1
+          ? json({
+              createdAt: "2026-08-11T08:00:00.000Z",
+              feedbackId: "feedback-1",
+              feedbackType: "INCORRECT",
+              retractedFeedbackId: null,
+              targetVersionId: "memory-version-1"
+            }, 201)
+          : json({
+              createdAt: "2026-08-11T08:01:00.000Z",
+              feedbackId: "feedback-retract-1",
+              feedbackType: "RETRACT",
+              retractedFeedbackId: "feedback-1",
+              targetVersionId: "memory-version-1"
+            }, 201);
+      }
+      if (path === `/api/me/memories/${automatic.id}`) {
+        return json({
+          ...memoryDetailFixture(automatic),
+          feedback: [{
+            comment: "Wrong inference",
+            createdAt: "2026-08-11T08:00:00.000Z",
+            feedbackType: "INCORRECT",
+            id: "feedback-1",
+            retractedAt: feedbackWrites > 1 ? "2026-08-11T08:01:00.000Z" : null,
+            targetVersionId: "memory-version-1"
+          }]
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    }));
+    useMemoryManagerStore.setState({
+      activeMemory: automatic,
+      detailLoadState: "ready",
+      memories: [automatic],
+      screen: "detail"
+    });
+
+    await submitMemoryFeedback("memory-version-1", "INCORRECT", "  Wrong inference  ");
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      lastFeedbackUndo: { feedbackId: "feedback-1", versionId: "memory-version-1" },
+      notice: "feedback_recorded"
+    });
+    await undoLastMemoryFeedback();
+
+    const writes = calls.filter(({ path }) => path.endsWith("/feedback"));
+    expect(writes).toHaveLength(2);
+    expect(writes[0]?.body).toMatchObject({
+      comment: "Wrong inference",
+      expectedVersionId: "memory-version-1",
+      feedbackType: "INCORRECT"
+    });
+    expect(writes[1]?.body).toMatchObject({
+      expectedVersionId: "memory-version-1",
+      feedbackType: "RETRACT",
+      retractsFeedbackId: "feedback-1"
+    });
+    expect(writes[0]?.body.requestId).not.toBe(writes[1]?.body.requestId);
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      lastFeedbackUndo: null,
+      notice: "feedback_retracted"
+    });
+  });
+
+  it("does not merge delayed feedback into another open memory", async () => {
+    const source = memorySummaryFixture({ id: "memory-source", sourceMode: "AUTOMATIC" });
+    const destination = memorySummaryFixture({ id: "memory-destination" });
+    let resolveFeedback!: (response: Response) => void;
+    const delayedFeedback = new Promise<Response>((resolve) => {
+      resolveFeedback = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/feedback")) return delayedFeedback;
+      if (path.startsWith("/api/me/memories?")) {
+        return json({ memories: [destination], nextCursor: null });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    }));
+    useMemoryManagerStore.setState({
+      activeMemory: source,
+      detailLoadState: "ready",
+      memories: [source, destination],
+      screen: "detail"
+    });
+
+    const pending = submitMemoryFeedback("memory-version-1", "INCORRECT");
+    useMemoryManagerStore.setState({
+      activeMemory: destination,
+      feedback: [],
+      lastFeedbackUndo: null,
+      notice: null
+    });
+    resolveFeedback(json({
+      createdAt: "2026-08-11T08:00:00.000Z",
+      feedbackId: "feedback-source",
+      feedbackType: "INCORRECT",
+      retractedFeedbackId: null,
+      targetVersionId: "memory-version-1"
+    }, 201));
+    await pending;
+
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      activeMemory: destination,
+      feedback: [],
+      lastFeedbackUndo: null,
+      mutationState: null,
+      notice: null
+    });
+  });
+
+  it("resolves an exact conflict choice in one submission", async () => {
+    const conflicted = memorySummaryFixture({
+      actionVersionId: "version-a",
+      currentVersionId: null,
+      factState: "CONFLICTED",
+      sourceMode: "AUTOMATIC",
+      versionState: "CONFLICTING"
+    });
+    const resolved = memorySummaryFixture({
+      actionVersionId: "version-resolved",
+      currentVersionId: "version-resolved",
+      sourceMode: "EXPLICIT"
+    });
+    const calls: Array<{ body: Record<string, unknown>; path: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      calls.push({ body, path });
+      if (path === "/api/me/memory/mutation-authorizations") {
+        return json({
+          expiresAt: "2026-08-11T08:05:00.000Z",
+          mutationAuthorizationId: "authorization-resolve"
+        }, 201);
+      }
+      if (path.endsWith("/resolve")) return json({ memory: resolved });
+      if (path === `/api/me/memories/${conflicted.id}`) {
+        return json(memoryDetailFixture(resolved));
+      }
+      if (path.startsWith("/api/me/memories?")) {
+        return json({ memories: [resolved], nextCursor: null });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    }));
+    useMemoryManagerStore.setState({
+      activeMemory: conflicted,
+      detailLoadState: "ready",
+      memories: [conflicted],
+      screen: "detail",
+      versions: [{
+        category: "preference",
+        createdAt: "2026-08-11T07:00:00.000Z",
+        displayText: "Version A",
+        id: "version-a",
+        modality: "PREFERENCE",
+        sensitivityClass: "NORMAL",
+        sourceCount: 1,
+        sourceMode: "AUTOMATIC",
+        state: "CONFLICTING",
+        systemFrom: "2026-08-11T07:00:00.000Z",
+        systemTo: null,
+        validFrom: null,
+        validTo: null
+      }, {
+        category: "preference",
+        createdAt: "2026-08-11T07:01:00.000Z",
+        displayText: "Version B",
+        id: "version-b",
+        modality: "PREFERENCE",
+        sensitivityClass: "NORMAL",
+        sourceCount: 1,
+        sourceMode: "AUTOMATIC",
+        state: "CONFLICTING",
+        systemFrom: "2026-08-11T07:01:00.000Z",
+        systemTo: null,
+        validFrom: null,
+        validTo: null
+      }]
+    });
+
+    await resolveMemoryConflictChoice("version-b");
+
+    const resolveCall = calls.find(({ path }) => path.endsWith("/resolve"));
+    expect(resolveCall?.body).toEqual({
+      expectedVersionIds: ["version-a", "version-b"],
+      mutationAuthorizationId: "authorization-resolve",
+      resolution: { kind: "CHOOSE", versionId: "version-b" }
+    });
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      activeMemory: resolved,
+      mutationState: null,
+      notice: "resolved",
+      screen: "detail"
     });
   });
 

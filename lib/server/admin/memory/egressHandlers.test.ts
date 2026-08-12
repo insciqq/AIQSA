@@ -20,10 +20,36 @@ const projection = {
   waitingJobCount: 0
 };
 
+const health = {
+  admin: vi.fn().mockResolvedValue({
+    deletion: { active: "NONE", blocked: "NONE", state: "CLEAR" },
+    observedAt: "2026-08-12T10:00:00.000Z",
+    overall: "HEALTHY",
+    provider: {
+      failedRecent: "NONE",
+      outcomeUnknown: "NONE",
+      state: "IDLE",
+      usageIncomplete: "NONE"
+    },
+    queue: {
+      active: "NONE",
+      failed: "NONE",
+      oldestLag: "NONE",
+      state: "CLEAR",
+      waitingForReview: "NONE"
+    },
+    requestLocale: "EN",
+    scheduler: { resetAt: "2026-08-13T00:00:00.000Z", state: "READY" },
+    temporary: { overdue: "NONE", state: "CLEAR" }
+  }),
+  user: vi.fn()
+};
+
 describe("administrator Memory egress handlers", () => {
   it("denies ordinary users before reading installation policy", async () => {
     const service = { acknowledge: vi.fn(), get: vi.fn() };
     const handlers = createAdminMemoryEgressHandlers({
+      healthService: health as never,
       resolveAuth: vi.fn().mockResolvedValue(session("user")) as never,
       service: service as never
     });
@@ -40,6 +66,7 @@ describe("administrator Memory egress handlers", () => {
       get: vi.fn()
     };
     const handlers = createAdminMemoryEgressHandlers({
+      healthService: health as never,
       resolveAuth: vi.fn().mockResolvedValue(session()) as never,
       service: service as never
     });
@@ -59,6 +86,9 @@ describe("administrator Memory egress handlers", () => {
       currentFingerprint: "a".repeat(64),
       expectedVersion: 3
     });
+    expect(health.admin).toHaveBeenCalledWith("admin-1", {
+      egressReviewRequired: true
+    });
   });
 
   it("rejects malformed values and maps a concurrent policy change", async () => {
@@ -69,6 +99,7 @@ describe("administrator Memory egress handlers", () => {
       get: vi.fn()
     };
     const handlers = createAdminMemoryEgressHandlers({
+      healthService: health as never,
       resolveAuth: vi.fn().mockResolvedValue(session()) as never,
       service: service as never
     });
@@ -90,5 +121,32 @@ describe("administrator Memory egress handlers", () => {
     await expect(conflict.json()).resolves.toEqual({
       error: "memory_admin_egress_policy_changed"
     });
+  });
+
+  it("keeps destination reads usable with a private-safe unavailable health projection", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const handlers = createAdminMemoryEgressHandlers({
+      healthService: {
+        admin: vi.fn().mockRejectedValue(new Error("private health detail")),
+        user: vi.fn()
+      } as never,
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: {
+        acknowledge: vi.fn(),
+        get: vi.fn().mockResolvedValue(projection)
+      } as never
+    });
+
+    const response = await handlers.GET(new Request("http://local.test/api/admin/memory"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      memoryEgress: projection,
+      memoryHealth: {
+        overall: "UNAVAILABLE",
+        queue: { active: "UNKNOWN", state: "UNKNOWN" }
+      }
+    });
+    expect(error).toHaveBeenCalledWith("memory_admin_health_read_failed");
+    expect(JSON.stringify(error.mock.calls)).not.toContain("private health detail");
   });
 });
