@@ -108,6 +108,13 @@ function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): Provider
 }
 
 describe("OpenRouter request builders", () => {
+  it("serializes required tool choice", () => {
+    expect(buildOpenRouterChatRequest(request({
+      toolChoice: "required",
+      tools: [perplexityWebSearchTool]
+    })).tool_choice).toBe("required");
+  });
+
   it("builds chat route, cache, reasoning, instruction, and metadata controls", () => {
     const body = buildOpenRouterChatRequest(request());
 

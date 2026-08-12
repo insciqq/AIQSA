@@ -1,7 +1,7 @@
 import { MEMORY_EVALUATION_SCORER_VERSION } from "./contracts";
 
 export const MEMORY_AUTOMATIC_LEARNING_EVALUATOR_VERSION =
-  "memory-learning-beta-live-evaluator-v6";
+  "memory-learning-beta-live-evaluator-v14";
 export const MEMORY_AUTOMATIC_LEARNING_EVIDENCE_VERSION =
   "memory-learning-beta-live-evidence-v2";
 export const MEMORY_AUTOMATIC_LEARNING_SUITE_VERSION =

@@ -487,7 +487,7 @@ export function buildAnthropicMessagesRequest(
 
   if (clientTools.length > 0) {
     body.tool_choice = {
-      type: request.toolChoice ?? "auto",
+      type: request.toolChoice === "required" ? "any" : request.toolChoice ?? "auto",
       ...(request.toolChoice !== "none" && request.parallelToolCalls !== true
         ? { disable_parallel_tool_use: true }
         : {})

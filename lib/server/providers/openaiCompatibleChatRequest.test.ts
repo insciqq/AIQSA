@@ -75,6 +75,12 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 }
 
 describe("OpenAI-compatible Chat Completions request", () => {
+  it("serializes required tool choice", () => {
+    expect(buildOpenAICompatibleChatRequest(request({
+      toolChoice: "required"
+    })).tool_choice).toBe("required");
+  });
+
   it("replays context and emits only the reviewed Chat Completions subset", () => {
     const runRequest = request();
     const body = buildOpenAICompatibleChatRequest(runRequest);

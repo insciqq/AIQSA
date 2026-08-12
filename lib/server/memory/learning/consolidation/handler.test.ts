@@ -133,6 +133,7 @@ function claim(kind: "CONSOLIDATE_CANDIDATE" | "VERIFY_CANDIDATE"): MemoryJobCla
 
 function providerOutput(kind: "CONSOLIDATE" | "VERIFY") {
   return {
+    outputKind: "tool_calls_only" as const,
     providerResponseId: "response-1",
     toolCalls: kind === "CONSOLIDATE"
       ? [{

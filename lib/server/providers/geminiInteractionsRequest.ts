@@ -36,7 +36,7 @@ export type GeminiInteractionsRequestBody = Record<string, unknown> & {
     max_output_tokens: number;
     thinking_level?: string;
     thinking_summaries: "none";
-    tool_choice?: "auto" | "none";
+    tool_choice?: "any" | "auto" | "none";
   };
   input: GeminiInteractionStep[];
   model: string;
@@ -434,7 +434,9 @@ function buildGeminiInteractionsBody(
     thinking_summaries: "none"
   };
   if (tools.length > 0) {
-    generationConfig.tool_choice = request.toolChoice ?? "auto";
+    generationConfig.tool_choice = request.toolChoice === "required"
+      ? "any"
+      : request.toolChoice ?? "auto";
   }
 
   const body: GeminiInteractionsRequestBody = {

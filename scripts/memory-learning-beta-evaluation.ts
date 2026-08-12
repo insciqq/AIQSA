@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
+import { pathToFileURL } from "node:url";
 import type { ModelRunUsage } from "../lib/domain/modelRunEvents";
 import { estimateCostMicros } from "../lib/domain/usage";
 import type {
@@ -62,6 +63,7 @@ import {
   MEMORY_FACT_CONSOLIDATION_VERSIONS,
   MEMORY_FACT_VERIFICATION_VERSIONS,
   memoryFactConsolidationInputHash,
+  memoryFactConsolidationOutputHash,
   memoryFactDecisionId,
   memoryFactRelatedSnapshotHash,
   memoryFactVerificationInputHash,
@@ -76,10 +78,13 @@ import {
 } from "../lib/server/memory/learning/consolidation/contract";
 import {
   decodeMemoryFactConsolidation,
-  decodeMemoryFactVerification
+  inspectMemoryFactVerificationOutput
 } from "../lib/server/memory/learning/consolidation/decoder";
 import { evaluateMemoryFactConsolidationPlan } from "../lib/server/memory/learning/consolidation/policy";
-import { createAcceptedMemoryFactDecisionProvider } from "../lib/server/memory/learning/consolidation/runtime";
+import {
+  createAcceptedMemoryFactDecisionProvider,
+  MEMORY_FACT_VERIFICATION_MAX_OUTPUT_TOKENS
+} from "../lib/server/memory/learning/consolidation/runtime";
 import { memorySha256 } from "../lib/server/memory/persistence/lexical";
 import { detectMemoryTextLanguage } from "../lib/server/memory/history/language";
 import { MEMORY_ITEM_EMBEDDING_VERSIONS } from "../lib/server/memory/embedding/contract";
@@ -97,7 +102,7 @@ const BOOTSTRAP_SEED = 4_242;
 // scorer would misclassify as omissions.
 const EXTRACTION_BATCH_SIZE = 1;
 const MATRIX_REPETITIONS = 10;
-const SUPPORTING_CASES_PER_LANGUAGE = 30;
+const SUPPORTING_CASES_PER_LANGUAGE = 32;
 let failureStage = "startup";
 
 type Split = "TUNING" | "HOLDOUT";
@@ -117,15 +122,17 @@ type RoleCounters = {
   decodeFailures: number;
   providerFailures: number;
 };
-type MatrixCase = Readonly<{
+export type MemoryLearningMatrixCase = Readonly<{
   expected: MemoryFactConsolidationOperation;
   input: MemoryFactConsolidationInput;
   language: MemoryEvaluationLanguage;
 }>;
-type VerifiedCase = Readonly<{
+export type MemoryLearningVerifiedCase = Readonly<{
   expectedApprove: boolean;
   input: MemoryFactVerificationInput;
   language: MemoryEvaluationLanguage;
+  operation: MemoryFactConsolidationOperation;
+  variant: "mismatched_target" | "supported";
 }>;
 type CorpusManifest = Readonly<{
   corpusVersion: string;
@@ -687,51 +694,57 @@ function extractionOutcomes(
   return outcomes;
 }
 
-function candidateSnapshot(
-  candidate: MemoryExtractedCandidate,
-  input: MemoryFactExtractionInput
+export function memoryLearningMatrixBaseCandidate(
+  language: MemoryEvaluationLanguage
 ): MemoryFactCandidateSnapshot {
+  const languageCode = language.toLowerCase();
+  const displayText = language === "RU"
+    ? "Я предпочитаю синтетический чай."
+    : "I prefer synthetic tea.";
+  const observedAt = "2026-08-11T12:00:00.000Z";
+  const messageId = `qualification-matrix-message-${languageCode}`;
   return {
-    branchGeneration: input.source.branchGeneration,
-    canonicalKey: candidate.canonicalKey,
-    category: candidate.category,
-    chatId: input.source.chatId,
-    confidence: candidate.confidence,
-    directness: candidate.directness,
-    displayText: candidate.displayText,
-    evidence: candidate.evidence.map((evidence) => {
-      const message = input.messages.find(({ id }) => id === evidence.messageId)!;
-      return {
-        ...evidence,
-        observedAt: message.createdAt,
-        quote: message.text.slice(evidence.startOffset, evidence.endOffset)
-      };
-    }),
-    id: candidate.id,
-    importance: candidate.importance,
-    languageCode: candidate.languageCode,
-    modality: candidate.modality,
-    negated: candidate.negated,
-    proposedValue: candidate.proposedValue,
-    rawTemporalExpression: candidate.rawTemporalExpression,
-    scope: candidate.scope,
-    sensitivity: candidate.sensitivity,
-    sourceHash: input.source.sourceHash,
-    sourceProjectionVersion: input.sourceProjectionVersion,
-    sourceRevision: input.source.sourceRevision,
-    sourceTimezone: input.timeZone,
-    temporalResolverVersion: candidate.temporalResolutionEvidence
-      ? "memory-fact-temporal-conservative-v1"
-      : null,
-    temporalResolutionEvidence: candidate.temporalResolutionEvidence,
-    validFrom: candidate.validFrom,
-    validTo: candidate.validTo
+    branchGeneration: 0,
+    canonicalKey: "user.preference.drink",
+    category: "preference",
+    chatId: `qualification-matrix-chat-${languageCode}`,
+    confidence: 0.95,
+    directness: "DIRECT",
+    displayText,
+    evidence: [{
+      endOffset: displayText.length,
+      messageId,
+      observedAt,
+      quote: displayText,
+      sourceTextHash: memorySha256(displayText),
+      startOffset: 0
+    }],
+    id: memorySha256({ domain: "qualification-matrix-base", language }),
+    importance: 0.9,
+    languageCode,
+    modality: "PREFERENCE",
+    negated: false,
+    proposedValue: {
+      drink: language === "RU" ? "синтетический чай" : "synthetic tea"
+    },
+    rawTemporalExpression: null,
+    scope: { targetId: null, type: "GLOBAL_USER" },
+    sensitivity: "NORMAL",
+    sourceHash: memorySha256({ domain: "qualification-matrix-source", language }),
+    sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+    sourceRevision: 1,
+    sourceTimezone: language === "RU" ? "Europe/Moscow" : "UTC",
+    temporalResolverVersion: null,
+    temporalResolutionEvidence: null,
+    validFrom: null,
+    validTo: null
   };
 }
 
 function relatedVersion(
   candidate: MemoryFactCandidateSnapshot,
   input: Readonly<{
+    displayText?: string;
     equivalent: boolean;
     explicit: boolean;
     latestEvidenceAt: string;
@@ -742,11 +755,11 @@ function relatedVersion(
     category: candidate.category,
     confidence: 0.95,
     directness: "DIRECT",
-    displayText: input.equivalent
+    displayText: input.displayText ?? (input.equivalent
       ? candidate.displayText
       : candidate.languageCode === "ru"
         ? "Ранее я предпочитал другой синтетический вариант."
-        : "I previously preferred another synthetic option.",
+        : "I previously preferred another synthetic option."),
     id: `qualification-version-${input.suffix}`,
     importance: candidate.importance,
     languageCode: candidate.languageCode,
@@ -836,16 +849,16 @@ function matrixCandidate(
   };
 }
 
-function matrixCases(
+export function memoryLearningMatrixCases(
   bases: Readonly<Record<MemoryEvaluationLanguage, MemoryFactCandidateSnapshot>>,
   repetitions: number
-): MatrixCase[] {
+): MemoryLearningMatrixCase[] {
   const operations: readonly MemoryFactConsolidationOperation[] = [
     "ADD", "REINFORCE", "SUPERSEDE", "CONFLICT", "EXPIRE", "NOOP", "DEFER"
   ];
   return (["RU", "EN"] as const).flatMap((language) =>
     operations.flatMap((operation) =>
-      Array.from({ length: repetitions }, (_, index): MatrixCase => {
+      Array.from({ length: repetitions }, (_, index): MemoryLearningMatrixCase => {
         const candidate = matrixCandidate(bases[language], language, operation, index);
         const observedAt = candidate.evidence[0]!.observedAt;
         let related: readonly MemoryRelatedFactSnapshot[] = [];
@@ -856,15 +869,28 @@ function matrixCases(
             latestEvidenceAt: "2026-08-10T12:00:00.000Z",
             suffix: `${language}-reinforce-${index}`
           })];
-        } else if (["SUPERSEDE", "EXPIRE"].includes(operation)) {
+        } else if (operation === "SUPERSEDE") {
           related = [relatedFact(candidate, {
             equivalent: false,
             explicit: false,
             latestEvidenceAt: "2026-08-10T12:00:00.000Z",
             suffix: `${language}-${operation}-${index}`
           })];
+        } else if (operation === "EXPIRE") {
+          related = [relatedFact(candidate, {
+            displayText: language === "RU"
+              ? "Я предпочитаю синтетический чай."
+              : "I prefer synthetic tea.",
+            equivalent: true,
+            explicit: false,
+            latestEvidenceAt: "2026-08-10T12:00:00.000Z",
+            suffix: `${language}-${operation}-${index}`
+          })];
         } else if (operation === "CONFLICT") {
           related = [relatedFact(candidate, {
+            displayText: language === "RU"
+              ? "Я предпочитаю другой синтетический вариант."
+              : "I prefer another synthetic option.",
             equivalent: false,
             explicit: false,
             latestEvidenceAt: observedAt,
@@ -892,68 +918,126 @@ function matrixCases(
   );
 }
 
-function verificationCases(
-  successful: readonly Readonly<{
-    input: MemoryFactConsolidationInput;
-    language: MemoryEvaluationLanguage;
-    plan: MemoryFactConsolidationPlan;
-  }>[],
+const matrixReasonCodes = Object.freeze({
+  ADD: "new_supported_fact",
+  CONFLICT: "simultaneous_contradiction",
+  DEFER: "insufficient_support",
+  EXPIRE: "direct_end_evidence",
+  NOOP: "duplicate_or_explicit",
+  REINFORCE: "same_current_value",
+  SUPERSEDE: "direct_newer_evidence"
+} as const);
+
+export function memoryLearningMatrixGoldPlan(
+  matrix: MemoryLearningMatrixCase
+): MemoryFactConsolidationPlan {
+  const targetsFact = ["REINFORCE", "SUPERSEDE", "CONFLICT", "EXPIRE"]
+    .includes(matrix.expected);
+  const target = targetsFact ? matrix.input.relatedFacts[0] : null;
+  if (targetsFact && !target?.currentVersionId) {
+    throw new Error("memory_learning_gold_matrix_target_missing");
+  }
+  const withoutHash: Omit<MemoryFactConsolidationPlan, "outputHash"> = {
+    candidateId: matrix.input.candidate.id,
+    effectiveFrom: matrix.expected === "SUPERSEDE"
+      ? matrix.input.candidate.validFrom
+      : null,
+    evidenceIds: matrix.input.candidate.evidence.map(({ messageId }) => messageId),
+    operation: matrix.expected,
+    reasonCode: matrixReasonCodes[matrix.expected],
+    targetFactId: target?.id ?? null,
+    targetVersionId: target?.currentVersionId ?? null
+  };
+  const plan = {
+    ...withoutHash,
+    outputHash: memoryFactConsolidationOutputHash(matrix.input, withoutHash)
+  };
+  if (evaluateMemoryFactConsolidationPlan(matrix.input, plan).status !== "VALID") {
+    throw new Error("memory_learning_gold_matrix_invalid");
+  }
+  return plan;
+}
+
+export function memoryLearningVerificationCases(
+  matrices: readonly MemoryLearningMatrixCase[],
   casesPerLanguage: number
-): VerifiedCase[] {
-  const result: VerifiedCase[] = [];
-  for (const item of successful.filter(({ plan }) =>
-    ["ADD", "SUPERSEDE", "CONFLICT", "EXPIRE"].includes(plan.operation)
-  )) {
-    if (result.filter(({ language }) => language === item.language).length >=
-      casesPerLanguage) continue;
-    const target = item.plan.targetFactId
-      ? item.input.relatedFacts.find(({ id }) => id === item.plan.targetFactId) ?? null
-      : null;
-    const decision: MemoryFactDecisionSnapshot = {
-      consolidationInputHash: item.input.inputHash,
-      consolidationOutputHash: item.plan.outputHash,
-      id: memoryFactDecisionId(item.input, item.plan),
-      operation: item.plan.operation,
-      reasonCode: item.plan.reasonCode,
-      relatedSnapshotHash: item.input.relatedSnapshotHash,
-      requiresVerification: true,
-      targetFactId: item.plan.targetFactId,
-      targetVersionId: item.plan.targetVersionId
-    };
-    const validWithoutHash: Omit<MemoryFactVerificationInput, "inputHash"> = {
-      candidate: item.input.candidate,
-      decision,
-      target
-    };
-    result.push({
-      expectedApprove: true,
-      input: {
-        ...validWithoutHash,
-        inputHash: memoryFactVerificationInputHash(validWithoutHash)
-      },
-      language: item.language
-    });
-    if (result.filter(({ language }) => language === item.language).length >=
-      casesPerLanguage) continue;
-    const invalidDecision = {
-      ...decision,
-      id: memorySha256({ decision: decision.id, invalid: true }),
-      targetFactId: "qualification-mismatched-fact",
-      targetVersionId: "qualification-mismatched-version"
-    };
-    const invalidWithoutHash: Omit<MemoryFactVerificationInput, "inputHash"> = {
-      candidate: item.input.candidate,
-      decision: invalidDecision,
-      target
-    };
-    result.push({
-      expectedApprove: false,
-      input: {
-        ...invalidWithoutHash,
-        inputHash: memoryFactVerificationInputHash(invalidWithoutHash)
-      },
-      language: item.language
-    });
+): MemoryLearningVerifiedCase[] {
+  const operations = ["ADD", "SUPERSEDE", "CONFLICT", "EXPIRE"] as const;
+  const cellCount = operations.length * 2;
+  if (
+    !Number.isSafeInteger(casesPerLanguage) ||
+    casesPerLanguage < cellCount ||
+    casesPerLanguage % cellCount !== 0
+  ) throw new Error("memory_learning_verification_case_count_invalid");
+  const casesPerOperation = casesPerLanguage / cellCount;
+  const result: MemoryLearningVerifiedCase[] = [];
+  for (const language of ["RU", "EN"] as const) {
+    for (const operation of operations) {
+      const selected = matrices
+        .filter((matrix) =>
+          matrix.language === language && matrix.expected === operation)
+        .slice(0, casesPerOperation);
+      if (selected.length !== casesPerOperation) {
+        throw new Error("memory_learning_verification_matrix_insufficient");
+      }
+      for (const matrix of selected) {
+        const plan = memoryLearningMatrixGoldPlan(matrix);
+        const policyDecision = evaluateMemoryFactConsolidationPlan(matrix.input, plan);
+        if (policyDecision.status !== "VALID" || !policyDecision.requiresVerification) {
+          throw new Error("memory_learning_gold_verification_case_invalid");
+        }
+        const target = plan.targetFactId
+          ? matrix.input.relatedFacts.find(({ id }) => id === plan.targetFactId) ?? null
+          : null;
+        const decision: MemoryFactDecisionSnapshot = {
+          consolidationInputHash: matrix.input.inputHash,
+          consolidationOutputHash: plan.outputHash,
+          id: memoryFactDecisionId(matrix.input, plan),
+          operation: plan.operation,
+          reasonCode: plan.reasonCode,
+          relatedSnapshotHash: matrix.input.relatedSnapshotHash,
+          requiresVerification: true,
+          targetFactId: plan.targetFactId,
+          targetVersionId: plan.targetVersionId
+        };
+        const validWithoutHash: Omit<MemoryFactVerificationInput, "inputHash"> = {
+          candidate: matrix.input.candidate,
+          decision,
+          target
+        };
+        result.push({
+          expectedApprove: true,
+          input: {
+            ...validWithoutHash,
+            inputHash: memoryFactVerificationInputHash(validWithoutHash)
+          },
+          language,
+          operation,
+          variant: "supported"
+        });
+        const invalidDecision = {
+          ...decision,
+          id: memorySha256({ decision: decision.id, invalid: true }),
+          targetFactId: "qualification-mismatched-fact",
+          targetVersionId: "qualification-mismatched-version"
+        };
+        const invalidWithoutHash: Omit<MemoryFactVerificationInput, "inputHash"> = {
+          candidate: matrix.input.candidate,
+          decision: invalidDecision,
+          target
+        };
+        result.push({
+          expectedApprove: false,
+          input: {
+            ...invalidWithoutHash,
+            inputHash: memoryFactVerificationInputHash(invalidWithoutHash)
+          },
+          language,
+          operation,
+          variant: "mismatched_target"
+        });
+      }
+    }
   }
   return result;
 }
@@ -1075,6 +1159,22 @@ function safeFailureCode(error: unknown): string {
 
 function incrementDiagnostic(diagnostics: Record<string, number>, key: string): void {
   diagnostics[key] = (diagnostics[key] ?? 0) + 1;
+}
+
+function verificationUsageDiagnostic(usage: ModelRunUsage): string {
+  const outputBand = usage.outputTokens === 0
+    ? "output_zero"
+    : usage.outputTokens >= MEMORY_FACT_VERIFICATION_MAX_OUTPUT_TOKENS
+      ? "output_at_limit"
+      : usage.outputTokens >= MEMORY_FACT_VERIFICATION_MAX_OUTPUT_TOKENS * 0.75
+        ? "output_high"
+        : "output_below_75pct";
+  const reasoningBand = usage.reasoningTokens === 0
+    ? "reasoning_zero"
+    : usage.reasoningTokens >= usage.outputTokens
+      ? "reasoning_all_output"
+      : "reasoning_partial_output";
+  return `${outputBand}:${reasoningBand}`;
 }
 
 async function runWithQualificationRetry<T>(input: Readonly<{
@@ -1312,7 +1412,6 @@ async function main(): Promise<void> {
       source
     });
   }
-  const baseCandidates: Partial<Record<MemoryEvaluationLanguage, MemoryFactCandidateSnapshot>> = {};
   for (const result of extractedBatches) {
     const messageIds = new Set(result.batch.map(({ message }) => message.id));
     const candidates = result.plan?.candidates ?? [];
@@ -1331,13 +1430,7 @@ async function main(): Promise<void> {
         foreignCandidate,
         source
       });
-      if (!baseCandidates[source.fixture.language] && associated[0]) {
-        baseCandidates[source.fixture.language] = candidateSnapshot(associated[0], result.input);
-      }
     }
-  }
-  if (!baseCandidates.RU || !baseCandidates.EN) {
-    throw new Error("memory_learning_matrix_candidate_missing");
   }
   const extractionScores = extractionOutcomes(
     [...assessments.values()],
@@ -1346,8 +1439,11 @@ async function main(): Promise<void> {
 
   failureStage = "consolidation";
   const decisionProvider = createAcceptedMemoryFactDecisionProvider(prisma);
-  const matrices = matrixCases(
-    { EN: baseCandidates.EN, RU: baseCandidates.RU },
+  const matrices = memoryLearningMatrixCases(
+    {
+      EN: memoryLearningMatrixBaseCandidate("EN"),
+      RU: memoryLearningMatrixBaseCandidate("RU")
+    },
     matrixRepetitions
   );
   const consolidationResults = await mapConcurrent(
@@ -1417,12 +1513,8 @@ async function main(): Promise<void> {
   }
 
   failureStage = "verification";
-  const verificationInputs = verificationCases(
-    consolidationResults.flatMap((result) =>
-      result.plan && result.correct
-        ? [{ input: result.input, language: result.language, plan: result.plan }]
-        : []
-    ),
+  const verificationInputs = memoryLearningVerificationCases(
+    matrices,
     supportingCasesPerLanguage
   );
   const verificationResults = await mapConcurrent(
@@ -1452,17 +1544,43 @@ async function main(): Promise<void> {
           pricing,
           attempt.retries
         ));
-        try {
-          const plan = decodeMemoryFactVerification(result.toolCalls, item.input);
-          return item.expectedApprove ? plan.verdict === "APPROVE" : plan.verdict !== "APPROVE";
-        } catch (error) {
+        const inspected = inspectMemoryFactVerificationOutput(
+          result.toolCalls,
+          item.input
+        );
+        const expected = item.expectedApprove
+          ? "expected_approve"
+          : "expected_non_approve";
+        if (!inspected.ok) {
           counters.verification.decodeFailures += 1;
           incrementDiagnostic(
             diagnostics,
-            `verification-decode:${item.language}:${safeFailureCode(error)}`
+            `verification-contract:${item.language}:${item.operation}:${item.variant}:` +
+              `${expected}:${inspected.issue}` +
+              (inspected.missingRequiredKeys.length > 0
+                ? `:missing_${inspected.missingRequiredKeys.join("+")}`
+                : "") +
+              (inspected.unexpectedKeyCount > 0
+                ? `:unexpected_key_count_${inspected.unexpectedKeyCount}`
+                : "") +
+              (inspected.issue === "tool_call_missing"
+                ? `:${result.outputKind}`
+                : "") +
+              `:${verificationUsageDiagnostic(result.usage)}`
           );
           return false;
         }
+        const correct = item.expectedApprove
+          ? inspected.plan.verdict === "APPROVE"
+          : inspected.plan.verdict !== "APPROVE";
+        if (!correct) {
+          incrementDiagnostic(
+            diagnostics,
+            `verification-assessment:${item.language}:${item.operation}:${item.variant}:` +
+              `${expected}:actual_${inspected.plan.verdict.toLowerCase()}`
+          );
+        }
+        return correct;
       } catch (error) {
         counters.verification.providerFailures += 1;
         incrementDiagnostic(
@@ -1661,11 +1779,16 @@ async function main(): Promise<void> {
   await prisma.$disconnect();
 }
 
-void main().catch(async (error: unknown) => {
-  const code = error instanceof Error && /^memory_[a-z0-9_]+$/u.test(error.message)
-    ? error.message
-    : "memory_learning_evaluation_failed";
-  process.stderr.write(`${code}:${failureStage}\n`);
-  process.exitCode = 1;
-  await prisma.$disconnect().catch(() => undefined);
-});
+const directModuleUrl = process.argv[1]
+  ? pathToFileURL(resolve(process.argv[1])).href
+  : null;
+if (directModuleUrl === import.meta.url) {
+  void main().catch(async (error: unknown) => {
+    const code = error instanceof Error && /^memory_[a-z0-9_]+$/u.test(error.message)
+      ? error.message
+      : "memory_learning_evaluation_failed";
+    process.stderr.write(`${code}:${failureStage}\n`);
+    process.exitCode = 1;
+    await prisma.$disconnect().catch(() => undefined);
+  });
+}

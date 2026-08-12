@@ -8,7 +8,7 @@ Not owned here: AIQSA runtime mapping details, normalized Search semantics, or n
 
 ## OpenRouter
 
-Last verified: 2026-08-08.
+Last verified: 2026-08-12.
 
 Primary references:
 
@@ -36,6 +36,7 @@ Externally constrained facts:
 - Reasoning controls are model/route specific. OpenRouter Claude effort is represented through Claude-compatible effort/verbosity behavior, Gemini thinking uses mapped effort levels, and OpenAI routes use OpenAI-style effort.
 - OpenRouter documents Gemini thinking levels through `minimal`, `low`, `medium`, and `high`; documented `xhigh` maps down to `high`, so it is not a distinct Gemini capability.
 - Provider routing supports `order`, `only`, `allow_fallbacks`, `require_parameters`, `data_collection`, `sort`, and `zdr`. Sticky `session_id` can improve cache routing; explicit `cache_control` support depends on the downstream provider/model.
+- Chat Completions accepts `tool_choice=required`, while actual function-call reliability remains downstream model/provider specific.
 - OpenRouter's Responses API is currently labelled beta and stateless: every request supplies its full history and no server-side conversation state is persisted.
 - The current catalog uses `google/gemini-3.5-flash` and the live `~google/gemini-pro-latest` alias. `google/gemini-3-pro-preview` can return no endpoints and must not be inferred as available.
 - The current `perplexity/sonar-pro-search` route uses denied data collection, Perplexity-only routing, throughput sort, and `require_parameters: false`; do not strengthen that flag without revalidating the selected route.

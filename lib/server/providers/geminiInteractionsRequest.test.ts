@@ -88,6 +88,13 @@ function expectNoBlankGeminiTextParts(body: Record<string, unknown>): void {
 }
 
 describe("Gemini Interactions request builder", () => {
+  it("serializes required tool choice", () => {
+    expect(buildGeminiInteractionsRequest(request({
+      toolChoice: "required",
+      tools: [tool]
+    })).generation_config.tool_choice).toBe("any");
+  });
+
   it("builds the stable stateless native body with flat function tools", () => {
     expect(buildGeminiInteractionsRequest(request({ tools: [tool] }))).toEqual({
       generation_config: {

@@ -8,7 +8,7 @@ Not owned here: AIQSA runtime mapping details, grounding retention policy, norma
 
 ## Gemini Native Interactions API
 
-Last verified: 2026-08-07.
+Last verified: 2026-08-12.
 
 Primary references:
 
@@ -32,6 +32,7 @@ Externally constrained facts:
 - Interactions expresses generation controls under `generation_config`, accepts native typed input/step arrays, returns step types such as model output, thought and function calls/results, and exposes cumulative token fields including cached and thought totals. Streaming uses named SSE events and a final done proof; stream EOF alone is not successful completion.
 - Documented native SSE may start a thought or Google Search call/result step with an empty signature placeholder and deliver the non-empty signature in a later typed delta. That empty start value is not terminal provider state: replay still requires the completed bounded signature, while null or an empty final/unary signature remains malformed.
 - Native function continuations require the provider-returned thought/signature steps. Dropping, merging, or fabricating them can invalidate the next request. They are request-critical private state, not display or logging metadata.
+- Stable Interactions accepts `auto`, `any`, `none`, and `validated` tool-choice modes; `any` requires a function call and is the provider mapping for AIQSA's normalized required-tool choice.
 - Native Google Search is a hosted `{ "type": "google_search" }` tool. It can produce search call/result steps, URL citation annotations, and exact `search_suggestions` markup. The documentation requires Suggestions to accompany grounded content; current terms constrain storage/use of Search Suggestions and citation Links. Those are external provider facts, not AIQSA route or retention policy.
 - Gemini 3 Interactions documents preview support for combining built-in tools such as Google Search with custom functions in one interaction through tool-context circulation. The combined path uses `validated` tool choice because `auto` is unsupported, and continuation-critical step `id` and encrypted `signature` fields must be preserved either by `previous_interaction_id` or by replaying the complete stateless history. The current REST examples target `/v1beta/interactions`.
 - Authenticated catalogs contain non-chat image, audio, embedding, and media identifiers. Blind import is unsafe; Quick setup intersects only the reviewed chat candidates above.

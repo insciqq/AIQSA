@@ -8,7 +8,7 @@ Not owned here: AIQSA runtime mapping details, normalized run semantics, or othe
 
 ## Anthropic Messages API
 
-Last verified: 2026-08-07.
+Last verified: 2026-08-12.
 
 Primary references:
 
@@ -35,6 +35,7 @@ Externally constrained facts:
 - `refusal` and `model_context_window_exceeded` are successful-response `stop_reason` values rather than HTTP errors. Current documentation specifies an HTTP-200 refusal with empty content and a `message_delta` terminal reason when streaming.
 - Total Anthropic input usage is `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`; current thinking usage is reported as `output_tokens_details.thinking_tokens` when available.
 - Older manual thinking uses a token budget below `max_tokens`. Claude Opus 4.8+ uses adaptive thinking plus `output_config.effort`; its documented scale includes `low`, `medium`, `high`, `xhigh`, and `max`, with `high` as API default.
+- Client tools use `tool_choice.type=any` to require one supplied tool. Forced tool choice is incompatible with older manual extended thinking, while the current adaptive-thinking path supports it.
 - The current explicit Claude 5 API ids are `claude-opus-5` and `claude-sonnet-5`. Both document a 1,000,000-token context window and 128,000 maximum output tokens.
 - Claude 5 uses adaptive thinking with effort. Its migration guidance removes manual extended-thinking budgets and non-default sampling combinations for this path.
 - PDF/document and image support are model capabilities, not provider-wide assumptions. Direct native PDF input uses Messages document content.

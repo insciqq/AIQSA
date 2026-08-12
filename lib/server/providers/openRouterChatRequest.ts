@@ -45,7 +45,7 @@ export type OpenRouterChatRequestBody = Record<string, unknown> & {
   session_id: string;
   stream: boolean;
   temperature?: number;
-  tool_choice?: "auto" | "none";
+  tool_choice?: "auto" | "none" | "required";
   tools?: Record<string, unknown>[];
   verbosity?: string;
 };
@@ -379,7 +379,7 @@ function buildOpenRouterBody(input: {
   parallelToolCalls?: boolean;
   params: OpenRouterParams;
   stream: boolean;
-  toolChoice?: "auto" | "none";
+  toolChoice?: "auto" | "none" | "required";
   tools?: Record<string, unknown>[];
 }): OpenRouterChatRequestBody {
   const body: OpenRouterChatRequestBody = {

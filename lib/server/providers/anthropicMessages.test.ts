@@ -711,6 +711,13 @@ describe("Anthropic Messages adapter", () => {
       disable_parallel_tool_use: true,
       type: "auto"
     });
+    expect(buildAnthropicMessagesRequest(request({
+      toolChoice: "required",
+      tools: [mcpTool]
+    })).tool_choice).toEqual({
+      disable_parallel_tool_use: true,
+      type: "any"
+    });
   });
 
   it("redacts Anthropic tool transcripts and thinking only in request previews", () => {

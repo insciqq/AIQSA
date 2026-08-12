@@ -82,6 +82,17 @@ function latestInputMessage(body: ReturnType<typeof buildOpenAIResponsesRequest>
 }
 
 describe("OpenAI Responses request builder", () => {
+  it("serializes required custom-tool choice", () => {
+    const body = buildOpenAIResponsesRequest(request({
+      searchStrategy: null,
+      toolChoice: "required",
+      tools: [perplexityWebSearchTool]
+    }));
+
+    expect(body.tool_choice).toBe("required");
+    expect(body.parallel_tool_calls).toBe(false);
+  });
+
   it("builds the exact background native-search request and safe preview envelope", () => {
     const runRequest = request();
     const body = buildOpenAIResponsesRequest(runRequest);

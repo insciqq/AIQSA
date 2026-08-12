@@ -65,7 +65,7 @@ export type OpenAIResponsesRequestBody = {
   store: boolean;
   stream: boolean;
   temperature: number;
-  tool_choice?: "auto" | "none";
+  tool_choice?: "auto" | "none" | "required";
   tools?: Record<string, unknown>[];
 };
 

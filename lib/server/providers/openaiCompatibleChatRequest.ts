@@ -28,7 +28,7 @@ export type OpenAICompatibleChatRequestBody = Record<string, unknown> & {
   stream: boolean;
   stream_options?: { include_usage: true };
   temperature?: number;
-  tool_choice?: "auto" | "none";
+  tool_choice?: "auto" | "none" | "required";
   tools?: Record<string, unknown>[];
 };
 

@@ -348,8 +348,9 @@ and direct-USER evidence. Consolidation sees at most 12 same-scope exact or
 entity/lexical facts, time-ranked, and three versions each, then proposes one
 `ADD|REINFORCE|SUPERSEDE|CONFLICT|EXPIRE|NOOP|DEFER` decision. The server
 rechecks source, suppression, explicit precedence, target pointer, and evidence;
-risky transitions require a separate exact-bound verifier. Unknown calls are
-not replayed. Drift stales the decision and schedules source purge.
+risky transitions require one exact-bound required tool; text terminals fail.
+Unknown calls are not replayed. Drift stales the decision and schedules source
+purge.
 
 An active fact has exactly one same-owner active current version. Conflicted,
 orphaned, expired, retracted, and forgotten facts have no unqualified current

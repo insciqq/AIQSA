@@ -8,7 +8,7 @@ Not owned here: AIQSA runtime behavior, configuration names, normalized run sema
 
 ## OpenAI Responses API
 
-Last verified: 2026-08-02.
+Last verified: 2026-08-12.
 
 Primary references:
 
@@ -40,6 +40,7 @@ Externally constrained facts:
 - Authenticated `GET /v1/models` returns the model identifiers available to the key; catalog presence does not guarantee that a later generation will succeed.
 - Ultra-small generation diagnostics are not portable across current models and routes.
 - Native `web_search` uses the Responses tool contract and may return call/action sources and/or message annotations. It does not require a backend regex intent gate.
+- Responses function tools accept `tool_choice=required`; with one function and parallel calls disabled, that requires exactly one function call.
 - A foreground, non-streaming Responses request can use `web_search` with `store: false` without requiring stored/background response state.
 - Native `web_search` and parallel custom functions can coexist.
 - Prompt caching is automatic where eligible; `prompt_cache_key` and retention hints influence routing/retention and must not expose a raw local chat id. GPT-5.6 replaces the older `prompt_cache_retention` field with `prompt_cache_options`; its currently documented TTL is `30m`.

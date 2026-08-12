@@ -8,7 +8,7 @@ Not owned here: Native OpenAI lifecycle behavior or AIQSA runtime mapping detail
 
 ## Compatible OpenAI Gateways And codex-lb
 
-Last verified: 2026-07-31.
+Last verified: 2026-08-12.
 
 Primary references:
 
@@ -22,6 +22,7 @@ Externally constrained facts:
 - A successful `/models` catalog request proves only reachability for the supplied authentication candidate. OpenAPI path presence, catalog membership, and declared capabilities do not guarantee that a later tool call will succeed.
 - The permitted live deployment smoke returned seven model rows and bounded per-model reasoning metadata, but the shapes are gateway-owned and untrusted.
 - The same deployment accepted `reasoning_effort` through both Chat Completions and Responses. A separate Responses request with the hosted `web_search` tool completed with a `web_search_call`; this proves that exact tested deployment/account path, not codex-lb installations generally. Smoke evidence retained only status and output-type facts, never answer text or credentials.
+- On the exact tested codex-lb GPT-5.6 Terra path, Responses accepted required custom-tool choice yet intermittently completed with reasoning/no callable output or incomplete arguments; earlier Chat Completions qualification for the same model had no structural verifier failures. Tool reliability is therefore protocol- and deployment-specific, not proved by model identity or a generic tool-capability flag.
 
 Current compatible protocol selection, discovery allowlisting, reasoning
 mapping, Search publication, and image-generation declarations live in the

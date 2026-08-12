@@ -297,6 +297,16 @@ npm run memory:learning:evaluate -- \
   --evidence-output=.aiqsa/PRIVATE_LEARNING_EVIDENCE.json
 ```
 
+Verifier qualification uses 32 cases per language in a fixed balanced gold
+matrix by transition operation and supported/mismatched-target variant; it
+never selects verifier
+inputs from consolidation outputs that happened to pass in the same run.
+Sanitized diagnostics distinguish provider failure, missing or malformed tool
+structure, exact public-schema contract violations, and wrong verdicts, with
+only operation/variant, output-shape class, and bounded token bands retained.
+Raw provider output, reasoning, arguments, source text, and identifiers remain
+excluded.
+
 Only a passed full-split aggregate with complete independent RU/EN gates, zero
 hard-gate counts, both supporting roles, and all six exact role fingerprints
 may be signed. `memory:qualification:build` accepts only evidence and an

@@ -32,7 +32,8 @@ const verificationKeys = [
   "decision_id",
   "reason_code",
   "verdict"
-].sort();
+] as const;
+const verificationKeySet = new Set<string>(verificationKeys);
 const controlPattern = /[\u0000-\u001f\u007f]/u;
 const operations = new Set<string>(MEMORY_FACT_CONSOLIDATION_OPERATIONS);
 const consolidationReasons = new Set<string>(MEMORY_FACT_CONSOLIDATION_REASON_CODES);
@@ -43,6 +44,47 @@ const targetOperations = new Set<MemoryFactConsolidationOperation>([
   "CONFLICT",
   "EXPIRE"
 ]);
+
+export const MEMORY_FACT_VERIFICATION_OUTPUT_ISSUES = [
+  "tool_call_missing",
+  "tool_call_count_invalid",
+  "tool_name_invalid",
+  "arguments_invalid",
+  "candidate_id_missing",
+  "decision_id_missing",
+  "reason_code_missing",
+  "verdict_missing",
+  "multiple_required_keys_missing",
+  "arguments_unexpected_keys",
+  "arguments_required_keys_missing_and_unexpected",
+  "candidate_id_mismatch",
+  "decision_id_mismatch",
+  "verdict_invalid",
+  "reason_code_invalid",
+  "approve_reason_mismatch",
+  "non_approve_reason_mismatch"
+] as const;
+
+export type MemoryFactVerificationOutputIssue =
+  (typeof MEMORY_FACT_VERIFICATION_OUTPUT_ISSUES)[number];
+export type MemoryFactVerificationArgumentKey = (typeof verificationKeys)[number];
+
+export type MemoryFactVerificationOutputInspection = Readonly<
+  | {
+      issue: MemoryFactVerificationOutputIssue;
+      missingRequiredKeys: readonly MemoryFactVerificationArgumentKey[];
+      ok: false;
+      plan: null;
+      unexpectedKeyCount: number;
+    }
+  | {
+      issue: null;
+      missingRequiredKeys: readonly [];
+      ok: true;
+      plan: MemoryFactVerificationPlan;
+      unexpectedKeyCount: 0;
+    }
+>;
 const operationReason: Readonly<Record<
   MemoryFactConsolidationOperation,
   MemoryFactConsolidationReasonCode
@@ -183,23 +225,88 @@ export function decodeMemoryFactVerification(
   calls: readonly ModelToolCall[] | undefined,
   input: MemoryFactVerificationInput
 ): MemoryFactVerificationPlan {
+  const inspected = inspectMemoryFactVerificationOutput(calls, input);
+  if (!inspected.ok) fail("memory_fact_verification_output_invalid");
+  return inspected.plan;
+}
+
+/**
+ * Produces a bounded, content-free diagnostic for live qualification evidence.
+ * Runtime decoding deliberately retains one public failure code so model output
+ * details never become durable execution errors or logs.
+ */
+export function inspectMemoryFactVerificationOutput(
+  calls: readonly ModelToolCall[] | undefined,
+  input: MemoryFactVerificationInput
+): MemoryFactVerificationOutputInspection {
+  const invalid = (
+    issue: MemoryFactVerificationOutputIssue,
+    missingRequiredKeys: readonly MemoryFactVerificationArgumentKey[] = [],
+    unexpectedKeyCount = 0
+  ): MemoryFactVerificationOutputInspection => ({
+    issue,
+    missingRequiredKeys,
+    ok: false,
+    plan: null,
+    unexpectedKeyCount
+  });
+  if (!calls || calls.length === 0) return invalid("tool_call_missing");
+  if (calls.length !== 1) return invalid("tool_call_count_invalid");
+  const call = calls[0]!;
+  if (call.name !== MEMORY_FACT_VERIFICATION_TOOL_NAME) {
+    return invalid("tool_name_invalid");
+  }
+  if (!isRecord(call.arguments)) return invalid("arguments_invalid");
+  if (!hasExactKeys(call.arguments, verificationKeys)) {
+    const actualKeys = new Set(Object.keys(call.arguments));
+    const missingRequiredKeys = verificationKeys.filter((key) => !actualKeys.has(key));
+    const unexpectedKeyCount = [...actualKeys]
+      .filter((key) => !verificationKeySet.has(key)).length;
+    if (missingRequiredKeys.length > 0 && unexpectedKeyCount > 0) {
+      return invalid(
+        "arguments_required_keys_missing_and_unexpected",
+        missingRequiredKeys,
+        unexpectedKeyCount
+      );
+    }
+    if (missingRequiredKeys.length > 1) {
+      return invalid("multiple_required_keys_missing", missingRequiredKeys);
+    }
+    if (missingRequiredKeys[0] === "candidate_id") {
+      return invalid("candidate_id_missing", missingRequiredKeys);
+    }
+    if (missingRequiredKeys[0] === "decision_id") {
+      return invalid("decision_id_missing", missingRequiredKeys);
+    }
+    if (missingRequiredKeys[0] === "reason_code") {
+      return invalid("reason_code_missing", missingRequiredKeys);
+    }
+    if (missingRequiredKeys[0] === "verdict") {
+      return invalid("verdict_missing", missingRequiredKeys);
+    }
+    return invalid("arguments_unexpected_keys", [], unexpectedKeyCount);
+  }
+  const args = call.arguments;
+  if (args.candidate_id !== input.candidate.id) {
+    return invalid("candidate_id_mismatch");
+  }
+  if (args.decision_id !== input.decision.id) {
+    return invalid("decision_id_mismatch");
+  }
   if (
-    !calls || calls.length !== 1 ||
-    calls[0]?.name !== MEMORY_FACT_VERIFICATION_TOOL_NAME ||
-    !isRecord(calls[0].arguments) ||
-    !hasExactKeys(calls[0].arguments, verificationKeys)
-  ) fail("memory_fact_verification_output_invalid");
-  const args = calls[0].arguments;
-  if (
-    args.candidate_id !== input.candidate.id ||
-    args.decision_id !== input.decision.id ||
     typeof args.verdict !== "string" ||
-    !["APPROVE", "DEFER", "REJECT"].includes(args.verdict) ||
+    !["APPROVE", "DEFER", "REJECT"].includes(args.verdict)
+  ) return invalid("verdict_invalid");
+  if (
     typeof args.reason_code !== "string" ||
-    !verificationReasons.has(args.reason_code) ||
-    (args.verdict === "APPROVE" && args.reason_code !== "supported_transition") ||
-    (args.verdict !== "APPROVE" && args.reason_code === "supported_transition")
-  ) fail("memory_fact_verification_output_invalid");
+    !verificationReasons.has(args.reason_code)
+  ) return invalid("reason_code_invalid");
+  if (args.verdict === "APPROVE" && args.reason_code !== "supported_transition") {
+    return invalid("approve_reason_mismatch");
+  }
+  if (args.verdict !== "APPROVE" && args.reason_code === "supported_transition") {
+    return invalid("non_approve_reason_mismatch");
+  }
   const withoutHash: Omit<MemoryFactVerificationPlan, "outputHash"> = {
     candidateId: input.candidate.id,
     decisionId: input.decision.id,
@@ -207,7 +314,13 @@ export function decodeMemoryFactVerification(
     verdict: args.verdict as MemoryFactVerificationPlan["verdict"]
   };
   return {
-    ...withoutHash,
-    outputHash: memoryFactVerificationOutputHash(input, withoutHash)
+    issue: null,
+    missingRequiredKeys: [],
+    ok: true,
+    plan: {
+      ...withoutHash,
+      outputHash: memoryFactVerificationOutputHash(input, withoutHash)
+    },
+    unexpectedKeyCount: 0
   };
 }

@@ -71,6 +71,27 @@ function responseBody(frames: readonly string[]): ReadableStream<Uint8Array> {
 }
 
 describe("compatible Responses adapter", () => {
+  it("preserves required tool choice on the portable wire body", () => {
+    expect(buildCompatibleResponsesRequest(request({
+      toolChoice: "required",
+      tools: [{
+        capability: "memory",
+        description: "Return one result.",
+        inputSchema: {
+          additionalProperties: false,
+          properties: { result: { type: "string" } },
+          required: ["result"],
+          type: "object"
+        },
+        name: "submit_result",
+        strict: true
+      }]
+    }))).toMatchObject({
+      parallel_tool_calls: false,
+      tool_choice: "required"
+    });
+  });
+
   it("forces stateless manual replay and strips native-only extensions", () => {
     const body = buildCompatibleResponsesRequest(request());
 

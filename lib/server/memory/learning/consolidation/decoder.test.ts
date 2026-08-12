@@ -13,6 +13,7 @@ import {
 import {
   decodeMemoryFactConsolidation,
   decodeMemoryFactVerification,
+  inspectMemoryFactVerificationOutput,
   MemoryFactConsolidationDecodeError
 } from "./decoder";
 import {
@@ -250,5 +251,118 @@ describe("Memory fact selective-verifier decoder", () => {
       id: "verify-call",
       name: MEMORY_FACT_VERIFICATION_TOOL_NAME
     }], input)).toThrowError("memory_fact_verification_output_invalid");
+  });
+
+  it("classifies verifier contract failures without retaining model content", () => {
+    const input = verificationInput();
+    const call = (overrides: Partial<ModelToolCall> = {}): ModelToolCall => ({
+      arguments: {
+        candidate_id: input.candidate.id,
+        decision_id: input.decision.id,
+        reason_code: "supported_transition",
+        verdict: "APPROVE"
+      },
+      id: "verify-call",
+      name: MEMORY_FACT_VERIFICATION_TOOL_NAME,
+      ...overrides
+    });
+    const issue = (calls: readonly ModelToolCall[] | undefined) =>
+      inspectMemoryFactVerificationOutput(calls, input).issue;
+
+    expect(issue(undefined)).toBe("tool_call_missing");
+    expect(issue([call(), call({ id: "verify-call-2" })])).toBe(
+      "tool_call_count_invalid"
+    );
+    expect(issue([call({ name: "wrong_tool" })])).toBe("tool_name_invalid");
+    expect(issue([call({ arguments: null as never })])).toBe("arguments_invalid");
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      decision_id: input.decision.id,
+      reason_code: "supported_transition",
+      verdict: "APPROVE",
+      explanation: "must not be retained"
+    } })])).toBe("arguments_unexpected_keys");
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      decision_id: input.decision.id,
+      verdict: "APPROVE"
+    } })])).toBe("reason_code_missing");
+    expect(issue([call({ arguments: {
+      decision_id: input.decision.id,
+      reason_code: "supported_transition",
+      verdict: "APPROVE"
+    } })])).toBe("candidate_id_missing");
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      reason_code: "supported_transition",
+      verdict: "APPROVE"
+    } })])).toBe("decision_id_missing");
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      decision_id: input.decision.id,
+      reason_code: "supported_transition"
+    } })])).toBe("verdict_missing");
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      verdict: "APPROVE"
+    } })])).toBe("multiple_required_keys_missing");
+    expect(inspectMemoryFactVerificationOutput([call({ arguments: {
+      candidate_id: input.candidate.id,
+      verdict: "APPROVE"
+    } })], input)).toMatchObject({
+      missingRequiredKeys: ["decision_id", "reason_code"],
+      unexpectedKeyCount: 0
+    });
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      decision_id: input.decision.id,
+      explanation: "must not be retained",
+      verdict: "APPROVE"
+    } })])).toBe("arguments_required_keys_missing_and_unexpected");
+    expect(inspectMemoryFactVerificationOutput([call({ arguments: {
+      candidate_id: input.candidate.id,
+      decision_id: input.decision.id,
+      explanation: "must not be retained",
+      verdict: "APPROVE"
+    } })], input)).toMatchObject({
+      missingRequiredKeys: ["reason_code"],
+      unexpectedKeyCount: 1
+    });
+    expect(issue([call({ arguments: {
+      candidate_id: "wrong",
+      decision_id: input.decision.id,
+      reason_code: "supported_transition",
+      verdict: "APPROVE"
+    } })])).toBe("candidate_id_mismatch");
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      decision_id: "wrong",
+      reason_code: "supported_transition",
+      verdict: "APPROVE"
+    } })])).toBe("decision_id_mismatch");
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      decision_id: input.decision.id,
+      reason_code: "supported_transition",
+      verdict: "MAYBE"
+    } })])).toBe("verdict_invalid");
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      decision_id: input.decision.id,
+      reason_code: "unknown",
+      verdict: "REJECT"
+    } })])).toBe("reason_code_invalid");
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      decision_id: input.decision.id,
+      reason_code: "source_mismatch",
+      verdict: "APPROVE"
+    } })])).toBe("approve_reason_mismatch");
+    expect(issue([call({ arguments: {
+      candidate_id: input.candidate.id,
+      decision_id: input.decision.id,
+      reason_code: "supported_transition",
+      verdict: "REJECT"
+    } })])).toBe("non_approve_reason_mismatch");
   });
 });

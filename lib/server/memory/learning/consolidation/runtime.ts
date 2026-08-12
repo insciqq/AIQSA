@@ -39,6 +39,8 @@ type LockedCredentialVersion = Readonly<{
   testEvidence: unknown;
 }>;
 
+export const MEMORY_FACT_VERIFICATION_MAX_OUTPUT_TOKENS = 800;
+
 export type MemoryFactDecisionProviderEvidence = Readonly<{
   connectionId: string;
   credentialId: string;
@@ -53,6 +55,14 @@ export type MemoryFactDecisionProviderRequest =
   | Readonly<{ input: MemoryFactVerificationInput; kind: "VERIFY" }>;
 
 export type MemoryFactDecisionProviderResult = Readonly<{
+  outputKind:
+    | "message_without_text"
+    | "no_output_items"
+    | "other_nontext"
+    | "reasoning_only"
+    | "text_and_tool_calls"
+    | "text_only"
+    | "tool_calls_only";
   providerResponseId: string | null;
   toolCalls: readonly ModelToolCall[] | undefined;
   usage: ModelRunUsage;
@@ -91,6 +101,34 @@ function boundedProviderResponseId(value: string | undefined): string | null {
     : null;
 }
 
+export function memoryFactDecisionOutputKind(
+  result: Pick<
+    ProviderRunResult,
+    "finalProviderResponsePreview" | "finalText" | "toolCalls"
+  >
+): MemoryFactDecisionProviderResult["outputKind"] {
+  const hasText = result.finalText.trim().length > 0;
+  const hasToolCalls = (result.toolCalls?.length ?? 0) > 0;
+  if (hasText) return hasToolCalls ? "text_and_tool_calls" : "text_only";
+  if (hasToolCalls) return "tool_calls_only";
+
+  const previewOutput = result.finalProviderResponsePreview.output;
+  if (!Array.isArray(previewOutput) || previewOutput.length === 0) {
+    return "no_output_items";
+  }
+  const itemTypes = previewOutput.map((item) =>
+    isRecord(item) && typeof item.type === "string" ? item.type : null);
+  if (itemTypes.every((type) => type === "reasoning")) return "reasoning_only";
+  if (itemTypes.some((type) => type === "message")) return "message_without_text";
+  return "other_nontext";
+}
+
+export function memoryFactDecisionToolChoice(
+  kind: MemoryFactDecisionProviderRequest["kind"]
+): NonNullable<ProviderRunRequest["toolChoice"]> {
+  return kind === "VERIFY" ? "required" : "auto";
+}
+
 function providerRequest(
   snapshot: ProviderExecutionSnapshot,
   request: MemoryFactDecisionProviderRequest
@@ -101,7 +139,7 @@ function providerRequest(
   }
   const maxOutputTokens = Math.min(
     model.capabilities.defaultMaxOutputTokens ?? 1_200,
-    request.kind === "VERIFY" ? 800 : 1_200
+    request.kind === "VERIFY" ? MEMORY_FACT_VERIFICATION_MAX_OUTPUT_TOKENS : 1_200
   );
   const input = request.input;
   return {
@@ -136,7 +174,7 @@ function providerRequest(
     },
     provider: snapshot.providerFamily,
     searchStrategy: null,
-    toolChoice: "auto",
+    toolChoice: memoryFactDecisionToolChoice(request.kind),
     tools: [request.kind === "CONSOLIDATE"
       ? memoryFactConsolidationTool
       : memoryFactVerificationTool]
@@ -259,6 +297,7 @@ export function createAcceptedMemoryFactDecisionProvider(
         runtime.adapter.stream(providerRequest(snapshot, request), { signal })
       );
       return {
+        outputKind: memoryFactDecisionOutputKind(result),
         providerResponseId: boundedProviderResponseId(result.providerResponseId),
         toolCalls: result.toolCalls,
         usage: result.usage

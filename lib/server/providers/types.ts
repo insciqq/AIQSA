@@ -178,7 +178,7 @@ export type ProviderRunRequest = NormalizedRunRequest & {
   parallelToolCalls?: boolean;
   previousProviderResponseId?: string;
   providerToolMessages?: unknown[];
-  toolChoice?: "auto" | "none";
+  toolChoice?: "auto" | "none" | "required";
   tools?: RunTool[];
 };
 
