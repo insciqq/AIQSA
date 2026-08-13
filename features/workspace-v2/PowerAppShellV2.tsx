@@ -332,6 +332,12 @@ export function PowerAppShellV2({
   const activeChatStream = useRunLifecycleStore((state) =>
     activeChatId ? state.activeStreams[activeChatId] : undefined
   );
+  // Recorded genuine transport loss for the active chat (stream ended or
+  // errored without a terminal frame); presentation shows the honest
+  // «Соединение потеряно · Обновить» strip from this record alone.
+  const activeChatInterruptedRun = useRunLifecycleStore((state) =>
+    activeChatId ? state.ambiguousFailures[activeChatId] ?? null : null
+  );
   const activeRunChatIdsKey = useRunLifecycleStore((state) => Object.keys(state.activeStreams).sort().join("\u0000"));
   const activeRunChatIds = useMemo(
     () => new Set(activeRunChatIdsKey ? activeRunChatIdsKey.split("\u0000") : []),
@@ -1024,7 +1030,12 @@ export function PowerAppShellV2({
     activeChatStreaming
   });
 
-  const { regenerateMessage, sendStarterPrompt, submitComposer } = useMessageRunActions({
+  const {
+    refreshInterruptedRun,
+    regenerateMessage,
+    sendStarterPrompt,
+    submitComposer
+  } = useMessageRunActions({
     activeChat,
     activeChatDetailLoading,
     activeChatId,
@@ -1282,6 +1293,8 @@ export function PowerAppShellV2({
     handleEditMessage,
     handleRegenerateMessage,
     handleThreadScroll,
+    interruptedRun: activeChatInterruptedRun,
+    refreshInterruptedRun: () => refreshInterruptedRun(),
     loadRunReceipt: async (runId: string) => {
       return activeChatId ? fetchRunReceipt(runId, activeChatId) : null;
     },

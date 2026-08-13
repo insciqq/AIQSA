@@ -132,6 +132,12 @@ export type ShellThreadView = {
   handleRegenerateMessage(messageId: string): void;
   handleThreadScroll(): void;
   hasOlderMessages: boolean;
+  /**
+   * The chat's recorded ambiguous transport loss (a stream whose connection
+   * genuinely failed without a terminal frame), or null while the transport
+   * is healthy. Presentation renders it as the honest connection-lost state.
+   */
+  interruptedRun: Readonly<{ assistantMessageId: string; runId: string | null }> | null;
   loadRunReceipt(runId: string): Promise<PersistedRun | null>;
   loadEarlierMessages(): Promise<void> | void;
   loadingOlderMessages: boolean;
@@ -141,6 +147,12 @@ export type ShellThreadView = {
   liveArtifactSummary: ThreadArtifactSummary | null;
   olderMessagesError: string | null;
   openMemorySourceChat(chatId: string): void;
+  /**
+   * Existing headless force-refresh owner for an ambiguous transport failure:
+   * reconciles the chat with durable server state and clears the recorded
+   * ambiguity on success («Обновить» in the connection-lost strip).
+   */
+  refreshInterruptedRun(): Promise<boolean>;
   retryActiveChatDetail(): void;
   showJumpToLatest: boolean;
   threadScrollRef: RefObject<HTMLDivElement | null>;

@@ -157,8 +157,8 @@
 }
 
 .v2-branch-pager-reason {
-  color: var(--v2-color-text3);
-  font-size: 0.6875rem;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
 }
 
 .v2-branch-scrim {
@@ -169,6 +169,7 @@
   justify-items: end;
   background: color-mix(in srgb, var(--v2-color-canvas) 50%, transparent);
   backdrop-filter: blur(3px);
+  animation: v2-scrim-enter var(--v2-motion-fast) both;
 }
 
 .v2-branch-drawer {
@@ -182,6 +183,7 @@
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
   box-shadow: var(--v2-shadow-overlay);
+  animation: v2-drawer-enter var(--v2-motion-base) both;
 }
 
 .v2-branch-drawer-header {
@@ -207,7 +209,7 @@
 .v2-branch-drawer-header h2 {
   margin: 0;
   font-size: 1.125rem;
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-branch-drawer-copy,
@@ -341,7 +343,7 @@
 .v2-branch-error-state strong,
 .v2-branch-empty strong {
   color: var(--v2-color-text);
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-branch-error-state p,

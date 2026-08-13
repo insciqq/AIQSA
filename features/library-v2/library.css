@@ -87,10 +87,10 @@
   padding: 0 0.125rem;
   border: 0;
   border-bottom: 2px solid transparent;
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
   background: transparent;
   font: inherit;
-  font-size: 0.8125rem;
+  font-size: 0.84375rem;
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
@@ -509,6 +509,7 @@
   z-index: 95;
   inset: 0;
   background: var(--v2-color-scrim);
+  animation: v2-scrim-enter var(--v2-motion-fast) both;
 }
 
 .v2-library-confirm {
@@ -523,6 +524,8 @@
   background: var(--v2-color-surface);
   box-shadow: var(--v2-shadow-overlay);
   transform: translate(-50%, -50%);
+  /* Opacity/scale only: the entrance must not replace the centering transform. */
+  animation: v2-overlay-enter var(--v2-motion-fast) both;
 }
 
 .v2-library-confirm h2 {

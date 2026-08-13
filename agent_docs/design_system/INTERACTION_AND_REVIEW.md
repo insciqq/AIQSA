@@ -44,9 +44,9 @@ Composition follows available space, content, and input capability. Media querie
 
 Motion communicates state change, spatial origin, and live work; it does not decorate idle surfaces.
 
-- Control feedback: 100-140ms.
-- Menus/popovers: 120-160ms.
-- Drawers/sheets: 160-220ms.
+- Control feedback and menus/popovers/dialogs/scrims: the `motion.fast` token.
+- Drawers and bottom sheets: the `motion.base` token.
+- Toasts: 200ms opacity plus a 10px translate settle.
 - Completion emphasis: one restrained settle, no looping celebration.
 
 Do not animate shell entrance or idle/settled pipeline chrome. Running activity may pulse, answer completion may settle once, and overlays may use one short entrance. Animate opacity and independent scale where possible; an entrance keyframe must not replace the translate/transform that positions its surface. Never animate layout during token streaming. Keep the existing deterministic test motion-off mode, but enable real motion in geometry cases that own this interaction.

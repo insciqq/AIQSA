@@ -10,6 +10,7 @@
     max(1rem, env(safe-area-inset-bottom))
     max(1rem, env(safe-area-inset-left));
   background: var(--v2-color-scrim);
+  animation: v2-scrim-enter var(--v2-motion-fast) both;
 }
 
 .v2-settings-dialog {
@@ -23,6 +24,7 @@
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
   box-shadow: var(--v2-shadow-overlay);
+  animation: v2-overlay-enter var(--v2-motion-fast) both;
 }
 
 .v2-settings-header {
@@ -288,6 +290,8 @@
   background: var(--v2-color-surface);
   box-shadow: var(--v2-shadow-overlay);
   transform: translate(-50%, -50%);
+  /* Opacity/scale only: the entrance must not replace the centering transform. */
+  animation: v2-overlay-enter var(--v2-motion-fast) both;
 }
 
 .v2-settings-confirm h2 {

@@ -48,8 +48,9 @@
   line-height: 1.5;
 }
 
+/* The resting cue is the field's visible label, so it keeps the text2 floor. */
 .v2-composer-input::placeholder {
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
 }
 
 .v2-composer-input:disabled {
@@ -102,7 +103,7 @@
   align-items: center;
   gap: 0.375rem;
   padding: 0 0.25rem 0.25rem;
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
   font-size: 0.75rem;
   line-height: 1.4;
 }
@@ -230,7 +231,7 @@
   border-radius: 50%;
   color: var(--v2-color-accent);
   background: transparent;
-  font: 0.5625rem/1 var(--font-mono), monospace;
+  font: 0.6875rem/1 var(--font-mono), monospace;
   cursor: pointer;
 }
 
@@ -282,6 +283,7 @@
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
   box-shadow: var(--v2-shadow-overlay);
+  animation: v2-overlay-enter var(--v2-motion-fast) both;
 }
 
 .v2-composer-context-popover header {
@@ -360,6 +362,7 @@
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
   box-shadow: var(--v2-shadow-overlay);
+  animation: v2-overlay-enter var(--v2-motion-fast) both;
 }
 
 .v2-composer-layer[data-kind="capabilities"] {
@@ -484,8 +487,8 @@
   flex: 0 0 auto;
   margin: 0;
   padding: 0.625rem;
-  color: var(--v2-color-text3);
-  font-size: 0.6875rem;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
   line-height: 1.45;
 }
 
@@ -655,7 +658,7 @@
   place-items: center;
   margin: 0;
   padding: 1rem;
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
   font-size: 0.8125rem;
   text-align: center;
 }
@@ -701,6 +704,7 @@
   /* Scrim token, not a text-derived mix: text-based scrims turn into a light
      wash in dark theme instead of dimming the workspace. */
   background: var(--v2-color-scrim);
+  animation: v2-scrim-enter var(--v2-motion-fast) both;
 }
 
 .v2-assistant-picker {
@@ -714,6 +718,7 @@
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
   box-shadow: var(--v2-shadow-overlay);
+  animation: v2-overlay-enter var(--v2-motion-fast) both;
 }
 
 .v2-assistant-picker-header {
@@ -755,7 +760,7 @@
 .v2-assistant-picker-list > p {
   margin: 0;
   padding: 1rem 0.75rem;
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
   font-size: 0.8125rem;
 }
 
@@ -896,6 +901,7 @@
     padding: 0;
     border: 0;
     background: var(--v2-color-scrim);
+    animation: v2-scrim-enter var(--v2-motion-fast) both;
   }
 
   .v2-composer-context-popover {
@@ -923,6 +929,7 @@
     border-bottom: 0;
     border-left: 0;
     border-radius: var(--v2-radius-l) var(--v2-radius-l) 0 0;
+    animation: v2-sheet-enter var(--v2-motion-base) both;
   }
 
   .v2-composer-layer[data-kind="capabilities"],
@@ -963,6 +970,7 @@
     border-bottom: 0;
     border-left: 0;
     border-radius: var(--v2-radius-l) var(--v2-radius-l) 0 0;
+    animation: v2-sheet-enter var(--v2-motion-base) both;
   }
 }
 
@@ -976,6 +984,15 @@
   .v2-composer-model-trigger,
   .v2-composer-indicator {
     min-height: 2.5rem;
+  }
+
+  /* The 32px context gauge keeps its visual size; an invisible ring extends
+     the touch target to 40px (S3 §11). */
+  .v2-composer-context-trigger::after {
+    content: "";
+    position: absolute;
+    inset: -0.25rem;
+    border-radius: 50%;
   }
 }
 

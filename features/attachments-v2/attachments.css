@@ -158,14 +158,16 @@
   line-height: 1.4;
 }
 
+/* The sent-file line answers "what went with this message" — text2 floor,
+   caption size per the prototype attach-line. */
 .v2-sent-attachments {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem 0.75rem;
   margin: 0.5rem 0 0;
   padding: 0;
-  color: var(--v2-color-text3);
-  font-size: 0.75rem;
+  color: var(--v2-color-text2);
+  font-size: 0.78125rem;
   line-height: 1.4;
   list-style: none;
 }

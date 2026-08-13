@@ -116,6 +116,11 @@ import {
   presentRunLifecycleV2,
   settledRunPresentationV2
 } from "@/features/run-lifecycle-v2/runPresentation";
+import { documentTitleV2 } from "@/features/workspace-v2/documentTitle";
+import {
+  runTransportEvidenceV2,
+  transportLostForMessageV2
+} from "@/features/workspace-v2/runTransportPresentation";
 import { SettingsV2 } from "@/features/settings-v2/SettingsV2";
 import { attachmentItemsForV2 } from "@/features/attachments-v2/attachmentPresentation";
 import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
@@ -1148,6 +1153,26 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   useEffect(() => {
     void refreshMcpSettings().catch(() => undefined);
   }, []);
+  // The tab title follows the visible active chat (rename/switch included);
+  // the Library replaces it while it owns the workspace. Next.js re-applies
+  // its static route metadata after hydration, so the effect also watches the
+  // <title> node and re-asserts the shell-owned value when something else
+  // overwrites it.
+  useEffect(() => {
+    const desired = documentTitleV2({
+      activeChatId: session.activeChatId,
+      activeChatTitle: session.activeChatTitle,
+      libraryOpen
+    });
+    if (document.title !== desired) document.title = desired;
+    const titleNode = document.head.querySelector("title");
+    if (!titleNode) return;
+    const observer = new MutationObserver(() => {
+      if (document.title !== desired) document.title = desired;
+    });
+    observer.observe(titleNode, { characterData: true, childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [libraryOpen, session.activeChatId, session.activeChatTitle]);
   useEffect(() => {
     if (!settings.memory.open) return;
     void Promise.all([
@@ -1374,13 +1399,21 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       assistantMessageId: source.id,
       runId: source.runId
     } satisfies RunDetailsTargetV2 : null;
+    // A genuinely lost stream transport (reader error / end without a
+    // terminal frame, recorded by the run-lifecycle store) presents as the
+    // honest connection-lost strip; the transport slice suppresses the
+    // locally invented post-loss "error" status until refresh reconciles.
+    const transportLost = transportLostForMessageV2(thread.interruptedRun, source);
     const presentation = presentRunLifecycleV2({
-      authoritativeMessageStatus: source.status === "streaming" ? null : source.status,
-      connectionLost: source.status === "streaming" && !thread.activeChatStreaming && Boolean(run),
+      ...runTransportEvidenceV2({
+        activeChatStreaming: thread.activeChatStreaming,
+        interruptedRun: thread.interruptedRun,
+        message: { id: source.id, runId: source.runId ?? null, status: source.status },
+        persistedRunStatus: run?.status ?? null
+      }),
       content: messageText(source),
       events,
-      runId: source.runId ?? null,
-      status: run?.status ?? (source.status === "streaming" ? "streaming" : source.status)
+      runId: source.runId ?? null
     });
     // A live run shows only its honest status line (plus Stop in the
     // composer): no action dock, no evidence row, and never a raw run or
@@ -1411,7 +1444,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         ) : pagerSlot}
         anchorId={source.id}
         content={messageText(source)}
-        onRefresh={() => source.runId ? thread.loadRunReceipt(source.runId) : null}
+        onRefresh={() => transportLost
+          ? thread.refreshInterruptedRun()
+          : source.runId ? thread.loadRunReceipt(source.runId) : null}
         onRegenerate={() => thread.handleRegenerateMessage(source.id)}
         onRetry={() => thread.handleRegenerateMessage(source.id)}
         onSelectModel={() => setRunSetupOpen(true)}

@@ -5,18 +5,20 @@ import type {
 } from "@/lib/contracts/assistants";
 import type { ReactNode } from "react";
 
-const AVATAR_PALETTES: Readonly<
-  Record<AssistantAvatarPalette, { background: string; foreground: string }>
-> = {
-  coral: { background: "#b85560", foreground: "#f6dfe0" },
-  ember: { background: "#b4552d", foreground: "#f6ddc8" },
-  meadow: { background: "#3e7c4f", foreground: "#dcedd8" },
-  ocean: { background: "#2d5e8c", foreground: "#d3e6f4" },
-  pine: { background: "#2f6158", foreground: "#d2e9e2" },
-  plum: { background: "#6c4a7e", foreground: "#e9daf0" },
-  sand: { background: "#a4834a", foreground: "#f3e9d0" },
-  slate: { background: "#4e5c66", foreground: "#dfe6ea" }
-};
+/*
+ * The recipe values live as theme-invariant `--v2-avatar-*` component tokens
+ * in the sole token file (styles/tokens-v2.css); the component references
+ * them so no palette value exists outside that boundary.
+ */
+function avatarPaletteTokens(paletteId: AssistantAvatarPalette): {
+  background: string;
+  foreground: string;
+} {
+  return {
+    background: `var(--v2-avatar-${paletteId}-bg)`,
+    foreground: `var(--v2-avatar-${paletteId}-fg)`
+  };
+}
 
 function shapeElement(
   shape: AssistantAvatarShape,
@@ -110,7 +112,7 @@ export function AssistantAvatarV2({
   recipe: AssistantAvatarRecipe;
   size: number;
 }>) {
-  const palette = AVATAR_PALETTES[recipe.paletteId];
+  const palette = avatarPaletteTokens(recipe.paletteId);
   const accents = recipe.accents.map((slot) => {
     const angle = (Math.PI / 4) * slot - Math.PI / 2;
     return {
