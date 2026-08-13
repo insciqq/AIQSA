@@ -1,6 +1,5 @@
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
-  MEMORY_UI_LOCALES,
   type MemoryUiLocale
 } from "./memory";
 import { MEMORY_PRESENTATION_LOCALE } from "./memoryPresentation";
@@ -47,7 +46,8 @@ export const MEMORY_COPY_KEYS = [
 ] as const;
 
 export type MemoryCopyKey = (typeof MEMORY_COPY_KEYS)[number];
-export type MemoryCopyCatalog = Readonly<Record<MemoryUiLocale, Readonly<Record<MemoryCopyKey, string>>>>;
+export type MemoryCopyCatalog =
+  Readonly<Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryCopyKey, string>>>>;
 
 export const MEMORY_COPY: MemoryCopyCatalog = Object.freeze({
   EN: Object.freeze({
@@ -87,44 +87,6 @@ export const MEMORY_COPY: MemoryCopyCatalog = Object.freeze({
     "temporary.externalRetention": "External providers and tools may retain data under their disclosed policies; operator backups are a separate domain.",
     "temporary.label": "Temporary Chat",
     "temporary.retention": "The complete chat aggregate is scheduled for durable deletion 24 hours after the last terminal run, or after creation or last local activity if no run settles."
-  }),
-  RU: Object.freeze({
-    "archive.action": "Архивировать",
-    "archive.explanation": "Убирает чат из активного списка. Сохранённый чат остаётся допустимым источником для Памяти.",
-    "bulkDelete.explicit.action": "Удалить все сохранённые воспоминания",
-    "bulkDelete.history.action": "Очистить индекс памяти истории чатов",
-    "bulkDelete.learned.action": "Удалить автоматически выученные воспоминания",
-    "bulkDelete.reusable.action": "Удалить все повторно используемые данные Памяти",
-    "bulkDelete.reusable.explanation": "Удаляет повторно используемые факты, индекс истории и профиль. Сохранённые чаты не удаляются, старые принятые запуски не переписываются, уже сохранённые провайдером запросы и резервные копии оператора не стираются.",
-    "consent.answerDestination": "Выбранная модель ответа: финальные ограниченные фрагменты могут быть отправлены вместе с принятым запуском.",
-    "consent.embeddingDestination": "Назначение эмбеддингов: допустимый ограниченный текст отправляется только в раскрытое настроенное развёртывание.",
-    "consent.explanation": "Проверьте точные текущие назначения Памяти. Существенное изменение назначения приостанавливает затронутую внешнюю обработку Памяти до вашего согласия.",
-    "consent.rerankerDestination": "Удалённый реранкер: ограниченные допустимые кандидаты отправляются только при настроенном и принятом назначении.",
-    "consent.reviewRequired": "Перед продолжением внешней обработки Памяти требуется проверка.",
-    "consent.systemDestination": "Системная модель Памяти: ограниченный допустимый исходный текст может отправляться для квалифицированного извлечения или проверки.",
-    "consent.title": "Проверьте назначения данных Памяти",
-    "deletion.blockedAdmin": "Будущее использование Памяти уже заблокировано, но физическое удаление требует внимания администратора и продолжит повторные попытки.",
-    "exclude.action": "Исключить этот чат из памяти",
-    "exclude.explanation": "Сохраняет чат, но немедленно прекращает использовать его как источник автоматического поиска и обучения. Состояние архива не меняется.",
-    "forget.action": "Забыть",
-    "forget.explanation": "Прекращает будущее использование Памятью и подавляет повторное обучение по тем же неизменённым данным. Сохранённый текст чата и старые принятые запуски не переписываются.",
-    "permanentDelete.action": "Удалить навсегда",
-    "permanentDelete.explanation": "Удаляет чат и принадлежащие ему данные запусков, отзывает его публикации и согласует производные Памяти. Сроки хранения провайдера и резервные копии оператора не переписываются.",
-    "receipt.laterForgotten": "Позже забыто",
-    "receipt.sourceDeleted": "Источник удалён",
-    "receipt.title": "Память",
-    "restore.action": "Восстановить",
-    "resume.action": "Снова использовать этот чат как источник памяти",
-    "resume.explanation": "Разрешает контролируемую переиндексацию активной ветки. Предыдущие барьеры забывания и массовой очистки сохраняются, а внешняя обработка по-прежнему требует принятых назначений.",
-    "settings.learnAutomatically.label": "Автоматически запоминать полезные факты",
-    "settings.manage.label": "Управление памятью",
-    "settings.referenceHistory.label": "Ссылаться на историю чатов",
-    "settings.savedWhileUseOff": "Сохранено; использование памяти выключено.",
-    "settings.useFacts.label": "Использовать факты из памяти",
-    "temporary.explanation": "Временный чат не читает и не записывает личную Память, не может быть преобразован в сохраняемый чат и не может быть опубликован.",
-    "temporary.externalRetention": "Внешние провайдеры и инструменты могут хранить данные по раскрытым правилам; резервные копии оператора относятся к отдельной области.",
-    "temporary.label": "Временный чат",
-    "temporary.retention": "Полный агрегат чата ставится на гарантированное удаление через 24 часа после последнего завершённого запуска либо после создания или последней локальной активности, если ни один запуск не завершился."
   })
 });
 
@@ -134,14 +96,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function memoryCopyCatalogIsComplete(value: unknown): value is MemoryCopyCatalog {
   if (!isRecord(value)) return false;
-  if (Object.keys(value).length !== MEMORY_UI_LOCALES.length) return false;
-  return MEMORY_UI_LOCALES.every((locale) => {
-    const entries = value[locale];
-    if (!isRecord(entries) || Object.keys(entries).length !== MEMORY_COPY_KEYS.length) return false;
-    return MEMORY_COPY_KEYS.every((key) => {
-      const copy = entries[key];
-      return typeof copy === "string" && copy.trim().length > 0 && !copy.includes("\u0000");
-    });
+  const entries = value[MEMORY_PRESENTATION_LOCALE];
+  if (!isRecord(entries) || Object.keys(entries).length !== MEMORY_COPY_KEYS.length) return false;
+  return MEMORY_COPY_KEYS.every((key) => {
+    const copy = entries[key];
+    return typeof copy === "string" && copy.trim().length > 0 && !copy.includes("\u0000");
   });
 }
 

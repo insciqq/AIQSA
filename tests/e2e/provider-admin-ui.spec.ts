@@ -923,7 +923,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await selectModel(page, installedFixture.connectionId, "GPT-5.6 Sol", "OpenAI");
   await chooseSearchStrategy(page, "^Off");
   await expect(page.locator(".v2-composer-model-trigger")).toContainText("GPT-5.6 Sol");
-  const composer = page.getByRole("textbox", { name: "Сообщение" });
+  const composer = page.getByRole("textbox", { name: "Message" });
   await expect(composer).toBeEnabled();
   const question = `First question after Quick setup ${randomUUID()}`;
   await composer.fill(question);
@@ -931,7 +931,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     response.request().method() === "POST" &&
     /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname)
   );
-  await page.getByRole("button", { name: "Отправить сообщение" }).click();
+  await page.getByRole("button", { name: "Send message" }).click();
   const completedMessageResponse = await messageResponse;
   expect(completedMessageResponse.ok(), await completedMessageResponse.text()).toBe(true);
   const chatId = await waitForActiveChatId(page);
@@ -961,7 +961,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   const conversation = page.getByTestId("conversation-thread");
   await expect(conversation).toContainText(question);
   await expect(conversation).toContainText(quickAnswer, { timeout: 20_000 });
-  await expect(page.getByRole("button", { name: "Остановить ответ" }))
+  await expect(page.getByRole("button", { name: "Stop answer" }))
     .toHaveCount(0, { timeout: 20_000 });
 
   await expect.poll(async () => {

@@ -57,8 +57,8 @@ for (const theme of ["dark", "light"] as const) {
         "data-sidebar-composition",
         viewport.width < 900 ? "mobile" : viewport.width < 1024 ? "compact" : "desktop"
       );
-      const navigation = page.getByRole("complementary", { name: "Навигация по чатам" });
-      const opener = page.getByRole("button", { name: "Открыть панель" });
+      const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+      const opener = page.getByRole("button", { name: "Open sidebar" });
       if (viewport.width < 1024) {
         await expect(navigation).toBeHidden();
         await expect(opener).toBeVisible();
@@ -68,7 +68,7 @@ for (const theme of ["dark", "light"] as const) {
         await expect(page.locator(".v2-sidebar-floats")).toHaveCSS("pointer-events", "none");
       }
 
-      const modelLayer = page.getByRole("dialog", { name: "Выбор модели" });
+      const modelLayer = page.getByRole("dialog", { name: "Choose model" });
       await expect(modelLayer).toBeVisible();
       const layerBox = await modelLayer.boundingBox();
       expect(layerBox).not.toBeNull();
@@ -99,7 +99,7 @@ test("v2 drawers become full-screen below 900px and stay temporary above it", as
   ]) {
     await page.setViewportSize(viewport);
     await page.goto("/ui-v2-fixture?fixture=run-details&state=complete");
-    const runDetails = page.getByRole("dialog", { name: /Детали run/ });
+    const runDetails = page.getByRole("dialog", { name: /Run details/ });
     await expect(runDetails).toBeVisible();
     const runBox = await runDetails.boundingBox();
     expect(runBox).not.toBeNull();
@@ -128,12 +128,12 @@ test("v2 sidebar transfers focus across desktop, compact, and mobile composition
   await source.focus();
 
   await page.setViewportSize({ height: 390, width: 844 });
-  const opener = page.getByRole("button", { name: "Открыть панель" });
+  const opener = page.getByRole("button", { name: "Open sidebar" });
   await expect(page.locator(".v2-workspace-shell"))
     .toHaveAttribute("data-sidebar-composition", "mobile");
   await expect(opener).toBeFocused();
   await opener.click();
-  await expect(page.getByRole("button", { name: "Закрыть панель" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Close sidebar" })).toBeFocused();
 
   await page.setViewportSize({ height: 768, width: 1023 });
   await expect(page.locator(".v2-workspace-shell"))
@@ -147,9 +147,9 @@ test("v2 sidebar transfers focus across desktop, compact, and mobile composition
 test("v2 sidebar leaves Ctrl/Cmd+K to the single shell command-palette owner", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/ui-v2-fixture?fixture=navigation");
-  const opener = page.getByRole("button", { name: "Открыть панель" });
+  const opener = page.getByRole("button", { name: "Open sidebar" });
   await opener.click();
-  const drawer = page.getByRole("complementary", { name: "Навигация по чатам" });
+  const drawer = page.getByRole("complementary", { name: "Chat navigation" });
   await expect(drawer).toBeVisible();
 
   await page.keyboard.press("Control+k");
@@ -163,7 +163,7 @@ test("v2 sidebar leaves Ctrl/Cmd+K to the single shell command-palette owner", a
 test("v2 composer preserves its draft above a reduced mobile content viewport", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/ui-v2-fixture?fixture=composer&state=default");
-  const input = page.getByRole("textbox", { name: "Сообщение" });
+  const input = page.getByRole("textbox", { name: "Message" });
   const draft = Array.from({ length: 24 }, (_, index) => `Строка ${index + 1}`).join("\n");
   await input.fill(draft);
 
@@ -195,9 +195,9 @@ for (const theme of ["dark", "light"] as const) {
     await page.setViewportSize({ height: 844, width: 390 });
     await page.goto("/ui-v2-fixture?fixture=composer&state=capabilities");
     await page.addStyleTag({ content: "html { font-size: 20px !important; }" });
-    const sheet = page.getByRole("menu", { name: "Возможности запроса" });
+    const sheet = page.getByRole("menu", { name: "Capabilities" });
     await expect(sheet).toBeVisible();
-    await expectInsideViewport(page, "[role='menu'][aria-label='Возможности запроса']");
+    await expectInsideViewport(page, "[role='menu'][aria-label='Capabilities']");
     await expectInsideViewport(page, "[data-testid='composer-v2']");
     await expectNoPageOverflow(page);
     await expect(page).toHaveScreenshot(`responsive-enlarged-text-${theme}-mobile.png`, {
@@ -230,8 +230,8 @@ test.describe("v2 coarse-pointer controls", () => {
     }
 
     await page.goto("/ui-v2-fixture?fixture=navigation");
-    await page.getByRole("button", { name: "Открыть панель" }).tap();
-    const navigation = page.getByRole("complementary", { name: "Навигация по чатам" });
+    await page.getByRole("button", { name: "Open sidebar" }).tap();
+    const navigation = page.getByRole("complementary", { name: "Chat navigation" });
     for (const button of await navigation.getByRole("button").all()) {
       if (!await button.isVisible()) continue;
       expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(40);

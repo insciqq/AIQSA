@@ -15,7 +15,7 @@ export function SentAttachmentsV2({ blocks }: Readonly<{
 
   return (
     <ul
-      aria-label="Вложения сообщения"
+      aria-label="Message attachments"
       className="v2-sent-attachments"
       data-testid="sent-attachments"
     >

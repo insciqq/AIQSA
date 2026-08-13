@@ -987,7 +987,7 @@ export function useWorkspaceActions({
       chatDetailRequestsRef.current.delete(chat.id);
       setNotice({
         action: {
-          label: "Отменить",
+          label: "Undo",
           onClick: () => {
             void (async () => {
               try {
@@ -1009,7 +1009,7 @@ export function useWorkspaceActions({
                   title: restoredChat.title,
                   updatedAt: restoredChat.updatedAt
                 });
-                setNotice({ kind: "success", text: "Чат восстановлен" });
+                setNotice({ kind: "success", text: "Chat restored" });
               } catch (error) {
                 setNotice({ kind: "error", text: errorMessage(error) });
               }
@@ -1017,7 +1017,7 @@ export function useWorkspaceActions({
           }
         },
         kind: "success",
-        text: "Чат перемещён в архив"
+        text: "Chat moved to archive"
       });
 
       if (activeChatIdRef.current === chat.id) {

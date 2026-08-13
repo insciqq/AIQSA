@@ -9,7 +9,7 @@ export function documentTitleV2(input: Readonly<{
   activeChatTitle: string;
   libraryOpen: boolean;
 }>): string {
-  if (input.libraryOpen) return "Библиотека · AIQSA";
+  if (input.libraryOpen) return "Library · AIQSA";
   const title = input.activeChatId ? input.activeChatTitle.trim() : "";
   return `${title || "New chat"} · AIQSA`;
 }

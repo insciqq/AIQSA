@@ -53,7 +53,7 @@ export function ArtifactsV2Gallery({ state = "default" }: { state?: ArtifactsFix
   const [notice, setNotice] = useState("");
 
   function exactVersionNotice(action: string, version: GeneratedArtifactVersion) {
-    setNotice(`${action}: ${version.number === 1 ? "исходная" : `версия ${version.number}`} · fixture-only, backend не подключён.`);
+    setNotice(`${action}: ${version.number === 1 ? "original" : `version ${version.number}`} · fixture-only, backend not connected.`);
   }
 
   const sidebar = (onClose: () => void) => (
@@ -91,17 +91,17 @@ export function ArtifactsV2Gallery({ state = "default" }: { state?: ArtifactsFix
               afterContent: (
                 <>
                   <p className="v2-artifact-fixture-note">
-                    Fixture-only preview · generated-files backend недоступен в продукте.
+                    Fixture-only preview · the generated-files backend is not available in the product.
                   </p>
                   <GeneratedArtifactStackV2
                     artifacts={artifacts}
-                    onDetails={() => setNotice("Validation details ограничены fixture-проекцией; Run details появится отдельным срезом.")}
-                    onDownload={(_, version) => exactVersionNotice("Скачивание не выполнялось", version)}
+                    onDetails={() => setNotice("Validation details are limited to the fixture projection; Run details ships as a separate slice.")}
+                    onDownload={(_, version) => exactVersionNotice("Download not performed", version)}
                     onPreview={(artifact) => {
                       if (artifact.status === "ready") setPreviewArtifact(artifact);
                     }}
-                    onRetry={() => setNotice("Повтор не выполнялся: compute backend не подключён.")}
-                    onUseInNextMessage={(_, version) => exactVersionNotice("Выбрано для следующего сообщения", version)}
+                    onRetry={() => setNotice("Retry not performed: the compute backend is not connected.")}
+                    onUseInNextMessage={(_, version) => exactVersionNotice("Selected for the next message", version)}
                   />
                 </>
               )
@@ -116,7 +116,7 @@ export function ArtifactsV2Gallery({ state = "default" }: { state?: ArtifactsFix
           artifact={previewArtifact}
           key={previewArtifact.id}
           onClose={() => setPreviewArtifact(null)}
-          onDownload={(_, version) => exactVersionNotice("Скачивание не выполнялось", version)}
+          onDownload={(_, version) => exactVersionNotice("Download not performed", version)}
         />
       ) : null}
     </div>

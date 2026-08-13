@@ -8,11 +8,10 @@ import {
   resolveMemoryCopy
 } from "./memoryCopy";
 
-describe("Memory RU/EN copy contract", () => {
+describe("Memory presentation copy contract", () => {
   it("has exact key parity, non-empty values, and one versioned confirmation contract", () => {
     expect(MEMORY_CONFIRMATION_COPY_VERSION).toBe("memory-confirmation-v1");
     expect(memoryCopyCatalogIsComplete(MEMORY_COPY)).toBe(true);
-    expect(Object.keys(MEMORY_COPY.RU).sort()).toEqual([...MEMORY_COPY_KEYS].sort());
     expect(Object.keys(MEMORY_COPY.EN).sort()).toEqual([...MEMORY_COPY_KEYS].sort());
   });
 
@@ -33,12 +32,16 @@ describe("Memory RU/EN copy contract", () => {
     }
   });
 
-  it("fails closed rather than falling back when any locale key is absent", () => {
+  it("resolves a persisted RU locale to the English presentation catalog", () => {
+    expect(resolveMemoryCopy("RU", "archive.action")).toBe("Archive");
+    expect(resolveMemoryCopy("RU", "temporary.label")).toBe("Temporary Chat");
+  });
+
+  it("fails closed rather than falling back when any presentation key is absent", () => {
     const incomplete = {
-      EN: { ...MEMORY_COPY.EN },
-      RU: { ...MEMORY_COPY.RU }
+      EN: { ...MEMORY_COPY.EN }
     } as Record<string, Record<string, string>>;
-    delete incomplete.RU["forget.explanation"];
+    delete incomplete.EN["forget.explanation"];
     expect(memoryCopyCatalogIsComplete(incomplete)).toBe(false);
     expect(() => resolveMemoryCopy("RU", "archive.action", incomplete))
       .toThrow(MemoryCopyContractError);

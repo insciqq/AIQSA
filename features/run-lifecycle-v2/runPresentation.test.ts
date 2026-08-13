@@ -31,10 +31,10 @@ describe("run lifecycle v2 presentation", () => {
   });
 
   it.each([
-    ["queued", "queued", "В очереди"],
-    ["preparing", "preparing", "Готовлю запрос…"],
-    ["in_progress", "provider", "Выполняется у провайдера…"],
-    ["streaming", "provider", "Выполняется у провайдера…"]
+    ["queued", "queued", "Queued"],
+    ["preparing", "preparing", "Preparing request…"],
+    ["in_progress", "provider", "Running at the provider…"],
+    ["streaming", "provider", "Running at the provider…"]
   ] as const)("maps explicit %s status to its truthful activity", (status, kind, label) => {
     expect(presentRunLifecycleV2(evidence({ status: status as RunLifecycleStatusV2 }))).toMatchObject({
       activity: { kind, label },
@@ -43,10 +43,10 @@ describe("run lifecycle v2 presentation", () => {
   });
 
   it.each([
-    [summary({ stage: "search", status: "running" }), "search", "Ищу в интернете…"],
-    [summary({ stage: "compute", status: "running" }), "compute", "Создаю таблицу…"],
-    [summary({ stage: "preview", status: "running" }), "preview", "Рендерю превью…"],
-    [summary({ stage: "model", status: "waiting" }), "provider", "Выполняется у провайдера…"]
+    [summary({ stage: "search", status: "running" }), "search", "Searching the web…"],
+    [summary({ stage: "compute", status: "running" }), "compute", "Computing…"],
+    [summary({ stage: "preview", status: "running" }), "preview", "Rendering preview…"],
+    [summary({ stage: "model", status: "waiting" }), "provider", "Running at the provider…"]
   ] as const)("uses normalized artifact evidence", (event, kind, label) => {
     expect(presentRunLifecycleV2(evidence({ events: [event] }))).toMatchObject({
       activity: { kind, label },
@@ -73,12 +73,12 @@ describe("run lifecycle v2 presentation", () => {
     expect(presentRunLifecycleV2(evidence({ events: [requested] }))).toMatchObject({
       activity: {
         kind: "tool",
-        label: "Инструмент: create_workbook…",
+        label: "Tool: create_workbook…",
         toolName: "create_workbook"
       }
     });
     expect(presentRunLifecycleV2(evidence({ events: [unsafe] }))).toMatchObject({
-      activity: { kind: "tool", label: "Выполняю инструменты…" }
+      activity: { kind: "tool", label: "Running tools…" }
     });
   });
 
@@ -88,7 +88,7 @@ describe("run lifecycle v2 presentation", () => {
 
     expect(presentRunLifecycleV2(evidence({ events: [tool, token] })).kind).toBe("streaming");
     expect(presentRunLifecycleV2(evidence({ events: [token, tool] }))).toMatchObject({
-      activity: { kind: "tool", label: "Инструмент: lookup…" },
+      activity: { kind: "tool", label: "Tool: lookup…" },
       kind: "activity"
     });
   });
@@ -167,7 +167,7 @@ describe("run lifecycle v2 presentation", () => {
     }))).toMatchObject({
       failure: {
         code: null,
-        message: "Запуск завершился с ошибкой. Измените параметры запроса и попробуйте снова."
+        message: "The run failed. Change the request parameters and try again."
       },
       kind: "terminal_error"
     });

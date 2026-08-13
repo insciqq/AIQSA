@@ -12,11 +12,13 @@ import {
   type CommandSelectionDirection
 } from "./commandItems";
 
-const kindLabels: Record<CommandKind, { group: string; item: string }> = {
-  action: { group: "Actions", item: "Action" },
-  chat: { group: "Chats", item: "Chat" },
-  model: { group: "Models", item: "Model" },
-  search: { group: "Search strategies", item: "Search" }
+// Rows keep only their human subtitle: the kind is already the visible group
+// heading, and per-row "Action · …"/"Model · …" prefixes read as dev language.
+const kindGroupLabels: Record<CommandKind, string> = {
+  action: "Actions",
+  chat: "Chats",
+  model: "Models",
+  search: "Search strategies"
 };
 
 function CommandKindIcon({ kind }: { kind: CommandKind }) {
@@ -178,7 +180,7 @@ export function CommandPalette({
                     className="flex items-center justify-between px-3 pb-1 pt-2 text-metadata font-medium text-ink-muted first:pt-1"
                     id={headingId}
                   >
-                    <span>{kindLabels[group.kind].group}</span>
+                    <span>{kindGroupLabels[group.kind]}</span>
                     <span className="tabular-nums" aria-hidden="true">
                       {group.items.length}
                     </span>
@@ -218,7 +220,7 @@ export function CommandPalette({
                             className="mt-0.5 block break-words text-xs leading-4 text-ink-muted [overflow-wrap:anywhere]"
                             title={item.subtitle}
                           >
-                            {kindLabels[item.kind].item} · {item.subtitle}
+                            {item.subtitle}
                           </span>
                         </span>
                       </span>

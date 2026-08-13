@@ -47,14 +47,14 @@ describe("Branches v2", () => {
     const { rerender } = render(<EditBranchStripV2 onCancel={onCancel} />);
 
     expect(screen.getByTestId("edit-branch-strip-v2")).toHaveTextContent(
-      "Отправка создаст новую ветвь; история не изменится."
+      "Sending creates a new branch; history stays unchanged."
     );
-    fireEvent.click(screen.getByRole("button", { name: "Отменить редактирование" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel editing" }));
     expect(onCancel).toHaveBeenCalledOnce();
 
-    rerender(<EditBranchStripV2 error="Черновик сохранён" onCancel={onCancel} pending />);
-    expect(screen.getByRole("button", { name: "Отменить редактирование" })).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Черновик сохранён");
+    rerender(<EditBranchStripV2 error="Draft saved" onCancel={onCancel} pending />);
+    expect(screen.getByRole("button", { name: "Cancel editing" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Draft saved");
   });
 
   it("checks out exact pager targets and explains streaming disablement", () => {
@@ -71,15 +71,15 @@ describe("Branches v2", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Предыдущая версия" }));
-    fireEvent.click(screen.getByRole("button", { name: "Следующая версия" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previous version" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next version" }));
     expect(onCheckout).toHaveBeenNthCalledWith(1, "previous-private-id");
     expect(onCheckout).toHaveBeenNthCalledWith(2, "next-private-id");
-    expect(screen.getByLabelText("Версия 2 из 3")).toHaveTextContent("2/3");
+    expect(screen.getByLabelText("Version 2 of 3")).toHaveTextContent("2/3");
 
     rerender(
       <BranchPagerV2
-        disabledReason="Дождитесь завершения ответа."
+        disabledReason="Wait for the answer to finish."
         onCheckout={onCheckout}
         state={{
           current: 2,
@@ -89,8 +89,8 @@ describe("Branches v2", () => {
         }}
       />
     );
-    expect(screen.getByRole("button", { name: "Предыдущая версия" })).toBeDisabled();
-    expect(screen.getByText("Дождитесь завершения ответа.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Previous version" })).toBeDisabled();
+    expect(screen.getByText("Wait for the answer to finish.")).toBeVisible();
   });
 
   it("renders the live pager slot only for sibling messages and checks out the sibling leaf", () => {
@@ -103,8 +103,8 @@ describe("Branches v2", () => {
       />
     );
 
-    expect(screen.getByLabelText("Версия 2 из 2")).toHaveTextContent("2/2");
-    fireEvent.click(screen.getByRole("button", { name: "Предыдущая версия" }));
+    expect(screen.getByLabelText("Version 2 of 2")).toHaveTextContent("2/2");
+    fireEvent.click(screen.getByRole("button", { name: "Previous version" }));
     expect(onCheckout).toHaveBeenCalledWith("answer-old-private-id");
 
     rerender(
@@ -131,7 +131,7 @@ describe("Branches v2", () => {
       const [open, setOpen] = useState(false);
       return (
         <>
-          <button onClick={() => setOpen(true)} type="button">Открыть ветви</button>
+          <button onClick={() => setOpen(true)} type="button">Open branches</button>
           {open ? (
             <BranchDrawerV2
               graph={graph}
@@ -144,19 +144,19 @@ describe("Branches v2", () => {
     }
 
     render(<Harness />);
-    const opener = screen.getByRole("button", { name: "Открыть ветви" });
+    const opener = screen.getByRole("button", { name: "Open branches" });
     opener.focus();
     fireEvent.click(opener);
-    const drawer = screen.getByRole("dialog", { name: "Ветви разговора" });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Закрыть ветви" })).toHaveFocus());
-    expect(drawer).toHaveTextContent("Версия 1");
-    expect(drawer).toHaveTextContent("Версия 2");
+    const drawer = screen.getByRole("dialog", { name: "Conversation branches" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close branches" })).toHaveFocus());
+    expect(drawer).toHaveTextContent("Version 1");
+    expect(drawer).toHaveTextContent("Version 2");
     expect(drawer.textContent).not.toContain("private-id");
 
-    const switchButton = within(drawer).getByRole("button", { name: "Переключиться" });
+    const switchButton = within(drawer).getByRole("button", { name: "Switch" });
     switchButton.focus();
     fireEvent.keyDown(drawer, { key: "Tab" });
-    expect(screen.getByRole("button", { name: "Закрыть ветви" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Close branches" })).toHaveFocus();
     fireEvent.keyDown(drawer, { key: "Escape" });
     await waitFor(() => expect(drawer).not.toBeInTheDocument());
     await waitFor(() => expect(opener).toHaveFocus());
@@ -171,12 +171,12 @@ describe("Branches v2", () => {
         onClose={vi.fn()}
       />
     );
-    const drawer = screen.getByRole("dialog", { name: "Ветви разговора" });
-    fireEvent.click(within(drawer).getByRole("button", { name: "Переключиться" }));
+    const drawer = screen.getByRole("dialog", { name: "Conversation branches" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Switch" }));
     await waitFor(() => expect(within(drawer).getByRole("alert")).toHaveTextContent(
-      "Текущая ветвь не изменилась"
+      "current branch is unchanged"
     ));
-    expect(within(drawer).getByText("Текущая")).toBeVisible();
+    expect(within(drawer).getByText("Current")).toBeVisible();
 
     const onClose = vi.fn();
     rerender(
@@ -187,7 +187,7 @@ describe("Branches v2", () => {
       />
     );
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", {
-      name: "Переключиться"
+      name: "Switch"
     }));
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
@@ -197,7 +197,7 @@ describe("Branches v2", () => {
     const { rerender } = render(
       <BranchDrawerV2 graph={null} loading onCheckout={vi.fn()} onClose={vi.fn()} />
     );
-    expect(screen.getByLabelText("Загружаем ветви")).toBeVisible();
+    expect(screen.getByLabelText("Loading branches")).toBeVisible();
 
     rerender(
       <BranchDrawerV2
@@ -208,7 +208,7 @@ describe("Branches v2", () => {
         onRetry={onRetry}
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(onRetry).toHaveBeenCalledOnce();
 
     rerender(
@@ -218,17 +218,17 @@ describe("Branches v2", () => {
         onClose={vi.fn()}
       />
     );
-    expect(screen.getByText("Ветвей пока нет")).toBeVisible();
+    expect(screen.getByText("No branches yet")).toBeVisible();
 
     rerender(
       <BranchDrawerV2
-        checkoutDisabledReason="Остановите ответ или дождитесь завершения."
+        checkoutDisabledReason="Stop the answer or wait for it to finish."
         graph={graph}
         onCheckout={vi.fn()}
         onClose={vi.fn()}
       />
     );
-    expect(screen.getByText("Остановите ответ или дождитесь завершения.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Переключиться" })).toBeDisabled();
+    expect(screen.getByText("Stop the answer or wait for it to finish.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Switch" })).toBeDisabled();
   });
 });

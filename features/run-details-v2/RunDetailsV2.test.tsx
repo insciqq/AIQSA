@@ -37,31 +37,31 @@ describe("Run details v2 drawer", () => {
     );
 
     const drawer = await screen.findByRole("dialog", {
-      name: "Детали run · Ответ «Квартальный отчёт»"
+      name: "Run details · Answer “Квартальный отчёт”"
     });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Закрыть детали run" })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close run details" })).toHaveFocus());
     expect(within(drawer).getByText("OpenAI · рабочий ключ")).toBeVisible();
     expect(within(drawer).getByText("GPT-5.2")).toBeVisible();
     expect(within(drawer).getByRole("region", { name: "Redacted request preview" })).toHaveTextContent("‹redacted›");
     expect(within(drawer).getByRole("region", { name: "Redacted request preview" })).toHaveTextContent("‹private›");
     expect(drawer).toHaveTextContent("Usage · provider evidence");
     expect(drawer).not.toHaveTextContent("$0.0091");
-    expect(drawer).not.toHaveTextContent("Стоимость9");
+    expect(drawer).not.toHaveTextContent("Cost9");
     expect(drawer).toHaveTextContent("report_q3.xlsx");
     expect(drawer).toHaveTextContent("deck_q3.pptx");
 
-    fireEvent.click(within(drawer).getByText(/2\. Фрагмент истории/));
-    expect(within(drawer).getByText("Ссылка скрыта: исходный чат удалён.")).toBeVisible();
-    fireEvent.click(within(drawer).getByText(/3\. Фрагмент истории/));
-    const source = within(drawer).getByRole("button", { name: "Открыть источник · 2" });
+    fireEvent.click(within(drawer).getByText(/2\. Previous-chat excerpt/));
+    expect(within(drawer).getByText("Link hidden: the source chat was deleted.")).toBeVisible();
+    fireEvent.click(within(drawer).getByText(/3\. Previous-chat excerpt/));
+    const source = within(drawer).getByRole("button", { name: "Open source · 2" });
     fireEvent.click(source);
     expect(onOpenSource).toHaveBeenCalledWith("source-chat-private-live");
 
     fireEvent.click(within(drawer).getByText(/office-compute · create_workbook/));
-    fireEvent.click(within(drawer).getByText("Аргументы · redacted"));
+    fireEvent.click(within(drawer).getByText("Arguments · redacted"));
     expect(within(drawer).getByRole("region", { name: "Redacted tool arguments" }))
       .toHaveTextContent("‹redacted›");
-    fireEvent.click(within(drawer).getByText("Результат · ненадёжные данные"));
+    fireEvent.click(within(drawer).getByText("Result · untrusted data"));
     expect(within(drawer).getByRole("region", { name: "Untrusted tool result preview" }))
       .toHaveTextContent("‹redacted›");
 
@@ -88,11 +88,11 @@ describe("Run details v2 drawer", () => {
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Receipt не принадлежит этому ответу"
+      "This receipt does not belong to this answer"
     );
     expect(screen.queryByText("OpenAI · рабочий ключ")).toBeNull();
     expect(document.body.textContent).not.toContain("foreign-answer-private");
-    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(loadRun).toHaveBeenCalledTimes(2));
   });
 
@@ -101,7 +101,7 @@ describe("Run details v2 drawer", () => {
     const second = deferred<PersistedRun | null>();
     const firstTarget = runDetailsTargetFixture;
     const secondTarget: RunDetailsTargetV2 = {
-      answerLabel: "Ответ «Вторая версия»",
+      answerLabel: "Answer “Вторая версия”",
       assistantMessageId: "assistant-message-private-second",
       runId: "run-private-second"
     };
@@ -125,7 +125,7 @@ describe("Run details v2 drawer", () => {
         target={firstTarget}
       />
     );
-    expect(screen.getByRole("status")).toHaveTextContent("Загружаю receipt этого ответа");
+    expect(screen.getByRole("status")).toHaveTextContent("Loading this answer’s receipt");
 
     rerender(
       <ExactRunDetailsDrawerV2
@@ -136,11 +136,11 @@ describe("Run details v2 drawer", () => {
       />
     );
     await act(async () => first.resolve(completeRunDetailsFixture));
-    expect(screen.getByRole("status")).toHaveTextContent("Загружаю receipt этого ответа");
+    expect(screen.getByRole("status")).toHaveTextContent("Loading this answer’s receipt");
     expect(screen.queryByText("GPT-5.2")).toBeNull();
     await act(async () => second.resolve(secondRun));
-    expect(await screen.findByText("Second readable model")).toBeVisible();
-    expect(screen.getByRole("dialog")).toHaveAccessibleName("Детали run · Ответ «Вторая версия»");
+    expect(await screen.findByText("Model unavailable")).toBeVisible();
+    expect(screen.getByRole("dialog")).toHaveAccessibleName("Run details · Answer “Вторая версия”");
   });
 
   it("traps focus, closes on Escape, and restores the explicit answer-bound opener", async () => {
@@ -166,7 +166,7 @@ describe("Run details v2 drawer", () => {
     opener.focus();
     fireEvent.click(opener);
     const drawer = await screen.findByRole("dialog");
-    const close = screen.getByRole("button", { name: "Закрыть детали run" });
+    const close = screen.getByRole("button", { name: "Close run details" });
     await waitFor(() => expect(close).toHaveFocus());
     fireEvent.keyDown(drawer, { key: "Tab", shiftKey: true });
     expect(within(drawer).getByRole("region", { name: "Redacted request preview" })).toHaveFocus();

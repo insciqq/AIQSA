@@ -105,7 +105,7 @@
   line-height: 1.66;
 }
 
-/* A long question clamps to ~14 lines; «Показать полностью» restores it. */
+/* A long question clamps to ~14 lines; "Show full message" restores it. */
 .v2-conversation-turn[data-role="user"] [data-bubble-clamped="true"] .v2-conversation-markdown {
   max-height: calc(14 * 1.55em);
   overflow: hidden;

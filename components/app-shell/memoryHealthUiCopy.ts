@@ -1,6 +1,5 @@
 import type { MemoryUiLocale } from "@/lib/contracts/memory";
 import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
-import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 
 export const MEMORY_HEALTH_UI_COPY_KEYS = [
   "checking",
@@ -112,64 +111,12 @@ const EN = {
   yes: "Yes"
 } satisfies Copy;
 
-const RU = {
-  advanced: "Расширенный режим",
-  advancedDescription: "Техническое состояние, назначения и сведения о доступности возможностей.",
-  alsoTemporaryOverdue: "Кроме того, истёк срок удаления временного чата.",
-  blockedDescription: "Выбранные сведения по-прежнему ограждены от повторного использования. Быстрые попытки исчерпаны; медленная сверка продолжается, пока администратор разбирается с причиной.",
-  blockedTitle: "Очистке Памяти требуется внимание администратора",
-  checking: "Проверяем состояние Памяти…",
-  cleanup: "Физическая очистка",
-  deletionDescription: "Выбранные сведения уже ограждены от повторного использования, а физическая очистка продолжается в фоне.",
-  deletionTitle: "Память очищается",
-  egress: "Проверка назначений",
-  ftsOnlyDescription: "Текстовый поиск продолжает работать. Семантический поиск вернётся, когда будет доступен совместимый индекс эмбеддингов.",
-  ftsOnlyTitle: "Память использует текстовый поиск",
-  indexing: "Индекс истории",
-  indexingDescription: "Допустимые существующие чаты индексируются в фоне. Можно продолжать общение.",
-  indexingTitle: "Память подготавливается",
-  lastChecked: "Последняя проверка",
-  learning: "Автоматическое запоминание",
-  learningCapabilityDescription: "Автоматическое запоминание включено в настройках, но установка ещё не активировала совместимую квалифицированную возможность. Явные действия с Памятью продолжают работать.",
-  learningAdminDescription: "Фоновое запоминание ждёт, пока администратор проверит текущие назначения. Чат продолжает работать.",
-  learningBudgetDescription: "Дневной лимит фоновой работы исчерпан. Запоминание возобновится автоматически после сброса лимита.",
-  learningDelayedDescription: "Фоновое запоминание отложено. Чат и явные действия с Памятью продолжают работать.",
-  learningDelayedTitle: "Запоминание приостановлено",
-  learningUnavailableDescription: "Состояние фонового планировщика временно недоступно. Чат и явные действия с Памятью продолжают работать.",
-  learningUserDescription: "Фоновое запоминание ждёт проверки назначений.",
-  no: "Нет",
-  openOperations: "Открыть операции Памяти",
-  rebuild: "Перестройка",
-  rebuildFailedDescription: "Последняя теневая перестройка завершилась ошибкой. Предыдущий рабочий индекс остался активным и не был заменён.",
-  rebuildFailedTitle: "Памяти нужна повторная попытка",
-  retry: "Проверить снова",
-  reviewDestinations: "Проверить назначения",
-  stateAdminReview: "Нужна проверка администратора",
-  stateBlocked: "Нужно внимание администратора",
-  stateClear: "Чисто",
-  stateDelayed: "Отложено",
-  stateDisabled: "Выключено",
-  stateFailed: "Ошибка",
-  stateFtsOnly: "Только текстовый поиск",
-  stateInProgress: "Выполняется",
-  stateOverdue: "Срок истёк",
-  stateReady: "Готово",
-  stateUserReview: "Нужна проверка",
-  temporaryCleanup: "Хранение временных чатов",
-  temporaryOverdueDescription: "Временный чат превысил срок хранения. Он остаётся скрытым, пока продолжаются надёжное удаление и сверка администратором.",
-  temporaryOverdueTitle: "Очистка временного чата просрочена",
-  unavailableDescription: "Настройки Памяти доступны, но текущее состояние фоновой работы проверить не удалось.",
-  unavailableTitle: "Состояние Памяти недоступно",
-  upToDateDescription: "Текущие настройки и фоновая работа Памяти синхронизированы.",
-  upToDateTitle: "Память в порядке",
-  yes: "Да"
-} satisfies Copy;
 
 export function memoryHealthUiCopy(
   _locale: MemoryUiLocale,
   key: MemoryHealthUiCopyKey
 ): string {
-  return (MEMORY_PRESENTATION_LOCALE === "EN" ? EN : RU)[key];
+  return EN[key];
 }
 
 export function memoryHealthStateCopy(

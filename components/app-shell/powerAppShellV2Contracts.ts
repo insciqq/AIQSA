@@ -150,7 +150,7 @@ export type ShellThreadView = {
   /**
    * Existing headless force-refresh owner for an ambiguous transport failure:
    * reconciles the chat with durable server state and clears the recorded
-   * ambiguity on success («Обновить» in the connection-lost strip).
+   * ambiguity on success ("Refresh" in the connection-lost strip).
    */
   refreshInterruptedRun(): Promise<boolean>;
   retryActiveChatDetail(): void;

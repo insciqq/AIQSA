@@ -23,7 +23,7 @@ function assistantFingerprint(assistant: AssistantSummary): string {
       ? `MCP · ${assistant.fingerprint.mcpServerCount}`
       : null
   ].filter((fact): fact is string => Boolean(fact));
-  return facts.length > 0 ? facts.join(" · ") : "Без дополнительных возможностей";
+  return facts.length > 0 ? facts.join(" · ") : "No additional capabilities";
 }
 
 export function AssistantPickerV2({

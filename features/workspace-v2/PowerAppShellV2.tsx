@@ -334,7 +334,7 @@ export function PowerAppShellV2({
   );
   // Recorded genuine transport loss for the active chat (stream ended or
   // errored without a terminal frame); presentation shows the honest
-  // «Соединение потеряно · Обновить» strip from this record alone.
+  // "Connection lost · Refresh" strip from this record alone.
   const activeChatInterruptedRun = useRunLifecycleStore((state) =>
     activeChatId ? state.ambiguousFailures[activeChatId] ?? null : null
   );
@@ -1180,7 +1180,7 @@ export function PowerAppShellV2({
   }
 
   /**
-   * Direct «Удалить…» entry: fetch the fresh server snapshot, then open the
+   * Direct "Delete…" entry: fetch the fresh server snapshot, then open the
    * existing permanent-deletion confirm surface. `openPermanentChatDeletion`
    * keeps the `permanentChatDeletionAvailable` gate; nothing is deleted before
    * the surface's own confirmed authorization.

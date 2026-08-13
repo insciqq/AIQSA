@@ -87,7 +87,7 @@ export type NavigationSidebarProps = Readonly<{
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
   onMoveFolder?(folder: ChatNavigationFolderWire, folderId: string | null): void;
   onNewChat(mode: NewChatMode): void;
-  /** Opens the single shell command palette from the quiet «Поиск ⌘K» row. */
+  /** Opens the single shell command palette from the quiet "Search ⌘K" row. */
   onOpenSearch?(): void;
   onRenameChat?(chat: ChatNavigationSummaryWire): void;
   onRenameFolder?(folder: ChatNavigationFolderWire): void;
@@ -111,10 +111,10 @@ export type NavigationSidebarProps = Readonly<{
 type DateGroup = "earlier" | "last-seven" | "today" | "yesterday";
 
 const dateLabels: Record<DateGroup, string> = {
-  earlier: "Раньше",
-  "last-seven": "7 дней",
-  today: "Сегодня",
-  yesterday: "Вчера"
+  earlier: "Earlier",
+  "last-seven": "Previous 7 days",
+  today: "Today",
+  yesterday: "Yesterday"
 };
 
 function dateGroup(updatedAt: string, now = new Date()): DateGroup {
@@ -220,7 +220,7 @@ function ChatRow({
       >
         <input
           autoFocus
-          aria-label={`Новое название: ${chat.title}`}
+          aria-label={`New title: ${chat.title}`}
           maxLength={120}
           value={editingTitle ?? chat.title}
           onChange={(event) => onChangeRename?.(event.target.value)}
@@ -231,8 +231,8 @@ function ChatRow({
             }
           }}
         />
-        <UiV2IconButton icon="check" label="Сохранить название" type="submit" />
-        <UiV2IconButton icon="close" label="Отменить переименование" onClick={onCancelRename} />
+        <UiV2IconButton icon="check" label="Save title" type="submit" />
+        <UiV2IconButton icon="close" label="Cancel rename" onClick={onCancelRename} />
       </form>
     );
   }
@@ -246,14 +246,14 @@ function ChatRow({
         onClick={() => onSelect(chat)}
       >
         {chat.activeRun ? (
-          <span className="v2-chat-pulse" aria-label="Ответ выполняется" />
+          <span className="v2-chat-pulse" aria-label="Answer in progress" />
         ) : <span aria-hidden="true" />}
         <span className="v2-chat-title">{chat.title}</span>
       </button>
       <UiV2IconButton
         className="v2-chat-menu-trigger"
         icon="more"
-        label={`Действия: ${chat.title}`}
+        label={`Actions: ${chat.title}`}
         aria-expanded={menuOpen}
         ref={triggerRef}
         onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
@@ -261,16 +261,16 @@ function ChatRow({
       {menuOpen ? (
         <UiV2MenuSurface
           className="v2-chat-menu"
-          label={`Действия чата ${chat.title}`}
+          label={`Chat actions: ${chat.title}`}
           ref={menuRef}
         >
-          <UiV2MenuItem onClick={() => { closeMenu(); onRename?.(chat); }}>Переименовать</UiV2MenuItem>
+          <UiV2MenuItem onClick={() => { closeMenu(); onRename?.(chat); }}>Rename</UiV2MenuItem>
           <UiV2MenuItem aria-expanded={moveOpen} onClick={() => setMoveOpen((open) => !open)}>
-            Переместить
+            Move to…
           </UiV2MenuItem>
           {moveOpen ? (
-            <div className="v2-chat-move-options" aria-label="Выберите папку">
-              <UiV2MenuItem onClick={() => { closeMenu(); onMove?.(chat, null); }}>Без папки</UiV2MenuItem>
+            <div className="v2-chat-move-options" aria-label="Choose a folder">
+              <UiV2MenuItem onClick={() => { closeMenu(); onMove?.(chat, null); }}>No folder</UiV2MenuItem>
               {flattenFolderTree(folders).map(({ depth: folderDepth, folder }) => (
                 <UiV2MenuItem
                   key={folder.id}
@@ -286,7 +286,7 @@ function ChatRow({
             selected={rowState?.favorite ?? false}
             onClick={() => { closeMenu(); onFavorite?.(chat); }}
           >
-            Избранное
+            Favorite
           </UiV2MenuItem>
           <UiV2MenuItem
             selected={memoryUsed}
@@ -295,10 +295,10 @@ function ChatRow({
               onMemoryMode?.(chat, memoryUsed ? "EXCLUDED" : "NORMAL");
             }}
           >
-            Использовать память
+            Use memory
           </UiV2MenuItem>
-          <UiV2MenuItem onClick={() => { closeMenu(); onShare?.(chat); }}>Поделиться</UiV2MenuItem>
-          <UiV2MenuItem onClick={() => { closeMenu(); onExport?.(chat); }}>Экспортировать</UiV2MenuItem>
+          <UiV2MenuItem onClick={() => { closeMenu(); onShare?.(chat); }}>Share</UiV2MenuItem>
+          <UiV2MenuItem onClick={() => { closeMenu(); onExport?.(chat); }}>Export</UiV2MenuItem>
           <UiV2MenuItem
             disabled={chat.activeRun}
             onClick={() => {
@@ -306,7 +306,7 @@ function ChatRow({
               onArchive?.(chat);
             }}
           >
-            Архивировать
+            Archive
           </UiV2MenuItem>
           {onDelete ? (
             <UiV2MenuItem
@@ -316,7 +316,7 @@ function ChatRow({
                 onDelete(chat);
               }}
             >
-              Удалить…
+              Delete…
             </UiV2MenuItem>
           ) : null}
         </UiV2MenuSurface>
@@ -363,7 +363,7 @@ function FolderGroup({
           }}>
             <input
               autoFocus
-              aria-label={`Новое название папки: ${folder.name}`}
+              aria-label={`New folder name: ${folder.name}`}
               maxLength={80}
               value={props.editingFolderName ?? folder.name}
               onChange={(event) => props.onChangeFolderRename?.(event.target.value)}
@@ -371,8 +371,8 @@ function FolderGroup({
                 if (event.key === "Escape") props.onCancelFolderRename?.();
               }}
             />
-            <UiV2IconButton icon="check" label="Сохранить папку" type="submit" />
-            <UiV2IconButton icon="close" label="Отменить" onClick={props.onCancelFolderRename} />
+            <UiV2IconButton icon="check" label="Save folder" type="submit" />
+            <UiV2IconButton icon="close" label="Cancel" onClick={props.onCancelFolderRename} />
           </form>
         ) : (
           <>
@@ -389,7 +389,7 @@ function FolderGroup({
             <UiV2IconButton
               className="v2-folder-menu-trigger"
               icon="more"
-              label={`Действия папки: ${folder.name}`}
+              label={`Folder actions: ${folder.name}`}
               aria-expanded={menuOpen}
               ref={triggerRef}
               onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
@@ -397,21 +397,21 @@ function FolderGroup({
             {menuOpen ? (
               <UiV2MenuSurface
                 className="v2-folder-menu"
-                label={`Действия папки ${folder.name}`}
+                label={`Folder actions: ${folder.name}`}
                 ref={menuRef}
               >
                 <UiV2MenuItem onClick={() => { closeMenu(); props.onRenameFolder?.(folder); }}>
-                  Переименовать
+                  Rename
                 </UiV2MenuItem>
                 <UiV2MenuItem onClick={() => { closeMenu(); setSubfolderOpen(true); setOpen(true); }}>
-                  Новая подпапка
+                  New subfolder
                 </UiV2MenuItem>
                 <UiV2MenuItem aria-expanded={moveOpen} onClick={() => setMoveOpen((value) => !value)}>
-                  Переместить
+                  Move to…
                 </UiV2MenuItem>
                 {moveOpen ? (
-                  <div className="v2-chat-move-options" aria-label="Переместить папку">
-                    <UiV2MenuItem onClick={() => { closeMenu(); props.onMoveFolder?.(folder, null); }}>В корень</UiV2MenuItem>
+                  <div className="v2-chat-move-options" aria-label="Move folder">
+                    <UiV2MenuItem onClick={() => { closeMenu(); props.onMoveFolder?.(folder, null); }}>Top level</UiV2MenuItem>
                     {flattenFolderTree(folders, folder.id).map(({ depth: folderDepth, folder: candidate }) => (
                       <UiV2MenuItem
                         key={candidate.id}
@@ -424,10 +424,10 @@ function FolderGroup({
                   </div>
                 ) : null}
                 <UiV2MenuItem onClick={() => { closeMenu(); props.onFolderProjectSettings?.(folder); }}>
-                  Настройки проекта
+                  Project settings
                 </UiV2MenuItem>
                 <UiV2MenuItem onClick={() => { closeMenu(); props.onDeleteFolder?.(folder); }}>
-                  Удалить папку
+                  Delete folder
                 </UiV2MenuItem>
               </UiV2MenuSurface>
             ) : null}
@@ -447,14 +447,14 @@ function FolderGroup({
             }}>
               <input
                 autoFocus
-                aria-label={`Название подпапки в ${folder.name}`}
+                aria-label={`Subfolder name in ${folder.name}`}
                 maxLength={80}
-                placeholder="Название подпапки"
+                placeholder="Subfolder name"
                 value={subfolderName}
                 onChange={(event) => setSubfolderName(event.target.value)}
               />
-              <UiV2IconButton icon="check" label="Создать подпапку" type="submit" />
-              <UiV2IconButton icon="close" label="Отменить" onClick={() => setSubfolderOpen(false)} />
+              <UiV2IconButton icon="check" label="Create subfolder" type="submit" />
+              <UiV2IconButton icon="close" label="Cancel" onClick={() => setSubfolderOpen(false)} />
             </form>
           ) : null}
           {directChats.map((chat) => (
@@ -511,7 +511,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   });
   const currentMode = props.currentNewChatMode ?? "NORMAL";
   // Navigating away from search results resets the query so no stale
-  // «Результаты» view survives chat selection.
+  // results view survives chat selection.
   const selectChat = (chat: ChatNavigationSummaryWire) => {
     if (props.searchQuery) props.onSearch("");
     props.onSelectChat(chat);
@@ -527,14 +527,14 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     .filter((group) => group.chats.length > 0);
 
   return (
-    <aside className="v2-navigation" aria-label="Навигация по чатам">
+    <aside className="v2-navigation" aria-label="Chat navigation">
       <div className="v2-navigation-header">
         <div className="v2-navigation-brand">
           <span className="v2-navigation-wordmark">
             <span className="v2-navigation-mark" aria-hidden="true">A</span>
             AIQSA
           </span>
-          <UiV2IconButton icon="close" label="Закрыть панель" onClick={props.onClose} />
+          <UiV2IconButton icon="close" label="Close sidebar" onClick={props.onClose} />
         </div>
         <div className="v2-new-chat-wrap">
           <button
@@ -543,13 +543,13 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             onClick={() => props.onNewChat("NORMAL")}
           >
             <UiV2Icon name="plus" />
-            Новый чат
+            New chat
           </button>
           <button
             className="v2-new-chat-menu-trigger v2-focusable"
             type="button"
             aria-expanded={newChatMenuOpen}
-            aria-label="Режим нового чата"
+            aria-label="New chat mode"
             ref={newChatTriggerRef}
             onClick={() => setNewChatMenuOpen((open) => !open)}
           >
@@ -558,29 +558,29 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           {newChatMenuOpen ? (
             <UiV2MenuSurface
               className="v2-new-chat-menu"
-              label="Режим нового чата"
+              label="New chat mode"
               ref={newChatMenuRef}
             >
               <UiV2MenuItem
                 selected={currentMode === "NORMAL"}
-                sub="Обычная память и история"
+                sub="Normal memory and history"
                 onClick={() => { setNewChatMenuOpen(false); props.onNewChat("NORMAL"); }}
               >
-                Обычный
+                Normal
               </UiV2MenuItem>
               <UiV2MenuItem
                 selected={currentMode === "EXCLUDED"}
-                sub="Не использовать и не обучать память"
+                sub="Memory is neither used nor updated"
                 onClick={() => { setNewChatMenuOpen(false); props.onNewChat("EXCLUDED"); }}
               >
-                Без памяти
+                Memory off
               </UiV2MenuItem>
               <UiV2MenuItem
                 selected={currentMode === "TEMPORARY"}
-                sub="Автоматически удалится через 24 часа"
+                sub="Deleted automatically after 24 hours"
                 onClick={() => { setNewChatMenuOpen(false); props.onNewChat("TEMPORARY"); }}
               >
-                Временный чат
+                Temporary chat
               </UiV2MenuItem>
               {props.onCreateFolder ? (
                 <>
@@ -588,7 +588,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                   <UiV2MenuItem
                     onClick={() => { setNewChatMenuOpen(false); setNewFolderOpen(true); }}
                   >
-                    Новая папка
+                    New folder
                   </UiV2MenuItem>
                 </>
               ) : null}
@@ -602,7 +602,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             onClick={props.onOpenSearch}
           >
             <UiV2Icon name="search" />
-            <span>Поиск</span>
+            <span>Search</span>
             <kbd aria-hidden="true" className="v2-navigation-kbd">⌘K</kbd>
           </button>
         ) : null}
@@ -617,48 +617,48 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           }}>
             <input
               autoFocus
-              aria-label="Название новой папки"
+              aria-label="New folder name"
               maxLength={80}
-              placeholder="Название папки"
+              placeholder="Folder name"
               value={newFolderName}
               onChange={(event) => setNewFolderName(event.target.value)}
             />
-            <UiV2IconButton icon="check" label="Создать папку" type="submit" />
-            <UiV2IconButton icon="close" label="Отменить" onClick={() => setNewFolderOpen(false)} />
+            <UiV2IconButton icon="check" label="Create folder" type="submit" />
+            <UiV2IconButton icon="close" label="Cancel" onClick={() => setNewFolderOpen(false)} />
           </form>
         ) : null}
       </div>
 
       <div className="v2-navigation-scroll" aria-live="polite">
         {!props.ready && props.loading ? (
-          <div className="v2-navigation-skeletons" aria-label="Загрузка чатов">
+          <div className="v2-navigation-skeletons" aria-label="Loading chats">
             {[0, 1, 2, 3, 4].map((index) => (
               <UiV2Skeleton className="block" key={index} />
             ))}
           </div>
         ) : props.error && !props.ready ? (
           <div className="v2-navigation-status">
-            <span>Не удалось загрузить чаты</span>
+            <span>Could not load chats</span>
             <button className="v2-navigation-retry v2-focusable" type="button" onClick={props.onRetry}>
-              Повторить
+              Retry
             </button>
           </div>
         ) : props.searchQuery && props.searchLoading && props.chats.length === 0 ? (
-          <div className="v2-navigation-status">Ищем чаты…</div>
+          <div className="v2-navigation-status">Searching chats…</div>
         ) : props.searchQuery && props.searchError && props.chats.length === 0 ? (
           <div className="v2-navigation-status">
-            <span>Поиск недоступен</span>
+            <span>Search is unavailable</span>
             <button className="v2-navigation-retry v2-focusable" type="button" onClick={props.onRetry}>
-              Повторить
+              Retry
             </button>
           </div>
         ) : props.chats.length === 0 ? (
           <div className="v2-navigation-status">
-            {props.searchQuery ? "Ничего не найдено" : "Начните первый чат"}
+            {props.searchQuery ? "Nothing found" : "Start your first chat"}
           </div>
         ) : props.searchQuery ? (
           <div className="v2-navigation-group">
-            <div className="v2-navigation-group-label">Результаты</div>
+            <div className="v2-navigation-group-label">Results</div>
             {props.chats.map((chat) => (
               <ChatRow
                 active={chat.id === props.activeChatId}
@@ -733,7 +733,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             type="button"
             onClick={props.onLoadMore}
           >
-            Показать раньше
+            Show earlier
           </button>
         ) : null}
       </div>
@@ -741,16 +741,16 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       <div className="v2-navigation-footer">
         {props.onArchivedChats ? (
           <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onArchivedChats}>
-            <UiV2Icon name="archive" /> Архив чатов
+            <UiV2Icon name="archive" /> Archived chats
           </button>
         ) : null}
         <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onLibrary}>
           <UiV2Icon name="library" />
-          Библиотека
+          Library
         </button>
         <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onSettings}>
           <UiV2Icon name="settings" />
-          <span className="v2-chat-title">{props.accountLabel || "Настройки"}</span>
+          <span className="v2-chat-title">{props.accountLabel || "Settings"}</span>
         </button>
       </div>
     </aside>
@@ -1017,19 +1017,19 @@ export function ReadingRoomShellV2({
       <button
         className="v2-navigation-scrim"
         type="button"
-        aria-label="Закрыть навигацию"
+        aria-label="Close navigation"
         onClick={() => setMobileOpen(false)}
       />
       {navigation}
       <div
         className="v2-sidebar-floats"
-        aria-label="Навигация"
+        aria-label="Navigation"
         inert={mobileOpen ? true : undefined}
       >
         <UiV2IconButton
           ref={openButtonRef}
           icon="menu"
-          label="Открыть панель"
+          label="Open sidebar"
           aria-expanded={composition === "mobile" ? mobileOpen : !collapsed}
           onClick={() => {
             setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "sidebar" }));
@@ -1038,7 +1038,7 @@ export function ReadingRoomShellV2({
             else setDesktopCollapsed(false);
           }}
         />
-        <UiV2IconButton icon="plus" label="Новый чат" onClick={() => onNewChat("NORMAL")} />
+        <UiV2IconButton icon="plus" label="New chat" onClick={() => onNewChat("NORMAL")} />
       </div>
       <div className="v2-workspace-content" inert={mobileOpen ? true : undefined}>{children}</div>
     </div>

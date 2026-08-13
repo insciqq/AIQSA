@@ -82,7 +82,7 @@ const files = [
   {
     id: "brief",
     kind: "generated" as const,
-    meta: "v3 · 24 страницы · 618 kB",
+    meta: "v3 · 24 pages · 618 kB",
     name: "quarterly_brief.docx",
     private: true,
     status: "ready" as const
@@ -90,7 +90,7 @@ const files = [
   {
     id: "sales",
     kind: "upload" as const,
-    meta: "Из чата «Quarterly product brief» · 214 kB",
+    meta: "From chat “Quarterly product brief” · 214 kB",
     name: "sales_q3.csv",
     private: true,
     status: "ready" as const
@@ -98,7 +98,7 @@ const files = [
   {
     id: "scan",
     kind: "upload" as const,
-    meta: "OCR и извлечение текста",
+    meta: "OCR and text extraction",
     name: "contract_scan.pdf",
     private: true,
     status: "processing" as const
@@ -119,8 +119,8 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
   if (closed) {
     return (
       <main className="v2-library-fixture-return">
-        <p>Чат снова открыт.</p>
-        <UiV2Button onClick={() => setClosed(false)}>Открыть библиотеку</UiV2Button>
+        <p>The chat is open again.</p>
+        <UiV2Button onClick={() => setClosed(false)}>Open Library</UiV2Button>
       </main>
     );
   }
@@ -140,7 +140,7 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
               <div>
                 {dirty ? (
                   <div className="v2-library-draft-notice" role="status">
-                    Черновик Assistant изменён. Его владелец требует явного выхода.
+                    The Assistant draft changed. Its owner requires an explicit exit.
                   </div>
                 ) : null}
                 <AssistantsPanelV2 assistants={assistants} onOpen={() => setDirty(true)} />
@@ -150,21 +150,21 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
             label: "Assistants"
           },
           { content: <KnowledgePanelV2 bases={bases} />, id: "knowledge", label: "Knowledge" },
-          { content: <FilesPanelV2 files={files} generatedFilesEnabled />, id: "files", label: "Файлы" },
+          { content: <FilesPanelV2 files={files} generatedFilesEnabled />, id: "files", label: "Files" },
           {
             content: (
               <MemoryPanelV2
                 memory={{
                   administratorDisabled: disabled,
                   automaticLearning: memoryGates.automatic,
-                  disabledReason: disabled ? "Новые ответы не используют сохранённый контекст; изменить политику может администратор." : undefined,
+                  disabledReason: disabled ? "New answers do not use saved context; an administrator can change this policy." : undefined,
                   explicitCrudAvailable: true,
                   facts: [
                     { id: "fact-1", pinned: true, scope: "Global", statement: "Пользователь предпочитает краткие технические ответы." },
                     { id: "fact-2", scope: "Folder · Research", statement: "Для исследовательских отчётов нужен список первичных источников." }
                   ],
-                  healthDetail: disabled ? "Автоматический recall остановлен. Сохранённые факты всё ещё можно просматривать и удалять." : "Факты и история готовы; фоновые задачи завершены.",
-                  healthLabel: disabled ? "Memory не участвует в ответах" : "Memory готова",
+                  healthDetail: disabled ? "Automatic recall is stopped. Saved facts can still be reviewed and deleted." : "Facts and history are ready; background jobs are complete.",
+                  healthLabel: disabled ? "Memory is not used in answers" : "Memory ready",
                   referenceChatHistory: memoryGates.history,
                   useMemoryFacts: memoryGates.facts
                 }}
@@ -174,15 +174,15 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
               />
             ),
             id: "memory",
-            label: "Память"
+            label: "Memory"
           }
         ]}
       />
       {pending ? (
         <div className="v2-library-confirm-scrim" role="presentation">
-          <section aria-label="Несохранённый черновик Assistant" aria-modal="true" className="v2-library-confirm" role="alertdialog">
-            <h2>Отменить изменения?</h2>
-            <p>Несохранённый черновик Assistant будет потерян.</p>
+          <section aria-label="Unsaved Assistant draft" aria-modal="true" className="v2-library-confirm" role="alertdialog">
+            <h2>Discard changes?</h2>
+            <p>The unsaved Assistant draft will be lost.</p>
             <div>
               <UiV2Button autoFocus onClick={() => {
                 const source = pending.intent.from;
@@ -190,13 +190,13 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
                 window.requestAnimationFrame(() => {
                   document.getElementById(`v2-library-tab-${source}`)?.focus();
                 });
-              }}>Продолжить редактирование</UiV2Button>
+              }}>Keep editing</UiV2Button>
               <UiV2Button tone="destructive" onClick={() => {
                 const proceed = pending.proceed;
                 setDirty(false);
                 setPending(null);
                 proceed();
-              }}>Отменить изменения</UiV2Button>
+              }}>Discard changes</UiV2Button>
             </div>
           </section>
         </div>

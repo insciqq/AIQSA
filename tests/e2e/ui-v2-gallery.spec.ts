@@ -59,9 +59,9 @@ for (const theme of ["dark", "light"] as const) {
     }]);
     await page.setViewportSize({ height: 844, width: 390 });
     await page.goto("/ui-v2-fixture?fixture=navigation");
-    await page.getByRole("button", { name: "Открыть панель" }).click();
+    await page.getByRole("button", { name: "Open sidebar" }).click();
 
-    await expect(page.getByRole("complementary", { name: "Навигация по чатам" }))
+    await expect(page.getByRole("complementary", { name: "Chat navigation" }))
       .toBeVisible();
     await expect(page).toHaveScreenshot(`navigation-drawer-${theme}-mobile.png`, {
       animations: "disabled",
@@ -79,19 +79,19 @@ for (const theme of ["dark", "light"] as const) {
     await page.setViewportSize({ height: 900, width: 1440 });
     await page.goto("/ui-v2-fixture?fixture=navigation");
 
-    await page.getByRole("button", { name: "Действия: Quarterly product brief" }).click();
-    await page.getByRole("menuitem", { name: "Архивировать" }).click();
-    await expect(page.getByRole("status")).toHaveText("Чат перемещён в архив·Отменить");
-    await page.getByRole("button", { name: "Отменить" }).click();
+    await page.getByRole("button", { name: "Actions: Quarterly product brief" }).click();
+    await page.getByRole("menuitem", { name: "Archive" }).click();
+    await expect(page.getByRole("status")).toHaveText("Chat moved to archive·Undo");
+    await page.getByRole("button", { name: "Undo" }).click();
     await expect(page.getByRole("button", {
       exact: true,
       name: "Quarterly product brief"
     })).toBeVisible();
 
-    await page.getByRole("button", { name: "Закрыть панель" }).click();
-    await expect(page.getByRole("button", { name: "Открыть панель" })).toBeFocused();
-    await page.getByRole("button", { name: "Открыть панель" }).click();
-    await expect(page.getByRole("complementary", { name: "Навигация по чатам" }))
+    await page.getByRole("button", { name: "Close sidebar" }).click();
+    await expect(page.getByRole("button", { name: "Open sidebar" })).toBeFocused();
+    await page.getByRole("button", { name: "Open sidebar" }).click();
+    await expect(page.getByRole("complementary", { name: "Chat navigation" }))
       .toBeVisible();
   });
 
@@ -172,8 +172,8 @@ for (const theme of ["dark", "light"] as const) {
 
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
       await expect(page.getByTestId("ui-v2-run-lifecycle-gallery")).toBeVisible();
-      await expect(page.getByText("В очереди", { exact: true })).toBeVisible();
-      await expect(page.getByText("Запрос не выполнен", { exact: true })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Queued" }).first()).toBeVisible();
+      await expect(page.getByText("Request not completed", { exact: true })).toBeVisible();
       await expect(page).toHaveScreenshot(
         `run-lifecycle-${theme}-${mode.name}.png`,
         {
@@ -241,10 +241,10 @@ for (const theme of ["dark", "light"] as const) {
     await page.setViewportSize({ height: 500, width: 1100 });
     await page.goto("/ui-v2-fixture?fixture=composer&state=capabilities");
 
-    const sheet = page.getByRole("menu", { name: "Возможности запроса" });
+    const sheet = page.getByRole("menu", { name: "Capabilities" });
     await expect(sheet).toBeVisible();
     const sheetBox = await sheet.boundingBox();
-    const closeBox = await sheet.getByRole("button", { name: "Закрыть" }).boundingBox();
+    const closeBox = await sheet.getByRole("button", { name: "Close" }).boundingBox();
     expect(sheetBox).not.toBeNull();
     expect(closeBox).not.toBeNull();
     expect(sheetBox!.x).toBe(0);
@@ -290,19 +290,19 @@ test("v2 run lifecycle refreshes only on request and isolates its live source", 
   const partial = page.getByRole("region", {
     name: "Connection lost · unknown until refresh"
   });
-  await expect(partial.getByText("Соединение потеряно", { exact: true })).toBeVisible();
+  await expect(partial.getByText("Connection lost", { exact: true })).toBeVisible();
   await expect(partial).toContainText("Собрал книгу из трёх листов");
-  await partial.getByRole("button", { name: "Обновить" }).click();
-  await expect(partial.getByText("Соединение потеряно", { exact: true })).toBeHidden();
+  await partial.getByRole("button", { name: "Refresh" }).click();
+  await expect(partial.getByText("Connection lost", { exact: true })).toBeHidden();
   await expect(partial).toContainText("Собрал книгу из трёх листов");
 
-  const unavailableStop = page.getByRole("button", { name: "Остановить ответ" }).first();
-  const durableStop = page.getByRole("button", { name: "Остановить ответ" }).last();
+  const unavailableStop = page.getByRole("button", { name: "Stop answer" }).first();
+  const durableStop = page.getByRole("button", { name: "Stop answer" }).last();
   await expect(unavailableStop).toBeDisabled();
   await expect(durableStop).toBeEnabled();
 
   const announcer = page.getByTestId("run-lifecycle-announcer");
-  await expect(announcer).toHaveText("Ищу в интернете…");
+  await expect(announcer).toHaveText("Searching the web…");
   await page.getByRole("button", { exact: true, name: "Settled answer" }).click();
   await expect(announcer).toHaveText("");
 });
@@ -316,7 +316,7 @@ test("v2 conversation preserves the visible anchor after loading earlier message
     element.scrollTop = 760;
   });
   const topBefore = await anchor.evaluate((element) => element.getBoundingClientRect().top);
-  await page.getByRole("button", { name: "Загрузить ранние сообщения" }).evaluate(
+  await page.getByRole("button", { name: "Load earlier messages" }).evaluate(
     (button: HTMLButtonElement) => button.click()
   );
   await expect(page.getByText("Сначала определим, что именно хотим измерить.")).toBeAttached();
@@ -330,18 +330,18 @@ test("v2 composer owns keyboard traversal and restores focus without leaking bin
 
   const modelTrigger = page.getByRole("button", { exact: true, name: "GPT-5.2" });
   await modelTrigger.click();
-  const modelSearch = page.getByRole("searchbox", { name: "Найти модель" });
+  const modelSearch = page.getByRole("searchbox", { name: "Search models" });
   await expect(modelSearch).toBeFocused();
   await modelSearch.press("End");
   const gemini = page.getByRole("option", { name: /Gemini 3 Pro/ });
   await expect(gemini).toBeFocused();
   await gemini.press("Enter");
-  await expect(page.getByRole("dialog", { name: "Выбор модели" })).toBeHidden();
+  await expect(page.getByRole("dialog", { name: "Choose model" })).toBeHidden();
   await expect(page.getByRole("button", { exact: true, name: "Gemini 3 Pro" })).toBeFocused();
 
-  const plus = page.getByRole("button", { name: "Возможности" });
+  const plus = page.getByRole("button", { name: "Capabilities" });
   await plus.click();
-  await expect(page.getByRole("menu", { name: "Возможности запроса" })).toBeVisible();
+  await expect(page.getByRole("menu", { name: "Capabilities" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(plus).toBeFocused();
 
@@ -356,7 +356,7 @@ test("v2 composer routes picker, drop, and paste through one visible attachment 
   await page.setViewportSize({ height: 900, width: 1280 });
   await page.goto("/ui-v2-fixture?fixture=composer&state=default");
 
-  await page.getByLabel("Прикрепить файлы").setInputFiles({
+  await page.getByLabel("Attach files").setInputFiles({
     buffer: Buffer.from("quarter,total\nQ3,42"),
     mimeType: "text/csv",
     name: "quarter.csv"
@@ -374,7 +374,7 @@ test("v2 composer routes picker, drop, and paste through one visible attachment 
     }));
   });
 
-  await page.getByRole("textbox", { name: "Сообщение" }).evaluate((textarea) => {
+  await page.getByRole("textbox", { name: "Message" }).evaluate((textarea) => {
     const transfer = new DataTransfer();
     transfer.items.add(new File(["pdf"], "brief.pdf", { type: "application/pdf" }));
     textarea.dispatchEvent(new ClipboardEvent("paste", {
@@ -387,31 +387,31 @@ test("v2 composer routes picker, drop, and paste through one visible attachment 
   await expect(page.getByText("quarter.csv", { exact: true })).toBeVisible();
   await expect(page.getByText("setup.exe", { exact: true })).toBeVisible();
   await expect(page.getByText("brief.pdf", { exact: true })).toBeVisible();
-  await expect(page.getByText("Формат не поддерживается", { exact: true })).toBeVisible();
+  await expect(page.getByText("Format not supported", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("note", { name: "Файлы приватны и доступны только вам." })
+    page.getByRole("note", { name: "Files are private and visible only to you." })
   ).toBeVisible();
 
-  const input = page.getByRole("textbox", { name: "Сообщение" });
+  const input = page.getByRole("textbox", { name: "Message" });
   await expect(input).toBeEnabled();
   await input.fill("Черновик остаётся доступен");
-  await expect(page.getByRole("button", { name: "Отправить сообщение" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Send message" })).toBeDisabled();
 });
 
 test("v2 attachment failures keep exact retry and remove resolution", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1280 });
   await page.goto("/ui-v2-fixture?fixture=composer&state=attachments");
 
-  await expect(page.getByText("4 файла · 78.3 KB", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Повторить" }).click();
+  await expect(page.getByText("4 files · 78.3 KB", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Retry" }).click();
   await expect(page.getByText("scan.pdf", { exact: true })).toBeVisible();
-  await expect(page.getByText("Ошибка обработки", { exact: true })).toBeHidden();
-  await expect(page.getByText("Обработка…", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("Processing failed", { exact: true })).toBeHidden();
+  await expect(page.getByText("Processing…", { exact: true })).toHaveCount(2);
 
-  await page.getByRole("button", { name: "Удалить archive.pdf" }).click();
+  await page.getByRole("button", { name: "Remove archive.pdf" }).click();
   await expect(page.getByText("archive.pdf", { exact: true })).toBeHidden();
-  await expect(page.getByRole("textbox", { name: "Сообщение" })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Отправить сообщение" })).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Send message" })).toBeDisabled();
 });
 
 test("v2 evidence opens exact citations and never renders private tool identity", async ({ page }) => {
@@ -490,13 +490,13 @@ test("v2 branch drawer switches only the future leaf and restores trigger focus"
   await page.setViewportSize({ height: 900, width: 1280 });
   await page.goto("/ui-v2-fixture?fixture=branches&state=default");
 
-  const drawer = page.getByRole("dialog", { name: "Ветви разговора" });
+  const drawer = page.getByRole("dialog", { name: "Conversation branches" });
   await expect(drawer).toBeHidden();
-  const opener = page.getByRole("button", { name: "Ветви" });
+  const opener = page.getByRole("button", { name: "Branches" });
   await opener.click();
   await expect(drawer).toBeVisible();
-  await expect(drawer.locator(".v2-branch-version").filter({ hasText: "Версия 3" }))
-    .toContainText("Текущая");
+  await expect(drawer.locator(".v2-branch-version").filter({ hasText: "Version 3" }))
+    .toContainText("Current");
   const text = await drawer.innerText();
   expect(text).not.toContain("answer-edited");
   expect(text).not.toContain("question-root");
@@ -506,14 +506,14 @@ test("v2 branch drawer switches only the future leaf and restores trigger focus"
   await expect(opener).toBeFocused();
 
   await opener.click();
-  const original = drawer.locator(".v2-branch-version").filter({ hasText: "Версия 1" });
-  await original.getByRole("button", { name: "Переключиться" }).click();
+  const original = drawer.locator(".v2-branch-version").filter({ hasText: "Version 1" });
+  await original.getByRole("button", { name: "Switch" }).click();
   await expect(drawer).toBeHidden();
   await expect(page.getByText(
     "Первый ответ опирается только на lexical lane и служит исходной версией."
   )).toBeVisible();
   await expect(page.locator(".v2-branch-gallery-notice")).toContainText(
-    "Следующее сообщение продолжит выбранную ветвь"
+    "next message continues the selected branch"
   );
 });
 
@@ -522,8 +522,8 @@ test("v2 branch pager and portalled More menu stay bounded and target exact vers
   await page.goto("/ui-v2-fixture?fixture=branches&state=default");
 
   const answerPager = page.getByTestId("branch-pager").first();
-  await expect(answerPager.getByLabel("Версия 2 из 2")).toHaveText("2/2");
-  await answerPager.getByRole("button", { name: "Предыдущая версия" }).click();
+  await expect(answerPager.getByLabel("Version 2 of 2")).toHaveText("2/2");
+  await answerPager.getByRole("button", { name: "Previous version" }).click();
   await expect(page.getByText(
     "Первый ответ опирается только на lexical lane и служит исходной версией."
   )).toBeVisible();
@@ -549,14 +549,14 @@ test("v2 branch edit keeps the draft and makes its immutable outcome explicit", 
   await page.goto("/ui-v2-fixture?fixture=branches&state=edit");
 
   await expect(page.getByTestId("edit-branch-strip-v2")).toContainText(
-    "Отправка создаст новую ветвь; история не изменится."
+    "Sending creates a new branch; history stays unchanged."
   );
-  const input = page.getByRole("textbox", { name: "Сообщение" });
+  const input = page.getByRole("textbox", { name: "Message" });
   await input.fill("Уточнённый вопрос остаётся в новой ветви");
-  await page.getByRole("button", { name: "Отправить сообщение" }).click();
+  await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByTestId("edit-branch-strip-v2")).toBeHidden();
   await expect(page.locator(".v2-branch-gallery-notice")).toContainText(
-    "исходная история не изменилась"
+    "original history is unchanged"
   );
 });
 
@@ -564,17 +564,17 @@ test("v2 branch mutations stay disabled while a response is streaming", async ({
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/ui-v2-fixture?fixture=branches&state=streaming");
 
-  const drawer = page.getByRole("dialog", { name: "Ветви разговора" });
-  await expect(drawer).toContainText("Другую версию нельзя открыть, пока ответ выполняется");
-  await expect(drawer.getByRole("button", { name: "Переключиться" })).toHaveCount(2);
-  for (const button of await drawer.getByRole("button", { name: "Переключиться" }).all()) {
+  const drawer = page.getByRole("dialog", { name: "Conversation branches" });
+  await expect(drawer).toContainText("Another version cannot be opened while the answer is running");
+  await expect(drawer.getByRole("button", { name: "Switch" })).toHaveCount(2);
+  for (const button of await drawer.getByRole("button", { name: "Switch" }).all()) {
     await expect(button).toBeDisabled();
   }
-  await drawer.getByRole("button", { name: "Закрыть ветви" }).click();
+  await drawer.getByRole("button", { name: "Close branches" }).click();
   const answer = page.getByRole("article", { name: "Answer" }).last();
   await answer.click();
   await expect(answer.getByRole("button", { name: "Regenerate answer" })).toBeDisabled();
-  await expect(answer).toContainText("Дождитесь завершения ответа или остановите его.");
+  await expect(answer).toContainText("Wait for the answer to finish or stop it.");
 });
 
 for (const theme of ["dark", "light"] as const) {
@@ -614,28 +614,28 @@ test("v2 artifact preview switches exact immutable versions and restores focus",
   await page.setViewportSize({ height: 760, width: 1180 });
   await page.goto("/ui-v2-fixture?fixture=artifacts&state=default");
 
-  await expect(page.getByRole("dialog", { name: /Предпросмотр файла/ })).toBeHidden();
-  const card = page.getByRole("article", { name: "Файл report_q3.xlsx" });
+  await expect(page.getByRole("dialog", { name: /File preview/ })).toBeHidden();
+  const card = page.getByRole("article", { name: "File report_q3.xlsx" });
   await expect(card).toContainText("v2");
-  const opener = card.getByRole("button", { name: "Превью" });
+  const opener = card.getByRole("button", { name: "Preview" });
   await opener.click();
-  const drawer = page.getByRole("dialog", { name: "Предпросмотр файла report_q3.xlsx" });
+  const drawer = page.getByRole("dialog", { name: "File preview: report_q3.xlsx" });
   await expect(drawer).toBeVisible();
-  await expect(drawer.getByRole("button", { name: "Закрыть предпросмотр" })).toBeFocused();
+  await expect(drawer.getByRole("button", { name: "Close preview" })).toBeFocused();
   const text = await drawer.innerText();
   expect(text).not.toContain("artifact-version-private");
   expect(text).not.toContain("message-private");
   expect(text).not.toContain("object-key");
 
-  await drawer.getByRole("button", { name: /v1.*Исходный ответ/ }).click();
+  await drawer.getByRole("button", { name: /v1.*Original answer/ }).click();
   await expect(drawer.getByText("₽14.8M")).toBeVisible();
   await drawer.getByRole("tab", { name: "Продажи" }).click();
   await expect(drawer.getByText("₽8.9M")).toBeVisible();
-  const download = drawer.getByRole("button", { name: "Скачать" });
+  const download = drawer.getByRole("button", { name: "Download" });
   await expect(download).not.toHaveAttribute("href");
   await download.click();
   await expect(page.locator(".v2-artifact-gallery-notice")).toContainText(
-    "Скачивание не выполнялось: исходная · fixture-only"
+    "Download not performed: original · fixture-only"
   );
 
   await page.keyboard.press("Escape");
@@ -646,27 +646,27 @@ test("v2 artifact preview switches exact immutable versions and restores focus",
 
 test("v2 artifacts keep preview failure, validation failure, and lifecycle outcomes honest", async ({ page }) => {
   await page.goto("/ui-v2-fixture?fixture=artifacts&state=preview-unavailable");
-  const ready = page.getByRole("article", { name: "Файл legacy.xlsx" });
-  await expect(ready).toContainText("Превью недоступно");
-  await expect(ready.getByRole("button", { name: "Превью" })).toBeHidden();
-  await ready.getByRole("button", { name: "Скачать" }).click();
+  const ready = page.getByRole("article", { name: "File legacy.xlsx" });
+  await expect(ready).toContainText("Preview unavailable");
+  await expect(ready.getByRole("button", { name: "Preview" })).toBeHidden();
+  await ready.getByRole("button", { name: "Download" }).click();
   await expect(page.locator(".v2-artifact-gallery-notice")).toContainText(
-    "Скачивание не выполнялось"
+    "Download not performed"
   );
 
   await page.goto("/ui-v2-fixture?fixture=artifacts&state=failed");
   await expect(page.locator(".v2-artifact-failure")).toContainText(
-    "битая ссылка на лист «Сводная»"
+    "broken reference to sheet “Сводная”"
   );
-  await page.getByRole("button", { name: "Попробовать снова" }).click();
+  await page.getByRole("button", { name: "Try again" }).click();
   await expect(page.locator(".v2-artifact-gallery-notice")).toContainText(
-    "compute backend не подключён"
+    "compute backend is not connected"
   );
 
   await page.goto("/ui-v2-fixture?fixture=artifacts&state=generating");
-  const generating = page.getByRole("article", { name: "Создаётся файл report_q3.xlsx" });
+  const generating = page.getByRole("article", { name: "Generating file report_q3.xlsx" });
   await expect(generating).toHaveAttribute("aria-busy", "true");
-  await expect(generating).toContainText("Создаю файлПроверяю файлРендерю превью");
+  await expect(generating).toContainText("Creating fileValidating fileRendering preview");
   expect(await page.locator("body").innerText()).not.toContain("artifact-private-generating");
 });
 
@@ -677,7 +677,7 @@ test("v2 artifacts render multiple outputs in stable order without fabricating p
   await expect(cards.nth(0)).toContainText("report_q3.xlsx");
   await expect(cards.nth(1)).toContainText("deck_q3.pptx");
   await expect(page.getByText(
-    "Fixture-only preview · generated-files backend недоступен в продукте."
+    "Fixture-only preview · the generated-files backend is not available in the product."
   )).toBeVisible();
 });
 
@@ -693,30 +693,30 @@ const runDetailsStates = [
 
 async function prepareRunDetailsVisual(page: import("@playwright/test").Page, state: typeof runDetailsStates[number]) {
   if (state === "closed") {
-    await expect(page.getByRole("dialog", { name: /Детали run/ })).toBeHidden();
+    await expect(page.getByRole("dialog", { name: /Run details/ })).toBeHidden();
     return;
   }
-  const drawer = page.getByRole("dialog", { name: /Детали run/ });
+  const drawer = page.getByRole("dialog", { name: /Run details/ });
   await expect(drawer).toBeVisible();
   if (state === "loading") {
-    await expect(drawer.getByRole("status")).toContainText("Загружаю receipt этого ответа");
+    await expect(drawer.getByRole("status")).toContainText("Loading this answer’s receipt");
     return;
   }
   if (state === "error") {
-    await expect(drawer.getByRole("alert")).toContainText("Детали run недоступны");
+    await expect(drawer.getByRole("alert")).toContainText("Run details unavailable");
     return;
   }
   if (state === "memory") {
-    const memory = drawer.getByRole("region", { name: "Память" });
+    const memory = drawer.getByRole("region", { name: "Memory" });
     await memory.scrollIntoViewIfNeeded();
-    await memory.getByText(/2\. Фрагмент истории/).click();
+    await memory.getByText(/2\. Previous-chat excerpt/).click();
     return;
   }
   if (state === "redacted") {
-    const tools = drawer.getByRole("region", { name: "Инструменты MCP" });
+    const tools = drawer.getByRole("region", { name: "MCP tools" });
     await tools.scrollIntoViewIfNeeded();
     await tools.getByText(/office-compute · create_workbook/).click();
-    await tools.getByText("Аргументы · redacted").click();
+    await tools.getByText("Arguments · redacted").click();
   }
 }
 
@@ -748,14 +748,14 @@ for (const theme of ["dark", "light"] as const) {
 test("v2 Run details opens only for the exact answer and restores its evidence-row opener", async ({ page }) => {
   await page.setViewportSize({ height: 760, width: 1180 });
   await page.goto("/ui-v2-fixture?fixture=run-details&state=closed");
-  await expect(page.getByRole("dialog", { name: /Детали run/ })).toBeHidden();
+  await expect(page.getByRole("dialog", { name: /Run details/ })).toBeHidden();
   const opener = page.getByRole("button", { name: "Run details, usage available" });
   await opener.click();
   const drawer = page.getByRole("dialog", {
-    name: "Детали run · Ответ «Квартальный отчёт»"
+    name: "Run details · Answer “Квартальный отчёт”"
   });
   await expect(drawer).toBeVisible();
-  await expect(drawer.getByRole("button", { name: "Закрыть детали run" })).toBeFocused();
+  await expect(drawer.getByRole("button", { name: "Close run details" })).toBeFocused();
   await expect(drawer).toContainText("OpenAI · рабочий ключ");
   await expect(drawer).toContainText("GPT-5.2");
   await expect(drawer).toContainText("Usage · provider evidence");
@@ -765,12 +765,12 @@ test("v2 Run details opens only for the exact answer and restores its evidence-r
     /assistant-message-private|run-private|fact-private|version-private|tool-call-private|knowledge-base-private|search-option-private/u
   );
 
-  const tools = drawer.getByRole("region", { name: "Инструменты MCP" });
+  const tools = drawer.getByRole("region", { name: "MCP tools" });
   await tools.getByText(/office-compute · create_workbook/).click();
-  await tools.getByText("Аргументы · redacted").click();
+  await tools.getByText("Arguments · redacted").click();
   await expect(tools.getByRole("region", { name: "Redacted tool arguments" }))
     .toContainText("‹redacted›");
-  await tools.getByText("Результат · ненадёжные данные").click();
+  await tools.getByText("Result · untrusted data").click();
   await expect(tools.getByRole("region", { name: "Untrusted tool result preview" }))
     .toContainText("‹redacted›");
   expect(await tools.innerText()).not.toMatch(/sk-private|private-bearer/u);
@@ -782,36 +782,36 @@ test("v2 Run details opens only for the exact answer and restores its evidence-r
 
 test("v2 Run details keeps loading and owner-private read failure honest", async ({ page }) => {
   await page.goto("/ui-v2-fixture?fixture=run-details&state=loading");
-  let drawer = page.getByRole("dialog", { name: /Детали run/ });
-  await expect(drawer.getByRole("status")).toContainText("Загружаю receipt этого ответа");
-  await expect(drawer).not.toContainText("Завершён");
+  let drawer = page.getByRole("dialog", { name: /Run details/ });
+  await expect(drawer.getByRole("status")).toContainText("Loading this answer’s receipt");
+  await expect(drawer).not.toContainText("Complete");
 
   await page.goto("/ui-v2-fixture?fixture=run-details&state=error");
-  drawer = page.getByRole("dialog", { name: /Детали run/ });
-  await expect(drawer.getByRole("alert")).toContainText("Детали run недоступны");
-  await drawer.getByRole("button", { name: "Повторить" }).click();
-  await expect(drawer.getByRole("alert")).toContainText("Детали run недоступны");
+  drawer = page.getByRole("dialog", { name: /Run details/ });
+  await expect(drawer.getByRole("alert")).toContainText("Run details unavailable");
+  await drawer.getByRole("button", { name: "Retry" }).click();
+  await expect(drawer.getByRole("alert")).toContainText("Run details unavailable");
   await expect(drawer).not.toContainText("OpenAI · рабочий ключ");
 });
 
 test("v2 Run details preserves frozen Memory evidence and removes stale source links", async ({ page }) => {
   await page.goto("/ui-v2-fixture?fixture=run-details&state=memory");
-  const drawer = page.getByRole("dialog", { name: /Детали run/ });
-  const memory = drawer.getByRole("region", { name: "Память" });
-  await expect(memory).toContainText("Использована с ограничениями");
-  await expect(memory).toContainText("Обновлено");
+  const drawer = page.getByRole("dialog", { name: /Run details/ });
+  const memory = drawer.getByRole("region", { name: "Memory" });
+  await expect(memory).toContainText("Used with safe degradation");
+  await expect(memory).toContainText("Updated");
 
-  const deleted = memory.locator("details").filter({ hasText: "2. Фрагмент истории" }).first();
-  await deleted.getByText(/2\. Фрагмент истории/).click();
+  const deleted = memory.locator("details").filter({ hasText: "2. Previous-chat excerpt" }).first();
+  await deleted.getByText(/2\. Previous-chat excerpt/).click();
   await expect(deleted.getByTestId("run-memory-frozen-text")).toContainText(
     "удалённом исходном чате"
   );
-  await expect(deleted).toContainText("Ссылка скрыта: исходный чат удалён");
-  await expect(deleted.getByRole("button", { name: /Открыть источник/ })).toBeHidden();
+  await expect(deleted).toContainText("Link hidden: the source chat was deleted");
+  await expect(deleted.getByRole("button", { name: /Open source/ })).toBeHidden();
 
-  const live = memory.locator("details").filter({ hasText: "3. Фрагмент истории" }).first();
-  await live.getByText(/3\. Фрагмент истории/).click();
-  const source = live.getByRole("button", { name: "Открыть источник · 2" });
+  const live = memory.locator("details").filter({ hasText: "3. Previous-chat excerpt" }).first();
+  await live.getByText(/3\. Previous-chat excerpt/).click();
+  const source = live.getByRole("button", { name: "Open source · 2" });
   await expect(source).toBeVisible();
   expect(await source.innerText()).not.toContain("source-chat-private-live");
   expect(await memory.innerText()).not.toMatch(/source-chat-private|source-message-private/u);
@@ -820,7 +820,7 @@ test("v2 Run details preserves frozen Memory evidence and removes stale source l
 test("v2 Run details redacts long provider and request previews without widening mobile", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/ui-v2-fixture?fixture=run-details&state=redacted");
-  const drawer = page.getByRole("dialog", { name: /Детали run/ });
+  const drawer = page.getByRole("dialog", { name: /Run details/ });
   await expect(drawer).toHaveCSS("width", "390px");
   const text = await drawer.innerText();
   expect(text).toContain("password=‹redacted›");

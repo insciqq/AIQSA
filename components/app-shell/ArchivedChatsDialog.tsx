@@ -58,7 +58,6 @@ export function ArchivedChatsDialog({
   );
   const dialogRef = useDialogFocus<HTMLDivElement>({ onClose: closeArchivedChats });
   const [filter, setFilter] = useState("");
-  const ru = false;
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const visibleSummaries = normalizedFilter
     ? summaries.filter((chat) => chat.title.toLocaleLowerCase().includes(normalizedFilter))
@@ -100,7 +99,7 @@ export function ArchivedChatsDialog({
             <button
               className={`grid size-10 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
               type="button"
-              aria-label={ru ? "Назад к архиву" : "Back to archive"}
+              aria-label="Back to archive"
               onClick={showArchivedChatList}
             >
               <ArrowLeft className="size-4" aria-hidden="true" />
@@ -109,12 +108,12 @@ export function ArchivedChatsDialog({
             <Archive className="size-4 shrink-0 text-ink-muted" aria-hidden="true" />
           )}
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" id="archived-chats-heading">
-            {detail?.title ?? (ru ? "Архив чатов" : "Archived chats")}
+            {detail?.title ?? "Archived chats"}
           </h2>
           <button
             className={`grid size-10 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
             type="button"
-            aria-label={ru ? "Закрыть архив" : "Close archive"}
+            aria-label="Close archive"
             onClick={closeArchivedChats}
           >
             <X className="size-4" aria-hidden="true" />
@@ -127,12 +126,8 @@ export function ArchivedChatsDialog({
               <p>{resolveMemoryCopy(locale, "archive.explanation")}</p>
               <p className="mt-1 text-xs text-ink-muted">
                 {detail.memoryMode === "EXCLUDED"
-                  ? `${resolveMemoryCopy(locale, "exclude.explanation")} ${
-                      ru
-                        ? "Отдельное состояние исключения имеет приоритет до возобновления."
-                        : "The separate Exclude state takes precedence until Resume."
-                    }`
-                  : ru ? "Предпросмотр владельца доступен только для чтения." : "This owner preview is read-only."}
+                  ? `${resolveMemoryCopy(locale, "exclude.explanation")} The separate Exclude state takes precedence until Resume.`
+                  : "This owner preview is read-only."}
               </p>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
@@ -144,20 +139,20 @@ export function ArchivedChatsDialog({
                   onClick={() => void loadEarlierArchivedMessages().catch(() => undefined)}
                 >
                   {detailLoadState === "loading" ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : null}
-                  {ru ? "Загрузить более ранние сообщения" : "Load earlier messages"}
+                  Load earlier messages
                 </button>
               ) : null}
-              <ol className="space-y-3" aria-label={ru ? "Сообщения архивного чата" : "Archived chat messages"}>
+              <ol className="space-y-3" aria-label="Archived chat messages">
                 {detail.messages.map((message) => (
                   <li
                     className="border-l-2 border-trace-subtle pl-3 text-sm leading-6"
                     key={message.id}
                   >
                     <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                      {message.role === "user" ? (ru ? "Вы" : "You") : (ru ? "Ассистент" : "Assistant")}
+                      {message.role === "user" ? "You" : "Assistant"}
                     </p>
                     <p className="whitespace-pre-wrap break-words text-ink-secondary">
-                      {textFromThreadContent(message.content) || (ru ? "Нет текстового содержимого" : "No text content")}
+                      {textFromThreadContent(message.content) || "No text content"}
                     </p>
                   </li>
                 ))}
@@ -179,7 +174,7 @@ export function ArchivedChatsDialog({
                   })}
                 >
                   <Trash2 className="size-4" aria-hidden="true" />
-                  {ru ? "Удалить навсегда" : "Delete permanently"}
+                  Delete permanently
                 </button>
               ) : null}
               <button className={button} disabled={restoring} type="button" onClick={() => void restore().catch(() => undefined)}>
@@ -192,14 +187,14 @@ export function ArchivedChatsDialog({
           <div className="grid min-h-0 flex-1 place-items-center px-4 py-10" role="status">
             <p className="flex items-center gap-2 text-sm text-ink-muted">
               <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-              {ru ? "Загрузка предпросмотра…" : "Loading preview…"}
+              Loading preview…
             </p>
           </div>
         ) : detailLoadState === "error" ? (
           <div className="grid min-h-0 flex-1 place-items-center px-4 py-10 text-center">
             <div>
               <p className="text-sm text-critical" role="alert">
-                {ru ? "Не удалось открыть архивный чат." : "Could not open the archived chat."}
+                Could not open the archived chat.
               </p>
               <button
                 className={`${button} mt-3`}
@@ -210,7 +205,7 @@ export function ArchivedChatsDialog({
                 }}
               >
                 <ArrowLeft className="size-4" aria-hidden="true" />
-                {ru ? "Назад к архиву" : "Back to archive"}
+                Back to archive
               </button>
             </div>
           </div>
@@ -223,9 +218,9 @@ export function ArchivedChatsDialog({
                   className="pointer-events-none absolute left-6 top-1/2 size-4 -translate-y-1/2 text-ink-muted sm:left-7"
                 />
                 <input
-                  aria-label={ru ? "Поиск по архиву" : "Search archive"}
+                  aria-label="Search archive"
                   className={`w-full rounded-control border border-trace-subtle bg-control-surface py-2 pl-9 pr-3 text-sm text-ink placeholder:text-ink-muted ${focusRing}`}
-                  placeholder={ru ? "Поиск по архиву" : "Search archive"}
+                  placeholder="Search archive"
                   type="search"
                   value={filter}
                   onChange={(event) => setFilter(event.target.value)}
@@ -233,32 +228,32 @@ export function ArchivedChatsDialog({
               </div>
             ) : null}
             {listLoadState === "loading" && summaries.length === 0 ? (
-              <p className="px-4 py-10 text-center text-sm text-ink-muted">{ru ? "Загрузка архива…" : "Loading archive…"}</p>
+              <p className="px-4 py-10 text-center text-sm text-ink-muted">Loading archive…</p>
             ) : null}
             {listError && summaries.length === 0 ? (
               <div className="px-4 py-10 text-center">
-                <p className="text-sm text-critical" role="alert">{ru ? "Не удалось загрузить архив." : "Could not load the archive."}</p>
+                <p className="text-sm text-critical" role="alert">Could not load the archive.</p>
                 <button className={`${button} mt-3`} type="button" onClick={() => void refreshArchivedChats().catch(() => undefined)}>
                   <RotateCw className="size-4" aria-hidden="true" />
-                  {ru ? "Повторить" : "Retry"}
+                  Retry
                 </button>
               </div>
             ) : null}
             {listError && summaries.length > 0 ? (
               <p className="border-b border-critical/20 px-4 py-2 text-sm text-critical" role="alert">
-                {ru ? "Последняя операция с архивом не удалась." : "The last archive operation failed."}
+                The last archive operation failed.
               </p>
             ) : null}
             {listLoadState === "ready" && summaries.length === 0 ? (
-              <p className="px-4 py-10 text-center text-sm text-ink-muted">{ru ? "Архив пуст." : "No archived chats."}</p>
+              <p className="px-4 py-10 text-center text-sm text-ink-muted">No archived chats.</p>
             ) : null}
             {summaries.length > 0 && visibleSummaries.length === 0 ? (
               <p className="px-4 py-10 text-center text-sm text-ink-muted">
-                {ru ? "Ничего не найдено." : "No archived chats match."}
+                No archived chats match.
               </p>
             ) : null}
             {visibleSummaries.length ? (
-              <ul className="divide-y divide-trace-subtle" aria-label={ru ? "Архивные чаты" : "Archived chats"}>
+              <ul className="divide-y divide-trace-subtle" aria-label="Archived chats">
                 {visibleSummaries.map((chat) => (
                   <li className="flex items-center gap-1 pr-2 sm:pr-3" key={chat.id}>
                     <button
@@ -268,17 +263,17 @@ export function ArchivedChatsDialog({
                     >
                       <span className="block truncate text-sm font-semibold text-ink">{chat.title}</span>
                       <span className="mt-1 block text-xs text-ink-muted">
-                        {formatDate(locale, chat.updatedAt)} · {chat.messageCount} {ru ? "сообщ." : "messages"}
+                        {formatDate(locale, chat.updatedAt)} · {chat.messageCount} {chat.messageCount === 1 ? "message" : "messages"}
                         {chat.memoryMode === "EXCLUDED"
-                          ? ` · ${ru ? "Исключён из источников Памяти" : "Excluded from Memory sources"}`
+                          ? " · Excluded from Memory sources"
                           : ""}
                       </span>
                     </button>
                     <button
-                      aria-label={`${ru ? "Восстановить" : "Restore"}: ${chat.title}`}
+                      aria-label={`Restore: ${chat.title}`}
                       className={`grid size-10 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-60 ${focusRing}`}
                       disabled={restoring}
-                      title={ru ? "Восстановить" : "Restore"}
+                      title="Restore"
                       type="button"
                       onClick={() => void restoreFromRow(chat).catch(() => undefined)}
                     >
@@ -286,10 +281,10 @@ export function ArchivedChatsDialog({
                     </button>
                     {permanentChatDeletionAvailable ? (
                       <button
-                        aria-label={`${ru ? "Удалить навсегда" : "Delete permanently"}: ${chat.title}`}
+                        aria-label={`Delete permanently: ${chat.title}`}
                         className={`grid size-10 shrink-0 place-items-center rounded-control text-critical hover:bg-critical/10 disabled:cursor-not-allowed disabled:opacity-60 ${focusRing}`}
                         disabled={restoring}
-                        title={ru ? "Удалить навсегда" : "Delete permanently"}
+                        title="Delete permanently"
                         type="button"
                         onClick={() => openPermanentChatDeletion({
                           chatId: chat.id,
@@ -309,7 +304,7 @@ export function ArchivedChatsDialog({
             {nextCursor ? (
               <div className="p-3">
                 <button className={`${button} w-full`} disabled={listLoadState === "loading"} type="button" onClick={() => void refreshArchivedChats(true).catch(() => undefined)}>
-                  {ru ? "Показать ещё" : "Show more"}
+                  Show more
                 </button>
               </div>
             ) : null}

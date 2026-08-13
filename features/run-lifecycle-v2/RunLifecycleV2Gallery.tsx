@@ -154,14 +154,14 @@ export function RunLifecycleV2Gallery() {
           <div className="v2-run-gallery-document">
             <header className="v2-run-gallery-header">
               <p>Reading Room · Run lifecycle</p>
-              <h1>Честные состояния выполнения</h1>
-              <span>Одна спокойная строка сообщает только подтверждённую фазу. Частичный ответ остаётся документом.</span>
+              <h1>Honest run states</h1>
+              <span>One quiet line reports only the confirmed phase. A partial answer remains a document.</span>
             </header>
 
             <section className="v2-run-gallery-group" aria-labelledby="run-activity-heading">
               <div className="v2-run-gallery-group-heading">
-                <h2 id="run-activity-heading">Серверные фазы</h2>
-                <span>Без процентов и стадий по таймеру</span>
+                <h2 id="run-activity-heading">Server phases</h2>
+                <span>No percentages, no timer-driven stages</span>
               </div>
               <div className="v2-run-gallery-activities">
                 {activityCases.map((item) => (
@@ -177,8 +177,8 @@ export function RunLifecycleV2Gallery() {
 
             <section className="v2-run-gallery-group" aria-labelledby="run-terminal-heading">
               <div className="v2-run-gallery-group-heading">
-                <h2 id="run-terminal-heading">Ответ и терминальные состояния</h2>
-                <span>Partial не становится complete без серверного перехода</span>
+                <h2 id="run-terminal-heading">Answer and terminal states</h2>
+                <span>Partial never becomes complete without a server transition</span>
               </div>
 
               <StateSpec label="Streaming">
@@ -218,7 +218,7 @@ export function RunLifecycleV2Gallery() {
                     content: "Собрал книгу из трёх листов: Данные, Сводная и Гра",
                     failure: {
                       code: "provider_stream_reset",
-                      message: "Соединение с провайдером сброшено во время стриминга. Частичный результат сохранён; можно повторить с теми же параметрами.",
+                      message: "The provider connection was reset during streaming. The partial result is kept; you can retry with the same parameters.",
                       recovery: "retry"
                     },
                     status: "error"
@@ -234,7 +234,7 @@ export function RunLifecycleV2Gallery() {
                   presentation={presentRunLifecycleV2(runEvidence({
                     failure: {
                       code: "context_budget_exceeded",
-                      message: "Контекст выбранной модели меньше объёма беседы с вложениями. Сократите вложения или выберите модель с бо́льшим контекстом.",
+                      message: "The selected model’s context is smaller than this conversation with its attachments. Reduce attachments or choose a model with a larger context.",
                       recovery: "change_parameters"
                     },
                     status: "error"
@@ -256,7 +256,7 @@ export function RunLifecycleV2Gallery() {
             <section className="v2-run-gallery-group" aria-labelledby="run-controls-heading">
               <div className="v2-run-gallery-group-heading">
                 <h2 id="run-controls-heading">Send → Stop</h2>
-                <span>Stop доступен только после durable run id</span>
+                <span>Stop is available only after a durable run id</span>
               </div>
               <div className="v2-run-gallery-controls">
                 <span>Send</span>

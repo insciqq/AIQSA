@@ -36,12 +36,12 @@ describe("SettingsV2", () => {
         themeId="dark"
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Внешний вид" }));
-    expect(screen.getByRole("alertdialog", { name: "Несохранённые изменения MCP" })).toBeInTheDocument();
-    expect(screen.queryByRole("radiogroup", { name: "Тема" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Отменить изменения" }));
+    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+    expect(screen.getByRole("alertdialog", { name: "Unsaved MCP changes" })).toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup", { name: "Theme" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
     expect(onDiscard).toHaveBeenCalledOnce();
-    expect(screen.getByRole("radiogroup", { name: "Тема" })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Theme" })).toBeInTheDocument();
   });
 
   it("blocks close while the existing MCP owner is busy", () => {
@@ -56,8 +56,8 @@ describe("SettingsV2", () => {
         themeId="dark"
       />
     );
-    expect(screen.getByRole("button", { name: "Закрыть настройки" })).toBeDisabled();
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Настройки" }), { key: "Escape" });
+    expect(screen.getByRole("button", { name: "Close settings" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Settings" }), { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
   });
 });

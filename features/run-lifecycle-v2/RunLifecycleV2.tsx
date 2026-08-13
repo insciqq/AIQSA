@@ -56,7 +56,7 @@ function RunConnectionLossV2({
   return (
     <div className="v2-run-connection" data-testid="run-connection-lost">
       <span className="v2-run-connection-mark" aria-hidden="true" />
-      <span>Соединение потеряно</span>
+      <span>Connection lost</span>
       <span aria-hidden="true">·</span>
       <button
         className="v2-focusable"
@@ -65,7 +65,7 @@ function RunConnectionLossV2({
         aria-busy={refreshing || undefined}
         onClick={() => void refresh()}
       >
-        {refreshing ? "Обновляю…" : "Обновить"}
+        {refreshing ? "Refreshing…" : "Refresh"}
       </button>
     </div>
   );
@@ -75,9 +75,9 @@ function RunCancelledV2({ onRegenerate }: { onRegenerate?(): void }) {
   return (
     <div className="v2-run-terminal-strip" data-kind="cancelled">
       <span className="v2-run-stop-mark" aria-hidden="true" />
-      <span>Остановлено</span>
+      <span>Stopped</span>
       {onRegenerate ? (
-        <UiV2Button onClick={onRegenerate}>Перегенерировать</UiV2Button>
+        <UiV2Button onClick={onRegenerate}>Regenerate</UiV2Button>
       ) : null}
     </div>
   );
@@ -106,10 +106,10 @@ function RunErrorV2({
     <section
       className="v2-run-error-card"
       data-kind={presentation.kind}
-      aria-label={recoverable ? "Ответ прерван ошибкой" : "Ошибка запуска"}
+      aria-label={recoverable ? "Answer interrupted by an error" : "Run failed"}
     >
       <div className="v2-run-error-heading">
-        <h2>{recoverable ? "Ответ прерван ошибкой провайдера" : "Запрос не выполнен"}</h2>
+        <h2>{recoverable ? "Answer interrupted by a provider error" : "Request not completed"}</h2>
         {presentation.failure.code ? (
           <code>{presentation.failure.code}</code>
         ) : null}
@@ -117,13 +117,13 @@ function RunErrorV2({
       <p>{presentation.failure.message}</p>
       <div className="v2-run-error-actions">
         {recoverable && onRetry ? (
-          <UiV2Button onClick={onRetry}>Повторить</UiV2Button>
+          <UiV2Button onClick={onRetry}>Retry</UiV2Button>
         ) : null}
         {!recoverable && onSelectModel ? (
-          <UiV2Button onClick={onSelectModel}>Выбрать модель…</UiV2Button>
+          <UiV2Button onClick={onSelectModel}>Choose model…</UiV2Button>
         ) : null}
         {!recoverable && onRegenerate ? (
-          <UiV2Button onClick={onRegenerate}>Перегенерировать</UiV2Button>
+          <UiV2Button onClick={onRegenerate}>Regenerate</UiV2Button>
         ) : null}
       </div>
     </section>
@@ -215,8 +215,8 @@ export function RunComposerActionV2({
       <>
         <UiV2IconButton
           icon="arrow-up"
-          label="Отправить сообщение"
-          title={sendDisabled && sendDisabledReason ? sendDisabledReason : "Отправить сообщение"}
+          label="Send message"
+          title={sendDisabled && sendDisabledReason ? sendDisabledReason : "Send message"}
           disabled={sendDisabled || !onSend}
           aria-describedby={sendDisabled && sendDisabledReason ? unavailableDescriptionId : undefined}
           onClick={onSend}
@@ -233,14 +233,14 @@ export function RunComposerActionV2({
 
   const unavailable = !runId || !onStop;
   const unavailableReason = !runId
-    ? "Запуск ещё не подтверждён сервером."
-    : "Остановка этого запуска недоступна.";
+    ? "The run is not yet acknowledged by the server."
+    : "Stopping this run is unavailable.";
   return (
     <>
       <UiV2IconButton
         icon="stop"
-        label="Остановить ответ"
-        title={unavailable ? unavailableReason : "Остановить ответ"}
+        label="Stop answer"
+        title={unavailable ? unavailableReason : "Stop answer"}
         disabled={unavailable || stopping}
         aria-busy={stopping || undefined}
         aria-describedby={unavailable ? unavailableDescriptionId : undefined}
@@ -263,16 +263,16 @@ function announcementFor(presentation: RunPresentationV2): string {
     case "activity":
       return presentation.activity?.label ?? "";
     case "streaming":
-      return "Формирую ответ…";
+      return "Writing answer…";
     case "connection_lost":
-      return "Соединение потеряно. Обновите состояние запуска.";
+      return "Connection lost. Refresh the run state.";
     case "complete":
-      return "Ответ готов. Поле сообщения доступно.";
+      return "Answer ready. The message field is available.";
     case "cancelled":
-      return "Выполнение остановлено. Поле сообщения доступно.";
+      return "Run stopped. The message field is available.";
     case "recoverable_error":
     case "terminal_error":
-      return "Ошибка выполнения. Поле сообщения доступно.";
+      return "Run failed. The message field is available.";
     case "idle":
       return "";
   }

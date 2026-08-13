@@ -28,7 +28,7 @@ describe("Conversation v2", () => {
     );
 
     expect(screen.getByTestId("conversation-empty")).toBeVisible();
-    expect(screen.getByText("Над чем поработаем?")).toBeVisible();
+    expect(screen.getByText("What are we working on?")).toBeVisible();
     // Quiet greeting only: no canvas wordmark and no marketing subtitle.
     expect(screen.queryByText("AIQSA")).toBeNull();
     expect(screen.queryByText(/Спросите, исследуйте/u)).toBeNull();
@@ -87,7 +87,7 @@ describe("Conversation v2", () => {
     expect(onCopy).toHaveBeenCalledOnce();
   });
 
-  it("clamps only a long question and restores it with «Показать полностью»", () => {
+  it("clamps only a long question and restores it with «Show full message»", () => {
     const longQuestion = Array.from({ length: 40 }, (_, index) => `Строка ${index + 1}`).join("\n");
     expect(shouldClampUserBubbleV2("Короткий вопрос")).toBe(false);
     expect(shouldClampUserBubbleV2(longQuestion)).toBe(true);
@@ -106,18 +106,18 @@ describe("Conversation v2", () => {
     // The short question and the answer never clamp and get no expander.
     const short = screen.getAllByRole("article", { name: "Question" })[0];
     expect(short.querySelector("[data-bubble-clamped]")).toBeNull();
-    expect(within(short).queryByRole("button", { name: "Показать полностью" })).toBeNull();
+    expect(within(short).queryByRole("button", { name: "Show full message" })).toBeNull();
     const assistant = screen.getByRole("article", { name: "Answer" });
     expect(assistant.querySelector("[data-bubble-clamped]")).toBeNull();
 
     const long = screen.getAllByRole("article", { name: "Question" })[1];
     expect(long.querySelector("[data-bubble-clamped='true']")).not.toBeNull();
-    const expander = within(long).getByRole("button", { name: "Показать полностью" });
+    const expander = within(long).getByRole("button", { name: "Show full message" });
     expect(expander).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(expander);
     expect(long.querySelector("[data-bubble-clamped]")).toBeNull();
-    const collapse = within(long).getByRole("button", { name: "Свернуть" });
+    const collapse = within(long).getByRole("button", { name: "Collapse" });
     expect(collapse).toHaveAttribute("aria-expanded", "true");
 
     fireEvent.click(collapse);
@@ -177,7 +177,7 @@ describe("Conversation v2", () => {
         actions={{
           branchDisabled: true,
           deleteDisabled: true,
-          disabledReason: "Дождитесь завершения ответа или остановите его.",
+          disabledReason: "Wait for the answer to finish or stop it.",
           editDisabled: true,
           onBranchFromHere: vi.fn(),
           onDelete: vi.fn(),
@@ -193,7 +193,7 @@ describe("Conversation v2", () => {
 
     expect(screen.getByRole("button", { name: "Regenerate answer" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Edit answer" })).toBeDisabled();
-    expect(screen.getByText("Дождитесь завершения ответа или остановите его.")).toBeVisible();
+    expect(screen.getByText("Wait for the answer to finish or stop it.")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "More answer actions" }));
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeDisabled();
     expect(screen.getByRole("menuitem", { name: "Branch from here" })).toBeDisabled();
@@ -206,14 +206,14 @@ describe("Conversation v2", () => {
 
     rerender(<ConversationV2 unavailable messages={[]} onRetry={retry} />);
     expect(screen.getByTestId("conversation-unavailable")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
 
     rerender(<ConversationV2 error="failed" messages={[]} onRetry={retry} />);
     expect(screen.getByTestId("conversation-error")).toBeVisible();
 
     rerender(<ConversationV2 error="partial" messages={[answer]} onRetry={retry} />);
-    expect(screen.getByRole("alert")).toHaveTextContent("Часть разговора не загрузилась");
+    expect(screen.getByRole("alert")).toHaveTextContent("Part of the conversation did not load");
     expect(screen.getByRole("article", { name: "Answer" })).toBeVisible();
   });
 
@@ -258,7 +258,7 @@ describe("Conversation v2", () => {
     render(<Harness />);
     const scroller = screen.getByTestId("conversation-scroll");
     scroller.scrollTop = 100;
-    fireEvent.click(screen.getByRole("button", { name: "Загрузить ранние сообщения" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
 
     await waitFor(() => expect(screen.getByText("Earlier question")).toBeVisible());
     expect(scroller.scrollTop).toBe(240);
@@ -306,7 +306,7 @@ describe("Conversation v2", () => {
     const turn = screen.getByRole("article", { name: "Answer" });
     expect(turn).toHaveClass("run-owned-turn");
     expect(turn).toHaveTextContent("Preparing stateTerminal state");
-    expect(turn).not.toHaveTextContent("В этом сообщении нет текста.");
+    expect(turn).not.toHaveTextContent("This message has no text.");
   });
 });
 

@@ -198,39 +198,39 @@ function ContextGaugeV2({
 function modelCapabilityLabels(model: CatalogModel): string[] {
   const labels: string[] = [];
   if (model.capabilities.reasoning) labels.push("Reasoning");
-  if (model.capabilities.documentInputMode !== "none") labels.push("PDF и документы");
-  if (model.capabilities.imageInput) labels.push("Изображения");
+  if (model.capabilities.documentInputMode !== "none") labels.push("PDF and documents");
+  if (model.capabilities.imageInput) labels.push("Images");
   if (model.capabilities.nativeWebSearch || model.capabilities.openRouterPerplexitySearch) {
     labels.push("Web search");
   }
-  if (model.capabilities.toolCalling) labels.push("Инструменты");
+  if (model.capabilities.toolCalling) labels.push("Tools");
   if (model.capabilities.streaming) labels.push("Streaming");
   return labels;
 }
 
 function readinessLabel(server: ComposerConfigMcpServer): string {
-  if (!server.enabled) return "выключен";
+  if (!server.enabled) return "off";
   switch (server.readiness) {
     case "ready":
-      return `${server.knownToolCount} ${server.knownToolCount === 1 ? "инструмент" : "инструмента"}`;
+      return `${server.knownToolCount} ${server.knownToolCount === 1 ? "tool" : "tools"}`;
     case "authorizing":
-      return "авторизация…";
+      return "authorizing…";
     case "needs_authorization":
-      return "нужна авторизация";
+      return "needs authorization";
     case "reauthorization_required":
-      return "нужно подключить заново";
+      return "reconnect required";
     case "needs_setup":
-      return "нужна настройка";
+      return "needs setup";
     case "queued":
-      return "в очереди";
+      return "queued";
     case "idle":
     case "restarting":
     case "starting":
-      return "запускается…";
+      return "starting…";
     case "disabled":
-      return "выключен";
+      return "off";
     case "unavailable":
-      return "не готов";
+      return "not ready";
   }
 }
 
@@ -344,11 +344,11 @@ export function ComposerV2({
   const noModels = Boolean(config && models.length === 0);
   const controlsLocked = Boolean(selectedAssistant);
   const bootstrapReason = configError
-    ? "Не удалось загрузить доступные возможности."
+    ? "Could not load available capabilities."
     : !config
-      ? "Загружаем доступные возможности…"
+      ? "Loading available capabilities…"
       : noModels
-        ? "Нет доступных моделей. Обратитесь к администратору."
+        ? "No models available. Contact your administrator."
         : disabledReason;
   const inputDisabled = Boolean(configError || !config || noModels || disabledReason);
   const attachmentBlockReason = attachmentSendBlockReasonV2(
@@ -363,9 +363,9 @@ export function ComposerV2({
     sending || inputDisabled || attachmentBlockReason || (!draft.trim() && !readyAttachment)
   );
   const sendDisabledReason = sending
-    ? "Сообщение отправляется."
+    ? "Sending message…"
     : bootstrapReason ?? attachmentBlockReason ??
-      (!draft.trim() && !readyAttachment ? "Введите сообщение." : null);
+      (!draft.trim() && !readyAttachment ? "Type a message." : null);
 
   const attachmentAccept = attachmentAcceptForPolicy(attachmentPolicy);
   const attachmentSelectionDisabled = Boolean(
@@ -384,7 +384,7 @@ export function ComposerV2({
     (config?.knowledgeBases ?? []).map((base) => [base.id, base])
   );
   const selectedKnowledgeNames = selectedKnowledgeBaseIds.map(
-    (id) => knowledgeById.get(id)?.name ?? "недоступно"
+    (id) => knowledgeById.get(id)?.name ?? "unavailable"
   );
   const enabledMcpServers = config?.mcpServers.filter((server) => server.enabled) ?? [];
   const readyMcpServers = enabledMcpServers.filter((server) => server.readiness === "ready");
@@ -415,7 +415,7 @@ export function ComposerV2({
         .includes(normalizedQuery);
     });
     return ungrouped.length > 0
-      ? [...groups, { models: ungrouped, provider: { id: "", models: [], name: "Другие модели" } }]
+      ? [...groups, { models: ungrouped, provider: { id: "", models: [], name: "Other models" } }]
       : groups;
   }, [modelQuery, models, providers]);
 
@@ -621,8 +621,8 @@ export function ComposerV2({
         {dragActive ? (
           <div className="v2-attachment-drop-overlay" role="status">
             {attachmentSelectionDisabled
-              ? "Сейчас нельзя прикрепить файлы"
-              : "Отпустите файлы, чтобы прикрепить"}
+              ? "Files cannot be attached right now"
+              : "Drop files to attach"}
           </div>
         ) : null}
         <input
@@ -630,7 +630,7 @@ export function ComposerV2({
           className="v2-sr-only"
           type="file"
           accept={attachmentAccept}
-          aria-label="Прикрепить файлы"
+          aria-label="Attach files"
           disabled={attachmentSelectionDisabled}
           multiple
           onChange={(event) => {
@@ -644,7 +644,7 @@ export function ComposerV2({
             <span>Assistant: <strong>{selectedAssistant.name}</strong></span>
             {onRemoveAssistant ? (
               <button className="v2-focusable" type="button" onClick={onRemoveAssistant}>
-                Убрать
+                Remove
               </button>
             ) : null}
           </div>
@@ -655,14 +655,14 @@ export function ComposerV2({
             data-testid="composer-assistant-removed-notice"
             role="status"
           >
-            <span>Assistant удалён. Теперь действуют ваши ручные настройки.</span>
+            <span>Assistant removed. Your manual settings now apply.</span>
             {onDismissAssistantRemovedNotice ? (
               <button
                 className="v2-focusable"
                 type="button"
                 onClick={onDismissAssistantRemovedNotice}
               >
-                Закрыть
+                Dismiss
               </button>
             ) : null}
           </div>
@@ -678,7 +678,7 @@ export function ComposerV2({
         {editStatusSlot}
 
         <label className="v2-composer-input-label" htmlFor={`${layerId}-input`}>
-          Сообщение
+          Message
         </label>
         <textarea
           ref={textareaRef}
@@ -688,7 +688,7 @@ export function ComposerV2({
           value={draft}
           disabled={inputDisabled}
           aria-describedby={bootstrapReason ? statusId : undefined}
-          placeholder="Спросить о чём угодно…"
+          placeholder="Ask anything…"
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={submitFromKeyboard}
           onPaste={pasteFiles}
@@ -699,7 +699,7 @@ export function ComposerV2({
             <span>{bootstrapReason}</span>
             {configError && onRetryConfig ? (
               <button className="v2-focusable" type="button" onClick={onRetryConfig}>
-                Повторить
+                Retry
               </button>
             ) : null}
           </div>
@@ -709,7 +709,7 @@ export function ComposerV2({
           <UiV2IconButton
             ref={plusTriggerRef}
             icon="plus"
-            label="Возможности"
+            label="Capabilities"
             aria-controls={`${layerId}-capabilities`}
             aria-expanded={layer === "capabilities"}
             aria-haspopup="menu"
@@ -725,20 +725,20 @@ export function ComposerV2({
             aria-expanded={layer === "model"}
             aria-haspopup="dialog"
             disabled={!config || configError || noModels || activeRun || controlsLocked}
-            title={controlsLocked ? "Управляется Assistant" : "Выбрать модель"}
+            title={controlsLocked ? "Managed by the Assistant" : "Choose model"}
             onClick={(event) => openLayer("model", event.currentTarget)}
           >
-            <strong>{currentModel?.displayName ?? (noModels ? "Нет доступных моделей" : "Выберите модель")}</strong>
+            <strong>{currentModel?.displayName ?? (noModels ? "No models available" : "Choose model")}</strong>
             {controlsLocked ? <UiV2Icon name="lock" /> : <UiV2Icon name="chevron-down" />}
           </button>
 
-          <div className="v2-composer-indicators" aria-label="Активные возможности">
+          <div className="v2-composer-indicators" aria-label="Active capabilities">
             {config && selectedSearchOptionIds.length > 0 ? (
               <button
                 className="v2-composer-indicator v2-focusable"
                 type="button"
                 disabled={controlsLocked || activeRun || !onSelectSearchOptionIds}
-                aria-label="Отключить Search"
+                aria-label="Turn off Search"
                 onClick={() => onSelectSearchOptionIds?.([])}
               >
                 <span aria-hidden="true" />Search
@@ -750,7 +750,7 @@ export function ComposerV2({
                 className="v2-composer-indicator v2-focusable"
                 type="button"
                 disabled={controlsLocked || activeRun || !onSelectKnowledgeBaseIds}
-                aria-label="Отключить Knowledge"
+                aria-label="Turn off Knowledge"
                 onClick={() => onSelectKnowledgeBaseIds?.([])}
               >
                 <span aria-hidden="true" />
@@ -765,7 +765,7 @@ export function ComposerV2({
                 className="v2-composer-indicator v2-focusable"
                 type="button"
                 disabled={activeRun || !onOpenMcpSettings}
-                aria-label="Открыть настройки MCP"
+                aria-label="Open MCP settings"
                 onClick={onOpenMcpSettings}
               >
                 <span aria-hidden="true" />MCP: {readyMcpServers.length}/{enabledMcpServers.length}
@@ -793,7 +793,7 @@ export function ComposerV2({
             <button
               className="v2-composer-layer-backdrop"
               type="button"
-              aria-label="Закрыть меню"
+              aria-label="Close menu"
               onClick={closeLayer}
             />
             <div
@@ -802,12 +802,12 @@ export function ComposerV2({
               data-kind={layer}
               id={`${layerId}-${layer}`}
               role={layer === "model" ? "dialog" : "menu"}
-              aria-label={layer === "model" ? "Выбор модели" : "Возможности запроса"}
+              aria-label={layer === "model" ? "Choose model" : "Capabilities"}
               onKeyDown={handleLayerKeyDown}
             >
               <header className="v2-composer-layer-header">
-                <strong>{layer === "model" ? "Модель" : "Возможности запроса"}</strong>
-                <UiV2IconButton icon="close" label="Закрыть" onClick={closeLayer} />
+                <strong>{layer === "model" ? "Model" : "Capabilities"}</strong>
+                <UiV2IconButton icon="close" label="Close" onClick={closeLayer} />
               </header>
 
               {layer === "model" ? (
@@ -830,7 +830,7 @@ export function ComposerV2({
                     icon="assistant"
                     disabled={activeRun || !onOpenAssistantPicker}
                     reason={selectedAssistant
-                      ? `Выбран: ${selectedAssistant.name}`
+                      ? `Selected: ${selectedAssistant.name}`
                       : "Pinned · Recent · Yours · Shared"}
                     selected={Boolean(selectedAssistant)}
                     onClick={() => {
@@ -838,34 +838,34 @@ export function ComposerV2({
                       closeLayer();
                     }}
                   >
-                    Использовать Assistant…
+                    Use an Assistant…
                   </CapabilityRow>
 
                   <CapabilityRow
                     icon="attach"
                     disabled={attachmentSelectionDisabled}
-                    reason={attachmentSelectionDisabled ? "Недоступно" : "XLSX · DOCX · PDF…"}
+                    reason={attachmentSelectionDisabled ? "Unavailable" : "XLSX · DOCX · PDF…"}
                     onClick={() => {
                       fileInputRef.current?.click();
                       closeLayer();
                     }}
                   >
-                    Прикрепить файл
+                    Attach files
                   </CapabilityRow>
 
                   <div className="v2-composer-layer-divider" />
                   <p className="v2-composer-layer-label">Search</p>
                   {concreteSearchOptions.length === 0 ? (
-                    <CapabilityRow icon="search" disabled reason="Не настроен администратором">
+                    <CapabilityRow icon="search" disabled reason="Not configured by the administrator">
                       Search
                     </CapabilityRow>
                   ) : concreteSearchOptions.map((option) => {
                     const selected = selectedSearchSet.has(option.strategyId);
                     const compatible = compatibleSearchOptionIds.has(option.strategyId);
                     const reason = controlsLocked
-                      ? "Управляется Assistant"
+                      ? "Managed by the Assistant"
                       : !compatible
-                        ? "Недоступно для этой модели"
+                        ? "Not available for this model"
                         : option.description ?? null;
                     return (
                       <CapabilityRow
@@ -883,7 +883,7 @@ export function ComposerV2({
 
                   <p className="v2-composer-layer-label">Knowledge</p>
                   {(config?.knowledgeBases.length ?? 0) === 0 && selectedKnowledgeBaseIds.length === 0 ? (
-                    <CapabilityRow icon="library" disabled reason="Нет доступных баз">
+                    <CapabilityRow icon="library" disabled reason="No knowledge bases available">
                       Knowledge
                     </CapabilityRow>
                   ) : null}
@@ -891,11 +891,11 @@ export function ComposerV2({
                     const selected = selectedKnowledgeSet.has(base.id);
                     const atLimit = selectedKnowledgeBaseIds.length >= 3 && !selected;
                     const reason = controlsLocked
-                      ? "Управляется Assistant"
+                      ? "Managed by the Assistant"
                       : base.archived
-                        ? "Доступ отозван или база в архиве"
+                        ? "Access revoked or base archived"
                         : atLimit
-                          ? "Можно выбрать до трёх баз"
+                          ? "Select up to three bases"
                           : base.description || null;
                     return (
                       <CapabilityRow
@@ -918,7 +918,7 @@ export function ComposerV2({
                         icon="library"
                         selected
                         disabled={controlsLocked || activeRun}
-                        reason={controlsLocked ? "Управляется Assistant" : "Доступ отозван"}
+                        reason={controlsLocked ? "Managed by the Assistant" : "Access revoked"}
                         onClick={() => {
                           onSelectKnowledgeBaseIds?.(
                             selectedKnowledgeBaseIds.filter((candidate) => candidate !== id)
@@ -926,22 +926,22 @@ export function ComposerV2({
                           closeLayer();
                         }}
                       >
-                        Недоступная база
+                        Unavailable knowledge base
                       </CapabilityRow>
                     ))}
 
                   <p className="v2-composer-layer-label">MCP</p>
                   {(config?.mcpServers.length ?? 0) === 0 ? (
-                    <CapabilityRow icon="tool" disabled reason="Не настроен администратором">
-                      Инструменты MCP
+                    <CapabilityRow icon="tool" disabled reason="Not configured by the administrator">
+                      MCP tools
                     </CapabilityRow>
                   ) : config?.mcpServers.map((server) => {
                     const canDisable = server.enabled;
                     const runnable = server.readiness === "ready";
                     const reason = controlsLocked
-                      ? "Управляется Assistant"
+                      ? "Managed by the Assistant"
                       : !currentModel?.capabilities.toolCalling
-                        ? "Не поддерживается этой моделью"
+                        ? "Not supported by this model"
                         : readinessLabel(server);
                     return (
                       <CapabilityRow
@@ -976,7 +976,7 @@ export function ComposerV2({
                         closeLayer();
                       }}
                     >
-                      Настроить MCP…
+                      Set up MCP…
                     </button>
                   ) : null}
 
@@ -984,16 +984,16 @@ export function ComposerV2({
                   <CapabilityRow
                     icon="sliders"
                     disabled={controlsLocked || !onOpenModelParameters}
-                    reason={controlsLocked ? "Управляется Assistant" : "Температура · reasoning · stream"}
+                    reason={controlsLocked ? "Managed by the Assistant" : "Temperature · reasoning · stream"}
                     onClick={() => {
                       onOpenModelParameters?.();
                       closeLayer();
                     }}
                   >
-                    Параметры модели
+                    Model parameters
                   </CapabilityRow>
                   <p className="v2-composer-privacy-note">
-                    Файлы приватны и доступны только вам. Недоступные возможности показаны с причиной.
+                    Files are private and visible only to you. Unavailable capabilities show a reason.
                   </p>
                 </div>
               )}
@@ -1031,20 +1031,20 @@ function ModelLayer({
   return (
     <>
       <label className="v2-composer-model-search-wrap">
-        <span className="v2-sr-only">Найти модель</span>
+        <span className="v2-sr-only">Search models</span>
         <UiV2Icon name="search" />
         <input
           data-v2-model-search="true"
           type="search"
           value={query}
-          placeholder="Найти модель…"
+          placeholder="Search models…"
           onChange={(event) => onQuery(event.target.value)}
         />
       </label>
-      <div className="v2-composer-layer-scroll" role="listbox" aria-label="Доступные модели">
+      <div className="v2-composer-layer-scroll" role="listbox" aria-label="Available models">
         {!hasMatches ? (
           <p className="v2-composer-empty-options" role="status">
-            {config?.catalog.models.length ? "Модели не найдены" : "Нет доступных моделей"}
+            {config?.catalog.models.length ? "No models match your search" : "No models available"}
           </p>
         ) : groups.map((group) => (
           <section className="v2-composer-model-group" key={group.provider.id || group.provider.name}>
@@ -1056,7 +1056,7 @@ function ModelLayer({
               const isOrganizationDefault = organizationDefault?.modelId === model.modelId &&
                 organizationDefault.provider === model.provider;
               const capabilityLabels = modelCapabilityLabels(model);
-              const capabilityTags = capabilityLabels.length > 0 ? capabilityLabels : ["Текст"];
+              const capabilityTags = capabilityLabels.length > 0 ? capabilityLabels : ["Text"];
               return (
                 <div className="v2-composer-model-row" key={`${model.provider}:${model.modelId}`}>
                   <button
@@ -1072,16 +1072,15 @@ function ModelLayer({
                     <span className="v2-composer-model-copy">
                       <strong>{model.displayName}</strong>
                       {/* One joined line with a single trailing ellipsis: per-tag
-                          truncation turned narrow rows into unreadable fragments
-                          («Rea… PDF и до… Изобр…»). */}
+                          truncation turned narrow rows into unreadable fragments. */}
                       <span className="v2-composer-model-tags" title={capabilityTags.join(" · ")}>
                         {capabilityTags.slice(0, 3).join(" · ")}
                         {capabilityTags.length > 3 ? ` · +${capabilityTags.length - 3}` : ""}
                       </span>
                       <span className="v2-composer-model-facts">
-                        {selected ? <em>Текущая</em> : null}
-                        {isPersonalDefault ? <em>Моя по умолчанию</em> : null}
-                        {isOrganizationDefault ? <em>Организации</em> : null}
+                        {selected ? <em>Current</em> : null}
+                        {isPersonalDefault ? <em>My default</em> : null}
+                        {isOrganizationDefault ? <em>Org default</em> : null}
                       </span>
                     </span>
                     {selected ? <UiV2Icon name="check" /> : null}
@@ -1090,10 +1089,10 @@ function ModelLayer({
                     <button
                       className="v2-composer-model-default v2-focusable"
                       type="button"
-                      aria-label={`Сделать ${model.displayName} моделью по умолчанию`}
+                      aria-label={`Make ${model.displayName} your default model`}
                       onClick={() => onMakeDefault(model)}
                     >
-                      Сделать по умолчанию
+                      Make default
                     </button>
                   ) : null}
                 </div>
@@ -1103,7 +1102,7 @@ function ModelLayer({
         ))}
       </div>
       <p className="v2-composer-model-note">
-        Действует со следующего сообщения.
+        Applies to your next message.
       </p>
     </>
   );

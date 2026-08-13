@@ -23,7 +23,6 @@ import type {
   MemoryReceipt,
   MemoryUiLocale
 } from "@/lib/contracts/memory";
-import { memoryPresentationIsRussian } from "@/lib/contracts/memoryPresentation";
 import { useEffect, useState } from "react";
 
 type FeedbackState = "AVAILABLE" | "ERROR" | "PENDING" | "RECORDED" | "UNDO_ERROR";
@@ -187,15 +186,13 @@ export function MemoryEvidenceV2({
                       {state === "RECORDED" || state === "UNDO_ERROR" ? (
                         <>
                           <span role="status"><UiV2Icon name="check" />
-                            {memoryPresentationIsRussian(locale)
-                              ? "Отмечено как неверное"
-                              : "Marked incorrect"}
+                            Marked incorrect
                           </span>
                           {feedbackUndo[item.ordinal] ? (
                             <UiV2Button
                               onClick={() => void undoIncorrect(item)}
                             >
-                              {memoryPresentationIsRussian(locale) ? "Отменить" : "Undo"}
+                              Undo
                             </UiV2Button>
                           ) : null}
                         </>
@@ -204,18 +201,14 @@ export function MemoryEvidenceV2({
                           busy={state === "PENDING"}
                           onClick={() => void markIncorrect(item)}
                         >
-                          {memoryPresentationIsRussian(locale) ? "Это неверно" : "This is incorrect"}
+                          This is incorrect
                         </UiV2Button>
                       )}
                       {state === "ERROR" || state === "UNDO_ERROR" ? (
                         <span className="v2-memory-receipt-error" role="alert">
                           {state === "UNDO_ERROR"
-                            ? (memoryPresentationIsRussian(locale)
-                                ? "Не удалось отменить отметку."
-                                : "Could not undo feedback.")
-                            : (memoryPresentationIsRussian(locale)
-                                ? "Не удалось сохранить отметку."
-                                : "Could not save feedback.")}
+                            ? "Could not undo feedback."
+                            : "Could not save feedback."}
                         </span>
                       ) : null}
                     </div>

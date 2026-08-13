@@ -36,14 +36,14 @@ describe("Run lifecycle v2", () => {
       <RunAnswerV2
         content="Частичный ответ"
         presentation={presentation({
-          activity: { kind: "provider", label: "Выполняется у провайдера…" },
+          activity: { kind: "provider", label: "Running at the provider…" },
           kind: "activity",
           runId
         })}
       />
     );
 
-    expect(screen.getByTestId("run-status-line")).toHaveTextContent("Выполняется у провайдера…");
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent("Running at the provider…");
     expect(screen.queryByTestId("conversation-message-actions")).toBeNull();
     expect(document.body.textContent).not.toMatch(
       /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu
@@ -55,14 +55,14 @@ describe("Run lifecycle v2", () => {
       <RunAnswerV2
         content=""
         presentation={presentation({
-          activity: { kind: "preparing", label: "Готовлю запрос…" },
+          activity: { kind: "preparing", label: "Preparing request…" },
           kind: "activity"
         })}
       />
     );
 
-    expect(screen.getByTestId("run-status-line")).toHaveTextContent("Готовлю запрос…");
-    expect(screen.queryByText("В этом сообщении нет текста.")).toBeNull();
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent("Preparing request…");
+    expect(screen.queryByText("This message has no text.")).toBeNull();
   });
 
   it("keeps partial output for streaming, cancellation, and connection loss", async () => {
@@ -86,8 +86,8 @@ describe("Run lifecycle v2", () => {
         presentation={presentation({ kind: "cancelled", runId: "run-a" })}
       />
     );
-    expect(screen.getByText("Остановлено")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Перегенерировать" }));
+    expect(screen.getByText("Stopped")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     expect(regenerate).toHaveBeenCalledOnce();
 
     rerender(
@@ -98,9 +98,9 @@ describe("Run lifecycle v2", () => {
       />
     );
     expect(screen.getByTestId("run-connection-lost")).toHaveTextContent(
-      "Соединение потеряно·Обновить"
+      "Connection lost·Refresh"
     );
-    fireEvent.click(screen.getByRole("button", { name: "Обновить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
     expect(screen.getByText("answer")).toBeVisible();
   });
@@ -124,10 +124,10 @@ describe("Run lifecycle v2", () => {
       />
     );
 
-    expect(screen.getByRole("region", { name: "Ответ прерван ошибкой" })).toHaveTextContent(
-      "Ответ прерван ошибкой провайдераprovider_stream_reset"
+    expect(screen.getByRole("region", { name: "Answer interrupted by an error" })).toHaveTextContent(
+      "Answer interrupted by a provider errorprovider_stream_reset"
     );
-    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
 
     rerender(
@@ -138,18 +138,18 @@ describe("Run lifecycle v2", () => {
         presentation={presentation({
           failure: {
             code: "context_budget_exceeded",
-            message: "Выберите модель с большим контекстом.",
+            message: "Choose a model with a larger context.",
             recovery: "change_parameters"
           },
           kind: "terminal_error"
         })}
       />
     );
-    expect(screen.getByRole("region", { name: "Ошибка запуска" })).toHaveTextContent(
-      "Запрос не выполненcontext_budget_exceeded"
+    expect(screen.getByRole("region", { name: "Run failed" })).toHaveTextContent(
+      "Request not completedcontext_budget_exceeded"
     );
-    fireEvent.click(screen.getByRole("button", { name: "Выбрать модель…" }));
-    fireEvent.click(screen.getByRole("button", { name: "Перегенерировать" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose model…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     expect(selectModel).toHaveBeenCalledOnce();
     expect(regenerate).toHaveBeenCalledOnce();
   });
@@ -160,18 +160,18 @@ describe("Run lifecycle v2", () => {
     const { rerender } = render(
       <RunComposerActionV2 active={false} onSend={send} onStop={stop} runId={null} />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Отправить сообщение" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     expect(send).toHaveBeenCalledOnce();
 
     rerender(<RunComposerActionV2 active onSend={send} onStop={stop} runId={null} />);
-    const unavailableStop = screen.getByRole("button", { name: "Остановить ответ" });
+    const unavailableStop = screen.getByRole("button", { name: "Stop answer" });
     expect(unavailableStop).toBeDisabled();
     expect(unavailableStop).toHaveAccessibleDescription(
-      "Запуск ещё не подтверждён сервером."
+      "The run is not yet acknowledged by the server."
     );
 
     rerender(<RunComposerActionV2 active onSend={send} onStop={stop} runId="run-a" />);
-    fireEvent.click(screen.getByRole("button", { name: "Остановить ответ" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop answer" }));
     expect(stop).toHaveBeenCalledWith("run-a");
   });
 
@@ -182,18 +182,18 @@ describe("Run lifecycle v2", () => {
         onSend={vi.fn()}
         runId={null}
         sendDisabled
-        sendDisabledReason="Введите сообщение."
+        sendDisabledReason="Type a message."
       />
     );
 
-    expect(screen.getByRole("button", { name: "Отправить сообщение" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Отправить сообщение" }))
-      .toHaveAccessibleDescription("Введите сообщение.");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message" }))
+      .toHaveAccessibleDescription("Type a message.");
   });
 
   it("announces only a continuously selected source and never replays historical terminal state", async () => {
     const working = presentation({
-      activity: { kind: "search", label: "Ищу в интернете…" },
+      activity: { kind: "search", label: "Searching the web…" },
       kind: "activity",
       runId: "run-a"
     });
@@ -207,7 +207,7 @@ describe("Run lifecycle v2", () => {
     );
 
     await waitFor(() => expect(screen.getByTestId("run-lifecycle-announcer")).toHaveTextContent(
-      "Ищу в интернете…"
+      "Searching the web…"
     ));
     rerender(
       <RunLifecycleAnnouncerV2
@@ -217,7 +217,7 @@ describe("Run lifecycle v2", () => {
       />
     );
     await waitFor(() => expect(screen.getByTestId("run-lifecycle-announcer")).toHaveTextContent(
-      "Ответ готов. Поле сообщения доступно."
+      "Answer ready. The message field is available."
     ));
 
     rerender(

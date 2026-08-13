@@ -21,7 +21,7 @@ export type RunDetailsFixtureState =
   | "redacted";
 
 export const runDetailsTargetFixture: RunDetailsTargetV2 = {
-  answerLabel: "Ответ «Квартальный отчёт»",
+  answerLabel: "Answer “Квартальный отчёт”",
   assistantMessageId: "assistant-message-private-run-details",
   runId: "run-private-run-details"
 };

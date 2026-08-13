@@ -57,20 +57,20 @@ test("Library tab state is keyboard-owned and dirty resource exit remains explic
   await page.goto("/ui-v2-fixture?fixture=library&state=dirty");
   const assistants = page.getByRole("tab", { name: "Assistants" });
   await assistants.press("End");
-  const confirmation = page.getByRole("alertdialog", { name: "Несохранённый черновик Assistant" });
+  const confirmation = page.getByRole("alertdialog", { name: "Unsaved Assistant draft" });
   await expect(confirmation).toBeVisible();
   await expect(assistants).toHaveAttribute("aria-selected", "true");
-  await confirmation.getByRole("button", { name: "Продолжить редактирование" }).click();
+  await confirmation.getByRole("button", { name: "Keep editing" }).click();
   await expect(assistants).toBeFocused();
 
   await assistants.press("End");
-  await confirmation.getByRole("button", { name: "Отменить изменения" }).click();
-  await expect(page.getByRole("tab", { name: "Память" })).toHaveAttribute("aria-selected", "true");
+  await confirmation.getByRole("button", { name: "Discard changes" }).click();
+  await expect(page.getByRole("tab", { name: "Memory" })).toHaveAttribute("aria-selected", "true");
 });
 
 test("administrator-disabled Memory preserves exact-fact management", async ({ page }) => {
   await page.goto("/ui-v2-fixture?fixture=library&state=memory-disabled");
-  await expect(page.getByText("Память отключена администратором")).toBeVisible();
+  await expect(page.getByText("Memory is disabled by the administrator")).toBeVisible();
   for (const control of await page.getByRole("switch").all()) await expect(control).toBeDisabled();
   await expect(page.getByRole("button", { name: "Manage memories" })).toBeEnabled();
   await expect(page.getByRole("button", { name: /Forget:/ }).first()).toBeEnabled();
@@ -80,11 +80,11 @@ test("administrator-disabled Memory preserves exact-fact management", async ({ p
 
 test("Settings has one modal layer, a three-value theme registry, and MCP discard ownership", async ({ page }) => {
   await page.goto("/ui-v2-fixture?fixture=settings&state=dirty");
-  await expect(page.getByRole("dialog", { name: "Настройки" })).toBeVisible();
-  await page.getByRole("button", { name: "Внешний вид" }).click();
-  const confirmation = page.getByRole("alertdialog", { name: "Несохранённые изменения MCP" });
+  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await page.getByRole("button", { name: "Appearance" }).click();
+  const confirmation = page.getByRole("alertdialog", { name: "Unsaved MCP changes" });
   await expect(confirmation).toBeVisible();
-  await confirmation.getByRole("button", { name: "Отменить изменения" }).click();
+  await confirmation.getByRole("button", { name: "Discard changes" }).click();
   await expect(page.getByRole("radio")).toHaveCount(3);
   await expect(page.getByRole("radio", { name: /System theme/ })).toBeVisible();
   await expect(page.getByRole("radio", { name: /Light theme/ })).toBeVisible();

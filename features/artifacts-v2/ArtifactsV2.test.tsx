@@ -22,11 +22,11 @@ describe("Artifacts v2", () => {
   it("shows bounded normalized lifecycle phases without claiming a ready file", () => {
     render(<GeneratedArtifactCardV2 artifact={artifactFor("generating")} />);
 
-    const card = screen.getByRole("article", { name: "Создаётся файл report_q3.xlsx" });
+    const card = screen.getByRole("article", { name: "Generating file report_q3.xlsx" });
     expect(card).toHaveAttribute("aria-busy", "true");
-    expect(card).toHaveTextContent("Проверяю файл…");
-    expect(within(card).getByRole("list", { name: "Этапы создания файла" })).toHaveTextContent(
-      "Создаю файлПроверяю файлРендерю превью"
+    expect(card).toHaveTextContent("Validating file…");
+    expect(within(card).getByRole("list", { name: "File generation stages" })).toHaveTextContent(
+      "Creating fileValidating fileRendering preview"
     );
     expect(within(card).queryByRole("button")).toBeNull();
   });
@@ -44,13 +44,13 @@ describe("Artifacts v2", () => {
       />
     );
 
-    const card = screen.getByRole("article", { name: "Файл report_q3.xlsx" });
+    const card = screen.getByRole("article", { name: "File report_q3.xlsx" });
     expect(card).toHaveTextContent("report_q3.xlsxv2");
-    expect(card).toHaveTextContent("XLSX · 3 листа · формулы проверены · 214 KB");
-    fireEvent.click(within(card).getByRole("button", { name: "Превью" }));
-    fireEvent.click(within(card).getByRole("button", { name: "Скачать" }));
+    expect(card).toHaveTextContent("XLSX · 3 sheets · formulas verified · 214 KB");
+    fireEvent.click(within(card).getByRole("button", { name: "Preview" }));
+    fireEvent.click(within(card).getByRole("button", { name: "Download" }));
     fireEvent.click(within(card).getByRole("button", {
-      name: "Использовать в следующем сообщении"
+      name: "Use in next message"
     }));
     expect(onPreview).toHaveBeenCalledWith(
       readyReportArtifact,
@@ -76,9 +76,9 @@ describe("Artifacts v2", () => {
       />
     );
 
-    expect(screen.getByText("Превью недоступно")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Превью" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Скачать" }));
+    expect(screen.getByText("Preview unavailable")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
     expect(onDownload).toHaveBeenCalledWith(
       expect.objectContaining({ name: "legacy.xlsx" }),
       expect.objectContaining({ downloadAvailable: true })
@@ -95,14 +95,14 @@ describe("Artifacts v2", () => {
         onRetry={retry}
       />
     );
-    expect(screen.getByRole("alert")).toHaveTextContent("битая ссылка на лист «Сводная»");
-    fireEvent.click(screen.getByRole("button", { name: "Подробнее" }));
-    fireEvent.click(screen.getByRole("button", { name: "Попробовать снова" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("broken reference to sheet “Сводная”");
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(details).toHaveBeenCalledOnce();
     expect(retry).toHaveBeenCalledOnce();
 
     rerender(<GeneratedArtifactCardV2 artifact={artifactFor("cancelled")} />);
-    expect(screen.getByText("Создание файла отменено")).toBeVisible();
+    expect(screen.getByText("File generation cancelled")).toBeVisible();
 
     rerender(<GeneratedArtifactStackV2 artifacts={artifactFixturesForState("stack")} />);
     expect(screen.getAllByRole("article")).toHaveLength(2);
@@ -112,7 +112,7 @@ describe("Artifacts v2", () => {
       boundVersionId: "missing-private-version"
     };
     rerender(<GeneratedArtifactCardV2 artifact={malformed} />);
-    expect(screen.getByRole("alert")).toHaveTextContent("Точная версия файла недоступна");
+    expect(screen.getByRole("alert")).toHaveTextContent("The exact file version is unavailable");
     expect(screen.queryByRole("button")).toBeNull();
   });
 
@@ -139,18 +139,18 @@ describe("Artifacts v2", () => {
     }
 
     const { container } = render(<Harness />);
-    const opener = screen.getByRole("button", { name: "Превью" });
+    const opener = screen.getByRole("button", { name: "Preview" });
     opener.focus();
     fireEvent.click(opener);
-    const drawer = screen.getByRole("dialog", { name: "Предпросмотр файла report_q3.xlsx" });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Закрыть предпросмотр" })).toHaveFocus());
+    const drawer = screen.getByRole("dialog", { name: "File preview: report_q3.xlsx" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close preview" })).toHaveFocus());
     expect(drawer).toHaveTextContent("v2");
-    expect(drawer).toHaveTextContent("Создано из v1");
+    expect(drawer).toHaveTextContent("Created from v1");
     expect(drawer.textContent).not.toContain("artifact-version-private");
     expect(drawer.textContent).not.toContain("message-private");
     expect(container.textContent).not.toContain("object-key");
 
-    fireEvent.click(within(drawer).getByRole("button", { name: /v1.*Исходный ответ/ }));
+    fireEvent.click(within(drawer).getByRole("button", { name: /v1.*Original answer/ }));
     expect(within(drawer).getByText("₽14.8M")).toBeVisible();
     fireEvent.click(within(drawer).getByRole("tab", { name: "Продажи" }));
     expect(within(drawer).getByText("₽8.9M")).toBeVisible();
@@ -162,7 +162,7 @@ describe("Artifacts v2", () => {
       "true"
     );
     expect(within(drawer).getByText("Операционные")).toBeVisible();
-    fireEvent.click(within(drawer).getByRole("button", { name: "Скачать" }));
+    fireEvent.click(within(drawer).getByRole("button", { name: "Download" }));
     expect(onDownload).toHaveBeenCalledWith(
       readyReportArtifact,
       expect.objectContaining({ id: "artifact-version-private-report-v1" })
@@ -171,6 +171,6 @@ describe("Artifacts v2", () => {
     fireEvent.keyDown(drawer, { key: "Escape" });
     await waitFor(() => expect(drawer).not.toBeInTheDocument());
     await waitFor(() => expect(opener).toHaveFocus());
-    expect(screen.getByRole("article", { name: "Файл report_q3.xlsx" })).toHaveTextContent("v2");
+    expect(screen.getByRole("article", { name: "File report_q3.xlsx" })).toHaveTextContent("v2");
   });
 });

@@ -22,10 +22,6 @@ export const MEMORY_UI_COPY_KEYS = [
   "settings.loading",
   "settings.loadError",
   "settings.retry",
-  "settings.localeHeading",
-  "settings.localeDescription",
-  "settings.localeRu",
-  "settings.localeEn",
   "settings.policyHeading",
   "settings.policyDescription",
   "settings.useFactsDescription",
@@ -236,10 +232,6 @@ const EN = {
   "settings.loading": "Loading Memory settings…",
   "settings.loadError": "Memory settings could not be loaded.",
   "settings.retry": "Retry",
-  "settings.localeHeading": "Memory language",
-  "settings.localeDescription": "This account preference controls all Memory controls, confirmations, and status messages.",
-  "settings.localeRu": "Русский",
-  "settings.localeEn": "English",
   "settings.policyHeading": "Remembering policy",
   "settings.policyDescription": "These three choices are independent. Turning one off retains existing data.",
   "settings.useFactsDescription": "Allow eligible saved and learned facts to be included in future answers.",
@@ -436,219 +428,9 @@ const EN = {
   "common.unavailable": "Unavailable"
 } satisfies MemoryUiCopyLocale;
 
-const RU = {
-  "settings.heading": "Память",
-  "settings.intro": "Выберите, что AIQSA может запоминать, и проверяйте точные факты, сохранённые в вашей учётной записи.",
-  "settings.informationHeading": "Как Память использует ваши данные",
-  "settings.informationManage": "Сохранёнными и автоматически изученными воспоминаниями можно управлять здесь. Выключение настройки сохраняет существующие данные.",
-  "settings.informationTemporary": "Временные чаты не используют Память. Удаление отдельного воспоминания не переписывает прежние чаты, запуски, данные у провайдеров или резервные копии оператора.",
-  "settings.informationDestinations": "Допустимые фрагменты могут отправляться выбранному провайдеру ответа вместе с подключёнными администратором Поиском, Базами знаний и инструментами.",
-  "settings.informationRisk": "Подключение администратора считается решением о доверии. Совместное использование Памяти и внешних инструментов сохраняет остаточный риск prompt injection и раскрытия данных.",
-  "settings.loading": "Загрузка настроек Памяти…",
-  "settings.loadError": "Не удалось загрузить настройки Памяти.",
-  "settings.retry": "Повторить",
-  "settings.localeHeading": "Язык Памяти",
-  "settings.localeDescription": "Эта настройка учётной записи определяет язык всех элементов управления, подтверждений и состояний Памяти.",
-  "settings.localeRu": "Русский",
-  "settings.localeEn": "English",
-  "settings.policyHeading": "Правила запоминания",
-  "settings.policyDescription": "Эти три настройки независимы. Выключение любой из них сохраняет уже записанные данные.",
-  "settings.useFactsDescription": "Разрешить добавлять допустимые сохранённые и выученные факты в будущие ответы.",
-  "settings.referenceHistoryDescription": "Разрешить поиск по допустимой сохранённой истории чатов как по Памяти, когда эта возможность доступна.",
-  "settings.historyIndexing": "Индексируется {completed} из {total} чатов",
-  "settings.learnAutomaticallyDescription": "Разрешить квалифицированное автоматическое обучение по сохранённым чатам, когда эта возможность доступна.",
-  "settings.capabilityReady": "Доступно сейчас",
-  "settings.capabilityUnavailable": "Предпочтение сохранено; эта возможность не активна в текущей установке.",
-  "settings.capabilitiesHeading": "Текущие возможности",
-  "settings.capabilityExplicit": "Явно сохранённые воспоминания",
-  "settings.capabilityHistory": "Поиск по истории чатов",
-  "settings.capabilityLearning": "Автоматическое обучение",
-  "settings.capabilityRussian": "Квалификация русского языка",
-  "settings.destinationsHeading": "Назначения данных Памяти",
-  "settings.destinationsDescription": "Проверьте текущие назначения до продолжения затронутой внешней обработки Памяти.",
-  "settings.destinationsAdminManaged": "Доверие назначениям и его продление управляются администратором. От вас ничего не требуется.",
-  "settings.answerDestination": "Выбранная модель ответа",
-  "settings.systemDestination": "Системная модель Памяти",
-  "settings.embeddingDestination": "Развёртывание эмбеддингов",
-  "settings.rerankerDestination": "Удалённый реранкер",
-  "settings.selectedAtRun": "Выбирается и фиксируется для каждого принятого запуска",
-  "settings.destinationUnavailable": "Не настроено или недоступно",
-  "settings.currentFingerprint": "Текущий отпечаток назначений",
-  "settings.acceptedFingerprint": "Принятый отпечаток назначений",
-  "settings.policyVersion": "Версия правил",
-  "settings.acceptedAt": "Принято",
-  "settings.notAccepted": "Не принято",
-  "settings.reviewAction": "Проверить назначения",
-  "settings.acceptAction": "Принять текущие назначения",
-  "settings.cancelReview": "Закрыть проверку",
-  "settings.reviewComplete": "Текущие назначения Памяти приняты.",
-  "settings.saved": "Настройка Памяти сохранена.",
-  "settings.stale": "Настройки Памяти изменились в другом месте. Загружено текущее состояние сервера.",
-  "settings.saveError": "Не удалось сохранить настройку Памяти.",
-  "settings.manageDescription": "Проверяйте, добавляйте, исправляйте, закрепляйте или забывайте точные сохранённые факты. Это отдельно от автоматического обучения и истории чатов.",
-  "settings.manageUnavailable": "Управление явной Памятью не активно в текущей установке.",
-  "manager.title": "Управление памятью",
-  "manager.back": "Назад к настройкам Памяти",
-  "manager.new": "Новое воспоминание",
-  "manager.searchLabel": "Поиск по сохранённым воспоминаниям",
-  "manager.searchPlaceholder": "Найти точный сохранённый факт",
-  "manager.searchAction": "Найти",
-  "manager.clearSearch": "Очистить поиск",
-  "manager.loading": "Загрузка сохранённых воспоминаний…",
-  "manager.loadError": "Не удалось загрузить сохранённые воспоминания.",
-  "manager.retry": "Повторить",
-  "manager.empty": "Сохранённых воспоминаний пока нет.",
-  "manager.noResults": "По этому запросу ничего не найдено.",
-  "manager.loadMore": "Загрузить ещё",
-  "manager.loadingMore": "Загрузка…",
-  "manager.selectPrompt": "Выберите сохранённое воспоминание, чтобы проверить точный текст и подтверждающие данные.",
-  "manager.pinned": "Закреплено",
-  "manager.explicit": "Явное сохранение пользователем",
-  "manager.automatic": "Изучено автоматически",
-  "manager.deferred": "отложенных кандидатов",
-  "manager.global": "Ваша учётная запись",
-  "manager.sources": "источников",
-  "manager.sourceCount": "Количество источников",
-  "manager.updated": "Обновлено",
-  "manager.detail": "Сведения о воспоминании",
-  "manager.backToList": "Назад к сохранённым воспоминаниям",
-  "manager.edit": "Изменить",
-  "manager.pin": "Закрепить",
-  "manager.unpin": "Открепить",
-  "manager.forget": "Забыть",
-  "manager.authority": "Источник полномочий",
-  "manager.scope": "Область",
-  "manager.state": "Состояние",
-  "manager.index": "Поисковый индекс",
-  "manager.category": "Категория",
-  "manager.modality": "Тип",
-  "manager.sensitivity": "Чувствительность",
-  "manager.created": "Создано",
-  "manager.lastConfirmed": "Последнее подтверждение",
-  "manager.lastUsed": "Последнее использование",
-  "manager.validity": "Период действия",
-  "manager.currentVersion": "Текущая версия",
-  "manager.never": "Никогда",
-  "manager.notSet": "Не задано",
-  "manager.evidenceHeading": "История подтверждений",
-  "manager.evidenceDescription": "Ограниченные данные источников, подтверждающие или опровергающие версии этого точного факта. Скрытые рассуждения не показываются.",
-  "manager.evidenceLoading": "Загрузка подтверждений…",
-  "manager.evidenceError": "Не удалось загрузить подтверждения.",
-  "manager.evidenceEmpty": "Для этого воспоминания нет доступных подтверждений источника.",
-  "manager.evidenceMore": "Загрузить ещё подтверждения",
-  "manager.supports": "Подтверждает",
-  "manager.contradicts": "Опровергает",
-  "manager.evidenceMessage": "Сохранённое сообщение чата",
-  "manager.evidenceAction": "Явное действие пользователя",
-  "manager.evidenceEpisode": "Квалифицированный эпизод чата",
-  "manager.observed": "Зафиксировано",
-  "manager.whyRemembered": "Почему это запомнилось",
-  "manager.whyAutomatic": "AIQSA изучила это по допустимым данным сохранённых чатов. Можно проверить ограниченные подтверждения и исправить результат без показа скрытых рассуждений модели.",
-  "manager.whyExplicit": "Эта версия создана явным сохранением или исправлением пользователя, поэтому она важнее автоматически изученных данных.",
-  "manager.conflictHeading": "Нужен ваш выбор",
-  "manager.conflictDescription": "Сохранённые подтверждения указывают на разные текущие значения. Выберите одно, введите верное значение или оставьте конфликт нерешённым.",
-  "manager.conflictChoose": "Использовать это значение",
-  "manager.conflictCorrection": "Верное значение",
-  "manager.conflictCorrectionHelp": "Исправление станет новой явной версией и будет важнее автоматических данных.",
-  "manager.conflictResolve": "Сохранить исправление",
-  "manager.conflictResolving": "Разрешение конфликта…",
-  "manager.keepUnresolved": "Оставить нерешённым",
-  "manager.feedbackHeading": "Помогите Памяти учиться",
-  "manager.feedbackDescription": "Отзыв приватен. Он помогает дальнейшему обучению, но не меняет факт незаметно.",
-  "manager.feedbackIncorrect": "Это неверно",
-  "manager.feedbackNotUseful": "Не пригодилось",
-  "manager.feedbackComment": "Приватная заметка (необязательно)",
-  "manager.feedbackCommentHelp": "Хранится только вместе с отзывом; не добавляйте секреты.",
-  "manager.feedbackRecorded": "Приватный отзыв о Памяти сохранён.",
-  "manager.feedbackRetracted": "Отзыв о Памяти отменён.",
-  "manager.feedbackUndone": "Отменено",
-  "manager.undo": "Отменить",
-  "manager.resolved": "Конфликт разрешён явной версией.",
-  "manager.lifecycleHeading": "История версий и состояний",
-  "manager.lifecycleDescription": "Ограниченная история версий и изменений этого факта без промптов и скрытых рассуждений.",
-  "manager.versionHistory": "Версии",
-  "manager.eventHistory": "События жизненного цикла",
-  "manager.createTitle": "Сохранить новое воспоминание",
-  "manager.editTitle": "Изменить сохранённое воспоминание",
-  "manager.statement": "Точный текст",
-  "manager.statementHelp": "AIQSA сохранит этот текст без изменений. Не сохраняйте пароли, токены доступа и другие секреты.",
-  "manager.categoryHelp": "Строчные латинские буквы, цифры, подчёркивания и дефисы; первый символ — буква.",
-  "manager.modalityHelp": "Выберите ближайший смысловой тип. Точный текст от этого не изменится.",
-  "manager.saveNew": "Сохранить воспоминание",
-  "manager.saveChanges": "Сохранить изменения",
-  "manager.cancel": "Отмена",
-  "manager.saving": "Сохранение…",
-  "manager.saved": "Воспоминание сохранено.",
-  "manager.draftStale": "Это воспоминание изменилось в другом месте. Черновик сохранён: проверьте текущую версию и повторите сохранение.",
-  "manager.validationStatement": "Введите непустой текст длиной не более 2 000 символов.",
-  "manager.validationCategory": "Введите допустимую категорию или оставьте поле пустым при создании.",
-  "manager.mutationError": "Действие Памяти не завершилось. Сохранение не подтверждено.",
-  "manager.secretRejected": "Текст похож на секрет и не был сохранён.",
-  "manager.forgetTitle": "Забыть это воспоминание?",
-  "manager.forgetDescription": "Будущее использование Памятью прекращается немедленно, а повторное обучение по неизменённым данным подавляется. Сохранённый текст чата и старые принятые запуски не переписываются.",
-  "manager.forgetConfirm": "Забыть это воспоминание",
-  "manager.forgetting": "Удаление из будущего использования…",
-  "manager.forgotten": "Забыто.",
-  "manager.forgetRestored": "Воспоминание восстановлено.",
-  "manager.deleteHeading": "Удаление сохранённых воспоминаний",
-  "manager.deleteDescription": "Удалить все текущие явно сохранённые воспоминания этой учётной записи.",
-  "manager.deleteTitle": "Удалить все сохранённые воспоминания?",
-  "manager.deleteExplanation": "Все текущие сохранённые воспоминания сразу перестают использоваться; затем их производные с открытым текстом удаляются асинхронно.",
-  "manager.deleteRetention": "Сохранённые исходные чаты не удаляются, неизменяемые принятые запуски назначения не переписываются, а сроки хранения провайдеров и резервные копии оператора остаются отдельными областями.",
-  "manager.deleteConfirmation": "Удаляется только набор, зафиксированный при запуске операции. Воспоминание, сохранённое позже, в него не входит.",
-  "manager.deletionDetails": "Что удаляется, а что сохраняется",
-  "manager.deleteWorking": "Запуск гарантированного удаления…",
-  "manager.deleteProgress": "Ход гарантированного удаления",
-  "manager.deletePending": "Будущий поиск заблокирован. Физическое удаление открытого текста поставлено в очередь.",
-  "manager.deleteRunning": "Будущий поиск заблокирован. Выполняется физическое удаление открытого текста.",
-  "manager.deleteRetry": "Будущий поиск заблокирован. Физическое удаление ожидает автоматической повторной попытки.",
-  "manager.deleteSucceeded": "Все производные с открытым текстом из принятого набора прошли аудит гарантированного удаления.",
-  "manager.deleteCheckAgain": "Проверить состояние удаления",
-  "manager.deleteStatusId": "Идентификатор удаления",
-  "manager.lastAudit": "Последний аудит удаления",
-  "manager.deleteStale": "Память изменилась до запуска удаления. Проверьте текущий список и подтвердите действие снова.",
-  "manager.savedUseOff": "Сохранено; использование памяти выключено. Факт останется сохранённым, но не попадёт в ответы, пока настройка «Использовать факты из памяти» не включена.",
-  "manager.closeDraftWarning": "Несохранённый черновик Памяти",
-  "manager.discardTitle": "Отменить изменения Памяти?",
-  "manager.discardBody": "Точный текст и метаданные этого несохранённого черновика будут потеряны.",
-  "manager.keepEditing": "Продолжить редактирование",
-  "manager.discardDraft": "Отменить изменения",
-  "receipt.label": "Память",
-  "receipt.usedOne": "Использовано 1 воспоминание",
-  "receipt.usedMany": "Использовано воспоминаний",
-  "receipt.degraded": "поиск безопасно продолжен в ограниченном режиме",
-  "receipt.outcome": "Результат",
-  "receipt.exactText": "Точный добавленный текст",
-  "receipt.type": "Тип",
-  "receipt.source": "Источник",
-  "receipt.sourceUnavailable": "Исходный разговор больше недоступен.",
-  "receipt.scope": "Область",
-  "receipt.version": "Версия",
-  "receipt.selection": "Причина выбора",
-  "action.saved": "Воспоминание сохранено.",
-  "action.updated": "Воспоминание обновлено.",
-  "action.forgotten": "Забыто.",
-  "action.markedIncorrect": "Отметка о неверном воспоминании сохранена приватно.",
-  "action.edit": "Изменить",
-  "action.undo": "Отменить",
-  "action.restore": "Восстановить",
-  "action.saveEdit": "Сохранить",
-  "action.cancelEdit": "Отмена",
-  "action.working": "Применяем…",
-  "action.restored": "Воспоминание восстановлено.",
-  "action.removed": "Сохранённое воспоминание удалено.",
-  "action.changed": "Сохранённый текст обновлён.",
-  "action.changeFailed": "Не удалось изменить воспоминание.",
-  "action.ambiguous": "Выберите точное сохранённое воспоминание, прежде чем AIQSA что-либо изменит.",
-  "action.manage": "Управление памятью",
-  "common.on": "Вкл.",
-  "common.off": "Выкл.",
-  "common.available": "Доступно",
-  "common.unavailable": "Недоступно"
-} satisfies MemoryUiCopyLocale;
 
-export const MEMORY_UI_COPY: Readonly<Record<MemoryUiLocale, MemoryUiCopyLocale>> =
-  Object.freeze({ EN: Object.freeze(EN), RU: Object.freeze(RU) });
+export const MEMORY_UI_COPY: Readonly<Record<typeof MEMORY_PRESENTATION_LOCALE, MemoryUiCopyLocale>> =
+  Object.freeze({ EN: Object.freeze(EN) });
 
 export function memoryUiCopy(locale: MemoryUiLocale, key: MemoryUiCopyKey): string {
   const value = MEMORY_UI_COPY[MEMORY_PRESENTATION_LOCALE][key];
@@ -656,7 +438,7 @@ export function memoryUiCopy(locale: MemoryUiLocale, key: MemoryUiCopyKey): stri
   return value;
 }
 
-const FACT_STATE_LABELS: Readonly<Record<MemoryUiLocale, Readonly<Record<MemoryFactState, string>>>> = {
+const FACT_STATE_LABELS: Readonly<Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryFactState, string>>>> = {
   EN: {
     ACTIVE: "Active",
     CONFLICTED: "Conflicted",
@@ -664,18 +446,10 @@ const FACT_STATE_LABELS: Readonly<Record<MemoryUiLocale, Readonly<Record<MemoryF
     FORGOTTEN: "Forgotten",
     ORPHANED: "Orphaned",
     RETRACTED: "Retracted"
-  },
-  RU: {
-    ACTIVE: "Активно",
-    CONFLICTED: "Есть конфликт",
-    EXPIRED: "Срок истёк",
-    FORGOTTEN: "Забыто",
-    ORPHANED: "Источник недоступен",
-    RETRACTED: "Отозвано"
   }
 };
 
-const MODALITY_LABELS: Readonly<Record<MemoryUiLocale, Readonly<Record<MemoryModality, string>>>> = {
+const MODALITY_LABELS: Readonly<Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryModality, string>>>> = {
   EN: {
     CONSIDERATION: "Consideration",
     CONSTRAINT: "Constraint",
@@ -686,34 +460,17 @@ const MODALITY_LABELS: Readonly<Record<MemoryUiLocale, Readonly<Record<MemoryMod
     PREFERENCE: "Preference",
     STATE: "State",
     WORKFLOW: "Workflow"
-  },
-  RU: {
-    CONSIDERATION: "Соображение",
-    CONSTRAINT: "Ограничение",
-    EVENT: "Событие",
-    HABIT: "Привычка",
-    INTENTION: "Намерение",
-    PLAN: "План",
-    PREFERENCE: "Предпочтение",
-    STATE: "Состояние",
-    WORKFLOW: "Рабочий процесс"
   }
 };
 
 const SENSITIVITY_LABELS: Readonly<
-  Record<MemoryUiLocale, Readonly<Record<MemorySensitivityClass, string>>>
+  Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemorySensitivityClass, string>>>
 > = {
   EN: {
     HIGHLY_SENSITIVE: "Highly sensitive",
     NORMAL: "Normal",
     SECRET: "Secret",
     SENSITIVE: "Sensitive"
-  },
-  RU: {
-    HIGHLY_SENSITIVE: "Особо чувствительные данные",
-    NORMAL: "Обычные данные",
-    SECRET: "Секрет",
-    SENSITIVE: "Чувствительные данные"
   }
 };
 
@@ -736,68 +493,45 @@ export function memorySensitivityLabel(
 }
 
 const RECEIPT_ITEM_TYPE_LABELS: Readonly<
-  Record<MemoryUiLocale, Readonly<Record<MemoryReceiptItemType, string>>>
+  Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryReceiptItemType, string>>>
 > = {
   EN: {
     EPISODE: "Previous-chat episode",
     FACT_VERSION: "Saved fact version",
     PROFILE: "Memory summary",
     RECALL_CHUNK: "Previous-chat excerpt"
-  },
-  RU: {
-    EPISODE: "Эпизод из предыдущего чата",
-    FACT_VERSION: "Версия сохранённого факта",
-    PROFILE: "Сводка Памяти",
-    RECALL_CHUNK: "Фрагмент предыдущего чата"
   }
 };
 
 const RECEIPT_SOURCE_MODE_LABELS: Readonly<
-  Record<MemoryUiLocale, Readonly<Record<MemoryReceiptItem["sourceMode"], string>>>
+  Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryReceiptItem["sourceMode"], string>>>
 > = {
   EN: {
     AUTOMATIC: "Automatically learned evidence",
     EXPLICIT: "Explicit user action",
     HISTORY: "Retained chat history",
     PROFILE: "Derived Memory summary"
-  },
-  RU: {
-    AUTOMATIC: "Автоматически изученные данные",
-    EXPLICIT: "Явное действие пользователя",
-    HISTORY: "Сохранённая история чатов",
-    PROFILE: "Производная сводка Памяти"
   }
 };
 
 const RECEIPT_SCOPE_LABELS: Readonly<
-  Record<MemoryUiLocale, Readonly<Record<MemoryScopeType, string>>>
+  Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryScopeType, string>>>
 > = {
   EN: {
     ASSISTANT: "Assistant",
     CHAT: "Chat",
     FOLDER: "Folder",
     GLOBAL_USER: "Your account"
-  },
-  RU: {
-    ASSISTANT: "Ассистент",
-    CHAT: "Чат",
-    FOLDER: "Папка",
-    GLOBAL_USER: "Ваша учётная запись"
   }
 };
 
 const RECEIPT_LIFECYCLE_LABELS: Readonly<
-  Record<MemoryUiLocale, Readonly<Record<MemoryReceiptLifecycleState, string>>>
+  Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryReceiptLifecycleState, string>>>
 > = {
   EN: {
     CURRENT: "Current",
     LATER_FORGOTTEN: "Later forgotten",
     SOURCE_DELETED: "Source deleted"
-  },
-  RU: {
-    CURRENT: "Текущее",
-    LATER_FORGOTTEN: "Позже забыто",
-    SOURCE_DELETED: "Источник удалён"
   }
 };
 

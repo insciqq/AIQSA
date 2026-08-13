@@ -11,8 +11,8 @@ describe("LibraryV2", () => {
         tabs={[
           { content: <p>Assistant owner</p>, id: "assistants", label: "Assistants" },
           { content: <p>Knowledge owner</p>, id: "knowledge", label: "Knowledge" },
-          { content: <p>Files owner</p>, id: "files", label: "Файлы" },
-          { content: <p>Memory owner</p>, id: "memory", label: "Память" }
+          { content: <p>Files owner</p>, id: "files", label: "Files" },
+          { content: <p>Memory owner</p>, id: "memory", label: "Memory" }
         ]}
       />
     );
@@ -20,7 +20,7 @@ describe("LibraryV2", () => {
     const assistants = screen.getByRole("tab", { name: "Assistants" });
     expect(assistants).toHaveAttribute("aria-selected", "true");
     fireEvent.keyDown(assistants, { key: "End" });
-    expect(screen.getByRole("tab", { name: "Память" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Memory" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("Memory owner")).toBeInTheDocument();
   });
 
@@ -48,7 +48,7 @@ describe("LibraryV2", () => {
     act(() => release?.());
     expect(screen.getByText("Knowledge owner")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Назад к чату" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
     expect(onBack).not.toHaveBeenCalled();
     act(() => release?.());
     expect(onBack).toHaveBeenCalledOnce();
@@ -102,7 +102,7 @@ describe("Library resource panels", () => {
       />
     );
 
-    expect(screen.getByText("Память отключена администратором")).toBeInTheDocument();
+    expect(screen.getByText("Memory is disabled by the administrator")).toBeInTheDocument();
     expect(screen.getAllByRole("switch")).toEqual([
       expect.objectContaining({ disabled: true }),
       expect.objectContaining({ disabled: true }),
@@ -127,7 +127,7 @@ describe("Library resource panels", () => {
         generatedFilesEnabled={false}
       />
     );
-    expect(screen.getByText("Файлы приватны и доступны только вам.")).toBeInTheDocument();
-    expect(screen.getByText("Созданные AIQSA файлы ещё не включены в этой установке.")).toBeInTheDocument();
+    expect(screen.getByText("Files are private and visible only to you.")).toBeInTheDocument();
+    expect(screen.getByText("AIQSA-generated files are not yet enabled in this installation.")).toBeInTheDocument();
   });
 });

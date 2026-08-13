@@ -16,23 +16,23 @@ function MenuHarness({ onAction }: { onAction?(): void }) {
         type="button"
         onClick={() => setOpen((value) => !value)}
       >
-        Открыть меню
+        Open menu
       </button>
       {open ? (
-        <UiV2MenuSurface label="Тестовое меню" ref={menuRef}>
+        <UiV2MenuSurface label="Test menu" ref={menuRef}>
           <UiV2MenuItem onClick={() => { setOpen(false); onAction?.(); }}>
-            Первый пункт
+            First item
           </UiV2MenuItem>
         </UiV2MenuSurface>
       ) : null}
-      <button type="button">Другой контрол</button>
+      <button type="button">Other control</button>
     </div>
   );
 }
 
 function openMenu() {
-  fireEvent.click(screen.getByRole("button", { name: "Открыть меню" }));
-  return screen.getByRole("menu", { name: "Тестовое меню" });
+  fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+  return screen.getByRole("menu", { name: "Test menu" });
 }
 
 describe("useMenuDismissalV2", () => {
@@ -45,13 +45,13 @@ describe("useMenuDismissalV2", () => {
     window.addEventListener("keydown", windowEscape);
     render(<MenuHarness />);
     const menu = openMenu();
-    const item = screen.getByRole("menuitem", { name: "Первый пункт" });
+    const item = screen.getByRole("menuitem", { name: "First item" });
     item.focus();
 
     fireEvent.keyDown(item, { key: "Escape" });
 
     expect(menu).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Открыть меню" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Open menu" })).toHaveFocus();
     expect(windowEscape).not.toHaveBeenCalled();
     window.removeEventListener("keydown", windowEscape);
   });
@@ -60,10 +60,10 @@ describe("useMenuDismissalV2", () => {
     render(<MenuHarness />);
     const menu = openMenu();
 
-    fireEvent.pointerDown(screen.getByRole("menuitem", { name: "Первый пункт" }));
+    fireEvent.pointerDown(screen.getByRole("menuitem", { name: "First item" }));
     expect(menu).toBeInTheDocument();
 
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Другой контрол" }));
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Other control" }));
     expect(menu).not.toBeInTheDocument();
   });
 
@@ -71,10 +71,10 @@ describe("useMenuDismissalV2", () => {
     render(<MenuHarness />);
     const menu = openMenu();
 
-    fireEvent.focusIn(screen.getByRole("menuitem", { name: "Первый пункт" }));
+    fireEvent.focusIn(screen.getByRole("menuitem", { name: "First item" }));
     expect(menu).toBeInTheDocument();
 
-    fireEvent.focusIn(screen.getByRole("button", { name: "Другой контрол" }));
+    fireEvent.focusIn(screen.getByRole("button", { name: "Other control" }));
     expect(menu).not.toBeInTheDocument();
   });
 
@@ -83,11 +83,11 @@ describe("useMenuDismissalV2", () => {
     render(<MenuHarness onAction={onAction} />);
     const menu = openMenu();
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Первый пункт" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "First item" }));
 
     expect(onAction).toHaveBeenCalledOnce();
     expect(menu).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Открыть меню" }));
-    expect(screen.getByRole("menu", { name: "Тестовое меню" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+    expect(screen.getByRole("menu", { name: "Test menu" })).toBeVisible();
   });
 });

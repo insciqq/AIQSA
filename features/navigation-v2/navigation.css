@@ -127,7 +127,7 @@
   z-index: 50;
 }
 
-/* Quiet «Поиск ⌘K» row: it opens the single shell command palette. */
+/* Quiet "Search ⌘K" row: it opens the single shell command palette. */
 .v2-navigation-search-row {
   display: flex;
   min-height: 2.125rem;

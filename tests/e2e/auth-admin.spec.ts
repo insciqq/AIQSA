@@ -561,8 +561,8 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     userPage = await userContext.newPage();
     await loginWithPassword(userPage, approvedEmail, approvedPassword);
     await expect(userPage.getByTestId("app-shell")).toBeVisible();
-    await userPage.getByRole("button", { name: "Меню аккаунта" }).click();
-    await expect(userPage.getByRole("menu", { name: "Аккаунт" }).getByRole("link", { name: "Control Center" })).toHaveCount(0);
+    await userPage.getByRole("button", { name: "Account menu" }).click();
+    await expect(userPage.getByRole("menu", { name: "Account" }).getByRole("link", { name: "Control Center" })).toHaveCount(0);
     await userPage.keyboard.press("Escape");
     await expect.poll(() => browserFetchStatus(userPage!, "/api/admin")).toBe(403);
     await userPage.goto("/admin");
@@ -608,9 +608,9 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
       await expect(modelPicker).not.toContainText("Fake QSA");
       await userPage.keyboard.press("Escape");
     } else {
-      await expect(runSummary).toContainText("Нет доступных моделей");
+      await expect(runSummary).toContainText("No models available");
       await expect(userPage.getByText(
-        "Нет доступных моделей. Обратитесь к администратору.",
+        "No models available. Contact your administrator.",
         { exact: true }
       ).first()).toBeVisible();
     }
@@ -749,8 +749,8 @@ test("admin console keeps all redesigned sections operable end to end", async ({
 
     await page.goto("/");
     await expect(page.getByTestId("app-shell")).toBeVisible();
-    await page.getByRole("button", { name: "Меню аккаунта" }).click();
-    const adminEntry = page.getByRole("menu", { name: "Аккаунт" }).getByRole("link", {
+    await page.getByRole("button", { name: "Account menu" }).click();
+    const adminEntry = page.getByRole("menu", { name: "Account" }).getByRole("link", {
       name: "Control Center"
     });
     await expect(adminEntry).toHaveAttribute("href", "/admin");

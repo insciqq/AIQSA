@@ -91,19 +91,19 @@ export function LibraryV2({
       <UiV2IconSprite />
       <header className="v2-library-header">
         <div className="v2-library-heading-row">
-          <UiV2Button icon="chevron-right" onClick={requestExit}>Назад к чату</UiV2Button>
+          <UiV2Button icon="chevron-right" onClick={requestExit}>Back to chat</UiV2Button>
           <div className="v2-library-title">
             <span className="v2-library-title-icon" aria-hidden="true">
               <UiV2Icon name="library" />
             </span>
             <div>
-              <h1>Библиотека</h1>
-              <p>Рабочие ресурсы и память в одном месте</p>
+              <h1>Library</h1>
+              <p>Your working resources and memory in one place</p>
             </div>
           </div>
         </div>
         <div className="v2-library-tabs-scroll">
-          <div className="v2-library-tabs" role="tablist" aria-label="Разделы библиотеки">
+          <div className="v2-library-tabs" role="tablist" aria-label="Library sections">
             {tabs.map((tab) => (
               <button
                 ref={(node) => { tabRefs.current[tab.id] = node; }}
@@ -177,8 +177,8 @@ export function AssistantsPanelV2({
   return (
     <div data-testid="library-assistants-panel">
       <SectionHeading
-        action={<UiV2Button icon="plus" tone="primary" onClick={onCreate}>Новый Assistant</UiV2Button>}
-        description="Выбирайте готовых помощников или создавайте свои. Применение происходит только по действию «Использовать»."
+        action={<UiV2Button icon="plus" tone="primary" onClick={onCreate}>New Assistant</UiV2Button>}
+        description="Pick a ready Assistant or create your own. It applies only through the Use action."
       >
         Assistants
       </SectionHeading>
@@ -197,7 +197,7 @@ export function AssistantsPanelV2({
             />
           ))}
         </ul>
-      ) : <p className="v2-resource-empty">Assistant-ов пока нет.</p>}
+      ) : <p className="v2-resource-empty">No Assistants yet.</p>}
     </div>
   );
 }
@@ -270,14 +270,14 @@ function AssistantCardV2({
           aria-pressed={assistant.pinned}
           onClick={() => onPinToggle?.(assistant.id, !assistant.pinned)}
         >
-          {assistant.pinned ? "Открепить" : "Закрепить"}
+          {assistant.pinned ? "Unpin" : "Pin"}
         </UiV2Button>
         <UiV2Button
           aria-label={`Use ${assistant.name}`}
           disabled={!assistant.available || assistant.archived}
           onClick={() => onUse?.(assistant.id)}
         >
-          Использовать
+          Use
         </UiV2Button>
         {assistant.owned ? (
           <span
@@ -335,10 +335,10 @@ function AssistantCardV2({
 }
 
 const knowledgeStatusLabel: Record<KnowledgeSummaryV2["status"], string> = {
-  archived: "В архиве",
-  indexing: "Индексируется",
-  ready: "Готово",
-  unavailable: "Недоступно"
+  archived: "Archived",
+  indexing: "Indexing",
+  ready: "Ready",
+  unavailable: "Unavailable"
 };
 
 export function KnowledgePanelV2({
@@ -353,8 +353,8 @@ export function KnowledgePanelV2({
   return (
     <div data-testid="library-knowledge-panel">
       <SectionHeading
-        action={<UiV2Button icon="plus" tone="primary" onClick={onCreate}>Новая база</UiV2Button>}
-        description="Документы, которые можно явно подключить к следующему запуску. Индексация и доступ остаются серверной истиной."
+        action={<UiV2Button icon="plus" tone="primary" onClick={onCreate}>New base</UiV2Button>}
+        description="Documents you can explicitly attach to your next run. Indexing and access remain server truth."
       >
         Knowledge
       </SectionHeading>
@@ -369,21 +369,21 @@ export function KnowledgePanelV2({
                   <span data-status={base.status}>{knowledgeStatusLabel[base.status]}</span>
                 </div>
                 <p>{base.description}</p>
-                <small>{base.owned ? "Ваша база" : "Доступ предоставлен"} · {base.documentCount} файлов</small>
+                <small>{base.owned ? "Your base" : "Shared with you"} · {base.documentCount} {base.documentCount === 1 ? "file" : "files"}</small>
               </div>
-              <UiV2Button onClick={() => onOpen?.(base.id)}>Открыть</UiV2Button>
+              <UiV2Button onClick={() => onOpen?.(base.id)}>Open</UiV2Button>
             </li>
           ))}
         </ul>
-      ) : <p className="v2-resource-empty">Баз знаний пока нет.</p>}
+      ) : <p className="v2-resource-empty">No knowledge bases yet.</p>}
     </div>
   );
 }
 
 const fileStatusLabel: Record<FileSummaryV2["status"], string> = {
-  failed: "Ошибка",
-  processing: "Обработка",
-  ready: "Готово"
+  failed: "Failed",
+  processing: "Processing",
+  ready: "Ready"
 };
 
 export function FilesPanelV2({
@@ -397,17 +397,17 @@ export function FilesPanelV2({
 }>) {
   return (
     <div data-testid="library-files-panel">
-      <SectionHeading description="Загрузки остаются привязаны к своим сообщениям; созданные файлы показывают версию и lineage, когда функция включена.">
-        Файлы
+      <SectionHeading description="Uploads stay bound to their messages; generated files show version and lineage when the feature is enabled.">
+        Files
       </SectionHeading>
       <p className="v2-library-disclosure">
-        <UiV2Icon name="lock" /> Файлы приватны и доступны только вам.
+        <UiV2Icon name="lock" /> Files are private and visible only to you.
       </p>
       {!generatedFilesEnabled ? (
-        <p className="v2-library-note">Созданные AIQSA файлы ещё не включены в этой установке.</p>
+        <p className="v2-library-note">AIQSA-generated files are not yet enabled in this installation.</p>
       ) : null}
       {files.length ? (
-        <ul className="v2-resource-list" aria-label="Файлы">
+        <ul className="v2-resource-list" aria-label="Files">
           {files.map((file) => (
             <li className="v2-resource-row" key={file.id}>
               <span className="v2-resource-row-icon" aria-hidden="true"><UiV2Icon name="file" /></span>
@@ -417,15 +417,15 @@ export function FilesPanelV2({
                   <span data-status={file.status}>{fileStatusLabel[file.status]}</span>
                 </div>
                 <p>{file.meta}</p>
-                <small>{file.kind === "generated" ? "Создан AIQSA" : "Загрузка"}{file.private ? " · Приватный" : ""}</small>
+                <small>{file.kind === "generated" ? "Generated by AIQSA" : "Upload"}{file.private ? " · Private" : ""}</small>
               </div>
               <UiV2Button disabled={file.status !== "ready"} onClick={() => onOpen?.(file.id)}>
-                {file.kind === "generated" ? "Превью" : "К источнику"}
+                {file.kind === "generated" ? "Preview" : "Go to source"}
               </UiV2Button>
             </li>
           ))}
         </ul>
-      ) : <p className="v2-resource-empty">Файлов пока нет.</p>}
+      ) : <p className="v2-resource-empty">No files yet.</p>}
     </div>
   );
 }
@@ -487,8 +487,8 @@ export function MemoryPanelV2({
 
       {memory.administratorDisabled ? (
         <div className="v2-memory-disabled" role="status">
-          <strong>Память отключена администратором</strong>
-          <span>{memory.disabledReason ?? "Новые ответы не используют Memory."}</span>
+          <strong>Memory is disabled by the administrator</strong>
+          <span>{memory.disabledReason ?? "New answers do not use Memory."}</span>
         </div>
       ) : null}
 

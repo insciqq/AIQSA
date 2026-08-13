@@ -4,6 +4,7 @@ export function providerDisplayName(provider: string): string {
     fake: "Fake",
     gemini: "Gemini",
     openai: "OpenAI",
+    openai_compatible: "OpenAI-compatible",
     openrouter: "OpenRouter"
   };
 

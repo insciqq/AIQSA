@@ -161,7 +161,7 @@ export function BranchesV2Gallery({ state = "default" }: { state?: BranchesGalle
   function checkout(leafId: string) {
     if (streaming) return false;
     setGraph((current) => ({ ...current, activeLeafMessageId: leafId }));
-    setNotice("Версия переключена. Следующее сообщение продолжит выбранную ветвь.");
+    setNotice("Version switched. The next message continues the selected branch.");
     return true;
   }
 
@@ -200,7 +200,7 @@ export function BranchesV2Gallery({ state = "default" }: { state?: BranchesGalle
         >
           <BranchesSlotV2>
             <UiV2Button icon="branch" onClick={() => setDrawerOpen(true)}>
-              Ветви
+              Branches
             </UiV2Button>
           </BranchesSlotV2>
           <ConversationV2
@@ -208,18 +208,18 @@ export function BranchesV2Gallery({ state = "default" }: { state?: BranchesGalle
               branchDisabled: streaming,
               deleteDisabled: streaming,
               disabledReason: streaming
-                ? "Дождитесь завершения ответа или остановите его."
+                ? "Wait for the answer to finish or stop it."
                 : null,
               editDisabled: streaming,
               moreDisabled: false,
-              onBranchFromHere: () => setNotice("Создание нового чата из этой точки запрошено."),
-              onCopy: () => setNotice("Сообщение скопировано."),
-              onDelete: () => setNotice("Удаление этой ветви требует подтверждения."),
+              onBranchFromHere: () => setNotice("A new chat from this point was requested."),
+              onCopy: () => setNotice("Message copied."),
+              onDelete: () => setNotice("Deleting this branch requires confirmation."),
               onEdit: () => {
                 setDraft(message.content);
                 setEditing(true);
               },
-              onRegenerate: () => setNotice("Перегенерация создаст соседнюю версию ответа."),
+              onRegenerate: () => setNotice("Regenerating creates a sibling answer version."),
               regenerateDisabled: streaming
             })}
             getMessagePresentation={(message) => {
@@ -228,7 +228,7 @@ export function BranchesV2Gallery({ state = "default" }: { state?: BranchesGalle
                 afterContent: (
                   <BranchPagerV2
                     disabledReason={streaming
-                      ? "Дождитесь завершения ответа или остановите его."
+                      ? "Wait for the answer to finish or stop it."
                       : null}
                     onCheckout={checkout}
                     state={pager}
@@ -256,7 +256,7 @@ export function BranchesV2Gallery({ state = "default" }: { state?: BranchesGalle
                 onSend={() => {
                   setEditing(false);
                   setDraft("");
-                  setNotice("Новая ветвь сохранена; исходная история не изменилась.");
+                  setNotice("The new branch is saved; the original history is unchanged.");
                 }}
                 selectedModelId="gpt-5.2"
                 selectedProvider="openai-work"
@@ -268,7 +268,7 @@ export function BranchesV2Gallery({ state = "default" }: { state?: BranchesGalle
       {drawerOpen ? (
         <BranchDrawerV2
           checkoutDisabledReason={streaming
-            ? "Другую версию нельзя открыть, пока ответ выполняется. Остановите его или дождитесь завершения."
+            ? "Another version cannot be opened while the answer is running. Stop it or wait for it to finish."
             : null}
           error={loadError ? "branch_unavailable" : null}
           graph={state === "loading" ? null : graph}

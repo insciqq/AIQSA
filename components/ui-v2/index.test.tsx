@@ -66,14 +66,14 @@ describe("UI v2 primitives", () => {
     render(
       <>
         <UiV2Chip tone="warn">Preview unavailable</UiV2Chip>
-        <UiV2Toast action="Отменить" onAction={onAction}>
-          Чат перемещён в архив
+        <UiV2Toast action="Undo" onAction={onAction}>
+          Chat moved to archive
         </UiV2Toast>
       </>
     );
 
     expect(screen.getByText("Preview unavailable")).toHaveAttribute("data-tone", "warn");
-    fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(onAction).toHaveBeenCalledOnce();
   });
 });

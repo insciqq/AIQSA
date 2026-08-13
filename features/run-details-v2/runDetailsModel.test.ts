@@ -24,11 +24,11 @@ describe("run details v2 projection", () => {
 
     expect(projection).not.toBeNull();
     expect(projection?.bindings).toEqual(expect.arrayContaining([
-      { label: "Провайдер", value: "OpenAI · рабочий ключ" },
-      { label: "Модель", value: "GPT-5.2" },
+      { label: "Provider", value: "OpenAI · рабочий ключ" },
+      { label: "Model", value: "GPT-5.2" },
       { label: "Search", value: "Research Search" },
-      { label: "Knowledge", value: "1 баз" },
-      { label: "Входные файлы", value: "2 · приватные" }
+      { label: "Knowledge", value: "1 base" },
+      { label: "Input files", value: "2 · private" }
     ]));
     expect(projection?.usage).toMatchObject({ inputTokens: 4_312, outputTokens: 1_208 });
     expect(projection).not.toHaveProperty("estimatedCostMicros");
@@ -64,19 +64,19 @@ describe("run details v2 projection", () => {
       run: memoryRunDetailsFixture,
       target: runDetailsTargetFixture
     });
-    expect(projection?.memory?.outcome).toBe("Использована с ограничениями");
+    expect(projection?.memory?.outcome).toBe("Used with safe degradation");
     expect(projection?.memory?.action).toEqual({
-      label: "Обновлено",
+      label: "Updated",
       statement: "Предпочитает отчёты в XLSX и суммы в рублях."
     });
-    const deleted = projection?.memory?.items.find((item) => item.lifecycle === "Источник удалён");
+    const deleted = projection?.memory?.items.find((item) => item.lifecycle === "Source deleted");
     expect(deleted).toMatchObject({
       includedText: expect.stringContaining("удалённом исходном чате"),
       sourceChatId: null
     });
     const live = projection?.memory?.items.find((item) => item.sourceMessageCount === 2);
     expect(live?.sourceChatId).toBe("source-chat-private-live");
-    expect(projection?.memory?.items.some((item) => item.lifecycle === "Позже забыто")).toBe(true);
+    expect(projection?.memory?.items.some((item) => item.lifecycle === "Later forgotten")).toBe(true);
   });
 
   it("shows no Usage section from an estimate when provider token evidence is absent", () => {

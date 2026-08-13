@@ -436,9 +436,9 @@ describe("workspace actions", () => {
     await state.actions.deleteChat(state.chatA);
 
     expect(state.setNotice).toHaveBeenCalledWith(expect.objectContaining({
-      action: expect.objectContaining({ label: "Отменить" }),
+      action: expect.objectContaining({ label: "Undo" }),
       kind: "success",
-      text: "Чат перемещён в архив"
+      text: "Chat moved to archive"
     }));
     expect(state.chats().map((candidate) => candidate.id)).toEqual(["chat-b", "chat-c"]);
     expect(useThreadStore.getState().threadsByChatId["chat-a"]).toBeUndefined();
@@ -578,8 +578,8 @@ describe("workspace actions", () => {
     expect(state.chats().map((candidate) => candidate.id)).toEqual(["chat-b"]);
     const notice = state.setNotice.mock.calls.at(-1)?.[0];
     expect(notice).toMatchObject({
-      action: { label: "Отменить" },
-      text: "Чат перемещён в архив"
+      action: { label: "Undo" },
+      text: "Chat moved to archive"
     });
     notice?.action?.onClick();
     await vi.waitFor(() => {
@@ -636,9 +636,9 @@ describe("workspace actions", () => {
       .toEqual(["chat-b"]);
     const notice = state.setNotice.mock.calls.at(-1)?.[0];
     expect(notice).toMatchObject({
-      action: { label: "Отменить" },
+      action: { label: "Undo" },
       kind: "success",
-      text: "Чат перемещён в архив"
+      text: "Chat moved to archive"
     });
 
     notice?.action?.onClick();

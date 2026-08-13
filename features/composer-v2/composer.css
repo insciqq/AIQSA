@@ -621,7 +621,7 @@
 }
 
 /* One joined line that ellipsizes once at the end; individual tags must never
-   shrink into fragments («Rea…», «Изобр…»). */
+   shrink into fragments. */
 .v2-composer-model-tags {
   display: block;
   min-width: 0;

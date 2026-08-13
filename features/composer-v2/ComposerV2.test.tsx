@@ -26,14 +26,14 @@ describe("Composer v2", () => {
     render(
       <ComposerV2
         {...props({
-          editStatusSlot: <div>Отправка создаст новую ветвь; история не изменится.</div>
+          editStatusSlot: <div>Sending creates a new branch; history stays unchanged.</div>
         })}
       />
     );
 
-    expect(screen.getByText("Отправка создаст новую ветвь; история не изменится."))
+    expect(screen.getByText("Sending creates a new branch; history stays unchanged."))
       .toBeVisible();
-    expect(screen.getByRole("textbox", { name: "Сообщение" })).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
   });
 
   it("renders no memory disclaimer while keeping truthful context/provider usage", () => {
@@ -52,8 +52,8 @@ describe("Composer v2", () => {
     })} />);
 
     expect(screen.queryByTestId("composer-memory-mode")).toBeNull();
-    expect(container.textContent).not.toContain("Обычный чат");
-    expect(container.textContent).not.toContain("Временный чат");
+    expect(container.textContent).not.toContain("Normal chat");
+    expect(container.textContent).not.toContain("Temporary chat");
     expect(container.textContent).not.toContain("Temporary");
 
     const context = screen.getByRole("button", {
@@ -77,7 +77,7 @@ describe("Composer v2", () => {
     })} />);
 
     const context = screen.getByRole("button", { name: /Context estimate/ });
-    expect(context).toHaveAttribute("title", "~8% контекста");
+    expect(context).toHaveAttribute("title", "~8% of context");
     expect(screen.queryByRole("dialog", { name: "Context and usage statistics" })).toBeNull();
 
     fireEvent.mouseOver(context);
@@ -96,7 +96,7 @@ describe("Composer v2", () => {
   it("sends on Enter, preserves Shift+Enter, and ignores every IME fallback", () => {
     const onSend = vi.fn();
     render(<ComposerV2 {...props({ onSend })} />);
-    const input = screen.getByRole("textbox", { name: "Сообщение" });
+    const input = screen.getByRole("textbox", { name: "Message" });
 
     fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
     fireEvent.keyDown(input, { isComposing: true, key: "Enter" });
@@ -113,7 +113,7 @@ describe("Composer v2", () => {
     render(<ComposerV2 {...props({ onSelectModel })} />);
     const trigger = screen.getByRole("button", { name: "GPT-5.2" });
     fireEvent.click(trigger);
-    const search = screen.getByRole("searchbox", { name: "Найти модель" });
+    const search = screen.getByRole("searchbox", { name: "Search models" });
     await waitFor(() => expect(search).toHaveFocus());
 
     fireEvent.change(search, { target: { value: "Gemini" } });
@@ -133,35 +133,35 @@ describe("Composer v2", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
 
     fireEvent.click(trigger);
-    await waitFor(() => expect(screen.getByRole("searchbox", { name: "Найти модель" })).toHaveFocus());
-    fireEvent.keyDown(screen.getByRole("searchbox", { name: "Найти модель" }), { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "Выбор модели" })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("searchbox", { name: "Search models" })).toHaveFocus());
+    fireEvent.keyDown(screen.getByRole("searchbox", { name: "Search models" }), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull();
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   it("closes each layer from the sheet scrim, the sticky close control, and Escape", async () => {
     render(<ComposerV2 {...props()} />);
-    const plus = screen.getByRole("button", { name: "Возможности" });
+    const plus = screen.getByRole("button", { name: "Capabilities" });
 
     // Scrim tap: the backdrop button is the touch exit of the bottom sheet.
     fireEvent.click(plus);
-    expect(screen.getByRole("menu", { name: "Возможности запроса" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Закрыть меню" }));
-    expect(screen.queryByRole("menu", { name: "Возможности запроса" })).toBeNull();
+    expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Close menu" }));
+    expect(screen.queryByRole("menu", { name: "Capabilities" })).toBeNull();
     await waitFor(() => expect(plus).toHaveFocus());
 
     // Always-visible close control in the sheet header.
     fireEvent.click(plus);
-    fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
-    expect(screen.queryByRole("menu", { name: "Возможности запроса" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("menu", { name: "Capabilities" })).toBeNull();
     await waitFor(() => expect(plus).toHaveFocus());
 
     // Escape keeps closing the model sheet and restores its trigger.
     const modelTrigger = screen.getByRole("button", { name: "GPT-5.2" });
     fireEvent.click(modelTrigger);
-    const modelLayer = screen.getByRole("dialog", { name: "Выбор модели" });
+    const modelLayer = screen.getByRole("dialog", { name: "Choose model" });
     fireEvent.keyDown(modelLayer, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "Выбор модели" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull();
     await waitFor(() => expect(modelTrigger).toHaveFocus());
   });
 
@@ -176,9 +176,9 @@ describe("Composer v2", () => {
       onToggleMcpServer: onToggleMcp,
       selectedKnowledgeBaseIds: ["kb-finance", "missing-base"]
     })} />);
-    const reopen = () => fireEvent.click(screen.getByRole("button", { name: "Возможности" }));
+    const reopen = () => fireEvent.click(screen.getByRole("button", { name: "Capabilities" }));
     const menuClosed = () =>
-      expect(screen.queryByRole("menu", { name: "Возможности запроса" })).toBeNull();
+      expect(screen.queryByRole("menu", { name: "Capabilities" })).toBeNull();
 
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Research Search/ }));
     expect(onSearch).toHaveBeenCalledWith(["web-primary", "research-search"]);
@@ -190,7 +190,7 @@ describe("Composer v2", () => {
     menuClosed();
 
     reopen();
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Недоступная база/ }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Unavailable knowledge base/ }));
     expect(onKnowledge).toHaveBeenCalledWith(["kb-finance"]);
     menuClosed();
 
@@ -210,12 +210,12 @@ describe("Composer v2", () => {
       onOpenAssistantPicker
     })} />);
 
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Использовать Assistant/ }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Use an Assistant/ }));
     expect(onOpenAssistantPicker).toHaveBeenCalledOnce();
     expect(screen.getByTestId("composer-assistant-removed-notice")).toHaveTextContent(
-      "действуют ваши ручные настройки"
+      "manual settings now apply"
     );
-    fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(onDismiss).toHaveBeenCalledOnce();
   });
 
@@ -236,8 +236,8 @@ describe("Composer v2", () => {
     expect(screen.getByRole("button", { name: "GPT-5.2" })).toBeDisabled();
     const searchRows = screen.getAllByRole("menuitemcheckbox", { name: /Web Search/ });
     expect(searchRows[0]).toBeDisabled();
-    expect(screen.getAllByText("Управляется Assistant").length).toBeGreaterThan(2);
-    fireEvent.click(screen.getByRole("button", { name: "Убрать" }));
+    expect(screen.getAllByText("Managed by the Assistant").length).toBeGreaterThan(2);
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(onRemoveAssistant).toHaveBeenCalledOnce();
     expect(onSelectSearch).not.toHaveBeenCalled();
   });
@@ -245,12 +245,12 @@ describe("Composer v2", () => {
   it("keeps loading, malformed, and zero-entitlement authority states explicit", () => {
     const retry = vi.fn();
     const { rerender } = render(<ComposerV2 {...props({ config: null, draft: "" })} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Загружаем доступные возможности…");
-    expect(screen.getByRole("textbox", { name: "Сообщение" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Loading available capabilities…");
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
 
     rerender(<ComposerV2 {...props({ config: null, configError: true, draft: "", onRetryConfig: retry })} />);
-    expect(screen.getByRole("alert")).toHaveTextContent("Не удалось загрузить доступные возможности.");
-    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load available capabilities.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
 
     const empty: ComposerConfig = {
@@ -263,9 +263,9 @@ describe("Composer v2", () => {
     };
     rerender(<ComposerV2 {...props({ config: empty, draft: "" })} />);
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Нет доступных моделей. Обратитесь к администратору."
+      "No models available. Contact your administrator."
     );
-    expect(screen.getByRole("button", { name: "Отправить сообщение" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
   });
 
   it("never renders opaque provider, model, Knowledge, or MCP bindings", () => {
@@ -309,18 +309,18 @@ describe("Composer v2", () => {
 
     const option = screen.getByRole("option", { name: /^GPT-5\.2Reasoning/ });
     const tags = within(option).getByTitle(
-      "Reasoning · PDF и документы · Изображения · Web search · Инструменты · Streaming"
+      "Reasoning · PDF and documents · Images · Web search · Tools · Streaming"
     );
     expect(tags).toHaveTextContent("+3");
     expect(within(option).queryByText("Web search")).toBeNull();
 
-    expect(screen.getByText("Действует со следующего сообщения.")).toBeVisible();
+    expect(screen.getByText("Applies to your next message.")).toBeVisible();
     expect(screen.queryByText(/Каталог отфильтрован/)).toBeNull();
 
     const makeDefault = screen.getByRole("button", {
-      name: "Сделать GPT-5.2 mini моделью по умолчанию"
+      name: "Make GPT-5.2 mini your default model"
     });
-    expect(makeDefault).toHaveTextContent("Сделать по умолчанию");
+    expect(makeDefault).toHaveTextContent("Make default");
     expect(makeDefault).toBeVisible();
   });
 
@@ -334,13 +334,13 @@ describe("Composer v2", () => {
     });
     const pastedFile = new File(["pdf"], "brief.pdf", { type: "application/pdf" });
 
-    fireEvent.change(screen.getByLabelText("Прикрепить файлы"), {
+    fireEvent.change(screen.getByLabelText("Attach files"), {
       target: { files: [pickerFile] }
     });
     fireEvent.drop(screen.getByTestId("composer-v2-surface"), {
       dataTransfer: { dropEffect: "copy", files: [droppedFile], types: ["Files"] }
     });
-    fireEvent.paste(screen.getByRole("textbox", { name: "Сообщение" }), {
+    fireEvent.paste(screen.getByRole("textbox", { name: "Message" }), {
       clipboardData: { files: [pastedFile] }
     });
 
@@ -364,10 +364,10 @@ describe("Composer v2", () => {
       onSend
     })} />);
 
-    expect(screen.getByRole("textbox", { name: "Сообщение" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Отправить сообщение" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Отправить сообщение" }))
-      .toHaveAccessibleDescription(/Повторите обработку или удалите файл/);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message" }))
+      .toHaveAccessibleDescription(/Retry processing or remove/);
 
     rerender(<ComposerV2 {...props({
       attachmentItems: [{ fileName: "sales.csv", id: "ready", status: "ready" }],
@@ -375,7 +375,7 @@ describe("Composer v2", () => {
       onRemoveAttachment: vi.fn(),
       onSend
     })} />);
-    fireEvent.click(screen.getByRole("button", { name: "Отправить сообщение" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     expect(onSend).toHaveBeenCalledOnce();
   });
 
@@ -407,7 +407,7 @@ describe("Composer v2", () => {
       onUploadFiles
     })} />);
 
-    fireEvent.change(screen.getByLabelText("Прикрепить файлы"), {
+    fireEvent.change(screen.getByLabelText("Attach files"), {
       target: { files: [new File(["new"], "new.txt", { type: "text/plain" })] }
     });
 

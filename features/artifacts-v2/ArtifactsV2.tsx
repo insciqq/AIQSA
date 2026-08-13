@@ -35,16 +35,16 @@ function artifactIcon(format: GeneratedArtifactProjection["format"]): UiV2IconNa
 }
 
 function lifecycleLabel(kind: GeneratedArtifactEventKind): string {
-  if (kind === "generated_file_detected") return "Создаю файл";
-  if (kind === "generated_file_validating") return "Проверяю файл";
-  if (kind === "generated_file_rendering") return "Рендерю превью";
-  if (kind === "generated_file_ready") return "Готово";
-  return "Не удалось";
+  if (kind === "generated_file_detected") return "Creating file";
+  if (kind === "generated_file_validating") return "Validating file";
+  if (kind === "generated_file_rendering") return "Rendering preview";
+  if (kind === "generated_file_ready") return "Ready";
+  return "Failed";
 }
 
 function ArtifactLifecycleV2({ artifact }: { artifact: GeneratedArtifactProjection }) {
   return (
-    <ol aria-label="Этапы создания файла" className="v2-artifact-lifecycle">
+    <ol aria-label="File generation stages" className="v2-artifact-lifecycle">
       {artifact.events.map((event) => (
         <li data-state={event.state} key={event.kind}>
           <span aria-hidden="true" />
@@ -77,14 +77,14 @@ export function GeneratedArtifactCardV2({
     return (
       <article
         aria-busy="true"
-        aria-label={`Создаётся файл ${artifact.name}`}
+        aria-label={`Generating file ${artifact.name}`}
         className="v2-artifact-card"
         data-state="generating"
       >
         <span className="v2-artifact-icon"><span className="v2-spinner" aria-hidden="true" /></span>
         <span className="v2-artifact-body">
           <strong>{artifact.name}</strong>
-          <span>{activeEvent ? `${lifecycleLabel(activeEvent.kind)}…` : "Создаю файл…"}</span>
+          <span>{activeEvent ? `${lifecycleLabel(activeEvent.kind)}…` : "Creating file…"}</span>
           <ArtifactLifecycleV2 artifact={artifact} />
         </span>
       </article>
@@ -94,14 +94,14 @@ export function GeneratedArtifactCardV2({
   if (artifact.status === "cancelled") {
     return (
       <article
-        aria-label={`Создание файла ${artifact.name} отменено`}
+        aria-label={`File generation cancelled: ${artifact.name}`}
         className="v2-artifact-card"
         data-state="cancelled"
       >
         <span className="v2-artifact-icon"><UiV2Icon name={artifactIcon(artifact.format)} /></span>
         <span className="v2-artifact-body">
           <strong>{artifact.name}</strong>
-          <span>Создание файла отменено</span>
+          <span>File generation cancelled</span>
         </span>
       </article>
     );
@@ -110,19 +110,19 @@ export function GeneratedArtifactCardV2({
   if (artifact.status === "failed") {
     return (
       <article
-        aria-label={`Не удалось создать файл ${artifact.name}`}
+        aria-label={`Could not generate file ${artifact.name}`}
         className="v2-artifact-card"
         data-state="failed"
       >
         <span className="v2-artifact-icon"><UiV2Icon name={artifactIcon(artifact.format)} /></span>
         <span className="v2-artifact-body">
-          <strong>Не удалось создать корректный {artifactFormatLabel(artifact.format)}</strong>
+          <strong>Could not produce a valid {artifactFormatLabel(artifact.format)}</strong>
           <span className="v2-artifact-failure" role="alert">{artifact.validationFailure}</span>
           <ArtifactLifecycleV2 artifact={artifact} />
         </span>
         <span className="v2-artifact-actions">
-          {onDetails ? <UiV2Button onClick={() => onDetails(artifact)}>Подробнее</UiV2Button> : null}
-          {onRetry ? <UiV2Button onClick={() => onRetry(artifact)}>Попробовать снова</UiV2Button> : null}
+          {onDetails ? <UiV2Button onClick={() => onDetails(artifact)}>Details</UiV2Button> : null}
+          {onRetry ? <UiV2Button onClick={() => onRetry(artifact)}>Try again</UiV2Button> : null}
         </span>
       </article>
     );
@@ -130,11 +130,11 @@ export function GeneratedArtifactCardV2({
 
   if (!version) {
     return (
-      <article aria-label={`Файл ${artifact.name} недоступен`} className="v2-artifact-card" data-state="failed">
+      <article aria-label={`File ${artifact.name} unavailable`} className="v2-artifact-card" data-state="failed">
         <span className="v2-artifact-icon"><UiV2Icon name={artifactIcon(artifact.format)} /></span>
         <span className="v2-artifact-body">
           <strong>{artifact.name}</strong>
-          <span className="v2-artifact-failure" role="alert">Точная версия файла недоступна.</span>
+          <span className="v2-artifact-failure" role="alert">The exact file version is unavailable.</span>
         </span>
       </article>
     );
@@ -143,7 +143,7 @@ export function GeneratedArtifactCardV2({
   const previewFailed = version.preview.status === "failed";
   const previewReady = version.preview.status === "ready";
   return (
-    <article aria-label={`Файл ${artifact.name}`} className="v2-artifact-card" data-state="ready">
+    <article aria-label={`File ${artifact.name}`} className="v2-artifact-card" data-state="ready">
       <span className="v2-artifact-icon"><UiV2Icon name={artifactIcon(artifact.format)} /></span>
       <span className="v2-artifact-body">
         <span className="v2-artifact-name-row">
@@ -154,23 +154,23 @@ export function GeneratedArtifactCardV2({
           {artifactFormatLabel(version.format)} · {version.structuralSummary} · {artifactByteSizeLabel(version.byteSize)}
         </span>
         {previewFailed ? (
-          <span className="v2-artifact-preview-failed">Превью недоступно</span>
+          <span className="v2-artifact-preview-failed">Preview unavailable</span>
         ) : version.preview.status === "rendering" || version.preview.status === "pending" ? (
-          <span>Превью готовится…</span>
+          <span>Preparing preview…</span>
         ) : null}
       </span>
       <span className="v2-artifact-actions">
         {previewReady && onPreview ? (
-          <UiV2Button onClick={() => onPreview(artifact, version)}>Превью</UiV2Button>
+          <UiV2Button onClick={() => onPreview(artifact, version)}>Preview</UiV2Button>
         ) : null}
         {version.downloadAvailable && onDownload ? (
           <UiV2Button icon="download" onClick={() => onDownload(artifact, version)}>
-            Скачать
+            Download
           </UiV2Button>
         ) : null}
         {version.useInNextMessageAvailable && onUseInNextMessage ? (
           <UiV2Button onClick={() => onUseInNextMessage(artifact, version)}>
-            Использовать в следующем сообщении
+            Use in next message
           </UiV2Button>
         ) : null}
       </span>
@@ -190,7 +190,7 @@ export function GeneratedArtifactStackV2({
   onUseInNextMessage?: ArtifactAction;
 }>) {
   return (
-    <section aria-label="Созданные файлы" className="v2-artifact-stack" data-testid="artifact-stack-v2">
+    <section aria-label="Generated files" className="v2-artifact-stack" data-testid="artifact-stack-v2">
       {artifacts.map((artifact) => (
         <GeneratedArtifactCardV2 artifact={artifact} key={artifact.id} {...actions} />
       ))}
@@ -203,7 +203,7 @@ function TablePreview({ preview }: { preview: GeneratedArtifactTablePreview }) {
   const selectedTab = preview.tabs.find((tab) => tab.label === activeTab) ?? preview.tabs[0];
   return (
     <div className="v2-artifact-table-preview">
-      <div aria-label="Листы книги" className="v2-artifact-tabs" role="tablist">
+      <div aria-label="Workbook sheets" className="v2-artifact-tabs" role="tablist">
         {preview.tabs.map((tab) => (
           <button
             aria-selected={tab.label === selectedTab?.label}
@@ -235,7 +235,7 @@ function TablePreview({ preview }: { preview: GeneratedArtifactTablePreview }) {
           </button>
         ))}
       </div>
-      <div aria-label="Предпросмотр таблицы" className="v2-artifact-table-scroll" role="region" tabIndex={0}>
+      <div aria-label="Table preview" className="v2-artifact-table-scroll" role="region" tabIndex={0}>
         <table>
           <thead><tr>{selectedTab?.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
           <tbody>
@@ -254,7 +254,7 @@ function TablePreview({ preview }: { preview: GeneratedArtifactTablePreview }) {
 function PagePreview({ preview }: { preview: GeneratedArtifactPagePreview }) {
   return (
     <div className="v2-artifact-page-preview">
-      <span>{preview.kind === "slides" ? `Слайд ${preview.activePage}` : `Страница ${preview.activePage}`} из {preview.pageCount}</span>
+      <span>{preview.kind === "slides" ? `Slide ${preview.activePage}` : `Page ${preview.activePage}`} of {preview.pageCount}</span>
       <div>
         <strong>{preview.title}</strong>
         {preview.lines.map((line) => <p key={line}>{line}</p>)}
@@ -267,8 +267,8 @@ function PreviewBody({ version }: { version: GeneratedArtifactVersion }) {
   if (version.preview.status !== "ready") {
     return (
       <div className="v2-artifact-preview-unavailable" role="status">
-        <strong>Превью недоступно</strong>
-        <p>{version.preview.status === "failed" ? version.preview.reason : "Превью ещё готовится."}</p>
+        <strong>Preview unavailable</strong>
+        <p>{version.preview.status === "failed" ? version.preview.reason : "The preview is still being prepared."}</p>
       </div>
     );
   }
@@ -307,7 +307,7 @@ export function ArtifactPreviewDrawerV2({
       role="presentation"
     >
       <aside
-        aria-label={`Предпросмотр файла ${artifact.name}`}
+        aria-label={`File preview: ${artifact.name}`}
         aria-modal="true"
         className="v2-artifact-preview-drawer"
         onKeyDown={onDialogKeyDown}
@@ -316,7 +316,7 @@ export function ArtifactPreviewDrawerV2({
       >
         <header className="v2-artifact-preview-header">
           <span>
-            <small>Предпросмотр файла</small>
+            <small>File preview</small>
             <h2>{artifact.name}</h2>
             {selectedVersion ? (
               <span>{artifactFormatLabel(selectedVersion.format)} · {artifactVersionLabel(selectedVersion)}</span>
@@ -325,29 +325,29 @@ export function ArtifactPreviewDrawerV2({
           <span className="v2-artifact-preview-header-actions">
             {selectedVersion?.downloadAvailable && onDownload ? (
               <UiV2Button icon="download" onClick={() => onDownload(artifact, selectedVersion)}>
-                Скачать
+                Download
               </UiV2Button>
             ) : null}
             <UiV2IconButton
               icon="close"
-              label="Закрыть предпросмотр"
+              label="Close preview"
               onClick={onClose}
               ref={closeRef}
             />
           </span>
         </header>
         <div className="v2-artifact-preview-layout">
-          <section aria-label="Содержимое предпросмотра" className="v2-artifact-preview-canvas">
+          <section aria-label="Preview content" className="v2-artifact-preview-canvas">
             {selectedVersion ? <PreviewBody version={selectedVersion} /> : (
               <div className="v2-artifact-preview-unavailable" role="alert">
-                <strong>Точная версия недоступна</strong>
+                <strong>The exact version is unavailable</strong>
               </div>
             )}
           </section>
-          <aside aria-label="Версии и происхождение файла" className="v2-artifact-lineage">
+          <aside aria-label="File versions and lineage" className="v2-artifact-lineage">
             <header>
-              <small>Неизменяемая история</small>
-              <h3>Версии</h3>
+              <small>Immutable history</small>
+              <h3>Versions</h3>
             </header>
             <ol>
               {artifact.versions.map((version) => (
@@ -360,8 +360,8 @@ export function ArtifactPreviewDrawerV2({
                     <span>{version.sourceMessageLabel}</span>
                     <small>
                       {version.parentVersionNumber
-                        ? `Создано из v${version.parentVersionNumber} · `
-                        : "Исходная версия · "}
+                        ? `Created from v${version.parentVersionNumber} · `
+                        : "Original version · "}
                       {version.createdAtLabel}
                     </small>
                   </button>

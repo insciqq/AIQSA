@@ -21,8 +21,8 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
   return (
     <main className="v2-settings-fixture">
       <h1>Quarterly product brief</h1>
-      <p>Настройки — временный слой поверх беседы, а не отдельный dashboard.</p>
-      <UiV2Button onClick={() => setOpen(true)}>Открыть настройки</UiV2Button>
+      <p>Settings is a temporary layer over the conversation, not a separate dashboard.</p>
+      <UiV2Button onClick={() => setOpen(true)}>Open settings</UiV2Button>
       {open ? (
         <SettingsV2
           dirty={dirty}
@@ -35,7 +35,7 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
               ]} />
               <div className="v2-settings-fixture-dirty">
                 <UiV2Button onClick={() => setDirty((value) => !value)}>
-                  {dirty ? "Сохранить fixture" : "Изменить личное поле"}
+                  {dirty ? "Save fixture" : "Edit personal field"}
                 </UiV2Button>
               </div>
             </>
