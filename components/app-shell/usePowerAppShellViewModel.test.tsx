@@ -1,11 +1,10 @@
-import { render, renderHook } from "@testing-library/react";
-import { memo } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { renderHook } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 import { usePowerAppShellViewModel } from "./usePowerAppShellViewModel";
 import { formatComposerContextStats } from "./composerContextStats";
 import { estimateApproxTokens } from "@/lib/domain/contextBudget";
 import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
-import type { Catalog, ChatGroup, ChatSummary, FolderSummary, ThreadMessage } from "./types";
+import type { Catalog, ChatSummary, ThreadMessage } from "./types";
 
 function chat(id: string): ChatSummary {
   return {
@@ -29,8 +28,6 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
       activeThreadUsageStats: null,
       attachments: [],
       catalog: null,
-      chatContentMatchIds: new Set(),
-      chatQuery: "",
       chats: [chat("chat-a")],
       draft: "",
       folders: [],
@@ -42,7 +39,6 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
       selectedAssistantPromptCharacterCount: null,
       selectedModelId: "gpt-5.5",
       selectedProvider: "openai",
-      selectedSearchStrategy: "search-disabled",
       visibleMessages: [],
       ...overrides
     })
@@ -69,70 +65,6 @@ const emptyCatalog: Catalog = {
 };
 
 describe("usePowerAppShellViewModel", () => {
-  it("keeps summary identity and sidebar memoization stable for thread-only changes", () => {
-    const onRender = vi.fn();
-    const contentMatchIds = new Set<string>();
-    const folders: FolderSummary[] = [];
-    const SidebarProbe = memo(function SidebarProbe({ chatGroups }: { chatGroups: ChatGroup[] }) {
-      const firstSummary = chatGroups[0]?.chats[0] ?? null;
-      onRender(firstSummary);
-      return <span>{firstSummary?.title}</span>;
-    });
-    function Harness({ chats, visibleMessages }: { chats: ChatSummary[]; visibleMessages: ThreadMessage[] }) {
-      const viewModel = usePowerAppShellViewModel({
-        activeChatId: "chat-a",
-        activeChatStreaming: false,
-        activeThreadUsageStats: null,
-        attachments: [],
-        catalog: null,
-        chatContentMatchIds: contentMatchIds,
-        chatQuery: "",
-        chats,
-        draft: "",
-        folders,
-        maxOutputTokens: "128000",
-        pendingChatFolderId: null,
-        projectSettingsFolderId: null,
-        renderActiveLeafId: null,
-        runSurface: { events: [], lastRun: null, runsById: {} },
-        selectedAssistantPromptCharacterCount: null,
-        selectedModelId: "gpt-5.5",
-        selectedProvider: "openai",
-        selectedSearchStrategy: "search-disabled",
-        visibleMessages
-      });
-
-      return <SidebarProbe chatGroups={viewModel.chatGroups} />;
-    }
-
-    const initialChat = chat("chat-a");
-    const stableChats = [initialChat];
-    const view = render(<Harness chats={stableChats} visibleMessages={[]} />);
-    const initialRenderCount = onRender.mock.calls.length;
-    expect(onRender).toHaveBeenLastCalledWith(initialChat);
-    view.rerender(
-      <Harness
-        chats={stableChats}
-        visibleMessages={[
-          {
-            content: "x".repeat(2_000),
-            id: "assistant-1",
-            parentMessageId: null,
-            role: "assistant",
-            status: "streaming"
-          }
-        ]}
-      />
-    );
-
-    expect(onRender).toHaveBeenCalledTimes(initialRenderCount);
-
-    const renamedChat = { ...initialChat, title: "Renamed chat" };
-    view.rerender(<Harness chats={[renamedChat]} visibleMessages={[]} />);
-    expect(onRender).toHaveBeenCalledTimes(initialRenderCount + 1);
-    expect(onRender).toHaveBeenLastCalledWith(renamedChat);
-  });
-
   it("does not mark a blank workspace as streaming while another chat runs", () => {
     const { result } = renderViewModel({
       activeChatId: null,
@@ -142,17 +74,11 @@ describe("usePowerAppShellViewModel", () => {
     expect(result.current.activeChatStreaming).toBe(false);
   });
 
-  it("keeps the command-palette chat inventory independent from sidebar filtering", () => {
+  it("keeps the complete command-palette chat inventory", () => {
     const alpha = { ...chat("chat-alpha"), title: "Alpha notes" };
     const beta = { ...chat("chat-beta"), title: "Beta plan" };
-    const { result } = renderViewModel({
-      chatQuery: "alpha",
-      chats: [alpha, beta]
-    });
+    const { result } = renderViewModel({ chats: [alpha, beta] });
 
-    expect(result.current.chatGroups.flatMap((group) => group.chats.map((item) => item.id))).toEqual([
-      "chat-alpha"
-    ]);
     expect(
       result.current.commandChatGroups.flatMap((group) => group.chats.map((item) => item.id))
     ).toEqual(expect.arrayContaining(["chat-alpha", "chat-beta"]));
@@ -194,24 +120,6 @@ describe("usePowerAppShellViewModel", () => {
     });
 
     expect(result.current.threadReadingAnchorKey).toBe("user-current");
-  });
-
-  it("derives Details errors only from the selected chat run surface", () => {
-    const idleB = renderViewModel({
-      activeChatId: "chat-b",
-      chats: [chat("chat-a"), chat("chat-b")],
-      runSurface: { events: [], lastRun: null, runsById: {} }
-    });
-    expect(idleB.result.current.currentErrorText).toBeNull();
-
-    const failedA = renderViewModel({
-      runSurface: {
-        events: [{ data: { message: "A failed" }, type: "error" }],
-        lastRun: null,
-        runsById: {}
-      }
-    });
-    expect(failedA.result.current.currentErrorText).toContain("A failed");
   });
 
   it("shows an entitlement hint when the current user has no catalog models", () => {

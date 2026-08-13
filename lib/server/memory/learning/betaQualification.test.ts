@@ -1,11 +1,4 @@
-import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  canonicalMemoryQualificationPayload,
-  type MemoryCapabilityQualification,
-  type MemoryQualificationRequirement
-} from "../../../evaluation/memory/qualification";
-import { memoryVectorSpaceFingerprint } from "../execution/policy";
 import type {
   ResolvedMemoryExecutionTarget,
   ResolvedMemoryUtilityPolicy
@@ -13,24 +6,20 @@ import type {
 import type { MemoryExecutionRole } from "../execution/roles";
 import {
   MEMORY_AUTOMATIC_LEARNING_QUALIFIED_ROLES,
-  memoryAutomaticLearningIsQualified,
-  memoryAutomaticLearningVersions
+  memoryAutomaticLearningIsQualified
 } from "./betaQualification";
 
 const NOW = new Date("2026-08-11T12:00:00.000Z");
-const HMAC_KEY = Buffer.from("memory-learning-capability-test-key", "utf8");
 
 function target(kind: "ANSWER" | "EMBEDDING"): ResolvedMemoryExecutionTarget {
   const embedding = kind === "EMBEDDING";
   const providerModelId = embedding ? "embedding-model" : "answer-model";
   return {
     authority: {
-      connectionId: embedding ? "embedding-connection" : "answer-connection",
+      connectionId: `${kind.toLowerCase()}-connection`,
       connectionVersion: 2,
-      credentialId: embedding ? "embedding-credential" : "answer-credential",
-      credentialVersionId: embedding
-        ? "embedding-credential-version"
-        : "answer-credential-version",
+      credentialId: `${kind.toLowerCase()}-credential`,
+      credentialVersionId: `${kind.toLowerCase()}-credential-version`,
       modelVersion: 3,
       providerModelId
     },
@@ -52,12 +41,10 @@ function target(kind: "ANSWER" | "EMBEDDING"): ResolvedMemoryExecutionTarget {
           : "https://answer.example.test/v1",
         responseTimeoutMs: 30_000
       },
-      connectionDisplayName: embedding ? "Embedding" : "Answer",
-      connectionId: embedding ? "embedding-connection" : "answer-connection",
-      credentialId: embedding ? "embedding-credential" : "answer-credential",
-      credentialVersionId: embedding
-        ? "embedding-credential-version"
-        : "answer-credential-version",
+      connectionDisplayName: kind,
+      connectionId: `${kind.toLowerCase()}-connection`,
+      credentialId: `${kind.toLowerCase()}-credential`,
+      credentialVersionId: `${kind.toLowerCase()}-credential-version`,
       model: embedding
         ? {
             adapterKind: "openai_embeddings_compatible",
@@ -78,7 +65,7 @@ function target(kind: "ANSWER" | "EMBEDDING"): ResolvedMemoryExecutionTarget {
               targetDimension: 4_096
             },
             modelClass: "embedding",
-            upstreamModelId: "qualified-embedding"
+            upstreamModelId: "custom-embedding"
           }
         : {
             adapterKind: "openai_responses_compatible",
@@ -93,9 +80,9 @@ function target(kind: "ANSWER" | "EMBEDDING"): ResolvedMemoryExecutionTarget {
             },
             defaultParams: {},
             modelClass: "answer",
-            upstreamModelId: "qualified-answer"
+            upstreamModelId: "custom-answer"
           },
-      modelDisplayName: embedding ? "Embedding" : "Answer",
+      modelDisplayName: kind,
       providerFamily: "openai_compatible",
       providerModelId,
       version: 1
@@ -123,129 +110,73 @@ function policy(): ResolvedMemoryUtilityPolicy {
   };
 }
 
-function requirement(
-  role: (typeof MEMORY_AUTOMATIC_LEARNING_QUALIFIED_ROLES)[number],
-  executionTarget: ResolvedMemoryExecutionTarget,
-  language: "EN" | "RU" = "RU"
-): MemoryQualificationRequirement {
-  return {
-    ...executionTarget.qualificationFingerprints,
-    corpusHash: "e".repeat(64),
-    corpusVersion: "memory-learning-corpus-v2",
-    language,
-    ...memoryAutomaticLearningVersions(role),
-    role,
-    scorerVersion: "memory-evaluation-scorer-v1",
-    suiteVersion: "memory-automatic-learning-beta-v2",
-    vectorSpaceFingerprint: memoryVectorSpaceFingerprint(executionTarget)
-  };
-}
-
-function signed(
-  key: MemoryQualificationRequirement,
-  index: number
-): MemoryCapabilityQualification {
-  const unsigned: MemoryCapabilityQualification = {
-    approval: {
-      approvalId: "memory-learning-approval-v1",
-      approved: true,
-      approvedAt: "2026-08-11T00:00:00.000Z",
-      approvedBy: "memory-test-operator",
-      expiresAt: "2026-09-11T00:00:00.000Z",
-      signature: "pending"
-    },
-    evidenceDigest: "f".repeat(64),
-    key,
-    qualificationId: `memory-learning-${key.role.toLowerCase()}-${index}`
-  };
-  return {
-    ...unsigned,
-    approval: {
-      ...unsigned.approval,
-      signature: createHmac("sha256", HMAC_KEY)
-        .update(canonicalMemoryQualificationPayload(unsigned), "utf8")
-        .digest("hex")
-    }
-  };
-}
-
-function authority(currentPolicy: ResolvedMemoryUtilityPolicy) {
-  const registry = MEMORY_AUTOMATIC_LEARNING_QUALIFIED_ROLES.map((role, index) => {
-    const executionTarget = currentPolicy.targets.get(role)!;
-    return signed(requirement(role, executionTarget), index);
-  });
-  return {
-    corpusHash: "e".repeat(64),
-    corpusVersion: "memory-learning-corpus-v2",
-    registry,
-    scorerVersion: "memory-evaluation-scorer-v1",
-    suiteVersion: "memory-automatic-learning-beta-v2",
-    verifySignature: (payload: string, signature: string) =>
-      createHmac("sha256", HMAC_KEY).update(payload, "utf8").digest("hex") === signature
-  } as const;
-}
-
-describe("automatic Memory learning beta qualification", () => {
-  it("advertises one capability only when every effective role is exactly qualified", () => {
+describe("automatic Memory runtime compatibility", () => {
+  it("ignores signed registries, language gates, and expiry dates", () => {
     const currentPolicy = policy();
-    const complete = authority(currentPolicy);
+    const authority = {
+      registry: [],
+      verifySignature: () => false
+    };
     expect(memoryAutomaticLearningIsQualified({
-      authority: complete,
+      authority,
       language: "RU",
       now: NOW,
       policy: currentPolicy
     })).toBe(true);
+    expect(memoryAutomaticLearningIsQualified({
+      authority,
+      language: "EN",
+      now: new Date("2099-01-01T00:00:00.000Z"),
+      policy: currentPolicy
+    })).toBe(true);
 
-    for (const role of MEMORY_AUTOMATIC_LEARNING_QUALIFIED_ROLES) {
-      expect(memoryAutomaticLearningIsQualified({
-        authority: {
-          ...complete,
-          registry: complete.registry.filter(({ key }) => key.role !== role)
-        },
-        language: "RU",
-        now: NOW,
-        policy: currentPolicy
-      }), role).toBe(false);
-    }
+    const changedFingerprints = new Map(currentPolicy.targets);
+    changedFingerprints.set("MEMORY_FACT_EXTRACT", {
+      ...changedFingerprints.get("MEMORY_FACT_EXTRACT")!,
+      qualificationFingerprints: {
+        ...changedFingerprints.get("MEMORY_FACT_EXTRACT")!.qualificationFingerprints,
+        modelFingerprint: "0".repeat(64)
+      }
+    });
+    expect(memoryAutomaticLearningIsQualified({
+      authority,
+      language: "RU",
+      now: NOW,
+      policy: { ...currentPolicy, targets: changedFingerprints }
+    })).toBe(true);
   });
 
-  it("fails closed for a missing target, stale deployment, language gap, or expiry", () => {
+  it("fails only when the resolved topology is missing or transport-incompatible", () => {
     const currentPolicy = policy();
-    const complete = authority(currentPolicy);
     const missingTarget = new Map(currentPolicy.targets);
-    missingTarget.delete("MEMORY_VERIFY");
+    missingTarget.delete("MEMORY_FACT_EXTRACT");
     expect(memoryAutomaticLearningIsQualified({
-      authority: complete,
+      authority: {},
       language: "RU",
       now: NOW,
       policy: { ...currentPolicy, targets: missingTarget }
     })).toBe(false);
 
-    const staleTargets = new Map(currentPolicy.targets);
-    staleTargets.set("MEMORY_FACT_EXTRACT", {
-      ...staleTargets.get("MEMORY_FACT_EXTRACT")!,
-      qualificationFingerprints: {
-        ...staleTargets.get("MEMORY_FACT_EXTRACT")!.qualificationFingerprints,
-        modelFingerprint: "0".repeat(64)
+    const incompatibleTargets = new Map(currentPolicy.targets);
+    const incompatible = incompatibleTargets.get("MEMORY_FACT_EXTRACT")!;
+    incompatibleTargets.set("MEMORY_FACT_EXTRACT", {
+      ...incompatible,
+      snapshot: {
+        ...incompatible.snapshot,
+        model: {
+          ...incompatible.snapshot.model,
+          capabilities: {
+            ...incompatible.snapshot.model.capabilities,
+            toolCalling: false
+          }
+        }
       }
     });
     expect(memoryAutomaticLearningIsQualified({
-      authority: complete,
+      authority: {},
       language: "RU",
       now: NOW,
-      policy: { ...currentPolicy, targets: staleTargets }
-    })).toBe(false);
-    expect(memoryAutomaticLearningIsQualified({
-      authority: complete,
-      language: "EN",
-      now: NOW,
-      policy: currentPolicy
-    })).toBe(false);
-    expect(memoryAutomaticLearningIsQualified({
-      authority: complete,
-      language: "RU",
-      now: new Date("2026-09-11T00:00:00.000Z"),
-      policy: currentPolicy
+      policy: { ...currentPolicy, targets: incompatibleTargets }
     })).toBe(false);
   });
 });

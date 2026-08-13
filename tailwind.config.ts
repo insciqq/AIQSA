@@ -1,42 +1,50 @@
 import type { Config } from "tailwindcss";
 
+function v2Color(variable: string): string {
+  return `color-mix(in srgb, var(${variable}) calc(<alpha-value> * 100%), transparent)`;
+}
+
 const config = {
-  content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}"],
+  content: [
+    "./app/**/*.{ts,tsx}",
+    "./components/**/*.{ts,tsx}",
+    "./features/**/*.{ts,tsx}"
+  ],
   theme: {
     extend: {
       colors: {
-        "app-canvas": "rgb(var(--app-canvas) / <alpha-value>)",
-        "workspace-rail": "rgb(var(--workspace-rail) / <alpha-value>)",
-        "answer-paper": "rgb(var(--answer-paper) / <alpha-value>)",
-        "composer-surface": "rgb(var(--composer-surface) / <alpha-value>)",
+        "app-canvas": v2Color("--v2-color-canvas"),
+        "workspace-rail": v2Color("--v2-color-sidebar"),
+        "answer-paper": v2Color("--v2-color-surface"),
+        "composer-surface": v2Color("--v2-color-surface"),
         control: {
-          boundary: "rgb(var(--ink-muted) / 0.85)",
-          surface: "rgb(var(--control-surface) / <alpha-value>)",
-          hover: "rgb(var(--control-hover) / <alpha-value>)",
-          pressed: "rgb(var(--control-pressed) / <alpha-value>)",
-          selected: "rgb(var(--control-selected) / <alpha-value>)"
+          boundary: v2Color("--v2-color-text3"),
+          surface: v2Color("--v2-color-surface2"),
+          hover: v2Color("--v2-color-hover"),
+          pressed: v2Color("--v2-color-active"),
+          selected: v2Color("--v2-color-accent-dim")
         },
-        focus: "rgb(var(--proof) / 0.78)",
-        "overlay-surface": "rgb(var(--overlay-surface) / <alpha-value>)",
+        focus: v2Color("--v2-color-accent"),
+        "overlay-surface": v2Color("--v2-color-surface"),
         trace: {
-          subtle: "rgb(var(--trace-subtle) / <alpha-value>)",
-          strong: "rgb(var(--trace-strong) / <alpha-value>)"
+          subtle: v2Color("--v2-color-border"),
+          strong: v2Color("--v2-color-border2")
         },
         ink: {
-          DEFAULT: "rgb(var(--ink) / <alpha-value>)",
-          secondary: "rgb(var(--ink-secondary) / <alpha-value>)",
-          muted: "rgb(var(--ink-muted) / <alpha-value>)",
-          disabled: "rgb(var(--ink-disabled) / <alpha-value>)"
+          DEFAULT: v2Color("--v2-color-text"),
+          secondary: v2Color("--v2-color-text2"),
+          muted: v2Color("--v2-color-text3"),
+          disabled: v2Color("--v2-color-text3")
         },
         proof: {
-          DEFAULT: "rgb(var(--proof) / <alpha-value>)",
-          hover: "rgb(var(--proof-hover) / <alpha-value>)",
-          contrast: "rgb(var(--proof-contrast) / <alpha-value>)"
+          DEFAULT: v2Color("--v2-color-accent"),
+          hover: v2Color("--v2-color-accent"),
+          contrast: v2Color("--v2-color-accent-ink")
         },
-        positive: "rgb(var(--positive) / <alpha-value>)",
-        caution: "rgb(var(--caution) / <alpha-value>)",
-        critical: "rgb(var(--critical) / <alpha-value>)",
-        scrim: "rgb(var(--scrim) / <alpha-value>)"
+        positive: v2Color("--v2-color-ok"),
+        caution: v2Color("--v2-color-warn"),
+        critical: v2Color("--v2-color-danger"),
+        scrim: v2Color("--v2-color-scrim")
       },
       fontFamily: {
         sans: [
@@ -90,8 +98,8 @@ const config = {
         reading: "46rem"
       },
       boxShadow: {
-        float: "var(--shadow-float)",
-        overlay: "var(--shadow-overlay)"
+        float: "var(--v2-shadow-float)",
+        overlay: "var(--v2-shadow-overlay)"
       }
     }
   },

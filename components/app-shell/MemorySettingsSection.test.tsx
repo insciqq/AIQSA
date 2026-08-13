@@ -158,7 +158,7 @@ describe("MemorySettingsSection", () => {
     expect(screen.getByRole("button", { name: "Manage Memories" })).toBeDisabled();
     fireEvent.click(screen.getByText("Advanced", { exact: true }));
     const capabilities = screen.getByText("Current capabilities").parentElement!;
-    expect(within(capabilities).getAllByText("Unavailable")).toHaveLength(4);
+    expect(within(capabilities).getAllByText("Unavailable")).toHaveLength(3);
   });
 
   it("shows passive lexical indexing progress in English over retained RU state", async () => {

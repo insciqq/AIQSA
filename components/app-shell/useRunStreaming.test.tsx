@@ -138,16 +138,46 @@ describe("run streaming", () => {
         failurePrefix: "send_failed",
         onMessageIds: vi.fn(),
         onRunId: vi.fn(),
-        response: new Response('event: message_reset\ndata: {"round":1}\n\n'),
+        response: new Response(
+          [
+            'event: message_reset\ndata: {"round":1}',
+            'event: done\ndata: {"runId":"run-a","status":"complete"}',
+            ""
+          ].join("\n\n")
+        ),
         tokenBuffer
       });
     });
 
     expect(selectThreadSnapshot(useThreadStore.getState(), chatA.id).messages[0]?.content).toBe("");
-    expect(selectRunSurface(useRunSurfaceStore.getState(), chatA.id).events.at(-1)).toEqual({
+    expect(selectRunSurface(useRunSurfaceStore.getState(), chatA.id).events.at(-2)).toEqual({
       data: { round: 1 },
       type: "message_reset"
     });
+  });
+
+  it("rejects an EOF without a terminal frame while retaining delivered tokens", async () => {
+    const push = vi.fn();
+    const flush = vi.fn();
+    const { result } = renderHook(() =>
+      useRunStreaming({ applyChatUpdate: vi.fn(() => false) })
+    );
+
+    await act(async () => {
+      await expect(
+        result.current.consumeRunStream({
+          chatId: "chat-a",
+          failurePrefix: "send_failed",
+          onMessageIds: vi.fn(),
+          onRunId: vi.fn(),
+          response: new Response('event: token\ndata: {"delta":"partial answer"}\n\n'),
+          tokenBuffer: { flush, push }
+        })
+      ).rejects.toThrow("stream_connection_lost");
+    });
+
+    expect(push).toHaveBeenCalledWith("partial answer");
+    expect(flush).toHaveBeenCalled();
   });
 
   it("keeps late events and one parse warning on the explicit inactive source chat", async () => {

@@ -6,7 +6,6 @@ import {
   loadMemory,
   loadMemoryDeletionStatus,
   loadMemoryEvidence,
-  loadMemoryProfile,
   memoryRequestId,
   MemoryApiError,
   memoryStatementHash,
@@ -29,8 +28,6 @@ import {
   type MemoryFactState,
   type MemoryLifecycleHistoryItem,
   type MemoryModality,
-  type MemoryProfileContributor,
-  type MemoryProfileResponse,
   type MemoryScopeSelection,
   type MemorySummary,
   type MemoryVersionHistoryItem
@@ -102,10 +99,6 @@ type MemoryManagerStore = {
   mutationState: MemoryManagerMutationState;
   nextCursor: string | null;
   notice: MemoryManagerNotice;
-  profileAccountId: string | null;
-  profileError: string | null;
-  profileLoadState: MemoryManagerLoadState;
-  profileResponse: MemoryProfileResponse | null;
   queryApplied: string;
   queryInput: string;
   screen: MemoryManagerScreen;
@@ -148,10 +141,6 @@ const initialState: Omit<MemoryManagerStore, "setDraft" | "setFactStateFilter" |
   mutationState: null,
   nextCursor: null,
   notice: null,
-  profileAccountId: null,
-  profileError: null,
-  profileLoadState: "idle",
-  profileResponse: null,
   queryApplied: "",
   queryInput: "",
   screen: "list",
@@ -180,7 +169,6 @@ export const useMemoryManagerStore = create<MemoryManagerStore>((set) => ({
 let listRequestGeneration = 0;
 let detailRequestGeneration = 0;
 let evidenceRequestGeneration = 0;
-let profileRequestGeneration = 0;
 const deletionStorageKey = "aiqsa:memory:explicit-deletion-id";
 
 function errorName(error: unknown): string {
@@ -302,44 +290,6 @@ export async function clearMemorySearch(): Promise<void> {
   await refreshMemoryList({ appliedQuery: "" });
 }
 
-export async function refreshMemoryProfile(accountId: string): Promise<void> {
-  const generation = ++profileRequestGeneration;
-  useMemoryManagerStore.setState({
-    profileAccountId: accountId,
-    profileError: null,
-    profileLoadState: "loading",
-    profileResponse: null
-  });
-  try {
-    const response = await loadMemoryProfile();
-    if (
-      generation !== profileRequestGeneration ||
-      useMemoryManagerStore.getState().profileAccountId !== accountId
-    ) return;
-    useMemoryManagerStore.setState({
-      profileError: null,
-      profileLoadState: "ready",
-      profileResponse: response
-    });
-  } catch (error) {
-    if (
-      generation !== profileRequestGeneration ||
-      useMemoryManagerStore.getState().profileAccountId !== accountId
-    ) return;
-    useMemoryManagerStore.setState({
-      profileError: errorName(error),
-      profileLoadState: "error",
-      profileResponse: null
-    });
-    throw error;
-  }
-}
-
-function refreshOpenMemoryProfile(): void {
-  const accountId = useMemoryManagerStore.getState().profileAccountId;
-  if (accountId) void refreshMemoryProfile(accountId).catch(() => undefined);
-}
-
 async function loadEvidence(memoryId: string, append = false): Promise<void> {
   const generation = ++evidenceRequestGeneration;
   const current = useMemoryManagerStore.getState();
@@ -441,7 +391,6 @@ export function showMemoryList(): void {
     screen: "list",
     versions: []
   });
-  refreshOpenMemoryProfile();
 }
 
 export function beginCreateMemory(): void {
@@ -874,54 +823,10 @@ export async function forgetCurrentMemory(): Promise<void> {
       screen: "list"
     }));
     void refreshMemoryList().catch(() => undefined);
-    refreshOpenMemoryProfile();
   } catch (error) {
     useMemoryManagerStore.setState({ mutationError: errorName(error), mutationState: null });
     if (error instanceof MemoryApiError && error.code === "memory_version_stale") {
       await openMemoryDetail(memory.id).catch(() => undefined);
-    }
-    throw error;
-  }
-}
-
-export async function forgetProfileMemory(
-  contributor: Pick<MemoryProfileContributor, "displayText" | "factId" | "factVersionId">
-): Promise<void> {
-  if (useMemoryManagerStore.getState().mutationState !== null) return;
-  useMemoryManagerStore.setState({ mutationError: null, mutationState: "forgetting" });
-  try {
-    const authorization = await authorizeMemoryMutation({
-      action: "FORGET",
-      expectedTargetVersionId: contributor.factVersionId,
-      targetFactId: contributor.factId
-    });
-    const response = await forgetMemory(contributor.factId, {
-      expectedVersionId: contributor.factVersionId,
-      mutationAuthorizationId: authorization.mutationAuthorizationId
-    });
-    useMemoryManagerStore.setState((state) => ({
-      activeMemory: state.activeMemory?.id === contributor.factId ? null : state.activeMemory,
-      lastForgetUndo: {
-        factId: contributor.factId,
-        statement: contributor.displayText,
-        undo: response.undo
-      },
-      memories: state.memories.filter((item) => item.id !== contributor.factId),
-      mutationError: null,
-      mutationState: null,
-      notice: "forgotten",
-      screen: "list"
-    }));
-    void refreshMemoryList().catch(() => undefined);
-    refreshOpenMemoryProfile();
-  } catch (error) {
-    useMemoryManagerStore.setState({ mutationError: errorName(error), mutationState: null });
-    if (error instanceof MemoryApiError && error.code === "memory_version_stale") {
-      const accountId = useMemoryManagerStore.getState().profileAccountId;
-      await Promise.allSettled([
-        refreshMemoryList(),
-        ...(accountId ? [refreshMemoryProfile(accountId)] : [])
-      ]);
     }
     throw error;
   }
@@ -952,7 +857,6 @@ export async function undoLastForgottenMemory(): Promise<void> {
       notice: "forget_restored"
     }));
     void refreshMemoryList().catch(() => undefined);
-    refreshOpenMemoryProfile();
   } catch (error) {
     useMemoryManagerStore.setState({
       mutationError: errorName(error),
@@ -1020,12 +924,7 @@ export async function refreshMemoryDeletionStatus(
       deletionStatus: status
     });
     if (status.state === "SUCCEEDED") {
-      const profileAccountId = useMemoryManagerStore.getState().profileAccountId;
-      await Promise.allSettled([
-        refreshMemorySettings(true),
-        refreshMemoryList(),
-        ...(profileAccountId ? [refreshMemoryProfile(profileAccountId)] : [])
-      ]);
+      await Promise.allSettled([refreshMemorySettings(true), refreshMemoryList()]);
     }
   } catch (error) {
     useMemoryManagerStore.setState({
@@ -1036,7 +935,7 @@ export async function refreshMemoryDeletionStatus(
   }
 }
 
-export async function openMemoryManager(accountId: string): Promise<void> {
+export async function openMemoryManager(_accountId: string): Promise<void> {
   const current = useMemoryManagerStore.getState();
   useMemoryManagerStore.setState({
     screen: current.draftDirty ? current.activeMemory ? "edit" : "create" : "list"
@@ -1045,25 +944,15 @@ export async function openMemoryManager(accountId: string): Promise<void> {
   if (useMemoryManagerStore.getState().listLoadState === "idle") {
     requests.push(refreshMemoryList());
   }
-  if (
-    current.profileAccountId !== accountId ||
-    current.profileLoadState === "error" ||
-    current.profileLoadState === "idle"
-  ) {
-    requests.push(refreshMemoryProfile(accountId));
-  }
   const deletionId = storedDeletionId();
   if (deletionId) requests.push(refreshMemoryDeletionStatus(deletionId));
   await Promise.allSettled(requests);
 }
 
-export function invalidateMemoryManagerData(accountId: string): void {
-  const current = useMemoryManagerStore.getState();
-  if (current.profileAccountId !== null && current.profileAccountId !== accountId) return;
+export function invalidateMemoryManagerData(_accountId: string): void {
   listRequestGeneration += 1;
   detailRequestGeneration += 1;
   evidenceRequestGeneration += 1;
-  profileRequestGeneration += 1;
   useMemoryManagerStore.setState({
     activeMemory: null,
     detailError: null,
@@ -1078,10 +967,6 @@ export function invalidateMemoryManagerData(accountId: string): void {
     listLoadState: "idle",
     memories: [],
     nextCursor: null,
-    profileAccountId: accountId,
-    profileError: null,
-    profileLoadState: "idle",
-    profileResponse: null,
     versions: []
   });
 }
@@ -1090,7 +975,6 @@ export function resetMemoryManagerStoreForTest(): void {
   listRequestGeneration += 1;
   detailRequestGeneration += 1;
   evidenceRequestGeneration += 1;
-  profileRequestGeneration += 1;
   if (typeof window !== "undefined") window.sessionStorage.removeItem(deletionStorageKey);
   useMemoryManagerStore.setState({
     ...initialState,

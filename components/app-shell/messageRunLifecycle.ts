@@ -6,7 +6,11 @@ import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { useThreadStore } from "@/components/app-shell/threadStore";
 import type { ThreadMessage } from "@/components/app-shell/types";
-import type { RunStreamMessageIds, RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
+import type {
+  RunStreamMessageIds,
+  RunStreamTerminalStatus,
+  RunStreamTokenBuffer
+} from "@/components/app-shell/useRunStream";
 
 type MutableRef<T> = { current: T };
 
@@ -17,7 +21,12 @@ export type ConsumeMessageRunStream = (input: {
   onRunId(runId: string): void;
   response: Response;
   tokenBuffer: RunStreamTokenBuffer;
-}) => Promise<{ failed: boolean; receivedChatUpdate: boolean; runId: string | null }>;
+}) => Promise<{
+  failed: boolean;
+  receivedChatUpdate: boolean;
+  runId: string | null;
+  terminalStatus: RunStreamTerminalStatus;
+}>;
 
 type ReconcileMessageIdsInput = {
   assistantMessageId: string;
@@ -77,33 +86,37 @@ function recordStreamFailure(input: {
   assistantMessageId: string;
   cancelled: boolean;
   chatId: string;
+  kind: "ambiguous" | "rejected";
   message: string;
   runId: string | null;
 }) {
-  useRunSurfaceStore.getState().appendEvent(
-    input.chatId,
-    input.cancelled
-      ? {
-          data: {
-            runId: input.runId,
-            status: "cancelled"
-          },
-          type: "done"
-        }
-      : {
-          data: {
-            message: input.message
-          },
-          type: "error"
-        }
-  );
+  if (input.cancelled) {
+    useRunSurfaceStore.getState().appendEvent(input.chatId, {
+      data: {
+        runId: input.runId,
+        status: "cancelled"
+      },
+      type: "done"
+    });
+  } else if (input.kind === "rejected") {
+    useRunSurfaceStore.getState().appendEvent(input.chatId, {
+      data: {
+        message: input.message
+      },
+      type: "error"
+    });
+  }
 
   updateStreamChatMessages(input.chatId, (current) =>
     current.map((candidate) =>
       candidate.id === input.assistantMessageId
         ? {
             ...candidate,
-            content: input.cancelled ? candidate.content || "Stopped." : input.message,
+            content: input.cancelled
+              ? candidate.content || "Stopped."
+              : input.kind === "ambiguous"
+                ? candidate.content
+                : candidate.content || input.message,
             status: input.cancelled ? "cancelled" : "error"
           }
         : candidate
@@ -230,6 +243,7 @@ export async function executeMessageRunLifecycle({
     });
 
     failed = streamResult.failed;
+    cancelled = streamResult.terminalStatus === "cancelled";
     receivedChatUpdate = streamResult.receivedChatUpdate;
     runId = streamResult.runId;
     if (runId) {
@@ -251,7 +265,7 @@ export async function executeMessageRunLifecycle({
         });
       }
     }
-    if (!failed) {
+    if (!failed && !cancelled) {
       void notifyAnswerReady();
     }
   } catch (error) {
@@ -264,10 +278,18 @@ export async function executeMessageRunLifecycle({
         assistantMessageId,
         cancelled,
         chatId,
+        kind: serverRejectedRequest ? "rejected" : "ambiguous",
         message: errorMessage(error),
         runId
       });
       if (!cancelled) {
+        if (!serverRejectedRequest) {
+          useRunLifecycleStore.getState().streamAmbiguous({
+            assistantMessageId,
+            chatId,
+            runId
+          });
+        }
         await settleFailedRunState?.({
           assistantMessageId,
           kind: serverRejectedRequest ? "rejected" : "ambiguous",

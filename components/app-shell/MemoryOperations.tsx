@@ -31,7 +31,6 @@ import {
   RefreshCw,
   RotateCw,
   ShieldAlert,
-  Sparkles,
   X
 } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
@@ -773,14 +772,6 @@ export function MemoryOperations({
             label={t(locale, "reembedLabel")}
             locale={locale}
             operation="REEMBED"
-          />
-          <OperationRow
-            data={data}
-            description={t(locale, "redreamDescription")}
-            icon={<Sparkles className="size-4" aria-hidden="true" />}
-            label={t(locale, "redreamLabel")}
-            locale={locale}
-            operation="REDREAM_EXISTING_CHATS"
           />
         </ul>
         <p className="mt-3 text-xs leading-5 text-ink-muted">{t(locale, "servedGeneration")}</p>

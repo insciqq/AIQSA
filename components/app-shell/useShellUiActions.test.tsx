@@ -38,18 +38,7 @@ describe("useShellUiActions", () => {
     act(() => result.current.openDetails("events"));
 
     expect(setInspectorActiveTab).toHaveBeenCalledWith("events");
-    const modeUpdater = setInspectorMode.mock.calls[0]?.[0] as (mode: "closed") => string;
-    expect(modeUpdater("closed")).toBe("overlay");
-  });
-
-  it("keeps pinned Details pinned while changing tabs", () => {
-    const setInspectorMode = vi.fn();
-    const { result } = renderActions({ setInspectorMode });
-
-    act(() => result.current.openDetails("branch"));
-
-    const modeUpdater = setInspectorMode.mock.calls[0]?.[0] as (mode: "pinned") => string;
-    expect(modeUpdater("pinned")).toBe("pinned");
+    expect(setInspectorMode).toHaveBeenCalledWith("overlay");
   });
 
   it("snapshots an unsent draft before entering message edit mode", () => {

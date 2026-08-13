@@ -92,6 +92,7 @@ function input(
   const relatedSnapshotHash = memoryFactRelatedSnapshotHash(relatedFacts);
   const withoutHash: Omit<MemoryFactConsolidationInput, "inputHash"> = {
     candidate: candidateSnapshot,
+    memoryRevision: 0,
     relatedFacts,
     relatedSnapshotHash
   };
@@ -134,17 +135,17 @@ function plan(
 }
 
 describe("server-owned Memory fact consolidation policy", () => {
-  it("admits a low-risk new fact but selects verification for material preferences", () => {
+  it("admits structurally valid ADD regardless of model-written numeric scores", () => {
     const lowRisk = input(candidate({ importance: 0.4, modality: "HABIT" }));
     expect(evaluateMemoryFactConsolidationPlan(lowRisk, plan(lowRisk, "ADD")))
       .toEqual({ requiresVerification: false, status: "VALID" });
 
     const material = input(candidate({ importance: 0.7, modality: "PREFERENCE" }));
     expect(evaluateMemoryFactConsolidationPlan(material, plan(material, "ADD")))
-      .toEqual({ requiresVerification: true, status: "VALID" });
+      .toEqual({ requiresVerification: false, status: "VALID" });
   });
 
-  it("allows reinforcement only for the exact same current value", () => {
+  it("trusts semantic REINFORCE identity after checking exact target authority", () => {
     const same = fact("AUTOMATIC", {
       versions: [{
         ...fact().versions[0]!,
@@ -162,7 +163,7 @@ describe("server-owned Memory fact consolidation policy", () => {
     expect(evaluateMemoryFactConsolidationPlan(
       differentInput,
       plan(differentInput, "REINFORCE")
-    )).toEqual({ reasonCode: "reinforce_precondition_invalid", status: "DEFER" });
+    )).toEqual({ requiresVerification: false, status: "VALID" });
   });
 
   it("requires newer direct evidence and an automatic target for SUPERSEDE", () => {
@@ -170,13 +171,13 @@ describe("server-owned Memory fact consolidation policy", () => {
     expect(evaluateMemoryFactConsolidationPlan(
       automatic,
       plan(automatic, "SUPERSEDE")
-    )).toEqual({ requiresVerification: true, status: "VALID" });
+    )).toEqual({ requiresVerification: false, status: "VALID" });
 
     const explicit = input(candidate(), [fact("EXPLICIT")]);
     expect(evaluateMemoryFactConsolidationPlan(
       explicit,
       plan(explicit, "SUPERSEDE")
-    )).toEqual({ reasonCode: "supersede_precondition_invalid", status: "DEFER" });
+    )).toEqual({ reasonCode: "explicit_authority_retained", status: "DEFER" });
 
     const staleCandidate = input(candidate({
       evidence: [{
@@ -190,36 +191,36 @@ describe("server-owned Memory fact consolidation policy", () => {
     )).toEqual({ reasonCode: "supersede_precondition_invalid", status: "DEFER" });
   });
 
-  it("never silently overrides explicit authority but may surface a verified conflict", () => {
+  it("never lets automatic consolidation target explicit authority", () => {
     const explicit = input(candidate(), [fact("EXPLICIT")]);
     expect(evaluateMemoryFactConsolidationPlan(
       explicit,
       plan(explicit, "CONFLICT")
-    )).toEqual({ requiresVerification: true, status: "VALID" });
+    )).toEqual({ reasonCode: "explicit_authority_retained", status: "DEFER" });
     expect(evaluateMemoryFactConsolidationPlan(
       explicit,
       plan(explicit, "SUPERSEDE")
     )).toMatchObject({ status: "DEFER" });
   });
 
-  it("expires only an automatic target with direct negating evidence", () => {
+  it("uses semantic EXPIRE output plus temporal ordering, not a negation heuristic", () => {
     const negated = input(candidate({ negated: true }), [fact()]);
     expect(evaluateMemoryFactConsolidationPlan(
       negated,
       plan(negated, "EXPIRE")
-    )).toEqual({ requiresVerification: true, status: "VALID" });
+    )).toEqual({ requiresVerification: false, status: "VALID" });
 
     const positive = input(candidate(), [fact()]);
     expect(evaluateMemoryFactConsolidationPlan(
       positive,
       plan(positive, "EXPIRE")
-    )).toEqual({ reasonCode: "expire_precondition_invalid", status: "DEFER" });
+    )).toEqual({ requiresVerification: false, status: "VALID" });
 
     const explicit = input(candidate({ negated: true }), [fact("EXPLICIT")]);
     expect(evaluateMemoryFactConsolidationPlan(
       explicit,
       plan(explicit, "EXPIRE")
-    )).toEqual({ reasonCode: "expire_precondition_invalid", status: "DEFER" });
+    )).toEqual({ reasonCode: "explicit_authority_retained", status: "DEFER" });
   });
 
   it("rejects stale or temporally impossible expiry evidence", () => {

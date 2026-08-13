@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { providerTemplateIds } from "../../lib/domain/providerTemplates";
+import { chooseSearchStrategy, selectModel } from "./shell/composer";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(60_000);
@@ -74,28 +76,14 @@ async function workspaceChats(page: Page): Promise<WorkspaceBody["chats"]> {
 }
 
 async function prepareFakeBlankChat(page: Page) {
-  await page.getByRole("button", { name: "Start new chat" }).click();
-  await expect(page.getByTestId("current-chat-title")).toHaveText("New chat");
-
-  await page.getByTestId("composer-run-summary").click();
-  const runSetup = page.getByRole("dialog", { name: "Run setup" });
-  await expect(runSetup).toBeVisible();
-
-  await runSetup.getByRole("button", { name: "Select model" }).click();
   await page
-    .getByTestId("model-picker")
-    .getByRole("button", { name: "Select model Fake QSA Fake QSA" })
+    .getByRole("complementary", { name: "Навигация по чатам" })
+    .getByRole("button", { name: "Новый чат" })
     .click();
-  await expect(runSetup.getByRole("button", { name: "Select model" })).toContainText("Fake QSA");
-  await expect(runSetup.getByRole("button", { name: "Select model" })).toHaveAttribute("title", "Fake QSA / Fake QSA");
-
-  await runSetup.getByRole("button", { name: "Search strategy" }).click();
-  await page.getByTestId("search-select-options").locator('[data-option-value="search-disabled"]').click();
-  await expect(runSetup.getByRole("button", { name: "Search strategy" })).toContainText("Off");
-  await runSetup.getByRole("button", { name: "Close run setup" }).click();
-  await expect(runSetup).toHaveCount(0);
-  await expect(page.getByTestId("composer-run-summary")).toContainText("Fake QSA");
-  await expect(page.getByTestId("run-search-summary")).toContainText("Off");
+  await expect(page.getByTestId("conversation-empty")).toBeVisible();
+  await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
+  await chooseSearchStrategy(page, "Off");
+  await expect(page.locator(".v2-composer-model-trigger")).toContainText("Fake QSA");
 }
 
 async function waitForActiveChatId(page: Page): Promise<string> {
@@ -137,24 +125,14 @@ async function latestRunForChat(page: Page, chatId: string): Promise<RunBody["ru
   return ((await runResponse.json()) as RunBody).run;
 }
 
-async function showLatestRunReceipt(page: Page) {
+async function showLatestRunDetails(page: Page) {
   const answer = page.locator('article[data-role="assistant"]').last();
-  const moreActions = answer.getByRole("button", { name: "More message actions" });
-  const moreActionsMenu = page.getByRole("menu", { name: "More message actions" });
-  await expect(async () => {
-    if (await moreActionsMenu.isVisible()) {
-      return;
-    }
-    await answer.hover();
-    await expect(moreActions).toBeVisible();
-    await expect(moreActions).toBeEnabled();
-    await moreActions.click({ timeout: 5_000 });
-    await expect(moreActionsMenu).toBeVisible();
-  }).toPass({ timeout: 20_000 });
-  await moreActionsMenu.getByRole("menuitem", { name: "Show run details" }).click();
-  const receipt = answer.getByTestId("run-receipt");
-  await expect(receipt).toBeVisible();
-  return receipt;
+  const opener = answer.getByRole("button", { name: /^Run details/u });
+  await expect(opener).toBeVisible({ timeout: 20_000 });
+  await opener.click();
+  const details = page.getByRole("dialog", { name: /Детали run/ });
+  await expect(details).toBeVisible();
+  return details;
 }
 
 test.beforeEach(async ({ page }) => {
@@ -175,37 +153,22 @@ test("runs a fake-provider chat through real routes, Prisma, SSE, and Details", 
 
   try {
     await prepareFakeBlankChat(page);
-    await page.getByRole("textbox", { name: "Message" }).fill(prompt);
-    await page.getByRole("textbox", { name: "Message" }).press("Enter");
+    await page.getByRole("textbox", { name: "Сообщение" }).fill(prompt);
+    await page.getByRole("textbox", { name: "Сообщение" }).press("Enter");
     chatId = await waitForActiveChatId(page);
 
-    await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${prompt}`, { timeout: 20_000 });
-    await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
-    const receipt = await showLatestRunReceipt(page);
-    await expect(receipt).toContainText("Run Complete");
-    await expect(receipt).toContainText("Fake QSA");
-    const usageSegment = receipt.getByRole("button", { name: /tokens used/ });
-    await expect(usageSegment).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByTestId("composer-usage-line")).toBeVisible();
-    await expect(page.getByTestId("composer-usage-line")).not.toContainText("cost");
-
-    await usageSegment.click();
-    const details = page.getByTestId("details-pane");
-    await expect(details.getByRole("tab", { name: "Events" })).toHaveAttribute("aria-selected", "true");
-    const eventLog = details.getByTestId("inspector-event-log");
-    await expect(eventLog).toContainText("Provider updates");
-    await expect(eventLog).toContainText("Answer text");
-    await expect(eventLog).toContainText("Usage");
-    await expect(eventLog).toContainText("Model: Fake QSA");
-    await expect(eventLog).toContainText("Search: Off");
-    await expect(eventLog).toContainText("Source: Fake provider");
-    await expect(eventLog).not.toContainText(/fake-qsa|search-disabled|fake-provider/);
-    await expect(
-      eventLog.getByRole("listitem").filter({ hasText: "Run started" }).getByText("Question", { exact: true })
-    ).toBeVisible();
-    await expect(
-      eventLog.getByRole("listitem").filter({ hasText: "Answer text" }).getByText("Answer", { exact: true })
-    ).toBeVisible();
+    await expect(page.getByTestId("conversation-thread")).toContainText(`Fake answer: ${prompt}`, {
+      timeout: 20_000
+    });
+    await expect(page.getByRole("button", { name: "Остановить ответ" })).toHaveCount(0, {
+      timeout: 20_000
+    });
+    const details = await showLatestRunDetails(page);
+    await expect(details.getByRole("region", { name: "Run outcome" })).toContainText("Завершён");
+    await expect(details.getByRole("region", { name: "Модель и bindings" })).toContainText("Fake QSA");
+    await expect(details.getByRole("region", { name: "Usage · provider evidence" })).toBeVisible();
+    await expect(details.getByTestId("run-details-timeline")).toContainText("Answer text");
+    await expect(details).not.toContainText(/fake-qsa|search-disabled|fake-provider/);
 
     const run = await latestRunForChat(page, chatId);
     expect(run?.status).toBe("complete");
@@ -228,21 +191,30 @@ test("streams a new answer on the branch created by editing an answered question
 
   try {
     await prepareFakeBlankChat(page);
-    await page.getByRole("textbox", { name: "Message" }).fill(prompt);
-    await page.getByRole("textbox", { name: "Message" }).press("Enter");
+    await page.getByRole("textbox", { name: "Сообщение" }).fill(prompt);
+    await page.getByRole("textbox", { name: "Сообщение" }).press("Enter");
     chatId = await waitForActiveChatId(page);
-    await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${prompt}`, { timeout: 20_000 });
-    await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
+    await expect(page.getByTestId("conversation-thread")).toContainText(`Fake answer: ${prompt}`, {
+      timeout: 20_000
+    });
 
-    await page.getByRole("button", { name: "Edit message" }).first().click();
-    await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue(prompt);
-    await page.getByRole("textbox", { name: "Message" }).fill(editedPrompt);
-    await page.getByRole("textbox", { name: "Message" }).press("Enter");
+    const question = page.locator('article[data-role="user"]').last();
+    await question.hover();
+    await question.getByRole("button", { name: "Edit question" }).click();
+    await expect(page.getByRole("textbox", { name: "Сообщение" })).toHaveValue(prompt);
+    await page.getByRole("textbox", { name: "Сообщение" }).fill(editedPrompt);
+    await page.getByRole("textbox", { name: "Сообщение" }).press("Enter");
 
-    await expect(page.getByTestId("thread")).toContainText(editedPrompt, { timeout: 20_000 });
-    await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${editedPrompt}`, { timeout: 20_000 });
-    await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
-    await expect(await showLatestRunReceipt(page)).toContainText("Run Complete");
+    await expect(page.getByTestId("conversation-thread")).toContainText(editedPrompt, { timeout: 20_000 });
+    await expect(page.getByTestId("conversation-thread")).toContainText(`Fake answer: ${editedPrompt}`, {
+      timeout: 20_000
+    });
+    await expect(page.getByRole("button", { name: "Остановить ответ" })).toHaveCount(0, {
+      timeout: 20_000
+    });
+    await expect((await showLatestRunDetails(page)).getByRole("region", { name: "Run outcome" }))
+      .toContainText("Завершён");
+    await page.getByRole("button", { name: "Закрыть детали run" }).click();
 
     const run = await latestRunForChat(page, chatId);
     expect(run?.status).toBe("complete");
@@ -250,17 +222,15 @@ test("streams a new answer on the branch created by editing an answered question
       expect.arrayContaining(["token", "usage", "done"])
     );
 
-    await page.getByRole("button", { name: "Conversation actions" }).click();
-    await page.getByRole("menuitem", { name: "Branch tree" }).click();
-    const branchTree = page.getByTestId("branch-tree");
-    await expect(branchTree).toBeVisible();
-    await expect(branchTree).toContainText("2 versions · 2 messages in the current version");
-
-    await branchTree.getByRole("button", { name: /^Open alternate version, user \d+$/ }).click();
-    await expect(page.getByTestId("thread")).toContainText(`Fake answer: ${prompt}`, { timeout: 10_000 });
-    await expect(page.getByTestId("thread")).not.toContainText(editedPrompt);
-    await expect(branchTree).toBeVisible();
-    await expect(branchTree).toContainText("2 versions · 2 messages in the current version");
+    await page.getByRole("button", { name: "Ветви" }).click();
+    const branchTree = page.getByRole("dialog", { name: "Ветви разговора" });
+    await expect(branchTree).toContainText("Правка вопроса");
+    await expect(branchTree).toContainText("Исходная версия");
+    await branchTree.getByRole("button", { name: "Переключиться" }).click();
+    await expect(page.getByTestId("conversation-thread")).toContainText(`Fake answer: ${prompt}`, {
+      timeout: 10_000
+    });
+    await expect(page.getByTestId("conversation-thread")).not.toContainText(editedPrompt);
   } finally {
     if (chatId) {
       await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);
@@ -275,19 +245,19 @@ test("cancels an in-flight fake-provider stream without leaving the shell stuck"
 
   try {
     await prepareFakeBlankChat(page);
-    await page.getByRole("textbox", { name: "Message" }).fill(prompt);
-    await page.getByRole("textbox", { name: "Message" }).press("Enter");
+    await page.getByRole("textbox", { name: "Сообщение" }).fill(prompt);
+    await page.getByRole("textbox", { name: "Сообщение" }).press("Enter");
     chatId = await waitForActiveChatId(page);
-    const stopButton = page.getByRole("button", { name: "Stop response" });
+    const stopButton = page.getByRole("button", { name: "Остановить ответ" });
     await expect(stopButton).toBeVisible({ timeout: 10_000 });
     await expect(stopButton).toBeEnabled({ timeout: 10_000 });
 
     await stopButton.click();
 
-    await expect(page.getByRole("button", { name: "Stop response" })).toHaveCount(0, { timeout: 10_000 });
-    await expect(page.getByTestId("streaming-cursor")).toHaveCount(0);
-    await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
-    await expect(await showLatestRunReceipt(page)).toContainText("Run Stopped");
+    await expect(page.getByRole("button", { name: "Остановить ответ" })).toHaveCount(0, { timeout: 10_000 });
+    await expect(page.getByRole("textbox", { name: "Сообщение" })).toBeEnabled();
+    await expect((await showLatestRunDetails(page)).getByRole("region", { name: "Run outcome" }))
+      .toContainText("Остановлен");
 
     await expect
       .poll(async () => (chatId ? (await latestRunForChat(page, chatId))?.status ?? null : null), {

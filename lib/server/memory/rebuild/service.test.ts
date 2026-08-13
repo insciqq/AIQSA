@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import type { MemoryRebuildStatus } from "../../../contracts/memory";
-import { memoryTargetAuthorizationPayloadHash } from "../persistence/authorizations";
 import type { MemoryItemEmbeddingPin } from "../embedding/contract";
 import type { MemoryRebuildRepository } from "./repository";
 import {
@@ -104,7 +103,7 @@ describe("Memory rebuild service", () => {
     );
   });
 
-  it("binds redream to exact CAS counters and one resolved authorization", async () => {
+  it("rejects retired redream before resolving mutation authority", async () => {
     const authorizationRepository = authorizations();
     const rebuildRepository = repository({
       status: vi.fn(async () => ({
@@ -123,26 +122,9 @@ describe("Memory rebuild service", () => {
       expectedSettingsRevision: 3,
       mutationAuthorizationId: "authorization-1",
       operation: "REDREAM_EXISTING_CHATS"
-    })).resolves.toMatchObject({ operation: "REDREAM_EXISTING_CHATS" });
-    expect(authorizationRepository.resolveForUse).toHaveBeenCalledWith("user-1", {
-      action: "BULK_DELETE",
-      authorizationId: "authorization-1",
-      authorizedPayloadHash: memoryTargetAuthorizationPayloadHash({
-        action: "BULK_DELETE",
-        expectedMemoryRevision: 7,
-        expectedSettingsRevision: 3,
-        operation: "REDREAM_EXISTING_CHATS"
-      })
-    });
-    expect(rebuildRepository.admit).toHaveBeenCalledWith(
-      "user-1",
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          authorizationId: "authorization-1",
-          requestId: "request-1"
-        })
-      })
-    );
+    })).rejects.toMatchObject({ code: "memory_contract_invalid" });
+    expect(authorizationRepository.resolveForUse).not.toHaveBeenCalled();
+    expect(rebuildRepository.admit).not.toHaveBeenCalled();
   });
 
   it("maps admission conflicts and hides foreign job status", async () => {

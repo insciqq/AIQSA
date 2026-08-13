@@ -142,7 +142,7 @@ function repository(
 }
 
 describe("Memory settings service", () => {
-  it("advertises released local Memory surfaces and keeps learning gated by default", async () => {
+  it("advertises released Memory surfaces with learning available by default", async () => {
     const service = createMemorySettingsService({
       egressConsentMode: "PER_USER",
       repository: repository(),
@@ -153,7 +153,7 @@ describe("Memory settings service", () => {
 
     expect(response.capabilities).toEqual(DEFAULT_MEMORY_SETTINGS_CAPABILITIES);
     expect(response.capabilities).toEqual({
-      automaticLearning: false,
+      automaticLearning: true,
       explicitMemory: true,
       historyRecall: true,
       permanentChatDeletion: false,

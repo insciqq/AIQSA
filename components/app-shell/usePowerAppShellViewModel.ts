@@ -1,11 +1,5 @@
 import { clampedNumber, defaultParameterControls } from "@/components/app-shell/controlDefaults";
-import { providerDisplayName } from "@/components/app-shell/providerDisplay";
-import {
-  eventLabel,
-  searchStrategyDescription
-} from "@/components/app-shell/shellFormatting";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
-import { isRecord } from "@/components/app-shell/shellValues";
 import {
   summarizeThreadArtifacts,
   textFromThreadContent
@@ -23,7 +17,7 @@ import type {
   FolderSummary,
   ThreadMessage
 } from "@/components/app-shell/types";
-import type { ComposerAttachment } from "@/components/chat/Composer";
+import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "@/lib/domain/contextBudget";
 import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
 import { useMemo } from "react";
@@ -36,8 +30,6 @@ type PowerAppShellViewModelInput = {
   activeThreadUsageStats: ChatUsageStats | null;
   attachments: ComposerAttachment[];
   catalog: Catalog | null;
-  chatContentMatchIds: Set<string>;
-  chatQuery: string;
   chats: ChatSummary[];
   draft: string;
   folders: FolderSummary[];
@@ -49,7 +41,6 @@ type PowerAppShellViewModelInput = {
   selectedAssistantPromptCharacterCount: number | null;
   selectedModelId: string;
   selectedProvider: string;
-  selectedSearchStrategy: string;
   visibleMessages: ThreadMessage[];
 };
 
@@ -130,8 +121,6 @@ export function usePowerAppShellViewModel({
   activeThreadUsageStats,
   attachments,
   catalog,
-  chatContentMatchIds,
-  chatQuery,
   chats,
   draft,
   folders,
@@ -143,7 +132,6 @@ export function usePowerAppShellViewModel({
   selectedAssistantPromptCharacterCount,
   selectedModelId,
   selectedProvider,
-  selectedSearchStrategy,
   visibleMessages
 }: PowerAppShellViewModelInput) {
   const { events: runEvents, lastRun } = runSurface;
@@ -180,14 +168,9 @@ export function usePowerAppShellViewModel({
     return userTurnStart?.id ?? tail.id;
   }, [visibleMessages]);
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) ?? null, [activeChatId, chats]);
-  const navigationChats = useMemo(() => workspaceNavigationChats(chats), [chats]);
-  const chatGroups = useMemo(
-    () => buildChatGroups(folders, navigationChats, chatQuery, chatContentMatchIds),
-    [chatContentMatchIds, chatQuery, folders, navigationChats]
-  );
   const commandChatGroups = useMemo(
-    () => buildChatGroups(folders, navigationChats, "", new Set()),
-    [folders, navigationChats]
+    () => buildChatGroups(folders, workspaceNavigationChats(chats), "", new Set()),
+    [chats, folders]
   );
   const liveArtifactSummary = useMemo(
     () => summarizeThreadArtifacts(runEvents, lastRun?.searchRuns, lastRun?.toolCalls, lastRun?.status),
@@ -196,15 +179,6 @@ export function usePowerAppShellViewModel({
   const searchOptions = useMemo<CatalogSearchStrategy[]>(() => {
     return catalog?.searchStrategies ?? [];
   }, [catalog]);
-  const compatibleSearchOptionIds = useMemo(
-    () => currentModel?.searchStrategyIds.filter((strategyId) => strategyId !== "search-disabled") ?? [],
-    [currentModel]
-  );
-  const selectedProviderName =
-    catalog?.providers.find((provider) => provider.id === selectedProvider)?.name ?? providerDisplayName(selectedProvider);
-  const selectedSearchLabel =
-    catalog?.searchStrategies.find((strategy) => strategy.strategyId === selectedSearchStrategy)?.displayName ??
-    (selectedSearchStrategy === "search-disabled" ? "Off" : "Search source unavailable");
   const projectSettingsFolder = folders.find((folder) => folder.id === projectSettingsFolderId) ?? null;
   const activeChatTitle = activeChat?.title ?? "New Chat";
   const activeChatFolderId = activeChat?.folderId ?? pendingChatFolderId ?? "";
@@ -279,36 +253,20 @@ export function usePowerAppShellViewModel({
     cacheWriteInputTokens: 0,
     totalTokens: lastRun?.status === "complete" ? lastRun.totalTokens || lastRun.inputTokens + lastRun.outputTokens : 0
   };
-  const currentErrorText = useMemo(() => {
-    const errorEvent = runEvents.find((event) => event.type === "error");
-    if (errorEvent) {
-      return eventLabel(errorEvent);
-    }
-
-    return isRecord(lastRun?.errorPayload) && typeof lastRun.errorPayload.message === "string"
-      ? lastRun.errorPayload.message
-      : null;
-  }, [lastRun, runEvents]);
-
   return {
     activeChat,
     activeChatStreaming,
     activeChatTitle,
-    chatGroups,
     commandChatGroups,
     composerDisabledHint,
     composerContextStats,
     composerUsageStats,
-    compatibleSearchOptionIds,
-    currentErrorText,
     currentModel,
     currentParameterControls,
     liveArtifactSummary,
     projectSettingsFolder,
     renderActiveLeafId,
     searchOptions,
-    selectedProviderName,
-    selectedSearchLabel,
     threadFollowKey,
     threadReadingAnchorKey,
     visibleMessages

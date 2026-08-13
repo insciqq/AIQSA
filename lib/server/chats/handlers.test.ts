@@ -88,10 +88,34 @@ describe("chat route handlers", () => {
         method: "POST"
       })
     );
+    const excludedResponse = await POST(
+      new Request("http://app.local/api/chats", {
+        body: JSON.stringify({ memoryMode: "EXCLUDED" }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      })
+    );
+    const invalidModeResponse = await POST(
+      new Request("http://app.local/api/chats", {
+        body: JSON.stringify({ memoryMode: "TEMPORARY" }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      })
+    );
 
     expect(genericResponse.status).toBe(201);
     expect(folderResponse.status).toBe(201);
-    expect(createInputs.map((input) => input.folderId)).toEqual([null, "folder-1"]);
+    expect(excludedResponse.status).toBe(201);
+    expect(invalidModeResponse.status).toBe(400);
+    await expect(invalidModeResponse.json()).resolves.toEqual({
+      error: "chat_memory_mode_invalid"
+    });
+    expect(createInputs.map((input) => input.folderId)).toEqual([null, "folder-1", null]);
+    expect(createInputs.map((input) => input.memoryMode)).toEqual([
+      undefined,
+      undefined,
+      "EXCLUDED"
+    ]);
     for (const response of [genericResponse, folderResponse]) {
       const chat = (await response.json()).chat as Record<string, unknown>;
       expect(chat).toMatchObject({

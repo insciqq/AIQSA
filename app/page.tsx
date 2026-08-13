@@ -1,4 +1,4 @@
-import { PowerAppShell } from "@/components/app-shell/PowerAppShell";
+import { PowerAppShellV2 } from "@/features/workspace-v2/PowerAppShellV2";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { authSessionStore } from "@/lib/server/auth/defaultAuth";
 import { resolveAuthToken } from "@/lib/server/auth/requestAuth";
@@ -44,7 +44,7 @@ export default async function Home() {
   }
 
   return (
-    <PowerAppShell
+    <PowerAppShellV2
       accountEmail={user.email}
       accountId={session.userId}
       adminEntryVisible={user.role === "admin"}

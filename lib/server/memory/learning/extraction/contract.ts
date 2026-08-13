@@ -3,13 +3,13 @@ import type { MemoryExecutionVersions } from "../../execution";
 import { memorySha256 } from "../../persistence/lexical";
 import type { MemoryTextLanguage } from "../../history/language";
 
-export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION = "memory-fact-extraction-v1";
+export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION = "memory-fact-extraction-v2";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-source-grounding-policy-v6";
+  "memory-fact-source-grounding-policy-v7";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-source-grounding-prompt-v8";
+  "memory-fact-source-grounding-prompt-v9";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
-  "memory-fact-source-grounding-schema-v2";
+  "memory-fact-source-grounding-schema-v3";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
   "memory-fact-temporal-conservative-v1";
 export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =
@@ -84,8 +84,10 @@ export type MemoryFactCandidateEvidence = Readonly<{
 
 export type MemoryExtractedCandidate = Readonly<{
   canonicalKey: string;
+  coreEligible: boolean;
+  coreSalience: "HIGH" | "LOW" | "MEDIUM" | "NONE";
   confidence: number;
-  directness: "DIRECT";
+  directness: "DIRECT" | "PARAPHRASED";
   displayText: string;
   evidence: readonly MemoryFactCandidateEvidence[];
   id: string;
@@ -101,13 +103,13 @@ export type MemoryExtractedCandidate = Readonly<{
     | "PREFERENCE"
     | "STATE"
     | "WORKFLOW";
-  negated: boolean;
+  negated: false;
   proposedValue: unknown;
   rawTemporalExpression: string | null;
-  reasonCode: string | null;
+  reasonCode: null;
   scope: MemoryFactCandidateScope;
   sensitivity: "NORMAL";
-  state: "DEFERRED" | "PENDING";
+  state: "PENDING";
   temporalResolutionEvidence: Readonly<Record<string, unknown>> | null;
   validFrom: string | null;
   validTo: string | null;
@@ -188,9 +190,10 @@ export function memoryFactCandidateId(
   input: MemoryFactExtractionInput,
   candidate: Omit<MemoryExtractedCandidate, "id">
 ): string {
+  const { canonicalKey: _serverOwnedOpaqueKey, ...identity } = candidate;
   return memorySha256({
     candidate: {
-      ...candidate,
+      ...identity,
       evidence: candidate.evidence.map((evidence) => ({
         endOffset: evidence.endOffset,
         messageId: evidence.messageId,

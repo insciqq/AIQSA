@@ -156,4 +156,53 @@ describe("run lifecycle store transitions", () => {
       runId: "run-a"
     });
   });
+
+  it("keeps ambiguous transport state source-keyed until an explicit clear", () => {
+    const ambiguous = reduceRunLifecycle(baseState(), {
+      assistantMessageId: "assistant-a",
+      chatId: "chat-a",
+      runId: "run-a",
+      type: "STREAM_AMBIGUOUS"
+    });
+    const finished = reduceRunLifecycle(ambiguous, {
+      chatId: "chat-a",
+      type: "STREAM_FINISHED"
+    });
+    const neighboring = reduceRunLifecycle(finished, {
+      assistantMessageId: "assistant-b",
+      chatId: "chat-b",
+      runId: null,
+      type: "STREAM_AMBIGUOUS"
+    });
+    const cleared = reduceRunLifecycle(neighboring, {
+      chatId: "chat-a",
+      type: "AMBIGUITY_CLEARED"
+    });
+
+    expect(finished.ambiguousFailures["chat-a"]).toEqual({
+      assistantMessageId: "assistant-a",
+      runId: "run-a"
+    });
+    expect(cleared.ambiguousFailures).toEqual({
+      "chat-b": { assistantMessageId: "assistant-b", runId: null }
+    });
+  });
+
+  it("clears stale ambiguity only when its source starts or cancels a run", () => {
+    const state = baseState();
+    state.ambiguousFailures = {
+      "chat-a": { assistantMessageId: "assistant-a", runId: "run-a" },
+      "chat-b": { assistantMessageId: "assistant-b", runId: "run-b" }
+    };
+
+    const restarted = reduceRunLifecycle(state, {
+      assistantMessageId: "assistant-a-next",
+      chatId: "chat-a",
+      type: "STREAM_STARTED"
+    });
+
+    expect(restarted.ambiguousFailures).toEqual({
+      "chat-b": { assistantMessageId: "assistant-b", runId: "run-b" }
+    });
+  });
 });

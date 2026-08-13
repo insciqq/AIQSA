@@ -2893,18 +2893,17 @@ describe("model run route handlers", () => {
       background: true,
       parallel_tool_calls: false,
       stream: true,
-      tool_choice: "auto",
-      tools: [
-        {
-          name: "search_via_perplexity",
-          type: "function"
-        },
-        {
-          name: "search_my_history",
-          type: "function"
-        }
-      ]
+      tool_choice: "auto"
     });
+    expect((bodies[0].tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
+      "search_via_perplexity",
+      "save_memory",
+      "list_memories",
+      "update_memory",
+      "forget_memory",
+      "mark_memory_incorrect",
+      "search_memory"
+    ]);
     expect(JSON.stringify(bodies[0])).not.toContain("web_search");
     expect(state.searchRuns).toHaveLength(0);
     expect(state.completed?.finalText).toBe("Direct OpenAI answer");
@@ -2968,22 +2967,18 @@ describe("model run route handlers", () => {
     expect(JSON.stringify(bodies[0])).not.toContain("Search findings from");
     expect(bodies[0]).toMatchObject({
       stream: true,
-      tool_choice: "auto",
-      tools: [
-        {
-          function: {
-            name: "search_via_perplexity"
-          },
-          type: "function"
-        },
-        {
-          function: {
-            name: "search_my_history"
-          },
-          type: "function"
-        }
-      ]
+      tool_choice: "auto"
     });
+    expect((bodies[0].tools as Array<{ function: { name: string } }>).map((tool) =>
+      tool.function.name)).toEqual([
+      "search_via_perplexity",
+      "save_memory",
+      "list_memories",
+      "update_memory",
+      "forget_memory",
+      "mark_memory_incorrect",
+      "search_memory"
+    ]);
     expect(JSON.stringify(bodies[0].messages)).toContain("Какая последняя модель Anthropic?");
     expect(JSON.stringify(bodies[1].messages)).toContain("tool_call_id");
     expect(JSON.stringify(bodies[1].messages)).toContain("Fake Perplexity search findings");
@@ -3328,18 +3323,17 @@ describe("model run route handlers", () => {
     expect(bodies[0]).toMatchObject({
       background: true,
       stream: true,
-      tool_choice: "auto",
-      tools: [
-        {
-          name: "search_via_perplexity",
-          type: "function"
-        },
-        {
-          name: "search_my_history",
-          type: "function"
-        }
-      ]
+      tool_choice: "auto"
     });
+    expect((bodies[0].tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
+      "search_via_perplexity",
+      "save_memory",
+      "list_memories",
+      "update_memory",
+      "forget_memory",
+      "mark_memory_incorrect",
+      "search_memory"
+    ]);
     expect(JSON.stringify(bodies[1].input)).toContain("function_call_output");
     expect(JSON.stringify(bodies[1].input)).toContain("Fake Perplexity search findings");
     expect(state.searchRuns).toHaveLength(1);
@@ -3836,6 +3830,7 @@ describe("model run route handlers", () => {
     expect(state.regenerated).toMatchObject({
       chatId: "chat-1",
       modelId: "fake-qsa",
+      preSendAssistantMessageId: null,
       provider: "fake",
       userMessageId: "user-message-1"
     });

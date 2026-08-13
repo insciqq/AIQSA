@@ -21,6 +21,7 @@ import {
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
+import type { MemoryExecutionOwner } from "../execution/owner";
 import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
 import { memorySha256 } from "../persistence/lexical";
 import {
@@ -41,7 +42,7 @@ export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
 export const MEMORY_QUERY_EXPANSION_PIPELINE_VERSION =
   "memory-query-expansion-v1";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
-  "memory-remote-rerank-v1";
+  "memory-multilingual-relevance-v2";
 
 export const MEMORY_QUERY_EMBEDDING_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION,
@@ -65,16 +66,16 @@ const queryExpansionVersions: MemoryExecutionVersions = Object.freeze({
 
 const rerankVersions: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_REMOTE_RERANK_PIPELINE_VERSION,
-  policyVersion: "memory-remote-rerank-policy-v1",
-  promptVersion: "memory-remote-rerank-prompt-v1",
+  policyVersion: "memory-relevance-policy-v2",
+  promptVersion: "memory-relevance-prompt-v2",
   retrievalConfigFingerprint: memoryExecutionSha256({
     candidateMaxCharacters: 4_000,
     maxCandidates: 25,
     maxTotalCharacters: 32_000,
-    permutationOnly: true,
-    version: 1
+    orderedRelevantSubset: true,
+    version: 2
   }),
-  schemaVersion: "memory-remote-rerank-result-v1"
+  schemaVersion: "memory-relevance-result-v2"
 });
 
 export type MemoryRunUtilityUnavailable = Readonly<{
@@ -104,15 +105,17 @@ export type MemoryRunRerankResult =
   | MemoryRunUtilityUnavailable
   | Readonly<{
       bindingId: string;
-      orderedHandles: readonly string[];
+      relevantHandles: readonly string[];
       status: "READY";
     }>;
 
 type UtilityBaseInput = Readonly<{
-  attemptId: string;
   signal: AbortSignal;
   userId: string;
-}>;
+}> & (
+  | Readonly<{ attemptId: string; owner?: never }>
+  | Readonly<{ attemptId?: never; owner: MemoryExecutionOwner }>
+);
 
 export type MemoryRunUtilityService = Readonly<{
   embedQuery(input: UtilityBaseInput & Readonly<{
@@ -125,9 +128,13 @@ export type MemoryRunUtilityService = Readonly<{
     query: string;
   }>): Promise<MemoryRunQueryExpansionResult>;
   rerank(input: UtilityBaseInput & Readonly<{
-    candidates: readonly Readonly<{ handle: string; text: string }>[];
-    intent: string;
-    language: string;
+    candidates: readonly Readonly<{
+      handle: string;
+      occurredFrom: string | null;
+      occurredTo: string | null;
+      sourceKind: "EVENT" | "FACT" | "HISTORY";
+      text: string;
+    }>[];
     query: string;
   }>): Promise<MemoryRunRerankResult>;
 }>;
@@ -313,12 +320,12 @@ function decodeRerank(
     calls?.length !== 1 ||
     call?.name !== MEMORY_RERANK_TOOL_NAME ||
     !isRecord(call.arguments) ||
-    !exactKeys(call.arguments, ["ordered_handles"]) ||
-    !Array.isArray(call.arguments.ordered_handles)
+    !exactKeys(call.arguments, ["relevant_handles"]) ||
+    !Array.isArray(call.arguments.relevant_handles)
   ) return null;
-  const ordered = call.arguments.ordered_handles;
+  const ordered = call.arguments.relevant_handles;
   if (
-    ordered.length !== expectedHandles.length ||
+    ordered.length > expectedHandles.length ||
     ordered.some((handle) => typeof handle !== "string")
   ) return null;
   const values = ordered as string[];
@@ -349,7 +356,10 @@ async function bindAndStart(
     const binding = await deps.execution.admission.bind(input.userId, {
       inputHash,
       ordinal,
-      owner: { retrievalAttemptId: input.attemptId, type: "RETRIEVAL_ATTEMPT" },
+      owner: input.owner ?? {
+        retrievalAttemptId: input.attemptId,
+        type: "RETRIEVAL_ATTEMPT"
+      },
       role,
       versions
     });
@@ -629,21 +639,20 @@ export function createMemoryRunUtilityService(
       const inputHash = memoryExecutionSha256({
         candidates: input.candidates.map((candidate) => ({
           handle: candidate.handle,
+          occurredFrom: candidate.occurredFrom,
+          occurredTo: candidate.occurredTo,
+          sourceKind: candidate.sourceKind,
           textHash: memorySha256(candidate.text)
         })),
-        domain: "aiqsa.memory.rerank-input",
-        intent: input.intent,
-        language: input.language,
+        domain: "aiqsa.memory.relevance-input",
         queryHash: memorySha256(input.query),
-        version: 1
+        version: 2
       });
       const result = await runTextUtility(
         deps,
         input,
         {
           candidates: input.candidates,
-          intent: input.intent,
-          language: input.language,
           query: input.query,
           role: "MEMORY_RERANK"
         },
@@ -656,7 +665,7 @@ export function createMemoryRunUtilityService(
       return result.status === "READY"
         ? {
             bindingId: result.bindingId,
-            orderedHandles: result.output,
+            relevantHandles: result.output,
             status: "READY"
           }
         : result;

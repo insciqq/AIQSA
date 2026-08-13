@@ -1,9 +1,7 @@
-export type MemoryTextLanguage = "en" | "mixed" | "ru" | "und";
+export type MemoryTextLanguage = string;
 
-export function detectMemoryTextLanguage(value: string): MemoryTextLanguage {
-  const cyrillicCount = value.match(/\p{Script=Cyrillic}/gu)?.length ?? 0;
-  const latinCount = value.match(/\p{Script=Latin}/gu)?.length ?? 0;
-  if (cyrillicCount === 0 && latinCount === 0) return "und";
-  if (cyrillicCount > 0 && latinCount > 0) return "mixed";
-  return cyrillicCount > 0 ? "ru" : "en";
+export function detectMemoryTextLanguage(_value: string): "und" {
+  // Script inspection cannot establish a language. Only model-provided,
+  // structurally valid BCP-47 metadata may be more specific.
+  return "und";
 }

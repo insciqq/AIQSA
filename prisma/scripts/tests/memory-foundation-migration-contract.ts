@@ -25,6 +25,10 @@ const WORKING_SET_PROFILE_MIGRATION = "20260811170000_memory_working_set_profile
 const PERMANENT_CHAT_DELETE_MIGRATION = "20260812100000_memory_permanent_chat_delete";
 const VERIFICATION_AUTHORITY_V2_MIGRATION =
   "20260812194000_memory_verification_authority_v2";
+const SEMANTIC_RETRIEVAL_MIGRATION =
+  "20260813090000_multilingual_memory_semantic_retrieval";
+const FACT_RECEIPT_PROVENANCE_MIGRATION =
+  "20260813100000_memory_fact_receipt_provenance";
 const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "aiqsa";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -2064,6 +2068,77 @@ function assertHistoryEgressContracts(database: string): void {
   );
 }
 
+function assertSemanticRetrievalContracts(database: string): void {
+  requireSuccess(psql(database, `
+    INSERT INTO "User" ("id", "displayName", "role", "status", "updatedAt")
+    VALUES (
+      'memory-semantic-default-owner', 'Memory semantic defaults', 'user', 'active',
+      CURRENT_TIMESTAMP
+    );
+  `), "create post-semantic-retrieval default owner");
+  assert.equal(
+    scalar(database, `
+      SELECT concat_ws('|',
+        (SELECT concat_ws(':', "useMemoryFacts"::int, "referenceChatHistory"::int,
+          "learnAutomatically"::int)
+         FROM "UserMemorySettings"
+         WHERE "userId" = 'memory-semantic-default-owner'),
+        (SELECT "learnAutomatically"::int FROM "UserMemorySettings"
+         WHERE "userId" = 'memory-r2-default-owner'),
+        (SELECT count(*) FROM pg_enum
+         WHERE enumtypid = '"MemoryCoreSalience"'::regtype),
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND (
+             (table_name = 'MemoryCandidate'
+               AND column_name IN ('proposedCoreEligible', 'proposedCoreSalience'))
+             OR (table_name = 'MemoryFactVersion'
+               AND column_name IN ('coreEligible', 'coreSalience'))
+           )),
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'UserMemorySettings'
+           AND column_name = 'learnAutomatically'
+           AND column_default = 'true'::text),
+        (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'MemoryFactVersion'
+           AND (
+             (column_name = 'coreEligible' AND column_default = 'false'::text)
+             OR (column_name = 'coreSalience' AND column_default LIKE '%NONE%')
+           )),
+        (SELECT character_maximum_length FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'MemoryHistoryRun' AND column_name = 'query'),
+        (SELECT count(*) FROM pg_constraint
+         WHERE conname = 'MemoryCandidate_shape_check'
+           AND pg_get_constraintdef(oid) LIKE '%proposedCoreEligible%'
+           AND pg_get_constraintdef(oid) LIKE '%memory-fact-extraction-v2%'),
+        (SELECT count(*) FROM pg_proc
+         WHERE proname = 'aiqsa_memory_candidate_decision_authority_trigger'
+           AND pg_get_functiondef(oid) LIKE '%memory-fact-consolidation-v2%')
+      );
+    `),
+    "1:1:1|0|4|4|1|2|2000|1|1",
+    "multilingual semantic retrieval migration contract drifted"
+  );
+}
+
+function assertFactReceiptProvenanceContracts(database: string): void {
+  assert.equal(
+    scalar(database, `
+      SELECT count(*) FROM pg_constraint
+      WHERE conname = 'MemoryRetrievalAttemptItem_shape_check'
+        AND pg_get_constraintdef(oid) LIKE
+          '%num_nonnulls("sourceChatIdSnapshot", "sourceBranchGenerationSnapshot") = 2%'
+        AND pg_get_constraintdef(oid) LIKE
+          '%num_nonnulls("sourceRevisionSnapshot", "sourceContentHashSnapshot") = 0%';
+    `),
+    "1",
+    "automatic fact receipt message-provenance shape is not installed"
+  );
+}
+
 function assertHistoryEgressMigrationAtomicRollback(database: string): void {
   requireSuccess(psql(database, `
     CREATE TYPE "MemoryHistoryRunState" AS ENUM ('fixture');
@@ -3586,6 +3661,10 @@ function main(): void {
     assertPermanentChatDeleteContracts(upgradeDatabase);
     applyMigrations(upgradeDatabase, [VERIFICATION_AUTHORITY_V2_MIGRATION]);
     assertVerificationAuthorityV2Contracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [SEMANTIC_RETRIEVAL_MIGRATION]);
+    assertSemanticRetrievalContracts(upgradeDatabase);
+    applyMigrations(upgradeDatabase, [FACT_RECEIPT_PROVENANCE_MIGRATION]);
+    assertFactReceiptProvenanceContracts(upgradeDatabase);
 
     createDatabase(freshDatabase);
     applyMigrations(freshDatabase, migrationNames((name) => name <= TARGET_MIGRATION));
@@ -3626,6 +3705,10 @@ function main(): void {
     assertPermanentChatDeleteContracts(freshDatabase);
     applyMigrations(freshDatabase, [VERIFICATION_AUTHORITY_V2_MIGRATION]);
     assertVerificationAuthorityV2Contracts(freshDatabase);
+    applyMigrations(freshDatabase, [SEMANTIC_RETRIEVAL_MIGRATION]);
+    assertSemanticRetrievalContracts(freshDatabase);
+    applyMigrations(freshDatabase, [FACT_RECEIPT_PROVENANCE_MIGRATION]);
+    assertFactReceiptProvenanceContracts(freshDatabase);
 
     createDatabase(rollbackDatabase);
     applyMigrations(rollbackDatabase, migrationNames((name) => name < CHAT_SCOPE_MIGRATION));
@@ -3705,7 +3788,7 @@ function main(): void {
   }
 
   console.info(
-    "Memory migration contract passed through verification-authority v2 fences."
+    "Memory migration contract passed through multilingual semantic retrieval and receipt-provenance fences."
   );
 }
 

@@ -1,0 +1,156 @@
+import { expect, test, type BrowserContext } from "@playwright/test";
+import { authenticateWithLocalToken } from "./support/localAuth";
+
+const modes = [
+  { height: 900, name: "desktop", width: 1440 },
+  { height: 844, name: "mobile", width: 390 }
+] as const;
+
+async function setTheme(
+  context: BrowserContext,
+  theme: "dark" | "light"
+) {
+  await context.addCookies([{
+    name: "aiqsa.theme",
+    value: theme,
+    url: "http://127.0.0.1:3000"
+  }]);
+}
+
+for (const theme of ["dark", "light"] as const) {
+  for (const mode of modes) {
+    for (const state of ["assistants", "files", "memory", "memory-disabled"] as const) {
+      test(`v2 Library · ${theme} · ${mode.name} · ${state}`, async ({ context, page }) => {
+        await setTheme(context, theme);
+        await page.setViewportSize(mode);
+        await page.goto(`/ui-v2-fixture?fixture=library&state=${state}`);
+
+        await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+        await expect(page.getByTestId("library-v2")).toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await expect(page).toHaveScreenshot(`library-${state}-${theme}-${mode.name}.png`, {
+          animations: "disabled",
+          caret: "hide",
+          fullPage: true
+        });
+      });
+    }
+
+    test(`v2 Settings · ${theme} · ${mode.name}`, async ({ context, page }) => {
+      await setTheme(context, theme);
+      await page.setViewportSize(mode);
+      await page.goto("/ui-v2-fixture?fixture=settings&state=appearance");
+
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.getByTestId("settings-v2")).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await expect(page).toHaveScreenshot(`settings-appearance-${theme}-${mode.name}.png`, {
+        animations: "disabled",
+        caret: "hide",
+        fullPage: true
+      });
+    });
+  }
+}
+
+test("Library tab state is keyboard-owned and dirty resource exit remains explicit", async ({ page }) => {
+  await page.goto("/ui-v2-fixture?fixture=library&state=dirty");
+  const assistants = page.getByRole("tab", { name: "Assistants" });
+  await assistants.press("End");
+  const confirmation = page.getByRole("alertdialog", { name: "Несохранённый черновик Assistant" });
+  await expect(confirmation).toBeVisible();
+  await expect(assistants).toHaveAttribute("aria-selected", "true");
+  await confirmation.getByRole("button", { name: "Продолжить редактирование" }).click();
+  await expect(assistants).toBeFocused();
+
+  await assistants.press("End");
+  await confirmation.getByRole("button", { name: "Отменить изменения" }).click();
+  await expect(page.getByRole("tab", { name: "Память" })).toHaveAttribute("aria-selected", "true");
+});
+
+test("administrator-disabled Memory preserves exact-fact management", async ({ page }) => {
+  await page.goto("/ui-v2-fixture?fixture=library&state=memory-disabled");
+  await expect(page.getByText("Память отключена администратором")).toBeVisible();
+  for (const control of await page.getByRole("switch").all()) await expect(control).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Manage memories" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: /Forget:/ }).first()).toBeEnabled();
+  expect((await page.locator("body").innerText()).toLocaleLowerCase()).not.toContain("temperature");
+  expect((await page.locator("body").innerText()).toLocaleLowerCase()).not.toContain("profile");
+});
+
+test("Settings has one modal layer, a three-value theme registry, and MCP discard ownership", async ({ page }) => {
+  await page.goto("/ui-v2-fixture?fixture=settings&state=dirty");
+  await expect(page.getByRole("dialog", { name: "Настройки" })).toBeVisible();
+  await page.getByRole("button", { name: "Внешний вид" }).click();
+  const confirmation = page.getByRole("alertdialog", { name: "Несохранённые изменения MCP" });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole("button", { name: "Отменить изменения" }).click();
+  await expect(page.getByRole("radio")).toHaveCount(3);
+  await expect(page.getByRole("radio", { name: /System theme/ })).toBeVisible();
+  await expect(page.getByRole("radio", { name: /Light theme/ })).toBeVisible();
+  await expect(page.getByRole("radio", { name: /Dark theme/ })).toBeVisible();
+});
+
+for (const theme of ["dark", "light"] as const) {
+  for (const mode of modes) {
+    test(`secondary auth token parity · ${theme} · ${mode.name}`, async ({ context, page }) => {
+      await setTheme(context, theme);
+      await page.setViewportSize(mode);
+      await page.goto("/login");
+      await expect(page.getByTestId("auth-root")).toHaveAttribute("data-ui-presentation", "v2-tokens");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await expect(page).toHaveScreenshot(`secondary-auth-${theme}-${mode.name}.png`, {
+        animations: "disabled",
+        caret: "hide",
+        fullPage: true
+      });
+    });
+
+    test(`secondary public share token parity · ${theme} · ${mode.name}`, async ({ context, page }) => {
+      await setTheme(context, theme);
+      await page.setViewportSize(mode);
+      await page.goto("/ui-v2-fixture?fixture=secondary&state=public-share");
+      await expect(page.getByTestId("public-share-view")).toHaveAttribute("data-ui-presentation", "v2-tokens");
+      await expect(page.getByText("Read-only snapshot")).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await expect(page).toHaveScreenshot(`secondary-public-share-${theme}-${mode.name}.png`, {
+        animations: "disabled",
+        caret: "hide",
+        fullPage: true
+      });
+    });
+
+    test(`Control Center direct V2 tokens · ${theme} · ${mode.name}`, async ({ context, page }) => {
+      await setTheme(context, theme);
+      await page.setViewportSize(mode);
+      await authenticateWithLocalToken(page.request, "The Control Center parity case needs the disposable local admin session.");
+      await page.goto("/admin");
+      const root = page.locator('main[data-ui-presentation="v2-tokens"]');
+      await expect(root).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Control Center" })).toBeVisible();
+      const colors = await root.evaluate((element) => {
+        const toSrgbBytes = (color: string) => {
+          const canvas = document.createElement("canvas");
+          canvas.width = 1;
+          canvas.height = 1;
+          const context = canvas.getContext("2d", { willReadFrequently: true });
+          if (!context) return null;
+          context.fillStyle = color;
+          context.fillRect(0, 0, 1, 1);
+          return Array.from(context.getImageData(0, 0, 1, 1).data.slice(0, 3));
+        };
+        const style = getComputedStyle(element);
+        const rootStyle = getComputedStyle(document.documentElement);
+        return {
+          background: toSrgbBytes(style.backgroundColor),
+          expected: toSrgbBytes(rootStyle.backgroundColor),
+          theme: document.documentElement.dataset.theme
+        };
+      });
+      expect(colors.theme).toBe(theme);
+      expect(colors.background).toStrictEqual(colors.expected);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    });
+  }
+}

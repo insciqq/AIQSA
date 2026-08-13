@@ -48,7 +48,8 @@ import {
 } from "@/components/app-shell/composerSessionStore";
 import {
   archiveChat as archiveChatRequest,
-  loadChatMemoryState
+  loadChatMemoryState,
+  restoreChat as restoreChatRequest
 } from "@/components/app-shell/chatLifecycleApi";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
@@ -81,7 +82,6 @@ type WorkspaceActionsInput = {
   chatHasActiveStream(chatId: string): boolean;
   chatHasPendingThreadMutation?(chatId: string): boolean;
   chatMutation: WorkspaceChatMutationPort;
-  confirmDeleteChat(chat: ChatSummary): Promise<boolean>;
   loadingChatDetailIdRef: MutableRef<string | null>;
   resumeChatRun(chat: ChatSummary): void;
   setNotice(notice: Notice): void;
@@ -107,7 +107,6 @@ export function useWorkspaceActions({
   chatHasActiveStream,
   chatHasPendingThreadMutation = () => false,
   chatMutation,
-  confirmDeleteChat,
   loadingChatDetailIdRef,
   resumeChatRun,
   setNotice,
@@ -150,7 +149,27 @@ export function useWorkspaceActions({
   }
 
   function mergeChatIntoList(chat: ChatSummary) {
+    const currentChat = useWorkspaceStore.getState().chats.find(
+      (candidate) => candidate.id === chat.id
+    );
+    const resolvedChat = { ...currentChat, ...chat };
     useWorkspaceStore.getState().upsertChat(chat);
+    if (
+      useWorkspaceStore.getState().navigationReady &&
+      resolvedChat.memoryMode !== "TEMPORARY" &&
+      resolvedChat.pendingInitialMemoryMode !== "TEMPORARY"
+    ) {
+      const existing = useWorkspaceStore.getState().navigationChats.find(
+        (candidate) => candidate.id === chat.id
+      );
+      useWorkspaceStore.getState().upsertNavigationChat({
+        activeRun: existing?.activeRun ?? chatHasActiveStream(chat.id),
+        folderId: resolvedChat.folderId,
+        id: resolvedChat.id,
+        title: resolvedChat.title,
+        updatedAt: resolvedChat.updatedAt
+      });
+    }
   }
 
   function markCachedSummaryRevision(chat: ChatSummary) {
@@ -584,7 +603,10 @@ export function useWorkspaceActions({
     return detail;
   }
 
-  function activateBlankWorkspace(folderId: string | null = null) {
+  function activateBlankWorkspace(
+    folderId: string | null = null,
+    memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY" = "NORMAL"
+  ) {
     activeChatIdRef.current = null;
     loadingChatDetailIdRef.current = null;
     useWorkspaceStore.getState().setPendingChatFolderId(folderId);
@@ -592,7 +614,9 @@ export function useWorkspaceActions({
     useWorkspaceStore.getState().setActiveChatDetailLoading(false);
     rememberActiveChatId(null);
     useWorkspaceStore.getState().setActiveChatId(null);
-    useComposerSessionStore.getState().activateSession(composerSessionKey(null, folderId));
+    useComposerSessionStore.getState().activateSession(
+      composerSessionKey(null, folderId, memoryMode)
+    );
     pruneThreadCache();
     if (!useComposerControlStore.getState().selectedAssistant) {
       const catalog = useWorkspaceStore.getState().catalog;
@@ -629,7 +653,7 @@ export function useWorkspaceActions({
       const decoded = decodeChatSummaryResponse(await response.json());
       if (!decoded || decoded.id !== chatId) throw new Error("chat_knowledge_default_malformed");
       const chat = chatSummaryFromApi(decoded);
-      useWorkspaceStore.getState().upsertChat(chat);
+      mergeChatIntoList(chat);
       const folderPlan = chat.folderId
         ? useWorkspaceStore.getState().folders.find((folder) => folder.id === chat.folderId)
             ?.defaultKnowledgePlan ?? null
@@ -828,9 +852,13 @@ export function useWorkspaceActions({
   ) {
     useWorkspaceStore.getState().setCreatingChat(true);
     try {
+      const initialMemoryMode = sourceSessionKey
+        ? composerSessionModeFromKey(sourceSessionKey)
+        : "NORMAL";
       const response = await shellFetch("/api/chats", {
         body: JSON.stringify({
-          folderId
+          folderId,
+          ...(initialMemoryMode === "EXCLUDED" ? { memoryMode: "EXCLUDED" } : {})
         }),
         headers: {
           "content-type": "application/json"
@@ -846,16 +874,16 @@ export function useWorkspaceActions({
       if (!apiChat) {
         throw new Error("chat_create_malformed");
       }
-      const initialMemoryMode = sourceSessionKey
-        ? composerSessionModeFromKey(sourceSessionKey)
-        : "NORMAL";
       const summary: ChatSummary = {
         ...chatSummaryFromApi(apiChat),
+        ...(initialMemoryMode === "EXCLUDED"
+          ? { memoryMode: "EXCLUDED" as const, memorySourceRevision: 0 }
+          : {}),
         ...(initialMemoryMode === "TEMPORARY"
           ? { pendingInitialMemoryMode: "TEMPORARY" as const }
           : {})
       };
-      useWorkspaceStore.getState().upsertChat(summary);
+      mergeChatIntoList(summary);
 
       if (sourceSessionKey) {
         const sourceWasSelected =
@@ -901,12 +929,7 @@ export function useWorkspaceActions({
       }
       const chat = chatSummaryFromApi(apiChat);
       markCachedSummaryRevision(chat);
-      useWorkspaceStore
-        .getState()
-        .updateChats((current) =>
-          sortChatsByFavoriteThenUpdatedAt(current.map((candidate) => (candidate.id === chat.id ? chat : candidate)))
-        );
-      chatMutation.closeActions();
+      mergeChatIntoList(chat);
       setNotice({
         kind: "success",
         text: `Moved: ${chat.title}`
@@ -928,27 +951,53 @@ export function useWorkspaceActions({
       return;
     }
 
-    if (!(await confirmDeleteChat(chat))) {
-      return;
-    }
-
     try {
       const memoryState = await loadChatMemoryState(chat.id);
       if (memoryState.chat.mode === "TEMPORARY") {
         throw new Error("memory_temporary_chat_forbidden");
       }
-      await archiveChatRequest(chat.id, memoryState.chat.sourceRevision);
+      const archived = await archiveChatRequest(chat.id, memoryState.chat.sourceRevision);
 
       const nextActive = useWorkspaceStore.getState().chats.find((candidate) => candidate.id !== chat.id) ?? null;
       useWorkspaceStore.getState().updateChats((current) => current.filter((candidate) => candidate.id !== chat.id));
+      useWorkspaceStore.getState().removeNavigationChat(chat.id);
       useThreadStore.getState().removeThread(chat.id);
       useRunSurfaceStore.getState().removeSurface(chat.id);
       useComposerSessionStore.getState().removeSession(composerSessionKey(chat.id));
       chatDetailRequestsRef.current.delete(chat.id);
-      chatMutation.closeActions();
       setNotice({
+        action: {
+          label: "Отменить",
+          onClick: () => {
+            void (async () => {
+              try {
+                const restored = await restoreChatRequest(
+                  chat.id,
+                  archived.chat.sourceRevision
+                );
+                const restoredChat: ChatSummary = {
+                  ...chat,
+                  memoryMode: restored.chat.memoryMode,
+                  memorySourceRevision: restored.chat.sourceRevision,
+                  updatedAt: restored.chat.updatedAt
+                };
+                useWorkspaceStore.getState().upsertChat(restoredChat);
+                useWorkspaceStore.getState().upsertNavigationChat({
+                  activeRun: false,
+                  folderId: restoredChat.folderId,
+                  id: restoredChat.id,
+                  title: restoredChat.title,
+                  updatedAt: restoredChat.updatedAt
+                });
+                setNotice({ kind: "success", text: "Чат восстановлен" });
+              } catch (error) {
+                setNotice({ kind: "error", text: errorMessage(error) });
+              }
+            })();
+          }
+        },
         kind: "success",
-        text: `Archived: ${chat.title}`
+        text: "Чат перемещён в архив"
       });
 
       if (activeChatIdRef.current === chat.id) {
@@ -991,13 +1040,7 @@ export function useWorkspaceActions({
       }
       const updated = chatSummaryFromApi(apiChat);
       markCachedSummaryRevision(updated);
-      useWorkspaceStore
-        .getState()
-        .updateChats((current) =>
-          sortChatsByFavoriteThenUpdatedAt(
-            current.map((candidate) => (candidate.id === updated.id ? updated : candidate))
-          )
-        );
+      mergeChatIntoList(updated);
       chatMutation.finishEditing();
       setNotice({
         kind: "success",
@@ -1039,7 +1082,6 @@ export function useWorkspaceActions({
       link.download = `${safeDownloadName(summary.title)}.json`;
       link.click();
       URL.revokeObjectURL(href);
-      chatMutation.closeActions();
       setNotice({ kind: "success", text: "Chat exported" });
     } catch (error) {
       setNotice({
@@ -1069,14 +1111,7 @@ export function useWorkspaceActions({
       }
       const updated = chatSummaryFromApi(apiChat);
       markCachedSummaryRevision(updated);
-      useWorkspaceStore
-        .getState()
-        .updateChats((current) =>
-          sortChatsByFavoriteThenUpdatedAt(
-            current.map((candidate) => (candidate.id === updated.id ? updated : candidate))
-          )
-        );
-      chatMutation.closeActions();
+      mergeChatIntoList(updated);
     } catch (error) {
       setNotice({
         kind: "error",

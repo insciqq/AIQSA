@@ -51,7 +51,11 @@ import {
 } from "../knowledge/runAdmission";
 import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
 import { decodeMemoryActionPlan } from "../memory/actions/intent";
-import { memoryActionToolForPlan } from "../memory/actions/tools";
+import {
+  MEMORY_LIST_TOOL_NAME,
+  memoryActionToolForPlan,
+  memoryActionTools
+} from "../memory/actions/tools";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import { defaultMemoryHistoryToolExecutor } from "../memory/history/search/defaultTool";
 import type { MemoryHistoryToolExecutor } from "../memory/history/search/toolExecutor";
@@ -555,13 +559,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   if (normalizedRequest.memoryActionPlan !== undefined && !memoryActionPlan) {
     throw new Error("memory_action_plan_invalid");
   }
+  const modelDrivenMemoryActions =
+    normalizedRequest.memoryActionTools?.version === "model-driven-v2";
   const clientToolsEnabled = normalizedRequest.toolMode !== "none";
   const knowledgeEnabled = clientToolsEnabled &&
     normalizedRequest.modelCapabilities.toolCalling === true &&
     (normalizedRequest.knowledgePlan?.baseIds.length ?? 0) > 0;
   const memoryActionEnabled = clientToolsEnabled &&
     normalizedRequest.modelCapabilities.toolCalling === true &&
-    memoryActionPlan !== null;
+    (memoryActionPlan !== null || modelDrivenMemoryActions);
   const memoryHistoryEnabled = clientToolsEnabled &&
     normalizedRequest.modelCapabilities.toolCalling === true &&
     normalizedRequest.memoryHistoryTool?.maxCalls === 2 &&
@@ -913,14 +919,19 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           searchPlanRouter?.accepts(name) === true;
         const isKnowledgeCall = (name: string) => knowledgeExecutor?.accepts(name) === true;
         const isMemoryCall = (name: string) =>
-          memoryActionPlan !== null && memoryActionExecutor?.accepts(memoryActionPlan, name) === true;
+          memoryActionExecutor?.accepts(
+            modelDrivenMemoryActions ? null : memoryActionPlan,
+            name
+          ) === true;
         const isMemoryHistoryCall = (name: string) =>
           memoryHistoryExecutor?.accepts(name) === true;
         const tools: RunTool[] = [
           ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
           ...(searchPlanRouter?.tools ?? (searchExecutor ? [perplexityWebSearchTool] : [])),
-          ...(memoryActionPlan && memoryActionExecutor
-            ? [memoryActionToolForPlan(memoryActionPlan)]
+          ...(memoryActionExecutor
+            ? modelDrivenMemoryActions
+              ? memoryActionTools
+              : memoryActionPlan ? [memoryActionToolForPlan(memoryActionPlan)] : []
             : []),
           ...(memoryHistoryExecutor ? [memoryHistoryExecutor.tool] : []),
           ...(clientToolsEnabled ? mcpRunTools(normalizedRequest.mcp) : [])
@@ -931,7 +942,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
         const persistedCalls = new Map<string, PersistedToolLoopCall>();
         const toolDurations = new Map<string, number>();
-        let memoryActionAttempted = false;
+        let memoryMutationAttempted = false;
         const hasMcpTools = tools.some((tool) => tool.capability === "mcp");
         let mcpRuntime = input.mcpRuntime ?? null;
         const runtime = () => {
@@ -1220,16 +1231,20 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     userId: input.userId
                   }, { signal: context.signal });
                 } else if (isMemoryCall(call.name)) {
-                  if (memoryActionAttempted) {
+                  if (call.name !== MEMORY_LIST_TOOL_NAME && memoryMutationAttempted) {
                     throw new Error("memory_action_already_attempted");
                   }
-                  memoryActionAttempted = true;
-                  result = await memoryActionExecutor!.execute(memoryActionPlan!, call, {
+                  if (call.name !== MEMORY_LIST_TOOL_NAME) memoryMutationAttempted = true;
+                  result = await memoryActionExecutor!.execute(
+                    modelDrivenMemoryActions ? null : memoryActionPlan,
+                    call,
+                    {
                     persistedToolCallId: claim.call.id,
                     request,
                     runId,
                     userId: input.userId
-                  });
+                    }
+                  );
                 } else if (isMemoryHistoryCall(call.name)) {
                   result = await memoryHistoryExecutor!.execute(call, {
                     persistedToolCallId: claim.call.id,
@@ -1459,7 +1474,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             streamSafetyReport
           );
         }
-        if (memoryActionPlan && !memoryActionAttempted) {
+        if (memoryActionPlan && !memoryMutationAttempted && memoryActionPlan.kind !== "LIST") {
           throw new RunPipelineError(
             "memory_action_required",
             "The requested Memory operation was not executed."

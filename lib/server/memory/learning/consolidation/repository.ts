@@ -88,6 +88,14 @@ export async function reconcileMemoryFactCandidateJobs(
       AND candidate."contentPurgedAt" IS NULL
       AND decision."id" IS NULL
       AND source_job."activeLeafMessageId" IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "MemoryJob" AS consolidation_job
+        WHERE consolidation_job."userId" = candidate."userId"
+          AND consolidation_job."kind" = 'CONSOLIDATE_CANDIDATE'::"MemoryJobKind"
+          AND consolidation_job."idempotencyFingerprint" LIKE
+            ('consolidate-candidate:' || candidate."id" || ':%')
+      )
     ORDER BY candidate."createdAt", candidate."id"
     LIMIT ${limit}
   `);
@@ -220,10 +228,18 @@ export function createPrismaMemoryFactConsolidationRepository(
       );
     },
     prepareConsolidation(
-      job: MemoryJobDescriptor
+      job: MemoryJobDescriptor,
+      relatedVersionIds: readonly string[] | null = null
     ): Promise<MemoryFactConsolidationPrepareResult> {
       return withLockedMemoryTransaction(client, job.userId, (tx, settings) =>
-        prepareMemoryFactConsolidation(tx, settings, job, keyring(), new Date()));
+        prepareMemoryFactConsolidation(
+          tx,
+          settings,
+          job,
+          keyring(),
+          new Date(),
+          relatedVersionIds
+        ));
     },
     prepareVerification(
       job: MemoryJobDescriptor

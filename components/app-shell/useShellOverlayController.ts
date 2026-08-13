@@ -1,8 +1,6 @@
 "use client";
 
 import type { ChatSummary, FolderSummary, InspectorMode } from "@/components/app-shell/types";
-import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
-import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const nonTextInputTypes = new Set([
@@ -86,52 +84,21 @@ export type ShellOverlayControllerInput = Readonly<{
     projectSettingsOpen: boolean;
     settingsOpen: boolean;
   }>;
-  onMobileWorkspaceClosed(): void;
 }>;
 
 export function useShellOverlayController({
   appearance,
-  blockers,
-  onMobileWorkspaceClosed
+  blockers
 }: ShellOverlayControllerInput) {
   const { changeMode: changeAppearanceMode, mode: appearanceMode } = appearance;
   const { projectSettingsOpen, settingsOpen } = blockers;
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [mobileWorkspaceOpen, setMobileWorkspaceOpen] = useState(false);
   const chatConfirmation = useConfirmationController<ChatSummary>();
   const folderConfirmation = useConfirmationController<FolderSummary>();
   const messageConfirmation = useConfirmationController<string>();
-  const onMobileWorkspaceClosedEvent = useEventCallback(onMobileWorkspaceClosed);
 
   const closePalette = useCallback(() => setPaletteOpen(false), []);
   const showPalette = useCallback(() => setPaletteOpen(true), []);
-  const showMobileWorkspace = useCallback(() => setMobileWorkspaceOpen(true), []);
-  const closeMobileWorkspace = useCallback(() => {
-    setMobileWorkspaceOpen(false);
-    onMobileWorkspaceClosedEvent();
-  }, [onMobileWorkspaceClosedEvent]);
-
-  const mobileWorkspaceDialogRef = useDialogFocus<HTMLDivElement>({
-    active: mobileWorkspaceOpen,
-    onClose: closeMobileWorkspace,
-    restoreFocus: () =>
-      document.querySelector<HTMLElement>(
-        '[data-testid="left-chat-pane"] button[aria-label="Start new chat"]'
-      )
-  });
-
-  const confirmChat = useEventCallback(() => {
-    chatConfirmation.confirm();
-    if (mobileWorkspaceOpen) {
-      closeMobileWorkspace();
-    }
-  });
-  const confirmFolder = useEventCallback(() => {
-    folderConfirmation.confirm();
-    if (mobileWorkspaceOpen) {
-      closeMobileWorkspace();
-    }
-  });
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -141,7 +108,6 @@ export function useShellOverlayController({
         }
 
         const blockingModalOpen =
-          mobileWorkspaceOpen ||
           projectSettingsOpen ||
           settingsOpen ||
           Boolean(chatConfirmation.target) ||
@@ -176,7 +142,6 @@ export function useShellOverlayController({
     closePalette,
     folderConfirmation.target,
     messageConfirmation.target,
-    mobileWorkspaceOpen,
     paletteOpen,
     projectSettingsOpen,
     settingsOpen,
@@ -187,23 +152,17 @@ export function useShellOverlayController({
     confirmations: {
       chat: {
         cancel: chatConfirmation.cancel,
-        confirm: confirmChat,
+        confirm: chatConfirmation.confirm,
         request: chatConfirmation.request,
         target: chatConfirmation.target
       },
       folder: {
         cancel: folderConfirmation.cancel,
-        confirm: confirmFolder,
+        confirm: folderConfirmation.confirm,
         request: folderConfirmation.request,
         target: folderConfirmation.target
       },
       message: messageConfirmation
-    },
-    mobileWorkspace: {
-      close: closeMobileWorkspace,
-      dialogRef: mobileWorkspaceDialogRef,
-      open: mobileWorkspaceOpen,
-      show: showMobileWorkspace
     },
     palette: {
       close: closePalette,

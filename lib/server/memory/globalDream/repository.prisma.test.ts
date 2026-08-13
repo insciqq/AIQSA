@@ -303,6 +303,8 @@ async function createDeferredCandidate(input: Readonly<{
         pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
         proposedCanonicalKey: input.canonicalKey,
         proposedCategory: "preference",
+        proposedCoreEligible: false,
+        proposedCoreSalience: "NONE",
         proposedDirectness: "DIRECT",
         proposedDisplayText: input.statement,
         proposedModality: "PREFERENCE",
@@ -774,7 +776,7 @@ describe("Global Dream Prisma repository", () => {
     })).resolves.toBe(2);
   });
 
-  it("discovers bounded local work once per low-frequency owner window", async () => {
+  it("does not discover new Global Dream work after semantic reconciliation retirement", async () => {
     const owner = await createOwner("discovery");
     await prisma.userMemorySettings.updateMany({
       data: { learnAutomatically: false },
@@ -798,10 +800,10 @@ describe("Global Dream Prisma repository", () => {
       keyring: () => keyring,
       limit: 1,
       now
-    })).resolves.toBe(2);
+    })).resolves.toBe(0);
     await expect(prisma.memoryJob.count({
       where: { kind: "GLOBAL_DREAM", userId: owner.userId }
-    })).resolves.toBe(2);
+    })).resolves.toBe(0);
     await expect(reconcileGlobalDreamJobs(prisma, {
       keyring: () => keyring,
       limit: 1,

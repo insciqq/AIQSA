@@ -2,7 +2,6 @@ import type { MemoryDeletionOperation, MemoryJobKind } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryExplicitEmbeddingHandler } from "../embedding/handler";
 import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
-import { createPrismaMemoryEpisodeExtractionHandler } from "../history/episode/handler";
 import { ensureDefaultMemoryPurgeHandlerRegistered } from "../purge/defaultPurge";
 import { MemoryCoordinator } from "./coordinator";
 import {
@@ -25,17 +24,9 @@ import { reconcileMemoryHistoryBackfills } from "../history/backfill";
 import { createPrismaMemoryFactExtractionHandler } from "../learning/extraction/handler";
 import { createPrismaMemoryFactDecisionHandlers } from "../learning/consolidation/handler";
 import { reconcileMemoryFactCandidateJobs } from "../learning/consolidation/repository";
-import {
-  createPrismaMemoryGlobalDreamHandler,
-  reconcileGlobalDreamJobs
-} from "../globalDream";
-import {
-  createPrismaMemoryWorkingSetProfileHandler,
-  reconcileMemoryWorkingSetJobs
-} from "../profile";
 import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
-import { MEMORY_PHASE7_CAPABILITY_POLICY } from "../capabilityPolicy";
 import { ensureDefaultMemoryPhase8Composition } from "../phase8Composition";
+import { memorySha256 } from "../persistence/lexical";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -79,9 +70,11 @@ type DefaultMemoryReconciliationWork = Readonly<{
 const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   Object.freeze({
     candidates: () => reconcileMemoryFactCandidateJobs(prisma),
-    dream: () => reconcileGlobalDreamJobs(prisma),
+    // Legacy handlers remain registered only so already-queued rows settle.
+    // New normal execution has one consolidator and no profile projection.
+    dream: async () => undefined,
     history: () => reconcileMemoryHistoryBackfills(prisma),
-    profile: () => reconcileMemoryWorkingSetJobs(prisma)
+    profile: async () => undefined
   });
 
 export async function reconcileDefaultMemoryWork(
@@ -96,9 +89,8 @@ export async function reconcileDefaultMemoryWork(
   await work.profile();
 }
 
-// The current coordinator composes the optional vector leaf, but an installation needs
-// an exact signed qualification entry before the handler can leave its durable
-// waiting state. Registry absence, expiry, or drift remains deliberately fail-closed.
+// Provider-backed work validates current destination, credential, transport,
+// schema, and vector-space compatibility through the shared execution boundary.
 const defaultExplicitEmbeddingHandler = createPrismaMemoryExplicitEmbeddingHandler(
   defaultMemoryExecutionAuthority,
   prisma
@@ -108,10 +100,6 @@ const defaultTemporaryChatDeletionHandler =
   createPrismaTemporaryChatDeletionHandler(createS3StorageAdapter(), prisma);
 
 const defaultHistoryIndexHandler = createPrismaMemoryHistoryIndexHandler(prisma);
-const defaultEpisodeExtractionHandler = createPrismaMemoryEpisodeExtractionHandler(
-  defaultMemoryExecutionAuthority,
-  prisma
-);
 const defaultFactExtractionHandler = createPrismaMemoryFactExtractionHandler(
   defaultMemoryExecutionAuthority,
   prisma
@@ -120,18 +108,33 @@ const defaultFactDecisionHandlers = createPrismaMemoryFactDecisionHandlers(
   defaultMemoryExecutionAuthority,
   prisma
 );
-const defaultGlobalDreamHandler = createPrismaMemoryGlobalDreamHandler(
-  defaultMemoryExecutionAuthority,
-  prisma
-);
-const defaultWorkingSetProfileHandler = createPrismaMemoryWorkingSetProfileHandler(
-  defaultMemoryExecutionAuthority,
-  prisma,
-  {
-    profileEnabled: MEMORY_PHASE7_CAPABILITY_POLICY.profileWorkingSet.enabled
-  }
-);
 const defaultMemoryRebuildHandler = createPrismaMemoryRebuildHandler(prisma);
+
+function retiredLegacyJobHandler(
+  kind: "EXTRACT_EPISODE" | "GLOBAL_DREAM" | "RECALCULATE_WORKING_SET"
+): MemoryJobHandler {
+  return Object.freeze({
+    async execute(claim) {
+      return {
+        acceptedResultHash: memorySha256({
+          domain: "aiqsa.memory.retired-legacy-job",
+          jobId: claim.id,
+          kind,
+          version: 1
+        }),
+        stage: "legacy_component_retired"
+      };
+    },
+    kind,
+    async preflight() {
+      return { status: "READY" };
+    }
+  });
+}
+
+const defaultEpisodeExtractionHandler = retiredLegacyJobHandler("EXTRACT_EPISODE");
+const defaultGlobalDreamHandler = retiredLegacyJobHandler("GLOBAL_DREAM");
+const defaultWorkingSetProfileHandler = retiredLegacyJobHandler("RECALCULATE_WORKING_SET");
 
 function getDefaultMemoryCoordinatorRuntime(): Readonly<{
   policy: MemoryCoordinatorPolicy;

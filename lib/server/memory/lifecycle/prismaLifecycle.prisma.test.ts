@@ -313,6 +313,8 @@ async function createFactCandidateFixture(input: Readonly<{
         pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
         proposedCanonicalKey: input.canonicalKey,
         proposedCategory: "preference",
+        proposedCoreEligible: false,
+        proposedCoreSalience: "NONE",
         proposedDirectness: "DIRECT",
         proposedDisplayText: input.displayText,
         proposedModality: "PREFERENCE",

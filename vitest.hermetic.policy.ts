@@ -5,6 +5,7 @@ export const databaseRequiredTestFiles = [
   "lib/server/auth/passwordRepository.test.ts",
   "lib/server/auth/registrationRepository.test.ts",
   "lib/server/chats/prismaRepository.test.ts",
+  "lib/server/chats/navigation.prisma.test.ts",
   "lib/server/chats/permanentDeletion/cleanup.prisma.test.ts",
   "lib/server/messages/prismaRepository.test.ts",
   "lib/server/memory/explicit/prismaExplicit.prisma.test.ts",

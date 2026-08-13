@@ -1,5 +1,5 @@
 import type { CatalogModel } from "@/components/app-shell/types";
-import type { ComposerAttachment } from "@/components/chat/Composer";
+import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { CatalogAttachmentLimits } from "@/lib/contracts/catalog";
 import { describe, expect, it } from "vitest";
 import {

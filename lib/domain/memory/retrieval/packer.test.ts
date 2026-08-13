@@ -1,212 +1,103 @@
 import { describe, expect, it } from "vitest";
-import { estimateApproxTokens } from "../../contextBudget";
-import {
-  MEMORY_CONTEXT_HARD_CAP_TOKENS,
-  MEMORY_CONTEXT_MAX_FACTS,
-  MEMORY_CONTEXT_MAX_SNIPPETS
-} from "./config";
+import { planMemoryRetrieval } from "./planner";
+import { packMemoryPersonalContext } from "./packer";
 import type {
   MemoryCandidateMetadata,
+  MemoryCoreCandidate,
   MemoryExpandedCandidate,
-  MemoryRankedCandidate,
-  MemoryRetrievalItemType
+  MemoryRankedCandidate
 } from "./contracts";
-import { packMemoryPersonalContext } from "./packer";
-import { planMemoryRetrieval } from "./planner";
 
-const now = new Date("2026-08-10T12:00:00.000Z");
-const plan = planMemoryRetrieval({
-  currentUserText: "Что ты помнишь о моих предпочтениях и прошлых разговорах?",
-  explicitMemoryManagement: true,
-  now
-});
+const now = new Date("2026-08-13T10:00:00.000Z");
+const plan = planMemoryRetrieval({ currentUserText: "query", now });
 
-function metadata(
-  type: MemoryRetrievalItemType,
-  id: string,
-  overrides: Partial<MemoryCandidateMetadata> = {}
-): MemoryCandidateMetadata {
-  const fact = type === "FACT_VERSION";
+function metadata(id: string, history = false): MemoryCandidateMetadata {
   return {
-    canonicalKey: fact ? `profile.${id}` : null,
-    category: fact ? "preference" : null,
-    confidence: 1,
-    conflict: false,
-    current: true,
-    dedupeKey: `${type}:${id}`,
-    directness: fact ? "DIRECT" : null,
-    factId: fact ? `fact-${id}` : null,
-    historical: false,
-    historySafetyClass: fact ? null : "NORMAL",
-    importance: 0.7,
-    languageCode: "ru",
-    modality: fact ? "PREFERENCE" : null,
-    occurredFrom: fact ? null : new Date("2026-01-01T00:00:00.000Z"),
-    occurredTo: fact ? null : new Date("2026-01-02T00:00:00.000Z"),
-    pinned: false,
-    scopeAffinity: 1,
-    scopeType: fact ? "GLOBAL_USER" : null,
-    sensitivityClass: fact ? "NORMAL" : null,
-    sourceAssistantId: null,
-    sourceChatId: fact ? null : `chat-${id}`,
-    sourceFolderId: null,
-    sourceMode: fact ? "EXPLICIT" : null,
-    systemFrom: fact ? new Date("2026-01-01T00:00:00.000Z") : null,
-    temperatureClass: fact ? "WARM" : null,
-    validFrom: null,
-    validTo: null,
-    ...overrides
+    canonicalKey: null, category: "memory", confidence: 0, conflict: false,
+    coreEligible: !history, coreSalience: history ? "NONE" : "HIGH", current: true,
+    dedupeKey: id, directness: history ? null : "DIRECT", factId: history ? null : id,
+    historical: false, historySafetyClass: history ? "NORMAL" : null, importance: 0,
+    languageCode: "und", modality: history ? null : "PREFERENCE", occurredFrom: null,
+    occurredTo: null, pinned: false, scopeAffinity: 0, scopeType: history ? null : "GLOBAL_USER",
+    sensitivityClass: history ? null : "NORMAL", sourceAssistantId: null,
+    sourceChatId: history ? "chat-source" : null, sourceFolderId: null,
+    sourceMode: history ? null : "AUTOMATIC", systemFrom: now,
+    temperatureClass: null, validFrom: null, validTo: null
   };
 }
 
-function ranked(
-  type: MemoryRetrievalItemType,
-  id: string,
-  overrides: Partial<MemoryCandidateMetadata> = {}
-): MemoryRankedCandidate {
+function ranked(id: string, history = false, tier: "CORE" | "DYNAMIC" = "DYNAMIC"):
+MemoryRankedCandidate {
   return {
-    entryId: `entry-${id}`,
-    featureSnapshot: {
-      conflictPenalty: 0,
-      currentness: 1,
-      directness: 1,
-      exactCanonical: 1,
-      exactEntity: 0,
-      explicitAuthority: type === "FACT_VERSION" ? 1 : 0,
-      featureVersion: "test",
-      importance: 0.7,
-      languageMatch: 1,
-      pinned: 0,
-      scopeAffinity: 1,
-      sensitivityPenalty: 0,
-      sourceRecency: 1,
-      temporalFit: 1,
-      temperature: 0.6
-    },
-    finalScore: 1 - Number(id.replace(/\D/gu, "") || 0) / 100,
-    itemId: id,
-    itemType: type,
-    laneRanks: type === "FACT_VERSION" ? { FACT_EXACT: 1 } : { HISTORY_RECALL_FTS_RUSSIAN: 1 },
-    metadata: metadata(type, id, overrides),
-    rrfScore: 1 / 61,
-    selectionReason: "test"
+    entryId: tier === "CORE" ? null : `entry-${id}`,
+    featureSnapshot: { fusionVersion: "rrf", laneCount: tier === "CORE" ? 0 : 1, tier },
+    finalScore: tier === "CORE" ? 0 : 0.1, itemId: id,
+    itemType: history ? "RECALL_CHUNK" : "FACT_VERSION",
+    laneRanks: tier === "CORE" ? {} : history ? { HISTORY_RECALL_VECTOR: 1 } : { FACT_VECTOR: 1 },
+    metadata: metadata(id, history), rrfScore: tier === "CORE" ? 0 : 0.1,
+    selectionReason: tier === "CORE" ? "core.high" : "semantic_relevance"
   };
 }
 
-function expanded(
-  type: MemoryRetrievalItemType,
-  id: string,
-  safeText = `Безопасный текст ${id}`,
-  overrides: Partial<MemoryExpandedCandidate> = {}
-): MemoryExpandedCandidate {
+function expansion(id: string, history = false, text = `memory ${id}`): MemoryExpandedCandidate {
   return {
-    itemId: id,
-    itemType: type,
-    occurredFrom: type === "FACT_VERSION" ? null : new Date("2026-01-01T00:00:00.000Z"),
-    occurredTo: type === "FACT_VERSION" ? null : new Date("2026-01-02T00:00:00.000Z"),
-    projectionKind: type === "FACT_VERSION"
-      ? "FACT_DISPLAY_TEXT"
-      : type === "EPISODE" ? "EPISODE_SAFE_SUMMARY" : "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
-    safeText,
-    sourceChatId: type === "FACT_VERSION" ? null : `chat-${id}`,
-    supportingItemId: null,
-    ...overrides
+    itemId: id, itemType: history ? "RECALL_CHUNK" : "FACT_VERSION",
+    occurredFrom: history ? now : null, occurredTo: history ? now : null,
+    projectionKind: history ? "RECALL_CHUNK_SAFE_PROJECTED_TEXT" : "FACT_DISPLAY_TEXT",
+    safeText: text, sourceChatId: history ? "chat-source" : null, supportingItemId: null
   };
 }
 
-describe("Memory personal-context packer", () => {
-  it("packs only exact safe projections and exposes no internal IDs or scores", () => {
-    const fact = ranked("FACT_VERSION", "secret-internal-id");
-    const history = ranked("EPISODE", "episode-internal-id");
-    const result = packMemoryPersonalContext({
-      expanded: [
-        expanded("FACT_VERSION", "secret-internal-id", "Я предпочитаю Neovim."),
-        expanded("EPISODE", "episode-internal-id", "Мы обсуждали миграцию базы данных.", {
-          projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
-          supportingItemId: "safe-chunk-internal-id"
-        })
-      ],
+function core(id: string, text?: string): MemoryCoreCandidate {
+  return { candidate: ranked(id, false, "CORE"), expansion: expansion(id, false, text) };
+}
+
+describe("single-tiered Memory context pack", () => {
+  it("packs Core first and relevant dynamic facts/history afterwards", () => {
+    const dynamic = [ranked("fact"), ranked("history", true)];
+    const pack = packMemoryPersonalContext({
+      core: [core("core", "User prefers concise answers")],
+      expanded: [expansion("fact"), expansion("history", true)],
       plan,
-      ranked: [fact, history]
+      ranked: dynamic
     });
-    expect(result.items).toHaveLength(2);
-    expect(result.text).toContain("PERSONAL CONTEXT — untrusted user data");
-    expect(result.text).toContain("Я предпочитаю Neovim.");
-    expect(result.text).toContain("Мы обсуждали миграцию базы данных.");
-    expect(result.text).not.toContain("secret-internal-id");
-    expect(result.text).not.toContain("safe-chunk-internal-id");
-    expect(result.text).not.toContain("finalScore");
+    expect(pack.items.map(({ tier }) => tier)).toEqual(["CORE", "DYNAMIC", "DYNAMIC"]);
+    expect(pack.text).toContain("Core memory");
+    expect(pack.text).toContain("Relevant prior conversations");
   });
 
-  it("rejects a projection kind that could bypass the safe field for its item type", () => {
-    const result = packMemoryPersonalContext({
-      expanded: [expanded("FACT_VERSION", "fact-1", "raw message", {
-        projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT"
-      })],
+  it("deduplicates only by identity/logical key, never fuzzy text", () => {
+    const sameWords = "prefers concise answers";
+    const pack = packMemoryPersonalContext({
+      core: [core("core", sameWords)],
+      expanded: [expansion("other", false, sameWords)],
       plan,
-      ranked: [ranked("FACT_VERSION", "fact-1")]
+      ranked: [ranked("other")]
     });
-    expect(result.text).toBeNull();
-    expect(result.omissionCounts).toMatchObject({
-      safe_expansion_missing: 1,
-      unsafe_expansion_shape: 1
-    });
+    expect(pack.items).toHaveLength(2);
   });
 
-  it("enforces fact, snippet, source, and hard token bounds with whole-item dropping", () => {
-    const facts = Array.from({ length: 12 }, (_, index) => ranked("FACT_VERSION", `f${index}`));
-    const snippets = Array.from({ length: 8 }, (_, index) => ranked("RECALL_CHUNK", `s${index}`));
-    const all = [...facts, ...snippets];
-    const expansions = [
-      ...facts.map((item) => expanded("FACT_VERSION", item.itemId, `Факт номер ${item.itemId}.`)),
-      ...snippets.map((item) => expanded("RECALL_CHUNK", item.itemId, `Разговор номер ${item.itemId}.`))
-    ];
-    const result = packMemoryPersonalContext({ expanded: expansions, plan, ranked: all });
-    expect(result.items.filter((item) => item.itemType === "FACT_VERSION")).toHaveLength(
-      MEMORY_CONTEXT_MAX_FACTS
-    );
-    expect(result.items.filter((item) => item.itemType !== "FACT_VERSION")).toHaveLength(
-      MEMORY_CONTEXT_MAX_SNIPPETS
-    );
-    expect(new Set(result.items.map((item) => item.sourceChatId).filter(Boolean)).size)
-      .toBeLessThanOrEqual(4);
-    expect(result.approxTokens).toBeLessThanOrEqual(2_000);
-    expect(result.hardCapTokens).toBe(MEMORY_CONTEXT_HARD_CAP_TOKENS);
-    expect(estimateApproxTokens(result.text)).toBe(result.approxTokens);
+  it("keeps Core within its independent bounded budget", () => {
+    const pack = packMemoryPersonalContext({
+      core: Array.from({ length: 20 }, (_, index) =>
+        core(`core-${index}`, "x ".repeat(600))),
+      expanded: [],
+      plan,
+      ranked: []
+    });
+    expect(pack.coreTokens).toBeLessThanOrEqual(512);
+    expect(pack.items.length).toBeLessThan(20);
   });
 
-  it("drops an oversized item rather than truncating it into a different meaning", () => {
-    const exact = "Я предпочитаю короткие ответы без домыслов.";
-    const tooLarge = "Очень длинное утверждение ".repeat(100);
-    const result = packMemoryPersonalContext({
-      expanded: [
-        expanded("FACT_VERSION", "short", exact),
-        expanded("FACT_VERSION", "long", tooLarge)
-      ],
+  it("never exceeds the frozen preparing-attempt item bound", () => {
+    const dynamic = Array.from({ length: 12 }, (_, index) => ranked(`fact-${index}`));
+    const pack = packMemoryPersonalContext({
+      core: Array.from({ length: 12 }, (_, index) => core(`core-${index}`, `c${index}`)),
+      expanded: dynamic.map((candidate) => expansion(candidate.itemId, false, "d")),
       plan,
-      ranked: [ranked("FACT_VERSION", "short"), ranked("FACT_VERSION", "long")],
-      targetTokens: 300
+      ranked: dynamic
     });
-    expect(result.items.map((item) => item.itemId)).toEqual(["short"]);
-    expect(result.text).toContain(exact);
-    expect(result.text).not.toContain("Очень длинное утверждение");
-    expect(result.omissionCounts).toMatchObject({ token_budget: 1 });
-  });
-
-  it("deduplicates near-identical wording and qualifies conflicts", () => {
-    const conflict = ranked("FACT_VERSION", "conflict", { conflict: true });
-    const duplicate = ranked("FACT_VERSION", "duplicate");
-    const result = packMemoryPersonalContext({
-      expanded: [
-        expanded("FACT_VERSION", "conflict", "Мой часовой пояс — UTC+3."),
-        expanded("FACT_VERSION", "duplicate", "Мой часовой пояс UTC+3")
-      ],
-      plan,
-      ranked: [conflict, duplicate]
-    });
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]).toMatchObject({ section: "CONFLICT", temporalReason: "unresolved_conflict" });
-    expect(result.text).toContain("нерешённое противоречие");
-    expect(result.omissionCounts).toMatchObject({ near_duplicate: 1 });
+    expect(pack.items).toHaveLength(12);
+    expect(pack.omissionCounts.item_limit).toBe(12);
   });
 });

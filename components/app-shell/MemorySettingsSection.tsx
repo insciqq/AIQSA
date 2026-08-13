@@ -251,8 +251,7 @@ function MemorySettings({
   const capabilities = [
     [t(locale, "settings.capabilityExplicit"), data.capabilities.explicitMemory],
     [t(locale, "settings.capabilityHistory"), data.capabilities.historyRecall],
-    [t(locale, "settings.capabilityLearning"), data.capabilities.automaticLearning],
-    [t(locale, "settings.capabilityRussian"), data.capabilities.russianQualified]
+    [t(locale, "settings.capabilityLearning"), data.capabilities.automaticLearning]
   ] as const;
 
   return (

@@ -41,9 +41,9 @@ describe("MemoryOperations", () => {
     const heading = screen.getByRole("heading", { name: "Memory operations" });
     await waitFor(() => expect(heading).toHaveFocus());
     expect(screen.getByText(/normal rebuild remains lexical-only/u)).toBeVisible();
-    expect(screen.getAllByText(/History indexing is unavailable/u)).toHaveLength(3);
+    expect(screen.getAllByText(/History indexing is unavailable/u)).toHaveLength(2);
     const actionButtons = screen.getAllByRole("button", { name: "Review action" });
-    expect(actionButtons.slice(0, 3).every((button) => button.hasAttribute("disabled"))).toBe(true);
+    expect(actionButtons.slice(0, 2).every((button) => button.hasAttribute("disabled"))).toBe(true);
     expect(actionButtons.at(-1)).toBeEnabled();
 
     fireEvent.click(actionButtons.at(-1)!);

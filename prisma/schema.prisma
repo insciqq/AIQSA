@@ -200,6 +200,13 @@ enum MemoryTemperatureClass {
   COLD
 }
 
+enum MemoryCoreSalience {
+  HIGH
+  MEDIUM
+  LOW
+  NONE
+}
+
 enum MemoryFactVersionState {
   ACTIVE
   CONFLICTING
@@ -2072,7 +2079,7 @@ model UserMemorySettings {
   userId                           String                         @id
   useMemoryFacts                   Boolean                        @default(true)
   referenceChatHistory             Boolean                        @default(true)
-  learnAutomatically               Boolean                        @default(false)
+  learnAutomatically               Boolean                        @default(true)
   memoryGeneration                 Int                            @default(0)
   memoryRevision                   Int                            @default(0)
   activeIndexGenerationId          String?
@@ -2261,6 +2268,8 @@ model MemoryCandidate {
   temporalResolutionEvidence Json?
   proposedDirectness         MemoryDirectness?
   proposedSensitivity        MemorySensitivityClass?
+  proposedCoreEligible       Boolean?
+  proposedCoreSalience       MemoryCoreSalience?
   languageCode               String?                 @db.VarChar(35)
   importance                 Float?
   confidence                 Float?
@@ -2377,6 +2386,8 @@ model MemoryFactVersion {
   importance                 Float
   directness                 MemoryDirectness
   sensitivityClass           MemorySensitivityClass
+  coreEligible               Boolean                @default(false)
+  coreSalience               MemoryCoreSalience     @default(NONE)
   supersedesVersionId        String?
   movedFromVersionId         String?
   createdByEventId           String
@@ -2913,7 +2924,7 @@ model MemoryHistoryRun {
   invocationOrdinal   Int
   state               MemoryHistoryRunState       @default(RUNNING)
   outcome             MemoryHistoryRunOutcome?
-  query               String?                     @db.VarChar(500)
+  query               String?                     @db.VarChar(2000)
   queryHash           String                      @db.VarChar(128)
   privateRequest      Json
   indexingEvidence    Json                        @default("{}")

@@ -23,14 +23,11 @@ import {
 import type { MemorySuppressionKeyring } from "../../suppressionKeyring";
 import {
   memoryFactDecisionId,
-  memoryFactVerificationInputHash,
-  memoryFactVerificationJobFingerprint,
-  MEMORY_FACT_VERIFICATION_PIPELINE_VERSION,
+  MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION,
   type MemoryFactCandidateEvidenceSnapshot,
   type MemoryFactCandidateSnapshot,
   type MemoryFactConsolidationInput,
   type MemoryFactConsolidationPlan,
-  type MemoryFactDecisionSnapshot,
   type MemoryFactVerificationInput,
   type MemoryFactVerificationPlan
 } from "./contract";
@@ -87,13 +84,15 @@ function candidateValue(candidate: MemoryFactCandidateSnapshot) {
   return {
     category: candidate.category,
     confidence: candidate.confidence,
+    coreEligible: candidate.coreEligible ?? false,
+    coreSalience: candidate.coreSalience ?? "NONE",
     directness: candidate.directness,
     displayText: candidate.displayText,
     importance: candidate.importance,
     languageCode: candidate.languageCode,
     modality: candidate.modality,
     normalizedSearchText: normalizeMemorySearchText(candidate.displayText),
-    pipelineVersion: "memory-fact-consolidation-v1",
+    pipelineVersion: MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION,
     rawTemporalExpression: candidate.rawTemporalExpression,
     sensitivityClass: candidate.sensitivity,
     sourceTimezone: candidate.sourceTimezone,
@@ -277,18 +276,8 @@ async function enqueueDerivedWork(
       pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
     });
   }
-  if (settings.useMemoryFacts) {
-    await enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: `recalculate-working-set:${memorySha256({
-        candidateId: candidate.id,
-        decisionId,
-        factId,
-        memoryRevision: settings.memoryRevision
-      })}`,
-      kind: "RECALCULATE_WORKING_SET",
-      pipelineVersion: "memory-fact-consolidation-v1"
-    });
-  }
+  void candidate;
+  void factId;
 }
 
 async function lockTargetFact(
@@ -454,7 +443,8 @@ async function applyReinforce(
   versionId: string
 ): Promise<SemanticApplyResult | null> {
   const target = await lockTargetFact(tx, settings.userId, factId, versionId);
-  if (!target || target.fact.canonicalKey !== candidate.canonicalKey) return null;
+  if (!target) return null;
+  const factCandidate = { ...candidate, canonicalKey: target.fact.canonicalKey };
   const existing = await tx.memoryEvidence.findMany({
     select: { messageId: true, sourceProjectionVersion: true },
     where: {
@@ -511,7 +501,7 @@ async function applyReinforce(
       index,
       settings.userId,
       versionId,
-      candidate,
+      factCandidate,
       true
     );
   }
@@ -536,7 +526,8 @@ async function applyVersionTransition(
     plan.targetFactId,
     plan.targetVersionId
   );
-  if (!target || target.fact.canonicalKey !== candidate.canonicalKey) return null;
+  if (!target) return null;
+  const factCandidate = { ...candidate, canonicalKey: target.fact.canonicalKey };
   if (plan.operation === "EXPIRE" && target.version.sourceMode !== "AUTOMATIC") {
     return null;
   }
@@ -608,7 +599,7 @@ async function applyVersionTransition(
   const newVersionId = randomUUID();
   const eventOperation = plan.operation === "SUPERSEDE" ? "SUPERSEDE" : "CONFLICT";
   const eventId = await createEvent(tx, {
-    candidate,
+    candidate: factCandidate,
     decisionId,
     executionId,
     factId: target.fact.id,
@@ -639,7 +630,7 @@ async function applyVersionTransition(
   }
   await tx.memoryFactVersion.create({
     data: {
-      ...candidateValue(candidate),
+      ...candidateValue(factCandidate),
       createdByEventId: eventId,
       factId: target.fact.id,
       id: newVersionId,
@@ -684,7 +675,7 @@ async function applyVersionTransition(
     index,
     settings.userId,
     newVersionId,
-    candidate,
+    factCandidate,
     plan.operation === "SUPERSEDE"
   );
   await enqueueDerivedWork(
@@ -793,7 +784,9 @@ export async function applyMemoryFactConsolidation(
     settings,
     claim,
     keyring,
-    now
+    now,
+    expectedInput.relatedFacts.flatMap((fact) =>
+      fact.currentVersionId ? [fact.currentVersionId] : [])
   );
   if ("decision" in prepared || prepared.input.inputHash !== expectedInput.inputHash) {
     await markCandidateDeferred(
@@ -823,82 +816,6 @@ export async function applyMemoryFactConsolidation(
     return;
   }
   const decisionId = memoryFactDecisionId(expectedInput, plan);
-  if (policy.requiresVerification) {
-    const decision: MemoryFactDecisionSnapshot = {
-      consolidationInputHash: expectedInput.inputHash,
-      consolidationOutputHash: plan.outputHash,
-      id: decisionId,
-      operation: plan.operation,
-      reasonCode: plan.reasonCode,
-      relatedSnapshotHash: expectedInput.relatedSnapshotHash,
-      requiresVerification: true,
-      targetFactId: plan.targetFactId,
-      targetVersionId: plan.targetVersionId
-    };
-    const target = plan.targetFactId
-      ? expectedInput.relatedFacts.find((fact) => fact.id === plan.targetFactId) ?? null
-      : null;
-    const verificationWithoutHash: Omit<MemoryFactVerificationInput, "inputHash"> = {
-      candidate: expectedInput.candidate,
-      decision,
-      target
-    };
-    const verificationInputHash = memoryFactVerificationInputHash(
-      verificationWithoutHash
-    );
-    const verificationJob = await enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: memoryFactVerificationJobFingerprint(decisionId),
-      kind: "VERIFY_CANDIDATE",
-      pipelineVersion: MEMORY_FACT_VERIFICATION_PIPELINE_VERSION,
-      source: {
-        activeLeafMessageId: claim.activeLeafMessageId!,
-        branchGeneration: claim.branchGeneration!,
-        chatId: claim.chatId!,
-        sourceHash: claim.sourceHash!,
-        sourceRevision: claim.sourceRevision!
-      }
-    });
-    await tx.memoryCandidateDecision.create({
-      data: {
-        candidateId: expectedInput.candidate.id,
-        consolidationExecutionId: executionId,
-        consolidationInputHash: expectedInput.inputHash,
-        consolidationJobId: claim.id,
-        consolidationOutputHash: plan.outputHash,
-        effectiveFrom: plan.effectiveFrom ? new Date(plan.effectiveFrom) : null,
-        id: decisionId,
-        operation: plan.operation,
-        reasonCode: plan.reasonCode,
-        relatedSnapshotHash: expectedInput.relatedSnapshotHash,
-        requiresVerification: true,
-        state: "PENDING_VERIFICATION",
-        targetFactId: plan.targetFactId,
-        targetVersionId: plan.targetVersionId,
-        userId: claim.userId,
-        verificationInputHash,
-        verificationJobId: verificationJob.id
-      }
-    });
-    return;
-  }
-  if (plan.operation === "DEFER") {
-    await markCandidateDeferred(
-      tx,
-      claim.userId,
-      expectedInput.candidate.id,
-      "consolidation_deferred"
-    );
-    await createAppliedDecision(
-      tx,
-      claim,
-      expectedInput,
-      plan,
-      executionId,
-      now,
-      decisionId
-    );
-    return;
-  }
   if (plan.operation === "NOOP") {
     const updated = await tx.memoryCandidate.updateMany({
       data: {
@@ -1050,6 +967,7 @@ export async function applyMemoryFactVerification(
   const consolidationInput: MemoryFactConsolidationInput = {
     candidate: prepared.input.candidate,
     inputHash: expectedInput.decision.consolidationInputHash,
+    memoryRevision: settings.memoryRevision,
     relatedFacts: prepared.input.target ? [prepared.input.target] : [],
     relatedSnapshotHash: expectedInput.decision.relatedSnapshotHash
   };

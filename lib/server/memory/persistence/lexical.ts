@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 
-export const MEMORY_LEXICAL_LANGUAGE_PROFILE = "RU_EN_MULTILINGUAL_V1";
-export const MEMORY_LEXICAL_NORMALIZATION_VERSION = "memory-search-normalization-v1";
+export const MEMORY_LEXICAL_LANGUAGE_PROFILE = "UNICODE_SIMPLE_V2";
+export const MEMORY_LEXICAL_NORMALIZATION_VERSION = "memory-search-normalization-v2";
 export const MEMORY_LEXICAL_CHUNKING_VERSION = "memory-no-chunking-v1";
-export const MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION = "memory-retrieval-v1";
+export const MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION = "memory-retrieval-v2";
 
 function canonicalJson(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();
@@ -33,5 +33,7 @@ export function normalizeMemorySearchText(value: string): string {
 }
 
 export function normalizeMemorySearchTextYo(value: string): string {
-  return normalizeMemorySearchText(value).replace(/ё/gu, "е");
+  // Compatibility column writer. New generations use one Unicode/simple
+  // normalization and do not rewrite language-specific characters.
+  return normalizeMemorySearchText(value);
 }

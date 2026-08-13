@@ -20,9 +20,7 @@ import {
   type MemoryItemEmbeddingPin
 } from "../embedding/contract";
 import {
-  MEMORY_EPISODE_REDREAM_JOB_PREFIX,
-  MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION,
-  memoryEpisodeRedreamJobFingerprint
+  MEMORY_EPISODE_REDREAM_JOB_PREFIX
 } from "../history/episode/contract";
 import {
   advanceMemoryMutation,
@@ -38,6 +36,10 @@ import {
 } from "../persistence/authorizations";
 import { enqueueMemoryJob } from "../persistence/jobs";
 import {
+  MEMORY_LEXICAL_CHUNKING_VERSION,
+  MEMORY_LEXICAL_LANGUAGE_PROFILE,
+  MEMORY_LEXICAL_NORMALIZATION_VERSION,
+  MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
   normalizeMemorySearchText,
   normalizeMemorySearchTextYo
@@ -46,10 +48,13 @@ import {
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
 } from "../retrieval/vector";
 import {
-  MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   memoryVectorSpaceFingerprint,
+  requireAcceptedMemoryUtilityPolicy,
   resolveCurrentMemoryUtilityPolicy
 } from "../execution/policy";
+import { requireAdminAcceptedMemoryDestination } from "../execution/adminConsent";
+import { resolveMemoryEgressConsentMode } from "../execution/consentMode";
+import { MemoryExecutionError } from "../execution/errors";
 import {
   MEMORY_REDREAM_BATCH_PIPELINE_VERSION,
   MEMORY_SHADOW_REBUILD_PIPELINE_VERSION,
@@ -108,20 +113,6 @@ type ChunkRow = Readonly<{
   safeProjectedText: string;
   safetyClass: string;
   sourceContentHash: string;
-  sourceProjectionVersion: string;
-  sourceRevisionAtCreation: number;
-}>;
-
-type EpisodeRow = Readonly<{
-  branchGeneration: number;
-  chatId: string;
-  id: string;
-  languageCode: string;
-  redactionReasonCodes: string[];
-  redactionState: string;
-  safeSummary: string;
-  safetyClass: string;
-  sourceHash: string;
   sourceProjectionVersion: string;
   sourceRevisionAtCreation: number;
 }>;
@@ -430,118 +421,17 @@ async function eligibleChunks(
   }).filter(({ safeSearchText }) => safeSearchText.length > 0);
 }
 
-async function eligibleEpisodes(
-  tx: MemoryTransaction,
-  settings: LockedMemorySettings,
-  suppressionIdentitySnapshot: string
-): Promise<readonly SearchIdentity[]> {
-  if (!settings.referenceChatHistory) return [];
-  const rows = await tx.$queryRaw<EpisodeRow[]>(Prisma.sql`
-    SELECT
-      episode."id", episode."chatId", episode."branchGeneration",
-      episode."sourceRevisionAtCreation", episode."safeSummary", episode."languageCode",
-      episode."safetyClass"::text AS "safetyClass",
-      episode."redactionState"::text AS "redactionState", episode."redactionReasonCodes",
-      episode."sourceHash", episode."sourceProjectionVersion"
-    FROM "MemoryEpisode" AS episode
-    INNER JOIN "Chat" AS chat
-      ON chat."userId" = episode."userId" AND chat."id" = episode."chatId"
-      AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND chat."memoryBranchGeneration" = episode."branchGeneration"
-      AND chat."memorySourceRevision" = episode."sourceRevisionAtCreation"
-    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
-      ON checkpoint."userId" = episode."userId" AND checkpoint."chatId" = episode."chatId"
-      AND checkpoint."branchGeneration" = episode."branchGeneration"
-      AND checkpoint."sourceRevision" = episode."sourceRevisionAtCreation"
-      AND checkpoint."sourceContentHash" = episode."sourceHash"
-      AND checkpoint."activeLeafMessageId" = chat."activeLeafMessageId"
-      AND checkpoint."lastDreamedMessageId" = chat."activeLeafMessageId"
-      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
-    WHERE episode."userId" = ${settings.userId}
-      AND episode."state" = 'ACTIVE'::"MemoryHistoryItemState"
-      AND episode."safetyClass" IN (
-        'NORMAL'::"MemoryDerivedSafetyClass", 'SENSITIVE'::"MemoryDerivedSafetyClass"
-      )
-      AND episode."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
-      AND NOT EXISTS (
-        SELECT 1 FROM "MemorySuppression" AS suppression
-        LEFT JOIN "MemoryEpisodeMessage" AS source_message
-          ON source_message."userId" = episode."userId"
-          AND source_message."episodeId" = episode."id"
-          AND suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-          AND suppression."sourceChatId" = source_message."chatId"
-          AND suppression."sourceMessageId" = source_message."messageId"
-        WHERE suppression."userId" = episode."userId"
-          AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
-          AND (
-            suppression."scope" = 'ALL'::"MemorySuppressionScope"
-            OR (
-              suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
-              AND suppression."sourceEpisodeId" = episode."id"
-            )
-            OR (
-              source_message."messageId" IS NOT NULL
-              AND (
-                suppression."sourceBranchGeneration" IS NULL
-                OR suppression."sourceBranchGeneration" = episode."branchGeneration"
-              )
-            )
-          )
-      )
-    ORDER BY episode."id"
-  `);
-  if (rows.length === 0) return [];
-  const joins = await tx.$queryRaw<MessageJoinRow[]>(Prisma.sql`
-    SELECT
-      join_row."episodeId" AS "itemId", join_row."messageId", join_row."ordinal",
-      NULL::varchar AS "role", NULL::integer AS "startOffset", NULL::integer AS "endOffset"
-    FROM "MemoryEpisodeMessage" AS join_row
-    WHERE join_row."userId" = ${settings.userId}
-      AND join_row."episodeId" IN (${Prisma.join(rows.map(({ id }) => id))})
-    ORDER BY join_row."episodeId", join_row."ordinal"
-  `);
-  return rows.map((row) => {
-    const messageIds = joins
-      .filter(({ itemId }) => itemId === row.id)
-      .map(({ messageId }) => messageId);
-    return {
-      itemId: row.id,
-      itemType: "EPISODE" as const,
-      languageCode: row.languageCode,
-      safeContentHash: memorySha256(row.safeSummary),
-      safeSearchText: normalizeMemorySearchText(row.safeSummary),
-      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(row.safeSummary),
-      safetyIdentitySnapshot: memorySha256({
-        redactionReasonCodes: row.redactionReasonCodes,
-        redactionState: row.redactionState,
-        safetyClass: row.safetyClass,
-        sourceProjectionVersion: row.sourceProjectionVersion
-      }),
-      sourceIdentitySnapshot: memorySha256({
-        branchGeneration: row.branchGeneration,
-        chatId: row.chatId,
-        messageIds,
-        sourceHash: row.sourceHash,
-        sourceRevision: row.sourceRevisionAtCreation,
-        userId: settings.userId
-      }),
-      suppressionIdentitySnapshot
-    };
-  }).filter(({ safeSearchText }) => safeSearchText.length > 0);
-}
-
 async function enumerateEligibleItems(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
   now: Date
 ): Promise<readonly SearchIdentity[]> {
   const suppressionIdentity = await currentSuppressionIdentity(tx, settings.userId, now);
-  const [facts, chunks, episodes] = await Promise.all([
+  const [facts, chunks] = await Promise.all([
     eligibleFacts(tx, settings),
-    eligibleChunks(tx, settings, suppressionIdentity),
-    eligibleEpisodes(tx, settings, suppressionIdentity)
+    eligibleChunks(tx, settings, suppressionIdentity)
   ]);
-  return [...facts, ...chunks, ...episodes].sort((left, right) =>
+  return [...facts, ...chunks].sort((left, right) =>
     left.itemType.localeCompare(right.itemType) || left.itemId.localeCompare(right.itemId));
 }
 
@@ -692,10 +582,10 @@ function generationConfigurationMatches(
   operation: MemoryShadowRebuildOperation,
   settings: LockedMemorySettings
 ): boolean {
-  const common = source.id === target.id ? false :
-    source.languageProfile === target.languageProfile &&
-    source.normalizationVersion === target.normalizationVersion &&
-    source.chunkingVersion === target.chunkingVersion;
+  const common = source.id !== target.id &&
+    target.languageProfile === MEMORY_LEXICAL_LANGUAGE_PROFILE &&
+    target.normalizationVersion === MEMORY_LEXICAL_NORMALIZATION_VERSION &&
+    target.chunkingVersion === MEMORY_LEXICAL_CHUNKING_VERSION;
   if (!common) return false;
   if (operation === "REEMBED") {
     return target.indexMode === "HYBRID" &&
@@ -708,7 +598,9 @@ function generationConfigurationMatches(
     source.embeddingConfigurationFingerprint === target.embeddingConfigurationFingerprint &&
     source.embeddingDimension === target.embeddingDimension &&
     source.vectorSpaceFingerprint === target.vectorSpaceFingerprint &&
-    source.retrievalPipelineVersion === target.retrievalPipelineVersion;
+    target.retrievalPipelineVersion === (target.indexMode === "HYBRID"
+      ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
+      : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION);
 }
 
 async function targetEmbeddingConfigurationIsCurrent(
@@ -745,14 +637,30 @@ async function currentEmbeddingPin(
   const model = current?.snapshot.model;
   if (
     !current ||
-    !settings.acceptedUtilityEgressAt ||
-    settings.acceptedUtilityPolicyVersion !== MEMORY_UTILITY_EGRESS_POLICY_VERSION ||
-    settings.acceptedUtilityEgressFingerprint !== policy.fingerprint ||
     model?.adapterKind !== "openai_embeddings_compatible" ||
     model.modelClass !== "embedding" ||
     !model.embedding
   ) {
     return null;
+  }
+  try {
+    const consentMode = resolveMemoryEgressConsentMode();
+    if (consentMode === "ADMIN") {
+      await requireAdminAcceptedMemoryDestination(tx, {
+        role: "MEMORY_DOCUMENT_EMBED",
+        target: current
+      });
+    } else {
+      requireAcceptedMemoryUtilityPolicy(settings, policy, consentMode);
+    }
+  } catch (error) {
+    if (
+      error instanceof MemoryExecutionError &&
+      error.code === "memory_execution_egress_consent_required"
+    ) {
+      return null;
+    }
+    throw error;
   }
   const vectorSpaceFingerprint = memoryVectorSpaceFingerprint(current);
   return vectorSpaceFingerprint
@@ -805,8 +713,10 @@ async function purgeRetainedSupersededSearch(
 async function failShadowGeneration(
   tx: MemoryTransaction,
   userId: string,
-  generationId: string
+  generationId: string,
+  reason: string
 ): Promise<void> {
+  console.error(reason);
   await tx.memoryIndexGeneration.updateMany({
     data: { state: "FAILED" },
     where: {
@@ -838,7 +748,12 @@ async function applyShadowCatchUp(
   if (["CANCELLED", "FAILED"].includes(target.state)) return;
   const sourceId = target.sourceIndexGenerationId;
   if (!sourceId || sourceId !== settings.activeIndexGenerationId) {
-    await failShadowGeneration(tx, claim.userId, target.id);
+    await failShadowGeneration(
+      tx,
+      claim.userId,
+      target.id,
+      "memory_rebuild_source_generation_changed"
+    );
     return;
   }
   const source = await tx.memoryIndexGeneration.findFirst({
@@ -849,7 +764,12 @@ async function applyShadowCatchUp(
     target.targetMemoryRevision !== claim.memoryRevisionSnapshot ||
     !generationConfigurationMatches(source, target, identity.operation, settings)
   ) {
-    await failShadowGeneration(tx, claim.userId, target.id);
+    await failShadowGeneration(
+      tx,
+      claim.userId,
+      target.id,
+      "memory_rebuild_configuration_changed"
+    );
     return;
   }
   if (target.state === "BUILDING" || target.state === "READY") {
@@ -876,12 +796,22 @@ async function applyShadowCatchUp(
     where: { id: target.id }
   });
   if (diff.failed) {
-    await failShadowGeneration(tx, claim.userId, target.id);
+    await failShadowGeneration(
+      tx,
+      claim.userId,
+      target.id,
+      "memory_rebuild_child_failed"
+    );
     return;
   }
   if (!diff.complete) return;
   if (!(await targetEmbeddingConfigurationIsCurrent(tx, settings, target))) {
-    await failShadowGeneration(tx, claim.userId, target.id);
+    await failShadowGeneration(
+      tx,
+      claim.userId,
+      target.id,
+      "memory_rebuild_embedding_configuration_changed"
+    );
     return;
   }
 
@@ -919,107 +849,17 @@ async function applyShadowCatchUp(
 }
 
 async function applyRedreamBatch(
-  tx: MemoryTransaction,
+  _tx: MemoryTransaction,
   claim: MemoryJobClaim,
-  now: Date
+  _now: Date
 ): Promise<void> {
   const identity = parseMemoryRebuildJobFingerprint(claim.idempotencyFingerprint);
   if (!identity || identity.type !== "REDREAM") {
     throw new Error("memory_redream_job_invalid");
   }
-  const settings = await lockMemorySettings(tx, claim.userId, true);
-  if (settings.memoryGeneration !== claim.memoryGenerationSnapshot) {
-    throw new MemoryCoordinatorError("memory_source_stale", false);
-  }
-  if (!settings.referenceChatHistory) return;
-  const sources = await tx.$queryRaw<Array<{
-    activeLeafMessageId: string;
-    branchGeneration: number;
-    chatId: string;
-    sourceHash: string;
-    sourceRevision: number;
-  }>>(Prisma.sql`
-    SELECT
-      checkpoint."activeLeafMessageId", checkpoint."branchGeneration",
-      checkpoint."chatId", checkpoint."sourceContentHash" AS "sourceHash",
-      checkpoint."sourceRevision"
-    FROM "ChatMemoryCheckpoint" AS checkpoint
-    INNER JOIN "Chat" AS chat
-      ON chat."userId" = checkpoint."userId" AND chat."id" = checkpoint."chatId"
-      AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND chat."activeLeafMessageId" = checkpoint."activeLeafMessageId"
-      AND chat."memoryBranchGeneration" = checkpoint."branchGeneration"
-      AND chat."memorySourceRevision" = checkpoint."sourceRevision"
-    WHERE checkpoint."userId" = ${claim.userId}
-      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
-      AND checkpoint."lastIndexedMessageId" = checkpoint."activeLeafMessageId"
-      AND EXISTS (
-        SELECT 1 FROM "MemoryRecallChunk" AS chunk
-        WHERE chunk."userId" = checkpoint."userId"
-          AND chunk."chatId" = checkpoint."chatId"
-          AND chunk."branchGeneration" = checkpoint."branchGeneration"
-          AND chunk."sourceRevisionAtCreation" = checkpoint."sourceRevision"
-          AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM "MemorySuppression" AS suppression
-        WHERE suppression."userId" = checkpoint."userId"
-          AND (
-            suppression."expiresAt" IS NULL
-            OR suppression."expiresAt" > CURRENT_TIMESTAMP
-          )
-          AND (
-            suppression."scope" = 'ALL'::"MemorySuppressionScope"
-            OR (
-              suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-              AND suppression."sourceChatId" = checkpoint."chatId"
-              AND (
-                suppression."sourceBranchGeneration" IS NULL
-                OR suppression."sourceBranchGeneration" = checkpoint."branchGeneration"
-              )
-              AND EXISTS (
-                SELECT 1
-                FROM "MemoryRecallChunk" AS chunk
-                INNER JOIN "MemoryRecallChunkMessage" AS source_message
-                  ON source_message."userId" = chunk."userId"
-                  AND source_message."chunkId" = chunk."id"
-                WHERE chunk."userId" = checkpoint."userId"
-                  AND chunk."chatId" = checkpoint."chatId"
-                  AND chunk."branchGeneration" = checkpoint."branchGeneration"
-                  AND chunk."sourceRevisionAtCreation" = checkpoint."sourceRevision"
-                  AND chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"
-                  AND source_message."messageId" = suppression."sourceMessageId"
-              )
-            )
-            OR (
-              suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
-              AND EXISTS (
-                SELECT 1
-                FROM "MemoryEpisode" AS episode
-                WHERE episode."userId" = checkpoint."userId"
-                  AND episode."id" = suppression."sourceEpisodeId"
-                  AND episode."chatId" = checkpoint."chatId"
-                  AND episode."branchGeneration" = checkpoint."branchGeneration"
-                  AND episode."sourceRevisionAtCreation" = checkpoint."sourceRevision"
-              )
-            )
-          )
-      )
-    ORDER BY checkpoint."chatId"
-  `);
-  for (const source of sources) {
-    await enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: memoryEpisodeRedreamJobFingerprint(identity.batchId, {
-        ...source,
-        userId: claim.userId
-      }),
-      kind: "EXTRACT_EPISODE",
-      pipelineVersion: MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION,
-      source
-    });
-  }
-  void now;
+  // Persisted v1 batch jobs settle successfully without creating any new
+  // extractive episodes. Eligible history chunks and grounded EVENT facts are
+  // the serving representations in v2.
 }
 
 function configurationData(
@@ -1027,30 +867,33 @@ function configurationData(
   operation: MemoryShadowRebuildOperation,
   pin: MemoryItemEmbeddingPin | null
 ) {
+  const lexicalConfiguration = {
+    chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+    languageProfile: MEMORY_LEXICAL_LANGUAGE_PROFILE,
+    normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION
+  } as const;
   if (operation === "REBUILD_SEARCH_INDEX") {
     return {
-      chunkingVersion: source.chunkingVersion,
+      ...lexicalConfiguration,
       embeddingConfigurationFingerprint: source.embeddingConfigurationFingerprint,
       embeddingConnectionId: source.embeddingConnectionId,
       embeddingDimension: source.embeddingDimension,
       embeddingProviderModelId: source.embeddingProviderModelId,
       indexMode: source.indexMode,
-      languageProfile: source.languageProfile,
-      normalizationVersion: source.normalizationVersion,
-      retrievalPipelineVersion: source.retrievalPipelineVersion,
+      retrievalPipelineVersion: source.indexMode === "HYBRID"
+        ? MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
+        : MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
       vectorSpaceFingerprint: source.vectorSpaceFingerprint
     } as const;
   }
   if (!pin) throw new Error("memory_rebuild_embedding_pin_missing");
   return {
-    chunkingVersion: source.chunkingVersion,
+    ...lexicalConfiguration,
     embeddingConfigurationFingerprint: pin.configurationFingerprint,
     embeddingConnectionId: pin.connectionId,
     embeddingDimension: pin.dimension,
     embeddingProviderModelId: pin.providerModelId,
     indexMode: "HYBRID" as const,
-    languageProfile: source.languageProfile,
-    normalizationVersion: source.normalizationVersion,
     retrievalPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
     vectorSpaceFingerprint: pin.vectorSpaceFingerprint
   };
@@ -1200,6 +1043,9 @@ export function createPrismaMemoryRebuildRepository(
       userId: string,
       input: MemoryRebuildAdmissionInput
     ): Promise<MemoryRebuildAdmissionResult> {
+      if (input.operation === "REDREAM_EXISTING_CHATS") {
+        throw new Error("memory_contract_invalid");
+      }
       return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
         let redreamFingerprint: string | null = null;
         if (input.operation === "REDREAM_EXISTING_CHATS") {

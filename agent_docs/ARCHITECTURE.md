@@ -151,7 +151,7 @@ The browser maintains strict summary/detail separation:
 
 Every async producer captures its source chat/session before awaiting. Optimistic rows, ID adoption, token flushes, errors, persisted refresh, and terminal updates affect only that source. Cached inactive state survives navigation, and stale responses merge without overwriting concurrent user/stream work.
 
-`PowerAppShell` composes exactly seven semantic view contracts and does not pass a root setter bag. `frontend/IMPLEMENTATION_STATE.md` owns exact state boundaries; other frontend behavior routes through `FRONTEND.md`. Theme remains browser-local with cookie-backed server first paint.
+`features/workspace-v2/PowerAppShellV2` is the sole authenticated browser composition. It projects exactly seven semantic view contracts into the v2 presentation and does not pass a root setter bag. Focused stores, controllers, and API clients under `components/app-shell/` remain headless owners rather than an alternate renderer. `frontend/IMPLEMENTATION_STATE.md` owns exact state boundaries; other frontend behavior routes through `FRONTEND.md`. Theme remains browser-local with cookie-backed server first paint.
 
 ## Change Rules
 

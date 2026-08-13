@@ -1,74 +1,39 @@
-import type {
-  ShellWorkspacePaneActions,
-  ShellWorkspacePaneState
-} from "@/components/app-shell/powerAppShellViewContracts";
-import {
-  rememberCollapsedFolderIds,
-  storedCollapsedFolderIds
-} from "@/components/app-shell/shellStorage";
 import type { ChatSummary, FolderSummary } from "@/components/app-shell/types";
 import { useCallback, useMemo, useState } from "react";
 
-type WorkspaceInteractionPaneState = Pick<
-  ShellWorkspacePaneState,
-  | "chatActionId"
-  | "collapsedFolderIds"
-  | "creatingFolder"
-  | "editingChatId"
-  | "editingChatTitle"
-  | "editingFolderId"
-  | "editingFolderName"
-  | "folderActionId"
-  | "folderMenuId"
-  | "newFolderName"
-  | "subfolderName"
-  | "subfolderParentId"
->;
-
-type WorkspaceInteractionPaneActions = Pick<
-  ShellWorkspacePaneActions,
-  | "cancelChatEdit"
-  | "cancelFolderEdit"
-  | "cancelSubfolder"
-  | "changeEditingChatTitle"
-  | "changeEditingFolderName"
-  | "changeNewFolderName"
-  | "changeSubfolderName"
-  | "closeMenus"
-  | "openProjectSettings"
-  | "startChatEdit"
-  | "startFolderEdit"
-  | "startSubfolder"
-  | "toggleChatActions"
-  | "toggleFolderCollapsed"
-  | "toggleFolderMenu"
->;
-
-export type WorkspaceChatMutationPort = Readonly<{
-  closeActions(): void;
-  editingTitle: string;
-  finishEditing(): void;
+type WorkspaceInteractionPaneState = Readonly<{
+  editingChatId: string | null;
+  editingChatTitle: string;
+  editingFolderId: string | null;
+  editingFolderName: string;
+  folderActionId: string | null;
 }>;
 
-export type WorkspaceFolderCreateCompletion = Readonly<{
-  parentId?: string | null;
-  usedNameOverride: boolean;
+type WorkspaceInteractionPaneActions = Readonly<{
+  cancelChatEdit(): void;
+  cancelFolderEdit(): void;
+  changeEditingChatTitle(value: string): void;
+  changeEditingFolderName(value: string): void;
+  openProjectSettings(folder: FolderSummary): void;
+  startChatEdit(chat: ChatSummary): void;
+  startFolderEdit(folder: FolderSummary): void;
+}>;
+
+export type WorkspaceChatMutationPort = Readonly<{
+  editingTitle: string;
+  finishEditing(): void;
 }>;
 
 export type WorkspaceFolderMutationPort = Readonly<{
   actionId: string | null;
   beginAction(folderId: string): void;
   beginCreate(): void;
-  completeCreate(input: WorkspaceFolderCreateCompletion): void;
-  completeDelete(folderId: string): void;
-  completeMove(): void;
   completeProjectSave(): void;
   completeRename(): void;
   creating: boolean;
   editingName: string;
   endAction(): void;
   endCreate(): void;
-  newName: string;
   projectKnowledgeBaseIds: string[];
   projectMemoryDraft: string;
 }>;
@@ -86,27 +51,18 @@ export type WorkspaceProjectSettingsPort = Readonly<{
 export type WorkspaceInteractionController = Readonly<{
   chatMutation: WorkspaceChatMutationPort;
   folderMutation: WorkspaceFolderMutationPort;
-  mobileWorkspaceClosed(): void;
   paneActions: WorkspaceInteractionPaneActions;
   paneState: WorkspaceInteractionPaneState;
   projectSettings: WorkspaceProjectSettingsPort;
 }>;
 
 export function useWorkspaceInteractionController(): WorkspaceInteractionController {
-  const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
-  const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(() =>
-    storedCollapsedFolderIds()
-  );
-  const [chatActionId, setChatActionId] = useState<string | null>(null);
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editingChatTitle, setEditingChatTitle] = useState("");
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState("");
   const [folderActionId, setFolderActionId] = useState<string | null>(null);
-  const [folderMenuId, setFolderMenuId] = useState<string | null>(null);
-  const [subfolderParentId, setSubfolderParentId] = useState<string | null>(null);
-  const [subfolderName, setSubfolderName] = useState("");
   const [projectSettingsFolderId, setProjectSettingsFolderId] = useState<string | null>(null);
   const [projectMemoryDraft, setProjectMemoryDraft] = useState("");
   const [projectKnowledgeBaseIds, setProjectKnowledgeBaseIds] = useState<string[]>([]);
@@ -119,27 +75,9 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
     setEditingFolderId(null);
     setEditingFolderName("");
   }, []);
-  const cancelSubfolder = useCallback(() => {
-    setSubfolderParentId(null);
-    setSubfolderName("");
-  }, []);
-  const closeChatActions = useCallback(() => {
-    setChatActionId(null);
-  }, []);
-  const closeMenus = useCallback(() => {
-    setChatActionId(null);
-    setFolderMenuId(null);
-    setSubfolderParentId(null);
-    setSubfolderName("");
-  }, []);
-  const mobileWorkspaceClosed = useCallback(() => {
-    setChatActionId(null);
-    setFolderMenuId(null);
-  }, []);
   const finishChatEditing = useCallback(() => {
     setEditingChatId(null);
     setEditingChatTitle("");
-    setChatActionId(null);
   }, []);
   const openProjectSettings = useCallback((folder: FolderSummary) => {
     setProjectMemoryDraft(folder.projectMemory);
@@ -154,234 +92,85 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
   const startChatEdit = useCallback((chat: ChatSummary) => {
     setEditingChatId(chat.id);
     setEditingChatTitle(chat.title);
-    setChatActionId(null);
   }, []);
   const startFolderEdit = useCallback((folder: FolderSummary) => {
     setEditingFolderId(folder.id);
     setEditingFolderName(folder.name);
-    setFolderMenuId(null);
-    setSubfolderParentId(null);
-    setSubfolderName("");
   }, []);
-  const startSubfolder = useCallback((folder: FolderSummary) => {
-    setSubfolderParentId(folder.id);
-    setSubfolderName("");
-  }, []);
-  const toggleChatActions = useCallback((chatId: string) => {
-    setFolderMenuId(null);
-    setSubfolderParentId(null);
-    setSubfolderName("");
-    setChatActionId((current) => (current === chatId ? null : chatId));
-  }, []);
-  const toggleFolderCollapsed = useCallback((folderId: string) => {
-    setCollapsedFolderIds((current) => {
-      const next = new Set(current);
-      if (next.has(folderId)) {
-        next.delete(folderId);
-      } else {
-        next.add(folderId);
-      }
-      rememberCollapsedFolderIds(next);
-      return next;
-    });
-  }, []);
-  const toggleFolderMenu = useCallback((folderId: string) => {
-    setChatActionId(null);
-    setSubfolderParentId(null);
-    setSubfolderName("");
-    setFolderMenuId((current) => (current === folderId ? null : folderId));
-  }, []);
-
-  const beginFolderAction = useCallback((folderId: string) => {
-    setFolderActionId(folderId);
-  }, []);
-  const beginFolderCreate = useCallback(() => {
-    setCreatingFolder(true);
-  }, []);
-  const completeFolderCreate = useCallback(
-    ({ parentId, usedNameOverride }: WorkspaceFolderCreateCompletion) => {
-      if (usedNameOverride) {
-        setSubfolderName("");
-        setSubfolderParentId(null);
-        setFolderMenuId(null);
-      } else {
-        setNewFolderName("");
-      }
-
-      if (parentId) {
-        setCollapsedFolderIds((current) => {
-          const next = new Set(current);
-          next.delete(parentId);
-          rememberCollapsedFolderIds(next);
-          return next;
-        });
-      }
-    },
-    []
-  );
-  const completeFolderDelete = useCallback((folderId: string) => {
-    setCollapsedFolderIds((current) => {
-      const next = new Set(current);
-      next.delete(folderId);
-      rememberCollapsedFolderIds(next);
-      return next;
-    });
-  }, []);
-  const completeFolderMove = useCallback(() => {
-    setFolderMenuId(null);
+  const beginFolderAction = useCallback((folderId: string) => setFolderActionId(folderId), []);
+  const completeFolderRename = useCallback(() => {
+    setEditingFolderId(null);
+    setEditingFolderName("");
   }, []);
   const completeProjectSave = useCallback(() => {
     setProjectSettingsFolderId(null);
     setProjectMemoryDraft("");
     setProjectKnowledgeBaseIds([]);
-    setFolderMenuId(null);
   }, []);
-  const completeFolderRename = useCallback(() => {
-    setEditingFolderId(null);
-    setEditingFolderName("");
-  }, []);
-  const endFolderAction = useCallback(() => {
-    setFolderActionId(null);
-  }, []);
-  const endFolderCreate = useCallback(() => {
-    setCreatingFolder(false);
-  }, []);
+  const endFolderAction = useCallback(() => setFolderActionId(null), []);
 
-  const paneState = useMemo<WorkspaceInteractionPaneState>(
-    () => ({
-      chatActionId,
-      collapsedFolderIds,
-      creatingFolder,
-      editingChatId,
-      editingChatTitle,
-      editingFolderId,
-      editingFolderName,
-      folderActionId,
-      folderMenuId,
-      newFolderName,
-      subfolderName,
-      subfolderParentId
-    }),
-    [
-      chatActionId,
-      collapsedFolderIds,
-      creatingFolder,
-      editingChatId,
-      editingChatTitle,
-      editingFolderId,
-      editingFolderName,
-      folderActionId,
-      folderMenuId,
-      newFolderName,
-      subfolderName,
-      subfolderParentId
-    ]
-  );
-  const paneActions = useMemo<WorkspaceInteractionPaneActions>(
-    () => ({
-      cancelChatEdit,
-      cancelFolderEdit,
-      cancelSubfolder,
-      changeEditingChatTitle: setEditingChatTitle,
-      changeEditingFolderName: setEditingFolderName,
-      changeNewFolderName: setNewFolderName,
-      changeSubfolderName: setSubfolderName,
-      closeMenus,
-      openProjectSettings,
-      startChatEdit,
-      startFolderEdit,
-      startSubfolder,
-      toggleChatActions,
-      toggleFolderCollapsed,
-      toggleFolderMenu
-    }),
-    [
-      cancelChatEdit,
-      cancelFolderEdit,
-      cancelSubfolder,
-      closeMenus,
-      openProjectSettings,
-      startChatEdit,
-      startFolderEdit,
-      startSubfolder,
-      toggleChatActions,
-      toggleFolderCollapsed,
-      toggleFolderMenu
-    ]
-  );
-  const chatMutation = useMemo<WorkspaceChatMutationPort>(
-    () => ({
-      closeActions: closeChatActions,
-      editingTitle: editingChatTitle,
-      finishEditing: finishChatEditing
-    }),
-    [closeChatActions, editingChatTitle, finishChatEditing]
-  );
-  const folderMutation = useMemo<WorkspaceFolderMutationPort>(
-    () => ({
-      actionId: folderActionId,
-      beginAction: beginFolderAction,
-      beginCreate: beginFolderCreate,
-      completeCreate: completeFolderCreate,
-      completeDelete: completeFolderDelete,
-      completeMove: completeFolderMove,
-      completeProjectSave,
-      completeRename: completeFolderRename,
-      creating: creatingFolder,
-      editingName: editingFolderName,
-      endAction: endFolderAction,
-      endCreate: endFolderCreate,
-      newName: newFolderName,
-      projectKnowledgeBaseIds,
-      projectMemoryDraft
-    }),
-    [
-      beginFolderAction,
-      beginFolderCreate,
-      completeFolderCreate,
-      completeFolderDelete,
-      completeFolderMove,
-      completeFolderRename,
-      completeProjectSave,
-      creatingFolder,
-      editingFolderName,
-      endFolderAction,
-      endFolderCreate,
-      folderActionId,
-      newFolderName,
-      projectKnowledgeBaseIds,
-      projectMemoryDraft
-    ]
-  );
-  const projectSettings = useMemo<WorkspaceProjectSettingsPort>(
-    () => ({
-      changeDraft: setProjectMemoryDraft,
-      changeKnowledgeBaseIds: setProjectKnowledgeBaseIds,
-      close: closeProjectSettings,
-      draft: projectMemoryDraft,
-      folderId: projectSettingsFolderId,
-      knowledgeBaseIds: projectKnowledgeBaseIds,
-      open: openProjectSettings
-    }),
-    [closeProjectSettings, openProjectSettings, projectKnowledgeBaseIds, projectMemoryDraft, projectSettingsFolderId]
-  );
+  const paneState = useMemo<WorkspaceInteractionPaneState>(() => ({
+    editingChatId,
+    editingChatTitle,
+    editingFolderId,
+    editingFolderName,
+    folderActionId
+  }), [editingChatId, editingChatTitle, editingFolderId, editingFolderName, folderActionId]);
 
-  return useMemo(
-    () => ({
-      chatMutation,
-      folderMutation,
-      mobileWorkspaceClosed,
-      paneActions,
-      paneState,
-      projectSettings
-    }),
-    [
-      chatMutation,
-      folderMutation,
-      mobileWorkspaceClosed,
-      paneActions,
-      paneState,
-      projectSettings
-    ]
-  );
+  const paneActions = useMemo<WorkspaceInteractionPaneActions>(() => ({
+    cancelChatEdit,
+    cancelFolderEdit,
+    changeEditingChatTitle: setEditingChatTitle,
+    changeEditingFolderName: setEditingFolderName,
+    openProjectSettings,
+    startChatEdit,
+    startFolderEdit
+  }), [cancelChatEdit, cancelFolderEdit, openProjectSettings, startChatEdit, startFolderEdit]);
+
+  const chatMutation = useMemo<WorkspaceChatMutationPort>(() => ({
+    editingTitle: editingChatTitle,
+    finishEditing: finishChatEditing
+  }), [editingChatTitle, finishChatEditing]);
+
+  const folderMutation = useMemo<WorkspaceFolderMutationPort>(() => ({
+    actionId: folderActionId,
+    beginAction: beginFolderAction,
+    beginCreate: () => setCreatingFolder(true),
+    completeProjectSave,
+    completeRename: completeFolderRename,
+    creating: creatingFolder,
+    editingName: editingFolderName,
+    endAction: endFolderAction,
+    endCreate: () => setCreatingFolder(false),
+    projectKnowledgeBaseIds,
+    projectMemoryDraft
+  }), [
+    beginFolderAction,
+    completeFolderRename,
+    completeProjectSave,
+    creatingFolder,
+    editingFolderName,
+    endFolderAction,
+    folderActionId,
+    projectKnowledgeBaseIds,
+    projectMemoryDraft
+  ]);
+
+  const projectSettings = useMemo<WorkspaceProjectSettingsPort>(() => ({
+    changeDraft: setProjectMemoryDraft,
+    changeKnowledgeBaseIds: setProjectKnowledgeBaseIds,
+    close: closeProjectSettings,
+    draft: projectMemoryDraft,
+    folderId: projectSettingsFolderId,
+    knowledgeBaseIds: projectKnowledgeBaseIds,
+    open: openProjectSettings
+  }), [closeProjectSettings, openProjectSettings, projectKnowledgeBaseIds, projectMemoryDraft, projectSettingsFolderId]);
+
+  return useMemo(() => ({
+    chatMutation,
+    folderMutation,
+    paneActions,
+    paneState,
+    projectSettings
+  }), [chatMutation, folderMutation, paneActions, paneState, projectSettings]);
 }

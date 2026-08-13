@@ -484,12 +484,25 @@ export function useMessageRunActions({
     );
   }
 
-  async function reconcileAmbiguousRun(chatId: string) {
-    await refreshActiveChat(chatId, {
-      forceDetail: true,
-      preserveControls: true,
-      resumeRuns: false
-    });
+  async function refreshInterruptedRun(chatId = activeChatId): Promise<boolean> {
+    if (!chatId || !useRunLifecycleStore.getState().ambiguousFailures[chatId]) {
+      return false;
+    }
+
+    try {
+      const detail = await refreshActiveChat(chatId, {
+        forceDetail: true,
+        preserveControls: true
+      });
+      if (!detail) {
+        return false;
+      }
+
+      useRunLifecycleStore.getState().ambiguityCleared({ chatId });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function hasUnreconciledOptimisticLeaf(chatId: string): boolean {
@@ -763,7 +776,7 @@ export function useMessageRunActions({
             signal
           });
         },
-        async settleFailedRunState({ kind }) {
+        settleFailedRunState({ kind }) {
           if (kind === "rejected") {
             rollbackOptimisticRun({
               chatId: chatIdForSend,
@@ -779,13 +792,8 @@ export function useMessageRunActions({
             return;
           }
 
-          await reconcileAmbiguousRun(chatIdForSend);
-          if (
-            activeChatIdRef.current === chatIdForSend &&
-            selectThreadSnapshot(useThreadStore.getState(), chatIdForSend).messages.length === 0
-          ) {
-            sendFailureLive = true;
-          }
+          // Ambiguous transport loss remains visible on the exact source chat.
+          // The user-owned refresh action reconciles it with durable server state.
         }
       });
       if (result.failureCode === "memory_intent_confirmation_required") {
@@ -982,7 +990,7 @@ export function useMessageRunActions({
             signal
           });
         },
-        async settleFailedRunState({ kind }) {
+        settleFailedRunState({ kind }) {
           if (kind === "rejected") {
             rollbackOptimisticRun({
               chatId: chatIdForSend,
@@ -993,8 +1001,6 @@ export function useMessageRunActions({
             });
             return;
           }
-
-          await reconcileAmbiguousRun(chatIdForSend);
         }
       });
       if (result.failureCode === "memory_intent_confirmation_required") {
@@ -1097,7 +1103,7 @@ export function useMessageRunActions({
           signal
         });
       },
-      async settleFailedRunState({ kind }) {
+      settleFailedRunState({ kind }) {
         if (kind === "rejected") {
           rollbackOptimisticRun({
             chatId: chatIdForRegenerate,
@@ -1107,8 +1113,6 @@ export function useMessageRunActions({
           });
           return;
         }
-
-        await reconcileAmbiguousRun(chatIdForRegenerate);
       }
     });
     if (result.failureCode === "memory_intent_confirmation_required") {
@@ -1117,6 +1121,7 @@ export function useMessageRunActions({
   }
 
   return {
+    refreshInterruptedRun,
     regenerateMessage,
     sendStarterPrompt,
     submitComposer

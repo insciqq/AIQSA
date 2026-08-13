@@ -51,10 +51,6 @@ import {
   type MemoryHistorySourceOrigin,
   type MemoryHistoryTaintSource
 } from "./sourceProjection";
-import {
-  MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION,
-  memoryEpisodeExtractionJobFingerprint
-} from "./episode/contract";
 
 type MemoryHistoryPrepareResult =
   | Readonly<{ decision: Exclude<MemoryJobGateDecision, { status: "READY" }> }>
@@ -810,20 +806,6 @@ async function applyPlan(
     for (const entry of pendingEntries) {
       await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
     }
-    if (plan.chunks.length > 0) {
-      await enqueueMemoryJob(tx, settings, {
-        idempotencyFingerprint: memoryEpisodeExtractionJobFingerprint(plan.source),
-        kind: "EXTRACT_EPISODE",
-        pipelineVersion: MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION,
-        source: {
-          activeLeafMessageId: plan.source.activeLeafMessageId,
-          branchGeneration: plan.source.branchGeneration,
-          chatId: plan.source.chatId,
-          sourceHash: plan.source.sourceHash,
-          sourceRevision: plan.source.sourceRevision
-        }
-      });
-    }
     return;
   }
 
@@ -901,20 +883,6 @@ async function applyPlan(
       }
     }
   });
-  if (plan.chunks.length > 0) {
-    await enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: memoryEpisodeExtractionJobFingerprint(plan.source),
-      kind: "EXTRACT_EPISODE",
-      pipelineVersion: MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION,
-      source: {
-        activeLeafMessageId: plan.source.activeLeafMessageId,
-        branchGeneration: plan.source.branchGeneration,
-        chatId: plan.source.chatId,
-        sourceHash: plan.source.sourceHash,
-        sourceRevision: plan.source.sourceRevision
-      }
-    });
-  }
 }
 
 export function createPrismaMemoryHistoryIndexRepository(

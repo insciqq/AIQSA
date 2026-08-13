@@ -2,9 +2,9 @@ import type { CatalogModel } from "@/components/app-shell/types";
 import type {
   ComposerAttachment,
   ComposerAttachmentWarning,
-  ComposerPdfProcessing,
-  ComposerAttachmentPolicy
-} from "@/components/chat/Composer";
+  ComposerPdfProcessing
+} from "@/components/app-shell/attachmentContracts";
+import type { ComposerAttachmentPolicy } from "@/components/app-shell/attachmentSelection";
 import { decodePdfProcessing } from "@/lib/contracts/uploads";
 
 export function pdfProcessingForAttachment(

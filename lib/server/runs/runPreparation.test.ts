@@ -57,6 +57,15 @@ const baseCapabilities: ProviderModelCapabilities = {
   vision: true
 };
 
+const memoryToolNames = [
+  "save_memory",
+  "list_memories",
+  "update_memory",
+  "forget_memory",
+  "mark_memory_incorrect",
+  "search_memory"
+] as const;
+
 const priorMessage: ProviderConversationMessage = {
   content: textMessageContent("Server-owned prior question"),
   id: "prior-user-message",
@@ -901,7 +910,7 @@ describe("run preparation", () => {
     expect(opaqueBuffer.toString()).toBe("leave-buffer-mutable");
   });
 
-  it("plans an exact direct-user Memory save and exposes only its first-party tool", async () => {
+  it("exposes the complete model-driven Memory tool set without routing natural language", async () => {
     const harness = createHarness({
       capabilities: {
         ...baseCapabilities,
@@ -915,33 +924,29 @@ describe("run preparation", () => {
       }))
     ));
 
-    expect(prepared.normalizedRequest.memoryActionPlan).toEqual({
-      kind: "SAVE",
-      sourceEnd: 39,
-      sourceStart: 14,
-      statement: "my favorite color is teal",
-      version: "memory-action-plan-v1"
+    expect(prepared.normalizedRequest.memoryActionPlan).toBeUndefined();
+    expect(prepared.normalizedRequest.memoryActionTools).toEqual({
+      version: "model-driven-v2"
     });
-    expect(prepared.providerRequest.tools).toEqual([
-      expect.objectContaining({ capability: "memory", name: "save_memory", strict: true })
-    ]);
-    expect(prepared.providerRequest.tools?.[0]?.inputSchema).not.toHaveProperty("authorization");
-    expect(prepared.providerRequest.tools?.[0]?.inputSchema).not.toHaveProperty("token");
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(memoryToolNames);
+    for (const tool of prepared.providerRequest.tools ?? []) {
+      expect(tool).toMatchObject({ capability: "memory", strict: true });
+      expect(tool.inputSchema).not.toHaveProperty("authorization");
+      expect(tool.inputSchema).not.toHaveProperty("token");
+    }
   });
 
-  it("requires explicit confirmation when a Memory mutation cannot use a first-party tool", async () => {
-    const result = await prepareRun(
+  it("does not invent a language fallback when the answer model lacks tool calling", async () => {
+    const prepared = preparedFrom(await prepareRun(
       createHarness().deps,
       sendInput(successBody({
         content: textMessageContent("Remember that my favorite color is teal")
       }))
-    );
+    ));
 
-    expect(result).toMatchObject({
-      code: "memory_intent_confirmation_required",
-      ok: false,
-      status: 409
-    });
+    expect(prepared.normalizedRequest.memoryActionPlan).toBeUndefined();
+    expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
+    expect(prepared.providerRequest.tools).toBeUndefined();
   });
 
   it("lets a direct-user Memory action coexist with admin-connected tools", async () => {
@@ -967,7 +972,7 @@ describe("run preparation", () => {
     ));
 
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-      "save_memory",
+      ...memoryToolNames,
       "mcp_team_lookup_1"
     ]);
   });
@@ -1025,8 +1030,8 @@ describe("run preparation", () => {
     });
   });
 
-  it("rejects first-party Memory actions in an admitted Temporary chat", async () => {
-    const result = await prepareRun(
+  it("does not expose Memory tools in an admitted Temporary chat", async () => {
+    const prepared = preparedFrom(await prepareRun(
       createHarness({
         capabilities: { ...baseCapabilities, toolCalling: true }
       }).deps,
@@ -1036,13 +1041,10 @@ describe("run preparation", () => {
         }),
         { memoryMode: "TEMPORARY", messageCount: 2 }
       )
-    );
+    ));
 
-    expect(result).toMatchObject({
-      code: "memory_temporary_chat_forbidden",
-      ok: false,
-      status: 409
-    });
+    expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
+    expect(prepared.providerRequest.tools).toBeUndefined();
   });
 
   it("keeps send and regeneration preparation in parity while using their server-owned context sources", async () => {
@@ -1549,7 +1551,7 @@ describe("run preparation", () => {
       provider: "openai_compatible"
     });
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-      "search_my_history",
+      ...memoryToolNames,
       "mcp_team_lookup_1"
     ]);
   });
@@ -1579,7 +1581,7 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
     expect(prepared.providerRequest.searchStrategy).toBe("openai-native-web-search");
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
-      "search_my_history"
+      ...memoryToolNames
     ]);
   });
 
@@ -1646,7 +1648,7 @@ describe("run preparation", () => {
     expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain('"type":"google_search"');
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "search_engine_1",
-      "search_my_history",
+      ...memoryToolNames,
       "mcp_team_lookup_1"
     ]);
     expect(harness.attachmentLoads).toEqual([{
@@ -1811,7 +1813,7 @@ describe("run preparation", () => {
       expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         "retrieve_knowledge",
         "search_engine_1",
-        "search_my_history"
+        ...memoryToolNames
       ]);
       expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain(
         hostedPreviewMarker
@@ -1862,7 +1864,7 @@ describe("run preparation", () => {
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "retrieve_knowledge",
       "search_engine_1",
-      "search_my_history",
+      ...memoryToolNames,
       "mcp_team_lookup_1"
     ]);
   });
@@ -1932,7 +1934,7 @@ describe("run preparation", () => {
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "retrieve_knowledge",
       "search_engine_1",
-      "search_my_history"
+      ...memoryToolNames
     ]);
   });
 
@@ -2062,7 +2064,7 @@ describe("run preparation", () => {
     );
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "search_engine_1",
-      "search_my_history"
+      ...memoryToolNames
     ]);
   });
 
@@ -2129,7 +2131,7 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest.searchPolicy).toBeUndefined();
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "search_selected_engines",
-      "search_my_history"
+      ...memoryToolNames
     ]);
   });
 
@@ -2182,7 +2184,7 @@ describe("run preparation", () => {
       }));
       expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         "search_engine_1",
-        "search_my_history"
+        ...memoryToolNames
       ]);
       expect(JSON.stringify(prepared.providerRequestPreview))
         .toContain("search_engine_1");

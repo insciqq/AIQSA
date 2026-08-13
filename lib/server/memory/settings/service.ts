@@ -18,7 +18,7 @@ export type MemorySettingsCapabilities = MemorySettingsResponse["capabilities"];
 
 export const DEFAULT_MEMORY_SETTINGS_CAPABILITIES: MemorySettingsCapabilities =
   Object.freeze({
-    automaticLearning: false,
+    automaticLearning: true,
     explicitMemory: true,
     historyRecall: true,
     permanentChatDeletion: false,

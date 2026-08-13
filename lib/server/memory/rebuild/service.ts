@@ -5,10 +5,7 @@ import type {
 import { decodeMemoryRebuildStatus } from "../../../contracts/memory";
 import { MemoryExecutionError } from "../execution";
 import type { MemoryItemEmbeddingPin } from "../embedding/contract";
-import {
-  memoryTargetAuthorizationPayloadHash,
-  type MemoryMutationAuthorizationUse
-} from "../persistence/authorizations";
+import type { MemoryMutationAuthorizationUse } from "../persistence/authorizations";
 import type {
   MemoryRebuildAdmissionResult,
   MemoryRebuildRepository
@@ -101,6 +98,9 @@ export function createMemoryRebuildService(input: Readonly<{
     },
 
     async start(userId, rebuildInput) {
+      if (rebuildInput.operation === "REDREAM_EXISTING_CHATS") {
+        return failure("memory_contract_invalid");
+      }
       let pin: MemoryItemEmbeddingPin | null = null;
       if (rebuildInput.operation === "REEMBED") {
         try {
@@ -109,35 +109,7 @@ export function createMemoryRebuildService(input: Readonly<{
           return executionFailure(error);
         }
       }
-      let authorization:
-        | (MemoryMutationAuthorizationUse & Readonly<{ requestId: string }>)
-        | undefined;
-      if (rebuildInput.operation === "REDREAM_EXISTING_CHATS") {
-        if (!rebuildInput.mutationAuthorizationId) {
-          return failure("memory_intent_confirmation_required");
-        }
-        const use: MemoryMutationAuthorizationUse = {
-          action: "BULK_DELETE",
-          authorizationId: rebuildInput.mutationAuthorizationId,
-          authorizedPayloadHash: memoryTargetAuthorizationPayloadHash({
-            action: "BULK_DELETE",
-            expectedMemoryRevision: rebuildInput.expectedMemoryRevision,
-            expectedSettingsRevision: rebuildInput.expectedSettingsRevision,
-            operation: rebuildInput.operation
-          })
-        };
-        let resolved: Awaited<ReturnType<
-          MemoryRebuildAuthorizationRepository["resolveForUse"]
-        >>;
-        try {
-          resolved = await input.authorizationRepository.resolveForUse(userId, use);
-        } catch {
-          return failure("memory_intent_confirmation_required");
-        }
-        authorization = { ...use, requestId: resolved.requestId };
-      }
       const admitted = await input.repository.admit(userId, {
-        ...(authorization ? { authorization } : {}),
         embeddingDeploymentId: rebuildInput.embeddingDeploymentId,
         expectedMemoryRevision: rebuildInput.expectedMemoryRevision,
         expectedSettingsRevision: rebuildInput.expectedSettingsRevision,

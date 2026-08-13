@@ -54,6 +54,7 @@ import {
   loadMemoryRunEvidence,
   type MemoryRunEvidenceProjection
 } from "../memory/receipts/projection";
+import { summarizeThreadRunEvidence } from "./runEvidenceSummary";
 import {
   applyMemoryScopedTargetOwnerLifecycle,
   applyMemorySourceMutations,
@@ -69,6 +70,11 @@ import {
 } from "../memory/suppressionKeyring";
 
 const assistantRunDetailSelect = {
+  _count: {
+    select: {
+      usageEvents: true
+    }
+  },
   assistantId: true,
   assistantRevision: {
     select: {
@@ -102,6 +108,7 @@ const assistantRunDetailSelect = {
   },
   normalizedRequest: true,
   outputTokens: true,
+  reasoningTokens: true,
   searchRuns: {
     orderBy: {
       createdAt: "asc"
@@ -562,17 +569,32 @@ function serializeHydratedMessage(
   memoryEvidenceByRun: ReadonlyMap<string, MemoryRunEvidenceProjection>
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0];
+  const artifactSummary = modelRun
+    ? summarizeMessageRunArtifacts(
+        modelRun,
+        message.content,
+        memoryEvidenceByRun.get(modelRun.id) ?? null
+      )
+    : null;
   return {
-    artifactSummary: modelRun
-      ? summarizeMessageRunArtifacts(
-          modelRun,
-          message.content,
-          memoryEvidenceByRun.get(modelRun.id) ?? null
-        )
-      : null,
+    artifactSummary,
     assistantIdentity: serializeAssistantIdentity(modelRun),
     content: message.content,
     createdAt: message.createdAt,
+    evidenceSummary: modelRun
+      ? summarizeThreadRunEvidence({
+          artifactSummary,
+          cachedInputTokens: modelRun.cachedInputTokens,
+          cacheWriteInputTokens: modelRun.cacheWriteInputTokens,
+          inputTokens: modelRun.inputTokens,
+          normalizedRequest: modelRun.normalizedRequest,
+          outputTokens: modelRun.outputTokens,
+          reasoningTokens: modelRun.reasoningTokens,
+          status: modelRun.status,
+          totalTokens: modelRun.totalTokens,
+          usageEventCount: modelRun._count.usageEvents
+        })
+      : null,
     errorMessage: message.errorMessage,
     id: message.id,
     modelId: message.modelId,
@@ -1313,7 +1335,7 @@ export function createPrismaChatRepository(
         };
       });
     },
-    createChat: async ({ folderId, title, userId }) => {
+    createChat: async ({ folderId, memoryMode, title, userId }) => {
       const defaults = await loadChatCreationDefaults(prismaClient, userId);
       if (!defaults) return null;
 
@@ -1331,6 +1353,7 @@ export function createPrismaChatRepository(
           data: {
             defaultProviderModelId: defaults.defaultProviderModelId,
             folderId: resolvedFolderId,
+            ...(memoryMode ? { memoryMode } : {}),
             title: title?.trim() || defaultChatTitle,
             userId
           },

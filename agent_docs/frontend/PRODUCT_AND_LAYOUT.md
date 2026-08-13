@@ -32,59 +32,61 @@ family.
 
 | Capability family | Reachable inventory | Normative owner |
 | --- | --- | --- |
-| Workspace and navigation | Desktop global icon rail, Chats, blank first-send creation, local/server search, favorites, nested folders/projects, project settings, per-chat live cues, command palette, and Account entry | [Navigation](composer/NAVIGATION.md) |
+| Workspace and navigation | One collapsible sidebar, Chats, blank first-send creation, bounded server search, nested folders/projects, per-chat live cues, command palette, and Library/Settings entry | [Navigation](composer/NAVIGATION.md) |
 | Composer and attachments | Keyed drafts, edit mode, text/IME/keyboard input, PDF/image/text attachments, upload feedback, Send/Stop, and independent cross-chat work | [Composer](composer/COMPOSER.md) |
 | Catalog and next-run controls | Entitled model choice, Search and Knowledge plans, optional Assistants, reasoning/background/Stream, visibility/sound preferences, temperature/output limits, Tools, and context disclosure | [Run controls](composer/RUN_CONTROLS.md) |
 | Answers, artifacts, and branches | Run states, safe Markdown/code/math, Search/Knowledge/tool/citation/reasoning artifacts and receipts, copy/edit/regenerate/delete/branch actions, active-leaf checkout, thread sharing, and long-content containment | [Messages and Markdown](MESSAGES_AND_MARKDOWN.md) |
-| Receipt and inspection | Message-bound run evidence, Branch and Events, recovery/error inspection, overlay access, and wide pinning; Run setup remains the next-run editor | [Receipt and Details](composer/RECEIPT_AND_DETAILS.md) |
+| Receipt and inspection | Message-bound run evidence, Branch and Run details, recovery/error inspection, and temporary overlay access; Run setup remains the next-run editor | [Receipt and Details](composer/RECEIPT_AND_DETAILS.md) |
 | Authentication and public access | Password/OAuth entry, access requests, invites, verification/reset, session-expiry return, route-safe failures, and anonymous immutable public viewing | [Auth and public sharing](account/AUTH_AND_PUBLIC_SHARING.md) |
 | Memory, Assistants, Knowledge, and Settings | Personal Memory overview/management/history/operations, Assistant discovery/revisions/sharing, Knowledge base/document ingestion/reindex/publication/archive, MCP & tools, appearance, and project settings | [Settings, Memory, Assistants, and Knowledge](account/SETTINGS_AND_ASSISTANTS.md) |
 | Control Center | Providers, Search, team/access, usage, MCP, email, safety, release awareness, and their complete administrator lifecycle tasks | [Control Center](account/CONTROL_CENTER.md) |
-| Responsive shell | One conversation-first shell with a mandatory desktop icon rail, persistent or on-demand chat pane, on-demand Details, safe overlays, coarse-pointer access, and no page-level overflow | [Layout](#layout) and [visual adaptation](../design_system/INTERACTION_AND_REVIEW.md) |
+| Responsive shell | One conversation-first shell with a single collapsible sidebar, temporary drawers/sheets, safe overlays, coarse-pointer access, and no page-level overflow | [Layout](#layout) and [visual adaptation](../design_system/INTERACTION_AND_REVIEW.md) |
 
 ## Layout
 
-Above `1280px`, Chat always begins with the compact 5rem global rail. Each destination keeps its icon plus a persistent short label; the optional 16rem Workspace pane sits beside it and owns chat/folder browsing, while the conversation column owns its compact edge-action rail, thread, and composer. No global application bar spans either navigation column. The desktop action rail occupies a protected top-right footprint without a full-width surface, separator, or vertical header row. Narrow conversation columns yield that right-side inline space; wide centered reading content clears it naturally. Account is one top-group rail control between Chats and the navigation divider; the desktop Workspace pane has no duplicate Account footer. At `>=1440px`, explicitly pinned Details adds a final 23rem normal-flow column without changing the answer's reading measure. Overlay Details never changes the grid. Exact geometry belongs to the bounded owners routed by `DESIGN_SYSTEM.md`.
+The Reading Room replacement composes a single 260px sidebar and a calm
+conversation canvas. The sidebar is one responsive presentation: it collapses
+entirely on desktop and becomes one scrim-backed modal drawer on mobile, with
+adjacent floating Open/New-chat recovery controls. It consumes the existing
+workspace/composer/lifecycle owners plus the compact summary/search boundary;
+it does not introduce a parallel chat, folder, run, or draft store. This is the
+sole production presentation. The guarded fixture described by `TESTING.md`
+exists only to render deterministic contract states and is not a selectable
+product route or fallback renderer.
+
+At `>=1024px`, the 260px sidebar is open by default and may be collapsed
+explicitly. At `900–1023px` it starts collapsed and expands as that same
+normal-flow sidebar; there is no alternate navigation hierarchy. Below `900px`
+it is a left modal drawer with a scrim and the same content, while adjacent
+floating Open/New-chat controls keep both primary actions reachable. The
+`1280/1281px` boundary has no composition discontinuity. Branches, Run details,
+and artifact preview remain temporary overlays at every width and become
+full-viewport sheets below `900px`; none creates a pinned column or changes the
+conversation measure.
 
 ```text
-desktop expanded: icon rail | Workspace | conversation { edge actions, thread, composer }
-desktop pane hidden: icon rail | conversation { edge actions, thread, composer }
-wide pinned expanded: icon rail | Workspace | conversation | Details
-wide pinned pane hidden: icon rail | conversation | Details
-compact: conversation + on-demand Workspace/Details overlays
+desktop expanded: sidebar | conversation { thread over composer }
+desktop collapsed: conversation { floating Open/New chat, thread over composer }
+900–1023 default: conversation { floating Open/New chat }
+<900: conversation + on-demand sidebar/drawer/sheet overlays
 ```
 
-At or below `1280px`, the edge-action rail floats over the conversation and
-exposes adjacent Workspace and Start-new-chat actions in one bounded group. A
-token-derived readability veil lets document content pass beneath without an
-opaque header row. Workspace reuses the ordinary navigation pane as a
-safe-area-aware modal drawer with explicit Close and one browse scroller;
-[Navigation](composer/NAVIGATION.md) owns its action inventory and blank-chat
-semantics. [Implementation state](IMPLEMENTATION_STATE.md) owns cross-breakpoint
-closure, focus transfer, scroll preservation, and replacement-overlay
-sequencing so only one modal layer remains active.
-
-On wider screens the Workspace pane has its own `Hide workspace` action. Hiding removes only that pane: the labeled rail persists, and either its current `Chats` destination or a pointer click on non-control rail space restores the pane. The compatible `aiqsa.workspaceRail` preference records wide-pane visibility, survives reload, preserves the existing Workspace/chat/folder state owners, and hands focus hide→`Chats`→hide; it never changes account settings or server navigation state. Compact Workspace remains dismissible as its ordinary drawer regardless of the stored wide-screen preference, and the compact `Open workspace` control never becomes a desktop restore path.
-
-The chat title is absent from visible conversation chrome; the selected Workspace row owns visible chat identity, and one visually hidden current-chat/`New chat` page heading preserves document structure without consuming the reading plane. Compact composition keeps Workspace, direct New chat, and truthful live Pipeline status in the edge-action rail; Account is reached through the Workspace drawer footer. Share, Details, and the secondary `Conversation actions` menu appear only after the conversation has at least one message; an empty start state does not advertise actions with no object. Once available, Copy thread and Branch tree share that one secondary menu at every width. The desktop labeled rail is the bounded global-navigation exception: it exposes New chat, current Chats, Account, Assistants, Knowledge, Memory, Settings, and entitled Control Center without creating another state or overlay owner. Account opens one rail-anchored desktop surface, while the conversation still has no second thread toolbar, duplicated action set, or replacement title chip. Below `sm`, the leading Workspace/New chat pair drops its visual gap and the decorative product identity stays absent so direct actions remain contained at the target portrait width. Account opens upward within compact Workspace and becomes locally scroll-bounded at short heights; the top-group desktop anchor and drawer placement clear their invoking rows, remain viewport-contained, and retain the continuation cue until final actions enter view.
+The sidebar owns New chat and its Normal/Memory-off/Temporary choice, bounded
+chat-title/folder search, date/folder groups, per-chat live cues, Library, and
+Settings. Collapse removes the entire sidebar; it never leaves an icon rail.
+The conversation has no duplicate title bar or navigation state. Compact and
+mobile composition reuse the same sidebar instance and selection/search owners.
 
 The browser document title follows the visible active chat, with `New chat` as the blank-workspace fallback. Settings, Memory, Assistants, and Knowledge replace that title while they own the workspace; transient drawers, palettes, inspectors, sharing, and confirmations preserve the underlying chat title. Sign in and public share use fixed privacy-safe route titles, while Control Center adds only its fixed active section label; public snapshot content, bearer tokens, account identity, selected resources, prompts, and message content never enter metadata.
 
-The responsive contract is verified at 384x844 portrait, 844x390 short
-landscape, 768x1024 tablet, 1280px compact width, the 1281px desktop boundary,
-and the 1440px pinned-Details boundary in addition to wider desktop evidence.
-On desktop→compact transition, focus from either desktop navigation column
-moves to compact `Open workspace`; return restores the remembered still-valid
-source only while that fallback retains focus; any unavailable source falls
-back to rail `Chats`, while Account restores to its single rail control.
-Settings, Memory, Assistants, and Knowledge use the same visible fallback if a crossing hides their
-captured opener. Width chooses shell composition; [Composer](composer/COMPOSER.md)
-and [Run controls](composer/RUN_CONTROLS.md) keep their one information model
-and choose their own disclosures from actual container/height. Rows wrap rather
-than switch to a second hierarchy, browser zoom cannot force desktop-only
-controls into a narrow column, and coarse-pointer actions retain the shared
-touch target. Tablet and compact layouts remain conversation-first with drawer
-navigation and bounded overlays rather than a cropped desktop grid.
+The responsive contract is verified at 384x844 and 390x844 portrait,
+844x390 short landscape, 768x1024 tablet, 1023/1024px sidebar transition,
+1280/1281px continuity, and 1440px wide desktop, plus enlarged text. When a
+width transition hides focused sidebar content, focus moves to `Open sidebar`;
+return restores the exact remembered source only while that fallback still owns
+focus. Opening and closing a drawer or sheet focuses its first deliberate
+control and restores the initiating control. Width never creates a second
+draft, run, navigation, or selection owner.
 
 [Run controls](composer/RUN_CONTROLS.md) owns Model, Search, Run setup, context
 facts, and compact-reading semantics. The shell guarantees that their popovers
@@ -93,19 +95,26 @@ short compositions use safe-area sheets while eligible desktop disclosures may
 remain anchored. Responsive presentation never creates a second draft,
 next-run owner, or setup path.
 
-`app/layout.tsx` opts into both `viewport-fit=cover` and `interactive-widget=resizes-content`. The shell uses `h-dvh`, fixed/dialog surfaces subtract `env(safe-area-inset-*)` on every relevant edge, and each tall bounded surface keeps one local scroll owner. Surfaces that would not fit a viewport at or below 32rem high—Run settings, model/assistant/finite pickers, Settings, and the command palette—switch to viewport-bounded sheet geometry. Memory, Assistants, and Knowledge are deliberate exceptions: each owns a safe-area-aware full-screen surface with local scroll owners. This contract follows content-viewport reduction from the software keyboard instead of assuming a stable `100vh` or hiding controls behind the keyboard.
+`app/layout.tsx` opts into both `viewport-fit=cover` and
+`interactive-widget=resizes-content`. Shell, conversation, and modal surfaces
+use `100dvh`; fixed sheets apply every relevant `env(safe-area-inset-*)`; and
+each tall surface has one local scroll owner. Composer occupies its own layout
+row above the reduced content viewport instead of covering the last answer.
+Its textarea grows to 200px on desktop or 40dvh below `900px`, then scrolls
+internally. Model/capability surfaces become safe-area bottom sheets below
+`900px` or at short height. Draft text survives viewport and keyboard geometry
+changes unchanged.
 
-Details contributes no column while closed, one modal overlay plane when open,
-or one normal-flow wide column when explicitly pinned at the routed breakpoint.
-[Receipt and Details](composer/RECEIPT_AND_DETAILS.md) owns defaults, tabs,
-opening, demotion, persistence, focus, and dismissal; this layout owner only
-reserves the resulting plane without changing the answer measure.
+Wide code, tables, formulae, previews, timelines, and redacted payloads never
+widen the document. They wrap where truthful or use a named local horizontal
+scroller. Coarse-pointer controls have a minimum 40px target; tapping a message
+reveals its action dock without requiring hover or long-press.
 
 Main areas:
 
-- desktop global labeled rail plus the optional Workspace chat/folder pane, or the compact Workspace drawer with its fixed Account footer;
-- conversation column with a title-free edge-action rail, thread, and composer;
-- on-demand Details overlay or wide-screen pinned inspection plane;
+- single collapsible desktop sidebar or its compact/mobile drawer presentation;
+- conversation column with the thread and one composer layout row;
+- on-demand Branch, Run details, and artifact-preview overlays;
 - full-screen Memory, Assistants, and Knowledge resource workspaces;
 - Settings and command overlays;
 - auth and public-share workspaces;

@@ -8,7 +8,7 @@ import {
 import { evaluateMemoryFactConsolidationPlan } from
   "../../server/memory/learning/consolidation/policy";
 
-describe("automatic Memory verifier qualification fixtures", () => {
+describe("legacy automatic Memory verifier comparison fixtures", () => {
   const matrices = memoryLearningMatrixCases({
     EN: memoryLearningMatrixBaseCandidate("EN"),
     RU: memoryLearningMatrixBaseCandidate("RU")
@@ -35,13 +35,13 @@ describe("automatic Memory verifier qualification fixtures", () => {
     }
   });
 
-  it("constructs every positive verifier case from a policy-valid risky transition", () => {
+  it("keeps legacy comparison cases policy-valid but outside normal verification", () => {
     for (const matrix of matrices.filter(({ expected }) =>
       ["ADD", "SUPERSEDE", "CONFLICT", "EXPIRE"].includes(expected)
     )) {
       const plan = memoryLearningMatrixGoldPlan(matrix);
       expect(evaluateMemoryFactConsolidationPlan(matrix.input, plan)).toEqual({
-        requiresVerification: true,
+        requiresVerification: false,
         status: "VALID"
       });
     }

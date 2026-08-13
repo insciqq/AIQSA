@@ -596,22 +596,13 @@ async function enqueueExplicitEmbedding(
 }
 
 async function enqueueWorkingSetRefresh(
-  tx: MemoryTransaction,
-  settings: LockedMemorySettings,
-  input: MemoryFactMutationCommonInput,
-  factId: string
+  _tx: MemoryTransaction,
+  _settings: LockedMemorySettings,
+  _input: MemoryFactMutationCommonInput,
+  _factId: string
 ): Promise<void> {
-  if (!settings.useMemoryFacts) return;
-  await enqueueMemoryJob(tx, settings, {
-    idempotencyFingerprint: memorySha256({
-      factId,
-      memoryRevision: settings.memoryRevision,
-      mutation: input.idempotencyFingerprint,
-      purpose: "recalculate-working-set"
-    }),
-    kind: "RECALCULATE_WORKING_SET",
-    pipelineVersion: input.value.pipelineVersion
-  });
+  // Core Memory reads current evidence-backed fact versions directly. The
+  // former generated RU/EN profile is not an answer-critical projection.
 }
 
 function suppressionMatchInput(input: MemoryFactMutationCommonInput) {

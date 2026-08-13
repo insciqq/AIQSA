@@ -31,24 +31,12 @@ import {
   MEMORY_FACT_CONSOLIDATION_POLICY_VERSION,
   MEMORY_FACT_CONSOLIDATION_PROMPT_VERSION,
   MEMORY_FACT_CONSOLIDATION_SCHEMA_VERSION,
-  MEMORY_FACT_VERIFICATION_PIPELINE_VERSION,
-  MEMORY_FACT_VERIFICATION_POLICY_VERSION,
-  MEMORY_FACT_VERIFICATION_PROMPT_VERSION,
-  MEMORY_FACT_VERIFICATION_SCHEMA_VERSION,
   type MemoryFactConsolidationInput,
   type MemoryFactConsolidationOperation,
-  type MemoryFactConsolidationPlan,
-  type MemoryFactVerificationInput,
-  type MemoryFactVerificationPlan
+  type MemoryFactConsolidationPlan
 } from "./contract";
-import {
-  decodeMemoryFactConsolidation,
-  decodeMemoryFactVerification
-} from "./decoder";
-import {
-  MEMORY_FACT_CONSOLIDATION_TOOL_NAME,
-  MEMORY_FACT_VERIFICATION_TOOL_NAME
-} from "./prompt";
+import { decodeMemoryFactConsolidation } from "./decoder";
+import { MEMORY_FACT_CONSOLIDATION_TOOL_NAME } from "./prompt";
 import {
   createPrismaMemoryFactConsolidationRepository,
   reconcileMemoryFactCandidateJobs
@@ -269,11 +257,7 @@ function consolidationRepository() {
 }
 
 async function createCandidate(input: Readonly<{
-  canonicalKey?: string;
-  confidence?: number;
   createdAt: Date;
-  importance?: number;
-  negated?: boolean;
   structuredValue: Record<string, unknown>;
   text: string;
   userId: string;
@@ -294,25 +278,25 @@ async function createCandidate(input: Readonly<{
   const plan = decodeMemoryFactExtraction([{
     arguments: {
       candidates: [{
-        canonical_key: input.canonicalKey ?? "user.preference.drink",
-        category: "preference",
-        confidence: input.confidence ?? 0.92,
+        core_eligible: true,
+        core_salience: "HIGH",
         directness: "DIRECT",
         display_text: input.text,
-        evidence: [{ message_id: turn.userMessage.id, quote: input.text }],
-        importance: input.importance ?? 0.45,
+        evidence: [{
+          end_offset: input.text.length,
+          message_id: turn.userMessage.id,
+          start_offset: 0
+        }],
         language: "en",
         modality: "PREFERENCE",
-        negated: input.negated ?? false,
         raw_temporal_expression: null,
-        reason_code: null,
         scope: { target_id: null, type: "GLOBAL_USER" },
         sensitivity: "NORMAL",
-        state: "PENDING",
-        structured_value: input.structuredValue,
+        structured_value: JSON.stringify(input.structuredValue),
         valid_from: null,
         valid_to: null
-      }]
+      }],
+      decision: "STORE"
     },
     id: `extract-call-${randomUUID()}`,
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
@@ -383,7 +367,6 @@ function consolidationPlan(
     .includes(operation);
   const target = targeted
     ? input.relatedFacts.find((fact) =>
-        fact.canonicalKey === input.candidate.canonicalKey &&
         fact.scope.type === input.candidate.scope.type &&
         fact.scope.targetId === input.candidate.scope.targetId &&
         fact.state === "ACTIVE")
@@ -456,71 +439,6 @@ async function commitConsolidation(input: Readonly<{
   if (!committed) throw new Error("memory_consolidation_commit_failed");
 }
 
-async function prepareVerification(userId: string): Promise<Readonly<{
-  claim: MemoryJobClaim;
-  input: MemoryFactVerificationInput;
-}>> {
-  const job = await prisma.memoryJob.findFirstOrThrow({
-    orderBy: { createdAt: "desc" },
-    where: { kind: "VERIFY_CANDIDATE", state: "QUEUED", userId }
-  });
-  const claim = await claimJob(job.id);
-  const prepared = await consolidationRepository().prepareVerification(claim);
-  if ("decision" in prepared) throw new Error(prepared.decision.errorCode);
-  return { claim, input: prepared.input };
-}
-
-function verificationPlan(
-  input: MemoryFactVerificationInput,
-  verdict: "APPROVE" | "DEFER" | "REJECT"
-): MemoryFactVerificationPlan {
-  return decodeMemoryFactVerification([{
-    arguments: {
-      candidate_id: input.candidate.id,
-      decision_id: input.decision.id,
-      reason_code: verdict === "APPROVE"
-        ? "supported_transition"
-        : "authority_conflict",
-      verdict
-    },
-    id: `verify-call-${randomUUID()}`,
-    name: MEMORY_FACT_VERIFICATION_TOOL_NAME
-  }], input);
-}
-
-async function commitVerification(input: Readonly<{
-  claim: MemoryJobClaim;
-  input: MemoryFactVerificationInput;
-  plan: MemoryFactVerificationPlan;
-}>): Promise<void> {
-  const bindingId = await createSucceededBinding({
-    inputHash: input.input.inputHash,
-    jobId: input.claim.id,
-    outputHash: input.plan.outputHash,
-    pipelineVersion: MEMORY_FACT_VERIFICATION_PIPELINE_VERSION,
-    policyVersion: MEMORY_FACT_VERIFICATION_POLICY_VERSION,
-    promptVersion: MEMORY_FACT_VERIFICATION_PROMPT_VERSION,
-    role: "MEMORY_VERIFY",
-    schemaVersion: MEMORY_FACT_VERIFICATION_SCHEMA_VERSION,
-    userId: input.claim.userId
-  });
-  const committed = await coordinator.commitJobSuccess({
-    acceptedResultHash: input.plan.outputHash,
-    apply: (tx, exactClaim) => consolidationRepository().applyVerification(
-      tx,
-      exactClaim,
-      input.input,
-      input.plan,
-      bindingId,
-      new Date()
-    ),
-    claim: input.claim,
-    now: new Date(),
-    stage: "verification_applied"
-  });
-  if (!committed) throw new Error("memory_verification_commit_failed");
-}
-
 async function addCandidateAsFact(candidate: CandidateFixture): Promise<string> {
   const prepared = await prepareConsolidation(candidate);
   const plan = consolidationPlan(prepared.input, "ADD");
@@ -582,6 +500,49 @@ async function saveExplicitFact(userId: string): Promise<Readonly<{
 describe("Prisma Memory fact consolidation", () => {
   afterAll(async () => {
     await prisma.$disconnect();
+  });
+
+  it("does not let an already-enqueued candidate starve later consolidation work", async () => {
+    const userId = await createOwner("reconcile-starvation");
+    try {
+      const first = await createCandidate({
+        createdAt: new Date("2026-08-11T06:00:00.000Z"),
+        structuredValue: { drink: "tea" },
+        text: "I prefer tea.",
+        userId
+      });
+      await expect(reconcileMemoryFactCandidateJobs(prisma, { limit: 1 }))
+        .resolves.toBe(1);
+
+      const second = await createCandidate({
+        createdAt: new Date("2026-08-11T06:01:00.000Z"),
+        structuredValue: { drink: "coffee" },
+        text: "I prefer coffee.",
+        userId
+      });
+      await expect(reconcileMemoryFactCandidateJobs(prisma, { limit: 1 }))
+        .resolves.toBe(1);
+      await expect(prisma.memoryJob.count({
+        where: {
+          idempotencyFingerprint: {
+            startsWith: `consolidate-candidate:${second.candidateId}:`
+          },
+          kind: "CONSOLIDATE_CANDIDATE",
+          userId
+        }
+      })).resolves.toBe(1);
+      await expect(prisma.memoryJob.count({
+        where: {
+          idempotencyFingerprint: {
+            startsWith: `consolidate-candidate:${first.candidateId}:`
+          },
+          kind: "CONSOLIDATE_CANDIDATE",
+          userId
+        }
+      })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
   });
 
   it.each(["AUTOMATIC_FACTS", "ALL_REUSABLE"] as const)(
@@ -693,7 +654,7 @@ describe("Prisma Memory fact consolidation", () => {
       const repeated = await createCandidate({
         createdAt: new Date("2026-08-11T09:00:00.000Z"),
         structuredValue: { drink: "tea" },
-        text: "I prefer tea.",
+        text: "Tea is always my first choice.",
         userId
       });
       const reinforcement = await prepareConsolidation(repeated);
@@ -726,7 +687,7 @@ describe("Prisma Memory fact consolidation", () => {
     }
   });
 
-  it("finds a bounded same-scope neighbor through structured entity overlap", async () => {
+  it("supplies a bounded same-scope neighborhood without canonical-key identity", async () => {
     const userId = await createOwner("entity-neighborhood");
     try {
       const tea = await createCandidate({
@@ -737,7 +698,6 @@ describe("Prisma Memory fact consolidation", () => {
       });
       await addCandidateAsFact(tea);
       const paraphrase = await createCandidate({
-        canonicalKey: "user.preference.beverage",
         createdAt: new Date("2026-08-11T09:20:00.000Z"),
         structuredValue: { beverage: "tea" },
         text: "I always choose tea.",
@@ -746,9 +706,11 @@ describe("Prisma Memory fact consolidation", () => {
       const prepared = await prepareConsolidation(paraphrase);
       expect(prepared.input.relatedFacts).toHaveLength(1);
       expect(prepared.input.relatedFacts[0]).toMatchObject({
-        canonicalKey: "user.preference.drink",
         scope: { targetId: null, type: "GLOBAL_USER" }
       });
+      expect(prepared.input.relatedFacts[0]!.canonicalKey).toMatch(/^auto\.[a-f0-9]{64}$/u);
+      expect(prepared.input.relatedFacts[0]!.canonicalKey)
+        .not.toBe(prepared.input.candidate.canonicalKey);
       expect(prepared.input.relatedFacts[0]?.versions).toHaveLength(1);
     } finally {
       await cleanupOwner(userId);
@@ -797,7 +759,7 @@ describe("Prisma Memory fact consolidation", () => {
     }
   });
 
-  it("removes invalid message support without retracting explicit authority", async () => {
+  it("retains explicit authority without attaching automatic support", async () => {
     const userId = await createOwner("explicit-support-invalidation");
     try {
       const reinforcement = await createCandidate({
@@ -814,12 +776,18 @@ describe("Prisma Memory fact consolidation", () => {
 
       await expect(prisma.memoryEvidence.count({
         where: { factVersionId: explicit.versionId, userId }
-      })).resolves.toBe(2);
+      })).resolves.toBe(1);
+      await expect(prisma.memoryCandidate.findUniqueOrThrow({
+        where: { id: reinforcement.candidateId }
+      })).resolves.toMatchObject({
+        reasonCode: "explicit_authority_retained",
+        state: "DEFERRED"
+      });
       await expect(prisma.memoryFact.findUniqueOrThrow({
         where: { id: explicit.factId }
       })).resolves.toMatchObject({
         currentVersionId: explicit.versionId,
-        lastConfirmedAt: new Date("2026-08-11T15:10:00.000Z"),
+        lastConfirmedAt: new Date("2026-08-11T15:00:00.000Z"),
         state: "ACTIVE"
       });
 
@@ -860,8 +828,8 @@ describe("Prisma Memory fact consolidation", () => {
     }
   });
 
-  it("requires selective verification for SUPERSEDE and defers disagreement", async () => {
-    const userId = await createOwner("verification");
+  it("applies a newer direct correction without a second verifier", async () => {
+    const userId = await createOwner("direct-correction");
     try {
       const tea = await createCandidate({
         createdAt: new Date("2026-08-11T10:00:00.000Z"),
@@ -892,18 +860,6 @@ describe("Prisma Memory fact consolidation", () => {
         bindingId: consolidationBinding,
         plan: supersede
       });
-      await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: factId } }))
-        .resolves.toMatchObject({ currentVersionId: oldVersionId, state: "ACTIVE" });
-      await expect(prisma.memoryCandidateDecision.findFirstOrThrow({
-        where: { candidateId: coffee.candidateId, userId }
-      })).resolves.toMatchObject({
-        operation: "SUPERSEDE",
-        state: "PENDING_VERIFICATION"
-      });
-
-      const verification = await prepareVerification(userId);
-      const approval = verificationPlan(verification.input, "APPROVE");
-      await commitVerification({ ...verification, plan: approval });
       const superseded = await prisma.memoryFact.findUniqueOrThrow({
         where: { id: factId }
       });
@@ -917,43 +873,15 @@ describe("Prisma Memory fact consolidation", () => {
       await expect(prisma.memoryCandidateDecision.findFirstOrThrow({
         where: { candidateId: coffee.candidateId, userId }
       })).resolves.toMatchObject({
+        operation: "SUPERSEDE",
+        requiresVerification: false,
         state: "APPLIED",
-        verificationExecutionId: expect.any(String),
-        verificationOutputHash: approval.outputHash
+        verificationExecutionId: null,
+        verificationOutputHash: null
       });
-
-      const water = await createCandidate({
-        createdAt: new Date("2026-08-11T12:00:00.000Z"),
-        structuredValue: { drink: "water" },
-        text: "I prefer water now.",
-        userId
-      });
-      const disputed = await prepareConsolidation(water);
-      const disputedPlan = consolidationPlan(disputed.input, "SUPERSEDE");
-      const disputedBinding = await bindConsolidation(
-        disputed.claim,
-        disputed.input,
-        disputedPlan
-      );
-      await commitConsolidation({
-        ...disputed,
-        bindingId: disputedBinding,
-        plan: disputedPlan
-      });
-      const disagreement = await prepareVerification(userId);
-      const defer = verificationPlan(disagreement.input, "DEFER");
-      await commitVerification({ ...disagreement, plan: defer });
-      await expect(prisma.memoryCandidate.findUniqueOrThrow({
-        where: { id: water.candidateId }
-      })).resolves.toMatchObject({
-        reasonCode: "verifier_authority_conflict",
-        state: "DEFERRED"
-      });
-      await expect(prisma.memoryCandidateDecision.findFirstOrThrow({
-        where: { candidateId: water.candidateId, userId }
-      })).resolves.toMatchObject({ state: "REJECTED" });
-      await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: factId } }))
-        .resolves.toMatchObject({ currentVersionId: superseded.currentVersionId });
+      await expect(prisma.memoryJob.count({
+        where: { kind: "VERIFY_CANDIDATE", userId }
+      })).resolves.toBe(0);
     } finally {
       await cleanupOwner(userId);
     }
@@ -973,7 +901,7 @@ describe("Prisma Memory fact consolidation", () => {
         where: { id: factId }
       })).currentVersionId!;
       const coffee = await createCandidate({
-        createdAt: new Date("2026-08-11T13:05:00.000Z"),
+        createdAt: new Date("2026-08-11T13:00:00.000Z"),
         structuredValue: { drink: "coffee" },
         text: "I prefer coffee too.",
         userId
@@ -990,16 +918,14 @@ describe("Prisma Memory fact consolidation", () => {
         bindingId: consolidationBinding,
         plan: conflict
       });
-      const verification = await prepareVerification(userId);
-      await commitVerification({
-        ...verification,
-        plan: verificationPlan(verification.input, "APPROVE")
-      });
       await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: factId } }))
         .resolves.toMatchObject({ currentVersionId: null, state: "CONFLICTED" });
       await expect(prisma.memoryFactVersion.count({
         where: { factId, state: "CONFLICTING", userId }
       })).resolves.toBe(2);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "VERIFY_CANDIDATE", userId }
+      })).resolves.toBe(0);
 
       await mutateSource(userId, coffee.chatId, {
         mutations: ["BRANCH_PATH_CHANGE"],
@@ -1035,7 +961,7 @@ describe("Prisma Memory fact consolidation", () => {
     }
   });
 
-  it("expires an automatic fact only after direct negation and verifier approval", async () => {
+  it("expires an automatic fact from a direct later ending claim without a verifier", async () => {
     const userId = await createOwner("expiry");
     try {
       const active = await createCandidate({
@@ -1050,9 +976,8 @@ describe("Prisma Memory fact consolidation", () => {
       })).currentVersionId!;
       const ended = await createCandidate({
         createdAt: new Date("2026-08-11T14:10:00.000Z"),
-        negated: true,
-        structuredValue: { drink: "tea" },
-        text: "I prefer not to drink tea.",
+        structuredValue: { active: false, drink: "tea" },
+        text: "I no longer drink tea.",
         userId
       });
       const proposed = await prepareConsolidation(ended);
@@ -1063,11 +988,6 @@ describe("Prisma Memory fact consolidation", () => {
         expiration
       );
       await commitConsolidation({ ...proposed, bindingId, plan: expiration });
-      const verification = await prepareVerification(userId);
-      await commitVerification({
-        ...verification,
-        plan: verificationPlan(verification.input, "APPROVE")
-      });
 
       await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: factId } }))
         .resolves.toMatchObject({ currentVersionId: null, state: "EXPIRED" });
@@ -1083,6 +1003,9 @@ describe("Prisma Memory fact consolidation", () => {
       })).resolves.toBe(1);
       await expect(prisma.memorySearchEntry.count({
         where: { factVersionId: versionId, userId }
+      })).resolves.toBe(0);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "VERIFY_CANDIDATE", userId }
       })).resolves.toBe(0);
     } finally {
       await cleanupOwner(userId);

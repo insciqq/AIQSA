@@ -685,7 +685,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     await prisma.$disconnect();
   });
 
-  it("keeps RU/EN relevant facts in Recall@5 and excludes tenant/scope/source/safety violations", async () => {
+  it("keeps Unicode lexical candidates bounded and excludes tenant/scope/source/safety violations", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const enQuery = "What is my preferred editor?";
     const enResult = await repository.retrieve({
@@ -716,7 +716,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     );
   });
 
-  it("uses a dated historical version without substituting an undated current fact", async () => {
+  it("never serves a superseded historical version as current truth", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const query = "Which editor did I prefer in July 2025?";
     const plan = planMemoryRetrieval({ currentUserText: query, now: fixtureNow });
@@ -728,16 +728,17 @@ describe("local Memory retrieval on PostgreSQL", () => {
       userId: fixture.userId
     });
     const ranked = fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow);
-    expect(ranked.map((item) => item.itemId)).toContain(fixture.historicalFactVersionId);
-    expect(ranked.map((item) => item.itemId)).not.toContain(fixture.enFactVersionId);
+    expect(ranked.map((item) => item.itemId)).not.toContain(
+      fixture.historicalFactVersionId
+    );
+    expect(ranked.map((item) => item.itemId)).toContain(fixture.enFactVersionId);
     const expanded = await repository.expand(result.snapshot, plan, ranked);
     const pack = packMemoryPersonalContext({ expanded, plan, ranked });
-    expect(pack.text).toContain("historical state");
-    expect(pack.text).toContain("Vim in July 2025");
-    expect(pack.text).not.toContain("Neovim");
+    expect(pack.text).not.toContain("Vim in July 2025");
+    expect(pack.text).toContain("Neovim");
   });
 
-  it("retrieves only current safe source projections and expands an episode through a safe chunk", async () => {
+  it("retrieves only safe chunks and leaves legacy episodes non-serving", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const query = "Когда мы обсуждали миграцию PostgreSQL в предыдущем чате?";
     const plan = planMemoryRetrieval({ currentUserText: query, now: fixtureNow });
@@ -751,20 +752,20 @@ describe("local Memory retrieval on PostgreSQL", () => {
     const candidateIds = result.laneResults.flatMap((lane) =>
       lane.candidates.map((candidate) => candidate.itemId));
     expect(candidateIds).toContain(fixture.validChunkId);
-    expect(candidateIds).toContain(fixture.episodeId);
+    expect(candidateIds).not.toContain(fixture.episodeId);
     expect(candidateIds).not.toContain(fixture.staleChunkId);
     expect(candidateIds).not.toContain(fixture.excludedChunkId);
     expect(candidateIds).not.toContain(fixture.secretChunkId);
 
     const ranked = fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow);
     const expanded = await repository.expand(result.snapshot, plan, ranked);
-    const episode = expanded.find((item) => item.itemId === fixture.episodeId);
-    expect(episode).toMatchObject({
+    expect(expanded.some((item) => item.itemType === "EPISODE")).toBe(false);
+    expect(expanded).toContainEqual(expect.objectContaining({
+      itemId: fixture.validChunkId,
       projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
       safeText: fixture.safeChunkText,
-      sourceChatId: fixture.sourceChatId,
-      supportingItemId: fixture.validChunkId
-    });
+      sourceChatId: fixture.sourceChatId
+    }));
     expect(expanded.map((item) => item.safeText).join("\n")).not.toContain(fixture.rawSourceText);
     const pack = packMemoryPersonalContext({ expanded, plan, ranked });
     expect(pack.approxTokens).toBeLessThanOrEqual(MEMORY_CONTEXT_HARD_CAP_TOKENS);
@@ -772,7 +773,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(pack.items.length).toBeLessThanOrEqual(12);
   });
 
-  it("matches a cross-script product alias but injects no unrelated past-chat result", async () => {
+  it("keeps a bounded recency lane for cross-script and unrelated relevance decisions", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const aliasQuery = "Что мы решили по Макбуку в предыдущем чате?";
     const aliasPlan = planMemoryRetrieval({ currentUserText: aliasQuery, now: fixtureNow });
@@ -798,14 +799,18 @@ describe("local Memory retrieval on PostgreSQL", () => {
       plan: irrelevantPlan,
       userId: fixture.userId
     });
-    expect(fuseMemoryRetrievalCandidates(
+    const irrelevantCandidates = fuseMemoryRetrievalCandidates(
       irrelevantPlan,
       irrelevantResult.laneResults,
       fixtureNow
-    )).toEqual([]);
+    );
+    expect(irrelevantCandidates.length).toBeGreaterThan(0);
+    expect(irrelevantResult.laneResults.filter((lane) =>
+      lane.lane === "HISTORY_RECALL_EXACT" || lane.lane === "HISTORY_RECALL_FTS_SIMPLE")
+      .flatMap((lane) => lane.candidates)).toEqual([]);
   });
 
-  it("injects nothing for an irrelevant generic query", async () => {
+  it("always generates candidates for an irrelevant non-empty query", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const plan = planMemoryRetrieval({ currentUserText: "What is photosynthesis?", now: fixtureNow });
     const result = await repository.retrieve({
@@ -815,11 +820,12 @@ describe("local Memory retrieval on PostgreSQL", () => {
       plan,
       userId: fixture.userId
     });
-    expect(result.laneResults).toEqual([]);
-    expect(fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow)).toEqual([]);
+    expect(result.laneResults.length).toBeGreaterThan(0);
+    expect(fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow).length)
+      .toBeGreaterThan(0);
   });
 
-  it("emits reproducible sanitized Recall@5, isolation, bounds, and latency evidence", async () => {
+  it("emits reproducible sanitized candidate coverage, isolation, bounds, and latency evidence", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const cases = [
       { expected: fixture.enFactVersionId, query: "What is my preferred editor?" },
@@ -852,12 +858,12 @@ describe("local Memory retrieval on PostgreSQL", () => {
           .slice(0, 5).some((item) => item.itemId === testCase.expected)) recalled += 1;
       }
     }
-    const irrelevantQueries = [
+    const recencyQueries = [
       "What is photosynthesis?",
       "Что мы решили по квантовым бананам в предыдущем чате?"
     ];
-    let irrelevantInjections = 0;
-    for (const query of irrelevantQueries) {
+    let recencyCandidateQueries = 0;
+    for (const query of recencyQueries) {
       const plan = planMemoryRetrieval({ currentUserText: query, now: fixtureNow });
       const result = await repository.retrieve({
         assistantId: null,
@@ -867,28 +873,28 @@ describe("local Memory retrieval on PostgreSQL", () => {
         userId: fixture.userId
       });
       if (fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow).length > 0) {
-        irrelevantInjections += 1;
+        recencyCandidateQueries += 1;
       }
     }
     const sampleCount = cases.length * 5;
     const evidence = Object.freeze({
       candidateHardCap: 150,
       crossTenantHits,
-      evidenceVersion: "memory-phase5-local-retrieval-qualification-v1",
-      irrelevantInjectionRate: irrelevantInjections / irrelevantQueries.length,
+      evidenceVersion: "memory-language-agnostic-local-candidates-v2",
       latencyP95Ms: Number(percentile95(latencies).toFixed(2)),
       maximumLatencyP95Ms: 150,
       maximumCandidateCount,
       recallAt5: recalled / sampleCount,
+      recencyCandidateAvailabilityRate: recencyCandidateQueries / recencyQueries.length,
       sanitizedAggregatesOnly: true,
       sampleCount
     });
     expect(evidence).toMatchObject({
       candidateHardCap: 150,
       crossTenantHits: 0,
-      irrelevantInjectionRate: 0,
       maximumCandidateCount: expect.any(Number),
       recallAt5: 1,
+      recencyCandidateAvailabilityRate: 1,
       sanitizedAggregatesOnly: true,
       sampleCount: 15
     });

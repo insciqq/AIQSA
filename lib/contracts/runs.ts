@@ -37,6 +37,43 @@ export type ModelRunAssistantProvenance = {
   revisionNumber: number;
 };
 
+export type ModelRunInspectionParameter = Readonly<{
+  name:
+    | "background"
+    | "max_output_tokens"
+    | "reasoning_effort"
+    | "reasoning_mode"
+    | "stream"
+    | "temperature";
+  value: boolean | number | string;
+}>;
+
+export type ModelRunInspectionMcpServer = Readonly<{
+  externalAccountLabel: string | null;
+  name: string;
+  toolNames: readonly string[];
+}>;
+
+/**
+ * Positive, content-free inspection facts computed from the exact accepted
+ * request. Raw normalized request content, ids, schemas, fingerprints,
+ * endpoints, credentials, and provider payloads are deliberately absent.
+ */
+export type ModelRunInspectionProjection = Readonly<{
+  acceptedAt: string;
+  answerMessageId: string | null;
+  attachmentCount: number;
+  branchMessageCount: number;
+  firstPartyTools: readonly string[];
+  knowledgeBaseCount: number;
+  mcpServers: readonly ModelRunInspectionMcpServer[];
+  memoryContextItemCount: number;
+  parameters: readonly ModelRunInspectionParameter[];
+  searchBindings: readonly Readonly<{ displayName: string }>[];
+  searchMode: "all_selected" | "model_choice" | null;
+  toolMode: "auto" | "none";
+}>;
+
 export type KnowledgeRunBindingProjection = {
   baseContentRevision: number;
   embeddingConnectionId: string;
@@ -112,6 +149,7 @@ export type ModelRunResponseProjection = {
   events: ModelRunEventProjection[];
   id: string;
   inputTokens: number;
+  inspection?: ModelRunInspectionProjection;
   knowledgeBindings?: KnowledgeRunBindingProjection[];
   knowledgePlan?: KnowledgePlan;
   knowledgeRuns?: KnowledgeRunProjection[];
@@ -201,6 +239,119 @@ function nonNegativeInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
     : null;
+}
+
+function boundedInspectionLabel(value: unknown, maxLength = 256): string | null {
+  if (typeof value !== "string") return null;
+  const label = value.trim();
+  return label && label.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(label)
+    ? label
+    : null;
+}
+
+function decodeModelRunInspectionParameter(
+  value: unknown
+): ModelRunInspectionParameter | null {
+  if (!isRecord(value)) return null;
+  const names = new Set<ModelRunInspectionParameter["name"]>([
+    "background",
+    "max_output_tokens",
+    "reasoning_effort",
+    "reasoning_mode",
+    "stream",
+    "temperature"
+  ]);
+  if (typeof value.name !== "string" || !names.has(value.name as ModelRunInspectionParameter["name"])) {
+    return null;
+  }
+  if (
+    typeof value.value !== "boolean" &&
+    typeof value.value !== "string" &&
+    (typeof value.value !== "number" || !Number.isFinite(value.value))
+  ) return null;
+  if (typeof value.value === "string" && !boundedInspectionLabel(value.value, 80)) return null;
+  return {
+    name: value.name as ModelRunInspectionParameter["name"],
+    value: value.value
+  };
+}
+
+function decodeModelRunInspection(value: unknown): ModelRunInspectionProjection | null {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.firstPartyTools) ||
+    !Array.isArray(value.mcpServers) ||
+    !Array.isArray(value.parameters) ||
+    !Array.isArray(value.searchBindings)
+  ) return null;
+  const acceptedAt = boundedInspectionLabel(value.acceptedAt, 64);
+  const answerMessageId = value.answerMessageId === null
+    ? null
+    : boundedInspectionLabel(value.answerMessageId, 512);
+  const attachmentCount = nonNegativeInteger(value.attachmentCount);
+  const branchMessageCount = nonNegativeInteger(value.branchMessageCount);
+  const knowledgeBaseCount = nonNegativeInteger(value.knowledgeBaseCount);
+  const memoryContextItemCount = nonNegativeInteger(value.memoryContextItemCount);
+  if (
+    !acceptedAt || Number.isNaN(Date.parse(acceptedAt)) ||
+    (value.answerMessageId !== null && !answerMessageId) ||
+    attachmentCount === null || attachmentCount > 20 ||
+    branchMessageCount === null || branchMessageCount > 10_000 ||
+    knowledgeBaseCount === null || knowledgeBaseCount > 3 ||
+    memoryContextItemCount === null || memoryContextItemCount > 50 ||
+    value.firstPartyTools.length > 4 ||
+    value.mcpServers.length > 16 ||
+    value.parameters.length > 6 ||
+    value.searchBindings.length > 3 ||
+    (value.searchMode !== null &&
+      value.searchMode !== "all_selected" && value.searchMode !== "model_choice") ||
+    (value.toolMode !== "auto" && value.toolMode !== "none")
+  ) return null;
+  const firstPartyTools = value.firstPartyTools.map((label) => boundedInspectionLabel(label));
+  if (firstPartyTools.some((label) => label === null) ||
+    new Set(firstPartyTools).size !== firstPartyTools.length) return null;
+  const parameters = value.parameters.map(decodeModelRunInspectionParameter);
+  if (parameters.some((parameter) => parameter === null) ||
+    new Set(parameters.map((parameter) => parameter?.name)).size !== parameters.length) return null;
+  const searchBindings = value.searchBindings.map((binding) => {
+    if (!isRecord(binding)) return null;
+    const displayName = boundedInspectionLabel(binding.displayName);
+    return displayName ? { displayName } : null;
+  });
+  if (searchBindings.some((binding) => binding === null)) return null;
+  const mcpServers = value.mcpServers.map((server): ModelRunInspectionMcpServer | null => {
+    if (!isRecord(server) || !Array.isArray(server.toolNames) || server.toolNames.length > 128) {
+      return null;
+    }
+    const name = boundedInspectionLabel(server.name);
+    const externalAccountLabel = server.externalAccountLabel === null
+      ? null
+      : boundedInspectionLabel(server.externalAccountLabel);
+    const toolNames = server.toolNames.map((toolName) => boundedInspectionLabel(toolName));
+    if (!name || (server.externalAccountLabel !== null && !externalAccountLabel) ||
+      toolNames.some((toolName) => toolName === null) ||
+      new Set(toolNames).size !== toolNames.length) return null;
+    return {
+      externalAccountLabel,
+      name,
+      toolNames: toolNames as string[]
+    };
+  });
+  if (mcpServers.some((server) => server === null)) return null;
+  return {
+    acceptedAt,
+    answerMessageId,
+    attachmentCount,
+    branchMessageCount,
+    firstPartyTools: firstPartyTools as string[],
+    knowledgeBaseCount,
+    mcpServers: mcpServers as ModelRunInspectionMcpServer[],
+    memoryContextItemCount,
+    parameters: parameters as ModelRunInspectionParameter[],
+    searchBindings: searchBindings as { displayName: string }[],
+    searchMode: value.searchMode as ModelRunInspectionProjection["searchMode"],
+    toolMode: value.toolMode
+  };
 }
 
 function decodeKnowledgeRunBinding(value: unknown): KnowledgeRunBindingProjection | null {
@@ -549,6 +700,12 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
     if (!decoded.ok) return null;
     memoryReceipt = decoded.value;
   }
+  let inspection: ModelRunInspectionProjection | undefined;
+  if (run.inspection !== undefined) {
+    const decoded = decodeModelRunInspection(run.inspection);
+    if (!decoded) return null;
+    inspection = decoded;
+  }
 
   const cachedInputTokens = finiteNumber(run.cachedInputTokens) ?? 0;
   const cacheWriteInputTokens = finiteNumber(run.cacheWriteInputTokens) ?? 0;
@@ -567,6 +724,7 @@ export function decodeGetModelRunResponse(value: unknown): PersistedRun | null {
     events,
     id,
     inputTokens,
+    ...(inspection ? { inspection } : {}),
     knowledgeBindings: knowledgeBindings.filter(
       (binding): binding is KnowledgeRunBindingProjection => binding !== null
     ),

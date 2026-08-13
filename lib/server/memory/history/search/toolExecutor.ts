@@ -1,17 +1,17 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import {
-  decodeMemoryHistorySearchInput,
-  type MemoryHistorySearchInput,
-  type MemoryHistorySearchResponse
-} from "../../../../contracts/memory";
 import type {
   ModelToolCall,
   ToolExecutionContext,
   ToolExecutionResult
 } from "../../../tools/types";
 import { prisma } from "../../../prisma";
+import { memoryExplicitStatementContainsSecret } from "../../explicit/safety";
 import { memorySha256 } from "../../persistence/lexical";
-import type { MemoryHistorySearchService } from "./service";
+import type {
+  MemoryUnifiedSearchInput,
+  MemoryUnifiedSearchResponse,
+  MemoryUnifiedSearchService
+} from "./unifiedService";
 import {
   MEMORY_HISTORY_SEARCH_MAX_CALLS,
   MEMORY_HISTORY_SEARCH_TOOL_NAME,
@@ -21,6 +21,8 @@ import {
 const HISTORY_PROVIDER_RESULT_MAX_BYTES = 256 * 1024;
 
 type HistoryReceipt = Readonly<{
+  assistantId: string | null;
+  chatId: string;
   created: boolean;
   id: string;
   providerResult: Prisma.JsonValue | null;
@@ -30,7 +32,11 @@ type HistoryReceipt = Readonly<{
 
 export type MemoryHistoryToolExecutor = Readonly<{
   accepts(toolName: string): boolean;
-  execute(call: ModelToolCall, context: ToolExecutionContext): Promise<ToolExecutionResult>;
+  execute(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+    options?: { signal?: AbortSignal }
+  ): Promise<ToolExecutionResult>;
   tool: typeof memoryHistorySearchTool;
 }>;
 
@@ -42,41 +48,75 @@ function exactKeys(value: Record<string, unknown>, allowed: readonly string[]): 
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
-function decodeToolInput(value: Record<string, unknown>): MemoryHistorySearchInput | null {
-  if (!exactKeys(value, ["query", "time_range", "chat_ids", "folder_id", "cursor"])) {
-    return null;
+const sourceKinds = new Set(["FACT", "EVENT", "HISTORY"] as const);
+const scopeTypes = new Set(["GLOBAL_USER", "FOLDER", "ASSISTANT", "CHAT"] as const);
+const rfc3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
+const opaqueId = /^[^\u0000-\u001f\u007f]{1,256}$/u;
+
+function dateValue(value: unknown): Date | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "string" || !rfc3339.test(value)) return undefined;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : undefined;
+}
+
+function decodeToolInput(value: Record<string, unknown>): MemoryUnifiedSearchInput | null {
+  if (!exactKeys(value, ["query", "scope", "source_kinds", "time_range"]) ||
+    typeof value.query !== "string" || value.query.length < 1 || value.query.length > 2_000 ||
+    value.query.includes("\u0000")) return null;
+  const requestedKinds = value.source_kinds === null
+    ? ["FACT", "EVENT", "HISTORY"] as const
+    : value.source_kinds;
+  if (!Array.isArray(requestedKinds) || requestedKinds.length < 1 || requestedKinds.length > 3 ||
+    new Set(requestedKinds).size !== requestedKinds.length ||
+    requestedKinds.some((kind) => typeof kind !== "string" || !sourceKinds.has(
+      kind as "FACT" | "EVENT" | "HISTORY"))) return null;
+
+  let scope: MemoryUnifiedSearchInput["scope"] = null;
+  if (value.scope !== null) {
+    if (typeof value.scope !== "object" || Array.isArray(value.scope) ||
+      !exactKeys(value.scope as Record<string, unknown>, ["target_id", "type"])) return null;
+    const raw = value.scope as Record<string, unknown>;
+    if (typeof raw.type !== "string" || !scopeTypes.has(
+      raw.type as "GLOBAL_USER" | "FOLDER" | "ASSISTANT" | "CHAT")) return null;
+    const targetId = raw.target_id;
+    if ((raw.type === "GLOBAL_USER" && targetId !== null) ||
+      (raw.type !== "GLOBAL_USER" &&
+        (typeof targetId !== "string" || !opaqueId.test(targetId)))) return null;
+    scope = {
+      targetId: targetId as string | null,
+      type: raw.type as "GLOBAL_USER" | "FOLDER" | "ASSISTANT" | "CHAT"
+    };
   }
-  const range = value.time_range;
-  if (
-    range !== undefined &&
-    range !== null &&
-    (typeof range !== "object" || Array.isArray(range) ||
-      !exactKeys(range as Record<string, unknown>, ["from", "to"]))
-  ) {
-    return null;
-  }
-  const timeRange = (range ?? {}) as Record<string, unknown>;
-  const decoded = decodeMemoryHistorySearchInput({
-    chatIds: value.chat_ids ?? [],
-    cursor: value.cursor ?? null,
-    folderId: value.folder_id ?? null,
-    from: timeRange.from ?? null,
-    pageSize: 20,
+
+  if (value.time_range !== null &&
+    (typeof value.time_range !== "object" || Array.isArray(value.time_range) ||
+      !exactKeys(value.time_range as Record<string, unknown>, ["from", "to"]))) return null;
+  const range = (value.time_range ?? { from: null, to: null }) as Record<string, unknown>;
+  const from = dateValue(range.from);
+  const to = dateValue(range.to);
+  if (from === undefined || to === undefined || (from && to && from >= to)) return null;
+  return {
+    from,
     query: value.query,
-    to: timeRange.to ?? null
-  });
-  return decoded.ok ? decoded.value : null;
+    scope,
+    sourceKinds: requestedKinds as Array<"FACT" | "EVENT" | "HISTORY">,
+    to
+  };
 }
 
 function executionIdentity(context: ToolExecutionContext): Readonly<{
+  chatId: string;
   modelRunId: string;
   persistedToolCallId: string;
   userId: string;
 }> {
-  if (!context.runId || !context.persistedToolCallId || !context.userId) {
+  if (!context.runId || !context.persistedToolCallId || !context.userId ||
+    !context.request.chatId) {
     throw new Error("memory_history_authorization_missing");
   }
   return {
+    chatId: context.request.chatId,
     modelRunId: context.runId,
     persistedToolCallId: context.persistedToolCallId,
     userId: context.userId
@@ -105,23 +145,23 @@ function failed(call: ModelToolCall, code: string): ToolExecutionResult {
 
 function complete(
   call: ModelToolCall,
-  response: MemoryHistorySearchResponse
+  response: MemoryUnifiedSearchResponse
 ): ToolExecutionResult {
   return {
     callId: call.id,
     content: [{
       type: "json",
       value: {
-        ...response,
+        indexing: response.indexing,
+        results: response.results,
         untrusted: true
       }
     }],
     name: call.name,
     rawPreview: {
       degradationCode: response.indexing.degradationCode,
-      hasNextPage: response.nextCursor !== null,
       resultCount: response.results.length,
-      resultType: "private_history"
+      resultType: "private_memory"
     },
     status: "complete"
   };
@@ -145,11 +185,12 @@ function boundedProviderResult(value: ToolExecutionResult): Prisma.InputJsonValu
   return json(JSON.parse(encoded));
 }
 
-function outcome(response: MemoryHistorySearchResponse) {
+function outcome(response: MemoryUnifiedSearchResponse) {
   if (response.indexing.lexicalState === "DISABLED") return "DISABLED" as const;
   if (response.indexing.degradationCode !== null ||
-    response.indexing.lexicalState === "UNAVAILABLE" ||
-    response.indexing.vectorState === "DEGRADED") {
+    response.indexing.lexicalState === "FAILED" ||
+    response.indexing.vectorState === "DEGRADED" ||
+    response.indexing.relevanceState === "UNAVAILABLE") {
     return "DEGRADED" as const;
   }
   return response.results.length > 0 ? "RESULTS" as const : "EMPTY" as const;
@@ -158,13 +199,19 @@ function outcome(response: MemoryHistorySearchResponse) {
 async function beginReceipt(
   client: PrismaClient,
   identity: ReturnType<typeof executionIdentity>,
-  request: MemoryHistorySearchInput
+  request: MemoryUnifiedSearchInput
 ): Promise<HistoryReceipt> {
   return client.$transaction(async (tx) => {
-    const runs = await tx.$queryRaw<Array<{ id: string; userId: string }>>(Prisma.sql`
-      SELECT "id", "userId"
+    const runs = await tx.$queryRaw<Array<{
+      assistantId: string | null;
+      chatId: string;
+      id: string;
+      userId: string;
+    }>>(Prisma.sql`
+      SELECT "id", "userId", "chatId", "assistantId"
       FROM "ModelRun"
       WHERE "id" = ${identity.modelRunId} AND "userId" = ${identity.userId}
+        AND "chatId" = ${identity.chatId}
       FOR UPDATE
     `);
     if (!runs[0]) throw new Error("memory_history_authorization_missing");
@@ -187,21 +234,35 @@ async function beginReceipt(
       },
       where: { modelRunToolCallId: call.id }
     });
-    if (existing) return { ...existing, created: false };
+    if (existing) return {
+      ...existing,
+      assistantId: runs[0].assistantId,
+      chatId: runs[0].chatId,
+      created: false
+    };
     const count = await tx.memoryHistoryRun.count({
       where: { modelRunId: identity.modelRunId }
     });
     if (count >= MEMORY_HISTORY_SEARCH_MAX_CALLS) {
       throw new Error("memory_history_call_limit");
     }
+    const secret = memoryExplicitStatementContainsSecret(request.query);
+    const privateRequest = {
+      from: request.from?.toISOString() ?? null,
+      query: secret ? null : request.query,
+      queryHash: memorySha256(request.query),
+      scope: request.scope,
+      sourceKinds: request.sourceKinds,
+      to: request.to?.toISOString() ?? null
+    };
     const created = await tx.memoryHistoryRun.create({
       data: {
         indexingEvidence: {},
         invocationOrdinal: count + 1,
         modelRunId: identity.modelRunId,
         modelRunToolCallId: call.id,
-        privateRequest: json(request),
-        query: request.query,
+        privateRequest: json(privateRequest),
+        query: secret ? null : request.query,
         queryHash: memorySha256(request.query),
         userId: identity.userId
       },
@@ -212,7 +273,12 @@ async function beginReceipt(
         state: true
       }
     });
-    return { ...created, created: true };
+    return {
+      ...created,
+      assistantId: runs[0].assistantId,
+      chatId: runs[0].chatId,
+      created: true
+    };
   });
 }
 
@@ -221,7 +287,7 @@ async function settleReceipt(input: Readonly<{
   durationMs: number;
   identity: ReturnType<typeof executionIdentity>;
   receiptId: string;
-  response?: MemoryHistorySearchResponse;
+  response?: MemoryUnifiedSearchResponse;
   result: ToolExecutionResult;
 }>): Promise<ToolExecutionResult> {
   const stored = boundedProviderResult(input.result);
@@ -256,6 +322,7 @@ async function settleReceipt(input: Readonly<{
         data: {
           completedAt: now,
           durationMs: input.durationMs,
+          executionBindingIds: [...input.response.executionBindingIds],
           indexingEvidence: json(input.response.indexing),
           outcome: outcome(input.response),
           providerResult: stored,
@@ -297,14 +364,14 @@ async function settleReceipt(input: Readonly<{
 
 export function createMemoryHistoryToolExecutor(input: Readonly<{
   client?: PrismaClient;
-  service: MemoryHistorySearchService;
+  service: MemoryUnifiedSearchService;
 }>): MemoryHistoryToolExecutor {
   const client = input.client ?? prisma;
   return Object.freeze({
     accepts(toolName) {
       return toolName === MEMORY_HISTORY_SEARCH_TOOL_NAME;
     },
-    async execute(call, context) {
+    async execute(call, context, options) {
       if (call.name !== MEMORY_HISTORY_SEARCH_TOOL_NAME) {
         return failed(call, "memory_history_tool_invalid");
       }
@@ -333,9 +400,20 @@ export function createMemoryHistoryToolExecutor(input: Readonly<{
         return failed(call, "memory_history_receipt_scrubbed");
       }
       const startedAt = Date.now();
-      let response: MemoryHistorySearchResponse;
+      let response: MemoryUnifiedSearchResponse;
       try {
-        response = await input.service.search(identity.userId, request);
+        response = await input.service.search({
+          assistantId: receipt.assistantId,
+          chatId: receipt.chatId,
+          now: new Date(),
+          owner: {
+            modelRunId: identity.modelRunId,
+            modelRunToolCallId: identity.persistedToolCallId,
+            type: "MODEL_RUN_TOOL_CALL"
+          },
+          signal: options?.signal ?? new AbortController().signal,
+          userId: identity.userId
+        }, request);
       } catch (error) {
         const result = failed(call, errorCode(error));
         return settleReceipt({

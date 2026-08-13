@@ -265,7 +265,7 @@ describe("explicit Memory service", () => {
       value: expect.objectContaining({
         category: "preference",
         displayText: STATEMENT,
-        languageCode: "ru",
+        languageCode: "und",
         modality: "PREFERENCE",
         sourceMode: "EXPLICIT"
       })

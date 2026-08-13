@@ -6,14 +6,23 @@ describe("Memory history search tool schema", () => {
     expect(memoryHistorySearchTool.inputSchema).toEqual({
       additionalProperties: false,
       properties: {
-        chat_ids: {
-          items: { maxLength: 256, minLength: 1, type: "string" },
-          maxItems: 20,
+        query: { type: "string" },
+        scope: {
+          additionalProperties: false,
+          properties: {
+            target_id: { type: ["string", "null"] },
+            type: {
+              enum: ["GLOBAL_USER", "FOLDER", "ASSISTANT", "CHAT"],
+              type: "string"
+            }
+          },
+          required: ["target_id", "type"],
+          type: ["object", "null"]
+        },
+        source_kinds: {
+          items: { enum: ["FACT", "EVENT", "HISTORY"], type: "string" },
           type: ["array", "null"]
         },
-        cursor: { maxLength: 4096, minLength: 1, type: ["string", "null"] },
-        folder_id: { maxLength: 256, minLength: 1, type: ["string", "null"] },
-        query: { maxLength: 500, minLength: 1, type: "string" },
         time_range: {
           additionalProperties: false,
           properties: {
@@ -24,7 +33,7 @@ describe("Memory history search tool schema", () => {
           type: ["object", "null"]
         }
       },
-      required: ["chat_ids", "cursor", "folder_id", "query", "time_range"],
+      required: ["query", "scope", "source_kinds", "time_range"],
       type: "object"
     });
     expect(memoryHistorySearchTool.strict).toBe(true);

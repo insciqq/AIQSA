@@ -10,6 +10,7 @@ import {
   decodeChatLifecycleRequest,
   decodeChatLifecycleResponse,
   decodeChatMemoryStateResponse,
+  decodeChatNavigationPage,
   decodeChatMessagesPageResponse,
   decodeChatPermanentDeleteAdmissionResponse,
   decodeChatPermanentDeleteAuthorizationRequest,
@@ -48,6 +49,12 @@ const message = {
   artifactSummary: null,
   content: { blocks: [{ text: "Answer", type: "text" }] },
   createdAt: "2026-07-14T08:00:30.000Z",
+  evidenceSummary: {
+    fileCount: 2,
+    hasUsage: true,
+    sourceCount: 3,
+    toolCallCount: 1
+  },
   errorMessage: null,
   id: "message-1",
   modelId: "gpt-5.5",
@@ -95,6 +102,31 @@ const toolActivity = {
 };
 
 describe("chat wire contracts", () => {
+  it("decodes the exact content-free navigation page", () => {
+    const page = {
+      chats: [{
+        activeRun: true,
+        folderId: "folder-1",
+        id: "chat-1",
+        title: "Quarterly review",
+        updatedAt: "2026-08-13T00:00:00.000Z"
+      }],
+      folders: [{ id: "folder-1", name: "Work", parentId: null }],
+      nextCursor: "opaque_cursor"
+    };
+
+    expect(decodeChatNavigationPage(page)).toEqual(page);
+    expect(decodeChatNavigationPage({
+      ...page,
+      chats: [{ ...page.chats[0], messageCount: 10 }]
+    })).toBeNull();
+    expect(decodeChatNavigationPage({ ...page, nextCursor: "bad!" })).toBeNull();
+    expect(decodeChatNavigationPage({
+      ...page,
+      chats: [...page.chats, page.chats[0]]
+    })).toBeNull();
+  });
+
   it("decodes workspace summaries without allowing additive thread fields into the result", () => {
     const workspace = decodeWorkspaceChatsResponse({
       chats: [{ ...summary, messages: [message], usageStats }],
@@ -262,6 +294,10 @@ describe("chat wire contracts", () => {
     for (const malformedMessage of [
       { ...message, role: "owner" },
       { ...message, status: "finished" },
+      { ...message, evidenceSummary: { ...message.evidenceSummary, fileCount: -1 } },
+      { ...message, evidenceSummary: { ...message.evidenceSummary, hasUsage: "yes" } },
+      { ...message, evidenceSummary: { ...message.evidenceSummary, sourceCount: 1.5 } },
+      { ...message, evidenceSummary: { ...message.evidenceSummary, privateId: "leak" } },
       { ...message, runUsage: { totalTokens: -1 } },
       { ...message, artifactSummary: { ...artifactSummary, searchDisplayName: 7 } },
       { ...message, artifactSummary: { ...artifactSummary, reasoningText: "not-an-array" } }
@@ -275,13 +311,35 @@ describe("chat wire contracts", () => {
   });
 
   it("keeps legacy messages without a run usage projection readable", () => {
-    const { runUsage: _runUsage, ...legacyMessage } = message;
+    const {
+      evidenceSummary: _evidenceSummary,
+      runUsage: _runUsage,
+      ...legacyMessage
+    } = message;
 
     expect(
       decodeChatDetailResponse({
         chat: detailChat({ messages: [legacyMessage], usageStats: null })
       })?.messages[0]
     ).toEqual(legacyMessage);
+  });
+
+  it("accepts a null terminal evidence summary but rejects one on an active or user message", () => {
+    expect(decodeChatDetailResponse({
+      chat: detailChat({
+        messages: [{ ...message, evidenceSummary: null }],
+        usageStats
+      })
+    })?.messages[0]?.evidenceSummary).toBeNull();
+
+    for (const malformedMessage of [
+      { ...message, role: "user" },
+      { ...message, status: "streaming" }
+    ]) {
+      expect(decodeChatDetailResponse({
+        chat: detailChat({ messages: [malformedMessage], usageStats })
+      })).toBeNull();
+    }
   });
 
   it("requires a complete, sequential Knowledge artifact projection", () => {

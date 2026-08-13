@@ -3,11 +3,12 @@ import {
   MEMORY_CONTEXT_HARD_CAP_TOKENS,
   MEMORY_CONTEXT_TARGET_TOKENS,
   MEMORY_RETRIEVAL_PIPELINE_VERSION,
-  MEMORY_RETRIEVAL_MINIMUM_VECTOR_SCORE,
+  MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
   fuseMemoryRetrievalCandidates,
   packMemoryPersonalContext,
   planMemoryRetrieval,
   type MemoryContextPack,
+  type MemoryCoreCandidate,
   type MemoryExpandedCandidate,
   type MemoryRankedCandidate,
   type MemoryRetrievalPlan
@@ -23,13 +24,8 @@ import type {
 import { MemoryPreparingRunConflictError } from "../../runs/preparingRun";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import type { MemoryExecutionAuthorityDependencies } from "../execution";
-import { MEMORY_PHASE7_CAPABILITY_POLICY } from "../capabilityPolicy";
 import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
-import {
-  memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
-} from "../persistence/lexical";
+import { memorySha256 } from "../persistence/lexical";
 import {
   createPrismaLocalMemoryRetrievalRepository,
   type MemoryLocalRetrievalResult,
@@ -39,7 +35,6 @@ import {
 import {
   createPrismaMemoryRunUtilityService,
   type MemoryRunQueryEmbeddingResult,
-  type MemoryRunQueryExpansionResult,
   type MemoryRunRerankResult,
   type MemoryRunUtilityService
 } from "./runUtilities";
@@ -49,7 +44,7 @@ import {
 } from "./vector";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v1";
+  "memory-run-retrieval-admission-v2";
 
 export type MemoryRunRetrievalExpectedSnapshot = Readonly<{
   activeIndexGenerationId: string | null;
@@ -76,6 +71,7 @@ export type MemoryRunRetrievalService = Readonly<{
 }>;
 
 export type MemoryRunRetrievalOptions = Readonly<{
+  /** Legacy construction options are accepted but no longer gate relevance. */
   enableQueryExpansion?: boolean;
   enableRemoteRerank?: boolean;
   utilities?: MemoryRunUtilityService;
@@ -84,21 +80,12 @@ export type MemoryRunRetrievalOptions = Readonly<{
 
 type UtilityEvidence = Readonly<{
   reason: string | null;
-  role: "MEMORY_QUERY_EMBED" | "MEMORY_QUERY_EXPAND" | "MEMORY_RERANK";
+  role: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK";
   state: "READY" | "SKIPPED" | "UNAVAILABLE";
 }>;
 
 function boundedCurrentUserText(request: NormalizedRunRequest): string {
   return Array.from(textFromContentBlocks(request.content)).slice(0, 2_000).join("");
-}
-
-function priorDirectUserTexts(request: NormalizedRunRequest, current: string): string[] {
-  const values = (request.context?.messages ?? [])
-    .filter((message) => message.role === "user")
-    .map((message) => textFromContentBlocks(message.content).trim())
-    .filter((text) => Boolean(text) && !memoryExplicitStatementContainsSecret(text));
-  if (values.at(-1) === current.trim()) values.pop();
-  return values.slice(-2);
 }
 
 function baseBudget(
@@ -112,7 +99,7 @@ function baseBudget(
     itemCount: 0,
     pipelineVersion: MEMORY_RETRIEVAL_PIPELINE_VERSION,
     reason,
-    schemaVersion: 1,
+    schemaVersion: 2,
     settingsRevision: snapshot.settings.settingsRevision,
     targetTokens: MEMORY_CONTEXT_TARGET_TOKENS,
     utilityEgressMode: "LOCAL_ONLY",
@@ -158,20 +145,22 @@ function assertStableSnapshot(
   }
 }
 
-function rankedByKey(
-  ranked: readonly MemoryRankedCandidate[]
+function candidateMap(
+  core: readonly MemoryCoreCandidate[],
+  dynamic: readonly MemoryRankedCandidate[]
 ): ReadonlyMap<string, MemoryRankedCandidate> {
-  return new Map(ranked.map((candidate) => [
-    `${candidate.itemType}:${candidate.itemId}`,
-    candidate
-  ]));
+  return new Map([
+    ...core.map(({ candidate }) => candidate),
+    ...dynamic
+  ].map((candidate) => [`${candidate.itemType}:${candidate.itemId}`, candidate]));
 }
 
 function attemptItems(
   pack: MemoryContextPack,
-  ranked: readonly MemoryRankedCandidate[]
+  core: readonly MemoryCoreCandidate[],
+  dynamic: readonly MemoryRankedCandidate[]
 ): readonly MemoryPreparingItemInput[] {
-  const candidates = rankedByKey(ranked);
+  const candidates = candidateMap(core, dynamic);
   return pack.items.map((packed): MemoryPreparingItemInput => {
     const candidate = candidates.get(`${packed.itemType}:${packed.itemId}`);
     if (!candidate) throw new Error("memory_retrieval_pack_identity_invalid");
@@ -184,7 +173,8 @@ function attemptItems(
         projectionKind: packed.projectionKind,
         rrfScore: candidate.rrfScore,
         supportingItemId: packed.supportingItemId,
-        temporalReason: packed.temporalReason
+        temporalReason: packed.temporalReason,
+        tier: packed.tier
       },
       finalScore: candidate.finalScore,
       laneRanks: candidate.laneRanks,
@@ -192,50 +182,28 @@ function attemptItems(
       selectionReason: candidate.selectionReason,
       supportingItemId: packed.supportingItemId
     } as const;
-    if (packed.itemType === "FACT_VERSION") {
-      return { ...base, factVersionId: packed.itemId, itemType: "FACT_VERSION" };
-    }
-    if (packed.itemType === "EPISODE") {
-      return { ...base, episodeId: packed.itemId, itemType: "EPISODE" };
-    }
-    return { ...base, itemType: "RECALL_CHUNK", recallChunkId: packed.itemId };
+    return packed.itemType === "FACT_VERSION"
+      ? { ...base, factVersionId: packed.itemId, itemType: "FACT_VERSION" }
+      : { ...base, itemType: "RECALL_CHUNK", recallChunkId: packed.itemId };
   });
-}
-
-function degradationFor(
-  result: MemoryLocalRetrievalResult,
-  rerank: MemoryRunRerankResult | null
-): string | null {
-  if (result.lexicalState === "FAILED") return "memory_fts_unavailable";
-  if (result.lexicalState === "DEGRADED") return "memory_fts_partial_unavailable";
-  if (result.vectorState === "DEGRADED") return "memory_vector_unavailable";
-  if (result.snapshot.indexMode === "HYBRID" && result.vectorState === "NOT_CONFIGURED") {
-    return "memory_query_embedding_unavailable";
-  }
-  if (rerank?.status === "UNAVAILABLE") return "memory_reranker_unavailable";
-  return null;
 }
 
 function planEvidence(plan: MemoryRetrievalPlan): Readonly<Record<string, unknown>> {
   return {
-    canonicalHintCount: plan.canonicalKeyHints.length,
-    entityHintCount: plan.entityHints.length,
-    intent: plan.intent,
-    language: plan.language,
+    filterFrom: plan.filters.from?.toISOString() ?? null,
+    filterScopeTargetId: plan.filters.scopeTargetId,
+    filterScopeType: plan.filters.scopeType,
+    filterSourceKinds: plan.filters.sourceKinds,
+    filterTo: plan.filters.to?.toISOString() ?? null,
+    lexicalAvailable: plan.lexicalQuery !== null,
     plannerVersion: plan.plannerVersion,
-    temporalMode: plan.temporal.mode,
-    temporalResolverVersion: plan.temporal.resolverVersion,
-    usedPriorUserTurns: plan.usedPriorUserTurns
+    queryPresent: plan.queryPresent
   };
 }
 
 function utilityEvidence(
   role: UtilityEvidence["role"],
-  result:
-    | MemoryRunQueryEmbeddingResult
-    | MemoryRunQueryExpansionResult
-    | MemoryRunRerankResult
-    | null
+  result: MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null
 ): UtilityEvidence {
   if (!result) return { reason: null, role, state: "SKIPPED" };
   return result.status === "READY"
@@ -244,110 +212,81 @@ function utilityEvidence(
 }
 
 function utilityUsedExternal(
-  result:
-    | MemoryRunQueryEmbeddingResult
-    | MemoryRunQueryExpansionResult
-    | MemoryRunRerankResult
-    | null
+  result: MemoryRunQueryEmbeddingResult | MemoryRunRerankResult | null
 ): boolean {
   return Boolean(result && "bindingId" in result && result.bindingId);
 }
 
-function expandedPlan(
-  plan: MemoryRetrievalPlan,
-  result: MemoryRunQueryExpansionResult | null
-): MemoryRetrievalPlan {
-  if (!result || result.status !== "READY" || result.terms.length === 0) return plan;
-  const normalizedTerms = result.terms.flatMap((term) => {
-    const normalized = normalizeMemorySearchText(term);
-    return normalized && !memoryExplicitStatementContainsSecret(normalized)
-      ? [normalized]
-      : [];
-  });
-  if (normalizedTerms.length === 0) return plan;
-  const queryParts = [plan.normalizedQuery];
-  for (const term of normalizedTerms) {
-    if (normalizeMemorySearchText(`${queryParts.join(" ")} ${term}`).length > 2_000) break;
-    queryParts.push(term);
-  }
-  const normalizedQuery = normalizeMemorySearchText(queryParts.join(" "));
-  const queryTerms = Array.from(new Set([
-    ...plan.queryTerms,
-    ...normalizedTerms.flatMap((term) => term.split(" "))
-  ].filter((term) => term.length > 0 && term.length <= 64))).slice(0, 24);
-  if (
-    normalizedQuery === plan.normalizedQuery ||
-    memoryExplicitStatementContainsSecret(normalizedQuery)
-  ) return plan;
-  return {
-    ...plan,
-    normalizedQuery,
-    normalizedYoQuery: normalizeMemorySearchTextYo(normalizedQuery),
-    plannerVersion: `${plan.plannerVersion}+remote-expand-v1`,
-    queryTerms
-  };
-}
-
-function shouldExpandQuery(plan: MemoryRetrievalPlan): boolean {
-  return plan.temporal.mode === "AMBIGUOUS" ||
-    plan.intent === "PAST_HISTORY" ||
-    plan.usedPriorUserTurns > 0 && plan.intent === "PERSONALIZE";
-}
-
-function rerankCandidates(
-  ranked: readonly MemoryRankedCandidate[],
-  expanded: readonly MemoryExpandedCandidate[]
-): readonly Readonly<{
+export type MemoryRelevanceCandidate = Readonly<{
   candidate: MemoryRankedCandidate;
   handle: string;
+  occurredFrom: string | null;
+  occurredTo: string | null;
+  sourceKind: "EVENT" | "FACT" | "HISTORY";
   text: string;
-}>[] {
+}>;
+
+export function memoryRelevanceCandidates(
+  ranked: readonly MemoryRankedCandidate[],
+  expanded: readonly MemoryExpandedCandidate[]
+): readonly MemoryRelevanceCandidate[] {
   const projections = new Map(expanded.map((candidate) => [
     `${candidate.itemType}:${candidate.itemId}`,
-    candidate.safeText
+    candidate
   ]));
   return ranked.flatMap((candidate) => {
-    const text = projections.get(`${candidate.itemType}:${candidate.itemId}`);
-    return text ? [{ candidate, handle: "", text }] : [];
-  }).slice(0, 25).map((entry, index) => ({ ...entry, handle: `c${index}` }));
+    const projection = projections.get(`${candidate.itemType}:${candidate.itemId}`);
+    if (!projection) return [];
+    const sourceKind = candidate.itemType === "RECALL_CHUNK"
+      ? "HISTORY" as const
+      : candidate.metadata.modality === "EVENT" ? "EVENT" as const : "FACT" as const;
+    return [{
+      candidate,
+      handle: "",
+      occurredFrom: (projection.occurredFrom ?? candidate.metadata.validFrom ??
+        candidate.metadata.systemFrom)?.toISOString() ?? null,
+      occurredTo: (projection.occurredTo ?? candidate.metadata.validTo)?.toISOString() ?? null,
+      sourceKind,
+      text: projection.safeText
+    }];
+  }).slice(0, 24).map((entry, index) => ({ ...entry, handle: `c${index}` }));
 }
 
-function shouldRerank(
-  plan: MemoryRetrievalPlan,
-  ranked: readonly MemoryRankedCandidate[]
-): boolean {
-  return ranked.length > 4 && (
-    ranked.length > 12 ||
-    plan.intent === "PAST_HISTORY" ||
-    plan.intent === "TEMPORAL" ||
-    ranked.some((candidate) => candidate.metadata.conflict) ||
-    ranked.some((candidate) => Object.keys(candidate.laneRanks).length > 1)
-  );
-}
-
-function applyRerank(
-  ranked: readonly MemoryRankedCandidate[],
-  candidates: ReturnType<typeof rerankCandidates>,
+export function applyMemoryRelevance(
+  candidates: readonly MemoryRelevanceCandidate[],
   result: MemoryRunRerankResult | null
 ): readonly MemoryRankedCandidate[] {
-  if (!result || result.status !== "READY") return ranked;
+  if (!result || result.status !== "READY") return [];
   const byHandle = new Map(candidates.map((entry) => [entry.handle, entry.candidate]));
-  const reordered = result.orderedHandles.map((handle) => byHandle.get(handle));
-  if (reordered.some((candidate) => !candidate)) return ranked;
-  const selectedKeys = new Set(candidates.map(({ candidate }) =>
-    `${candidate.itemType}:${candidate.itemId}`));
-  return [
-    ...reordered.map((candidate) => {
-      const value = candidate!;
-      const reason = `${value.selectionReason}+remote_rerank`;
-      return {
-        ...value,
-        selectionReason: reason.length <= 128 ? reason : "remote_rerank"
-      };
-    }),
-    ...ranked.filter((candidate) =>
-      !selectedKeys.has(`${candidate.itemType}:${candidate.itemId}`))
-  ];
+  return result.relevantHandles.flatMap((handle) => {
+    const candidate = byHandle.get(handle);
+    if (!candidate) return [];
+    const reason = `${candidate.selectionReason}+semantic_relevance`;
+    return [{
+      ...candidate,
+      selectionReason: reason.length <= 128 ? reason : "semantic_relevance"
+    }];
+  });
+}
+
+function degradationFor(
+  result: MemoryLocalRetrievalResult,
+  relevance: MemoryRunRerankResult | null,
+  hadDynamicCandidates: boolean
+): string | null {
+  if (hadDynamicCandidates && relevance?.status === "UNAVAILABLE") {
+    return "memory_relevance_unavailable";
+  }
+  if (result.lexicalState === "FAILED") return "memory_fts_unavailable";
+  if (result.lexicalState === "DEGRADED") return "memory_fts_partial_unavailable";
+  if (result.vectorState === "DEGRADED") return "memory_vector_unavailable";
+  if (result.snapshot.indexMode === "HYBRID" && result.vectorState === "NOT_CONFIGURED") {
+    return "memory_query_embedding_unavailable";
+  }
+  if (!result.snapshot.indexMode && result.snapshot.reason === "memory_index_unavailable") {
+    return "memory_index_unavailable";
+  }
+  return null;
 }
 
 export function createMemoryRunRetrievalService(
@@ -362,18 +301,9 @@ export function createMemoryRunRetrievalService(
         return emptyAttempt(input.expected, "DISABLED", "temporary_chat");
       }
       const currentUserText = boundedCurrentUserText(input.normalizedRequest);
-      if (memoryExplicitStatementContainsSecret(currentUserText)) {
-        return {
-          ...emptyAttempt(input.expected, "FAILED_SAFE", "query_secret_blocked"),
-          queryHash: memorySha256(currentUserText)
-        };
-      }
-      let plan = planMemoryRetrieval({
-        currentUserText,
-        now: input.now,
-        priorDirectUserTexts: priorDirectUserTexts(input.normalizedRequest, currentUserText),
-        timeZone: input.normalizedRequest.prompt.baseline?.timeZone
-      });
+      const plan = planMemoryRetrieval({ currentUserText, now: input.now });
+      const querySecret = memoryExplicitStatementContainsSecret(plan.normalizedQuery);
+
       let snapshot: MemoryLocalRetrievalSnapshot;
       try {
         snapshot = await repository.snapshot({
@@ -396,84 +326,30 @@ export function createMemoryRunRetrievalService(
       if (snapshot.status === "DISABLED") {
         return emptyAttempt(input.expected, "DISABLED", snapshot.reason);
       }
-      if (snapshot.status === "UNAVAILABLE") {
-        return emptyAttempt(input.expected, "FAILED_SAFE", snapshot.reason, null, {
-          plan: planEvidence(plan)
-        });
-      }
-      if (!plan.retrievalAllowed) {
-        return emptyAttempt(input.expected, "EMPTY", "retrieval_not_needed", null, {
-          plan: planEvidence(plan)
-        });
-      }
-
-      let queryExpansion: MemoryRunQueryExpansionResult | null = null;
-      if (
-        options.enableQueryExpansion === true &&
-        options.utilities &&
-        shouldExpandQuery(plan)
-      ) {
-        queryExpansion = await options.utilities.expandQuery({
-          attemptId: input.attemptId,
-          intent: plan.intent,
-          language: plan.language,
-          query: plan.normalizedQuery,
-          signal,
-          userId: input.userId
-        }).catch(() => ({
-          reason: "memory_query_expansion_unavailable",
-          status: "UNAVAILABLE" as const
-        }));
-        plan = expandedPlan(plan, queryExpansion);
-      }
 
       let queryEmbedding: MemoryRunQueryEmbeddingResult | null = null;
-      if (snapshot.indexMode === "HYBRID") {
+      if (plan.queryPresent && !querySecret && snapshot.indexMode === "HYBRID") {
         if (options.utilities && options.vectorRepository) {
-          const profile = await options.vectorRepository.resolveActiveProfile(
-            input.userId
-          ).catch(() => ({
-            reason: "memory_vector_unavailable" as const,
-            status: "DEGRADED" as const
-          }));
-          if (
-            profile.status === "READY" &&
-            profile.profile.generationId === snapshot.activeGenerationId
-          ) {
+          const profile = await options.vectorRepository.resolveActiveProfile(input.userId)
+            .catch(() => ({ reason: "memory_vector_unavailable" as const,
+              status: "DEGRADED" as const }));
+          if (profile.status === "READY" && profile.profile.generationId === snapshot.activeGenerationId) {
             queryEmbedding = await options.utilities.embedQuery({
               attemptId: input.attemptId,
               profile: profile.profile,
               query: plan.normalizedQuery,
               signal,
               userId: input.userId
-            }).catch(() => ({
-              reason: "memory_query_embedding_unavailable",
-              status: "UNAVAILABLE" as const
-            }));
+            }).catch(() => ({ reason: "memory_query_embedding_unavailable",
+              status: "UNAVAILABLE" as const }));
           } else {
-            queryEmbedding = {
-              reason: profile.status === "DEGRADED"
-                ? profile.reason
-                : "memory_vector_generation_stale",
-              status: "UNAVAILABLE"
-            };
+            queryEmbedding = { reason: profile.status === "DEGRADED" ? profile.reason
+              : "memory_vector_generation_stale", status: "UNAVAILABLE" };
           }
         } else {
-          queryEmbedding = {
-            reason: "memory_query_embedding_unavailable",
-            status: "UNAVAILABLE"
-          };
+          queryEmbedding = { reason: "memory_query_embedding_unavailable", status: "UNAVAILABLE" };
         }
       }
-
-      const utilityResults = () => [
-        utilityEvidence("MEMORY_QUERY_EXPAND", queryExpansion),
-        utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding)
-      ];
-      const utilityEgressMode = () =>
-        utilityUsedExternal(queryExpansion) || utilityUsedExternal(queryEmbedding)
-          ? "CONSENTED_EXTERNAL"
-          : "LOCAL_ONLY";
 
       let local: MemoryLocalRetrievalResult;
       try {
@@ -483,124 +359,109 @@ export function createMemoryRunRetrievalService(
           now: input.now,
           plan,
           userId: input.userId,
-          ...(queryEmbedding?.status === "READY"
-            ? {
-                vector: {
-                  minimumScore: MEMORY_RETRIEVAL_MINIMUM_VECTOR_SCORE,
-                  profile: queryEmbedding.profile,
-                  vector: queryEmbedding.vector
-                }
-              }
-            : {})
+          ...(queryEmbedding?.status === "READY" ? { vector: {
+            minimumScore: MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
+            profile: queryEmbedding.profile,
+            vector: queryEmbedding.vector
+          } } : {})
         });
       } catch (error) {
         return emptyAttempt(input.expected, "FAILED_SAFE", "memory_local_retrieval_failed",
-          plan.normalizedQuery, {
+          querySecret || !plan.queryPresent ? null : plan.normalizedQuery, {
             failureClass: error instanceof Error ? error.name : "unknown",
             plan: planEvidence(plan),
-            utilityEgressMode: utilityEgressMode(),
-            utilityExecutions: utilityResults()
+            queryHash: querySecret ? memorySha256(plan.normalizedQuery) : null,
+            utilityExecutions: [utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding)]
           });
       }
       assertStableSnapshot(local.snapshot, input.expected);
-      let ranked = fuseMemoryRetrievalCandidates(plan, local.laneResults, input.now);
-      let expanded: readonly MemoryExpandedCandidate[];
-      try {
-        expanded = await repository.expand(local.snapshot, plan, ranked);
-      } catch (error) {
-        return emptyAttempt(input.expected, "FAILED_SAFE", "memory_expansion_failed",
-          plan.normalizedQuery, {
-            candidateCount: ranked.length,
-            failureClass: error instanceof Error ? error.name : "unknown",
-            plan: planEvidence(plan),
-            utilityEgressMode: utilityEgressMode(),
-            utilityExecutions: utilityResults()
-          });
+
+      const fused = fuseMemoryRetrievalCandidates(plan, local.laneResults, input.now);
+      const coreKeys = new Set(local.core.map(({ candidate }) =>
+        `${candidate.itemType}:${candidate.itemId}`));
+      const dynamicFused = fused.filter((candidate) =>
+        !coreKeys.has(`${candidate.itemType}:${candidate.itemId}`));
+      let expanded: readonly MemoryExpandedCandidate[] = [];
+      if (dynamicFused.length > 0) {
+        try {
+          expanded = await repository.expand(local.snapshot, plan, dynamicFused);
+        } catch {
+          expanded = [];
+        }
       }
-      let rerank: MemoryRunRerankResult | null = null;
-      const rerankInput = rerankCandidates(ranked, expanded);
-      if (
-        options.enableRemoteRerank === true &&
-        options.utilities &&
-        shouldRerank(plan, ranked) &&
-        rerankInput.length > 0
-      ) {
-        rerank = await options.utilities.rerank({
-          attemptId: input.attemptId,
-          candidates: rerankInput.map(({ handle, text }) => ({ handle, text })),
-          intent: plan.intent,
-          language: plan.language,
-          query: plan.normalizedQuery,
-          signal,
-          userId: input.userId
-        }).catch(() => ({
-          reason: "memory_reranker_unavailable",
-          status: "UNAVAILABLE" as const
-        }));
-        ranked = applyRerank(ranked, rerankInput, rerank);
+      // Recognizable credential-shaped input still reaches every owner-local
+      // candidate lane. It must not cross the provider boundary, including the
+      // relevance stage.
+      const relevanceInput = querySecret ? [] : memoryRelevanceCandidates(dynamicFused, expanded);
+      let relevance: MemoryRunRerankResult | null = null;
+      if (relevanceInput.length > 0) {
+        relevance = options.utilities
+          ? await options.utilities.rerank({
+              attemptId: input.attemptId,
+              candidates: relevanceInput.map(({ candidate: _candidate, ...candidate }) => candidate),
+              query: plan.normalizedQuery,
+              signal,
+              userId: input.userId
+            }).catch(() => ({ reason: "memory_relevance_unavailable",
+              status: "UNAVAILABLE" as const }))
+          : { reason: "memory_relevance_unavailable", status: "UNAVAILABLE" };
       }
+      const dynamic = applyMemoryRelevance(relevanceInput, relevance);
+      const selectedKeys = new Set(dynamic.map((candidate) => `${candidate.itemType}:${candidate.itemId}`));
+      const dynamicExpanded = expanded.filter((candidate) =>
+        selectedKeys.has(`${candidate.itemType}:${candidate.itemId}`));
+      const pack = packMemoryPersonalContext({
+        core: local.core,
+        expanded: dynamicExpanded,
+        plan,
+        ranked: dynamic
+      });
+      const degradationCode = degradationFor(local, relevance, dynamicFused.length > 0);
       const utilityExecutions = [
-        ...utilityResults(),
-        utilityEvidence("MEMORY_RERANK", rerank)
+        utilityEvidence("MEMORY_QUERY_EMBED", queryEmbedding),
+        utilityEvidence("MEMORY_RERANK", relevance)
       ];
-      const externalUtilityUsed = utilityEgressMode() === "CONSENTED_EXTERNAL" ||
-        utilityUsedExternal(rerank);
-      const pack = packMemoryPersonalContext({ expanded, plan, ranked });
-      const degradationCode = degradationFor(local, rerank);
+      const externalUtilityUsed = utilityUsedExternal(queryEmbedding) || utilityUsedExternal(relevance);
+      const commonEvidence = {
+        candidateCount: pack.candidateCount,
+        coreCount: local.core.length,
+        laneCount: local.laneResults.length,
+        lexicalFailures: local.lexicalFailures,
+        lexicalState: local.lexicalState,
+        omissionCounts: pack.omissionCounts,
+        plan: planEvidence(plan),
+        utilityEgressMode: externalUtilityUsed ? "CONSENTED_EXTERNAL" : "LOCAL_ONLY",
+        utilityExecutions,
+        vectorEvidence: local.vectorEvidence,
+        vectorState: local.vectorState
+      } as const;
       if (!pack.text || pack.items.length === 0) {
-        const retrievalUnavailable = local.lexicalState === "FAILED" &&
-          local.vectorState !== "READY";
         return emptyAttempt(input.expected,
-          retrievalUnavailable ? "FAILED_SAFE" : "EMPTY",
-          retrievalUnavailable ? "memory_local_retrieval_unavailable" : "no_relevant_memory",
-          plan.normalizedQuery, {
-            candidateCount: pack.candidateCount,
-            laneCount: local.laneResults.length,
-            lexicalFailures: local.lexicalFailures,
-            lexicalState: local.lexicalState,
-            omissionCounts: pack.omissionCounts,
-            plan: planEvidence(plan),
-            utilityEgressMode: externalUtilityUsed
-              ? "CONSENTED_EXTERNAL"
-              : "LOCAL_ONLY",
-            utilityExecutions,
-            vectorEvidence: local.vectorEvidence,
-            vectorState: local.vectorState
-          });
+          querySecret ? "FAILED_SAFE" : "EMPTY",
+          querySecret ? "query_secret_blocked" : degradationCode ?? "no_relevant_memory",
+          querySecret || !plan.queryPresent ? null : plan.normalizedQuery,
+          { ...commonEvidence, ...(querySecret ? { queryHash: memorySha256(plan.normalizedQuery) } : {}) });
       }
-      const items = attemptItems(pack, ranked);
+      const items = attemptItems(pack, local.core, dynamic);
       return {
         budgetSnapshot: {
           admissionVersion: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION,
-          candidateCount: pack.candidateCount,
+          ...commonEvidence,
           hardCapTokens: pack.hardCapTokens,
           itemCount: items.length,
-          laneCount: local.laneResults.length,
-          lexicalFailures: local.lexicalFailures,
-          lexicalState: local.lexicalState,
-          omissionCounts: pack.omissionCounts,
           packedTokens: pack.approxTokens,
           packerVersion: pack.packerVersion,
           pipelineVersion: MEMORY_RETRIEVAL_PIPELINE_VERSION,
-          plan: planEvidence(plan),
-          schemaVersion: 1,
+          schemaVersion: 2,
           settingsRevision: input.expected.settings.settingsRevision,
-          targetTokens: pack.targetTokens,
-          utilityEgressMode: externalUtilityUsed
-            ? "CONSENTED_EXTERNAL"
-            : "LOCAL_ONLY",
-          utilityExecutions,
-          vectorEvidence: local.vectorEvidence,
-          vectorState: local.vectorState
+          targetTokens: pack.targetTokens
         },
         ...(degradationCode ? { degradationCode } : {}),
         items,
         outcome: degradationCode ? "DEGRADED" : "USED",
-        preparedContext: {
-          approxTokens: pack.approxTokens,
-          text: pack.text
-        },
-        querySnapshot: plan.normalizedQuery
+        preparedContext: { approxTokens: pack.approxTokens, text: pack.text },
+        ...(querySecret ? { queryHash: memorySha256(plan.normalizedQuery) } : {}),
+        querySnapshot: querySecret || !plan.queryPresent ? null : plan.normalizedQuery
       };
     }
   });
@@ -608,23 +469,14 @@ export function createMemoryRunRetrievalService(
 
 export function createPrismaMemoryRunRetrievalService(
   client: PrismaClient = prisma,
-  options: Pick<MemoryRunRetrievalOptions,
-    "enableQueryExpansion" | "enableRemoteRerank"> & Readonly<{
-      authority?: MemoryExecutionAuthorityDependencies;
-    }> = {}
+  options: Pick<MemoryRunRetrievalOptions, "enableQueryExpansion" | "enableRemoteRerank"> &
+    Readonly<{ authority?: MemoryExecutionAuthorityDependencies }> = {}
 ): MemoryRunRetrievalService {
   const authority = options.authority ?? defaultMemoryExecutionAuthority;
   return createMemoryRunRetrievalService(
     createPrismaLocalMemoryRetrievalRepository(client),
     {
-      enableQueryExpansion: options.enableQueryExpansion ??
-        MEMORY_PHASE7_CAPABILITY_POLICY.queryExpansion.enabled,
-      enableRemoteRerank: options.enableRemoteRerank ??
-        MEMORY_PHASE7_CAPABILITY_POLICY.remoteReranker.enabled,
-      utilities: createPrismaMemoryRunUtilityService(
-        authority,
-        client
-      ),
+      utilities: createPrismaMemoryRunUtilityService(authority, client),
       vectorRepository: createPrismaMemoryVectorRepository(client)
     }
   );

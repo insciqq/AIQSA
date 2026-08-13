@@ -1,4 +1,3 @@
-import { memoryStableJson, normalizeMemorySearchText } from "../../persistence/lexical";
 import type {
   MemoryFactConsolidationInput,
   MemoryFactConsolidationPlan,
@@ -6,32 +5,12 @@ import type {
 } from "./contract";
 
 export type MemoryFactConsolidationPolicyDecision =
-  | Readonly<{ requiresVerification: boolean; status: "VALID" }>
+  | Readonly<{ requiresVerification: false; status: "VALID" }>
   | Readonly<{ reasonCode: string; status: "DEFER" }>;
-
-const highRiskCategoryPattern = /(?:^|[_-])(?:identity|location|possession|employment|employer|job|address|residence|ownership)(?:$|[_-])/iu;
 
 function candidateObservedAt(input: MemoryFactConsolidationInput): number {
   return Math.max(...input.candidate.evidence.map((evidence) =>
     new Date(evidence.observedAt).getTime()));
-}
-
-function equivalentValue(
-  input: MemoryFactConsolidationInput,
-  version: MemoryRelatedFactVersionSnapshot
-): boolean {
-  try {
-    return version.category === input.candidate.category &&
-      version.modality === input.candidate.modality &&
-      normalizeMemorySearchText(version.displayText) ===
-        normalizeMemorySearchText(input.candidate.displayText) &&
-      memoryStableJson(version.structuredValue) ===
-        memoryStableJson(input.candidate.proposedValue) &&
-      version.validFrom === input.candidate.validFrom &&
-      version.validTo === input.candidate.validTo;
-  } catch {
-    return false;
-  }
 }
 
 function targetVersion(
@@ -42,34 +21,15 @@ function targetVersion(
   const fact = input.relatedFacts.find((candidate) =>
     candidate.id === plan.targetFactId &&
     candidate.currentVersionId === plan.targetVersionId &&
-    candidate.state === "ACTIVE");
+    candidate.state === "ACTIVE" &&
+    candidate.scope.type === input.candidate.scope.type &&
+    candidate.scope.targetId === input.candidate.scope.targetId);
   return fact?.versions.find((version) =>
     version.id === plan.targetVersionId && version.state === "ACTIVE") ?? null;
 }
 
-function hasRetainedExplicitAuthority(input: MemoryFactConsolidationInput): boolean {
-  return input.relatedFacts.some((fact) =>
-    fact.canonicalKey === input.candidate.canonicalKey &&
-    fact.scope.type === input.candidate.scope.type &&
-    fact.scope.targetId === input.candidate.scope.targetId &&
-    fact.versions.some((version) => version.sourceMode === "EXPLICIT"));
-}
-
-function needsRiskVerification(input: MemoryFactConsolidationInput): boolean {
-  const candidate = input.candidate;
-  if (candidate.importance >= 0.8 || candidate.confidence < 0.82) return true;
-  if (highRiskCategoryPattern.test(candidate.category)) return true;
-  if (
-    candidate.scope.type === "GLOBAL_USER" &&
-    input.relatedFacts.some((fact) =>
-      fact.canonicalKey === candidate.canonicalKey &&
-      fact.scope.type !== "GLOBAL_USER")
-  ) return true;
-  return candidate.importance >= 0.65 && [
-    "CONSTRAINT",
-    "PREFERENCE",
-    "WORKFLOW"
-  ].includes(candidate.modality);
+function targetObservedAt(version: MemoryRelatedFactVersionSnapshot): number {
+  return new Date(version.latestEvidenceAt ?? version.systemFrom).getTime();
 }
 
 export function evaluateMemoryFactConsolidationPlan(
@@ -83,76 +43,55 @@ export function evaluateMemoryFactConsolidationPlan(
       id !== input.candidate.evidence[index]?.messageId)
   ) return { reasonCode: "evidence_precondition_invalid", status: "DEFER" };
 
-  if (plan.operation === "NOOP" || plan.operation === "DEFER") {
+  if (plan.operation === "NOOP") {
+    return { requiresVerification: false, status: "VALID" };
+  }
+  if (plan.operation === "DEFER") {
+    return { reasonCode: "consolidation_deferred", status: "DEFER" };
+  }
+  if (plan.operation === "ADD") {
+    return plan.targetFactId === null && plan.targetVersionId === null
+      ? { requiresVerification: false, status: "VALID" }
+      : { reasonCode: "add_precondition_invalid", status: "DEFER" };
+  }
+
+  const target = targetVersion(input, plan);
+  if (!target) return { reasonCode: "target_precondition_invalid", status: "DEFER" };
+  if (target.sourceMode === "EXPLICIT") {
+    return { reasonCode: "explicit_authority_retained", status: "DEFER" };
+  }
+  if (plan.operation === "REINFORCE") {
     return { requiresVerification: false, status: "VALID" };
   }
 
-  const exactFacts = input.relatedFacts.filter((fact) =>
-    fact.canonicalKey === input.candidate.canonicalKey &&
-    fact.scope.type === input.candidate.scope.type &&
-    fact.scope.targetId === input.candidate.scope.targetId);
-  const activeExact = exactFacts.filter((fact) => fact.state === "ACTIVE");
-  const target = targetVersion(input, plan);
-
-  if (plan.operation === "ADD") {
-    if (
-      input.candidate.negated ||
-      activeExact.length > 0 ||
-      exactFacts.some((fact) => fact.state === "CONFLICTED" || fact.state === "ORPHANED") ||
-      hasRetainedExplicitAuthority(input)
-    ) return { reasonCode: "add_precondition_invalid", status: "DEFER" };
+  const candidateAt = candidateObservedAt(input);
+  const targetAt = targetObservedAt(target);
+  if (!Number.isFinite(candidateAt) || !Number.isFinite(targetAt)) {
+    return { reasonCode: "temporal_precondition_invalid", status: "DEFER" };
+  }
+  const targetValidFrom = target.validFrom === null
+    ? null
+    : new Date(target.validFrom).getTime();
+  if (
+    targetValidFrom !== null &&
+    (!Number.isFinite(targetValidFrom) || candidateAt < targetValidFrom)
+  ) {
     return {
-      requiresVerification: needsRiskVerification(input),
-      status: "VALID"
+      reasonCode: `${plan.operation.toLowerCase()}_precondition_invalid`,
+      status: "DEFER"
     };
   }
-
-  if (!target || activeExact.length !== 1) {
-    return { reasonCode: "target_precondition_invalid", status: "DEFER" };
-  }
-  const equivalent = equivalentValue(input, target);
-  if (plan.operation === "REINFORCE") {
-    if (input.candidate.negated || !equivalent) {
-      return { reasonCode: "reinforce_precondition_invalid", status: "DEFER" };
-    }
+  if (plan.operation === "SUPERSEDE" && candidateAt > targetAt) {
     return { requiresVerification: false, status: "VALID" };
   }
-  if (plan.operation === "SUPERSEDE") {
-    const targetEvidenceAt = target.latestEvidenceAt
-      ? new Date(target.latestEvidenceAt).getTime()
-      : new Date(target.systemFrom).getTime();
-    if (
-      input.candidate.negated || equivalent || target.sourceMode !== "AUTOMATIC" ||
-      !Number.isFinite(targetEvidenceAt) || candidateObservedAt(input) <= targetEvidenceAt
-    ) return { reasonCode: "supersede_precondition_invalid", status: "DEFER" };
-    return { requiresVerification: true, status: "VALID" };
+  if (plan.operation === "CONFLICT" && candidateAt === targetAt) {
+    return { requiresVerification: false, status: "VALID" };
   }
-  if (plan.operation === "CONFLICT") {
-    if (input.candidate.negated || equivalent) {
-      return { reasonCode: "conflict_precondition_invalid", status: "DEFER" };
-    }
-    return { requiresVerification: true, status: "VALID" };
+  if (plan.operation === "EXPIRE" && candidateAt > targetAt) {
+    return { requiresVerification: false, status: "VALID" };
   }
-  if (
-    plan.operation !== "EXPIRE" ||
-    !input.candidate.negated ||
-    equivalent ||
-    target.sourceMode !== "AUTOMATIC"
-  ) return { reasonCode: "expire_precondition_invalid", status: "DEFER" };
-  const observedEnd = candidateObservedAt(input);
-  const targetEvidenceAt = target.latestEvidenceAt
-    ? new Date(target.latestEvidenceAt).getTime()
-    : new Date(target.systemFrom).getTime();
-  const targetValidFrom = target.validFrom
-    ? new Date(target.validFrom).getTime()
-    : null;
-  if (
-    !Number.isFinite(observedEnd) ||
-    !Number.isFinite(targetEvidenceAt) ||
-    observedEnd <= targetEvidenceAt ||
-    (targetValidFrom !== null && (
-      !Number.isFinite(targetValidFrom) || observedEnd <= targetValidFrom
-    ))
-  ) return { reasonCode: "expire_precondition_invalid", status: "DEFER" };
-  return { requiresVerification: true, status: "VALID" };
+  return {
+    reasonCode: `${plan.operation.toLowerCase()}_precondition_invalid`,
+    status: "DEFER"
+  };
 }

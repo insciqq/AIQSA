@@ -20,11 +20,20 @@ import {
 import { memoryExecutionSha256 } from "../../execution/canonical";
 import { withLockedMemoryTransaction } from "../../persistence/transaction";
 import {
+  createPrismaMemoryRunUtilityService,
+  type MemoryRunUtilityService
+} from "../../retrieval/runUtilities";
+import {
+  createPrismaMemoryVectorRepository,
+  type MemoryVectorRepository
+} from "../../retrieval/vector";
+import {
   MEMORY_FACT_CONSOLIDATION_VERSIONS,
   MEMORY_FACT_VERIFICATION_VERSIONS,
   parseMemoryFactConsolidationJob,
   parseMemoryFactVerificationJob,
   type MemoryFactConsolidationInput,
+  type MemoryFactCandidateSnapshot,
   type MemoryFactVerificationInput
 } from "./contract";
 import {
@@ -48,10 +57,63 @@ type DecisionRole = "MEMORY_CONSOLIDATE" | "MEMORY_VERIFY";
 
 export type MemoryFactDecisionHandlerDependencies = Readonly<{
   execution: PrismaMemoryExecutionService;
+  neighborhood?: MemoryFactNeighborhoodResolver;
   probeAuthority: (userId: string, role: DecisionRole) => Promise<void>;
   provider: MemoryFactDecisionProvider;
   repository: MemoryFactConsolidationRepository;
 }>;
+
+export type MemoryFactNeighborhoodResolver = Readonly<{
+  relatedVersionIds(
+    job: MemoryJobDescriptor,
+    candidate: MemoryFactCandidateSnapshot,
+    signal: AbortSignal
+  ): Promise<readonly string[] | null>;
+}>;
+
+function createMemoryFactNeighborhoodResolver(
+  utilities: MemoryRunUtilityService,
+  vectors: MemoryVectorRepository
+): MemoryFactNeighborhoodResolver {
+  return Object.freeze({
+    async relatedVersionIds(job, candidate, signal) {
+      const profile = await vectors.resolveActiveProfile(job.userId);
+      if (profile.status !== "READY") return null;
+      const embedding = await utilities.embedQuery({
+        owner: { memoryJobId: job.id, type: "JOB" },
+        profile: profile.profile,
+        query: candidate.displayText,
+        signal,
+        userId: job.userId
+      });
+      if (embedding.status !== "READY") return null;
+      const scope = candidate.scope;
+      const result = await vectors.search({
+        eligibility: {
+          allowedFactSensitivity: ["NORMAL"],
+          allowedHistorySafety: ["NORMAL"],
+          assistantId: scope.type === "ASSISTANT" ? scope.targetId : null,
+          chatId: scope.type === "CHAT" ? scope.targetId : null,
+          folderId: scope.type === "FOLDER" ? scope.targetId : null,
+          occurredFrom: null,
+          occurredTo: null,
+          sourceAssistantId: null,
+          sourceChatIds: null,
+          sourceFolderId: null
+        },
+        itemTypes: ["FACT_VERSION"],
+        limit: 24,
+        minimumScore: -1,
+        profile: embedding.profile,
+        userId: job.userId,
+        vector: embedding.vector
+      });
+      return result.status === "READY"
+        ? result.hits.map((hit) => hit.itemId)
+        : null;
+    }
+  });
+}
 
 const unavailableUsage: MemoryReportedUsage = Object.freeze({
   cachedInputTokens: null,
@@ -206,7 +268,29 @@ export function createMemoryFactConsolidationHandler(
         };
       }
       await context.setStage("related_fact_lookup");
-      const prepared = await deps.repository.prepareConsolidation(job);
+      const initial = await deps.repository.prepareConsolidation(job);
+      if ("decision" in initial) {
+        return {
+          acceptedResultHash: terminalHash(job, null, initial.decision.errorCode),
+          apply: (tx, claim) => deps.repository.deferConsolidation(
+            tx,
+            claim,
+            identity.candidateId,
+            initial.decision.errorCode
+          ),
+          stage: "consolidation_deferred"
+        };
+      }
+      const relatedVersionIds = deps.neighborhood
+        ? await deps.neighborhood.relatedVersionIds(
+            job,
+            initial.input.candidate,
+            context.signal
+          ).catch(() => null)
+        : null;
+      const prepared = relatedVersionIds === null
+        ? initial
+        : await deps.repository.prepareConsolidation(job, relatedVersionIds);
       if ("decision" in prepared) {
         return {
           acceptedResultHash: terminalHash(job, null, prepared.decision.errorCode),
@@ -558,6 +642,10 @@ export function createPrismaMemoryFactDecisionHandlers(
     createPrismaMemoryFactConsolidationRepository(client);
   const dependencies: MemoryFactDecisionHandlerDependencies = {
     execution,
+    neighborhood: createMemoryFactNeighborhoodResolver(
+      createPrismaMemoryRunUtilityService(authority, client),
+      createPrismaMemoryVectorRepository(client)
+    ),
     probeAuthority: (userId, role) => withLockedMemoryTransaction(
       client,
       userId,

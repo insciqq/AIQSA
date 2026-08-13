@@ -5,7 +5,6 @@ import {
   cancelMemoryRebuild,
   forgetMemory,
   loadMemoryHealth,
-  loadMemoryProfile,
   loadMemorySettings,
   loadMemoryRebuildStatus,
   MemoryApiError,
@@ -20,7 +19,6 @@ import {
   memoryDeletionFixture,
   memoryHealthFixture,
   memoryListFixture,
-  memoryProfileFixture,
   memoryRebuildFixture,
   memorySettingsFixture,
   memorySummaryFixture
@@ -80,24 +78,6 @@ describe("Memory API client", () => {
       credentials: "same-origin",
       method: "GET"
     });
-  });
-
-  it("loads the private profile without query data and rejects an enriched response", async () => {
-    const valid = memoryProfileFixture();
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(valid))
-      .mockResolvedValueOnce(jsonResponse({ ...valid, confidence: 0.91 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(loadMemoryProfile()).resolves.toEqual(valid);
-    await expect(loadMemoryProfile()).rejects.toMatchObject({
-      code: "memory_response_invalid",
-      status: 502
-    });
-    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
-      "/api/me/memory/profile",
-      "/api/me/memory/profile"
-    ]);
   });
 
   it("keeps saved-memory search text out of URLs and strictly POSTs the bounded query", async () => {

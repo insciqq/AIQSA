@@ -86,6 +86,7 @@ function input(): MemoryFactConsolidationInput {
       validFrom: null,
       validTo: null
     },
+    memoryRevision: 0,
     relatedFacts,
     relatedSnapshotHash
   };

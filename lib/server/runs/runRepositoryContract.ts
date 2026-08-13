@@ -249,7 +249,8 @@ export type CreateRegenerationRunInput = {
   normalizedRequest: NormalizedRunRequest;
   /** The assistant being replaced. Omission is accepted only by the legacy
    * compatibility wrapper, which resolves the currently active sibling. */
-  preSendAssistantMessageId?: string;
+  /** Null means a newly committed user branch with no Assistant child yet. */
+  preSendAssistantMessageId?: string | null;
   providerAdmissionPlan?: ProviderAdmissionPlan;
   provider: string;
   providerRequestPreview: Record<string, unknown>;

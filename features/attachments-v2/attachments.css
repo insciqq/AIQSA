@@ -1,0 +1,222 @@
+.v2-attachment-tray {
+  display: grid;
+  gap: 0.375rem;
+  margin: -0.125rem -0.125rem 0.375rem;
+  padding: 0 0.125rem 0.5rem;
+  border-bottom: 1px solid var(--v2-color-border);
+}
+
+.v2-attachment-capacity {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0 0.25rem;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+
+.v2-attachment-capacity strong {
+  flex: 0 0 auto;
+  color: var(--v2-color-text2);
+  font-weight: 500;
+}
+
+.v2-attachment-capacity[data-tone="caution"] {
+  color: var(--v2-color-warn);
+}
+
+.v2-attachment-capacity[data-tone="critical"] {
+  color: var(--v2-color-danger);
+}
+
+.v2-attachment-list {
+  display: flex;
+  max-height: 8.5rem;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.v2-attachment-chip {
+  display: grid;
+  min-width: min(14rem, 100%);
+  max-width: min(21rem, 100%);
+  min-height: 2.75rem;
+  grid-template-columns: 1rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3125rem 0.25rem 0.3125rem 0.625rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface2);
+}
+
+.v2-attachment-chip[data-attachment-status="uploading"],
+.v2-attachment-chip[data-attachment-status="processing"] {
+  border-color: color-mix(in srgb, var(--v2-color-accent) 32%, var(--v2-color-border));
+}
+
+.v2-attachment-chip[data-attachment-status="rejected"] {
+  border-color: color-mix(in srgb, var(--v2-color-danger) 38%, var(--v2-color-border));
+}
+
+.v2-attachment-chip[data-attachment-status="failed"] {
+  border-color: color-mix(in srgb, var(--v2-color-warn) 38%, var(--v2-color-border));
+}
+
+.v2-attachment-chip[data-warning="true"] {
+  border-color: color-mix(in srgb, var(--v2-color-warn) 38%, var(--v2-color-border));
+}
+
+.v2-attachment-spinner {
+  width: 0.875rem;
+  height: 0.875rem;
+  border: 1.5px solid var(--v2-color-border2);
+  border-top-color: var(--v2-color-accent);
+  border-radius: 50%;
+  animation: v2-attachment-spin 0.8s linear infinite;
+}
+
+.v2-attachment-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.0625rem;
+  font-size: 0.71875rem;
+  line-height: 1.35;
+}
+
+.v2-attachment-copy strong {
+  overflow: hidden;
+  color: var(--v2-color-text);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-attachment-copy > span {
+  color: var(--v2-color-text3);
+}
+
+.v2-attachment-chip[data-attachment-status="rejected"] .v2-attachment-copy > span {
+  color: var(--v2-color-danger);
+}
+
+.v2-attachment-chip[data-attachment-status="failed"] .v2-attachment-copy > span {
+  color: var(--v2-color-warn);
+}
+
+.v2-attachment-copy small {
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.v2-attachment-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+}
+
+.v2-attachment-actions .v2-icon-button {
+  width: 2rem;
+  height: 2rem;
+  color: var(--v2-color-text3);
+}
+
+.v2-attachment-retry {
+  min-height: 2rem;
+  padding: 0.25rem 0.4375rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-warn);
+  background: transparent;
+  font: inherit;
+  font-size: 0.6875rem;
+  cursor: pointer;
+}
+
+.v2-attachment-retry:hover {
+  background: color-mix(in srgb, var(--v2-color-warn) 10%, transparent);
+}
+
+.v2-attachment-privacy {
+  margin: 0;
+  padding: 0 0.25rem;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+
+.v2-attachment-drop-overlay {
+  position: absolute;
+  inset: 0.25rem;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--v2-color-accent) 55%, var(--v2-color-border));
+  border-radius: calc(var(--v2-radius-l) - 0.125rem);
+  color: var(--v2-color-accent);
+  background: color-mix(in srgb, var(--v2-color-surface) 94%, transparent);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-align: center;
+  pointer-events: none;
+}
+
+@keyframes v2-attachment-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 42rem) {
+  .v2-attachment-capacity {
+    display: grid;
+    gap: 0.0625rem;
+  }
+
+  .v2-attachment-list {
+    display: grid;
+    max-height: min(18.5rem, 40dvh);
+  }
+
+  .v2-attachment-chip {
+    width: 100%;
+    max-width: none;
+  }
+}
+
+@media (max-height: 32rem) {
+  .v2-attachment-list {
+    max-height: 5.75rem;
+    flex-wrap: nowrap;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-attachment-actions .v2-icon-button,
+  .v2-attachment-retry {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+  }
+}
+
+html[data-motion="off"] .v2-attachment-spinner {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2-attachment-spinner {
+    animation: none;
+  }
+}

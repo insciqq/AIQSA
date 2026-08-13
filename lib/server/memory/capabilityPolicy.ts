@@ -38,11 +38,11 @@ export const MEMORY_PHASE8_CAPABILITY_POLICY = Object.freeze({
 });
 
 export const MEMORY_GA_ROLLOUT_MANIFEST_VERSION =
-  "memory-ga-rollout-manifest-v1";
+  "memory-ga-rollout-manifest-v2";
 
 export const MEMORY_GA_ROLLOUT_MANIFEST = Object.freeze({
   defaults: Object.freeze({
-    learnAutomatically: false,
+    learnAutomatically: true,
     referenceChatHistory: true,
     useMemoryFacts: true
   }),
@@ -69,7 +69,7 @@ export const MEMORY_GA_ROLLOUT_MANIFEST = Object.freeze({
     Object.freeze({
       id: "AUTOMATIC_LEARNING" as const,
       rollback: "LEARNING_AND_PROVIDER_CALLS_OFF" as const,
-      state: "QUALIFICATION_GATED_DEFAULT_OFF" as const
+      state: "RELEASED_DEFAULT_ON" as const
     }),
     Object.freeze({
       id: "PHASE7_OPTIONAL_COMPONENTS" as const,
@@ -84,7 +84,7 @@ export const MEMORY_GA_ROLLOUT_MANIFEST = Object.freeze({
     Object.freeze({
       id: "OPERATIONAL_GA" as const,
       rollback: "RETURN_TO_PRIOR_STAGE_GATES" as const,
-      state: "READY_NOT_PUBLISHED" as const
+      state: "RELEASED" as const
     })
   ])
 });

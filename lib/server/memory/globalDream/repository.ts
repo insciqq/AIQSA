@@ -52,11 +52,7 @@ import {
   type MemorySuppressionKeyring
 } from "../suppressionKeyring";
 import {
-  MEMORY_GLOBAL_DREAM_DISCOVERY_OWNER_LIMIT,
-  MEMORY_GLOBAL_DREAM_MAX_JOBS_PER_OWNER,
-  MEMORY_GLOBAL_DREAM_MIN_INTERVAL_MS,
   MEMORY_GLOBAL_DREAM_PIPELINE_VERSION,
-  memoryGlobalDreamJobFingerprint,
   memoryGlobalDreamJobIsValid,
   parseMemoryGlobalDreamJobFingerprint,
   type MemoryGlobalDreamPrepared,
@@ -66,13 +62,9 @@ import {
 import { prepareGlobalDreamDeferredSelection } from "./deferred";
 import {
   loadGlobalDreamCurrentFact,
-  memoryGlobalDreamPairLooksRelated,
   prepareGlobalDreamLocalSelection,
   prepareGlobalDreamPairSelection
 } from "./selection";
-
-const MEMORY_GLOBAL_DREAM_FACT_LIMIT = 24;
-const MEMORY_GLOBAL_DREAM_PAIR_PROBE_LIMIT = 16;
 
 const disabledDecision = Object.freeze({
   errorCode: "memory_automatic_learning_disabled",
@@ -93,22 +85,6 @@ export type MemoryGlobalDreamExecutionBinding = Readonly<{
   inputHash: string;
   ordinal: number;
   state: MemoryExecutionState;
-}>;
-
-type DiscoveryOwnerRow = Readonly<{ userId: string }>;
-type DiscoveryDeferredRow = Readonly<{ candidateId: string }>;
-
-type DiscoveryFactRow = Readonly<{
-  canonicalKey: string;
-  category: string;
-  displayText: string;
-  factId: string;
-  lastConfirmedAt: Date | null;
-  scopeTargetId: string | null;
-  scopeType: "ASSISTANT" | "CHAT" | "FOLDER" | "GLOBAL_USER";
-  structuredValue: Prisma.JsonValue;
-  updatedAt: Date;
-  validTo: Date | null;
 }>;
 
 function configuredKeyring(): MemorySuppressionKeyring {
@@ -159,170 +135,8 @@ async function prepareSelection(
     : { decision: staleDecision };
 }
 
-function sameScope(left: DiscoveryFactRow, right: DiscoveryFactRow): boolean {
-  return left.scopeType === right.scopeType &&
-    left.scopeTargetId === right.scopeTargetId;
-}
-
-function pairDirection(
-  left: DiscoveryFactRow,
-  right: DiscoveryFactRow
-): Readonly<{ sourceFactId: string; targetFactId: string }> | null {
-  if (sameScope(left, right)) {
-    const leftTime = left.lastConfirmedAt?.getTime() ?? left.updatedAt.getTime();
-    const rightTime = right.lastConfirmedAt?.getTime() ?? right.updatedAt.getTime();
-    if (leftTime !== rightTime) {
-      return leftTime > rightTime
-        ? { sourceFactId: left.factId, targetFactId: right.factId }
-        : { sourceFactId: right.factId, targetFactId: left.factId };
-    }
-    return left.factId > right.factId
-      ? { sourceFactId: left.factId, targetFactId: right.factId }
-      : { sourceFactId: right.factId, targetFactId: left.factId };
-  }
-  if (left.scopeType === "GLOBAL_USER" && right.scopeType !== "GLOBAL_USER") {
-    return { sourceFactId: left.factId, targetFactId: right.factId };
-  }
-  if (right.scopeType === "GLOBAL_USER" && left.scopeType !== "GLOBAL_USER") {
-    return { sourceFactId: right.factId, targetFactId: left.factId };
-  }
-  return null;
-}
-
-async function discoveryOwners(
-  client: PrismaClient,
-  now: Date,
-  limit: number
-): Promise<readonly DiscoveryOwnerRow[]> {
-  const cutoff = new Date(now.getTime() - MEMORY_GLOBAL_DREAM_MIN_INTERVAL_MS);
-  return client.$queryRaw<DiscoveryOwnerRow[]>(Prisma.sql`
-    SELECT settings."userId"
-    FROM "UserMemorySettings" AS settings
-    INNER JOIN "User" AS owner ON owner."id" = settings."userId"
-    WHERE owner."status" = 'active'::"UserStatus"
-      AND settings."learnAutomatically" = TRUE
-      AND (
-        settings."lastGlobalDreamAt" IS NULL
-        OR settings."lastGlobalDreamAt" <= ${cutoff}
-      )
-      AND EXISTS (
-        SELECT 1 FROM "MemoryFact" AS fact
-        WHERE fact."userId" = settings."userId"
-          AND fact."state" = 'ACTIVE'::"MemoryFactState"
-      )
-      AND (
-        (
-          SELECT count(*) FROM "MemoryJob" AS local_job
-          WHERE local_job."userId" = settings."userId"
-            AND local_job."kind" = 'EXTRACT_FACTS'::"MemoryJobKind"
-            AND local_job."state" = 'SUCCEEDED'::"MemoryJobState"
-            AND local_job."completedAt" > COALESCE(
-              settings."lastGlobalDreamAt",
-              '-infinity'::timestamptz
-            )
-        ) >= 2
-        OR NOT EXISTS (
-          SELECT 1 FROM "Chat" AS chat
-          WHERE chat."userId" = settings."userId"
-            AND chat."updatedAt" > ${cutoff}
-        )
-      )
-    ORDER BY settings."lastGlobalDreamAt" NULLS FIRST, settings."userId"
-    LIMIT ${limit}
-  `);
-}
-
-async function discoveryFacts(
-  tx: MemoryTransaction,
-  userId: string
-): Promise<readonly DiscoveryFactRow[]> {
-  return tx.$queryRaw<DiscoveryFactRow[]>(Prisma.sql`
-    SELECT
-      fact."id" AS "factId", fact."canonicalKey", fact."category",
-      fact."lastConfirmedAt", fact."updatedAt",
-      scope."scopeType"::text AS "scopeType",
-      scope."targetIdSnapshot" AS "scopeTargetId",
-      version."displayText", version."structuredValue", version."validTo"
-    FROM "MemoryFact" AS fact
-    INNER JOIN "MemoryScope" AS scope
-      ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
-    INNER JOIN "MemoryFactVersion" AS version
-      ON version."userId" = fact."userId"
-      AND version."factId" = fact."id"
-      AND version."id" = fact."currentVersionId"
-    WHERE fact."userId" = ${userId}
-      AND fact."state" = 'ACTIVE'::"MemoryFactState"
-      AND fact."movedToFactId" IS NULL
-      AND fact."pinned" = FALSE
-      AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-      AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
-      AND version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
-      AND version."sensitivityClass" = 'NORMAL'::"MemorySensitivityClass"
-      AND version."contentPurgedAt" IS NULL
-      AND version."displayText" IS NOT NULL
-      AND version."structuredValue" IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM "MemoryFactVersion" AS explicit_version
-        WHERE explicit_version."userId" = fact."userId"
-          AND explicit_version."factId" = fact."id"
-          AND explicit_version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-      )
-    ORDER BY fact."updatedAt" DESC, fact."id"
-    LIMIT ${MEMORY_GLOBAL_DREAM_FACT_LIMIT}
-    FOR SHARE OF fact, scope, version
-  `);
-}
-
-async function discoveryDeferredCandidates(
-  tx: MemoryTransaction,
-  userId: string
-): Promise<readonly DiscoveryDeferredRow[]> {
-  return tx.$queryRaw<DiscoveryDeferredRow[]>(Prisma.sql`
-    SELECT candidate."id" AS "candidateId"
-    FROM "MemoryCandidate" AS candidate
-    WHERE candidate."userId" = ${userId}
-      AND candidate."state" = 'DEFERRED'::"MemoryCandidateState"
-      AND candidate."contentPurgedAt" IS NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM "MemoryCandidateDecision" AS decision
-        WHERE decision."userId" = candidate."userId"
-          AND decision."candidateId" = candidate."id"
-      )
-    ORDER BY candidate."createdAt", candidate."id"
-    LIMIT ${MEMORY_GLOBAL_DREAM_MAX_JOBS_PER_OWNER}
-    FOR SHARE OF candidate
-  `);
-}
-
-async function enqueueSelection(
-  tx: MemoryTransaction,
-  settings: LockedMemorySettings,
-  selection: MemoryGlobalDreamSelection
-): Promise<boolean> {
-  const identity = selection.kind === "RECONCILE_PAIR" ? {
-        kind: selection.kind,
-        snapshotHash: selection.snapshotHash,
-        sourceFactId: selection.sourceFactId,
-        targetFactId: selection.targetFactId
-      } : selection.kind === "REVISIT_DEFERRED" ? {
-        candidateId: selection.input.candidate.id,
-        kind: selection.kind,
-        snapshotHash: selection.snapshotHash
-      } : {
-        factId: selection.factId,
-        kind: selection.kind,
-        snapshotHash: selection.snapshotHash
-      };
-  const result = await enqueueMemoryJob(tx, settings, {
-    idempotencyFingerprint: memoryGlobalDreamJobFingerprint(identity),
-    kind: "GLOBAL_DREAM",
-    pipelineVersion: MEMORY_GLOBAL_DREAM_PIPELINE_VERSION
-  });
-  return result.created;
-}
-
 export async function reconcileGlobalDreamJobs(
-  client: PrismaClient = prisma,
+  _client: PrismaClient = prisma,
   options: Readonly<{
     keyring?: () => MemorySuppressionKeyring;
     limit?: number;
@@ -335,105 +149,10 @@ export async function reconcileGlobalDreamJobs(
     options.limit !== undefined &&
     (!Number.isSafeInteger(options.limit) || options.limit < 1)
   ) throw new Error("memory_global_dream_limit_invalid");
-  const ownerLimit = Math.min(
-    options.limit ?? MEMORY_GLOBAL_DREAM_DISCOVERY_OWNER_LIMIT,
-    MEMORY_GLOBAL_DREAM_DISCOVERY_OWNER_LIMIT
-  );
-  const loadKeyring = options.keyring ?? configuredKeyring;
-  const owners = await discoveryOwners(client, now, ownerLimit);
-  let created = 0;
-  for (const owner of owners) {
-    created += await withLockedMemoryTransaction(
-      client,
-      owner.userId,
-      async (tx, settings) => {
-        if (!settings.learnAutomatically) return 0;
-        const persisted = await tx.userMemorySettings.findUnique({
-          select: { lastGlobalDreamAt: true },
-          where: { userId: settings.userId }
-        });
-        const cutoff = new Date(now.getTime() - MEMORY_GLOBAL_DREAM_MIN_INTERVAL_MS);
-        if (persisted?.lastGlobalDreamAt && persisted.lastGlobalDreamAt > cutoff) return 0;
-        const keyring = loadKeyring();
-        const facts = await discoveryFacts(tx, settings.userId);
-        const selectedFacts = new Set<string>();
-        let ownerCreated = 0;
-        for (const fact of facts) {
-          if (ownerCreated >= MEMORY_GLOBAL_DREAM_MAX_JOBS_PER_OWNER) break;
-          let selection = fact.validTo && fact.validTo <= now
-            ? await prepareGlobalDreamLocalSelection(tx, keyring, settings, {
-                factId: fact.factId,
-                kind: "EXPIRE_TEMPORAL",
-                now
-              })
-            : null;
-          selection ??= await prepareGlobalDreamLocalSelection(tx, keyring, settings, {
-            factId: fact.factId,
-            kind: "RETRACT_INVALID",
-            now
-          });
-          if (selection) {
-            selectedFacts.add(fact.factId);
-            if (await enqueueSelection(tx, settings, selection)) ownerCreated += 1;
-          }
-        }
-        const deferred = await discoveryDeferredCandidates(tx, settings.userId);
-        for (const candidate of deferred) {
-          if (ownerCreated >= MEMORY_GLOBAL_DREAM_MAX_JOBS_PER_OWNER) break;
-          const selection = await prepareGlobalDreamDeferredSelection(
-            tx,
-            keyring,
-            settings,
-            { candidateId: candidate.candidateId, now }
-          );
-          if (selection) {
-            selectedFacts.add(selection.targetFactId);
-            if (await enqueueSelection(tx, settings, selection)) ownerCreated += 1;
-          }
-        }
-        let probedPairs = 0;
-        for (let leftIndex = 0; leftIndex < facts.length; leftIndex += 1) {
-          if (
-            ownerCreated >= MEMORY_GLOBAL_DREAM_MAX_JOBS_PER_OWNER ||
-            probedPairs >= MEMORY_GLOBAL_DREAM_PAIR_PROBE_LIMIT
-          ) break;
-          const left = facts[leftIndex]!;
-          if (selectedFacts.has(left.factId)) continue;
-          for (let rightIndex = leftIndex + 1; rightIndex < facts.length; rightIndex += 1) {
-            if (
-              ownerCreated >= MEMORY_GLOBAL_DREAM_MAX_JOBS_PER_OWNER ||
-              probedPairs >= MEMORY_GLOBAL_DREAM_PAIR_PROBE_LIMIT
-            ) break;
-            const right = facts[rightIndex]!;
-            if (
-              selectedFacts.has(right.factId) || left.category !== right.category ||
-              !memoryGlobalDreamPairLooksRelated(left, right)
-            ) continue;
-            const direction = pairDirection(left, right);
-            if (!direction) continue;
-            probedPairs += 1;
-            const selection = await prepareGlobalDreamPairSelection(
-              tx,
-              keyring,
-              settings,
-              { ...direction, now }
-            );
-            if (selection) {
-              selectedFacts.add(left.factId);
-              selectedFacts.add(right.factId);
-              if (await enqueueSelection(tx, settings, selection)) ownerCreated += 1;
-            }
-          }
-        }
-        await tx.userMemorySettings.update({
-          data: { lastGlobalDreamAt: now },
-          where: { userId: settings.userId }
-        });
-        return ownerCreated;
-      }
-    );
-  }
-  return created;
+  // Global Dream discovery was a second semantic reconciliation layer. The
+  // normal path now uses only candidate consolidation; existing queued jobs
+  // are settled by the coordinator's retired legacy handler.
+  return 0;
 }
 
 export function createPrismaMemoryGlobalDreamRepository(

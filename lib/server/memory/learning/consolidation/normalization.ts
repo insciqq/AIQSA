@@ -538,17 +538,5 @@ export async function normalizeMemoryFactsForSourceMutation(
     data: { indexedThroughMemoryRevision: settings.memoryRevision },
     where: { id: index.id }
   });
-  if (settings.useMemoryFacts) {
-    await enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: `recalculate-working-set:${memorySha256({
-        chatId: event.snapshot.id,
-        memoryRevision: settings.memoryRevision,
-        sourceHash: event.snapshot.sourceHash,
-        version: 1
-      })}`,
-      kind: "RECALCULATE_WORKING_SET",
-      pipelineVersion: "memory-fact-consolidation-v1"
-    });
-  }
   return settings;
 }

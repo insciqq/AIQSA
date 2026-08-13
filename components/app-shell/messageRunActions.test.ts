@@ -17,7 +17,7 @@ import {
 } from "./runSurfaceStore";
 import { resetThreadStoreForTest, selectThreadSnapshot, useThreadStore } from "./threadStore";
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
-import type { ComposerAttachment } from "@/components/chat/Composer";
+import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { Catalog, CatalogModel, ChatDetail, ChatSummary } from "./types";
 import type { SavedControlDraft } from "./powerAppShellData";
 import { memorySettingsFixture } from "./memoryTestFixtures";
@@ -308,7 +308,8 @@ function useMessageRunActionsForTest(input: {
         return {
           failed: false,
           receivedChatUpdate: true,
-          runId: "run-1"
+          runId: "run-1",
+          terminalStatus: "complete"
         };
       }),
     createChat: async (folderId, sourceKey) => {
@@ -595,7 +596,8 @@ describe("message run actions", () => {
         return {
           failed: false,
           receivedChatUpdate: true,
-          runId: "run-a"
+          runId: "run-a",
+          terminalStatus: "complete"
         };
       }
     });
@@ -1467,7 +1469,8 @@ describe("message run actions", () => {
         return {
           failed: false,
           receivedChatUpdate: true,
-          runId: "run-a"
+          runId: "run-a",
+          terminalStatus: "complete"
         };
       }
     });
@@ -1842,7 +1845,8 @@ describe("message run actions", () => {
         return {
           failed: false,
           receivedChatUpdate: true,
-          runId: "run-edit"
+          runId: "run-edit",
+          terminalStatus: "complete"
         };
       },
       draft: "Edited question",
@@ -2036,7 +2040,6 @@ describe("message run actions", () => {
       .mockRejectedValueOnce(new TypeError("network disconnected"))
       .mockResolvedValueOnce(new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    let refreshAttempt = 0;
     const canonicalMessages = [
       {
         content: "Persisted question",
@@ -2055,11 +2058,6 @@ describe("message run actions", () => {
       }
     ];
     const refreshActiveChat = vi.fn(async () => {
-      refreshAttempt += 1;
-      if (refreshAttempt === 1) {
-        return null;
-      }
-
       useThreadStore.getState().replaceThread("chat-a", {
         activeLeafId: "assistant-canonical",
         messages: canonicalMessages,
@@ -2112,9 +2110,10 @@ describe("message run actions", () => {
       draft: "Retry after reconnect"
     });
 
+    await expect(actions.refreshInterruptedRun("chat-a")).resolves.toBe(true);
     await actions.submitComposer();
 
-    expect(actions.refreshActiveChat).toHaveBeenCalledTimes(2);
+    expect(actions.refreshActiveChat).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const [, retryInit] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
     expect(JSON.parse(String(retryInit.body))).toMatchObject({
@@ -2122,28 +2121,29 @@ describe("message run actions", () => {
     });
   });
 
-  it("reconciles an ambiguous send only in its source chat while another chat streams", async () => {
+  it("refreshes an ambiguous send only on user request and only in its source chat", async () => {
+    const canonicalMessages = [
+      {
+        content: "Persisted question",
+        id: "user-server-a",
+        parentMessageId: null,
+        role: "user" as const,
+        status: "complete" as const
+      },
+      {
+        content: "Provider result unavailable",
+        id: "assistant-server-a",
+        parentMessageId: "user-server-a",
+        role: "assistant" as const,
+        runId: "run-server-a",
+        status: "error" as const
+      }
+    ];
     const refreshActiveChat = vi.fn(async (chatId: string | null) => {
       expect(chatId).toBe("chat-a");
       useThreadStore.getState().replaceThread("chat-a", {
         activeLeafId: "assistant-server-a",
-        messages: [
-          {
-            content: "Persisted question",
-            id: "user-server-a",
-            parentMessageId: null,
-            role: "user",
-            status: "complete"
-          },
-          {
-            content: "Provider result unavailable",
-            id: "assistant-server-a",
-            parentMessageId: "user-server-a",
-            role: "assistant",
-            runId: "run-server-a",
-            status: "error"
-          }
-        ],
+        messages: canonicalMessages,
         usageStats: null
       });
       useWorkspaceStore.getState().updateChats((current) =>
@@ -2153,7 +2153,20 @@ describe("message run actions", () => {
             : candidate
         )
       );
-      return null;
+      return {
+        ...chat(),
+        activeLeafMessageId: "assistant-server-a",
+        contextStats: { approximateActiveBranchInputTokens: 48 },
+        messageCount: 2,
+        messages: canonicalMessages,
+        pageInfo: {
+          activeLeafMessageId: "assistant-server-a",
+          beforeCursor: null,
+          hasOlder: false,
+          snapshotUpdatedAt: chat().updatedAt
+        },
+        usageStats: null
+      };
     });
     vi.stubGlobal(
       "fetch",
@@ -2197,10 +2210,14 @@ describe("message run actions", () => {
 
     await actions.submitComposer();
 
+    expect(actions.refreshActiveChat).not.toHaveBeenCalled();
+    expect(useRunLifecycleStore.getState().ambiguousFailures).toMatchObject({
+      "chat-a": { assistantMessageId: expect.any(String), runId: null }
+    });
+    await expect(actions.refreshInterruptedRun("chat-a")).resolves.toBe(true);
     expect(actions.refreshActiveChat).toHaveBeenCalledWith("chat-a", {
       forceDetail: true,
-      preserveControls: true,
-      resumeRuns: false
+      preserveControls: true
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
       activeLeafId: "assistant-server-a",
@@ -2220,6 +2237,7 @@ describe("message run actions", () => {
         runId: "run-b"
       }
     });
+    expect(useRunLifecycleStore.getState().ambiguousFailures).toEqual({});
     expect(actions.session(composerSessionKey("chat-b"))).toMatchObject({
       draft: "Draft B"
     });
@@ -2242,7 +2260,8 @@ describe("message run actions", () => {
         return {
           failed: false,
           receivedChatUpdate: true,
-          runId: "run-send"
+          runId: "run-send",
+          terminalStatus: "complete"
         };
       }
     });
@@ -2333,15 +2352,14 @@ describe("message run actions", () => {
         }
       ]
     });
-    expect(actions.surface("chat-new").events).toEqual([
-      {
-        data: { message: "stream disconnected" },
-        type: "error"
-      }
-    ]);
+    expect(actions.surface("chat-new").events).toEqual([]);
+    expect(useRunLifecycleStore.getState().ambiguousFailures["chat-new"]).toEqual({
+      assistantMessageId: expect.any(String),
+      runId: null
+    });
   });
 
-  it("keeps Composer as the live owner when ambiguous reconciliation confirms an empty chat", async () => {
+  it("keeps an ambiguous send visible until an explicit refresh succeeds", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
     const actions = useMessageRunActionsForTest({
       attachments: [],
@@ -2349,47 +2367,35 @@ describe("message run actions", () => {
         throw new Error("stream disconnected");
       },
       draft: "Question that remains retryable",
-      refreshActiveChat: async (chatId) => {
-        useThreadStore.getState().replaceThread(chatId!, {
-          activeLeafId: null,
-          messages: [],
-          usageStats: null
-        });
-        return null;
-      }
+      refreshActiveChat: async () => null
     });
 
     await actions.submitComposer();
 
-    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages).toEqual([]);
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages).toEqual([
+      expect.objectContaining({ role: "user" }),
+      expect.objectContaining({ content: "", role: "assistant", status: "error" })
+    ]);
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       draft: "Question that remains retryable",
       operationError: "Send failed. Your draft was preserved.",
-      operationErrorLive: true,
+      operationErrorLive: false,
       pendingSend: null
     });
-    expect(actions.surface("chat-a").events).toEqual([
-      { data: { message: "stream disconnected" }, type: "error" }
-    ]);
+    expect(actions.surface("chat-a").events).toEqual([]);
+    await expect(actions.refreshInterruptedRun("chat-a")).resolves.toBe(false);
+    expect(useRunLifecycleStore.getState().ambiguousFailures).toHaveProperty("chat-a");
   });
 
-  it("keeps an empty reconciled background failure historical on later activation", async () => {
+  it("does not announce an ambiguous source-chat failure after focus moves away", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
     let actions!: ReturnType<typeof useMessageRunActionsForTest>;
     actions = useMessageRunActionsForTest({
       attachments: [],
       consumeRunStream: async () => {
-        throw new Error("stream disconnected");
-      },
-      refreshActiveChat: async (chatId) => {
         actions.activeChatIdRef.current = "chat-b";
         useWorkspaceStore.getState().setActiveChatId("chat-b");
-        useThreadStore.getState().replaceThread(chatId!, {
-          activeLeafId: null,
-          messages: [],
-          usageStats: null
-        });
-        return null;
+        throw new Error("stream disconnected");
       }
     });
 
@@ -2399,6 +2405,8 @@ describe("message run actions", () => {
       operationError: "Send failed. Your draft was preserved.",
       operationErrorLive: false
     });
+    expect(actions.refreshActiveChat).not.toHaveBeenCalled();
+    expect(useRunLifecycleStore.getState().ambiguousFailures).toHaveProperty("chat-a");
   });
 
   it("settles a rejected first send as one saved-empty chat with restored feedback", async () => {
@@ -2467,7 +2475,8 @@ describe("message run actions", () => {
         return {
           failed: false,
           receivedChatUpdate: true,
-          runId: "run-regenerated"
+          runId: "run-regenerated",
+          terminalStatus: "complete"
         };
       }
     });
@@ -2534,7 +2543,8 @@ describe("message run actions", () => {
         return {
           failed: false,
           receivedChatUpdate: true,
-          runId: "run-from-user"
+          runId: "run-from-user",
+          terminalStatus: "complete"
         };
       }
     });
@@ -2727,7 +2737,8 @@ describe("message run actions", () => {
         return {
           failed: false,
           receivedChatUpdate: false,
-          runId: "run-background"
+          runId: "run-background",
+          terminalStatus: "complete"
         };
       }
     });

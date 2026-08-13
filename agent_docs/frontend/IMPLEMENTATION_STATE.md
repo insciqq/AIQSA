@@ -11,15 +11,15 @@ This document is a semantic ownership map, not a file inventory. Exact modules r
 | --- | --- | --- |
 | Server entries | `app/` pages | Authenticate/authorize entry, normalize safe URL state, and pass least-data initial props into browser workspaces. |
 | Shared wire contracts | `lib/contracts/` | Client-safe request/response types, runtime decoders, stable errors, and summary/detail boundaries. |
-| Chat composition | `components/app-shell/PowerAppShell*` | Compose focused stores/controllers into the seven root view contracts; no server repository or leaf implementation ownership. |
+| Chat composition | `features/workspace-v2/PowerAppShellV2*` | Compose focused stores/controllers into the seven root view contracts and the sole production presentation; no server repository or leaf implementation ownership. |
 | Workspace, thread, composer, run state | focused `components/app-shell/*Store` modules | Keyed durable projections, optimistic state, operation ownership, stream lifecycle, inspection, and next-run controls. |
 | Shell actions/controllers | focused app-shell action and controller modules | Async mutation coordination, navigation/focus lifetimes, reconciliation, and semantic feature ports. |
-| Conversation presentation | app-shell and `components/chat/` leaves | Thread rows, artifacts, receipts, Markdown, composer, Details, rails, menus, and dialogs. |
+| Conversation presentation | `features/*-v2/`, `components/ui-v2/`, and reviewed Markdown/resource leaves | Navigation, turns, evidence, composer, Branches, Run details, Library, Settings, menus, drawers, and dialogs. |
 | Account and public share | `components/auth/` and `components/share/` | Mode-driven authentication and sanitized anonymous read-only rendering. |
 | Resource workspaces | Memory app-shell components, `components/assistants/`, and `components/knowledge/` plus focused stores/controllers | Full-screen Memory, Assistant, and Knowledge workflows, decoded API projections, lifecycle mutations, and navigation-safe reconciliation. |
 | Control Center | `components/admin/` | Administrator shell, resource controllers, index/detail tasks, write-only configuration UI, and decoded admin API clients. |
 | Resource availability | `components/resource-lifecycle/` | Neutral shared Enabled/Disabled presentation and restoration-action tone across app and admin features. |
-| Theme | app-shell theme owner plus root layout | Browser-local palette registry, cookie-backed first paint, and synchronized theme/color-scheme attributes. |
+| Theme | `styles/tokens-v2.css`, app-shell theme owner, and root layout | Browser-local three-value registry, cookie-backed first paint, and synchronized theme/color-scheme attributes. |
 
 [Architecture](../ARCHITECTURE.md) owns and routes the executable dependency
 rules. Inside the browser boundary, avoid broad utility barrels and catch-all
@@ -69,7 +69,13 @@ Active-chat detail loading is a skeleton, not a blank chat. Detail failure has o
 
 ### Composer sessions and controls
 
-`composerSessionStore` owns keyed sessions for each saved chat plus distinct blank-root and blank-folder destinations. A session contains draft text, edit target, staged attachments, operation generations/tokens, and local feedback.
+`composerSessionStore` owns keyed sessions for each saved chat plus distinct
+blank-root and blank-folder destinations for `NORMAL`, `EXCLUDED`, and
+`TEMPORARY` intent. A first send may transfer only its exact source session;
+Memory-off creation persists `EXCLUDED` with the new chat, while Temporary
+continues through its separately acknowledged first-run admission. A session
+contains draft text, edit target, staged attachments, operation
+generations/tokens, and local feedback.
 
 Async writers capture their source key and token before awaiting. Send snapshots and clears visible input atomically; upload and send exclude each other; attachment status polling updates only a still-present id in its captured source and keeps send blocked through `processing`/`failed`; a failed send restores captured text only if no newer composer work exists. A successful first send transfers the blank session to the created chat. Deletion/authoritative refresh removes stale sources so late results cannot resurrect them.
 
@@ -161,9 +167,9 @@ MCP settings owns its coalesced catalog refresh, mutation replacement, OAuth out
 
 General-shell and settings-destination notices are separate channels. Settings and Memory render that destination channel and clear it on exit. Persistent workflow notices remain in flow; transient notices stay bounded and dismissible.
 
-## PowerAppShell Boundary
+## PowerAppShellV2 Boundary
 
-`PowerAppShell` composes stores, hooks, refs, effects, controllers, and view adapters. It does not own server data, branch logic, next-run state, or leaf drafts.
+`PowerAppShellV2` composes stores, hooks, refs, effects, controllers, and v2 view adapters. It does not own server data, branch logic, next-run state, or leaf drafts. There is no selectable classic renderer, parallel API client, or second state graph.
 
 Its root view contract has exactly seven keys:
 
@@ -175,9 +181,7 @@ Its root view contract has exactly seven keys:
 - `settings`;
 - `overlays`.
 
-Compile-time coverage and component tests enforce this boundary. Root and left-pane adapters receive grouped semantic actions rather than raw `set*` bags. Leaf adapters receive only their selected feature projection. If a future slice needs shared state, integrate with the focused owner rather than adding a second producer or broad root reducer.
-
-The memoized left-pane adapter intentionally ignores callback identity churn and calls a stable event callback that always reaches the latest catalog-aware activation handler. Remove its custom comparator only after replacing that contract with direct selectors or fully stable callbacks.
+Compile-time coverage and component tests enforce this boundary. Root and navigation adapters receive grouped semantic actions rather than raw `set*` bags. Leaf adapters receive only their selected feature projection. If a future slice needs shared state, integrate with the focused owner rather than adding a second producer or broad root reducer.
 
 ## Presentation And Runtime Contracts
 
@@ -193,38 +197,52 @@ context disclosure belong to [Messages](MESSAGES_AND_MARKDOWN.md),
 [Composer](composer/COMPOSER.md), [Run controls](composer/RUN_CONTROLS.md), and
 [Receipt and Details](composer/RECEIPT_AND_DETAILS.md).
 
+Generated-artifact cards and their preview/lineage drawer currently have a
+typed deterministic presentation owner only. That owner is reachable solely
+from the explicit non-production fixture route; its server-side release gate
+fails closed in production and the ordinary shell has no import or state path
+to it. A future product release must substitute an authenticated, owner-fenced
+projection without weakening exact message/branch/version binding. Until that
+backend boundary exists, the UI must not expose synthetic downloads, storage
+references, or generated-file success on a real run.
+
 ### Shell and session ownership
 
 - Shell adapters project the action destinations and availability owned by
-  [product and layout](PRODUCT_AND_LAYOUT.md). `WorkspaceIconRail` is the compact
-  labeled desktop presentation owner for those existing global destinations; it does
-  not create a second navigation, Account, conversation-action, or Details
-  state owner.
+  [product and layout](PRODUCT_AND_LAYOUT.md). `NavigationSidebar` is the one
+  chat/folder navigation presentation: normal-flow at desktop widths, fully
+  collapsed when requested, and a scrim-backed drawer below 900px. Collapse
+  leaves adjacent Open/New-chat recovery controls, never an icon rail or a
+  second navigation state owner. Account actions live in the workspace header;
+  Library and Settings also remain reachable from the sidebar.
 - Initial bootstrap has one actionable Retry surface and disables dependent mutations. Blank-chat and zero-model states render only after readiness and distinguish an empty workspace from missing granted access. The zero-model projection also distinguishes admin authority: only an administrator receives the direct Control Center provider-setup action.
-- Above the compact shell threshold, the labeled rail is mandatory and wide
-  Workspace-pane visibility is one browser-local presentation preference.
-  Hiding closes pane-owned menus and focuses rail `Chats`; Chats or a pointer
-  click on non-control rail space restores and focuses the pane's hide action.
-  Desktop Account has one top-group rail trigger and one externally anchored
-  surface; only the compact drawer retains its own Account footer presentation.
-  At compact widths `Open workspace` continues to own the modal drawer, and no
-  chat/folder/account state migrates into this preference.
+- At `>=1024px` the sidebar starts open; at `900–1023px` it starts collapsed;
+  below `900px` the same content becomes a modal drawer. Responsive transitions
+  preserve the active chat, search, folders, drafts, and operation ownership.
+  When hiding focused navigation, focus moves to the exact visible Open control
+  and restores only while that fallback still owns focus.
 - A persisted chat with no provider/model default is valid. Blank startup and every ordinary New-chat transition re-resolve only the catalog's exact effective personal-or-installation default; when that projection is absent, the shell keeps model selection empty instead of substituting the first visible model. An active Assistant keeps its revision-owned selection across a blank transition. Existing-chat activation preserves its independent saved tuple and established non-persisting visible fallback when that tuple is absent or unavailable. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
 - Any Chat `401` creates one sticky session-expiry transition. Concurrent failures navigate once, store only the active text draft in tab-scoped owner-bound state, and restore it after the same account reauthenticates only into an untouched matching destination. The handoff expires after 30 minutes and never includes attachments.
 - Sign-out failure remains visibly attributable to Account and retryable. Answer completion may use the local audio/favicon alert; hidden-tab signaling stops when the user returns.
 
 ### Theme and focus
 
-Theme preference is local, and the palette registry preserves every supported stored theme id. A valid LocalStorage value wins after hydration and repairs the same-site cookie; invalid local state yields to the validated server-rendered theme. First paint and runtime changes set `data-theme` and `data-color-scheme` together. Theme never becomes user/account/conversation data.
+Theme preference is local and exposes only System, Light, and Dark. A
+recognized LocalStorage value wins after hydration and repairs the same-site
+cookie; the one-time compatibility normalizer maps the six shipped legacy ids
+to Dark or Light and maps unknown/absent state to System. Cookie-backed
+normalized state owns first paint. Runtime changes set `data-theme` and the
+effective `data-color-scheme` together, including operating-system changes
+while System is selected. Theme never becomes user/account/conversation data.
 
-Dialog focus is session-scoped: entry, Tab containment, Escape ownership, nested confirmation priority, and opener restoration belong to the focused overlay owner. A responsive transition replaces a CSS-hidden desktop-navigation opener with compact `Open workspace`, remembers its exact source, and restores that source on desktop return only while the fallback still owns focus. A drawer becoming a pinned panel releases modal behavior without prematurely restoring focus.
+Dialog focus is session-scoped: entry, Tab containment, Escape ownership, nested confirmation priority, and opener restoration belong to the focused overlay owner. Branches, Run details, artifact preview, Settings, and command search remain temporary layers; no responsive transition converts them into a pinned column.
 
 ## Testability Rules
 
 - Prefer clear visible labels and stable `data-testid` anchors only for critical behavior.
 - Keep every state understandable with nonessential motion disabled and deterministic fake data/providers.
 - Test store/action owners directly for source-key capture, race settlement, malformed payload rejection, and cache isolation.
-- Use focused browser behavior and affected desktop/mobile states for material interaction or visual changes; do not maintain exhaustive screenshot inventories.
+- Use focused browser behavior and affected desktop/mobile states for material interaction or visual changes. The guarded v2 fixture is the bounded exception: its named dark/light state matrix and responsive baselines are maintained under `tests/e2e/ui-baseline/` as routed by `TESTING.md`.
 - Select proportional checks through `TESTING.md`.
 
 ## Change Rules

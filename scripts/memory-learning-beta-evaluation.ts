@@ -801,6 +801,7 @@ function consolidationInput(
   const relatedSnapshotHash = memoryFactRelatedSnapshotHash(relatedFacts);
   const withoutHash: Omit<MemoryFactConsolidationInput, "inputHash"> = {
     candidate,
+    memoryRevision: 0,
     relatedFacts,
     relatedSnapshotHash
   };
@@ -983,7 +984,7 @@ export function memoryLearningVerificationCases(
       for (const matrix of selected) {
         const plan = memoryLearningMatrixGoldPlan(matrix);
         const policyDecision = evaluateMemoryFactConsolidationPlan(matrix.input, plan);
-        if (policyDecision.status !== "VALID" || !policyDecision.requiresVerification) {
+        if (policyDecision.status !== "VALID") {
           throw new Error("memory_learning_gold_verification_case_invalid");
         }
         const target = plan.targetFactId

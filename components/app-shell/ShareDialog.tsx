@@ -346,6 +346,7 @@ export function ShareDialog({
   return (
     <div
       className="fixed inset-0 z-40 flex items-end justify-center bg-scrim/60 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[max(.75rem,env(safe-area-inset-top))] sm:items-center sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))]"
+      data-ui-presentation="v2-tokens"
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {

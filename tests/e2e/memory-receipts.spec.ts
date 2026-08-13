@@ -83,10 +83,7 @@ function message(input: Readonly<{
 
 async function openAnswerDetails(page: Page, answerId: string) {
   const answer = page.locator(`[data-message-id="${answerId}"]`);
-  await answer.hover();
-  await answer.getByRole("button", { name: "More message actions" }).click();
-  await page.getByRole("menuitem", { name: "Show run details" }).click();
-  await expect(answer.getByTestId("answer-metadata-block")).toBeVisible();
+  await expect(answer.getByTestId("evidence-row")).toBeVisible();
   return answer;
 }
 
@@ -255,7 +252,7 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
   await expect(first.getByText("First answer frozen memory.", { exact: true })).toBeVisible();
   await expect(first.getByText("Later forgotten", { exact: true })).toBeVisible();
   await expect(first.getByText("Second answer frozen memory.", { exact: true })).toHaveCount(0);
-  await expect(page.getByTestId("details-pane")).toHaveCount(0);
+  await expect(page.getByTestId("run-details-scrim")).toHaveCount(0);
 
   const second = await openAnswerDetails(page, "assistant-update");
   const secondDisclosure = second.getByRole("button", {
@@ -269,7 +266,7 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
   await expect(second.getByText("Archived previous-chat episode.", { exact: true }))
     .toBeVisible();
   await expect(second.getByText("Source deleted", { exact: true })).toBeVisible();
-  await expect(second.getByText("memory_vector_unavailable", { exact: true })).toBeVisible();
+  await expect(second.getByText(/memory_vector_unavailable/u)).toBeVisible();
   const receiptItems = second.getByTestId("thread-memory-details").getByRole("listitem");
   const chunkItem = receiptItems.filter({ hasText: "Current previous-chat chunk." });
   const episodeItem = receiptItems.filter({ hasText: "Archived previous-chat episode." });
@@ -285,7 +282,7 @@ test("keeps exact Memory receipts and committed actions answer-bound", async ({ 
   const reopenedArchived = page.getByRole("dialog", { name: "Archived Memory source" });
   await expect(reopenedArchived.getByText(/Archived previous-chat episode\./u)).toBeVisible();
   await expect(second.getByText("First answer frozen memory.", { exact: true })).toHaveCount(0);
-  await expect(page.getByTestId("details-pane")).toHaveCount(0);
+  await expect(page.getByTestId("run-details-scrim")).toHaveCount(0);
 });
 
 for (const locale of ["EN", "RU"] as const) {
@@ -562,9 +559,9 @@ test("offers Manage Memories for an ambiguous target without claiming success", 
   });
   await signInWithLocalToken(page);
 
-  const composer = page.getByRole("textbox", { name: "Message" });
+  const composer = page.getByRole("textbox", { name: "Сообщение" });
   await composer.fill("Forget the preference I mentioned.");
-  await page.getByRole("button", { name: "Send message" }).click();
+  await page.getByRole("button", { name: "Отправить сообщение" }).click();
 
   const notice = page.getByTestId("shell-notice");
   await expect(notice).toContainText(
@@ -573,7 +570,7 @@ test("offers Manage Memories for an ambiguous target without claiming success", 
   await expect(notice).not.toContainText("Memory forgotten");
   await expect(composer).toHaveValue("Forget the preference I mentioned.");
   await notice.getByRole("button", { name: "Manage Memories" }).click();
-  const memory = page.getByTestId("memory-workspace");
-  await expect(memory.getByRole("heading", { level: 1, name: "Memory" })).toBeVisible();
-  await expect(memory.getByRole("button", { name: "Manage Memories" })).toBeVisible();
+  const memory = page.getByRole("tabpanel", { name: "Memory" });
+  await expect(memory.getByRole("heading", { level: 2, name: "Memory" })).toBeVisible();
+  await expect(memory.getByRole("button", { name: "Manage memories" })).toBeVisible();
 });

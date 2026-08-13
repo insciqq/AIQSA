@@ -8,6 +8,7 @@ import { SESSION_COOKIE_NAME } from "./lib/server/auth/constants";
 import {
   isAllowedMutationOrigin,
   isBootstrapLoginPublicEnv,
+  isTestAuthAllowedEnv,
   isProtectedMutationPath
 } from "./lib/server/auth/csrf";
 import { applyRuntimeSecurityHeaders } from "./lib/server/security/headers";
@@ -32,10 +33,17 @@ const publicPrefixes = [
   "/api/public-shares"
 ];
 
-function isPublicPath(pathname: string): boolean {
+function isPublicPath(
+  pathname: string,
+  env: Record<string, string | undefined>
+): boolean {
+  if (pathname === "/ui-v2-fixture" && isTestAuthAllowedEnv(env)) {
+    return true;
+  }
+
   if (
     (pathname === "/api/auth/token" || pathname.startsWith("/api/auth/token/")) &&
-    isBootstrapLoginPublicEnv(process.env)
+    isBootstrapLoginPublicEnv(env)
   ) {
     return true;
   }
@@ -60,13 +68,16 @@ function securedPublicShare(response: NextResponse): NextResponse {
   return response;
 }
 
-export function proxy(request: NextRequest) {
+export function proxyWithEnv(
+  request: NextRequest,
+  env: Record<string, string | undefined>
+) {
   const { pathname } = request.nextUrl;
 
   if (
     isProtectedMutationPath(request.method, pathname) &&
     !isAllowedMutationOrigin({
-      appBaseUrl: process.env.AIQSA_APP_BASE_URL,
+      appBaseUrl: env.AIQSA_APP_BASE_URL,
       origin: request.headers.get("origin"),
       requestOrigin: request.nextUrl.origin,
       secFetchSite: request.headers.get("sec-fetch-site")
@@ -80,7 +91,7 @@ export function proxy(request: NextRequest) {
     );
   }
 
-  if (isPublicPath(pathname)) {
+  if (isPublicPath(pathname, env)) {
     const response = NextResponse.next();
     return isPublicSharePath(pathname) ? securedPublicShare(response) : secured(response);
   }
@@ -103,6 +114,10 @@ export function proxy(request: NextRequest) {
   loginUrl.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
 
   return secured(NextResponse.redirect(loginUrl));
+}
+
+export function proxy(request: NextRequest) {
+  return proxyWithEnv(request, process.env);
 }
 
 export const config = {

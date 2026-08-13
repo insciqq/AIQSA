@@ -97,7 +97,7 @@ describe("Prisma explicit Memory API", () => {
     await prisma.$disconnect();
   });
 
-  it("commits exact Russian text and all lexical profiles without worker or provider", async () => {
+  it("commits exact Russian text and the Unicode-simple index without worker or provider", async () => {
     const userId = await createActiveUser("lexical");
     const memoryService = service();
     const russian = "  Я предпочитаю ответы о ёлках на русском языке.  ";
@@ -106,7 +106,7 @@ describe("Prisma explicit Memory API", () => {
         where: { userId }
       });
       expect(initialSettings).toMatchObject({
-        learnAutomatically: false,
+        learnAutomatically: true,
         referenceChatHistory: true,
         useMemoryFacts: true
       });
@@ -134,11 +134,11 @@ describe("Prisma explicit Memory API", () => {
       const factId = created.response.memory.id;
       const versionId = created.response.memory.currentVersionId!;
       await expect(memoryService.search(userId, {
-        query: "русский",
+        query: "русском",
         scope: { type: "GLOBAL_USER" }
       })).resolves.toMatchObject({ memories: [{ id: factId }] });
       await expect(memoryService.search(userId, {
-        query: "елках",
+        query: "ёлках",
         scope: { type: "GLOBAL_USER" }
       })).resolves.toMatchObject({ memories: [{ id: factId }] });
 
@@ -164,10 +164,7 @@ describe("Prisma explicit Memory API", () => {
       await expect(prisma.memoryJob.findMany({
         select: { kind: true, state: true },
         where: { userId }
-      })).resolves.toEqual([{
-        kind: "RECALCULATE_WORKING_SET",
-        state: "QUEUED"
-      }]);
+      })).resolves.toEqual([]);
 
       const replay = await memoryService.create(userId, created.input);
       expect(replay.memory).toMatchObject({ id: factId, currentVersionId: versionId });
@@ -187,7 +184,7 @@ describe("Prisma explicit Memory API", () => {
         "nonce-english"
       );
       await expect(memoryService.search(userId, {
-        query: "city",
+        query: "cities",
         scope: { type: "GLOBAL_USER" }
       })).resolves.toMatchObject({ memories: [{ id: second.response.memory.id }] });
       const firstPage = await memoryService.list(userId, {

@@ -1736,6 +1736,54 @@ describe("Prisma run repository", () => {
     });
   });
 
+  it("starts the first answer on a newly committed user branch", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          defaultProviderModelId: providerTemplateIds.fakeModel,
+          title: "Edited user branch",
+          userId
+        }
+      });
+      const editedUser = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Edited question"),
+          role: "user",
+          status: "complete"
+        }
+      });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: editedUser.id },
+        where: { id: chat.id }
+      });
+      const prepared = createRunInput({
+        chatId: chat.id,
+        question: "Edited question",
+        userId
+      });
+
+      const regenerated = await createPrismaRunRepository(prisma).createRegenerationRun({
+        ...createRegenerationInput(prepared, editedUser.id),
+        preSendAssistantMessageId: null
+      });
+
+      await expect(chatGraph(chat.id)).resolves.toEqual({
+        _count: { messages: 2, modelRuns: 1 },
+        activeLeafMessageId: regenerated.assistantMessageId,
+        title: "Edited user branch"
+      });
+      await expect(prisma.message.findUniqueOrThrow({
+        select: { parentMessageId: true, role: true, status: true },
+        where: { id: regenerated.assistantMessageId }
+      })).resolves.toEqual({
+        parentMessageId: editedUser.id,
+        role: "assistant",
+        status: "streaming"
+      });
+    });
+  });
+
   it("fails closed and rolls back run writes when the settings row is missing", async () => {
     await withRunUser(async ({ userId }) => {
       const [sendChat, regenerationChat] = await Promise.all([

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AIQSA_THEMES,
   AIQSA_THEME_COOKIE_NAME,
@@ -13,117 +13,89 @@ import {
 
 describe("theme preferences", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     window.localStorage.removeItem(AIQSA_THEME_STORAGE_KEY);
     document.cookie = `${AIQSA_THEME_COOKIE_NAME}=; max-age=0; path=/`;
     delete document.documentElement.dataset.colorScheme;
     delete document.documentElement.dataset.theme;
   });
 
-  it("validates stored theme ids with the default as fallback", () => {
-    expect(DEFAULT_THEME_ID).toBe("neutral");
-    expect(AIQSA_THEMES.find((theme) => theme.id === "neutral")).toEqual(
-      expect.objectContaining({
-        accentLabel: "Teal",
-        colorScheme: "light",
-        description: "Quiet neutral light palette",
-        name: "Classic Light"
-      })
-    );
-    expect(AIQSA_THEMES.find((theme) => theme.id === "classic-dark")).toEqual(
-      expect.objectContaining({
-        colorScheme: "dark",
-        description: "Charcoal dark palette",
-        name: "Classic Dark"
-      })
-    );
-    expect(AIQSA_THEMES.map((theme) => theme.id)).toEqual([
-      "aiqsa",
-      "graphite",
-      "verdant",
-      "classic-dark",
-      "neutral",
-      "paper"
+  it("exposes only System, Light, and Dark", () => {
+    expect(DEFAULT_THEME_ID).toBe("system");
+    expect(AIQSA_THEMES.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "system", name: "System" },
+      { id: "light", name: "Light" },
+      { id: "dark", name: "Dark" }
     ]);
-    expect(AIQSA_THEMES.find((theme) => theme.id === "paper")).toEqual(
-      expect.objectContaining({
-        accentLabel: "Graphite",
-        colorScheme: "light",
-        description: "Soft monochrome palette",
-        name: "Paper"
-      })
-    );
-    expect(resolveThemeId("classic-dark")).toBe("classic-dark");
-    expect(resolveThemeId("graphite")).toBe("graphite");
-    expect(resolveThemeId("neutral")).toBe("neutral");
-    expect(resolveThemeId("paper")).toBe("paper");
-    expect(resolveThemeId("unknown")).toBe(DEFAULT_THEME_ID);
-    expect(resolveThemeColorScheme(DEFAULT_THEME_ID)).toBe("light");
-    expect(resolveThemeColorScheme("classic-dark")).toBe("dark");
-    expect(resolveThemeColorScheme("neutral")).toBe("light");
-    expect(resolveThemeColorScheme("paper")).toBe("light");
-    expect(resolveThemeColorScheme("unknown")).toBe("light");
   });
 
-  it("stores and applies the selected theme locally", () => {
-    expect(storedThemeId()).toBe(DEFAULT_THEME_ID);
-
-    const applied = applyAndRememberThemeId("neutral");
-
-    expect(applied).toBe("neutral");
-    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("neutral");
-    expect(document.cookie).toContain(`${AIQSA_THEME_COOKIE_NAME}=neutral`);
-    expect(document.documentElement.dataset.theme).toBe("neutral");
-    expect(document.documentElement.dataset.colorScheme).toBe("light");
+  it.each([
+    ["aiqsa", "dark"],
+    ["graphite", "dark"],
+    ["verdant", "dark"],
+    ["classic-dark", "dark"],
+    ["neutral", "light"],
+    ["paper", "light"],
+    ["dark", "dark"],
+    ["light", "light"],
+    ["system", "system"],
+    ["unknown", "system"],
+    [undefined, "system"]
+  ] as const)("normalizes %s to %s", (value, expected) => {
+    expect(resolveThemeId(value)).toBe(expected);
   });
 
-  it("falls back to the valid server-rendered theme when local storage is malformed", () => {
-    window.localStorage.setItem(AIQSA_THEME_STORAGE_KEY, "not-a-theme");
+  it("resolves System against the supplied browser preference", () => {
+    expect(resolveThemeColorScheme("system")).toBe("light");
+    expect(resolveThemeColorScheme("system", true)).toBe("dark");
+    expect(resolveThemeColorScheme("dark")).toBe("dark");
+    expect(resolveThemeColorScheme("light", true)).toBe("light");
+  });
+
+  it("migrates a valid legacy local preference and repairs first-paint storage", () => {
+    window.localStorage.setItem(AIQSA_THEME_STORAGE_KEY, "classic-dark");
+    document.documentElement.dataset.theme = "light";
+    document.documentElement.dataset.colorScheme = "light";
+
+    expect(storedThemeId()).toBe("dark");
+    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("dark");
+    expect(document.cookie).toContain(`${AIQSA_THEME_COOKIE_NAME}=dark`);
+  });
+
+  it("uses the normalized server value when local state is absent", () => {
     document.documentElement.dataset.theme = "paper";
     document.documentElement.dataset.colorScheme = "light";
 
-    expect(storedThemeId()).toBe("paper");
-    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("paper");
-    expect(document.documentElement.dataset.theme).toBe("paper");
+    expect(storedThemeId()).toBe("light");
+    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("light");
   });
 
-  it("keeps a valid local preference authoritative and repairs a stale first-paint cookie", () => {
-    window.localStorage.setItem(AIQSA_THEME_STORAGE_KEY, "paper");
-    document.documentElement.dataset.theme = "classic-dark";
-    document.documentElement.dataset.colorScheme = "dark";
+  it("normalizes malformed local state to System idempotently", () => {
+    window.localStorage.setItem(AIQSA_THEME_STORAGE_KEY, "not-a-theme");
+    document.documentElement.dataset.theme = "dark";
 
-    expect(storedThemeId()).toBe("paper");
-    expect(document.cookie).toContain(`${AIQSA_THEME_COOKIE_NAME}=paper`);
+    expect(storedThemeId()).toBe("system");
+    expect(storedThemeId()).toBe("system");
+    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("system");
   });
 
-  it("persists Classic Dark with its dark browser scheme", () => {
-    const applied = applyAndRememberThemeId("classic-dark");
-
-    expect(applied).toBe("classic-dark");
-    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe(
-      "classic-dark"
-    );
-    expect(document.cookie).toContain(
-      `${AIQSA_THEME_COOKIE_NAME}=classic-dark`
-    );
-    expect(document.documentElement.dataset.theme).toBe("classic-dark");
-    expect(document.documentElement.dataset.colorScheme).toBe("dark");
+  it("stores and applies an explicit selection", () => {
+    expect(applyAndRememberThemeId("neutral")).toBe("light");
+    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(document.documentElement.dataset.colorScheme).toBe("light");
   });
 
-  it("can apply a validated theme without writing localStorage", () => {
-    applyThemeId("classic-dark");
+  it("applies System using the live media preference without persisting", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true
+    } as MediaQueryList)));
 
-    expect(document.documentElement.dataset.theme).toBe("classic-dark");
+    applyThemeId("system");
+
+    expect(document.documentElement.dataset.theme).toBe("system");
     expect(document.documentElement.dataset.colorScheme).toBe("dark");
     expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBeNull();
-  });
-
-  it("persists Paper as an additional light palette", () => {
-    const applied = applyAndRememberThemeId("paper");
-
-    expect(applied).toBe("paper");
-    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("paper");
-    expect(document.cookie).toContain(`${AIQSA_THEME_COOKIE_NAME}=paper`);
-    expect(document.documentElement.dataset.theme).toBe("paper");
-    expect(document.documentElement.dataset.colorScheme).toBe("light");
   });
 });

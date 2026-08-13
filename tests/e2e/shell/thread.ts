@@ -5,13 +5,13 @@ export function sseEvent(type: string, data: unknown): string {
 }
 
 export async function expectThreadTextInViewport(page: Page, text: string): Promise<void> {
-  const locator = page.getByTestId("thread").locator("p").filter({ hasText: text }).last();
+  const locator = page.getByTestId("conversation-thread").locator("p").filter({ hasText: text }).last();
 
   await expect(locator).toBeVisible();
   await expect
     .poll(async () =>
       locator.evaluate((element) => {
-        const thread = document.querySelector('[data-testid="thread"]');
+        const thread = document.querySelector('[data-testid="conversation-scroll"]');
         if (!thread) {
           return false;
         }
@@ -27,19 +27,18 @@ export async function expectThreadTextInViewport(page: Page, text: string): Prom
 
 export function assistantContentWithText(page: Page, text: string) {
   return page
-    .getByTestId("thread")
-    .getByTestId("assistant-message-content")
+    .locator('article[data-role="assistant"]')
     .filter({ hasText: text })
     .last();
 }
 
 export async function threadTextIsInViewport(page: Page, text: string): Promise<boolean> {
-  const locator = page.getByTestId("thread").locator("p").filter({ hasText: text }).last();
+  const locator = page.getByTestId("conversation-thread").locator("p").filter({ hasText: text }).last();
 
   await expect(locator).toBeVisible();
 
   return locator.evaluate((element) => {
-    const thread = document.querySelector('[data-testid="thread"]');
+    const thread = document.querySelector('[data-testid="conversation-scroll"]');
     if (!thread) {
       return false;
     }

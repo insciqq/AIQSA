@@ -19,6 +19,7 @@ import type {
   CreateChatRequestWire,
   ThreadArtifactSummary,
   ThreadAssistantIdentity,
+  ThreadRunEvidenceSummary,
   ThreadRunUsage,
   UpdateChatRequestWire,
   UpdateFolderRequestWire,
@@ -39,6 +40,7 @@ export type ChatMessageRecord = {
   assistantIdentity?: ThreadAssistantIdentity | null;
   content: unknown;
   createdAt: Date | string;
+  evidenceSummary?: ThreadRunEvidenceSummary | null;
   errorMessage?: string | null;
   id: string;
   modelId: string | null;
@@ -112,7 +114,12 @@ export type ChatContentMatchRecord = {
 };
 
 export type ChatRepository = {
-  createChat(input: { folderId?: string | null; title?: string | null; userId: string }): Promise<ChatSummaryRecord | null>;
+  createChat(input: {
+    folderId?: string | null;
+    memoryMode?: "EXCLUDED";
+    title?: string | null;
+    userId: string;
+  }): Promise<ChatSummaryRecord | null>;
   createFolder(input: { name: string; parentId?: string | null; userId: string }): Promise<FolderRecord | null>;
   deleteFolder(input: { folderId: string; userId: string }): Promise<boolean>;
   archiveChat(input: { chatId: string; userId: string }): Promise<boolean>;
@@ -176,6 +183,15 @@ function folderValue(body: { folderId?: unknown } | null): string | null | undef
   return typeof body.folderId === "string" && body.folderId.trim() ? body.folderId.trim() : null;
 }
 
+function initialMemoryModeValue(
+  body: { memoryMode?: unknown } | null
+): "EXCLUDED" | null | undefined {
+  if (!body || !("memoryMode" in body)) {
+    return undefined;
+  }
+  return body.memoryMode === "EXCLUDED" ? "EXCLUDED" : null;
+}
+
 function activeLeafValue(body: { activeLeafMessageId?: unknown } | null): string | null | undefined {
   if (!body || !("activeLeafMessageId" in body)) {
     return undefined;
@@ -233,6 +249,7 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
     assistantIdentity: message.assistantIdentity ?? null,
     content: message.content,
     createdAt: iso(message.createdAt),
+    evidenceSummary: message.evidenceSummary ?? null,
     errorMessage: message.errorMessage ?? null,
     id: message.id,
     modelId: message.modelId,
@@ -454,8 +471,13 @@ export function createCreateChatHandler(deps: ChatHandlerDeps) {
     if (bodyError) {
       return bodyError;
     }
+    const memoryMode = initialMemoryModeValue(body);
+    if (memoryMode === null) {
+      return chatRouteErrorJson({ error: "chat_memory_mode_invalid" }, { status: 400 });
+    }
     const chat = await deps.repository.createChat({
       folderId: body && "folderId" in body ? folderValue(body) : null,
+      ...(memoryMode ? { memoryMode } : {}),
       title: textValue(body?.title),
       userId: result.session.userId
     });

@@ -2801,7 +2801,7 @@ describe("run recovery", () => {
       };
     });
     const memoryActionExecutor: MemoryActionExecutor = {
-      accepts: (plan, name) => plan.kind === "SAVE" && name === "save_memory",
+      accepts: (plan, name) => plan?.kind === "SAVE" && name === "save_memory",
       execute
     };
     const harness = createHarness({

@@ -5,7 +5,6 @@ import { useCommandPaletteActions } from "./useCommandPaletteActions";
 
 function renderActions(
   mode: InspectorMode,
-  pinningAvailable = false,
   workspaceReady = true,
   surface: "assistants" | "knowledge" | "memory" | "settings" | null = null
 ) {
@@ -27,7 +26,6 @@ function renderActions(
       changeInspectorMode: setInspectorMode,
       closePalette,
       inspectorMode: mode,
-      inspectorPinningAvailable: pinningAvailable,
       knowledgeOpen: surface === "knowledge",
       memoryOpen: surface === "memory",
       openKnowledge,
@@ -64,24 +62,6 @@ describe("useCommandPaletteActions", () => {
     expect(update("closed")).toBe("overlay");
   });
 
-  it("offers pin and unpin only when pinning is available and Details is open", () => {
-    const overlay = renderActions("overlay", true);
-    const pinCommand = overlay.result.current.commandItems.find((item) => item.id === "action:pin-inspector");
-    expect(pinCommand?.label).toBe("Pin details");
-
-    act(() => overlay.result.current.runCommand(pinCommand!));
-    const pinUpdate = overlay.setInspectorMode.mock.calls[0]?.[0] as (mode: InspectorMode) => InspectorMode;
-    expect(pinUpdate("overlay")).toBe("pinned");
-
-    const pinned = renderActions("pinned", true);
-    expect(pinned.result.current.commandItems.find((item) => item.id === "action:pin-inspector")?.label).toBe(
-      "Unpin details"
-    );
-    expect(renderActions("overlay", false).result.current.commandItems).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: "action:pin-inspector" })])
-    );
-  });
-
   it("closes the palette before opening Settings on the next task", async () => {
     const { closePalette, openSettings, result } = renderActions("closed");
     const settingsCommand = result.current.commandItems.find((item) => item.id === "action:open-settings");
@@ -94,7 +74,7 @@ describe("useCommandPaletteActions", () => {
   });
 
   it("omits New chat until workspace hydration succeeds", () => {
-    expect(renderActions("closed", false, false).result.current.commandItems).not.toEqual(
+    expect(renderActions("closed", false).result.current.commandItems).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ id: "action:new-chat" })])
     );
     expect(renderActions("closed").result.current.commandItems).toEqual(
@@ -108,7 +88,7 @@ describe("useCommandPaletteActions", () => {
     ["memory", "action:open-memory"],
     ["settings", "action:open-settings"]
   ] as const)("marks only the active %s workspace destination current", (surface, currentId) => {
-    const current = renderActions("closed", false, true, surface).result.current.commandItems
+    const current = renderActions("closed", true, surface).result.current.commandItems
       .filter((item) => item.current && item.id.startsWith("action:open-"))
       .map((item) => item.id);
     expect(current).toEqual([currentId]);
@@ -195,7 +175,6 @@ describe("useCommandPaletteActions", () => {
         changeInspectorMode: vi.fn(),
         closePalette,
         inspectorMode: "closed",
-        inspectorPinningAvailable: false,
         knowledgeOpen: false,
         memoryOpen: false,
         openKnowledge,

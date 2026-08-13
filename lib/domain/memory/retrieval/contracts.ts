@@ -6,6 +6,8 @@ import type {
 } from "../../../contracts/memory";
 import type { MemoryRetrievalLane } from "./config";
 
+// EPISODE remains decodable only for immutable legacy run evidence. New
+// retrieval lanes and packs never produce it.
 export type MemoryRetrievalItemType = "EPISODE" | "FACT_VERSION" | "RECALL_CHUNK";
 export type MemoryRetrievalDirectness = "DIRECT" | "INFERRED" | "PARAPHRASED";
 export type MemoryRetrievalTemperatureClass = "COLD" | "HOT" | "WARM";
@@ -15,47 +17,30 @@ export type MemoryRetrievalHistorySafetyClass =
   | "SECRET_TAINTED"
   | "SENSITIVE";
 
-export const MEMORY_RETRIEVAL_INTENTS = [
-  "NONE",
-  "PERSONALIZE",
-  "PAST_HISTORY",
-  "CURRENT_STATE",
-  "TEMPORAL",
-  "MEMORY_MANAGEMENT"
-] as const;
+export type MemoryRetrievalSourceKind = "EVENT" | "FACT" | "HISTORY";
 
-export type MemoryRetrievalIntent = (typeof MEMORY_RETRIEVAL_INTENTS)[number];
-export type MemoryRetrievalLanguage = "EN" | "MIXED" | "OTHER" | "RU";
-export type MemoryTemporalMode = "AMBIGUOUS" | "CURRENT" | "HISTORICAL" | "RANGE";
-
-export type MemoryTemporalQuery = Readonly<{
+export type MemoryRetrievalFilters = Readonly<{
   from: Date | null;
-  mode: MemoryTemporalMode;
-  rawExpressions: readonly string[];
-  resolverVersion: string;
+  /** Exact owner-validated target for an optional typed scope filter. */
+  scopeTargetId: string | null;
+  scopeType: MemoryScopeType | null;
+  sourceKinds: readonly MemoryRetrievalSourceKind[];
   to: Date | null;
 }>;
 
 export type MemoryRetrievalPlan = Readonly<{
-  canonicalKeyHints: readonly string[];
-  entityHints: readonly string[];
-  intent: MemoryRetrievalIntent;
-  language: MemoryRetrievalLanguage;
+  filters: MemoryRetrievalFilters;
+  lexicalQuery: string | null;
+  normalizedExactQuery: string;
   normalizedQuery: string;
-  normalizedYoQuery: string;
   plannerVersion: string;
-  queryTerms: readonly string[];
-  retrievalAllowed: boolean;
-  temporal: MemoryTemporalQuery;
-  usedPriorUserTurns: number;
+  queryPresent: boolean;
 }>;
 
 export type MemoryRetrievalPlannerInput = Readonly<{
   currentUserText: string;
-  explicitMemoryManagement?: boolean;
+  filters?: Partial<MemoryRetrievalFilters>;
   now: Date;
-  priorDirectUserTexts?: readonly string[];
-  timeZone?: string;
 }>;
 
 export type MemoryCandidateMetadata = Readonly<{
@@ -63,11 +48,14 @@ export type MemoryCandidateMetadata = Readonly<{
   category: string | null;
   confidence: number;
   conflict: boolean;
+  coreEligible: boolean;
+  coreSalience: "HIGH" | "LOW" | "MEDIUM" | "NONE";
   current: boolean;
   dedupeKey: string;
   directness: MemoryRetrievalDirectness | null;
   factId: string | null;
   historical: boolean;
+  historySafetyClass: MemoryRetrievalHistorySafetyClass | null;
   importance: number;
   languageCode: string;
   modality: MemoryModality | null;
@@ -85,7 +73,6 @@ export type MemoryCandidateMetadata = Readonly<{
   temperatureClass: MemoryRetrievalTemperatureClass | null;
   validFrom: Date | null;
   validTo: Date | null;
-  historySafetyClass: MemoryRetrievalHistorySafetyClass | null;
 }>;
 
 export type MemoryLaneCandidate = Readonly<{
@@ -104,21 +91,9 @@ export type MemoryLaneResult = Readonly<{
 }>;
 
 export type MemoryRetrievalFeatureSnapshot = Readonly<{
-  conflictPenalty: number;
-  currentness: number;
-  directness: number;
-  exactCanonical: number;
-  exactEntity: number;
-  explicitAuthority: number;
-  featureVersion: string;
-  importance: number;
-  languageMatch: number;
-  pinned: number;
-  scopeAffinity: number;
-  sensitivityPenalty: number;
-  sourceRecency: number;
-  temporalFit: number;
-  temperature: number;
+  fusionVersion: string;
+  laneCount: number;
+  tier: "CORE" | "DYNAMIC";
 }>;
 
 export type MemoryRankedCandidate = Readonly<{
@@ -133,9 +108,14 @@ export type MemoryRankedCandidate = Readonly<{
   selectionReason: string;
 }>;
 
+export type MemoryCoreCandidate = Readonly<{
+  candidate: MemoryRankedCandidate;
+  expansion: MemoryExpandedCandidate;
+}>;
+
 export const MEMORY_SAFE_PROJECTION_KINDS = [
-  "FACT_DISPLAY_TEXT",
   "EPISODE_SAFE_SUMMARY",
+  "FACT_DISPLAY_TEXT",
   "RECALL_CHUNK_SAFE_PROJECTED_TEXT"
 ] as const;
 
@@ -149,14 +129,7 @@ export type MemoryExpandedCandidate = Readonly<{
   projectionKind: MemorySafeProjectionKind;
   safeText: string;
   sourceChatId: string | null;
-  supportingItemId: string | null;
-}>;
-
-export type MemoryTemporalDecision = Readonly<{
-  disposition: "INCLUDE_CURRENT" | "INCLUDE_QUALIFIED" | "OMIT";
-  qualification: string | null;
-  reason: string;
-  temporalFit: number;
+  supportingItemId: null;
 }>;
 
 export type MemoryPackedItem = Readonly<{
@@ -165,15 +138,17 @@ export type MemoryPackedItem = Readonly<{
   itemId: string;
   itemType: MemoryRetrievalItemType;
   projectionKind: MemorySafeProjectionKind;
-  section: "CONFLICT" | "FACT" | "HISTORY";
+  section: "CORE" | "FACT" | "HISTORY";
   sourceChatId: string | null;
-  supportingItemId: string | null;
-  temporalReason: string;
+  supportingItemId: null;
+  temporalReason: "absolute_filter" | "current";
+  tier: "CORE" | "DYNAMIC";
 }>;
 
 export type MemoryContextPack = Readonly<{
   approxTokens: number;
   candidateCount: number;
+  coreTokens: number;
   hardCapTokens: number;
   items: readonly MemoryPackedItem[];
   omissionCounts: Readonly<Record<string, number>>;

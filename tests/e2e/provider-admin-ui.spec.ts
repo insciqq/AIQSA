@@ -429,6 +429,9 @@ async function cleanupQuickChatFixture(
       await tx.modelRun.deleteMany({ where: { id: { in: runIds } } });
     }
     if (chatIds.length > 0) {
+      await tx.memoryJob.deleteMany({
+        where: { chatId: { in: chatIds }, userId: fixture.userId }
+      });
       await tx.chat.deleteMany({ where: { id: { in: chatIds }, userId: fixture.userId } });
     }
     await tx.accessGrant.deleteMany({
@@ -798,7 +801,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(section.getByLabel("API key")).toHaveValue("e2e-quick-write-only-key");
   await section.getByRole("button", { name: "Use selected model & save" }).click();
   await expect(quickFeedback).toHaveAttribute("role", "status");
-  await expect(section.getByLabel("API key")).not.toHaveAttribute("aria-invalid");
+  await expect(section.getByLabel("API key")).toHaveCount(0);
   await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
   await expect(section.getByRole("heading", { name: "GPT-5.6 Sol" })).toBeVisible();
   const readyReceipt = section.getByTestId("provider-quick-ready-receipt");
@@ -919,8 +922,8 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     }]);
   await selectModel(page, installedFixture.connectionId, "GPT-5.6 Sol", "OpenAI");
   await chooseSearchStrategy(page, "^Off");
-  await expect(page.getByTestId("run-model-summary")).toHaveText("GPT-5.6 Sol");
-  const composer = page.getByRole("textbox", { name: "Message" });
+  await expect(page.locator(".v2-composer-model-trigger")).toContainText("GPT-5.6 Sol");
+  const composer = page.getByRole("textbox", { name: "Сообщение" });
   await expect(composer).toBeEnabled();
   const question = `First question after Quick setup ${randomUUID()}`;
   await composer.fill(question);
@@ -928,7 +931,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     response.request().method() === "POST" &&
     /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname)
   );
-  await page.getByRole("button", { name: "Send message" }).click();
+  await page.getByRole("button", { name: "Отправить сообщение" }).click();
   const completedMessageResponse = await messageResponse;
   expect(completedMessageResponse.ok(), await completedMessageResponse.text()).toBe(true);
   const chatId = await waitForActiveChatId(page);
@@ -955,9 +958,11 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   });
   expect(upstream.sseResponses).toBe(1);
   expect(JSON.stringify(upstream.requests[0]?.body.input)).toContain(question);
-  await expect(page.getByTestId("thread")).toContainText(question);
-  await expect(page.getByTestId("thread")).toContainText(quickAnswer, { timeout: 20_000 });
-  await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
+  const conversation = page.getByTestId("conversation-thread");
+  await expect(conversation).toContainText(question);
+  await expect(conversation).toContainText(quickAnswer, { timeout: 20_000 });
+  await expect(page.getByRole("button", { name: "Остановить ответ" }))
+    .toHaveCount(0, { timeout: 20_000 });
 
   await expect.poll(async () => {
     const chatResponse = await page.request.get(`/api/chats/${chatId}`);

@@ -74,16 +74,12 @@ function createFolderActionsHarness({
     actionId: null,
     beginAction: vi.fn(),
     beginCreate: vi.fn(),
-    completeCreate: vi.fn(),
-    completeDelete: vi.fn(),
-    completeMove: vi.fn(),
     completeProjectSave: vi.fn(),
     completeRename: vi.fn(),
     creating: false,
     editingName: "",
     endAction: vi.fn(),
     endCreate: vi.fn(),
-    newName: "",
     projectKnowledgeBaseIds,
     projectMemoryDraft
   };
@@ -134,7 +130,6 @@ describe("folder actions", () => {
     expect(state.confirmDeleteFolder).toHaveBeenCalledWith(state.folder);
     expect(fetchMock).toHaveBeenCalledWith("/api/folders/folder-research", { method: "DELETE" });
     expect(state.folderMutation.beginAction).toHaveBeenCalledWith(state.folder.id);
-    expect(state.folderMutation.completeDelete).toHaveBeenCalledWith(state.folder.id);
     expect(state.folderMutation.endAction).toHaveBeenCalledOnce();
     expect(state.folders()).toEqual([]);
     expect(state.chats().map((candidate) => candidate.folderId)).toEqual([null, null]);

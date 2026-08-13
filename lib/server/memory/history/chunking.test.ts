@@ -204,14 +204,20 @@ describe("Memory history recall chunking", () => {
     expect(JSON.stringify(chunks)).not.toContain("forgedHistorySecret");
   });
 
-  it("drops a chunk when a secret assignment appears only across safe turn groups", () => {
+  it("does not infer a cross-turn secret assignment from natural-language labels", () => {
     const snapshot = multiTurnSnapshot(2, (role, ordinal) => {
       if (ordinal === 0) return role === "user" ? "Store a label." : "The password:";
       return role === "user" ? "correct-horse-battery" : "Acknowledged.";
     });
 
     expect(snapshot.recallEpisodeProjection.turnGroups).toHaveLength(2);
-    expect(chunkMemoryRecallProjection(snapshot)).toEqual([]);
+    const chunks = chunkMemoryRecallProjection(snapshot);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatchObject({
+      redactionState: "NOT_NEEDED",
+      safetyClass: "NORMAL"
+    });
+    expect(chunks[0]?.safeProjectedText).toContain("correct-horse-battery");
   });
 
   it("applies source cutoffs and message suppressions before forming chunks", () => {

@@ -70,6 +70,7 @@ function consolidationInput(): MemoryFactConsolidationInput {
   const relatedSnapshotHash = memoryFactRelatedSnapshotHash(relatedFacts);
   const withoutHash: Omit<MemoryFactConsolidationInput, "inputHash"> = {
     candidate: candidate(),
+    memoryRevision: 0,
     relatedFacts,
     relatedSnapshotHash
   };

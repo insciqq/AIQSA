@@ -1792,7 +1792,7 @@ describe("run execution", () => {
       };
     });
     const memoryActionExecutor: MemoryActionExecutor = {
-      accepts: (candidate, name) => candidate.kind === "SAVE" && name === "save_memory",
+      accepts: (candidate, name) => candidate?.kind === "SAVE" && name === "save_memory",
       execute
     };
 

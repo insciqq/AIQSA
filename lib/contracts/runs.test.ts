@@ -189,6 +189,51 @@ describe("decodeGetModelRunResponse", () => {
     })).toBeNull();
   });
 
+  it("strictly decodes the content-free accepted-run inspection projection", () => {
+    const inspection = {
+      acceptedAt: "2026-08-13T11:32:05.000Z",
+      answerMessageId: "assistant-message-1",
+      attachmentCount: 2,
+      branchMessageCount: 4,
+      firstPartyTools: ["Memory actions"],
+      knowledgeBaseCount: 1,
+      mcpServers: [{
+        externalAccountLabel: "Finance workspace",
+        name: "office-compute",
+        toolNames: ["create_workbook"]
+      }],
+      memoryContextItemCount: 2,
+      parameters: [
+        { name: "temperature", value: 0.7 },
+        { name: "stream", value: true }
+      ],
+      searchBindings: [{ displayName: "Installation Search" }],
+      searchMode: "all_selected",
+      toolMode: "auto"
+    };
+    expect(decodeGetModelRunResponse({
+      run: { ...requiredRunFields(), inspection }
+    })?.inspection).toEqual(inspection);
+
+    for (const malformed of [
+      { ...inspection, answerMessageId: { id: "private" } },
+      { ...inspection, attachmentCount: 21 },
+      { ...inspection, firstPartyTools: ["Memory actions", "Memory actions"] },
+      { ...inspection, parameters: [{ name: "api_key", value: "private" }] },
+      { ...inspection, parameters: [{ name: "stream", value: { raw: true } }] },
+      { ...inspection, searchBindings: [{ displayName: "bad\nlabel" }] },
+      { ...inspection, mcpServers: [{
+        externalAccountLabel: null,
+        name: "office-compute",
+        toolNames: Array.from({ length: 129 }, (_, index) => `tool-${index}`)
+      }] }
+    ]) {
+      expect(decodeGetModelRunResponse({
+        run: { ...requiredRunFields(), inspection: malformed }
+      })).toBeNull();
+    }
+  });
+
   it("decodes exact ordered Knowledge evidence and rejects plan/binding drift", () => {
     const binding = {
       baseContentRevision: 7,

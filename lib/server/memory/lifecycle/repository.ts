@@ -10,7 +10,6 @@ import type { MemoryMutationAuthorizationUse } from "../persistence/authorizatio
 import { consumeMemoryMutationAuthorization } from "../persistence/authorizations";
 import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { memoryPersistenceFailure } from "../persistence/errors";
-import { enqueueMemoryJob } from "../persistence/jobs";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { createMemorySuppressionInTransaction } from "../persistence/suppressions";
 import type { MemorySuppressionCreateInput } from "../persistence/suppressions";
@@ -27,7 +26,6 @@ import {
 } from "../purge/contract";
 import { auditMemoryDeletion } from "../purge/reconciliation";
 import type { MemoryDeletionContributorRegistry } from "../purge/registry";
-import { MEMORY_PROFILE_PIPELINE_VERSION } from "../profile/contract";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
   MEMORY_HISTORY_CLEAR_TARGET_TYPE,
@@ -106,22 +104,11 @@ const boundedIdPattern = /^\S{1,256}$/u;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 
 async function enqueueWorkingSetAfterDeletion(
-  tx: MemoryTransaction,
-  settings: LockedMemorySettings,
-  deletionId: string
+  _tx: MemoryTransaction,
+  _settings: LockedMemorySettings,
+  _deletionId: string
 ): Promise<void> {
-  if (!settings.useMemoryFacts) return;
-  await enqueueMemoryJob(tx, settings, {
-    idempotencyFingerprint: `working-set-deletion:${memorySha256({
-      deletionId,
-      memoryGeneration: settings.memoryGeneration,
-      memoryRevision: settings.memoryRevision,
-      userId: settings.userId,
-      version: 1
-    })}`,
-    kind: "RECALCULATE_WORKING_SET",
-    pipelineVersion: MEMORY_PROFILE_PIPELINE_VERSION
-  });
+  // Direct Core projection has no generated working-set invalidation job.
 }
 
 function validateCommon(input: LifecycleMutationCommon): void {

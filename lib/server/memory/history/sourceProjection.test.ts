@@ -147,7 +147,7 @@ describe("Memory safe source snapshot", () => {
     expect(first.snapshotHash).toMatch(/^[a-f0-9]{64}$/u);
   });
 
-  it("preserves English negation and dates without translating display text", () => {
+  it("preserves English negation and dates while leaving language metadata und", () => {
     const user = userMessage({
       id: "user-english",
       parentMessageId: null,
@@ -162,14 +162,14 @@ describe("Memory safe source snapshot", () => {
     const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
     const group = snapshot.recallEpisodeProjection.turnGroups[0];
 
-    expect(group?.languageCode).toBe("en");
+    expect(group?.languageCode).toBe("und");
     expect(group?.messages.map((message) => message.safeText)).toEqual([
       "I do not drink coffee after August 10, 2026.",
       "Understood: do not suggest coffee after August 10, 2026."
     ]);
   });
 
-  it("propagates secret taint through assistant provenance with zero derivative text", () => {
+  it("does not classify a natural-language secret label without a format signal", () => {
     const secret = "Qwerty123456!";
     const user = userMessage({
       id: "user-secret",
@@ -185,26 +185,26 @@ describe("Memory safe source snapshot", () => {
     const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
     const serialized = JSON.stringify(snapshot);
 
-    expect(snapshot.recallEpisodeProjection.turnGroups).toEqual([]);
-    expect(snapshot.factEvidenceProjection.messages).toEqual([]);
+    expect(snapshot.recallEpisodeProjection.turnGroups).toHaveLength(1);
+    expect(snapshot.factEvidenceProjection.messages.map((message) => message.id))
+      .toEqual([user.id]);
     expect(snapshot.provenanceGraph).toEqual([
       expect.objectContaining({
-        eligibleForFactEvidence: false,
-        eligibleForRecall: false,
+        eligibleForFactEvidence: true,
+        eligibleForRecall: true,
         messageId: user.id,
-        reasonCodes: ["SECRET_PATTERN"],
-        transitiveTaint: true
+        reasonCodes: [],
+        transitiveTaint: false
       }),
       expect.objectContaining({
         eligibleForFactEvidence: false,
-        eligibleForRecall: false,
+        eligibleForRecall: true,
         messageId: assistant.id,
-        reasonCodes: ["TRANSITIVE_PROVENANCE_TAINT"],
-        transitiveTaint: true
+        transitiveTaint: false
       })
     ]);
-    expect(serialized).not.toContain(secret);
-    expect(serialized).not.toContain("supplied credential");
+    expect(serialized).toContain(secret);
+    expect(serialized).toContain("supplied credential");
   });
 
   it("keeps direct user text separate when an assistant is attachment-tainted", () => {
@@ -341,7 +341,7 @@ describe("Memory safe source snapshot", () => {
     expect(JSON.stringify(snapshot)).not.toContain("me@example.com");
   });
 
-  it("removes direct-user fact windows when a secret assignment spans turns", () => {
+  it("does not infer a cross-turn secret assignment from English words", () => {
     const firstUser = userMessage({
       id: "user-window-1",
       parentMessageId: null,
@@ -370,11 +370,12 @@ describe("Memory safe source snapshot", () => {
       secondAssistant
     ]));
 
-    expect(snapshot.factEvidenceProjection.messages).toEqual([]);
+    expect(snapshot.factEvidenceProjection.messages.map((message) => message.id))
+      .toEqual([firstUser.id, secondUser.id]);
     expect(snapshot.provenanceGraph[0]?.reasonCodes)
-      .toContain("FACT_WINDOW_SAFETY_EXCLUDED");
+      .not.toContain("FACT_WINDOW_SAFETY_EXCLUDED");
     expect(snapshot.provenanceGraph[2]?.reasonCodes)
-      .toContain("FACT_WINDOW_SAFETY_EXCLUDED");
+      .not.toContain("FACT_WINDOW_SAFETY_EXCLUDED");
   });
 
   it("returns an inert projection for excluded and Temporary sources", () => {

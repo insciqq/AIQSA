@@ -93,11 +93,11 @@ export function buildMemoryRecallReleaseCases(
       forbiddenMessageIds: query.forbiddenMessageIds,
       key: query.id,
       language: fixture.language,
-      lexicalTerms: plan.queryTerms,
+      lexicalTerms: plan.lexicalQuery?.split(" ") ?? [],
       queryText,
       recallExpected: query.expectedOutcome === "RECALL",
       relevantMessageIds: query.relevantMessageIds,
-      retrievalAllowed: plan.retrievalAllowed
+      retrievalAllowed: plan.queryPresent
     };
   }));
 }

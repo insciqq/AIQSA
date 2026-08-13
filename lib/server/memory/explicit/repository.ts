@@ -1020,8 +1020,6 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
           search."safeSearchTextYoNormalized" = ${normalizedYoQuery}
           OR strpos(search."safeSearchTextYoNormalized", ${normalizedYoQuery}) > 0
           OR search."searchVectorSimple" @@ plainto_tsquery('simple', ${normalizedYoQuery})
-          OR search."searchVectorRussian" @@ plainto_tsquery('russian', ${normalizedYoQuery})
-          OR search."searchVectorEnglish" @@ plainto_tsquery('english', ${normalizedQuery})
         )`
       ];
       if (input.scope) conditions.push(scopeFilter(input.scope));
@@ -1056,11 +1054,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
         WHERE ${Prisma.join(conditions, " AND ")}
         ORDER BY
           (search."safeSearchTextYoNormalized" = ${normalizedYoQuery}) DESC,
-          GREATEST(
-            ts_rank_cd(search."searchVectorSimple", plainto_tsquery('simple', ${normalizedYoQuery})),
-            ts_rank_cd(search."searchVectorRussian", plainto_tsquery('russian', ${normalizedYoQuery})),
-            ts_rank_cd(search."searchVectorEnglish", plainto_tsquery('english', ${normalizedQuery}))
-          ) DESC,
+          ts_rank_cd(search."searchVectorSimple", plainto_tsquery('simple', ${normalizedQuery})) DESC,
           fact."updatedAt" DESC,
           fact."id" DESC
         OFFSET ${offset}

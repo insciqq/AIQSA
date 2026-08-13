@@ -26,7 +26,7 @@ import { requireAdminAcceptedMemoryDestination } from "./adminConsent";
 export type MemoryExecutionAuthorityDependencies = Readonly<{
   egressConsentMode?: MemoryEgressConsentMode;
   now?: () => Date;
-  qualification: MemoryQualificationAuthority;
+  qualification?: MemoryQualificationAuthority;
   requireAdminAcceptedDestination?: typeof requireAdminAcceptedMemoryDestination;
 }>;
 
@@ -83,6 +83,29 @@ export async function resolveCurrentMemoryExecutionAuthority(
   return { policy, qualification, target };
 }
 
+function storedRequirementCompatible(
+  snapshot: MemorySecretFreeExecutionSnapshot,
+  current: QualifiedMemoryExecution
+): boolean {
+  if (snapshot.version === 2) {
+    return snapshot.qualificationId === current.qualificationId &&
+      canonicalMemoryExecutionJson(snapshot.qualificationRequirement) ===
+        canonicalMemoryExecutionJson(current.requirement);
+  }
+  const stored = snapshot.qualificationRequirement;
+  const active = current.requirement;
+  return stored.configFingerprint === active.configFingerprint &&
+    stored.deploymentFingerprint === active.deploymentFingerprint &&
+    stored.modelFingerprint === active.modelFingerprint &&
+    stored.pipelineVersion === active.pipelineVersion &&
+    stored.policyVersion === active.policyVersion &&
+    stored.promptVersion === active.promptVersion &&
+    stored.providerFingerprint === active.providerFingerprint &&
+    stored.retrievalConfigFingerprint === active.retrievalConfigFingerprint &&
+    stored.role === active.role && stored.schemaVersion === active.schemaVersion &&
+    stored.vectorSpaceFingerprint === active.vectorSpaceFingerprint;
+}
+
 export async function reauthorizeStoredMemoryExecution(
   tx: AuthorityPrisma,
   settings: LockedMemorySettings,
@@ -112,11 +135,9 @@ export async function reauthorizeStoredMemoryExecution(
     input.snapshot.utilityPolicyVersion !== current.policy.policyVersion ||
     input.snapshot.destinationFingerprint !== current.target.destinationFingerprint ||
     input.snapshot.executionTargetFingerprint !== current.target.executionTargetFingerprint ||
-    input.snapshot.qualificationId !== current.qualification.qualificationId ||
     input.snapshot.requiresStrictStructuredOutput !==
       current.qualification.requiresStrictStructuredOutput ||
-    canonicalMemoryExecutionJson(input.snapshot.qualificationRequirement) !==
-      canonicalMemoryExecutionJson(current.qualification.requirement)
+    !storedRequirementCompatible(input.snapshot, current.qualification)
   ) {
     return memoryExecutionFailure("memory_execution_policy_drift");
   }

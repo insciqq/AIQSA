@@ -50,6 +50,7 @@ export function PublicShareView({ snapshot, title }: PublicShareViewProps) {
   return (
     <main
       className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-answer-paper text-ink"
+      data-ui-presentation="v2-tokens"
       data-testid="public-share-view"
     >
       <PublicShareHeader />
@@ -136,6 +137,7 @@ export function PublicShareUnavailableView() {
   return (
     <main
       className="min-h-[100dvh] min-w-0 overflow-x-hidden bg-answer-paper text-ink"
+      data-ui-presentation="v2-tokens"
       data-testid="public-share-unavailable"
     >
       <PublicShareHeader />

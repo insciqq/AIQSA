@@ -568,9 +568,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           preparation.toolBridge
         ),
         normalizedRequest: preparedData.normalizedRequest,
-        ...(source.assistantMessage
-          ? { preSendAssistantMessageId: source.assistantMessage.id }
-          : {}),
+        preSendAssistantMessageId: source.assistantMessage?.id ?? null,
         provider: preparedData.normalizedRequest.provider,
         providerRequestPreview: preparedData.providerRequestPreview,
         signal: request.signal,

@@ -1,4 +1,9 @@
 import type { Catalog, FolderSummary, WorkspaceChatSummary } from "@/components/app-shell/types";
+import type {
+  ChatNavigationFolderWire,
+  ChatNavigationPageWire,
+  ChatNavigationSummaryWire
+} from "@/lib/contracts/chats";
 import { create } from "zustand";
 
 type StateUpdate<T> = T | ((current: T) => T);
@@ -12,6 +17,17 @@ export type WorkspaceSnapshot = {
   chats: WorkspaceChatSummary[];
   creatingChat: boolean;
   folders: FolderSummary[];
+  navigationChats: ChatNavigationSummaryWire[];
+  navigationError: string | null;
+  navigationFolders: ChatNavigationFolderWire[];
+  navigationLoading: boolean;
+  navigationNextCursor: string | null;
+  navigationReady: boolean;
+  navigationSearchChats: ChatNavigationSummaryWire[];
+  navigationSearchError: string | null;
+  navigationSearchLoading: boolean;
+  navigationSearchNextCursor: string | null;
+  navigationSearchQuery: string;
   pendingChatFolderId: string | null;
   workspaceError: string | null;
   workspaceLoading: boolean;
@@ -27,6 +43,16 @@ export type WorkspaceStore = WorkspaceSnapshot & {
   setChats(update: StateUpdate<WorkspaceChatSummary[]>): void;
   setCreatingChat(value: boolean): void;
   setFolders(update: StateUpdate<FolderSummary[]>): void;
+  applyNavigationPage(page: ChatNavigationPageWire, append: boolean): void;
+  applyNavigationSearchPage(page: ChatNavigationPageWire, append: boolean): void;
+  setNavigationError(value: string | null): void;
+  setNavigationLoading(value: boolean): void;
+  setNavigationSearchError(value: string | null): void;
+  setNavigationSearchLoading(value: boolean): void;
+  setNavigationSearchQuery(value: string): void;
+  setNavigationChatActiveRun(chatId: string, activeRun: boolean): void;
+  upsertNavigationChat(chat: ChatNavigationSummaryWire): void;
+  removeNavigationChat(chatId: string): void;
   setPendingChatFolderId(value: string | null): void;
   setWorkspaceError(value: string | null): void;
   setWorkspaceLoading(value: boolean): void;
@@ -45,6 +71,17 @@ export const initialWorkspaceSnapshot: WorkspaceSnapshot = {
   chats: [],
   creatingChat: false,
   folders: [],
+  navigationChats: [],
+  navigationError: null,
+  navigationFolders: [],
+  navigationLoading: false,
+  navigationNextCursor: null,
+  navigationReady: false,
+  navigationSearchChats: [],
+  navigationSearchError: null,
+  navigationSearchLoading: false,
+  navigationSearchNextCursor: null,
+  navigationSearchQuery: "",
   pendingChatFolderId: null,
   workspaceError: null,
   workspaceLoading: true,
@@ -53,6 +90,26 @@ export const initialWorkspaceSnapshot: WorkspaceSnapshot = {
 
 function applyUpdate<T>(current: T, update: StateUpdate<T>): T {
   return typeof update === "function" ? (update as (value: T) => T)(current) : update;
+}
+
+function mergeNavigationChats(
+  current: readonly ChatNavigationSummaryWire[],
+  incoming: readonly ChatNavigationSummaryWire[],
+  append: boolean
+): ChatNavigationSummaryWire[] {
+  const byId = new Map(
+    (append ? [...current, ...incoming] : [...incoming]).map((chat) => [chat.id, chat])
+  );
+  return [...byId.values()].sort((a, b) =>
+    Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.id.localeCompare(a.id)
+  );
+}
+
+function mergeNavigationFolders(
+  current: readonly ChatNavigationFolderWire[],
+  incoming: readonly ChatNavigationFolderWire[]
+): ChatNavigationFolderWire[] {
+  return [...new Map([...current, ...incoming].map((folder) => [folder.id, folder])).values()];
 }
 
 export function sortChatsByFavoriteThenUpdatedAt(
@@ -97,6 +154,77 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   },
   setFolders(update) {
     set((state) => ({ folders: applyUpdate(state.folders, update) }));
+  },
+  applyNavigationPage(page, append) {
+    set((state) => ({
+      navigationChats: mergeNavigationChats(state.navigationChats, page.chats, append),
+      navigationError: null,
+      navigationFolders: mergeNavigationFolders(
+        append ? state.navigationFolders : [],
+        page.folders
+      ),
+      navigationLoading: false,
+      navigationNextCursor: page.nextCursor,
+      navigationReady: true
+    }));
+  },
+  applyNavigationSearchPage(page, append) {
+    set((state) => ({
+      navigationFolders: mergeNavigationFolders(state.navigationFolders, page.folders),
+      navigationSearchChats: mergeNavigationChats(
+        state.navigationSearchChats,
+        page.chats,
+        append
+      ),
+      navigationSearchError: null,
+      navigationSearchLoading: false,
+      navigationSearchNextCursor: page.nextCursor
+    }));
+  },
+  setNavigationError(value) {
+    set({ navigationError: value });
+  },
+  setNavigationLoading(value) {
+    set({ navigationLoading: value });
+  },
+  setNavigationSearchError(value) {
+    set({ navigationSearchError: value });
+  },
+  setNavigationSearchLoading(value) {
+    set({ navigationSearchLoading: value });
+  },
+  setNavigationSearchQuery(value) {
+    set({
+      navigationSearchChats: [],
+      navigationSearchError: null,
+      navigationSearchLoading: false,
+      navigationSearchNextCursor: null,
+      navigationSearchQuery: value
+    });
+  },
+  setNavigationChatActiveRun(chatId, activeRun) {
+    set((state) => ({
+      navigationChats: state.navigationChats.map((chat) =>
+        chat.id === chatId ? { ...chat, activeRun } : chat
+      ),
+      navigationSearchChats: state.navigationSearchChats.map((chat) =>
+        chat.id === chatId ? { ...chat, activeRun } : chat
+      )
+    }));
+  },
+  upsertNavigationChat(chat) {
+    set((state) => ({
+      navigationChats: mergeNavigationChats(state.navigationChats, [chat], true),
+      navigationSearchChats: state.navigationSearchChats.some((item) => item.id === chat.id)
+        ? mergeNavigationChats(state.navigationSearchChats, [chat], true)
+        : state.navigationSearchChats
+    }));
+  },
+  removeNavigationChat(chatId) {
+    set((state) => ({
+      navigationChats: state.navigationChats.filter((chat) => chat.id !== chatId),
+      navigationSearchChats: state.navigationSearchChats.filter((chat) => chat.id !== chatId)
+    }));
   },
   setPendingChatFolderId(value) {
     set({ pendingChatFolderId: value });

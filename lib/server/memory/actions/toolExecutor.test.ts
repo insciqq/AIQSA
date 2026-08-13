@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderRunRequest } from "../../providers/types";
 import { memorySha256 } from "../persistence/lexical";
-import { planMemoryActionFromText } from "./intent";
 import { createMemoryActionExecutor } from "./toolExecutor";
 import { memoryActionToolForPlan } from "./tools";
 
@@ -66,11 +65,11 @@ describe("first-party Memory tool executor", () => {
     });
   });
 
-  it("claims hidden run authority and binds a save receipt to the persisted call", async () => {
-    const claimForTool = vi.fn(async () => authorization());
+  it("mints hidden authority from the exact current USER turn for a model-driven save", async () => {
+    const mintForTool = vi.fn(async () => authorization());
     const create = vi.fn(async () => ({ memory: { id: "fact-1" } } as never));
     const executor = createMemoryActionExecutor({
-      authorizationRepository: { claimForTool },
+      authorizationRepository: { claimForTool: vi.fn(), mintForTool },
       explicitService: {
         create,
         evidence: vi.fn(),
@@ -89,15 +88,12 @@ describe("first-party Memory tool executor", () => {
       },
       reviewService: { feedback: vi.fn() }
     });
-    const plan = {
-      kind: "SAVE" as const,
-      sourceEnd: 24,
-      sourceStart: 14,
-      statement: "I like tea",
-      version: "memory-action-plan-v1" as const
-    };
-    const result = await executor.execute(plan, {
-      arguments: { statement: "I like tea" },
+    const result = await executor.execute(null, {
+      arguments: {
+        scope: { target_id: null, type: "GLOBAL_USER" },
+        source_text: "Remember that I like tea",
+        statement: "I like tea"
+      },
       id: "provider-call-1",
       name: "save_memory"
     }, {
@@ -108,10 +104,14 @@ describe("first-party Memory tool executor", () => {
     });
 
     expect(result.status).toBe("complete");
-    expect(claimForTool).toHaveBeenCalledWith("user-1", {
+    expect(mintForTool).toHaveBeenCalledWith("user-1", {
       action: "SAVE",
+      authorizedPayloadHash: memorySha256("I like tea"),
+      chatId: "chat-1",
       modelRunId: "run-1",
-      persistedToolCallId: "persisted-call-1"
+      persistedToolCallId: "persisted-call-1",
+      sourceText: "Remember that I like tea",
+      toolName: "save_memory"
     });
     expect(create).toHaveBeenCalledWith("user-1", {
       mutationAuthorizationId: "authorization-1",
@@ -183,7 +183,7 @@ describe("first-party Memory tool executor", () => {
     });
   });
 
-  it("lists authoritative first-party data without mutation authority", async () => {
+  it("lists authoritative first-party data without minting mutation authority", async () => {
     const list = vi.fn(async () => ({ memories: [], nextCursor: null }));
     const claimForTool = vi.fn();
     const executor = createMemoryActionExecutor({
@@ -206,11 +206,7 @@ describe("first-party Memory tool executor", () => {
       },
       reviewService: { feedback: vi.fn() }
     });
-    const result = await executor.execute({
-      kind: "LIST",
-      query: null,
-      version: "memory-action-plan-v1"
-    }, {
+    const result = await executor.execute(null, {
       arguments: { query: null },
       id: "provider-list-1",
       name: "list_memories"
@@ -228,7 +224,6 @@ describe("first-party Memory tool executor", () => {
     expect(list).toHaveBeenCalledWith("user-1", {
       pageSize: 20,
       scope: { type: "GLOBAL_USER" },
-      sourceMode: "EXPLICIT",
       state: "ACTIVE"
     });
     expect(claimForTool).not.toHaveBeenCalled();
@@ -237,30 +232,21 @@ describe("first-party Memory tool executor", () => {
   it("binds update and Forget to the exact authorized target version", async () => {
     const updateSource = "Update the memory that my editor is Vim to my editor is Neovim";
     const forgetSource = "Forget that my editor is Neovim";
-    const updatePlan = planMemoryActionFromText(updateSource);
-    const forgetPlan = planMemoryActionFromText(forgetSource);
-    if (updatePlan.kind !== "UPDATE" || forgetPlan.kind !== "FORGET") {
-      throw new Error("invalid_memory_action_fixture");
-    }
-    const claimForTool = vi.fn()
+    const mintForTool = vi.fn()
       .mockResolvedValueOnce(authorization({
         action: "EDIT",
-        exactSourceEnd: updatePlan.sourceEnd,
-        exactSourceStart: updatePlan.sourceStart,
         expectedTargetVersionId: "version-1",
         targetFactId: "fact-1"
       }))
       .mockResolvedValueOnce(authorization({
         action: "FORGET",
-        exactSourceEnd: forgetPlan.sourceEnd,
-        exactSourceStart: forgetPlan.sourceStart,
         expectedTargetVersionId: "version-2",
         targetFactId: "fact-1"
       }));
     const update = vi.fn(async () => ({ memory: { id: "fact-1" } } as never));
     const forget = vi.fn(async () => ({ memory: { id: "fact-1" } } as never));
     const executor = createMemoryActionExecutor({
-      authorizationRepository: { claimForTool },
+      authorizationRepository: { claimForTool: vi.fn(), mintForTool },
       explicitService: {
         create: vi.fn(),
         evidence: vi.fn(),
@@ -280,8 +266,13 @@ describe("first-party Memory tool executor", () => {
       reviewService: { feedback: vi.fn() }
     });
 
-    const updated = await executor.execute(updatePlan, {
-      arguments: { statement: updatePlan.replacement },
+    const updated = await executor.execute(null, {
+      arguments: {
+        expected_version_id: "version-1",
+        source_text: updateSource,
+        statement: "my editor is Neovim",
+        target_fact_id: "fact-1"
+      },
       id: "provider-update-1",
       name: "update_memory"
     }, {
@@ -290,12 +281,16 @@ describe("first-party Memory tool executor", () => {
       runId: "run-1",
       userId: "user-1"
     });
-    const forgotten = await executor.execute(forgetPlan, {
-      arguments: { exact_query: forgetPlan.targetQuery },
+    const forgotten = await executor.execute(null, {
+      arguments: {
+        expected_version_id: "version-2",
+        source_text: forgetSource,
+        target_fact_id: "fact-1"
+      },
       id: "provider-forget-1",
       name: "forget_memory"
     }, {
-      persistedToolCallId: "persisted-call-1",
+      persistedToolCallId: "persisted-call-2",
       request: { ...request, content: { blocks: [{ text: forgetSource, type: "text" }] } },
       runId: "run-1",
       userId: "user-1"
@@ -316,19 +311,15 @@ describe("first-party Memory tool executor", () => {
       mutationAuthorizationId: "authorization-1"
     }, expect.objectContaining({
       modelRunId: "run-1",
-      persistedToolCallId: "persisted-call-1"
+      persistedToolCallId: "persisted-call-2"
     }));
   });
 
   it("marks one automatic fact incorrect through consumed target authority without changing truth", async () => {
     const source = "Mark the memory that I prefer coffee as incorrect";
-    const plan = planMemoryActionFromText(source);
-    if (plan.kind !== "MARK_INCORRECT") throw new Error("invalid_memory_action_fixture");
-    const claimForTool = vi.fn(async () => authorization({
+    const mintForTool = vi.fn(async () => authorization({
       action: "EDIT",
       authorizedPayloadHash: memorySha256("automatic-target"),
-      exactSourceEnd: plan.sourceEnd,
-      exactSourceStart: plan.sourceStart,
       expectedTargetVersionId: "automatic-version-1",
       requestId: "authorization-request-1",
       targetFactId: "automatic-fact-1"
@@ -342,7 +333,7 @@ describe("first-party Memory tool executor", () => {
     }));
     const update = vi.fn();
     const executor = createMemoryActionExecutor({
-      authorizationRepository: { claimForTool },
+      authorizationRepository: { claimForTool: vi.fn(), mintForTool },
       explicitService: {
         create: vi.fn(),
         evidence: vi.fn(),
@@ -362,8 +353,12 @@ describe("first-party Memory tool executor", () => {
       reviewService: { feedback }
     });
 
-    const result = await executor.execute(plan, {
-      arguments: { exact_query: plan.targetQuery },
+    const result = await executor.execute(null, {
+      arguments: {
+        expected_version_id: "automatic-version-1",
+        source_text: source,
+        target_fact_id: "automatic-fact-1"
+      },
       id: "provider-feedback-1",
       name: "mark_memory_incorrect"
     }, {
@@ -374,11 +369,14 @@ describe("first-party Memory tool executor", () => {
     });
 
     expect(result.status).toBe("complete");
-    expect(claimForTool).toHaveBeenCalledWith("user-1", {
+    expect(mintForTool).toHaveBeenCalledWith("user-1", expect.objectContaining({
       action: "EDIT",
       modelRunId: "run-1",
-      persistedToolCallId: "persisted-call-1"
-    });
+      persistedToolCallId: "persisted-call-1",
+      sourceText: source,
+      targetFactId: "automatic-fact-1",
+      toolName: "mark_memory_incorrect"
+    }));
     expect(feedback).toHaveBeenCalledWith(
       "user-1",
       "automatic-fact-1",

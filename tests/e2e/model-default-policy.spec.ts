@@ -8,6 +8,7 @@ import { signInWithLocalToken } from "./support/localAuth";
 import {
   closeRunSetup,
   expectRunSummary,
+  openModelPicker,
   openRunSetup
 } from "./shell/composer";
 
@@ -285,16 +286,11 @@ test.describe("installation model default policy", () => {
         }
       });
 
-      let runSetup = await openRunSetup(userPage);
-      await runSetup.getByRole("button", { name: "Select model" }).click();
-      let modelPicker = userPage.getByTestId("model-picker");
-      const inheritedRow = modelPicker.getByRole("button", {
-        name: "Select model Browser Default Fixture Browser Policy Model"
-      });
-      await expect(inheritedRow).toContainText("Current");
-      await expect(inheritedRow).toContainText("Organization default");
-      await modelPicker.getByRole("button", { name: "Select model Fake QSA Fake QSA" }).click();
-      await closeRunSetup(userPage);
+      let modelPicker = await openModelPicker(userPage);
+      const inheritedRow = modelPicker.getByRole("option", { name: /Browser Policy Model/ });
+      await expect(inheritedRow).toContainText("Текущая");
+      await expect(inheritedRow).toContainText("Организации");
+      await modelPicker.getByRole("option", { name: /Fake QSA/ }).click();
       await expectRunSummary(userPage, { model: "Fake QSA" });
       await userPage.waitForTimeout(650);
       expect(settingsBodies).toEqual([]);
@@ -302,20 +298,15 @@ test.describe("installation model default policy", () => {
         where: { userId: LOCAL_RESTRICTED_MEMBER.id }
       })).defaultProviderModelId).toBeNull();
 
-      runSetup = await openRunSetup(userPage);
-      await runSetup.getByRole("button", { name: "Select model" }).click();
-      modelPicker = userPage.getByTestId("model-picker");
-      await expect(modelPicker.getByRole("button", {
-        name: "Select model Fake QSA Fake QSA"
-      })).toContainText("Current");
-      await expect(modelPicker.getByRole("button", {
-        name: "Select model Browser Default Fixture Browser Policy Model"
-      })).toContainText("Organization default");
+      modelPicker = await openModelPicker(userPage);
+      await expect(modelPicker.getByRole("option", { name: /Fake QSA/ })).toContainText("Текущая");
+      await expect(modelPicker.getByRole("option", { name: /Browser Policy Model/ }))
+        .toContainText("Организации");
       const personalSave = userPage.waitForResponse((response) =>
         response.request().method() === "PATCH" &&
         new URL(response.url()).pathname === "/api/me/settings"
       );
-      await modelPicker.getByRole("button", { name: "Make Fake QSA Fake QSA my default" }).click();
+      await modelPicker.getByRole("button", { name: "Сделать Fake QSA моделью по умолчанию" }).click();
       expect((await personalSave).status()).toBe(200);
       await expect(userPage.getByTestId("shell-notice")).toContainText(
         "Personal default model updated."
@@ -324,30 +315,27 @@ test.describe("installation model default policy", () => {
         defaultModelId: providerTemplateIds.fakeModel,
         defaultProvider: providerTemplateIds.fakeConnection
       }]);
-      await modelPicker.getByRole("button", {
-        name: "Select model Browser Default Fixture Browser Policy Model"
-      }).click();
-      await closeRunSetup(userPage);
+      await modelPicker.getByRole("option", { name: /Browser Policy Model/ }).click();
       await expectRunSummary(userPage, { model: "Browser Policy Model" });
-      await userPage.getByTestId("workspace-icon-rail").getByRole("button", { name: "New chat" }).click();
+      await userPage
+        .getByRole("complementary", { name: "Навигация по чатам" })
+        .getByRole("button", { name: "Новый чат" })
+        .click();
       await expectRunSummary(userPage, { model: "Fake QSA" });
 
       await userPage.reload();
       await expect(userPage.getByTestId("app-shell")).toBeVisible();
       await expectRunSummary(userPage, { model: "Fake QSA" });
-      runSetup = await openRunSetup(userPage);
-      await runSetup.getByRole("button", { name: "Select model" }).click();
-      modelPicker = userPage.getByTestId("model-picker");
+      const runSetup = await openRunSetup(userPage);
       const inheritSave = userPage.waitForResponse((response) =>
         response.request().method() === "PATCH" &&
         new URL(response.url()).pathname === "/api/me/settings"
       );
-      await modelPicker.getByRole("button", { name: "Use organization default" }).click();
+      await runSetup.getByRole("button", { name: "Модель организации" }).click();
       expect((await inheritSave).status()).toBe(200);
       await expect(userPage.getByTestId("shell-notice")).toContainText(
         "Using the organization default model."
       );
-      await modelPicker.getByRole("button", { name: "Back to Run setup" }).click();
       await closeRunSetup(userPage);
       await expectRunSummary(userPage, { model: "Fake QSA" });
       expect(settingsBodies).toEqual([

@@ -101,4 +101,49 @@ describe("workspace store", () => {
       "folder-a"
     );
   });
+
+  it("merges compact navigation pages and keeps search results isolated", () => {
+    const older = {
+      activeRun: false,
+      folderId: null,
+      id: "older",
+      title: "Older",
+      updatedAt: "2026-06-10T00:00:00.000Z"
+    };
+    const newer = {
+      ...older,
+      activeRun: true,
+      folderId: "folder-a",
+      id: "newer",
+      title: "Newer",
+      updatedAt: "2026-06-11T00:00:00.000Z"
+    };
+    const store = useWorkspaceStore.getState();
+    store.applyNavigationPage({
+      chats: [older],
+      folders: [{ id: "folder-a", name: "Work", parentId: null }],
+      nextCursor: "next"
+    }, false);
+    useWorkspaceStore.getState().applyNavigationPage({
+      chats: [newer, { ...older, activeRun: true }],
+      folders: [{ id: "folder-a", name: "Work", parentId: null }],
+      nextCursor: null
+    }, true);
+
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      navigationChats: [newer, { ...older, activeRun: true }],
+      navigationNextCursor: null,
+      navigationReady: true
+    });
+
+    useWorkspaceStore.getState().setNavigationSearchQuery("new");
+    useWorkspaceStore.getState().applyNavigationSearchPage({
+      chats: [newer],
+      folders: [],
+      nextCursor: null
+    }, false);
+    useWorkspaceStore.getState().removeNavigationChat(newer.id);
+    expect(useWorkspaceStore.getState().navigationChats).toEqual([{ ...older, activeRun: true }]);
+    expect(useWorkspaceStore.getState().navigationSearchChats).toEqual([]);
+  });
 });

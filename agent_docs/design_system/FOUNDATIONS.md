@@ -8,7 +8,13 @@ Not owned here: Chat-specific composition, Control Center composition, functiona
 
 The bounded visual-system family routed by `DESIGN_SYSTEM.md` is binding for the current Chat workspace and Control Center. Owners routed by `FRONTEND.md` define behavior, state, responsive access, and control ownership. This file owns product character, semantic tokens, typography, foundational geometry, spacing, and depth; its sibling visual leaves own feature composition, shared interaction states, motion, content presentation, and visual review gates.
 
-All runtime UI consumes this system's product-semantic tokens directly. Compatibility aliases such as `surface-*`, `content-*`, `separator-*`, and generic color-named accents are not part of the component API and must not return.
+The replacement presentation consumes the `color.*`, `radius.*`,
+`shadow.*`, and `motion.*` variables from `styles/tokens-v2.css`
+directly. That file is the sole active palette-value boundary. The previous
+theme variables and six legacy theme selectors no longer exist. A bounded set
+of established Tailwind utility names remains for secondary Auth, Share, and
+Control Center leaves, but each utility resolves directly to a `--v2-*` token
+through `color-mix()`; it is not a second palette or compatibility theme layer.
 
 ## Product Character
 
@@ -21,8 +27,8 @@ The two primary contexts are:
 
 The domain vocabulary is question, answer, evidence, source, branch, event,
 trace, workspace, and run. Prefer those words over generic dashboard language.
-The signature visual language pairs one quiet whole-turn reveal with an anchored
-action dock and a deliberately secondary Run receipt. [Messages](../frontend/MESSAGES_AND_MARKDOWN.md)
+The signature visual language pairs one quiet whole-turn reveal with a compact
+message-action dock, a factual evidence row, and an on-demand Run details drawer. [Messages](../frontend/MESSAGES_AND_MARKDOWN.md)
 own reveal/action behavior and [receipt and Details](../frontend/composer/RECEIPT_AND_DETAILS.md)
 own disclosure/data behavior; this system owns only their hierarchy, geometry,
 and visual states.
@@ -41,7 +47,7 @@ Reject these defaults:
 - a card grid around ordinary rows or prose;
 - a permanent toolbar containing every run control;
 - oversized hero copy, decorative gradients, glass effects, and ornamental grain;
-- badge carpets, unlabeled icon-only critical actions, and pills for ordinary rectangular controls; the desktop global rail is the deliberate exception only because every entry has an exact accessible name plus a visible associated hover/focus tooltip and no workflow depends on that tooltip;
+- badge carpets, unlabeled icon-only critical actions, and pills for ordinary rectangular controls;
 - fake activity, confidence, citations, stages, or completion claims;
 - a shrunken desktop table presented as a mobile workflow.
 
@@ -53,64 +59,59 @@ Components consume semantic tokens only. Raw product colors, palette-specific Ta
 
 | Token family | Role |
 |---|---|
-| `app-canvas` | Page and application background. |
-| `workspace-rail` | Workspace and Control Center navigation plus the compact Workspace drawer. |
-| `answer-paper` | Conversation column, its title-free edge actions, and document plane; not a card around each answer. |
-| `composer-surface` | Composer and focused editing surfaces. |
-| `control-surface` | Inputs, quiet buttons, and repeated interactive rows. |
-| `control-boundary` | Necessary field, picker, and other interactive boundaries; not structural separators or decorative boxes. |
-| `overlay-surface` | Menus, dialogs, sheets, and the Details inspection plane in overlay or pinned form. |
-| `control-hover`, `control-pressed`, `control-selected` | Interaction states, never resting decoration. |
-| `trace-subtle`, `trace-strong` | Quiet and stronger structural separators; never a substitute for a necessary control boundary. |
-| `ink`, `ink-secondary`, `ink-muted`, `ink-disabled` | Text hierarchy. |
-| `proof`, `proof-hover`, `proof-contrast` | Primary action, selection, links, and live trace. |
-| `focus` | Keyboard and programmatic focus indication, independent of status tone. |
-| `positive`, `caution`, `critical` | Confirmed success, recoverable warning, and error/destructive state. |
-| `scrim` | Modal background isolation. |
+| `color.canvas`, `color.sidebar` | Reading plane/drawers and navigation plane. |
+| `color.surface`, `color.surface2` | Composer/overlays and their single permitted nested surface. |
+| `color.bubble`, `color.codeBg` | User question and code-only surfaces. |
+| `color.hover`, `color.active` | Transient hover and quiet current-row state. |
+| `color.border`, `color.border2` | Soft structure and stronger interactive/overlay boundary. |
+| `color.text`, `color.text2`, `color.text3` | Primary, secondary, and bounded tertiary hierarchy. |
+| `color.accent`, `color.accentInk`, `color.accentDim` | Primary action, focus, links, selection marks, and live capability/run facts. |
+| `color.ok`, `color.warn`, `color.danger` | Observed success, degradation, and error/destructive state. |
+| `shadow.overlay` | Popovers, drawers, dialogs, and toasts only. |
 
-Names may receive a CSS/Tailwind prefix, but their semantic role must stay recognizable. `surface-2`, `gray-700`, and similarly context-free aliases are not acceptable component APIs.
+Names receive the `--v2-` implementation prefix while retaining the
+normative role. A v2 focus target uses a two-pixel `color.accent` outline
+with a two-pixel offset. Disabled controls use `surface2/text3`; structural
+boundaries use `border` or `border2`, never a text color repurposed as a
+border. These are bounded visual-system checks, not an application-wide
+accessibility-conformance claim.
 
-The `ring-focus` recipe composites `proof` at 78% and must reach at least 3:1 across adjacent common canvas, rail, answer, composer, control, overlay, and interaction-state surfaces. The compound composer keeps its quiet trace boundary and adds no inner or outer focus decoration around the Message plane. The `border-control-boundary` recipe composites `ink-muted` at 85% and has the same bounded 3:1 target; use it only where a visible boundary is necessary to identify an enabled control. Disabled controls remain quieter, and `trace-subtle`/`trace-strong` continue to own structural separation. Meaningful small `ink-muted` text on `control-selected` reaches at least 4.5:1 in every theme. These token-pair checks are a bounded visual-system contract, not an application-wide accessibility-conformance claim.
+### Light reference palette
 
-### Reference neutral palette
-
-The `neutral` theme is the first-use default and the reference against which hierarchy is reviewed. `paper` is an additional light interpretation; each dark theme owns its concrete values in `globals.css` while preserving this semantic ordering. There is no implicit dark counterpart for either light theme.
-
-| Role | Light `neutral` reference |
+| Role | Light reference |
 |---|---:|
-| App canvas | `#fbfcfb` |
-| Workspace rail | `#f3f5f3` |
-| Answer paper | `#ffffff` |
-| Composer surface | `#ffffff` |
-| Control surface | `#f4f6f5` |
-| Overlay surface | `#ffffff` |
-| Trace subtle | `#e0e5e2` |
-| Trace strong | `#b8c1bd` |
-| Ink | `#1c211f` |
-| Ink secondary | `#454d49` |
-| Ink muted | `#5f6864` |
-| Proof | `#176f65` |
-| Proof contrast | `#ffffff` |
+| Canvas | `#faf9f6` |
+| Sidebar | `#f1efe9` |
+| Surface | `#ffffff` |
+| Nested surface / code | `#f3f1ec` |
+| User bubble | `#eeece5` |
+| Text | `#26241f` |
+| Text 2 | `#6e6a61` |
+| Text 3 | `#9b968b` |
+| Accent | `#146b63` |
+| Accent ink | `#f4fffd` |
 
-The table is a visual reference. Review normal text, muted text, controls, and status colors for ordinary readability in every theme. Muted text is not a substitute for tiny type.
+The dark values and both palettes' alpha borders/interactions are executable
+in the sole token file and locked by the theme contract test. Muted text is
+not a substitute for tiny type.
 
 ### Theme compatibility
 
-Theme IDs `aiqsa`, `graphite`, `verdant`, `classic-dark`, `neutral`, and `paper` are stable browser-persisted compatibility identifiers and must not be repurposed. They are tonal interpretations of one hierarchy, not separate layouts:
+The product exposes exactly `system`, `light`, and `dark`. System selects
+one of the two palettes with `prefers-color-scheme`; it is not a third
+palette. The browser-local migration is idempotent:
+`aiqsa | graphite | verdant | classic-dark -> dark`,
+`neutral | paper -> light`, and unknown or absent values become `system`.
+The normalized cookie owns server first paint while LocalStorage keeps its
+existing post-hydration precedence. Runtime application synchronizes
+`data-theme` with the currently effective `data-color-scheme` for code and
+native-control parity.
 
-- `neutral`: quiet light neutral with teal proof accent; first-use default;
-- `aiqsa`: warm dark neutral with teal proof accent;
-- `graphite`: cool dark neutral with blue-teal proof accent;
-- `verdant`: green-black neutral with mint proof accent;
-- `classic-dark`: charcoal neutral with restrained blue proof accent.
-- `paper`: paper-white and whisper-gray light surfaces with graphite proof/action hierarchy; conversation-product familiar without copying another product's brand or layout.
-
-Every registry entry declares `light` or `dark`, and components consume the
-applied `data-theme`/`data-color-scheme` pair without inferring scheme from an
-ID. [Frontend implementation state](../frontend/IMPLEMENTATION_STATE.md) owns
-first-paint, LocalStorage/cookie precedence, hydration, and runtime switching.
-
-Dark parity is complete only when conversation, admin, auth, public share, code, math, menus, native controls, selection, scrollbars, status, charts, and overlays all follow the selected scheme. No theme may diverge into a separate visual hierarchy.
+Dark and light use the exact approved Reading Room palette in the token file.
+Light is warm paper and white surface hierarchy, not mechanical inversion.
+Parity is complete only when conversation, admin, auth, public share, code,
+math, menus, native controls, selection, scrollbars, status, charts, and
+overlays follow the selected scheme.
 
 ## Typography
 
@@ -134,15 +135,20 @@ The answer is a readable document, not a chat bubble stack. Use a 46-48rem answe
 
 Use a 4px base rhythm with primary steps of 4, 8, 12, 16, 24, 32, and 48px. Related controls stay closer than adjacent groups. Large empty areas belong around the answer and composer, not inside padded cards.
 
-- Desktop icon rail: a 3rem control lane plus `env(safe-area-inset-left)`;
-  the inset is additive and cannot consume the lane's 44px coarse-pointer
-  targets. It is mandatory at `>=1281px` and owns the shell's left safe area.
-- Workspace pane: 16rem when visible, with one fixed Account footer below the
-  independently scrolling browse region; it owns no duplicate left inset.
+- Chat sidebar: 16.25rem when visible. It is open by default at `>=1024px`,
+  starts collapsed at `900–1023px`, and becomes a scrim-backed drawer below
+  `900px` with a maximum width of 17.5rem. Full collapse leaves only the
+  adjacent Open/New-chat controls; there is no residual icon rail.
 - Control Center navigation: 15rem when persistent.
-- Conversation edge-action rail: at most 4rem plus the applicable top safe-area inset on compact input and 3rem plus that inset on desktop. It belongs to the answer-paper column and overlays the scroll plane at every width without a full-width resting fill or separator. Compact actions use one quiet bounded group per side; a token-derived readability veil fades from answer paper to transparent behind them, and initial thread padding scrolls away so later prose can pass beneath without meeting an opaque banner. Desktop keeps the top-right overlay; below a 78rem conversation-column width the thread yields only a 16rem right footprint, while wider centered content clears it naturally. It collapses to the safe-area inset when desktop has no visible conversation action.
-- Pinned Details: 23rem, available only at `>=1440px`.
+- Workspace header: one 3rem row for conversation identity and bounded global
+  actions. Mobile hides secondary text actions before shrinking touch targets.
+- Branches, Run details, artifact preview, Settings, and command search are
+  temporary overlays at every width. Right-hand desktop drawers use the
+  27.5rem drawer token; below `900px` they become full-viewport sheets. No
+  inspection surface creates a pinned column or changes conversation measure.
 - Answer column: max 46-48rem with responsive inline padding.
+- Composer: the same 46.25rem measure as the answer, in its own layout row;
+  compact/short model and capability surfaces become safe-area bottom sheets.
 - Dense list rows: 36-44px for precise pointers; at least 44px for coarse pointers.
 - Ordinary control radius: 8px; panels and composer: 12-16px.
 - Full pills: only short status, filters, segmented values, avatars, and compact tags.

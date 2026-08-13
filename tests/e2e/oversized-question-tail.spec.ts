@@ -87,20 +87,21 @@ test.describe("oversized submitted-question reading anchor", () => {
       }
 
       const runSetup = await openRunSetup(page);
-      const streamButton = runSetup.getByRole("button", { name: "Stream response" });
+      const streamButton = runSetup.getByRole("button", { name: /Streaming/ });
       await expect(streamButton).toHaveAttribute("aria-pressed", "false");
       await streamButton.click();
       await closeRunSetup(page);
 
-      const thread = page.getByTestId("thread");
+      const thread = page.getByTestId("conversation-scroll");
       await expectThreadTextInViewport(page, "Historical answer tail");
       await thread.evaluate((element) => {
         element.scrollTop = 0;
         element.dispatchEvent(new Event("scroll"));
       });
-      await expect(page.getByTestId("jump-to-latest")).toBeVisible();
+      const jumpToLatest = page.getByRole("button", { name: "Jump to latest message" });
+      await expect(jumpToLatest).toBeVisible();
 
-      const composer = page.getByRole("textbox", { name: "Message" });
+      const composer = page.getByRole("textbox", { name: "Сообщение" });
       await composer.fill(oversizedQuestion);
       await composer.press("Enter");
       await oversizedQuestionStream.waitForRequestCount(page, 1);
@@ -129,20 +130,19 @@ test.describe("oversized submitted-question reading anchor", () => {
         .toBe(true);
       await expectThreadTextInViewport(page, questionTailMarker);
       await expectThreadTextInViewport(page, answerStartMarker);
-      await expect(page.getByTestId("jump-to-latest")).toHaveCount(0);
+      await expect(jumpToLatest).toHaveCount(0);
       await expectNoHorizontalOverflow(page);
 
       const anchoredScrollTop = await thread.evaluate((element) => element.scrollTop);
       await oversizedQuestionStream.emit(page, "token", {
         delta: "\n\nSmall answer preview growth."
       });
-      await expect(
-        page.getByTestId("assistant-message-content").last()
-      ).toContainText("Small answer preview growth.");
+      await expect(page.getByRole("article", { name: "Answer" }).last())
+        .toContainText("Small answer preview growth.");
       await expect
         .poll(() => thread.evaluate((element) => element.scrollTop))
         .toBe(anchoredScrollTop);
-      await expect(page.getByTestId("jump-to-latest")).toHaveCount(0);
+      await expect(jumpToLatest).toHaveCount(0);
 
       const largeGrowth = [
         "",
@@ -158,10 +158,10 @@ test.describe("oversized submitted-question reading anchor", () => {
         .poll(() => thread.evaluate((element) => element.scrollTop))
         .toBe(anchoredScrollTop);
       expect(await threadTextIsInViewport(page, largeGrowthTailMarker)).toBe(false);
-      await expect(page.getByTestId("jump-to-latest")).toBeVisible();
+      await expect(jumpToLatest).toBeVisible();
       await expectNoHorizontalOverflow(page);
 
-      await page.getByTestId("jump-to-latest").click();
+      await jumpToLatest.click();
       await expectThreadTextInViewport(page, largeGrowthTailMarker);
       const jumpedScrollTop = await thread.evaluate((element) => element.scrollTop);
       expect(jumpedScrollTop).toBeGreaterThan(anchoredScrollTop);
@@ -173,7 +173,7 @@ test.describe("oversized submitted-question reading anchor", () => {
       await expect
         .poll(() => thread.evaluate((element) => element.scrollTop))
         .toBeGreaterThan(jumpedScrollTop);
-      await expect(page.getByTestId("jump-to-latest")).toHaveCount(0);
+      await expect(jumpToLatest).toHaveCount(0);
       await expectNoHorizontalOverflow(page);
 
       await oversizedQuestionStream.emit(page, "done", { status: "complete" });

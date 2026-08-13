@@ -17,7 +17,6 @@ import {
   authorizeMemoryHistoryTerminalRetries,
   seedMemoryHistoryBackfill
 } from "../history/backfill";
-import { MEMORY_PROFILE_PIPELINE_VERSION } from "../profile/contract";
 import { memoryPersistenceFailure } from "./errors";
 import { enqueueMemoryJob } from "./jobs";
 import { memorySha256 } from "./lexical";
@@ -247,9 +246,6 @@ export function createPrismaMemorySettingsRepository(
       validatePatchShape(patch);
       return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
         const historyWasEnabled = settings.referenceChatHistory;
-        const memoryFactsWereEnabled = settings.useMemoryFacts;
-        const previousProfileLanguage = settings.preferredProfileLanguage;
-        const previousUiLocale = settings.memoryUiLocale;
         if (settings.settingsRevision !== patch.expectedSettingsRevision) {
           return memoryPersistenceFailure("memory_settings_conflict");
         }
@@ -317,27 +313,6 @@ export function createPrismaMemorySettingsRepository(
         if (!historyWasEnabled && settings.referenceChatHistory) {
           await authorizeMemoryHistoryTerminalRetries(tx, settings);
           await seedMemoryHistoryBackfill(tx, settings);
-        }
-        const profileLanguageChanged =
-          previousProfileLanguage !== settings.preferredProfileLanguage ||
-          (settings.preferredProfileLanguage === "AUTO" &&
-            previousUiLocale !== settings.memoryUiLocale);
-        if (
-          settings.useMemoryFacts &&
-          (!memoryFactsWereEnabled || profileLanguageChanged)
-        ) {
-          await enqueueMemoryJob(tx, settings, {
-            idempotencyFingerprint: `working-set-settings:${memorySha256({
-              memoryRevision: settings.memoryRevision,
-              memoryUiLocale: settings.memoryUiLocale,
-              preferredProfileLanguage: settings.preferredProfileLanguage,
-              settingsRevision: settings.settingsRevision,
-              userId: settings.userId,
-              version: 1
-            })}`,
-            kind: "RECALCULATE_WORKING_SET",
-            pipelineVersion: MEMORY_PROFILE_PIPELINE_VERSION
-          });
         }
         return persistedSettings(tx, userId);
       });

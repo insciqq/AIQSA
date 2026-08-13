@@ -67,6 +67,7 @@ export function ArchivedChatsDialog({
   return (
     <div
       className="fixed inset-0 z-[90] flex items-end justify-center bg-scrim/70 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] sm:items-center sm:p-3"
+      data-ui-presentation="v2-tokens"
       data-testid="archived-chats-dialog"
       role="presentation"
       onMouseDown={closeArchivedChats}

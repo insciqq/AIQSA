@@ -36,6 +36,10 @@ export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
 export const CHAT_BRANCH_PREVIEW_MAX_LENGTH = 160;
 export const ARCHIVED_CHAT_PAGE_SIZE = 20;
 export const ARCHIVED_CHAT_CURSOR_MAX_LENGTH = 2_048;
+export const CHAT_NAVIGATION_CURSOR_MAX_LENGTH = 2_048;
+export const CHAT_NAVIGATION_DEFAULT_PAGE_SIZE = 30;
+export const CHAT_NAVIGATION_MAX_PAGE_SIZE = 50;
+export const CHAT_NAVIGATION_QUERY_MAX_LENGTH = 120;
 export const CHAT_PERMANENT_DELETE_CONTRACT_VERSION =
   "chat-permanent-delete-v1" as const;
 
@@ -65,6 +69,7 @@ export type ThreadMessage = {
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
   content: unknown;
+  evidenceSummary?: ThreadRunEvidenceSummary | null;
   id: string;
   modelId?: string;
   parentMessageId: string | null;
@@ -77,6 +82,17 @@ export type ThreadMessage = {
 
 export type ThreadRunUsage = {
   totalTokens: number;
+};
+
+/**
+ * Content-free terminal facts for the quiet evidence row. Detailed receipts
+ * stay behind the answer-bound disclosures and Run details.
+ */
+export type ThreadRunEvidenceSummary = {
+  fileCount: number;
+  hasUsage: boolean;
+  sourceCount: number;
+  toolCallCount: number;
 };
 
 /**
@@ -219,6 +235,7 @@ export type ChatMessageWire = {
   assistantIdentity?: ThreadAssistantIdentity | null;
   content: unknown;
   createdAt: string;
+  evidenceSummary?: ThreadRunEvidenceSummary | null;
   errorMessage: string | null;
   id: string;
   modelId: string | null;
@@ -387,6 +404,7 @@ export type ChatSourceResolutionResponseWire = {
 
 export type CreateChatRequestWire = {
   folderId?: string | null;
+  memoryMode?: "EXCLUDED";
   title?: string | null;
 };
 
@@ -406,6 +424,7 @@ export type ChatRouteServerErrorCode =
   | "chat_page_cursor_invalid"
   | "chat_page_stale"
   | "chat_lifecycle_invalid"
+  | "chat_memory_mode_invalid"
   | "chat_not_created"
   | "chat_not_found"
   | "chat_revision_stale"
@@ -441,11 +460,42 @@ export type WorkspaceChatsResponseWire = {
   folders: FolderWire[];
 };
 
+/**
+ * Content-free sidebar projection. Message counts, model identities, defaults,
+ * prompts, and message snippets deliberately do not cross this boundary.
+ */
+export type ChatNavigationSummaryWire = {
+  activeRun: boolean;
+  folderId: string | null;
+  id: string;
+  title: string;
+  updatedAt: string;
+};
+
+export type ChatNavigationFolderWire = {
+  id: string;
+  name: string;
+  parentId: string | null;
+};
+
+export type ChatNavigationPageWire = {
+  chats: ChatNavigationSummaryWire[];
+  folders: ChatNavigationFolderWire[];
+  nextCursor: string | null;
+};
+
 export type DecodedWorkspaceChatsResponse = {
   chats: WorkspaceChatSummaryWire[];
   contentMatches: ChatContentMatchWire[];
   folders: FolderWire[];
 };
+
+export type ChatNavigationErrorCode =
+  | SessionErrorCode
+  | "chat_navigation_cursor_invalid"
+  | "chat_navigation_query_invalid";
+
+export type ChatNavigationErrorResponse = ErrorResponse<ChatNavigationErrorCode>;
 
 export type ChatUpdateDataWire = {
   chat: WorkspaceChatSummaryWire & {
@@ -618,6 +668,41 @@ function decodeThreadRunUsage(value: unknown): ThreadRunUsage | null | undefined
 
   const totalTokens = nonNegativeInteger(value.totalTokens);
   return totalTokens === null ? undefined : { totalTokens };
+}
+
+function decodeThreadRunEvidenceSummary(
+  value: unknown
+): ThreadRunEvidenceSummary | null | undefined {
+  if (value === undefined || value === null) {
+    return value;
+  }
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "fileCount",
+    "hasUsage",
+    "sourceCount",
+    "toolCallCount"
+  ])) {
+    return undefined;
+  }
+
+  const fileCount = nonNegativeInteger(value.fileCount);
+  const sourceCount = nonNegativeInteger(value.sourceCount);
+  const toolCallCount = nonNegativeInteger(value.toolCallCount);
+  if (
+    fileCount === null || !Number.isSafeInteger(fileCount) ||
+    sourceCount === null || !Number.isSafeInteger(sourceCount) ||
+    toolCallCount === null || !Number.isSafeInteger(toolCallCount) ||
+    typeof value.hasUsage !== "boolean"
+  ) {
+    return undefined;
+  }
+
+  return {
+    fileCount,
+    hasUsage: value.hasUsage,
+    sourceCount,
+    toolCallCount
+  };
 }
 
 function validOptionalString(record: Record<string, unknown>, key: string): boolean {
@@ -940,6 +1025,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   const modelRunId = nullableString(value.modelRunId);
   const parentMessageId = nullableId(value.parentMessageId);
   const provider = nullableString(value.provider);
+  const evidenceSummary = decodeThreadRunEvidenceSummary(value.evidenceSummary);
   const runUsage = decodeThreadRunUsage(value.runUsage);
   const role = value.role === "assistant" || value.role === "user" ? value.role : null;
   const status =
@@ -976,10 +1062,17 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     modelRunId === undefined ||
     parentMessageId === undefined ||
     provider === undefined ||
+    ("evidenceSummary" in value && evidenceSummary === undefined) ||
     ("runUsage" in value && runUsage === undefined) ||
     !role ||
     !status ||
     !("content" in value)
+  ) {
+    return null;
+  }
+  if (
+    evidenceSummary !== undefined && evidenceSummary !== null &&
+    (role !== "assistant" || status === "queued" || status === "streaming")
   ) {
     return null;
   }
@@ -989,6 +1082,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     ...(assistantIdentity !== undefined ? { assistantIdentity } : {}),
     content: value.content,
     createdAt,
+    ...(evidenceSummary !== undefined ? { evidenceSummary } : {}),
     errorMessage,
     id,
     modelId,
@@ -1108,6 +1202,94 @@ function decodeFolderWire(value: unknown): FolderWire | null {
     projectMemory,
     sortOrder
   };
+}
+
+function decodeChatNavigationSummaryWire(
+  value: unknown
+): ChatNavigationSummaryWire | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["activeRun", "folderId", "id", "title", "updatedAt"])
+  ) {
+    return null;
+  }
+  const folderId = nullableId(value.folderId);
+  const id = requiredString(value.id);
+  const title = requiredString(value.title);
+  const updatedAt = isoTimestamp(value.updatedAt);
+  if (
+    typeof value.activeRun !== "boolean" ||
+    folderId === undefined ||
+    !id ||
+    !title ||
+    !updatedAt
+  ) {
+    return null;
+  }
+  return {
+    activeRun: value.activeRun,
+    folderId,
+    id,
+    title,
+    updatedAt
+  };
+}
+
+function decodeChatNavigationFolderWire(
+  value: unknown
+): ChatNavigationFolderWire | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["id", "name", "parentId"])) {
+    return null;
+  }
+  const id = requiredString(value.id);
+  const name = requiredString(value.name);
+  const parentId = nullableId(value.parentId);
+  return id && name && parentId !== undefined ? { id, name, parentId } : null;
+}
+
+export function decodeChatNavigationPage(
+  value: unknown
+): ChatNavigationPageWire | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["chats", "folders", "nextCursor"]) ||
+    !Array.isArray(value.chats) ||
+    value.chats.length > CHAT_NAVIGATION_MAX_PAGE_SIZE ||
+    !Array.isArray(value.folders)
+  ) {
+    return null;
+  }
+  const nextCursor = nullableId(value.nextCursor);
+  if (
+    nextCursor === undefined ||
+    (nextCursor !== null && (
+      nextCursor.length > CHAT_NAVIGATION_CURSOR_MAX_LENGTH ||
+      !/^[A-Za-z0-9_-]+$/u.test(nextCursor)
+    ))
+  ) {
+    return null;
+  }
+  const chats = value.chats.map(decodeChatNavigationSummaryWire);
+  const folders = value.folders.map(decodeChatNavigationFolderWire);
+  if (
+    chats.some((chat) => chat === null) ||
+    folders.some((folder) => folder === null)
+  ) {
+    return null;
+  }
+  const decodedChats = chats.filter(
+    (chat): chat is ChatNavigationSummaryWire => chat !== null
+  );
+  const decodedFolders = folders.filter(
+    (folder): folder is ChatNavigationFolderWire => folder !== null
+  );
+  if (
+    new Set(decodedChats.map((chat) => chat.id)).size !== decodedChats.length ||
+    new Set(decodedFolders.map((folder) => folder.id)).size !== decodedFolders.length
+  ) {
+    return null;
+  }
+  return { chats: decodedChats, folders: decodedFolders, nextCursor };
 }
 
 function decodeChatContentMatchWire(value: unknown): ChatContentMatchWire | null {

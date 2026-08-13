@@ -25,7 +25,7 @@ export function createFolderActions({
   setNotice
 }: FolderActionsInput) {
   async function createFolder(parentId?: string | null, nameOverride?: string) {
-    const name = (nameOverride ?? folderMutation.newName).trim();
+    const name = (nameOverride ?? "").trim();
     if (!name || folderMutation.creating) {
       return;
     }
@@ -49,10 +49,6 @@ export function createFolderActions({
 
       const body = (await response.json()) as { folder: FolderSummary };
       useWorkspaceStore.getState().updateFolders((current) => sortFoldersByOrder([...current, body.folder]));
-      folderMutation.completeCreate({
-        parentId,
-        usedNameOverride: nameOverride !== undefined
-      });
       setNotice({
         kind: "success",
         text: `Folder created: ${body.folder.name}`
@@ -151,7 +147,6 @@ export function createFolderActions({
       ) {
         useWorkspaceStore.getState().setPendingChatFolderId(null);
       }
-      folderMutation.completeDelete(folder.id);
       setNotice({
         kind: "success",
         text: `Folder deleted: ${folder.name}`
@@ -187,7 +182,6 @@ export function createFolderActions({
         .updateFolders((current) =>
           sortFoldersByOrder(current.map((candidate) => (candidate.id === body.folder.id ? body.folder : candidate)))
         );
-      folderMutation.completeMove();
       setNotice({
         kind: "success",
         text: `Folder moved: ${body.folder.name}`

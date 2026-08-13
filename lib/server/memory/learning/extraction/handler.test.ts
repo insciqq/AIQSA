@@ -69,28 +69,31 @@ function claim(): MemoryJobClaim {
   };
 }
 
-function providerOutput(displayText = "I prefer tea.") {
+function providerOutput(
+  displayText = "The user prefers tea.",
+  evidenceEnd = "I prefer tea.".length
+) {
   return {
     providerResponseId: "response-1",
     toolCalls: [{
       arguments: {
+        decision: "STORE",
         candidates: [{
-          canonical_key: "user.preference.drink",
-          category: "preference",
-          confidence: 0.9,
+          core_eligible: true,
+          core_salience: "MEDIUM",
           directness: "DIRECT",
           display_text: displayText,
-          evidence: [{ message_id: "message-1", quote: displayText }],
-          importance: 0.5,
+          evidence: [{
+            end_offset: evidenceEnd,
+            message_id: "message-1",
+            start_offset: 0
+          }],
           language: "en",
           modality: "PREFERENCE",
-          negated: false,
           raw_temporal_expression: null,
-          reason_code: null,
           scope: { target_id: null, type: "GLOBAL_USER" },
           sensitivity: "NORMAL",
-          state: "PENDING",
-          structured_value: { drink: "tea" },
+          structured_value: JSON.stringify({ drink: "tea" }),
           valid_from: null,
           valid_to: null
         }]
@@ -213,9 +216,9 @@ describe("Memory qualified fact extraction handler", () => {
     expect(fixture.apply).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects invented quotes after accounting usage and writes no candidate", async () => {
+  it("rejects invalid evidence bounds after accounting usage and writes no candidate", async () => {
     const fixture = dependencies({
-      provider: { run: vi.fn(async () => providerOutput("I prefer coffee.")) }
+      provider: { run: vi.fn(async () => providerOutput("A grounded paraphrase.", 500)) }
     });
     const result = await createMemoryFactExtractionHandler(fixture.base)
       .execute(claim(), context());

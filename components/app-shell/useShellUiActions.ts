@@ -1,4 +1,4 @@
-import type { InspectorTabId } from "@/components/inspector/InspectorTabs";
+import type { InspectorTabId } from "@/components/app-shell/inspectorContracts";
 import { useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import type { InspectorMode, ThreadMessage } from "@/components/app-shell/types";
@@ -27,7 +27,7 @@ export function useShellUiActions({
       setInspectorActiveTab(tab);
     }
 
-    setInspectorMode((mode) => (mode === "pinned" ? mode : "overlay"));
+    setInspectorMode("overlay");
   }
 
   const handleBranchFromMessage = useEventCallback((messageId: string) => {

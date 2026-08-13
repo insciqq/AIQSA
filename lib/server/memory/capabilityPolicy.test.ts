@@ -9,10 +9,10 @@ import {
 } from "./capabilityPolicy";
 
 describe("Memory GA rollout manifest", () => {
-  it("pins the Revision 2 defaults, staged order, and non-destructive rollback", () => {
+  it("pins released default-on learning and non-destructive rollback", () => {
     expect(MEMORY_GA_ROLLOUT_MANIFEST).toEqual({
       defaults: {
-        learnAutomatically: false,
+        learnAutomatically: true,
         referenceChatHistory: true,
         useMemoryFacts: true
       },
@@ -39,7 +39,7 @@ describe("Memory GA rollout manifest", () => {
         {
           id: "AUTOMATIC_LEARNING",
           rollback: "LEARNING_AND_PROVIDER_CALLS_OFF",
-          state: "QUALIFICATION_GATED_DEFAULT_OFF"
+          state: "RELEASED_DEFAULT_ON"
         },
         {
           id: "PHASE7_OPTIONAL_COMPONENTS",
@@ -54,12 +54,12 @@ describe("Memory GA rollout manifest", () => {
         {
           id: "OPERATIONAL_GA",
           rollback: "RETURN_TO_PRIOR_STAGE_GATES",
-          state: "READY_NOT_PUBLISHED"
+          state: "RELEASED"
         }
       ]
     });
     expect(MEMORY_GA_ROLLOUT_MANIFEST_VERSION)
-      .toBe("memory-ga-rollout-manifest-v1");
+      .toBe("memory-ga-rollout-manifest-v2");
     expect(MEMORY_PHASE7_CAPABILITY_POLICY).toMatchObject({
       profileWorkingSet: { enabled: false },
       queryExpansion: { enabled: false },

@@ -36,7 +36,10 @@ function searchCommandSubtitle(strategy: CatalogSearchStrategy): string {
 
 type CommandPaletteActionsInput = {
   activateChat(chat: ChatSummary): void;
-  activateBlankWorkspace(folderId?: string | null): void;
+  activateBlankWorkspace(
+    folderId?: string | null,
+    memoryMode?: "EXCLUDED" | "NORMAL" | "TEMPORARY"
+  ): void;
   activeChatId: string | null;
   assistantLibraryOpen: boolean;
   catalog: Catalog | null;
@@ -45,7 +48,6 @@ type CommandPaletteActionsInput = {
   changeInspectorMode: Dispatch<SetStateAction<InspectorMode>>;
   closePalette(): void;
   inspectorMode: InspectorMode;
-  inspectorPinningAvailable: boolean;
   knowledgeOpen: boolean;
   memoryOpen: boolean;
   openKnowledge(): void;
@@ -73,7 +75,6 @@ export function useCommandPaletteActions({
   changeInspectorMode,
   closePalette,
   inspectorMode,
-  inspectorPinningAvailable,
   knowledgeOpen,
   memoryOpen,
   openKnowledge,
@@ -144,18 +145,6 @@ export function useCommandPaletteActions({
       }
     );
 
-    if (inspectorPinningAvailable && inspectorMode !== "closed") {
-      const settingsIndex = items.findIndex((item) => item.id === "action:open-settings");
-      items.splice(settingsIndex, 0, {
-        current: inspectorMode === "pinned",
-        id: "action:pin-inspector",
-        kind: "action",
-        keywords: ["right", "panel", "details", "pin"],
-        label: inspectorMode === "pinned" ? "Unpin details" : "Pin details",
-        subtitle: "Details"
-      });
-    }
-
     for (const group of chatGroups) {
       for (const chat of group.chats) {
         items.push({
@@ -209,7 +198,6 @@ export function useCommandPaletteActions({
     catalog,
     chatGroups,
     inspectorMode,
-    inspectorPinningAvailable,
     knowledgeOpen,
     memoryOpen,
     searchOptions,
@@ -227,12 +215,6 @@ export function useCommandPaletteActions({
         () => changeInspectorMode((mode) => (mode === "closed" ? "overlay" : "closed")),
         0
       );
-      return;
-    }
-
-    if (item.id === "action:pin-inspector" && inspectorPinningAvailable) {
-      changeInspectorMode((mode) => (mode === "pinned" ? "overlay" : "pinned"));
-      closePalette();
       return;
     }
 

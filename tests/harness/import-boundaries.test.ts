@@ -10,6 +10,7 @@ const eslint = new ESLint({ cwd: repositoryRoot });
 
 const boundaryRuleId = "aiqsa-architecture/architecture-boundaries";
 const memoryReferenceRuleId = "aiqsa-architecture/no-memory-reference";
+const v2BoundaryRuleId = "aiqsa-architecture/v2-presentation-boundaries";
 const boundaryMessage = (specifier: string, message: string) =>
   `'${specifier}' import crosses an architecture boundary. ${message}`;
 const unverifiableDynamicMessage = (kind: string) =>
@@ -111,13 +112,13 @@ const invalidFixtures: InvalidFixture[] = [
     fixture: "api-invalid.txt",
     filePath: "app/api/import-boundary/route.ts",
     expected: [
-      ["@/components/app-shell/PowerAppShell", "API routes must not import browser components."],
-      ["../../../components/app-shell/PowerAppShell", "API routes must not import browser components."],
-      ["components/app-shell/PowerAppShell", "API routes must not import browser components."],
-      ["@/app/../components/app-shell/PowerAppShell", "API routes must not import browser components."],
-      ["../../../app/../components/app-shell/PowerAppShell", "API routes must not import browser components."],
-      ["components/app-shell/PowerAppShell", "API routes must not import browser components."],
-      ["@/components/app-shell/PowerAppShell", "API routes must not import browser components."]
+      ["@/features/workspace-v2/PowerAppShellV2", "API routes must not import browser components."],
+      ["../../../features/workspace-v2/PowerAppShellV2", "API routes must not import browser components."],
+      ["features/workspace-v2/PowerAppShellV2", "API routes must not import browser components."],
+      ["@/app/../features/workspace-v2/PowerAppShellV2", "API routes must not import browser components."],
+      ["../../../app/../features/workspace-v2/PowerAppShellV2", "API routes must not import browser components."],
+      ["features/workspace-v2/PowerAppShellV2", "API routes must not import browser components."],
+      ["@/features/workspace-v2/PowerAppShellV2", "API routes must not import browser components."]
     ]
   },
   {
@@ -368,5 +369,70 @@ describe("architecture import boundaries", () => {
       expect(result.messages.filter(({ fatal }) => fatal), filePath).toEqual([]);
       expect(result.messages.filter(({ ruleId }) => ruleId === boundaryRuleId), filePath).toEqual([]);
     }
+  });
+
+  it("isolates v2 presentation from legacy visual modules in both directions", async () => {
+    const [v2Result] = await eslint.lintText(
+      [
+        'import "@/components/legacy-ui/LegacyShell";',
+        'import "@/components/chat/Composer";',
+        'import "@/components/admin/AdminPanel";',
+        'import "@/features/legacy-workspace/LegacyView";'
+      ].join("\n"),
+      { filePath: path.join(repositoryRoot, "features/chat-v2/Conversation.tsx") }
+    );
+    expect(v2Result.messages.filter(({ fatal }) => fatal)).toEqual([]);
+    expect(
+      v2Result.messages
+        .filter(({ ruleId }) => ruleId === v2BoundaryRuleId)
+        .map(({ message }) => message)
+    ).toEqual([
+      "'@/components/legacy-ui/LegacyShell' import crosses a v2 presentation boundary. V2 presentation may import only v2 UI/features, shared contracts/domain code, and reviewed headless owners.",
+      "'@/components/chat/Composer' import crosses a v2 presentation boundary. V2 presentation may import only v2 UI/features, shared contracts/domain code, and reviewed headless owners.",
+      "'@/components/admin/AdminPanel' import crosses a v2 presentation boundary. V2 presentation may import only v2 UI/features, shared contracts/domain code, and reviewed headless owners.",
+      "'@/features/legacy-workspace/LegacyView' import crosses a v2 presentation boundary. V2 presentation may import only v2 UI/features, shared contracts/domain code, and reviewed headless owners."
+    ]);
+
+    const [legacyResult] = await eslint.lintText(
+      [
+        'import "@/components/ui-v2";',
+        'import "@/features/chat-v2/Conversation";'
+      ].join("\n"),
+      { filePath: path.join(repositoryRoot, "components/app-shell/LegacyView.tsx") }
+    );
+    expect(
+      legacyResult.messages
+        .filter(({ ruleId }) => ruleId === v2BoundaryRuleId)
+        .map(({ message }) => message)
+    ).toEqual([
+      "'@/components/ui-v2' import crosses a v2 presentation boundary. Legacy presentation must not import the isolated v2 presentation.",
+      "'@/features/chat-v2/Conversation' import crosses a v2 presentation boundary. Legacy presentation must not import the isolated v2 presentation."
+    ]);
+  });
+
+  it("allows reviewed headless dependencies from v2 and fails closed for dynamic imports", async () => {
+    const [allowed] = await eslint.lintText(
+      [
+        'import "@/components/ui-v2";',
+        'import "@/components/app-shell/workspaceStore";',
+        'import "@/components/chat/MarkdownMessage";',
+        'import "@/lib/contracts/chats";',
+        'import "@/lib/domain/usage";'
+      ].join("\n"),
+      { filePath: path.join(repositoryRoot, "features/chat-v2/Conversation.tsx") }
+    );
+    expect(allowed.messages).toEqual([]);
+
+    const [dynamic] = await eslint.lintText(
+      'const dependency = "@/components/legacy-ui/LegacyShell";\nvoid import(dependency);',
+      { filePath: path.join(repositoryRoot, "features/chat-v2/DynamicView.tsx") }
+    );
+    expect(
+      dynamic.messages
+        .filter(({ ruleId }) => ruleId === v2BoundaryRuleId)
+        .map(({ message }) => message)
+    ).toEqual([
+      "import() uses a non-literal dependency specifier, so its v2 presentation boundary cannot be verified. Use a string literal."
+    ]);
   });
 });

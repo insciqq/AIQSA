@@ -279,7 +279,8 @@ function rrfRank(input: Readonly<{
 
 function itemType(candidate: MemoryPhase7AblationCandidate): MemoryRetrievalItemType {
   if (candidate.kind === "FACT") return "FACT_VERSION";
-  if (candidate.kind === "EPISODE") return "EPISODE";
+  // Historical phase-7 episode fixtures are evaluated as their source-history
+  // representation; production no longer serves extractive episode objects.
   return "RECALL_CHUNK";
 }
 
@@ -313,6 +314,8 @@ function metadata(
     category: candidate.category,
     confidence: 1,
     conflict: false,
+    coreEligible: false,
+    coreSalience: "NONE",
     current: candidate.current,
     dedupeKey: dedupeKey(candidate),
     directness: "DIRECT",
@@ -344,26 +347,14 @@ function metadata(
 function lexicalLane(
   candidate: MemoryPhase7AblationCandidate
 ): MemoryRetrievalLane {
-  if (candidate.kind === "FACT") {
-    return candidate.language === "RU" ? "FACT_FTS_RUSSIAN" : "FACT_FTS_ENGLISH";
-  }
-  if (candidate.kind === "EPISODE") {
-    return candidate.language === "RU"
-      ? "HISTORY_EPISODE_FTS_RUSSIAN"
-      : "HISTORY_EPISODE_FTS_ENGLISH";
-  }
-  return candidate.language === "RU"
-    ? "HISTORY_RECALL_FTS_RUSSIAN"
-    : "HISTORY_RECALL_FTS_ENGLISH";
+  return candidate.kind === "FACT" ? "FACT_FTS_SIMPLE" : "HISTORY_RECALL_FTS_SIMPLE";
 }
 
 function vectorLane(
   candidate: MemoryPhase7AblationCandidate
 ): MemoryRetrievalLane {
   if (candidate.kind === "FACT") return "FACT_VECTOR";
-  return candidate.kind === "EPISODE"
-    ? "HISTORY_EPISODE_VECTOR"
-    : "HISTORY_RECALL_VECTOR";
+  return "HISTORY_RECALL_VECTOR";
 }
 
 function productionRank(input: Readonly<{
@@ -405,7 +396,7 @@ function productionRank(input: Readonly<{
     lane
   }));
   const plan = planMemoryRetrieval({ currentUserText: input.current.queryText, now: scoringNow });
-  if (plan.retrievalAllowed !== input.current.retrievalAllowed) {
+  if (plan.queryPresent !== input.current.retrievalAllowed) {
     throw new Error("memory_phase7_ablation_planner_drift");
   }
   const byKey = new Map(input.candidates.map((candidate) => [candidate.key, candidate]));

@@ -56,8 +56,7 @@ import type { ProviderToolBridge } from "../tools/types";
 import { perplexityWebSearchTool } from "../tools/perplexitySearch";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { knowledgeRetrievalTool } from "../knowledge/toolExecutor";
-import { planMemoryAction } from "../memory/actions/intent";
-import { memoryActionToolForPlan } from "../memory/actions/tools";
+import { memoryActionTools } from "../memory/actions/tools";
 import { memoryHistorySearchTool } from "../memory/history/search/tool";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import {
@@ -1126,35 +1125,10 @@ export async function prepareRun(
       ? await deps.mcp.prepare(input.userId)
       : null;
 
-  const memoryActionIntent = planMemoryAction(content);
-  if (resolvedChatMode.mode === "TEMPORARY" && memoryActionIntent.kind !== "NONE") {
-    return failure("memory_temporary_chat_forbidden", 409);
-  }
-  if (memoryActionIntent.kind === "AMBIGUOUS") {
-    return failure(
-      "memory_intent_confirmation_required",
-      409,
-      "Choose a specific saved memory or provide the exact statement to save."
-    );
-  }
-  const memoryActionPlan = memoryActionIntent.kind === "NONE"
-    ? undefined
-    : memoryActionIntent;
-  const memoryMutationRequested = memoryActionPlan !== undefined &&
-    memoryActionPlan.kind !== "LIST";
-  const memoryActionToolsEnabled = memoryActionPlan !== undefined &&
+  const memoryActionToolsRequested = resolvedChatMode.mode === "NORMAL" &&
+    input.source.kind === "send" &&
     body?.tools !== "none" &&
     modelConfiguration.capabilities.toolCalling === true;
-  if (
-    memoryMutationRequested &&
-    (input.source.kind === "regenerate" || !memoryActionToolsEnabled)
-  ) {
-    return failure(
-      "memory_intent_confirmation_required",
-      409,
-      "Use a tool-capable model or Manage Memories to confirm this change."
-    );
-  }
 
   const admittedKnowledgeToolsEnabled =
     body?.tools !== "none" &&
@@ -1163,11 +1137,10 @@ export async function prepareRun(
   const mcpToolsEnabled = Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
   const memoryHistoryToolsRequested =
     resolvedChatMode.mode === "NORMAL" &&
-    memoryActionPlan === undefined &&
     body?.tools !== "none" &&
     modelConfiguration.capabilities.toolCalling === true;
   const requiresClientToolCoexistence = admittedKnowledgeToolsEnabled ||
-    mcpToolsEnabled || memoryActionToolsEnabled || memoryHistoryToolsRequested;
+    mcpToolsEnabled || memoryActionToolsRequested || memoryHistoryToolsRequested;
   if (
     admissionPlan &&
     deps.providerAdmission &&
@@ -1234,9 +1207,13 @@ export async function prepareRun(
 
   const { adapter, toolBridge } = previewRuntime;
   const { capabilities: modelCapabilities, defaultParams } = modelConfiguration;
+  const memoryActionToolsEnabled =
+    resolvedChatMode.mode === "NORMAL" &&
+    input.source.kind === "send" &&
+    body?.tools !== "none" &&
+    modelConfiguration.capabilities.toolCalling === true;
   const memoryHistoryToolsEnabled =
     resolvedChatMode.mode === "NORMAL" &&
-    memoryActionPlan === undefined &&
     body?.tools !== "none" &&
     modelConfiguration.capabilities.toolCalling === true;
   const knowledgeToolsEnabled =
@@ -1453,7 +1430,9 @@ export async function prepareRun(
     content,
     context: { messages: contextMessages, mode: "branch_path" },
     knowledgePlan: { baseIds: [...decodedKnowledgePlan.plan.baseIds] },
-    ...(memoryActionPlan ? { memoryActionPlan } : {}),
+    ...(memoryActionToolsEnabled
+      ? { memoryActionTools: { version: "model-driven-v2" } as const }
+      : {}),
     ...(memoryHistoryToolsEnabled
       ? { memoryHistoryTool: { maxCalls: 2, pageSize: 20 } as const }
       : {}),
@@ -1507,9 +1486,7 @@ export async function prepareRun(
           : searchStrategy === perplexityToolSearchStrategyId
             ? [perplexityWebSearchTool]
             : []),
-        ...(memoryActionToolsEnabled && memoryActionPlan
-          ? [memoryActionToolForPlan(memoryActionPlan)]
-          : []),
+        ...(memoryActionToolsEnabled ? memoryActionTools : []),
         ...(memoryHistoryToolsEnabled ? [memoryHistorySearchTool] : []),
         ...mcpRunTools(unbudgetedNormalizedRequest.mcp)
       ];

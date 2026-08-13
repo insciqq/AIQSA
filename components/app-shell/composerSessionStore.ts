@@ -1,19 +1,23 @@
-import type { ComposerAttachment } from "@/components/chat/Composer";
+import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import { create } from "zustand";
 
 type StateUpdate<T> = T | ((current: T) => T);
 
 const blankRootSessionKey = "blank:root" as const;
 const blankFolderSessionPrefix = "blank:folder:";
+const excludedRootSessionKey = "blank:excluded:root" as const;
+const excludedFolderSessionPrefix = "blank:excluded:folder:";
 const temporaryRootSessionKey = "blank:temporary:root" as const;
 const temporaryFolderSessionPrefix = "blank:temporary:folder:";
 const savedChatSessionPrefix = "chat:";
 
-export type ComposerBlankMemoryMode = "NORMAL" | "TEMPORARY";
+export type ComposerBlankMemoryMode = "EXCLUDED" | "NORMAL" | "TEMPORARY";
 
 export type ComposerSessionKey =
   | typeof blankRootSessionKey
   | `blank:folder:${string}`
+  | typeof excludedRootSessionKey
+  | `blank:excluded:folder:${string}`
   | typeof temporaryRootSessionKey
   | `blank:temporary:folder:${string}`
   | `chat:${string}`;
@@ -153,12 +157,20 @@ export function composerSessionKey(
       ? `${temporaryFolderSessionPrefix}${encodeURIComponent(folderId)}`
       : temporaryRootSessionKey;
   }
+  if (memoryMode === "EXCLUDED") {
+    return folderId
+      ? `${excludedFolderSessionPrefix}${encodeURIComponent(folderId)}`
+      : excludedRootSessionKey;
+  }
   return folderId ? `${blankFolderSessionPrefix}${encodeURIComponent(folderId)}` : blankRootSessionKey;
 }
 
 export function composerSessionModeFromKey(key: ComposerSessionKey): ComposerBlankMemoryMode {
-  return key === temporaryRootSessionKey || key.startsWith(temporaryFolderSessionPrefix)
-    ? "TEMPORARY"
+  if (key === temporaryRootSessionKey || key.startsWith(temporaryFolderSessionPrefix)) {
+    return "TEMPORARY";
+  }
+  return key === excludedRootSessionKey || key.startsWith(excludedFolderSessionPrefix)
+    ? "EXCLUDED"
     : "NORMAL";
 }
 
@@ -171,6 +183,9 @@ export function chatIdFromComposerSessionKey(key: ComposerSessionKey): string | 
 export function folderIdFromComposerSessionKey(key: ComposerSessionKey): string | null {
   if (key.startsWith(temporaryFolderSessionPrefix)) {
     return decodeKeySegment(key.slice(temporaryFolderSessionPrefix.length));
+  }
+  if (key.startsWith(excludedFolderSessionPrefix)) {
+    return decodeKeySegment(key.slice(excludedFolderSessionPrefix.length));
   }
   return key.startsWith(blankFolderSessionPrefix)
     ? decodeKeySegment(key.slice(blankFolderSessionPrefix.length))

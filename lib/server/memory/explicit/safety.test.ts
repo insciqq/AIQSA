@@ -12,12 +12,12 @@ describe("explicit Memory secret screening", () => {
     expect(memoryExplicitStatementContainsSecret(
       "Search my history for large recovery evidence."
     )).toBe(false);
+    expect(memoryExplicitStatementContainsSecret("My password is hunter2-secret")).toBe(false);
+    expect(memoryExplicitStatementContainsSecret("Мой пароль: hunter2-secret")).toBe(false);
+    expect(memoryExplicitStatementContainsSecret("API-ключ: example-secret-value")).toBe(false);
   });
 
   it.each([
-    "My password is hunter2-secret",
-    "Мой пароль: hunter2-secret",
-    "API-ключ: example-secret-value",
     "API key: sk-abcdefghijklmnopqrstuvwxyz123456",
     "postgresql://owner:private-password@db.example.test/app",
     "-----BEGIN PRIVATE KEY----- abc -----END PRIVATE KEY-----",

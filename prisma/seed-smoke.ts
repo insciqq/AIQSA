@@ -231,16 +231,16 @@ async function main() {
     memorySettings.length !== seededUserIds.length ||
     memorySettings.some(
       (settings) =>
-        settings.useMemoryFacts ||
-        settings.referenceChatHistory ||
-        settings.learnAutomatically ||
+        !settings.useMemoryFacts ||
+        !settings.referenceChatHistory ||
+        !settings.learnAutomatically ||
         settings.activeIndexGenerationId !== null
     ) ||
     checkpointCount !== 0 ||
     chunkCount !== 0 ||
     episodeCount !== 0
   ) {
-    throw new Error("Seed smoke found non-inert Memory history state");
+    throw new Error("Seed smoke found unexpected default Memory state");
   }
 
   if (

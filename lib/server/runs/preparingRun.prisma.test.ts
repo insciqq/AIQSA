@@ -36,7 +36,7 @@ import {
   memoryVectorSpaceFingerprint,
   resolveCurrentMemoryUtilityPolicy
 } from "../memory/execution/policy";
-import { planMemoryActionFromText } from "../memory/actions/intent";
+import type { MemoryActionPlan } from "../memory/actions/intent";
 import { createMemoryActionExecutor } from "../memory/actions/toolExecutor";
 import { retrieveExplicitRunMemory } from "../memory/retrieval/explicitRun";
 import { MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION } from "../memory/retrieval/runUtilities";
@@ -53,6 +53,31 @@ const suppressionKeyring = MemorySuppressionKeyring.parse(
     Array.from({ length: 32 }, (_, index) => index + 17)
   ).toString("base64")}`
 );
+
+function legacyListActionPlan(
+  query: string | null = null
+): Extract<MemoryActionPlan, { kind: "LIST" }> {
+  return {
+    kind: "LIST",
+    query,
+    version: "memory-action-plan-v1"
+  };
+}
+
+function legacySaveActionPlan(
+  source: string,
+  statement: string
+): Extract<MemoryActionPlan, { kind: "SAVE" }> {
+  const sourceStart = source.indexOf(statement);
+  if (sourceStart < 0) throw new Error("invalid_legacy_save_fixture");
+  return {
+    kind: "SAVE",
+    sourceEnd: sourceStart + statement.length,
+    sourceStart,
+    statement,
+    version: "memory-action-plan-v1"
+  };
+}
 
 function preparingForgetRegistry(): MemoryDeletionContributorRegistry {
   const registry = new MemoryDeletionContributorRegistry({
@@ -925,6 +950,10 @@ describe("PREPARING run orchestration", () => {
       });
       const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
       const fact = await saveExplicitFact(userId, scope.id, "My preferred editor\nis  Vim.");
+      await prisma.memoryFactVersion.update({
+        data: { coreEligible: true, coreSalience: "HIGH" },
+        where: { id: fact.versionId }
+      });
       const chat = await prisma.chat.create({ data: { title: "Explicit recall", userId } });
       const request = normalizedRequest(chat.id, "What is my preferred editor?");
       const repository = createPrismaRunRepository(prisma);
@@ -980,14 +1009,14 @@ describe("PREPARING run orchestration", () => {
       });
       expect(attempt).toMatchObject({
         acceptedUtilityEgressFingerprint: null,
-        boundedSafeQuerySnapshot: "what is my preferred editor?",
+        boundedSafeQuerySnapshot: "What is my preferred editor?",
         externalRolesUsed: [],
         outcome: "USED",
         state: "CONSUMED",
         utilityEgressMode: "LOCAL_ONLY"
       });
       expect(binding).toMatchObject({
-        boundedSafeQuerySnapshot: "what is my preferred editor?",
+        boundedSafeQuerySnapshot: "What is my preferred editor?",
         outcome: "USED",
         retrievalAttemptId: attempt.id
       });
@@ -1210,8 +1239,7 @@ describe("PREPARING run orchestration", () => {
     await withPreparingUser(async ({ userId }) => {
       const chat = await prisma.chat.create({ data: { title: "Empty Memory list", userId } });
       const baseRequest = normalizedRequest(chat.id, "What do you remember about me?");
-      const actionPlan = planMemoryActionFromText("What do you remember about me?");
-      if (actionPlan.kind !== "LIST") throw new Error("invalid_memory_action_fixture");
+      const actionPlan = legacyListActionPlan();
       const request: NormalizedRunRequest = {
         ...baseRequest,
         memoryActionPlan: actionPlan,
@@ -1276,8 +1304,7 @@ describe("PREPARING run orchestration", () => {
         data: { title: "Unmaterialized Memory list", userId }
       });
       const baseRequest = normalizedRequest(chat.id, "What do you remember about me?");
-      const actionPlan = planMemoryActionFromText("What do you remember about me?");
-      if (actionPlan.kind !== "LIST") throw new Error("invalid_memory_action_fixture");
+      const actionPlan = legacyListActionPlan();
       const request: NormalizedRunRequest = {
         ...baseRequest,
         memoryActionPlan: actionPlan,
@@ -1360,8 +1387,7 @@ describe("PREPARING run orchestration", () => {
     await withPreparingUser(async ({ userId }) => {
       const chat = await prisma.chat.create({ data: { title: "Empty list race", userId } });
       const baseRequest = normalizedRequest(chat.id, "What do you remember about me?");
-      const actionPlan = planMemoryActionFromText("What do you remember about me?");
-      if (actionPlan.kind !== "LIST") throw new Error("invalid_memory_action_fixture");
+      const actionPlan = legacyListActionPlan();
       const request: NormalizedRunRequest = {
         ...baseRequest,
         memoryActionPlan: actionPlan,
@@ -1421,8 +1447,7 @@ describe("PREPARING run orchestration", () => {
     await withPreparingUser(async ({ userId }) => {
       const chat = await prisma.chat.create({ data: { title: "Run Memory save", userId } });
       const source = "Remember that I like tea";
-      const actionPlan = planMemoryActionFromText(source);
-      if (actionPlan.kind !== "SAVE") throw new Error("invalid_memory_action_fixture");
+      const actionPlan = legacySaveActionPlan(source, "I like tea");
       const baseRequest = normalizedRequest(chat.id, source);
       const request: NormalizedRunRequest = {
         ...baseRequest,
@@ -1577,6 +1602,10 @@ describe("PREPARING run orchestration", () => {
       const accepted = await createStagedRun("Exact item");
       const scopeStale = await createStagedRun("Stale scope");
       const stale = await createStagedRun("Stale item");
+      await prisma.userMemorySettings.update({
+        data: { memoryRevision: { increment: 1 } },
+        where: { userId }
+      });
       await expect(repository.finalizePreparingRun({
         attemptId: accepted.admitted.attemptId,
         normalizedRequest: accepted.finalRequest,
@@ -1590,7 +1619,11 @@ describe("PREPARING run orchestration", () => {
       const bindingItems = await prisma.modelRunMemoryItem.findMany({
         where: { bindingId: binding.id }
       });
-      expect(binding).toMatchObject({ outcome: "USED" });
+      expect(binding).toMatchObject({
+        finalizedRevisionSnapshot: accepted.admitted.memoryRevision + 1,
+        outcome: "USED",
+        retrievalRevisionSnapshot: accepted.admitted.memoryRevision
+      });
       expect(bindingItems).toEqual([
         expect.objectContaining({
           factVersionId: fact.versionId,

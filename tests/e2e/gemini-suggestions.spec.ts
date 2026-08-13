@@ -51,7 +51,7 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
   });
 
   await signIn(page);
-  const composer = page.getByRole("textbox", { name: "Message" });
+  const composer = page.getByRole("textbox", { name: "Сообщение" });
   await composer.fill("Show grounded suggestions");
   await composer.press("Enter");
   await suggestionStream.waitForRequestCount(page, 1);
@@ -72,6 +72,7 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
     suggestionsHtml: String.raw`<style>body::before{content:"${cssCanary}"}.cover{pos\69 tion:fixed;inset:0;z-index:2147483647;width:100vw;height:100vh}</style><a href="https://google.com/search?q=unsafe">Unsafe overlay</a>`
   });
 
+  await page.getByRole("button", { name: /^Search,/u }).click();
   const region = page.getByRole("complementary", { name: "Google Search suggestions" });
   await expect(region.getByRole("alert")).toContainText("could not be displayed safely");
   const host = page.getByTestId("gemini-search-suggestions-host");
@@ -80,7 +81,7 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
     childCount: element.shadowRoot?.childNodes.length ?? 0,
     hasProviderCssCanary: element.shadowRoot?.textContent?.includes(canary) ?? false
   }), cssCanary)).toEqual({ childCount: 0, hasProviderCssCanary: false });
-  const workspaceButton = page.getByRole("button", { name: "Open workspace" });
+  const workspaceButton = page.getByRole("button", { name: "Открыть панель" });
   await expectCenterUnobscured(workspaceButton);
   expect(await workspaceButton.evaluate((button) => {
     const bounds = button.getBoundingClientRect();
@@ -192,6 +193,8 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
   expect(projection!.iconHeight).toBeLessThanOrEqual(19);
 
   await link.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
   await expect(link).toBeFocused();
   const focusRing = await link.evaluate((element) => {
     const style = getComputedStyle(element);

@@ -1,23 +1,23 @@
 # FRONTEND VISUAL INTERACTION
 
 Owner: Frontend interaction-motion maintainers
-Scope: Runtime motion-state behavior and reduced-motion ownership; visual timing and composition recipes are routed by DESIGN_SYSTEM.md.
+Scope: Runtime motion-state behavior and reduced-motion ownership; composition recipes are routed by `DESIGN_SYSTEM.md`.
 
 ## Motion
 
-The shared motion layer is CSS-only with no animation-library dependency. Keyframes and utilities are centralized in `app/globals.css`; `html[data-motion="off"]` remains the deterministic test switch. There is no page-load shell entrance animation.
+The shipped motion layer is CSS-only with no animation-library dependency. Shared timings and tokens live in `styles/tokens-v2.css`; the bounded `pop-enter` compatibility utility remains in `app/globals.css` for reviewed secondary dialogs. `html[data-motion="off"]` is the deterministic visual-test switch. There is no page-load shell animation.
 
-Sanctioned moments — no decorative motion outside this list:
+Sanctioned moments:
 
-1. Run lifecycle: the evidence-based pipeline indicator's live activity glyph carries a working pulse (`pipeline-pulse`, 1.3s opacity breathing); idle and settled pipeline chrome do not animate. The completed turn's metadata line cools from the proof accent once (`settle-flash`, 800ms via `data-run-settled`).
-2. Streaming liveness: only the active progress dot and answer caret pulse. The answer text itself remains visually stable, so coalesced token flushes update the live row without restarting a whole-block animation and memoized historical rows never repaint.
-3. Popover/menu/dialog entrances: every picker, action menu, dialog, command palette, and mobile drawer uses the shared `pop-enter` utility (120ms ease-out, opacity plus ~2% scale). The scale animation uses the independent CSS `scale` property and must not override a surface's positioning translate/transform. Exits stay instant via unmount — no exit animations.
-4. Reading disclosures: compact composer collapse/expand uses a 150ms grid-row/opacity transition. Only the bounded exact-message surface—not its full-width row gutter—accepts fine-pointer hover; it and keyboard-visible focus use a symmetric 150ms `cubic-bezier(0.4, 0, 0.2, 1)` semantic surface transition in both directions. Its anchored action dock appears and disappears as one stable unit without an independent opacity/translate transition; compact/coarse tap keeps its 300ms soft entrance and never latches the surface highlight. The explicitly requested Run receipt uses the shared soft mount fade. Reduced motion keeps the same states without delay or interpolation.
+1. Active work may use a slow opacity-only spinner or pulse derived from real run/upload/index state. Idle and settled chrome does not loop.
+2. Streaming changes only the active answer caret/progress indicator; token text does not replay a whole-block animation and historical rows remain stable.
+3. Menus, drawers, sheets, dialogs, and the command palette may use one 120–220ms entrance. The entrance cannot replace the transform that positions a surface. Exit may be immediate on unmount.
+4. Hover, press, focus, selection, and disclosure state use the `motion.fast` or `motion.base` token. Message actions appear as one stable unit; evidence counts and settled answer content do not animate as proof of activity.
 
 Rules:
 
-- One-shot motion stays within 100-350ms and normally uses ease-out; bidirectional transient hover uses the symmetric standard easing above. Continuous liveness animations are opacity-only breathing at >=1.3s periods.
-- The pipeline indicator derives from existing client-side run state only; adding backend stage events for motion is out of contract.
-- Adjacent token events aggregate into one bounded client timeline entry, and workspace summaries structurally contain no message content, so token-only thread-cache updates do not repaint navigation. No per-token style mutation occurs outside the streaming row; historical row memoization stays intact.
-- Skeleton shimmer (loading placeholders) predates this list and keeps its own keyframes.
-- New motion requires extending this section first.
+- One-shot motion stays within 100–350ms and normally uses ease-out. Continuous liveness is opacity-only and no faster than 1.3s.
+- Run state comes only from normalized lifecycle/event evidence. Elapsed time, prose, and animation never invent a stage or completion.
+- No layout animation runs during token streaming. Adjacent token events remain coalesced by the focused run/thread owner.
+- `prefers-reduced-motion: reduce` and `data-motion="off"` preserve every state and action without delay or interpolation.
+- New motion requires extending this owner and the paired deterministic visual state before shipping.

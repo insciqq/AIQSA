@@ -1,6 +1,6 @@
 import type { ModelToolCall } from "../../../tools/types";
 import {
-  MEMORY_FACT_CONSOLIDATION_OPERATIONS,
+  MEMORY_FACT_CONSOLIDATION_MODEL_OPERATIONS,
   MEMORY_FACT_CONSOLIDATION_REASON_CODES,
   MEMORY_FACT_VERIFICATION_REASON_CODES,
   memoryFactConsolidationOutputHash,
@@ -35,7 +35,7 @@ const verificationKeys = [
 ] as const;
 const verificationKeySet = new Set<string>(verificationKeys);
 const controlPattern = /[\u0000-\u001f\u007f]/u;
-const operations = new Set<string>(MEMORY_FACT_CONSOLIDATION_OPERATIONS);
+const operations = new Set<string>(MEMORY_FACT_CONSOLIDATION_MODEL_OPERATIONS);
 const consolidationReasons = new Set<string>(MEMORY_FACT_CONSOLIDATION_REASON_CODES);
 const verificationReasons = new Set<string>(MEMORY_FACT_VERIFICATION_REASON_CODES);
 const targetOperations = new Set<MemoryFactConsolidationOperation>([
@@ -163,7 +163,6 @@ function exactTarget(
   const fact = input.relatedFacts.find((candidate) => candidate.id === factId);
   if (
     !fact || fact.state !== "ACTIVE" || fact.currentVersionId !== versionId ||
-    fact.canonicalKey !== input.candidate.canonicalKey ||
     fact.scope.type !== input.candidate.scope.type ||
     fact.scope.targetId !== input.candidate.scope.targetId
   ) return false;

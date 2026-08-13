@@ -38,9 +38,11 @@ function safeCount(value: string): number {
 }
 
 /**
- * Counts meaningful Memory-owned records. The mandatory untouched default
- * settings row is deliberately inert and does not turn every stale account
- * into a deletion blocker.
+ * Counts meaningful Memory-owned records. The mandatory untouched settings
+ * row is deliberately inert and does not turn every stale account into a
+ * deletion blocker. `learnAutomatically` is not inspected directly because
+ * both the legacy false default and the current true default can be untouched;
+ * an actual user mutation is already fenced by `settingsRevision`.
  */
 export async function loadAccountMemoryOwnedCounts(
   client: MemoryInventoryClient,
@@ -54,7 +56,6 @@ export async function loadAccountMemoryOwnedCounts(
       WHERE
         settings."useMemoryFacts" IS DISTINCT FROM TRUE
         OR settings."referenceChatHistory" IS DISTINCT FROM TRUE
-        OR settings."learnAutomatically" IS DISTINCT FROM FALSE
         OR settings."memoryGeneration" <> 0
         OR settings."memoryRevision" <> 0
         OR settings."activeIndexGenerationId" IS NOT NULL

@@ -10,7 +10,6 @@ import {
   confirmDeleteExplicitMemories,
   discardMemoryManagerDraft,
   forgetCurrentMemory,
-  forgetProfileMemory,
   loadMoreMemoryEvidence,
   memoryDraftIsValid,
   openMemoryDetail,
@@ -40,7 +39,6 @@ import {
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
 import { MemoryHistorySearch } from "@/components/app-shell/MemoryHistorySearch";
-import { MemoryProfileSummary } from "@/components/app-shell/MemoryProfileSummary";
 import { memoryHistoryUiCopy } from "@/components/app-shell/memoryHistoryUiCopy";
 import {
   MEMORY_FEEDBACK_COMMENT_MAX_LENGTH,
@@ -1530,21 +1528,6 @@ export function ManageMemories({
       ) : null}
 
       <div className="mt-4"><LiveNotice locale={locale} /></div>
-      {screen === "list" ? (
-        <div className="mt-4">
-          <MemoryProfileSummary
-            accountId={accountId}
-            locale={locale}
-            mutationBusy={mutationState !== null}
-            onDelete={forgetProfileMemory}
-            onEdit={async (factId) => {
-              await openMemoryDetail(factId);
-              beginEditMemory();
-            }}
-            onOpenDetails={openMemoryDetail}
-          />
-        </div>
-      ) : null}
       <button
         ref={historyEntryRef}
         aria-label={memoryHistoryUiCopy(locale, "entry")}

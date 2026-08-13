@@ -523,6 +523,9 @@ function searchSql(
         HAVING count(*) BETWEEN 1 AND 50
       ) AS source_messages ON TRUE
       WHERE entry."userId" = ${prepared.userId}
+        -- Legacy extractive episodes remain deletion-compatible but are not a
+        -- serving source. Grounded EVENT facts and raw chunks replace them.
+        AND FALSE
         AND entry."itemType" = 'EPISODE'::"MemorySearchItemType"
         AND episode."state" = 'ACTIVE'::"MemoryHistoryItemState"
         AND episode."safetyClass" IN (
@@ -607,18 +610,13 @@ function searchSql(
     WHERE (
       eligible."safeSearchTextYoNormalized" = ${prepared.normalizedYoQuery}
       OR eligible."searchVectorSimple" @@ plainto_tsquery('simple', ${prepared.normalizedYoQuery})
-      OR eligible."searchVectorRussian" @@ plainto_tsquery('russian', ${prepared.normalizedYoQuery})
-      OR eligible."searchVectorEnglish" @@ plainto_tsquery('english', ${prepared.normalizedQuery})
       OR ${vectorPredicate}
     )
     ORDER BY
       (eligible."safeSearchTextYoNormalized" = ${prepared.normalizedYoQuery}) DESC,
       (
-        GREATEST(
-          ts_rank_cd(eligible."searchVectorSimple", plainto_tsquery('simple', ${prepared.normalizedYoQuery})),
-          ts_rank_cd(eligible."searchVectorRussian", plainto_tsquery('russian', ${prepared.normalizedYoQuery})),
-          ts_rank_cd(eligible."searchVectorEnglish", plainto_tsquery('english', ${prepared.normalizedQuery}))
-        ) + COALESCE(${vectorScore}, 0)
+        ts_rank_cd(eligible."searchVectorSimple", plainto_tsquery('simple', ${prepared.normalizedQuery}))
+          + COALESCE(${vectorScore}, 0)
       ) DESC,
       eligible."occurredAt" DESC,
       eligible."entryId"

@@ -5,10 +5,8 @@ import {
   beginMoveMemory,
   confirmDeleteExplicitMemories,
   forgetCurrentMemory,
-  forgetProfileMemory,
   moveMemoryScope,
   refreshMemoryDeletionStatus,
-  refreshMemoryProfile,
   resetMemoryManagerStoreForTest,
   resolveMemoryConflictChoice,
   saveMemoryChanges,
@@ -25,7 +23,6 @@ import {
   memoryDeletionFixture,
   memoryDetailFixture,
   memoryEvidenceFixture,
-  memoryProfileFixture,
   memorySettingsFixture,
   memorySummaryFixture
 } from "./memoryTestFixtures";
@@ -47,124 +44,6 @@ describe("Memory manager store", () => {
     resetMemorySettingsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-  });
-
-  it("fences delayed profile reads to the current account", async () => {
-    let resolveFirst!: (response: Response) => void;
-    let resolveSecond!: (response: Response) => void;
-    const firstResponse = new Promise<Response>((resolve) => {
-      resolveFirst = resolve;
-    });
-    const secondResponse = new Promise<Response>((resolve) => {
-      resolveSecond = resolve;
-    });
-    const fetchMock = vi.fn()
-      .mockReturnValueOnce(firstResponse)
-      .mockReturnValueOnce(secondResponse);
-    vi.stubGlobal("fetch", fetchMock);
-
-    const first = refreshMemoryProfile("account-a");
-    const second = refreshMemoryProfile("account-b");
-    resolveSecond(json(memoryProfileFixture({ profile: { id: "profile-b" } })));
-    await second;
-    resolveFirst(json(memoryProfileFixture({ profile: { id: "profile-a" } })));
-    await first;
-
-    expect(useMemoryManagerStore.getState()).toMatchObject({
-      profileAccountId: "account-b",
-      profileLoadState: "ready",
-      profileResponse: { profile: { id: "profile-b" }, state: "READY" }
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("forgets an exact profile contributor without opening evidence and keeps bounded Undo", async () => {
-    const memory = memorySummaryFixture({
-      actionVersionId: "memory-version-1",
-      currentVersionId: "memory-version-1",
-      id: "memory-fact-1"
-    });
-    const profile = memoryProfileFixture();
-    const contributor = profile.profile!.contributors[0]!;
-    const calls: Array<{ body: Record<string, unknown>; path: string }> = [];
-    useMemoryManagerStore.setState({
-      listLoadState: "ready",
-      memories: [memory],
-      profileAccountId: "account-1",
-      profileLoadState: "ready",
-      profileResponse: profile
-    });
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
-      calls.push({ body, path });
-      if (path === "/api/me/memory/mutation-authorizations") {
-        return json({
-          expiresAt: "2099-08-12T08:05:00.000Z",
-          mutationAuthorizationId: "profile-forget-authorization"
-        }, 201);
-      }
-      if (path === "/api/me/memories/memory-fact-1/forget") {
-        return json({
-          memory: memorySummaryFixture({
-            actionVersionId: null,
-            currentVersionId: null,
-            displayText: null,
-            factState: "FORGOTTEN",
-            id: "memory-fact-1",
-            versionState: "FORGOTTEN"
-          }),
-          undo: {
-            deletionId: "profile-forget-deletion",
-            expiresAt: "2099-08-12T08:06:00.000Z",
-            versionId: "memory-version-1"
-          }
-        });
-      }
-      if (path.startsWith("/api/me/memories?")) {
-        return json({ memories: [], nextCursor: null });
-      }
-      if (path === "/api/me/memory/profile") {
-        return json(memoryProfileFixture({ memoryRevision: 9, profile: null, state: "EMPTY" }));
-      }
-      throw new Error(`unexpected request: ${path}`);
-    }));
-
-    await forgetProfileMemory(contributor);
-
-    expect(calls[0]).toMatchObject({
-      body: {
-        action: "FORGET",
-        expectedTargetVersionId: "memory-version-1",
-        targetFactId: "memory-fact-1"
-      },
-      path: "/api/me/memory/mutation-authorizations"
-    });
-    expect(calls[1]).toMatchObject({
-      body: {
-        expectedVersionId: "memory-version-1",
-        mutationAuthorizationId: "profile-forget-authorization"
-      },
-      path: "/api/me/memories/memory-fact-1/forget"
-    });
-    expect(useMemoryManagerStore.getState()).toMatchObject({
-      lastForgetUndo: {
-        factId: "memory-fact-1",
-        statement: "I prefer concise answers in Russian.",
-        undo: { deletionId: "profile-forget-deletion" }
-      },
-      memories: [],
-      mutationState: null,
-      notice: "forgotten",
-      screen: "list"
-    });
-    await vi.waitFor(() => {
-      expect(useMemoryManagerStore.getState()).toMatchObject({
-        profileLoadState: "ready",
-        profileResponse: { profile: null, state: "EMPTY" }
-      });
-    });
-    expect(calls.some(({ path }) => path.endsWith("/evidence"))).toBe(false);
   });
 
   it("creates an exact GLOBAL_USER memory through hash-bound authority and discloses use-off", async () => {

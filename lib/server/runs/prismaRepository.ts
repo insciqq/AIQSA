@@ -77,6 +77,7 @@ import {
   type MemorySecretFreeExecutionSnapshot
 } from "../memory/execution";
 import { defaultMemoryExecutionAuthority } from "../memory/execution/defaultAuthority";
+import { resolveMemoryEgressConsentMode } from "../memory/execution/consentMode";
 import {
   lockMemorySettings,
   type LockedMemorySettings
@@ -88,6 +89,7 @@ import {
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { decodeKnowledgeRunProjection } from "../../contracts/runs";
 import { projectKnowledgeInspectionEvents } from "./knowledgeInspectionEvents";
+import { projectModelRunInspection } from "./inspectionProjection";
 import { projectMemoryInspectionEvents } from "./memoryInspectionEvents";
 import { loadMemoryRunEvidence } from "../memory/receipts/projection";
 import {
@@ -1390,36 +1392,58 @@ async function admitPreparingRunWithClient(
           }
           lockedChat = { ...lockedChat, temporaryRetentionDeadline: deadline };
         }
-        const preSendAssistantMessageId = input.preSendAssistantMessageId ??
-          lockedChat.activeLeafMessageId;
-        if (!preSendAssistantMessageId ||
-          lockedChat.activeLeafMessageId !== preSendAssistantMessageId) {
+        const userLeafWithoutAssistant = input.preSendAssistantMessageId === null;
+        const preSendSourceMessageId = userLeafWithoutAssistant
+          ? input.userMessageId
+          : input.preSendAssistantMessageId ?? lockedChat.activeLeafMessageId;
+        if (!preSendSourceMessageId ||
+          lockedChat.activeLeafMessageId !== preSendSourceMessageId) {
           throw new ActiveLeafConflictError();
         }
-        const [source] = await tx.$queryRaw<Array<{
-          assistantParentId: string | null;
-          assistantRole: string;
-          userContent: Prisma.JsonValue;
-          userRole: string;
-        }>>(Prisma.sql`
-          SELECT
-            assistant."parentMessageId" AS "assistantParentId",
-            assistant."role" AS "assistantRole",
-            user_message."content" AS "userContent",
-            user_message."role" AS "userRole"
-          FROM "Message" AS assistant
-          INNER JOIN "Message" AS user_message
-            ON user_message."chatId" = assistant."chatId"
-           AND user_message."id" = ${input.userMessageId}
-          WHERE assistant."chatId" = ${input.chatId}
-            AND assistant."id" = ${preSendAssistantMessageId}
-          FOR SHARE OF assistant, user_message
-        `);
-        if (!source || source.assistantRole !== "assistant" || source.userRole !== "user" ||
-          source.assistantParentId !== input.userMessageId ||
-          memoryPreparingHash(source.userContent) !==
-            memoryPreparingHash(input.normalizedRequest.content)) {
-          throw new ActiveLeafConflictError();
+        if (userLeafWithoutAssistant) {
+          const [sourceUser] = await tx.$queryRaw<Array<{
+            userContent: Prisma.JsonValue;
+            userRole: string;
+          }>>(Prisma.sql`
+            SELECT
+              user_message."content" AS "userContent",
+              user_message."role" AS "userRole"
+            FROM "Message" AS user_message
+            WHERE user_message."chatId" = ${input.chatId}
+              AND user_message."id" = ${input.userMessageId}
+            FOR SHARE OF user_message
+          `);
+          if (!sourceUser || sourceUser.userRole !== "user" ||
+            memoryPreparingHash(sourceUser.userContent) !==
+              memoryPreparingHash(input.normalizedRequest.content)) {
+            throw new ActiveLeafConflictError();
+          }
+        } else {
+          const [source] = await tx.$queryRaw<Array<{
+            assistantParentId: string | null;
+            assistantRole: string;
+            userContent: Prisma.JsonValue;
+            userRole: string;
+          }>>(Prisma.sql`
+            SELECT
+              assistant."parentMessageId" AS "assistantParentId",
+              assistant."role" AS "assistantRole",
+              user_message."content" AS "userContent",
+              user_message."role" AS "userRole"
+            FROM "Message" AS assistant
+            INNER JOIN "Message" AS user_message
+              ON user_message."chatId" = assistant."chatId"
+             AND user_message."id" = ${input.userMessageId}
+            WHERE assistant."chatId" = ${input.chatId}
+              AND assistant."id" = ${preSendSourceMessageId}
+            FOR SHARE OF assistant, user_message
+          `);
+          if (!source || source.assistantRole !== "assistant" || source.userRole !== "user" ||
+            source.assistantParentId !== input.userMessageId ||
+            memoryPreparingHash(source.userContent) !==
+              memoryPreparingHash(input.normalizedRequest.content)) {
+            throw new ActiveLeafConflictError();
+          }
         }
         const assistantMessage = await tx.message.create({
           data: {
@@ -1433,7 +1457,7 @@ async function admitPreparingRunWithClient(
           }
         });
         assistantMessageId = assistantMessage.id;
-        preSendActiveLeafMessageId = preSendAssistantMessageId;
+        preSendActiveLeafMessageId = preSendSourceMessageId;
         userMessageId = input.userMessageId;
         await applyMemorySourceMutations(tx, {
           chat: lockedChat,
@@ -1711,12 +1735,14 @@ async function assertCurrentPreparingExecutionEvidence(
     );
   }
   if (evidence.utilityEgressMode === "LOCAL_ONLY") return;
-  if (
+  const consentMode = authority.egressConsentMode ??
+    resolveMemoryEgressConsentMode();
+  if (consentMode !== "ADMIN" && (
     settings.acceptedUtilityEgressFingerprint !==
       evidence.acceptedUtilityEgressFingerprint ||
     settings.acceptedUtilityPolicyVersion === null ||
     settings.acceptedUtilityEgressAt === null
-  ) {
+  )) {
     throw new MemoryPreparingRunConflictError(
       "memory_utility_egress_changed",
       true
@@ -2183,8 +2209,7 @@ function validateFinalPreparingRequest(
   input: PreparingRunFinalizationInput,
   baseSnapshot: ReturnType<typeof decodeMemoryPreparingBaseSnapshot>,
   attempt: LockedPreparingAttempt,
-  items: readonly PreparingAttemptItemRow[],
-  finalizedRevision: number
+  items: readonly PreparingAttemptItemRow[]
 ): void {
   if (!baseSnapshot) {
     throw new MemoryPreparingRunConflictError("memory_base_request_invalid", false);
@@ -2242,7 +2267,7 @@ function validateFinalPreparingRequest(
     personalContext.approxTokens !== attempt.preparedContextTokenCount ||
     personalContext.itemCount !== items.length ||
     personalContext.memoryGeneration !== attempt.memoryGenerationSnapshot ||
-    personalContext.memoryRevision !== finalizedRevision
+    personalContext.memoryRevision !== attempt.retrievalRevisionSnapshot
   ) {
     throw new MemoryPreparingRunConflictError("memory_final_request_invalid", false);
   }
@@ -2369,17 +2394,19 @@ async function finalizePreparingRunWithClient(
       if (!attempt.preSendActiveLeafMessageId) {
         throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
       }
-      const source = await tx.message.findFirst({
-        select: { id: true },
-        where: {
-          chatId: run.chatId,
-          id: attempt.preSendActiveLeafMessageId,
-          parentMessageId: attempt.admittedUserMessageId,
-          role: "assistant"
+      if (attempt.preSendActiveLeafMessageId !== attempt.admittedUserMessageId) {
+        const source = await tx.message.findFirst({
+          select: { id: true },
+          where: {
+            chatId: run.chatId,
+            id: attempt.preSendActiveLeafMessageId,
+            parentMessageId: attempt.admittedUserMessageId,
+            role: "assistant"
+          }
+        });
+        if (!source) {
+          throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
         }
-      });
-      if (!source) {
-        throw new MemoryPreparingRunConflictError("memory_admission_dag_changed", false);
       }
     }
 
@@ -2491,7 +2518,7 @@ async function finalizePreparingRunWithClient(
           false
         );
       }
-      validateFinalPreparingRequest(input, baseSnapshot, attempt, items, 0);
+      validateFinalPreparingRequest(input, baseSnapshot, attempt, items);
       await tx.modelRunMemoryBinding.create({
         data: {
           boundedSafeQuerySnapshot: null,
@@ -2554,8 +2581,7 @@ async function finalizePreparingRunWithClient(
       input,
       baseSnapshot,
       attempt,
-      items,
-      currentSettings.memoryRevision
+      items
     );
 
     const binding = await tx.modelRunMemoryBinding.create({
@@ -3047,7 +3073,6 @@ async function createDormantPreparingRun(
                 ...(admission.assistant
                   ? { assistantId: admission.assistant.assistantId }
                   : {}),
-                normalizedRequest: admission.normalizedRequest,
                 settings: currentSettings.settingsSnapshot,
                 userId: admission.userId
               })
@@ -4415,6 +4440,11 @@ export function createPrismaRunRepository(
         cachedInputTokens: run.cachedInputTokens,
         cacheWriteInputTokens: run.cacheWriteInputTokens,
         inputTokens: run.inputTokens,
+        inspection: projectModelRunInspection({
+          acceptedAt: run.createdAt,
+          answerMessageId: run.assistantMessageId,
+          normalizedRequest: run.normalizedRequest
+        }),
         knowledgeBindings: run.knowledgeRunBindings.map((binding) => ({
           baseContentRevision: binding.baseContentRevision,
           embeddingConnectionId: binding.embeddingConnectionId,

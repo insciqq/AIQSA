@@ -244,30 +244,30 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   });
 
   await signInWithLocalToken(page);
-  const workspace = page.getByTestId("left-chat-pane");
+  const workspace = page.getByRole("complementary", { name: "Навигация по чатам" });
   await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 
-  await workspace.getByRole("button", { name: "Chat actions Retained lifecycle" }).click();
-  await workspace.getByRole("button", { name: "Exclude this chat from memory" }).click();
+  await workspace.getByRole("button", { name: "Действия: Retained lifecycle" }).click();
+  await page.getByRole("menu", { name: "Действия чата Retained lifecycle" })
+    .getByRole("menuitem", { name: "Без памяти" }).click();
   await expect.poll(() => modePatches.length).toBe(1);
   expect(modePatches.at(-1)).toMatchObject({ mode: "EXCLUDED" });
 
-  await workspace.getByRole("button", { name: "Chat actions Retained lifecycle" }).click();
-  await workspace.getByRole("button", { name: "Resume using this chat as a memory source" }).click();
+  await workspace.getByRole("button", { name: "Действия: Retained lifecycle" }).click();
+  await page.getByRole("menu", { name: "Действия чата Retained lifecycle" })
+    .getByRole("menuitem", { name: "Использовать память" }).click();
   await expect.poll(() => modePatches.length).toBe(2);
   expect(modePatches.at(-1)).toMatchObject({
     mode: "NORMAL",
     resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
   });
 
-  await workspace.getByRole("button", { name: "Chat actions Retained lifecycle" }).click();
-  await workspace.getByRole("button", { exact: true, name: "Archive" }).click();
-  const archiveDialog = page.getByRole("dialog", { name: "Archive chat Retained lifecycle" });
-  await expect(archiveDialog).toBeVisible();
-  await archiveDialog.getByRole("button", { name: "Confirm archive" }).click();
+  await workspace.getByRole("button", { name: "Действия: Retained lifecycle" }).click();
+  await page.getByRole("menu", { name: "Действия чата Retained lifecycle" })
+    .getByRole("menuitem", { name: "Архивировать" }).click();
   await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toHaveCount(0);
 
-  await workspace.getByRole("button", { name: "Archived chats" }).click();
+  await workspace.getByRole("button", { name: "Архив чатов" }).click();
   const archivedDialog = page.getByRole("dialog", { name: "Archived chats" });
   await archivedDialog.getByRole("button", { name: /Retained lifecycle/ }).click();
   await expect(page.getByRole("dialog", { name: "Retained lifecycle" })).toContainText("Retained answer");
@@ -275,24 +275,23 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
     .getByRole("button", { name: "Restore" }).click();
   await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 
-  await workspace.getByRole("button", { name: "Start new chat" }).click();
-  const composer = page.getByRole("textbox", { name: "Message" });
-  await page.getByRole("button", { name: "Temporary Chat" }).click();
-  await composer.fill("Temporary draft marker");
-  await page.getByRole("button", { name: "Cancel Temporary" }).click();
-  await expect(composer).toHaveValue("");
+  await workspace.getByRole("button", { name: "Новый чат" }).click();
+  const composer = page.getByRole("textbox", { name: "Сообщение" });
   await composer.fill("Normal draft marker");
+  await page.getByRole("button", { name: "Обычный чат" }).click();
+  await composer.fill("Temporary draft marker");
   await page.getByRole("button", { name: "Temporary Chat" }).click();
+  await expect(composer).toHaveValue("Normal draft marker");
+  await page.getByRole("button", { name: "Обычный чат" }).click();
   await expect(composer).toHaveValue("Temporary draft marker");
-  await page.getByRole("button", { name: "Send message" }).click();
+  await page.getByRole("button", { name: "Отправить сообщение" }).click();
 
   await expect(page.getByTestId("composer-memory-mode")).toHaveAttribute(
-    "data-memory-mode",
-    "TEMPORARY"
+    "data-mode",
+    "temporary"
   );
   await expect(page.getByTestId("temporary-retention-deadline")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Share anonymously" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Cancel Temporary" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Поделиться" })).toBeDisabled();
   expect(temporaryAdmissions).toHaveLength(1);
   expect(temporaryAdmissions[0]).toMatchObject({
     chatMode: "TEMPORARY",

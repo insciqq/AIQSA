@@ -42,7 +42,7 @@ import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
 import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
 import { decodeMemoryActionPlan, type MemoryActionPlan } from "../memory/actions/intent";
-import { memoryActionToolForPlan } from "../memory/actions/tools";
+import { memoryActionToolForPlan, memoryActionTools } from "../memory/actions/tools";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import { defaultMemoryHistoryToolExecutor } from "../memory/history/search/defaultTool";
 import type { MemoryHistoryToolExecutor } from "../memory/history/search/toolExecutor";
@@ -584,6 +584,7 @@ type RecoveryToolContext = Readonly<{
   knowledgeExecutor: KnowledgeToolExecutor | null;
   memoryActionExecutor: MemoryActionExecutor | null;
   memoryActionPlan: MemoryActionPlan | null;
+  modelDrivenMemoryActions: boolean;
   memoryHistoryToolExecutor: MemoryHistoryToolExecutor | null;
   searchExecutor: RecoverySearchExecutor | null;
   usageAttributions: RunUsageAttribution[];
@@ -598,8 +599,10 @@ function isRecoveredKnowledgeCall(context: RecoveryToolContext, name: string): b
 }
 
 function isRecoveredMemoryCall(context: RecoveryToolContext, name: string): boolean {
-  return context.memoryActionPlan !== null &&
-    context.memoryActionExecutor?.accepts(context.memoryActionPlan, name) === true;
+  return context.memoryActionExecutor?.accepts(
+    context.modelDrivenMemoryActions ? null : context.memoryActionPlan,
+    name
+  ) === true;
 }
 
 function isRecoveredMemoryHistoryCall(
@@ -898,7 +901,7 @@ async function executePersistedToolCall(
       }
     } else if (isRecoveredMemoryCall(context, call.name)) {
       result = await context.memoryActionExecutor!.execute(
-        context.memoryActionPlan!,
+        context.modelDrivenMemoryActions ? null : context.memoryActionPlan,
         call,
         {
           persistedToolCallId: claim.call.id,
@@ -1154,6 +1157,8 @@ async function recoverCheckpointedToolLoop(
         "The saved Memory action plan is invalid."
       );
     }
+    const modelDrivenMemoryActions =
+      run.normalizedRequest.memoryActionTools?.version === "model-driven-v2";
     const searchEnabled = clientToolsEnabled && !run.normalizedRequest.searchPlan &&
       run.normalizedRequest.searchStrategy === "perplexity-tool-search";
     const searchPolicy = run.normalizedRequest.searchPolicy;
@@ -1249,7 +1254,7 @@ async function recoverCheckpointedToolLoop(
       );
     }
     const knowledgeExecutor = knowledgeEnabled ? deps.knowledgeExecutor ?? null : null;
-    const memoryActionEnabled = memoryActionPlan !== null &&
+    const memoryActionEnabled = (memoryActionPlan !== null || modelDrivenMemoryActions) &&
       clientToolsEnabled &&
       run.normalizedRequest.modelCapabilities.toolCalling === true;
     const memoryActionExecutor = memoryActionEnabled
@@ -1265,8 +1270,10 @@ async function recoverCheckpointedToolLoop(
     const tools: RunTool[] = [
       ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
       ...(searchExecutor?.tools ?? []),
-      ...(memoryActionPlan && memoryActionExecutor
-        ? [memoryActionToolForPlan(memoryActionPlan)]
+      ...(memoryActionExecutor
+        ? modelDrivenMemoryActions
+          ? memoryActionTools
+          : memoryActionPlan ? [memoryActionToolForPlan(memoryActionPlan)] : []
         : []),
       ...(memoryHistoryToolExecutor ? [memoryHistoryToolExecutor.tool] : []),
       ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : [])
@@ -1302,6 +1309,7 @@ async function recoverCheckpointedToolLoop(
       knowledgeExecutor,
       memoryActionExecutor,
       memoryActionPlan,
+      modelDrivenMemoryActions,
       memoryHistoryToolExecutor,
       runtime() {
         runtime ??= getDefaultMcpRuntimeCoordinator();
@@ -1541,7 +1549,10 @@ async function recoverCheckpointedToolLoop(
           const route = resolveMcpRunTool(run.normalizedRequest.mcp, call.name);
           if (!route && searchExecutor?.accepts(call.name) !== true &&
             knowledgeExecutor?.accepts(call.name) !== true &&
-            !(memoryActionPlan && memoryActionExecutor?.accepts(memoryActionPlan, call.name)) &&
+            memoryActionExecutor?.accepts(
+              modelDrivenMemoryActions ? null : memoryActionPlan,
+              call.name
+            ) !== true &&
             memoryHistoryToolExecutor?.accepts(call.name) !== true) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",

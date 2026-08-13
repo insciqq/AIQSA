@@ -5,11 +5,11 @@ import {
 } from "./safety";
 
 describe("Memory history safety projection", () => {
-  it("excludes secret-like English and Russian source text without echoing it", () => {
-    const englishSecret = "api key: sk-exampleToken1234567890";
-    const russianSecret = "пароль: Qwerty123456!";
-
-    for (const value of [englishSecret, russianSecret]) {
+  it("excludes recognizable credential formats without echoing them", () => {
+    for (const value of [
+      "api key: sk-exampleToken1234567890",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvd25lciJ9.signature123456"
+    ]) {
       const projection = projectMemoryHistorySafeText(value);
 
       expect(projection).toMatchObject({
@@ -21,6 +21,20 @@ describe("Memory history safety projection", () => {
         safeText: null
       });
       expect(JSON.stringify(projection)).not.toContain(value.split(": ")[1]);
+    }
+  });
+
+  it("does not classify natural-language secret or sensitivity labels", () => {
+    for (const value of [
+      "пароль: Qwerty123456!",
+      "diagnosis: chronic condition",
+      "номер паспорта: 1234 567890"
+    ]) {
+      expect(projectMemoryHistorySafeText(value)).toMatchObject({
+        eligible: true,
+        redactionReasonCodes: [],
+        safetyClass: "NORMAL"
+      });
     }
   });
 
@@ -42,19 +56,6 @@ describe("Memory history safety projection", () => {
     expect(projection.safeText).not.toContain("me@example.com");
     expect(projection.safeText).not.toContain("123-45-67");
     expect(projection.providerSafeText).toBe(projection.safeText);
-  });
-
-  it("excludes highly sensitive identity and health assignments", () => {
-    expect(projectMemoryHistorySafeText("diagnosis: chronic condition")).toMatchObject({
-      eligible: false,
-      redactionReasonCodes: ["HIGHLY_SENSITIVE_IDENTITY_OR_HEALTH"],
-      safetyClass: "HIGHLY_SENSITIVE"
-    });
-    expect(projectMemoryHistorySafeText("номер паспорта: 1234 567890")).toMatchObject({
-      eligible: false,
-      redactionReasonCodes: ["HIGHLY_SENSITIVE_IDENTITY_OR_HEALTH"],
-      safetyClass: "HIGHLY_SENSITIVE"
-    });
   });
 
   it("normalizes line endings deterministically and rejects unsafe controls", () => {

@@ -258,6 +258,8 @@ const candidateDerivativesContributor: MemoryDeletionContributor = Object.freeze
         negated: null,
         proposedCanonicalKey: null,
         proposedCategory: null,
+        proposedCoreEligible: null,
+        proposedCoreSalience: null,
         proposedDirectness: null,
         proposedDisplayText: null,
         proposedModality: null,

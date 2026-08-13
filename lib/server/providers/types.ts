@@ -83,9 +83,11 @@ export type NormalizedRunRequest = {
     };
   };
   knowledgePlan?: KnowledgePlan;
-  /** Deterministic plan derived only from the direct current-user message.
-   * Provider-visible tool schemas never carry its server-side authorization. */
+  /** Legacy v1 recovery only. New runs never derive a semantic action plan. */
   memoryActionPlan?: MemoryActionPlan;
+  /** Model-driven v2 tools. Mutation authority is minted at execution from the
+   * exact accepted USER message and exact owned target/version. */
+  memoryActionTools?: Readonly<{ version: "model-driven-v2" }>;
   /** Bounded first-party private-history tool. Its results remain untrusted
    * data and may coexist with admin-connected Search and tool capabilities. */
   memoryHistoryTool?: Readonly<{

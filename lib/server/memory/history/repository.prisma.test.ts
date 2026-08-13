@@ -3,8 +3,7 @@ import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
-  type MemoryHistorySearchInput,
-  type MemoryHistorySearchResponse
+  type MemoryHistorySearchInput
 } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
@@ -37,13 +36,15 @@ import {
 } from "../temporaryRetention";
 import { createMemoryHistoryToolExecutor } from "./search/toolExecutor";
 import { MEMORY_HISTORY_SEARCH_TOOL_NAME } from "./search/tool";
+import type { MemoryUnifiedSearchResponse } from "./search/unifiedService";
 import type { ProviderRunRequest } from "../../providers/types";
 import { createMemoryToolEgressReceiptService } from "../egress/receipts";
 import { purgeMemoryHistoryReceiptDerivatives } from "./purge";
 import {
   MEMORY_HISTORY_BACKFILL_WINDOW,
   readMemoryHistoryIndexingProgress,
-  reconcileMemoryHistoryBackfills
+  reconcileMemoryHistoryBackfills,
+  seedMemoryHistoryBackfill
 } from "./backfill";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 
@@ -286,6 +287,15 @@ function historyToolProviderRequest(chatId: string): ProviderRunRequest {
   };
 }
 
+function unifiedToolArguments(query: string) {
+  return {
+    query,
+    scope: null,
+    source_kinds: null,
+    time_range: null
+  };
+}
+
 async function processHistoryJob(userId: string) {
   const claim = await claimHistoryJob(userId);
   const handler = createPrismaMemoryHistoryIndexHandler(prisma);
@@ -301,6 +311,11 @@ async function processHistoryJob(userId: string) {
     stage: result.stage ?? null
   })).resolves.toBe(true);
   return { claim, result };
+}
+
+async function seedHistoryBackfill(userId: string) {
+  return withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
+    seedMemoryHistoryBackfill(tx, settings));
 }
 
 describe("Memory lexical history index persistence", () => {
@@ -578,7 +593,7 @@ describe("Memory lexical history index persistence", () => {
         });
       }
 
-      await reconcileMemoryHistoryBackfills(prisma);
+      await seedHistoryBackfill(userId);
       const initialWindow = await prisma.memoryJob.findMany({
         select: { id: true },
         where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
@@ -595,7 +610,7 @@ describe("Memory lexical history index persistence", () => {
         where: { id: { in: initialWindow.map(({ id }) => id) } }
       });
 
-      await reconcileMemoryHistoryBackfills(prisma);
+      await seedHistoryBackfill(userId);
       await expect(prisma.memoryJob.count({
         where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
       })).resolves.toBe(2);
@@ -803,7 +818,63 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("persists an exact episode, message evidence, and lexical row atomically", async () => {
+  it("indexes eligible chunks without enqueueing or serving extractive episodes", async () => {
+    const userId = await createOwner("memory-chunks-no-episodes");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Chunk-only episodic history", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Подтверждаю выбранный сине-зелёный выпуск.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T08:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Для выпуска используем сине-зелёное развёртывание."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: turn.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: turn.assistantMessage.id,
+          runId: turn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+
+      await expect(prisma.memoryJob.count({
+        where: { kind: "EXTRACT_EPISODE", userId }
+      })).resolves.toBe(0);
+      await expect(prisma.memoryEpisode.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memorySearchEntry.count({
+        where: { itemType: "EPISODE", userId }
+      })).resolves.toBe(0);
+
+      const historySearch = createPrismaMemoryHistorySearchRepository(prisma);
+      const prepared = await historySearch.prepare(userId, {
+        chatIds: [],
+        cursor: null,
+        folderId: null,
+        from: null,
+        pageSize: 20,
+        query: "сине-зелёное развёртывание",
+        to: null
+      });
+      const response = await historySearch.search(prepared, null);
+      expect(response.results.some((result) => result.itemType === "RECALL_CHUNK"))
+        .toBe(true);
+      expect(response.results.some((result) => result.itemType === "EPISODE"))
+        .toBe(false);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it.skip("legacy extractive episode apply remains quarantined from normal enqueue", async () => {
     const userId = await createOwner("memory-episode-apply");
     try {
       const chat = await prisma.chat.create({
@@ -999,7 +1070,7 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("rejects an episode apply after the exact source revision changes", async () => {
+  it.skip("legacy episode apply retains its source-revision fence", async () => {
     const userId = await createOwner("memory-episode-source-race");
     try {
       const chat = await prisma.chat.create({
@@ -1709,24 +1780,33 @@ describe("Memory lexical history index persistence", () => {
         userId,
         userText: "Receipt fixture question"
       });
-      const response: MemoryHistorySearchResponse = {
+      const response: MemoryUnifiedSearchResponse = {
+        executionBindingIds: [],
         indexing: {
+          candidateCount: 1,
           degradationCode: null,
           lexicalState: "READY",
+          relevanceState: "READY",
+          serviceVersion: "memory-unified-search-v1",
           vectorState: "NOT_CONFIGURED"
         },
-        nextCursor: null,
-        results: [{
-          indexingState: "LEXICAL_READY",
+        privateResults: [{
+          entryId: "entry-1",
+          factId: null,
+          handle: "m0",
+          itemId: "chunk-1",
           itemType: "RECALL_CHUNK",
-          occurredAt: "2026-08-10T17:00:00.000Z",
+          laneRanks: { HISTORY_RECALL_EXACT: 1 },
           sourceChatId: chat.id,
-          sourceChatTitle: "History tool receipts",
-          sourceFolderId: null,
-          sourceFolderName: null,
-          sourceMessageIds: [firstTurn.userMessage.id],
-          sourceState: "AVAILABLE",
-          snippet: "Receipt fixture question"
+          sourceKind: "HISTORY"
+        }],
+        results: [{
+          handle: "m0",
+          occurredFrom: "2026-08-10T17:00:00.000Z",
+          occurredTo: null,
+          sourceChatId: chat.id,
+          sourceKind: "HISTORY",
+          text: "Receipt fixture question"
         }]
       };
       const search = vi.fn(async () => response);
@@ -1737,7 +1817,7 @@ describe("Memory lexical history index persistence", () => {
       const calls = await Promise.all([0, 1, 2].map((ordinal) =>
         prisma.modelRunToolCall.create({
           data: {
-            arguments: { query: `receipt query ${ordinal}` },
+            arguments: unifiedToolArguments(`receipt query ${ordinal}`),
             modelRunId: firstTurn.run.id,
             ordinal,
             providerCallId: `history-tool-call-${ordinal}`,
@@ -1753,7 +1833,7 @@ describe("Memory lexical history index persistence", () => {
         userId
       });
       const call = (ordinal: number) => ({
-        arguments: { query: `receipt query ${ordinal}` },
+        arguments: unifiedToolArguments(`receipt query ${ordinal}`),
         id: `history-tool-call-${ordinal}`,
         name: MEMORY_HISTORY_SEARCH_TOOL_NAME
       });
@@ -1767,13 +1847,20 @@ describe("Memory lexical history index persistence", () => {
         }],
         status: "complete"
       });
-      expect(search).toHaveBeenNthCalledWith(1, userId, {
-        chatIds: [],
-        cursor: null,
-        folderId: null,
+      expect(search).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        assistantId: null,
+        chatId: chat.id,
+        owner: {
+          modelRunId: firstTurn.run.id,
+          modelRunToolCallId: calls[0]!.id,
+          type: "MODEL_RUN_TOOL_CALL"
+        },
+        userId
+      }), {
         from: null,
-        pageSize: 20,
         query: "receipt query 0",
+        scope: null,
+        sourceKinds: ["FACT", "EVENT", "HISTORY"],
         to: null
       });
       await expect(prisma.memoryHistoryRun.findUniqueOrThrow({
@@ -1814,7 +1901,7 @@ describe("Memory lexical history index persistence", () => {
       });
       const ambiguousCall = await prisma.modelRunToolCall.create({
         data: {
-          arguments: { query: "ambiguous query" },
+          arguments: unifiedToolArguments("ambiguous query"),
           modelRunId: ambiguousTurn.run.id,
           ordinal: 0,
           providerCallId: "history-tool-call-ambiguous",
@@ -1844,7 +1931,7 @@ describe("Memory lexical history index persistence", () => {
         }
       });
       await expect(executor.execute({
-        arguments: { query: "ambiguous query" },
+        arguments: unifiedToolArguments("ambiguous query"),
         id: "history-tool-call-ambiguous",
         name: MEMORY_HISTORY_SEARCH_TOOL_NAME
       }, {
@@ -1886,7 +1973,7 @@ describe("Memory lexical history index persistence", () => {
       });
       const toolCall = await prisma.modelRunToolCall.create({
         data: {
-          arguments: { query: "private race query" },
+          arguments: unifiedToolArguments("private race query"),
           modelRunId: turn.run.id,
           ordinal: 0,
           providerCallId: "history-tool-call-purge-race",
@@ -1894,12 +1981,12 @@ describe("Memory lexical history index persistence", () => {
           toolName: MEMORY_HISTORY_SEARCH_TOOL_NAME
         }
       });
-      let releaseSearch!: (response: MemoryHistorySearchResponse) => void;
+      let releaseSearch!: (response: MemoryUnifiedSearchResponse) => void;
       let markSearchStarted!: () => void;
       const searchStarted = new Promise<void>((resolve) => {
         markSearchStarted = resolve;
       });
-      const searchResult = new Promise<MemoryHistorySearchResponse>((resolve) => {
+      const searchResult = new Promise<MemoryUnifiedSearchResponse>((resolve) => {
         releaseSearch = resolve;
       });
       const executor = createMemoryHistoryToolExecutor({
@@ -1912,7 +1999,7 @@ describe("Memory lexical history index persistence", () => {
         }
       });
       const execution = executor.execute({
-        arguments: { query: "private race query" },
+        arguments: unifiedToolArguments("private race query"),
         id: "history-tool-call-purge-race",
         name: MEMORY_HISTORY_SEARCH_TOOL_NAME
       }, {
@@ -1930,23 +2017,32 @@ describe("Memory lexical history index persistence", () => {
         })
       );
       releaseSearch({
+        executionBindingIds: [],
         indexing: {
+          candidateCount: 1,
           degradationCode: null,
           lexicalState: "READY",
+          relevanceState: "READY",
+          serviceVersion: "memory-unified-search-v1",
           vectorState: "NOT_CONFIGURED"
         },
-        nextCursor: null,
-        results: [{
-          indexingState: "LEXICAL_READY",
+        privateResults: [{
+          entryId: "entry-race",
+          factId: null,
+          handle: "m0",
+          itemId: "chunk-race",
           itemType: "RECALL_CHUNK",
-          occurredAt: "2026-08-10T18:30:00.000Z",
+          laneRanks: { HISTORY_RECALL_EXACT: 1 },
           sourceChatId: chat.id,
-          sourceChatTitle: "History purge race",
-          sourceFolderId: null,
-          sourceFolderName: null,
-          sourceMessageIds: [turn.userMessage.id],
-          sourceState: "AVAILABLE",
-          snippet: "PRIVATE_PURGE_RACE_CANARY"
+          sourceKind: "HISTORY"
+        }],
+        results: [{
+          handle: "m0",
+          occurredFrom: "2026-08-10T18:30:00.000Z",
+          occurredTo: null,
+          sourceChatId: chat.id,
+          sourceKind: "HISTORY",
+          text: "PRIVATE_PURGE_RACE_CANARY"
         }]
       });
 

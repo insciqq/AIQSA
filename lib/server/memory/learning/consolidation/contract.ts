@@ -3,13 +3,13 @@ import type { MemoryExecutionVersions } from "../../execution";
 import { memorySha256 } from "../../persistence/lexical";
 
 export const MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION =
-  "memory-fact-consolidation-v1";
+  "memory-fact-consolidation-v2";
 export const MEMORY_FACT_CONSOLIDATION_POLICY_VERSION =
-  "memory-fact-consolidation-policy-v1";
+  "memory-fact-consolidation-policy-v2";
 export const MEMORY_FACT_CONSOLIDATION_PROMPT_VERSION =
-  "memory-fact-consolidation-prompt-v3";
+  "memory-fact-consolidation-prompt-v4";
 export const MEMORY_FACT_CONSOLIDATION_SCHEMA_VERSION =
-  "memory-fact-consolidation-schema-v1";
+  "memory-fact-consolidation-schema-v2";
 export const MEMORY_FACT_VERIFICATION_PIPELINE_VERSION =
   "memory-fact-verification-v2";
 export const MEMORY_FACT_VERIFICATION_POLICY_VERSION =
@@ -33,6 +33,10 @@ export const MEMORY_FACT_CONSOLIDATION_OPERATIONS = [
   "NOOP",
   "DEFER"
 ] as const;
+
+export const MEMORY_FACT_CONSOLIDATION_MODEL_OPERATIONS = [
+  "ADD", "REINFORCE", "SUPERSEDE", "CONFLICT", "EXPIRE", "NOOP"
+] as const satisfies readonly MemoryFactConsolidationOperation[];
 
 export type MemoryFactConsolidationOperation =
   (typeof MEMORY_FACT_CONSOLIDATION_OPERATIONS)[number];
@@ -82,7 +86,9 @@ export type MemoryFactCandidateSnapshot = Readonly<{
   category: string;
   chatId: string;
   confidence: number;
-  directness: "DIRECT";
+  coreEligible?: boolean;
+  coreSalience?: "HIGH" | "LOW" | "MEDIUM" | "NONE";
+  directness: "DIRECT" | "PARAPHRASED";
   displayText: string;
   evidence: readonly MemoryFactCandidateEvidenceSnapshot[];
   id: string;
@@ -152,6 +158,7 @@ export type MemoryRelatedFactSnapshot = Readonly<{
 export type MemoryFactConsolidationInput = Readonly<{
   candidate: MemoryFactCandidateSnapshot;
   inputHash: string;
+  memoryRevision: number;
   relatedFacts: readonly MemoryRelatedFactSnapshot[];
   relatedSnapshotHash: string;
 }>;
@@ -174,7 +181,7 @@ export type MemoryFactDecisionSnapshot = Readonly<{
   operation: MemoryFactConsolidationOperation;
   reasonCode: MemoryFactConsolidationReasonCode;
   relatedSnapshotHash: string;
-  requiresVerification: true;
+  requiresVerification: boolean;
   targetFactId: string | null;
   targetVersionId: string | null;
 }>;
@@ -196,13 +203,11 @@ export type MemoryFactVerificationPlan = Readonly<{
 
 export const MEMORY_FACT_CONSOLIDATION_RETRIEVAL_CONFIG_FINGERPRINT =
   memorySha256({
-    entityTermOverlap: true,
-    exactCanonicalFirst: true,
     maxFacts: MEMORY_FACT_MAX_RELATED_FACTS,
     maxVersionsPerFact: MEMORY_FACT_MAX_RELATED_VERSIONS,
-    profileDisclosure: "bounded-scope-neighborhood",
-    temporalOverlapRanking: true,
-    version: 2
+    profileDisclosure: "bounded-current-scope-semantic-neighborhood",
+    serverSemanticClassifier: false,
+    version: 3
   });
 
 export const MEMORY_FACT_CONSOLIDATION_VERSIONS: MemoryExecutionVersions =

@@ -224,12 +224,8 @@ function requireStatement(statement: string): void {
   }
 }
 
-function languageCode(statement: string): string {
-  const cyrillic = /\p{Script=Cyrillic}/u.test(statement);
-  const latin = /\p{Script=Latin}/u.test(statement);
-  if (cyrillic && !latin) return "ru";
-  if (latin && !cyrillic) return "en";
-  return "AUTO";
+function languageCode(_statement: string): string {
+  return "und";
 }
 
 function customCanonicalKey(statement: string): string {

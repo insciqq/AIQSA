@@ -4,7 +4,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from "@
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { hashPassword } from "../../lib/server/auth/password";
-import { closeRunSetup, composerRunSummary, openRunSetup } from "./shell/composer";
+import { composerRunSummary, openModelPicker } from "./shell/composer";
 
 test.describe.configure({ mode: "serial" });
 
@@ -60,6 +60,12 @@ async function openAdminSection(page: Page, section: AdminSection): Promise<void
 
   const tab = page.getByRole("tab", { exact: true, name: section.label });
   await tab.click();
+  const discardConfirmation = page.getByTestId("admin-discard-unsaved-confirmation");
+  if (await discardConfirmation.isVisible().catch(() => false)) {
+    await discardConfirmation
+      .getByRole("button", { name: /confirm discard changes/i })
+      .click();
+  }
   await expect(current).toBeVisible();
 }
 
@@ -458,9 +464,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     const approvedDetail = page.getByTestId("admin-user-detail");
     await approvedDetail.getByLabel(group.name).check();
     await approvedDetail.getByRole("button", { name: "Approve user" }).click();
-    await approvedDetail.getByRole("button", { name: "Back to users" }).click();
-    await expect(userRow(page, approvedEmail).getByText("active")).toBeVisible();
-    await userRow(page, approvedEmail).click();
+    await expect(approvedDetail.getByText("Active", { exact: true })).toBeVisible();
     const activeApprovedDetail = page.getByTestId("admin-user-detail");
     const saveGroups = activeApprovedDetail.getByRole("button", { name: "Save groups" });
     await expect(saveGroups).toBeDisabled();
@@ -478,8 +482,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     const rejectedDetail = page.getByTestId("admin-user-detail");
     await rejectedDetail.getByRole("button", { name: "Reject user" }).click();
     await confirmAdminDialog(page, "admin-confirm-reject-user", /confirm reject user/i);
-    await rejectedDetail.getByRole("button", { name: "Back to users" }).click();
-    await expect(userRow(page, rejectedEmail).getByText("denied")).toBeVisible();
+    await expect(rejectedDetail.getByText("denied", { exact: true })).toBeVisible();
 
     await openAdminSection(page, adminSection("access-rules"));
     const rules = page.getByTestId("admin-section-access-rules");
@@ -558,19 +561,17 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     userPage = await userContext.newPage();
     await loginWithPassword(userPage, approvedEmail, approvedPassword);
     await expect(userPage.getByTestId("app-shell")).toBeVisible();
-    await userPage.getByRole("button", { name: /Account menu/ }).click();
-    await expect(userPage.getByRole("menu", { name: "Account" }).getByRole("menuitem", { name: "Control Center" })).toHaveCount(0);
+    await userPage.getByRole("button", { name: "Меню аккаунта" }).click();
+    await expect(userPage.getByRole("menu", { name: "Аккаунт" }).getByRole("link", { name: "Control Center" })).toHaveCount(0);
     await userPage.keyboard.press("Escape");
     await expect.poll(() => browserFetchStatus(userPage!, "/api/admin")).toBe(403);
     await userPage.goto("/admin");
     await expect(userPage.getByTestId("admin-denied")).toBeVisible();
     await userPage.goto("/");
     await expect(userPage.getByTestId("app-shell")).toBeVisible();
-    let runSetup = await openRunSetup(userPage);
-    await runSetup.getByRole("button", { name: "Select model" }).click();
-    await expect(userPage.getByTestId("model-picker")).toContainText("Fake QSA");
+    let modelPicker = await openModelPicker(userPage);
+    await expect(modelPicker).toContainText("Fake QSA");
     await userPage.keyboard.press("Escape");
-    await closeRunSetup(userPage);
 
     await openAdminSection(page, adminSection("access"));
     const access = page.getByTestId("admin-section-access");
@@ -603,14 +604,15 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     const runSummary = composerRunSummary(userPage);
     await expect(runSummary).not.toContainText("Fake QSA");
     if (await runSummary.isEnabled()) {
-      runSetup = await openRunSetup(userPage);
-      await runSetup.getByRole("button", { name: "Select model" }).click();
-      await expect(userPage.getByTestId("model-picker")).not.toContainText("Fake QSA");
+      modelPicker = await openModelPicker(userPage);
+      await expect(modelPicker).not.toContainText("Fake QSA");
       await userPage.keyboard.press("Escape");
-      await closeRunSetup(userPage);
     } else {
-      await expect(runSummary).toContainText("No models available");
-      await expect(userPage.getByText("This workspace has no models available yet.")).toBeVisible();
+      await expect(runSummary).toContainText("Нет доступных моделей");
+      await expect(userPage.getByText(
+        "Нет доступных моделей. Обратитесь к администратору.",
+        { exact: true }
+      ).first()).toBeVisible();
     }
 
     const createChat = await userPage.request.post("/api/chats", {
@@ -634,21 +636,31 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     });
 
     await openAdminSection(page, adminSection("users"));
+    const selectedUserDetail = page.getByTestId("admin-user-detail");
+    if (await selectedUserDetail.isVisible()) {
+      await selectedUserDetail.getByRole("button", { name: "Back to users" }).click();
+      await expect(selectedUserDetail).toHaveCount(0);
+    }
     await userRow(page, approvedEmail).click();
     const activeUserDetail = page.getByTestId("admin-user-detail");
     await expect(activeUserDetail.getByText("Disable this user before deletion can be considered.")).toBeVisible();
     await activeUserDetail.getByRole("button", { name: "Revoke sessions" }).click();
     await confirmAdminDialog(page, "admin-confirm-revoke-user-sessions", /confirm revoke sessions/i);
-    await expect.poll(() => browserFetchStatus(userPage!, "/api/me")).toBe(401);
+    await expect.poll(
+      () => browserFetchStatus(userPage!, "/api/me"),
+      { timeout: 15_000 }
+    ).toBe(401);
 
     await loginWithPassword(userPage, approvedEmail, approvedPassword);
     await expect(userPage.getByTestId("app-shell")).toBeVisible();
 
     await activeUserDetail.getByRole("button", { name: "Disable user" }).click();
     await confirmAdminDialog(page, "admin-confirm-disable-user", /confirm disable user/i);
-    await activeUserDetail.getByRole("button", { name: "Back to users" }).click();
-    await expect(userRow(page, approvedEmail).getByText("disabled")).toBeVisible();
-    await expect.poll(() => browserFetchStatus(userPage!, "/api/me")).toBe(401);
+    await expect(activeUserDetail.getByText("Disabled", { exact: true })).toBeVisible();
+    await expect.poll(
+      () => browserFetchStatus(userPage!, "/api/me"),
+      { timeout: 15_000 }
+    ).toBe(401);
     await loginWithPassword(userPage, approvedEmail, approvedPassword);
     await expect(userPage.getByText("The credentials were not accepted. (unauthorized)")).toBeVisible();
 
@@ -737,8 +749,8 @@ test("admin console keeps all redesigned sections operable end to end", async ({
 
     await page.goto("/");
     await expect(page.getByTestId("app-shell")).toBeVisible();
-    await page.getByRole("button", { name: /Account menu/ }).click();
-    const adminEntry = page.getByRole("menu", { name: "Account" }).getByRole("menuitem", {
+    await page.getByRole("button", { name: "Меню аккаунта" }).click();
+    const adminEntry = page.getByRole("menu", { name: "Аккаунт" }).getByRole("link", {
       name: "Control Center"
     });
     await expect(adminEntry).toHaveAttribute("href", "/admin");

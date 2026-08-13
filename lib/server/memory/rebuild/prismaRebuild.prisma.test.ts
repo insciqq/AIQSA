@@ -12,6 +12,10 @@ import type {
 import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
 import type { MemoryItemEmbeddingPin } from "../embedding/contract";
 import {
+  currentMemoryAdminDestinations,
+  memoryAdminDestinationsFingerprint
+} from "../execution/adminConsent";
+import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   memoryVectorSpaceFingerprint,
   resolveCurrentMemoryUtilityPolicy
@@ -228,6 +232,25 @@ async function configureEmbeddingProvider(
   if (!vectorSpaceFingerprint) {
     throw new Error("memory_rebuild_vector_space_unavailable");
   }
+  const adminDestinations = currentMemoryAdminDestinations([policy]);
+  await prisma.memoryEgressAdminPolicy.upsert({
+    create: {
+      acceptedAt: now,
+      acceptedDestinations: adminDestinations,
+      acceptedFingerprint: memoryAdminDestinationsFingerprint(adminDestinations),
+      acceptedPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+      id: "installation"
+    },
+    update: {
+      acceptedAt: now,
+      acceptedByUserId: null,
+      acceptedDestinations: adminDestinations,
+      acceptedFingerprint: memoryAdminDestinationsFingerprint(adminDestinations),
+      acceptedPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
+      version: { increment: 1 }
+    },
+    where: { id: "installation" }
+  });
   await prisma.userMemorySettings.update({
     data: {
       acceptedUtilityEgressAt: now,
@@ -238,6 +261,17 @@ async function configureEmbeddingProvider(
   });
   return {
     async cleanup() {
+      await prisma.memoryEgressAdminPolicy.updateMany({
+        data: {
+          acceptedAt: null,
+          acceptedByUserId: null,
+          acceptedDestinations: [],
+          acceptedFingerprint: null,
+          acceptedPolicyVersion: null,
+          version: { increment: 1 }
+        },
+        where: { id: "installation" }
+      });
       await prisma.providerModelCredentialCheck.deleteMany({ where: { connectionId } });
       await prisma.providerConnection.updateMany({
         data: { defaultCredentialId: null },
@@ -1348,12 +1382,11 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       const history = await createHistoryDerivative({
         activeIndexGenerationId: initial.activeIndexGenerationId,
         createdAt: new Date("2026-08-10T08:45:00.000Z"),
-        includeEpisode: true,
+        includeEpisode: false,
         label: "hybrid-suppression",
         sourceRevision: 1,
         userId
       });
-      if (!history.episodeId) throw new Error("episode_fixture_missing");
       provider = await configureEmbeddingProvider(userId, "hybrid-suppression");
       const before = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
@@ -1368,28 +1401,16 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       });
       if (admitted.kind !== "ok") throw new Error(admitted.kind);
       await processRebuildJob(admitted.jobId, repository);
-      const [chunkEntry, episodeEntry] = await Promise.all([
-        prisma.memorySearchEntry.findFirstOrThrow({
-          where: {
-            embeddingState: "PENDING",
-            recallChunkId: history.chunkId,
-            userId
-          }
-        }),
-        prisma.memorySearchEntry.findFirstOrThrow({
-          where: {
-            embeddingState: "PENDING",
-            episodeId: history.episodeId,
-            userId
-          }
-        })
-      ]);
+      const chunkEntry = await prisma.memorySearchEntry.findFirstOrThrow({
+        where: {
+          embeddingState: "PENDING",
+          recallChunkId: history.chunkId,
+          userId
+        }
+      });
       const embeddingRepository = createPrismaMemoryItemEmbeddingRepository(prisma);
-      const [chunkTarget, episodeTarget] = await Promise.all([
-        embeddingRepository.loadTarget(userId, chunkEntry.id),
-        embeddingRepository.loadTarget(userId, episodeEntry.id)
-      ]);
-      if (!chunkTarget || !episodeTarget) throw new Error("embedding_target_missing");
+      const chunkTarget = await embeddingRepository.loadTarget(userId, chunkEntry.id);
+      if (!chunkTarget) throw new Error("embedding_target_missing");
       await prisma.memorySuppression.create({
         data: {
           deletionGeneration: before.memoryGeneration,
@@ -1404,8 +1425,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         }
       });
       await expect(embeddingRepository.loadTarget(userId, chunkEntry.id))
-        .resolves.toBeNull();
-      await expect(embeddingRepository.loadTarget(userId, episodeEntry.id))
         .resolves.toBeNull();
       const vector = Array.from(
         { length: EMBEDDING_DIMENSION },
@@ -1544,7 +1563,25 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
     }
   });
 
-  it("creates salted redream children and cancels them after parent settlement", async () => {
+  it("rejects the retired redream operation without creating episode work", async () => {
+    const userId = await createOwner("redream-retired");
+    const deps = services();
+    const repository = createPrismaMemoryRebuildRepository(prisma);
+    try {
+      await expect(admitRedream(userId, "redream-retired", {
+        authorizationRepository: deps.authorizationRepository,
+        explicit: deps.explicit,
+        repository
+      })).rejects.toThrow("memory_contract_invalid");
+      await expect(prisma.memoryJob.count({
+        where: { kind: "EXTRACT_EPISODE", userId }
+      })).resolves.toBe(0);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it.skip("legacy redream child cancellation remains historical-only", async () => {
     const userId = await createOwner("redream-cancel");
     const deps = services();
     const repository = createPrismaMemoryRebuildRepository(prisma);
@@ -1981,18 +2018,11 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         itemType: "FACT_VERSION"
       });
 
-      const redream = await admitRedream(userId, "suppression-redream", {
+      await expect(admitRedream(userId, "suppression-redream", {
         authorizationRepository: deps.authorizationRepository,
         explicit: deps.explicit,
         repository
-      });
-      if (redream.kind !== "ok") throw new Error(redream.kind);
-      await processRebuildJob(redream.jobId, repository);
-      await expect(repository.status(userId, redream.jobId)).resolves.toMatchObject({
-        completedUnits: 0,
-        state: "SUCCEEDED",
-        totalUnits: 0
-      });
+      })).rejects.toThrow("memory_contract_invalid");
       await expect(prisma.memoryJob.count({
         where: {
           idempotencyFingerprint: { startsWith: "memory-episode-redream-v1:" },

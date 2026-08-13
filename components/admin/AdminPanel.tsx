@@ -399,6 +399,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     <main
       aria-busy={isBusy}
       className="min-h-[100dvh] overflow-x-hidden bg-app-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
+      data-ui-presentation="v2-tokens"
     >
       <AdminDraftRegistration
         dirty={navigation.activeSection === "access" && groups.access.draftProtection.dirty}

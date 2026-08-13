@@ -8,6 +8,7 @@ import {
 import {
   MemoryRunUtilityProviderCallError,
   MEMORY_QUERY_EXPANSION_TOOL_NAME,
+  MEMORY_RUN_UTILITY_TOOL_CHOICE,
   type MemoryRunUtilityProvider
 } from "./runUtilityRuntime";
 import {
@@ -148,6 +149,10 @@ function baseInput() {
 }
 
 describe("Memory run utility execution", () => {
+  it("requires the sole typed utility tool for every semantic call", () => {
+    expect(MEMORY_RUN_UTILITY_TOOL_CHOICE).toBe("required");
+  });
+
   it("binds and starts before a query embedding call, then settles usage once", async () => {
     const log: string[] = [];
     const bound = execution(log);
@@ -279,10 +284,11 @@ describe("Memory run utility execution", () => {
       ...baseInput(),
       candidates: [{
         handle: "c0",
+        occurredFrom: null,
+        occurredTo: null,
+        sourceKind: "HISTORY",
         text: "API key sk-abcdefghijklmnopqrstuvwxyz123456"
       }],
-      intent: "PAST_HISTORY",
-      language: "EN",
       query: "previous chat"
     });
     expect(blocked).toEqual({

@@ -11,7 +11,6 @@ import {
   decodeMemoryFeedbackMutationResponse,
   decodeMemoryListResponse,
   decodeMemoryMutationAuthorizationResponse,
-  decodeMemoryProfileResponse,
   decodeMemoryRebuildStatus,
   decodeMemorySettingsResponse,
   type MemoryBulkDeleteInput,
@@ -30,7 +29,6 @@ import {
   type MemoryMutationAuthorizationInput,
   type MemoryMutationAuthorizationResponse,
   type MemoryMutationResponse,
-  type MemoryProfileResponse,
   type MemoryRebuildInput,
   type MemoryRebuildStatus,
   type MemorySettingsPatch,
@@ -149,14 +147,6 @@ export async function loadMemoryHealth(signal?: AbortSignal): Promise<MemoryHeal
       if (!decoded) return { ok: false };
       return { ok: true, value: decoded };
     }
-  );
-}
-
-export async function loadMemoryProfile(signal?: AbortSignal): Promise<MemoryProfileResponse> {
-  return memoryRequest(
-    "/api/me/memory/profile",
-    { method: "GET", signal },
-    decodeMemoryProfileResponse
   );
 }
 

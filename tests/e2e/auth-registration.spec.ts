@@ -330,8 +330,8 @@ test("registers, verifies, logs in, and sees an isolated workspace", async ({ pa
     await expect(page.getByTestId("app-shell")).toBeVisible();
     const workspace = (await (await page.request.get("/api/chats")).json()) as { chats: unknown[] };
     expect(workspace.chats).toHaveLength(0);
-    await expect(page.getByTestId("current-chat-title")).toHaveText("New chat");
-    await expect(page.getByTestId("thread")).not.toContainText("Compare native web search");
+    await expect(page.getByTestId("conversation-empty")).toBeVisible();
+    await expect(page.getByTestId("conversation-v2")).not.toContainText("Compare native web search");
   } finally {
     await prisma.user.deleteMany({
       where: {

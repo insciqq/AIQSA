@@ -114,17 +114,17 @@ function call(argumentsValue: Record<string, unknown> = validArguments()): Model
 }
 
 describe("Memory episode strict decoder", () => {
-  it("accepts bounded RU/EN verbatim episodes and derives all safety metadata locally", () => {
+  it("decodes bounded verbatim legacy episodes with language metadata disabled", () => {
     const plan = decodeMemoryEpisodeExtraction([call()], input());
     expect(plan.episodes).toHaveLength(2);
     expect(plan.episodes[0]).toMatchObject({
-      languageCode: "ru",
+      languageCode: "und",
       messageIds: ["message-1", "message-2"],
       safeSummary: "Я не пью кофе после обеда.",
       safetyClass: "NORMAL"
     });
     expect(plan.episodes[1]).toMatchObject({
-      languageCode: "en",
+      languageCode: "und",
       redactionState: "REDACTED",
       safetyClass: "SENSITIVE"
     });
@@ -147,13 +147,13 @@ describe("Memory episode strict decoder", () => {
     }
   });
 
-  it("derives language from the exact summary instead of model metadata", () => {
+  it("does not derive language from model metadata or source script", () => {
     const value = validArguments();
     value.episodes[0]!.language = "en";
 
     const plan = decodeMemoryEpisodeExtraction([call(value)], input());
 
-    expect(plan.episodes[0]?.languageCode).toBe("ru");
+    expect(plan.episodes[0]?.languageCode).toBe("und");
   });
 
   it("rejects free-form, multiple-call, extra-field, overlap, and secret output", () => {

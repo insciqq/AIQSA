@@ -112,7 +112,6 @@ function createActionsForTest(input: {
     string,
     Promise<BranchCheckoutSettlement>
   >();
-  const closeChatActions = vi.fn();
   const openShareDialog = vi.fn<(target: ShareDialogTarget) => void>();
   const resetThreadToLatest = vi.fn();
 
@@ -123,7 +122,6 @@ function createActionsForTest(input: {
       activeChatStreaming: input.activeChatStreaming ?? false,
       activeChatTitle: activeChat.title,
       activateChat,
-      closeChatActions,
       confirmDeleteMessage,
       loadCompleteActiveBranch,
       openShareDialog,
@@ -136,7 +134,6 @@ function createActionsForTest(input: {
     }),
     activateChat,
     chats: () => useWorkspaceStore.getState().chats,
-    closeChatActions,
     confirmDeleteMessage,
     loadCompleteActiveBranch,
     messages: () => selectThreadSnapshot(useThreadStore.getState(), activeChat.id).messages,
@@ -535,15 +532,14 @@ describe("thread actions", () => {
     expect(notices).toEqual([]);
   });
 
-  it("opens the share dialog from a chat row with that chat's leaf and closes the row menu", () => {
+  it("opens the share dialog from a chat row with that chat's leaf", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    const { actions, closeChatActions, openShareDialog } = createActionsForTest();
+    const { actions, openShareDialog } = createActionsForTest();
     const rowChat = chatSummary({ activeLeafMessageId: "leaf-c", id: "chat-c" });
 
     actions.shareChat(rowChat);
 
-    expect(closeChatActions).toHaveBeenCalledOnce();
     expect(openShareDialog).toHaveBeenCalledWith({
       activeLeafMessageId: "leaf-c",
       chat: expect.objectContaining({ id: "chat-c" })

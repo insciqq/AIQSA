@@ -94,6 +94,16 @@ describe("Prisma chat repository", () => {
         defaultProviderModelId: fakeProviderModelId
       });
 
+      const excluded = await repository.createChat({
+        memoryMode: "EXCLUDED",
+        title: "Memory-off chat",
+        userId
+      });
+      await expect(prisma.chat.findUniqueOrThrow({
+        select: { memoryMode: true },
+        where: { id: excluded?.id ?? "" }
+      })).resolves.toEqual({ memoryMode: "EXCLUDED" });
+
       const userMessage = await prisma.message.create({
         data: {
           chatId: created?.id ?? "",
@@ -658,7 +668,7 @@ describe("Prisma chat repository", () => {
             chatId: chat.id,
             inputTokens: 7,
             modelId: "fake-qsa",
-            normalizedRequest: {},
+            normalizedRequest: { attachmentIds: ["file-a", "file-b"] },
             outputTokens: 5,
             provider: "fake",
             providerRequestPreview: {},
@@ -698,6 +708,12 @@ describe("Prisma chat repository", () => {
       });
       expect(detail?.messages).toEqual(expect.arrayContaining([
         expect.objectContaining({
+          evidenceSummary: {
+            fileCount: 2,
+            hasUsage: true,
+            sourceCount: 0,
+            toolCallCount: 0
+          },
           id: activeAssistant.id,
           runUsage: { totalTokens: 12 }
         })
@@ -1201,6 +1217,12 @@ describe("Prisma chat repository", () => {
         },
         {
           kind: "INDEX_HISTORY",
+          memoryGenerationSnapshot: 1,
+          memoryRevisionSnapshot: 2,
+          sourceRevision: 2
+        },
+        {
+          kind: "EXTRACT_FACTS",
           memoryGenerationSnapshot: 1,
           memoryRevisionSnapshot: 2,
           sourceRevision: 2

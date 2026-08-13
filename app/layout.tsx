@@ -8,6 +8,20 @@ import {
 } from "@/components/app-shell/theme";
 import { isTestAuthEnabled } from "@/lib/server/auth/config";
 import "katex/dist/katex.min.css";
+import "../styles/tokens-v2.css";
+import "../components/ui-v2/primitives.css";
+import "../features/navigation-v2/navigation.css";
+import "../features/conversation-v2/conversation.css";
+import "../features/run-lifecycle-v2/run-lifecycle.css";
+import "../features/composer-v2/composer.css";
+import "../features/attachments-v2/attachments.css";
+import "../features/evidence-v2/evidence.css";
+import "../features/branches-v2/branches.css";
+import "../features/artifacts-v2/artifacts.css";
+import "../features/run-details-v2/run-details.css";
+import "../features/library-v2/library.css";
+import "../features/settings-v2/settings.css";
+import "../features/workspace-v2/workspace.css";
 import "./globals.css";
 
 const sans = Golos_Text({

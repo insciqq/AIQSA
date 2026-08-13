@@ -455,6 +455,7 @@ export async function prepareGlobalDreamDeferredSelection(
   const relatedSnapshotHash = memoryFactRelatedSnapshotHash(relatedFacts);
   const withoutHash: Omit<MemoryFactConsolidationInput, "inputHash"> = {
     candidate,
+    memoryRevision: 0,
     relatedFacts,
     relatedSnapshotHash
   };

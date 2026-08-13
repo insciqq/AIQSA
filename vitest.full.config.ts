@@ -23,6 +23,7 @@ export default defineConfig({
     include: [
       "app/**/*.test.{ts,tsx}",
       "components/**/*.test.{ts,tsx}",
+      "features/**/*.test.{ts,tsx}",
       "lib/**/*.test.{ts,tsx}",
       "tests/harness/**/*.test.ts"
     ],

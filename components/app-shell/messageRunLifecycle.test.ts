@@ -57,7 +57,12 @@ describe("message run lifecycle", () => {
         onRunId("run-1");
         onMessageIds({ assistantMessageId: "assistant-persisted" }, "run-1");
         expect(getAssistantMessageId()).toBe("assistant-persisted");
-        return { failed: false, receivedChatUpdate: false, runId: "run-1" };
+        return {
+          failed: false,
+          receivedChatUpdate: false,
+          runId: "run-1",
+          terminalStatus: "complete"
+        };
       },
       createStreamTokenBuffer: (input) => {
         getAssistantMessageId = input.getAssistantMessageId;
@@ -123,7 +128,8 @@ describe("message run lifecycle", () => {
       consumeRunStream: async () => ({
         failed: false,
         receivedChatUpdate: true,
-        runId: null
+        runId: null,
+        terminalStatus: "complete" as const
       }),
       createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
       failurePrefix: "send_failed",
@@ -153,7 +159,8 @@ describe("message run lifecycle", () => {
         return {
           failed: true,
           receivedChatUpdate: true,
-          runId: "run-failed"
+          runId: "run-failed",
+          terminalStatus: "error"
         };
       },
       createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
@@ -179,6 +186,38 @@ describe("message run lifecycle", () => {
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
   });
 
+  it("settles a server-confirmed cancellation without answer-ready notification", async () => {
+    prepareThread();
+    const notifyAnswerReady = vi.fn(async () => undefined);
+
+    const result = await executeMessageRunLifecycle({
+      activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef: { current: new Map() },
+      chatId: "chat-1",
+      consumeRunStream: async () => ({
+        failed: false,
+        receivedChatUpdate: true,
+        runId: "run-cancelled",
+        terminalStatus: "cancelled"
+      }),
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
+      failurePrefix: "send_failed",
+      fetchRun: vi.fn(async () => null),
+      notifyAnswerReady,
+      optimisticAssistantMessageId: "assistant-optimistic",
+      primeAnswerSound: vi.fn(async () => undefined),
+      reconcileMessageIds: vi.fn(),
+      refreshActiveChat: vi.fn(async () => null),
+      request: async () => new Response("", { status: 200 })
+    });
+
+    expect(result).toMatchObject({ cancelled: true, failed: false });
+    expect(notifyAnswerReady).not.toHaveBeenCalled();
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({
+      status: "cancelled"
+    });
+  });
+
   it("refreshes a background source chat without painting it into the active surface", async () => {
     prepareThread();
     useThreadStore.getState().mergeMessages("chat-1", [], {
@@ -195,7 +234,12 @@ describe("message run lifecycle", () => {
       chatId: "chat-1",
       consumeRunStream: async () => {
         activeChatIdRef.current = "chat-2";
-        return { failed: false, receivedChatUpdate: false, runId: "run-1" };
+        return {
+          failed: false,
+          receivedChatUpdate: false,
+          runId: "run-1",
+          terminalStatus: "complete"
+        };
       },
       createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
       failurePrefix: "regenerate_failed",
@@ -237,7 +281,8 @@ describe("message run lifecycle", () => {
       consumeRunStream: vi.fn(async () => ({
         failed: false,
         receivedChatUpdate: false,
-        runId: null
+        runId: null,
+        terminalStatus: "complete" as const
       })),
       createStreamTokenBuffer: () => ({ flush, push: vi.fn() }),
       failurePrefix: "regenerate_failed",
@@ -314,6 +359,10 @@ describe("message run lifecycle", () => {
       optimisticAssistantMessageId: "assistant-optimistic",
       runId: null
     });
+    expect(useRunLifecycleStore.getState().ambiguousFailures["chat-1"]).toEqual({
+      assistantMessageId: "assistant-optimistic",
+      runId: null
+    });
   });
 
   it("reconciles an accepted stream that truncates after canonical ids arrive", async () => {
@@ -327,6 +376,13 @@ describe("message run lifecycle", () => {
       consumeRunStream: async ({ onMessageIds, onRunId }) => {
         onRunId("run-persisted");
         onMessageIds({ assistantMessageId: "assistant-persisted" }, "run-persisted");
+        useThreadStore.getState().updateMessages("chat-1", (current) =>
+          current.map((message) =>
+            message.id === "assistant-persisted"
+              ? { ...message, content: "Partial answer" }
+              : message
+          )
+        );
         throw new Error("stream truncated");
       },
       createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
@@ -360,6 +416,14 @@ describe("message run lifecycle", () => {
       optimisticAssistantMessageId: "assistant-optimistic",
       runId: "run-persisted"
     });
+    expect(useRunLifecycleStore.getState().ambiguousFailures["chat-1"]).toEqual({
+      assistantMessageId: "assistant-persisted",
+      runId: "run-persisted"
+    });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({
+      content: "Partial answer",
+      id: "assistant-persisted"
+    });
   });
 
   it("keeps the optimistic owner when caller message-id reconciliation throws", async () => {
@@ -371,7 +435,12 @@ describe("message run lifecycle", () => {
       chatId: "chat-1",
       consumeRunStream: async ({ onMessageIds }) => {
         onMessageIds({ assistantMessageId: "assistant-never-applied" }, null);
-        return { failed: false, receivedChatUpdate: false, runId: null };
+        return {
+          failed: false,
+          receivedChatUpdate: false,
+          runId: null,
+          terminalStatus: "complete"
+        };
       },
       createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
       failurePrefix: "send_failed",
@@ -392,17 +461,16 @@ describe("message run lifecycle", () => {
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages).toEqual([
       expect.objectContaining({
-        content: "reconciliation failed",
+        content: "",
         id: "assistant-optimistic",
         status: "error"
       })
     ]);
-    expect(surfaceEvents()).toEqual([
-      {
-        data: { message: "reconciliation failed" },
-        type: "error"
-      }
-    ]);
+    expect(surfaceEvents()).toEqual([]);
+    expect(useRunLifecycleStore.getState().ambiguousFailures["chat-1"]).toEqual({
+      assistantMessageId: "assistant-optimistic",
+      runId: null
+    });
     expect(useRunLifecycleStore.getState().activeStreams).toEqual({});
   });
 
@@ -460,7 +528,8 @@ describe("message run lifecycle", () => {
       consumeRunStream: vi.fn(async () => ({
         failed: false,
         receivedChatUpdate: false,
-        runId: null
+        runId: null,
+        terminalStatus: "complete" as const
       })),
       createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
       failurePrefix: "regenerate_failed",

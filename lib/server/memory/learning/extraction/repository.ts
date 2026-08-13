@@ -44,7 +44,6 @@ import {
   type MemoryFactExtractionPlan,
   type MemoryFactSourceIdentity
 } from "./contract";
-import { inspectMemoryFactSourceSafety } from "./safety";
 
 type PrepareResult =
   | Readonly<{ decision: Exclude<MemoryJobGateDecision, { status: "READY" }> }>
@@ -314,8 +313,7 @@ async function prepareWith(
     if (
       admission.excludedMessageIds.has(message.id) ||
       (admission.sourceCreatedAtCutoff !== null &&
-        new Date(message.createdAt) <= admission.sourceCreatedAtCutoff) ||
-      !inspectMemoryFactSourceSafety(message.safeText).eligible
+        new Date(message.createdAt) <= admission.sourceCreatedAtCutoff)
     ) return [];
     return [{
       contentHash: message.safeTextHash,
@@ -385,35 +383,6 @@ async function candidateIsSuppressed(
   return false;
 }
 
-async function explicitAuthorityExists(
-  tx: MemoryTransaction,
-  userId: string,
-  candidate: MemoryExtractedCandidate
-): Promise<boolean> {
-  const rows = await tx.$queryRaw<Array<{ present: boolean }>>(Prisma.sql`
-    SELECT EXISTS (
-      SELECT 1
-      FROM "MemoryFact" AS fact
-      INNER JOIN "MemoryScope" AS scope
-        ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
-      INNER JOIN "MemoryFactVersion" AS version
-        ON version."userId" = fact."userId"
-        AND version."factId" = fact."id"
-      WHERE fact."userId" = ${userId}
-        AND fact."canonicalKey" = ${candidate.canonicalKey}
-        AND fact."state" <> 'FORGOTTEN'::"MemoryFactState"
-        AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-        AND version."state" <> 'FORGOTTEN'::"MemoryFactVersionState"
-        AND scope."scopeType"::text = ${candidate.scope.type}
-        AND (
-          (${candidate.scope.type} = 'GLOBAL_USER' AND scope."targetIdSnapshot" IS NULL)
-          OR scope."targetIdSnapshot" = ${candidate.scope.targetId}
-        )
-    ) AS "present"
-  `);
-  return rows[0]?.present === true;
-}
-
 async function applyPlan(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
@@ -475,7 +444,6 @@ async function applyPlan(
       ) continue;
       await tx.memoryCandidate.delete({ where: { id: existing.id } });
     }
-    const rejected = await explicitAuthorityExists(tx, claim.userId, candidate);
     await tx.memoryCandidate.create({
       data: {
         branchGeneration: claim.branchGeneration,
@@ -490,6 +458,8 @@ async function applyPlan(
         pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
         proposedCanonicalKey: candidate.canonicalKey,
         proposedCategory: candidate.category,
+        proposedCoreEligible: candidate.coreEligible,
+        proposedCoreSalience: candidate.coreSalience,
         proposedDirectness: candidate.directness,
         proposedDisplayText: candidate.displayText,
         proposedModality: candidate.modality,
@@ -506,16 +476,14 @@ async function applyPlan(
           ? Prisma.JsonNull
           : candidate.proposedValue as Prisma.InputJsonValue,
         rawTemporalExpression: candidate.rawTemporalExpression,
-        reasonCode: rejected
-          ? "explicit_authority_exists"
-          : candidate.reasonCode,
-        resolvedAt: rejected ? now : null,
+        reasonCode: candidate.reasonCode,
+        resolvedAt: null,
         sourceHash: claim.sourceHash,
         sourceProjectionHash: plan.input.sourceProjectionHash,
         sourceProjectionVersion: plan.input.sourceProjectionVersion,
         sourceRevision: claim.sourceRevision,
         sourceTimezone: plan.input.timeZone,
-        state: rejected ? "REJECTED" : candidate.state,
+        state: candidate.state,
         temporalResolutionEvidence: candidate.temporalResolutionEvidence === null
           ? Prisma.DbNull
           : candidate.temporalResolutionEvidence as Prisma.InputJsonValue,

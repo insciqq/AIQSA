@@ -4,6 +4,7 @@ import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   type MemoryMutationAuthorizationInput
 } from "../../../contracts/memory";
+import { textFromContentBlocks } from "../../../domain/modelRunEvents";
 import { prisma } from "../../prisma";
 import { memoryPersistenceFailure } from "./errors";
 import { memorySha256 } from "./lexical";
@@ -66,6 +67,18 @@ export type MemoryMutationToolAuthorizationClaim = Readonly<{
   authorizedPayloadHash?: string;
   modelRunId: string;
   persistedToolCallId: string;
+}>;
+
+export type MemoryMutationToolAuthorizationMint = Readonly<{
+  action: MemoryMutationAction;
+  authorizedPayloadHash: string;
+  chatId: string;
+  expectedTargetVersionId?: string | null;
+  modelRunId: string;
+  persistedToolCallId: string;
+  sourceText: string;
+  targetFactId?: string | null;
+  toolName: string;
 }>;
 
 const authorizationSelect = {
@@ -339,6 +352,63 @@ export function createPrismaMemoryMutationAuthorizationRepository(
         return memoryPersistenceFailure("memory_mutation_authorization_invalid");
       }
       return { confirmedAt: row.createdAt, requestId: row.requestId };
+    },
+
+    async mintForTool(
+      userId: string,
+      input: MemoryMutationToolAuthorizationMint,
+      now = new Date()
+    ): Promise<MemoryMutationAuthorizationSnapshot> {
+      if (
+        !bounded(userId, 256) || !bounded(input.chatId, 256) ||
+        !bounded(input.modelRunId, 256) || !bounded(input.persistedToolCallId, 256) ||
+        !bounded(input.toolName, 128) || !input.sourceText ||
+        input.sourceText.length > 2_000 || input.sourceText.includes("\u0000")
+      ) return memoryPersistenceFailure("memory_input_invalid");
+      const run = await client.modelRun.findFirst({
+        select: {
+          chatId: true,
+          userMessageId: true,
+          userMessage: { select: { content: true, role: true } }
+        },
+        where: {
+          chatId: input.chatId,
+          id: input.modelRunId,
+          toolCalls: {
+            some: { id: input.persistedToolCallId, toolName: input.toolName }
+          },
+          userId
+        }
+      });
+      const stored = run?.userMessage.content;
+      const blocks = stored && typeof stored === "object" && !Array.isArray(stored) &&
+        Array.isArray((stored as { blocks?: unknown }).blocks)
+        ? (stored as { blocks: unknown[] }).blocks
+        : null;
+      const exactText = blocks ? textFromContentBlocks({ blocks }) : null;
+      if (
+        !run || run.chatId !== input.chatId || run.userMessage.role !== "user" ||
+        exactText === null || exactText !== input.sourceText
+      ) return memoryPersistenceFailure("memory_mutation_authorization_invalid");
+      return createPrismaMemoryMutationAuthorizationRepository(client).mint(userId, {
+        action: input.action,
+        authorizedPayloadHash: input.authorizedPayloadHash,
+        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        exactSourceEnd: exactText.length,
+        exactSourceStart: 0,
+        expectedTargetVersionId: input.expectedTargetVersionId,
+        expiresAt: new Date(now.getTime() + MEMORY_MUTATION_AUTHORIZATION_TTL_MS),
+        modelRunId: input.modelRunId,
+        nonceHash: memoryMutationNonceHash(
+          userId,
+          `tool:${input.modelRunId}:${input.persistedToolCallId}:${input.action}`
+        ),
+        persistedToolCallId: input.persistedToolCallId,
+        requestId: randomUUID(),
+        sourceChatId: input.chatId,
+        sourceMessageId: run.userMessageId,
+        targetFactId: input.targetFactId
+      }, now);
     },
 
     async claimForTool(

@@ -9,6 +9,13 @@ export type RunLifecycleSnapshot = {
       runId: string | null;
     }
   >;
+  ambiguousFailures: Record<
+    string,
+    {
+      assistantMessageId: string;
+      runId: string | null;
+    }
+  >;
   cancelledRunIds: Set<string>;
 };
 
@@ -47,21 +54,34 @@ export type RunLifecycleTransition =
       chatId: string;
       runId: string;
       type: "RESUME_EXITED";
+    }
+  | {
+      assistantMessageId: string;
+      chatId: string;
+      runId: string | null;
+      type: "STREAM_AMBIGUOUS";
+    }
+  | {
+      chatId: string;
+      type: "AMBIGUITY_CLEARED";
     };
 
 export type RunLifecycleStore = RunLifecycleSnapshot & {
+  ambiguityCleared(input: { chatId: string }): void;
   dispatch(transition: RunLifecycleTransition): void;
   resumeExited(input: { chatId: string; runId: string }): void;
   resumeStarted(input: { chatId: string; runId: string }): boolean;
   runCancelled(input: { chatId: string; runId?: string | null }): void;
   runIdReceived(input: { chatId: string; runId: string }): void;
   streamFinished(input: { chatId: string }): void;
+  streamAmbiguous(input: { assistantMessageId: string; chatId: string; runId: string | null }): void;
   streamStarted(input: { assistantMessageId?: string | null; chatId: string; runId?: string | null }): void;
   tokensApplied(input: { assistantMessageId: string; chatId: string }): void;
 };
 
 export const initialRunLifecycleSnapshot: RunLifecycleSnapshot = {
   activeStreams: {},
+  ambiguousFailures: {},
   cancelledRunIds: new Set<string>()
 };
 
@@ -69,6 +89,9 @@ function cloneSnapshot(state: RunLifecycleSnapshot): RunLifecycleSnapshot {
   return {
     activeStreams: Object.fromEntries(
       Object.entries(state.activeStreams).map(([chatId, stream]) => [chatId, { ...stream }])
+    ),
+    ambiguousFailures: Object.fromEntries(
+      Object.entries(state.ambiguousFailures).map(([chatId, failure]) => [chatId, { ...failure }])
     ),
     cancelledRunIds: new Set(state.cancelledRunIds)
   };
@@ -82,6 +105,7 @@ export function reduceRunLifecycle(
 
   switch (transition.type) {
     case "STREAM_STARTED":
+      delete next.ambiguousFailures[transition.chatId];
       next.activeStreams[transition.chatId] = {
         optimisticAssistantMessageId: transition.assistantMessageId ?? null,
         resuming: false,
@@ -110,6 +134,7 @@ export function reduceRunLifecycle(
         next.cancelledRunIds.add(transition.runId);
       }
       delete next.activeStreams[transition.chatId];
+      delete next.ambiguousFailures[transition.chatId];
       return next;
 
     case "RESUME_STARTED":
@@ -121,6 +146,7 @@ export function reduceRunLifecycle(
         resuming: true,
         runId: transition.runId
       };
+      delete next.ambiguousFailures[transition.chatId];
       return next;
 
     case "RESUME_EXITED":
@@ -131,11 +157,25 @@ export function reduceRunLifecycle(
         delete next.activeStreams[transition.chatId];
       }
       return next;
+
+    case "STREAM_AMBIGUOUS":
+      next.ambiguousFailures[transition.chatId] = {
+        assistantMessageId: transition.assistantMessageId,
+        runId: transition.runId
+      };
+      return next;
+
+    case "AMBIGUITY_CLEARED":
+      delete next.ambiguousFailures[transition.chatId];
+      return next;
   }
 }
 
 export const useRunLifecycleStore = create<RunLifecycleStore>((set, get) => ({
   ...initialRunLifecycleSnapshot,
+  ambiguityCleared(input) {
+    get().dispatch({ ...input, type: "AMBIGUITY_CLEARED" });
+  },
   dispatch(transition) {
     set((state) => reduceRunLifecycle(state, transition));
   },
@@ -163,6 +203,9 @@ export const useRunLifecycleStore = create<RunLifecycleStore>((set, get) => ({
   streamFinished(input) {
     get().dispatch({ ...input, type: "STREAM_FINISHED" });
   },
+  streamAmbiguous(input) {
+    get().dispatch({ ...input, type: "STREAM_AMBIGUOUS" });
+  },
   streamStarted(input) {
     get().dispatch({ ...input, type: "STREAM_STARTED" });
   },
@@ -175,6 +218,7 @@ export function resetRunLifecycleStoreForTest() {
   useRunLifecycleStore.setState({
     ...initialRunLifecycleSnapshot,
     activeStreams: {},
+    ambiguousFailures: {},
     cancelledRunIds: new Set<string>()
   });
 }

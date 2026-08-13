@@ -39,8 +39,6 @@ const unsafeControlPattern = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202
 const emailPattern = /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+/giu;
 const phoneCandidatePattern = /\+?\d(?:[\d ()\u00A0.-]{7,}\d)/gu;
 const dateLikePattern = /(\d{1,4})[./-](\d{1,2})[./-](\d{1,4})/gu;
-const highlySensitiveEnglishPattern = /(?:^|[^\p{L}\p{N}_])(?:bank account(?: number)?|diagnosis|medical record(?: number)?|passport(?: number)?|routing number|social security(?: number)?|ssn)(?=$|[^\p{L}\p{N}_])\s*(?:is|=|:|—|-)\s*\S+/iu;
-const highlySensitiveRussianPattern = /(?:^|[^\p{L}\p{N}_])(?:банковск(?:ий|ого) сч[её]т|диагноз|медицинск(?:ая|ой) карт(?:а|ы)|номер паспорта|паспорт|снилс)(?=$|[^\p{L}\p{N}_])\s*(?:это|=|:|—|-)\s*\S+/iu;
 
 type RedactionRange = Readonly<{
   end: number;
@@ -171,20 +169,6 @@ export function projectMemoryHistorySafeText(value: string): MemorySafeTextProje
       redactionReasonCodes: ["SECRET_PATTERN"],
       redactionState: "EXCLUDED",
       safetyClass: "SECRET_TAINTED",
-      safeText: null
-    };
-  }
-
-  if (
-    highlySensitiveEnglishPattern.test(sourceText) ||
-    highlySensitiveRussianPattern.test(sourceText)
-  ) {
-    return {
-      eligible: false,
-      providerSafeText: null,
-      redactionReasonCodes: ["HIGHLY_SENSITIVE_IDENTITY_OR_HEALTH"],
-      redactionState: "EXCLUDED",
-      safetyClass: "HIGHLY_SENSITIVE",
       safeText: null
     };
   }

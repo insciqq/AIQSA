@@ -104,6 +104,7 @@ function consolidationInput(
   const relatedSnapshotHash = memoryFactRelatedSnapshotHash(relatedFacts);
   const withoutHash: Omit<MemoryFactConsolidationInput, "inputHash"> = {
     candidate: candidateSnapshot,
+    memoryRevision: 0,
     relatedFacts,
     relatedSnapshotHash
   };

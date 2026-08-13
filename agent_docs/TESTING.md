@@ -56,11 +56,15 @@ docker compose -f docker-compose.dev.yml up -d --build
 npm run check:container
 ```
 
-`check:container` executes the complete check in a fresh bounded one-shot app
-container, including PostgreSQL-backed repository/concurrency cases. It has
-fixed 4 GiB and two-CPU cgroup boundaries, uses a 3 GiB Node heap and one Vitest
-worker, and never runs the toolchain inside the warmed Next/Turbopack dev
-process. Its unique container name also rejects a concurrent second check. Dev
+`check:container` executes the full container/stateful test matrix in a fresh
+bounded one-shot app container, including PostgreSQL-backed repository and
+concurrency cases. It first deploys every committed migration to the disposable
+development schema so the generated client and database can never drift. The
+required preceding hermetic lane owns full-repository
+lint and TypeScript; container parity does not repeat those memory-heavy static
+passes. It has fixed 2 GiB and two-CPU cgroup boundaries, uses a 1.5 GiB Node
+heap and one Vitest worker, and never runs the toolchain inside the warmed
+Next/Turbopack dev process. Its unique container name also rejects a concurrent second check. Dev
 Compose caps other app containers with `AIQSA_APP_MEMORY_LIMIT` (3 GiB by
 default) and `AIQSA_APP_CPU_LIMIT` (four CPUs by default).
 Deterministic and direct-database files therefore run sequentially in this
@@ -96,7 +100,11 @@ docker compose -f docker-compose.dev.yml exec -T \
   npx playwright test <spec-files> --project=chromium
 ```
 
-Use the standalone `run --rm` form when the selected spec requires the configured reset and loss of interactive development fixtures is acceptable. Inspect material visual changes directly at the viewport, input, theme, zoom, and motion conditions owned by the frontend contract; there is no generated screenshot-gallery or final-evidence ceremony. Local auth fixtures and session-mutation safety are owned by the bounded security contracts routed by `SECURITY.md`.
+When a prior container run left the default result directory host-unwritable,
+set `AIQSA_PLAYWRIGHT_OUTPUT_DIR` to a fresh task-owned path under `/tmp` rather
+than changing or deleting another process's artifacts.
+
+Use the standalone `run --rm` form when the selected spec requires the configured reset and loss of interactive development fixtures is acceptable. Inspect material visual changes directly at the viewport, input, theme, zoom, and motion conditions owned by the frontend contract. The replacement UI owns one bounded exception to the ordinary no-gallery rule: dev/test-only fixture routes feed reviewed dark/light Playwright baselines in `tests/e2e/ui-baseline/`. Each baseline represents a named contract state, is updated only after direct inspection, and carries no account, provider, chat, Memory, or other private data. It is not a generic final-evidence ceremony or permission to snapshot arbitrary application content. Local auth fixtures and session-mutation safety are owned by the bounded security contracts routed by `SECURITY.md`.
 
 ## Test Authoring
 
@@ -162,10 +170,12 @@ Select the script owned by the migration; do not run this list as a generic rele
 
 ### Database and service integrations
 
-Native Memory source settlement through learning review and feature-dark global
-reconciliation: safety projection, lexical/vector/episode indexing, candidate
-extraction/consolidation, local automatic retrieval, review feedback/conflict
-resolution, rebuild/recovery, manual search, and destructive replay:
+Native Memory source settlement through default-on learning and three-tier
+retrieval: recognizable-format safety projection, lexical/vector chunk/fact
+indexing, extraction/consolidation, Core and automatic retrieval, unified search,
+review feedback/conflict resolution, rebuild/recovery, and destructive replay.
+The episode, Global Dream, and profile rows in this matrix verify only that
+historical data is non-serving and remains safely purgeable/settleable:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app \
@@ -238,6 +248,24 @@ matrix enforces local-retrieval p95 below 150 ms and settled-history lag below
 15 minutes. It never prints owner/job IDs, Memory/query/source text, embeddings,
 storage keys, provider bodies, or credentials.
 
+The operator-authorized production-path Memory smoke runs only against a local
+disposable app already bounded to two CPUs and two GiB. It refreshes exact
+active answer/System/embedding tuples when stale, acknowledges the current
+installation egress fingerprint, performs a real `REEMBED`, and then proves two
+automatic-fact recall paths plus one non-Core cross-language vector/history
+path through private run receipts:
+
+```bash
+npm run smoke:memory-semantic
+```
+
+The runner reads the local bootstrap token only for loopback authentication and
+uses provider credentials already stored through Admin; it never exports a
+provider key. Output is limited to aggregate booleans/counts and SHA-256
+digests. It never prints Memory/query/source or answer text, account/chat/run/
+message/fact IDs, credentials, provider responses, or receipt passages. This
+command has no standing permission for a persistent or non-loopback install.
+
 Write-quiesced backup, wrong-key rejection, empty-target restore, unresolved
 account-obligation rejection, deletion-only review, and private promotion
 receipt use uniquely named disposable source/restore projects and clean their
@@ -250,13 +278,13 @@ npm run test:backup-restore
 The vector fixture uses PostgreSQL 16/pgvector 0.8, 5,001 eligible rows and
 closer foreign-tenant rows, plus incompatible generations/dimensions. It emits
 only a sanitized aggregate with Recall@5, exact/HNSW plan booleans, query p95,
-and zero leakage counts. The local-retrieval fixture emits sanitized RU/EN
-Recall@5, irrelevant-injection, candidate-bound, isolation, and query-p95
-evidence while exercising temporal and suppression filters. The history fixture
+and zero leakage counts. The local-retrieval fixture emits sanitized
+multi-script/cross-language Recall@5, irrelevant-injection, candidate-bound,
+isolation, and query-p95 evidence while exercising temporal and suppression filters. The history fixture
 emits only searchable-row count and enqueue-to-commit job lag. Test fixture IDs
 and content are explicitly excluded from every evidence object.
 
-The recall release profile additionally has a frozen synthetic RU/EN holdout
+The optional recall evaluation additionally has a frozen synthetic multilingual holdout
 runner. It exercises PostgreSQL lexical scoring plus the exactly selected
 embedding deployment, and emits only hashes, version fingerprints, aggregate
 Recall@5/bootstrap intervals, irrelevant-injection/Wilson intervals, source
@@ -277,16 +305,16 @@ npx tsx scripts/memory-recall-release-evaluation.ts \
 Use `AIQSA_MEMORY_EVALUATION_USER_ID` only to disambiguate the already
 authorized owner; the runner otherwise requires exactly one active admin. It
 never grants provider authority by itself and never emits account/model IDs,
-source text, vectors, raw provider bodies, or credentials. This
-`RECALL_RELEASE` evidence does not satisfy `AUTOMATIC_LEARNING_BETA`.
+source text, vectors, raw provider bodies, or credentials. Recall evidence is
+advisory for tested/recommended model combinations and never grants runtime
+authority.
 
-The automatic-learning beta has a separate live evaluator. Tuning may use its
-bounded subset flags repeatedly, but HOLDOUT rejects every subset flag and
-requires the exact frozen corpus hash plus the already-passed exact embedding
-HOLDOUT dependency. The runner resolves the persisted System Model and
-embedding deployment, makes no call without explicit authorization, writes the
-sanitized aggregate once with exclusive creation, and runs in a 2 GiB/two-CPU
-one-shot dev container:
+Automatic learning retains a separate optional live evaluator for regression
+and model recommendations. It does not qualify an installation or toggle the
+feature. The runner resolves the persisted System Model and embedding
+deployment, makes no call without explicit authorization, writes the sanitized
+aggregate once with exclusive creation, and runs in a 2 GiB/two-CPU one-shot
+dev container:
 
 ```bash
 npm run memory:learning:evaluate -- \
@@ -297,37 +325,12 @@ npm run memory:learning:evaluate -- \
   --evidence-output=.aiqsa/PRIVATE_LEARNING_EVIDENCE.json
 ```
 
-Verifier qualification uses 32 cases per language in a fixed balanced gold
-matrix by transition operation and supported/mismatched-target variant; it
-never selects verifier
-inputs from consolidation outputs that happened to pass in the same run.
-Sanitized diagnostics distinguish provider failure, missing or malformed tool
-structure, exact public-schema contract violations, and wrong verdicts, with
-only operation/variant, output-shape class, and bounded token bands retained.
-Raw provider output, reasoning, arguments, source text, and identifiers remain
-excluded.
-
-Only a passed full-split aggregate with complete independent RU/EN gates, zero
-hard-gate counts, both supporting roles, and all six exact role fingerprints
-may be signed. `memory:qualification:build` accepts only evidence and an
-Ed25519 private key below `.aiqsa`, emits the public key plus registry to
-standard output or an exclusively created private `--output`, and never emits
-or copies the private key:
-
-```bash
-npm run memory:qualification:build -- \
-  --evidence=.aiqsa/PRIVATE_LEARNING_EVIDENCE.json \
-  --private-key=.aiqsa/PRIVATE_ED25519_KEY.pem \
-  --approved-at=APPROVED_AT_ISO \
-  --expires-at=EXPIRES_AT_ISO \
-  --approved-by=SAFE_OPERATOR_ID \
-  --approval-id=SAFE_APPROVAL_ID \
-  --output=.aiqsa/PRIVATE_SIGNED_REGISTRY.json
-```
-
-The reviewed sanitized output updates the code-owned
-`lib/evaluation/memory/qualificationRegistry.json`; the private evidence and
-signing key never enter Git, Docker context exports, logs, or test fixtures.
+The old verifier/signing registry commands are retained only for archaeology or
+offline comparison. They are not release gates, runtime authorities, Settings
+capabilities, or prerequisites for automatic learning. Focused tests instead
+verify strict extraction/consolidation/relevance schemas, exact evidence,
+multi-script handling, compatibility/drift, and the absence of semantic
+post-processing gates.
 
 Authentication admission concurrency/restart:
 

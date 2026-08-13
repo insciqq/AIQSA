@@ -1,22 +1,15 @@
-import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type {
-  MemoryCapabilityQualification,
-  MemoryQualificationRequirement
-} from "../../../evaluation/memory/qualification";
-import { canonicalMemoryQualificationPayload } from "../../../evaluation/memory/qualification";
 import { MemoryExecutionError } from "./errors";
 import type { ResolvedMemoryExecutionTarget } from "./policy";
 import { qualifyMemoryExecution } from "./qualification";
 import { MEMORY_EXECUTION_ROLES, MEMORY_STRICT_OUTPUT_ROLES } from "./roles";
 
-const KEY = Buffer.from("memory-execution-strict-output-test", "utf8");
 const versions = {
-  pipelineVersion: "memory-pipeline-v1",
-  policyVersion: "memory-policy-v1",
-  promptVersion: "memory-prompt-v1",
-  retrievalConfigFingerprint: "memory-retrieval-v1",
-  schemaVersion: "memory-schema-v1"
+  pipelineVersion: "memory-pipeline-v2",
+  policyVersion: "memory-policy-v2",
+  promptVersion: "memory-prompt-v2",
+  retrievalConfigFingerprint: "memory-retrieval-v2",
+  schemaVersion: "memory-schema-v2"
 } as const;
 
 function target(toolCalling: boolean): ResolvedMemoryExecutionTarget {
@@ -45,7 +38,7 @@ function target(toolCalling: boolean): ResolvedMemoryExecutionTarget {
         apiRoot: "https://provider.example.test/v1",
         responseTimeoutMs: 30_000
       },
-      connectionDisplayName: "Provider",
+      connectionDisplayName: "Custom provider",
       connectionId: "connection-1",
       credentialId: "credential-1",
       credentialVersionId: "credential-version-1",
@@ -62,9 +55,9 @@ function target(toolCalling: boolean): ResolvedMemoryExecutionTarget {
         },
         defaultParams: {},
         modelClass: "answer",
-        upstreamModelId: "strict-model"
+        upstreamModelId: "custom-strict-model"
       },
-      modelDisplayName: "Strict model",
+      modelDisplayName: "Custom strict model",
       providerFamily: "openai_compatible",
       providerModelId: "provider-model-1",
       version: 1
@@ -72,152 +65,45 @@ function target(toolCalling: boolean): ResolvedMemoryExecutionTarget {
   };
 }
 
-function requirementFor(executionTarget: ResolvedMemoryExecutionTarget): MemoryQualificationRequirement {
-  return {
-    ...executionTarget.qualificationFingerprints,
-    corpusHash: "7".repeat(64),
-    corpusVersion: "memory-corpus-v1",
-    language: "RU",
-    pipelineVersion: versions.pipelineVersion,
-    policyVersion: versions.policyVersion,
-    promptVersion: versions.promptVersion,
-    retrievalConfigFingerprint: versions.retrievalConfigFingerprint,
-    role: "MEMORY_FACT_EXTRACT",
-    schemaVersion: versions.schemaVersion,
-    scorerVersion: "memory-scorer-v1",
-    suiteVersion: "memory-suite-v1",
-    vectorSpaceFingerprint: null
-  };
-}
-
-function signed(requirement: MemoryQualificationRequirement): MemoryCapabilityQualification {
-  const qualification: MemoryCapabilityQualification = {
-    approval: {
-      approvalId: "approval-v1",
-      approved: true,
-      approvedAt: "2026-08-10T00:00:00.000Z",
-      approvedBy: "operator-v1",
-      expiresAt: "2026-09-10T00:00:00.000Z",
-      signature: "pending"
-    },
-    evidenceDigest: "8".repeat(64),
-    key: requirement,
-    qualificationId: "qualification-v1"
-  };
-  return {
-    ...qualification,
-    approval: {
-      ...qualification.approval,
-      signature: createHmac("sha256", KEY)
-        .update(canonicalMemoryQualificationPayload(qualification), "utf8")
-        .digest("hex")
-    }
-  };
-}
-
-describe("Memory execution qualification", () => {
-  it("covers every approved logical role and marks only schema-bound roles strict", () => {
-    expect(MEMORY_EXECUTION_ROLES).toEqual([
-      "MEMORY_EPISODE_EXTRACT",
-      "MEMORY_FACT_EXTRACT",
-      "MEMORY_CONSOLIDATE",
-      "MEMORY_VERIFY",
-      "MEMORY_QUERY_EXPAND",
-      "MEMORY_RERANK",
-      "MEMORY_PROFILE",
-      "MEMORY_DOCUMENT_EMBED",
-      "MEMORY_QUERY_EMBED"
-    ]);
-    expect(MEMORY_STRICT_OUTPUT_ROLES).toEqual([
-      "MEMORY_EPISODE_EXTRACT",
-      "MEMORY_FACT_EXTRACT",
-      "MEMORY_CONSOLIDATE",
-      "MEMORY_VERIFY",
-      "MEMORY_PROFILE"
-    ]);
+describe("Memory execution compatibility", () => {
+  it("keeps the bounded role and strict-output declarations", () => {
+    expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_FACT_EXTRACT");
+    expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_RERANK");
+    expect(MEMORY_STRICT_OUTPUT_ROLES).toContain("MEMORY_FACT_EXTRACT");
+    expect(MEMORY_STRICT_OUTPUT_ROLES).not.toContain("MEMORY_QUERY_EMBED");
   });
 
-  it("requires both declared schema transport and an exact signed role qualification", () => {
-    const capable = target(true);
-    const qualification = signed(requirementFor(capable));
-    const authority = {
-      corpusHash: "7".repeat(64),
-      corpusVersion: "memory-corpus-v1",
-      registry: [qualification],
-      scorerVersion: "memory-scorer-v1",
-      suiteVersion: "memory-suite-v1",
-      verifySignature: (payload: string, signature: string) =>
-        createHmac("sha256", KEY).update(payload, "utf8").digest("hex") === signature
-    };
-    expect(qualifyMemoryExecution({
-      authority,
+  it("admits any compatible administrator-selected model without a quality registry", () => {
+    const qualified = qualifyMemoryExecution({
+      authority: {
+        corpusHash: "legacy-corpus-that-is-deliberately-ignored",
+        registry: []
+      },
       now: new Date("2026-08-10T12:00:00.000Z"),
       role: "MEMORY_FACT_EXTRACT",
       settings: { memoryUiLocale: "RU" },
-      target: capable,
+      target: target(true),
       versions
-    })).toMatchObject({
-      qualificationId: "qualification-v1",
-      requiresStrictStructuredOutput: true
     });
 
+    expect(qualified).toMatchObject({
+      qualificationId: expect.stringMatching(/^compat\.[a-f0-9]{64}$/u),
+      requirement: {
+        compatibilityVersion: "memory-runtime-compatibility-v2",
+        role: "MEMORY_FACT_EXTRACT",
+        vectorSpaceFingerprint: null
+      },
+      requiresStrictStructuredOutput: true
+    });
+  });
+
+  it("still rejects an incompatible strict-output transport", () => {
     expect(() => qualifyMemoryExecution({
-      authority,
       now: new Date("2026-08-10T12:00:00.000Z"),
       role: "MEMORY_FACT_EXTRACT",
       settings: { memoryUiLocale: "RU" },
       target: target(false),
       versions
     })).toThrow(new MemoryExecutionError("memory_execution_capability_unavailable"));
-  });
-
-  it("selects the preregistered evidence identity for a Phase-specific role", () => {
-    const capable = target(true);
-    const profileRequirement: MemoryQualificationRequirement = {
-      ...requirementFor(capable),
-      corpusHash: "9".repeat(64),
-      corpusVersion: "memory-corpus-v2",
-      role: "MEMORY_PROFILE",
-      scorerVersion: "memory-scorers-v2",
-      suiteVersion: "memory-phase7-quality-v1"
-    };
-    const qualification = signed(profileRequirement);
-    const authority = {
-      corpusHash: "7".repeat(64),
-      corpusVersion: "memory-corpus-v1",
-      identitiesByRole: {
-        MEMORY_PROFILE: {
-          corpusHash: "9".repeat(64),
-          corpusVersion: "memory-corpus-v2",
-          scorerVersion: "memory-scorers-v2",
-          suiteVersion: "memory-phase7-quality-v1"
-        }
-      },
-      registry: [qualification],
-      scorerVersion: "memory-scorer-v1",
-      suiteVersion: "memory-suite-v1",
-      verifySignature: (payload: string, signature: string) =>
-        createHmac("sha256", KEY).update(payload, "utf8").digest("hex") === signature
-    } as const;
-    expect(qualifyMemoryExecution({
-      authority,
-      now: new Date("2026-08-10T12:00:00.000Z"),
-      role: "MEMORY_PROFILE",
-      settings: { memoryUiLocale: "RU" },
-      target: capable,
-      versions
-    }).requirement).toMatchObject({
-      corpusHash: "9".repeat(64),
-      role: "MEMORY_PROFILE",
-      suiteVersion: "memory-phase7-quality-v1"
-    });
-    expect(() => qualifyMemoryExecution({
-      authority: { ...authority, identitiesByRole: undefined },
-      now: new Date("2026-08-10T12:00:00.000Z"),
-      role: "MEMORY_PROFILE",
-      settings: { memoryUiLocale: "RU" },
-      target: capable,
-      versions
-    })).toThrow(new MemoryExecutionError("memory_execution_qualification_required"));
   });
 });

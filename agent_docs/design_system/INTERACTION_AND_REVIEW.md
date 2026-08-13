@@ -28,12 +28,13 @@ Composition follows available space, content, and input capability. Media querie
 - At shell, Details, composer, Assistant, and resource split breakpoints owned by
   the routed functional contracts, preserve the same semantic hierarchy rather
   than inventing another control or navigation model.
-- At `>=1281px`, the global icon rail is mandatory while the adjacent Workspace
-  pane may be hidden; at `<=1280px`, both desktop navigation columns leave the
-  layout and accessibility tree and the established drawer remains the owner.
+- At `>=1024px`, the single sidebar starts open and may collapse completely;
+  at `900–1023px` it starts collapsed; below `900px` the same navigation becomes
+  the sole scrim-backed drawer. Collapse never leaves an icon rail or duplicate
+  accessibility-tree navigation.
 - Validate at 384/390x844, 844x390, 768x1024, 1024x512, 1024x768,
-  1280x500, 1280x800, the compact/desktop shell boundary, and the wide Details
-  boundary, including enlarged root text at the 1281px edge.
+  1280x500, 1280x800, the 899/900 and 1023/1024 shell boundaries, and 1440px
+  wide composition, including enlarged root text.
 - Use `dvh`, `viewport-fit=cover`, `interactive-widget=resizes-content`, and every relevant safe-area inset.
 - At `(hover: none)` or `(pointer: coarse)`, primary workflow targets are approximately 44x44px so the product remains comfortable on phones and tablets.
 - No primary phone/tablet workflow depends on hover or drag precision.
@@ -82,20 +83,23 @@ Before propagating a new recipe, render and critique one representative Chat sta
 Every new or changed visual recipe must satisfy these conditions before it becomes the product default:
 
 - it reads as the same system in light and dark themes;
+- every v2 gallery state has a deterministic paired light/dark baseline, and the
+  shell responsive matrix records both themes at each owned viewport rather
+  than treating light as a desktop-only spot check;
 - primary and secondary actions are unambiguous without badge/color dependence;
 - loading, empty, error, busy, success, destructive, and long-content states are covered as applicable;
 - safe-area, software-keyboard clearance, overflow, and coarse-pointer composition are verified;
-- the Run receipt and other AI stages show only real state;
+- the evidence row, Run details, and other AI stages show only real state;
 - affected capability and state contracts have test/evidence references;
 - no superseded renderer, component-local color recipe, obsolete token, or implementation-shape test remains.
 
 Use these audits during implementation:
 
 ```bash
-rg -n '#[0-9a-fA-F]{3,8}|rgb\(|rgba\(|hsl\(|oklch\(' components app
-rg -n '(bg|text|border|ring)-(blue|indigo|violet|purple|sky|emerald|teal|cyan|lime|orange|yellow|red|pink|fuchsia|gray|neutral)-[0-9]' components app
-rg -n 'bg-gradient|from-|via-|to-|backdrop-blur' components app
-rg -n 'bg-black/|className=.*dark|theme: "github-dark"' components app tailwind.config.ts
+rg -n '#[0-9a-fA-F]{3,8}|rgb\(|rgba\(|hsl\(|oklch\(' components features app styles
+rg -n '(bg|text|border|ring)-(blue|indigo|violet|purple|sky|emerald|teal|cyan|lime|orange|yellow|red|pink|fuchsia|gray|neutral)-[0-9]' components features app
+rg -n 'bg-gradient|from-|via-|to-|backdrop-blur' components features app
+rg -n 'bg-black/|className=.*dark|theme: "github-dark"' components features app tailwind.config.ts
 ```
 
 Investigate every product-code hit, then run the proportional checks in `TESTING.md` and inspect affected runtime states directly.

@@ -26,7 +26,6 @@ type ThreadActionsInput = {
   activeChatId: string | null;
   activeChatTitle: string;
   activateChat(chat: ChatSummary): void;
-  closeChatActions(): void;
   confirmDeleteMessage(messageId: string): Promise<boolean>;
   loadCompleteActiveBranch(chatId: string): Promise<ThreadMessage[]>;
   openShareDialog(target: ShareDialogTarget): void;
@@ -84,7 +83,6 @@ export function createThreadActions({
   activeChatStreaming,
   activeChatTitle,
   activateChat,
-  closeChatActions,
   confirmDeleteMessage,
   loadCompleteActiveBranch,
   openShareDialog,
@@ -429,7 +427,6 @@ export function createThreadActions({
       return;
     }
 
-    closeChatActions();
     openShareDialog({
       activeLeafMessageId: chat.activeLeafMessageId,
       chat

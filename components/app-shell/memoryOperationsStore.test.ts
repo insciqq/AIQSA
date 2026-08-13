@@ -19,7 +19,6 @@ import {
 import { resetMemorySettingsStoreForTest } from "./memorySettingsStore";
 import {
   memoryDeletionFixture,
-  memoryProfileFixture,
   memoryRebuildFixture,
   memorySettingsFixture,
   memorySummaryFixture
@@ -296,10 +295,7 @@ describe("Memory operations store", () => {
     });
     useMemoryManagerStore.setState({
       listLoadState: "ready",
-      memories: [memorySummaryFixture()],
-      profileAccountId: "account-a",
-      profileLoadState: "ready",
-      profileResponse: memoryProfileFixture()
+      memories: [memorySummaryFixture()]
     });
     selectMemoryOperation("DELETE_ALL_REUSABLE");
     await confirmSelectedMemoryOperation();
@@ -325,10 +321,7 @@ describe("Memory operations store", () => {
     });
     expect(useMemoryManagerStore.getState()).toMatchObject({
       listLoadState: "idle",
-      memories: [],
-      profileAccountId: "account-a",
-      profileLoadState: "idle",
-      profileResponse: null
+      memories: []
     });
     expect(useMemoryOperationsStore.getState()).toMatchObject({
       allStatus: deletion,

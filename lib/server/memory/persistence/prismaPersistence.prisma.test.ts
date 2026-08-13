@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../prisma";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
+import { textMessageContent } from "../../../domain/content";
 import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   resolveCurrentMemoryUtilityPolicy,
@@ -201,6 +202,142 @@ describe("Prisma Memory persistence", () => {
     }
   });
 
+  it("mints tool authority only from the exact current USER turn and current owned target", async () => {
+    const userId = await createActiveUser("tool-authorization");
+    const otherUserId = await createActiveUser("tool-authorization-other");
+    const sourceText = "Replace my saved answer preference with concise replies.";
+    const repository = createPrismaMemoryMutationAuthorizationRepository(prisma);
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Tool authorization", userId }
+      });
+      const userMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent(sourceText),
+          role: "user",
+          status: "complete"
+        }
+      });
+      const run = await prisma.modelRun.create({
+        data: {
+          chatId: chat.id,
+          modelId: "memory-tool-authorization-model",
+          normalizedRequest: {},
+          provider: "memory-tool-authorization-provider",
+          providerRequestPreview: {},
+          status: "complete",
+          userId,
+          userMessageId: userMessage.id
+        }
+      });
+      const [saveCall, editCall] = await Promise.all([
+        prisma.modelRunToolCall.create({
+          data: {
+            arguments: { text: "Keep replies concise." },
+            modelRunId: run.id,
+            ordinal: 0,
+            providerCallId: randomUUID(),
+            roundIndex: 0,
+            toolName: "save_memory"
+          }
+        }),
+        prisma.modelRunToolCall.create({
+          data: {
+            arguments: { replacement_text: "Keep replies concise." },
+            modelRunId: run.id,
+            ordinal: 1,
+            providerCallId: randomUUID(),
+            roundIndex: 0,
+            toolName: "edit_memory"
+          }
+        })
+      ]);
+
+      const saved = await repository.mintForTool(userId, {
+        action: "SAVE",
+        authorizedPayloadHash: "1".repeat(64),
+        chatId: chat.id,
+        modelRunId: run.id,
+        persistedToolCallId: saveCall.id,
+        sourceText,
+        toolName: saveCall.toolName
+      });
+      expect(saved).toMatchObject({
+        action: "SAVE",
+        exactSourceEnd: sourceText.length,
+        exactSourceStart: 0,
+        modelRunId: run.id,
+        persistedToolCallId: saveCall.id,
+        sourceChatId: chat.id,
+        sourceMessageId: userMessage.id
+      });
+      await expect(repository.mintForTool(userId, {
+        action: "SAVE",
+        authorizedPayloadHash: "2".repeat(64),
+        chatId: chat.id,
+        modelRunId: run.id,
+        persistedToolCallId: saveCall.id,
+        sourceText: "Replace an earlier turn instead.",
+        toolName: saveCall.toolName
+      })).rejects.toMatchObject({ code: "memory_mutation_authorization_invalid" });
+
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const current = await createTestMemoryFactRepository().save(userId, saveInput(
+        scope.id,
+        `tool-owned-${randomUUID()}`,
+        factValue(`opaque.${randomUUID()}`, "I prefer detailed replies.", "detailed")
+      ));
+      await expect(repository.mintForTool(userId, {
+        action: "EDIT",
+        authorizedPayloadHash: "3".repeat(64),
+        chatId: chat.id,
+        expectedTargetVersionId: current.versionId,
+        modelRunId: run.id,
+        persistedToolCallId: editCall.id,
+        sourceText,
+        targetFactId: current.factId,
+        toolName: editCall.toolName
+      })).resolves.toMatchObject({
+        action: "EDIT",
+        expectedTargetVersionId: current.versionId,
+        targetFactId: current.factId
+      });
+
+      const otherScope = await createPrismaMemoryScopeRepository(prisma)
+        .ensureGlobal(otherUserId);
+      const other = await createTestMemoryFactRepository().save(otherUserId, saveInput(
+        otherScope.id,
+        `tool-other-${randomUUID()}`,
+        factValue(`opaque.${randomUUID()}`, "Other user's preference.", "other")
+      ));
+      const foreignCall = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: { replacement_text: "Do not cross owners." },
+          modelRunId: run.id,
+          ordinal: 2,
+          providerCallId: randomUUID(),
+          roundIndex: 0,
+          toolName: "edit_memory"
+        }
+      });
+      await expect(repository.mintForTool(userId, {
+        action: "EDIT",
+        authorizedPayloadHash: "4".repeat(64),
+        chatId: chat.id,
+        expectedTargetVersionId: other.versionId,
+        modelRunId: run.id,
+        persistedToolCallId: foreignCall.id,
+        sourceText,
+        targetFactId: other.factId,
+        toolName: foreignCall.toolName
+      })).rejects.toMatchObject({ code: "memory_fact_not_found" });
+    } finally {
+      await cleanupUser(userId);
+      await cleanupUser(otherUserId);
+    }
+  });
+
   it("persists all independent gate combinations and fences consent policy drift", async () => {
     const userId = await createActiveUser("settings-matrix");
     let currentFingerprint = "c".repeat(64);
@@ -231,7 +368,7 @@ describe("Prisma Memory persistence", () => {
       }).get(userId);
       expect(initialProjection).toMatchObject({
         capabilities: {
-          automaticLearning: false,
+          automaticLearning: true,
           explicitMemory: true,
           historyRecall: true,
           permanentChatDeletion: false,
@@ -255,17 +392,17 @@ describe("Prisma Memory persistence", () => {
       expect(JSON.stringify(initialProjection)).not.toMatch(/credential/iu);
 
       const combinations = [
-        [true, true, false],
+        [true, true, true],
         [false, true, false],
         [false, false, false],
         [false, false, true],
         [false, true, true],
-        [true, true, true],
+        [true, true, false],
         [true, false, true],
         [true, false, false]
       ] as const;
       await expect(repository.get(userId)).resolves.toMatchObject({
-        learnAutomatically: false,
+        learnAutomatically: true,
         referenceChatHistory: true,
         useMemoryFacts: true
       });
@@ -301,23 +438,7 @@ describe("Prisma Memory persistence", () => {
         orderBy: { createdAt: "asc" },
         where: { kind: "RECALCULATE_WORKING_SET", userId }
       });
-      expect(workingSetJobs).toHaveLength(2);
-      expect(workingSetJobs.map((job) => ({
-        fingerprint: job.idempotencyFingerprint.slice(0, 21),
-        memoryRevision: job.memoryRevisionSnapshot,
-        pipelineVersion: job.pipelineVersion
-      }))).toEqual([
-        {
-          fingerprint: "working-set-settings:",
-          memoryRevision: 5,
-          pipelineVersion: "memory-working-set-profile-v1"
-        },
-        {
-          fingerprint: "working-set-settings:",
-          memoryRevision: 7,
-          pipelineVersion: "memory-working-set-profile-v1"
-        }
-      ]);
+      expect(workingSetJobs).toHaveLength(0);
 
       const observedFingerprint = currentFingerprint;
       currentFingerprint = "d".repeat(64);

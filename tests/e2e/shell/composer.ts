@@ -1,85 +1,79 @@
 import { expect, type Locator, type Page } from "@playwright/test";
-import { matrixCatalog } from "./catalog";
+
+export function composerRunSummary(page: Page): Locator {
+  return page.locator(".v2-composer-model-trigger");
+}
+
+export async function openModelPicker(page: Page): Promise<Locator> {
+  const picker = page.getByRole("dialog", { name: "Выбор модели" });
+  if (await picker.isVisible()) return picker;
+  await composerRunSummary(page).click();
+  await expect(picker).toBeVisible();
+  await expect(picker.getByRole("searchbox", { name: "Найти модель" })).toBeFocused();
+  return picker;
+}
 
 export async function selectModel(
   page: Page,
   provider: string,
   modelQuery: string,
-  providerNameOverride?: string
+  _providerNameOverride?: string
 ): Promise<void> {
-  const providerName =
-    providerNameOverride ?? matrixCatalog.providers.find((candidate) => candidate.id === provider)?.name ?? provider;
-  const escapedProviderName = providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const controls = await openRunSetup(page);
-  await controls.getByRole("button", { name: "Select model" }).click();
-  await expect(page.getByLabel("Search models")).toBeFocused();
-  await page.getByLabel("Search models").fill(modelQuery);
-  const modelPicker = page.getByTestId("model-picker");
-  const providerRows = modelPicker.locator(
-    `[data-model-picker-row^="${provider}:"]`
-  );
-  await expect(providerRows.first()).toBeVisible();
-  await providerRows.getByRole("button", {
-    name: new RegExp(`^Select model ${escapedProviderName} `, "i")
-  }).first().click();
-  await closeRunSetup(page);
+  const picker = await openModelPicker(page);
+  await picker.getByRole("searchbox", { name: "Найти модель" }).fill(modelQuery);
+  const option = picker.locator(`[role="option"][data-provider-id="${provider}"]`)
+    .filter({ hasText: modelQuery })
+    .first();
+  await expect(option).toBeVisible();
+  await option.click();
+  await expect(picker).toHaveCount(0);
+}
+
+export async function openRunSetup(page: Page): Promise<Locator> {
+  const setup = page.getByRole("dialog", { name: "Параметры модели" });
+  if (await setup.isVisible()) return setup;
+  await page.getByRole("button", { name: "Возможности" }).click();
+  const capabilities = page.getByRole("menu", { name: "Возможности запроса" });
+  await capabilities.getByRole("menuitemcheckbox", { name: /Параметры модели/ }).click();
+  await expect(setup).toBeVisible();
+  return setup;
+}
+
+export async function closeRunSetup(page: Page): Promise<void> {
+  const setup = page.getByRole("dialog", { name: "Параметры модели" });
+  if (!(await setup.isVisible())) return;
+  await setup.getByRole("button", { name: "Закрыть параметры" }).click();
+  await expect(setup).toHaveCount(0);
 }
 
 export async function reasoningOptionValues(page: Page): Promise<string[]> {
-  const controls = await openRunSetup(page);
-  await controls.getByRole("button", { name: "Reasoning effort", exact: true }).click();
-  const values = await controls
-    .getByTestId("composer-reasoning-effort-options")
-    .locator("[data-option-value]")
-    .evaluateAll((options) => options.map((option) => option.getAttribute("data-option-value") ?? ""));
-  await controls.getByRole("button", { name: "Reasoning effort", exact: true }).click();
+  const setup = await openRunSetup(page);
+  const select = setup.getByLabel("Reasoning effort");
+  const values = await select.locator("option").evaluateAll(
+    (options) => options.map((option) => (option as HTMLOptionElement).value)
+  );
   await closeRunSetup(page);
   return values;
 }
 
 export async function chooseSearchStrategy(page: Page, label: string): Promise<void> {
-  const controls = await openRunSetup(page);
-  await controls.getByRole("button", { name: "Search strategy" }).click();
-  const options = controls.getByTestId("search-select-options");
-  await options.getByRole("button", { name: new RegExp(label) }).click();
-  await options.getByRole("button", { name: "Close Search picker" }).click();
-  await expect(options).toHaveCount(0);
-  await closeRunSetup(page);
-}
-
-export async function chooseReasoningEffort(page: Page, value: string): Promise<void> {
-  const controls = await openRunSetup(page);
-  await controls.getByRole("button", { name: "Reasoning effort", exact: true }).click();
-  await controls
-    .getByTestId("composer-reasoning-effort-options")
-    .locator(`[data-option-value="${value}"]`)
-    .click();
-  await closeRunSetup(page);
-}
-
-export function composerRunSummary(page: Page): Locator {
-  return page.getByTestId("composer-run-summary");
-}
-
-export async function openRunSetup(page: Page): Promise<Locator> {
-  const sheet = page.getByTestId("run-setup-sheet");
-  if (await sheet.isVisible()) {
-    return sheet;
-  }
-
-  await composerRunSummary(page).click();
-  await expect(sheet).toBeVisible();
-  return sheet;
-}
-
-export async function closeRunSetup(page: Page): Promise<void> {
-  const sheet = page.getByTestId("run-setup-sheet");
-  if (!(await sheet.isVisible())) {
+  if (/off/iu.test(label)) {
+    const indicator = page.getByRole("button", { name: "Отключить Search" });
+    if (await indicator.isVisible()) await indicator.click();
+    await expect(indicator).toHaveCount(0);
     return;
   }
 
-  await sheet.getByRole("button", { name: "Close run setup" }).click();
-  await expect(sheet).toHaveCount(0);
+  await page.getByRole("button", { name: "Возможности" }).click();
+  const capabilities = page.getByRole("menu", { name: "Возможности запроса" });
+  await capabilities.getByRole("menuitemcheckbox", { name: new RegExp(label, "iu") }).click();
+  await capabilities.getByRole("button", { name: "Закрыть" }).click();
+}
+
+export async function chooseReasoningEffort(page: Page, value: string): Promise<void> {
+  const setup = await openRunSetup(page);
+  await setup.getByLabel("Reasoning effort").selectOption(value);
+  await closeRunSetup(page);
 }
 
 export async function expectRunSummary(
@@ -91,12 +85,18 @@ export async function expectRunSummary(
   }>
 ): Promise<void> {
   if (expected.model !== undefined) {
-    await expect(page.getByTestId("run-model-summary")).toHaveText(expected.model);
+    await expect(composerRunSummary(page)).toContainText(expected.model);
   }
   if (expected.reasoning !== undefined) {
-    await expect(page.getByTestId("run-reasoning-summary")).toHaveText(`Reasoning: ${expected.reasoning}`);
+    const setup = await openRunSetup(page);
+    await expect(setup.getByLabel("Reasoning effort")).toHaveValue(expected.reasoning);
+    await closeRunSetup(page);
   }
   if (expected.search !== undefined) {
-    await expect(page.getByTestId("run-search-summary")).toHaveText(`Search: ${expected.search}`);
+    if (/off/iu.test(expected.search)) {
+      await expect(page.getByRole("button", { name: "Отключить Search" })).toHaveCount(0);
+    } else {
+      await expect(page.getByRole("button", { name: "Отключить Search" })).toBeVisible();
+    }
   }
 }

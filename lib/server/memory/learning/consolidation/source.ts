@@ -4,7 +4,11 @@ import type {
   MemoryJobGateDecision
 } from "../../coordinator/types";
 import { projectMemoryHistorySafeText } from "../../history/safety";
-import { memorySha256, memoryStableJson, normalizeMemorySearchText } from "../../persistence/lexical";
+import {
+  memorySha256,
+  memoryStableJson,
+  normalizeMemorySearchText
+} from "../../persistence/lexical";
 import { findMatchingMemorySuppressions } from "../../persistence/suppressions";
 import type {
   LockedMemorySettings,
@@ -13,10 +17,6 @@ import type {
 import { loadMemorySourceSnapshot } from "../../sourceState";
 import type { MemorySuppressionKeyring } from "../../suppressionKeyring";
 import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION } from "../extraction/contract";
-import {
-  inspectMemoryFactSourceSafety,
-  memoryFactCandidateSensitivityAllowed
-} from "../extraction/safety";
 import {
   MEMORY_FACT_MAX_RELATED_FACTS,
   MEMORY_FACT_MAX_RELATED_VERSIONS,
@@ -58,7 +58,6 @@ const invalidDecision = Object.freeze({
 
 const categoryPattern = /^[a-z][a-z0-9_-]{0,63}$/u;
 const canonicalKeyPattern = /^[a-z0-9][a-z0-9._:-]{0,255}$/u;
-const languageCodePattern = /^(mixed|und|[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*)$/u;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 const modalities = new Set([
   "CONSIDERATION",
@@ -77,6 +76,8 @@ type CandidateRecord = Readonly<{
   chatId: string;
   confidence: number | null;
   contentPurgedAt: Date | null;
+  proposedCoreEligible: boolean | null;
+  proposedCoreSalience: string | null;
   id: string;
   importance: number | null;
   jobId: string;
@@ -192,15 +193,26 @@ function temporalEvidence(value: Prisma.JsonValue | null): Readonly<Record<strin
   return isRecord(value) ? value : null;
 }
 
+function validLanguageCode(value: string): boolean {
+  if (value === "und") return true;
+  try {
+    new Intl.Locale(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function candidateIdentityHash(
   row: CandidateRecord,
   snapshot: Omit<MemoryFactCandidateSnapshot, "id">
 ): string {
   return memorySha256({
     candidate: {
-      canonicalKey: snapshot.canonicalKey,
       category: snapshot.category,
       confidence: snapshot.confidence,
+      coreEligible: snapshot.coreEligible,
+      coreSalience: snapshot.coreSalience,
       directness: snapshot.directness,
       displayText: snapshot.displayText,
       evidence: snapshot.evidence.map((evidence) => ({
@@ -349,6 +361,8 @@ async function loadCandidate(
       pipelineVersion: true,
       proposedCanonicalKey: true,
       proposedCategory: true,
+      proposedCoreEligible: true,
+      proposedCoreSalience: true,
       proposedDirectness: true,
       proposedDisplayText: true,
       proposedModality: true,
@@ -375,10 +389,15 @@ async function loadCandidate(
     !sha256Pattern.test(row.id) || !sha256Pattern.test(row.sourceHash) ||
     !row.proposedCanonicalKey || !canonicalKeyPattern.test(row.proposedCanonicalKey) ||
     !row.proposedCategory || !categoryPattern.test(row.proposedCategory) ||
-    row.proposedDirectness !== "DIRECT" || row.proposedSensitivity !== "NORMAL" ||
+    (row.proposedDirectness !== "DIRECT" &&
+      row.proposedDirectness !== "PARAPHRASED") ||
+    row.proposedSensitivity !== "NORMAL" ||
+    row.proposedCoreEligible === null ||
+    !["HIGH", "MEDIUM", "LOW", "NONE"].includes(row.proposedCoreSalience ?? "") ||
+    (row.proposedCoreEligible === (row.proposedCoreSalience === "NONE")) ||
     !row.proposedDisplayText || row.proposedDisplayText.length > 2_000 ||
     !row.proposedModality || !modalities.has(row.proposedModality) ||
-    !row.languageCode || !languageCodePattern.test(row.languageCode) ||
+    !row.languageCode || !validLanguageCode(row.languageCode) ||
     row.confidence === null || !Number.isFinite(row.confidence) ||
     row.confidence < 0 || row.confidence > 1 ||
     row.importance === null || !Number.isFinite(row.importance) ||
@@ -410,7 +429,6 @@ async function loadCandidate(
     if (
       !projected.eligible || projected.safetyClass !== "NORMAL" ||
       projected.redactionState !== "NOT_NEEDED" || projected.safeText !== text ||
-      !inspectMemoryFactSourceSafety(text).eligible ||
       memorySha256(text) !== item.sourceTextHash ||
       item.startOffset < 0 || item.endOffset <= item.startOffset ||
       item.endOffset > text.length
@@ -426,16 +444,9 @@ async function loadCandidate(
       startOffset: item.startOffset
     });
   }
-  if (!evidence.some((item) => item.quote === row.proposedDisplayText)) return null;
-  if (!memoryFactCandidateSensitivityAllowed(
-    evidence.map((item) => item.quote).join("\n"),
-    row.proposedCategory,
-    row.proposedDisplayText
-  )) return null;
   try {
     const encoded = memoryStableJson(row.proposedValue);
-    if (!encoded || encoded.length > 8_192 ||
-      !normalizeMemorySearchText(row.proposedDisplayText)) return null;
+    if (!encoded || encoded.length > 8_192) return null;
   } catch {
     return null;
   }
@@ -445,7 +456,9 @@ async function loadCandidate(
     category: row.proposedCategory,
     chatId: row.chatId,
     confidence: row.confidence,
-    directness: "DIRECT",
+    coreEligible: row.proposedCoreEligible,
+    coreSalience: row.proposedCoreSalience as MemoryFactCandidateSnapshot["coreSalience"],
+    directness: row.proposedDirectness as MemoryFactCandidateSnapshot["directness"],
     displayText: row.proposedDisplayText,
     evidence,
     importance: row.importance,
@@ -480,75 +493,23 @@ function scopeSql(scope: MemoryFactCandidateScope): Prisma.Sql {
         AND scope."targetIdSnapshot" = ${scope.targetId}`;
 }
 
-function relatedEntityTerms(value: unknown): string[] {
-  const terms = new Set<string>();
-  const visit = (entry: unknown, depth: number): void => {
-    if (depth > 4 || terms.size >= 16) return;
-    if (typeof entry === "string") {
-      const matches = normalizeMemorySearchText(entry)
-        .match(/[\p{L}\p{N}][\p{L}\p{N}._-]{1,63}/gu) ?? [];
-      for (const match of matches) {
-        terms.add(match);
-        if (terms.size >= 16) break;
-      }
-      return;
-    }
-    if (Array.isArray(entry)) {
-      for (const item of entry.slice(0, 32)) visit(item, depth + 1);
-      return;
-    }
-    if (isRecord(entry)) {
-      for (const item of Object.values(entry).slice(0, 32)) {
-        visit(item, depth + 1);
-      }
-    }
-  };
-  visit(value, 0);
-  return [...terms];
-}
-
-function entityOverlapSql(terms: readonly string[]): Prisma.Sql {
-  if (terms.length === 0) return Prisma.sql`FALSE`;
-  return Prisma.sql`EXISTS (
-    SELECT 1
-    FROM unnest(ARRAY[${Prisma.join([...terms])}]::text[]) AS entity(term)
-    WHERE to_tsvector('simple', current_version."normalizedSearchText")
-      @@ plainto_tsquery('simple', entity.term)
-  )`;
-}
-
-function temporalOverlapSql(candidate: MemoryFactCandidateSnapshot): Prisma.Sql {
-  const from = candidate.validFrom ? new Date(candidate.validFrom) : null;
-  const to = candidate.validTo ? new Date(candidate.validTo) : null;
-  if (from && to) {
-    return Prisma.sql`(
-      (current_version."validFrom" IS NULL OR current_version."validFrom" <= ${to})
-      AND (current_version."validTo" IS NULL OR current_version."validTo" >= ${from})
-    )`;
-  }
-  if (from) {
-    return Prisma.sql`(
-      current_version."validTo" IS NULL OR current_version."validTo" >= ${from}
-    )`;
-  }
-  if (to) {
-    return Prisma.sql`(
-      current_version."validFrom" IS NULL OR current_version."validFrom" <= ${to}
-    )`;
-  }
-  return Prisma.sql`FALSE`;
-}
-
 async function loadRelatedFacts(
   tx: MemoryTransaction,
   userId: string,
-  candidate: MemoryFactCandidateSnapshot
+  candidate: MemoryFactCandidateSnapshot,
+  relatedVersionIds: readonly string[] | null
 ): Promise<MemoryRelatedFactSnapshot[]> {
   const normalizedQuery = normalizeMemorySearchText(candidate.displayText);
-  const entityOverlap = entityOverlapSql(
-    relatedEntityTerms(candidate.proposedValue)
-  );
-  const temporalOverlap = temporalOverlapSql(candidate);
+  const boundedIds = [...new Set(relatedVersionIds ?? [])]
+    .slice(0, MEMORY_FACT_MAX_RELATED_FACTS * 2);
+  const neighborhood = relatedVersionIds === null
+    ? Prisma.sql`TRUE`
+    : boundedIds.length > 0
+      ? Prisma.sql`(
+          current_version."id" IN (${Prisma.join(boundedIds)})
+          OR current_version."normalizedSearchText" = ${normalizedQuery}
+        )`
+      : Prisma.sql`current_version."normalizedSearchText" = ${normalizedQuery}`;
   const relatedQuery = Prisma.sql`
     SELECT
       fact."id", fact."canonicalKey", fact."category",
@@ -558,32 +519,21 @@ async function loadRelatedFacts(
     FROM "MemoryFact" AS fact
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
-    LEFT JOIN "MemoryFactVersion" AS current_version
+    INNER JOIN "MemoryFactVersion" AS current_version
       ON current_version."userId" = fact."userId"
       AND current_version."factId" = fact."id"
       AND current_version."id" = fact."currentVersionId"
     WHERE fact."userId" = ${userId}
       AND fact."state" <> 'FORGOTTEN'::"MemoryFactState"
       AND scope."state" = 'ACTIVE'::"MemoryScopeState"
-      AND (
-        fact."canonicalKey" = ${candidate.canonicalKey}
-        OR (
-          ${scopeSql(candidate.scope)}
-          AND fact."category" = ${candidate.category}
-          AND current_version."normalizedSearchText" IS NOT NULL
-          AND (
-            to_tsvector('simple', current_version."normalizedSearchText")
-              @@ plainto_tsquery('simple', ${normalizedQuery})
-            OR (${entityOverlap})
-          )
-        )
-      )
+      AND fact."state" = 'ACTIVE'::"MemoryFactState"
+      AND current_version."state" = 'ACTIVE'::"MemoryFactVersionState"
+      AND current_version."systemTo" IS NULL
+      AND current_version."contentPurgedAt" IS NULL
+      AND ${scopeSql(candidate.scope)}
+      AND (${neighborhood})
     ORDER BY
-      (fact."canonicalKey" = ${candidate.canonicalKey}) DESC,
-      (${scopeSql(candidate.scope)}) DESC,
-      CASE WHEN (${entityOverlap}) THEN 1 ELSE 0 END DESC,
-      CASE WHEN (${temporalOverlap}) THEN 1 ELSE 0 END DESC,
-      (fact."state" = 'ACTIVE'::"MemoryFactState") DESC,
+      (current_version."normalizedSearchText" = ${normalizedQuery}) DESC,
       fact."updatedAt" DESC,
       fact."id"
     LIMIT ${MEMORY_FACT_MAX_RELATED_FACTS}
@@ -749,7 +699,8 @@ export async function prepareMemoryFactConsolidation(
   settings: LockedMemorySettings,
   job: MemoryJobDescriptor,
   keyring: MemorySuppressionKeyring,
-  now: Date
+  now: Date,
+  relatedVersionIds: readonly string[] | null = null
 ): Promise<MemoryFactConsolidationPrepareResult> {
   const gate = await probeMemoryFactConsolidation(tx, settings, job);
   if (gate.status !== "READY") return { decision: gate };
@@ -757,10 +708,16 @@ export async function prepareMemoryFactConsolidation(
   if (!identity) return { decision: invalidDecision };
   const candidate = await loadCandidate(tx, settings, job, identity.candidateId, keyring, now);
   if (!candidate) return { decision: staleDecision };
-  const relatedFacts = await loadRelatedFacts(tx, job.userId, candidate);
+  const relatedFacts = await loadRelatedFacts(
+    tx,
+    job.userId,
+    candidate,
+    relatedVersionIds
+  );
   const relatedSnapshotHash = memoryFactRelatedSnapshotHash(relatedFacts);
   const withoutHash: Omit<MemoryFactConsolidationInput, "inputHash"> = {
     candidate,
+    memoryRevision: settings.memoryRevision,
     relatedFacts,
     relatedSnapshotHash
   };
@@ -856,7 +813,7 @@ export async function prepareMemoryFactVerification(
   }
   const candidate = await loadCandidate(tx, settings, job, row.candidateId, keyring, now);
   if (!candidate) return { decision: staleDecision };
-  const related = await loadRelatedFacts(tx, job.userId, candidate);
+  const related = await loadRelatedFacts(tx, job.userId, candidate, null);
   const target = row.targetFactId
     ? related.find((fact) => fact.id === row.targetFactId) ?? null
     : null;

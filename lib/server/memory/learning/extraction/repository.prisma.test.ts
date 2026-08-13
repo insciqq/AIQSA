@@ -198,31 +198,26 @@ async function claimFactJob(userId: string): Promise<MemoryJobClaim> {
 function candidatePlan(
   input: MemoryFactExtractionInput,
   messageId: string,
-  text: string,
-  canonicalKey = "user.preference.drink"
+  text: string
 ): MemoryFactExtractionPlan {
   return decodeMemoryFactExtraction([{
     arguments: {
       candidates: [{
-        canonical_key: canonicalKey,
-        category: "preference",
-        confidence: 0.92,
+        core_eligible: true,
+        core_salience: "HIGH",
         directness: "DIRECT",
         display_text: text,
-        evidence: [{ message_id: messageId, quote: text }],
-        importance: 0.55,
+        evidence: [{ end_offset: text.length, message_id: messageId, start_offset: 0 }],
         language: "en",
         modality: "PREFERENCE",
-        negated: false,
         raw_temporal_expression: null,
-        reason_code: null,
         scope: { target_id: null, type: "GLOBAL_USER" },
         sensitivity: "NORMAL",
-        state: "PENDING",
-        structured_value: { drink: "tea" },
+        structured_value: JSON.stringify({ preference: text }),
         valid_from: null,
         valid_to: null
-      }]
+      }],
+      decision: "STORE"
     },
     id: `fact-call-${randomUUID()}`,
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
@@ -283,7 +278,7 @@ describe("Prisma Memory fact extraction", () => {
     await prisma.$disconnect();
   });
 
-  it("admits learning independently and excludes assistant, secret, and sensitive text", async () => {
+  it("admits direct-user language while excluding assistants and recognizable secrets", async () => {
     const userId = await createOwner("projection");
     try {
       const chat = await prisma.chat.create({
@@ -324,14 +319,17 @@ describe("Prisma Memory fact extraction", () => {
 
       const claim = await claimFactJob(userId);
       const input = await prepareFactJob(claim);
-      expect(input.messages.map(({ id }) => id)).toEqual([safe.userMessage.id]);
+      expect(input.messages.map(({ id }) => id)).toEqual([
+        safe.userMessage.id,
+        sensitive.userMessage.id
+      ]);
       expect(input.messages[0]).toMatchObject({
-        languageCode: "en",
+        languageCode: "und",
         text: "I prefer tea."
       });
       const serialized = JSON.stringify(input);
       expect(serialized).not.toContain("ABCDEFGHIJKLMNOP1234567890");
-      expect(serialized).not.toContain("salary");
+      expect(serialized).toContain("salary");
       expect(serialized).not.toContain("Tea noted");
     } finally {
       await cleanupOwner(userId);
@@ -404,6 +402,8 @@ describe("Prisma Memory fact extraction", () => {
         where: { id: plan.candidates[0]!.id }
       })).resolves.toMatchObject({
         chatId: chat.id,
+        proposedCoreEligible: true,
+        proposedCoreSalience: "HIGH",
         createdByExecutionId: bindingId,
         jobId: claim.id,
         proposedDisplayText: "I prefer tea.",
@@ -533,7 +533,7 @@ describe("Prisma Memory fact extraction", () => {
       );
       await withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
         createMemorySuppressionInTransaction(tx, settings, keyring, {
-          canonicalKey: "user.preference.drink",
+          canonicalKey: plan.candidates[0]!.canonicalKey,
           explicitOverrideAllowed: false,
           scope: "FACT",
           suppressionId: randomUUID()

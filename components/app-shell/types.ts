@@ -22,6 +22,7 @@ export type {
   ThreadKnowledgeCitation,
   ThreadKnowledgeOutcome,
   ThreadMessage,
+  ThreadRunEvidenceSummary,
   ThreadRunUsage,
   ThreadSearchActivity,
   ThreadSearchActivityStatus,
@@ -36,7 +37,7 @@ export type {
 
 export type { PersistedRun, RunEventView } from "@/lib/contracts/runs";
 
-export type InspectorMode = "closed" | "overlay" | "pinned";
+export type InspectorMode = "closed" | "overlay";
 
 export type FolderSummary = {
   defaultKnowledgePlan?: KnowledgePlan | null;

@@ -98,6 +98,7 @@ function semanticSelection(
       validFrom: null,
       validTo: null
     },
+    memoryRevision: 0,
     relatedFacts,
     relatedSnapshotHash
   };
@@ -322,27 +323,21 @@ describe("Global Dream handler", () => {
     );
   });
 
-  it("requires an independently bound verifier before a conflict apply", async () => {
+  it("applies a legacy conflict with one consolidation call and no verifier", async () => {
     const selection = semanticSelection("CONFLICT");
     const test = fixture(selection);
     const job = claim(selection);
     const result = await createMemoryGlobalDreamHandler(test.deps)
       .execute(job, context());
-    expect(test.run).toHaveBeenCalledTimes(2);
-    expect(test.run.mock.calls.map((call) => call[1].kind)).toEqual([
-      "CONSOLIDATE",
-      "VERIFY"
-    ]);
+    expect(test.run).toHaveBeenCalledTimes(1);
+    expect(test.run.mock.calls.map((call) => call[1].kind)).toEqual(["CONSOLIDATE"]);
     await result.apply?.({} as never, job);
     expect(test.apply).toHaveBeenCalledWith(
       expect.anything(),
       job,
       selection,
       expect.objectContaining({ bindingId: "consolidate-binding" }),
-      expect.objectContaining({
-        bindingId: "verify-binding",
-        plan: expect.objectContaining({ verdict: "APPROVE" })
-      }),
+      null,
       now
     );
   });

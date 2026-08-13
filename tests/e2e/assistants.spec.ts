@@ -3,7 +3,7 @@ import {
   expectNoHorizontalOverflow,
   expectWithinViewport
 } from "./support/layoutAssertions";
-import { chooseReasoningEffort, openRunSetup } from "./shell/composer";
+import { chooseReasoningEffort } from "./shell/composer";
 import { runAccountMenuAction } from "./shell/page";
 import { assistantContentWithText } from "./shell/thread";
 
@@ -167,43 +167,38 @@ async function deleteChat(page: Page, chatId: string | null): Promise<void> {
   }
 }
 
-async function openLibraryYoursTab(page: Page): Promise<Locator> {
+async function openAssistantsLibrary(page: Page): Promise<Locator> {
   await runAccountMenuAction(page, "Assistants");
-  const library = page.getByTestId("assistant-library");
+  const library = page.getByTestId("library-v2");
   await expect(library).toBeVisible();
-  await library.getByRole("tab", { name: "Yours" }).click();
-  await expect(library.getByRole("tab", { name: "Yours" })).toHaveAttribute("aria-selected", "true");
+  await expect(library.getByRole("tab", { name: "Assistants" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
   return library;
 }
 
 async function selectAssistantFromPicker(page: Page, assistantId: string): Promise<void> {
-  const runSetup = await openRunSetup(page);
-  await runSetup.getByTestId("run-setup-use-assistant").click();
+  await page.getByRole("button", { name: "Возможности" }).click();
+  await page
+    .getByRole("menu", { name: "Возможности запроса" })
+    .getByRole("menuitemcheckbox", { name: /Использовать Assistant/ })
+    .click();
   const picker = page.getByTestId("assistant-picker");
   await expect(picker).toBeVisible();
   await picker.getByTestId(`assistant-picker-row-${assistantId}`).click();
   await expect(picker).toHaveCount(0);
-  await expect(page.getByTestId("composer-assistant-chip")).toBeVisible();
+  await expect(page.getByTestId("composer-v2-assistant-lock")).toBeVisible();
 }
 
-async function showLatestRunReceipt(page: Page): Promise<Locator> {
+async function showLatestRunDetails(page: Page): Promise<Locator> {
   const answer = page.locator('article[data-role="assistant"]').last();
-  const moreActions = answer.getByRole("button", { name: "More message actions" });
-  const moreActionsMenu = page.getByRole("menu", { name: "More message actions" });
-  await expect(async () => {
-    if (await moreActionsMenu.isVisible()) {
-      return;
-    }
-    await answer.hover();
-    await expect(moreActions).toBeVisible();
-    await expect(moreActions).toBeEnabled();
-    await moreActions.click({ timeout: 5_000 });
-    await expect(moreActionsMenu).toBeVisible();
-  }).toPass({ timeout: 20_000 });
-  await moreActionsMenu.getByRole("menuitem", { name: "Show run details" }).click();
-  const receipt = answer.getByTestId("run-receipt");
-  await expect(receipt).toBeVisible();
-  return receipt;
+  const opener = answer.getByRole("button", { name: /^Run details/u });
+  await expect(opener).toBeVisible({ timeout: 20_000 });
+  await opener.click();
+  const details = page.getByRole("dialog", { name: /Детали run/ });
+  await expect(details).toBeVisible();
+  return details;
 }
 
 test.beforeEach(async ({ page }) => {
@@ -219,11 +214,12 @@ test("creates an assistant through the Library editor", async ({ page }) => {
   const name = `${assistantNamePrefix} ${Date.now()}`;
 
   await runAccountMenuAction(page, "Assistants");
-  const library = page.getByTestId("assistant-library");
+  const library = page.getByTestId("library-v2");
   await expect(library).toBeVisible();
-  await library.getByRole("button", { name: "New assistant" }).click();
+  await library.getByRole("button", { name: "Новый Assistant" }).click();
 
-  const editor = library.getByTestId("assistant-editor");
+  const editorSurface = page.getByTestId("assistant-library");
+  const editor = editorSurface.getByTestId("assistant-editor");
   await expect(editor).toBeVisible();
   await expect(editor.getByText("Draft", { exact: true })).toBeVisible();
   const save = editor.getByTestId("assistant-editor-save");
@@ -240,7 +236,7 @@ test("creates an assistant through the Library editor", async ({ page }) => {
   await expect(save).toBeEnabled();
   await save.click();
 
-  await expect(library.getByTestId("assistant-library-notice")).toContainText(
+  await expect(editorSurface.getByTestId("assistant-library-notice")).toContainText(
     "Assistant created. It stays private until you share it."
   );
   await expect(editor.getByText("Revision 1", { exact: true })).toBeVisible();
@@ -249,12 +245,9 @@ test("creates an assistant through the Library editor", async ({ page }) => {
   await expect(editor.getByRole("button", { name: "Use in chat" })).toBeVisible();
 
   await editor.getByRole("button", { name: "Back to assistants" }).click();
-  await expect(library.getByTestId("assistant-editor")).toHaveCount(0);
-  await library.getByRole("tab", { name: "Yours" }).click();
-  await expect(
-    library.getByTestId("assistant-library-grid").getByRole("heading", { name })
-  ).toBeVisible();
-  await library.getByRole("button", { name: "Back to chat" }).click();
+  await expect(editorSurface).toHaveCount(0);
+  await expect(library.getByRole("heading", { name })).toBeVisible();
+  await library.getByRole("button", { name: "Назад к чату" }).click();
   await expect(library).toHaveCount(0);
 });
 
@@ -279,7 +272,7 @@ test("uses an assistant from the Library and completes an identified run", async
   });
 
   try {
-    const library = await openLibraryYoursTab(page);
+    const library = await openAssistantsLibrary(page);
     const card = library.getByTestId(`assistant-card-${assistant.id}`);
     await expect(card).toContainText(name);
     await card.getByRole("button", { name: `Use ${name}` }).click();
@@ -292,14 +285,16 @@ test("uses an assistant from the Library and completes an identified run", async
       .getByTestId("assistant-starter-prompts")
       .getByRole("button", { name: "Say hello" });
     await expect(starter).toBeVisible();
-    await expect(page.getByTestId("composer-assistant-chip")).toContainText(name);
+    await expect(page.getByTestId("composer-v2-assistant-lock")).toContainText(name);
 
     await starter.click();
     chatId = await waitForActiveChatId(page);
     await expect(assistantContentWithText(page, "Fake answer: Say hello")).toBeVisible({
       timeout: 20_000
     });
-    await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
+    await expect(page.getByRole("button", { name: "Остановить ответ" })).toHaveCount(0, {
+      timeout: 20_000
+    });
 
     expect(sendBodies).toHaveLength(1);
     const sendBody = sendBodies[0]!;
@@ -316,34 +311,40 @@ test("uses an assistant from the Library and completes an identified run", async
     await expect(identity).toBeVisible();
     await expect(identity).toContainText(name);
 
-    const receipt = await showLatestRunReceipt(page);
-    await expect(receipt.locator('[data-run-fact="assistant"]')).toBeVisible();
-    await expect(receipt).toContainText(`Assistant ${name} · revision 1`);
+    const details = await showLatestRunDetails(page);
+    await expect(details).toContainText(name);
+    await expect(details).toContainText("ревизия 1");
   } finally {
     await deleteChat(page, chatId);
     await archiveAssistantById(page, assistant.id);
   }
 });
 
-test("removes the assistant identity when a governed control changes", async ({ page }) => {
+test("requires explicit removal before a governed Assistant control changes", async ({ page }) => {
   const name = `${assistantNamePrefix} Strict ${Date.now()}`;
   const modelId = await fakeProviderModelId(page);
   const assistant = await createAssistantViaApi(page, { name, providerModelId: modelId });
 
   try {
     await selectAssistantFromPicker(page, assistant.id);
-    const chip = page.getByTestId("composer-assistant-chip");
+    const chip = page.getByTestId("composer-v2-assistant-lock");
     await expect(chip).toContainText(name);
     await expect(page.getByTestId("composer-assistant-removed-notice")).toHaveCount(0);
 
-    await chooseReasoningEffort(page, "high");
+    await page.getByRole("button", { name: "Возможности" }).click();
+    const parameters = page
+      .getByRole("menu", { name: "Возможности запроса" })
+      .getByRole("menuitemcheckbox", { name: /Параметры модели/ });
+    await expect(parameters).toBeDisabled();
+    await expect(parameters).toContainText("Управляется Assistant");
+    await page.getByRole("button", { name: "Закрыть", exact: true }).click();
+
+    await chip.getByRole("button", { name: "Убрать" }).click();
 
     await expect(chip).toHaveCount(0);
-    const removedNotice = page.getByTestId("composer-assistant-removed-notice");
-    await expect(removedNotice).toContainText("Assistant removed. Your manual settings now apply.");
-    await removedNotice.getByRole("button", { name: "Dismiss" }).click();
-    await expect(removedNotice).toHaveCount(0);
-    await expect(page.getByTestId("composer-assistant-chip")).toHaveCount(0);
+    await expect(page.getByTestId("composer-assistant-removed-notice")).toHaveCount(0);
+    await chooseReasoningEffort(page, "high");
+    await expect(page.getByTestId("composer-v2-assistant-lock")).toHaveCount(0);
   } finally {
     await archiveAssistantById(page, assistant.id);
   }
@@ -360,40 +361,45 @@ test("keeps accepted answers on their historical revision after a revise", async
 
   try {
     await selectAssistantFromPicker(page, assistant.id);
-    await page.getByRole("textbox", { name: "Message" }).fill(question);
-    await page.getByRole("textbox", { name: "Message" }).press("Enter");
+    await page.getByRole("textbox", { name: "Сообщение" }).fill(question);
+    await page.getByRole("textbox", { name: "Сообщение" }).press("Enter");
     chatId = await waitForActiveChatId(page);
     await expect(assistantContentWithText(page, `Fake answer: ${question}`)).toBeVisible({
       timeout: 20_000
     });
-    await expect(page.getByTestId("streaming-cursor")).toHaveCount(0, { timeout: 20_000 });
+    await expect(page.getByRole("button", { name: "Остановить ответ" })).toHaveCount(0, {
+      timeout: 20_000
+    });
     const answer = page.locator('article[data-role="assistant"]').last();
     await expect(answer.getByTestId("answer-assistant-identity")).toContainText(name);
 
-    const library = await openLibraryYoursTab(page);
+    const library = await openAssistantsLibrary(page);
     const card = library.getByTestId(`assistant-card-${assistant.id}`);
     await card.getByRole("button", { name: `More actions for ${name}` }).click();
     await card.getByRole("menuitem", { name: "Edit" }).click();
 
-    const editor = library.getByTestId("assistant-editor");
+    const editorSurface = page.getByTestId("assistant-library");
+    const editor = editorSurface.getByTestId("assistant-editor");
     await expect(editor.getByText("Revision 1", { exact: true })).toBeVisible();
     const nameField = editor.getByLabel("Name", { exact: true });
     await expect(nameField).toHaveValue(name);
     await nameField.fill(revisedName);
     await editor.getByTestId("assistant-editor-save").click();
-    await expect(library.getByTestId("assistant-library-notice")).toContainText("Saved revision 2");
+    await expect(editorSurface.getByTestId("assistant-library-notice")).toContainText("Saved revision 2");
     await expect(editor.getByText("Revision 2", { exact: true })).toBeVisible();
 
     await editor.getByRole("button", { name: "Back to assistants" }).click();
-    await library.getByRole("button", { name: "Back to chat" }).click();
+    await expect(editorSurface).toHaveCount(0);
+    await library.getByRole("button", { name: "Назад к чату" }).click();
     await expect(library).toHaveCount(0);
 
     // Historical immutability: the accepted answer keeps the revision it used.
     const identity = answer.getByTestId("answer-assistant-identity");
     await expect(identity).toContainText(name);
     await expect(identity).not.toContainText(revisedName);
-    const receipt = await showLatestRunReceipt(page);
-    await expect(receipt).toContainText(`Assistant ${name} · revision 1`);
+    const details = await showLatestRunDetails(page);
+    await expect(details).toContainText(name);
+    await expect(details).toContainText("ревизия 1");
   } finally {
     await deleteChat(page, chatId);
     await archiveAssistantById(page, assistant.id);
@@ -406,15 +412,18 @@ test("pins an assistant from the Library card and groups it in the quick picker"
   const assistant = await createAssistantViaApi(page, { name, providerModelId: modelId });
 
   try {
-    const library = await openLibraryYoursTab(page);
+    const library = await openAssistantsLibrary(page);
     const card = library.getByTestId(`assistant-card-${assistant.id}`);
     await card.getByRole("button", { name: `Pin ${name}` }).click();
     await expect(card.getByRole("button", { name: `Unpin ${name}` })).toBeVisible();
-    await library.getByRole("button", { name: "Back to chat" }).click();
+    await library.getByRole("button", { name: "Назад к чату" }).click();
     await expect(library).toHaveCount(0);
 
-    const runSetup = await openRunSetup(page);
-    await runSetup.getByTestId("run-setup-use-assistant").click();
+    await page.getByRole("button", { name: "Возможности" }).click();
+    await page
+      .getByRole("menu", { name: "Возможности запроса" })
+      .getByRole("menuitemcheckbox", { name: /Использовать Assistant/ })
+      .click();
     const picker = page.getByTestId("assistant-picker");
     await expect(picker).toBeVisible();
     const pinnedGroup = picker.locator('section[aria-label="Pinned"]');
@@ -431,26 +440,25 @@ test("keeps the Library one-task and reachable at 390x844", async ({ page }) => 
   await page.setViewportSize({ height: 844, width: 390 });
 
   await runAccountMenuAction(page, "Assistants");
-  const library = page.getByTestId("assistant-library");
+  const library = page.getByTestId("library-v2");
   await expect(library).toBeVisible();
-  await expect(library.getByTestId("assistant-editor")).toHaveCount(0);
   await expect(library.getByRole("heading", { name: "Assistants" })).toBeVisible();
-  await expect(library.getByRole("button", { name: "Back to chat" })).toBeInViewport();
-  await expect(library.getByRole("button", { name: "New assistant" })).toBeInViewport();
+  await expect(library.getByRole("button", { name: "Назад к чату" })).toBeInViewport();
+  await expect(library.getByRole("button", { name: "Новый Assistant" })).toBeInViewport();
   await expectWithinViewport(page, library);
   await expectNoHorizontalOverflow(page);
 
-  await library.getByRole("button", { name: "New assistant" }).click();
-  const editor = library.getByTestId("assistant-editor");
+  await library.getByRole("button", { name: "Новый Assistant" }).click();
+  const editorSurface = page.getByTestId("assistant-library");
+  const editor = editorSurface.getByTestId("assistant-editor");
   await expect(editor).toBeVisible();
-  await expect(library.getByRole("tab", { name: "Discover" })).toHaveCount(0);
   await expect(editor.getByRole("button", { name: "Back to assistants" })).toBeInViewport();
   await expect(editor.getByTestId("assistant-editor-save")).toBeInViewport();
   await expectNoHorizontalOverflow(page);
 
   await editor.getByRole("button", { name: "Back to assistants" }).click();
-  await expect(library.getByTestId("assistant-editor")).toHaveCount(0);
-  await expect(library.getByRole("button", { name: "Back to chat" })).toBeInViewport();
-  await library.getByRole("button", { name: "Back to chat" }).click();
+  await expect(editorSurface).toHaveCount(0);
+  await expect(library.getByRole("button", { name: "Назад к чату" })).toBeInViewport();
+  await library.getByRole("button", { name: "Назад к чату" }).click();
   await expect(library).toHaveCount(0);
 });

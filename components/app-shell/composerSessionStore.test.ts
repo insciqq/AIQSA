@@ -1,4 +1,4 @@
-import type { ComposerAttachment } from "@/components/chat/Composer";
+import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   chatIdFromComposerSessionKey,
@@ -70,23 +70,37 @@ describe("composer session store", () => {
     expect(session(missing)).toBe(session(composerSessionKey("also-missing")));
   });
 
-  it("keeps Normal and Temporary root and folder drafts in distinct keyed sessions", () => {
+  it("keeps Normal, Memory-off, and Temporary drafts in distinct keyed sessions", () => {
     const normalRoot = composerSessionKey(null);
+    const excludedRoot = composerSessionKey(null, null, "EXCLUDED");
     const temporaryRoot = composerSessionKey(null, null, "TEMPORARY");
     const normalFolder = composerSessionKey(null, "folder/one");
+    const excludedFolder = composerSessionKey(null, "folder/one", "EXCLUDED");
     const temporaryFolder = composerSessionKey(null, "folder/one", "TEMPORARY");
     const store = useComposerSessionStore.getState();
 
-    expect(new Set([normalRoot, temporaryRoot, normalFolder, temporaryFolder]).size).toBe(4);
+    expect(new Set([
+      normalRoot,
+      excludedRoot,
+      temporaryRoot,
+      normalFolder,
+      excludedFolder,
+      temporaryFolder
+    ]).size).toBe(6);
     expect(composerSessionModeFromKey(normalRoot)).toBe("NORMAL");
+    expect(composerSessionModeFromKey(excludedRoot)).toBe("EXCLUDED");
+    expect(composerSessionModeFromKey(excludedFolder)).toBe("EXCLUDED");
     expect(composerSessionModeFromKey(temporaryRoot)).toBe("TEMPORARY");
     expect(composerSessionModeFromKey(temporaryFolder)).toBe("TEMPORARY");
     expect(folderIdFromComposerSessionKey(temporaryFolder)).toBe("folder/one");
+    expect(folderIdFromComposerSessionKey(excludedFolder)).toBe("folder/one");
 
     for (const [key, draft] of [
       [normalRoot, "Normal root"],
+      [excludedRoot, "Memory-off root"],
       [temporaryRoot, "Temporary root"],
       [normalFolder, "Normal folder"],
+      [excludedFolder, "Memory-off folder"],
       [temporaryFolder, "Temporary folder"]
     ] as const) {
       store.activateSession(key);
@@ -94,8 +108,10 @@ describe("composer session store", () => {
     }
 
     expect(session(normalRoot).draft).toBe("Normal root");
+    expect(session(excludedRoot).draft).toBe("Memory-off root");
     expect(session(temporaryRoot).draft).toBe("Temporary root");
     expect(session(normalFolder).draft).toBe("Normal folder");
+    expect(session(excludedFolder).draft).toBe("Memory-off folder");
     expect(session(temporaryFolder).draft).toBe("Temporary folder");
   });
 

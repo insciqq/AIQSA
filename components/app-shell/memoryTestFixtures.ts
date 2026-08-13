@@ -3,8 +3,6 @@ import type {
   MemoryDetailResponse,
   MemoryEvidenceResponse,
   MemoryListResponse,
-  MemoryProfileProjection,
-  MemoryProfileResponse,
   MemoryRebuildStatus,
   MemorySettingsResponse,
   MemorySummary,
@@ -153,45 +151,6 @@ export function memorySummaryFixture(overrides: Partial<MemorySummary> = {}): Me
 
 export function memoryListFixture(memories = [memorySummaryFixture()]): MemoryListResponse {
   return { memories, nextCursor: null };
-}
-
-export function memoryProfileFixture(
-  overrides: Partial<Omit<MemoryProfileResponse, "profile">> & {
-    profile?: Partial<MemoryProfileProjection> | null;
-  } = {}
-): MemoryProfileResponse {
-  const profile: MemoryProfileProjection = {
-    asOf: "2026-08-10T08:00:00.000Z",
-    contributors: [{
-      displayText: "I prefer concise answers in Russian.",
-      factId: "memory-fact-1",
-      factVersionId: "memory-version-1",
-      ordinal: 0,
-      pinned: false,
-      sourceMode: "EXPLICIT",
-      temperatureClass: "HOT"
-    }],
-    createdAt: "2026-08-10T08:01:00.000Z",
-    id: "memory-profile-1",
-    languageCode: "en",
-    memoryRevision: 8,
-    redactionState: "NOT_NEEDED",
-    summary: "I prefer concise answers in Russian."
-  };
-  const state = overrides.state ?? "READY";
-  const resolvedProfile = { ...profile, ...overrides.profile };
-  if (overrides.profile?.contributors && overrides.profile.summary === undefined) {
-    resolvedProfile.summary = overrides.profile.contributors
-      .map(({ displayText }) => displayText)
-      .join("\n");
-  }
-  return {
-    memoryRevision: overrides.memoryRevision ?? 8,
-    profile: overrides.profile === null || state !== "READY"
-      ? null
-      : resolvedProfile,
-    state
-  };
 }
 
 export function memoryDetailFixture(

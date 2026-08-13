@@ -50,6 +50,8 @@ export type ResolvedPreparingMemoryItem = Readonly<{
 }>;
 
 type FactAuthorityRow = Readonly<{
+  coreEligible: boolean;
+  coreSalience: string;
   createdByEventId: string;
   currentVersionId: string | null;
   displayText: string;
@@ -58,6 +60,7 @@ type FactAuthorityRow = Readonly<{
   factId: string;
   factState: string;
   languageCode: string;
+  pinned: boolean;
   scopeAssistantId: string | null;
   scopeChatId: string | null;
   scopeFolderId: string | null;
@@ -72,6 +75,13 @@ type FactAuthorityRow = Readonly<{
   validFrom: Date | null;
   validTo: Date | null;
   versionState: string;
+}>;
+
+type FactMessageEvidenceRow = Readonly<{
+  branchGeneration: number;
+  chatId: string;
+  evidenceId: string;
+  messageId: string;
 }>;
 
 type HistoryAuthorityRow = Readonly<{
@@ -167,16 +177,65 @@ async function resolveFact(
   querySnapshot: string | null,
   input: MemoryPreparingItemInput & Readonly<{ factVersionId: string }>
 ): Promise<ResolvedPreparingMemoryItem> {
-  if (!authority.indexGenerationId) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
-  }
   const projection = itemProjection(input);
   if (projection.kind !== "FACT_DISPLAY_TEXT" || projection.supportingItemId !== null) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
   }
+  const feature = record(input.featureSnapshot);
+  const core = feature?.tier === "CORE";
+  if (!core && !authority.indexGenerationId) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+  }
   const normalizedQueryYo = querySnapshot ? normalizeMemorySearchTextYo(querySnapshot) : "";
+  const settingsJoin = core
+    ? Prisma.sql`
+        INNER JOIN "UserMemorySettings" AS settings
+          ON settings."userId" = version."userId"
+          AND settings."useMemoryFacts" = TRUE
+      `
+    : Prisma.sql`
+        INNER JOIN "UserMemorySettings" AS settings
+          ON settings."userId" = version."userId"
+          AND settings."useMemoryFacts" = TRUE
+          AND settings."activeIndexGenerationId" = ${authority.indexGenerationId}
+        INNER JOIN "MemoryIndexGeneration" AS generation
+          ON generation."userId" = settings."userId"
+          AND generation."id" = settings."activeIndexGenerationId"
+          AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
+        LEFT JOIN "MemorySearchEntry" AS entry
+          ON entry."userId" = version."userId"
+          AND entry."indexGenerationId" = generation."id"
+          AND entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"
+          AND entry."factVersionId" = version."id"
+      `;
+  const currentAuthority = core
+    ? Prisma.sql`(
+        fact."pinned"
+        OR version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+        OR version."coreEligible"
+      )`
+    : Prisma.sql`entry."id" IS NOT NULL`;
+  const terminalCompatibility = core
+    ? Prisma.sql`FALSE`
+    : Prisma.sql`(
+        version."state" IN (
+          'SUPERSEDED'::"MemoryFactVersionState",
+          'EXPIRED'::"MemoryFactVersionState",
+          'CONFLICTING'::"MemoryFactVersionState"
+        )
+        AND fact."state" IN (
+          'ACTIVE'::"MemoryFactState",
+          'CONFLICTED'::"MemoryFactState",
+          'EXPIRED'::"MemoryFactState"
+        )
+        AND (fact."currentVersionId" IS NULL OR fact."currentVersionId" <> version."id")
+      )`;
+  const lockTargets = core
+    ? Prisma.sql`version, fact, scope, settings`
+    : Prisma.sql`version, fact, scope, settings, generation`;
   const [row] = await tx.$queryRaw<FactAuthorityRow[]>(Prisma.sql`
     SELECT
+      version."coreEligible", version."coreSalience"::text AS "coreSalience",
       version."createdByEventId",
       version."displayText",
       version."languageCode",
@@ -186,7 +245,7 @@ async function resolveFact(
       version."systemFrom", version."systemTo", version."validFrom", version."validTo",
       fact."canonicalKey" AS "factCanonicalKey",
       fact."category" AS "factCategory", fact."currentVersionId",
-      fact."id" AS "factId", fact."state"::text AS "factState",
+      fact."id" AS "factId", fact."pinned", fact."state"::text AS "factState",
       scope."assistantId" AS "scopeAssistantId", scope."chatId" AS "scopeChatId",
       scope."folderId" AS "scopeFolderId", scope."id" AS "scopeId",
       scope."state"::text AS "scopeState",
@@ -197,19 +256,7 @@ async function resolveFact(
       ON fact."userId" = version."userId" AND fact."id" = version."factId"
     INNER JOIN "MemoryScope" AS scope
       ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
-    INNER JOIN "UserMemorySettings" AS settings
-      ON settings."userId" = version."userId"
-      AND settings."useMemoryFacts" = TRUE
-      AND settings."activeIndexGenerationId" = ${authority.indexGenerationId}
-    INNER JOIN "MemoryIndexGeneration" AS generation
-      ON generation."userId" = settings."userId"
-      AND generation."id" = settings."activeIndexGenerationId"
-      AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
-    LEFT JOIN "MemorySearchEntry" AS entry
-      ON entry."userId" = version."userId"
-      AND entry."indexGenerationId" = generation."id"
-      AND entry."itemType" = 'FACT_VERSION'::"MemorySearchItemType"
-      AND entry."factVersionId" = version."id"
+    ${settingsJoin}
     WHERE version."userId" = ${authority.userId}
       AND version."id" = ${input.factVersionId}
       AND version."contentPurgedAt" IS NULL
@@ -233,37 +280,88 @@ async function resolveFact(
           AND version."systemTo" IS NULL
           AND fact."state" = 'ACTIVE'::"MemoryFactState"
           AND fact."currentVersionId" = version."id"
-          AND entry."id" IS NOT NULL
+          AND ${currentAuthority}
         )
-        OR (
-          version."state" IN (
-            'SUPERSEDED'::"MemoryFactVersionState",
-            'EXPIRED'::"MemoryFactVersionState",
-            'CONFLICTING'::"MemoryFactVersionState"
-          )
-          AND fact."state" IN (
-            'ACTIVE'::"MemoryFactState",
-            'CONFLICTED'::"MemoryFactState",
-            'EXPIRED'::"MemoryFactState"
-          )
-          AND (fact."currentVersionId" IS NULL OR fact."currentVersionId" <> version."id")
-        )
+        OR ${terminalCompatibility}
       )
       AND (
         version."sensitivityClass" = 'NORMAL'::"MemorySensitivityClass"
         OR (
           version."sensitivityClass" = 'SENSITIVE'::"MemorySensitivityClass"
           AND ${normalizedQueryYo} <> ''
-          AND replace(version."normalizedSearchText", 'ё', 'е') = ${normalizedQueryYo}
+          AND version."normalizedSearchText" = ${normalizedQueryYo}
         )
       )
-    FOR SHARE OF version, fact, scope, settings, generation
+    FOR SHARE OF ${lockTargets}
   `);
   if (!row || !exactTextContainsProjection(input.exactSafeText, row.displayText)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
+  const messageEvidence = row.sourceMode === "AUTOMATIC"
+    ? await tx.$queryRaw<FactMessageEvidenceRow[]>(Prisma.sql`
+        SELECT
+          support."branchGeneration", support."chatId",
+          support."id" AS "evidenceId", support."messageId"
+        FROM "MemoryEvidence" AS support
+        INNER JOIN "Chat" AS evidence_chat
+          ON evidence_chat."userId" = support."userId"
+          AND evidence_chat."id" = support."chatId"
+          AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+          AND evidence_chat."memoryBranchGeneration" = support."branchGeneration"
+        INNER JOIN "Message" AS evidence_message
+          ON evidence_message."chatId" = support."chatId"
+          AND evidence_message."id" = support."messageId"
+          AND evidence_message."role" = 'user'
+        WHERE support."userId" = ${authority.userId}
+          AND support."factVersionId" = ${input.factVersionId}
+          AND support."stance" = 'SUPPORTS'::"MemoryEvidenceStance"
+          AND support."sourceType" = 'MESSAGE'::"MemoryEvidenceSourceType"
+          AND support."sourceRole" = 'user'
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemorySuppression" AS source_suppression
+            WHERE source_suppression."userId" = support."userId"
+              AND source_suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
+              AND source_suppression."sourceChatId" = support."chatId"
+              AND source_suppression."sourceMessageId" = support."messageId"
+              AND (source_suppression."sourceBranchGeneration" IS NULL
+                OR source_suppression."sourceBranchGeneration" = support."branchGeneration")
+              AND (source_suppression."expiresAt" IS NULL
+                OR source_suppression."expiresAt" > CURRENT_TIMESTAMP)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemorySourceBarrier" AS source_barrier
+            WHERE source_barrier."userId" = support."userId"
+              AND source_barrier."kind" IN (
+                'AUTOMATIC_FACTS'::"MemorySourceBarrierKind",
+                'ALL_REUSABLE'::"MemorySourceBarrierKind"
+              )
+              AND evidence_message."createdAt" <= source_barrier."sourceCreatedAtCutoff"
+          )
+        ORDER BY support."createdAt", support."id"
+        LIMIT 50
+        FOR SHARE OF support, evidence_chat, evidence_message
+      `)
+    : [];
+  const primaryEvidence = messageEvidence[0] ?? null;
+  if (row.sourceMode === "AUTOMATIC" && !primaryEvidence) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+  }
+  const sourceMessageIds = primaryEvidence
+    ? messageEvidence.flatMap((evidence) =>
+        evidence.chatId === primaryEvidence.chatId &&
+          evidence.branchGeneration === primaryEvidence.branchGeneration
+          ? [evidence.messageId]
+          : [])
+    : [];
   const sourceSnapshot = {
     createdByEventId: row.createdByEventId,
+    evidenceIds: primaryEvidence
+      ? messageEvidence.flatMap((evidence) =>
+          evidence.chatId === primaryEvidence.chatId &&
+            evidence.branchGeneration === primaryEvidence.branchGeneration
+            ? [evidence.evidenceId]
+            : [])
+      : [],
     projectedTextHash: memoryPreparingTextHash(compactProjection(row.displayText)),
     projectionKind: projection.kind,
     schemaVersion: 2,
@@ -271,12 +369,15 @@ async function resolveFact(
   };
   const versionSnapshot = {
     currentVersionId: row.currentVersionId,
+    coreEligible: row.coreEligible,
+    coreSalience: row.coreSalience,
     factCanonicalKey: row.factCanonicalKey,
     factCategory: row.factCategory,
     factId: row.factId,
     factState: row.factState,
     factVersionId: input.factVersionId,
     languageCode: row.languageCode,
+    pinned: row.pinned,
     scopeAssistantId: row.scopeAssistantId,
     scopeChatId: row.scopeChatId,
     scopeFolderId: row.scopeFolderId,
@@ -300,10 +401,10 @@ async function resolveFact(
     itemStateAtAdmission: row.versionState,
     itemType: "FACT_VERSION",
     recallChunkId: null,
-    sourceBranchGenerationSnapshot: null,
-    sourceChatIdSnapshot: null,
+    sourceBranchGenerationSnapshot: primaryEvidence?.branchGeneration ?? null,
+    sourceChatIdSnapshot: primaryEvidence?.chatId ?? null,
     sourceContentHashSnapshot: null,
-    sourceMessageIdsSnapshot: [],
+    sourceMessageIdsSnapshot: sourceMessageIds,
     sourceRevisionSnapshot: null,
     sourceSnapshot,
     versionSnapshot

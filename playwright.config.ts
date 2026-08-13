@@ -4,11 +4,14 @@ const baseURL = "http://127.0.0.1:3000";
 const fakeProviderTokenDelayMs = process.env.AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS?.trim() || "10";
 const encryptionKey = process.env.AIQSA_ENCRYPTION_KEY?.trim() ||
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const outputDir = process.env.AIQSA_PLAYWRIGHT_OUTPUT_DIR?.trim() ||
+  "test-results/playwright";
 
 export default defineConfig({
   forbidOnly: true,
   testDir: "./tests/e2e",
-  outputDir: "test-results/playwright",
+  outputDir,
+  snapshotPathTemplate: "{testDir}/ui-baseline/{arg}{ext}",
   timeout: 30_000,
   expect: {
     timeout: 5_000

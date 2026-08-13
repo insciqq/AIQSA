@@ -1,0 +1,175 @@
+import { describe, expect, it } from "vitest";
+import type { RunEventView } from "@/lib/contracts/runs";
+import {
+  presentRunLifecycleV2,
+  type RunLifecycleEvidenceV2,
+  type RunLifecycleStatusV2
+} from "./runPresentation";
+
+function evidence(overrides: Partial<RunLifecycleEvidenceV2> = {}): RunLifecycleEvidenceV2 {
+  return {
+    content: "",
+    events: [],
+    runId: null,
+    ...overrides
+  };
+}
+
+function summary(payload: Record<string, unknown>): RunEventView {
+  return {
+    data: { artifactType: "summary", payload },
+    type: "artifact"
+  };
+}
+
+describe("run lifecycle v2 presentation", () => {
+  it("stays silent without explicit lifecycle evidence", () => {
+    expect(presentRunLifecycleV2(evidence({ content: "A finished-looking sentence." }))).toEqual({
+      kind: "idle",
+      runId: null
+    });
+  });
+
+  it.each([
+    ["queued", "queued", "В очереди"],
+    ["preparing", "preparing", "Готовлю запрос…"],
+    ["in_progress", "provider", "Выполняется у провайдера…"],
+    ["streaming", "provider", "Выполняется у провайдера…"]
+  ] as const)("maps explicit %s status to its truthful activity", (status, kind, label) => {
+    expect(presentRunLifecycleV2(evidence({ status: status as RunLifecycleStatusV2 }))).toMatchObject({
+      activity: { kind, label },
+      kind: "activity"
+    });
+  });
+
+  it.each([
+    [summary({ stage: "search", status: "running" }), "search", "Ищу в интернете…"],
+    [summary({ stage: "compute", status: "running" }), "compute", "Создаю таблицу…"],
+    [summary({ stage: "preview", status: "running" }), "preview", "Рендерю превью…"],
+    [summary({ stage: "model", status: "waiting" }), "provider", "Выполняется у провайдера…"]
+  ] as const)("uses normalized artifact evidence", (event, kind, label) => {
+    expect(presentRunLifecycleV2(evidence({ events: [event] }))).toMatchObject({
+      activity: { kind, label },
+      kind: "activity"
+    });
+  });
+
+  it("uses only bounded tool names and never server-authored display prose", () => {
+    const requested = {
+      data: {
+        artifactType: "tool_call",
+        payload: { name: "create_workbook", status: "requested" }
+      },
+      type: "artifact"
+    } satisfies RunEventView;
+    const unsafe = {
+      data: {
+        artifactType: "tool_call",
+        payload: { name: "<script>alert(1)</script>", status: "requested" }
+      },
+      type: "artifact"
+    } satisfies RunEventView;
+
+    expect(presentRunLifecycleV2(evidence({ events: [requested] }))).toMatchObject({
+      activity: {
+        kind: "tool",
+        label: "Инструмент: create_workbook…",
+        toolName: "create_workbook"
+      }
+    });
+    expect(presentRunLifecycleV2(evidence({ events: [unsafe] }))).toMatchObject({
+      activity: { kind: "tool", label: "Выполняю инструменты…" }
+    });
+  });
+
+  it("lets the latest explicit signal choose between tool rounds and token streaming", () => {
+    const token = { data: { delta: "partial" }, type: "token" } satisfies RunEventView;
+    const tool = summary({ stage: "tools", status: "running", toolName: "lookup" });
+
+    expect(presentRunLifecycleV2(evidence({ events: [tool, token] })).kind).toBe("streaming");
+    expect(presentRunLifecycleV2(evidence({ events: [token, tool] }))).toMatchObject({
+      activity: { kind: "tool", label: "Инструмент: lookup…" },
+      kind: "activity"
+    });
+  });
+
+  it("keeps ambiguous EOF distinct until terminal server truth arrives", () => {
+    const partial = evidence({
+      connectionLost: true,
+      content: "Partial answer",
+      events: [{ data: { delta: "Partial answer" }, type: "token" }],
+      runId: "run-a"
+    });
+
+    expect(presentRunLifecycleV2(partial)).toEqual({
+      kind: "connection_lost",
+      runId: "run-a"
+    });
+    expect(presentRunLifecycleV2({
+      ...partial,
+      events: [...partial.events, { data: { status: "complete" }, type: "done" }]
+    })).toEqual({
+      kind: "complete",
+      runId: "run-a"
+    });
+  });
+
+  it("requires an authoritative terminal transition for complete or cancelled", () => {
+    expect(presentRunLifecycleV2(evidence({
+      authoritativeMessageStatus: "complete",
+      content: "Persisted answer"
+    })).kind).toBe("complete");
+    expect(presentRunLifecycleV2(evidence({
+      events: [{ data: { status: "cancelled" }, type: "done" }]
+    })).kind).toBe("cancelled");
+    expect(presentRunLifecycleV2(evidence({ content: "Looks complete" })).kind).toBe("idle");
+  });
+
+  it("distinguishes retryable partial failure from terminal parameter failure", () => {
+    expect(presentRunLifecycleV2(evidence({
+      content: "Partial answer",
+      events: [{
+        data: {
+          code: "provider_stream_reset",
+          message: "Соединение с провайдером сброшено.",
+          recovery: "retry"
+        },
+        type: "error"
+      }]
+    }))).toMatchObject({
+      failure: {
+        code: "provider_stream_reset",
+        message: "Соединение с провайдером сброшено.",
+        recovery: "retry"
+      },
+      kind: "recoverable_error"
+    });
+
+    expect(presentRunLifecycleV2(evidence({
+      failure: {
+        code: "context_budget_exceeded",
+        message: "Контекст выбранной модели слишком мал.",
+        recovery: "change_parameters"
+      },
+      status: "error"
+    }))).toMatchObject({
+      failure: { code: "context_budget_exceeded", recovery: "change_parameters" },
+      kind: "terminal_error"
+    });
+  });
+
+  it("bounds malformed error evidence and supplies factual fallback copy", () => {
+    expect(presentRunLifecycleV2(evidence({
+      events: [{
+        data: { code: "<unsafe>", message: "   " },
+        type: "error"
+      }]
+    }))).toMatchObject({
+      failure: {
+        code: null,
+        message: "Запуск завершился с ошибкой. Измените параметры запроса и попробуйте снова."
+      },
+      kind: "terminal_error"
+    });
+  });
+});

@@ -19,7 +19,7 @@ import {
   useWorkspaceStore,
   workspaceNavigationChats
 } from "./workspaceStore";
-import type { ComposerAttachment } from "@/components/chat/Composer";
+import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { Catalog, ChatDetail, ChatSummary, ThreadMessage } from "./types";
 
 function chat(input: Partial<ChatSummary> & { id: string; title: string }): ChatSummary {
@@ -254,7 +254,6 @@ function useWorkspaceActionsForTest(input: {
     .activateSession(composerSessionKey(activeChatId));
   useComposerSessionStore.getState().setAttachments(input.attachments);
   useComposerSessionStore.getState().setDraft(input.draft);
-  const confirmDeleteChat = vi.fn(async () => true);
   const applyModelControlDefaults = vi.fn();
   const resumeChatRun = vi.fn();
   const setSelectedModelId = vi.fn();
@@ -263,7 +262,6 @@ function useWorkspaceActionsForTest(input: {
   const setSelectedSearchPlan = vi.fn();
   const setNotice = vi.fn();
   const chatMutation = {
-    closeActions: vi.fn(),
     editingTitle: "",
     finishEditing: vi.fn()
   };
@@ -284,7 +282,6 @@ function useWorkspaceActionsForTest(input: {
     chatHasActiveStream,
     chatHasPendingThreadMutation,
     chatMutation,
-    confirmDeleteChat,
     loadingChatDetailIdRef: { current: null },
     resumeChatRun,
     setNotice,
@@ -307,7 +304,6 @@ function useWorkspaceActionsForTest(input: {
     chatHasActiveStream,
     chatDetailRequestsRef,
     chats: () => useWorkspaceStore.getState().chats,
-    confirmDeleteChat,
     draft: () => selectActiveComposerSession(useComposerSessionStore.getState()).draft,
     pendingThreadMutationChatIds,
     resumeChatRun,
@@ -439,7 +435,11 @@ describe("workspace actions", () => {
 
     await state.actions.deleteChat(state.chatA);
 
-    expect(state.confirmDeleteChat).toHaveBeenCalledWith(state.chatA);
+    expect(state.setNotice).toHaveBeenCalledWith(expect.objectContaining({
+      action: expect.objectContaining({ label: "Отменить" }),
+      kind: "success",
+      text: "Чат перемещён в архив"
+    }));
     expect(state.chats().map((candidate) => candidate.id)).toEqual(["chat-b", "chat-c"]);
     expect(useThreadStore.getState().threadsByChatId["chat-a"]).toBeUndefined();
     expect(useRunSurfaceStore.getState().surfacesByChatId["chat-a"]).toBeUndefined();
@@ -460,7 +460,6 @@ describe("workspace actions", () => {
     await state.actions.deleteChat(state.chatA);
 
     expect(state.chatHasActiveStream).toHaveBeenCalledWith("chat-a");
-    expect(state.confirmDeleteChat).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(state.chats().map((candidate) => candidate.id)).toEqual(["chat-a", "chat-b"]);
     expect(state.setNotice).toHaveBeenCalledWith({
@@ -556,21 +555,40 @@ describe("workspace actions", () => {
     });
   });
 
-  it("cancels chat deletion when the custom confirmation is dismissed", async () => {
+  it("restores an immediately archived chat through the undo toast", async () => {
     const state = useWorkspaceActionsForTest({
       activeChatId: "chat-b",
       attachments: [],
       draft: ""
     });
-    state.confirmDeleteChat.mockResolvedValueOnce(false);
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+      const path = String(url);
+      if (path.endsWith("/memory-mode")) return Response.json(apiChatMemoryState(state.chatA));
+      if (path.endsWith("/archive")) return Response.json(apiArchivedChat(state.chatA));
+      if (path.endsWith("/restore")) {
+        return Response.json({
+          chat: { ...apiArchivedChat(state.chatA, 2).chat, archived: false }
+        });
+      }
+      return Response.json({ error: "unexpected" }, { status: 500 });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     await state.actions.deleteChat(state.chatA);
-
-    expect(state.confirmDeleteChat).toHaveBeenCalledWith(state.chatA);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(state.chats().map((candidate) => candidate.id)).toEqual(["chat-a", "chat-b"]);
+    expect(state.chats().map((candidate) => candidate.id)).toEqual(["chat-b"]);
+    const notice = state.setNotice.mock.calls.at(-1)?.[0];
+    expect(notice).toMatchObject({
+      action: { label: "Отменить" },
+      text: "Чат перемещён в архив"
+    });
+    notice?.action?.onClick();
+    await vi.waitFor(() => {
+      expect(state.chats().map((candidate) => candidate.id)).toEqual(["chat-a", "chat-b"]);
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/chats/chat-a/restore",
+      expect.objectContaining({ method: "POST" })
+    );
   });
 
   it("activates a blank workspace without creating a persisted chat", () => {
@@ -868,6 +886,11 @@ describe("workspace actions", () => {
 
   it("marks a chat created from a Temporary draft pending and keeps it out of navigation", async () => {
     const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    useWorkspaceStore.getState().applyNavigationPage({
+      chats: [],
+      folders: [],
+      nextCursor: null
+    }, false);
     const sourceKey = composerSessionKey(null, "folder-1", "TEMPORARY");
     useComposerSessionStore.getState().activateSession(sourceKey);
     useComposerSessionStore.getState().setDraft("Temporary first send");
@@ -883,7 +906,46 @@ describe("workspace actions", () => {
     expect(stored).toMatchObject({ pendingInitialMemoryMode: "TEMPORARY" });
     expect(workspaceNavigationChats(useWorkspaceStore.getState().chats))
       .not.toContainEqual(expect.objectContaining({ id: created.id }));
+    expect(useWorkspaceStore.getState().navigationChats)
+      .not.toContainEqual(expect.objectContaining({ id: created.id }));
     expect(state.session(composerSessionKey(created.id)).draft).toBe("Temporary first send");
+  });
+
+  it("activates Memory-off and Temporary blank workspaces without sharing the Normal draft", () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "Normal" });
+    state.actions.activateBlankWorkspace("folder-1", "EXCLUDED");
+    useComposerSessionStore.getState().setDraft("Memory off");
+    state.actions.activateBlankWorkspace("folder-1", "TEMPORARY");
+    useComposerSessionStore.getState().setDraft("Temporary");
+
+    expect(state.session(composerSessionKey(null, "folder-1", "EXCLUDED")).draft)
+      .toBe("Memory off");
+    expect(state.session(composerSessionKey(null, "folder-1", "TEMPORARY")).draft)
+      .toBe("Temporary");
+    expect(state.session(composerSessionKey(null, "folder-1")).draft).toBe("");
+  });
+
+  it("creates a Memory-off draft as an excluded retained chat without merging sessions", async () => {
+    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
+    const sourceKey = composerSessionKey(null, "folder-1", "EXCLUDED");
+    useComposerSessionStore.getState().activateSession(sourceKey);
+    useComposerSessionStore.getState().setDraft("Memory-off first send");
+    const created = chat({ folderId: "folder-1", id: "chat-excluded", title: "Memory off" });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ chat: apiChatSummary(created) }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(state.actions.createChat("folder-1", sourceKey)).resolves.toMatchObject({
+      id: "chat-excluded",
+      memoryMode: "EXCLUDED",
+      memorySourceRevision: 0
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      folderId: "folder-1",
+      memoryMode: "EXCLUDED"
+    });
+    expect(state.session(composerSessionKey(created.id)).draft).toBe("Memory-off first send");
+    expect(state.session(composerSessionKey(null, "folder-1")).draft).toBe("");
   });
 
   it("still applies saved defaults during ordinary chat activation", async () => {
@@ -1657,6 +1719,17 @@ describe("workspace actions", () => {
       attachments: [],
       draft: ""
     });
+    useWorkspaceStore.getState().applyNavigationPage({
+      chats: [{
+        activeRun: true,
+        folderId: state.chatA.folderId,
+        id: state.chatA.id,
+        title: state.chatA.title,
+        updatedAt: state.chatA.updatedAt
+      }],
+      folders: [],
+      nextCursor: null
+    }, false);
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -1687,6 +1760,11 @@ describe("workspace actions", () => {
     );
     expect(state.chats().map((candidate) => candidate.id)).toEqual(["chat-a", "chat-b"]);
     expect(state.chats()[0]?.pinned).toBe(true);
+    expect(useWorkspaceStore.getState().navigationChats).toEqual([expect.objectContaining({
+      activeRun: true,
+      id: "chat-a",
+      updatedAt: "2026-06-09T00:00:00.000Z"
+    })]);
   });
 
   it("keeps an initial workspace failure inline without also raising a shell notice", async () => {

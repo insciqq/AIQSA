@@ -10,6 +10,6 @@ This file is a routing index, not a functional contract owner. Read only the lea
 | Composer input, attachments, drafts, submit, keyboard behavior, validation, or mobile interaction | [Composer](composer/COMPOSER.md) |
 | Command palette, Workspace pane, chat discovery, account entry, shortcuts, or responsive navigation | [Navigation](composer/NAVIGATION.md) |
 | Provider, model, Assistant, Search, prompt, parameter, next-run, entitlement, or unavailable controls | [Run controls](composer/RUN_CONTROLS.md) |
-| Run receipt, inspection entry, Details opening/pinning, tabs, overlays, or responsive Details access | [Receipt and Details](composer/RECEIPT_AND_DETAILS.md) |
+| Answer evidence, Branch checkout, exact Run-details opening, drawers/sheets, or responsive inspection access | [Evidence, Branches, and Run details](composer/RECEIPT_AND_DETAILS.md) |
 
 Appearance is routed through [the design system](../DESIGN_SYSTEM.md); server-side admission and run semantics remain routed through [backend](../BACKEND.md) and [the run pipeline](../RUN_PIPELINE.md).

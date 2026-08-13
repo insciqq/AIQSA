@@ -8,6 +8,7 @@ import {
   runIdFromEvent,
   tokenDeltaFromEvent
 } from "@/components/app-shell/shellApi";
+import { isRecord } from "@/components/app-shell/shellValues";
 import type { RunEventView } from "@/components/app-shell/types";
 
 export type RunStreamTokenBuffer = {
@@ -36,10 +37,13 @@ type ConsumeRunStreamInput = {
   tokenBuffer: RunStreamTokenBuffer;
 };
 
+export type RunStreamTerminalStatus = "cancelled" | "complete" | "error";
+
 type ConsumeRunStreamResult = {
   failed: boolean;
   receivedChatUpdate: boolean;
   runId: string | null;
+  terminalStatus: RunStreamTerminalStatus;
 };
 
 export function useRunStream({
@@ -64,6 +68,7 @@ export function useRunStream({
       let parseWarningLogged = false;
       let receivedChatUpdate = false;
       let runId: string | null = null;
+      let terminalStatus: RunStreamTerminalStatus | null = null;
 
       const handleEvent = (event: RunEventView) => {
         if (isSseParseError(event)) {
@@ -97,6 +102,13 @@ export function useRunStream({
 
         if (event.type === "error") {
           failed = true;
+          terminalStatus = "error";
+        } else if (event.type === "done" && isRecord(event.data)) {
+          const status = event.data.status;
+          if (status === "cancelled" || status === "complete" || status === "error") {
+            terminalStatus = status;
+            failed = status === "error";
+          }
         }
       };
 
@@ -126,7 +138,11 @@ export function useRunStream({
       }
       tokenBuffer.flush();
 
-      return { failed, receivedChatUpdate, runId };
+      if (!terminalStatus) {
+        throw new Error("stream_connection_lost");
+      }
+
+      return { failed, receivedChatUpdate, runId, terminalStatus };
     },
     [appendRunEventView, appendSseParseWarningOnce, applyChatUpdate]
   );

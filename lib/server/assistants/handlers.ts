@@ -73,6 +73,22 @@ function errorJson(code: string, status: number, message?: string): Response {
   return Response.json({ error: code, ...(message ? { message } : {}) }, { status });
 }
 
+export function buildAssistantRunnerCatalogView(input: Readonly<{
+  accessibleMcpServerIds: ReadonlySet<string>;
+  catalogData: CatalogData;
+  mcpRunPlan: AssistantCatalogView["mcpRunPlan"];
+}>): RunnerCatalogView {
+  const selection = resolveCurrentUserCatalogSelection(input.catalogData);
+  return {
+    accessibleMcpServerIds: input.accessibleMcpServerIds,
+    entitledSearchOptionIds: new Set(
+      selection.entitledStrategies.map((strategy) => strategy.strategyId)
+    ),
+    mcpRunPlan: input.mcpRunPlan,
+    modelById: new Map(selection.models.map((model) => [model.modelId, model]))
+  };
+}
+
 async function runnerCatalogView(
   deps: AssistantHandlerDeps,
   userId: string
@@ -83,16 +99,11 @@ async function runnerCatalogView(
     deps.repository.loadUserMcpRunPlanView(userId)
   ]);
   if (!catalogData) return null;
-  const selection = resolveCurrentUserCatalogSelection(catalogData);
-  const modelById = new Map(selection.models.map((model) => [model.modelId, model]));
-  return {
+  return buildAssistantRunnerCatalogView({
     accessibleMcpServerIds,
-    entitledSearchOptionIds: new Set(
-      selection.entitledStrategies.map((strategy) => strategy.strategyId)
-    ),
+    catalogData,
     mcpRunPlan,
-    modelById,
-  };
+  });
 }
 
 function decodeStoredRevision(revision: AssistantRevisionRow): {
@@ -151,7 +162,10 @@ function availabilityFor(
   return { ok: true };
 }
 
-function summaryFromEntry(entry: AssistantAccessEntry, view: RunnerCatalogView): AssistantSummary {
+export function buildAssistantSummary(
+  entry: AssistantAccessEntry,
+  view: RunnerCatalogView
+): AssistantSummary {
   const decoded = decodeStoredRevision(entry.revision);
   const availability = availabilityFor(entry.revision, decoded.searchPlan.optionIds, view);
   return {
@@ -313,7 +327,7 @@ export function createListAssistantsHandler(deps: AssistantHandlerDeps) {
       deps.repository.listForUser(resolved.auth.userId),
       deps.repository.listPublishableGroups(resolved.auth.userId)
     ]);
-    const assistants = entries.map((entry) => summaryFromEntry(entry, resolved.view));
+    const assistants = entries.map((entry) => buildAssistantSummary(entry, resolved.view));
     return Response.json({
       assistants,
       publishableGroups,

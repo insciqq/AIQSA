@@ -2,61 +2,51 @@
 @tailwind components;
 @tailwind utilities;
 
-/*
- * Desktop conversation actions float above the paper instead of reserving a
- * full-width header row. When the conversation column is narrow, the reading
- * surface yields only the actions' right-side footprint; at wider sizes the
- * centered reading measure already clears that footprint naturally.
- */
-[data-testid="conversation-column"] {
-  container-name: conversation;
-  container-type: inline-size;
+* {
+  box-sizing: border-box;
 }
 
-.top-rail-reading-veil {
-  background: linear-gradient(
-    to bottom,
-    rgb(var(--answer-paper) / 0.82) 0%,
-    rgb(var(--answer-paper) / 0.42) 68%,
-    rgb(var(--answer-paper) / 0) 100%
-  );
+html,
+body {
+  min-height: 100%;
 }
 
-@media (min-width: 1281px) {
-  [data-desktop-action-clearance="true"] [data-testid="thread"],
-  [data-desktop-action-clearance="true"] [data-testid="persistent-notice-region"] {
-    padding-right: 16rem;
+html {
+  background: var(--v2-color-canvas);
+}
+
+body {
+  margin: 0;
+  color: var(--v2-color-text);
+  background: var(--v2-color-canvas);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+button,
+textarea,
+input,
+select {
+  font: inherit;
+}
+
+@layer base {
+  a,
+  button,
+  select,
+  [role="tab"],
+  [role="option"] {
+    transition-property: color, background-color, border-color, opacity;
+    transition-duration: var(--v2-motion-fast);
   }
 }
 
-[data-composer-controls-container="true"] {
-  container-name: composer-controls;
-  container-type: inline-size;
-}
-
-@container composer-controls (min-width: 44rem) {
-  [data-composer-secondary-controls="true"][data-has-direct-reasoning="true"] {
-    flex-basis: 26rem;
-    min-width: min(26rem, 100%);
-  }
-
-  [data-composer-direct-reasoning="true"] {
-    display: block;
+@layer components {
+  .pop-enter {
+    animation: pop-enter 120ms ease-out both;
   }
 }
 
-@container conversation (min-width: 78rem) {
-  [data-desktop-action-clearance="true"] [data-testid="thread"],
-  [data-desktop-action-clearance="true"] [data-testid="persistent-notice-region"] {
-    padding-right: 0;
-  }
-}
-
-/*
- * Control Center resource navigation follows the space left inside the task
- * surface, not the viewport. Below this threshold the explicit navigation
- * state owns one pane; a sufficiently wide surface may retain index context.
- */
+/* Control Center responds to the width of its owned task surface. */
 [data-admin-task-container="true"] {
   container-name: admin-task-workspace;
   container-type: inline-size;
@@ -82,265 +72,7 @@
   }
 }
 
-[data-message-interaction-surface="true"] {
-  transition:
-    background-color 150ms cubic-bezier(0.4, 0, 0.2, 1),
-    box-shadow 150ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-[data-message-interaction-surface="true"]:active {
-  background-color: rgb(var(--control-surface) / 0.72);
-  box-shadow: inset 0 0 0 1px rgb(var(--trace-subtle) / 0.8);
-}
-
-@media (max-width: 639px), (max-height: 32rem), (hover: none), (pointer: coarse) {
-  article[data-role]:not([data-mobile-controls-open="true"])
-    [data-message-controls-surface="true"] {
-    display: none;
-  }
-
-  article[data-mobile-controls-open="true"] [data-message-controls-surface="true"] {
-    animation: message-controls-enter 300ms ease-out both;
-  }
-}
-
-@media (min-width: 640px) and (hover: hover) and (pointer: fine) {
-  article[data-role] [data-message-controls-surface="true"] {
-    display: none;
-  }
-
-  [data-message-interaction-surface="true"]:hover [data-message-controls-surface="true"],
-  article[data-role]:focus-visible [data-message-controls-surface="true"],
-  article[data-role]:has(:focus-visible) [data-message-controls-surface="true"],
-  article[data-role]:has([data-message-menu-trigger="true"][aria-expanded="true"])
-    [data-message-controls-surface="true"] {
-    display: flex;
-  }
-
-  [data-message-interaction-surface="true"]:hover,
-  article[data-role]:focus-visible [data-message-interaction-surface="true"],
-  article[data-role]:has(:focus-visible) [data-message-interaction-surface="true"],
-  article[data-role]:has([data-message-menu-trigger="true"][aria-expanded="true"])
-    [data-message-interaction-surface="true"] {
-    background-color: rgb(var(--control-surface) / 0.72);
-  }
-}
-
-article[data-role]:focus-visible [data-message-interaction-surface="true"] {
-  box-shadow:
-    inset 0 0 0 1px rgb(var(--trace-subtle) / 0.8),
-    0 0 0 2px rgb(var(--proof) / 0.78);
-}
-
-:root {
-  background: rgb(var(--app-canvas));
-}
-
-:root,
-[data-theme="neutral"] {
-  color-scheme: light;
-  --app-canvas: 251 252 251;
-  --workspace-rail: 243 245 243;
-  --answer-paper: 255 255 255;
-  --composer-surface: 255 255 255;
-  --control-surface: 244 246 245;
-  --overlay-surface: 255 255 255;
-  --control-hover: 235 239 237;
-  --control-pressed: 226 233 230;
-  --control-selected: 219 235 232;
-  --trace-subtle: 224 229 226;
-  --trace-strong: 184 193 189;
-  --ink: 28 33 31;
-  --ink-secondary: 69 77 73;
-  --ink-muted: 95 104 100;
-  --ink-disabled: 147 156 152;
-  --proof: 23 111 101;
-  --proof-hover: 18 94 86;
-  --proof-contrast: 255 255 255;
-  --positive: 35 119 73;
-  --caution: 146 91 16;
-  --critical: 181 53 68;
-  --scrim: 16 24 21;
-  --shadow-float: 0 2px 10px rgb(16 24 21 / 0.1);
-  --shadow-overlay: 0 14px 40px rgb(16 24 21 / 0.16);
-}
-
-[data-theme="aiqsa"] {
-  color-scheme: dark;
-  --app-canvas: 15 18 17;
-  --workspace-rail: 20 24 22;
-  --answer-paper: 24 29 27;
-  --composer-surface: 29 35 32;
-  --control-surface: 33 40 37;
-  --overlay-surface: 31 38 35;
-  --control-hover: 40 48 44;
-  --control-pressed: 34 53 49;
-  --control-selected: 31 62 56;
-  --trace-subtle: 48 57 53;
-  --trace-strong: 87 98 93;
-  --ink: 237 241 239;
-  --ink-secondary: 201 209 205;
-  --ink-muted: 157 168 163;
-  --ink-disabled: 104 116 111;
-  --proof: 77 184 169;
-  --proof-hover: 94 199 184;
-  --proof-contrast: 7 27 23;
-  --positive: 126 196 139;
-  --caution: 222 173 89;
-  --critical: 228 116 133;
-  --scrim: 0 0 0;
-  --shadow-float: 0 2px 10px rgb(0 0 0 / 0.26);
-  --shadow-overlay: 0 14px 40px rgb(0 0 0 / 0.34);
-}
-
-[data-theme="graphite"] {
-  color-scheme: dark;
-  --app-canvas: 14 17 21;
-  --workspace-rail: 18 22 27;
-  --answer-paper: 22 27 33;
-  --composer-surface: 27 33 40;
-  --control-surface: 31 38 46;
-  --overlay-surface: 29 36 44;
-  --control-hover: 39 47 57;
-  --control-pressed: 35 52 62;
-  --control-selected: 35 61 72;
-  --trace-subtle: 46 55 66;
-  --trace-strong: 81 92 106;
-  --ink: 239 243 246;
-  --ink-secondary: 200 209 218;
-  --ink-muted: 156 168 180;
-  --ink-disabled: 100 112 125;
-  --proof: 105 190 202;
-  --proof-hover: 124 204 215;
-  --proof-contrast: 7 25 29;
-  --positive: 128 195 145;
-  --caution: 220 174 95;
-  --critical: 226 119 139;
-  --scrim: 2 5 9;
-  --shadow-float: 0 2px 10px rgb(0 0 0 / 0.27);
-  --shadow-overlay: 0 14px 40px rgb(0 0 0 / 0.36);
-}
-
-[data-theme="verdant"] {
-  color-scheme: dark;
-  --app-canvas: 11 16 14;
-  --workspace-rail: 15 22 19;
-  --answer-paper: 19 27 23;
-  --composer-surface: 24 33 29;
-  --control-surface: 28 39 34;
-  --overlay-surface: 26 36 31;
-  --control-hover: 35 47 41;
-  --control-pressed: 30 52 42;
-  --control-selected: 30 62 49;
-  --trace-subtle: 43 58 51;
-  --trace-strong: 76 94 84;
-  --ink: 239 243 240;
-  --ink-secondary: 198 210 202;
-  --ink-muted: 152 168 158;
-  --ink-disabled: 98 113 104;
-  --proof: 113 201 157;
-  --proof-hover: 132 214 174;
-  --proof-contrast: 7 29 20;
-  --positive: 144 200 119;
-  --caution: 218 171 85;
-  --critical: 226 115 132;
-  --scrim: 0 4 2;
-  --shadow-float: 0 2px 10px rgb(0 0 0 / 0.27);
-  --shadow-overlay: 0 14px 40px rgb(0 0 0 / 0.36);
-}
-
-[data-theme="classic-dark"] {
-  color-scheme: dark;
-  --app-canvas: 25 27 30;
-  --workspace-rail: 29 32 35;
-  --answer-paper: 32 35 39;
-  --composer-surface: 36 40 45;
-  --control-surface: 39 44 50;
-  --overlay-surface: 37 41 46;
-  --control-hover: 46 51 58;
-  --control-pressed: 40 49 61;
-  --control-selected: 40 54 72;
-  --trace-subtle: 55 60 67;
-  --trace-strong: 89 96 107;
-  --ink: 242 244 246;
-  --ink-secondary: 202 208 215;
-  --ink-muted: 153 164 176;
-  --ink-disabled: 102 113 125;
-  --proof: 139 183 231;
-  --proof-hover: 159 198 238;
-  --proof-contrast: 11 27 44;
-  --positive: 130 196 146;
-  --caution: 222 175 91;
-  --critical: 230 120 139;
-  --scrim: 3 5 8;
-  --shadow-float: 0 2px 10px rgb(0 0 0 / 0.28);
-  --shadow-overlay: 0 14px 40px rgb(0 0 0 / 0.4);
-}
-
-[data-theme="paper"] {
-  color-scheme: light;
-  --app-canvas: 250 250 250;
-  --workspace-rail: 248 248 248;
-  --answer-paper: 255 255 255;
-  --composer-surface: 255 255 255;
-  --control-surface: 244 244 244;
-  --overlay-surface: 255 255 255;
-  --control-hover: 235 235 235;
-  --control-pressed: 224 224 224;
-  --control-selected: 232 232 232;
-  --trace-subtle: 230 230 230;
-  --trace-strong: 184 184 184;
-  --ink: 13 13 13;
-  --ink-secondary: 66 66 66;
-  --ink-muted: 102 102 102;
-  --ink-disabled: 156 156 156;
-  --proof: 33 33 33;
-  --proof-hover: 0 0 0;
-  --proof-contrast: 255 255 255;
-  --positive: 32 122 74;
-  --caution: 151 91 16;
-  --critical: 183 52 68;
-  --scrim: 16 16 16;
-  --shadow-float: 0 2px 10px rgb(0 0 0 / 0.08);
-  --shadow-overlay: 0 14px 40px rgb(0 0 0 / 0.14);
-}
-
-* {
-  box-sizing: border-box;
-}
-
-html,
-body {
-  min-height: 100%;
-}
-
-body {
-  margin: 0;
-  background: rgb(var(--app-canvas));
-  color: rgb(var(--ink));
-}
-
-.account-menu-scrollbar {
-  scrollbar-color: rgb(var(--trace-strong)) transparent;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-}
-
-.account-menu-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-
-.account-menu-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.account-menu-scrollbar::-webkit-scrollbar-thumb {
-  border: 1px solid rgb(var(--overlay-surface));
-  border-radius: 9999px;
-  background: rgb(var(--trace-strong));
-}
-
-/* Prevent iOS focus zoom from invalidating the dynamic-viewport composer and sheets. */
+/* Prevent iOS focus zoom from invalidating dynamic-viewport dialogs and Composer. */
 @media (max-width: 1023px), (hover: none), (pointer: coarse) {
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
   select,
@@ -349,119 +81,18 @@ body {
   }
 }
 
-button,
-textarea,
-input {
-  font: inherit;
-}
-
-@layer base {
-  /* Interaction baseline: color-only transitions so hover/active stop snapping. */
-  a,
-  button,
-  select,
-  [role="tab"],
-  [role="option"] {
-    transition-property: color, background-color, border-color, opacity;
-    transition-duration: 100ms;
-    transition-timing-function: ease-out;
-  }
-}
-
-@layer components {
-  /* Loading placeholder bars; the shimmer is disabled with the rest of the motion layer. */
-  .skeleton-block {
-    @apply rounded-control bg-control-hover;
-    animation: skeleton-shimmer 1.6s ease-in-out infinite;
-  }
-
-  /* Shared popover/menu/dialog entrance; exits stay instant (unmount). */
-  .pop-enter {
-    animation: pop-enter 120ms ease-out both;
-  }
-
-  /* Soft mount fade for post-run metadata such as the composer usage line. */
-  .fade-in-soft {
-    animation: fade-in-soft 220ms ease-out both;
-  }
-}
-
-/*
- * Motion layer. Sanctioned moments only: streaming liveness, popover
- * entrances, and the answer-complete settle. Everything below dies under
- * html[data-motion="off"] and prefers-reduced-motion via the global kill
- * rules at the end of this file.
- */
-
-/* Evidence-based run activity: the live glyph carries a subtle working pulse. */
-.pipeline-indicator[data-phase="running"] [data-run-activity] {
-  animation: pipeline-pulse 1.3s ease-in-out infinite;
-}
-
-/* Freshly revealed completed-run evidence cools from the proof accent. */
-[data-run-settled="true"] {
-  animation: settle-flash 800ms ease-out 1;
-}
-
-@keyframes skeleton-shimmer {
-  0%,
-  100% {
-    opacity: 0.45;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-@keyframes pipeline-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-}
-
-/* from-only keyframes settle back to the element's natural computed style. */
-@keyframes settle-flash {
-  from {
-    color: rgb(var(--proof));
-  }
-}
-
 @keyframes pop-enter {
   from {
     opacity: 0;
     scale: 0.98;
   }
+
   to {
     opacity: 1;
     scale: 1;
   }
 }
 
-@keyframes fade-in-soft {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes message-controls-enter {
-  from {
-    opacity: 0;
-    transform: translateY(calc(50% - 0.2rem)) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(50%) scale(1);
-  }
-}
-
-/* Test mode pins every animation/transition so assertions stay deterministic. */
 html[data-motion="off"] *,
 html[data-motion="off"] *::before,
 html[data-motion="off"] *::after {
@@ -482,10 +113,9 @@ html[data-motion="off"] *::after {
 }
 
 ::selection {
-  background: rgb(var(--proof) / 0.35);
+  background: var(--v2-color-accent-dim);
 }
 
-/* Shiki emits both palettes as variables so an already-rendered block follows runtime theme changes. */
 .shiki,
 .shiki span {
   color: var(--shiki-dark);

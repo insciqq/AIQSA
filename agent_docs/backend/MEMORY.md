@@ -5,206 +5,141 @@ Scope: Approved product semantics, correctness fences, privacy boundaries, and t
 
 ## Implementation Status And Authority
 
-Native Memory is approved. Shipped foundations cover evaluation, durable
-coordination, scoped explicit Memory, Temporary lifecycle, safe history
-indexing/manual search, and answer recall. Recall uses exact/RU/EN/simple FTS,
-optional qualified vectors, RRF, bounded per-term language ORs,
-temporal/contextual probes, bounded packing, and exact source/suppression
-rechecks; generic knowledge queries need a personal/history signal.
-Retained turns and Resume enqueue indexing only with `referenceChatHistory`;
-the gate now defaults on for every owner, while learning stays independent and
-defaults off. HYBRID degrades to lexical without qualified query embedding. The
-Phase 7 policy keeps expansion/rerank off for no measured lift; later enablement
-still requires accepted policy and signed role qualification.
+Native Memory ships as three cooperating retrieval tiers over the existing
+PostgreSQL authority:
+
+1. a bounded Core projection of eligible current facts, present on every
+   non-Temporary run while Saved Memories are enabled;
+2. automatic bounded hybrid prefetch for every eligible non-empty USER turn;
+3. one model-callable, read-only `search_memory` tool for a second pass.
+
+Core uses pinned and explicit/user-corrected facts plus automatic facts carrying
+the extractor's discrete `coreEligible` and `coreSalience` fields. Ordering is
+authority, salience, recency, and stable identity. It does not use query text,
+provider I/O, profile summaries, category rules, confidence decimals, or
+temperature scores. Its code-owned limits are 12 facts and 512 approximate
+tokens; the complete personal-context pack is capped at 12 items and 2,500
+approximate tokens.
+
+Every eligible non-empty query reaches candidate generation. Exact whole-query,
+Unicode-simple FTS, compatible pgvector, and authoritative-recency lanes run
+under the same owner/scope/source/suppression fences. Candidate lanes have
+bounded limits and no semantic cutoff. Reciprocal-rank fusion produces a small
+candidate set; one strict structured relevance call returns ordered relevant
+IDs or abstains. If that call is unavailable, dynamic automatic injection stays
+empty and records degradation. Core remains available, local candidates remain
+available to an explicit `search_memory` call, and the ordinary answer continues.
+
+`search_memory` covers current facts, grounded EVENT facts, and eligible history
+chunks. Its typed input accepts a natural-language query and optional exact
+source-kind, owner-validated scope, and absolute time filters. It is available
+whenever the corresponding Memory gates are enabled, has no language or intent
+router, is limited to two calls per answer run, and owns a private replay-safe
+receipt bound to the exact persisted tool call. Extractive legacy `EPISODE` rows
+remain decodable only for historical evidence and are never newly enqueued,
+indexed, retrieved, packed, or returned by the tool.
+
+The answer model receives all five typed Memory action tools—`save_memory`,
+`list_memories`, `update_memory`, `forget_memory`, and
+`mark_memory_incorrect`—on eligible tool-capable normal runs. There is no
+natural-language regex router. Mutation authority is minted and claimed at
+tool execution from the exact current USER message plus the exact owned target,
+current version, and scope. Retrieved, Assistant, tool, Knowledge, quoted, or
+earlier-turn text cannot grant authority. Direct Manage Memories APIs remain the
+fallback for models without tool calling. Unambiguous mutations apply
+immediately and expose compact Edit/Undo feedback; genuine ambiguity asks one
+clarifying question, and bulk irreversible deletion retains confirmation.
+
+Automatic learning defaults on, independently of Saved Memories and history
+reference. Extraction emits one strict `STORE | ABSTAIN` decision containing a
+normalized fact, exact supporting message spans, structured modality/scope/time,
+optional valid BCP-47 or `und` language metadata, sensitivity, and discrete Core
+fields. The server validates shape, ownership, spans, enums, bounds, and safe
+scope; it does not reinterpret natural language with regexes, dictionaries,
+substring equality, or numeric confidence/importance gates. Deterministic DLP
+is limited to recognizable formats such as private-key envelopes, JWT/provider
+token shapes, credential URLs, Luhn-valid card candidates, and high-entropy
+values.
+
+Consolidation receives a bounded same-scope semantic neighborhood and emits one
+strict `ADD | REINFORCE | SUPERSEDE | CONFLICT | EXPIRE | NOOP` decision with
+exact targets. The server enforces evidence, ownership/currentness, temporal
+ordering, suppression, and explicit-over-automatic authority. New logical facts
+receive an opaque server-owned `canonicalKey`; target operations retain the
+target key. Keys and exact hashes are compatibility/deduplication identifiers,
+not semantic identity. The old category-word verifier, Global Dream semantic
+reconciliation, profile generation, and temperature working set are absent from
+the normal path. Historical jobs for retired kinds settle deterministically
+without provider I/O or new semantic data.
+
+Runtime admission validates actual compatibility and authority only: provider
+entitlement, protocol and strict-tool support, configured credential, embedding
+dimension/vector-space identity, accepted administrator destination, and
+bounded execution. Signed quality registries, per-installation benchmark
+qualification, corpus signatures, and language allowlists are not runtime
+authority. Offline evaluation may still document tested or recommended model
+combinations without blocking a compatible administrator-selected model.
+
+Every normal send and regeneration retains the two-phase run boundary. Phase A
+commits the exact DAG, ordinary dependency evidence, private `PREPARING` run,
+bounded base request, and retrieval attempt before external Memory I/O. Phase B
+rechecks the DAG, settings and generation, active source, scopes, safety,
+suppression, accepted destination, and every exact Core/dynamic item before
+freezing the untrusted pack, request, binding, and items. Recovery uses only that
+frozen request. Drift receives one safe retry; retrieval degradation never
+becomes an invented Memory success.
+
+All adapters place labelled personal context after trusted instructions. Memory
+may coexist with Search, Knowledge, and administrator-connected tools, but it is
+data and cannot authorize an action, enable a tool, or select credentials.
+Temporary chats perform no personal-Memory reads or writes. Anonymous shares
+strip Memory context, attempts, bindings, items, receipts, identifiers, sources,
+and lifecycle metadata while preserving visible assistant prose.
 
 Explicit Memory supports owned `GLOBAL_USER`, `FOLDER`, `ASSISTANT`, and
 non-Temporary `CHAT` scopes. Assistant archive pauses its scope; target deletion
 retracts automatic current versions and orphans explicit ones for Move or
-Forget. Permanent chat deletion is separate: admission excludes the source and
-revokes shares; durable `SOURCE_PURGE` deletes it and reconciles Memory.
+Forget. Permanent chat deletion separately fences the source, revokes shares,
+and completes durable aggregate cleanup. Forget synchronously fences the item
+and suppression before its Undo-window purge; unchanged evidence cannot
+resurrect it.
 
-One helper owns DAG/source writes and active-path hashes. Apply rechecks
-generation, leaf, branch, revision, and hash under the chat lock; drift leaves
-no partial writes. Lock order is Folder, Chat, UserMemorySettings; source commit
-then locks its job lease. Queued/streaming payload is hash-neutral. Source
-changes synchronously invalidate stale history; `INDEX_HISTORY` rechecks all
-source, generation, gate, suppression, and cutoff fences before atomic commit.
-Qualified episodes use the same fence. Gated learning and review ship, while
-`learnAutomatically` defaults off and rollout remains qualification-gated.
-
-The foundation persists settings, facts, evidence, suppressions, indexes, jobs,
-deletions, attempts, and final-run evidence under database constraints. The
-coordinator fences claims, retries, blocked deletion, and apply. Facts/history
-default on, learning off; suppression HMAC keys remain installation-only.
-
-Every normal send and regeneration uses the two-phase run boundary. Phase A
-commits the exact DAG, ordinary dependency evidence, private `PREPARING` run,
-bounded base request, and one retrieval attempt. Recall selects eligible current
-or requested historical facts plus safe chunks/episodes from the exact active
-generation and scope. Local exact/FTS needs no utility consent. Qualified query
-embedding and optional expansion/rerank bind before I/O and retain one usage row
-per terminal outcome. Phase B rechecks the DAG, target, settings/index, ordinary
-admission, used utility policy, and every exact item/source/safety snapshot
-before freezing the untrusted pack, request, binding, and items. Drift gets one
-safe retry. Retrieval may degrade; management cannot invent success. Dispatch
-rejects `PREPARING`; recovery uses only the finalized request.
-
-Tool-capable answers may additionally use the first-party bounded
-`search_my_history` tool. It returns at most 20 private results per page, may
-run at most twice per answer run, applies the same source/suppression/safety
-fences as manual history search, and owns a distinct private receipt joined to
-the exact persisted tool call. Settled receipts replay exactly; a recovered
-RUNNING receipt has unknown outcome and is never repeated.
-
-All answer adapters place labelled personal context after trusted instructions.
-Normal runs may carry that untrusted context together with hosted/client Search,
-Knowledge, and administrator-connected MCP/external tools. Temporary chats
-still carry none, and Memory remains data: it cannot authorize an action,
-enable a tool, or select credentials.
-Each accepted run privately projects its exact frozen Memory outcome/items into
-the originating answer and a passage-free Events digest. Later Forget or source
-loss adds a lifecycle label without replacing admitted text. Automatic-fact
-feedback Undo appends `RETRACT`; it never mutates truth. Applied same-run
-Save/Edit/Forget receipts expose the target and Edit/Undo;
-ambiguity routes to Manage Memories without mutation.
-
-Authenticated `GET/PATCH /api/me/memory/settings` exposes bounded, `private,
-no-store` settings/capability and utility-policy state. The three gates and
-RU/EN locale are independent; only memory-visible changes advance Memory
-revision. `AIQSA_MEMORY_EGRESS_CONSENT_MODE` selects installation-owned
-`ADMIN` (default) or retained `PER_USER` consent. `ADMIN` gives users passive
-status only; administrators own its four-row exact-fingerprint action.
-`PER_USER` retains the existing fingerprint/CAS acceptance.
-Embedding selection still requires current entitlement. Stale observations
-fail atomically.
-
-Explicit management is gate-independent across owned `GLOBAL_USER`, `FOLDER`,
-`ASSISTANT`, and non-Temporary `CHAT` scopes. Short grants bind Save to text,
-Edit/Forget/Move to a fact, and bulk/redream operations to exact counters, copy,
-operation, and nonce; Move also locks its target scope. Serializable mutation
-consumes the grant; only exact receipt replay succeeds. Private routes rejoin
-ownership, keep text out of URLs, and update FTS locally. Published foreign
-Assistants grant no authority; unavailable targets consume no grant; orphaned
-explicit facts allow only Move/Forget; secrets and internals stay hidden.
-
-Deterministic direct-user intent exposes at most one strict `save_memory`,
-`list_memories`, `update_memory`, `forget_memory`, or `mark_memory_incorrect`.
-PREPARING mints hidden short-lived run/source-span authority; update/Forget bind
-one current version, and execution claims it with the persisted tool call before
-mutation consumes it. Save may use a bounded faithful paraphrase, but authority
-comes only from that nonempty user span; quoted, Assistant, retrieved,
-ambiguous, or regenerated text cannot mint it. Tool-capable runs must attempt
-their planned action. Non-tool models may prefetch a revision-bound read-only
-list; mutation intent instead requires confirmation.
-
-Forget atomically fences counters/current pointer, fact/version state, search,
-and exact suppressions, records a text-free event, and schedules
-`FORGET_PURGE` after the 60-second Undo window. Undo cancels only that pending
-row and revives explicitly; its fence holds until revival. `DELETE_EXPLICIT`
-fences its admitted set, excluding later Saves. Contributors scrub content,
-search/vector rows, evidence, and unaccepted run context; audits and startup
-reconciliation reopen false success. Suppression blocks automatic recreation,
-while fresh explicit authority may create a version. Clear-history uses its own
-account cutoff and retains chats, facts, and accepted evidence.
-
-Explicit, chunk, and episode writes enqueue content-free `EMBED_ITEMS` only for
-an active HYBRID generation; lexical-only rows stay `NOT_APPLICABLE`. The handler
-parks without consent, credential authority, or signed contract qualification.
-Each call has one binding/usage event and exact item/generation/content/config/
-dimension/vector-space apply. READY/FAILED advances revision while FTS stays
-live; unknown results are not replayed, and drift blocks late apply.
-
-`RECALCULATE_WORKING_SET` updates hot/warm/cold rankings locally. The default
-coordinator composes its handler, but `memory-phase7-capability-policy-v1`
-cancels provider-backed profile jobs before snapshot, authority, or I/O because
-cost is unverified; local sweeps remain active. The dormant qualified path
-admits only byte-exact current RU/EN facts into an identity-frozen projection.
-Private GET revalidates it; mutations and purge work scrub text and joins.
-
-Shadow rebuild/re-embed uses non-serving full diff; HYBRID requires
-vectors and consent. Activation rechecks source/config/barriers/revision and
-advances counters once; failure/cancel never serves. Redream jobs are salted,
-source-fenced, and replayable.
-
-Learning/review ship behind the default-off gate. The default coordinator
-composes Global Dream and working-set/profile leaves; Dream still needs its gate
-and signed qualification, while provider profile remains policy-dark.
-Expansion/rerank stay off pending lift, remote lanes fail closed, and local
-exact/FTS/sweeps remain available. Web and `memory-worker` share one coordinator.
-Manual search remains
-inspection-only; answer recall admits safe frozen history through PREPARING.
-Each provider call owns exact authority, usage, and recovery. Private
-`preparing` runs never reach public projection or provider I/O.
-Ordinary answers cannot create Memory. Existing chat context and folder/project
-prompt memory are separate retained-chat behavior.
-
-Temporary admission atomically binds an empty chat to one deletion obligation;
-mode/policy are immutable. It keeps disabled run evidence, omits Memory/source/
-project projections, and stays exact-route.
-
-Anonymous share creation and reads re-project through the positive public
-text-only schema. Personal context, Memory attempts/executions/bindings/items,
-events, operation/tool receipts, identifiers, sources, and lifecycle metadata
-never enter the public snapshot or response; visible answer prose is preserved.
-
-Executable code, migrations, tests, and this status own shipped behavior; a
-planned name grants no route, schema, or control before its dependencies exist.
-
-Memory is native to the existing modular monolith. PostgreSQL is the durable
-authority; pgvector, PostgreSQL full-text search, exact matching, temporal
-filters, and reciprocal-rank fusion are retrieval tools below that authority.
-No external memory service owns chat branches, accepted-run evidence, access,
-deletion, retention, or truth.
-
-Hindsight is a reference for complex components, not a production
-dependency. Its pinned evaluator uses only synthetic or approved data;
-results are not AIQSA truth, and copied code needs license review.
-
-Evaluation binds exact runtime/version/vector fingerprints, corpus hash,
-PostgreSQL profile, and seed. Proportions use two-sided 95% Wilson intervals;
-ranking uses deterministic stratified-bootstrap intervals. Gates compare
-unrounded values and display three decimals. Missing hard-invariant or selected-
-profile coverage fails. `RECALL_RELEASE` and `AUTOMATIC_LEARNING_BETA` require
-independent complete RU/EN gates.
-
-`MemoryCapabilityQualification` matches role/language/runtime/vector/corpus/
-scorer/suite against code-owned signed expectations; registry rows never
-define currency. Learning requires every `betaQualification.ts` role per
-locale in Settings/execution. Live
-HOLDOUT uses authorized synthetic data; only registry/public key enter source,
-never evidence/signing keys.
+PostgreSQL remains the durable truth and coordination boundary. Lexical rows are
+synchronous; compatible vectors are asynchronous and vector spaces never mix.
+Every external Memory call has an immutable accepted execution binding and one
+usage outcome. Administrator-owned egress acceptance is the default; changed
+destinations pause only affected work until renewed. Hindsight and other public
+memory engines remain design/evaluation references, never runtime dependencies.
 
 ## Product Vocabulary And Independent Controls
 
-The feature has four independently understandable layers:
+The feature has three user-understandable sources:
 
 - explicit Saved Memories, whose user action has highest authority;
-- safe past-chat chunks and episodes used for history recall;
-- automatically learned, evidence-backed semantic facts;
-- a derived profile/working set that may summarize only supported current
-  facts.
+- safe past-chat chunks used for history recall;
+- automatically learned, evidence-backed semantic facts, including grounded
+  EVENT facts.
 
-The gates are independent. Facts/history default on for new and migrated
-owners; automatic learning defaults off:
+The gates are independent and default on for new owners:
 
 | Gate | Reads | Writes | Turning it off |
 | --- | --- | --- | --- |
 | `useMemoryFacts` | Eligible explicit and previously learned facts | Nothing by itself | Stops future fact injection and retains data |
-| `referenceChatHistory` | Eligible chunks and episodes | Incremental history index only | Stops history recall/index work and retains data |
+| `referenceChatHistory` | Eligible chunks | Incremental history index only | Stops history recall/index work and retains data |
 | `learnAutomatically` | Source evidence needed by learning | Candidates and automatic facts | Stops learning work and retains data |
 
 Explicit CRUD and Forget work under every gate. Enabling history fills a
-newest-first four-job `INDEX_HISTORY` window after a coordinator pass; Settings
+newest-first bounded `INDEX_HISTORY` window after a coordinator pass; Settings
 shows progress and vectors enrich asynchronously. Terminal failures retry only
 after an off/on cycle.
 
 Eligible terminal sources independently enqueue `EXTRACT_FACTS` only while
-learning is on; history is not a prerequisite and existing chats still require
-explicit `REDREAM_EXISTING_CHATS`.
+learning is on; history is not a prerequisite. The retired redream/episode path
+does not enqueue new semantic work.
 
-`memoryUiLocale` remains `RU | EN`; UI is fixed English with
-no picker. Source storage/retrieval stays multilingual, including
-NFKC, punctuation, case, and `ё`/`е` normalization.
+`memoryUiLocale` remains a wire/schema compatibility field; it does not classify
+content, gate execution, select prompts, or change fixed-English presentation.
+Source storage and retrieval accept arbitrary non-empty normalized Unicode.
 
 These lifecycle actions are not aliases:
 
@@ -224,26 +159,26 @@ These lifecycle actions are not aliases:
   resumable aggregate cleanup. Legacy chat `DELETE` remains Archive-only.
 - Expire closes reliable temporal validity; Retract removes automatic truth
   whose evidence is no longer admissible. Neither is user Forget.
-- Clear history index removes rebuildable chunks/episodes/search rows while
+- Clear history index removes rebuildable chunks/search rows while
   retaining chats and semantic facts.
-- Delete all reusable memory removes reusable fact/history/profile data; it is
+- Delete all reusable memory removes reusable fact/history data; it is
   not conversational erasure, retroactive provider erasure, or backup erasure.
 
 ## Trust, Evidence, And Scope
 
-Raw AIQSA messages and explicit user actions are primary. Chunks, episodes,
-candidates, facts, profiles, search entries, and temperature are derivatives.
+Raw AIQSA messages and explicit user actions are primary. Chunks, candidates,
+facts, and search entries are derivatives.
 Every derived assertion remains rebuildable or retractable and cannot outrank
 its admissible evidence. Assistant, web, MCP, tool, Knowledge, and attachment
 text do not establish a user fact by default. Secret-tainted source windows are
 excluded before derivative persistence or external Memory I/O.
 
 Fact extraction receives only bounded, storage-time-safe, complete direct USER
-messages from the active branch. Local screening removes secrets/disallowed
-sensitivity and excludes instruction- or hypothetical-shaped input before
-extractor egress. Exact model quotes become server-validated spans; relational
-messages—not model JSON—own source authority. This adds no general egress-time
-DLP dependency.
+messages from the active branch. Recognizable-format DLP runs before extractor
+egress; semantic sensitivity, quotation, hypothetical/modality meaning, and
+`STORE | ABSTAIN` belong to the structured model decision. Exact cited offsets
+must resolve to the original message text, while relational messages—not model
+JSON—own source authority. This adds no general egress-time DLP dependency.
 
 Memory is untrusted data. It cannot become system/developer instruction,
 authorize an action, enable MCP, bypass confirmation, choose a provider or
@@ -263,7 +198,7 @@ Semantic facts use exactly these scope kinds:
 
 `userId`, not scope, is the tenant boundary. Normal retrieval admits the
 current user's global scope plus only the exact current Folder, Assistant, and
-Chat scopes. Chunks and episodes stay tied to their source chat and may support
+Chat scopes. Chunks stay tied to their source chat and may support
 cross-chat recall after source-eligibility checks.
 
 The extractor may propose a scope, but the server validates it and chooses the
@@ -311,9 +246,8 @@ The authoritative mutation matrix is:
 | Explicit save or automatic add/reinforce | – | – | – | + | logical fact and current pointer |
 | Explicit edit, pin, rescope, conflict resolution | – | – | – | + | selected version and scope |
 | Automatic supersede, conflict, expiry, retraction | – | – | – | + | selected version and current pointer |
-| Activate/invalidate chunk or episode and lexical row | – | – | – | + once | source, safety, hash |
+| Activate/invalidate chunk and lexical row | – | – | – | + once | source, safety, hash |
 | Active-generation vector settles READY/FAILED | – | – | – | + | item, generation, fingerprint |
-| Replace profile projection | – | – | – | + | all contributing active versions |
 | Forget, bulk clear, or source hard delete | as source requires | + for chat source | + | + | suppression, source, exact items |
 | Source NORMAL to EXCLUDED | – | + | + | + | source mode and items |
 | Explicit source Resume/reindex | – | + | – | + | cutoff barriers and source snapshot |
@@ -332,7 +266,9 @@ drift; it rechecks its exact source/fact/version preconditions.
 
 ## Fact And Operational State
 
-Candidate, decision, logical-fact, and fact-version states are separate:
+Candidate, decision, logical-fact, and fact-version states are separate. Legacy
+verification states remain decodable for queued/history compatibility but are
+not emitted by the normal learning path:
 
 - candidate: `PENDING`, `DEFERRED`, `PROMOTED`, `REJECTED`, `STALE`;
 - decision: `PENDING_VERIFICATION`, `APPLIED`, `REJECTED`, `STALE`;
@@ -344,11 +280,12 @@ Candidate, decision, logical-fact, and fact-version states are separate:
 Candidates never reach answers; each binds to succeeded extraction and
 direct-USER evidence. Consolidation gets at most 12 same-scope facts and three
 versions each, then proposes
-`ADD|REINFORCE|SUPERSEDE|CONFLICT|EXPIRE|NOOP|DEFER`. Server rechecks source,
-suppression, explicit precedence, targets, and evidence. One direct-user
-statement supports its subjective preference; ambiguous scope, time, or
-authority defers. Risky transitions require one exact-bound tool. Text terminals
-fail, unknown calls are not replayed, and drift schedules source purge.
+`ADD|REINFORCE|SUPERSEDE|CONFLICT|EXPIRE|NOOP`. Server rechecks source,
+suppression, explicit precedence, targets, temporal order, and evidence. One
+direct-user statement supports its subjective preference; ambiguous scope,
+time, sensitivity, or authority abstains during extraction or remains
+non-applied. Text terminals fail, unknown calls are not replayed, and drift
+schedules source purge.
 
 An active fact has exactly one same-owner active current version. Conflicted,
 orphaned, expired, retracted, and forgotten facts have no unqualified current
@@ -396,7 +333,7 @@ external outcome is never replayed blindly.
 Every external Memory operation first commits one owner-bound `PENDING`
 execution row, then wins one `PENDING -> RUNNING` transition after re-resolving
 the accepted aggregate egress fingerprint, exact credential version, provider
-configuration, role capability, and signed unexpired qualification. A second
+configuration, protocol/schema capability, and vector-space compatibility. A second
 starter receives no execution authority. Settlement creates exactly one
 independent `UsageEvent`; unreported token categories and ambiguous cost remain
 null, and the row is never linked into answer-run replacement accounting.
@@ -477,15 +414,26 @@ recovery-idempotent `MemoryToolEgressReceipt` with destination, ordinal, mode,
 content hashes, and terminal outcome—never plaintext or confirmation state.
 Destination authority is rechecked before client Search, Knowledge, or MCP.
 Accepted destination/outcome stays immutable; deletion scrubs private
-query/result derivatives after resolving message/episode result provenance,
+query/result derivatives after resolving message/chunk/fact result provenance,
 preventing stranded query/result/tool-argument text.
 
 ## Retrieval And Index Integrity
 
-Lexical-only is complete. Visible items synchronously get RU/EN/simple FTS;
-compatible vectors are asynchronous. Rebuildable entries never become truth.
-Queries OR bounded normalized terms per projection before exact tenant,
-generation, lifecycle, scope, safety, and relevance fences.
+Visible facts and chunks synchronously receive one language-agnostic Unicode
+exact/simple-FTS projection; compatible vectors are asynchronous. Rebuildable
+entries never become truth. A non-empty bounded raw query always enters local
+candidate generation even when tokenization produces no terms. Recognizable
+secret/binary-like shapes suppress external query embedding and relevance I/O,
+not owner-local exact/simple/recency retrieval; only the query hash is persisted
+when a safe snapshot cannot be retained.
+
+Exact/simple/vector/recency lanes run in parallel within code-owned bounds and
+rejoin owner, generation, lifecycle, scope, source, safety, and suppression
+authority before use. RRF combines only lane ranks; BM25 and cosine values are
+never treated as a shared calibrated scale. Candidate generation has no
+language rule or model-independent semantic threshold. One relevance stage sees
+the query, bounded safe projections, and authoritative timestamps, then selects
+ordered IDs or an empty set. It cannot modify truth, authority, scope, or time.
 
 An immutable generation pins index mode, source/target revisions, language,
 normalization, chunking, pipeline, and, for hybrid mode, the exact embedding
@@ -516,8 +464,9 @@ cosine scan. Above it, iterative strict-order HNSW requests at most
 under-fills while an exact eligible count proves enough rows exist, a bounded
 exact scan fills the lane; it never broadens tenant, generation, dimension, or
 relevance policy. Changing pgvector version, index expression, dimension, or
-query shape requires fresh plan and recall qualification with adversarial
-closer cross-tenant vectors and production-shaped `EXPLAIN` evidence.
+query shape requires fresh plan and recall regression evidence with adversarial
+closer cross-tenant vectors and production-shaped `EXPLAIN` evidence. That
+evidence is an engineering release check, not a signed runtime allowlist.
 
 ## Lifecycle And Deletion Truth
 
@@ -545,10 +494,10 @@ The source/retention outcomes are:
 
 | Action | Future Memory | Source and derivatives | Historical destinations, shares, external retention |
 | --- | --- | --- | --- |
-| Save/edit explicit | New lexical current version; stale selected versions fail Phase B | Source action remains; vector/profile may follow | Earlier runs and snapshots unchanged; new utility egress follows installation policy |
+| Save/edit explicit | New lexical current version; stale selected versions fail Phase B | Source action remains; vector may follow | Earlier runs and snapshots unchanged; new utility egress follows installation policy |
 | Forget one / delete explicit set | Exact versions and unchanged source evidence fenced | Retained chats remain; durable purge and suppression reconcile all affected derivatives | Old destination request/receipt remains immutable and labeled; share prose is not rewritten; provider/backups keep their own retention |
 | Delete learned set | Automatic versions fenced at source cutoff | Explicit versions/chats remain; admitted automatic derivatives purge | Accepted runs/provider/backups unchanged |
-| Clear history index | Chunks/episodes immediately ineligible with source barrier | Chats and semantic facts remain; rebuildable rows purge | Old destination evidence/prose remains |
+| Clear history index | Chunks immediately ineligible with source barrier | Chats and semantic facts remain; rebuildable rows purge | Old destination evidence/prose remains |
 | Delete all reusable Memory | All reusable gates fenced with account cutoffs | Raw retained chats remain; reusable tables/indexes purge | Destination runs remain under their owners; no retroactive provider or backup erasure |
 | Turn a gate off | That future read/write stops | Data remains; queued work waits or cancels | Existing evidence/shares unchanged; no new affected egress |
 | Archive/Restore chat | No Memory change | Chat remains eligible | No change |
@@ -588,10 +537,9 @@ excerpts, tool queries/results, embeddings, raw provider bodies, or secrets.
 The coordinator shares code/image and PostgreSQL. Development starts it from
 `instrumentation.ts`; persistent Compose runs private `memory-worker`, with no
 API or web-readiness dependency. Tenant-fair skip-locked queues use leases,
-bounded retry, and idempotency. Policy admits two jobs, one per user, plus an
-independent deletion worker; safety weighting bounds every tier. UTC-day
-budgets defer only Dream/profile without spending a
-retry. Invalid policy/keys or database preflight blocks claims feature-locally.
+bounded retry, and idempotency. Policy admits at most two jobs, one per user,
+plus an independent deletion worker; safety weighting bounds every tier.
+Invalid policy/keys or database preflight blocks claims feature-locally.
 Phase 8 enables hard-delete admission only after exact composition; conflict
 fails closed and rollback retains accepted obligations. Durable status stays
 inspectable. [Testing](../TESTING.md) owns the measured gate.
@@ -640,7 +588,7 @@ checksummed promotion receipt; neither helper performs cutover.
   stripping alongside the other run evidence.
 - [Provider adapters](PROVIDER_ADAPTERS.md) own provider transport, credential
   resolution, usage normalization, and supported capabilities; Memory owns
-  role qualification and no-fallback semantics.
+  compatibility, destination authority, and no-fallback semantics.
 - [Frontend](../FRONTEND.md) routes current shell, Settings, receipts, Details,
   responsive access, and localization behavior. Memory UI must extend those
   owners rather than create a parallel app or new Details tab.
@@ -648,11 +596,12 @@ checksummed promotion receipt; neither helper performs cutover.
   and private-data enforcement. Memory adds no exception.
 - [Testing](../TESTING.md) owns lane selection and disposable-environment
   safety. Memory requires focused domain fixtures, migration/Prisma proofs,
-  phase gates, RU/EN holdouts, adversarial tenancy/egress tests, and bounded
-  provider qualification only in the phase that exposes the capability.
+  language/script-agnostic semantic-boundary cases, adversarial tenancy/egress
+  tests, and a bounded real-provider smoke when current credentials are
+  available.
 
-`memory-ga-rollout-manifest-v1` records: explicit Memory; default-on
-fact/history; qualified default-off learning; evidence-held Phase 7 options;
-composition-gated hard deletion; operational GA. Rollback stops future stage
-work, keeps data, skips silent backfill, and finishes accepted deletions.
-Publishing is separate.
+`memory-ga-rollout-manifest-v1` now records default-on fact/history/learning,
+the three-tier retrieval contract, model-driven actions, and
+composition-gated hard deletion. Legacy capability fields and retired job enums
+remain compatibility-only. Rollback stops future work, keeps data, skips silent
+backfill, and finishes accepted deletions. Publishing is separate.

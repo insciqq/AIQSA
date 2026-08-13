@@ -1,4 +1,4 @@
-import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { act, fireEvent, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatSummary, FolderSummary, InspectorMode } from "./types";
 import {
@@ -32,7 +32,6 @@ function controllerInput(overrides: {
   blockers?: Partial<ShellOverlayControllerInput["blockers"]>;
   changeMode?: (mode: InspectorMode) => void;
   mode?: InspectorMode;
-  onMobileWorkspaceClosed?: () => void;
 } = {}): ShellOverlayControllerInput {
   return {
     appearance: {
@@ -43,8 +42,7 @@ function controllerInput(overrides: {
       projectSettingsOpen: false,
       settingsOpen: false,
       ...overrides.blockers
-    },
-    onMobileWorkspaceClosed: overrides.onMobileWorkspaceClosed ?? vi.fn()
+    }
   };
 }
 
@@ -117,64 +115,14 @@ describe("useShellOverlayController confirmations", () => {
     expect(result.current.confirmations.chat.target).toBeNull();
   });
 
-  it("confirms chat and folder before closing mobile Workspace, but keeps it open for messages", async () => {
-    const onMobileWorkspaceClosed = vi.fn();
-    const { result } = renderHook(() =>
-      useShellOverlayController(controllerInput({ onMobileWorkspaceClosed }))
-    );
-    let chatRequest!: Promise<boolean>;
-    let folderRequest!: Promise<boolean>;
-    let messageRequest!: Promise<boolean>;
-
-    act(() => {
-      result.current.mobileWorkspace.show();
-      chatRequest = result.current.confirmations.chat.request(chat("confirm"));
-    });
-    act(() => result.current.confirmations.chat.confirm());
-    await expect(chatRequest).resolves.toBe(true);
-    expect(result.current.confirmations.chat.target).toBeNull();
-    expect(result.current.mobileWorkspace.open).toBe(false);
-    expect(onMobileWorkspaceClosed).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      result.current.mobileWorkspace.show();
-      folderRequest = result.current.confirmations.folder.request(folder("confirm"));
-    });
-    act(() => result.current.confirmations.folder.confirm());
-    await expect(folderRequest).resolves.toBe(true);
-    expect(result.current.confirmations.folder.target).toBeNull();
-    expect(result.current.mobileWorkspace.open).toBe(false);
-    expect(onMobileWorkspaceClosed).toHaveBeenCalledTimes(2);
-
-    act(() => {
-      result.current.mobileWorkspace.show();
-      messageRequest = result.current.confirmations.message.request("message-confirm");
-    });
-    act(() => result.current.confirmations.message.confirm());
-    await expect(messageRequest).resolves.toBe(true);
-    expect(result.current.confirmations.message.target).toBeNull();
-    expect(result.current.mobileWorkspace.open).toBe(true);
-    expect(onMobileWorkspaceClosed).toHaveBeenCalledTimes(2);
-
-    act(() => result.current.mobileWorkspace.close());
-    expect(onMobileWorkspaceClosed).toHaveBeenCalledTimes(3);
-  });
-
   it("exposes semantic nested owners without a root setter bag", () => {
     const { result } = renderHook(() => useShellOverlayController(controllerInput()));
 
     expect(Object.keys(result.current).sort()).toEqual([
       "confirmations",
-      "mobileWorkspace",
       "palette"
     ]);
     expect(Object.keys(result.current.palette).sort()).toEqual(["close", "open", "show"]);
-    expect(Object.keys(result.current.mobileWorkspace).sort()).toEqual([
-      "close",
-      "dialogRef",
-      "open",
-      "show"
-    ]);
   });
 });
 
@@ -209,14 +157,9 @@ describe("useShellOverlayController shortcuts", () => {
     expect(result.current.palette.open).toBe(false);
   });
 
-  it("blocks the palette for mobile Workspace and every owned confirmation", () => {
+  it("blocks the palette for every owned confirmation", () => {
     const { result } = renderHook(() => useShellOverlayController(controllerInput()));
     const button = document.createElement("button");
-
-    act(() => result.current.mobileWorkspace.show());
-    expect(globalShortcut(button)).toBe(true);
-    expect(result.current.palette.open).toBe(false);
-    act(() => result.current.mobileWorkspace.close());
 
     for (const [request, cancel] of [
       [() => result.current.confirmations.chat.request(chat("blocked")), result.current.confirmations.chat.cancel],
@@ -258,50 +201,5 @@ describe("useShellOverlayController shortcuts", () => {
     expect(fireEvent.keyDown(input, { key: "Escape" })).toBe(false);
     expect(result.current.palette.open).toBe(false);
     input.remove();
-  });
-});
-
-describe("useShellOverlayController mobile dialog focus", () => {
-  it("autofocuses, closes through Escape, calls cleanup, and restores its opener", () => {
-    vi.useFakeTimers();
-    const onMobileWorkspaceClosed = vi.fn();
-
-    function Harness() {
-      const controller = useShellOverlayController(
-        controllerInput({ onMobileWorkspaceClosed })
-      );
-
-      return (
-        <>
-          <button type="button" onClick={controller.mobileWorkspace.show}>
-            Open Workspace
-          </button>
-          {controller.mobileWorkspace.open ? (
-            <div
-              ref={controller.mobileWorkspace.dialogRef}
-              aria-label="Mobile Workspace"
-              role="dialog"
-            >
-              <button type="button">Workspace action</button>
-            </div>
-          ) : null}
-        </>
-      );
-    }
-
-    render(<Harness />);
-    const opener = screen.getByRole("button", { name: "Open Workspace" });
-    opener.focus();
-    fireEvent.click(opener);
-    act(() => vi.runOnlyPendingTimers());
-    expect(screen.getByRole("button", { name: "Workspace action" })).toHaveFocus();
-
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Mobile Workspace" }), {
-      key: "Escape"
-    });
-
-    expect(screen.queryByRole("dialog", { name: "Mobile Workspace" })).not.toBeInTheDocument();
-    expect(onMobileWorkspaceClosed).toHaveBeenCalledOnce();
-    expect(opener).toHaveFocus();
   });
 });

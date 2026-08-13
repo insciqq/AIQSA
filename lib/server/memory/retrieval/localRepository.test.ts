@@ -41,7 +41,9 @@ function mockClient(
     const sql = query.strings?.join("?") ?? "";
     if (sql.includes('owner."status"')) return [row];
     laneSql.push(sql);
-    if (options.failLaneQueries === true) throw new Error("fts unavailable");
+    if (options.failLaneQueries === true && sql.includes('"MemorySearchEntry"')) {
+      throw new Error("fts unavailable");
+    }
     return [];
   });
   const client = {
@@ -79,15 +81,15 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('source_chat."memoryBranchGeneration" = chunk."branchGeneration"');
     expect(result.snapshot.historySuppressionIdentitySnapshot).toMatch(/^[a-f0-9]{64}$/u);
     expect(sql).toContain('"MemorySourceBarrier"');
-    expect(sql).toContain("plainto_tsquery('russian'");
     expect(sql).toContain("plainto_tsquery('simple'");
-    expect(sql).toContain(" || ");
+    expect(sql).not.toContain("plainto_tsquery('russian'");
+    expect(sql).not.toContain("plainto_tsquery('english'");
     expect(sql).not.toContain("websearch_to_tsquery");
     expect(sql).not.toContain('message."content"');
     expect(sql).not.toContain('attachment."extractedText"');
   });
 
-  it("does not run candidate lanes for generic or secret-tainted direct input", async () => {
+  it("runs candidate lanes for generic and recognizable-secret direct input", async () => {
     for (const currentUserText of [
       "What is PostgreSQL?",
       "What is my API key: sk-abcdefghijklmnopqrstuvwxyz123456?"
@@ -101,8 +103,10 @@ describe("local Memory retrieval repository", () => {
         plan: planMemoryRetrieval({ currentUserText, now }),
         userId: "user-1"
       });
-      expect(result.laneResults).toEqual([]);
-      expect(mocked.laneSql).toEqual([]);
+      expect(result.laneResults.map(({ lane }) => lane)).toEqual([
+        "FACT_EXACT", "FACT_FTS_SIMPLE", "FACT_RECENT"
+      ]);
+      expect(mocked.laneSql.length).toBeGreaterThan(0);
     }
   });
 
@@ -149,7 +153,7 @@ describe("local Memory retrieval repository", () => {
       }
     });
     expect(result.vectorState).toBe("DEGRADED");
-    expect(result.laneResults.some((lane) => lane.lane === "FACT_FTS_ENGLISH")).toBe(true);
+    expect(result.laneResults.some((lane) => lane.lane === "FACT_FTS_SIMPLE")).toBe(true);
   });
 
   it("returns explicit failed-lane evidence instead of rejecting the whole retrieval", async () => {
