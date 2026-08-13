@@ -703,7 +703,9 @@
   place-items: center;
   padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
     max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
-  background: color-mix(in srgb, var(--v2-color-text) 36%, transparent);
+  /* Scrim token, not a text-derived mix: text-based scrims turn into a light
+     wash in dark theme instead of dimming the workspace. */
+  background: var(--v2-color-scrim);
 }
 
 .v2-assistant-picker {
@@ -884,6 +886,11 @@
     max-height: 40dvh;
   }
 
+  /*
+   * The sheet scrim must use the dedicated dark scrim token. Deriving it from
+   * --v2-color-text painted a light wash over the whole viewport in dark
+   * theme (audit §16: "light header pill" at 515×573) instead of dimming it.
+   */
   .v2-composer-layer-backdrop {
     position: fixed;
     inset: 0;
@@ -893,7 +900,7 @@
     height: 100%;
     padding: 0;
     border: 0;
-    background: color-mix(in srgb, var(--v2-color-text) 28%, transparent);
+    background: var(--v2-color-scrim);
   }
 
   .v2-composer-context-popover {
@@ -904,12 +911,16 @@
     width: auto;
   }
 
+  /*
+   * The sheet always leaves a tappable scrim band at the top so a touch user
+   * has a close path even before reaching the sticky header's close control.
+   */
   .v2-composer-layer {
     position: fixed;
     inset: auto 0 0;
     z-index: 90;
     width: 100%;
-    max-height: calc(100dvh - max(0.5rem, env(safe-area-inset-top)));
+    max-height: calc(100dvh - max(2.75rem, calc(env(safe-area-inset-top) + 1.75rem)));
     padding-right: max(0.375rem, env(safe-area-inset-right));
     padding-bottom: max(0.375rem, env(safe-area-inset-bottom));
     padding-left: max(0.375rem, env(safe-area-inset-left));
@@ -925,10 +936,9 @@
     left: 0;
   }
 
-  .v2-composer-layer-header {
-    padding-top: max(0.125rem, env(safe-area-inset-top));
-  }
-
+  /* The sheet never reaches under the display cutout (the scrim band above it
+     already clears env(safe-area-inset-top)), so its header keeps the base
+     padding and only grows the touch target of the close control. */
   .v2-composer-layer-header .v2-icon-button {
     width: 2.5rem;
     height: 2.5rem;
@@ -945,12 +955,12 @@
 
   .v2-assistant-picker-scrim {
     align-items: end;
-    padding: max(0.5rem, env(safe-area-inset-top)) 0 0;
+    padding: max(2.75rem, calc(env(safe-area-inset-top) + 1.75rem)) 0 0;
   }
 
   .v2-assistant-picker {
     width: 100%;
-    max-height: calc(100dvh - max(0.5rem, env(safe-area-inset-top)));
+    max-height: 100%;
     padding-right: env(safe-area-inset-right);
     padding-bottom: env(safe-area-inset-bottom);
     padding-left: env(safe-area-inset-left);

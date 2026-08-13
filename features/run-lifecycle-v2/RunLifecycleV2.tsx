@@ -12,7 +12,10 @@ import {
   useState,
   type ReactNode
 } from "react";
-import type { RunPresentationV2 } from "./runPresentation";
+import {
+  settledRunPresentationV2,
+  type RunPresentationV2
+} from "./runPresentation";
 
 type MaybePromise = Promise<unknown> | unknown;
 
@@ -275,13 +278,6 @@ function announcementFor(presentation: RunPresentationV2): string {
   }
 }
 
-function isTerminalPresentation(presentation: RunPresentationV2): boolean {
-  return presentation.kind === "cancelled" ||
-    presentation.kind === "complete" ||
-    presentation.kind === "recoverable_error" ||
-    presentation.kind === "terminal_error";
-}
-
 export function RunLifecycleAnnouncerV2({
   activeChatId,
   presentation,
@@ -310,7 +306,7 @@ export function RunLifecycleAnnouncerV2({
       previous.sourceChatId === sourceChatId
     );
 
-    if (!selected || (isTerminalPresentation(presentation) && !continuouslySelected)) {
+    if (!selected || (settledRunPresentationV2(presentation) && !continuouslySelected)) {
       setAnnouncement("");
     } else if (!previous || previous.signature !== signature || !previous.selected) {
       setAnnouncement(announcementFor(presentation));

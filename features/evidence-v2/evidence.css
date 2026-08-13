@@ -37,7 +37,15 @@
   cursor: pointer;
 }
 
-.v2-evidence-row button + button::before {
+.v2-evidence-row-identity {
+  display: inline-flex;
+  min-height: 1.875rem;
+  align-items: center;
+  padding: 0.1875rem 0.5rem;
+  color: var(--v2-color-text3);
+}
+
+.v2-evidence-row-track > * + *::before {
   margin-right: 0.5rem;
   color: var(--v2-color-border2);
   content: "·";

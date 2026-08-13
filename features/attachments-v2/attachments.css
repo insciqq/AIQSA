@@ -149,11 +149,43 @@
 }
 
 .v2-attachment-privacy {
+  display: inline-flex;
+  align-items: center;
   margin: 0;
   padding: 0 0.25rem;
   color: var(--v2-color-text3);
   font-size: 0.6875rem;
   line-height: 1.4;
+}
+
+.v2-sent-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  list-style: none;
+}
+
+.v2-sent-attachments li {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.3125rem;
+}
+
+.v2-sent-attachments li span {
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-conversation-turn[data-role="user"] .v2-sent-attachments {
+  justify-content: flex-end;
 }
 
 .v2-attachment-drop-overlay {

@@ -139,6 +139,32 @@ describe("Composer v2", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
+  it("closes each layer from the sheet scrim, the sticky close control, and Escape", async () => {
+    render(<ComposerV2 {...props()} />);
+    const plus = screen.getByRole("button", { name: "Возможности" });
+
+    // Scrim tap: the backdrop button is the touch exit of the bottom sheet.
+    fireEvent.click(plus);
+    expect(screen.getByRole("menu", { name: "Возможности запроса" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Закрыть меню" }));
+    expect(screen.queryByRole("menu", { name: "Возможности запроса" })).toBeNull();
+    await waitFor(() => expect(plus).toHaveFocus());
+
+    // Always-visible close control in the sheet header.
+    fireEvent.click(plus);
+    fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
+    expect(screen.queryByRole("menu", { name: "Возможности запроса" })).toBeNull();
+    await waitFor(() => expect(plus).toHaveFocus());
+
+    // Escape keeps closing the model sheet and restores its trigger.
+    const modelTrigger = screen.getByRole("button", { name: "GPT-5.2" });
+    fireEvent.click(modelTrigger);
+    const modelLayer = screen.getByRole("dialog", { name: "Выбор модели" });
+    fireEvent.keyDown(modelLayer, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Выбор модели" })).toBeNull();
+    await waitFor(() => expect(modelTrigger).toHaveFocus());
+  });
+
   it("applies each capability toggle in one action and closes the menu", () => {
     const onKnowledge = vi.fn();
     const onSearch = vi.fn();

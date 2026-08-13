@@ -190,6 +190,18 @@ function failureFromEvidence(
 }
 
 /**
+ * True only for authoritative terminal presentations. The settled answer
+ * chrome (action dock, evidence row, disclosures) renders exclusively behind
+ * this predicate; live runs show the status line and Stop instead.
+ */
+export function settledRunPresentationV2(presentation: RunPresentationV2): boolean {
+  return presentation.kind === "cancelled" ||
+    presentation.kind === "complete" ||
+    presentation.kind === "recoverable_error" ||
+    presentation.kind === "terminal_error";
+}
+
+/**
  * Projects only explicit server/client lifecycle evidence. It never infers a
  * phase from elapsed time, answer text, or a missing terminal frame.
  */

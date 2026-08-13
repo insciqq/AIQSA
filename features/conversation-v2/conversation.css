@@ -208,6 +208,14 @@
   transform: translateY(0);
 }
 
+/* The newest settled answer keeps its dock always visible so copying the
+   last answer stays one click; earlier turns reveal on hover/focus/tap. */
+.v2-conversation-thread > li:last-child .v2-conversation-turn[data-role="assistant"] .v2-message-actions {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
 @media (hover: hover) and (pointer: fine) {
   .v2-conversation-turn:hover .v2-message-actions {
     opacity: 1;

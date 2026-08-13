@@ -217,6 +217,22 @@ describe("thread actions", () => {
     });
   });
 
+  it("keeps the message untouched when the delete confirmation is declined", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, confirmDeleteMessage, messages, thread } = createActionsForTest({
+      activeChatStreaming: false
+    });
+    confirmDeleteMessage.mockResolvedValueOnce(false);
+
+    await actions.deleteMessage("message-1");
+
+    expect(confirmDeleteMessage).toHaveBeenCalledWith("message-1");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(messages().map((message) => message.id)).toContain("message-1");
+    expect(thread().activeLeafId).toBe("message-1");
+  });
+
   it("blocks mutable actions while the active chat streams", async () => {
     const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

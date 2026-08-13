@@ -1,5 +1,6 @@
 "use client";
 
+import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { UiV2Button, UiV2Chip, UiV2Icon } from "@/components/ui-v2";
 import type {
   ThreadArtifactSummary,
@@ -17,8 +18,15 @@ import {
   type ReactNode
 } from "react";
 import { GeminiSearchSuggestionsV2 } from "./GeminiSearchSuggestionsV2";
+import { presentSearchSourcesV2 } from "./sourcePresentation";
 
 export type EvidenceRowV2Props = Readonly<{
+  /**
+   * Optional quiet identity item (catalog-resolved model display name or the
+   * accepted Assistant identity) rendered as plain muted text in the same
+   * row. Raw adapter/provider/model ids never reach this slot.
+   */
+  identitySlot?: ReactNode;
   onOpenFiles?(): void;
   onOpenRunDetails(): void;
   onOpenSources?(): void;
@@ -31,6 +39,7 @@ function countLabel(label: string, count: number): string {
 }
 
 export function EvidenceRowV2({
+  identitySlot,
   onOpenFiles,
   onOpenRunDetails,
   onOpenSources,
@@ -44,6 +53,9 @@ export function EvidenceRowV2({
       data-testid="evidence-row"
     >
       <div className="v2-evidence-row-track">
+        {identitySlot ? (
+          <span className="v2-evidence-row-identity">{identitySlot}</span>
+        ) : null}
         {summary.sourceCount > 0 ? (
           <button
             aria-label={countLabel("Sources", summary.sourceCount)}
@@ -133,6 +145,7 @@ function SearchAttemptV2({ activity, ordinal }: {
   ordinal: number;
 }) {
   const knownSourceCount = activity.sourceCount ?? activity.sources.length;
+  const presented = presentSearchSourcesV2(activity.sources);
   const failure = activity.failureReason ?? (
     activity.status === "error"
       ? "This Search attempt did not complete."
@@ -149,9 +162,11 @@ function SearchAttemptV2({ activity, ordinal }: {
         <span className="v2-search-source-fact">
           {knownSourceCount} source{knownSourceCount === 1 ? "" : "s"}
         </span>
-        <UiV2Chip tone={activity.status === "error" ? "danger" : activity.status === "partial" ? "warn" : "neutral"}>
-          {statusLabel(activity.status)}
-        </UiV2Chip>
+        {activity.status !== "complete" ? (
+          <UiV2Chip tone={activity.status === "error" ? "danger" : activity.status === "partial" ? "warn" : "neutral"}>
+            {statusLabel(activity.status)}
+          </UiV2Chip>
+        ) : null}
       </div>
       {failure ? <p className="v2-evidence-warning">{failure}</p> : null}
       {activity.query ? (
@@ -159,9 +174,9 @@ function SearchAttemptV2({ activity, ordinal }: {
       ) : null}
       {knownSourceCount === 0 ? (
         <p className="v2-evidence-empty">No sources were returned by this attempt.</p>
-      ) : activity.sources.length > 0 ? (
+      ) : presented.sources.length > 0 ? (
         <ol className="v2-source-list">
-          {activity.sources.map((source, index) => {
+          {presented.sources.map((source, index) => {
             const href = safeEvidenceHref(source.url);
             return (
               <li key={`${source.rank}:${source.url}:${index}`}>
@@ -172,12 +187,20 @@ function SearchAttemptV2({ activity, ordinal }: {
                   ) : (
                     <span data-testid="unsafe-source-title">{source.title}</span>
                   )}
+                  {source.domain && source.domain !== source.title ? (
+                    <small className="v2-source-domain">{source.domain}</small>
+                  ) : null}
                   {source.snippet ? <small>{source.snippet}</small> : null}
                 </span>
               </li>
             );
           })}
         </ol>
+      ) : null}
+      {presented.mergedDuplicateCount > 0 ? (
+        <p className="v2-evidence-empty" data-testid="merged-duplicate-sources">
+          {presented.mergedDuplicateCount} duplicate link{presented.mergedDuplicateCount === 1 ? "" : "s"} merged.
+        </p>
       ) : null}
       {knownSourceCount > activity.sources.length && activity.sources.length > 0 ? (
         <p className="v2-evidence-empty">
@@ -525,4 +548,28 @@ export function ToolApprovalCardV2({
 
 export function EvidenceStackV2({ children }: { children: ReactNode }) {
   return <div className="v2-evidence-stack">{children}</div>;
+}
+
+/**
+ * Collapsed reasoning disclosure for a settled answer. Text renders through
+ * the shared safe Markdown pipeline so provider markup never shows as literal
+ * asterisks. The header carries a duration only when the caller derived one
+ * from persisted run evidence timestamps; no counter or duration is ever
+ * invented.
+ */
+export function ReasoningEvidenceV2({ durationLabel = null, texts }: Readonly<{
+  durationLabel?: string | null;
+  texts: readonly string[];
+}>) {
+  const content = texts.map((text) => text.trim()).filter(Boolean).join("\n\n");
+  if (!content) return null;
+
+  return (
+    <details className="v2-live-reasoning" data-testid="reasoning-evidence">
+      <summary>{durationLabel ? `Reasoning · ${durationLabel}` : "Reasoning"}</summary>
+      <div className="v2-live-reasoning-body">
+        <MarkdownMessage content={content} />
+      </div>
+    </details>
+  );
 }
