@@ -4,6 +4,7 @@ import {
   openArchivedChatPreview,
   refreshArchivedChats,
   restoreArchivedChat,
+  restoreArchivedChatSummary,
   showArchivedChatList,
   useArchivedChatsStore
 } from "@/components/app-shell/archivedChatsStore";
@@ -16,7 +17,8 @@ import {
   openPermanentChatDeletion,
   usePermanentChatDeletionStore
 } from "@/components/app-shell/permanentChatDeletionStore";
-import { Archive, ArrowLeft, LoaderCircle, RotateCw, Trash2, Undo2, X } from "lucide-react";
+import { Archive, ArrowLeft, LoaderCircle, RotateCw, Search, Trash2, Undo2, X } from "lucide-react";
+import { useState } from "react";
 
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface";
@@ -55,13 +57,24 @@ export function ArchivedChatsDialog({
     (state) => Boolean(state.target) || state.statusOpen
   );
   const dialogRef = useDialogFocus<HTMLDivElement>({ onClose: closeArchivedChats });
+  const [filter, setFilter] = useState("");
   const ru = false;
+  const normalizedFilter = filter.trim().toLocaleLowerCase();
+  const visibleSummaries = normalizedFilter
+    ? summaries.filter((chat) => chat.title.toLocaleLowerCase().includes(normalizedFilter))
+    : summaries;
 
   async function restore(): Promise<void> {
     const chatId = await restoreArchivedChat();
     if (!chatId) return;
     await onRestored(chatId);
     closeArchivedChats();
+  }
+
+  async function restoreFromRow(chat: (typeof summaries)[number]): Promise<void> {
+    const chatId = await restoreArchivedChatSummary(chat);
+    if (!chatId) return;
+    await onRestored(chatId);
   }
 
   return (
@@ -203,6 +216,22 @@ export function ArchivedChatsDialog({
           </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" aria-busy={listLoadState === "loading"}>
+            {summaries.length ? (
+              <div className="relative border-b border-trace-subtle px-3 py-2 sm:px-4">
+                <Search
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-6 top-1/2 size-4 -translate-y-1/2 text-ink-muted sm:left-7"
+                />
+                <input
+                  aria-label={ru ? "Поиск по архиву" : "Search archive"}
+                  className={`w-full rounded-control border border-trace-subtle bg-control-surface py-2 pl-9 pr-3 text-sm text-ink placeholder:text-ink-muted ${focusRing}`}
+                  placeholder={ru ? "Поиск по архиву" : "Search archive"}
+                  type="search"
+                  value={filter}
+                  onChange={(event) => setFilter(event.target.value)}
+                />
+              </div>
+            ) : null}
             {listLoadState === "loading" && summaries.length === 0 ? (
               <p className="px-4 py-10 text-center text-sm text-ink-muted">{ru ? "Загрузка архива…" : "Loading archive…"}</p>
             ) : null}
@@ -215,15 +244,25 @@ export function ArchivedChatsDialog({
                 </button>
               </div>
             ) : null}
+            {listError && summaries.length > 0 ? (
+              <p className="border-b border-critical/20 px-4 py-2 text-sm text-critical" role="alert">
+                {ru ? "Последняя операция с архивом не удалась." : "The last archive operation failed."}
+              </p>
+            ) : null}
             {listLoadState === "ready" && summaries.length === 0 ? (
               <p className="px-4 py-10 text-center text-sm text-ink-muted">{ru ? "Архив пуст." : "No archived chats."}</p>
             ) : null}
-            {summaries.length ? (
+            {summaries.length > 0 && visibleSummaries.length === 0 ? (
+              <p className="px-4 py-10 text-center text-sm text-ink-muted">
+                {ru ? "Ничего не найдено." : "No archived chats match."}
+              </p>
+            ) : null}
+            {visibleSummaries.length ? (
               <ul className="divide-y divide-trace-subtle" aria-label={ru ? "Архивные чаты" : "Archived chats"}>
-                {summaries.map((chat) => (
-                  <li key={chat.id}>
+                {visibleSummaries.map((chat) => (
+                  <li className="flex items-center gap-1 pr-2 sm:pr-3" key={chat.id}>
                     <button
-                      className={`w-full px-4 py-3 text-left hover:bg-control-hover ${focusRing}`}
+                      className={`min-w-0 flex-1 px-4 py-3 text-left hover:bg-control-hover ${focusRing}`}
                       type="button"
                       onClick={() => void openArchivedChatPreview(chat.id).catch(() => undefined)}
                     >
@@ -235,6 +274,34 @@ export function ArchivedChatsDialog({
                           : ""}
                       </span>
                     </button>
+                    <button
+                      aria-label={`${ru ? "Восстановить" : "Restore"}: ${chat.title}`}
+                      className={`grid size-10 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-60 ${focusRing}`}
+                      disabled={restoring}
+                      title={ru ? "Восстановить" : "Restore"}
+                      type="button"
+                      onClick={() => void restoreFromRow(chat).catch(() => undefined)}
+                    >
+                      <Undo2 className="size-4" aria-hidden="true" />
+                    </button>
+                    {permanentChatDeletionAvailable ? (
+                      <button
+                        aria-label={`${ru ? "Удалить навсегда" : "Delete permanently"}: ${chat.title}`}
+                        className={`grid size-10 shrink-0 place-items-center rounded-control text-critical hover:bg-critical/10 disabled:cursor-not-allowed disabled:opacity-60 ${focusRing}`}
+                        disabled={restoring}
+                        title={ru ? "Удалить навсегда" : "Delete permanently"}
+                        type="button"
+                        onClick={() => openPermanentChatDeletion({
+                          chatId: chat.id,
+                          expectedActiveLeafMessageId: chat.activeLeafMessageId,
+                          expectedChatRevision: chat.sourceRevision,
+                          location: "ARCHIVED",
+                          title: chat.title
+                        })}
+                      >
+                        <Trash2 className="size-4" aria-hidden="true" />
+                      </button>
+                    ) : null}
                   </li>
                 ))}
               </ul>

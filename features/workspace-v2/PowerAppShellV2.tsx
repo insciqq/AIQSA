@@ -106,8 +106,10 @@ import {
 } from "@/components/app-shell/archivedChatsStore";
 import {
   activatePermanentChatDeletionAccount,
-  deactivatePermanentChatDeletionAccount
+  deactivatePermanentChatDeletionAccount,
+  openPermanentChatDeletion
 } from "@/components/app-shell/permanentChatDeletionStore";
+import { loadPermanentChatDeletionSnapshot } from "@/components/app-shell/permanentChatDeletionApi";
 import {
   loadChatMemoryState,
   patchChatMemoryMode,
@@ -1166,6 +1168,20 @@ export function PowerAppShellV2({
     }
   }
 
+  /**
+   * Direct «Удалить…» entry: fetch the fresh server snapshot, then open the
+   * existing permanent-deletion confirm surface. `openPermanentChatDeletion`
+   * keeps the `permanentChatDeletionAvailable` gate; nothing is deleted before
+   * the surface's own confirmed authorization.
+   */
+  async function deleteChatPermanently(chat: ChatSummary): Promise<void> {
+    try {
+      openPermanentChatDeletion(await loadPermanentChatDeletionSnapshot(chat.id));
+    } catch (error) {
+      setNotice({ kind: "error", text: errorMessage(error) });
+    }
+  }
+
   const workspacePaneView = {
     actions: {
       ...workspaceInteraction.paneActions,
@@ -1173,6 +1189,7 @@ export function PowerAppShellV2({
       createChat: activateBlankWorkspace,
       createFolder,
       deleteChat,
+      deleteChatPermanently,
       deleteFolder,
       exportChat,
       moveChat: updateChatFolder,

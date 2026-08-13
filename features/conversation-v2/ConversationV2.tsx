@@ -471,10 +471,10 @@ export function ConversationV2({
         ) : showOrientation ? (
           <div className="v2-conversation-orientation" data-testid="conversation-empty">
             {orientationSlot ?? (
+              // The blank chat greets quietly: no canvas wordmark and no
+              // marketing subtitle — the greeting alone is the welcome state.
               <div className="v2-conversation-orientation-copy">
-                <p>AIQSA</p>
                 <h1>Над чем поработаем?</h1>
-                <span>Спросите, исследуйте или соберите материал в одном спокойном потоке.</span>
               </div>
             )}
             {composerSlot ? <div className="v2-conversation-empty-composer">{composerSlot}</div> : null}

@@ -42,10 +42,22 @@ function currentSidebarCompositionV2(): SidebarCompositionV2 {
 
 export type NewChatMode = "EXCLUDED" | "NORMAL" | "TEMPORARY";
 
+export type NavigationChatRowState = Readonly<{
+  favorite: boolean;
+  memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
+}>;
+
 export type NavigationSidebarProps = Readonly<{
   accountLabel?: string | null;
   activeChatId: string | null;
+  /**
+   * Optional current per-chat state (favourite, retained Memory mode) so the
+   * row menu can show what is active; unknown chats simply render stateless.
+   */
+  chatStateFor?(chat: ChatNavigationSummaryWire): NavigationChatRowState | null;
   chats: readonly ChatNavigationSummaryWire[];
+  /** Marks the mode the current session is in inside the New-chat mode menu. */
+  currentNewChatMode?: NewChatMode;
   error: string | null;
   folders: readonly ChatNavigationFolderWire[];
   hasMore: boolean;
@@ -59,6 +71,12 @@ export type NavigationSidebarProps = Readonly<{
   onChangeFolderRename?(value: string): void;
   onClose(): void;
   onCreateFolder?(parentId: string | null, name: string): Promise<unknown> | unknown;
+  /**
+   * Direct permanent-deletion entry. Provided only while the server-verified
+   * `permanentChatDeletionAvailable` capability holds; it opens the existing
+   * confirm surface and never deletes by itself.
+   */
+  onDelete?(chat: ChatNavigationSummaryWire): void;
   onDeleteFolder?(folder: ChatNavigationFolderWire): void;
   onExport?(chat: ChatNavigationSummaryWire): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
@@ -69,6 +87,8 @@ export type NavigationSidebarProps = Readonly<{
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
   onMoveFolder?(folder: ChatNavigationFolderWire, folderId: string | null): void;
   onNewChat(mode: NewChatMode): void;
+  /** Opens the single shell command palette from the quiet «Поиск ⌘K» row. */
+  onOpenSearch?(): void;
   onRenameChat?(chat: ChatNavigationSummaryWire): void;
   onRenameFolder?(folder: ChatNavigationFolderWire): void;
   onSaveChatRename?(chat: ChatNavigationSummaryWire): Promise<unknown> | unknown;
@@ -108,9 +128,40 @@ function dateGroup(updatedAt: string, now = new Date()): DateGroup {
   return "earlier";
 }
 
+export type FlattenedFolder<Folder> = Readonly<{ depth: number; folder: Folder }>;
+
+/**
+ * Depth-first flattening of the folder tree for move pickers: every folder —
+ * nested ones included — appears once with its depth for indentation. Passing
+ * `excludeId` removes that folder and its entire subtree (a folder can never
+ * be moved into itself or a descendant). Folders whose parent is not part of
+ * the projection are treated as roots so no destination silently disappears.
+ */
+export function flattenFolderTree<
+  Folder extends Readonly<{ id: string; name: string; parentId: string | null }>
+>(
+  folders: readonly Folder[],
+  excludeId?: string | null
+): readonly FlattenedFolder<Folder>[] {
+  const ids = new Set(folders.map((folder) => folder.id));
+  const result: FlattenedFolder<Folder>[] = [];
+  const visit = (parentId: string | null, depth: number) => {
+    for (const folder of folders) {
+      const effectiveParent =
+        folder.parentId !== null && ids.has(folder.parentId) ? folder.parentId : null;
+      if (effectiveParent !== parentId || folder.id === excludeId) continue;
+      result.push({ depth, folder });
+      visit(folder.id, depth + 1);
+    }
+  };
+  visit(null, 0);
+  return result;
+}
+
 function ChatRow({
   active,
   chat,
+  chatStateFor,
   depth = 0,
   editing,
   editingTitle,
@@ -118,6 +169,7 @@ function ChatRow({
   onArchive,
   onCancelRename,
   onChangeRename,
+  onDelete,
   onExport,
   onFavorite,
   onMemoryMode,
@@ -129,6 +181,7 @@ function ChatRow({
 }: {
   active: boolean;
   chat: ChatNavigationSummaryWire;
+  chatStateFor?(chat: ChatNavigationSummaryWire): NavigationChatRowState | null;
   depth?: number;
   editing?: boolean;
   editingTitle?: string;
@@ -136,6 +189,7 @@ function ChatRow({
   onArchive?(chat: ChatNavigationSummaryWire): void;
   onCancelRename?(): void;
   onChangeRename?(value: string): void;
+  onDelete?(chat: ChatNavigationSummaryWire): void;
   onExport?(chat: ChatNavigationSummaryWire): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
   onMemoryMode?(chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL"): void;
@@ -152,6 +206,8 @@ function ChatRow({
     setMoveOpen(false);
   };
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
+  const rowState = chatStateFor?.(chat) ?? null;
+  const memoryUsed = (rowState?.memoryMode ?? "NORMAL") !== "EXCLUDED";
   if (editing) {
     return (
       <form
@@ -209,18 +265,38 @@ function ChatRow({
           ref={menuRef}
         >
           <UiV2MenuItem onClick={() => { closeMenu(); onRename?.(chat); }}>Переименовать</UiV2MenuItem>
-          <UiV2MenuItem onClick={() => setMoveOpen((open) => !open)}>Переместить</UiV2MenuItem>
+          <UiV2MenuItem aria-expanded={moveOpen} onClick={() => setMoveOpen((open) => !open)}>
+            Переместить
+          </UiV2MenuItem>
           {moveOpen ? (
             <div className="v2-chat-move-options" aria-label="Выберите папку">
               <UiV2MenuItem onClick={() => { closeMenu(); onMove?.(chat, null); }}>Без папки</UiV2MenuItem>
-              {folders.map((folder) => (
-                <UiV2MenuItem key={folder.id} onClick={() => { closeMenu(); onMove?.(chat, folder.id); }}>
+              {flattenFolderTree(folders).map(({ depth: folderDepth, folder }) => (
+                <UiV2MenuItem
+                  key={folder.id}
+                  style={{ paddingLeft: `${0.5 + folderDepth * 0.75}rem` }}
+                  onClick={() => { closeMenu(); onMove?.(chat, folder.id); }}
+                >
                   {folder.name}
                 </UiV2MenuItem>
               ))}
             </div>
           ) : null}
-          <UiV2MenuItem onClick={() => { closeMenu(); onFavorite?.(chat); }}>Избранное</UiV2MenuItem>
+          <UiV2MenuItem
+            selected={rowState?.favorite ?? false}
+            onClick={() => { closeMenu(); onFavorite?.(chat); }}
+          >
+            Избранное
+          </UiV2MenuItem>
+          <UiV2MenuItem
+            selected={memoryUsed}
+            onClick={() => {
+              closeMenu();
+              onMemoryMode?.(chat, memoryUsed ? "EXCLUDED" : "NORMAL");
+            }}
+          >
+            Использовать память
+          </UiV2MenuItem>
           <UiV2MenuItem onClick={() => { closeMenu(); onShare?.(chat); }}>Поделиться</UiV2MenuItem>
           <UiV2MenuItem onClick={() => { closeMenu(); onExport?.(chat); }}>Экспортировать</UiV2MenuItem>
           <UiV2MenuItem
@@ -232,18 +308,17 @@ function ChatRow({
           >
             Архивировать
           </UiV2MenuItem>
-          <UiV2MenuItem onClick={() => {
-            closeMenu();
-            onMemoryMode?.(chat, "NORMAL");
-          }}>
-            Использовать память
-          </UiV2MenuItem>
-          <UiV2MenuItem onClick={() => {
-            closeMenu();
-            onMemoryMode?.(chat, "EXCLUDED");
-          }}>
-            Без памяти
-          </UiV2MenuItem>
+          {onDelete ? (
+            <UiV2MenuItem
+              disabled={chat.activeRun}
+              onClick={() => {
+                closeMenu();
+                onDelete(chat);
+              }}
+            >
+              Удалить…
+            </UiV2MenuItem>
+          ) : null}
         </UiV2MenuSurface>
       ) : null}
     </div>
@@ -331,12 +406,18 @@ function FolderGroup({
                 <UiV2MenuItem onClick={() => { closeMenu(); setSubfolderOpen(true); setOpen(true); }}>
                   Новая подпапка
                 </UiV2MenuItem>
-                <UiV2MenuItem onClick={() => setMoveOpen((value) => !value)}>Переместить</UiV2MenuItem>
+                <UiV2MenuItem aria-expanded={moveOpen} onClick={() => setMoveOpen((value) => !value)}>
+                  Переместить
+                </UiV2MenuItem>
                 {moveOpen ? (
                   <div className="v2-chat-move-options" aria-label="Переместить папку">
                     <UiV2MenuItem onClick={() => { closeMenu(); props.onMoveFolder?.(folder, null); }}>В корень</UiV2MenuItem>
-                    {folders.filter((candidate) => candidate.id !== folder.id).map((candidate) => (
-                      <UiV2MenuItem key={candidate.id} onClick={() => { closeMenu(); props.onMoveFolder?.(folder, candidate.id); }}>
+                    {flattenFolderTree(folders, folder.id).map(({ depth: folderDepth, folder: candidate }) => (
+                      <UiV2MenuItem
+                        key={candidate.id}
+                        style={{ paddingLeft: `${0.5 + folderDepth * 0.75}rem` }}
+                        onClick={() => { closeMenu(); props.onMoveFolder?.(folder, candidate.id); }}
+                      >
                         {candidate.name}
                       </UiV2MenuItem>
                     ))}
@@ -380,6 +461,7 @@ function FolderGroup({
             <ChatRow
               active={chat.id === activeChatId}
               chat={chat}
+              chatStateFor={props.chatStateFor}
               depth={depth + 1}
               editing={props.editingChatId === chat.id}
               editingTitle={props.editingChatTitle}
@@ -388,6 +470,7 @@ function FolderGroup({
               onArchive={props.onArchive}
               onCancelRename={props.onCancelChatRename}
               onChangeRename={props.onChangeChatRename}
+              onDelete={props.onDelete}
               onExport={props.onExport}
               onFavorite={props.onFavorite}
               onMemoryMode={props.onMemoryMode}
@@ -426,6 +509,14 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     onClose: () => setNewChatMenuOpen(false),
     open: newChatMenuOpen
   });
+  const currentMode = props.currentNewChatMode ?? "NORMAL";
+  // Navigating away from search results resets the query so no stale
+  // «Результаты» view survives chat selection.
+  const selectChat = (chat: ChatNavigationSummaryWire) => {
+    if (props.searchQuery) props.onSearch("");
+    props.onSelectChat(chat);
+  };
+  const rowProps: NavigationSidebarProps = { ...props, onSelectChat: selectChat };
   const unfiled = props.chats.filter((chat) => chat.folderId === null);
   const roots = props.folders.filter((folder) => folder.parentId === null);
   const dateGroups = (["today", "yesterday", "last-seven", "earlier"] as const)
@@ -471,77 +562,70 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               ref={newChatMenuRef}
             >
               <UiV2MenuItem
+                selected={currentMode === "NORMAL"}
                 sub="Обычная память и история"
                 onClick={() => { setNewChatMenuOpen(false); props.onNewChat("NORMAL"); }}
               >
                 Обычный
               </UiV2MenuItem>
               <UiV2MenuItem
+                selected={currentMode === "EXCLUDED"}
                 sub="Не использовать и не обучать память"
                 onClick={() => { setNewChatMenuOpen(false); props.onNewChat("EXCLUDED"); }}
               >
                 Без памяти
               </UiV2MenuItem>
               <UiV2MenuItem
+                selected={currentMode === "TEMPORARY"}
                 sub="Автоматически удалится через 24 часа"
                 onClick={() => { setNewChatMenuOpen(false); props.onNewChat("TEMPORARY"); }}
               >
                 Временный чат
               </UiV2MenuItem>
+              {props.onCreateFolder ? (
+                <>
+                  <div aria-hidden="true" className="v2-menu-separator" />
+                  <UiV2MenuItem
+                    onClick={() => { setNewChatMenuOpen(false); setNewFolderOpen(true); }}
+                  >
+                    Новая папка
+                  </UiV2MenuItem>
+                </>
+              ) : null}
             </UiV2MenuSurface>
           ) : null}
         </div>
-        {props.onCreateFolder ? (
-          newFolderOpen ? (
-            <form className="v2-new-folder-inline" onSubmit={(event) => {
-              event.preventDefault();
-              if (!newFolderName.trim()) return;
-              void Promise.resolve(props.onCreateFolder?.(null, newFolderName.trim())).then(() => {
-                setNewFolderName("");
-                setNewFolderOpen(false);
-              });
-            }}>
-              <input
-                autoFocus
-                aria-label="Название новой папки"
-                maxLength={80}
-                placeholder="Название папки"
-                value={newFolderName}
-                onChange={(event) => setNewFolderName(event.target.value)}
-              />
-              <UiV2IconButton icon="check" label="Создать папку" type="submit" />
-              <UiV2IconButton icon="close" label="Отменить" onClick={() => setNewFolderOpen(false)} />
-            </form>
-          ) : (
-            <button className="v2-navigation-create-folder v2-focusable" type="button" onClick={() => setNewFolderOpen(true)}>
-              <UiV2Icon name="folder" /> Новая папка
-            </button>
-          )
-        ) : null}
-      </div>
-
-      <div className="v2-navigation-search-wrap">
-        <span className="v2-navigation-search-icon"><UiV2Icon name="search" /></span>
-        <input
-          className="v2-navigation-search v2-focusable"
-          aria-label="Поиск чатов"
-          placeholder="Поиск"
-          type="search"
-          value={props.searchQuery}
-          onChange={(event) => props.onSearch(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape" && props.searchQuery) props.onSearch("");
-          }}
-        />
-        {props.searchQuery ? (
+        {props.onOpenSearch ? (
           <button
-            className="v2-navigation-search-clear v2-focusable"
+            className="v2-navigation-search-row v2-focusable"
             type="button"
-            aria-label="Очистить поиск"
-            onClick={() => props.onSearch("")}
+            onClick={props.onOpenSearch}
           >
-            <UiV2Icon name="close" />
+            <UiV2Icon name="search" />
+            <span>Поиск</span>
+            <kbd aria-hidden="true" className="v2-navigation-kbd">⌘K</kbd>
           </button>
+        ) : null}
+        {props.onCreateFolder && newFolderOpen ? (
+          <form className="v2-new-folder-inline" onSubmit={(event) => {
+            event.preventDefault();
+            if (!newFolderName.trim()) return;
+            void Promise.resolve(props.onCreateFolder?.(null, newFolderName.trim())).then(() => {
+              setNewFolderName("");
+              setNewFolderOpen(false);
+            });
+          }}>
+            <input
+              autoFocus
+              aria-label="Название новой папки"
+              maxLength={80}
+              placeholder="Название папки"
+              value={newFolderName}
+              onChange={(event) => setNewFolderName(event.target.value)}
+            />
+            <UiV2IconButton icon="check" label="Создать папку" type="submit" />
+            <UiV2IconButton icon="close" label="Отменить" onClick={() => setNewFolderOpen(false)} />
+          </form>
         ) : null}
       </div>
 
@@ -579,6 +663,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               <ChatRow
                 active={chat.id === props.activeChatId}
                 chat={chat}
+                chatStateFor={props.chatStateFor}
                 editing={props.editingChatId === chat.id}
                 editingTitle={props.editingChatTitle}
                 folders={props.folders}
@@ -586,6 +671,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 onArchive={props.onArchive}
                 onCancelRename={props.onCancelChatRename}
                 onChangeRename={props.onChangeChatRename}
+                onDelete={props.onDelete}
                 onExport={props.onExport}
                 onFavorite={props.onFavorite}
                 onMemoryMode={props.onMemoryMode}
@@ -593,7 +679,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 onRename={props.onRenameChat}
                 onSaveRename={props.onSaveChatRename}
                 onShare={props.onShare}
-                onSelect={props.onSelectChat}
+                onSelect={selectChat}
               />
             ))}
           </div>
@@ -607,7 +693,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 folder={folder}
                 folders={props.folders}
                 key={folder.id}
-                props={props}
+                props={rowProps}
               />
             ))}
             {dateGroups.map((group) => (
@@ -617,6 +703,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                   <ChatRow
                     active={chat.id === props.activeChatId}
                     chat={chat}
+                    chatStateFor={props.chatStateFor}
                     editing={props.editingChatId === chat.id}
                     editingTitle={props.editingChatTitle}
                     folders={props.folders}
@@ -624,6 +711,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                     onArchive={props.onArchive}
                     onCancelRename={props.onCancelChatRename}
                     onChangeRename={props.onChangeChatRename}
+                    onDelete={props.onDelete}
                     onExport={props.onExport}
                     onFavorite={props.onFavorite}
                     onMemoryMode={props.onMemoryMode}
@@ -631,7 +719,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                     onRename={props.onRenameChat}
                     onSaveRename={props.onSaveChatRename}
                     onShare={props.onShare}
-                    onSelect={props.onSelectChat}
+                    onSelect={selectChat}
                   />
                 ))}
               </div>

@@ -69,8 +69,14 @@ export type ShellWorkspacePaneActions = {
   ): Promise<ChatSummary | null> | void;
   createFolder(parentId?: string | null, nameOverride?: string): Promise<void> | void;
   deleteChat(chat: ChatSummary): Promise<void> | void;
+  /**
+   * Opens the existing permanent-deletion confirm surface for this chat.
+   * Server-verified gating (`permanentChatDeletionAvailable`) and the
+   * irreversible-deletion semantics stay owned by the deletion store.
+   */
+  deleteChatPermanently(chat: ChatSummary): Promise<void> | void;
   deleteFolder(folder: FolderSummary): Promise<void> | void;
-  exportChat(chat: ChatSummary): void;
+  exportChat(chat: ChatSummary, format?: "json" | "markdown"): void;
   moveChat(chatId: string, folderId: string | null): Promise<void> | void;
   moveFolder(folder: FolderSummary, folderId: string | null): Promise<void> | void;
   openArchivedChats(): void;

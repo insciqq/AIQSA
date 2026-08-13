@@ -6,8 +6,10 @@ import {
   LiveEvidenceV2,
   RunSetupV2,
   TemporaryChatIndicatorV2,
+  WelcomeOrientationV2,
   WorkspaceHeaderV2,
   answerIdentityV2,
+  blankWelcomeStartersVisibleV2,
   type RunSetupComposerV2
 } from "./PowerAppShellV2View";
 
@@ -265,7 +267,7 @@ describe("Temporary chat indicator v2", () => {
   });
 });
 
-describe("Workspace header v2 overflow menu", () => {
+describe("Workspace header v2", () => {
   const temporaryMemory = {
     explanation: "Временный чат не читает и не записывает личную Память.",
     externalRetention: "Внешние провайдеры могут хранить данные по раскрытым правилам.",
@@ -273,18 +275,32 @@ describe("Workspace header v2 overflow menu", () => {
     retention: "Полный агрегат чата удаляется через 24 часа.",
     retentionDeadline: null
   };
+  const folders = [
+    { id: "root-a", name: "Research", parentId: null },
+    { id: "child-a", name: "Recall", parentId: "root-a" },
+    { id: "root-b", name: "Ops", parentId: null }
+  ];
 
   function headerProps(overrides: Partial<Parameters<typeof WorkspaceHeaderV2>[0]> = {}) {
     return {
       active: true,
       accountEmail: "operator@example.com",
       adminEntryVisible: false,
-      onArchived: vi.fn(),
+      editingTitle: null,
+      folders,
+      onArchive: vi.fn(),
       onBranches: vi.fn(),
       onCommands: vi.fn(),
-      onCopy: vi.fn(),
+      onCopyThread: vi.fn(),
+      onDelete: vi.fn(),
       onExport: vi.fn(),
       onLibrary: vi.fn(),
+      onMove: vi.fn(),
+      onRenameCancel: vi.fn(),
+      onRenameChange: vi.fn(),
+      onRenameSave: vi.fn(),
+      onRenameStart: vi.fn(),
+      onRunDetails: vi.fn(),
       onSettings: vi.fn(),
       onShare: vi.fn(),
       shareDisabled: false,
@@ -294,51 +310,135 @@ describe("Workspace header v2 overflow menu", () => {
     } satisfies Parameters<typeof WorkspaceHeaderV2>[0];
   }
 
-  it("collapses the four actions into one ⋯ menu dispatching the desktop handlers", () => {
+  it("keeps one kicker-free header: Share plus a single complete ⋯ menu", () => {
     const props = headerProps();
     render(<WorkspaceHeaderV2 {...props} />);
 
-    // The trigger carries the mobile-only collapse class; ≤899px CSS is the
-    // breakpoint owner, jsdom asserts the structure it toggles.
-    const trigger = screen.getByTestId("header-more-trigger");
-    expect(trigger.closest(".v2-live-more")).not.toBeNull();
+    // No kicker and no standalone Копировать/Ветви buttons remain.
+    expect(screen.queryByText("Conversation")).toBeNull();
+    expect(screen.queryByText("Reading Room")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Копировать" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Ветви" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Поделиться" })).toBeVisible();
 
+    const trigger = screen.getByTestId("header-more-trigger");
     fireEvent.click(trigger);
     const menu = screen.getByTestId("header-more-menu");
     expect(
       within(menu).getAllByRole("menuitem").map((item) => item.textContent)
-    ).toEqual(["Поделиться", "Ветви", "Копировать", "Экспортировать"]);
+    ).toEqual([
+      "Поделиться",
+      "Переименовать",
+      "Переместить",
+      "Архивировать",
+      "Удалить…",
+      "Экспортировать",
+      "Экспорт в JSON",
+      "Копировать весь тред",
+      "Ветви",
+      "Детали run"
+    ]);
+    // Поделиться is a mobile-only route; ≤899px CSS owns the breakpoint and
+    // toggles this exact marker.
+    expect(within(menu).getByRole("menuitem", { name: "Поделиться" }))
+      .toHaveAttribute("data-mobile-only");
 
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Поделиться" }));
-    expect(props.onShare).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Экспортировать" }));
+    expect(props.onExport).toHaveBeenLastCalledWith("markdown");
     expect(screen.queryByTestId("header-more-menu")).toBeNull();
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Экспорт в JSON" }));
+    expect(props.onExport).toHaveBeenLastCalledWith("json");
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Копировать весь тред" }));
+    expect(props.onCopyThread).toHaveBeenCalledTimes(1);
 
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("menuitem", { name: "Ветви" }));
     expect(props.onBranches).toHaveBeenCalledTimes(1);
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Копировать" }));
-    expect(props.onCopy).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Детали run" }));
+    expect(props.onRunDetails).toHaveBeenCalledTimes(1);
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Экспортировать" }));
-    expect(props.onExport).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Архивировать" }));
+    expect(props.onArchive).toHaveBeenCalledTimes(1);
+  });
 
-    // The desktop text buttons dispatch the very same handler instances.
-    fireEvent.click(screen.getByRole("button", { name: "Поделиться" }));
-    fireEvent.click(screen.getByRole("button", { name: "Ветви" }));
-    fireEvent.click(screen.getByRole("button", { name: "Копировать" }));
-    expect(props.onShare).toHaveBeenCalledTimes(2);
-    expect(props.onBranches).toHaveBeenCalledTimes(2);
-    expect(props.onCopy).toHaveBeenCalledTimes(2);
+  it("gates Удалить… on the capability and lists nested move destinations", () => {
+    const props = headerProps({ onDelete: null });
+    const { rerender } = render(<WorkspaceHeaderV2 {...props} />);
+
+    fireEvent.click(screen.getByTestId("header-more-trigger"));
+    expect(screen.queryByRole("menuitem", { name: "Удалить…" })).toBeNull();
+
+    const onDelete = vi.fn();
+    const onMove = vi.fn();
+    rerender(<WorkspaceHeaderV2 {...headerProps({ onDelete, onMove })} />);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Удалить…" }));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+
+    // Move discloses the complete nested folder list with indentation.
+    fireEvent.click(screen.getByTestId("header-more-trigger"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Переместить" }));
+    const submenu = screen.getByLabelText("Переместить");
+    const labels = within(submenu).getAllByRole("menuitem").map((item) => item.textContent);
+    expect(labels).toEqual(["Без папки", "Research", "Recall", "Ops"]);
+    const nested = within(submenu).getByRole("menuitem", { name: "Recall" });
+    expect(nested.style.paddingLeft).toBe("1.25rem");
+    fireEvent.click(nested);
+    expect(onMove).toHaveBeenCalledWith("child-a");
+    expect(screen.queryByTestId("header-more-menu")).toBeNull();
+  });
+
+  it("starts inline rename from the title with the shared ✓/✕ pattern", () => {
+    const props = headerProps();
+    const { rerender } = render(<WorkspaceHeaderV2 {...props} />);
+
+    fireEvent.click(screen.getByTestId("header-title"));
+    expect(props.onRenameStart).toHaveBeenCalledTimes(1);
+
+    rerender(<WorkspaceHeaderV2 {...props} editingTitle="Черновик названия" />);
+    const input = screen.getByRole("textbox", { name: "Новое название: Release checklist" });
+    expect(input).toHaveValue("Черновик названия");
+    fireEvent.change(input, { target: { value: "Новое имя" } });
+    expect(props.onRenameChange).toHaveBeenCalledWith("Новое имя");
+
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить название" }));
+    expect(props.onRenameSave).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Отменить переименование" }));
+    expect(props.onRenameCancel).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(props.onRenameCancel).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the welcome header empty and the account menu to one archive entry", () => {
+    const props = headerProps({ active: false });
+    render(<WorkspaceHeaderV2 {...props} />);
+
+    // Welcome: no title, no kicker, no chat actions — quiet actions only.
+    expect(screen.queryByRole("heading")).toBeNull();
+    expect(screen.queryByTestId("header-more-trigger")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Поделиться" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Команды" })).toBeVisible();
+
+    // The sidebar «Архив чатов» row is the single archive entry.
+    fireEvent.click(screen.getByRole("button", { name: "Меню аккаунта" }));
+    const account = screen.getByRole("menu", { name: "Аккаунт" });
+    expect(within(account).queryByRole("menuitem", { name: "Архив чатов" })).toBeNull();
+    expect(within(account).getByRole("menuitem", { name: "Библиотека" })).toBeVisible();
+    expect(within(account).getByRole("menuitem", { name: "Настройки" })).toBeVisible();
   });
 
   it("keeps Share governance, the Temporary indicator, and shared dismissal", () => {
     const props = headerProps({ shareDisabled: true, temporaryMemory });
     render(<WorkspaceHeaderV2 {...props} />);
 
-    // Only the four text actions collapse; the Temporary indicator stays.
     expect(screen.getByTestId("header-temporary-indicator")).toHaveTextContent("Временный чат");
 
     const trigger = screen.getByTestId("header-more-trigger");
@@ -355,5 +455,71 @@ describe("Workspace header v2 overflow menu", () => {
     fireEvent.click(trigger);
     fireEvent.pointerDown(document.body);
     expect(screen.queryByTestId("header-more-menu")).toBeNull();
+  });
+
+  it("disables Детали run without a settled answer run", () => {
+    render(<WorkspaceHeaderV2 {...headerProps({ onRunDetails: null })} />);
+
+    fireEvent.click(screen.getByTestId("header-more-trigger"));
+    expect(screen.getByRole("menuitem", { name: "Детали run" })).toBeDisabled();
+  });
+});
+
+describe("Blank welcome v2", () => {
+  it("shows starter prompts exactly on the untouched blank welcome", () => {
+    expect(blankWelcomeStartersVisibleV2({
+      assistantSelected: false,
+      attachmentCount: 0,
+      draft: "",
+      uploading: false
+    })).toBe(true);
+    expect(blankWelcomeStartersVisibleV2({
+      assistantSelected: true,
+      attachmentCount: 0,
+      draft: "",
+      uploading: false
+    })).toBe(false);
+    expect(blankWelcomeStartersVisibleV2({
+      assistantSelected: false,
+      attachmentCount: 0,
+      draft: "  черновик",
+      uploading: false
+    })).toBe(false);
+    expect(blankWelcomeStartersVisibleV2({
+      assistantSelected: false,
+      attachmentCount: 1,
+      draft: "",
+      uploading: false
+    })).toBe(false);
+    expect(blankWelcomeStartersVisibleV2({
+      assistantSelected: false,
+      attachmentCount: 0,
+      draft: "",
+      uploading: true
+    })).toBe(false);
+  });
+
+  it("greets quietly with prompts and no wordmark or marketing subtitle", () => {
+    const onPickPrompt = vi.fn();
+    const onOpenAssistantPicker = vi.fn();
+    render(
+      <WelcomeOrientationV2
+        showAssistantEntry
+        onOpenAssistantPicker={onOpenAssistantPicker}
+        onPickPrompt={onPickPrompt}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Над чем поработаем?" })).toBeVisible();
+    expect(screen.queryByText("AIQSA")).toBeNull();
+    expect(screen.queryByText(/Спросите, исследуйте/u)).toBeNull();
+
+    const starters = screen.getByLabelText("Starter prompts");
+    const buttons = within(starters).getAllByRole("button");
+    expect(buttons.length).toBeLessThanOrEqual(4);
+    fireEvent.click(buttons[0]!);
+    expect(onPickPrompt).toHaveBeenCalledWith(buttons[0]!.textContent);
+    fireEvent.click(within(starters).getByRole("button", { name: "Начать с Assistant…" }));
+    expect(onOpenAssistantPicker).toHaveBeenCalledTimes(1);
   });
 });

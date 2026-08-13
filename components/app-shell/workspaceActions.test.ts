@@ -8,7 +8,7 @@ import {
   type ComposerSessionKey
 } from "./composerSessionStore";
 import { resetRunSurfaceStoreForTest, useRunSurfaceStore } from "./runSurfaceStore";
-import { useWorkspaceActions } from "./workspaceActions";
+import { chatExportMarkdown, useWorkspaceActions } from "./workspaceActions";
 import {
   resetThreadStoreForTest,
   useThreadStore,
@@ -1598,7 +1598,7 @@ describe("workspace actions", () => {
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", fetchMock);
 
-    await state.actions.exportChat(summary);
+    await state.actions.exportChat(summary, "json");
 
     expect(fetchMock).not.toHaveBeenCalled();
     const payload = JSON.parse(exportedText) as {
@@ -1609,6 +1609,59 @@ describe("workspace actions", () => {
     expect(payload.messages.map((candidate) => candidate.content)).toEqual([
       "Question",
       "Branch B"
+    ]);
+  });
+
+  it("defaults export to a Markdown document named by title slug and ISO date", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const summary = {
+      ...state.chatA,
+      activeLeafMessageId: "assistant-a",
+      messageCount: 2,
+      title: "Release checklist · 032"
+    };
+    useWorkspaceStore.getState().updateChats((current) =>
+      current.map((candidate) => (candidate.id === summary.id ? summary : candidate))
+    );
+    useThreadStore.getState().replaceThread(summary.id, {
+      activeLeafId: "assistant-a",
+      history: threadHistory(summary),
+      messages: [
+        message({ content: "Вопрос", id: "user-1" }),
+        message({ content: "Ответ", id: "assistant-a", parentMessageId: "user-1", role: "assistant" })
+      ],
+      sourceUpdatedAt: summary.updatedAt,
+      usageStats: null
+    });
+    let exportedText = "";
+    class CapturedBlob {
+      constructor(parts: BlobPart[]) {
+        exportedText = parts.map((part) => (typeof part === "string" ? part : "")).join("");
+      }
+    }
+    const downloads: string[] = [];
+    vi.stubGlobal("Blob", CapturedBlob);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:export");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement
+    ) {
+      downloads.push(this.download);
+    });
+    vi.stubGlobal("fetch", vi.fn());
+
+    await state.actions.exportChat(summary);
+    expect(exportedText).toBe(
+      "# Release checklist · 032\n\n## User\n\nВопрос\n\n## Assistant\n\nОтвет\n"
+    );
+
+    await state.actions.exportChat(summary, "json");
+    expect(JSON.parse(exportedText)).toMatchObject({ title: "Release checklist · 032" });
+
+    const isoDate = new Date().toISOString().slice(0, 10);
+    expect(downloads).toEqual([
+      `release-checklist-032-${isoDate}.md`,
+      `release-checklist-032-${isoDate}.json`
     ]);
   });
 
@@ -1668,7 +1721,7 @@ describe("workspace actions", () => {
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", fetchMock);
 
-    await state.actions.exportChat(summary);
+    await state.actions.exportChat(summary, "json");
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/chats/chat-a/messages?before=cursor-tail"
@@ -1725,7 +1778,7 @@ describe("workspace actions", () => {
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", fetchMock);
 
-    await state.actions.exportChat(summary);
+    await state.actions.exportChat(summary, "json");
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(JSON.parse(exportedText)).toMatchObject({
@@ -2132,5 +2185,29 @@ describe("workspace actions", () => {
     expect(useThreadStore.getState().threadsByChatId["chat-a"]).toBe(liveThread);
     expect(liveThread.messages[0]?.content).toBe("live token");
     expect(useThreadStore.getState().threadsByChatId["chat-b"]).toBeUndefined();
+  });
+});
+
+describe("chat export markdown", () => {
+  it("renders the visible branch as a readable deterministic document", () => {
+    const markdown = chatExportMarkdown("Release checklist · 032", [
+      message({ content: "Составь план релиза  ", id: "q1" }),
+      message({
+        content: {
+          blocks: [{ text: "1. Проверить миграции\n2. Прогнать smoke", type: "text" }]
+        },
+        id: "a1",
+        parentMessageId: "q1",
+        role: "assistant"
+      })
+    ]);
+
+    expect(markdown).toBe(
+      "# Release checklist · 032\n\n" +
+      "## User\n\nСоставь план релиза\n\n" +
+      "## Assistant\n\n1. Проверить миграции\n2. Прогнать smoke\n"
+    );
+    // No provider internals, ids, or token counts leak into the document.
+    expect(markdown).not.toMatch(/token|provider|runId|uuid/iu);
   });
 });

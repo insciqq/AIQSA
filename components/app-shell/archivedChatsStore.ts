@@ -185,6 +185,29 @@ export async function loadEarlierArchivedMessages(): Promise<void> {
   }
 }
 
+/**
+ * Restores an archived chat directly from its list row, using the summary's
+ * current source-revision fence. Returns the restored chat id, or null while
+ * another restore is in flight.
+ */
+export async function restoreArchivedChatSummary(
+  chat: Pick<ArchivedChatSummaryWire, "id" | "sourceRevision">
+): Promise<string | null> {
+  if (useArchivedChatsStore.getState().restoring) return null;
+  useArchivedChatsStore.setState({ listError: null, restoring: true });
+  try {
+    const response = await restoreChat(chat.id, chat.sourceRevision);
+    useArchivedChatsStore.setState((state) => ({
+      restoring: false,
+      summaries: state.summaries.filter((item) => item.id !== chat.id)
+    }));
+    return response.chat.id;
+  } catch (error) {
+    useArchivedChatsStore.setState({ listError: errorName(error), restoring: false });
+    throw error;
+  }
+}
+
 export async function restoreArchivedChat(): Promise<string | null> {
   const current = useArchivedChatsStore.getState();
   const detail = current.detail;

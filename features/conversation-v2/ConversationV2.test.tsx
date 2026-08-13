@@ -28,6 +28,9 @@ describe("Conversation v2", () => {
 
     expect(screen.getByTestId("conversation-empty")).toBeVisible();
     expect(screen.getByText("Над чем поработаем?")).toBeVisible();
+    // Quiet greeting only: no canvas wordmark and no marketing subtitle.
+    expect(screen.queryByText("AIQSA")).toBeNull();
+    expect(screen.queryByText(/Спросите, исследуйте/u)).toBeNull();
     expect(screen.getByText("Composer preview")).toBeVisible();
 
     rerender(

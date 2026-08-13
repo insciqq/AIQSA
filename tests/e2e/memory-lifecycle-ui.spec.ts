@@ -247,9 +247,11 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   const workspace = page.getByRole("complementary", { name: "Навигация по чатам" });
   await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 
+  // One stateful toggle item: it starts checked (NORMAL) and each click flips
+  // the retained Memory mode.
   await workspace.getByRole("button", { name: "Действия: Retained lifecycle" }).click();
   await page.getByRole("menu", { name: "Действия чата Retained lifecycle" })
-    .getByRole("menuitem", { name: "Без памяти" }).click();
+    .getByRole("menuitem", { name: "Использовать память" }).click();
   await expect.poll(() => modePatches.length).toBe(1);
   expect(modePatches.at(-1)).toMatchObject({ mode: "EXCLUDED" });
 
@@ -269,7 +271,8 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
 
   await workspace.getByRole("button", { name: "Архив чатов" }).click();
   const archivedDialog = page.getByRole("dialog", { name: "Archived chats" });
-  await archivedDialog.getByRole("button", { name: /Retained lifecycle/ }).click();
+  // Anchored: list rows now also carry Restore/Delete actions naming the chat.
+  await archivedDialog.getByRole("button", { name: /^Retained lifecycle/ }).click();
   await expect(page.getByRole("dialog", { name: "Retained lifecycle" })).toContainText("Retained answer");
   await page.getByRole("dialog", { name: "Retained lifecycle" })
     .getByRole("button", { name: "Restore" }).click();

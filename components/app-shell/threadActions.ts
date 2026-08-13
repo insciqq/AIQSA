@@ -111,6 +111,7 @@ export function createThreadActions({
       });
     } catch (error) {
       setNotice({
+        autoDismiss: true,
         kind: "error",
         text: `The complete thread could not be copied: ${errorMessage(error)}`
       });
@@ -164,6 +165,17 @@ export function createThreadActions({
         chat,
         ...current.filter((candidate) => candidate.id !== chat.id)
       ]);
+      // Mirror the fork into the live navigation list so the switch is never
+      // silent: the sidebar shows the new chat and the toast names it.
+      if (useWorkspaceStore.getState().navigationReady) {
+        useWorkspaceStore.getState().upsertNavigationChat({
+          activeRun: false,
+          folderId: chat.folderId,
+          id: chat.id,
+          title: chat.title,
+          updatedAt: chat.updatedAt
+        });
+      }
       activateChat(chat);
       setNotice({
         kind: "success",
