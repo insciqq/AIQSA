@@ -1071,9 +1071,12 @@ function ModelLayer({
                   >
                     <span className="v2-composer-model-copy">
                       <strong>{model.displayName}</strong>
+                      {/* One joined line with a single trailing ellipsis: per-tag
+                          truncation turned narrow rows into unreadable fragments
+                          («Rea… PDF и до… Изобр…»). */}
                       <span className="v2-composer-model-tags" title={capabilityTags.join(" · ")}>
-                        {capabilityTags.slice(0, 3).map((tag) => <em key={tag}>{tag}</em>)}
-                        {capabilityTags.length > 3 ? <em>+{capabilityTags.length - 3}</em> : null}
+                        {capabilityTags.slice(0, 3).join(" · ")}
+                        {capabilityTags.length > 3 ? ` · +${capabilityTags.length - 3}` : ""}
                       </span>
                       <span className="v2-composer-model-facts">
                         {selected ? <em>Текущая</em> : null}
