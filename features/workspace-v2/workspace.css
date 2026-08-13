@@ -72,6 +72,24 @@
   display: inline-flex;
 }
 
+/*
+ * Header "⋯" overflow. Hidden on desktop (the text buttons stay the desktop
+ * composition until slice F); below 900px it is the only reachable route to
+ * Share/Branches/Copy/Export, so it must never collapse without a replacement.
+ */
+.v2-live-more {
+  position: relative;
+  display: none;
+}
+
+.v2-live-more-menu {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  width: min(14rem, calc(100vw - 2rem));
+}
+
 .v2-live-temporary {
   position: relative;
   display: inline-flex;
@@ -264,6 +282,16 @@
   pointer-events: auto;
 }
 
+/*
+ * While a composer layer is open, the dock's stacking context must rise above
+ * the absolute chat header (z 20); otherwise the fixed bottom sheet and its
+ * scrim (z 80/90 inside the dock context) paint under the header pill and a
+ * touch user cannot reach the sheet's close control (audit §18.2, 515×573).
+ */
+.v2-live-composer-dock:has(.v2-composer[data-layer-open]) {
+  z-index: 60;
+}
+
 .v2-live-composer-error {
   width: min(42rem, 100%);
   margin: 0 auto;
@@ -285,16 +313,6 @@
   transform: translateX(-50%);
 }
 
-.v2-live-answer-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.375rem 0.75rem;
-  margin-top: 0.75rem;
-  color: var(--v2-color-text3);
-  font-size: 0.6875rem;
-  line-height: 1.4;
-}
-
 .v2-live-evidence {
   margin-top: 0.375rem;
 }
@@ -311,8 +329,9 @@
   cursor: pointer;
 }
 
-.v2-live-reasoning p {
-  white-space: pre-wrap;
+.v2-live-reasoning-body {
+  padding-top: 0.5rem;
+  color: var(--v2-color-text2);
 }
 
 .v2-live-context-note,
@@ -522,9 +541,17 @@
     left: max(7.25rem, calc(env(safe-area-inset-left) + 7.25rem));
   }
 
+  /*
+   * Only the four text actions collapse; they reappear inside the "⋯" menu.
+   * The Temporary indicator, palette, and account stay directly visible.
+   */
   .v2-live-title small,
   .v2-live-header-actions > .v2-button {
     display: none;
+  }
+
+  .v2-live-more {
+    display: inline-flex;
   }
 
   .v2-live-title h1 {
@@ -555,6 +582,36 @@
   .v2-run-setup-body > label {
     grid-template-columns: 1fr;
     gap: 0.375rem;
+  }
+}
+
+/*
+ * Narrow or short geometry turns the Params dialog into a true bottom sheet:
+ * a dark scrim token (never a text-derived light wash in dark theme), a
+ * tappable scrim band above the sheet, the sticky header row with the close
+ * control, and safe-area padding. The scrim layer stays above the chat header.
+ */
+@media (max-width: 899px), (max-height: 32rem) {
+  .v2-run-setup-scrim {
+    padding: max(2.75rem, calc(env(safe-area-inset-top) + 1.75rem)) 0 0;
+    place-items: end stretch;
+    background: var(--v2-color-scrim);
+    backdrop-filter: none;
+  }
+
+  .v2-run-setup {
+    width: 100%;
+    max-height: 100%;
+    padding-right: env(safe-area-inset-right);
+    padding-left: env(safe-area-inset-left);
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: var(--v2-radius-l) var(--v2-radius-l) 0 0;
+  }
+
+  .v2-run-setup-body {
+    padding-bottom: max(1.125rem, env(safe-area-inset-bottom));
   }
 }
 

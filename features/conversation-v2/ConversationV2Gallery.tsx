@@ -5,6 +5,7 @@ import {
   NavigationSidebar,
   ReadingRoomShellV2
 } from "@/features/navigation-v2/NavigationV2";
+import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
 import { useState } from "react";
 import {
   ConversationV2,
@@ -190,6 +191,19 @@ export function ConversationV2Gallery({ state = "basic" }: { state?: Conversatio
               onMore: () => undefined,
               onRegenerate: () => undefined
             }}
+            getMessagePresentation={(message) => message.id === "question-current" ? {
+              // Sent files stay visible as a quiet owner-only line under the
+              // user-bubble text.
+              afterContent: (
+                <SentAttachmentsV2
+                  blocks={[{
+                    attachmentId: "gallery-attachment",
+                    label: "sales_q3.csv",
+                    type: "file"
+                  }]}
+                />
+              )
+            } : undefined}
             hasOlder={hasOlder}
             loading={state === "loading"}
             messages={messages}

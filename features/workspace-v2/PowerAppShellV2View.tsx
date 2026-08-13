@@ -38,12 +38,16 @@ import type {
 } from "@/components/app-shell/powerAppShellV2Contracts";
 import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
 import type {
+  Catalog,
   ChatSummary,
   PersistedRun,
   RunEventView,
   ThreadMessage
 } from "@/components/app-shell/types";
-import { textFromThreadContent } from "@/components/app-shell/threadContent";
+import {
+  attachmentBlocksFromThreadContent,
+  textFromThreadContent
+} from "@/components/app-shell/threadContent";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { AssistantLibrary } from "@/components/assistants/AssistantLibrary";
 import { KnowledgeLibrary } from "@/components/knowledge/KnowledgeLibrary";
@@ -76,6 +80,7 @@ import {
   EvidenceRowV2,
   EvidenceStackV2,
   KnowledgeEvidenceV2,
+  ReasoningEvidenceV2,
   SearchEvidenceV2,
   ToolEvidenceV2
 } from "@/features/evidence-v2/EvidenceV2";
@@ -105,9 +110,13 @@ import {
 import { ExactRunDetailsDrawerV2 } from "@/features/run-details-v2/RunDetailsV2";
 import type { RunDetailsTargetV2 } from "@/features/run-details-v2/runDetailsModel";
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
-import { presentRunLifecycleV2 } from "@/features/run-lifecycle-v2/runPresentation";
+import {
+  presentRunLifecycleV2,
+  settledRunPresentationV2
+} from "@/features/run-lifecycle-v2/runPresentation";
 import { SettingsV2 } from "@/features/settings-v2/SettingsV2";
 import { attachmentItemsForV2 } from "@/features/attachments-v2/attachmentPresentation";
+import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
 import type {
   ChatNavigationFolderWire,
@@ -163,8 +172,51 @@ function scopeLabel(scope: Readonly<{ projectId?: string; type: string }>): stri
   return scope.type.toLocaleLowerCase().replaceAll("_", " ");
 }
 
-function LiveEvidenceV2({
+const opaqueUuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+export type AnswerIdentityV2 = Readonly<{
+  label: string;
+  testId: "answer-assistant-identity" | "evidence-row-model";
+}>;
+
+/**
+ * Optional quiet identity for the evidence row: the accepted Assistant
+ * identity, otherwise the catalog-resolved model display name. Adapter ids,
+ * raw model ids, and opaque UUIDs never render; when the catalog cannot
+ * resolve a display name the item is simply omitted (Run details keeps the
+ * exact historical binding).
+ */
+export function answerIdentityV2(
+  catalog: Catalog | null,
+  message: Pick<ThreadMessage, "assistantIdentity" | "modelId" | "provider">
+): AnswerIdentityV2 | null {
+  if (message.assistantIdentity) {
+    return {
+      label: `${message.assistantIdentity.name} · revision ${message.assistantIdentity.revisionNumber}`,
+      testId: "answer-assistant-identity"
+    };
+  }
+  const modelId = message.modelId;
+  if (!modelId || opaqueUuidPattern.test(modelId)) return null;
+  const models = catalog?.models ?? [];
+  const provider = message.provider ?? null;
+  const exact = models.find((model) =>
+    model.modelId === modelId &&
+    (!provider || model.provider === provider || model.providerFamily === provider)
+  );
+  const matches = exact
+    ? [exact]
+    : models.filter((model) => model.modelId === modelId || model.upstreamModelId === modelId);
+  const names = new Set(matches.map((model) => model.displayName));
+  return names.size === 1
+    ? { label: matches[0]!.displayName, testId: "evidence-row-model" }
+    : null;
+}
+
+export function LiveEvidenceV2({
   artifact,
+  identity = null,
   locale,
   onOpenMemorySource,
   onOpenRunDetails,
@@ -173,6 +225,7 @@ function LiveEvidenceV2({
   summary
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
+  identity?: AnswerIdentityV2 | null;
   locale: "EN" | "RU";
   onOpenMemorySource?(chatId: string): void;
   onOpenRunDetails(): void;
@@ -186,6 +239,9 @@ function LiveEvidenceV2({
   return (
     <div className="v2-live-evidence">
       <EvidenceRowV2
+        identitySlot={identity ? (
+          <span data-testid={identity.testId}>{identity.label}</span>
+        ) : null}
         summary={rowSummary}
         onOpenRunDetails={onOpenRunDetails}
         onOpenSources={() => setSearchOpen(true)}
@@ -210,13 +266,10 @@ function LiveEvidenceV2({
               onOpenChange={setToolsOpen}
             />
           ) : null}
-          {showReasoning && artifact.reasoningCount > 0 ? (
-            <details className="v2-live-reasoning">
-              <summary>Reasoning · {artifact.reasoningCount}</summary>
-              {artifact.reasoningText.map((text, index) => (
-                <p key={`${index}:${text.slice(0, 32)}`}>{text}</p>
-              ))}
-            </details>
+          {showReasoning ? (
+            // Persisted run events carry no timestamps, so no reasoning
+            // duration is derivable; the header stays a plain "Reasoning".
+            <ReasoningEvidenceV2 texts={artifact.reasoningText} />
           ) : null}
           {artifact.contextTruncation ? (
             <p className="v2-live-context-note">
@@ -531,7 +584,65 @@ export function TemporaryChatIndicatorV2({ memory }: Readonly<{
   );
 }
 
-function WorkspaceHeaderV2({
+export type HeaderOverflowActionV2 = Readonly<{
+  disabled?: boolean;
+  label: string;
+  onSelect(): void;
+}>;
+
+/**
+ * Reusable header "⋯" menu. Below 900px it is the only route to the header
+ * actions that the compact header hides, so it must never be removed without
+ * a replacement; slice F extends this same menu on desktop. Dismissal follows
+ * the shared wave-1 contract (Escape, outside pointer, focus-out).
+ */
+export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
+  actions: readonly HeaderOverflowActionV2[];
+  label: string;
+}>) {
+  const [open, setOpen] = useState(false);
+  const { menuRef, triggerRef } = useMenuDismissalV2({
+    onClose: () => setOpen(false),
+    open
+  });
+
+  return (
+    <span className="v2-live-more">
+      <UiV2IconButton
+        ref={triggerRef}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        data-testid="header-more-trigger"
+        icon="more"
+        label={label}
+        onClick={() => setOpen((value) => !value)}
+      />
+      {open ? (
+        <UiV2MenuSurface
+          className="v2-live-more-menu"
+          data-testid="header-more-menu"
+          label={label}
+          ref={menuRef}
+        >
+          {actions.map((action) => (
+            <UiV2MenuItem
+              key={action.label}
+              disabled={action.disabled}
+              onClick={() => {
+                setOpen(false);
+                action.onSelect();
+              }}
+            >
+              {action.label}
+            </UiV2MenuItem>
+          ))}
+        </UiV2MenuSurface>
+      ) : null}
+    </span>
+  );
+}
+
+export function WorkspaceHeaderV2({
   active,
   accountEmail,
   adminEntryVisible,
@@ -539,6 +650,7 @@ function WorkspaceHeaderV2({
   onBranches,
   onCommands,
   onCopy,
+  onExport,
   onLibrary,
   onSettings,
   onShare,
@@ -553,6 +665,7 @@ function WorkspaceHeaderV2({
   onBranches(): void;
   onCommands(): void;
   onCopy(): void;
+  onExport(): void;
   onLibrary(): void;
   onSettings(): void;
   onShare(): void;
@@ -594,6 +707,15 @@ function WorkspaceHeaderV2({
             <UiV2Button icon="copy" onClick={onCopy}>Копировать</UiV2Button>
             <UiV2Button icon="branch" onClick={onBranches}>Ветви</UiV2Button>
             <UiV2Button disabled={shareDisabled} onClick={onShare}>Поделиться</UiV2Button>
+            <HeaderOverflowMenuV2
+              label="Действия чата"
+              actions={[
+                { disabled: shareDisabled, label: "Поделиться", onSelect: onShare },
+                { label: "Ветви", onSelect: onBranches },
+                { label: "Копировать", onSelect: onCopy },
+                { label: "Экспортировать", onSelect: onExport }
+              ]}
+            />
           </>
         ) : null}
         <UiV2IconButton icon="search" label="Команды" onClick={onCommands} />
@@ -1008,10 +1130,18 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       />
     );
     if (source.role === "user") {
+      // Owner-only quiet line of the files sent with this exact message,
+      // rendered from the labels the thread snapshot already exposes.
+      const sentAttachments = attachmentBlocksFromThreadContent(source.content);
       return (
         <ConversationTurnV2
           actions={actions}
-          afterContent={pagerSlot}
+          afterContent={(
+            <>
+              <SentAttachmentsV2 blocks={sentAttachments} />
+              {pagerSlot}
+            </>
+          )}
           anchorId={source.id}
           content={messageText(source)}
           role="user"
@@ -1038,24 +1168,22 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       runId: source.runId ?? null,
       status: run?.status ?? (source.status === "streaming" ? "streaming" : source.status)
     });
+    // A live run shows only its honest status line (plus Stop in the
+    // composer): no action dock, no evidence row, and never a raw run or
+    // request id. The settled answer gets exactly one muted evidence row —
+    // non-zero counters, optional catalog-resolved identity, and Run details
+    // as an ordinary item — plus the collapsed disclosures. Token counts live
+    // only in the Run details drawer.
+    const settled = settledRunPresentationV2(presentation);
     return (
       <RunAnswerV2
-        actions={actions}
-        actionsSlot={(
+        actions={settled ? actions : undefined}
+        actionsSlot={settled ? (
           <>
-            <div className="v2-live-answer-meta">
-              {source.assistantIdentity ? (
-                <span data-testid="answer-assistant-identity">
-                  {source.assistantIdentity.name} · revision {source.assistantIdentity.revisionNumber}
-                </span>
-              ) : source.modelId ? (
-                <span>{source.provider ?? "Provider"} · {source.modelId}</span>
-              ) : null}
-              {source.runUsage ? <span>{source.runUsage.totalTokens.toLocaleString()} tokens</span> : null}
-            </div>
             {target ? (
               <LiveEvidenceV2
                 artifact={artifact}
+                identity={answerIdentityV2(composer.catalog, source)}
                 locale={composer.memory.locale}
                 onOpenMemorySource={thread.openMemorySourceChat}
                 showReasoning={composer.showReasoningBlocks}
@@ -1066,7 +1194,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             ) : null}
             {pagerSlot}
           </>
-        )}
+        ) : pagerSlot}
         anchorId={source.id}
         content={messageText(source)}
         onRefresh={() => source.runId ? thread.loadRunReceipt(source.runId) : null}
@@ -1176,6 +1304,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               onBranches={() => details.open("branch")}
               onCommands={overlays.palette.show}
               onCopy={() => void thread.copyVisibleThread()}
+              onExport={() => {
+                const chatId = session.activeChatId;
+                const full = chatId ? currentWorkspaceChat(chatId) : null;
+                if (full) workspace.pane.actions.exportChat(full);
+              }}
               onLibrary={settings.openLibrary}
               onSettings={settings.open}
               onShare={() => void session.shareActiveBranch()}

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import { AttachmentTrayV2 } from "./AttachmentTrayV2";
+import { SentAttachmentsV2 } from "./SentAttachmentsV2";
 import {
   attachmentItemsForV2,
   attachmentSendBlockReasonV2,
@@ -66,7 +67,12 @@ describe("AttachmentTrayV2", () => {
     expect(screen.getByText("Формат не поддерживается")).toBeVisible();
     expect(screen.getByText("Больше 50 MB")).toBeVisible();
     expect(screen.getByText("Ошибка обработки")).toBeVisible();
-    expect(screen.getByText("Файлы приватны и доступны только вам.")).toBeVisible();
+    // The privacy disclosure is a quiet tooltip/AT note, not a permanent line.
+    const privacyNote = screen.getByRole("note", {
+      name: "Файлы приватны и доступны только вам."
+    });
+    expect(privacyNote).toHaveAttribute("title", "Файлы приватны и доступны только вам.");
+    expect(privacyNote).not.toHaveTextContent("Файлы приватны");
 
     fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
     fireEvent.click(screen.getByRole("button", { name: "Удалить setup.exe" }));
@@ -106,5 +112,29 @@ describe("AttachmentTrayV2", () => {
     expect(mapped[0]?.detail).not.toContain("pdf_extraction_failed");
     expect(mapped[1]?.warning).toMatchObject({ blocking: true, label: "Текст ограничен" });
     expect(attachmentSendBlockReasonV2(mapped, null, false)).toContain("scan.pdf");
+  });
+});
+
+describe("SentAttachmentsV2", () => {
+  it("renders a quiet owner-only label line without private identifiers", () => {
+    const { container } = render(
+      <SentAttachmentsV2
+        blocks={[
+          { attachmentId: "private-attachment-id", label: "sample.txt", type: "file" },
+          { attachmentId: "private-image-id", label: "Диаграмма продаж", type: "image" }
+        ]}
+      />
+    );
+
+    const list = screen.getByRole("list", { name: "Вложения сообщения" });
+    expect(list).toHaveTextContent("sample.txt");
+    expect(list).toHaveTextContent("Диаграмма продаж");
+    expect(container.innerHTML).not.toContain("private-attachment-id");
+    expect(container.innerHTML).not.toContain("private-image-id");
+  });
+
+  it("renders nothing for a message without attachments", () => {
+    const { container } = render(<SentAttachmentsV2 blocks={[]} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });

@@ -388,7 +388,9 @@ test("v2 composer routes picker, drop, and paste through one visible attachment 
   await expect(page.getByText("setup.exe", { exact: true })).toBeVisible();
   await expect(page.getByText("brief.pdf", { exact: true })).toBeVisible();
   await expect(page.getByText("Формат не поддерживается", { exact: true })).toBeVisible();
-  await expect(page.getByText("Файлы приватны и доступны только вам.")).toBeVisible();
+  await expect(
+    page.getByRole("note", { name: "Файлы приватны и доступны только вам." })
+  ).toBeVisible();
 
   const input = page.getByRole("textbox", { name: "Сообщение" });
   await expect(input).toBeEnabled();

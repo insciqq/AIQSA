@@ -4,6 +4,7 @@ import type { ThreadArtifactSummary, ThreadToolActivity } from "@/lib/contracts/
 import {
   CitationMarkerV2,
   EvidenceRowV2,
+  ReasoningEvidenceV2,
   SearchEvidenceV2,
   ToolApprovalCardV2,
   ToolEvidenceV2
@@ -47,6 +48,61 @@ describe("Evidence v2", () => {
     expect(screen.getByText("Files 2")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Run details" }));
     expect(onOpenRunDetails).toHaveBeenCalledOnce();
+  });
+
+  it("renders the optional identity as muted row text, never as a control", () => {
+    render(
+      <EvidenceRowV2
+        identitySlot={<span data-testid="evidence-row-model">GPT-5.2</span>}
+        onOpenRunDetails={vi.fn()}
+        summary={{ fileCount: 0, hasUsage: true, sourceCount: 2, toolCallCount: 0 }}
+      />
+    );
+
+    const row = screen.getByTestId("evidence-row");
+    expect(row).toHaveTextContent("GPT-5.2");
+    expect(row).toHaveTextContent("Sources 2");
+    expect(row).toHaveTextContent("Run details");
+    expect(screen.getByTestId("evidence-row-model").closest("button")).toBeNull();
+    // The identity is optional: without it the row keeps only its actions.
+    expect(screen.getAllByRole("button")).toHaveLength(2);
+  });
+
+  it("shows sources as title plus domain, merges near-duplicates, and drops the redundant Complete chip", () => {
+    const summary: ThreadArtifactSummary = {
+      ...emptySummary,
+      searchActivity: [{
+        displayName: "OpenAI Search",
+        providerOperations: null,
+        providerOperationsTruncated: false,
+        query: "node lts download",
+        sourceCount: 4,
+        sources: [
+          { rank: 1, title: "Download Node.js", url: "https://nodejs.org/en/download" },
+          { rank: 2, title: "Download Node.js", url: "https://www.nodejs.org/en/download/" },
+          { rank: 3, title: "Download Node.js", url: "https://nodejs.org/en/download#current" },
+          { rank: 4, title: "https://nodejs.org/en/blog", url: "https://nodejs.org/en/blog" }
+        ],
+        status: "complete"
+      }],
+      searchCount: 1
+    };
+    render(<SearchEvidenceV2 onOpenChange={() => undefined} open summary={summary} />);
+
+    const links = screen.getAllByRole("link");
+    expect(links.map((link) => link.textContent)).toEqual([
+      "Download Node.js",
+      "nodejs.org"
+    ]);
+    expect(document.querySelectorAll(".v2-source-domain")).toHaveLength(1);
+    expect(screen.getByTestId("merged-duplicate-sources")).toHaveTextContent(
+      "2 duplicate links merged."
+    );
+    // Status already sits in the disclosure header; no per-attempt chip for
+    // the ordinary Complete outcome.
+    expect(screen.getByRole("button", { name: "Search, Complete, 1 attempt" })).toBeVisible();
+    expect(document.querySelector(".v2-search-attempt .v2-chip")).toBeNull();
+    expect(document.querySelector(".v2-search-attempt")?.textContent).not.toContain("Complete");
   });
 
   it("shows empty and failed Search attempts truthfully and keeps unsafe links inert", () => {
@@ -162,5 +218,29 @@ describe("Evidence v2", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
     expect(onAllow).toHaveBeenCalledOnce();
     expect(onReject).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Reasoning evidence v2", () => {
+  it("renders reasoning through safe Markdown without literal asterisks or a counter", () => {
+    render(
+      <ReasoningEvidenceV2
+        texts={["**Identifying need**\n\nThe request asks for a *bounded* summary."]}
+      />
+    );
+
+    const disclosure = screen.getByTestId("reasoning-evidence");
+    expect(disclosure.querySelector("summary")).toHaveTextContent(/^Reasoning$/u);
+    expect(disclosure.textContent).not.toContain("**");
+    expect(disclosure.querySelector("strong")).toHaveTextContent("Identifying need");
+  });
+
+  it("shows a duration only when the caller derived one, and nothing without text", () => {
+    const { container, rerender } = render(<ReasoningEvidenceV2 texts={[]} />);
+    expect(container).toBeEmptyDOMElement();
+
+    rerender(<ReasoningEvidenceV2 durationLabel="12 s" texts={["Thinking notes."]} />);
+    expect(screen.getByTestId("reasoning-evidence").querySelector("summary"))
+      .toHaveTextContent("Reasoning · 12 s");
   });
 });

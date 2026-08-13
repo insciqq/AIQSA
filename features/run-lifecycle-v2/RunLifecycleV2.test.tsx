@@ -5,7 +5,10 @@ import {
   RunComposerActionV2,
   RunLifecycleAnnouncerV2
 } from "./RunLifecycleV2";
-import type { RunPresentationV2 } from "./runPresentation";
+import {
+  settledRunPresentationV2,
+  type RunPresentationV2
+} from "./runPresentation";
 
 function presentation(
   overrides: Partial<RunPresentationV2> = {}
@@ -18,6 +21,35 @@ function presentation(
 }
 
 describe("Run lifecycle v2", () => {
+  it("settles the answer chrome only on authoritative terminal presentations", () => {
+    for (const kind of ["cancelled", "complete", "recoverable_error", "terminal_error"] as const) {
+      expect(settledRunPresentationV2(presentation({ kind }))).toBe(true);
+    }
+    for (const kind of ["activity", "connection_lost", "idle", "streaming"] as const) {
+      expect(settledRunPresentationV2(presentation({ kind }))).toBe(false);
+    }
+  });
+
+  it("keeps run and request UUIDs out of the streaming chrome", () => {
+    const runId = "396b627a-1c9f-4e58-9d1f-2b9a5c1e7a10";
+    render(
+      <RunAnswerV2
+        content="Частичный ответ"
+        presentation={presentation({
+          activity: { kind: "provider", label: "Выполняется у провайдера…" },
+          kind: "activity",
+          runId
+        })}
+      />
+    );
+
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent("Выполняется у провайдера…");
+    expect(screen.queryByTestId("conversation-message-actions")).toBeNull();
+    expect(document.body.textContent).not.toMatch(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu
+    );
+  });
+
   it("renders explicit activity without an invented empty answer", () => {
     render(
       <RunAnswerV2

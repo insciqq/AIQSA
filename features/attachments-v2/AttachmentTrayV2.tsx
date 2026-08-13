@@ -88,7 +88,16 @@ export function AttachmentTrayV2({
           </li>
         ))}
       </ul>
-      <p className="v2-attachment-privacy">Файлы приватны и доступны только вам.</p>
+      {/* Privacy disclosure stays reachable as a quiet tooltip/AT note instead
+          of a permanent line; the capability menu keeps the full sentence. */}
+      <p
+        aria-label="Файлы приватны и доступны только вам."
+        className="v2-attachment-privacy"
+        role="note"
+        title="Файлы приватны и доступны только вам."
+      >
+        <UiV2Icon name="lock" />
+      </p>
     </section>
   );
 }
