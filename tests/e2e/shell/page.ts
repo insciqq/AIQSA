@@ -5,21 +5,21 @@ export async function runAccountMenuAction(
   name: "Command palette" | "Assistants" | "Knowledge" | "Memory" | "Settings"
 ): Promise<Locator> {
   if (name === "Command palette") {
-    const commandTrigger = page.getByRole("button", { name: "Команды" });
+    const commandTrigger = page.getByRole("button", { name: "Commands" });
     await commandTrigger.click();
     return commandTrigger;
   }
 
-  const accountTrigger = page.getByRole("button", { name: "Меню аккаунта" });
+  const accountTrigger = page.getByRole("button", { name: "Account menu" });
   await accountTrigger.click();
-  const accountMenu = page.getByRole("menu", { name: "Аккаунт" });
+  const accountMenu = page.getByRole("menu", { name: "Account" });
 
   if (name === "Settings") {
-    await accountMenu.getByRole("menuitem", { name: "Настройки" }).click();
+    await accountMenu.getByRole("menuitem", { name: "Settings" }).click();
     return accountTrigger;
   }
 
-  await accountMenu.getByRole("menuitem", { name: "Библиотека" }).click();
+  await accountMenu.getByRole("menuitem", { name: "Library" }).click();
   const library = page.getByTestId("library-v2");
   await expect(library).toBeVisible();
   const tab = library.getByRole("tab", { name });

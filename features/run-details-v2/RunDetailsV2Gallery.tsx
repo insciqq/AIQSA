@@ -110,7 +110,7 @@ export function RunDetailsV2Gallery({
           key={runDetailsTargetFixture.runId}
           loadRun={loadRun}
           onClose={() => setOpen(false)}
-          onOpenMemorySource={() => setNotice("Источник открыт бы owner-private навигацией; fixture не меняет workspace.")}
+          onOpenMemorySource={() => setNotice("The source would open via owner-private navigation; the fixture does not change the workspace.")}
           target={runDetailsTargetFixture}
         />
       ) : null}

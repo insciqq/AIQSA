@@ -75,7 +75,7 @@ const USER_BUBBLE_CLAMP_CHARACTER_LIMIT = 1600;
 
 /**
  * A long question clamps to roughly fourteen bubble lines with a
- * «Показать полностью» expander (audit §18.12). The candidate check is a
+ * "Show full message" expander (audit §18.12). The candidate check is a
  * deterministic content heuristic — line and character counts, never a layout
  * measurement — so server render, tests, and the browser agree.
  */
@@ -96,7 +96,7 @@ export function ConversationTurnV2({
   beforeContent,
   className = "",
   content,
-  emptyText = "В этом сообщении нет текста.",
+  emptyText = "This message has no text.",
   hideEmptyContent = false,
   role,
   streaming = false
@@ -254,7 +254,7 @@ export function ConversationTurnV2({
             aria-expanded={bubbleExpanded}
             onClick={() => setBubbleExpanded((expanded) => !expanded)}
           >
-            {bubbleExpanded ? "Свернуть" : "Показать полностью"}
+            {bubbleExpanded ? "Collapse" : "Show full message"}
           </button>
         ) : null}
         {afterContent}
@@ -492,16 +492,16 @@ export function ConversationV2({
         ) : unavailable ? (
           <div className="v2-conversation-state" data-testid="conversation-unavailable">
             <p className="v2-conversation-state-kicker">Conversation unavailable</p>
-            <h1>Этот чат сейчас недоступен</h1>
-            <p>Он мог быть удалён или у вашей учётной записи больше нет доступа.</p>
-            {onRetry ? <UiV2Button onClick={onRetry}>Повторить</UiV2Button> : null}
+            <h1>This chat is unavailable</h1>
+            <p>It may have been deleted, or your account no longer has access.</p>
+            {onRetry ? <UiV2Button onClick={onRetry}>Retry</UiV2Button> : null}
           </div>
         ) : error && messages.length === 0 ? (
           <div className="v2-conversation-state" role="alert" data-testid="conversation-error">
             <p className="v2-conversation-state-kicker">Could not load conversation</p>
-            <h1>Не удалось открыть чат</h1>
-            <p>Проверьте подключение и попробуйте ещё раз.</p>
-            {onRetry ? <UiV2Button onClick={onRetry}>Повторить</UiV2Button> : null}
+            <h1>Could not open the chat</h1>
+            <p>Check your connection and try again.</p>
+            {onRetry ? <UiV2Button onClick={onRetry}>Retry</UiV2Button> : null}
           </div>
         ) : showOrientation ? (
           <div className="v2-conversation-orientation" data-testid="conversation-empty">
@@ -509,7 +509,7 @@ export function ConversationV2({
               // The blank chat greets quietly: no canvas wordmark and no
               // marketing subtitle — the greeting alone is the welcome state.
               <div className="v2-conversation-orientation-copy">
-                <h1>Над чем поработаем?</h1>
+                <h1>What are we working on?</h1>
               </div>
             )}
             {composerSlot ? <div className="v2-conversation-empty-composer">{composerSlot}</div> : null}
@@ -520,8 +520,8 @@ export function ConversationV2({
               <div className="v2-conversation-older">
                 {olderError ? (
                   <div role="alert">
-                    <span>Не удалось загрузить ранние сообщения.</span>
-                    <button type="button" onClick={loadEarlier}>Повторить</button>
+                    <span>Could not load earlier messages.</span>
+                    <button type="button" onClick={loadEarlier}>Retry</button>
                   </div>
                 ) : (
                   <button
@@ -530,7 +530,7 @@ export function ConversationV2({
                     aria-busy={loadingEarlier || undefined}
                     onClick={loadEarlier}
                   >
-                    {loadingEarlier ? "Загружаем…" : "Загрузить ранние сообщения"}
+                    {loadingEarlier ? "Loading…" : "Load earlier messages"}
                   </button>
                 )}
               </div>
@@ -538,8 +538,8 @@ export function ConversationV2({
 
             {error ? (
               <div className="v2-conversation-inline-error" role="alert">
-                <span>Часть разговора не загрузилась.</span>
-                {onRetry ? <button type="button" onClick={onRetry}>Повторить</button> : null}
+                <span>Part of the conversation did not load.</span>
+                {onRetry ? <button type="button" onClick={onRetry}>Retry</button> : null}
               </div>
             ) : null}
 

@@ -175,7 +175,10 @@ function modelDisplayName(catalog: Catalog | null, provider: string | null, mode
     return `GPT-${gptModel[1]}`;
   }
 
-  return opaqueUuidPattern.test(modelId) ? "Unavailable" : readableIdentifier(modelId);
+  // Deep-inspection timelines may carry the exact upstream id when the catalog
+  // cannot resolve a display name; title-casing it into a fake display name
+  // ("Gpt 5.6 terra") is the dev leak, so the raw id is shown verbatim.
+  return opaqueUuidPattern.test(modelId) ? "Unavailable" : modelId;
 }
 
 function searchStrategyDisplayName(catalog: Catalog | null, strategyId: string): string {

@@ -144,29 +144,29 @@ function activityFromEvent(event: RunEventView, index: number): ActivitySignal |
 function activityLabel(signal: Omit<ActivitySignal, "index">): string {
   switch (signal.kind) {
     case "search":
-      return "Ищу в интернете…";
+      return "Searching the web…";
     case "tool":
       return signal.toolName
-        ? `Инструмент: ${signal.toolName}…`
-        : "Выполняю инструменты…";
+        ? `Tool: ${signal.toolName}…`
+        : "Running tools…";
     case "compute":
-      return "Создаю таблицу…";
+      return "Computing…";
     case "preview":
-      return "Рендерю превью…";
+      return "Rendering preview…";
     case "provider":
-      return "Выполняется у провайдера…";
+      return "Running at the provider…";
   }
 }
 
 function statusActivity(status: RunLifecycleStatusV2 | null | undefined) {
   if (status === "queued") {
-    return { kind: "queued" as const, label: "В очереди" };
+    return { kind: "queued" as const, label: "Queued" };
   }
   if (status === "preparing") {
-    return { kind: "preparing" as const, label: "Готовлю запрос…" };
+    return { kind: "preparing" as const, label: "Preparing request…" };
   }
   if (status === "in_progress" || status === "streaming") {
-    return { kind: "provider" as const, label: "Выполняется у провайдера…" };
+    return { kind: "provider" as const, label: "Running at the provider…" };
   }
   return null;
 }
@@ -179,8 +179,8 @@ function failureFromEvidence(
   const recovery = failure.recovery === "retry" ? "retry" : "change_parameters";
   const partial = evidence.content.trim().length > 0;
   const fallback = partial && recovery === "retry"
-    ? "Ответ прервался во время выполнения. Частичный результат сохранён; можно повторить с теми же параметрами."
-    : "Запуск завершился с ошибкой. Измените параметры запроса и попробуйте снова.";
+    ? "The answer was interrupted mid-run. The partial result is kept; you can retry with the same parameters."
+    : "The run failed. Change the request parameters and try again.";
 
   return {
     code: safeErrorCode(failure.code),

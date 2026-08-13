@@ -23,17 +23,17 @@ import {
 import { describe, expect, it } from "vitest";
 
 describe("Memory UI copy", () => {
-  it("has exact non-blank RU/EN parity without fallback", () => {
-    expect(Object.keys(MEMORY_UI_COPY).sort()).toEqual([...MEMORY_UI_LOCALES].sort());
+  it("has exact non-blank English coverage without fallback", () => {
+    expect(Object.keys(MEMORY_UI_COPY)).toEqual(["EN"]);
+    expect(Object.keys(MEMORY_UI_COPY.EN).sort()).toEqual([...MEMORY_UI_COPY_KEYS].sort());
     for (const locale of MEMORY_UI_LOCALES) {
-      expect(Object.keys(MEMORY_UI_COPY[locale]).sort()).toEqual([...MEMORY_UI_COPY_KEYS].sort());
       for (const key of MEMORY_UI_COPY_KEYS) {
         expect(memoryUiCopy(locale, key).trim(), `${locale}:${key}`).not.toBe("");
       }
     }
   });
 
-  it("localizes every visible fact enum in both locales", () => {
+  it("labels every visible fact enum for every persisted locale", () => {
     for (const locale of MEMORY_UI_LOCALES) {
       for (const state of MEMORY_FACT_STATES) expect(memoryFactStateLabel(locale, state)).toBeTruthy();
       for (const modality of MEMORY_MODALITIES) expect(memoryModalityLabel(locale, modality)).toBeTruthy();

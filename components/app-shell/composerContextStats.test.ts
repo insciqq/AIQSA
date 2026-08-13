@@ -40,11 +40,11 @@ describe("composer context statistics", () => {
       approximateInputTokens: 800,
       safeInputBudgetTokens: 10_000,
       totalContextTokens: 12_000
-    })).toBe("~8% контекста");
+    })).toBe("~8% of context");
     expect(composerContextGaugeTitle({
       approximateInputTokens: 42_000,
       safeInputBudgetTokens: null,
       totalContextTokens: null
-    })).toBe("Контекст: ~42k токенов");
+    })).toBe("Context: ~42k tokens");
   });
 });

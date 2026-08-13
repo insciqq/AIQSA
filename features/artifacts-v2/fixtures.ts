@@ -21,9 +21,9 @@ const readyEvents: readonly GeneratedArtifactLifecycleEvent[] = [
 ];
 
 const reportV1: GeneratedArtifactVersion = {
-  branchLabel: "Исходный ответ",
+  branchLabel: "Original answer",
   byteSize: 188_416,
-  createdAtLabel: "13 авг., 14:02",
+  createdAtLabel: "Aug 13, 14:02",
   downloadAvailable: true,
   format: "xlsx",
   id: "artifact-version-private-report-v1",
@@ -54,15 +54,15 @@ const reportV1: GeneratedArtifactVersion = {
     status: "ready"
   },
   sourceMessageId: "message-private-report-v1",
-  sourceMessageLabel: "Ответ «Соберу квартальную книгу»",
-  structuralSummary: "3 листа",
+  sourceMessageLabel: "Answer “Соберу квартальную книгу”",
+  structuralSummary: "3 sheets",
   useInNextMessageAvailable: true
 };
 
 const reportV2: GeneratedArtifactVersion = {
-  branchLabel: "Правка вопроса",
+  branchLabel: "Edited question",
   byteSize: 219_136,
-  createdAtLabel: "13 авг., 14:32",
+  createdAtLabel: "Aug 13, 14:32",
   downloadAvailable: true,
   format: "xlsx",
   id: "artifact-version-private-report-v2",
@@ -94,15 +94,15 @@ const reportV2: GeneratedArtifactVersion = {
     status: "ready"
   },
   sourceMessageId: "message-private-report-v2",
-  sourceMessageLabel: "Ответ «Добавил прогноз и проверку формул»",
-  structuralSummary: "3 листа · формулы проверены",
+  sourceMessageLabel: "Answer “Добавил прогноз и проверку формул”",
+  structuralSummary: "3 sheets · formulas verified",
   useInNextMessageAvailable: true
 };
 
 const deckV1: GeneratedArtifactVersion = {
-  branchLabel: "Активная ветвь",
+  branchLabel: "Active branch",
   byteSize: 1_887_437,
-  createdAtLabel: "13 авг., 14:35",
+  createdAtLabel: "Aug 13, 14:35",
   downloadAvailable: true,
   format: "pptx",
   id: "artifact-version-private-deck-v1",
@@ -119,27 +119,27 @@ const deckV1: GeneratedArtifactVersion = {
     status: "ready"
   },
   sourceMessageId: "message-private-deck-v1",
-  sourceMessageLabel: "Ответ «Подготовил презентацию»",
-  structuralSummary: "10 слайдов",
+  sourceMessageLabel: "Answer “Подготовил презентацию”",
+  structuralSummary: "10 slides",
   useInNextMessageAvailable: true
 };
 
 const legacyV1: GeneratedArtifactVersion = {
-  branchLabel: "Активная ветвь",
+  branchLabel: "Active branch",
   byteSize: 98_304,
-  createdAtLabel: "13 авг., 14:40",
+  createdAtLabel: "Aug 13, 14:40",
   downloadAvailable: true,
   format: "xlsx",
   id: "artifact-version-private-legacy-v1",
   number: 1,
   parentVersionNumber: null,
   preview: {
-    reason: "Рендерер не поддерживает представление этого файла.",
+    reason: "The renderer does not support displaying this file.",
     status: "failed"
   },
   sourceMessageId: "message-private-legacy-v1",
-  sourceMessageLabel: "Ответ «Проверил исходную книгу»",
-  structuralSummary: "Файл готов",
+  sourceMessageLabel: "Answer “Проверил исходную книгу”",
+  structuralSummary: "File ready",
   useInNextMessageAvailable: true
 };
 
@@ -192,7 +192,7 @@ const failedArtifact: GeneratedArtifactProjection = {
   logicalFileId: "logical-file-private-failed",
   name: "report_q3.xlsx",
   status: "failed",
-  validationFailure: "Валидация не прошла: битая ссылка на лист «Сводная».",
+  validationFailure: "Validation failed: broken reference to sheet “Сводная”.",
   versions: []
 };
 

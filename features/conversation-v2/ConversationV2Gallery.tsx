@@ -177,7 +177,7 @@ export function ConversationV2Gallery({ state = "basic" }: { state?: Conversatio
           <ConversationV2
             composerSlot={(
               <div className="v2-conversation-empty-composer-fixture" aria-label="Composer preview">
-                <span>Сообщение для AIQSA</span>
+                <span>Message AIQSA</span>
                 <span aria-hidden="true">↑</span>
               </div>
             )}

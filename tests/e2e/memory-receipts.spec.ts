@@ -559,9 +559,9 @@ test("offers Manage Memories for an ambiguous target without claiming success", 
   });
   await signInWithLocalToken(page);
 
-  const composer = page.getByRole("textbox", { name: "Сообщение" });
+  const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Forget the preference I mentioned.");
-  await page.getByRole("button", { name: "Отправить сообщение" }).click();
+  await page.getByRole("button", { name: "Send message" }).click();
 
   const notice = page.getByTestId("shell-notice");
   await expect(notice).toContainText(

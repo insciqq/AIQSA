@@ -77,7 +77,7 @@ export function UiV2Gallery() {
         <section aria-labelledby="toast-heading">
           <h2 className="text-sm font-semibold" id="toast-heading">Ephemeral result</h2>
           <div className="mt-3">
-            <UiV2Toast action="Отменить">Чат перемещён в архив</UiV2Toast>
+            <UiV2Toast action="Undo">Chat moved to archive</UiV2Toast>
           </div>
         </section>
 

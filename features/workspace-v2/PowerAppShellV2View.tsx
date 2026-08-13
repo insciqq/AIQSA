@@ -163,7 +163,7 @@ function persistedEvents(run: PersistedRun | null): RunEventView[] {
 function assistantAnswerLabel(messages: readonly ThreadMessage[], messageId: string): string {
   const index = messages.filter((message) => message.role === "assistant")
     .findIndex((message) => message.id === messageId);
-  return index >= 0 ? `Ответ ${index + 1}` : "Ответ";
+  return index >= 0 ? `Answer ${index + 1}` : "Answer";
 }
 
 function currentWorkspaceChat(chatId: string): ChatSummary | null {
@@ -175,8 +175,8 @@ function currentWorkspaceFolder(folderId: string) {
 }
 
 function scopeLabel(scope: Readonly<{ projectId?: string; type: string }>): string {
-  if (scope.type === "GLOBAL_USER") return "Личная";
-  if (scope.type === "PROJECT") return "Проект";
+  if (scope.type === "GLOBAL_USER") return "Personal";
+  if (scope.type === "PROJECT") return "Project";
   return scope.type.toLocaleLowerCase().replaceAll("_", " ");
 }
 
@@ -281,7 +281,7 @@ export function LiveEvidenceV2({
           ) : null}
           {artifact.contextTruncation ? (
             <p className="v2-live-context-note">
-              Контекст сокращён: {artifact.contextTruncation.droppedMessages} сообщений не вошли в запрос.
+              Context trimmed: {artifact.contextTruncation.droppedMessages} messages were not sent with this request.
             </p>
           ) : null}
           {artifact.memoryReceipt ? (
@@ -373,7 +373,7 @@ export function RunSetupV2({ composer, onClose }: Readonly<{
       if (event.target === event.currentTarget) onClose();
     }}>
       <section
-        aria-label="Параметры модели"
+        aria-label="Model parameters"
         aria-modal="true"
         className="v2-run-setup"
         onKeyDown={onDialogKeyDown}
@@ -382,20 +382,20 @@ export function RunSetupV2({ composer, onClose }: Readonly<{
       >
         <header>
           <div>
-            <small>Следующий запуск</small>
-            <h2>Параметры модели</h2>
+            <small>Applies to your next message</small>
+            <h2>Model parameters</h2>
           </div>
           <UiV2IconButton
             icon="close"
-            label="Закрыть параметры"
+            label="Close parameters"
             onClick={onClose}
             ref={initialFocusRef}
           />
         </header>
         <div className="v2-run-setup-body">
           <p className="v2-run-setup-current" data-testid="run-setup-current-model">
-            Текущая модель:{" "}
-            <strong>{composer.currentModel?.displayName ?? "Не выбрана"}</strong>
+            Current model:{" "}
+            <strong>{composer.currentModel?.displayName ?? "Not selected"}</strong>
           </p>
           {controls.temperature.supported ? (
             <label>
@@ -504,16 +504,16 @@ export function RunSetupV2({ composer, onClose }: Readonly<{
             {composer.useOrganizationModelDefault ? (
               <UiV2Button onClick={() => {
                 composer.useOrganizationModelDefault?.();
-                setDefaultsFeedback("Теперь используется модель организации.");
+                setDefaultsFeedback("Organization model default applied.");
               }}>
-                Использовать модель организации
+                Use organization model default
               </UiV2Button>
             ) : null}
             <UiV2Button onClick={() => {
               composer.useOrganizationSearchDefault();
-              setDefaultsFeedback("Теперь используется Search организации.");
+              setDefaultsFeedback("Organization Search default applied.");
             }}>
-              Использовать Search организации
+              Use organization Search default
             </UiV2Button>
             {defaultsFeedback ? (
               <p
@@ -601,7 +601,7 @@ export type HeaderOverflowSubmenuItemV2 = Readonly<{
 export type HeaderOverflowActionV2 = Readonly<{
   disabled?: boolean;
   label: string;
-  /** Rendered only below 900px via CSS; e.g. Поделиться joins the menu there. */
+  /** Rendered only below 900px via CSS; e.g. Share joins the menu there. */
   mobileOnly?: boolean;
   onSelect?(): void;
   /** Inline disclosure list (folder picker); scrolls locally when long. */
@@ -733,7 +733,7 @@ export function WorkspaceHeaderV2({
   onBranches(): void;
   onCommands(): void;
   onCopyThread(): void;
-  /** Null hides «Удалить…» entirely (no `permanentChatDeletionAvailable`). */
+  /** Null hides "Delete…" entirely (no `permanentChatDeletionAvailable`). */
   onDelete?: (() => void) | null;
   onExport(format: "json" | "markdown"): void;
   onLibrary(): void;
@@ -742,7 +742,7 @@ export function WorkspaceHeaderV2({
   onRenameChange(value: string): void;
   onRenameSave(): void;
   onRenameStart(): void;
-  /** Null disables «Детали run» (no settled answer with a run yet). */
+  /** Null disables "Run details" (no settled answer with a run yet). */
   onRunDetails?: (() => void) | null;
   onSettings(): void;
   onShare(): void;
@@ -771,15 +771,15 @@ export function WorkspaceHeaderV2({
     }
   };
   // S1 §4.3: the header carries no kicker; for an active chat the right side
-  // is Share plus one "⋯" menu. Поделиться additionally joins the menu below
+  // is Share plus one "⋯" menu. Share additionally joins the menu below
   // 900px, where the Share text button collapses.
   const overflowActions: HeaderOverflowActionV2[] = [
-    { disabled: shareDisabled, label: "Поделиться", mobileOnly: true, onSelect: onShare },
-    { label: "Переименовать", onSelect: onRenameStart },
+    { disabled: shareDisabled, label: "Share", mobileOnly: true, onSelect: onShare },
+    { label: "Rename", onSelect: onRenameStart },
     {
-      label: "Переместить",
+      label: "Move to…",
       submenu: [
-        { label: "Без папки", onSelect: () => onMove(null) },
+        { label: "No folder", onSelect: () => onMove(null) },
         ...flattenFolderTree(folders).map(({ depth, folder }) => ({
           depth,
           label: folder.name,
@@ -787,15 +787,15 @@ export function WorkspaceHeaderV2({
         }))
       ]
     },
-    { disabled: archiveDisabled, label: "Архивировать", onSelect: onArchive },
+    { disabled: archiveDisabled, label: "Archive", onSelect: onArchive },
     ...(onDelete
-      ? [{ disabled: deleteDisabled, label: "Удалить…", onSelect: onDelete }]
+      ? [{ disabled: deleteDisabled, label: "Delete…", onSelect: onDelete }]
       : []),
-    { label: "Экспортировать", onSelect: () => onExport("markdown") },
-    { label: "Экспорт в JSON", onSelect: () => onExport("json") },
-    { label: "Копировать весь тред", onSelect: onCopyThread },
-    { label: "Ветви", onSelect: onBranches },
-    { disabled: !onRunDetails, label: "Детали run", onSelect: onRunDetails ?? undefined }
+    { label: "Export", onSelect: () => onExport("markdown") },
+    { label: "Export as JSON", onSelect: () => onExport("json") },
+    { label: "Copy entire thread", onSelect: onCopyThread },
+    { label: "Branches", onSelect: onBranches },
+    { disabled: !onRunDetails, label: "Run details", onSelect: onRunDetails ?? undefined }
   ];
 
   return (
@@ -813,7 +813,7 @@ export function WorkspaceHeaderV2({
             >
               <input
                 autoFocus
-                aria-label={`Новое название: ${title}`}
+                aria-label={`New title: ${title}`}
                 maxLength={120}
                 value={editingTitle}
                 onChange={(event) => onRenameChange(event.target.value)}
@@ -824,15 +824,15 @@ export function WorkspaceHeaderV2({
                   }
                 }}
               />
-              <UiV2IconButton icon="check" label="Сохранить название" type="submit" />
-              <UiV2IconButton icon="close" label="Отменить переименование" onClick={onRenameCancel} />
+              <UiV2IconButton icon="check" label="Save title" type="submit" />
+              <UiV2IconButton icon="close" label="Cancel rename" onClick={onRenameCancel} />
             </form>
           ) : (
             <h1>
               <button
                 className="v2-live-title-button v2-focusable"
                 data-testid="header-title"
-                title="Переименовать чат"
+                title="Rename chat"
                 type="button"
                 onClick={onRenameStart}
               >
@@ -846,15 +846,15 @@ export function WorkspaceHeaderV2({
         {temporaryMemory ? <TemporaryChatIndicatorV2 memory={temporaryMemory} /> : null}
         {active ? (
           <>
-            <UiV2Button disabled={shareDisabled} onClick={onShare}>Поделиться</UiV2Button>
-            <HeaderOverflowMenuV2 label="Действия чата" actions={overflowActions} />
+            <UiV2Button disabled={shareDisabled} onClick={onShare}>Share</UiV2Button>
+            <HeaderOverflowMenuV2 label="Chat actions" actions={overflowActions} />
           </>
         ) : null}
-        <UiV2IconButton icon="search" label="Команды" onClick={onCommands} />
+        <UiV2IconButton icon="search" label="Commands" onClick={onCommands} />
         <span className="v2-live-account">
           <button
             aria-expanded={accountOpen}
-            aria-label="Меню аккаунта"
+            aria-label="Account menu"
             className="v2-live-account-trigger v2-focusable"
             ref={accountTriggerRef}
             type="button"
@@ -865,20 +865,20 @@ export function WorkspaceHeaderV2({
           {accountOpen ? (
             <UiV2MenuSurface
               className="v2-live-account-menu"
-              label="Аккаунт"
+              label="Account"
               ref={accountMenuRef}
             >
               <p className="v2-live-account-label">{accountEmail ?? "AIQSA account"}</p>
-              <UiV2MenuItem onClick={() => { setAccountOpen(false); onLibrary(); }}>Библиотека</UiV2MenuItem>
-              {/* «Архив чатов» lives only in the sidebar: one archive entry total. */}
-              <UiV2MenuItem onClick={() => { setAccountOpen(false); onSettings(); }}>Настройки</UiV2MenuItem>
+              <UiV2MenuItem onClick={() => { setAccountOpen(false); onLibrary(); }}>Library</UiV2MenuItem>
+              {/* "Archived chats" lives only in the sidebar: one archive entry total. */}
+              <UiV2MenuItem onClick={() => { setAccountOpen(false); onSettings(); }}>Settings</UiV2MenuItem>
               {adminEntryVisible ? (
                 <a className="v2-live-menu-link v2-focusable" href="/admin">Control Center</a>
               ) : null}
               <UiV2MenuItem disabled={signingOut} onClick={() => void signOut()}>
-                {signingOut ? "Выходим…" : "Выйти"}
+                {signingOut ? "Signing out…" : "Sign out"}
               </UiV2MenuItem>
-              {signOutError ? <p className="v2-live-menu-error" role="alert">Не удалось выйти.</p> : null}
+              {signOutError ? <p className="v2-live-menu-error" role="alert">Could not sign out.</p> : null}
             </UiV2MenuSurface>
           ) : null}
         </span>
@@ -958,7 +958,7 @@ function LibrarySurfaceV2({
     healthDetail: memoryData.egress.reviewRequired
       ? "Utility egress needs review before automatic work can continue."
       : `${memoryData.historyIndexing.completedChats} of ${memoryData.historyIndexing.totalChats} retained chats indexed.`,
-    healthLabel: memoryData.egress.reviewRequired ? "Требуется проверка" : "Memory ready",
+    healthLabel: memoryData.egress.reviewRequired ? "Review required" : "Memory ready",
     referenceChatHistory: memoryData.settings.referenceChatHistory,
     useMemoryFacts: memoryData.settings.useMemoryFacts
   } : {
@@ -966,7 +966,7 @@ function LibrarySurfaceV2({
     automaticLearning: false,
     explicitCrudAvailable: false,
     facts: [],
-    healthDetail: "Загружаю точное состояние Memory…",
+    healthDetail: "Loading exact Memory status…",
     healthLabel: "Memory",
     referenceChatHistory: false,
     useMemoryFacts: false
@@ -1006,7 +1006,7 @@ function LibrarySurfaceV2({
     {
       content: <FilesPanelV2 files={files} generatedFilesEnabled={false} />,
       id: "files",
-      label: "Файлы"
+      label: "Files"
     },
     {
       content: (
@@ -1058,9 +1058,9 @@ function LibrarySurfaceV2({
 }
 
 export const WELCOME_STARTER_PROMPTS = [
-  "Объясни сложную тему простыми словами",
-  "Составь план работы из моих заметок",
-  "Сравни варианты и предложи решение"
+  "Explain a complex topic in simple terms",
+  "Turn my notes into a work plan",
+  "Compare options and recommend one"
 ] as const;
 
 /**
@@ -1099,7 +1099,7 @@ export function WelcomeOrientationV2({
   return (
     <div className="v2-live-welcome" data-testid="welcome-orientation">
       <div className="v2-conversation-orientation-copy">
-        <h1>Над чем поработаем?</h1>
+        <h1>What are we working on?</h1>
       </div>
       <div
         aria-label="Starter prompts"
@@ -1118,7 +1118,7 @@ export function WelcomeOrientationV2({
         ))}
         {showAssistantEntry ? (
           <button className="v2-focusable" type="button" onClick={onOpenAssistantPicker}>
-            Начать с Assistant…
+            Start with an Assistant…
           </button>
         ) : null}
       </div>
@@ -1137,7 +1137,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const mcpServers = useMcpSettingsStore((state) => state.servers);
   const navigationFolders = useWorkspaceStore((state) => state.navigationFolders);
-  // Server-verified capability gate for the direct «Удалить…» entries; the
+  // Server-verified capability gate for the direct "Delete…" entries; the
   // deletion confirm surface and its semantics stay unchanged.
   const permanentChatDeletionAvailable = useMemorySettingsStore(
     (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
@@ -1335,7 +1335,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 
   const actionsFor = (message: ThreadMessage): ConversationMessageActionsV2 => {
     const mutationBlocked = thread.activeChatStreaming;
-    const disabledReason = mutationBlocked ? "Дождитесь завершения текущего ответа." : null;
+    const disabledReason = mutationBlocked ? "Wait for the current answer to finish." : null;
     return {
       branchDisabled: mutationBlocked,
       deleteDisabled: mutationBlocked,
@@ -1362,7 +1362,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // existing branch model, never a history edit.
     const pagerSlot = (
       <BranchPagerSlotV2
-        disabledReason={thread.activeChatStreaming ? "Дождитесь завершения текущего ответа." : null}
+        disabledReason={thread.activeChatStreaming ? "Wait for the current answer to finish." : null}
         graph={details.branchGraph}
         messageId={source.id}
         onCheckout={details.checkoutBranch}
@@ -1482,7 +1482,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     if (full) action(full);
     else void workspace.pane.actions.retry();
   };
-  // «Детали run» in the header "⋯" opens the existing Run details drawer for
+  // "Run details" in the header "⋯" opens the existing Run details drawer for
   // the latest answer that has a persisted run; without one the item disables.
   const lastAnswerWithRun = [...thread.visibleMessages].reverse().find(
     (message) => message.role === "assistant" && message.runId
@@ -1665,7 +1665,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 
       {details.activeTab === "branch" && details.mode !== "closed" ? (
         <BranchDrawerV2
-          checkoutDisabledReason={thread.activeChatStreaming ? "Дождитесь завершения текущего ответа." : null}
+          checkoutDisabledReason={thread.activeChatStreaming ? "Wait for the current answer to finish." : null}
           error={details.branchError}
           graph={details.branchGraph}
           loading={details.branchLoading}

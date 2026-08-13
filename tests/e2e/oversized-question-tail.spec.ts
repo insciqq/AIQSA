@@ -101,7 +101,7 @@ test.describe("oversized submitted-question reading anchor", () => {
       const jumpToLatest = page.getByRole("button", { name: "Jump to latest message" });
       await expect(jumpToLatest).toBeVisible();
 
-      const composer = page.getByRole("textbox", { name: "Сообщение" });
+      const composer = page.getByRole("textbox", { name: "Message" });
       await composer.fill(oversizedQuestion);
       await composer.press("Enter");
       await oversizedQuestionStream.waitForRequestCount(page, 1);

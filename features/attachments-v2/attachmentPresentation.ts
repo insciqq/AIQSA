@@ -26,28 +26,28 @@ export type ComposerAttachmentItemV2 = Readonly<{
 }>;
 
 const processingFailureMessages: Readonly<Record<string, string>> = {
-  animated_gif_not_supported: "Анимированные GIF не поддерживаются.",
-  attachment_checksum_mismatch: "Файл не прошёл проверку целостности.",
-  attachment_object_read_failed: "Не удалось прочитать сохранённый файл.",
-  attachment_object_size_mismatch: "Размер сохранённого файла не совпал.",
-  attachment_processing_failed: "Не удалось обработать файл.",
-  parser_invalid_output: "Парсер вернул некорректный результат.",
-  parser_output_too_large: "Результат обработки слишком велик.",
-  parser_rejected: "Парсер отклонил файл.",
-  parser_timeout: "Обработка документа заняла слишком много времени.",
-  parser_unavailable: "Сервис обработки документов недоступен.",
-  pdf_extraction_failed: "Не удалось извлечь текст из PDF.",
-  pdf_extraction_timeout: "Извлечение текста из PDF заняло слишком много времени.",
-  pdf_invalid: "PDF повреждён или имеет неверный формат.",
-  pdf_page_limit_exceeded: "PDF превышает лимит страниц.",
-  pdf_password_required: "PDF с паролем не поддерживаются."
+  animated_gif_not_supported: "Animated GIFs are not supported.",
+  attachment_checksum_mismatch: "The file failed its integrity check.",
+  attachment_object_read_failed: "Could not read the stored file.",
+  attachment_object_size_mismatch: "The stored file size did not match.",
+  attachment_processing_failed: "Could not process the file.",
+  parser_invalid_output: "The parser returned an invalid result.",
+  parser_output_too_large: "The processed result is too large.",
+  parser_rejected: "The parser rejected the file.",
+  parser_timeout: "Document processing took too long.",
+  parser_unavailable: "The document processing service is unavailable.",
+  pdf_extraction_failed: "Could not extract text from the PDF.",
+  pdf_extraction_timeout: "PDF text extraction took too long.",
+  pdf_invalid: "The PDF is corrupted or malformed.",
+  pdf_page_limit_exceeded: "The PDF exceeds the page limit.",
+  pdf_password_required: "Password-protected PDFs are not supported."
 };
 
 function failureDetail(attachment: ComposerAttachment): string {
   const clientMessage = clientAttachmentFailureMessage(attachment.processingErrorCode);
   if (clientMessage) return clientMessage;
   return processingFailureMessages[attachment.processingErrorCode ?? ""] ??
-    "Не удалось обработать файл.";
+    "Could not process the file.";
 }
 
 export function attachmentItemsForV2(
@@ -69,7 +69,7 @@ export function attachmentItemsForV2(
       ...(warning ? {
         warning: {
           blocking: warning.blocking,
-          label: warning.label === "No text" ? "Нет текста" : "Текст ограничен",
+          label: warning.label === "No text" ? "No text" : "Text limited",
           message: warning.message
         }
       } : {})
@@ -85,18 +85,18 @@ function firstBlockingItemReason(items: readonly ComposerAttachmentItemV2[]): st
   const item = items.find(attachmentItemBlocksSend);
   if (!item) return null;
   if (item.status === "uploading") {
-    return `Дождитесь завершения загрузки файла «${item.fileName}».`;
+    return `Wait for “${item.fileName}” to finish uploading.`;
   }
   if (item.status === "processing") {
-    return `Дождитесь обработки файла «${item.fileName}».`;
+    return `Wait for “${item.fileName}” to finish processing.`;
   }
   if (item.status === "rejected") {
-    return `Удалите отклонённый файл «${item.fileName}».`;
+    return `Remove the rejected file “${item.fileName}”.`;
   }
   if (item.status === "failed") {
-    return `Повторите обработку или удалите файл «${item.fileName}».`;
+    return `Retry processing or remove “${item.fileName}”.`;
   }
-  return item.warning?.message ?? `Проверьте файл «${item.fileName}».`;
+  return item.warning?.message ?? `Check the file “${item.fileName}”.`;
 }
 
 export function attachmentSendBlockReasonV2(
@@ -106,9 +106,9 @@ export function attachmentSendBlockReasonV2(
 ): string | null {
   const itemReason = firstBlockingItemReason(items);
   if (itemReason) return itemReason;
-  if (uploading) return "Дождитесь завершения загрузки файлов.";
+  if (uploading) return "Wait for file uploads to finish.";
   if (usage?.blocking) {
-    return "Превышен лимит вложений. Удалите часть файлов или выберите совместимую модель.";
+    return "Attachment limit exceeded. Remove some files or choose a compatible model.";
   }
   return null;
 }
@@ -117,21 +117,16 @@ export function attachmentCapacityCopyV2(usage: AttachmentLimitUsage): {
   detail: string | null;
   summary: string;
 } {
-  const fileWord = usage.count % 10 === 1 && usage.count % 100 !== 11
-    ? "файл"
-    : usage.count % 10 >= 2 && usage.count % 10 <= 4 &&
-        (usage.count % 100 < 12 || usage.count % 100 > 14)
-      ? "файла"
-      : "файлов";
+  const fileWord = usage.count === 1 ? "file" : "files";
   const sourceSize = usage.totalSourceBytes >= 1024 * 1024
     ? `${Number((usage.totalSourceBytes / (1024 * 1024)).toFixed(1))} MB`
     : usage.totalSourceBytes >= 1024
       ? `${Number((usage.totalSourceBytes / 1024).toFixed(1))} KB`
-      : `${usage.totalSourceBytes} байт`;
+      : `${usage.totalSourceBytes} B`;
   const detail = usage.blocking
-    ? "Лимит превышен — удалите часть файлов перед отправкой."
+    ? "Limit exceeded — remove some files before sending."
     : usage.tone === "caution"
-      ? "Использовано не менее 80% одного из лимитов вложений."
+      ? "At least 80% of one attachment limit is used."
       : null;
   return {
     detail,

@@ -75,8 +75,10 @@ describe("CommandPalette", () => {
 
     const current = screen.getByRole("option", { name: /New chat.*Current/ });
     expect(current).toHaveAttribute("aria-current", "true");
-    expect(current).toHaveTextContent("Action · Workspace");
-    expect(screen.getByRole("option", { name: /Fake QSA/ })).toHaveTextContent("Model · fake:fake-qsa");
+    expect(current).toHaveTextContent("Workspace");
+    expect(current).not.toHaveTextContent("Action ·");
+    expect(screen.getByRole("option", { name: /Fake QSA/ })).toHaveTextContent("fake:fake-qsa");
+    expect(screen.getByRole("option", { name: /Fake QSA/ })).not.toHaveTextContent("Model ·");
   });
 
   it("supports Arrow, Home, End, Enter, and Escape from the search field", async () => {

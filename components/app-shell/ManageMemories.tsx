@@ -52,7 +52,6 @@ import {
   type MemoryUiLocale
 } from "@/lib/contracts/memory";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
-import { memoryPresentationIsRussian } from "@/lib/contracts/memoryPresentation";
 import {
   ArrowLeft,
   Check,
@@ -108,19 +107,12 @@ function formatDate(locale: MemoryUiLocale, value: string | null): string {
 }
 
 function indexingLabel(locale: MemoryUiLocale, value: MemorySummary["indexingState"]): string {
-  const labels = memoryPresentationIsRussian(locale)
-    ? {
-        DEGRADED: "Только резервный поиск",
-        HYBRID_READY: "Лексический и векторный поиск готовы",
-        LEXICAL_READY: "Лексический поиск готов",
-        VECTOR_PENDING: "Лексический поиск готов; векторный ожидается"
-      }
-    : {
-        DEGRADED: "Fallback search only",
-        HYBRID_READY: "Lexical and vector search ready",
-        LEXICAL_READY: "Lexical search ready",
-        VECTOR_PENDING: "Lexical search ready; vector pending"
-      };
+  const labels = {
+    DEGRADED: "Fallback search only",
+    HYBRID_READY: "Lexical and vector search ready",
+    LEXICAL_READY: "Lexical search ready",
+    VECTOR_PENDING: "Lexical search ready; vector pending"
+  } as const;
   return labels[value];
 }
 
@@ -128,25 +120,15 @@ function versionStateLabel(
   locale: MemoryUiLocale,
   value: "ACTIVE" | "CONFLICTING" | "ORPHANED" | "SUPERSEDED" | "EXPIRED" | "RETRACTED" | "FORGOTTEN"
 ): string {
-  const labels = memoryPresentationIsRussian(locale)
-    ? {
-        ACTIVE: "Текущая",
-        CONFLICTING: "Конфликтующая",
-        EXPIRED: "Срок истёк",
-        FORGOTTEN: "Забыта",
-        ORPHANED: "Источник недоступен",
-        RETRACTED: "Отозвана",
-        SUPERSEDED: "Заменена"
-      }
-    : {
-        ACTIVE: "Current",
-        CONFLICTING: "Conflicting",
-        EXPIRED: "Expired",
-        FORGOTTEN: "Forgotten",
-        ORPHANED: "Source unavailable",
-        RETRACTED: "Retracted",
-        SUPERSEDED: "Superseded"
-      };
+  const labels = {
+    ACTIVE: "Current",
+    CONFLICTING: "Conflicting",
+    EXPIRED: "Expired",
+    FORGOTTEN: "Forgotten",
+    ORPHANED: "Source unavailable",
+    RETRACTED: "Retracted",
+    SUPERSEDED: "Superseded"
+  } as const;
   return labels[value];
 }
 
@@ -154,55 +136,43 @@ function feedbackTypeLabel(
   locale: MemoryUiLocale,
   value: "CORRECT" | "INCORRECT" | "NOT_USEFUL" | "WRONG_SCOPE" | "OUTDATED" | "TOO_SENSITIVE"
 ): string {
-  const labels = memoryPresentationIsRussian(locale)
-    ? {
-        CORRECT: "Верно",
-        INCORRECT: "Неверно",
-        NOT_USEFUL: "Не пригодилось",
-        OUTDATED: "Устарело",
-        TOO_SENSITIVE: "Слишком чувствительные данные",
-        WRONG_SCOPE: "Неверная область"
-      }
-    : {
-        CORRECT: "Correct",
-        INCORRECT: "Incorrect",
-        NOT_USEFUL: "Not useful",
-        OUTDATED: "Outdated",
-        TOO_SENSITIVE: "Too sensitive",
-        WRONG_SCOPE: "Wrong scope"
-      };
+  const labels = {
+    CORRECT: "Correct",
+    INCORRECT: "Incorrect",
+    NOT_USEFUL: "Not useful",
+    OUTDATED: "Outdated",
+    TOO_SENSITIVE: "Too sensitive",
+    WRONG_SCOPE: "Wrong scope"
+  } as const;
   return labels[value];
 }
 
 function lifecycleOperationLabel(locale: MemoryUiLocale, value: string): string {
-  const labels: Readonly<Record<string, readonly [string, string]>> = {
-    AUTO_PROPOSE: ["Automatic proposal", "Автоматическое предложение"],
-    CONFLICT: ["Conflict detected", "Обнаружен конфликт"],
-    EDIT: ["User correction", "Исправление пользователя"],
-    EXPIRE: ["Expired", "Срок действия истёк"],
-    EXPLICIT_SAVE: ["Explicit save", "Явное сохранение"],
-    FORGET: ["Forgotten", "Забыто"],
-    INDEX_SWITCH: ["Index switched", "Переключён индекс"],
-    PIN: ["Pinned", "Закреплено"],
-    PROMOTE: ["Promoted", "Повышено до факта"],
-    REBUILD: ["Rebuilt", "Перестроено"],
-    REINFORCE: ["Evidence reinforced", "Подтверждение усилено"],
-    RETRACT: ["Retracted", "Отозвано"],
-    SCOPE_CHANGE: ["Scope changed", "Изменена область"],
-    SOURCE_INVALIDATE: ["Source invalidated", "Источник стал недоступен"],
-    SUPERSEDE: ["Superseded", "Заменено"],
-    UNPIN: ["Unpinned", "Откреплено"],
-    USER_FEEDBACK: ["Private feedback", "Приватный отзыв"]
+  const labels: Readonly<Record<string, string>> = {
+    AUTO_PROPOSE: "Automatic proposal",
+    CONFLICT: "Conflict detected",
+    EDIT: "User correction",
+    EXPIRE: "Expired",
+    EXPLICIT_SAVE: "Explicit save",
+    FORGET: "Forgotten",
+    INDEX_SWITCH: "Index switched",
+    PIN: "Pinned",
+    PROMOTE: "Promoted",
+    REBUILD: "Rebuilt",
+    REINFORCE: "Evidence reinforced",
+    RETRACT: "Retracted",
+    SCOPE_CHANGE: "Scope changed",
+    SOURCE_INVALIDATE: "Source invalidated",
+    SUPERSEDE: "Superseded",
+    UNPIN: "Unpinned",
+    USER_FEEDBACK: "Private feedback"
   };
-  const label = labels[value];
-  return label ? label[memoryPresentationIsRussian(locale) ? 1 : 0] : value;
+  return labels[value] ?? value;
 }
 
 function scopeLabel(locale: MemoryUiLocale, scope: MemoryScopeSelection): string {
   if (scope.type === "GLOBAL_USER") return t(locale, "manager.global");
-  const labels = memoryPresentationIsRussian(locale)
-    ? { ASSISTANT: "Ассистент", CHAT: "Чат", FOLDER: "Папка" }
-    : { ASSISTANT: "Assistant", CHAT: "Chat", FOLDER: "Folder" };
+  const labels = { ASSISTANT: "Assistant", CHAT: "Chat", FOLDER: "Folder" } as const;
   return `${labels[scope.type]} · ${scope.targetId}`;
 }
 
@@ -335,7 +305,6 @@ function MemoryScopePicker({
   const chats = useMemo(() => workspaceNavigationChats(workspaceChats), [workspaceChats]);
   const [remoteTargets, setRemoteTargets] = useState<ScopeTargetOption[]>([]);
   const [loading, setLoading] = useState(true);
-  const ru = memoryPresentationIsRussian(locale);
 
   useEffect(() => {
     let active = true;
@@ -405,27 +374,27 @@ function MemoryScopePicker({
       >
         <option value="GLOBAL_USER">{t(locale, "manager.global")}</option>
         {!currentAvailable ? (
-          <option value={current} disabled>{ru ? "Источник или область недоступны" : "Source or scope unavailable"}</option>
+          <option value={current} disabled>Source or scope unavailable</option>
         ) : null}
         {folders.length ? (
-          <optgroup label={ru ? "Папки" : "Folders"}>
+          <optgroup label="Folders">
             {targets.filter((target) => target.type === "FOLDER").map((target) => (
               <option key={`folder:${target.id}`} value={encodedScope({ targetId: target.id, type: "FOLDER" })}>{target.label}</option>
             ))}
           </optgroup>
         ) : null}
         {targets.some((target) => target.type === "ASSISTANT") ? (
-          <optgroup label={ru ? "Ассистенты" : "Assistants"}>
+          <optgroup label="Assistants">
             {targets.filter((target) => target.type === "ASSISTANT").map((target) => (
               <option key={`assistant:${target.id}`} value={encodedScope({ targetId: target.id, type: "ASSISTANT" })}>{target.label}</option>
             ))}
           </optgroup>
         ) : null}
         {targets.some((target) => target.type === "CHAT") ? (
-          <optgroup label={ru ? "Чаты" : "Chats"}>
+          <optgroup label="Chats">
             {targets.filter((target) => target.type === "CHAT").map((target) => (
               <option key={`chat:${target.id}`} value={encodedScope({ targetId: target.id, type: "CHAT" })}>
-                {target.label}{target.archived ? (ru ? " (архив)" : " (archived)") : ""}
+                {target.label}{target.archived ? " (archived)" : ""}
               </option>
             ))}
           </optgroup>
@@ -433,8 +402,8 @@ function MemoryScopePicker({
       </select>
       <p className="mt-1 text-xs leading-5 text-ink-muted">
         {loading
-          ? (ru ? "Загрузка доступных областей…" : "Loading available scopes…")
-          : (ru ? "Область определяет, где это воспоминание доступно." : "Scope controls where this memory is available.")}
+          ? "Loading available scopes…"
+          : "Scope controls where this memory is available."}
       </p>
     </div>
   );
@@ -494,7 +463,7 @@ function MemoryListPane({ locale }: { locale: MemoryUiLocale }) {
         </div>
       </form>
 
-      <div className="flex gap-1 overflow-x-auto border-b border-trace-subtle px-3 py-2" role="group" aria-label={memoryPresentationIsRussian(locale) ? "Состояние воспоминаний" : "Memory state"}>
+      <div className="flex gap-1 overflow-x-auto border-b border-trace-subtle px-3 py-2" role="group" aria-label="Memory state">
         {MANAGE_MEMORY_STATES.map((state) => (
           <button
             className={`min-h-control shrink-0 rounded-control px-3 text-xs font-semibold ${
@@ -788,7 +757,7 @@ function MemoryFeedbackHistory({ locale }: { locale: MemoryUiLocale }) {
   return (
     <section className="mt-6 border-t border-trace-subtle pt-5" aria-labelledby="memory-feedback-history-heading">
       <h4 className="text-sm font-semibold text-ink" id="memory-feedback-history-heading">
-        {memoryPresentationIsRussian(locale) ? "Приватные отзывы" : "Private feedback"}
+        Private feedback
       </h4>
       <ul className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
         {feedback.map((item) => (
@@ -956,7 +925,7 @@ function MemoryLifecycle({ locale }: { locale: MemoryUiLocale }) {
                 <span className="font-medium text-ink-secondary">
                   {lifecycleOperationLabel(locale, event.operation)}
                   {!event.sourceAvailable
-                    ? ` · ${memoryPresentationIsRussian(locale) ? "источник недоступен" : "source unavailable"}`
+                    ? " · source unavailable"
                     : ""}
                 </span>
                 <span className="text-xs text-ink-muted">{formatDate(locale, event.createdAt)}</span>
@@ -1032,7 +1001,7 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
           (memory.actionVersionId ?? memory.currentVersionId) ? (
             <button className={secondaryButton} disabled={mutationState !== null} onClick={beginMoveMemory} type="button">
               <FolderInput className="size-4" aria-hidden="true" />
-              {memoryPresentationIsRussian(locale) ? "Переместить область" : "Move scope"}
+              Move scope
             </button>
           ) : null}
           {memory.factState !== "CONFLICTED" && (memory.actionVersionId ?? memory.currentVersionId) ? (
@@ -1053,14 +1022,14 @@ function MemoryDetail({ locale }: { locale: MemoryUiLocale }) {
       {errorText ? <p className="mt-3 text-sm text-critical" role="alert">{errorText}</p> : null}
       {memory.factState === "ORPHANED" ? (
         <div className="mt-3 border-y border-caution/35 bg-caution/10 px-3 py-2 text-sm leading-6 text-ink-secondary" role="status">
-          {memoryPresentationIsRussian(locale) ? "Источник или область недоступны." : "Source or scope unavailable."}
+          Source or scope unavailable.
         </div>
       ) : null}
       {memory.factState === "EXPIRED" || memory.factState === "RETRACTED" ? (
         <div className="mt-3 border-y border-trace-subtle bg-control-surface px-3 py-2 text-sm leading-6 text-ink-secondary" role="status">
           {memory.factState === "EXPIRED"
-            ? (memoryPresentationIsRussian(locale) ? "Срок действия этой версии истёк; она остаётся только в истории." : "This version expired and remains only in history.")
-            : (memoryPresentationIsRussian(locale) ? "Эта версия была отозвана и больше не участвует в ответах." : "This version was retracted and no longer participates in answers.")}
+            ? "This version expired and remains only in history."
+            : "This version was retracted and no longer participates in answers."}
         </div>
       ) : null}
       <p className="mt-5 whitespace-pre-wrap border-y border-trace-subtle bg-answer-paper px-3 py-4 text-base leading-7 text-ink">
@@ -1247,16 +1216,14 @@ function MoveMemoryScope({ locale }: { locale: MemoryUiLocale }) {
       <ScreenBack locale={locale} onClick={cancelMemoryDraft} />
       <FolderInput className="mt-2 size-6 text-proof" aria-hidden="true" />
       <h3 className="mt-3 text-base font-semibold text-ink" data-memory-screen-heading tabIndex={-1}>
-        {memoryPresentationIsRussian(locale) ? "Переместить область воспоминания" : "Move memory scope"}
+        Move memory scope
       </h3>
       <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-secondary">
-        {memoryPresentationIsRussian(locale)
-          ? "Создаёт новую активную запись в выбранной области; прежняя запись остаётся историческим свидетельством перемещения."
-          : "Creates a new active record in the selected scope; the prior record remains as historical move evidence."}
+        Creates a new active record in the selected scope; the prior record remains as historical move evidence.
       </p>
       {memory.factState === "ORPHANED" ? (
         <p className="mt-3 border-y border-caution/35 bg-caution/10 px-3 py-2 text-sm text-ink-secondary">
-          {memoryPresentationIsRussian(locale) ? "Источник или область недоступны. Выберите доступную область для восстановления." : "Source or scope unavailable. Choose an available scope to repair it."}
+          Source or scope unavailable. Choose an available scope to repair it.
         </p>
       ) : null}
       {mutationError ? <p className="mt-3 text-sm text-critical" role="alert">{mutationErrorText(locale, mutationError)}</p> : null}
@@ -1279,8 +1246,8 @@ function MoveMemoryScope({ locale }: { locale: MemoryUiLocale }) {
           </button>
           <button className={primaryButton} disabled={mutationState !== null || unchanged} type="submit">
             {mutationState === "moving"
-              ? (memoryPresentationIsRussian(locale) ? "Перемещение…" : "Moving…")
-              : (memoryPresentationIsRussian(locale) ? "Переместить" : "Move")}
+              ? "Moving…"
+              : "Move"}
           </button>
         </div>
       </form>
@@ -1295,7 +1262,7 @@ function deletionStateText(locale: MemoryUiLocale, status: MemoryDeletionStatus)
     case "RETRY_WAIT": return t(locale, "manager.deleteRetry");
     case "BLOCKED_REQUIRES_ADMIN": return resolveMemoryCopy(locale, "deletion.blockedAdmin");
     case "SUCCEEDED": return t(locale, "manager.deleteSucceeded");
-    case "CANCELLED": return memoryPresentationIsRussian(locale) ? "Удаление отменено." : "Deletion cancelled.";
+    case "CANCELLED": return "Deletion cancelled.";
   }
 }
 

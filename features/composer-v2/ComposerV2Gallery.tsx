@@ -190,16 +190,16 @@ export const composerGalleryConfig: ComposerConfig = {
       name: "Google"
     }],
     searchStrategies: [{
-      displayName: "Без Search",
+      displayName: "No Search",
       kind: "none",
       strategyId: "search-disabled"
     }, {
-      description: "Актуальные веб-источники",
+      description: "Fresh web sources",
       displayName: "Web Search",
       kind: "web_search",
       strategyId: "web-primary"
     }, {
-      description: "Исследовательский поиск",
+      description: "Research-grade search",
       displayName: "Research Search",
       kind: "provider_model_web_search",
       strategyId: "research-search"
@@ -265,13 +265,13 @@ const attachmentGalleryItems: ComposerAttachmentItemV2[] = [{
   rejection: "unsupported_format",
   status: "rejected"
 }, {
-  detail: "Больше 50 MB",
+  detail: "Over 50 MB",
   fileName: "archive.pdf",
   id: "local-rejected-archive",
   rejection: "too_large",
   status: "rejected"
 }, {
-  detail: "Не удалось извлечь текст из PDF.",
+  detail: "Could not extract text from the PDF.",
   fileName: "scan.pdf",
   id: "attachment-scan",
   kind: "pdf",

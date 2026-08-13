@@ -115,7 +115,7 @@ describe("catalog wire contract", () => {
     const duplicateLabel = decoded?.providers.find(({ id }) => id === duplicate.id)?.name;
 
     expect(firstLabel).toMatch(/^OpenAI · ref [0-9A-Z]{6,}$/u);
-    expect(duplicateLabel).toMatch(/^  openai   · ref [0-9A-Z]{6,}$/u);
+    expect(duplicateLabel).toMatch(/^openai · ref [0-9A-Z]{6,}$/u);
     expect(firstLabel).not.toBe(duplicateLabel);
     expect(decoded?.models[0]).toMatchObject({
       modelId: "deployment-test",
@@ -125,6 +125,39 @@ describe("catalog wire contract", () => {
       modelId: "deployment-test",
       provider: "connection-test"
     });
+  });
+
+  it("strips endpoint-host fragments from ordinary-UI connection labels", () => {
+    const response = validResponse();
+    response.catalog.providers[0]!.name = "Custom OpenAI · llm-lb.internal.example";
+
+    const decoded = decodeCatalogResponse(response);
+    expect(decoded?.providers[0]?.name).toBe("Custom OpenAI");
+  });
+
+  it("keeps a collision-only reference when stripped connection labels collide", () => {
+    const response = validResponse();
+    response.catalog.providers[0]!.name = "Custom OpenAI · llm-lb.internal.example";
+    const duplicate = structuredClone(response.catalog.providers[0]!);
+    duplicate.id = "connection-duplicate";
+    duplicate.name = "Custom OpenAI · other-host.example.com:8443";
+    response.catalog.providers.push(duplicate);
+
+    const decoded = decodeCatalogResponse(response);
+    const firstLabel = decoded?.providers.find(({ id }) => id === "connection-test")?.name;
+    const duplicateLabel = decoded?.providers.find(({ id }) => id === duplicate.id)?.name;
+
+    expect(firstLabel).toMatch(/^Custom OpenAI · ref [0-9A-Z]{6,}$/u);
+    expect(duplicateLabel).toMatch(/^Custom OpenAI · ref [0-9A-Z]{6,}$/u);
+    expect(firstLabel).not.toBe(duplicateLabel);
+  });
+
+  it("falls back to neutral copy when a connection label is only an endpoint host", () => {
+    const response = validResponse();
+    response.catalog.providers[0]!.name = "https://llm-lb.internal.example:8443/v1";
+
+    const decoded = decodeCatalogResponse(response);
+    expect(decoded?.providers[0]?.name).toBe("Custom connection");
   });
 
   it("preserves a null personal default when the effective model is the organization default", () => {

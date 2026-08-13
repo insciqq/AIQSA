@@ -12,14 +12,14 @@ function itemStatus(item: ComposerAttachmentItemV2): string {
     const progress = typeof item.progress === "number" && Number.isFinite(item.progress)
       ? Math.max(0, Math.min(100, Math.round(item.progress)))
       : null;
-    return progress === null ? "Загрузка…" : `Загрузка… ${progress}%`;
+    return progress === null ? "Uploading…" : `Uploading… ${progress}%`;
   }
-  if (item.status === "processing") return "Обработка…";
-  if (item.status === "ready") return item.warning?.label ?? "Готов";
-  if (item.status === "failed") return "Ошибка обработки";
-  if (item.rejection === "unsupported_format") return "Формат не поддерживается";
-  if (item.rejection === "too_large") return item.detail || "Файл слишком большой";
-  return item.detail || "Файл не загружен";
+  if (item.status === "processing") return "Processing…";
+  if (item.status === "ready") return item.warning?.label ?? "Ready";
+  if (item.status === "failed") return "Processing failed";
+  if (item.rejection === "unsupported_format") return "Format not supported";
+  if (item.rejection === "too_large") return item.detail || "File is too large";
+  return item.detail || "File not uploaded";
 }
 
 export function AttachmentTrayV2({
@@ -37,7 +37,7 @@ export function AttachmentTrayV2({
   const capacity = usage ? attachmentCapacityCopyV2(usage) : null;
 
   return (
-    <section className="v2-attachment-tray" aria-label="Вложения">
+    <section className="v2-attachment-tray" aria-label="Attachments">
       {capacity ? (
         <div
           className="v2-attachment-capacity"
@@ -74,13 +74,13 @@ export function AttachmentTrayV2({
                   type="button"
                   onClick={() => onRetry(item.id)}
                 >
-                  Повторить
+                  Retry
                 </button>
               ) : null}
               {onRemove ? (
                 <UiV2IconButton
                   icon="close"
-                  label={`Удалить ${item.fileName}`}
+                  label={`Remove ${item.fileName}`}
                   onClick={() => onRemove(item.id)}
                 />
               ) : null}
@@ -91,10 +91,10 @@ export function AttachmentTrayV2({
       {/* Privacy disclosure stays reachable as a quiet tooltip/AT note instead
           of a permanent line; the capability menu keeps the full sentence. */}
       <p
-        aria-label="Файлы приватны и доступны только вам."
+        aria-label="Files are private and visible only to you."
         className="v2-attachment-privacy"
         role="note"
-        title="Файлы приватны и доступны только вам."
+        title="Files are private and visible only to you."
       >
         <UiV2Icon name="lock" />
       </p>

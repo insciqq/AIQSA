@@ -67,44 +67,44 @@ test("keeps the draft editable and gates send across attachment processing, retr
   });
 
   await signInWithLocalToken(page);
-  const composer = page.getByRole("textbox", { name: "Сообщение" });
-  const send = page.getByRole("button", { name: "Отправить сообщение" });
+  const composer = page.getByRole("textbox", { name: "Message" });
+  const send = page.getByRole("button", { name: "Send message" });
   await composer.fill("Keep this draft while the report is processed");
-  await page.getByLabel("Прикрепить файлы").setInputFiles({
+  await page.getByLabel("Attach files").setInputFiles({
     buffer: Buffer.from("OOXML fixture routed by the browser contract"),
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     name: "lifecycle-report.docx"
   });
 
-  const chip = page.getByRole("region", { name: "Вложения" })
+  const chip = page.getByRole("region", { name: "Attachments" })
     .getByRole("listitem")
     .filter({ hasText: "lifecycle-report.docx" });
-  await expect(chip).toContainText("Обработка…");
+  await expect(chip).toContainText("Processing…");
   await expect(chip).toHaveAttribute("data-attachment-status", "processing");
   await expect(composer).toBeEnabled();
   await expect(composer).toHaveValue("Keep this draft while the report is processed");
   await expect(send).toBeDisabled();
 
   await failedPoll.promise;
-  await expect(chip).toContainText("Обработка…");
+  await expect(chip).toContainText("Processing…");
   failedResult.resolve();
-  await expect(chip).toContainText("Сервис обработки документов недоступен.");
+  await expect(chip).toContainText("The document processing service is unavailable.");
   await expect(chip).toHaveAttribute("data-attachment-status", "failed");
-  await expect(chip.getByRole("button", { name: "Повторить" })).toBeVisible();
-  await expect(chip.getByRole("button", { name: "Удалить lifecycle-report.docx" })).toBeVisible();
+  await expect(chip.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(chip.getByRole("button", { name: "Remove lifecycle-report.docx" })).toBeVisible();
   await expect(composer).toBeEnabled();
   await expect(send).toBeDisabled();
 
-  await chip.getByRole("button", { name: "Повторить" }).click();
-  await expect(chip).toContainText("Обработка…");
+  await chip.getByRole("button", { name: "Retry" }).click();
+  await expect(chip).toContainText("Processing…");
   await readyPoll.promise;
   await expect(send).toBeDisabled();
   readyResult.resolve();
-  await expect(chip).toContainText("Готов");
+  await expect(chip).toContainText("Ready");
   await expect(chip).toHaveAttribute("data-attachment-status", "ready");
   await expect(composer).toHaveValue("Keep this draft while the report is processed");
   await expect(send).toBeEnabled();
 
-  await chip.getByRole("button", { name: "Удалить lifecycle-report.docx" }).click();
+  await chip.getByRole("button", { name: "Remove lifecycle-report.docx" }).click();
   await expect(chip).toHaveCount(0);
 });

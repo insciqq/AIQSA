@@ -55,13 +55,13 @@ describe("Run setup v2", () => {
     const { rerender } = render(<RunSetupV2 composer={composer} onClose={vi.fn()} />);
 
     expect(screen.getByTestId("run-setup-current-model")).toHaveTextContent(
-      "Текущая модель: GPT-5.2"
+      "Current model: GPT-5.2"
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Использовать модель организации" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use organization model default" }));
     expect(composer.useOrganizationModelDefault).toHaveBeenCalledOnce();
     expect(screen.getByTestId("run-setup-defaults-feedback")).toHaveTextContent(
-      "Теперь используется модель организации."
+      "Organization model default applied."
     );
 
     rerender(
@@ -71,19 +71,19 @@ describe("Run setup v2", () => {
       />
     );
     expect(screen.getByTestId("run-setup-current-model")).toHaveTextContent(
-      "Текущая модель: Gemini 3 Pro"
+      "Current model: Gemini 3 Pro"
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Использовать Search организации" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use organization Search default" }));
     expect(screen.getByTestId("run-setup-defaults-feedback")).toHaveTextContent(
-      "Теперь используется Search организации."
+      "Organization Search default applied."
     );
   });
 
   it("closes the params sheet from scrim tap, the close control, and Escape", () => {
     const onClose = vi.fn();
     render(<RunSetupV2 composer={runSetupComposer()} onClose={onClose} />);
-    const dialog = screen.getByRole("dialog", { name: "Параметры модели" });
+    const dialog = screen.getByRole("dialog", { name: "Model parameters" });
     const scrim = dialog.parentElement!;
 
     fireEvent.mouseDown(dialog);
@@ -92,7 +92,7 @@ describe("Run setup v2", () => {
     fireEvent.mouseDown(scrim);
     expect(onClose).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Закрыть параметры" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close parameters" }));
     expect(onClose).toHaveBeenCalledTimes(2);
 
     fireEvent.keyDown(dialog, { key: "Escape" });
@@ -239,26 +239,26 @@ describe("Live evidence v2", () => {
 
 describe("Temporary chat indicator v2", () => {
   const memory = {
-    explanation: "Временный чат не читает и не записывает личную Память.",
-    externalRetention: "Внешние провайдеры могут хранить данные по раскрытым правилам.",
-    label: "Временный чат",
-    retention: "Полный агрегат чата удаляется через 24 часа.",
-    retentionDeadline: "14 августа, 12:00"
+    explanation: "Temporary Chat reads and writes no personal Memory.",
+    externalRetention: "External providers may retain data under their disclosed policies.",
+    label: "Temporary chat",
+    retention: "The complete chat aggregate is deleted after 24 hours.",
+    retentionDeadline: "Aug 14, 12:00"
   };
 
   it("stays quiet until clicked, then disclosing the retention explainer", () => {
     render(<TemporaryChatIndicatorV2 memory={memory} />);
 
     const trigger = screen.getByTestId("header-temporary-indicator");
-    expect(trigger).toHaveTextContent("Временный чат");
+    expect(trigger).toHaveTextContent("Temporary chat");
     expect(screen.queryByRole("dialog")).toBeNull();
 
     fireEvent.click(trigger);
-    const dialog = screen.getByRole("dialog", { name: "Временный чат" });
-    expect(dialog).toHaveTextContent("удаляется через 24 часа");
-    expect(dialog).toHaveTextContent("Внешние провайдеры");
+    const dialog = screen.getByRole("dialog", { name: "Temporary chat" });
+    expect(dialog).toHaveTextContent("deleted after 24 hours");
+    expect(dialog).toHaveTextContent("External providers");
     expect(screen.getByTestId("temporary-retention-deadline")).toHaveTextContent(
-      "14 августа, 12:00"
+      "Aug 14, 12:00"
     );
 
     fireEvent.keyDown(dialog, { key: "Escape" });
@@ -269,10 +269,10 @@ describe("Temporary chat indicator v2", () => {
 
 describe("Workspace header v2", () => {
   const temporaryMemory = {
-    explanation: "Временный чат не читает и не записывает личную Память.",
-    externalRetention: "Внешние провайдеры могут хранить данные по раскрытым правилам.",
-    label: "Временный чат",
-    retention: "Полный агрегат чата удаляется через 24 часа.",
+    explanation: "Temporary Chat reads and writes no personal Memory.",
+    externalRetention: "External providers may retain data under their disclosed policies.",
+    label: "Temporary chat",
+    retention: "The complete chat aggregate is deleted after 24 hours.",
     retentionDeadline: null
   };
   const folders = [
@@ -314,12 +314,12 @@ describe("Workspace header v2", () => {
     const props = headerProps();
     render(<WorkspaceHeaderV2 {...props} />);
 
-    // No kicker and no standalone Копировать/Ветви buttons remain.
+    // No kicker and no standalone Copy/Branches buttons remain.
     expect(screen.queryByText("Conversation")).toBeNull();
     expect(screen.queryByText("Reading Room")).toBeNull();
     expect(screen.queryByRole("button", { name: "Копировать" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Ветви" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Поделиться" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Branches" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Share" })).toBeVisible();
 
     const trigger = screen.getByTestId("header-more-trigger");
     fireEvent.click(trigger);
@@ -327,66 +327,66 @@ describe("Workspace header v2", () => {
     expect(
       within(menu).getAllByRole("menuitem").map((item) => item.textContent)
     ).toEqual([
-      "Поделиться",
-      "Переименовать",
-      "Переместить",
-      "Архивировать",
-      "Удалить…",
-      "Экспортировать",
-      "Экспорт в JSON",
-      "Копировать весь тред",
-      "Ветви",
-      "Детали run"
+      "Share",
+      "Rename",
+      "Move to…",
+      "Archive",
+      "Delete…",
+      "Export",
+      "Export as JSON",
+      "Copy entire thread",
+      "Branches",
+      "Run details"
     ]);
-    // Поделиться is a mobile-only route; ≤899px CSS owns the breakpoint and
+    // Share is a mobile-only route; ≤899px CSS owns the breakpoint and
     // toggles this exact marker.
-    expect(within(menu).getByRole("menuitem", { name: "Поделиться" }))
+    expect(within(menu).getByRole("menuitem", { name: "Share" }))
       .toHaveAttribute("data-mobile-only");
 
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Экспортировать" }));
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Export" }));
     expect(props.onExport).toHaveBeenLastCalledWith("markdown");
     expect(screen.queryByTestId("header-more-menu")).toBeNull();
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Экспорт в JSON" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Export as JSON" }));
     expect(props.onExport).toHaveBeenLastCalledWith("json");
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Копировать весь тред" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy entire thread" }));
     expect(props.onCopyThread).toHaveBeenCalledTimes(1);
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Ветви" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Branches" }));
     expect(props.onBranches).toHaveBeenCalledTimes(1);
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Детали run" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Run details" }));
     expect(props.onRunDetails).toHaveBeenCalledTimes(1);
 
     fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Архивировать" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
     expect(props.onArchive).toHaveBeenCalledTimes(1);
   });
 
-  it("gates Удалить… on the capability and lists nested move destinations", () => {
+  it("gates Delete… on the capability and lists nested move destinations", () => {
     const props = headerProps({ onDelete: null });
     const { rerender } = render(<WorkspaceHeaderV2 {...props} />);
 
     fireEvent.click(screen.getByTestId("header-more-trigger"));
-    expect(screen.queryByRole("menuitem", { name: "Удалить…" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
 
     const onDelete = vi.fn();
     const onMove = vi.fn();
     rerender(<WorkspaceHeaderV2 {...headerProps({ onDelete, onMove })} />);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Удалить…" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete…" }));
     expect(onDelete).toHaveBeenCalledTimes(1);
 
     // Move discloses the complete nested folder list with indentation.
     fireEvent.click(screen.getByTestId("header-more-trigger"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Переместить" }));
-    const submenu = screen.getByLabelText("Переместить");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+    const submenu = screen.getByLabelText("Move to…");
     const labels = within(submenu).getAllByRole("menuitem").map((item) => item.textContent);
-    expect(labels).toEqual(["Без папки", "Research", "Recall", "Ops"]);
+    expect(labels).toEqual(["No folder", "Research", "Recall", "Ops"]);
     const nested = within(submenu).getByRole("menuitem", { name: "Recall" });
     expect(nested.style.paddingLeft).toBe("1.25rem");
     fireEvent.click(nested);
@@ -402,15 +402,15 @@ describe("Workspace header v2", () => {
     expect(props.onRenameStart).toHaveBeenCalledTimes(1);
 
     rerender(<WorkspaceHeaderV2 {...props} editingTitle="Черновик названия" />);
-    const input = screen.getByRole("textbox", { name: "Новое название: Release checklist" });
+    const input = screen.getByRole("textbox", { name: "New title: Release checklist" });
     expect(input).toHaveValue("Черновик названия");
     fireEvent.change(input, { target: { value: "Новое имя" } });
     expect(props.onRenameChange).toHaveBeenCalledWith("Новое имя");
 
-    fireEvent.click(screen.getByRole("button", { name: "Сохранить название" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save title" }));
     expect(props.onRenameSave).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Отменить переименование" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel rename" }));
     expect(props.onRenameCancel).toHaveBeenCalledTimes(1);
 
     fireEvent.keyDown(input, { key: "Escape" });
@@ -424,31 +424,31 @@ describe("Workspace header v2", () => {
     // Welcome: no title, no kicker, no chat actions — quiet actions only.
     expect(screen.queryByRole("heading")).toBeNull();
     expect(screen.queryByTestId("header-more-trigger")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Поделиться" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Команды" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Commands" })).toBeVisible();
 
-    // The sidebar «Архив чатов» row is the single archive entry.
-    fireEvent.click(screen.getByRole("button", { name: "Меню аккаунта" }));
-    const account = screen.getByRole("menu", { name: "Аккаунт" });
-    expect(within(account).queryByRole("menuitem", { name: "Архив чатов" })).toBeNull();
-    expect(within(account).getByRole("menuitem", { name: "Библиотека" })).toBeVisible();
-    expect(within(account).getByRole("menuitem", { name: "Настройки" })).toBeVisible();
+    // The sidebar «Archived chats» row is the single archive entry.
+    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    const account = screen.getByRole("menu", { name: "Account" });
+    expect(within(account).queryByRole("menuitem", { name: "Archived chats" })).toBeNull();
+    expect(within(account).getByRole("menuitem", { name: "Library" })).toBeVisible();
+    expect(within(account).getByRole("menuitem", { name: "Settings" })).toBeVisible();
   });
 
   it("keeps Share governance, the Temporary indicator, and shared dismissal", () => {
     const props = headerProps({ shareDisabled: true, temporaryMemory });
     render(<WorkspaceHeaderV2 {...props} />);
 
-    expect(screen.getByTestId("header-temporary-indicator")).toHaveTextContent("Временный чат");
+    expect(screen.getByTestId("header-temporary-indicator")).toHaveTextContent("Temporary chat");
 
     const trigger = screen.getByTestId("header-more-trigger");
     fireEvent.click(trigger);
-    const share = screen.getByRole("menuitem", { name: "Поделиться" });
+    const share = screen.getByRole("menuitem", { name: "Share" });
     expect(share).toBeDisabled();
     fireEvent.click(share);
     expect(props.onShare).not.toHaveBeenCalled();
 
-    fireEvent.keyDown(screen.getByRole("menuitem", { name: "Ветви" }), { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("menuitem", { name: "Branches" }), { key: "Escape" });
     expect(screen.queryByTestId("header-more-menu")).toBeNull();
     expect(trigger).toHaveFocus();
 
@@ -457,11 +457,11 @@ describe("Workspace header v2", () => {
     expect(screen.queryByTestId("header-more-menu")).toBeNull();
   });
 
-  it("disables Детали run without a settled answer run", () => {
+  it("disables Run details without a settled answer run", () => {
     render(<WorkspaceHeaderV2 {...headerProps({ onRunDetails: null })} />);
 
     fireEvent.click(screen.getByTestId("header-more-trigger"));
-    expect(screen.getByRole("menuitem", { name: "Детали run" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Run details" })).toBeDisabled();
   });
 });
 
@@ -510,7 +510,7 @@ describe("Blank welcome v2", () => {
       />
     );
 
-    expect(screen.getByRole("heading", { name: "Над чем поработаем?" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "What are we working on?" })).toBeVisible();
     expect(screen.queryByText("AIQSA")).toBeNull();
     expect(screen.queryByText(/Спросите, исследуйте/u)).toBeNull();
 
@@ -519,7 +519,7 @@ describe("Blank welcome v2", () => {
     expect(buttons.length).toBeLessThanOrEqual(4);
     fireEvent.click(buttons[0]!);
     expect(onPickPrompt).toHaveBeenCalledWith(buttons[0]!.textContent);
-    fireEvent.click(within(starters).getByRole("button", { name: "Начать с Assistant…" }));
+    fireEvent.click(within(starters).getByRole("button", { name: "Start with an Assistant…" }));
     expect(onOpenAssistantPicker).toHaveBeenCalledTimes(1);
   });
 });

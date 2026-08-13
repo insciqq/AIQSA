@@ -23,14 +23,14 @@ export function formatComposerContextStats(stats: ComposerContextStats): string 
 
 /**
  * Human hover label for the composer context gauge. The gauge digit alone is
- * cryptic, so hover/focus reveals the unit ("~8% контекста"); when no safe
+ * cryptic, so hover/focus reveals the unit ("~8% of context"); when no safe
  * budget exists only the honest token estimate is offered.
  */
 export function composerContextGaugeTitle(stats: ComposerContextStats): string {
   const gauge = composerContextGauge(stats);
   return gauge.percent === null
-    ? `Контекст: ~${formatTokenCount(stats.approximateInputTokens)} токенов`
-    : `~${gauge.percent}% контекста`;
+    ? `Context: ~${formatTokenCount(stats.approximateInputTokens)} tokens`
+    : `~${gauge.percent}% of context`;
 }
 
 export function composerContextGauge(stats: ComposerContextStats): ComposerContextGauge {

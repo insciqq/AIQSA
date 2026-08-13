@@ -33,6 +33,34 @@ function distinctReferenceLength(references: readonly string[]): number | null {
   return null;
 }
 
+const endpointHostFragmentPattern =
+  /(?:[a-z][a-z0-9+.-]*:\/\/)?(?:(?:[\w-]+\.)+[a-z]{2,}|localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:\/[^\s·•|]*)?/giu;
+
+/**
+ * Removes endpoint-host fragments (domains, host:port pairs, URLs) from an
+ * operator-authored connection label before it reaches ordinary UI. Run
+ * controls require display names or neutral copy there; endpoint hosts stay
+ * on Admin and diagnostic surfaces only. Domain-shaped tokens are stripped
+ * even when they were meant as branding, because ordinary UI cannot tell the
+ * difference. Callers strip before collision resolution so the deterministic
+ * "· ref" suffix still separates connections whose stripped names collide.
+ */
+export function stripEndpointHostFragments(
+  label: string,
+  fallback = "Custom connection"
+): string {
+  const cleaned = label
+    .split(/[·•|]|\s+[–—-]\s+/u)
+    .map((part) => part
+      .replace(endpointHostFragmentPattern, " ")
+      .replace(/\(\s*\)|\[\s*\]/gu, " ")
+      .replace(/\s+/gu, " ")
+      .trim())
+    .filter((part) => part.length > 0)
+    .join(" · ");
+  return cleaned.length > 0 ? cleaned : fallback;
+}
+
 /**
  * Resolves privacy-safe presentation labels for an already filtered connection catalog.
  * Runtime binding continues to use the exact connection id; only colliding display names

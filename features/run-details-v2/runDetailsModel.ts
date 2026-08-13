@@ -86,7 +86,6 @@ export type RunDetailsProjectionV2 = Readonly<{
   }> | null;
 }>;
 
-const opaqueUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const secretKeyPattern = /(?:api[_-]?key|authorization|cookie|credential|password|secret|signature|(?:access|refresh|identity|id|bearer)[_-]?token)/iu;
 const jwtPattern = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu;
 const providerKeyPattern = /\b(?:sk|rk|pk)-[A-Za-z0-9_-]{10,}\b/gu;
@@ -154,19 +153,14 @@ function readableIdentifier(value: string): string {
     .join(" ");
 }
 
-function safeHistoricalLabel(value: string, fallback: string): string {
-  return opaqueUuidPattern.test(value) || value.length > 100 || /[^\p{L}\p{N}._:/+ -]/u.test(value)
-    ? fallback
-    : readableIdentifier(value);
-}
-
+// Raw adapter/config ids (`openai_compatible`) and prettified raw model ids
+// are dev leaks in ordinary UI; unresolvable historical bindings fall back to
+// neutral copy instead (RUN_CONTROLS.md: display names or neutral copy).
 function resolveProviderLabel(run: PersistedRun, catalog: Catalog | null): string {
   const provider = catalog?.providers?.find((candidate) => candidate.id === run.provider);
   if (provider) return provider.name;
   const fallback = providerDisplayName(run.provider);
-  return fallback === run.provider
-    ? safeHistoricalLabel(run.provider, "Провайдер недоступен")
-    : fallback;
+  return fallback === run.provider ? "Provider unavailable" : fallback;
 }
 
 function resolveModelLabel(run: PersistedRun, catalog: Catalog | null): string {
@@ -180,16 +174,17 @@ function resolveModelLabel(run: PersistedRun, catalog: Catalog | null): string {
   ) ?? [];
   const names = new Set(uniqueMatches.map((candidate) => candidate.displayName));
   if (names.size === 1) return uniqueMatches[0]!.displayName;
-  return safeHistoricalLabel(run.modelId, "Модель недоступна");
+  return "Model unavailable";
 }
 
 function acceptedAtLabel(value: string | undefined): string | null {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return `${new Intl.DateTimeFormat("ru-RU", {
+  return `${new Intl.DateTimeFormat("en-US", {
     day: "numeric",
     hour: "2-digit",
+    hour12: false,
     minute: "2-digit",
     month: "short",
     timeZone: "UTC"
@@ -197,23 +192,23 @@ function acceptedAtLabel(value: string | undefined): string | null {
 }
 
 function statusLabel(status: PersistedRun["status"]): string {
-  if (status === "complete") return "Завершён";
-  if (status === "cancelled") return "Остановлен";
-  if (status === "error") return "Ошибка";
-  if (status === "queued") return "В очереди";
-  if (status === "streaming") return "Стриминг";
-  return "Выполняется";
+  if (status === "complete") return "Complete";
+  if (status === "cancelled") return "Stopped";
+  if (status === "error") return "Error";
+  if (status === "queued") return "Queued";
+  if (status === "streaming") return "Streaming";
+  return "Running";
 }
 
 function toolStatusLabel(status: PersistedRun["toolCalls"][number]["status"]): string {
-  if (status === "complete") return "Завершён";
-  if (status === "cancelled") return "Остановлен";
-  if (status === "error") return "Ошибка";
-  return "Выполняется";
+  if (status === "complete") return "Complete";
+  if (status === "cancelled") return "Stopped";
+  if (status === "error") return "Error";
+  return "Running";
 }
 
 function parameterLabel(name: string): string {
-  if (name === "max_output_tokens") return "Максимум output-токенов";
+  if (name === "max_output_tokens") return "Max output tokens";
   if (name === "temperature") return "Temperature";
   if (name === "reasoning_effort") return "Reasoning effort";
   if (name === "reasoning_mode") return "Reasoning mode";
@@ -222,51 +217,51 @@ function parameterLabel(name: string): string {
 }
 
 function parameterValue(value: boolean | number | string): string {
-  if (typeof value === "boolean") return value ? "Включено" : "Выключено";
+  if (typeof value === "boolean") return value ? "On" : "Off";
   return String(value);
 }
 
 function memoryItemTypeLabel(value: MemoryReceiptItem["itemType"]): string {
-  if (value === "FACT_VERSION") return "Сохранённый факт";
-  if (value === "RECALL_CHUNK") return "Фрагмент истории";
-  if (value === "EPISODE") return "Исторический эпизод";
-  return "Профиль";
+  if (value === "FACT_VERSION") return "Saved fact";
+  if (value === "RECALL_CHUNK") return "Previous-chat excerpt";
+  if (value === "EPISODE") return "Previous-chat episode";
+  return "Memory summary";
 }
 
 function memorySourceModeLabel(value: MemoryReceiptItem["sourceMode"]): string {
-  if (value === "EXPLICIT") return "Сохранено явно";
-  if (value === "AUTOMATIC") return "Извлечено автоматически";
-  if (value === "HISTORY") return "История чатов";
-  return "Профиль";
+  if (value === "EXPLICIT") return "Saved explicitly";
+  if (value === "AUTOMATIC") return "Learned automatically";
+  if (value === "HISTORY") return "Chat history";
+  return "Memory summary";
 }
 
 function memoryScopeLabel(value: MemoryReceiptItem["scopeType"]): string {
-  if (value === "GLOBAL_USER") return "Учётная запись";
-  if (value === "CHAT") return "Чат";
-  if (value === "FOLDER") return "Папка";
-  if (value === "ASSISTANT") return "Ассистент";
-  return "Без области";
+  if (value === "GLOBAL_USER") return "Your account";
+  if (value === "CHAT") return "Chat";
+  if (value === "FOLDER") return "Folder";
+  if (value === "ASSISTANT") return "Assistant";
+  return "No scope";
 }
 
 function memoryLifecycleLabel(value: MemoryReceiptItem["lifecycleState"]): string {
-  if (value === "LATER_FORGOTTEN") return "Позже забыто";
-  if (value === "SOURCE_DELETED") return "Источник удалён";
-  return "Актуально для этого run";
+  if (value === "LATER_FORGOTTEN") return "Later forgotten";
+  if (value === "SOURCE_DELETED") return "Source deleted";
+  return "Current for this run";
 }
 
 function memoryOutcomeLabel(value: MemoryReceipt["outcome"]): string {
-  if (value === "USED") return "Использована";
-  if (value === "DEGRADED") return "Использована с ограничениями";
-  if (value === "EMPTY") return "Подходящих воспоминаний не было";
-  if (value === "DISABLED") return "Была выключена";
-  return "Безопасно пропущена";
+  if (value === "USED") return "Used";
+  if (value === "DEGRADED") return "Used with safe degradation";
+  if (value === "EMPTY") return "No matching memories";
+  if (value === "DISABLED") return "Memory was off";
+  return "Safely skipped";
 }
 
 function memoryActionLabel(value: MemoryActionFeedback["operation"]): string {
-  if (value === "SAVE") return "Сохранено";
-  if (value === "UPDATE") return "Обновлено";
-  if (value === "FORGET") return "Забыто";
-  return "Отмечено как неверное";
+  if (value === "SAVE") return "Saved";
+  if (value === "UPDATE") return "Updated";
+  if (value === "FORGET") return "Forgotten";
+  return "Marked incorrect";
 }
 
 function projectMemoryDetails(
@@ -360,19 +355,19 @@ export function projectRunDetailsV2(input: Readonly<{
     value: parameterValue(parameter.value)
   })) ?? [];
   const bindings: { label: string; value: string }[] = [
-    { label: "Провайдер", value: providerLabel },
-    { label: "Модель", value: modelLabel }
+    { label: "Provider", value: providerLabel },
+    { label: "Model", value: modelLabel }
   ];
   if (run.assistant) {
     bindings.push({
-      label: "Ассистент",
-      value: `${run.assistant.name} · ревизия ${run.assistant.revisionNumber}`
+      label: "Assistant",
+      value: `${run.assistant.name} · revision ${run.assistant.revisionNumber}`
     });
   }
   if (inspection) {
     bindings.push({
-      label: "Контекст ветви",
-      value: `${inspection.branchMessageCount} предыдущих сообщений`
+      label: "Branch context",
+      value: `${inspection.branchMessageCount} previous messages`
     });
     if (inspection.searchBindings.length > 0) {
       bindings.push({
@@ -381,7 +376,7 @@ export function projectRunDetailsV2(input: Readonly<{
       });
     }
     if (inspection.knowledgeBaseCount > 0) {
-      bindings.push({ label: "Knowledge", value: `${inspection.knowledgeBaseCount} баз` });
+      bindings.push({ label: "Knowledge", value: `${inspection.knowledgeBaseCount} ${inspection.knowledgeBaseCount === 1 ? "base" : "bases"}` });
     }
     if (inspection.mcpServers.length > 0) {
       bindings.push({
@@ -393,14 +388,14 @@ export function projectRunDetailsV2(input: Readonly<{
     }
     if (inspection.memoryContextItemCount > 0) {
       bindings.push({
-        label: "Память",
+        label: "Memory",
         value: `${inspection.memoryContextItemCount} frozen items`
       });
     }
     if (inspection.attachmentCount > 0) {
       bindings.push({
-        label: "Входные файлы",
-        value: `${inspection.attachmentCount} · приватные`
+        label: "Input files",
+        value: `${inspection.attachmentCount} · private`
       });
     }
   }
@@ -418,8 +413,8 @@ export function projectRunDetailsV2(input: Readonly<{
     credentialLabel: [
       call.externalAccountLabel,
       ...call.credentialSources.map((source) => {
-        if (source === "personal") return "личный credential";
-        if (source === "shared") return "общий credential";
+        if (source === "personal") return "personal credential";
+        if (source === "shared") return "shared credential";
         return "OAuth";
       })
     ].filter((value): value is string => Boolean(value)).join(" · ") || null,

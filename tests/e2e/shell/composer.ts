@@ -5,11 +5,11 @@ export function composerRunSummary(page: Page): Locator {
 }
 
 export async function openModelPicker(page: Page): Promise<Locator> {
-  const picker = page.getByRole("dialog", { name: "Выбор модели" });
+  const picker = page.getByRole("dialog", { name: "Choose model" });
   if (await picker.isVisible()) return picker;
   await composerRunSummary(page).click();
   await expect(picker).toBeVisible();
-  await expect(picker.getByRole("searchbox", { name: "Найти модель" })).toBeFocused();
+  await expect(picker.getByRole("searchbox", { name: "Search models" })).toBeFocused();
   return picker;
 }
 
@@ -20,7 +20,7 @@ export async function selectModel(
   _providerNameOverride?: string
 ): Promise<void> {
   const picker = await openModelPicker(page);
-  await picker.getByRole("searchbox", { name: "Найти модель" }).fill(modelQuery);
+  await picker.getByRole("searchbox", { name: "Search models" }).fill(modelQuery);
   const option = picker.locator(`[role="option"][data-provider-id="${provider}"]`)
     .filter({ hasText: modelQuery })
     .first();
@@ -30,19 +30,19 @@ export async function selectModel(
 }
 
 export async function openRunSetup(page: Page): Promise<Locator> {
-  const setup = page.getByRole("dialog", { name: "Параметры модели" });
+  const setup = page.getByRole("dialog", { name: "Model parameters" });
   if (await setup.isVisible()) return setup;
-  await page.getByRole("button", { name: "Возможности" }).click();
-  const capabilities = page.getByRole("menu", { name: "Возможности запроса" });
-  await capabilities.getByRole("menuitemcheckbox", { name: /Параметры модели/ }).click();
+  await page.getByRole("button", { name: "Capabilities" }).click();
+  const capabilities = page.getByRole("menu", { name: "Capabilities" });
+  await capabilities.getByRole("menuitemcheckbox", { name: /Model parameters/ }).click();
   await expect(setup).toBeVisible();
   return setup;
 }
 
 export async function closeRunSetup(page: Page): Promise<void> {
-  const setup = page.getByRole("dialog", { name: "Параметры модели" });
+  const setup = page.getByRole("dialog", { name: "Model parameters" });
   if (!(await setup.isVisible())) return;
-  await setup.getByRole("button", { name: "Закрыть параметры" }).click();
+  await setup.getByRole("button", { name: "Close parameters" }).click();
   await expect(setup).toHaveCount(0);
 }
 
@@ -58,16 +58,16 @@ export async function reasoningOptionValues(page: Page): Promise<string[]> {
 
 export async function chooseSearchStrategy(page: Page, label: string): Promise<void> {
   if (/off/iu.test(label)) {
-    const indicator = page.getByRole("button", { name: "Отключить Search" });
+    const indicator = page.getByRole("button", { name: "Turn off Search" });
     if (await indicator.isVisible()) await indicator.click();
     await expect(indicator).toHaveCount(0);
     return;
   }
 
-  await page.getByRole("button", { name: "Возможности" }).click();
-  const capabilities = page.getByRole("menu", { name: "Возможности запроса" });
+  await page.getByRole("button", { name: "Capabilities" }).click();
+  const capabilities = page.getByRole("menu", { name: "Capabilities" });
   await capabilities.getByRole("menuitemcheckbox", { name: new RegExp(label, "iu") }).click();
-  await capabilities.getByRole("button", { name: "Закрыть" }).click();
+  await capabilities.getByRole("button", { name: "Close" }).click();
 }
 
 export async function chooseReasoningEffort(page: Page, value: string): Promise<void> {
@@ -94,9 +94,9 @@ export async function expectRunSummary(
   }
   if (expected.search !== undefined) {
     if (/off/iu.test(expected.search)) {
-      await expect(page.getByRole("button", { name: "Отключить Search" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Turn off Search" })).toHaveCount(0);
     } else {
-      await expect(page.getByRole("button", { name: "Отключить Search" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Turn off Search" })).toBeVisible();
     }
   }
 }

@@ -6,7 +6,10 @@ import {
   type SearchPlanMode,
   type SearchProtocol
 } from "./search";
-import { resolveProviderConnectionLabels } from "./providerConnectionLabels";
+import {
+  resolveProviderConnectionLabels,
+  stripEndpointHostFragments
+} from "./providerConnectionLabels";
 
 export type ReasoningEffort = string;
 export type ReasoningMode = string;
@@ -462,7 +465,16 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const decodedProviders = providers.filter(
     (provider): provider is CatalogProvider => provider !== null
   );
-  const providerLabels = resolveProviderConnectionLabels(decodedProviders);
+  // Ordinary UI receives display names with endpoint-host fragments removed;
+  // stripping happens before collision resolution so "· ref" still
+  // disambiguates connections whose stripped names collide. Admin surfaces
+  // resolve their own labels from the unstripped source.
+  const providerLabels = resolveProviderConnectionLabels(
+    decodedProviders.map((provider) => ({
+      id: provider.id,
+      name: stripEndpointHostFragments(provider.name)
+    }))
+  );
 
   return {
     ...(attachmentLimits ? { attachmentLimits } : {}),

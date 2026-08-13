@@ -51,7 +51,7 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
   });
 
   await signIn(page);
-  const composer = page.getByRole("textbox", { name: "Сообщение" });
+  const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Show grounded suggestions");
   await composer.press("Enter");
   await suggestionStream.waitForRequestCount(page, 1);
@@ -81,7 +81,7 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
     childCount: element.shadowRoot?.childNodes.length ?? 0,
     hasProviderCssCanary: element.shadowRoot?.textContent?.includes(canary) ?? false
   }), cssCanary)).toEqual({ childCount: 0, hasProviderCssCanary: false });
-  const workspaceButton = page.getByRole("button", { name: "Открыть панель" });
+  const workspaceButton = page.getByRole("button", { name: "Open sidebar" });
   await expectCenterUnobscured(workspaceButton);
   expect(await workspaceButton.evaluate((button) => {
     const bounds = button.getBoundingClientRect();

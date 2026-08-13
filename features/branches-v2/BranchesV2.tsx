@@ -34,18 +34,18 @@ export function EditBranchStripV2({
     <section className="v2-edit-branch-strip" data-testid="edit-branch-strip-v2">
       <UiV2Icon name="branch" />
       <span>
-        <strong>{pending ? "Сохраняем новую ветвь…" : "Редактирование сообщения"}</strong>
-        <small>Отправка создаст новую ветвь; история не изменится.</small>
+        <strong>{pending ? "Saving the new branch…" : "Editing message"}</strong>
+        <small>Sending creates a new branch; history stays unchanged.</small>
         {error ? <small className="v2-edit-branch-error" role="alert">{error}</small> : null}
       </span>
       <button
-        aria-label="Отменить редактирование"
+        aria-label="Cancel editing"
         disabled={pending}
         onClick={onCancel}
-        title={pending ? "Дождитесь сохранения новой ветви" : "Отменить редактирование"}
+        title={pending ? "Wait for the new branch to save" : "Cancel editing"}
         type="button"
       >
-        Отмена
+        Cancel
       </button>
     </section>
   );
@@ -64,29 +64,29 @@ export function BranchPagerV2({
 }>) {
   const reasonId = useId();
   const disabled = Boolean(disabledReason || pending);
-  const description = pending ? "Переключаем версию…" : disabledReason;
+  const description = pending ? "Switching version…" : disabledReason;
 
   return (
     <div className="v2-branch-pager-wrap">
       <nav
-        aria-label="Версии сообщения"
+        aria-label="Message versions"
         aria-describedby={description ? reasonId : undefined}
         className="v2-branch-pager"
         data-testid="branch-pager"
       >
         <button
-          aria-label="Предыдущая версия"
+          aria-label="Previous version"
           disabled={disabled || state.previousLeafId === null}
           onClick={() => state.previousLeafId && onCheckout(state.previousLeafId)}
           type="button"
         >
           ‹
         </button>
-        <span aria-label={`Версия ${state.current} из ${state.total}`}>
+        <span aria-label={`Version ${state.current} of ${state.total}`}>
           {state.current}/{state.total}
         </span>
         <button
-          aria-label="Следующая версия"
+          aria-label="Next version"
           disabled={disabled || state.nextLeafId === null}
           onClick={() => state.nextLeafId && onCheckout(state.nextLeafId)}
           type="button"
@@ -124,18 +124,18 @@ export function BranchPagerSlotV2({
 }
 
 function versionKindLabel(kind: BranchVersionV2["kind"]): string {
-  if (kind === "original") return "Исходная версия";
-  if (kind === "edited_question") return "Правка вопроса";
-  if (kind === "regenerated_answer") return "Перегенерация ответа";
-  return "Альтернативная версия";
+  if (kind === "original") return "Original version";
+  if (kind === "edited_question") return "Edited question";
+  if (kind === "regenerated_answer") return "Regenerated answer";
+  return "Alternate version";
 }
 
 function statusLabel(status: BranchVersionV2["status"]): string {
-  if (status === "complete") return "Готова";
-  if (status === "cancelled") return "Остановлена";
-  if (status === "error") return "С ошибкой";
-  if (status === "streaming") return "Выполняется";
-  return "В очереди";
+  if (status === "complete") return "Complete";
+  if (status === "cancelled") return "Stopped";
+  if (status === "error") return "Error";
+  if (status === "streaming") return "Running";
+  return "Queued";
 }
 
 function BranchVersionRow({
@@ -156,16 +156,16 @@ function BranchVersionRow({
       <span className="v2-branch-version-mark" aria-hidden="true" />
       <span className="v2-branch-version-copy">
         <span>
-          <strong>Версия {version.ordinal}</strong>
+          <strong>Version {version.ordinal}</strong>
           <small>{versionKindLabel(version.kind)}</small>
         </span>
         <span className="v2-branch-version-preview">{version.preview}</span>
         <small>
-          {version.messageCount} {version.messageCount === 1 ? "сообщение" : "сообщений"} · {statusLabel(version.status)}
+          {version.messageCount} {version.messageCount === 1 ? "message" : "messages"} · {statusLabel(version.status)}
         </small>
       </span>
       {version.active ? (
-        <span className="v2-branch-current" aria-current="true">Текущая</span>
+        <span className="v2-branch-current" aria-current="true">Current</span>
       ) : (
         <UiV2Button
           busy={pending}
@@ -173,7 +173,7 @@ function BranchVersionRow({
           onClick={() => onCheckout(version)}
           title={checkoutDisabledReason ?? undefined}
         >
-          Переключиться
+          Switch
         </UiV2Button>
       )}
     </li>
@@ -217,12 +217,12 @@ export function BranchDrawerV2({
     try {
       const succeeded = await onCheckout(version.checkoutLeafId);
       if (succeeded === false) {
-        setCheckoutError("Не удалось переключить версию. Текущая ветвь не изменилась.");
+        setCheckoutError("Could not switch versions. The current branch is unchanged.");
         return;
       }
       onClose();
     } catch {
-      setCheckoutError("Не удалось переключить версию. Текущая ветвь не изменилась.");
+      setCheckoutError("Could not switch versions. The current branch is unchanged.");
     } finally {
       setPendingLeafId(null);
     }
@@ -239,7 +239,7 @@ export function BranchDrawerV2({
     >
       <aside
         aria-busy={pendingLeafId !== null}
-        aria-label="Ветви разговора"
+        aria-label="Conversation branches"
         aria-modal="true"
         className="v2-branch-drawer"
         onKeyDown={onDialogKeyDown}
@@ -248,19 +248,19 @@ export function BranchDrawerV2({
       >
         <header className="v2-branch-drawer-header">
           <span>
-            <small>История разговора</small>
-            <h2>Ветви</h2>
+            <small>Conversation history</small>
+            <h2>Branches</h2>
           </span>
           <UiV2IconButton
             disabled={Boolean(pendingLeafId)}
             icon="close"
-            label="Закрыть ветви"
+            label="Close branches"
             onClick={onClose}
             ref={closeRef}
           />
         </header>
         <p className="v2-branch-drawer-copy">
-          Переключение меняет активную ветвь для будущих сообщений. История не изменяется.
+          Switching changes the active branch for future messages. History is never rewritten.
         </p>
         {checkoutDisabledReason ? (
           <p className="v2-branch-disabled-guidance" role="status">
@@ -272,21 +272,21 @@ export function BranchDrawerV2({
         ) : null}
         <div className="v2-branch-drawer-scroll">
           {loading ? (
-            <div className="v2-branch-loading" aria-label="Загружаем ветви" role="status">
+            <div className="v2-branch-loading" aria-label="Loading branches" role="status">
               <UiV2Skeleton />
               <UiV2Skeleton />
               <UiV2Skeleton />
             </div>
           ) : error ? (
             <div className="v2-branch-error-state" role="alert">
-              <strong>Не удалось загрузить ветви</strong>
-              <p>Текущая версия не изменилась.</p>
-              {onRetry ? <UiV2Button onClick={onRetry}>Повторить</UiV2Button> : null}
+              <strong>Could not load branches</strong>
+              <p>The current version is unchanged.</p>
+              {onRetry ? <UiV2Button onClick={onRetry}>Retry</UiV2Button> : null}
             </div>
           ) : versions.length === 0 ? (
             <div className="v2-branch-empty">
-              <strong>Ветвей пока нет</strong>
-              <p>Отредактируйте сообщение или перегенерируйте ответ, чтобы создать новую версию.</p>
+              <strong>No branches yet</strong>
+              <p>Edit a message or regenerate an answer to create a new version.</p>
             </div>
           ) : (
             <ol className="v2-branch-version-list">

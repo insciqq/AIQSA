@@ -105,26 +105,26 @@ export function NavigationV2Gallery({ state = "default" }: { state?: NavigationG
           <p className="v2-navigation-fixture-kicker">Reading Room</p>
           <h1>Quarterly product brief</h1>
           <p>
-            Спокойная рабочая поверхность оставляет навигацию рядом, но не превращает
-            беседу в dashboard. Активный режим нового чата: <strong>{mode}</strong>.
+            A calm working surface keeps navigation nearby without turning the
+            conversation into a dashboard. Active new-chat mode: <strong>{mode}</strong>.
           </p>
           <div className="v2-navigation-fixture-rule" />
           <p>
-            Selected chat: <strong>{selected}</strong>. Ctrl/Cmd+K использует тот же
-            серверный поиск по названию и папке.
+            Selected chat: <strong>{selected}</strong>. Ctrl/Cmd+K uses the same
+            server-side title and folder search.
           </p>
         </main>
       </ReadingRoomShellV2>
       {toastChat ? (
         <div className="v2-navigation-fixture-toast">
           <UiV2Toast
-            action="Отменить"
+            action="Undo"
             onAction={() => {
               setChats((items) => [toastChat, ...items]);
               setToastChat(null);
             }}
           >
-            Чат перемещён в архив
+            Chat moved to archive
           </UiV2Toast>
         </div>
       ) : null}

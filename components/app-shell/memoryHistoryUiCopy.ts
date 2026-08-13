@@ -1,5 +1,4 @@
 import type { MemoryUiLocale } from "@/lib/contracts/memory";
-import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 
 export const MEMORY_HISTORY_UI_COPY_KEYS = [
   "entry",
@@ -98,59 +97,11 @@ const EN = {
   itemDegraded: "Fallback index only"
 } satisfies MemoryHistoryUiCopyLocale;
 
-const RU = {
-  entry: "Поиск по истории чатов",
-  entryDescription: "Найдите прежний фрагмент или решение в допустимых сохранённых чатах.",
-  title: "Поиск по истории чатов",
-  back: "Назад к сохранённым воспоминаниям",
-  intro: "Поиск по безопасным фрагментам и эпизодам Памяти. Он не связан с поиском в боковой панели.",
-  queryLabel: "Поиск по истории",
-  queryPlaceholder: "Решение, фрагмент или прежний контекст",
-  search: "Найти в истории",
-  filters: "Ограничить источники",
-  chat: "Чат",
-  allChats: "Все допустимые чаты",
-  folder: "Папка",
-  allFolders: "Все допустимые папки",
-  fromDate: "Начиная с даты",
-  throughDate: "По дату включительно",
-  dateHelp: "Используются календарные дни UTC; конечная дата включена.",
-  loading: "Поиск по допустимой истории…",
-  cancel: "Отменить поиск",
-  cancelled: "Поиск отменён. Запрос и фильтры сохранены.",
-  error: "Не удалось выполнить поиск по истории.",
-  retry: "Повторить поиск",
-  queryInvalid: "Введите непустой запрос длиной не более 500 символов.",
-  intervalInvalid: "Выберите корректный диапазон: начало не позже конечной даты.",
-  empty: "В допустимой сохранённой истории ничего не найдено.",
-  loadMore: "Загрузить ещё из истории",
-  loadingMore: "Загрузка истории…",
-  openChat: "Открыть чат",
-  openArchived: "Открыть архивный просмотр",
-  archived: "Источник в архиве",
-  sourceTrail: "След источника",
-  excerpt: "Фрагмент чата",
-  episode: "Эпизод разговора",
-  lexicalReady: "Лексический поиск активен.",
-  vectorReady: "Семантический и лексический поиск активны.",
-  vectorNotConfigured: "Лексический поиск активен; семантическое сопоставление не настроено.",
-  vectorUnavailable: "Показаны лексические результаты; семантическое сопоставление временно недоступно.",
-  vectorStale: "Показаны лексические результаты; семантические векторы обновляются.",
-  vectorProfileUnsupported: "Показаны лексические результаты; этот векторный профиль не поддерживается.",
-  indexUnavailable: "Индекс сохранённой истории сейчас недоступен.",
-  historyDisabled: "Использование истории чатов выключено. Включите его в настройках Памяти для поиска.",
-  itemLexical: "Лексический индекс готов",
-  itemVectorPending: "Векторный индекс ожидается",
-  itemHybrid: "Лексический и векторный индексы готовы",
-  itemDegraded: "Только резервный индекс"
-} satisfies MemoryHistoryUiCopyLocale;
 
-const COPY: Readonly<Record<MemoryUiLocale, MemoryHistoryUiCopyLocale>> =
-  Object.freeze({ EN: Object.freeze(EN), RU: Object.freeze(RU) });
 
 export function memoryHistoryUiCopy(
   _locale: MemoryUiLocale,
   key: MemoryHistoryUiCopyKey
 ): string {
-  return COPY[MEMORY_PRESENTATION_LOCALE][key];
+  return EN[key];
 }

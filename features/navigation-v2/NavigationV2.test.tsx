@@ -86,47 +86,47 @@ describe("Navigation v2", () => {
   it("renders stable date groups, selected state, and an active-run cue", () => {
     sidebar();
 
-    expect(screen.getByText("Сегодня")).toBeVisible();
-    expect(screen.getByText("Вчера")).toBeVisible();
+    expect(screen.getByText("Today")).toBeVisible();
+    expect(screen.getByText("Yesterday")).toBeVisible();
     expect(screen.getByRole("button", { name: "Selected brief" })).toHaveAttribute(
       "data-selected",
       "true"
     );
-    expect(screen.getByLabelText("Ответ выполняется")).toBeVisible();
+    expect(screen.getByLabelText("Answer in progress")).toBeVisible();
   });
 
   it("keeps loading, error, empty, and search-empty states explicit", () => {
     const { view } = sidebar({ chats: [], loading: true, ready: false });
-    expect(screen.getByLabelText("Загрузка чатов")).toBeVisible();
+    expect(screen.getByLabelText("Loading chats")).toBeVisible();
 
     view.rerender(<NavigationSidebar {...{
       ...sidebarProps({ chats: [], error: "failed", ready: false })
     }} />);
-    expect(screen.getByText("Не удалось загрузить чаты")).toBeVisible();
+    expect(screen.getByText("Could not load chats")).toBeVisible();
 
     view.rerender(<NavigationSidebar {...sidebarProps({ chats: [] })} />);
-    expect(screen.getByText("Начните первый чат")).toBeVisible();
+    expect(screen.getByText("Start your first chat")).toBeVisible();
 
     view.rerender(<NavigationSidebar {...sidebarProps({ chats: [], searchQuery: "missing" })} />);
-    expect(screen.getByText("Ничего не найдено")).toBeVisible();
+    expect(screen.getByText("Nothing found")).toBeVisible();
   });
 
   it("routes Normal, Memory-off, and Temporary new-chat intents and marks the current mode", () => {
     const onNewChat = vi.fn();
     sidebar({ currentNewChatMode: "EXCLUDED", onNewChat });
 
-    fireEvent.click(screen.getByRole("button", { name: "Новый чат" }));
+    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
     expect(onNewChat).toHaveBeenLastCalledWith("NORMAL");
-    fireEvent.click(screen.getByRole("button", { name: "Режим нового чата" }));
-    expect(screen.getByRole("menuitem", { name: /Без памяти/ })).toHaveAttribute(
+    fireEvent.click(screen.getByRole("button", { name: "New chat mode" }));
+    expect(screen.getByRole("menuitem", { name: /Memory off/ })).toHaveAttribute(
       "aria-current",
       "true"
     );
-    expect(screen.getByRole("menuitem", { name: /Обычный/ })).not.toHaveAttribute("aria-current");
-    fireEvent.click(screen.getByRole("menuitem", { name: /Без памяти/ }));
+    expect(screen.getByRole("menuitem", { name: /Normal/ })).not.toHaveAttribute("aria-current");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Memory off/ }));
     expect(onNewChat).toHaveBeenLastCalledWith("EXCLUDED");
-    fireEvent.click(screen.getByRole("button", { name: "Режим нового чата" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /Временный чат/ }));
+    fireEvent.click(screen.getByRole("button", { name: "New chat mode" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Temporary chat/ }));
     expect(onNewChat).toHaveBeenLastCalledWith("TEMPORARY");
   });
 
@@ -134,13 +134,13 @@ describe("Navigation v2", () => {
     const onCreateFolder = vi.fn(async () => undefined);
     sidebar({ onCreateFolder });
 
-    expect(screen.queryByRole("button", { name: "Новая папка" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Режим нового чата" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Новая папка" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Название новой папки" }), {
+    expect(screen.queryByRole("button", { name: "New folder" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "New chat mode" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "New folder" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "New folder name" }), {
       target: { value: "Исследования" }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Создать папку" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create folder" }));
     expect(onCreateFolder).toHaveBeenCalledWith(null, "Исследования");
   });
 
@@ -155,23 +155,23 @@ describe("Navigation v2", () => {
       onMemoryMode
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Действия: Running answer" }));
-    expect(screen.getByRole("menuitem", { name: "Архивировать" })).toBeDisabled();
-    expect(screen.queryByRole("menuitem", { name: "Без памяти" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Actions: Running answer" }));
+    expect(screen.getByRole("menuitem", { name: "Archive" })).toBeDisabled();
+    expect(screen.queryByRole("menuitem", { name: "Memory off" })).toBeNull();
     // One toggle item shows the current state and flips it.
-    const memoryOn = screen.getByRole("menuitem", { name: "Использовать память" });
+    const memoryOn = screen.getByRole("menuitem", { name: "Use memory" });
     expect(memoryOn).toHaveAttribute("aria-current", "true");
-    expect(screen.getByRole("menuitem", { name: "Избранное" })).toHaveAttribute(
+    expect(screen.getByRole("menuitem", { name: "Favorite" })).toHaveAttribute(
       "aria-current",
       "true"
     );
     fireEvent.click(memoryOn);
     expect(onMemoryMode).toHaveBeenCalledWith(chats[0], "EXCLUDED");
 
-    fireEvent.click(screen.getByRole("button", { name: "Действия: Selected brief" }));
-    const memoryOff = screen.getByRole("menuitem", { name: "Использовать память" });
+    fireEvent.click(screen.getByRole("button", { name: "Actions: Selected brief" }));
+    const memoryOff = screen.getByRole("menuitem", { name: "Use memory" });
     expect(memoryOff).not.toHaveAttribute("aria-current");
-    expect(screen.getByRole("menuitem", { name: "Избранное" })).not.toHaveAttribute(
+    expect(screen.getByRole("menuitem", { name: "Favorite" })).not.toHaveAttribute(
       "aria-current"
     );
     fireEvent.click(memoryOff);
@@ -179,25 +179,25 @@ describe("Navigation v2", () => {
     expect(onArchive).not.toHaveBeenCalled();
   });
 
-  it("shows Удалить… only with the capability and routes it to the confirm opener", () => {
+  it("shows Delete… only with the capability and routes it to the confirm opener", () => {
     const onDelete = vi.fn();
     const { view } = sidebar();
 
-    fireEvent.click(screen.getByRole("button", { name: "Действия: Selected brief" }));
-    expect(screen.queryByRole("menuitem", { name: "Удалить…" })).toBeNull();
-    fireEvent.keyDown(screen.getByRole("menuitem", { name: "Переименовать" }), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Actions: Selected brief" }));
+    expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+    fireEvent.keyDown(screen.getByRole("menuitem", { name: "Rename" }), { key: "Escape" });
 
     view.rerender(<NavigationSidebar {...sidebarProps({ onDelete })} />);
-    fireEvent.click(screen.getByRole("button", { name: "Действия: Selected brief" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Удалить…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions: Selected brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete…" }));
     expect(onDelete).toHaveBeenCalledWith(chats[1]);
 
     // A running chat cannot be deleted directly either.
-    fireEvent.click(screen.getByRole("button", { name: "Действия: Running answer" }));
-    expect(screen.getByRole("menuitem", { name: "Удалить…" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Actions: Running answer" }));
+    expect(screen.getByRole("menuitem", { name: "Delete…" })).toBeDisabled();
   });
 
-  it("lists every nested folder with indentation inside Переместить", () => {
+  it("lists every nested folder with indentation inside Move to…", () => {
     const onMove = vi.fn();
     sidebar({
       folders: [
@@ -209,12 +209,12 @@ describe("Navigation v2", () => {
       onMove
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Действия: Selected brief" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Переместить" }));
-    const options = screen.getByLabelText("Выберите папку");
+    fireEvent.click(screen.getByRole("button", { name: "Actions: Selected brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+    const options = screen.getByLabelText("Choose a folder");
     const labels = [...options.querySelectorAll("[role='menuitem']")]
       .map((item) => item.textContent);
-    expect(labels).toEqual(["Без папки", "Research", "Recall", "Evidence", "Ops"]);
+    expect(labels).toEqual(["No folder", "Research", "Recall", "Evidence", "Ops"]);
     const nested = [...options.querySelectorAll("[role='menuitem']")]
       .find((item) => item.textContent === "Evidence") as HTMLElement;
     expect(nested.style.paddingLeft).toBe("2rem");
@@ -237,12 +237,12 @@ describe("Navigation v2", () => {
       .toEqual(["root-a", "root-b", "orphan"]);
   });
 
-  it("opens the shell palette from the quiet «Поиск ⌘K» row without an inline field", () => {
+  it("opens the shell palette from the quiet Search ⌘K row without an inline field", () => {
     const onOpenSearch = vi.fn();
     sidebar({ onOpenSearch });
 
     expect(screen.queryByRole("searchbox")).toBeNull();
-    const row = screen.getByRole("button", { name: /Поиск/ });
+    const row = screen.getByRole("button", { name: /Search/ });
     expect(row).toHaveTextContent("⌘K");
     fireEvent.click(row);
     expect(onOpenSearch).toHaveBeenCalledTimes(1);
@@ -253,7 +253,7 @@ describe("Navigation v2", () => {
     const onSelectChat = vi.fn();
     sidebar({ onSearch, onSelectChat, searchQuery: "brief" });
 
-    expect(screen.getByText("Результаты")).toBeVisible();
+    expect(screen.getByText("Results")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Selected brief" }));
     expect(onSearch).toHaveBeenCalledWith("");
     expect(onSelectChat).toHaveBeenCalledWith(chats[1]);
@@ -274,9 +274,9 @@ describe("Navigation v2", () => {
       </ReadingRoomShellV2>
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Закрыть панель" }));
-    expect(screen.getByRole("button", { name: "Открыть панель" })).toHaveFocus();
-    fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close sidebar" }));
+    expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
     expect(screen.getByRole("main")).toHaveTextContent("Conversation");
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -293,15 +293,15 @@ describe("Navigation v2", () => {
       </ReadingRoomShellV2>
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
-    const close = screen.getByRole("button", { name: "Закрыть панель" });
+    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    const close = screen.getByRole("button", { name: "Close sidebar" });
     expect(close).toHaveFocus();
     fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
-    expect(screen.getByRole("button", { name: "Настройки" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Settings" })).toHaveFocus();
     fireEvent.keyDown(window, { key: "Tab" });
     expect(close).toHaveFocus();
     fireEvent.click(close);
-    expect(screen.getByRole("button", { name: "Открыть панель" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
   });
 
   it("defaults 900–1023px to compact and preserves one sidebar owner when expanded", () => {
@@ -318,10 +318,10 @@ describe("Navigation v2", () => {
     const shell = screen.getByRole("main").closest(".v2-workspace-shell");
     expect(shell).toHaveAttribute("data-sidebar-composition", "compact");
     expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
-    const opener = screen.getByRole("button", { name: "Открыть панель" });
+    const opener = screen.getByRole("button", { name: "Open sidebar" });
     fireEvent.click(opener);
     expect(shell).toHaveAttribute("data-sidebar-compact-expanded", "true");
-    expect(screen.getByRole("button", { name: "Закрыть панель" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Close sidebar" })).toHaveFocus();
   });
 
   it("moves focus to the compact opener across <900 and restores the exact desktop source", () => {
@@ -335,7 +335,7 @@ describe("Navigation v2", () => {
       </ReadingRoomShellV2>
     );
     const source = screen.getByRole("button", { name: "Selected brief" });
-    const opener = screen.getByRole("button", { name: "Открыть панель" });
+    const opener = screen.getByRole("button", { name: "Open sidebar" });
     source.focus();
 
     width = 844;
@@ -366,44 +366,44 @@ describe("Navigation v2", () => {
     fireEvent.keyDown(opener, { key: "k", metaKey: true });
 
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.queryByRole("textbox", { name: "Найти чат" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Search chats" })).toBeNull();
   });
 
   it("dismisses the chat-row menu on Escape, outside press, and focus-out", () => {
     sidebar({ onOpenSearch: vi.fn() });
-    const trigger = screen.getByRole("button", { name: "Действия: Selected brief" });
-    const searchRow = screen.getByRole("button", { name: /Поиск/ });
+    const trigger = screen.getByRole("button", { name: "Actions: Selected brief" });
+    const searchRow = screen.getByRole("button", { name: /Search/ });
 
     fireEvent.click(trigger);
     fireEvent.keyDown(
-      screen.getByRole("menuitem", { name: "Переименовать" }),
+      screen.getByRole("menuitem", { name: "Rename" }),
       { key: "Escape" }
     );
-    expect(screen.queryByRole("menu", { name: "Действия чата Selected brief" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Chat actions: Selected brief" })).toBeNull();
     expect(trigger).toHaveFocus();
 
     fireEvent.click(trigger);
-    expect(screen.getByRole("menu", { name: "Действия чата Selected brief" })).toBeVisible();
+    expect(screen.getByRole("menu", { name: "Chat actions: Selected brief" })).toBeVisible();
     fireEvent.pointerDown(searchRow);
-    expect(screen.queryByRole("menu", { name: "Действия чата Selected brief" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Chat actions: Selected brief" })).toBeNull();
 
     fireEvent.click(trigger);
     fireEvent.focusIn(searchRow);
-    expect(screen.queryByRole("menu", { name: "Действия чата Selected brief" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Chat actions: Selected brief" })).toBeNull();
   });
 
   it("dismisses the new-chat mode menu on Escape with focus returned to its trigger", () => {
     const onNewChat = vi.fn();
     sidebar({ onNewChat });
-    const trigger = screen.getByRole("button", { name: "Режим нового чата" });
+    const trigger = screen.getByRole("button", { name: "New chat mode" });
 
     fireEvent.click(trigger);
     fireEvent.keyDown(
-      screen.getByRole("menuitem", { name: /Временный чат/ }),
+      screen.getByRole("menuitem", { name: /Temporary chat/ }),
       { key: "Escape" }
     );
 
-    expect(screen.queryByRole("menu", { name: "Режим нового чата" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "New chat mode" })).toBeNull();
     expect(trigger).toHaveFocus();
     expect(onNewChat).not.toHaveBeenCalled();
   });
@@ -421,12 +421,12 @@ describe("Navigation v2", () => {
         onSelectChat={vi.fn()}
       />
     );
-    expect(screen.queryByLabelText("Ответ выполняется")).toBeNull();
+    expect(screen.queryByLabelText("Answer in progress")).toBeNull();
 
     act(() => useRunLifecycleStore.getState().streamStarted({ chatId: "yesterday" }));
-    expect(screen.getByLabelText("Ответ выполняется")).toBeVisible();
+    expect(screen.getByLabelText("Answer in progress")).toBeVisible();
     act(() => useRunLifecycleStore.getState().streamFinished({ chatId: "yesterday" }));
-    expect(screen.queryByLabelText("Ответ выполняется")).toBeNull();
+    expect(screen.queryByLabelText("Answer in progress")).toBeNull();
   });
 });
 

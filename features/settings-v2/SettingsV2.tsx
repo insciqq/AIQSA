@@ -101,7 +101,7 @@ export function SettingsV2({
         ref={dialogRef}
         aria-busy={busy || undefined}
         aria-hidden={discardIntent !== null || undefined}
-        aria-label="Настройки"
+        aria-label="Settings"
         aria-modal="true"
         className="v2-settings-dialog"
         data-testid="settings-v2"
@@ -113,18 +113,18 @@ export function SettingsV2({
         <UiV2IconSprite />
         <header className="v2-settings-header">
           <div>
-            <h1>Настройки</h1>
-            <p>Внешний вид и личные подключения инструментов</p>
+            <h1>Settings</h1>
+            <p>Appearance and your personal tool connections</p>
           </div>
           <UiV2IconButton
             ref={initialFocusRef}
             disabled={busy}
             icon="close"
-            label="Закрыть настройки"
+            label="Close settings"
             onClick={() => request({ kind: "close" })}
           />
         </header>
-        <nav className="v2-settings-nav" aria-label="Разделы настроек">
+        <nav className="v2-settings-nav" aria-label="Settings sections">
           <button
             aria-current={activeSection === "appearance" ? "page" : undefined}
             className="v2-settings-nav-button v2-focusable"
@@ -133,7 +133,7 @@ export function SettingsV2({
             type="button"
             onClick={() => request({ kind: "section", section: "appearance" })}
           >
-            <UiV2Icon name="sun" /> Внешний вид
+            <UiV2Icon name="sun" /> Appearance
           </button>
           <button
             aria-current={activeSection === "mcp" ? "page" : undefined}
@@ -143,23 +143,23 @@ export function SettingsV2({
             type="button"
             onClick={() => request({ kind: "section", section: "mcp" })}
           >
-            <UiV2Icon name="tool" /> MCP и инструменты
+            <UiV2Icon name="tool" /> MCP & tools
           </button>
         </nav>
         {busy || dirty ? (
           <p className="v2-settings-state" role="status">
-            {busy ? "Обновляем MCP…" : "Есть несохранённые значения MCP"}
+            {busy ? "Updating MCP…" : "Unsaved MCP values"}
           </p>
         ) : null}
         {noticeSlot ? <div className="v2-settings-notice">{noticeSlot}</div> : null}
         <div className="v2-settings-scroll">
           {activeSection === "appearance" ? (
             <section className="v2-settings-section" aria-labelledby="v2-appearance-heading">
-              <h2 id="v2-appearance-heading">Внешний вид</h2>
+              <h2 id="v2-appearance-heading">Appearance</h2>
               <p className="v2-settings-intro">
-                Выберите System, Light или Dark. Настройка применяется сразу и сохраняется только в этом браузере.
+                Choose System, Light, or Dark. The setting applies immediately and is saved only in this browser.
               </p>
-              <div className="v2-theme-options" role="radiogroup" aria-label="Тема">
+              <div className="v2-theme-options" role="radiogroup" aria-label="Theme">
                 {AIQSA_THEMES.map((theme, index) => {
                   const selected = theme.id === themeId;
                   return (
@@ -184,7 +184,7 @@ export function SettingsV2({
                         <strong>{theme.name}</strong>
                         <small>{theme.description}</small>
                       </span>
-                      <span className="v2-theme-current">{selected ? <UiV2Icon name="check" /> : null}{selected ? "Текущая" : "Выбрать"}</span>
+                      <span className="v2-theme-current">{selected ? <UiV2Icon name="check" /> : null}{selected ? "Current" : "Select"}</span>
                     </button>
                   );
                 })}
@@ -192,9 +192,9 @@ export function SettingsV2({
             </section>
           ) : (
             <section className="v2-settings-section" aria-labelledby="v2-mcp-heading">
-              <h2 id="v2-mcp-heading">MCP и инструменты</h2>
+              <h2 id="v2-mcp-heading">MCP & tools</h2>
               <p className="v2-settings-intro">
-                Управляйте только доступными вам подключениями. Политика, секреты и полный inventory остаются у администратора.
+                Manage only the connections available to you. Policy, secrets, and the full inventory stay with the administrator.
               </p>
               <div className="v2-settings-owner-slot" data-testid="settings-mcp-owner">
                 {mcpContent}
@@ -205,16 +205,16 @@ export function SettingsV2({
       </section>
       {discardIntent ? (
         <section
-          aria-label="Несохранённые изменения MCP"
+          aria-label="Unsaved MCP changes"
           aria-modal="true"
           className="v2-settings-confirm"
           role="alertdialog"
         >
-          <h2>Отменить несохранённые изменения?</h2>
-          <p>Изменения личного подключения MCP будут потеряны.</p>
+          <h2>Discard unsaved changes?</h2>
+          <p>Changes to your personal MCP connection will be lost.</p>
           <div>
-            <UiV2Button onClick={() => setDiscardIntent(null)}>Продолжить редактирование</UiV2Button>
-            <UiV2Button tone="destructive" onClick={confirmDiscard}>Отменить изменения</UiV2Button>
+            <UiV2Button onClick={() => setDiscardIntent(null)}>Keep editing</UiV2Button>
+            <UiV2Button tone="destructive" onClick={confirmDiscard}>Discard changes</UiV2Button>
           </div>
         </section>
       ) : null}
@@ -245,7 +245,7 @@ export function McpSettingsSummaryV2({
             <p>{server.detail}</p>
             <small>{server.enabled ? "Enabled" : "Disabled"} · {server.ready ? `${server.tools} tools ready` : "Needs setup"}</small>
           </div>
-          <UiV2Button>{server.ready ? "Настроить" : "Подключить"}</UiV2Button>
+          <UiV2Button>{server.ready ? "Configure" : "Connect"}</UiV2Button>
         </li>
       ))}
     </ul>
