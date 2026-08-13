@@ -84,7 +84,7 @@
   min-width: 0;
   overflow-wrap: anywhere;
   font-size: 0.875rem;
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-artifact-body > span:not(.v2-artifact-name-row),
@@ -183,6 +183,7 @@
   justify-items: end;
   background: color-mix(in srgb, var(--v2-color-canvas) 52%, transparent);
   backdrop-filter: blur(3px);
+  animation: v2-scrim-enter var(--v2-motion-fast) both;
 }
 
 .v2-artifact-preview-drawer {
@@ -196,6 +197,7 @@
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
   box-shadow: var(--v2-shadow-overlay);
+  animation: v2-drawer-enter var(--v2-motion-base) both;
 }
 
 .v2-artifact-preview-header {
@@ -226,7 +228,7 @@
   margin: 0;
   overflow-wrap: anywhere;
   font-size: 1.125rem;
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-artifact-preview-header-actions {
@@ -353,7 +355,7 @@
   display: block;
   margin-bottom: 2rem;
   font-size: 1.5rem;
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-artifact-page-preview p {
@@ -371,7 +373,7 @@
 
 .v2-artifact-preview-unavailable strong {
   color: var(--v2-color-text);
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-artifact-preview-unavailable p {
@@ -401,7 +403,7 @@
 .v2-artifact-lineage h3 {
   margin: 0;
   font-size: 0.9375rem;
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-artifact-lineage ol {
@@ -445,7 +447,7 @@
 .v2-artifact-lineage strong {
   color: var(--v2-color-text);
   font-size: 0.8125rem;
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-artifact-lineage button > span:not(:first-child),

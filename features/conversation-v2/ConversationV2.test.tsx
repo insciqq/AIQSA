@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ConversationTurnV2,
   ConversationV2,
+  shouldClampUserBubbleV2,
   type ConversationMessageV2
 } from "./ConversationV2";
 
@@ -84,6 +85,43 @@ describe("Conversation v2", () => {
     expect(onRegenerate).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Copy question" }));
     expect(onCopy).toHaveBeenCalledOnce();
+  });
+
+  it("clamps only a long question and restores it with «Показать полностью»", () => {
+    const longQuestion = Array.from({ length: 40 }, (_, index) => `Строка ${index + 1}`).join("\n");
+    expect(shouldClampUserBubbleV2("Короткий вопрос")).toBe(false);
+    expect(shouldClampUserBubbleV2(longQuestion)).toBe(true);
+    expect(shouldClampUserBubbleV2("а".repeat(2000))).toBe(true);
+
+    render(
+      <ConversationV2
+        messages={[
+          { content: "Короткий вопрос", id: "short-question", role: "user" },
+          { content: longQuestion, id: "long-question", role: "user" },
+          answer
+        ]}
+      />
+    );
+
+    // The short question and the answer never clamp and get no expander.
+    const short = screen.getAllByRole("article", { name: "Question" })[0];
+    expect(short.querySelector("[data-bubble-clamped]")).toBeNull();
+    expect(within(short).queryByRole("button", { name: "Показать полностью" })).toBeNull();
+    const assistant = screen.getByRole("article", { name: "Answer" });
+    expect(assistant.querySelector("[data-bubble-clamped]")).toBeNull();
+
+    const long = screen.getAllByRole("article", { name: "Question" })[1];
+    expect(long.querySelector("[data-bubble-clamped='true']")).not.toBeNull();
+    const expander = within(long).getByRole("button", { name: "Показать полностью" });
+    expect(expander).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(expander);
+    expect(long.querySelector("[data-bubble-clamped]")).toBeNull();
+    const collapse = within(long).getByRole("button", { name: "Свернуть" });
+    expect(collapse).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(collapse);
+    expect(long.querySelector("[data-bubble-clamped='true']")).not.toBeNull();
   });
 
   it("keeps answer-bound presentation beside the exact message", () => {

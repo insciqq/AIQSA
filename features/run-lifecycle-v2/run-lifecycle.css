@@ -32,11 +32,12 @@
   animation: v2-run-caret 1s steps(1) infinite;
 }
 
+/* Terminal and connection-loss strips are semantic statuses: text2 floor. */
 .v2-run-connection,
 .v2-run-terminal-strip {
   margin-top: 0.625rem;
   margin-bottom: 0;
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
 }
 
 .v2-run-connection button {
@@ -208,10 +209,10 @@ html[data-motion="off"] .v2-run-answer-streaming .v2-conversation-markdown > div
 
 .v2-run-gallery-header h1 {
   margin: 0;
-  font-size: clamp(1.625rem, 4vw, 2rem);
-  font-weight: 580;
+  font-size: 1.625rem;
+  font-weight: 600;
   letter-spacing: -0.025em;
-  line-height: 1.25;
+  line-height: 1.3;
 }
 
 .v2-run-gallery-header > span {

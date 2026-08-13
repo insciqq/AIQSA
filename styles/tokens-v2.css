@@ -43,6 +43,30 @@
   --v2-light-shadow-float: 0 2px 10px rgb(30 28 22 / 0.08);
   --v2-light-shadow-overlay: 0 12px 40px rgb(30 28 22 / 0.14);
 
+  /*
+   * Assistant avatar recipe palette: theme-invariant component tokens.
+   * These are immutable identity data pinned inside Assistant revisions —
+   * deliberately outside the semantic dark/light system so the same recipe
+   * renders identically in every theme — but their values still live only in
+   * this sole token file. They never encode status and never restyle by theme.
+   */
+  --v2-avatar-coral-bg: #b85560;
+  --v2-avatar-coral-fg: #f6dfe0;
+  --v2-avatar-ember-bg: #b4552d;
+  --v2-avatar-ember-fg: #f6ddc8;
+  --v2-avatar-meadow-bg: #3e7c4f;
+  --v2-avatar-meadow-fg: #dcedd8;
+  --v2-avatar-ocean-bg: #2d5e8c;
+  --v2-avatar-ocean-fg: #d3e6f4;
+  --v2-avatar-pine-bg: #2f6158;
+  --v2-avatar-pine-fg: #d2e9e2;
+  --v2-avatar-plum-bg: #6c4a7e;
+  --v2-avatar-plum-fg: #e9daf0;
+  --v2-avatar-sand-bg: #a4834a;
+  --v2-avatar-sand-fg: #f3e9d0;
+  --v2-avatar-slate-bg: #4e5c66;
+  --v2-avatar-slate-fg: #dfe6ea;
+
   --v2-measure: 46.25rem;
   --v2-wide-measure: 60rem;
   --v2-sidebar-width: 16.25rem;

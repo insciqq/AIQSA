@@ -6,6 +6,7 @@
   justify-items: end;
   background: color-mix(in srgb, var(--v2-color-canvas) 54%, transparent);
   backdrop-filter: blur(3px);
+  animation: v2-scrim-enter var(--v2-motion-fast) both;
 }
 
 .v2-run-details-gallery-main {
@@ -44,6 +45,7 @@
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
   box-shadow: var(--v2-shadow-overlay);
+  animation: v2-drawer-enter var(--v2-motion-base) both;
 }
 
 .v2-run-details-header {
@@ -73,7 +75,7 @@
 .v2-run-details-header h2 {
   margin: 0;
   font-size: 1rem;
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-run-details-body {
@@ -122,7 +124,7 @@
 
 .v2-run-details-outcome strong {
   color: var(--v2-color-text);
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-run-details-outcome small {
@@ -275,7 +277,7 @@
 
 .v2-run-details-timeline-copy strong {
   font-size: 0.75rem;
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-run-details-timeline-copy > span,
@@ -433,7 +435,7 @@
 
 .v2-run-details-files strong {
   font-size: 0.75rem;
-  font-weight: 550;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
@@ -457,7 +459,7 @@
 
 .v2-run-details-memory-action strong {
   color: var(--v2-color-ok);
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-run-details-memory-action p {
@@ -492,13 +494,13 @@
 
 .v2-run-details-state strong {
   font-size: 0.875rem;
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .v2-run-details-state p {
   max-width: 22rem;
   margin: 0;
-  color: var(--v2-color-text3);
+  color: var(--v2-color-text2);
   font-size: 0.75rem;
   line-height: 1.5;
 }

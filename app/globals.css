@@ -29,6 +29,18 @@ select {
   font: inherit;
 }
 
+/*
+ * Quiet token-colored scrollbars for every scroll region — the shell feed and
+ * each overlay layer/sheet/drawer alike (audit §23.5 found a system scrollbar
+ * inside a layer). Styled bars render as classic always-visible bars where
+ * content overflows, which also gives code blocks a visible horizontal-scroll
+ * affordance before any hover.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--v2-color-border2) transparent;
+}
+
 @layer base {
   a,
   button,

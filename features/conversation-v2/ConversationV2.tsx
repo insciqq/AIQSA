@@ -70,6 +70,24 @@ function interactiveTarget(target: EventTarget | null): boolean {
   );
 }
 
+const USER_BUBBLE_CLAMP_LINE_LIMIT = 14;
+const USER_BUBBLE_CLAMP_CHARACTER_LIMIT = 1600;
+
+/**
+ * A long question clamps to roughly fourteen bubble lines with a
+ * «Показать полностью» expander (audit §18.12). The candidate check is a
+ * deterministic content heuristic — line and character counts, never a layout
+ * measurement — so server render, tests, and the browser agree.
+ */
+export function shouldClampUserBubbleV2(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+  return (
+    trimmed.split("\n").length > USER_BUBBLE_CLAMP_LINE_LIMIT ||
+    trimmed.length > USER_BUBBLE_CLAMP_CHARACTER_LIMIT
+  );
+}
+
 export function ConversationTurnV2({
   actions,
   afterContent,
@@ -84,6 +102,7 @@ export function ConversationTurnV2({
   streaming = false
 }: ConversationTurnV2Props) {
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [bubbleExpanded, setBubbleExpanded] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [morePosition, setMorePosition] = useState<{
     left: number;
@@ -100,6 +119,8 @@ export function ConversationTurnV2({
   );
   const hasMoreMenu = Boolean(actions?.onDelete || actions?.onBranchFromHere);
   const label = ariaLabel ?? (isUser ? "Question" : "Answer");
+  const bubbleClampCandidate = isUser && shouldClampUserBubbleV2(content);
+  const bubbleClamped = bubbleClampCandidate && !bubbleExpanded;
 
   useEffect(() => {
     if (!moreOpen) return;
@@ -213,7 +234,11 @@ export function ConversationTurnV2({
       onClick={toggleControlsOnSurface}
       onKeyDown={handleKeyDown}
     >
-      <div className="v2-conversation-turn-content" data-thread-message-content>
+      <div
+        className="v2-conversation-turn-content"
+        data-bubble-clamped={bubbleClamped ? "true" : undefined}
+        data-thread-message-content
+      >
         {beforeContent}
         <div className="v2-conversation-markdown">
           {content.trim() ? (
@@ -222,6 +247,16 @@ export function ConversationTurnV2({
             <p className="v2-conversation-empty-turn">{emptyText}</p>
           ) : null}
         </div>
+        {bubbleClampCandidate ? (
+          <button
+            className="v2-bubble-expander v2-focusable"
+            type="button"
+            aria-expanded={bubbleExpanded}
+            onClick={() => setBubbleExpanded((expanded) => !expanded)}
+          >
+            {bubbleExpanded ? "Свернуть" : "Показать полностью"}
+          </button>
+        ) : null}
         {afterContent}
       </div>
 

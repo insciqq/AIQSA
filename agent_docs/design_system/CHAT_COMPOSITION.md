@@ -98,7 +98,7 @@ Back action; detailed existing resource editors open only from an explicit
 Library action. Settings uses one bounded modal or compact safe-area sheet with
 System/Light/Dark and MCP sections. These tasks never create another shell.
 
-The generated Assistant avatar is first-class recognition: 96px in the editor beside a quiet text-labelled `Generate another`, 40-48px on cards, 20-24px in the picker and settled answer identity, 56-64px in the blank intro, with deterministic initials as the only fallback. Its bounded recipe palette is identity data pinned inside immutable revisions — deliberately outside the semantic token system so the same recipe renders identically in every theme — and avatar color never carries scope, readiness, or status semantics. Adjacent-to-name avatars are decorative; avatar-only controls keep an accessible name and coarse-pointer target.
+The generated Assistant avatar is first-class recognition: 96px in the editor beside a quiet text-labelled `Generate another`, 40-48px on cards, 20-24px in the picker and settled answer identity, 56-64px in the blank intro, with deterministic initials as the only fallback. Its bounded recipe palette is identity data pinned inside immutable revisions — outside the semantic dark/light system so the same recipe renders identically in every theme, while the values themselves live as theme-invariant `--v2-avatar-*` component tokens in the sole token file — and avatar color never carries scope, readiness, or status semantics. Adjacent-to-name avatars are decorative; avatar-only controls keep an accessible name and coarse-pointer target.
 
 ## Auth And Public Share Composition
 
