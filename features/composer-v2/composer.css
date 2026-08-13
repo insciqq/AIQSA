@@ -617,19 +617,14 @@
   font-style: normal;
 }
 
+/* One joined line that ellipsizes once at the end; individual tags must never
+   shrink into fragments («Rea…», «Изобр…»). */
 .v2-composer-model-tags {
-  display: flex;
+  display: block;
   min-width: 0;
-  flex-wrap: nowrap;
-  gap: 0.375rem;
   overflow: hidden;
-  white-space: nowrap;
-}
-
-.v2-composer-model-tags em {
-  overflow: hidden;
-  font-style: normal;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .v2-composer-model-option > .v2-icon {
