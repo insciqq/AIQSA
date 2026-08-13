@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CatalogModel } from "./types";
 import {
   eventLabel,
+  exportFileBaseName,
   formatTokenCount,
   humanizeErrorCode,
   modelCapabilityDescription,
@@ -183,5 +184,21 @@ describe("shell labels", () => {
       "architecture-notes-2026"
     );
     expect(safeDownloadName("Исследование")).toBe("aiqsa-chat");
+  });
+
+  it("builds deterministic export base names from the title slug and ISO date", () => {
+    const date = new Date("2026-08-13T15:30:00.000Z");
+
+    expect(exportFileBaseName("Release checklist · 032", date)).toBe(
+      "release-checklist-032-2026-08-13"
+    );
+    // Unicode titles keep their letters instead of collapsing to a fallback.
+    expect(exportFileBaseName("Исследование памяти", date)).toBe(
+      "исследование-памяти-2026-08-13"
+    );
+    expect(exportFileBaseName("///", date)).toBe("chat-2026-08-13");
+    expect(exportFileBaseName(`${"a".repeat(80)} tail`, date)).toBe(
+      `${"a".repeat(64)}-2026-08-13`
+    );
   });
 });

@@ -51,7 +51,7 @@ describe("ArchivedChatsDialog", () => {
     render(<ArchivedChatsDialog locale="EN" onRestored={vi.fn()} />);
 
     const dialog = screen.getByRole("dialog", { name: "Archived chats" });
-    expect(within(dialog).getByRole("button", { name: /Archived source/ })).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: /^Archived source/ })).toBeVisible();
     expect(within(dialog).queryByRole("button", { name: /Delete/i })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: /New chat/i })).not.toBeInTheDocument();
     return waitFor(() =>
@@ -156,6 +156,85 @@ describe("ArchivedChatsDialog", () => {
     expect(
       screen.getByTestId("archived-chats-dialog").querySelector('[role="dialog"]')
     ).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("restores and deletes directly from list rows with capability-gated delete", async () => {
+    useMemorySettingsStore.setState({
+      data: memorySettingsFixture({ capabilities: { permanentChatDeletion: true } }),
+      error: null,
+      loadState: "ready"
+    });
+    await activatePermanentChatDeletionAccount("account-a");
+    useArchivedChatsStore.setState({
+      listLoadState: "ready",
+      open: true,
+      summaries: [
+        summary,
+        { ...summary, id: "chat-2", title: "Second archived" }
+      ]
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/chats/chat-1/restore" && init?.method === "POST") {
+        return Response.json({
+          chat: {
+            archived: false,
+            id: "chat-1",
+            memoryMode: "EXCLUDED",
+            sourceRevision: 5,
+            updatedAt
+          }
+        });
+      }
+      return new Response("", { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onRestored = vi.fn();
+
+    render(<ArchivedChatsDialog locale="EN" onRestored={onRestored} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore: Archived source" }));
+    await waitFor(() => expect(onRestored).toHaveBeenCalledWith("chat-1"));
+    expect(useArchivedChatsStore.getState().summaries.map((chat) => chat.id)).toEqual([
+      "chat-2"
+    ]);
+    // The list dialog stays open after a row restore.
+    expect(useArchivedChatsStore.getState().open).toBe(true);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete permanently: Second archived" })
+    );
+    expect(usePermanentChatDeletionStore.getState().target).toEqual({
+      chatId: "chat-2",
+      expectedActiveLeafMessageId: "message-1",
+      expectedChatRevision: 4,
+      location: "ARCHIVED",
+      title: "Second archived"
+    });
+  });
+
+  it("filters the archived list client-side by title", () => {
+    useArchivedChatsStore.setState({
+      listLoadState: "ready",
+      open: true,
+      summaries: [
+        summary,
+        { ...summary, id: "chat-2", title: "Release checklist" }
+      ]
+    });
+
+    render(<ArchivedChatsDialog locale="EN" onRestored={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: /^Archived source/ })).toBeVisible();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search archive" }), {
+      target: { value: "release" }
+    });
+    expect(screen.queryByRole("button", { name: /^Archived source/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Release checklist/ })).toBeVisible();
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search archive" }), {
+      target: { value: "nothing here" }
+    });
+    expect(screen.getByText("No archived chats match.")).toBeVisible();
   });
 
   it("keeps direct source navigation in an explicit loading state", () => {

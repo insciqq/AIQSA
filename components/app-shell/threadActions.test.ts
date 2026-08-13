@@ -189,12 +189,30 @@ describe("thread actions", () => {
       return new Response("", { status: 500 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const { actions, activateChat, confirmDeleteMessage, messages, refreshActiveChat, thread } =
-      createActionsForTest({
-        activeChatStreaming: false
-      });
+    const {
+      actions,
+      activateChat,
+      confirmDeleteMessage,
+      messages,
+      notices,
+      refreshActiveChat,
+      thread
+    } = createActionsForTest({
+      activeChatStreaming: false
+    });
+    useWorkspaceStore.setState({ navigationReady: true });
 
     await actions.branchChatFromMessage("message-1");
+
+    // The fork is never silent: the standard toast names the new chat and the
+    // live navigation list mirrors it.
+    expect(notices).toContainEqual(
+      expect.objectContaining({ kind: "success", text: "Branched chat: Branched Chat" })
+    );
+    expect(
+      useWorkspaceStore.getState().navigationChats.map((chat) => chat.id)
+    ).toContain("chat-branch");
+
     await actions.checkoutBranch("message-2");
     await actions.deleteMessage("message-1");
 

@@ -222,7 +222,9 @@ test("streams a new answer on the branch created by editing an answered question
       expect.arrayContaining(["token", "usage", "done"])
     );
 
-    await page.getByRole("button", { name: "Ветви" }).click();
+    // Branches opens from the single header "⋯" menu.
+    await page.getByTestId("header-more-trigger").click();
+    await page.getByRole("menuitem", { name: "Ветви" }).click();
     const branchTree = page.getByRole("dialog", { name: "Ветви разговора" });
     await expect(branchTree).toContainText("Правка вопроса");
     await expect(branchTree).toContainText("Исходная версия");

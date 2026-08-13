@@ -46,7 +46,7 @@ export function ShellNotice({
   }, [onDismiss]);
 
   useEffect(() => {
-    if (notice.kind !== "success" || notice.persistent) {
+    if (notice.persistent || (notice.kind !== "success" && !notice.autoDismiss)) {
       return;
     }
 

@@ -7,9 +7,10 @@ import {
 import { fallbackCatalogModel } from "@/components/app-shell/controlDefaults";
 import {
   errorMessage,
-  responseErrorMessage,
-  safeDownloadName
+  exportFileBaseName,
+  responseErrorMessage
 } from "@/components/app-shell/shellFormatting";
+import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import {
   rememberActiveChatId,
   storedActiveChatId
@@ -74,6 +75,25 @@ type ActivateChatOptions = {
 };
 
 export type OlderPageLoadOutcome = "failed" | "prepended" | "reset";
+
+export type ChatExportFormat = "json" | "markdown";
+
+/**
+ * Default export document: the readable Markdown projection of the visible
+ * branch — title heading, then each turn under a User/Assistant heading.
+ * Deterministic for a given branch; token counts, ids, and provider internals
+ * never appear.
+ */
+export function chatExportMarkdown(
+  title: string,
+  messages: readonly ThreadMessage[]
+): string {
+  const turns = messages.map((message) => {
+    const speaker = message.role === "assistant" ? "Assistant" : "User";
+    return `## ${speaker}\n\n${textFromThreadContent(message.content).trim()}`;
+  });
+  return `# ${title}\n\n${turns.join("\n\n")}\n`;
+}
 
 type WorkspaceActionsInput = {
   activeChatIdRef: MutableRef<string | null>;
@@ -1054,32 +1074,43 @@ export function useWorkspaceActions({
     }
   }
 
-  async function exportChat(chat: ChatSummary) {
+  async function exportChat(chat: ChatSummary, format: ChatExportFormat = "markdown") {
     setNotice({ kind: "success", text: "Preparing the complete chat export…" });
     try {
       const visible = await loadCompleteActiveBranch(chat.id);
       const summary =
         useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chat.id) ?? chat;
-      const payload = {
-        defaultModelId: summary.defaultModelId,
-        defaultProvider: summary.defaultProvider,
-        exportedAt: new Date().toISOString(),
-        messages: visible.map((message) => ({
-          content: message.content,
-          modelId: message.modelId ?? null,
-          provider: message.provider ?? null,
-          role: message.role,
-          status: message.status
-        })),
-        title: summary.title
-      };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], {
-        type: "application/json"
-      });
+      const baseName = exportFileBaseName(summary.title);
+      let blob: Blob;
+      let fileName: string;
+      if (format === "json") {
+        const payload = {
+          defaultModelId: summary.defaultModelId,
+          defaultProvider: summary.defaultProvider,
+          exportedAt: new Date().toISOString(),
+          messages: visible.map((message) => ({
+            content: message.content,
+            modelId: message.modelId ?? null,
+            provider: message.provider ?? null,
+            role: message.role,
+            status: message.status
+          })),
+          title: summary.title
+        };
+        blob = new Blob([JSON.stringify(payload, null, 2)], {
+          type: "application/json"
+        });
+        fileName = `${baseName}.json`;
+      } else {
+        blob = new Blob([chatExportMarkdown(summary.title, visible)], {
+          type: "text/markdown"
+        });
+        fileName = `${baseName}.md`;
+      }
       const href = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = href;
-      link.download = `${safeDownloadName(summary.title)}.json`;
+      link.download = fileName;
       link.click();
       URL.revokeObjectURL(href);
       setNotice({ kind: "success", text: "Chat exported" });

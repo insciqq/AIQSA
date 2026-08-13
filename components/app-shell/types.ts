@@ -69,6 +69,8 @@ export type NoticeAction = {
 
 export type Notice = {
   action?: NoticeAction;
+  /** Error notices stay until dismissed unless this opts into the standard timeout. */
+  autoDismiss?: boolean;
   href?: string;
   kind: "error" | "success";
   persistent?: boolean;

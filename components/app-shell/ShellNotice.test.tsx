@@ -50,6 +50,37 @@ describe("ShellNotice", () => {
     expect(onDismiss).toHaveBeenCalledOnce();
   });
 
+  it("auto-dismisses error notices that opt into the standard timeout", () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+
+    const view = render(
+      <ShellNotice
+        notice={{
+          autoDismiss: true,
+          kind: "error",
+          text: "The complete thread could not be copied: clipboard denied"
+        }}
+        onDismiss={onDismiss}
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("could not be copied");
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(onDismiss).toHaveBeenCalledOnce();
+
+    // Errors without the opt-in keep waiting for the user.
+    view.rerender(
+      <ShellNotice notice={{ kind: "error", text: "Still failing" }} onDismiss={onDismiss} />
+    );
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(onDismiss).toHaveBeenCalledOnce();
+  });
+
   it("keeps a public share link and its destructive revoke action available until dismissal", () => {
     vi.useFakeTimers();
     const onDismiss = vi.fn();

@@ -104,7 +104,9 @@ import type {
   MemoryOverviewV2
 } from "@/features/library-v2/contracts";
 import {
+  flattenFolderTree,
   ReadingRoomShellV2,
+  type NavigationChatRowState,
   type NewChatMode
 } from "@/features/navigation-v2/NavigationV2";
 import { ExactRunDetailsDrawerV2 } from "@/features/run-details-v2/RunDetailsV2";
@@ -125,6 +127,7 @@ import type {
   ThreadRunEvidenceSummary
 } from "@/lib/contracts/chats";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -584,25 +587,40 @@ export function TemporaryChatIndicatorV2({ memory }: Readonly<{
   );
 }
 
-export type HeaderOverflowActionV2 = Readonly<{
-  disabled?: boolean;
+export type HeaderOverflowSubmenuItemV2 = Readonly<{
+  depth?: number;
   label: string;
   onSelect(): void;
 }>;
 
+export type HeaderOverflowActionV2 = Readonly<{
+  disabled?: boolean;
+  label: string;
+  /** Rendered only below 900px via CSS; e.g. Поделиться joins the menu there. */
+  mobileOnly?: boolean;
+  onSelect?(): void;
+  /** Inline disclosure list (folder picker); scrolls locally when long. */
+  submenu?: readonly HeaderOverflowSubmenuItemV2[];
+}>;
+
 /**
- * Reusable header "⋯" menu. Below 900px it is the only route to the header
- * actions that the compact header hides, so it must never be removed without
- * a replacement; slice F extends this same menu on desktop. Dismissal follows
- * the shared wave-1 contract (Escape, outside pointer, focus-out).
+ * The single header "⋯" menu on every width. Below 900px it is the only route
+ * to the header actions the compact header hides, so it must never be removed
+ * without a replacement. Dismissal follows the shared wave-1 contract (Escape,
+ * outside pointer, focus-out).
  */
 export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
   actions: readonly HeaderOverflowActionV2[];
   label: string;
 }>) {
   const [open, setOpen] = useState(false);
+  const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
+  const close = () => {
+    setOpen(false);
+    setOpenSubmenu(null);
+  };
   const { menuRef, triggerRef } = useMenuDismissalV2({
-    onClose: () => setOpen(false),
+    onClose: close,
     open
   });
 
@@ -615,7 +633,7 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
         data-testid="header-more-trigger"
         icon="more"
         label={label}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => (open ? close() : setOpen(true))}
       />
       {open ? (
         <UiV2MenuSurface
@@ -625,16 +643,39 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
           ref={menuRef}
         >
           {actions.map((action) => (
-            <UiV2MenuItem
-              key={action.label}
-              disabled={action.disabled}
-              onClick={() => {
-                setOpen(false);
-                action.onSelect();
-              }}
-            >
-              {action.label}
-            </UiV2MenuItem>
+            <Fragment key={action.label}>
+              <UiV2MenuItem
+                data-mobile-only={action.mobileOnly ? "" : undefined}
+                disabled={action.disabled}
+                {...(action.submenu ? { "aria-expanded": openSubmenu === action.label } : {})}
+                onClick={() => {
+                  if (action.submenu) {
+                    setOpenSubmenu((current) => current === action.label ? null : action.label);
+                    return;
+                  }
+                  close();
+                  action.onSelect?.();
+                }}
+              >
+                {action.label}
+              </UiV2MenuItem>
+              {action.submenu && openSubmenu === action.label ? (
+                <div aria-label={action.label} className="v2-live-more-submenu">
+                  {action.submenu.map((item, index) => (
+                    <UiV2MenuItem
+                      key={`${item.label}-${index}`}
+                      style={{ paddingLeft: `${0.5 + (item.depth ?? 0) * 0.75}rem` }}
+                      onClick={() => {
+                        close();
+                        item.onSelect();
+                      }}
+                    >
+                      {item.label}
+                    </UiV2MenuItem>
+                  ))}
+                </div>
+              ) : null}
+            </Fragment>
           ))}
         </UiV2MenuSurface>
       ) : null}
@@ -642,16 +683,33 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
   );
 }
 
+export type WorkspaceHeaderFolderV2 = Readonly<{
+  id: string;
+  name: string;
+  parentId: string | null;
+}>;
+
 export function WorkspaceHeaderV2({
   active,
   accountEmail,
   adminEntryVisible,
-  onArchived,
+  archiveDisabled = false,
+  deleteDisabled = false,
+  editingTitle = null,
+  folders = [],
+  onArchive,
   onBranches,
   onCommands,
-  onCopy,
+  onCopyThread,
+  onDelete = null,
   onExport,
   onLibrary,
+  onMove,
+  onRenameCancel,
+  onRenameChange,
+  onRenameSave,
+  onRenameStart,
+  onRunDetails = null,
   onSettings,
   onShare,
   shareDisabled,
@@ -661,12 +719,26 @@ export function WorkspaceHeaderV2({
   active: boolean;
   accountEmail: string | null;
   adminEntryVisible: boolean;
-  onArchived(): void;
+  archiveDisabled?: boolean;
+  deleteDisabled?: boolean;
+  /** Non-null while the header title is being renamed inline. */
+  editingTitle?: string | null;
+  folders?: readonly WorkspaceHeaderFolderV2[];
+  onArchive(): void;
   onBranches(): void;
   onCommands(): void;
-  onCopy(): void;
-  onExport(): void;
+  onCopyThread(): void;
+  /** Null hides «Удалить…» entirely (no `permanentChatDeletionAvailable`). */
+  onDelete?: (() => void) | null;
+  onExport(format: "json" | "markdown"): void;
   onLibrary(): void;
+  onMove(folderId: string | null): void;
+  onRenameCancel(): void;
+  onRenameChange(value: string): void;
+  onRenameSave(): void;
+  onRenameStart(): void;
+  /** Null disables «Детали run» (no settled answer with a run yet). */
+  onRunDetails?: (() => void) | null;
   onSettings(): void;
   onShare(): void;
   shareDisabled: boolean;
@@ -693,29 +765,84 @@ export function WorkspaceHeaderV2({
       setSigningOut(false);
     }
   };
+  // S1 §4.3: the header carries no kicker; for an active chat the right side
+  // is Share plus one "⋯" menu. Поделиться additionally joins the menu below
+  // 900px, where the Share text button collapses.
+  const overflowActions: HeaderOverflowActionV2[] = [
+    { disabled: shareDisabled, label: "Поделиться", mobileOnly: true, onSelect: onShare },
+    { label: "Переименовать", onSelect: onRenameStart },
+    {
+      label: "Переместить",
+      submenu: [
+        { label: "Без папки", onSelect: () => onMove(null) },
+        ...flattenFolderTree(folders).map(({ depth, folder }) => ({
+          depth,
+          label: folder.name,
+          onSelect: () => onMove(folder.id)
+        }))
+      ]
+    },
+    { disabled: archiveDisabled, label: "Архивировать", onSelect: onArchive },
+    ...(onDelete
+      ? [{ disabled: deleteDisabled, label: "Удалить…", onSelect: onDelete }]
+      : []),
+    { label: "Экспортировать", onSelect: () => onExport("markdown") },
+    { label: "Экспорт в JSON", onSelect: () => onExport("json") },
+    { label: "Копировать весь тред", onSelect: onCopyThread },
+    { label: "Ветви", onSelect: onBranches },
+    { disabled: !onRunDetails, label: "Детали run", onSelect: onRunDetails ?? undefined }
+  ];
 
   return (
     <header className="v2-live-header">
       <div className="v2-live-title">
-        <small>{active ? "Conversation" : "Reading Room"}</small>
-        <h1>{title}</h1>
+        {/* The welcome screen keeps a quiet empty header: actions only. */}
+        {active ? (
+          editingTitle !== null ? (
+            <form
+              className="v2-live-title-rename"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onRenameSave();
+              }}
+            >
+              <input
+                autoFocus
+                aria-label={`Новое название: ${title}`}
+                maxLength={120}
+                value={editingTitle}
+                onChange={(event) => onRenameChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    onRenameCancel();
+                  }
+                }}
+              />
+              <UiV2IconButton icon="check" label="Сохранить название" type="submit" />
+              <UiV2IconButton icon="close" label="Отменить переименование" onClick={onRenameCancel} />
+            </form>
+          ) : (
+            <h1>
+              <button
+                className="v2-live-title-button v2-focusable"
+                data-testid="header-title"
+                title="Переименовать чат"
+                type="button"
+                onClick={onRenameStart}
+              >
+                {title}
+              </button>
+            </h1>
+          )
+        ) : null}
       </div>
       <div className="v2-live-header-actions">
         {temporaryMemory ? <TemporaryChatIndicatorV2 memory={temporaryMemory} /> : null}
         {active ? (
           <>
-            <UiV2Button icon="copy" onClick={onCopy}>Копировать</UiV2Button>
-            <UiV2Button icon="branch" onClick={onBranches}>Ветви</UiV2Button>
             <UiV2Button disabled={shareDisabled} onClick={onShare}>Поделиться</UiV2Button>
-            <HeaderOverflowMenuV2
-              label="Действия чата"
-              actions={[
-                { disabled: shareDisabled, label: "Поделиться", onSelect: onShare },
-                { label: "Ветви", onSelect: onBranches },
-                { label: "Копировать", onSelect: onCopy },
-                { label: "Экспортировать", onSelect: onExport }
-              ]}
-            />
+            <HeaderOverflowMenuV2 label="Действия чата" actions={overflowActions} />
           </>
         ) : null}
         <UiV2IconButton icon="search" label="Команды" onClick={onCommands} />
@@ -738,7 +865,7 @@ export function WorkspaceHeaderV2({
             >
               <p className="v2-live-account-label">{accountEmail ?? "AIQSA account"}</p>
               <UiV2MenuItem onClick={() => { setAccountOpen(false); onLibrary(); }}>Библиотека</UiV2MenuItem>
-              <UiV2MenuItem onClick={() => { setAccountOpen(false); onArchived(); }}>Архив чатов</UiV2MenuItem>
+              {/* «Архив чатов» lives only in the sidebar: one archive entry total. */}
               <UiV2MenuItem onClick={() => { setAccountOpen(false); onSettings(); }}>Настройки</UiV2MenuItem>
               {adminEntryVisible ? (
                 <a className="v2-live-menu-link v2-focusable" href="/admin">Control Center</a>
@@ -925,6 +1052,75 @@ function LibrarySurfaceV2({
   );
 }
 
+export const WELCOME_STARTER_PROMPTS = [
+  "Объясни сложную тему простыми словами",
+  "Составь план работы из моих заметок",
+  "Сравни варианты и предложи решение"
+] as const;
+
+/**
+ * Blank-welcome starter prompts render exactly while the canvas is a quiet
+ * greeting: no selected Assistant (that intro owns its own starters), nothing
+ * typed, no attachments in flight.
+ */
+export function blankWelcomeStartersVisibleV2({
+  assistantSelected,
+  attachmentCount,
+  draft,
+  uploading
+}: Readonly<{
+  assistantSelected: boolean;
+  attachmentCount: number;
+  draft: string;
+  uploading: boolean;
+}>): boolean {
+  return !assistantSelected && !draft.trim() && attachmentCount === 0 && !uploading;
+}
+
+/**
+ * S1 §5.2 welcome: a quiet greeting plus up to four unobtrusive prompts —
+ * no canvas wordmark, no marketing subtitle. Prompt clicks prefill the draft;
+ * the optional last entry opens the Assistant picker.
+ */
+export function WelcomeOrientationV2({
+  onOpenAssistantPicker,
+  onPickPrompt,
+  showAssistantEntry
+}: Readonly<{
+  onOpenAssistantPicker(): void;
+  onPickPrompt(prompt: string): void;
+  showAssistantEntry: boolean;
+}>) {
+  return (
+    <div className="v2-live-welcome" data-testid="welcome-orientation">
+      <div className="v2-conversation-orientation-copy">
+        <h1>Над чем поработаем?</h1>
+      </div>
+      <div
+        aria-label="Starter prompts"
+        className="v2-live-assistant-starters"
+        data-testid="welcome-starter-prompts"
+      >
+        {WELCOME_STARTER_PROMPTS.map((prompt) => (
+          <button
+            className="v2-focusable"
+            key={prompt}
+            type="button"
+            onClick={() => onPickPrompt(prompt)}
+          >
+            {prompt}
+          </button>
+        ))}
+        {showAssistantEntry ? (
+          <button className="v2-focusable" type="button" onClick={onOpenAssistantPicker}>
+            Начать с Assistant…
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { composer, details, overlays, session, settings, thread, workspace } = props;
   const [runDetailsTarget, setRunDetailsTarget] = useState<RunDetailsTargetV2 | null>(null);
@@ -935,6 +1131,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [mcpKey, setMcpKey] = useState(0);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const mcpServers = useMcpSettingsStore((state) => state.servers);
+  const navigationFolders = useWorkspaceStore((state) => state.navigationFolders);
+  // Server-verified capability gate for the direct «Удалить…» entries; the
+  // deletion confirm surface and its semantics stay unchanged.
+  const permanentChatDeletionAvailable = useMemorySettingsStore(
+    (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
+  );
   const composerDockRef = useRef<HTMLDivElement>(null);
   const loadRunRef = useRef(thread.loadRunReceipt);
   const loadRun = useCallback((runId: string) => loadRunRef.current(runId), []);
@@ -1072,6 +1274,18 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         ) : null}
       </div>
     ) : undefined;
+  const welcomeOrientation = blankWelcomeStartersVisibleV2({
+    assistantSelected: Boolean(composer.assistant.selected),
+    attachmentCount: composer.attachments.length,
+    draft: composer.draft,
+    uploading: composer.uploading
+  }) ? (
+    <WelcomeOrientationV2
+      showAssistantEntry={composer.assistant.pickerItems.length > 0}
+      onOpenAssistantPicker={() => composer.assistant.setPickerOpen(true)}
+      onPickPrompt={(prompt) => composer.composerActions.changeDraft(prompt)}
+    />
+  ) : undefined;
   const messageById = new Map(thread.visibleMessages.map((message) => [message.id, message]));
   const conversationMessages: ConversationMessageV2[] = thread.visibleMessages.map((message) => ({
     content: messageText(message),
@@ -1218,6 +1432,37 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const createNavigationChat = (mode: NewChatMode) => {
     void workspace.pane.actions.createChat(null, mode);
   };
+  const navigationChatState = (chat: ChatNavigationSummaryWire): NavigationChatRowState | null => {
+    const full = currentWorkspaceChat(chat.id);
+    return full
+      ? { favorite: Boolean(full.pinned), memoryMode: full.memoryMode ?? "NORMAL" }
+      : null;
+  };
+  const activeChatSummary = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
+  const currentNewChatMode: NewChatMode = composer.memory.mode === "TEMPORARY"
+    ? "TEMPORARY"
+    : activeChatSummary?.memoryMode === "EXCLUDED" ? "EXCLUDED" : "NORMAL";
+  const withActiveChat = (action: (chat: ChatSummary) => void) => () => {
+    const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
+    if (full) action(full);
+    else void workspace.pane.actions.retry();
+  };
+  // «Детали run» in the header "⋯" opens the existing Run details drawer for
+  // the latest answer that has a persisted run; without one the item disables.
+  const lastAnswerWithRun = [...thread.visibleMessages].reverse().find(
+    (message) => message.role === "assistant" && message.runId
+  );
+  const headerRunDetailsTarget: RunDetailsTargetV2 | null = lastAnswerWithRun?.runId
+    ? {
+        answerLabel: assistantAnswerLabel(thread.visibleMessages, lastAnswerWithRun.id),
+        assistantMessageId: lastAnswerWithRun.id,
+        runId: lastAnswerWithRun.runId
+      }
+    : null;
+  const temporarySession = composer.memory.mode === "TEMPORARY";
+  const deleteActiveChatPermanently = permanentChatDeletionAvailable
+    ? withActiveChat((full) => void workspace.pane.actions.deleteChatPermanently(full))
+    : null;
 
   return (
     <main className="v2-live-root" data-testid="app-shell" data-ui-version="v2">
@@ -1227,6 +1472,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ) : (
         <ReadingRoomShellV2
           accountLabel={session.accountEmail}
+          chatStateFor={navigationChatState}
+          currentNewChatMode={currentNewChatMode}
           editingChatId={workspace.pane.state.editingChatId}
           editingChatTitle={workspace.pane.state.editingChatTitle}
           editingFolderId={workspace.pane.state.editingFolderId}
@@ -1244,6 +1491,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onChangeChatRename={workspace.pane.actions.changeEditingChatTitle}
           onChangeFolderRename={workspace.pane.actions.changeEditingFolderName}
           onCreateFolder={(parentId, name) => workspace.pane.actions.createFolder(parentId, name)}
+          onDelete={permanentChatDeletionAvailable ? (chat) => {
+            const full = currentWorkspaceChat(chat.id);
+            if (full) void workspace.pane.actions.deleteChatPermanently(full);
+            else void workspace.pane.actions.retry();
+          } : undefined}
           onDeleteFolder={(folder: ChatNavigationFolderWire) => {
             const full = currentWorkspaceFolder(folder.id);
             if (full) void workspace.pane.actions.deleteFolder(full);
@@ -1272,6 +1524,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             if (full) void workspace.pane.actions.moveFolder(full, folderId);
           }}
           onNewChat={createNavigationChat}
+          onOpenSearch={overlays.palette.show}
           onRenameChat={(chat) => {
             const full = currentWorkspaceChat(chat.id);
             if (full) workspace.pane.actions.startChatEdit(full);
@@ -1300,21 +1553,42 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               active={Boolean(session.activeChatId)}
               accountEmail={session.accountEmail}
               adminEntryVisible={session.adminEntryVisible}
-              onArchived={workspace.pane.actions.openArchivedChats}
+              archiveDisabled={thread.activeChatStreaming || temporarySession}
+              deleteDisabled={thread.activeChatStreaming || temporarySession}
+              editingTitle={
+                session.activeChatId &&
+                workspace.pane.state.editingChatId === session.activeChatId
+                  ? workspace.pane.state.editingChatTitle
+                  : null
+              }
+              folders={navigationFolders}
+              onArchive={withActiveChat((full) => void workspace.pane.actions.deleteChat(full))}
               onBranches={() => details.open("branch")}
               onCommands={overlays.palette.show}
-              onCopy={() => void thread.copyVisibleThread()}
-              onExport={() => {
+              onCopyThread={() => void thread.copyVisibleThread()}
+              onDelete={deleteActiveChatPermanently}
+              onExport={(format) => {
                 const chatId = session.activeChatId;
                 const full = chatId ? currentWorkspaceChat(chatId) : null;
-                if (full) workspace.pane.actions.exportChat(full);
+                if (full) workspace.pane.actions.exportChat(full, format);
               }}
               onLibrary={settings.openLibrary}
+              onMove={(folderId) => {
+                const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
+                if (full) void workspace.pane.actions.moveChat(full.id, folderId);
+              }}
+              onRenameCancel={workspace.pane.actions.cancelChatEdit}
+              onRenameChange={workspace.pane.actions.changeEditingChatTitle}
+              onRenameSave={withActiveChat((full) => void workspace.pane.actions.saveChatTitle(full))}
+              onRenameStart={withActiveChat((full) => workspace.pane.actions.startChatEdit(full))}
+              onRunDetails={headerRunDetailsTarget
+                ? () => setRunDetailsTarget(headerRunDetailsTarget)
+                : null}
               onSettings={settings.open}
               onShare={() => void session.shareActiveBranch()}
-              shareDisabled={composer.memory.mode === "TEMPORARY"}
-              temporaryMemory={composer.memory.mode === "TEMPORARY" ? composer.memory : null}
-              title={session.activeChatId ? session.activeChatTitle : "Над чем поработаем?"}
+              shareDisabled={temporarySession}
+              temporaryMemory={temporarySession ? composer.memory : null}
+              title={session.activeChatTitle}
             />
             {session.notice ? (
               <div className="v2-live-notice">
@@ -1334,7 +1608,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               onLoadEarlier={thread.loadEarlierMessages}
               onRetry={thread.retryActiveChatDetail}
               onScroll={thread.handleThreadScroll}
-              orientationSlot={assistantOrientation}
+              orientationSlot={assistantOrientation ?? welcomeOrientation}
               renderMessage={renderMessage}
               scrollRef={thread.threadScrollRef}
               showJumpToLatest={thread.showJumpToLatest}

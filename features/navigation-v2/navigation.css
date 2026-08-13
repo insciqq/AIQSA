@@ -77,16 +77,21 @@
   font-size: 0.625rem;
 }
 
+/*
+ * The New-chat split control is a quiet row per the prototype: no border box,
+ * hover wash only, with the mode chevron kept as the split affordance.
+ */
 .v2-new-chat-wrap {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 2.125rem;
+  grid-template-columns: minmax(0, 1fr) 1.875rem;
 }
 
 .v2-new-chat-main,
 .v2-new-chat-menu-trigger {
-  min-height: 2.375rem;
-  border: 1px solid var(--v2-color-border2);
+  min-height: 2.125rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
   color: var(--v2-color-text);
   background: transparent;
   cursor: pointer;
@@ -96,8 +101,7 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.375rem 0.625rem;
-  border-radius: var(--v2-radius-s) 0 0 var(--v2-radius-s);
+  padding: 0.25rem 0.5rem;
   font: inherit;
   font-size: 0.8125rem;
   font-weight: 500;
@@ -107,8 +111,7 @@
 .v2-new-chat-menu-trigger {
   display: grid;
   place-items: center;
-  border-left: 0;
-  border-radius: 0 var(--v2-radius-s) var(--v2-radius-s) 0;
+  color: var(--v2-color-text2);
 }
 
 .v2-new-chat-main:hover,
@@ -124,54 +127,40 @@
   z-index: 50;
 }
 
-.v2-navigation-search-wrap {
-  position: relative;
-  padding: 0 0.75rem 0.625rem;
-}
-
-.v2-navigation-search-icon {
-  position: absolute;
-  top: 50%;
-  left: 1.375rem;
-  color: var(--v2-color-text3);
-  pointer-events: none;
-  transform: translateY(-50%);
-}
-
-.v2-navigation-search {
-  width: 100%;
+/* Quiet «Поиск ⌘K» row: it opens the single shell command palette. */
+.v2-navigation-search-row {
+  display: flex;
   min-height: 2.125rem;
-  padding: 0.375rem 2rem 0.375rem 2.125rem;
-  border: 1px solid transparent;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border: 0;
   border-radius: var(--v2-radius-s);
-  outline: 0;
   color: var(--v2-color-text);
-  background: var(--v2-color-hover);
+  background: transparent;
   font: inherit;
   font-size: 0.8125rem;
-}
-
-.v2-navigation-search:focus {
-  border-color: var(--v2-color-accent);
-}
-
-.v2-navigation-search::placeholder {
-  color: var(--v2-color-text3);
-}
-
-.v2-navigation-search-clear {
-  position: absolute;
-  top: 50%;
-  right: 1.125rem;
-  display: grid;
-  width: 1.5rem;
-  height: 1.5rem;
-  place-items: center;
-  border: 0;
-  color: var(--v2-color-text3);
-  background: transparent;
-  transform: translateY(-50%);
+  text-align: left;
   cursor: pointer;
+}
+
+.v2-navigation-search-row:hover {
+  background: var(--v2-color-hover);
+}
+
+.v2-navigation-search-row .v2-icon {
+  color: var(--v2-color-text2);
+}
+
+.v2-navigation-kbd {
+  margin-left: auto;
+  padding: 0.0625rem 0.375rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: 0.375rem;
+  color: var(--v2-color-text2);
+  font-family: inherit;
+  font-size: 0.6875rem;
+  line-height: 1.4;
 }
 
 .v2-navigation-scroll {
@@ -292,27 +281,6 @@
 
 .v2-new-folder-inline {
   margin: 0 0.5rem;
-}
-
-.v2-navigation-create-folder {
-  display: flex;
-  min-height: 2rem;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0.5rem;
-  border: 0;
-  border-radius: var(--v2-radius-s);
-  color: var(--v2-color-text3);
-  background: transparent;
-  font: inherit;
-  font-size: 0.75rem;
-  text-align: left;
-  cursor: pointer;
-}
-
-.v2-navigation-create-folder:hover {
-  color: var(--v2-color-text);
-  background: var(--v2-color-hover);
 }
 
 .v2-folder-toggle {
@@ -647,7 +615,7 @@
 @media (hover: none), (pointer: coarse) {
   .v2-new-chat-main,
   .v2-new-chat-menu-trigger,
-  .v2-navigation-search,
+  .v2-navigation-search-row,
   .v2-folder-toggle,
   .v2-chat-row,
   .v2-navigation-destination,
@@ -660,7 +628,6 @@
     grid-template-columns: minmax(0, 1fr) 2.5rem;
   }
 
-  .v2-navigation-search-clear,
   .v2-chat-menu-trigger {
     width: 2.5rem;
     height: 2.5rem;

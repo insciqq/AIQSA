@@ -155,6 +155,11 @@
   color: var(--v2-color-accent);
 }
 
+.v2-menu-separator {
+  margin: 0.25rem 0.125rem;
+  border-top: 1px solid var(--v2-color-border);
+}
+
 .v2-menu-item-sub {
   display: block;
   margin-top: 0.125rem;

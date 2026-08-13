@@ -45,6 +45,22 @@ export function safeDownloadName(value: string): string {
   return normalized || "aiqsa-chat";
 }
 
+/**
+ * Deterministic export base name: a unicode-aware slug of the chat title plus
+ * the ISO date, e.g. `release-checklist-032-2026-08-13`. The extension is
+ * appended by the caller per export format.
+ */
+export function exportFileBaseName(title: string, date: Date = new Date()): string {
+  const slug = title
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64)
+    .replace(/-+$/g, "");
+  return `${slug || "chat"}-${date.toISOString().slice(0, 10)}`;
+}
+
 export function errorMessage(error: unknown): string {
   return humanizeErrorCode(error instanceof Error ? error.message : "Request failed");
 }

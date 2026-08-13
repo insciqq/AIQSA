@@ -41,8 +41,10 @@ test("uses the v2 workspace as the sole authenticated renderer", async ({ page }
   if (await firstChat.count()) {
     await firstChat.click();
     await page.locator("[data-testid='conversation-loading']").waitFor({ state: "detached" });
-    await expect(page.getByRole("button", { name: "Ветви" })).toBeVisible();
-    await page.getByRole("button", { name: "Ветви" }).click();
+    // The header keeps Share plus one "⋯" menu; Branches lives inside it.
+    await expect(page.getByRole("button", { name: "Поделиться" })).toBeVisible();
+    await page.getByTestId("header-more-trigger").click();
+    await page.getByRole("menuitem", { name: "Ветви" }).click();
     await expect(page.getByTestId("branch-drawer-scrim")).toBeVisible();
     await page.getByRole("button", { name: "Закрыть ветви" }).click();
 
