@@ -591,6 +591,63 @@ describe("workspace actions", () => {
     );
   });
 
+  it("keeps the live navigation list fresh across archive and its undo", async () => {
+    const state = useWorkspaceActionsForTest({
+      activeChatId: "chat-b",
+      attachments: [],
+      draft: ""
+    });
+    useWorkspaceStore.getState().applyNavigationPage({
+      chats: [
+        {
+          activeRun: false,
+          folderId: null,
+          id: "chat-a",
+          title: "Chat A",
+          updatedAt: state.chatA.updatedAt
+        },
+        {
+          activeRun: false,
+          folderId: null,
+          id: "chat-b",
+          title: "Chat B",
+          updatedAt: state.chatB.updatedAt
+        }
+      ],
+      folders: [],
+      nextCursor: null
+    }, false);
+    const fetchMock = vi.fn().mockImplementation(async (url: string | URL | Request) => {
+      const path = String(url);
+      if (path.endsWith("/memory-mode")) return Response.json(apiChatMemoryState(state.chatA));
+      if (path.endsWith("/archive")) return Response.json(apiArchivedChat(state.chatA));
+      if (path.endsWith("/restore")) {
+        return Response.json({
+          chat: { ...apiArchivedChat(state.chatA, 2).chat, archived: false }
+        });
+      }
+      return Response.json({ error: "unexpected" }, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await state.actions.deleteChat(state.chatA);
+
+    expect(useWorkspaceStore.getState().navigationChats.map((chat) => chat.id))
+      .toEqual(["chat-b"]);
+    const notice = state.setNotice.mock.calls.at(-1)?.[0];
+    expect(notice).toMatchObject({
+      action: { label: "Отменить" },
+      kind: "success",
+      text: "Чат перемещён в архив"
+    });
+
+    notice?.action?.onClick();
+    await vi.waitFor(() => {
+      expect(useWorkspaceStore.getState().navigationChats.map((chat) => chat.id).sort())
+        .toEqual(["chat-a", "chat-b"]);
+    });
+  });
+
   it("activates a blank workspace without creating a persisted chat", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

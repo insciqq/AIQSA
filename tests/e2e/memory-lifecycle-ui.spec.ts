@@ -275,22 +275,30 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
     .getByRole("button", { name: "Restore" }).click();
   await expect(workspace.getByRole("button", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 
+  const selectNewChatMode = async (itemName: RegExp) => {
+    await workspace.getByRole("button", { name: "Режим нового чата" }).click();
+    await page.getByRole("menu", { name: "Режим нового чата" })
+      .getByRole("menuitem", { name: itemName }).click();
+  };
   await workspace.getByRole("button", { name: "Новый чат" }).click();
   const composer = page.getByRole("textbox", { name: "Сообщение" });
   await composer.fill("Normal draft marker");
-  await page.getByRole("button", { name: "Обычный чат" }).click();
+  await selectNewChatMode(/Временный чат/);
+  await expect(page.getByTestId("header-temporary-indicator")).toBeVisible();
   await composer.fill("Temporary draft marker");
-  await page.getByRole("button", { name: "Temporary Chat" }).click();
+  await selectNewChatMode(/Обычный/);
+  await expect(page.getByTestId("header-temporary-indicator")).toHaveCount(0);
   await expect(composer).toHaveValue("Normal draft marker");
-  await page.getByRole("button", { name: "Обычный чат" }).click();
+  await selectNewChatMode(/Временный чат/);
   await expect(composer).toHaveValue("Temporary draft marker");
   await page.getByRole("button", { name: "Отправить сообщение" }).click();
 
-  await expect(page.getByTestId("composer-memory-mode")).toHaveAttribute(
-    "data-mode",
-    "temporary"
-  );
+  const temporaryIndicator = page.getByTestId("header-temporary-indicator");
+  await expect(temporaryIndicator).toBeVisible();
+  await temporaryIndicator.click();
   await expect(page.getByTestId("temporary-retention-deadline")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("temporary-retention-deadline")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Поделиться" })).toBeDisabled();
   expect(temporaryAdmissions).toHaveLength(1);
   expect(temporaryAdmissions[0]).toMatchObject({

@@ -15,6 +15,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  branchPagerForMessageV2,
   branchVersionsV2,
   type BranchPagerStateV2,
   type BranchVersionV2
@@ -97,6 +98,28 @@ export function BranchPagerV2({
         <span className="v2-branch-pager-reason" id={reasonId}>{description}</span>
       ) : null}
     </div>
+  );
+}
+
+export function BranchPagerSlotV2({
+  disabledReason = null,
+  graph,
+  messageId,
+  onCheckout
+}: Readonly<{
+  disabledReason?: string | null;
+  graph: ChatBranchGraphWire | null;
+  messageId: string;
+  onCheckout(leafId: string): void;
+}>) {
+  const state = graph ? branchPagerForMessageV2(graph, messageId) : null;
+  if (!state) return null;
+  return (
+    <BranchPagerV2
+      disabledReason={disabledReason}
+      onCheckout={onCheckout}
+      state={state}
+    />
   );
 }
 

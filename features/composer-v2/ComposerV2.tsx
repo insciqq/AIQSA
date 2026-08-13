@@ -4,6 +4,7 @@ import { isImeCompositionEvent } from "@/components/keyboard";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import {
   composerContextGauge,
+  composerContextGaugeTitle,
   type ComposerContextStats
 } from "@/components/app-shell/composerContextStats";
 import { formatTokenCount } from "@/components/app-shell/shellFormatting";
@@ -66,16 +67,6 @@ export type ComposerV2Props = Readonly<{
   editStatusSlot?: ReactNode;
   hasReadyAttachments?: boolean;
   initialLayer?: ComposerV2Layer;
-  memory?: Readonly<{
-    canToggleTemporary: boolean;
-    explanation: string;
-    externalRetention: string;
-    label: string;
-    mode: "NORMAL" | "TEMPORARY";
-    retention: string;
-    retentionDeadline: string | null;
-    toggleTemporary(): void;
-  }>;
   onAttachmentCountLimitExceeded?(input: {
     attemptedCount: number;
     currentCount: number;
@@ -118,11 +109,18 @@ function ContextGaugeV2({
   stats: ComposerContextStats;
   usage: ChatUsageStats | null;
 }>) {
-  const [open, setOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const gauge = composerContextGauge(stats);
   const circumference = 2 * Math.PI * 9;
   const progress = gauge.fraction === null ? 0 : Math.min(1, gauge.fraction);
+  const open = pinned || hovered;
+  const close = () => {
+    setPinned(false);
+    setHovered(false);
+    triggerRef.current?.focus();
+  };
   const usageFacts = usage ?? {
     activeBranchMessageCount: 0,
     cachedInputTokens: 0,
@@ -131,7 +129,11 @@ function ContextGaugeV2({
   };
 
   return (
-    <span className="v2-composer-context">
+    <span
+      className="v2-composer-context"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <button
         ref={triggerRef}
         aria-expanded={open}
@@ -139,9 +141,9 @@ function ContextGaugeV2({
         aria-label={`${gauge.accessibleLabel}. Open context details`}
         className="v2-composer-context-trigger v2-focusable"
         data-context-tone={gauge.tone}
-        title={gauge.accessibleLabel}
+        title={composerContextGaugeTitle(stats)}
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setPinned((value) => !value)}
       >
         <svg aria-hidden="true" viewBox="0 0 24 24">
           <circle className="v2-composer-context-track" cx="12" cy="12" fill="none" r="9" strokeWidth="3" />
@@ -169,17 +171,13 @@ function ContextGaugeV2({
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               event.preventDefault();
-              setOpen(false);
-              triggerRef.current?.focus();
+              close();
             }
           }}
         >
           <header>
             <strong>Context and usage</strong>
-            <UiV2IconButton icon="close" label="Close context and usage statistics" onClick={() => {
-              setOpen(false);
-              triggerRef.current?.focus();
-            }} />
+            <UiV2IconButton icon="close" label="Close context and usage statistics" onClick={close} />
           </header>
           <dl>
             <div><dt>Approximate input</dt><dd>~{formatTokenCount(stats.approximateInputTokens)}</dd></div>
@@ -281,13 +279,6 @@ function CapabilityRow({
   );
 }
 
-function providerForModel(
-  providers: readonly CatalogProvider[],
-  model: CatalogModel
-): CatalogProvider | undefined {
-  return providers.find((provider) => provider.id === model.provider);
-}
-
 export function ComposerV2({
   activeRun = false,
   assistantRemovedNotice = false,
@@ -302,7 +293,6 @@ export function ComposerV2({
   editStatusSlot,
   hasReadyAttachments = false,
   initialLayer = null,
-  memory,
   onAttachmentCountLimitExceeded,
   onDraftChange,
   onDismissAssistantRemovedNotice,
@@ -351,7 +341,6 @@ export function ComposerV2({
   const currentModel = models.find(
     (model) => model.modelId === selectedModelId && model.provider === selectedProvider
   );
-  const currentProvider = currentModel ? providerForModel(providers, currentModel) : undefined;
   const noModels = Boolean(config && models.length === 0);
   const controlsLocked = Boolean(selectedAssistant);
   const bootstrapReason = configError
@@ -604,6 +593,7 @@ export function ComposerV2({
       ? selectedSearchOptionIds.filter((id) => id !== option.strategyId)
       : [...selectedSearchOptionIds, option.strategyId];
     onSelectSearchOptionIds(next);
+    closeLayer();
   }
 
   function toggleKnowledge(base: ComposerConfigKnowledgeBase) {
@@ -612,6 +602,7 @@ export function ComposerV2({
       ? selectedKnowledgeBaseIds.filter((id) => id !== base.id)
       : [...selectedKnowledgeBaseIds, base.id];
     onSelectKnowledgeBaseIds(next);
+    closeLayer();
   }
 
   return (
@@ -677,35 +668,6 @@ export function ComposerV2({
           </div>
         ) : null}
 
-        {memory && (memory.canToggleTemporary || memory.mode === "TEMPORARY") ? (
-          <div
-            className="v2-composer-memory-mode"
-            data-mode={memory.mode.toLowerCase()}
-            data-testid="composer-memory-mode"
-          >
-            <button
-              aria-pressed={memory.mode === "TEMPORARY"}
-              className="v2-focusable"
-              disabled={!memory.canToggleTemporary}
-              type="button"
-              onClick={memory.toggleTemporary}
-            >
-              <UiV2Icon name="memory" />
-              {memory.mode === "TEMPORARY" ? memory.label : "Обычный чат"}
-            </button>
-            <span>
-              {memory.mode === "TEMPORARY"
-                ? [memory.retention, memory.externalRetention]
-                    .filter(Boolean)
-                    .join(" · ")
-                : memory.explanation}
-            </span>
-            {memory.mode === "TEMPORARY" && memory.retentionDeadline ? (
-              <span data-testid="temporary-retention-deadline">{memory.retentionDeadline}</span>
-            ) : null}
-          </div>
-        ) : null}
-
         <AttachmentTrayV2
           items={attachmentItems}
           onRemove={onRemoveAttachment}
@@ -766,7 +728,6 @@ export function ComposerV2({
             title={controlsLocked ? "Управляется Assistant" : "Выбрать модель"}
             onClick={(event) => openLayer("model", event.currentTarget)}
           >
-            {currentProvider ? <span>{currentProvider.name}</span> : null}
             <strong>{currentModel?.displayName ?? (noModels ? "Нет доступных моделей" : "Выберите модель")}</strong>
             {controlsLocked ? <UiV2Icon name="lock" /> : <UiV2Icon name="chevron-down" />}
           </button>
@@ -958,9 +919,12 @@ export function ComposerV2({
                         selected
                         disabled={controlsLocked || activeRun}
                         reason={controlsLocked ? "Управляется Assistant" : "Доступ отозван"}
-                        onClick={() => onSelectKnowledgeBaseIds?.(
-                          selectedKnowledgeBaseIds.filter((candidate) => candidate !== id)
-                        )}
+                        onClick={() => {
+                          onSelectKnowledgeBaseIds?.(
+                            selectedKnowledgeBaseIds.filter((candidate) => candidate !== id)
+                          );
+                          closeLayer();
+                        }}
                       >
                         Недоступная база
                       </CapabilityRow>
@@ -992,7 +956,10 @@ export function ComposerV2({
                           (!runnable && !canDisable)
                         }
                         reason={reason}
-                        onClick={() => onToggleMcpServer?.(server.id, !server.enabled)}
+                        onClick={() => {
+                          onToggleMcpServer?.(server.id, !server.enabled);
+                          closeLayer();
+                        }}
                       >
                         {server.name}
                       </CapabilityRow>
@@ -1088,6 +1055,8 @@ function ModelLayer({
                 personalDefault.provider === model.provider;
               const isOrganizationDefault = organizationDefault?.modelId === model.modelId &&
                 organizationDefault.provider === model.provider;
+              const capabilityLabels = modelCapabilityLabels(model);
+              const capabilityTags = capabilityLabels.length > 0 ? capabilityLabels : ["Текст"];
               return (
                 <div className="v2-composer-model-row" key={`${model.provider}:${model.modelId}`}>
                   <button
@@ -1102,7 +1071,10 @@ function ModelLayer({
                   >
                     <span className="v2-composer-model-copy">
                       <strong>{model.displayName}</strong>
-                      <span>{modelCapabilityLabels(model).join(" · ") || "Текст"}</span>
+                      <span className="v2-composer-model-tags" title={capabilityTags.join(" · ")}>
+                        {capabilityTags.slice(0, 3).map((tag) => <em key={tag}>{tag}</em>)}
+                        {capabilityTags.length > 3 ? <em>+{capabilityTags.length - 3}</em> : null}
+                      </span>
                       <span className="v2-composer-model-facts">
                         {selected ? <em>Текущая</em> : null}
                         {isPersonalDefault ? <em>Моя по умолчанию</em> : null}
@@ -1118,7 +1090,7 @@ function ModelLayer({
                       aria-label={`Сделать ${model.displayName} моделью по умолчанию`}
                       onClick={() => onMakeDefault(model)}
                     >
-                      По умолчанию
+                      Сделать по умолчанию
                     </button>
                   ) : null}
                 </div>
@@ -1128,7 +1100,7 @@ function ModelLayer({
         ))}
       </div>
       <p className="v2-composer-model-note">
-        Каталог отфильтрован сервером. Выбор действует на следующие сообщения; история не меняется.
+        Действует со следующего сообщения.
       </p>
     </>
   );

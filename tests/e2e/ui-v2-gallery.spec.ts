@@ -328,7 +328,7 @@ test("v2 composer owns keyboard traversal and restores focus without leaking bin
   await page.setViewportSize({ height: 900, width: 1280 });
   await page.goto("/ui-v2-fixture?fixture=composer&state=default");
 
-  const modelTrigger = page.getByRole("button", { name: /OpenAI · рабочий\s+GPT-5\.2/ });
+  const modelTrigger = page.getByRole("button", { exact: true, name: "GPT-5.2" });
   await modelTrigger.click();
   const modelSearch = page.getByRole("searchbox", { name: "Найти модель" });
   await expect(modelSearch).toBeFocused();
@@ -337,7 +337,7 @@ test("v2 composer owns keyboard traversal and restores focus without leaking bin
   await expect(gemini).toBeFocused();
   await gemini.press("Enter");
   await expect(page.getByRole("dialog", { name: "Выбор модели" })).toBeHidden();
-  await expect(page.getByRole("button", { name: /Google\s+Gemini 3 Pro/ })).toBeFocused();
+  await expect(page.getByRole("button", { exact: true, name: "Gemini 3 Pro" })).toBeFocused();
 
   const plus = page.getByRole("button", { name: "Возможности" });
   await plus.click();
