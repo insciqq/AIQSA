@@ -719,20 +719,35 @@ export function PowerAppShellV2({
   });
 
   useEffect(() => {
-    if (inspectorMode === "closed" || inspectorActiveTab !== "branch" || !activeChatId) {
-      return;
-    }
+    if (!activeChatId) return;
     const summary = chats.find((chat) => chat.id === activeChatId);
     if (!summary) return;
+    const branchTabOpen = inspectorMode !== "closed" && inspectorActiveTab === "branch";
+    // Beyond the explicit Branch drawer, the per-message ‹N/M› version pager
+    // needs the compact branch graph for any saved chat with committed
+    // messages, so the graph stays current per (chat, updatedAt) revision.
+    // A live stream defers background refresh until settlement bumps
+    // `updatedAt`.
+    if (!branchTabOpen && (summary.messageCount === 0 || activeChatStreaming)) {
+      return;
+    }
     const current = branchGraph?.chatId === activeChatId ? branchGraph : null;
     if (current?.loading || current?.error || (
       current?.messages &&
-      current.snapshotUpdatedAt === summary?.updatedAt
+      current.snapshotUpdatedAt === summary.updatedAt
     )) {
       return;
     }
     void loadBranchGraph();
-  }, [activeChatId, branchGraph, chats, inspectorActiveTab, inspectorMode, loadBranchGraph]);
+  }, [
+    activeChatId,
+    activeChatStreaming,
+    branchGraph,
+    chats,
+    inspectorActiveTab,
+    inspectorMode,
+    loadBranchGraph
+  ]);
 
   const retryActiveChatDetail = useEventCallback(() => {
     const chat = chats.find((candidate) => candidate.id === activeChatId);

@@ -144,18 +144,19 @@ test("v2 sidebar transfers focus across desktop, compact, and mobile composition
   await expect(source).toBeFocused();
 });
 
-test("v2 command search replaces the mobile sidebar as the only modal layer", async ({ page }) => {
+test("v2 sidebar leaves Ctrl/Cmd+K to the single shell command-palette owner", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/ui-v2-fixture?fixture=navigation");
   const opener = page.getByRole("button", { name: "Открыть панель" });
   await opener.click();
-  await expect(page.getByRole("complementary", { name: "Навигация по чатам" })).toBeVisible();
+  const drawer = page.getByRole("complementary", { name: "Навигация по чатам" });
+  await expect(drawer).toBeVisible();
 
   await page.keyboard.press("Control+k");
-  await expect(page.getByRole("complementary", { name: "Навигация по чатам" })).toBeHidden();
-  await expect(page.getByRole("dialog", { name: "Поиск чатов" })).toBeVisible();
-  await expect(page.locator("[aria-modal='true']")).toHaveCount(1);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(drawer).toBeVisible();
   await page.keyboard.press("Escape");
+  await expect(drawer).toBeHidden();
   await expect(opener).toBeFocused();
 });
 

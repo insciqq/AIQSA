@@ -331,7 +331,7 @@ test.describe("installation model default policy", () => {
         response.request().method() === "PATCH" &&
         new URL(response.url()).pathname === "/api/me/settings"
       );
-      await runSetup.getByRole("button", { name: "Модель организации" }).click();
+      await runSetup.getByRole("button", { name: "Использовать модель организации" }).click();
       expect((await inheritSave).status()).toBe(200);
       await expect(userPage.getByTestId("shell-notice")).toContainText(
         "Using the organization default model."

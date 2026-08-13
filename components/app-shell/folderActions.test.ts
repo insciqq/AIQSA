@@ -156,6 +156,49 @@ describe("folder actions", () => {
     });
   });
 
+  it("updates the live navigation tree when a folder is deleted", async () => {
+    const state = createFolderActionsHarness();
+    useWorkspaceStore.getState().updateFolders((current) => [
+      ...current,
+      folder({ id: "folder-child", name: "Child", parentId: state.folder.id })
+    ]);
+    useWorkspaceStore.getState().applyNavigationPage({
+      chats: [
+        {
+          activeRun: false,
+          folderId: state.folder.id,
+          id: "chat-a",
+          title: "Chat A",
+          updatedAt: "2026-06-10T00:00:00.000Z"
+        },
+        {
+          activeRun: false,
+          folderId: null,
+          id: "chat-b",
+          title: "Chat B",
+          updatedAt: "2026-06-10T00:00:00.000Z"
+        }
+      ],
+      folders: [
+        { id: state.folder.id, name: state.folder.name, parentId: null },
+        { id: "folder-child", name: "Child", parentId: state.folder.id }
+      ],
+      nextCursor: null
+    }, false);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
+
+    await state.actions.deleteFolder(state.folder);
+
+    const workspace = useWorkspaceStore.getState();
+    expect(workspace.navigationFolders).toEqual([
+      { id: "folder-child", name: "Child", parentId: null }
+    ]);
+    expect(workspace.navigationChats.map((chat) => chat.folderId)).toEqual([null, null]);
+    expect(state.folders()).toEqual([
+      expect.objectContaining({ id: "folder-child", parentId: null })
+    ]);
+  });
+
   it("cancels folder deletion when the custom confirmation is dismissed", async () => {
     const state = createFolderActionsHarness();
     state.confirmDeleteFolder.mockResolvedValueOnce(false);

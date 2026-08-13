@@ -57,9 +57,11 @@ import {
   UiV2MenuSurface
 } from "@/components/ui-v2";
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
+import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import {
   BranchDrawerV2,
+  BranchPagerSlotV2,
   EditBranchStripV2
 } from "@/features/branches-v2/BranchesV2";
 import { AssistantPickerV2 } from "@/features/composer-v2/AssistantPickerV2";
@@ -237,11 +239,65 @@ function LiveEvidenceV2({
   );
 }
 
-function RunSetupV2({ composer, onClose }: Readonly<{
-  composer: ShellComposerView;
+export type RunSetupComposerV2 = Pick<
+  ShellComposerView,
+  | "backgroundMode"
+  | "changeBackgroundMode"
+  | "changeMaxOutputTokens"
+  | "changeReasoningEffort"
+  | "changeReasoningMode"
+  | "changeStreamMode"
+  | "changeTemperature"
+  | "currentModel"
+  | "currentParameterControls"
+  | "maxOutputTokens"
+  | "notificationSoundEnabled"
+  | "reasoningEffort"
+  | "reasoningMode"
+  | "searchPlanMode"
+  | "selectSearchPlan"
+  | "selectedSearchOptionIds"
+  | "showCitations"
+  | "showReasoningBlocks"
+  | "showToolActivity"
+  | "streamMode"
+  | "temperature"
+  | "toggleCitationsVisibility"
+  | "toggleNotificationSound"
+  | "toggleReasoningBlockVisibility"
+  | "toggleToolActivityVisibility"
+  | "useOrganizationModelDefault"
+  | "useOrganizationSearchDefault"
+>;
+
+function RunSetupSwitchV2({
+  checked,
+  label,
+  stateLabels = ["On", "Off"],
+  onToggle
+}: Readonly<{
+  checked: boolean;
+  label: string;
+  stateLabels?: readonly [string, string];
+  onToggle(): void;
+}>) {
+  return (
+    <button aria-checked={checked} role="switch" type="button" onClick={onToggle}>
+      <span>{label}</span>
+      <span className="v2-run-setup-switch-state">
+        <strong>{checked ? stateLabels[0] : stateLabels[1]}</strong>
+        <span aria-hidden="true" className="v2-run-setup-switch-track" />
+      </span>
+    </button>
+  );
+}
+
+export function RunSetupV2({ composer, onClose }: Readonly<{
+  composer: RunSetupComposerV2;
   onClose(): void;
 }>) {
   const controls = composer.currentParameterControls;
+  const [defaultsFeedback, setDefaultsFeedback] = useState<string | null>(null);
   const {
     dialogRef,
     initialFocusRef,
@@ -276,6 +332,10 @@ function RunSetupV2({ composer, onClose }: Readonly<{
           />
         </header>
         <div className="v2-run-setup-body">
+          <p className="v2-run-setup-current" data-testid="run-setup-current-model">
+            Текущая модель:{" "}
+            <strong>{composer.currentModel?.displayName ?? "Не выбрана"}</strong>
+          </p>
           {controls.temperature.supported ? (
             <label>
               <span>Temperature</span>
@@ -342,38 +402,132 @@ function RunSetupV2({ composer, onClose }: Readonly<{
           </label>
           <div className="v2-run-setup-switches">
             {controls.stream.supported ? (
-              <button aria-pressed={composer.streamMode} type="button" onClick={() => composer.changeStreamMode(!composer.streamMode)}>
-                Streaming <strong>{composer.streamMode ? "On" : "Off"}</strong>
-              </button>
+              <RunSetupSwitchV2
+                checked={composer.streamMode}
+                label="Streaming"
+                onToggle={() => composer.changeStreamMode(!composer.streamMode)}
+              />
             ) : null}
             {controls.background.supported ? (
-              <button aria-pressed={composer.backgroundMode} type="button" onClick={() => composer.changeBackgroundMode(!composer.backgroundMode)}>
-                Background <strong>{composer.backgroundMode ? "On" : "Off"}</strong>
-              </button>
+              <RunSetupSwitchV2
+                checked={composer.backgroundMode}
+                label="Background"
+                onToggle={() => composer.changeBackgroundMode(!composer.backgroundMode)}
+              />
             ) : null}
-            <button aria-pressed={composer.showCitations} type="button" onClick={composer.toggleCitationsVisibility}>
-              Citations <strong>{composer.showCitations ? "Shown" : "Hidden"}</strong>
-            </button>
-            <button aria-pressed={composer.showReasoningBlocks} type="button" onClick={composer.toggleReasoningBlockVisibility}>
-              Reasoning blocks <strong>{composer.showReasoningBlocks ? "Shown" : "Hidden"}</strong>
-            </button>
-            <button aria-pressed={composer.showToolActivity} type="button" onClick={composer.toggleToolActivityVisibility}>
-              Tool activity <strong>{composer.showToolActivity ? "Shown" : "Hidden"}</strong>
-            </button>
-            <button aria-pressed={composer.notificationSoundEnabled} type="button" onClick={composer.toggleNotificationSound}>
-              Completion sound <strong>{composer.notificationSoundEnabled ? "On" : "Off"}</strong>
-            </button>
+            <RunSetupSwitchV2
+              checked={composer.showCitations}
+              label="Citations"
+              stateLabels={["Shown", "Hidden"]}
+              onToggle={composer.toggleCitationsVisibility}
+            />
+            <RunSetupSwitchV2
+              checked={composer.showReasoningBlocks}
+              label="Reasoning blocks"
+              stateLabels={["Shown", "Hidden"]}
+              onToggle={composer.toggleReasoningBlockVisibility}
+            />
+            <RunSetupSwitchV2
+              checked={composer.showToolActivity}
+              label="Tool activity"
+              stateLabels={["Shown", "Hidden"]}
+              onToggle={composer.toggleToolActivityVisibility}
+            />
+            <RunSetupSwitchV2
+              checked={composer.notificationSoundEnabled}
+              label="Completion sound"
+              onToggle={composer.toggleNotificationSound}
+            />
           </div>
           <div className="v2-run-setup-defaults">
             {composer.useOrganizationModelDefault ? (
-              <UiV2Button onClick={composer.useOrganizationModelDefault}>Модель организации</UiV2Button>
+              <UiV2Button onClick={() => {
+                composer.useOrganizationModelDefault?.();
+                setDefaultsFeedback("Теперь используется модель организации.");
+              }}>
+                Использовать модель организации
+              </UiV2Button>
             ) : null}
-            <UiV2Button onClick={composer.useOrganizationSearchDefault}>Search организации</UiV2Button>
+            <UiV2Button onClick={() => {
+              composer.useOrganizationSearchDefault();
+              setDefaultsFeedback("Теперь используется Search организации.");
+            }}>
+              Использовать Search организации
+            </UiV2Button>
+            {defaultsFeedback ? (
+              <p
+                className="v2-run-setup-feedback"
+                data-testid="run-setup-defaults-feedback"
+                role="status"
+              >
+                {defaultsFeedback}
+              </p>
+            ) : null}
           </div>
         </div>
       </section>
     </div>,
     document.body
+  );
+}
+
+export type TemporaryChatHeaderMemoryV2 = Readonly<{
+  explanation: string;
+  externalRetention: string;
+  label: string;
+  retention: string;
+  retentionDeadline: string | null;
+}>;
+
+/**
+ * The single sanctioned Temporary indication surface: a quiet header element
+ * that exists only while the session is Temporary. Clicking it discloses the
+ * retention explainer; normal chats render no permanent memory indicator.
+ */
+export function TemporaryChatIndicatorV2({ memory }: Readonly<{
+  memory: TemporaryChatHeaderMemoryV2;
+}>) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  return (
+    <span
+      className="v2-live-temporary"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !open) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }}
+    >
+      <button
+        ref={triggerRef}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        className="v2-live-temporary-trigger v2-focusable"
+        data-testid="header-temporary-indicator"
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <UiV2Icon name="memory" />
+        {memory.label}
+      </button>
+      {open ? (
+        <section
+          aria-label={memory.label}
+          className="v2-live-temporary-popover"
+          role="dialog"
+        >
+          <p>{memory.explanation}</p>
+          <p>{memory.retention}</p>
+          {memory.retentionDeadline ? (
+            <p data-testid="temporary-retention-deadline">{memory.retentionDeadline}</p>
+          ) : null}
+          <p>{memory.externalRetention}</p>
+        </section>
+      ) : null}
+    </span>
   );
 }
 
@@ -389,6 +543,7 @@ function WorkspaceHeaderV2({
   onSettings,
   onShare,
   shareDisabled,
+  temporaryMemory,
   title
 }: Readonly<{
   active: boolean;
@@ -402,11 +557,19 @@ function WorkspaceHeaderV2({
   onSettings(): void;
   onShare(): void;
   shareDisabled: boolean;
+  temporaryMemory: TemporaryChatHeaderMemoryV2 | null;
   title: string;
 }>) {
   const [accountOpen, setAccountOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
+  const {
+    menuRef: accountMenuRef,
+    triggerRef: accountTriggerRef
+  } = useMenuDismissalV2({
+    onClose: () => setAccountOpen(false),
+    open: accountOpen
+  });
   const signOut = async () => {
     if (signingOut) return;
     setSigningOut(true);
@@ -425,6 +588,7 @@ function WorkspaceHeaderV2({
         <h1>{title}</h1>
       </div>
       <div className="v2-live-header-actions">
+        {temporaryMemory ? <TemporaryChatIndicatorV2 memory={temporaryMemory} /> : null}
         {active ? (
           <>
             <UiV2Button icon="copy" onClick={onCopy}>Копировать</UiV2Button>
@@ -438,13 +602,18 @@ function WorkspaceHeaderV2({
             aria-expanded={accountOpen}
             aria-label="Меню аккаунта"
             className="v2-live-account-trigger v2-focusable"
+            ref={accountTriggerRef}
             type="button"
             onClick={() => setAccountOpen((open) => !open)}
           >
             {(accountEmail?.slice(0, 1) || "A").toLocaleUpperCase()}
           </button>
           {accountOpen ? (
-            <UiV2MenuSurface className="v2-live-account-menu" label="Аккаунт">
+            <UiV2MenuSurface
+              className="v2-live-account-menu"
+              label="Аккаунт"
+              ref={accountMenuRef}
+            >
               <p className="v2-live-account-label">{accountEmail ?? "AIQSA account"}</p>
               <UiV2MenuItem onClick={() => { setAccountOpen(false); onLibrary(); }}>Библиотека</UiV2MenuItem>
               <UiV2MenuItem onClick={() => { setAccountOpen(false); onArchived(); }}>Архив чатов</UiV2MenuItem>
@@ -717,7 +886,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       ) : null}
       hasReadyAttachments={attachmentItems.some((item) => item.status === "ready")}
-      memory={composer.memory}
       onAttachmentCountLimitExceeded={composer.composerActions.rejectAttachmentCount}
       onDismissAssistantRemovedNotice={composer.assistant.clearRemovedNotice}
       onDraftChange={composer.composerActions.changeDraft}
@@ -828,10 +996,22 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const source = messageById.get(message.id);
     if (!source) return null;
     const actions = actionsFor(source);
+    // Always-visible ‹N/M› version pager beside the action dock for any
+    // message with committed siblings; switching versions is a checkout of the
+    // existing branch model, never a history edit.
+    const pagerSlot = (
+      <BranchPagerSlotV2
+        disabledReason={thread.activeChatStreaming ? "Дождитесь завершения текущего ответа." : null}
+        graph={details.branchGraph}
+        messageId={source.id}
+        onCheckout={details.checkoutBranch}
+      />
+    );
     if (source.role === "user") {
       return (
         <ConversationTurnV2
           actions={actions}
+          afterContent={pagerSlot}
           anchorId={source.id}
           content={messageText(source)}
           role="user"
@@ -884,6 +1064,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onOpenRunDetails={() => setRunDetailsTarget(target)}
               />
             ) : null}
+            {pagerSlot}
           </>
         )}
         anchorId={source.id}
@@ -924,7 +1105,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           editingFolderName={workspace.pane.state.editingFolderName}
           onArchive={(chat) => {
             const full = currentWorkspaceChat(chat.id);
+            // A stale workspace projection must resync instead of silently
+            // ignoring the requested archive.
             if (full) void workspace.pane.actions.deleteChat(full);
+            else void workspace.pane.actions.retry();
           }}
           onArchivedChats={workspace.pane.actions.openArchivedChats}
           onCancelChatRename={workspace.pane.actions.cancelChatEdit}
@@ -935,6 +1119,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onDeleteFolder={(folder: ChatNavigationFolderWire) => {
             const full = currentWorkspaceFolder(folder.id);
             if (full) void workspace.pane.actions.deleteFolder(full);
+            else void workspace.pane.actions.retry();
           }}
           onExport={(chat) => {
             const full = currentWorkspaceChat(chat.id);
@@ -995,6 +1180,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               onSettings={settings.open}
               onShare={() => void session.shareActiveBranch()}
               shareDisabled={composer.memory.mode === "TEMPORARY"}
+              temporaryMemory={composer.memory.mode === "TEMPORARY" ? composer.memory : null}
               title={session.activeChatId ? session.activeChatTitle : "Над чем поработаем?"}
             />
             {session.notice ? (

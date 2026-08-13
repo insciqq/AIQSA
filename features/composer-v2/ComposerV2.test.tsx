@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
 import { ComposerV2 } from "./ComposerV2";
@@ -36,23 +36,12 @@ describe("Composer v2", () => {
     expect(screen.getByRole("textbox", { name: "Сообщение" })).toBeEnabled();
   });
 
-  it("keeps Temporary intent explicit and exposes truthful context/provider usage", () => {
-    const toggleTemporary = vi.fn();
-    render(<ComposerV2 {...props({
+  it("renders no memory disclaimer while keeping truthful context/provider usage", () => {
+    const { container } = render(<ComposerV2 {...props({
       contextStats: {
         approximateInputTokens: 8_000,
         safeInputBudgetTokens: 10_000,
         totalContextTokens: 12_000
-      },
-      memory: {
-        canToggleTemporary: true,
-        explanation: "История и память включены",
-        externalRetention: "Провайдер хранит данные по своей политике",
-        label: "Временный чат",
-        mode: "NORMAL",
-        retention: "Удалится через 24 часа",
-        retentionDeadline: null,
-        toggleTemporary
       },
       usageStats: {
         activeBranchMessageCount: 4,
@@ -62,8 +51,10 @@ describe("Composer v2", () => {
       }
     })} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Обычный чат" }));
-    expect(toggleTemporary).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("composer-memory-mode")).toBeNull();
+    expect(container.textContent).not.toContain("Обычный чат");
+    expect(container.textContent).not.toContain("Временный чат");
+    expect(container.textContent).not.toContain("Temporary");
 
     const context = screen.getByRole("button", {
       name: /80% of the 10k safe input budget/u
@@ -74,6 +65,32 @@ describe("Composer v2", () => {
     const dialog = screen.getByRole("dialog", { name: "Context and usage statistics" });
     expect(dialog).toHaveTextContent("Provider-reported tokens2.4k");
     expect(dialog).toHaveTextContent("Total messages4");
+  });
+
+  it("labels the context gauge in human units and reveals it on hover too", () => {
+    render(<ComposerV2 {...props({
+      contextStats: {
+        approximateInputTokens: 800,
+        safeInputBudgetTokens: 10_000,
+        totalContextTokens: 12_000
+      }
+    })} />);
+
+    const context = screen.getByRole("button", { name: /Context estimate/ });
+    expect(context).toHaveAttribute("title", "~8% контекста");
+    expect(screen.queryByRole("dialog", { name: "Context and usage statistics" })).toBeNull();
+
+    fireEvent.mouseOver(context);
+    expect(screen.getByRole("dialog", { name: "Context and usage statistics" })).toBeVisible();
+    fireEvent.mouseOut(context);
+    expect(screen.queryByRole("dialog", { name: "Context and usage statistics" })).toBeNull();
+
+    fireEvent.click(context);
+    fireEvent.mouseOut(context);
+    const pinned = screen.getByRole("dialog", { name: "Context and usage statistics" });
+    fireEvent.keyDown(pinned, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Context and usage statistics" })).toBeNull();
+    expect(context).toHaveFocus();
   });
 
   it("sends on Enter, preserves Shift+Enter, and ignores every IME fallback", () => {
@@ -94,7 +111,7 @@ describe("Composer v2", () => {
   it("searches grouped models, wraps keyboard navigation, and restores trigger focus", async () => {
     const onSelectModel = vi.fn();
     render(<ComposerV2 {...props({ onSelectModel })} />);
-    const trigger = screen.getByRole("button", { name: /OpenAI · рабочий.*GPT-5.2/ });
+    const trigger = screen.getByRole("button", { name: "GPT-5.2" });
     fireEvent.click(trigger);
     const search = screen.getByRole("searchbox", { name: "Найти модель" });
     await waitFor(() => expect(search).toHaveFocus());
@@ -122,7 +139,7 @@ describe("Composer v2", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  it("changes only explicit capability selections and keeps revoked choices removable", () => {
+  it("applies each capability toggle in one action and closes the menu", () => {
     const onKnowledge = vi.fn();
     const onSearch = vi.fn();
     const onToggleMcp = vi.fn();
@@ -133,15 +150,28 @@ describe("Composer v2", () => {
       onToggleMcpServer: onToggleMcp,
       selectedKnowledgeBaseIds: ["kb-finance", "missing-base"]
     })} />);
+    const reopen = () => fireEvent.click(screen.getByRole("button", { name: "Возможности" }));
+    const menuClosed = () =>
+      expect(screen.queryByRole("menu", { name: "Возможности запроса" })).toBeNull();
 
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Research Search/ }));
     expect(onSearch).toHaveBeenCalledWith(["web-primary", "research-search"]);
+    menuClosed();
+
+    reopen();
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Финансы 2026/ }));
     expect(onKnowledge).toHaveBeenCalledWith(["missing-base"]);
+    menuClosed();
+
+    reopen();
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Недоступная база/ }));
     expect(onKnowledge).toHaveBeenCalledWith(["kb-finance"]);
+    menuClosed();
+
+    reopen();
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /office-compute/ }));
     expect(onToggleMcp).toHaveBeenCalledWith("mcp-office", false);
+    menuClosed();
   });
 
   it("opens the Assistant quick picker within two actions and explains manual restoration", () => {
@@ -177,7 +207,7 @@ describe("Composer v2", () => {
     expect(screen.getByTestId("composer-v2-assistant-lock")).toHaveTextContent(
       "Assistant: Research editor"
     );
-    expect(screen.getByRole("button", { name: /OpenAI · рабочий.*GPT-5.2/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "GPT-5.2" })).toBeDisabled();
     const searchRows = screen.getAllByRole("menuitemcheckbox", { name: /Web Search/ });
     expect(searchRows[0]).toBeDisabled();
     expect(screen.getAllByText("Управляется Assistant").length).toBeGreaterThan(2);
@@ -218,6 +248,54 @@ describe("Composer v2", () => {
     expect(text).not.toContain("openai-work");
     expect(text).not.toContain("kb-finance");
     expect(text).not.toContain("mcp-office");
+  });
+
+  it("keeps the model trigger to the display name without provider labels or hosts", () => {
+    const leakyConfig: ComposerConfig = {
+      ...composerGalleryConfig,
+      catalog: {
+        ...composerGalleryConfig.catalog,
+        providers: [{
+          family: "openai",
+          id: "openai-work",
+          models: ["gpt-5.2", "gpt-5.2-mini"],
+          name: "Custom OpenAI · codex-lb.psaux.info · ref 0N0FNN"
+        }, {
+          family: "google",
+          id: "google-work",
+          models: ["gemini-3-pro"],
+          name: "Google"
+        }]
+      }
+    };
+    render(<ComposerV2 {...props({ config: leakyConfig })} />);
+
+    const trigger = screen.getByRole("button", { name: "GPT-5.2" });
+    expect(trigger.textContent).toBe("GPT-5.2");
+    const surface = screen.getByTestId("composer-v2").textContent ?? "";
+    expect(surface).not.toContain("codex-lb.psaux.info");
+    expect(surface).not.toContain("ref 0N0FNN");
+    expect(surface).not.toContain("Custom OpenAI");
+  });
+
+  it("collapses model capabilities to short tags and keeps one human footer line", () => {
+    render(<ComposerV2 {...props({ initialLayer: "model", onMakeModelDefault: vi.fn() })} />);
+
+    const option = screen.getByRole("option", { name: /^GPT-5\.2Reasoning/ });
+    const tags = within(option).getByTitle(
+      "Reasoning · PDF и документы · Изображения · Web search · Инструменты · Streaming"
+    );
+    expect(tags).toHaveTextContent("+3");
+    expect(within(option).queryByText("Web search")).toBeNull();
+
+    expect(screen.getByText("Действует со следующего сообщения.")).toBeVisible();
+    expect(screen.queryByText(/Каталог отфильтрован/)).toBeNull();
+
+    const makeDefault = screen.getByRole("button", {
+      name: "Сделать GPT-5.2 mini моделью по умолчанию"
+    });
+    expect(makeDefault).toHaveTextContent("Сделать по умолчанию");
+    expect(makeDefault).toBeVisible();
   });
 
   it("routes picker, drop, and clipboard files through one capability filter", () => {

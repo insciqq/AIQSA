@@ -17,6 +17,14 @@ type FolderActionsInput = {
   setNotice(notice: Notice): void;
 };
 
+function mirrorFolderIntoNavigation(folder: FolderSummary) {
+  useWorkspaceStore.getState().upsertNavigationFolder({
+    id: folder.id,
+    name: folder.name,
+    parentId: folder.parentId ?? null
+  });
+}
+
 export function createFolderActions({
   activeChat,
   activeChatId,
@@ -49,6 +57,7 @@ export function createFolderActions({
 
       const body = (await response.json()) as { folder: FolderSummary };
       useWorkspaceStore.getState().updateFolders((current) => sortFoldersByOrder([...current, body.folder]));
+      mirrorFolderIntoNavigation(body.folder);
       setNotice({
         kind: "success",
         text: `Folder created: ${body.folder.name}`
@@ -89,6 +98,7 @@ export function createFolderActions({
         .updateFolders((current) =>
           sortFoldersByOrder(current.map((candidate) => (candidate.id === body.folder.id ? body.folder : candidate)))
         );
+      mirrorFolderIntoNavigation(body.folder);
       folderMutation.completeRename();
       setNotice({
         kind: "success",
@@ -123,12 +133,18 @@ export function createFolderActions({
         throw new Error(await responseErrorMessage(response, `folder_delete_failed_${response.status}`));
       }
 
-      useWorkspaceStore.getState().updateFolders((current) => current.filter((candidate) => candidate.id !== folder.id));
+      useWorkspaceStore.getState().updateFolders((current) => current
+        .filter((candidate) => candidate.id !== folder.id)
+        // The server reparents child folders of a deleted folder to the root.
+        .map((candidate) =>
+          candidate.parentId === folder.id ? { ...candidate, parentId: null } : candidate
+        ));
       useWorkspaceStore
         .getState()
         .updateChats((current) =>
           current.map((chat) => (chat.folderId === folder.id ? { ...chat, folderId: null } : chat))
         );
+      useWorkspaceStore.getState().removeNavigationFolder(folder.id);
       if (activeChat?.folderId === folder.id && activeChatId) {
         useWorkspaceStore
           .getState()
@@ -182,6 +198,7 @@ export function createFolderActions({
         .updateFolders((current) =>
           sortFoldersByOrder(current.map((candidate) => (candidate.id === body.folder.id ? body.folder : candidate)))
         );
+      mirrorFolderIntoNavigation(body.folder);
       setNotice({
         kind: "success",
         text: `Folder moved: ${body.folder.name}`

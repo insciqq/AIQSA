@@ -87,8 +87,8 @@ test.describe("oversized submitted-question reading anchor", () => {
       }
 
       const runSetup = await openRunSetup(page);
-      const streamButton = runSetup.getByRole("button", { name: /Streaming/ });
-      await expect(streamButton).toHaveAttribute("aria-pressed", "false");
+      const streamButton = runSetup.getByRole("switch", { name: /Streaming/ });
+      await expect(streamButton).toHaveAttribute("aria-checked", "false");
       await streamButton.click();
       await closeRunSetup(page);
 

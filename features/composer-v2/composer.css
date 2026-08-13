@@ -96,47 +96,6 @@
   background: var(--v2-color-hover);
 }
 
-.v2-composer-memory-mode {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.25rem 0.625rem;
-  margin-bottom: 0.375rem;
-  color: var(--v2-color-text3);
-  font-size: 0.6875rem;
-  line-height: 1.4;
-}
-
-.v2-composer-memory-mode > button {
-  display: inline-flex;
-  min-height: 1.75rem;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.25rem 0.4375rem;
-  border: 1px solid var(--v2-color-border);
-  border-radius: var(--v2-radius-s);
-  color: var(--v2-color-text2);
-  background: var(--v2-color-surface2);
-  font: inherit;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.v2-composer-memory-mode[data-mode="temporary"] > button {
-  border-color: color-mix(in srgb, var(--v2-color-warn) 45%, var(--v2-color-border));
-  color: var(--v2-color-warn);
-}
-
-.v2-composer-memory-mode > button:disabled {
-  cursor: default;
-}
-
-.v2-composer-memory-mode > span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
 .v2-composer-status {
   display: flex;
   min-height: 1.5rem;
@@ -188,21 +147,12 @@
   background: var(--v2-color-hover);
 }
 
-.v2-composer-model-trigger > span,
 .v2-composer-model-trigger > strong {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.v2-composer-model-trigger > span {
-  color: var(--v2-color-text3);
-  font-weight: 400;
-}
-
-.v2-composer-model-trigger > strong {
   color: var(--v2-color-text);
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .v2-composer-model-trigger:disabled {
@@ -667,6 +617,21 @@
   font-style: normal;
 }
 
+.v2-composer-model-tags {
+  display: flex;
+  min-width: 0;
+  flex-wrap: nowrap;
+  gap: 0.375rem;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.v2-composer-model-tags em {
+  overflow: hidden;
+  font-style: normal;
+  text-overflow: ellipsis;
+}
+
 .v2-composer-model-option > .v2-icon {
   color: var(--v2-color-accent);
 }
@@ -896,10 +861,6 @@
 }
 
 @media (max-width: 42rem) {
-  .v2-composer-model-trigger > span {
-    display: none;
-  }
-
   .v2-composer-indicators {
     flex: 1 1 auto;
   }

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { composerContextGauge, formatComposerContextStats } from "./composerContextStats";
+import {
+  composerContextGauge,
+  composerContextGaugeTitle,
+  formatComposerContextStats
+} from "./composerContextStats";
 
 describe("composer context statistics", () => {
   it("formats the estimate separately from the safe and total budgets", () => {
@@ -29,5 +33,18 @@ describe("composer context statistics", () => {
       safeInputBudgetTokens: null,
       totalContextTokens: null
     })).toMatchObject({ fraction: null, percent: null, tone: "neutral" });
+  });
+
+  it("offers a human hover label in safe-budget percent or honest tokens", () => {
+    expect(composerContextGaugeTitle({
+      approximateInputTokens: 800,
+      safeInputBudgetTokens: 10_000,
+      totalContextTokens: 12_000
+    })).toBe("~8% контекста");
+    expect(composerContextGaugeTitle({
+      approximateInputTokens: 42_000,
+      safeInputBudgetTokens: null,
+      totalContextTokens: null
+    })).toBe("Контекст: ~42k токенов");
   });
 });

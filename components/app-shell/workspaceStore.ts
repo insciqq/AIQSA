@@ -53,6 +53,8 @@ export type WorkspaceStore = WorkspaceSnapshot & {
   setNavigationChatActiveRun(chatId: string, activeRun: boolean): void;
   upsertNavigationChat(chat: ChatNavigationSummaryWire): void;
   removeNavigationChat(chatId: string): void;
+  upsertNavigationFolder(folder: ChatNavigationFolderWire): void;
+  removeNavigationFolder(folderId: string): void;
   setPendingChatFolderId(value: string | null): void;
   setWorkspaceError(value: string | null): void;
   setWorkspaceLoading(value: boolean): void;
@@ -224,6 +226,25 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
     set((state) => ({
       navigationChats: state.navigationChats.filter((chat) => chat.id !== chatId),
       navigationSearchChats: state.navigationSearchChats.filter((chat) => chat.id !== chatId)
+    }));
+  },
+  upsertNavigationFolder(folder) {
+    set((state) => ({
+      navigationFolders: mergeNavigationFolders(state.navigationFolders, [folder])
+    }));
+  },
+  removeNavigationFolder(folderId) {
+    const clearFolder = (chat: ChatNavigationSummaryWire) =>
+      chat.folderId === folderId ? { ...chat, folderId: null } : chat;
+    set((state) => ({
+      // Server deletion moves direct chats and child folders to the root.
+      navigationChats: state.navigationChats.map(clearFolder),
+      navigationFolders: state.navigationFolders
+        .filter((folder) => folder.id !== folderId)
+        .map((folder) =>
+          folder.parentId === folderId ? { ...folder, parentId: null } : folder
+        ),
+      navigationSearchChats: state.navigationSearchChats.map(clearFolder)
     }));
   },
   setPendingChatFolderId(value) {

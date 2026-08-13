@@ -235,11 +235,7 @@ describe("Navigation v2", () => {
     expect(source).toHaveFocus();
   });
 
-  it("contains command-palette focus and restores its opener", () => {
-    vi.useFakeTimers();
-    const store = useWorkspaceStore.getState();
-    store.setNavigationSearchQuery("brief");
-    store.applyNavigationSearchPage({ chats, folders: [], nextCursor: null }, false);
+  it("leaves Ctrl/Cmd+K to the single shell command-palette owner", () => {
     render(
       <ReadingRoomShellV2
         onNewChat={vi.fn()}
@@ -253,15 +249,48 @@ describe("Navigation v2", () => {
     opener.focus();
 
     fireEvent.keyDown(opener, { ctrlKey: true, key: "k" });
-    const input = screen.getByRole("textbox", { name: "Найти чат" });
-    expect(input).toHaveFocus();
-    fireEvent.keyDown(input, { key: "Tab", shiftKey: true });
-    expect(screen.getByRole("button", { name: /Selected brief/ })).toHaveFocus();
-    fireEvent.keyDown(document.activeElement!, { key: "Tab" });
-    expect(input).toHaveFocus();
-    fireEvent.keyDown(input, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "Поиск чатов" })).toBeNull();
-    expect(opener).toHaveFocus();
+    fireEvent.keyDown(opener, { key: "k", metaKey: true });
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Найти чат" })).toBeNull();
+  });
+
+  it("dismisses the chat-row menu on Escape, outside press, and focus-out", () => {
+    sidebar();
+    const trigger = screen.getByRole("button", { name: "Действия: Selected brief" });
+
+    fireEvent.click(trigger);
+    fireEvent.keyDown(
+      screen.getByRole("menuitem", { name: "Переименовать" }),
+      { key: "Escape" }
+    );
+    expect(screen.queryByRole("menu", { name: "Действия чата Selected brief" })).toBeNull();
+    expect(trigger).toHaveFocus();
+
+    fireEvent.click(trigger);
+    expect(screen.getByRole("menu", { name: "Действия чата Selected brief" })).toBeVisible();
+    fireEvent.pointerDown(screen.getByRole("searchbox", { name: "Поиск чатов" }));
+    expect(screen.queryByRole("menu", { name: "Действия чата Selected brief" })).toBeNull();
+
+    fireEvent.click(trigger);
+    fireEvent.focusIn(screen.getByRole("searchbox", { name: "Поиск чатов" }));
+    expect(screen.queryByRole("menu", { name: "Действия чата Selected brief" })).toBeNull();
+  });
+
+  it("dismisses the new-chat mode menu on Escape with focus returned to its trigger", () => {
+    const onNewChat = vi.fn();
+    sidebar({ onNewChat });
+    const trigger = screen.getByRole("button", { name: "Режим нового чата" });
+
+    fireEvent.click(trigger);
+    fireEvent.keyDown(
+      screen.getByRole("menuitem", { name: /Временный чат/ }),
+      { key: "Escape" }
+    );
+
+    expect(screen.queryByRole("menu", { name: "Режим нового чата" })).toBeNull();
+    expect(trigger).toHaveFocus();
+    expect(onNewChat).not.toHaveBeenCalled();
   });
 
   it("reconciles local run start and settlement with the server summary cue", () => {

@@ -72,6 +72,55 @@
   display: inline-flex;
 }
 
+.v2-live-temporary {
+  position: relative;
+  display: inline-flex;
+}
+
+.v2-live-temporary-trigger {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  border: 0;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-warn);
+  background: transparent;
+  font: inherit;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.v2-live-temporary-trigger:hover {
+  background: var(--v2-color-hover);
+}
+
+.v2-live-temporary-popover {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  width: min(20rem, calc(100vw - 2rem));
+  padding: 0.75rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface);
+  box-shadow: var(--v2-shadow-overlay);
+}
+
+.v2-live-temporary-popover p {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.v2-live-temporary-popover p:last-child {
+  margin-bottom: 0;
+}
+
 .v2-live-account-trigger {
   display: grid;
   width: 2.125rem;
@@ -379,10 +428,65 @@
   cursor: pointer;
 }
 
-.v2-run-setup-switches button[aria-pressed="true"] {
+.v2-run-setup-switches button[aria-checked="true"] {
   border-color: var(--v2-color-accent);
   color: var(--v2-color-text);
   background: var(--v2-color-active);
+}
+
+.v2-run-setup-switch-state {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.v2-run-setup-switch-track {
+  position: relative;
+  width: 1.75rem;
+  height: 1rem;
+  border-radius: 999px;
+  background: var(--v2-color-border2);
+  transition: background var(--v2-motion-fast);
+}
+
+.v2-run-setup-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 0.125rem;
+  left: 0.125rem;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  background: var(--v2-color-surface);
+  transition: transform var(--v2-motion-fast);
+}
+
+.v2-run-setup-switches button[aria-checked="true"] .v2-run-setup-switch-track {
+  background: var(--v2-color-accent);
+}
+
+.v2-run-setup-switches button[aria-checked="true"] .v2-run-setup-switch-track::after {
+  transform: translateX(0.75rem);
+}
+
+.v2-run-setup-current {
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+}
+
+.v2-run-setup-current strong {
+  color: var(--v2-color-text);
+  font-weight: 550;
+}
+
+.v2-run-setup-feedback {
+  width: 100%;
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 .v2-run-setup-defaults {
@@ -401,6 +505,16 @@
   .v2-live-header {
     left: max(1rem, env(safe-area-inset-left));
   }
+}
+
+/*
+ * While the sidebar is collapsed (desktop collapse and compact 900–1023px
+ * default), the fixed `.v2-sidebar-floats` group occupies the top-left corner.
+ * The absolute header must start to its right so float buttons never overlap
+ * the chat title.
+ */
+.v2-workspace-shell[data-sidebar-collapsed="true"] .v2-live-header {
+  left: max(7.25rem, calc(env(safe-area-inset-left) + 7.25rem));
 }
 
 @media (max-width: 899px) {
@@ -446,7 +560,9 @@
 
 @media (prefers-reduced-motion: reduce) {
   .v2-live-header,
-  .v2-run-setup {
+  .v2-run-setup,
+  .v2-run-setup-switch-track,
+  .v2-run-setup-switch-track::after {
     transition: none;
   }
 }

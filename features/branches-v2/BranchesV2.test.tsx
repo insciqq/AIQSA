@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
 import {
   BranchDrawerV2,
+  BranchPagerSlotV2,
   BranchPagerV2,
   EditBranchStripV2
 } from "./BranchesV2";
@@ -90,6 +91,39 @@ describe("Branches v2", () => {
     );
     expect(screen.getByRole("button", { name: "Предыдущая версия" })).toBeDisabled();
     expect(screen.getByText("Дождитесь завершения ответа.")).toBeVisible();
+  });
+
+  it("renders the live pager slot only for sibling messages and checks out the sibling leaf", () => {
+    const onCheckout = vi.fn();
+    const { rerender } = render(
+      <BranchPagerSlotV2
+        graph={graph}
+        messageId="answer-current-private-id"
+        onCheckout={onCheckout}
+      />
+    );
+
+    expect(screen.getByLabelText("Версия 2 из 2")).toHaveTextContent("2/2");
+    fireEvent.click(screen.getByRole("button", { name: "Предыдущая версия" }));
+    expect(onCheckout).toHaveBeenCalledWith("answer-old-private-id");
+
+    rerender(
+      <BranchPagerSlotV2
+        graph={graph}
+        messageId="question-private-id"
+        onCheckout={onCheckout}
+      />
+    );
+    expect(screen.queryByTestId("branch-pager")).toBeNull();
+
+    rerender(
+      <BranchPagerSlotV2
+        graph={null}
+        messageId="answer-current-private-id"
+        onCheckout={onCheckout}
+      />
+    );
+    expect(screen.queryByTestId("branch-pager")).toBeNull();
   });
 
   it("traps focus, restores the opener, and never renders raw graph ids", async () => {

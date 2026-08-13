@@ -8,6 +8,7 @@ import {
   UiV2MenuSurface,
   UiV2Skeleton
 } from "@/components/ui-v2";
+import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import {
   clearChatNavigationSearch,
   loadChatNavigation,
@@ -25,7 +26,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode
 } from "react";
 
@@ -147,6 +147,11 @@ function ChatRow({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
+  const closeMenu = () => {
+    setMenuOpen(false);
+    setMoveOpen(false);
+  };
+  const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
   if (editing) {
     return (
       <form
@@ -194,42 +199,47 @@ function ChatRow({
         icon="more"
         label={`Действия: ${chat.title}`}
         aria-expanded={menuOpen}
-        onClick={() => setMenuOpen((open) => !open)}
+        ref={triggerRef}
+        onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
       />
       {menuOpen ? (
-        <UiV2MenuSurface className="v2-chat-menu" label={`Действия чата ${chat.title}`}>
-          <UiV2MenuItem onClick={() => { setMenuOpen(false); onRename?.(chat); }}>Переименовать</UiV2MenuItem>
+        <UiV2MenuSurface
+          className="v2-chat-menu"
+          label={`Действия чата ${chat.title}`}
+          ref={menuRef}
+        >
+          <UiV2MenuItem onClick={() => { closeMenu(); onRename?.(chat); }}>Переименовать</UiV2MenuItem>
           <UiV2MenuItem onClick={() => setMoveOpen((open) => !open)}>Переместить</UiV2MenuItem>
           {moveOpen ? (
             <div className="v2-chat-move-options" aria-label="Выберите папку">
-              <UiV2MenuItem onClick={() => { setMenuOpen(false); onMove?.(chat, null); }}>Без папки</UiV2MenuItem>
+              <UiV2MenuItem onClick={() => { closeMenu(); onMove?.(chat, null); }}>Без папки</UiV2MenuItem>
               {folders.map((folder) => (
-                <UiV2MenuItem key={folder.id} onClick={() => { setMenuOpen(false); onMove?.(chat, folder.id); }}>
+                <UiV2MenuItem key={folder.id} onClick={() => { closeMenu(); onMove?.(chat, folder.id); }}>
                   {folder.name}
                 </UiV2MenuItem>
               ))}
             </div>
           ) : null}
-          <UiV2MenuItem onClick={() => { setMenuOpen(false); onFavorite?.(chat); }}>Избранное</UiV2MenuItem>
-          <UiV2MenuItem onClick={() => { setMenuOpen(false); onShare?.(chat); }}>Поделиться</UiV2MenuItem>
-          <UiV2MenuItem onClick={() => { setMenuOpen(false); onExport?.(chat); }}>Экспортировать</UiV2MenuItem>
+          <UiV2MenuItem onClick={() => { closeMenu(); onFavorite?.(chat); }}>Избранное</UiV2MenuItem>
+          <UiV2MenuItem onClick={() => { closeMenu(); onShare?.(chat); }}>Поделиться</UiV2MenuItem>
+          <UiV2MenuItem onClick={() => { closeMenu(); onExport?.(chat); }}>Экспортировать</UiV2MenuItem>
           <UiV2MenuItem
             disabled={chat.activeRun}
             onClick={() => {
-              setMenuOpen(false);
+              closeMenu();
               onArchive?.(chat);
             }}
           >
             Архивировать
           </UiV2MenuItem>
           <UiV2MenuItem onClick={() => {
-            setMenuOpen(false);
+            closeMenu();
             onMemoryMode?.(chat, "NORMAL");
           }}>
             Использовать память
           </UiV2MenuItem>
           <UiV2MenuItem onClick={() => {
-            setMenuOpen(false);
+            closeMenu();
             onMemoryMode?.(chat, "EXCLUDED");
           }}>
             Без памяти
@@ -260,6 +270,11 @@ function FolderGroup({
   const [moveOpen, setMoveOpen] = useState(false);
   const [subfolderOpen, setSubfolderOpen] = useState(false);
   const [subfolderName, setSubfolderName] = useState("");
+  const closeMenu = () => {
+    setMenuOpen(false);
+    setMoveOpen(false);
+  };
+  const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
   const directChats = chats.filter((chat) => chat.folderId === folder.id);
   const children = folders.filter((candidate) => candidate.parentId === folder.id);
   const editing = props.editingFolderId === folder.id;
@@ -301,31 +316,36 @@ function FolderGroup({
               icon="more"
               label={`Действия папки: ${folder.name}`}
               aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((value) => !value)}
+              ref={triggerRef}
+              onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
             />
             {menuOpen ? (
-              <UiV2MenuSurface className="v2-folder-menu" label={`Действия папки ${folder.name}`}>
-                <UiV2MenuItem onClick={() => { setMenuOpen(false); props.onRenameFolder?.(folder); }}>
+              <UiV2MenuSurface
+                className="v2-folder-menu"
+                label={`Действия папки ${folder.name}`}
+                ref={menuRef}
+              >
+                <UiV2MenuItem onClick={() => { closeMenu(); props.onRenameFolder?.(folder); }}>
                   Переименовать
                 </UiV2MenuItem>
-                <UiV2MenuItem onClick={() => { setMenuOpen(false); setSubfolderOpen(true); setOpen(true); }}>
+                <UiV2MenuItem onClick={() => { closeMenu(); setSubfolderOpen(true); setOpen(true); }}>
                   Новая подпапка
                 </UiV2MenuItem>
                 <UiV2MenuItem onClick={() => setMoveOpen((value) => !value)}>Переместить</UiV2MenuItem>
                 {moveOpen ? (
                   <div className="v2-chat-move-options" aria-label="Переместить папку">
-                    <UiV2MenuItem onClick={() => { setMenuOpen(false); props.onMoveFolder?.(folder, null); }}>В корень</UiV2MenuItem>
+                    <UiV2MenuItem onClick={() => { closeMenu(); props.onMoveFolder?.(folder, null); }}>В корень</UiV2MenuItem>
                     {folders.filter((candidate) => candidate.id !== folder.id).map((candidate) => (
-                      <UiV2MenuItem key={candidate.id} onClick={() => { setMenuOpen(false); props.onMoveFolder?.(folder, candidate.id); }}>
+                      <UiV2MenuItem key={candidate.id} onClick={() => { closeMenu(); props.onMoveFolder?.(folder, candidate.id); }}>
                         {candidate.name}
                       </UiV2MenuItem>
                     ))}
                   </div>
                 ) : null}
-                <UiV2MenuItem onClick={() => { setMenuOpen(false); props.onFolderProjectSettings?.(folder); }}>
+                <UiV2MenuItem onClick={() => { closeMenu(); props.onFolderProjectSettings?.(folder); }}>
                   Настройки проекта
                 </UiV2MenuItem>
-                <UiV2MenuItem onClick={() => { setMenuOpen(false); props.onDeleteFolder?.(folder); }}>
+                <UiV2MenuItem onClick={() => { closeMenu(); props.onDeleteFolder?.(folder); }}>
                   Удалить папку
                 </UiV2MenuItem>
               </UiV2MenuSurface>
@@ -399,6 +419,13 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const {
+    menuRef: newChatMenuRef,
+    triggerRef: newChatTriggerRef
+  } = useMenuDismissalV2({
+    onClose: () => setNewChatMenuOpen(false),
+    open: newChatMenuOpen
+  });
   const unfiled = props.chats.filter((chat) => chat.folderId === null);
   const roots = props.folders.filter((folder) => folder.parentId === null);
   const dateGroups = (["today", "yesterday", "last-seven", "earlier"] as const)
@@ -432,12 +459,17 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             type="button"
             aria-expanded={newChatMenuOpen}
             aria-label="Режим нового чата"
+            ref={newChatTriggerRef}
             onClick={() => setNewChatMenuOpen((open) => !open)}
           >
             <UiV2Icon name="chevron-down" />
           </button>
           {newChatMenuOpen ? (
-            <UiV2MenuSurface className="v2-new-chat-menu" label="Режим нового чата">
+            <UiV2MenuSurface
+              className="v2-new-chat-menu"
+              label="Режим нового чата"
+              ref={newChatMenuRef}
+            >
               <UiV2MenuItem
                 sub="Обычная память и история"
                 onClick={() => { setNewChatMenuOpen(false); props.onNewChat("NORMAL"); }}
@@ -491,7 +523,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       <div className="v2-navigation-search-wrap">
         <span className="v2-navigation-search-icon"><UiV2Icon name="search" /></span>
         <input
-          className="v2-navigation-search"
+          className="v2-navigation-search v2-focusable"
           aria-label="Поиск чатов"
           placeholder="Поиск"
           type="search"
@@ -637,139 +669,6 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   );
 }
 
-function ChatCommandPalette({
-  onClose,
-  onSelect
-}: {
-  onClose(): void;
-  onSelect(chat: ChatNavigationSummaryWire): void;
-}) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const query = useWorkspaceStore((state) => state.navigationSearchQuery);
-  const chats = useWorkspaceStore((state) => state.navigationSearchChats);
-  const folders = useWorkspaceStore((state) => state.navigationFolders);
-  const loading = useWorkspaceStore((state) => state.navigationSearchLoading);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const folderNames = useMemo(() => new Map(folders.map((folder) => [folder.id, folder.name])), [folders]);
-  const resolvedActiveIndex = Math.min(activeIndex, Math.max(0, chats.length - 1));
-
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    inputRef.current?.focus();
-    return () => {
-      const shell = opener?.closest<HTMLElement>(".v2-workspace-shell");
-      const navigationHidden = Boolean(
-        opener?.closest(".v2-navigation") && shell && (
-          shell.getAttribute("data-sidebar-composition") === "mobile" &&
-          shell.getAttribute("data-mobile-sidebar") !== "true" ||
-          shell.getAttribute("data-sidebar-collapsed") === "true"
-        )
-      );
-      if (opener?.isConnected && opener !== document.body && !navigationHidden) opener.focus();
-      else document.querySelector<HTMLElement>(
-        ".v2-sidebar-floats button[aria-label='Открыть панель']"
-      )?.focus();
-    };
-  }, []);
-
-  const trapDialogFocus = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
-      "button:not([disabled]), input:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])"
-    ) ?? [])].filter((element) => !element.hidden);
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (!first || !last) return;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
-  return (
-    <div className="v2-command-scrim" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose();
-    }}>
-      <div
-        ref={dialogRef}
-        className="v2-command-palette"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Поиск чатов"
-        onKeyDown={trapDialogFocus}
-      >
-        <input
-          ref={inputRef}
-          className="v2-command-input"
-          aria-label="Найти чат"
-          placeholder="Найти чат по названию или папке…"
-          value={query}
-          onChange={(event) => {
-            const value = event.target.value;
-            setActiveIndex(0);
-            if (!value) clearChatNavigationSearch();
-            else useWorkspaceStore.getState().setNavigationSearchQuery(value);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Home" && chats.length) {
-              event.preventDefault();
-              setActiveIndex(0);
-            }
-            if (event.key === "End" && chats.length) {
-              event.preventDefault();
-              setActiveIndex(chats.length - 1);
-            }
-            if (event.key === "ArrowDown" && chats.length) {
-              event.preventDefault();
-              setActiveIndex((index) => (index + 1) % chats.length);
-            }
-            if (event.key === "ArrowUp" && chats.length) {
-              event.preventDefault();
-              setActiveIndex((index) => (index - 1 + chats.length) % chats.length);
-            }
-            if (event.key === "Enter" && chats[resolvedActiveIndex]) {
-              onSelect(chats[resolvedActiveIndex]);
-              onClose();
-            }
-          }}
-        />
-        <div className="v2-command-results">
-          {loading ? <div className="v2-navigation-status">Ищем…</div> : null}
-          {!loading && query && chats.length === 0 ? (
-            <div className="v2-navigation-status">Нет совпадений</div>
-          ) : null}
-          {chats.map((chat, index) => (
-            <button
-              className="v2-command-result v2-focusable"
-              data-active={index === resolvedActiveIndex || undefined}
-              key={chat.id}
-              type="button"
-              onMouseEnter={() => setActiveIndex(index)}
-              onClick={() => { onSelect(chat); onClose(); }}
-            >
-              <span className="v2-chat-title">{chat.title}</span>
-              <span className="v2-command-folder">
-                {chat.folderId ? folderNames.get(chat.folderId) ?? "Папка" : "Чат"}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarProps,
   | "activeChatId" | "chats" | "error" | "folders" | "hasMore" | "loading"
   | "onLoadMore" | "onRetry" | "onSearch" | "ready" | "searchError"
@@ -858,7 +757,7 @@ export function ReadingRoomShellV2({
   sidebar,
   ...navigationOwnerProps
 }: ReadingRoomShellV2Props) {
-  const { onNewChat, onSelectChat } = navigationOwnerProps;
+  const { onNewChat } = navigationOwnerProps;
   const [composition, setComposition] = useState<SidebarCompositionV2>("desktop");
   const [compactExpanded, setCompactExpanded] = useState(false);
   const [desktopCollapsed, setDesktopCollapsed] = useState(false);
@@ -867,7 +766,6 @@ export function ReadingRoomShellV2({
     target: "open" | "sidebar";
   }> | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [paletteOpen, setPaletteOpen] = useState(false);
   const openButtonRef = useRef<HTMLButtonElement>(null);
   const compositionRef = useRef<SidebarCompositionV2>("desktop");
   const focusBeforeCompactRef = useRef<HTMLElement | null>(null);
@@ -951,20 +849,12 @@ export function ReadingRoomShellV2({
     };
   }, [searchQuery]);
 
+  // Ctrl/Cmd+K stays owned by the single shell command-palette controller
+  // (`useShellOverlayController`); this shell adds no second global listener.
   useEffect(() => {
+    if (!mobileOpen) return;
     const keydown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        const target = event.target;
-        if (
-          target instanceof Element &&
-          target.matches("input, textarea, select, [contenteditable=true]")
-        ) return;
-        event.preventDefault();
-        setMobileOpen(false);
-        setPaletteOpen(true);
-      } else if (event.key === "Escape" && mobileOpen) {
-        setMobileOpen(false);
-      }
+      if (event.key === "Escape") setMobileOpen(false);
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
@@ -1063,12 +953,6 @@ export function ReadingRoomShellV2({
         <UiV2IconButton icon="plus" label="Новый чат" onClick={() => onNewChat("NORMAL")} />
       </div>
       <div className="v2-workspace-content" inert={mobileOpen ? true : undefined}>{children}</div>
-      {paletteOpen ? (
-        <ChatCommandPalette
-          onClose={() => setPaletteOpen(false)}
-          onSelect={onSelectChat}
-        />
-      ) : null}
     </div>
   );
 }

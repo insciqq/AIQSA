@@ -32,6 +32,7 @@ The workspace header owns the visible Account menu and command trigger. Account 
 ## Chat and folder actions
 
 - A chat row reserves one overflow action. Current actions are Rename, Move, Favorite, Share, Export, Archive, Use Memory, and Memory-off. Archive is unavailable while that chat has an active run. Temporary remains a creation mode, not a retained-row toggle.
+- Archive applies immediately without a dialog: the row leaves the live sidebar list at once, and the shared shell notice `Чат перемещён в архив` offers `Отменить`, which restores the chat and its row in place. Chat and folder mutations (create, rename, move, delete/archive) update the live navigation projection without a reload.
 - Rename is inline, keeps its draft until exact success/cancel, and uses the current chat revision owner. Move uses explicit owned folder ids; labels never act as authorization.
 - A folder row owns expand/collapse, New chat, New subfolder, Project settings, Rename, Move, and Delete. Indentation is bounded; ancestor visibility and active-descendant cues prevent a collapsed hierarchy from hiding the active location ambiguously.
 - No chat/folder confirmation uses `window.confirm`, `window.alert`, or `window.prompt`. Destructive surfaces name the exact target and consequence, close on safe Escape/backdrop, and keep focus restoration with their opener.
