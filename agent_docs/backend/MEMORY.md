@@ -361,8 +361,7 @@ admission with two durable phases:
    active leaf, chat mode, all four relevant generation/revision snapshots,
    accepted/current egress policy, source and scope targets, safety,
    suppression, and every selected exact item/version.
-5. Phase B freezes the final normalized provider request, provider preview,
-   exact personal-context text, private run binding/items, and transitions out
+5. Phase B freezes the minimum private recovery checkpoint, exact personal-context text, private run binding/items, and transitions out
    of `PREPARING` to a dispatchable admitted state.
 6. Only the committed finalized request may reach the answer provider. Recovery
    of a finalized run replays that frozen request and never performs fresh
@@ -541,8 +540,7 @@ bounded retry, and idempotency. Policy admits at most two jobs, one per user,
 plus an independent deletion worker; safety weighting bounds every tier.
 Invalid policy/keys or database preflight blocks claims feature-locally.
 Phase 8 enables hard-delete admission only after exact composition; conflict
-fails closed and rollback retains accepted obligations. Durable status stays
-inspectable. [Testing](../TESTING.md) owns the measured gate.
+fails closed and rollback retains accepted obligations. Durable status stays owner-readable through its bounded operational status projection. [Testing](../TESTING.md) owns the measured gate.
 
 No asynchronous embedding, indexing, Temporary promise, or purge promise may
 ship before the job ledger, the single deletion outbox, lease recovery, and
@@ -583,15 +581,11 @@ checksummed promotion receipt; neither helper performs cutover.
   streaming](RUNS_AND_STREAMING.md) own implemented run/message admission,
   two-phase Memory retrieval/finalization, dispatch, recovery, settlement,
   context, and streaming behavior.
-- [Evidence, sharing, and retention](../run_pipeline/EVIDENCE_SHARING_AND_RETENTION.md)
-  owns implemented frozen Memory inspection and positive public-share
-  stripping alongside the other run evidence.
+- [Outputs, recovery, sharing, and retention](../run_pipeline/OUTPUTS_RECOVERY_SHARING_AND_RETENTION.md) owns private Memory checkpoint boundaries and positive public-share stripping alongside the other run data.
 - [Provider adapters](PROVIDER_ADAPTERS.md) own provider transport, credential
   resolution, usage normalization, and supported capabilities; Memory owns
   compatibility, destination authority, and no-fallback semantics.
-- [Frontend](../FRONTEND.md) routes current shell, Settings, receipts, Details,
-  responsive access, and localization behavior. Memory UI must extend those
-  owners rather than create a parallel app or new Details tab.
+- [Frontend](../FRONTEND.md) routes the current shell, Settings, explicit Memory confirmations, responsive access, and localization behavior. Memory UI must extend those owners rather than create a parallel app or post-hoc run inspector.
 - [Security](../SECURITY.md) owns implemented auth, secret, logging, network,
   and private-data enforcement. Memory adds no exception.
 - [Testing](../TESTING.md) owns lane selection and disposable-environment

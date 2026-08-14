@@ -5,7 +5,7 @@ Scope: Current process topology, module dependency direction, durable data bound
 
 ## Ownership
 
-AIQSA is a TypeScript/Node.js Next.js modular monolith for a self-hosted installation. The supported topology is a hardened single-host, single-replica runtime. Its current capacity policy assumes authenticated, authorized users inside one trusted, operator-managed organization: different-chat runs intentionally have no per-user, installation-wide, or shared-provider admission quota or queue. That absence is an accepted capacity-allocation choice, not an authentication, tenant-isolation, per-request-bound, or same-chat-integrity exception. Operators still observe saturation and tune capacity; reassess admission controls before accepting untrusted or external users, promising contractual spend or latency guarantees, adding multi-replica scheduling, or after measured provider, CPU, memory, or cost contention.
+AIQSA is a TypeScript/Node.js Next.js modular monolith for an open-source, self-hosted, model-agnostic AI web interface. The supported topology is a hardened single-host, single-replica runtime. Its current capacity policy assumes authenticated, authorized users inside one trusted, operator-managed organization: different-chat runs intentionally have no per-user, installation-wide, or shared-provider admission quota or queue. That absence is an accepted capacity-allocation choice, not an authentication, tenant-isolation, per-request-bound, or same-chat-integrity exception. Operators still observe saturation and tune capacity; reassess admission controls before accepting untrusted or external users, promising contractual spend or latency guarantees, adding multi-replica scheduling, or after measured provider, CPU, memory, or cost contention.
 
 Do not split a separate backend, frontend runtime, or microservice without a measured blocker that cannot be solved within this boundary. API behavior is routed by `BACKEND.md`, UI behavior by `FRONTEND.md`, deployment configuration belongs to `ENV_VARIABLES.md`, and security/exposure rules are routed by `SECURITY.md`.
 
@@ -43,7 +43,7 @@ The dependency rules are executable in `eslint.config.mjs` and `tests/harness/im
 
 - `lib/server/auth/` owns sessions, admission, user/group entitlements, and the built-in `full_access` semantic wildcard. Entitlement never selects a credential; direct-user, active-group, and permitted default credential precedence remains a separate pure/domain and runtime boundary.
 - Administrator provider owners manage mutable connection/model/credential configuration. Provider runtime owns transactional run admission, immutable accepted bindings, credential-version/revocation guards, and adapter construction. Browser contracts expose only write actions and safe metadata.
-- Search administration exposes one logical source per exact provider connection and owns the source-level lifecycle; physical hosted/query-only routes retain configuration-evidenced immutable revisions and optional non-gating diagnostics below it. Provider-neutral Search owns typed query-only execution, whole-plan physical-route assignment, fan-out merge, and bounded canonical findings/source evidence supplied explicitly by each adapter. Technical-only provider deployments may support Search while remaining absent from answer-model catalogs.
+- Search administration exposes one logical source per exact provider connection and owns the source-level lifecycle; physical hosted/query-only routes retain configuration-backed immutable revisions and optional non-gating diagnostics below it. Provider-neutral Search owns typed query-only execution, whole-plan physical-route assignment, fan-out merge, and bounded canonical findings and safe citation sources supplied explicitly by each adapter. Technical-only provider deployments may support Search while remaining absent from answer-model catalogs.
 - MCP owns installation definitions, grants, encrypted configuration/OAuth envelopes, activation jobs, runtime generations, and official SDK/ToolHive adapters. One process-local coordinator advances a database-owned activation job; another reconciles durable desired generations into live sessions. Both fence writes to exact versions/fingerprints. Remote traffic uses the SSRF-safe fetch boundary; local stdio uses ToolHive sibling workloads on the private control network.
 - `lib/server/parsing/` owns the optional file-to-structured-text boundary. Plain text, Markdown, CSV, and JSON remain in-process; structure-aware PDF/OOXML/HTML/image work routes to Docling first with Tika fallback, while Tika owns legacy office/mail/ebook formats. The Docling request explicitly recognizes printed Russian and English text in image regions while preserving usable native PDF text; this is OCR, not semantic understanding of pictures, plots, diagrams, handwriting, or other visual content. Its ordered page-anchored blocks are a consumer-neutral contract; upload/chat and Knowledge ingestion wire to it only through their own later lifecycle owners.
 - Knowledge owns private publishable bases, append-only document versions, immutable embedding/index generations, and hybrid relational retrieval storage. Object storage holds originals and normalized text; Postgres holds lifecycle metadata, bounded chunks, vectors, FTS projections, and temporal revision authority. Embedding is a separate disclosed provider-egress boundary outside chat runs.
@@ -71,23 +71,23 @@ Process liveness is separate from readiness. Readiness checks explicit runtime s
 
 Installation state relies on stable volumes, coordinated pre-migration backup, committed `prisma migrate deploy` migrations, guarded restore, and versioned/commit-tagged unified images. `ops/backup/` owns write-quiesced database/object backup, durable Memory-lease fencing, and the internal no-port restore project plus key/deletion/barrier review receipt; it never starts or promotes an application. `ops/nginx/` owns the optional SSE/upload-aware TLS proxy template.
 
-Live run cancellation and MCP sessions are process-local. Durable run status, per-chat active-run uniqueness, activation jobs, desired MCP generations, and evidence survive restart; live abort/session ownership does not cross replicas. Multi-replica/HA operation is unsupported.
+Live run cancellation and MCP sessions are process-local. Durable run status, per-chat active-run uniqueness, accepted bindings, recovery checkpoints, activation jobs, and desired MCP generations survive restart; live abort/session ownership does not cross replicas. Multi-replica/HA operation is unsupported.
 
 ## Persistence And Durable Ownership
 
 Postgres/Prisma is authoritative for:
 
 - users, identities, sessions, auth admission, groups, grants, and invitations;
-- folders, chats, message DAGs, settings state, Assistant definitions/revisions/publications/pins, runs, events, usage, and immutable accepted bindings;
-- Knowledge Base ownership/publications, document-version visibility, vector-space generations, chunks, vectors, and retrieval evidence;
+- folders, chats, message DAGs, settings state, Assistant definitions/revisions/publications/pins, runs, purpose-bound lifecycle/checkpoint records, usage, and immutable accepted bindings;
+- Knowledge Base ownership/publications, document-version visibility, vector-space generations, chunks, vectors, retrieval checkpoints, and safe citations;
 - provider/model/credential, Search, SMTP, and MCP control planes;
-- MCP activation/runtime evidence, upload metadata/cleanup work, and public-share snapshots.
+- MCP activation/runtime state, accepted tool-call checkpoints, upload metadata/cleanup work, and public-share snapshots.
 
 Private attachment and Knowledge original/normalized objects live in S3/MinIO in the bundled stack. A filesystem fallback exists only when S3 is absent outside that topology.
 
 At the architecture layer, Postgres owns authenticated relational tenancy,
-mutable control-plane state, conversation/run graphs, and immutable accepted
-evidence; private object storage owns attachment bytes behind those relational
+mutable control-plane state, conversation/run graphs, accepted bindings,
+recovery checkpoints, and user-visible output records; private object storage owns attachment bytes behind those relational
 references. Browser input never becomes ownership or entitlement authority, and
 external payloads cross into durable state only through a bounded normalized
 projection. `CRITICAL_INVARIANTS.md` owns the cross-cutting safety outcomes;
@@ -104,7 +104,7 @@ authenticated mutation
   -> immutable provider-neutral prepared snapshot
   -> atomic run graph + accepted bindings
   -> provider/Search/MCP execution
-  -> normalized SSE + bounded durable evidence
+  -> normalized live updates + bounded durable checkpoints/outputs
   -> status-guarded finalization
   -> source-keyed browser reconciliation
 ```
@@ -131,8 +131,8 @@ batched persistence, transient chat synchronization, and process-local
 cancellation. One provider-neutral continuation owner coordinates Search and
 MCP while adapters remain limited to wire/transport/parser translation.
 
-Recovery reconstructs work from durable accepted bindings, checkpoints, and
-evidence; live controllers and provider sessions remain process-local. Exact
+Recovery reconstructs work from durable accepted bindings and purpose-bound
+checkpoints; live controllers and provider sessions remain process-local. Exact
 batch persistence, outcome-unknown handling, terminal settlement, and
 provider-specific live-only exceptions are owned by the routed run and provider
 contracts rather than repeated in this topology map.
@@ -141,13 +141,13 @@ contracts rather than repeated in this topology map.
 
 ## Frontend Boundary
 
-The browser maintains strict summary/detail separation:
+The browser maintains strict summary/detail and server/client separation:
 
 - workspace state contains lightweight summaries only;
 - keyed thread state contains messages, active leaf, usage, and branch snapshots;
-- keyed run-surface state contains compacted Events and persisted inspection;
+- keyed run-lifecycle state contains only live status and the minimal decoded run outcome required for cancellation, resume polling, terminal reconciliation, citations, and generated outputs;
 - keyed composer sessions contain draft/edit/attachment and async-operation ownership;
-- next-run controls and overlay/menu state remain in focused owners.
+- Branches, next-run controls, and overlay/menu state remain in focused owners. Repository objects and internal checkpoints never cross this boundary without an explicit allowlisted serializer.
 
 Every async producer captures its source chat/session before awaiting. Optimistic rows, ID adoption, token flushes, errors, persisted refresh, and terminal updates affect only that source. Cached inactive state survives navigation, and stale responses merge without overwriting concurrent user/stream work.
 

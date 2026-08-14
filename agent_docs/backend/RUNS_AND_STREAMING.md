@@ -20,16 +20,8 @@ Persisted `Message` rows are durable chat memory. The backend, not the browser, 
 - Runs that fit the budget keep the prior request shape. Trimmed runs store the trimmed `context.messages`, add `context.summary.truncation`, and emit a persisted `context_truncated` artifact. If prompts plus the current user message exceed budget, the route returns `400 context_too_large` before creating a run or calling a provider.
 - Branch checkout persists by updating `Chat.activeLeafMessageId`; message deletion removes the selected subtree and falls back to the deleted root's parent if the active leaf was inside it.
 - Provider adapters receive a provider-neutral `context.mode = "branch_path"` payload with ordered user/assistant messages.
-- Request previews expose safe context ids, roles, and text snippets.
-- A historical attachment-only user turn remains non-empty in text replay as one
-  ordered marker line per stored block: `[image attachment]`,
-  `[file attachment: <fileName>]`, or the private-data-free `[attachment]`
-  fallback for a legacy kind. Always-redacted previews replace a named file
-  with `[file attachment]`, declare `attachment_filename`, and expose no
-  attachment id, storage fact, extracted text, media type, or bytes. Individual
-  provider owners document only a wire-specific deviation from this shared
-  projection.
-- If the chat belongs to a folder/project with memory, the run preparation boundary appends `Project memory` to the normalized system prompt for sends and regenerations before provider request preview/building.
+- Purpose-bound server recovery snapshots may retain the exact admitted context needed to continue an accepted run, including ordered roles/content and neutral attachment markers. They remain private, are never a browser projection, and are narrowed or removed when no recovery consumer remains. A historical attachment-only user turn remains non-empty in provider replay as one ordered marker line per stored block: `[image attachment]`, `[file attachment: <fileName>]`, or the private-data-free `[attachment]` fallback for a legacy kind. Provider owners document only a wire-specific deviation from this shared replay contract; logs and client outcomes expose no attachment id, storage fact, extracted text, media type, filename, or bytes.
+- If the chat belongs to a folder/project with memory, the run preparation boundary appends `Project memory` to the normalized system prompt for sends and regenerations before provider request building and private checkpointing.
 
 OpenAI Responses and native Gemini Interactions use ordered input/step items, Anthropic Messages and OpenRouter/compatible Chat use ordered message arrays, and the fake provider echoes a deterministic context-memory preview for tests. A grounded live-only assistant row contributes only its neutral placeholder, never its transient answer.
 
@@ -38,13 +30,12 @@ OpenAI Responses and native Gemini Interactions use ordered input/step items, An
 The visible assistant message is for the user-facing answer only. The run preparation boundary adds a backend invariant to provider requests:
 
 - do not print debug sections such as `Question`, `Search`, `Provider Parameters`, `Request Preview`, `Artifacts`, `Usage`, or `Errors` in chat;
-- keep provider/search/request/usage/error details out of visible chat answers; the UI shows Events/Details summaries and the model-run API keeps debug previews inspectable;
+- keep provider/search/request/usage/error internals out of visible chat answers; the UI shows only factual live status, safe Sources, generated outputs, and actionable terminal state;
 - include citations naturally in the answer only when useful.
 
 OpenAI Responses, native Gemini Interactions, OpenRouter, and OpenAI-compatible
 Chat answer adapters sanitize the common old debug-template shape before
-emitting/saving visible answer text. Raw provider text remains available in
-model-run response previews when it differs from the visible answer.
+emitting/saving visible answer text. Raw provider text is not retained solely to compare it with the sanitized visible answer. A provider-specific recovery owner may keep only the bounded opaque checkpoint required to continue or prove terminal state.
 
 ## Chat Titles
 
@@ -71,22 +62,22 @@ expired or already-claimed aggregate.
   empty/disabled/degraded/failed-safe result, then atomically revalidate the
   admitted DAG, mutable authority, any qualified utility evidence, and every
   selected fact/chunk/episode/source; consume the attempt, create its immutable
-  run binding/items, freeze the normalized request/provider preview, and
+  run binding/items, freeze the minimum purpose-bound recovery checkpoint, and
   transition to `streaming` before first answer-provider I/O;
 - for Temporary, use the fixed disabled settings snapshot and a zero-item,
   zero-token `DISABLED` final binding without loading personal Memory settings
-  or reusable data; the binding is run evidence and is deleted with the
-  Temporary aggregate;
+  or reusable data; the binding is a private operational record and is deleted with the
+  Temporary aggregate; it is not a user-facing receipt;
 - reject `PREPARING` at the execution fence before `run_start`, provider
   resolution, or adapter invocation. Cancellation, failure, boot sweep, stale
   reconciliation, and expiry terminally settle the owned attempt and freeze the
   base request rather than leaving an active orphan; finalized recovery never
   retrieves again;
-- expose the finalized provider request preview for inspection;
-- persist streamed event summaries without raw user content by default;
+- expose only the explicit allowlisted run outcome needed for live reconciliation, cancellation, citations/generated outputs, actionable errors, and bounded resume polling;
+- persist lifecycle/checkpoint rows only when recovery, side-effect safety, security, retention, or aggregate accounting consumes them; transient UI events and presentation-only summaries are not durable by default;
 - batch token persistence: live SSE keeps per-token deltas, while assistant-message partial text and stored token `ModelRunEvent` rows flush as aggregated chunks;
 - require provider-specific terminal proof before durable completion. A truncated or safety-bounded provider stream flushes accepted partial text, then marks the assistant/run `error` without writing `done`; provider-reported usage already observed before failure may still be stored as incomplete-run operational usage, but is never guessed;
-- persist an exceeded accepted provider response deadline as terminal `provider_request_timed_out`, with concise user-visible copy naming the configured elapsed seconds and no provider payload. Cancellation remains distinct. The timeout keeps any already accepted partial text and reported usage, executes no later tool/provider round, and is recovery-terminal even without a provider response id; later outcome-unknown reconciliation may retain diagnostic evidence but cannot replace this primary error;
+- persist an exceeded accepted provider response deadline as terminal `provider_request_timed_out`, with concise user-visible copy naming the configured elapsed seconds and no provider payload. Cancellation remains distinct. The timeout keeps any already accepted partial text and reported usage, executes no later tool/provider round, and is recovery-terminal even without a provider response id; later outcome-unknown reconciliation may retain bounded operational facts but cannot replace this primary error;
 - treat event/total-wire, absolute-deadline, idle-timeout, and retained-output safety failures as terminal recovery outcomes. They keep a stable value-free code and concise public message, cannot execute a tool or another provider round, and cannot be refreshed into success from a published provider response id. Structured warnings allow only provider family/adapter plus opaque local connection/model ids and numeric limit counters; provider text, reasoning, citations, tool arguments, endpoints, and credentials remain excluded. Ordinary transient provider failures retain the existing bounded refresh path;
 - treat a remote MCP wire-envelope overflow as a non-retryable tool/session
   failure before any partial JSON or result enters provider continuation.
@@ -95,7 +86,7 @@ expired or already-claimed aggregate.
   `mcp_inventory_response_too_large`, `mcp_call_result_too_large`, and
   `mcp_response_too_large`; the separately persisted requested call retains its
   ordering/recovery contract. [MCP runtime security](../security/MCP_RUNTIME.md)
-  owns pre-parse transport closure and the preview/log redaction boundary;
+  owns pre-parse transport closure and the private-record/log redaction boundary;
 - send transient UI sync events such as `chat_update` without persisting them into `ModelRunEvent`;
 - annotate hosted `web_search_call` artifacts outside the provider call payload with the admitted logical Search option id and pinned friendly display name, so live and recovered UI retain exact source identity without inventing an OpenAI label for custom Responses endpoints;
 - update assistant content incrementally or at finalization;
@@ -107,25 +98,25 @@ expired or already-claimed aggregate.
 - stop persisting provider stream events promptly after explicit cancellation;
 - close with `done`.
 
-## Knowledge Tool Evidence And Recovery
+## Knowledge Tool Checkpoints And Recovery
 
 Every requested Knowledge invocation is first a durable `ModelRunToolCall`.
-Execution writes one matching `KnowledgeRun` receipt containing the generated
-query, accepted per-base revision/generation evidence, candidate counts and
-threshold, real ANN/FTS/RRF scores, exact private chunk/version/page mapping,
-the exact included text and truncation facts, embedding usage, duration, and
-the explicit positive or negative outcome. Thread tool activity uses capability
-`knowledge`, and authenticated run inspection returns the complete receipt;
-provider continuation receives only its opaque citation handles, pages, and
-bounded passage text.
+Execution writes one matching private `KnowledgeRun` checkpoint with only the
+facts required to fence the accepted bases/generations, reconstruct the settled
+provider-facing passages and citations, account for embedding usage, and avoid
+repeating an ambiguous retrieval. Exact queries, policy values, scores, private
+chunk/version/page mappings, included text, and truncation facts remain
+server-private and must not be projected as a post-hoc Knowledge panel. Provider
+continuation receives only opaque citation handles, pages, and bounded passage
+text.
 
 The settled tool call keeps a versioned canonical projection. Persistence may
-compact its repeated provider text to a marker, but foreground reuse and
-recovery rehydrate that text deterministically from the stored receipt
-evidence. A settled call is therefore replayed verbatim without another query
-embedding or retrieval. A call left `running` across a crash remains
-outcome-ambiguous and is never repeated. A malformed marker/receipt fails
-recovery with `tool_call_result_invalid` rather than reconstructing evidence.
+compact repeated provider text to a marker, but foreground reuse and recovery
+rehydrate that text deterministically from the private checkpoint. A settled
+call is replayed without another query embedding or retrieval. A call left
+`running` across a crash remains outcome-ambiguous and is never repeated. A
+malformed marker/checkpoint fails recovery with `tool_call_result_invalid`
+rather than reconstructing data from provider text.
 
 ## Cost And Usage
 
@@ -133,7 +124,7 @@ Token/cost math belongs in `lib/domain/usage.ts` with unit tests.
 
 Completed runs persist provider-reported `inputTokens`, `cachedInputTokens`, `cacheWriteInputTokens`, `outputTokens`, `reasoningTokens`, and `totalTokens`, while preserving the older coarse fields. Normalized `reasoningTokens` are treated as a subset of `outputTokens`, matching OpenAI/OpenRouter usage-detail semantics. `totalTokens` prefers provider-reported totals and falls back to `inputTokens + outputTokens` for providers and old rows that omit totals. `cachedInputTokens` is provider-reported only; do not infer cache hits from repeated text. Anthropic input normalization sums uncached, cache-creation, and cache-read fields, while thinking usage comes from current output-token details.
 
-Search/Knowledge-tool `ModelRun` fields and completed lifetime `Chat.total*` counters keep the end-to-end sum across answer-model rounds plus every client-engine or query-embedding execution. Each `SearchRun` and `KnowledgeRun` retains its reported usage evidence, while `UsageEvent` stores one grouped attribution per actual provider/model instead of pricing or reporting the entire run as the answer model. If a later provider/tool round fails or is cancelled, only usage already reported by a completed round or usage event is persisted; AIQSA does not estimate unreported failed-request usage. A later successful recovery replaces incomplete attribution rows with the final completed breakdown.
+Search/Knowledge-tool `ModelRun` fields and completed lifetime `Chat.total*` counters keep the end-to-end sum across answer-model rounds plus every client-engine or query-embedding execution. Each `SearchRun` and `KnowledgeRun` retains its provider-reported usage facts, while `UsageEvent` stores one grouped attribution per actual provider/model instead of pricing or reporting the entire run as the answer model. If a later provider/tool round fails or is cancelled, only usage already reported by a completed round or usage event is persisted; AIQSA does not estimate unreported failed-request usage. A later successful recovery replaces incomplete attribution rows with the final completed breakdown.
 
 Feature-dark Native Memory calls use the same `UsageEvent` ledger through a
 unique `memoryExecutionBindingId`, but never set `modelRunId` or participate in
@@ -142,9 +133,9 @@ missing categories and ambiguous estimated cost are null. An uncertain call has
 one row that bounded provider recovery may monotonically enrich, never another
 blindly replayed execution or duplicate usage event.
 
-Durable tool-loop checkpoint v2 keeps a bounded ledger of at most four answer-model rounds. Each round has normalized usage plus `partial` or `terminal` completeness; a terminal observation replaces that round's partial observation, an identical terminal replay is idempotent, and a conflicting terminal observation fails closed. The repository updates this ledger, the cumulative `ModelRun` counters, and replacement `UsageEvent` rows in one locked transaction. Recovery subtracts the ledger's answer-round contribution from the grouped answer provider/model row before treating the remainder as non-answer usage, so Search, Knowledge, or other tool usage is preserved even when it shares the answer provider/model. It then replaces only the recovered round's partial contribution with terminal provider evidence. Invalid or underflowing evidence settles as `tool_loop_usage_evidence_invalid` without rewriting trusted usage totals. Strict v1 checkpoints remain readable for legacy in-flight runs, using their prior conservative provider/model-key fallback until the next v2 transition.
+Durable tool-loop checkpoint v2 keeps a bounded ledger of at most four answer-model rounds. Each round has normalized usage plus `partial` or `terminal` completeness; a terminal observation replaces that round's partial observation, an identical terminal replay is idempotent, and a conflicting terminal observation fails closed. The repository updates this ledger, the cumulative `ModelRun` counters, and replacement `UsageEvent` rows in one locked transaction. Recovery subtracts the ledger's answer-round contribution from the grouped answer provider/model row before treating the remainder as non-answer usage, so Search, Knowledge, or other tool usage is preserved even when it shares the answer provider/model. It then replaces only the recovered round's partial contribution with terminal provider-reported usage. Invalid or underflowing usage facts settle as `tool_loop_usage_evidence_invalid` without rewriting trusted usage totals. Strict v1 checkpoints remain readable for legacy in-flight runs, using their prior conservative provider/model-key fallback until the next v2 transition.
 
-`Chat.totalInputTokens`, `Chat.totalOutputTokens`, and `Chat.totalReasoningTokens` are lifetime completed-run counters for operational accounting. They intentionally count completed sibling/regenerated runs and are not the user-facing active-branch usage number. The shell's circular context indicator derives its arc from approximate current input divided by the conservative safe input budget; its branch-aware detail disclosure uses `summarizeChatUsageStats` over the active visible branch for provider-reported usage.
+`Chat.totalInputTokens`, `Chat.totalOutputTokens`, and `Chat.totalReasoningTokens` are lifetime completed-run counters for operational accounting. They intentionally count completed sibling/regenerated runs and are not the user-facing active-branch usage number. The shell's circular context indicator derives its arc from approximate current input divided by the conservative safe input budget; its bounded setup disclosure uses `summarizeChatUsageStats` over the active visible branch for provider-reported aggregate usage.
 
 Estimated cost is computed and stored from operator-maintained `ProviderModel.inputTokenPriceMicros` and `outputTokenPriceMicros` only when the historical provider/model identity has one unambiguous deployment; otherwise cost is `null` rather than guessed. Reasoning tokens use the output-token price fallback because separate reasoning pricing is not implemented, and they are not added on top of the output-token total. Source-labeled provider cost accounting is not implemented, so the user-facing shell omits dollar costs and `est. cost n/a`; stored estimates are never billing truth.
 

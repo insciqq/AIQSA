@@ -12,9 +12,9 @@ This document is a semantic ownership map, not a file inventory. Exact modules r
 | Server entries | `app/` pages | Authenticate/authorize entry, normalize safe URL state, and pass least-data initial props into browser workspaces. |
 | Shared wire contracts | `lib/contracts/` | Client-safe request/response types, runtime decoders, stable errors, and summary/detail boundaries. |
 | Chat composition | `features/workspace-v2/PowerAppShellV2*` | Compose focused stores/controllers into the seven root view contracts and the sole production presentation; no server repository or leaf implementation ownership. |
-| Workspace, thread, composer, run state | focused `components/app-shell/*Store` modules | Keyed durable projections, optimistic state, operation ownership, stream lifecycle, inspection, and next-run controls. |
+| Workspace, thread, composer, and run state | focused `components/app-shell/*Store` modules | Keyed durable projections, optimistic state, operation ownership, stream lifecycle/recovery, Branches, and next-run controls. |
 | Shell actions/controllers | focused app-shell action and controller modules | Async mutation coordination, navigation/focus lifetimes, reconciliation, and semantic feature ports. |
-| Conversation presentation | `features/*-v2/`, `components/ui-v2/`, and reviewed Markdown/resource leaves | Navigation, turns, evidence, composer, Branches, Run details, Library, Settings, menus, drawers, and dialogs. |
+| Conversation presentation | `features/*-v2/`, `components/ui-v2/`, and reviewed Markdown/resource leaves | Navigation, turns, Sources and generated outputs, composer, Branches, Library, Settings, menus, drawers, and dialogs. |
 | Account and public share | `components/auth/` and `components/share/` | Mode-driven authentication and sanitized anonymous read-only rendering. |
 | Resource workspaces | Memory app-shell components, `components/assistants/`, and `components/knowledge/` plus focused stores/controllers | Full-screen Memory, Assistant, and Knowledge workflows, decoded API projections, lifecycle mutations, and navigation-safe reconciliation. |
 | Control Center | `components/admin/` | Administrator shell, resource controllers, index/detail tasks, write-only configuration UI, and decoded admin API clients. |
@@ -37,9 +37,9 @@ Server-backed state includes:
 - lightweight chat summaries, nested folders/projects, and project instructions;
 - lazily loaded keyed thread snapshots with a bounded active-branch page, older-page state, full-branch usage/context facts, and safe artifacts; plus an explicit lazy compact branch-graph projection outside the thread store;
 - Memory settings, capability/health, summary, exact facts, history-search and operation projections; Assistant summaries, details, revisions, publications, and per-user pins; Knowledge base summaries/details, document-version ingestion status, reindex progress, publication projections, and entitled embedding choices; plus current-user MCP catalog/readiness;
-- persisted model-run inspection and usage evidence.
+- minimal owner-private model-run outcomes required for cancellation, background resume, terminal reconciliation, citations/generated outputs, and aggregate usage accounting.
 
-Exact response decoders run before store mutation. Workspace summaries contain no messages or usage graph, even if a future server response carries unknown fields. Thread data enters only the thread owner; run inspection enters only the run-surface owner.
+Exact response decoders run before store mutation. Workspace summaries contain no messages or usage graph, even if a future server response carries unknown fields. Thread data enters only the thread owner; minimal run outcomes enter only the run-lifecycle owner. Unknown and non-allowlisted fields are discarded before state mutation.
 
 ### Browser-only state
 
@@ -49,7 +49,7 @@ Browser-local state includes:
 - open menus, popovers, drawers, dialogs, confirmations, palette query/selection, Memory/Assistant/Knowledge surface navigation and dirty resource drafts, browser-local persistent wide Workspace-pane visibility under the legacy `aiqsa.workspaceRail` key, and focus restoration;
 - keyed composer drafts, edit intent, staged attachments, async operation tokens, and local feedback;
 - foreground text buffering and controller ownership;
-- manual Details mode/tab, its current-chat compact branch projection, folder collapse, local notices, and theme choice.
+- the current-chat compact Branches projection, folder collapse, local notices, and theme choice. There is no generic Details mode or Events tab.
 
 Do not persist UI ephemera to the server or expand a global store merely because several leaves render it. Cross-component workflow sessions belong to a focused controller/store; hover, focus, and one-shot presentation state stays local.
 
@@ -63,9 +63,9 @@ Startup loads the filtered catalog before activating a remembered chat so chat d
 
 ### Threads and branches
 
-`threadStore` owns each retained `ThreadSnapshot`: the bounded loaded active-path segment, active leaf, authoritative full-branch usage/context facts, older-page cursor/fence/generation/error state, visible partial-path derivation, and repair after checkout/edit/delete/regenerate. Prepend merges by message id without replacing newer optimistic/token state. Normal navigation retains the active snapshot plus at most two least-recently-used inactive snapshots; live streams, pending detail reads, and owned pending thread mutations are temporary safety exceptions. Safe eviction also removes the matching run-surface receipt cache while composer sessions remain under their separate owner. Chat deletion evicts only that chat.
+`threadStore` owns each retained `ThreadSnapshot`: the bounded loaded active-path segment, active leaf, authoritative full-branch usage/context facts, older-page cursor/fence/generation/error state, visible partial-path derivation, and repair after checkout/edit/delete/regenerate. Prepend merges by message id without replacing newer optimistic/token state. Normal navigation retains the active snapshot plus at most two least-recently-used inactive snapshots; live streams, pending detail reads, and owned pending thread mutations are temporary safety exceptions. Safe eviction also removes the matching inactive run-outcome cache while composer sessions remain under their separate owner. Chat deletion evicts only that chat.
 
-Active-chat detail loading is a skeleton, not a blank chat. Detail failure has one in-thread Retry owner and disables the composer without creating a duplicate global notice. Returning to a current retained tail does not refetch it merely because navigation changed; reopening an evicted or snapshot-stale chat performs another bounded detail read. Older pages are fenced to the active leaf and authoritative revision, and stale settlement explicitly resets to the latest tail. Complete Copy/Export loops over remaining pages only in operation-local memory. Details owns the separately fetched compact branch graph for its current chat and never promotes it into rich message state.
+Active-chat detail loading is a skeleton, not a blank chat. Detail failure has one in-thread Retry owner and disables the composer without creating a duplicate global notice. Returning to a current retained tail does not refetch it merely because navigation changed; reopening an evicted or snapshot-stale chat performs another bounded detail read. Older pages are fenced to the active leaf and authoritative revision, and stale settlement explicitly resets to the latest tail. Complete Copy/Export loops over remaining pages only in operation-local memory. The Branches owner separately fetches the compact graph for its current chat and never promotes it into rich message state.
 
 ### Composer sessions and controls
 
@@ -88,11 +88,11 @@ owns the visible selection/removal behavior and notices. Prompt text is not
 browser state: runs receive only the server-resolved ordinary or Assistant
 prompt owner.
 
-### Run lifecycle and inspection
+### Run lifecycle and outcomes
 
 `runLifecycleStore` owns active stream/controller records keyed by source chat, run IDs, optimistic assistant IDs, cancellation, and resume ownership. The active view selects only its active chat key; a late background event cannot steal selection.
 
-`runSurfaceStore` owns the selected/live compacted event timeline and decoded `lastRun` per saved chat plus an exact `runId`-keyed persisted-run receipt cache for that chat. The lifecycle fetch may replace `lastRun` and Events only while its source surface fence still owns selection; the message-receipt loader updates only the exact cache entry and never selects Details or replaces live events. Every writer captures a non-null source chat before asynchronous work. New send/regenerate resets only that source; navigation is read-only selection; deletion evicts only the deleted key.
+`runSurfaceStore` owns only the concise live status and minimal decoded run outcome required by the source chat for cancellation, resume polling, terminal message reconciliation, citations, and generated outputs. It owns no post-hoc event timeline or persisted receipt cache. Every writer captures a non-null source chat before asynchronous work. New send/regenerate resets only that source; navigation is read-only selection; deletion evicts only the deleted key.
 
 Send and regenerate keep their distinct optimistic preparation but share one lifecycle executor for HTTP/SSE work, persisted-ID adoption, source reconciliation, terminal notification, failure/cancellation, and controller-safe cleanup. A rejected request rolls back only its optimistic rows. An ambiguous accepted/network failure performs a source-keyed durable refresh before retry.
 
@@ -100,7 +100,7 @@ A failed assistant retry delegates to the existing regenerate lifecycle owner
 with no second retry store, deletion path, or draft mutation; [Composer](composer/COMPOSER.md)
 owns the visible action and branch outcome.
 
-Foreground token deltas are buffered for React updates and adjacent event aggregation. Historical rows, Markdown/artifacts, and workspace summaries do not repaint for token-only changes. Malformed SSE frames are skipped, later frames continue, and one readable warning appears in the UI/Details.
+Foreground token deltas are buffered for React updates and adjacent event aggregation. Historical rows, Markdown/artifacts, and workspace summaries do not repaint for token-only changes. Malformed SSE frames are skipped, later frames continue, and one readable warning remains bound to the originating answer.
 
 ### Memory, Assistants, Knowledge, Settings, and MCP workflows
 
@@ -161,7 +161,7 @@ explicit advanced disclosure.
 
 The Assistants surface owns its own focused state: `assistantLibraryStore` holds the open full-screen task (list, editor, history), Discover/Yours mode, filter/category/query, fetched list data, and editor/history drafts, while `assistantLibraryController` owns every surface mutation (create, revise with CAS, archive/restore, duplicate, publish/revoke, pin, restore-as-new-revision) and `Use` application into the composer owner. Editor avatar generation happens exactly once per new draft plus once per explicit `Generate another`, entirely in the browser. Current-composer Assistant selection remains with composer controls; the surface never mutates next-run state except through the atomic apply/remove actions.
 
-Knowledge follows the same focused-owner boundary without sharing Assistant or composer state. `knowledgeLibraryStore` owns its open list/create/detail task, list filter/query, active document query/page, decoded list/detail/ingestion projections, dirty drafts, action identity, and bounded notice; `knowledgeLibraryController` owns loading, server-paged filename search, CAS save, sequential multi-file upload, retry/replace/remove, archive/restore, reindex, publish/revoke, and stale-response fencing. Lifecycle polling refreshes only transient work on the active document query/page, preserves the last useful projection on background failure, and cannot replace a dirty base draft. The Knowledge management surface does not select next-run retrieval; composer binding and persisted run evidence remain with their dedicated run task and owners.
+Knowledge follows the same focused-owner boundary without sharing Assistant or composer state. `knowledgeLibraryStore` owns its open list/create/detail task, list filter/query, active document query/page, decoded list/detail/ingestion projections, dirty drafts, action identity, and bounded notice; `knowledgeLibraryController` owns loading, server-paged filename search, CAS save, sequential multi-file upload, retry/replace/remove, archive/restore, reindex, publish/revoke, and stale-response fencing. Lifecycle polling refreshes only transient work on the active document query/page, preserves the last useful projection on background failure, and cannot replace a dirty base draft. The Knowledge management surface does not select next-run retrieval; composer binding and accepted run ownership remain with their dedicated run task and owners.
 
 MCP settings owns its coalesced catalog refresh, mutation replacement, OAuth outcome, readiness polling, and last ready/error presentation. Personal input values remain leaf-local and write-only. Background reads do not flash an empty catalog over last-known useful state.
 
@@ -177,7 +177,7 @@ Its root view contract has exactly seven keys:
 - `workspace`;
 - `thread`;
 - `composer`;
-- `details`;
+- `branches`;
 - `settings`;
 - `overlays`.
 
@@ -187,15 +187,15 @@ Compile-time coverage and component tests enforce this boundary. Root and naviga
 
 ### Run truth and thread behavior
 
-Run presentation selectors consume only normalized lifecycle/event evidence and
-never synthesize provider stages or open inspection. Thread-scroll ownership is
+Run presentation selectors consume only normalized lifecycle facts and
+never synthesize provider stages or open a diagnostic surface. Thread-scroll ownership is
 source-keyed: deliberate work in the active chat may establish one anchor,
 while passive or background updates cannot move another reader. Context
 selectors expose only backend-projected estimates and provider usage. Exact
 labels, assistant-tail states, anchor geometry, latest-message eligibility, and
 context disclosure belong to [Messages](MESSAGES_AND_MARKDOWN.md),
 [Composer](composer/COMPOSER.md), [Run controls](composer/RUN_CONTROLS.md), and
-[Receipt and Details](composer/RECEIPT_AND_DETAILS.md).
+[Answer outputs and Branches](composer/ANSWER_OUTPUTS_AND_BRANCHES.md).
 
 Generated-artifact cards and their preview/lineage drawer currently have a
 typed deterministic presentation owner only. That owner is reachable solely
@@ -235,7 +235,7 @@ normalized state owns first paint. Runtime changes set `data-theme` and the
 effective `data-color-scheme` together, including operating-system changes
 while System is selected. Theme never becomes user/account/conversation data.
 
-Dialog focus is session-scoped: entry, Tab containment, Escape ownership, nested confirmation priority, and opener restoration belong to the focused overlay owner. Branches, Run details, artifact preview, Settings, and command search remain temporary layers; no responsive transition converts them into a pinned column.
+Dialog focus is session-scoped: entry, Tab containment, Escape ownership, nested confirmation priority, and opener restoration belong to the focused overlay owner. Branches, generated-output preview, Settings, and command search remain temporary layers; no responsive transition converts them into a pinned column.
 
 ## Testability Rules
 

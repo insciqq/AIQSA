@@ -12,7 +12,7 @@ This file is a router, not a second endpoint or schema manifest. Read only the o
 - [Provider adapters](backend/PROVIDER_ADAPTERS.md) — routing index for current provider runtime behavior, shared boundaries, and provider-specific defaults.
 - [Generated API and schema reference](generated/API_AND_SCHEMA.md) — route methods plus Prisma model/enum names; regenerate rather than editing it.
 - [Security](SECURITY.md) — threat, privacy, auth, secret, network, and exposure boundaries.
-- [Run pipeline](RUN_PIPELINE.md) — product-level message, optional Search/tool, response, evidence, and sharing semantics.
+- [Run pipeline](RUN_PIPELINE.md) — product-level message, optional Search/Knowledge/tool execution, response outputs, recovery, and sharing semantics.
 
 Installation model-policy ownership crosses three bounded owners: administrator
 set/clear behavior belongs to the provider control plane, durable singleton and

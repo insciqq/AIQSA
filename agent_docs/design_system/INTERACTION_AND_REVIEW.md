@@ -25,7 +25,7 @@ Each reusable control defines rest, hover, active, selected, disabled, busy, inv
 
 Composition follows available space, content, and input capability. Media queries establish shell-level thresholds; container queries adapt composer, headers, navigation rows, and list/detail regions inside their actual space.
 
-- At shell, Details, composer, Assistant, and resource split breakpoints owned by
+- At shell, Branches, composer, Assistant, and resource split breakpoints owned by
   the routed functional contracts, preserve the same semantic hierarchy rather
   than inventing another control or navigation model.
 - At `>=1024px`, the single sidebar starts open and may collapse completely;
@@ -58,23 +58,21 @@ Representative production-like routes must stay within Core Web Vitals targets: 
 - Stream only the live answer tail. Historical completed messages and heavy Markdown blocks are memoized.
 - Start syntax highlighting only for completed fences; cache by language and source.
 - Virtualize only when measured list/thread size warrants it, without breaking find-in-page or answer anchors.
-- Reserve geometry for loading, answer actions, attachments, receipts, and asynchronous metadata to prevent layout shift.
+- Reserve geometry for loading, answer actions, attachments, generated outputs, and asynchronous status to prevent layout shift.
 - Avoid broad store subscriptions and duplicated derived state in the view layer.
-- Lazy-load heavy secondary workspaces such as advanced editors and inspection surfaces while keeping their entry feedback immediate.
+- Lazy-load heavy secondary workspaces such as advanced editors and generated-output previews while keeping their entry feedback immediate.
 - Do not ship raster mockups, duplicate icon sets, or temporary compatibility CSS in the final runtime bundle.
 
 ## Content And AI Trust
 
 Use short, specific labels and sentence case. Lead with the action or outcome. Explain consequences before destructive actions and recovery after errors. Empty states describe what belongs there and the next valid step; they do not use marketing copy.
 
-AI-specific presentation is evidence constrained. Stage labels and transitions
-come only from the functional run-evidence owner; the visual layer never
-creates a stage from elapsed time, prose, or animation.
+AI-specific presentation is fact constrained. Live stage labels and transitions come only from normalized lifecycle state; the visual layer never creates a stage from elapsed time, prose, or animation.
 
-- Source counts come from actual surfaced evidence; confidence is never inferred from prose length or model identity.
-- A failed or partial stage remains visible and understandable.
-- Provider/model identity stays legible where it affects user choice or evidence.
-- User data, attachments, provider payloads, internal IDs, group metadata, and secrets follow the existing privacy contracts in every empty, error, debug, receipt, and share state.
+- Source counts come from the exact safe source projection; confidence is never inferred from prose length or model identity.
+- A failed or partial live stage remains visible and understandable.
+- Provider/model identity stays legible where it affects user choice, not as permanent answer metadata.
+- User data, attachments, provider payloads, internal IDs, group metadata, and secrets follow the existing privacy contracts in every empty, error, diagnostic, and share state.
 
 ## Visual Review Gate
 
@@ -89,8 +87,8 @@ Every new or changed visual recipe must satisfy these conditions before it becom
 - primary and secondary actions are unambiguous without badge/color dependence;
 - loading, empty, error, busy, success, destructive, and long-content states are covered as applicable;
 - safe-area, software-keyboard clearance, overflow, and coarse-pointer composition are verified;
-- the evidence row, Run details, and other AI stages show only real state;
-- affected capability and state contracts have test/evidence references;
+- Sources, generated outputs, confirmations, and live AI stages show only real state;
+- affected capability and state contracts have verification references;
 - no superseded renderer, component-local color recipe, obsolete token, or implementation-shape test remains.
 
 Use these audits during implementation:

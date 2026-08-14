@@ -5,7 +5,7 @@ Scope: Current UI capability, presentation boundary, accessibility scope, and fu
 
 ## Current Product Contract
 
-The shipped UI is one Chat workspace and task-first Control Center presentation with direct composer controls, compact completed-answer evidence, unobstructed conversation actions, unified provider/Search administration, and explicit lifecycle state. Presentation may change only while server contracts, entitlements, run semantics, one store/action owner, and the complete capability inventory below remain reachable.
+The shipped UI is one Chat workspace and task-first Control Center presentation with direct composer controls, unobstructed conversation actions, simple answer outputs, unified provider/Search administration, and explicit lifecycle state. Presentation may change only while server contracts, entitlements, run semantics, one store/action owner, and the complete capability inventory below remain reachable.
 
 ## Presentation Boundary
 
@@ -35,8 +35,8 @@ family.
 | Workspace and navigation | One collapsible sidebar, Chats, blank first-send creation, bounded server search, nested folders/projects, per-chat live cues, command palette, and Library/Settings entry | [Navigation](composer/NAVIGATION.md) |
 | Composer and attachments | Keyed drafts, edit mode, text/IME/keyboard input, PDF/image/text attachments, upload feedback, Send/Stop, and independent cross-chat work | [Composer](composer/COMPOSER.md) |
 | Catalog and next-run controls | Entitled model choice, Search and Knowledge plans, optional Assistants, reasoning/background/Stream, visibility/sound preferences, temperature/output limits, Tools, and context disclosure | [Run controls](composer/RUN_CONTROLS.md) |
-| Answers, artifacts, and branches | Run states, safe Markdown/code/math, Search/Knowledge/tool/citation/reasoning artifacts and receipts, copy/edit/regenerate/delete/branch actions, active-leaf checkout, thread sharing, and long-content containment | [Messages and Markdown](MESSAGES_AND_MARKDOWN.md) |
-| Receipt and inspection | Message-bound run evidence, Branch and Run details, recovery/error inspection, and temporary overlay access; Run setup remains the next-run editor | [Receipt and Details](composer/RECEIPT_AND_DETAILS.md) |
+| Answers, sources, artifacts, and branches | Run states, safe Markdown/code/math, inline citations, optional Sources, Reasoning, generated outputs, explicit approved-mutation confirmations, copy/edit/regenerate/delete/branch actions, active-leaf checkout, thread sharing, and long-content containment | [Messages and Markdown](MESSAGES_AND_MARKDOWN.md) |
+| Answer outputs and Branches | Simple Sources/output presentation, Branch checkout, recovery/error actions, and temporary overlay access; no post-hoc run inspector | [Answer outputs and Branches](composer/ANSWER_OUTPUTS_AND_BRANCHES.md) |
 | Authentication and public access | Password/OAuth entry, access requests, invites, verification/reset, session-expiry return, route-safe failures, and anonymous immutable public viewing | [Auth and public sharing](account/AUTH_AND_PUBLIC_SHARING.md) |
 | Memory, Assistants, Knowledge, and Settings | Personal Memory overview/management/history/operations, Assistant discovery/revisions/sharing, Knowledge base/document ingestion/reindex/publication/archive, MCP & tools, appearance, and project settings | [Settings, Memory, Assistants, and Knowledge](account/SETTINGS_AND_ASSISTANTS.md) |
 | Control Center | Providers, Search, team/access, usage, MCP, email, safety, release awareness, and their complete administrator lifecycle tasks | [Control Center](account/CONTROL_CENTER.md) |
@@ -59,10 +59,10 @@ explicitly. At `900–1023px` it starts collapsed and expands as that same
 normal-flow sidebar; there is no alternate navigation hierarchy. Below `900px`
 it is a left modal drawer with a scrim and the same content, while adjacent
 floating Open/New-chat controls keep both primary actions reachable. The
-`1280/1281px` boundary has no composition discontinuity. Branches, Run details,
-and artifact preview remain temporary overlays at every width and become
-full-viewport sheets below `900px`; none creates a pinned column or changes the
-conversation measure.
+`1280/1281px` boundary has no composition discontinuity. Branches and
+generated-output preview remain temporary overlays at every width and become
+full-viewport sheets below `900px`; neither creates a pinned column or changes
+the conversation measure.
 
 ```text
 desktop expanded: sidebar | conversation { thread over composer }
@@ -77,7 +77,7 @@ Settings. Collapse removes the entire sidebar; it never leaves an icon rail.
 The conversation has no duplicate title bar or navigation state. Compact and
 mobile composition reuse the same sidebar instance and selection/search owners.
 
-The browser document title follows the visible active chat, with `New chat` as the blank-workspace fallback. Settings, Memory, Assistants, and Knowledge replace that title while they own the workspace; transient drawers, palettes, inspectors, sharing, and confirmations preserve the underlying chat title. Sign in and public share use fixed privacy-safe route titles, while Control Center adds only its fixed active section label; public snapshot content, bearer tokens, account identity, selected resources, prompts, and message content never enter metadata.
+The browser document title follows the visible active chat, with `New chat` as the blank-workspace fallback. Settings, Memory, Assistants, and Knowledge replace that title while they own the workspace; transient drawers, palettes, output previews, sharing, and confirmations preserve the underlying chat title. Sign in and public share use fixed privacy-safe route titles, while Control Center adds only its fixed active section label; public snapshot content, bearer tokens, account identity, selected resources, prompts, and message content never enter metadata.
 
 The responsive contract is verified at 384x844 and 390x844 portrait,
 844x390 short landscape, 768x1024 tablet, 1023/1024px sidebar transition,
@@ -105,7 +105,7 @@ internally. Model/capability surfaces become safe-area bottom sheets below
 `900px` or at short height. Draft text survives viewport and keyboard geometry
 changes unchanged.
 
-Wide code, tables, formulae, previews, timelines, and redacted payloads never
+Wide code, tables, formulae, generated-output previews, and source lists never
 widen the document. They wrap where truthful or use a named local horizontal
 scroller. Coarse-pointer controls have a minimum 40px target; tapping a message
 reveals its action dock without requiring hover or long-press.
@@ -114,7 +114,7 @@ Main areas:
 
 - single collapsible desktop sidebar or its compact/mobile drawer presentation;
 - conversation column with the thread and one composer layout row;
-- on-demand Branch, Run details, and artifact-preview overlays;
+- on-demand Branches and generated-output preview overlays;
 - full-screen Memory, Assistants, and Knowledge resource workspaces;
 - Settings and command overlays;
 - auth and public-share workspaces;
