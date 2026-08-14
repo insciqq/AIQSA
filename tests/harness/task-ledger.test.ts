@@ -9,14 +9,21 @@ const roots: string[] = [];
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), "aiqsa-task-ledger-"));
   roots.push(root);
-  mkdirSync(path.join(root, "agent_docs/tasks"), { recursive: true });
-  mkdirSync(path.join(root, "agent_docs/task_archive"), { recursive: true });
+  mkdirSync(path.join(root, "agent_docs/tasks/queue"), { recursive: true });
+  mkdirSync(path.join(root, "agent_docs/tasks/archive"), { recursive: true });
+  mkdirSync(path.join(root, "agent_docs/tasks/drafts"), { recursive: true });
   writeFileSync(path.join(root, "agent_docs/tasks/README.md"), "# TASKS\n");
-  writeFileSync(path.join(root, "agent_docs/task_archive/README.md"), "# TASK ARCHIVE\n");
+  writeFileSync(path.join(root, "agent_docs/tasks/queue/README.md"), "# TASK QUEUE\n");
+  writeFileSync(path.join(root, "agent_docs/tasks/archive/README.md"), "# TASK ARCHIVE\n");
+  writeFileSync(path.join(root, "agent_docs/tasks/drafts/README.md"), "# TASK DRAFTS\n");
   writeFileSync(path.join(root, "agent_docs/SECURITY.md"), "# SECURITY\n");
   writeFileSync(
     path.join(root, ".gitignore"),
-    "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n/agent_docs/task_archive/*\n!/agent_docs/task_archive/README.md\n"
+    "/agent_docs/tasks/queue/*.md\n!/agent_docs/tasks/queue/README.md\n"
+      + "/agent_docs/tasks/archive/*\n!/agent_docs/tasks/archive/README.md\n"
+      + "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n"
+      + "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n"
+      + "/agent_docs/task_archive/*\n/agent_docs/backlog/**\n"
   );
   const initialized = spawnSync("git", ["init", "-q"], { cwd: root, encoding: "utf8" });
   if (initialized.status !== 0) throw new Error(initialized.stderr);
@@ -77,12 +84,12 @@ ${options.decisions ?? "- No lasting decision."}
 
 ${options.verification ?? "- [x] focused fixture check passed."}
 `;
-  writeFileSync(path.join(root, "agent_docs/tasks", `${stem}.md`), body, "utf8");
+  writeFileSync(path.join(root, "agent_docs/tasks/queue", `${stem}.md`), body, "utf8");
 }
 
 function archivedTask(root: string, stem: string) {
   writeFileSync(
-    path.join(root, "agent_docs/task_archive", `${stem}.md`),
+    path.join(root, "agent_docs/tasks/archive", `${stem}.md`),
     `# ${stem}\n\nStatus: completed\n`,
     "utf8"
   );
@@ -103,13 +110,13 @@ describe("local unified task ledger", () => {
     const result = run(root, "new", "next-task", "--summary", "Next implementation slice");
 
     expect(result.status).toBe(0);
-    const filename = readdirSync(path.join(root, "agent_docs/tasks")).find((entry) => entry !== "README.md");
+    const filename = readdirSync(path.join(root, "agent_docs/tasks/queue")).find((entry) => entry !== "README.md");
     expect(filename).toMatch(/^\d{17}-next-task\.md$/);
-    const body = readFileSync(path.join(root, "agent_docs/tasks", filename!), "utf8");
+    const body = readFileSync(path.join(root, "agent_docs/tasks/queue", filename!), "utf8");
     expect(body).toContain("Status: backlog");
     expect(body).toContain("Durable rationale: pending");
     expect(body).not.toContain("Human review:");
-    expect(spawnSync("git", ["check-ignore", "-q", `agent_docs/tasks/${filename}`], { cwd: root }).status).toBe(0);
+    expect(spawnSync("git", ["check-ignore", "-q", `agent_docs/tasks/queue/${filename}`], { cwd: root }).status).toBe(0);
   });
 
   it("refuses local task creation when the public-repository ignore guard is absent", () => {
@@ -120,7 +127,79 @@ describe("local unified task ledger", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("must be ignored before local task creation");
-    expect(readdirSync(path.join(root, "agent_docs/tasks"))).toEqual(["README.md"]);
+    expect(readdirSync(path.join(root, "agent_docs/tasks/queue"))).toEqual(["README.md"]);
+  });
+
+  it("fails closed when pre-migration local task state remains", () => {
+    const root = fixture();
+    writeFileSync(path.join(root, "agent_docs/tasks/20260801120000001-legacy.md"), "private task\n");
+
+    const rootTask = run(root, "list");
+    expect(rootTask.status).toBe(1);
+    expect(rootTask.stderr).toContain("legacy task-queue entry");
+
+    rmSync(path.join(root, "agent_docs/tasks/20260801120000001-legacy.md"));
+    mkdirSync(path.join(root, "agent_docs/backlog"));
+    const oldDrafts = run(root, "list");
+    expect(oldDrafts.status).toBe(1);
+    expect(oldDrafts.stderr).toContain("move its local state to agent_docs/tasks/drafts");
+  });
+
+  it("parks a reconciled task outside the ledger and restores its original status", () => {
+    const root = fixture();
+    const stem = "20260801120000001-paused-work";
+    task(root, stem, "ready");
+
+    const parked = run(root, "park", stem);
+
+    expect(parked.status).toBe(0);
+    expect(parked.stdout).toContain(`Parked ${stem} at agent_docs/tasks/drafts/${stem}.md`);
+    expect(existsSync(path.join(root, "agent_docs/tasks/queue", `${stem}.md`))).toBe(false);
+    const draft = path.join(root, "agent_docs/tasks/drafts", `${stem}.md`);
+    expect(readFileSync(draft, "utf8")).toContain("Status: ready");
+    expect(spawnSync("git", ["check-ignore", "-q", `agent_docs/tasks/drafts/${stem}.md`], { cwd: root }).status).toBe(0);
+    expect(run(root, "list").stdout).toContain("No open tasks.");
+
+    const restored = run(root, "restore", stem);
+
+    expect(restored.status).toBe(0);
+    expect(restored.stdout).toContain(`Restored ${stem} at agent_docs/tasks/queue/${stem}.md`);
+    expect(existsSync(draft)).toBe(false);
+    expect(run(root, "list").stdout).toContain(`ready       ${stem}`);
+  });
+
+  it("refuses to park active work or a dependency still used by the queue", () => {
+    const root = fixture();
+    const active = "20260801120000001-active";
+    task(root, active, "in_progress");
+    expect(run(root, "park", active).stderr).toContain("reconcile it before parking");
+
+    const foundation = "20260801120000002-foundation";
+    const dependent = "20260801120000003-dependent";
+    task(root, foundation, "backlog");
+    task(root, dependent, "backlog", { dependencies: foundation });
+    const rejected = run(root, "park", foundation);
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain(`required by open task(s): ${dependent}`);
+  });
+
+  it("rolls back a restore until draft dependencies are restored first", () => {
+    const root = fixture();
+    const foundation = "20260801120000001-foundation";
+    const dependent = "20260801120000002-dependent";
+    task(root, foundation, "backlog");
+    task(root, dependent, "backlog", { dependencies: foundation });
+    expect(run(root, "park", dependent).status).toBe(0);
+    expect(run(root, "park", foundation).status).toBe(0);
+
+    const premature = run(root, "restore", dependent);
+    expect(premature.status).toBe(1);
+    expect(premature.stderr).toContain("does not resolve to exactly one open task");
+    expect(existsSync(path.join(root, "agent_docs/tasks/drafts", `${dependent}.md`))).toBe(true);
+    expect(existsSync(path.join(root, "agent_docs/tasks/queue", `${dependent}.md`))).toBe(false);
+
+    expect(run(root, "restore", foundation).status).toBe(0);
+    expect(run(root, "restore", dependent).status).toBe(0);
   });
 
   it("completes by archiving the task and clearing remaining dependencies", () => {
@@ -133,12 +212,12 @@ describe("local unified task ledger", () => {
     const result = run(root, "complete", foundation);
 
     expect(result.status).toBe(0);
-    expect(existsSync(path.join(root, "agent_docs/tasks", `${foundation}.md`))).toBe(false);
-    const archived = path.join(root, "agent_docs/task_archive", `${foundation}.md`);
+    expect(existsSync(path.join(root, "agent_docs/tasks/queue", `${foundation}.md`))).toBe(false);
+    const archived = path.join(root, "agent_docs/tasks/archive", `${foundation}.md`);
     expect(readFileSync(archived, "utf8")).toContain("Status: completed");
-    expect(spawnSync("git", ["check-ignore", "-q", `agent_docs/task_archive/${foundation}.md`], { cwd: root }).status).toBe(0);
-    expect(readFileSync(path.join(root, "agent_docs/tasks", `${followup}.md`), "utf8")).toContain("Depends on: none");
-    expect(result.stdout).toContain(`archived ${foundation} at agent_docs/task_archive/${foundation}.md`);
+    expect(spawnSync("git", ["check-ignore", "-q", `agent_docs/tasks/archive/${foundation}.md`], { cwd: root }).status).toBe(0);
+    expect(readFileSync(path.join(root, "agent_docs/tasks/queue", `${followup}.md`), "utf8")).toContain("Depends on: none");
+    expect(result.stdout).toContain(`archived ${foundation} at agent_docs/tasks/archive/${foundation}.md`);
     expect(result.stdout).toContain("cleared 1 dependency reference");
   });
 
@@ -150,15 +229,15 @@ describe("local unified task ledger", () => {
     }
     const current = "20260801120000001-current";
     task(root, current, "in_progress");
-    const before = readdirSync(path.join(root, "agent_docs/task_archive")).sort();
+    const before = readdirSync(path.join(root, "agent_docs/tasks/archive")).sort();
 
     const result = run(root, "complete", current);
 
     expect(result.status).toBe(0);
-    expect(existsSync(path.join(root, "agent_docs/tasks", `${current}.md`))).toBe(false);
-    const after = readdirSync(path.join(root, "agent_docs/task_archive")).sort();
+    expect(existsSync(path.join(root, "agent_docs/tasks/queue", `${current}.md`))).toBe(false);
+    const after = readdirSync(path.join(root, "agent_docs/tasks/archive")).sort();
     expect(after).toEqual([...before, `${current}.md`].sort());
-    expect(readFileSync(path.join(root, "agent_docs/task_archive", `${current}.md`), "utf8"))
+    expect(readFileSync(path.join(root, "agent_docs/tasks/archive", `${current}.md`), "utf8"))
       .toContain("Status: completed");
   });
 
@@ -185,7 +264,7 @@ describe("local unified task ledger", () => {
     expect(parallel.status).toBe(0);
     expect(parallel.stdout.match(/in_progress/g)).toHaveLength(2);
 
-    rmSync(path.join(root, "agent_docs/tasks/20260801120000002-second.md"));
+    rmSync(path.join(root, "agent_docs/tasks/queue/20260801120000002-second.md"));
     task(root, "20260801120000002-second", "ready", { dependencies: "20260801120000001-first" });
     const dependency = run(root, "list");
     expect(dependency.status).toBe(1);
@@ -230,7 +309,7 @@ describe("local unified task ledger", () => {
     task(root, unchecked, "in_progress", { verification: "- [ ] npm run check:hermetic" });
     expect(run(root, "complete", unchecked).stderr).toContain("no unchecked checks");
 
-    rmSync(path.join(root, "agent_docs/tasks", `${unchecked}.md`));
+    rmSync(path.join(root, "agent_docs/tasks/queue", `${unchecked}.md`));
     const malformed = "20260801120000002-malformed";
     task(root, malformed, "in_progress", { verification: "- Not run: provider smoke" });
     expect(run(root, "list").stderr).toContain("Not run: <check> — <specific reason>");
@@ -264,7 +343,7 @@ describe("local unified task ledger", () => {
     task(root, pending, "in_progress", { rationale: "pending" });
     expect(run(root, "complete", pending).stderr).toContain("Durable rationale must be settled");
 
-    rmSync(path.join(root, "agent_docs/tasks", `${pending}.md`));
+    rmSync(path.join(root, "agent_docs/tasks/queue", `${pending}.md`));
     const moved = "20260801120000002-moved-rationale";
     task(root, moved, "in_progress", { rationale: "moved to agent_docs/SECURITY.md" });
     expect(run(root, "complete", moved).status).toBe(0);

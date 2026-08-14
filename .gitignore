@@ -9,11 +9,18 @@ tsconfig.tsbuildinfo
 coverage/
 playwright-report/
 test-results/
-# Open and completed task instances are local-only; directory contracts remain tracked.
+# Queued, parked, and completed task instances are local-only; directory contracts remain tracked.
+/agent_docs/tasks/queue/*.md
+!/agent_docs/tasks/queue/README.md
+/agent_docs/tasks/archive/*
+!/agent_docs/tasks/archive/README.md
+/agent_docs/tasks/drafts/*
+!/agent_docs/tasks/drafts/README.md
+# Keep pre-migration local task state private until its checkout owner moves it.
 /agent_docs/tasks/*.md
 !/agent_docs/tasks/README.md
 /agent_docs/task_archive/*
-!/agent_docs/task_archive/README.md
+/agent_docs/backlog/**
 
 .env
 .env.*
@@ -24,6 +31,5 @@ test-results/
 /ops/deploy/
 /sa.json
 /sa.json:Zone.Identifier
-# Operator-local reference material outside the active task ledger.
+# Operator-local reference material outside the task namespace.
 /agent_docs/PRD/**
-/agent_docs/backlog/**

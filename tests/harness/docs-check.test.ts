@@ -27,7 +27,12 @@ function fixture() {
   writeFileSync(path.join(root, ".env.example"), "EXAMPLE_KEY=value\n");
   writeFileSync(
     path.join(root, ".gitignore"),
-    "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n/agent_docs/task_archive/*\n!/agent_docs/task_archive/README.md\n/agent_docs/PRD/**\n/agent_docs/backlog/**\n"
+    "/agent_docs/tasks/queue/*.md\n!/agent_docs/tasks/queue/README.md\n"
+      + "/agent_docs/tasks/archive/*\n!/agent_docs/tasks/archive/README.md\n"
+      + "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n"
+      + "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n"
+      + "/agent_docs/task_archive/*\n/agent_docs/backlog/**\n"
+      + "/agent_docs/PRD/**\n"
   );
   writeFileSync(path.join(root, "README.md"), "# README\n\n[Architecture](agent_docs/ARCHITECTURE.md)\n");
   mkdirSync(path.join(root, "app/api/health"), { recursive: true });
@@ -45,7 +50,7 @@ function fixture() {
 
 function task(root: string, stem: string, status = "backlog", dependencies = "none") {
   writeFileSync(
-    path.join(root, "agent_docs/tasks", `${stem}.md`),
+    path.join(root, "agent_docs/tasks/queue", `${stem}.md`),
     `# ${stem}
 
 Status: ${status}
@@ -138,24 +143,27 @@ describe("current documentation and harness sanity check", () => {
     mkdirSync(path.join(root, "docs"));
     writeFileSync(path.join(root, "docs/README.md"), "# Public documentation\n");
     mkdirSync(path.join(root, "agent_docs/done_tasks"));
+    mkdirSync(path.join(root, "agent_docs/backlog"));
+    mkdirSync(path.join(root, "agent_docs/task_archive"));
 
     const result = check(root);
 
     expect(result.stderr).not.toContain("docs: obsolete top-level human-docs directory");
     expect(result.stderr).toContain("agent_docs/done_tasks: obsolete harness directory");
+    expect(result.stderr).toContain("agent_docs/backlog: obsolete harness directory");
+    expect(result.stderr).toContain("agent_docs/task_archive: obsolete harness directory");
   });
 
-  it("allows ignored operator-local PRD and backlog directories outside the task ledger", () => {
+  it("allows ignored operator-local PRD and drafts outside the task ledger", () => {
     const root = fixture();
     mkdirSync(path.join(root, "agent_docs/PRD"), { recursive: true });
-    mkdirSync(path.join(root, "agent_docs/backlog"), { recursive: true });
     writeFileSync(
       path.join(root, "agent_docs/PRD/private.md"),
       "Private reference with agent_docs/ADR/0001-old.md.\n"
     );
     writeFileSync(
-      path.join(root, "agent_docs/backlog/private.md"),
-      "Private backlog with agent_docs/archive/old.md.\n"
+      path.join(root, "agent_docs/tasks/drafts/private.md"),
+      "Private draft with agent_docs/archive/old.md.\n"
     );
 
     expect(check(root).status).toBe(0);
@@ -287,15 +295,20 @@ describe("current documentation and harness sanity check", () => {
   it("requires local task ignore rules and rejects force-tracked task instances", () => {
     const root = fixture();
     writeFileSync(path.join(root, ".gitignore"), "node_modules/\n");
-    expect(check(root).stderr).toContain("must ignore /agent_docs/tasks/*.md");
+    expect(check(root).stderr).toContain("must ignore /agent_docs/tasks/queue/*.md");
 
-    writeFileSync(
-      path.join(root, ".gitignore"),
-      "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n"
-    );
+    const ignoreContract = "/agent_docs/tasks/queue/*.md\n!/agent_docs/tasks/queue/README.md\n"
+      + "/agent_docs/tasks/archive/*\n!/agent_docs/tasks/archive/README.md\n"
+      + "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n"
+      + "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n"
+      + "/agent_docs/task_archive/*\n/agent_docs/backlog/**\n";
+    writeFileSync(path.join(root, ".gitignore"), ignoreContract.replace("!/agent_docs/tasks/README.md\n", ""));
+    expect(check(root).stderr).toContain("must keep agent_docs/tasks/README.md trackable");
+
+    writeFileSync(path.join(root, ".gitignore"), ignoreContract);
     const stem = "20260801120000001-tracked-task";
     task(root, stem);
-    const staged = spawnSync("git", ["add", "-f", `agent_docs/tasks/${stem}.md`], { cwd: root, encoding: "utf8" });
+    const staged = spawnSync("git", ["add", "-f", `agent_docs/tasks/queue/${stem}.md`], { cwd: root, encoding: "utf8" });
     expect(staged.status).toBe(0);
     expect(check(root).stderr).toContain("public Git must not track task instances");
   });

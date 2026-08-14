@@ -40,4 +40,4 @@ Use these defaults only when the operator has not decided the point. They route 
 - Update the single subject owner instead of copying a changed fact into several living documents.
 - When a durable rule changes, update its owning current contract and add a concise rationale only when future maintainers need it to avoid repeating a costly mistake.
 - Update `ENV_VARIABLES.md` for configuration changes and keep the compact semantic ownership map in `ARCHITECTURE.md` current when module boundaries change.
-- Keep `agent_docs/tasks/` executable: one lifecycle field, no duplicate plans, no resolved placeholders, and no completion archive.
+- Keep `agent_docs/tasks/queue/` executable: one lifecycle field, no duplicate plans, no resolved placeholders, and no completion archive.

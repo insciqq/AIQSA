@@ -81,6 +81,8 @@
     "test:e2e": "playwright test --project=chromium",
     "task:new": "node scripts/task-ledger.mjs new",
     "task:promote": "node scripts/task-ledger.mjs promote",
+    "task:park": "node scripts/task-ledger.mjs park",
+    "task:restore": "node scripts/task-ledger.mjs restore",
     "task:complete": "node scripts/task-ledger.mjs complete"
   },
   "dependencies": {
