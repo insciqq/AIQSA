@@ -20,13 +20,21 @@ function commit(root: string, message: string) {
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), "aiqsa-release-privacy-"));
   roots.push(root);
-  mkdirSync(path.join(root, "agent_docs/tasks"), { recursive: true });
-  mkdirSync(path.join(root, "agent_docs/task_archive"), { recursive: true });
+  mkdirSync(path.join(root, "agent_docs/tasks/queue"), { recursive: true });
+  mkdirSync(path.join(root, "agent_docs/tasks/archive"), { recursive: true });
+  mkdirSync(path.join(root, "agent_docs/tasks/drafts"), { recursive: true });
   writeFileSync(path.join(root, "agent_docs/tasks/README.md"), "# TASKS\n");
-  writeFileSync(path.join(root, "agent_docs/task_archive/README.md"), "# TASK ARCHIVE\n");
+  writeFileSync(path.join(root, "agent_docs/tasks/queue/README.md"), "# TASK QUEUE\n");
+  writeFileSync(path.join(root, "agent_docs/tasks/archive/README.md"), "# TASK ARCHIVE\n");
+  writeFileSync(path.join(root, "agent_docs/tasks/drafts/README.md"), "# TASK DRAFTS\n");
   writeFileSync(
     path.join(root, ".gitignore"),
-    "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n/agent_docs/task_archive/*\n!/agent_docs/task_archive/README.md\n/agent_docs/PRD/**\n/agent_docs/backlog/**\n"
+    "/agent_docs/tasks/queue/*.md\n!/agent_docs/tasks/queue/README.md\n"
+      + "/agent_docs/tasks/archive/*\n!/agent_docs/tasks/archive/README.md\n"
+      + "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n"
+      + "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n"
+      + "/agent_docs/task_archive/*\n/agent_docs/backlog/**\n"
+      + "/agent_docs/PRD/**\n"
   );
   writeFileSync(path.join(root, ".dockerignore"), "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n!.env.example\n");
   writeFileSync(path.join(root, "README.md"), "# Public source\n");
@@ -53,7 +61,7 @@ afterEach(() => {
 });
 
 describe("release privacy check", () => {
-  it("accepts a GitHub-only post-baseline history with only the task directory READMEs", () => {
+  it("accepts a GitHub-only post-baseline history with only the task namespace READMEs", () => {
     const root = fixture();
     const historySince = head(root);
 
@@ -83,7 +91,7 @@ describe("release privacy check", () => {
   it("finds a post-baseline task that was committed and later deleted", () => {
     const root = fixture();
     const historySince = head(root);
-    const relative = "agent_docs/tasks/20260801120000001-private-plan.md";
+    const relative = "agent_docs/tasks/queue/20260801120000001-private-plan.md";
     writeFileSync(path.join(root, relative), "private task\n");
     git(root, "add", "-f", relative);
     git(root, "-c", "user.name=AIQSA Test", "-c", "user.email=test@aiqsa.local", "commit", "-q", "-m", "unsafe task");
@@ -99,10 +107,25 @@ describe("release privacy check", () => {
   it("rejects a completed task forced into the tracked archive", () => {
     const root = fixture();
     const historySince = head(root);
-    const relative = "agent_docs/task_archive/20260801120000001-private-completed-task.md";
+    const relative = "agent_docs/tasks/archive/20260801120000001-private-completed-task.md";
     writeFileSync(path.join(root, relative), "private completed task\n");
     git(root, "add", "-f", relative);
     git(root, "-c", "user.name=AIQSA Test", "-c", "user.email=test@aiqsa.local", "commit", "-q", "-m", "unsafe archived task");
+
+    const result = runSince(root, historySince, "--ref", "HEAD");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`release tree contains private task artifact ${relative}`);
+    expect(result.stderr).toContain(`post-baseline history contains private task artifact ${relative}`);
+  });
+
+  it("rejects a parked draft forced into the public tree", () => {
+    const root = fixture();
+    const historySince = head(root);
+    const relative = "agent_docs/tasks/drafts/20260801120000001-private-draft.md";
+    writeFileSync(path.join(root, relative), "private parked task\n");
+    git(root, "add", "-f", relative);
+    git(root, "-c", "user.name=AIQSA Test", "-c", "user.email=test@aiqsa.local", "commit", "-q", "-m", "unsafe draft task");
 
     const result = runSince(root, historySince, "--ref", "HEAD");
 
@@ -157,13 +180,13 @@ describe("release privacy check", () => {
     const historySince = head(root);
     writeFileSync(
       path.join(root, ".dockerignore"),
-      "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n!agent_docs/tasks/private-plan.md\n"
+      "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n!agent_docs/tasks/queue/private-plan.md\n"
     );
 
     const result = runSince(root, historySince);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("later negation !agent_docs/tasks/private-plan.md");
+    expect(result.stderr).toContain("later negation !agent_docs/tasks/queue/private-plan.md");
   });
 
   it("rejects any later direct re-inclusion inside agent_docs", () => {

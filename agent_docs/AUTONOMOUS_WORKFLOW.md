@@ -7,11 +7,11 @@ This is the operating loop for broad autonomous selection, queued/task-state wor
 The operator's latest request is primary. A concrete same-session change may run directly. Create a task when work must survive the current session or belongs in the autonomous queue. For broad implementation permission, queued work, dependencies, or parallel execution:
 
 1. Inspect Git state and the relevant code and living documents.
-2. Enumerate `agent_docs/tasks/*.md` in natural filename order and reconcile every existing `in_progress` task before claiming more work.
+2. Enumerate `agent_docs/tasks/queue/*.md` in natural filename order and reconcile every existing `in_progress` task before claiming more work. Never enumerate or select `agent_docs/tasks/drafts/`.
 3. Select `ready` tasks with no open dependencies. For sequential work, prefer the first one; for a parallel wave, select up to five tasks whose expected write sets and stateful checks do not overlap.
 4. Never implement `backlog` or `blocked` tasks without the required transition or missing input.
 5. Mark every selected task `in_progress` before implementation.
-6. Keep task-file state in the primary checkout. Workers receive the task specification but do not edit `agent_docs/tasks`; the integrating agent is its only writer.
+6. Keep task-file state in the primary checkout. Workers receive the task specification but do not edit `agent_docs/tasks/queue`; the integrating agent is its only writer.
 
 The [task queue manual](tasks/README.md) owns statuses, dependencies, commands, task shape, evidence gates, and the local completion archive; `scripts/task-ledger.mjs` enforces them. A task is the executable plan and handoff artifact; do not create a parallel plan file or any second completed-plan archive.
 
@@ -21,7 +21,7 @@ When the operator asks to run queued tasks in parallel, one integrating agent ow
 
 1. Inspect ready tasks, current dirty paths, likely write sets, dependencies, migrations, generated outputs, and stateful checks. Exclude tasks that overlap the primary checkout's uncommitted work or each other.
 2. Select no more than five independent tasks and mark each one `in_progress` in the primary checkout before spawning workers.
-3. Give each worker one self-contained task specification and an isolated write scope. Tell workers not to edit `agent_docs/tasks`.
+3. Give each worker one self-contained task specification and an isolated write scope. Tell workers not to edit `agent_docs/tasks/queue`.
 4. Each worker implements and verifies only its assigned slice, then returns changed paths, exact checks, decisions, blockers, and an inspectable patch or branch when isolation is external.
 5. Wait for every worker and inspect every result. Apply only non-conflicting changes; a failed apply or conflict is an integration result, never permission to discard either side.
 6. Resolve conflicts in the integrating session against both task contracts and current code. Preserve unrelated dirty work, add an interaction regression when the conflict exposes one, and rerun the affected focused checks. Leave the task `in_progress` or block it with the exact condition when safe integration is impossible.

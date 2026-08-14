@@ -79,7 +79,9 @@ export const REQUIRED_DOCS = Object.freeze([
   "agent_docs/security/MCP_RUNTIME.md",
   "agent_docs/security/UPLOADS_AND_PROVIDER_TRUST.md",
   "agent_docs/TESTING.md",
-  "agent_docs/task_archive/README.md",
   "agent_docs/tasks/README.md",
+  "agent_docs/tasks/archive/README.md",
+  "agent_docs/tasks/drafts/README.md",
+  "agent_docs/tasks/queue/README.md",
   "agent_docs/generated/API_AND_SCHEMA.md"
 ]);

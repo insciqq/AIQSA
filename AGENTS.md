@@ -32,7 +32,7 @@ Then read only what the scope requires:
 
 - Before changing a scoped directory, read the nearest `AGENTS.md`; Claude-compatible scopes import it through the adjacent `CLAUDE.md`.
 
-- Read `agent_docs/AUTONOMOUS_WORKFLOW.md` only for broad selection, queued/task-state work, dependencies, parallel waves, or multi-session work. For queued work, also read `agent_docs/tasks/README.md` and the selected task. Named same-session work does not require the full workflow.
+- Read `agent_docs/AUTONOMOUS_WORKFLOW.md` only for broad selection, queued/task-state work, dependencies, parallel waves, or multi-session work. For queued work, also read `agent_docs/tasks/README.md` and the selected task from `agent_docs/tasks/queue/`. Named same-session work does not require the full workflow.
 - When the operator left a product or implementation choice open, read `agent_docs/DECISION_DEFAULTS.md`.
 - Before topology, module-boundary, data-boundary, or deployment-shape work, read `agent_docs/ARCHITECTURE.md`.
 - `agent_docs/RUN_PIPELINE.md` before run-pipeline, Search, tool-loop, provider-run, or inspection work.
@@ -67,7 +67,7 @@ If this is not a Git repository, record that in the final response and continue 
 
 ## Repository Publication
 
-`origin` is the public development/release repository. Open and archived task instances are local ignored state and must never be staged, committed, included in Docker context/images, or added to a public ref. Older commits/tags are grandfathered archaeology and do not justify ref rewrites. Agents do not push, rewrite refs, or tag releases without an explicit request; release publication also requires fresh readiness and privacy checks.
+`origin` is the public development/release repository. Queued, parked, and archived task instances are local ignored state and must never be staged, committed, included in Docker context/images, or added to a public ref. Older commits/tags are grandfathered archaeology and do not justify ref rewrites. Agents do not push, rewrite refs, or tag releases without an explicit request; release publication also requires fresh readiness and privacy checks.
 
 For repository sharing, export an inspected commit/tree with `git archive`; never archive the working directory, where ignored/untracked files remain. Use a fresh output path. Attach local tasks separately only after manual review.
 
@@ -77,7 +77,7 @@ For repository sharing, export an inspected commit/tree with `git archive`; neve
 - Use existing code and current local contracts before inventing scope or another abstraction.
 - Use the focused hermetic lane for deterministic static/unit work and `docker-compose.dev.yml` only for required container parity or integration. Never run destructive development or test workflows against the default persistent installation.
 - Keep one task file as the specification, execution plan, progress log, and task-local decision log. Do not create a second plan document for the same work.
-- Keep only local unfinished tasks in `agent_docs/tasks/`; `agent_docs/task_archive/` is the sole completed-task archive. Archive size never blocks validation or completion, and the harness never prunes, rotates, or overwrites archived evidence. Cleanup happens only on an explicit operator request. Do not force-add either kind of task instance or create another completion journal or decision-history directory.
+- Keep executable unfinished tasks in `agent_docs/tasks/queue/`, parked work outside the ledger in `agent_docs/tasks/drafts/`, and completed tasks only in `agent_docs/tasks/archive/`. Archive size never blocks validation or completion, and the harness never prunes, rotates, or overwrites archived evidence. Cleanup happens only on an explicit operator request. Do not force-add any task instance or create another completion journal or decision-history directory.
 - Update the owning living document only when the change modifies a durable product contract, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, or verification policy. A bug fix or implementation change that restores or preserves an already documented contract does not require a documentation edit.
 
 ## Before Final Response

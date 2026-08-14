@@ -25,7 +25,6 @@ const DISCOVERY_EXCLUDED_PREFIXES = [
   ".turbo/",
   ".aiqsa/",
   "agent_docs/PRD/",
-  "agent_docs/backlog/",
   "agent_docs/generated/",
   "build/",
   "coverage/",
@@ -37,28 +36,40 @@ const DISCOVERY_EXCLUDED_PREFIXES = [
   "test-results/",
   "vendor/"
 ];
+const TASK_CONTRACT_FILES = new Set([
+  "agent_docs/tasks/README.md",
+  "agent_docs/tasks/archive/README.md",
+  "agent_docs/tasks/drafts/README.md",
+  "agent_docs/tasks/queue/README.md"
+]);
 const OBSOLETE_HARNESS_DIRECTORIES = [
   "agent_docs/ADR",
   "agent_docs/active_tasks",
   "agent_docs/archive",
+  "agent_docs/backlog",
   "agent_docs/done_tasks",
   "agent_docs/exec_plans",
-  "agent_docs/exec-plans"
+  "agent_docs/exec-plans",
+  "agent_docs/task_archive"
 ];
 const CURRENT_SOURCE_EXTENSIONS = new Set([
   ".cjs", ".js", ".json", ".jsx", ".mjs", ".prisma", ".sh", ".ts", ".tsx", ".yaml", ".yml"
 ]);
 const CURRENT_SOURCE_BASENAMES = new Set([".dockerignore", ".gitignore", "Dockerfile", "Makefile"]);
 const CURRENT_SOURCE_EXCLUDED_FILES = new Set([
+  ".gitignore",
   "scripts/docs-check.mjs",
   "scripts/release-privacy-check.mjs",
+  "scripts/task-ledger.mjs",
   "tests/harness/docs-check.test.ts",
-  "tests/harness/release-privacy-check.test.ts"
+  "tests/harness/release-privacy-check.test.ts",
+  "tests/harness/task-ledger.test.ts"
 ]);
 
 function discoveryExcluded(relative) {
-  if (relative.startsWith("agent_docs/tasks/") && relative !== "agent_docs/tasks/README.md") return true;
-  if (relative.startsWith("agent_docs/task_archive/") && relative !== "agent_docs/task_archive/README.md") return true;
+  if (relative === "agent_docs/tasks/") return false;
+  if (["archive", "drafts", "queue"].some((name) => relative === `agent_docs/tasks/${name}/`)) return false;
+  if (relative.startsWith("agent_docs/tasks/") && !TASK_CONTRACT_FILES.has(relative)) return true;
   return DISCOVERY_EXCLUDED_PREFIXES.some((prefix) => relative.startsWith(prefix));
 }
 
@@ -142,7 +153,7 @@ function obsoleteHarnessErrors(root, markdown) {
   const errors = [];
   for (const relative of OBSOLETE_HARNESS_DIRECTORIES) {
     if (existsSync(path.join(root, relative))) {
-      errors.push(`${relative}: obsolete harness directory; keep unfinished work only in agent_docs/tasks`);
+      errors.push(`${relative}: obsolete harness directory; keep task state only under agent_docs/tasks`);
     }
   }
   const forbidden = [
@@ -150,12 +161,13 @@ function obsoleteHarnessErrors(root, markdown) {
     { pattern: /\bactive_tasks\b/u, label: "active_tasks directory" },
     { pattern: /\bdone_tasks\b/u, label: "done_tasks directory" },
     { pattern: /\bexec[_-]plans?\b/u, label: "separate execution-plan directory" },
-    { pattern: /agent_docs\/archive(?:\/|\b)/u, label: "separate archive directory" }
+    { pattern: /agent_docs\/archive(?:\/|\b)/u, label: "separate archive directory" },
+    { pattern: /agent_docs\/backlog(?:\/|\b)/u, label: "separate backlog directory" },
+    { pattern: /agent_docs\/task_archive(?:\/|\b)/u, label: "separate task_archive directory" }
   ];
 
   for (const filename of markdown) {
     const relative = portablePath(path.relative(root, filename));
-    if (relative.startsWith("agent_docs/tasks/") && relative !== "agent_docs/tasks/README.md") continue;
     const body = readFileSync(filename, "utf8");
     for (const { pattern, label } of forbidden) {
       if (pattern.test(body)) errors.push(`${relative}: references obsolete ${label}`);
@@ -171,7 +183,9 @@ function currentSourceReferenceErrors(root, files) {
     /\bactive_tasks\b/u,
     /\bdone_tasks\b/u,
     /\bexec[_-]plans?\b/u,
-    /agent_docs\/archive(?:\/|\b)/u
+    /agent_docs\/archive(?:\/|\b)/u,
+    /agent_docs\/backlog(?:\/|\b)/u,
+    /agent_docs\/task_archive(?:\/|\b)/u
   ];
 
   for (const relative of files) {
@@ -226,15 +240,33 @@ function taskPrivacyErrors(root) {
   const ignorePath = path.join(root, ".gitignore");
   if (!existsSync(ignorePath)) return ["missing task privacy contract: .gitignore"];
   const ignoreLines = new Set(readFileSync(ignorePath, "utf8").split(/\r?\n/u).map((line) => line.trim()));
-  if (!ignoreLines.has("/agent_docs/tasks/*.md")) {
-    errors.push(".gitignore: must ignore /agent_docs/tasks/*.md");
+  for (const [instancePattern, contractPattern] of [
+    ["/agent_docs/tasks/queue/*.md", "!/agent_docs/tasks/queue/README.md"],
+    ["/agent_docs/tasks/archive/*", "!/agent_docs/tasks/archive/README.md"],
+    ["/agent_docs/tasks/drafts/*", "!/agent_docs/tasks/drafts/README.md"]
+  ]) {
+    if (!ignoreLines.has(instancePattern)) {
+      errors.push(`.gitignore: must ignore ${instancePattern}`);
+    }
+    if (!ignoreLines.has(contractPattern)) {
+      errors.push(`.gitignore: must keep ${contractPattern.slice(1)} trackable`);
+    }
+  }
+  for (const legacyPattern of [
+    "/agent_docs/tasks/*.md",
+    "/agent_docs/task_archive/*",
+    "/agent_docs/backlog/**"
+  ]) {
+    if (!ignoreLines.has(legacyPattern)) {
+      errors.push(`.gitignore: must retain the pre-migration privacy guard ${legacyPattern}`);
+    }
   }
   if (!ignoreLines.has("!/agent_docs/tasks/README.md")) {
     errors.push(".gitignore: must keep agent_docs/tasks/README.md trackable");
   }
 
   if (existsSync(path.join(root, ".git"))) {
-    const tracked = spawnSync("git", ["--work-tree", root, "ls-files", "--", "agent_docs/tasks/*.md"], {
+    const tracked = spawnSync("git", ["--work-tree", root, "ls-files", "--", "agent_docs/tasks"], {
       cwd: root,
       encoding: "utf8"
     });
@@ -242,7 +274,7 @@ function taskPrivacyErrors(root) {
       errors.push(`task privacy check could not inspect tracked files: ${tracked.stderr.trim() || "git ls-files failed"}`);
     } else {
       const instances = tracked.stdout.split(/\r?\n/u).filter(Boolean).filter(
-        (filename) => filename !== "agent_docs/tasks/README.md"
+        (filename) => !TASK_CONTRACT_FILES.has(filename)
       );
       for (const filename of instances) errors.push(`${filename}: public Git must not track task instances`);
     }

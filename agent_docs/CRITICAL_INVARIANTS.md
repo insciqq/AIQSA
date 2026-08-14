@@ -29,7 +29,7 @@ This is the mandatory short safety read. Scoped contracts retain the same normat
 ## Repository And Verification Safety
 
 1. Never run destructive development, test, migration, prune, or browser workflows against the default persistent installation or an operator-designated data set. Only the explicit disposable development topology may be reset or polluted.
-2. Completion moves task files from `agent_docs/tasks/` to the ignored local `agent_docs/task_archive/`. Archive size never blocks validation or completion, and the harness never prunes, rotates, or overwrites archived tasks automatically. Cleanup happens only on an explicit operator request. Open and archived task instances must never be forced into public Git, release source trees, or images.
+2. Completion moves task files from `agent_docs/tasks/queue/` to the ignored local `agent_docs/tasks/archive/`; operator parking moves reconciled unfinished tasks to `agent_docs/tasks/drafts/`, which is outside ledger selection and dependency resolution. Archive size never blocks validation or completion, and the harness never prunes, rotates, or overwrites archived tasks automatically. Cleanup happens only on an explicit operator request. Queued, parked, and archived task instances must never be forced into public Git, release source trees, or images.
 3. Real-provider smokes require current operator-provided keys, the smallest scoped context/output, sanitized evidence, and the provider-specific permission in `TESTING.md`; deterministic fakes remain the default.
 4. External dependency-security checks follow `SECURITY.md`; do not apply breaking or destructive remediation merely because an automated command proposes it.
 

@@ -14,8 +14,12 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const TASK_DIRECTORY = "agent_docs/tasks";
-const TASK_ARCHIVE_DIRECTORY = "agent_docs/task_archive";
+const TASK_ROOT_DIRECTORY = "agent_docs/tasks";
+const TASK_DIRECTORY = `${TASK_ROOT_DIRECTORY}/queue`;
+const TASK_ARCHIVE_DIRECTORY = `${TASK_ROOT_DIRECTORY}/archive`;
+const TASK_DRAFT_DIRECTORY = `${TASK_ROOT_DIRECTORY}/drafts`;
+const LEGACY_TASK_ARCHIVE_DIRECTORY = "agent_docs/task_archive";
+const LEGACY_TASK_DRAFT_DIRECTORY = "agent_docs/backlog";
 const TASK_FILE = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const TASK_STEM = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const TASK_ID = /^\d{17}$/;
@@ -110,6 +114,31 @@ function isGitRepository(root) {
   return existsSync(path.join(root, ".git"));
 }
 
+function legacyLayoutErrors(root) {
+  const errors = [];
+  const taskRoot = path.join(root, TASK_ROOT_DIRECTORY);
+  const allowedEntries = new Set(["README.md", "archive", "drafts", "queue"]);
+  if (existsSync(taskRoot)) {
+    for (const entry of readdirSync(taskRoot, { withFileTypes: true })) {
+      if (!allowedEntries.has(entry.name)) {
+        errors.push(
+          `${portable(path.join(TASK_ROOT_DIRECTORY, entry.name))}: legacy task-queue entry; `
+          + `move unfinished task files to ${TASK_DIRECTORY}`
+        );
+      }
+    }
+  }
+  for (const [legacyDirectory, destination] of [
+    [LEGACY_TASK_ARCHIVE_DIRECTORY, TASK_ARCHIVE_DIRECTORY],
+    [LEGACY_TASK_DRAFT_DIRECTORY, TASK_DRAFT_DIRECTORY]
+  ]) {
+    if (existsSync(path.join(root, legacyDirectory))) {
+      errors.push(`${legacyDirectory}: legacy task directory; move its local state to ${destination}`);
+    }
+  }
+  return errors;
+}
+
 function isIgnoredTask(root, relativePath) {
   if (!isGitRepository(root)) return true;
   const result = spawnSync("git", ["--work-tree", root, "check-ignore", "-q", "--", portable(relativePath)], {
@@ -202,6 +231,31 @@ function discoverArchivedTasks(root) {
   return { directory, invalidFiles, records };
 }
 
+function discoverDraftTasks(root) {
+  const directory = path.join(root, TASK_DRAFT_DIRECTORY);
+  if (!existsSync(directory)) return { directory, records: [] };
+
+  const records = [];
+  for (const filename of readdirSync(directory).sort()) {
+    if (filename === "README.md") continue;
+    const absolutePath = path.join(directory, filename);
+    const match = TASK_FILE.exec(filename);
+    if (!match || !statSync(absolutePath).isFile()) continue;
+    const body = readFileSync(absolutePath, "utf8");
+    records.push({
+      body,
+      filename,
+      id: match[1],
+      path: absolutePath,
+      relativePath: portable(path.join(TASK_DRAFT_DIRECTORY, filename)),
+      status: field(body, "Status"),
+      stem: filename.slice(0, -3)
+    });
+  }
+  records.sort(taskOrder);
+  return { directory, records };
+}
+
 function indexRecords(records) {
   const byStem = new Map();
   const byId = new Map();
@@ -221,9 +275,18 @@ export function readTaskLedger(root = process.cwd()) {
   root = path.resolve(root);
   const tasks = discoverTasks(root);
   const archive = discoverArchivedTasks(root);
+  const drafts = discoverDraftTasks(root);
   const { byId, byStem } = indexRecords(tasks.records);
   const archiveIndex = indexRecords(archive.records);
-  return { archive: { ...archive, ...archiveIndex }, byId, byStem, root, tasks };
+  const draftIndex = indexRecords(drafts.records);
+  return {
+    archive: { ...archive, ...archiveIndex },
+    byId,
+    byStem,
+    drafts: { ...drafts, ...draftIndex },
+    root,
+    tasks
+  };
 }
 
 function cycleErrors(records) {
@@ -332,10 +395,8 @@ function durableRationaleErrors(record, root, { requireSettled = false } = {}) {
       path.isAbsolute(owner)
       || normalized.includes("../")
       || !normalized.startsWith("agent_docs/")
-      || normalized === "agent_docs/tasks"
-      || normalized.startsWith("agent_docs/tasks/")
-      || normalized === "agent_docs/task_archive"
-      || normalized.startsWith("agent_docs/task_archive/")
+      || normalized === TASK_ROOT_DIRECTORY
+      || normalized.startsWith(`${TASK_ROOT_DIRECTORY}/`)
     ) {
       errors.push(`${record.relativePath}: durable rationale owner must be an existing file outside local task directories: ${owner}`);
       continue;
@@ -374,9 +435,10 @@ function completionReadiness(record, root) {
 
 export function validateTaskLedger(root = process.cwd()) {
   const ledger = readTaskLedger(root);
-  const errors = ledger.tasks.invalidFiles.map(
+  const errors = legacyLayoutErrors(ledger.root);
+  errors.push(...ledger.tasks.invalidFiles.map(
     (filename) => `${filename}: task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
-  );
+  ));
   errors.push(...ledger.archive.invalidFiles.map(
     (filename) => `${filename}: archived task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
   ));
@@ -474,6 +536,18 @@ function resolveTask(ledger, reference) {
   throw new Error(`task ${reference} was not found`);
 }
 
+function resolveDraftTask(ledger, reference) {
+  const exact = ledger.drafts.records.find((record) => record.stem === reference);
+  if (exact) return exact;
+  if (!TASK_ID.test(reference ?? "")) throw new Error(`draft task ${reference} was not found`);
+  const matches = ledger.drafts.byId.get(reference) ?? [];
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    throw new Error(`draft task ${reference} is ambiguous; use one of: ${matches.map((record) => record.stem).join(", ")}`);
+  }
+  throw new Error(`draft task ${reference} was not found`);
+}
+
 function noOpenDependencies(record) {
   const dependencies = parseDependencies(field(record.body, "Depends on"));
   if (dependencies.length) throw new Error(`open dependencies: ${dependencies.join(", ")}`);
@@ -483,7 +557,7 @@ function nextTaskId(ledger, date = new Date()) {
   let candidate = new Date(date.getTime());
   for (let attempts = 0; attempts < 10_000; attempts += 1) {
     const id = formatTimestampId(candidate);
-    if (!ledger.byId.has(id) && !ledger.archive.byId.has(id)) return id;
+    if (!ledger.byId.has(id) && !ledger.archive.byId.has(id) && !ledger.drafts.byId.has(id)) return id;
     candidate = new Date(candidate.getTime() + 1);
   }
   throw new Error("could not allocate a unique task timestamp within ten seconds");
@@ -547,6 +621,65 @@ export function blockTask({ root = process.cwd(), reference, reason }) {
   body = replaceField(body, "Blocked by", reason.trim());
   writeFileSync(record.path, body, "utf8");
   return record.stem;
+}
+
+export function parkTask({ root = process.cwd(), reference }) {
+  const ledger = assertValid(root);
+  const record = resolveTask(ledger, reference);
+  if (record.status === "in_progress") {
+    throw new Error(`${record.stem} is in_progress; block or otherwise reconcile it before parking`);
+  }
+  const dependents = ledger.tasks.records.filter(
+    (candidate) => candidate.stem !== record.stem && candidate.dependencies.includes(record.stem)
+  );
+  if (dependents.length) {
+    throw new Error(
+      `${record.stem} is required by open task(s): ${dependents.map((candidate) => candidate.stem).join(", ")}; `
+      + "park those dependents first"
+    );
+  }
+  if (ledger.drafts.byStem.has(record.stem) || ledger.drafts.byId.has(record.id)) {
+    throw new Error(`${record.stem} conflicts with an existing draft task`);
+  }
+
+  const destination = path.join(ledger.drafts.directory, record.filename);
+  const relativePath = portable(path.relative(ledger.root, destination));
+  if (existsSync(destination)) throw new Error(`${relativePath} already exists; refusing to overwrite a draft task`);
+  if (!isIgnoredTask(ledger.root, relativePath)) {
+    throw new Error(`${relativePath} must be ignored before parking a task`);
+  }
+  mkdirSync(ledger.drafts.directory, { recursive: true });
+  renameSync(record.path, destination);
+  return { relativePath, stem: record.stem };
+}
+
+export function restoreTask({ root = process.cwd(), reference }) {
+  const ledger = assertValid(root);
+  const record = resolveDraftTask(ledger, reference);
+  if (!ALLOWED_STATUSES.has(record.status)) {
+    throw new Error(`${record.stem} has Status: ${record.status ?? "missing"}; only unfinished tasks can be restored`);
+  }
+  if (ledger.byStem.has(record.stem) || ledger.archive.byStem.has(record.stem)) {
+    throw new Error(`${record.stem} already exists in the queue or archive`);
+  }
+  if (ledger.byId.has(record.id) || ledger.archive.byId.has(record.id)) {
+    throw new Error(`${record.id} already exists in the queue or archive`);
+  }
+
+  const destination = path.join(ledger.tasks.directory, record.filename);
+  const relativePath = portable(path.relative(ledger.root, destination));
+  if (existsSync(destination)) throw new Error(`${relativePath} already exists; refusing to overwrite a queued task`);
+  if (!isIgnoredTask(ledger.root, relativePath)) {
+    throw new Error(`${relativePath} must be ignored before restoring a task`);
+  }
+  mkdirSync(ledger.tasks.directory, { recursive: true });
+  renameSync(record.path, destination);
+  const validation = validateTaskLedger(ledger.root);
+  if (validation.errors.length) {
+    renameSync(destination, record.path);
+    throw new Error(`draft task cannot be restored:\n- ${validation.errors.join("\n- ")}`);
+  }
+  return { relativePath, stem: record.stem };
 }
 
 function removeDependency(body, dependency) {
@@ -639,6 +772,15 @@ export function runTaskCli(argv = process.argv.slice(2)) {
     const reference = oneReference(arguments_, command);
     return `Blocked ${blockTask({ root, reference, reason })}.`;
   }
+  if (["park", "restore"].includes(command)) {
+    const reference = oneReference(arguments_, command);
+    if (command === "park") {
+      const result = parkTask({ root, reference });
+      return `Parked ${result.stem} at ${result.relativePath}.`;
+    }
+    const result = restoreTask({ root, reference });
+    return `Restored ${result.stem} at ${result.relativePath}.`;
+  }
   if (["promote", "start"].includes(command)) {
     const reference = oneReference(arguments_, command);
     if (command === "promote") return `Promoted ${promoteTask({ root, reference })} to ready.`;
@@ -649,7 +791,7 @@ export function runTaskCli(argv = process.argv.slice(2)) {
     const result = completeTask({ root, reference });
     return `Completed and archived ${result.stem} at ${result.archiveRelativePath}; cleared ${result.cleared} dependency reference(s).`;
   }
-  throw new Error("usage: task-ledger <new|promote|start|block|complete|list> ...");
+  throw new Error("usage: task-ledger <new|promote|start|block|park|restore|complete|list> ...");
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
