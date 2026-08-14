@@ -8,12 +8,12 @@ Not owned here: Specific auth, admin, chat/run, upload/share, or provider wire b
 
 ## Backend Goals
 
-The backend supports a transparent, provider-neutral AI workspace without becoming an unrestricted workflow platform. It owns:
+The backend supports a reliable, provider-neutral AI web interface without becoming an unrestricted workflow platform or a run-inspection service. It owns:
 
 - password and optional Google/Yandex OAuth authentication, access requests, direct invites, verification, reset, revocable sessions, and administrator recovery;
 - user/group entitlements and administrator control planes for providers, Search, SMTP, and MCP;
 - backend-filtered catalogs and saved user defaults;
-- persistent folders, chats, message branches, Assistants, runs, attachments, shares, usage, and inspection evidence;
+- persistent folders, chats, message branches, Assistants, runs, attachments, shares, usage, and purpose-bound recovery/accounting records;
 - deterministic fake-provider execution plus OpenAI, Anthropic, Gemini, OpenRouter, and compatible-provider adapters;
 - private upload processing and anonymous sanitized share snapshots;
 - passive administrator-only awareness of stable public GitHub releases.

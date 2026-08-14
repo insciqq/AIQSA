@@ -253,7 +253,7 @@ disposable app already bounded to two CPUs and two GiB. It refreshes exact
 active answer/System/embedding tuples when stale, acknowledges the current
 installation egress fingerprint, performs a real `REEMBED`, and then proves two
 automatic-fact recall paths plus one non-Core cross-language vector/history
-path through private run receipts:
+path through private recovery checkpoints:
 
 ```bash
 npm run smoke:memory-semantic
@@ -263,7 +263,7 @@ The runner reads the local bootstrap token only for loopback authentication and
 uses provider credentials already stored through Admin; it never exports a
 provider key. Output is limited to aggregate booleans/counts and SHA-256
 digests. It never prints Memory/query/source or answer text, account/chat/run/
-message/fact IDs, credentials, provider responses, or receipt passages. This
+message/fact IDs, credentials, provider responses, or private checkpoint passages. This
 command has no standing permission for a persistent or non-loopback install.
 
 Write-quiesced backup, wrong-key rejection, empty-target restore, unresolved

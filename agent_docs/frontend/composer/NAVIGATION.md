@@ -4,7 +4,7 @@ Owner: Chat interaction maintainers
 Scope: Chat/folder navigation, bounded search, command palette, account destinations, and responsive sidebar behavior.
 Read when: Changing chat discovery, sidebar actions, folders, archived chat access, command shortcuts, Account, or mobile navigation.
 Code owners: `features/navigation-v2/`, the reviewed command-palette leaf, and focused workspace/navigation stores and actions.
-Not owned here: Composer input, next-run controls, evidence/inspection, or visual token recipes.
+Not owned here: Composer input, next-run controls, answer outputs, Branches behavior, or visual token recipes.
 
 ## One navigation presentation
 
@@ -20,7 +20,7 @@ The sidebar contains:
 - incremental `Show earlier` pagination;
 - `Archived chats` (the single archive entry), `Library`, and Settings/account destinations.
 
-The workspace header owns the visible Account menu and command trigger, and it carries no kicker text. Account exposes Library, Settings, entitled Control Center, and Sign out; Archived chats is reached only through the sidebar row. For an active chat the header shows a Share button plus one `⋯` overflow menu (Rename, Move with the complete indented folder picker, Archive, capability-gated `Delete…`, Markdown export, JSON export, Copy thread, Branches, Run details for the latest answer); below 900px Share joins that same menu. The header title is inline-renameable through the shared chat-rename owner. It does not create a second sidebar or resource workspace.
+The workspace header owns the visible Account menu and command trigger, and it carries no kicker text. Account exposes Library, Settings, entitled Control Center, and Sign out; Archived chats is reached only through the sidebar row. For an active chat the header shows a Share button plus one `⋯` overflow menu (Rename, Move with the complete indented folder picker, Archive, capability-gated `Delete…`, Markdown export, JSON export, Copy thread, Branches); below 900px Share joins that same menu. The header title is inline-renameable through the shared chat-rename owner. It does not create a second sidebar or resource workspace.
 
 ## Search and command access
 
@@ -43,7 +43,7 @@ The workspace header owns the visible Account menu and command trigger, and it c
 
 - `Archived chats` opens the existing owner-private archived list with a client-side title filter. Each list row offers Restore and capability-gated permanent deletion directly; selecting a row still opens its read-only preview with bounded older-page loading and the same two actions. A Memory source link to an archived chat resolves to this preview rather than activating an ineligible chat.
 - Restore uses the current source-revision fence and returns the chat to active navigation. Duplicate or stale restore attempts stay disabled or refresh the exact target.
-- Permanent deletion — whether opened from the archive, a chat row's `Delete…`, or the header `⋯` — rereads exact title/location/revision/leaf before authorization and always passes through the same confirm surface. Admission immediately removes the chat from active/archived navigation and leaves an account-bound progress surface. Forgetting facts sourced from that chat remains an explicit separate choice; external retention and backup limitations stay in Advanced details.
+- Permanent deletion — whether opened from the archive, a chat row's `Delete…`, or the header `⋯` — rereads exact title/location/revision/leaf before authorization and always passes through the same confirm surface. Admission immediately removes the chat from active/archived navigation and leaves an account-bound progress surface. Forgetting facts sourced from that chat remains an explicit separate choice; external retention and backup limitations stay in the advanced cleanup explanation.
 
 ## Focus and responsive behavior
 

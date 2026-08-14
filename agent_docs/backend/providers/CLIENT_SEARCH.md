@@ -33,8 +33,7 @@ common execution validates those adapter-selected fields and never recursively
 discovers URLs in an arbitrary response. The runtime applies revision-owned
 controls and starts each provider call with the earlier of the Search revision
 deadline and the technical provider model's effective snapshotted response
-deadline. Its bounded request preview records the Search, provider, and
-effective millisecond values. It merges fan-out in plan/rank order and persists
+deadline. Its private accepted checkpoint records the Search, provider, and effective millisecond values only when recovery or accounting consumes them. It merges fan-out in plan/rank order and persists
 one canonical settled result for foreground and recovery reuse. The product privacy,
 attachment, default-policy, and invocation semantics are owned by [Search plans](../../run_pipeline/SEARCH_PLANS.md);
 this boundary makes them unrepresentable or revalidates them before I/O.

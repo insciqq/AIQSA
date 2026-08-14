@@ -2,7 +2,7 @@
 
 Entry point for agent-driven development in this repository.
 
-AIQSA is a self-hosted, multi-user AI workspace with explicit provider and model control, optional web search, MCP tools, and inspectable runs. This harness is a current operating manual: keep current contracts, commands, open work, and the local completed-task archive; delete obsolete narrative. Put durable rationale beside its owning rule.
+AIQSA is an open-source, self-hosted, multi-user, model-agnostic web interface with explicit provider and model control, optional web search, Knowledge, files, Memory, and MCP tools. The product is conversation-first: optimize for working functionality, clear outputs, and reliable operation rather than post-hoc run inspection. This harness is a current operating manual: keep current contracts, commands, open work, and the local completed-task archive; delete obsolete narrative. Put durable rationale beside its owning rule.
 
 ## Autonomy Trigger
 
@@ -22,7 +22,7 @@ Stop only for missing secrets, unrequested destructive work, an unmockable unava
 
 ## Completion Policy
 
-There is no human-review task status or operator-acceptance gate. The integrating agent completes work after automated inspection and proportional verification. If required evidence is unavailable, block the task instead of completing it. Stop before implementation only when the requested outcome needs missing authority, secrets, destructive work, an unavailable unmockable service, or a product decision not covered by current contracts.
+There is no human-review task status or operator-acceptance gate. The integrating agent completes work after automated inspection and proportional verification. If required verification output is unavailable, block the task instead of completing it. Stop before implementation only when the requested outcome needs missing authority, secrets, destructive work, an unavailable unmockable service, or a product decision not covered by current contracts.
 
 ## Reading Map
 
@@ -31,18 +31,17 @@ Do not preload the whole harness. Start with `agent_docs/CRITICAL_INVARIANTS.md`
 Then read only what the scope requires:
 
 - Before changing a scoped directory, read the nearest `AGENTS.md`; Claude-compatible scopes import it through the adjacent `CLAUDE.md`.
-
 - Read `agent_docs/AUTONOMOUS_WORKFLOW.md` only for broad selection, queued/task-state work, dependencies, parallel waves, or multi-session work. For queued work, also read `agent_docs/tasks/README.md` and the selected task from `agent_docs/tasks/queue/`. Named same-session work does not require the full workflow.
 - When the operator left a product or implementation choice open, read `agent_docs/DECISION_DEFAULTS.md`.
 - Before topology, module-boundary, data-boundary, or deployment-shape work, read `agent_docs/ARCHITECTURE.md`.
-- `agent_docs/RUN_PIPELINE.md` before run-pipeline, Search, tool-loop, provider-run, or inspection work.
-- `agent_docs/FRONTEND.md` before UI behavior, state, accessibility, or shell work; it routes to bounded frontend owners.
-- `agent_docs/DESIGN_SYSTEM.md` additionally before visual composition, theme, geometry, density, or motion work.
-- `agent_docs/BACKEND.md` before route, persistence, auth, upload, run, or server-side behavior work; it routes to bounded backend owners.
-- `agent_docs/PROVIDER_API_NOTES.md` before provider work.
-- `agent_docs/ENV_VARIABLES.md` before environment or configuration work.
-- `agent_docs/SECURITY.md` before dependency or security work.
-- Before changing behavior or tests, read the verification map, applicable lane, and test-authoring rules in `agent_docs/TESTING.md`; consult its boundary-specific evidence and opt-in commands only when the scope crosses that boundary.
+- Read `agent_docs/RUN_PIPELINE.md` before run admission, Search, Knowledge retrieval, tool-loop, provider execution, recovery, output, usage, or retention work.
+- Read `agent_docs/FRONTEND.md` before UI behavior, state, accessibility, or shell work; it routes to bounded frontend owners.
+- Read `agent_docs/DESIGN_SYSTEM.md` additionally before visual composition, theme, geometry, density, or motion work.
+- Read `agent_docs/BACKEND.md` before route, persistence, auth, upload, run, or server-side behavior work; it routes to bounded backend owners.
+- Read `agent_docs/PROVIDER_API_NOTES.md` before provider work.
+- Read `agent_docs/ENV_VARIABLES.md` before environment or configuration work.
+- Read `agent_docs/SECURITY.md` before dependency or security work.
+- Before changing behavior or tests, read the verification map, applicable lane, and test-authoring rules in `agent_docs/TESTING.md`; consult its boundary-specific verification requirements and opt-in commands only when the scope crosses that boundary.
 
 ## Contract Authority
 
@@ -75,9 +74,11 @@ For repository sharing, export an inspected commit/tree with `git archive`; neve
 
 - Prefer the smallest change that leaves the app runnable or clearly verifiable.
 - Use existing code and current local contracts before inventing scope or another abstraction.
+- Delete product-facing diagnostics and unused projections when they have no operational consumer. Do not preserve a hidden inspection/admin/debug surface merely to avoid removing code.
+- Keep internal run data purpose-bound to execution, recovery, side-effect safety, security, retention, or aggregate accounting. Do not expose repository objects directly to the browser; serialize an explicit client-safe contract.
 - Use the focused hermetic lane for deterministic static/unit work and `docker-compose.dev.yml` only for required container parity or integration. Never run destructive development or test workflows against the default persistent installation.
 - Keep one task file as the specification, execution plan, progress log, and task-local decision log. Do not create a second plan document for the same work.
-- Keep executable unfinished tasks in `agent_docs/tasks/queue/`, parked work outside the ledger in `agent_docs/tasks/drafts/`, and completed tasks only in `agent_docs/tasks/archive/`. Archive size never blocks validation or completion, and the harness never prunes, rotates, or overwrites archived evidence. Cleanup happens only on an explicit operator request. Do not force-add any task instance or create another completion journal or decision-history directory.
+- Keep executable unfinished tasks in `agent_docs/tasks/queue/`, parked work outside the ledger in `agent_docs/tasks/drafts/`, and completed tasks only in `agent_docs/tasks/archive/`. Archive size never blocks validation or completion, and the harness never prunes, rotates, or overwrites archived task records. Cleanup happens only on an explicit operator request. Do not force-add any task instance or create another completion journal or decision-history directory.
 - Update the owning living document only when the change modifies a durable product contract, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, or verification policy. A bug fix or implementation change that restores or preserves an already documented contract does not require a documentation edit.
 
 ## Before Final Response

@@ -18,20 +18,15 @@ through `color-mix()`; it is not a second palette or compatibility theme layer.
 
 ## Product Character
 
-AIQSA should feel like a quiet, focused AI workspace: familiar enough to understand immediately, precise enough to trust, and calm enough to read for a long time. It is not a generic admin dashboard and not a decorative AI demo.
+AIQSA should feel like a quiet, focused AI web interface: familiar enough to understand immediately, precise enough to trust, and calm enough to read for a long time. It is not a generic admin dashboard, research workbench, run debugger, or decorative AI demo.
 
 The two primary contexts are:
 
-- **Chat:** ask, create, inspect execution, branch, and continue.
-- **Control Center:** connect an installation, manage access, and inspect operational state.
+- **Chat:** ask, create, use sources and files, branch, and continue.
+- **Control Center:** connect an installation, manage access, and operate configured resources.
 
-The domain vocabulary is question, answer, evidence, source, branch, event,
-trace, workspace, and run. Prefer those words over generic dashboard language.
-The signature visual language pairs one quiet whole-turn reveal with a compact
-message-action dock, a factual evidence row, and an on-demand Run details drawer. [Messages](../frontend/MESSAGES_AND_MARKDOWN.md)
-own reveal/action behavior and [receipt and Details](../frontend/composer/RECEIPT_AND_DETAILS.md)
-own disclosure/data behavior; this system owns only their hierarchy, geometry,
-and visual states.
+The domain vocabulary is question, answer, source, branch, workspace, model, and run. Prefer concrete user tasks over generic dashboard or diagnostic language.
+The signature visual language pairs a readable document answer with a compact message-action dock, optional Sources only when present, and direct generated outputs. [Messages](../frontend/MESSAGES_AND_MARKDOWN.md) own reveal/action behavior and [answer outputs and Branches](../frontend/composer/ANSWER_OUTPUTS_AND_BRANCHES.md) own output/data behavior; this system owns only hierarchy, geometry, and visual states.
 
 Use these hierarchy rules in order:
 
@@ -115,7 +110,7 @@ overlays follow the selected scheme.
 
 ## Typography
 
-Use the already bundled `Golos Text` variable face for UI and document text because it is legible, compact, and covers the product's Latin/Cyrillic content. Use `JetBrains Mono` only for code, identifiers, exact provider values, and event payloads. Typography changes the product character through scale, weight, width, and measure rather than another network font.
+Use the already bundled `Golos Text` variable face for UI and document text because it is legible, compact, and covers the product's Latin/Cyrillic content. Use `JetBrains Mono` only for code, identifiers, and exact provider/configuration values. Typography changes the product character through scale, weight, width, and measure rather than another network font.
 
 | Role | Target recipe |
 |---|---|
@@ -125,9 +120,9 @@ Use the already bundled `Golos Text` variable face for UI and document text beca
 | Page title | 22-28px, 600 weight, compact tracking. |
 | Section title | 16-18px, 600 weight. |
 | Labels/actions | 13-14px, 500-600 weight; sentence case. |
-| Code/event data | 12-14px mono, 1.5-1.65 line height. |
+| Code/configuration data | 12-14px mono, 1.5-1.65 line height. |
 
-Use the semantic `text-metadata` utility for the 12px/1.5 small-metadata floor. Raw 10-11px utilities are not a component API. The only smaller recipe is `text-incidental` at 11px/16px, reserved for visually redundant glyphs, indices, or structural markers that are explicitly `aria-hidden`; it must never carry help, status, security, lifecycle, technical evidence, or an action label.
+Use the semantic `text-metadata` utility for the 12px/1.5 small-metadata floor. Raw 10-11px utilities are not a component API. The only smaller recipe is `text-incidental` at 11px/16px, reserved for visually redundant glyphs, indices, or structural markers that are explicitly `aria-hidden`; it must never carry help, status, security, lifecycle, technical facts, or an action label.
 
 The answer is a readable document, not a chat bubble stack. Use a 46-48rem answer measure. User questions may use a narrower right-aligned surface but must wrap naturally. Long headings, German-like compounds, Cyrillic text, URLs, code, tables, and formulas must not widen the page at the supported viewport compositions.
 
@@ -142,10 +137,7 @@ Use a 4px base rhythm with primary steps of 4, 8, 12, 16, 24, 32, and 48px. Rela
 - Control Center navigation: 15rem when persistent.
 - Workspace header: one 3rem row for conversation identity and bounded global
   actions. Mobile hides secondary text actions before shrinking touch targets.
-- Branches, Run details, artifact preview, Settings, and command search are
-  temporary overlays at every width. Right-hand desktop drawers use the
-  27.5rem drawer token; below `900px` they become full-viewport sheets. No
-  inspection surface creates a pinned column or changes conversation measure.
+- Branches, generated-output preview, Settings, and command search are temporary overlays at every width. Right-hand desktop drawers use the 27.5rem drawer token; below `900px` they become full-viewport sheets. No secondary surface creates a pinned diagnostic column or changes conversation measure.
 - Answer column: max 46-48rem with responsive inline padding.
 - Composer: the same 46.25rem measure as the answer, in its own layout row;
   compact/short model and capability surfaces become safe-area bottom sheets.
