@@ -2,7 +2,7 @@
 
 Entry point for agent-driven development in this repository.
 
-AIQSA is a self-hosted, multi-user, model-agnostic conversational web interface with Search, Knowledge, files, Memory, and MCP tools. Optimize for working functionality, clear outputs, and reliable operation. Keep this manual current and put durable rationale beside its owning rule.
+AIQSA is a self-hosted, multi-user, model-agnostic conversational web interface with Search, Knowledge, files, Memory, and MCP tools. Optimize for working functionality, clear outputs, and reliable operation. Keep this manual limited to navigation, non-derivable product semantics, safety/operations boundaries, and durable rationale.
 
 ## Autonomy Trigger
 
@@ -14,7 +14,7 @@ If the operator says "start implementation", "begin", "go ahead", or an equivale
 4. For broad queued work, reconcile existing `in_progress` tasks and select unblocked `ready` tasks. Use the parallel-wave rules in `agent_docs/AUTONOMOUS_WORKFLOW.md` when the operator requests parallel execution.
 5. Mark every selected queued task `in_progress` before implementation.
 6. Implement the smallest complete vertical slice; the integrating agent owns task state, automated review, conflict resolution, and integration.
-7. Run proportional checks and update an owning living document only when its durable contract changed.
+7. Run proportional checks and update `agent_docs` only when the change alters a non-derivable product rule, safety/operations boundary, architectural direction, configuration/operator contract, verification policy, or rationale that future work cannot recover from executable artifacts.
 8. Complete verified tasks directly; completion moves each task to the local archive and clears remaining dependency references.
 9. Continue only when broad implementation was requested and another concrete unblocked task or safe parallel wave remains.
 
@@ -41,14 +41,14 @@ Then read only what the scope requires:
 
 ## Contract Authority
 
-- The operator's current request defines intended scope.
+- The operator's current request defines intended scope and outcome.
 - `agent_docs/CRITICAL_INVARIANTS.md` defines non-negotiable safety and product-semantic boundaries unless the operator explicitly requests a contract change.
-- Executable code, schemas, migrations, and tests plus the owning living document define current behavior.
-- When executable behavior/tests and a living contract disagree, treat it as drift. Resolve a clear mismatch from the request, observable behavior, tests, and nearby owners, updating both sides; escalate only when two plausible readings change product semantics.
-- A task may change a living contract only when its goal says so and the owner is updated in the same implementation.
+- Executable code, schemas, migrations, and tests define the exact current implementation.
+- The rest of `agent_docs` provides navigation, non-derivable product semantics, safety/operations boundaries, and durable rationale. It is not a co-owner or prose inventory of implementation state.
+- When implementation violates an explicit durable constraint, fix the executable artifacts unless the operator authorized changing that constraint. When prose merely repeats stale mechanics, remove the mechanics and link to the executable owner instead of synchronizing two descriptions.
 - `PRODUCT_PRINCIPLES.md` and `DECISION_DEFAULTS.md` guide choices that current contracts leave open.
 
-Do not reconstruct current behavior from old plans or Git history when code and living contracts answer it. History is for archaeology.
+Discover current behavior from executable artifacts, not `agent_docs`, old plans, or Git history. History is for archaeology.
 
 ## Pre-production Compatibility
 
@@ -79,7 +79,7 @@ For repository sharing, export an inspected commit/tree with `git archive`; neve
 - Use the focused hermetic lane for deterministic static/unit work and `docker-compose.dev.yml` only for required container parity or integration. Never run destructive development or test workflows against the default persistent installation.
 - Keep one task file as the specification, execution plan, progress log, and task-local decision log. Do not create a second plan document for the same work.
 - Keep executable unfinished tasks in `agent_docs/tasks/queue/`, parked work outside the ledger in `agent_docs/tasks/drafts/`, and completed tasks only in `agent_docs/tasks/archive/`. Archive size never blocks validation or completion, and the harness never prunes, rotates, or overwrites archived task records. Cleanup happens only on an explicit operator request. Do not force-add any task instance or create another completion journal or decision-history directory.
-- Update the owning living document only when the change modifies a durable product contract, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, or verification policy. A bug fix or implementation change that restores or preserves an already documented contract does not require a documentation edit.
+- Do not mirror implementation changes into Markdown. Update the relevant `agent_docs` owner only when a non-derivable product rule, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, verification policy, or durable rationale changes.
 
 ## Before Final Response
 
