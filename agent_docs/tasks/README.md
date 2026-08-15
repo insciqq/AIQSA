@@ -34,8 +34,6 @@ Use `Status: backlog` when a task should stay visible to ledger validation and d
 
 Draft files are not listed, selected, content-validated, or accepted as dependency targets. A restored `ready` task is immediately eligible for normal selection.
 
-The pre-migration root queue and former sibling draft/archive directories are not alternate task locations. Their ignore patterns remain only so updating an older checkout cannot expose private local state; the ledger rejects those paths and requires their owner to move the files into this namespace.
-
 ## Task Shape
 
 `node scripts/task-ledger.mjs new` is the sole executable scaffold source. Each task has the metadata fields `Status`, `Depends on`, `Blocked by`, and `Durable rationale`, followed by `Goal`, `Context`, `Scope`, `Out Of Scope`, `Acceptance Criteria`, `Plan`, `Progress`, `Decisions`, and `Verification`. Replace every scaffold placeholder before promotion; use exact task stems in `Depends on` and `none` when no open dependency remains.
@@ -47,6 +45,7 @@ Task-local decisions remain inspectable in the local completion archive, but the
 ## Commands
 
 ```bash
+npm run task:check
 node scripts/task-ledger.mjs new <slug> --summary "<one-line outcome>"
 node scripts/task-ledger.mjs promote <task-id-or-stem>
 node scripts/task-ledger.mjs start <task-id-or-stem>
@@ -57,7 +56,7 @@ node scripts/task-ledger.mjs complete <task-id-or-stem>
 node scripts/task-ledger.mjs list
 ```
 
-`new` creates an ignored local queue task with `Status: backlog`. `promote` requires a complete executable specification and no open dependencies. `start` claims one ready task and permits other tasks to remain `in_progress`. `block` records the exact unavailable condition. `park` and `restore` cross the queue/draft boundary without changing status. `complete` requires settled durable rationale and completed verification.
+`task:check` explicitly validates current queue/archive privacy, structure, statuses, and dependencies; documentation checks do not inspect local task state. `new` creates an ignored local queue task with `Status: backlog`. `promote` requires a complete executable specification and no open dependencies. `start` claims one ready task and permits other tasks to remain `in_progress`. `block` records the exact unavailable condition. `park` and `restore` cross the queue/draft boundary without changing status. `complete` requires settled durable rationale and completed verification.
 
 Task filenames use a 17-digit local timestamp including milliseconds followed by a lowercase kebab-case slug, for example `20260801143025123-search-quota-guard.md`. CLI allocation prevents identifier reuse across the queue, drafts, and completion archive without a separate sequence ledger.
 

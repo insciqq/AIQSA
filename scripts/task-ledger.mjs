@@ -18,8 +18,6 @@ const TASK_ROOT_DIRECTORY = "agent_docs/tasks";
 const TASK_DIRECTORY = `${TASK_ROOT_DIRECTORY}/queue`;
 const TASK_ARCHIVE_DIRECTORY = `${TASK_ROOT_DIRECTORY}/archive`;
 const TASK_DRAFT_DIRECTORY = `${TASK_ROOT_DIRECTORY}/drafts`;
-const LEGACY_TASK_ARCHIVE_DIRECTORY = "agent_docs/task_archive";
-const LEGACY_TASK_DRAFT_DIRECTORY = "agent_docs/backlog";
 const TASK_FILE = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const TASK_STEM = /^(\d{17})-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const TASK_ID = /^\d{17}$/;
@@ -112,31 +110,6 @@ function formatTimestampId(date) {
 
 function isGitRepository(root) {
   return existsSync(path.join(root, ".git"));
-}
-
-function legacyLayoutErrors(root) {
-  const errors = [];
-  const taskRoot = path.join(root, TASK_ROOT_DIRECTORY);
-  const allowedEntries = new Set(["README.md", "archive", "drafts", "queue"]);
-  if (existsSync(taskRoot)) {
-    for (const entry of readdirSync(taskRoot, { withFileTypes: true })) {
-      if (!allowedEntries.has(entry.name)) {
-        errors.push(
-          `${portable(path.join(TASK_ROOT_DIRECTORY, entry.name))}: legacy task-queue entry; `
-          + `move unfinished task files to ${TASK_DIRECTORY}`
-        );
-      }
-    }
-  }
-  for (const [legacyDirectory, destination] of [
-    [LEGACY_TASK_ARCHIVE_DIRECTORY, TASK_ARCHIVE_DIRECTORY],
-    [LEGACY_TASK_DRAFT_DIRECTORY, TASK_DRAFT_DIRECTORY]
-  ]) {
-    if (existsSync(path.join(root, legacyDirectory))) {
-      errors.push(`${legacyDirectory}: legacy task directory; move its local state to ${destination}`);
-    }
-  }
-  return errors;
 }
 
 function isIgnoredTask(root, relativePath) {
@@ -435,7 +408,7 @@ function completionReadiness(record, root) {
 
 export function validateTaskLedger(root = process.cwd()) {
   const ledger = readTaskLedger(root);
-  const errors = legacyLayoutErrors(ledger.root);
+  const errors = [];
   errors.push(...ledger.tasks.invalidFiles.map(
     (filename) => `${filename}: task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
   ));
@@ -767,6 +740,11 @@ export function runTaskCli(argv = process.argv.slice(2)) {
     if (arguments_.length) throw new Error("usage: task-ledger list [--root <path>]");
     return listTasks(root);
   }
+  if (command === "check") {
+    if (arguments_.length) throw new Error("usage: task-ledger check [--root <path>]");
+    assertValid(root);
+    return "Task ledger is valid.";
+  }
   if (command === "block") {
     const reason = takeOption(arguments_, "--reason");
     const reference = oneReference(arguments_, command);
@@ -791,7 +769,7 @@ export function runTaskCli(argv = process.argv.slice(2)) {
     const result = completeTask({ root, reference });
     return `Completed and archived ${result.stem} at ${result.archiveRelativePath}; cleared ${result.cleared} dependency reference(s).`;
   }
-  throw new Error("usage: task-ledger <new|promote|start|block|park|restore|complete|list> ...");
+  throw new Error("usage: task-ledger <check|new|promote|start|block|park|restore|complete|list> ...");
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

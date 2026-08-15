@@ -16,11 +16,6 @@ test-results/
 !/agent_docs/tasks/archive/README.md
 /agent_docs/tasks/drafts/*
 !/agent_docs/tasks/drafts/README.md
-# Keep pre-migration local task state private until its checkout owner moves it.
-/agent_docs/tasks/*.md
-!/agent_docs/tasks/README.md
-/agent_docs/task_archive/*
-/agent_docs/backlog/**
 
 .env
 .env.*
