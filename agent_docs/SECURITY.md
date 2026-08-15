@@ -45,11 +45,13 @@ Deterministic test auth and the public demo credential are valid only when every
 
 For dependency changes, inspect manifest/lockfile, registry sources, and lifecycle scripts; use `npm ci`, then the operator-approved `npm run security:deps`. Never apply forced/breaking automated remediation implicitly. These deliberate pins/overrides retain their rationale:
 
+Keep dependency admission small and explicit: do not add a repository-owned OSV client, lockfile scanner, or aggregate dependency gate while this remains an npm-only tree covered by manifest/lockfile review and the registry audit. Reconsider that decision only if another package ecosystem or required advisory source enters the runtime or build boundary.
+
 | Dependency | Reviewed boundary |
 | --- | --- |
-| `@modelcontextprotocol/sdk` | Exact pin and sole MCP protocol/OAuth implementation; its resolved Hono server line must remain beyond the reviewed advisory floor even though AIQSA does not expose that static server. |
+| `@modelcontextprotocol/sdk` | Exact pin and sole MCP protocol/OAuth implementation; the `@hono/node-server` override enforces the reviewed `>=2.0.10` advisory floor even though AIQSA does not expose that static server. |
 | `sharp` | Audited newer line used only by repository-owned OCR fixture generation; it intentionally crosses Next's optional range and must be revisited before any user-controlled/runtime image path. |
-| `nanoid` | Patched compatible build-only transitive line avoids the zero-size generator denial-of-service; AIQSA does not call the affected generator APIs. |
+| `nanoid` | The `3.3.18` override is the first patched compatible 3.x line for the zero-size custom-generator denial-of-service; AIQSA does not call the affected generator APIs and receives it only through build tooling. |
 | `postcss` | Audited override intentionally crosses Next's exact older dependency and processes repository CSS only; revisit before runtime/user CSS or once maintained Next carries a safe version. |
 
 Keep each only while its focused hostile-input/build/hermetic contract passes, and re-evaluate when upstream constraints become safe or its input surface expands.

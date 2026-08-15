@@ -43,7 +43,6 @@ export const providerConnectionTemplates = Object.freeze([
       responseTimeoutMs: 300_000
     }),
     displayName: "Fake QSA",
-    enabled: false,
     family: "fake",
     id: providerTemplateIds.fakeConnection,
     templateKey: "fake"
@@ -56,7 +55,6 @@ export const providerConnectionTemplates = Object.freeze([
       responseTimeoutMs: 300_000
     }),
     displayName: "OpenAI",
-    enabled: false,
     family: "openai",
     id: providerTemplateIds.openAiConnection,
     templateKey: "openai"
@@ -69,7 +67,6 @@ export const providerConnectionTemplates = Object.freeze([
       responseTimeoutMs: 300_000
     }),
     displayName: "Anthropic",
-    enabled: false,
     family: "anthropic",
     id: providerTemplateIds.anthropicConnection,
     templateKey: "anthropic"
@@ -82,7 +79,6 @@ export const providerConnectionTemplates = Object.freeze([
       responseTimeoutMs: 300_000
     }),
     displayName: "Gemini",
-    enabled: false,
     family: "gemini",
     id: providerTemplateIds.geminiConnection,
     templateKey: "gemini"
@@ -95,7 +91,6 @@ export const providerConnectionTemplates = Object.freeze([
       responseTimeoutMs: 300_000
     }),
     displayName: "OpenRouter",
-    enabled: false,
     family: "openrouter",
     id: providerTemplateIds.openRouterConnection,
     templateKey: "openrouter"

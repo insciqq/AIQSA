@@ -20,7 +20,7 @@ Start with [critical invariants](CRITICAL_INVARIANTS.md). Read only the owner cr
 | Test level, command, or evidence selection | [Testing](TESTING.md) |
 | Queued, dependent, parallel, or multi-session work | [Autonomous workflow](AUTONOMOUS_WORKFLOW.md) and [task ledger](tasks/README.md) |
 
-The [generated API reference](generated/API_AND_SCHEMA.md) is derived from route source and must be regenerated, never hand-edited. `prisma/schema.prisma` is the schema inventory.
+`app/api/**/route.ts` is the exact API route/method inventory. `prisma/schema.prisma` plus committed migrations are the exact schema inventory.
 
 ## Authority And Maintenance
 

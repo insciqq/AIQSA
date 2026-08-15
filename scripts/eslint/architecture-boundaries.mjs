@@ -325,16 +325,20 @@ const testSupportBoundaryRule = {
     schema: [],
     messages: {
       productionImport:
-        "Production code must not import '{{specifier}}' from the tests/support boundary."
+        "Production code must not import '{{specifier}}' from a test/fixture support boundary."
     }
   },
   create(context) {
     const importerFilename = context.physicalFilename ?? context.filename;
+    const importerTarget = toPosixPath(path.relative(repositoryRoot, importerFilename));
     const checkSource = (sourceNode) => {
       const specifier = staticString(sourceNode);
       if (specifier === null) return;
       const target = repositoryTarget(specifier, importerFilename);
-      if (targets(target, "tests/support")) {
+      const testSupport = targets(target, "tests/support");
+      const fixtureSupport = targets(target, "app/ui-v2-fixture/_fixtures");
+      const fixtureOwner = targets(importerTarget, "app/ui-v2-fixture");
+      if (testSupport || (fixtureSupport && !fixtureOwner)) {
         context.report({
           node: sourceNode,
           messageId: "productionImport",

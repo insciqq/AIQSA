@@ -29,7 +29,7 @@ Use these defaults only when the operator has not decided the point. They route 
 
 ## Documentation Defaults
 
-- Living documents describe current contracts; open tasks describe planned or active work. Completed task files are deleted after verification.
+- Living documents describe current contracts; open tasks describe planned or active work. Completion moves verified task files to the ignored local archive owned by the task ledger.
 - Give every durable proposition one normative owner. A cross-layer document may link that owner and state only its own storage, enforcement, wire, API, state, presentation, or external-fact projection; it must not restate another owner's mechanics. The mandatory critical-invariant summary may repeat the safety outcome while the bounded leaf remains the sole owner of its mechanics.
 - Update the single subject owner instead of copying a changed fact into several living documents.
 - When a durable rule changes, update its owning current contract and add a concise rationale only when future maintainers need it to avoid repeating a costly mistake.

@@ -25,7 +25,7 @@ export type InstallationBootstrapInput = {
 
 export type InstallationBootstrapResult = {
   catalogModelCount: number;
-  catalogSearchStrategyCount: number;
+  catalogSearchOptionCount: number;
   status: "already_adopted" | "created";
 };
 
@@ -418,10 +418,15 @@ export async function bootstrapInstallationDatabase(
       if (state.adoptedUserId) {
         const catalog = await synchronizeInstallationFoundation(tx, now());
         await ensureFullAccessGroup(tx, state.adoptedUserId);
+        await tx.userMemorySettings.upsert({
+          create: { userId: state.adoptedUserId },
+          update: {},
+          where: { userId: state.adoptedUserId }
+        });
 
         return {
           catalogModelCount: catalog.modelCount,
-          catalogSearchStrategyCount: catalog.searchStrategyCount,
+          catalogSearchOptionCount: catalog.searchOptionCount,
           status: "already_adopted"
         };
       }
@@ -448,7 +453,7 @@ export async function bootstrapInstallationDatabase(
 
       return {
         catalogModelCount: catalog.modelCount,
-        catalogSearchStrategyCount: catalog.searchStrategyCount,
+        catalogSearchOptionCount: catalog.searchOptionCount,
         status: "created"
       };
     },

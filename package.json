@@ -18,11 +18,9 @@
     "build": "next build",
     "check": "npm run check:hermetic",
     "check:container": "AIQSA_APP_MEMORY_LIMIT=2g AIQSA_APP_CPU_LIMIT=2 docker compose -f docker-compose.dev.yml run --rm -T --no-deps --name aiqsa-dev-check -e NODE_OPTIONS=--max-old-space-size=1536 app npm run check:container:inner",
-    "check:container:inner": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE tsx scripts/stateful-test-target.ts && prisma generate && prisma migrate deploy && npm run docs:check && npm run test:full -- --maxWorkers=1",
+    "check:container:inner": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE tsx scripts/stateful-test-target.ts && prisma generate && prisma migrate deploy && npm run docs:check && npm run test:full:inner -- --maxWorkers=1",
     "check:hermetic": "prisma generate && npm run docs:check && npm run lint && tsc --noEmit && vitest run",
     "docs:check": "node scripts/docs-check.mjs",
-    "docs:generate": "node scripts/generate-doc-reference.mjs",
-    "docs:generated:check": "node scripts/generate-doc-reference.mjs --check",
     "release:privacy:check": "node scripts/release-privacy-check.mjs --require-origin",
     "db:generate": "prisma generate",
     "db:bootstrap": "tsx prisma/bootstrap.ts",
@@ -53,7 +51,7 @@
     "typecheck": "prisma generate && tsc --noEmit",
     "test": "vitest run",
     "test:backup-restore": "AIQSA_RUN_BACKUP_RESTORE_TEST=1 bash scripts/test-backup-restore-reconciliation.sh",
-    "test:full": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE vitest run --config vitest.full.config.ts",
+    "test:full:inner": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE vitest run --config vitest.full.config.ts",
     "test:watch": "vitest",
     "test:e2e": "playwright test --project=chromium",
     "task:check": "node scripts/task-ledger.mjs check",
@@ -101,8 +99,9 @@
     "vitest": "4.1.8"
   },
   "overrides": {
+    "@hono/node-server": "^2.0.10",
     "esbuild": "0.28.1",
-    "nanoid": "3.3.17",
+    "nanoid": "3.3.18",
     "postcss": "8.5.25",
     "sharp": "0.35.3"
   }

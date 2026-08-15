@@ -5,7 +5,7 @@ Scope: Durable HTTP/API, service-boundary, upload, and control-plane principles.
 
 ## API Boundary
 
-`app/api/**/route.ts` is the route inventory; the [generated reference](generated/API_AND_SCHEMA.md) lists methods. Route entries authenticate, bound and decode input, call a server owner, and serialize an explicit client-safe result. They do not expose repository objects, Prisma rows, secrets, provider payloads, or private recovery state.
+`app/api/**/route.ts` is the exact route and method inventory. Route entries authenticate, bound and decode input, call a server owner, and serialize an explicit client-safe result. They do not expose repository objects, Prisma rows, secrets, provider payloads, or private recovery state.
 
 All private operations recheck authentication, ownership, entitlement, and lifecycle at the operation boundary. Browser filtering is presentation, not authority. State-changing browser requests pass the shared same-origin and bounded-body boundary. Stable error codes and privacy-neutral unavailable responses replace raw exceptions and existence leaks.
 

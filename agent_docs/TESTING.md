@@ -5,9 +5,9 @@ Scope: Test-level selection, canonical commands, disposable boundaries, evidence
 
 ## Selection Rule
 
-Use the cheapest deterministic check that proves the increment, then run the completion lane proportional to the changed boundary. Documentation-only work runs `npm run docs:check`; generated-reference work also runs `npm run docs:generated:check`. Pure code normally completes through the hermetic lane. Add database, browser, image, dependency, deployment, or provider evidence only when the change crosses that boundary.
+Use the cheapest deterministic check that proves the increment, then run the completion lane proportional to the changed boundary. Documentation-only work runs `npm run docs:check`. Pure code normally completes through the hermetic lane. Add database, browser, image, dependency, deployment, or provider evidence only when the change crosses that boundary.
 
-`scripts/docs-manifest.mjs` owns the small mandatory document set and budgets. The docs checker verifies required owners, handwritten-document budgets/orphans, internal links, and generated freshness; it does not encode implementation prose or task-ledger state.
+`scripts/docs-manifest.mjs` owns the small mandatory document set and budgets. The docs checker verifies required owners, handwritten-document budgets/orphans, and internal links; it does not mirror source inventories, encode implementation prose, or inspect task-ledger state.
 Task-ledger changes run `npm run task:check` explicitly plus focused ledger/privacy tests; this remains independent of documentation validation.
 
 ## Core Lanes
@@ -43,6 +43,8 @@ npm run check:container
 
 The full lane deploys committed migrations and runs deterministic plus stateful tests against the exact acknowledged disposable database. Stateful/container checks are serialized. The default `docker-compose.yml` is a persistent installation and is never a test target.
 
+`test:full:inner` is an internal command for the disposable development container and intentionally fails closed on the host. Use `check:container` for the full lane; when an already migrated disposable stack is running, a focused stateful file may be passed to `test:full:inner` only from that app container.
+
 Use Playwright only for browser/server routing, auth/session, streaming, responsive geometry/input, or focus behavior:
 
 ```bash
@@ -63,7 +65,7 @@ This may reset disposable data and must not overlap another stateful check. Reus
 | Dependency/security | Focused threat tests and `npm run security:deps`; review manifest, lockfile, lifecycle scripts, and any override/upstream contract. |
 | MCP/ToolHive/OAuth | Deterministic protocol/security tests, then the relevant disposable local runtime. Registry pulls, hosted consent, upstream OAuth, and Docker-side effects need separate authority. |
 | Upload/parser sidecars | Deterministic routing/bounds/decoder tests, then the parser smoke in disposable Compose; prove stopped parsers degrade locally without breaking core readiness. |
-| Memory/Knowledge/recovery/concurrency | Pure policy/source/handler tests, then focused `test:full` cases or container parity against disposable PostgreSQL/pgvector. Evidence is aggregate and content-free. |
+| Memory/Knowledge/recovery/concurrency | Pure policy/source/handler tests, then focused container-internal `test:full:inner` cases or container parity against disposable PostgreSQL/pgvector. Evidence is aggregate and content-free. |
 | Repository publication | `npm run release:privacy:check`, inspected-tree release build, and image inspection; publication/tag/ref changes still need explicit authority. |
 
 These are routing rules, not a cumulative release matrix. Do not run unrelated expensive lanes because another task once used them.

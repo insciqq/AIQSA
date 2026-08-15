@@ -7,5 +7,5 @@ Root `AGENTS.md` and `agent_docs/CRITICAL_INVARIANTS.md` remain authoritative. R
 - Every schema change ships a forward migration and updates bootstrap/seed/integrity contracts when their assumptions change.
 - Preserve existing rows and accepted compatibility semantics unless the operator explicitly authorizes a destructive cutover.
 - Never run migration, seed, prune, or reset commands against the default persistent installation during development.
-- Regenerate the API/schema reference after schema changes; do not hand-edit its output.
+- Treat `schema.prisma` plus committed migrations as the exact schema inventory; do not add a generated prose mirror.
 - Verify with the clean-install migration contract and disposable Compose parity lane required by `TESTING.md`.

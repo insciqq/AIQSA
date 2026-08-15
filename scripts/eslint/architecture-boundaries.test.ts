@@ -91,10 +91,38 @@ describe("repository lint policies", () => {
     ).toEqual([
       expect.objectContaining({
         message:
-          `Production code must not import '${specifier}' from the tests/support boundary.`,
+          `Production code must not import '${specifier}' from a test/fixture support boundary.`,
         ruleId: testSupportRuleId
       })
     ]);
+    expect(testResult.messages.filter(({ ruleId }) => ruleId === testSupportRuleId)).toEqual([]);
+  });
+
+  it("keeps UI fixture modules inside their gated route and tests", async () => {
+    const specifier = "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
+    const [productionResult] = await eslint.lintText(
+      `import ${JSON.stringify(specifier)};`,
+      { filePath: path.join(repositoryRoot, "features/composer-v2/productionConsumer.tsx") }
+    );
+    const [ownerResult] = await eslint.lintText(
+      `import ${JSON.stringify(specifier)};`,
+      { filePath: path.join(repositoryRoot, "app/ui-v2-fixture/owner.tsx") }
+    );
+    const [testResult] = await eslint.lintText(
+      `import ${JSON.stringify(specifier)};`,
+      { filePath: path.join(repositoryRoot, "features/composer-v2/consumer.test.tsx") }
+    );
+
+    expect(
+      productionResult.messages.filter(({ ruleId }) => ruleId === testSupportRuleId)
+    ).toEqual([
+      expect.objectContaining({
+        message:
+          `Production code must not import '${specifier}' from a test/fixture support boundary.`,
+        ruleId: testSupportRuleId
+      })
+    ]);
+    expect(ownerResult.messages.filter(({ ruleId }) => ruleId === testSupportRuleId)).toEqual([]);
     expect(testResult.messages.filter(({ ruleId }) => ruleId === testSupportRuleId)).toEqual([]);
   });
 

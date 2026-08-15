@@ -14,12 +14,14 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-target";
 
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
+const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
+  "23f4876e042bd58033f32bd0acd3e9c407121d0dbb7b38e40ee7b3bbfcd77459";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const POSTGRES_USER = "aiqsa";
-const POSTGRES_PASSWORD = "aiqsa-dev-password";
 const POSTGRES_SERVICE = "postgres";
 const APP_SERVICE = "app";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -28,7 +30,7 @@ const migrationsRoot = join(repositoryRoot, "prisma/migrations");
 const runId = `${process.pid}_${Date.now()}`;
 
 type Mode = "full" | "smoke";
-type DatabaseRole = "bootstrap" | "seed" | "smoke";
+type DatabaseRole = "bootstrap" | "seed" | "shadow" | "smoke";
 type CommandResult = Readonly<{
   status: number;
   stderr: string;
@@ -71,21 +73,54 @@ function requireSuccess(result: CommandResult, operation: string): string {
 }
 
 function databaseName(role: DatabaseRole): string {
-  const prefix = role === "smoke" ? "migration_smoke" : `baseline_${role}`;
+  const prefix = role === "smoke"
+    ? "migration_smoke"
+    : role === "shadow"
+      ? "migration_shadow"
+      : `baseline_${role}`;
   return `aiqsa_${prefix}_${runId}`;
 }
 
 function assertDisposableDatabase(database: string): void {
   assert.match(
     database,
-    /^aiqsa_(?:migration_smoke|baseline_seed|baseline_bootstrap)_[0-9]+_[0-9]+$/u,
+    /^aiqsa_(?:migration_smoke|migration_shadow|baseline_seed|baseline_bootstrap)_[0-9]+_[0-9]+$/u,
     `refusing unsafe database target: ${database}`,
   );
 }
 
+let disposableDatabaseUrlTemplate: URL | undefined;
+
+function databaseUrlTemplate(): URL {
+  if (disposableDatabaseUrlTemplate) {
+    return disposableDatabaseUrlTemplate;
+  }
+
+  const value = requireSuccess(
+    compose([
+      "exec",
+      "-T",
+      APP_SERVICE,
+      "node",
+      "-e",
+      "process.stdout.write(process.env.DATABASE_URL ?? '')",
+    ]),
+    "read disposable app database target",
+  );
+  assert.equal(
+    isDisposableStatefulDatabaseUrl(value),
+    true,
+    "the disposable app DATABASE_URL does not match the fail-closed stateful target contract",
+  );
+  disposableDatabaseUrlTemplate = new URL(value);
+  return disposableDatabaseUrlTemplate;
+}
+
 function databaseUrl(database: string): string {
   assertDisposableDatabase(database);
-  return `postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_SERVICE}:5432/${database}?schema=public`;
+  const url = new URL(databaseUrlTemplate());
+  url.pathname = `/${database}`;
+  return url.toString();
 }
 
 function postgres(args: string[], operation: string, input?: string): string {
@@ -230,7 +265,11 @@ function schemaCatalogDigest(database: string): string {
   return sha256(normalized);
 }
 
-function deployAndVerify(database: string, migrations: readonly string[]): void {
+function deployAndVerify(
+  database: string,
+  migrations: readonly string[],
+  shadowDatabase: string,
+): void {
   app(database, ["npx", "prisma", "migrate", "deploy"]);
   assertDeployedMigrations(database, migrations);
   const beforeRepeat = deployedMigrations(database);
@@ -244,6 +283,38 @@ function deployAndVerify(database: string, migrations: readonly string[]): void 
     app(database, ["npx", "prisma", "migrate", "status"]),
     /Database schema is up to date!/u,
   );
+  const schemaDatamodelDiff = app(database, [
+    "npx",
+    "prisma",
+    "migrate",
+    "diff",
+    "--from-migrations",
+    "prisma/migrations",
+    "--to-schema-datamodel",
+    "prisma/schema.prisma",
+    "--shadow-database-url",
+    databaseUrl(shadowDatabase),
+    "--script",
+  ]);
+  const schemaDatamodelDiffSha256 = sha256(schemaDatamodelDiff);
+  assert.equal(
+    schemaDatamodelDiffSha256,
+    EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256,
+    `the reviewed SQL-only schema/datamodel delta changed; received sha256=${schemaDatamodelDiffSha256}`,
+  );
+  app(database, [
+    "npx",
+    "prisma",
+    "migrate",
+    "diff",
+    "--exit-code",
+    "--from-migrations",
+    "prisma/migrations",
+    "--to-schema-datasource",
+    "prisma/schema.prisma",
+    "--shadow-database-url",
+    databaseUrl(shadowDatabase),
+  ]);
 }
 
 function runIntegrityProof(database: string): void {
@@ -258,7 +329,11 @@ function runSeedProof(database: string): void {
   };
   app(database, ["npx", "prisma", "db", "seed"], testEnvironment);
   app(database, ["npx", "prisma", "db", "seed"], testEnvironment);
-  app(database, ["npx", "tsx", "prisma/seed-smoke.ts"], testEnvironment);
+  app(
+    database,
+    ["npx", "tsx", "prisma/seed-smoke.ts", "--expect-empty-workspace"],
+    testEnvironment,
+  );
   runIntegrityProof(database);
 }
 
@@ -383,24 +458,32 @@ function runAppendOnlyMigrationProbe(
   }
 }
 
-function main(mode: Mode, databases: readonly string[]): void {
+function main(
+  mode: Mode,
+  databases: readonly string[],
+  shadowDatabase: string,
+): void {
   const migrations = committedMigrations();
 
-  for (const database of databases) {
+  for (const database of [...databases, shadowDatabase]) {
     dropDatabase(database);
     createDatabase(database);
   }
 
   app(databases[0]!, ["npx", "prisma", "generate"]);
   for (const database of databases) {
-    deployAndVerify(database, migrations);
+    deployAndVerify(database, migrations, shadowDatabase);
   }
-  const catalogDigests = databases.map(schemaCatalogDigest);
-  assert.equal(
-    new Set(catalogDigests).size,
-    1,
-    "independent clean installs produced different schema catalogs",
-  );
+  const catalogDigests = databases.length > 1
+    ? databases.map(schemaCatalogDigest)
+    : [];
+  if (catalogDigests.length > 1) {
+    assert.equal(
+      new Set(catalogDigests).size,
+      1,
+      "independent clean installs produced different schema catalogs",
+    );
+  }
 
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
@@ -412,8 +495,11 @@ function main(mode: Mode, databases: readonly string[]): void {
     runAppendOnlyMigrationProbe(databases[1]!, migrations);
   }
 
+  const catalogEvidence = catalogDigests[0]
+    ? ` catalog_sha256=${catalogDigests[0]}`
+    : "";
   process.stdout.write(
-    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} catalog_sha256=${catalogDigests[0]} ordered deploy, idempotence, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
+    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256}${catalogEvidence} ordered deploy, idempotence, schema parity, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
   );
 }
 
@@ -421,11 +507,12 @@ const selectedMode = parseMode(process.argv.slice(2));
 const selectedRoles: DatabaseRole[] =
   selectedMode === "smoke" ? ["smoke"] : ["seed", "bootstrap"];
 const disposableDatabases = selectedRoles.map(databaseName);
+const shadowDatabase = databaseName("shadow");
 
 try {
-  main(selectedMode, disposableDatabases);
+  main(selectedMode, disposableDatabases, shadowDatabase);
 } finally {
-  for (const database of disposableDatabases) {
+  for (const database of [...disposableDatabases, shadowDatabase]) {
     try {
       dropDatabase(database);
     } catch (error) {

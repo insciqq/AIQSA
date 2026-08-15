@@ -41,7 +41,6 @@
 
 .v2-answer-sources > summary:focus-visible,
 .v2-answer-source-list a:focus-visible,
-.v2-citation-marker:focus-visible,
 .v2-tool-approval summary:focus-visible,
 .v2-memory-action-confirmation textarea:focus-visible {
   outline: 2px solid var(--v2-color-accent);
@@ -189,22 +188,6 @@
   margin-top: 0.5rem;
 }
 
-.v2-citation-marker {
-  margin: 0 0.0625rem;
-  padding: 0.0625rem 0.1875rem;
-  border: 0;
-  border-radius: 0.25rem;
-  color: var(--v2-color-accent);
-  background: transparent;
-  font: 0.75rem/1 var(--font-mono), monospace;
-  vertical-align: 0.08em;
-  cursor: pointer;
-}
-
-.v2-citation-marker:hover {
-  background: var(--v2-color-accent-dim);
-}
-
 .v2-tool-approval {
   display: grid;
   gap: 0.75rem;
@@ -282,12 +265,5 @@
 
   .v2-tool-approval-actions .v2-button {
     width: 100%;
-  }
-}
-
-@media (hover: none), (pointer: coarse) {
-  .v2-citation-marker {
-    min-width: 2.5rem;
-    min-height: 2.5rem;
   }
 }

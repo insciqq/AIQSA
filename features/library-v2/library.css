@@ -339,8 +339,7 @@
   display: block;
 }
 
-.v2-library-disclosure,
-.v2-library-note {
+.v2-library-disclosure {
   display: flex;
   align-items: center;
   gap: 0.375rem;
@@ -348,10 +347,6 @@
   color: var(--v2-color-text2);
   font-size: 0.75rem;
   line-height: 1.45;
-}
-
-.v2-library-note {
-  color: var(--v2-color-text3);
 }
 
 .v2-resource-empty {
