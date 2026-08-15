@@ -111,11 +111,13 @@ function providerModelDraftConfig(model: (typeof defaultProviderModels)[number])
 
   return {
     adapterKind,
+    answerSelectable: true,
     capabilities: {
       ...model.capabilities,
       contextWindow: model.contextWindow
     },
     defaultParams: model.defaultParams,
+    modelClass: "answer" as const,
     ...(model.provider === "openrouter"
       ? {
           openRouterRouting: selectedProviders.length > 0
