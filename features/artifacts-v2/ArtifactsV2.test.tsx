@@ -10,7 +10,7 @@ import type { GeneratedArtifactProjection } from "./contracts";
 import {
   artifactFixturesForState,
   readyReportArtifact
-} from "./fixtures";
+} from "@/app/ui-v2-fixture/_fixtures/artifactFixtures";
 
 function artifactFor(state: Parameters<typeof artifactFixturesForState>[0]) {
   const artifact = artifactFixturesForState(state)[0];

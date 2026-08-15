@@ -1,5 +1,6 @@
 "use client";
 
+import "./artifacts.css";
 import {
   UiV2Button,
   UiV2Icon,

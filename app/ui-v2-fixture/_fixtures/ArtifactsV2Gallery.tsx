@@ -13,16 +13,16 @@ import { useState } from "react";
 import {
   ArtifactPreviewDrawerV2,
   GeneratedArtifactStackV2
-} from "./ArtifactsV2";
+} from "@/features/artifacts-v2/ArtifactsV2";
 import type {
   GeneratedArtifactProjection,
   GeneratedArtifactVersion
-} from "./contracts";
+} from "@/features/artifacts-v2/contracts";
 import {
   artifactFixturesForState,
   readyReportArtifact,
   type ArtifactsFixtureState
-} from "./fixtures";
+} from "./artifactFixtures";
 
 const navigationChats: ChatNavigationSummaryWire[] = [{
   activeRun: false,

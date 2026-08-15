@@ -113,21 +113,20 @@ describe("Library resource panels", () => {
     expect(screen.queryByText(/temperature|profile/i)).not.toBeInTheDocument();
   });
 
-  it("labels uploads private and keeps generated files presentation-gated", () => {
+  it("labels uploads private without advertising disabled generated files", () => {
     render(
       <FilesPanelV2
         files={[{
           id: "upload",
-          kind: "upload",
           meta: "214 kB",
           name: "source.csv",
           private: true,
           status: "ready"
         }]}
-        generatedFilesEnabled={false}
       />
     );
     expect(screen.getByText("Files are private and visible only to you.")).toBeInTheDocument();
-    expect(screen.getByText("AIQSA-generated files are not yet enabled in this installation.")).toBeInTheDocument();
+    expect(screen.getByText("Upload · Private")).toBeInTheDocument();
+    expect(screen.queryByText(/generated files/i)).not.toBeInTheDocument();
   });
 });

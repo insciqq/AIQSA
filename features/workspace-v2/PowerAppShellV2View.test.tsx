@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { composerGalleryConfig } from "@/features/composer-v2/ComposerV2Gallery";
+import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import {
   RunSetupV2,
   TemporaryChatIndicatorV2,

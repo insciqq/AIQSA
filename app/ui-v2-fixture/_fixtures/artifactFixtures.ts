@@ -2,7 +2,7 @@ import type {
   GeneratedArtifactLifecycleEvent,
   GeneratedArtifactProjection,
   GeneratedArtifactVersion
-} from "./contracts";
+} from "@/features/artifacts-v2/contracts";
 
 export type ArtifactsFixtureState =
   | "cancelled"

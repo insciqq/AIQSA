@@ -6,7 +6,7 @@ import {
   NavigationSidebar,
   ReadingRoomShellV2,
   type NewChatMode
-} from "./NavigationV2";
+} from "@/features/navigation-v2/NavigationV2";
 import { useMemo, useState } from "react";
 
 const baseChats: ChatNavigationSummaryWire[] = [

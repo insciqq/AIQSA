@@ -13,7 +13,7 @@ import {
   type ConversationMessageV2
 } from "@/features/conversation-v2/ConversationV2";
 import { ComposerV2 } from "@/features/composer-v2/ComposerV2";
-import { composerGalleryConfig } from "@/features/composer-v2/ComposerV2Gallery";
+import { composerGalleryConfig } from "./ComposerV2Gallery";
 import { UiV2Button } from "@/components/ui-v2";
 import { useMemo, useState } from "react";
 import {
@@ -21,11 +21,11 @@ import {
   BranchPagerV2,
   BranchesSlotV2,
   EditBranchStripV2
-} from "./BranchesV2";
+} from "@/features/branches-v2/BranchesV2";
 import {
   activeBranchPathV2,
   branchPagerForMessageV2
-} from "./branchModel";
+} from "@/features/branches-v2/branchModel";
 
 export type BranchesGalleryState =
   | "default"

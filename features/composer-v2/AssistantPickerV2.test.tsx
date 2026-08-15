@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { composerGalleryConfig } from "./ComposerV2Gallery";
+import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import { AssistantPickerV2 } from "./AssistantPickerV2";
 
 describe("Assistant picker v2", () => {

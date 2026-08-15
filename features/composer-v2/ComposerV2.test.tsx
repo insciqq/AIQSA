@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { describe, expect, it, vi } from "vitest";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
 import { ComposerV2 } from "./ComposerV2";
-import { composerGalleryConfig } from "./ComposerV2Gallery";
+import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 
 function props(overrides: Partial<Parameters<typeof ComposerV2>[0]> = {}) {
   return {

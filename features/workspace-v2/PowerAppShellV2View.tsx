@@ -785,7 +785,6 @@ function LibrarySurfaceV2({
     }));
   const files: FileSummaryV2[] = composer.attachments.map((attachment) => ({
     id: attachment.id,
-    kind: "upload",
     meta: typeof attachment.byteSize === "number" ? `${attachment.byteSize.toLocaleString()} bytes` : "Active chat upload",
     name: attachment.fileName,
     private: true,
@@ -856,7 +855,7 @@ function LibrarySurfaceV2({
       label: "Knowledge"
     },
     {
-      content: <FilesPanelV2 files={files} generatedFilesEnabled={false} />,
+      content: <FilesPanelV2 files={files} />,
       id: "files",
       label: "Files"
     },
