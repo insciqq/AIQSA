@@ -123,7 +123,8 @@ Add only evidence justified by the changed boundary:
 
 | Changed boundary | Proportional evidence |
 | --- | --- |
-| Prisma schema or migration | Keep the current clean baseline immutable and add an append-only migration; run deploy, seed/integrity smoke, and the clean-install contract against an explicitly disposable database. Never use a persistent installation as a migration test target. |
+| Prisma schema, append-only migration, seed, bootstrap, or database repository | Run the one-database migration smoke with ordered deploy, repeat deploy, seed/bootstrap, and integrity checks against an explicitly disposable database. Never use a persistent installation as a migration test target. |
+| Baseline, custom PostgreSQL function/trigger/index/generated column/deferred constraint, or bootstrap adoption logic | Run the full baseline contract across two independent disposable databases after the focused migration smoke. |
 | Installation bootstrap, image, or Compose topology | Run focused bootstrap/config tests, build the single `release` target, and prove fresh bootstrap plus adopted repeat in a uniquely named disposable project. Stable volume/image names require unique temporary `AIQSA_POSTGRES_VOLUME_NAME`, `AIQSA_MINIO_VOLUME_NAME`, `AIQSA_TOOLHIVE_VOLUME_NAME`, and `AIQSA_IMAGE`; `-p` alone is not isolation. Prove update preservation and the required non-root runtime roles when those behaviors changed. |
 | First-install helper | Run shell syntax plus its focused harness test against temporary files; never invoke it against the repository's real `.env`. |
 | Backup or restore | Perform a real write-quiesced backup and restore only into explicitly acknowledged disposable empty targets, then compare database and object evidence. |
@@ -142,15 +143,23 @@ These rows are routing rules, not a cumulative release matrix. A change does not
 
 The commands below are recorded because their environment gate, process boundary, or external effect is not reliably inferred from an ordinary focused-test name. Run only the entry point owned by the changed boundary.
 
-### Migration contract
+### Migration smoke and baseline contract
 
-The baseline contract creates uniquely named disposable databases inside the
-development PostgreSQL service, deploys the single current baseline, and proves
-the catalog, repeatable seed, schema integrity, and fresh/adopted installation
-bootstrap:
+The ordinary migration smoke creates one uniquely named disposable database
+inside the development PostgreSQL service. It deploys the complete ordered
+committed migration set twice, checks status, and proves seed, bootstrap, and
+schema integrity:
 
 ```bash
-npm run db:migration:contract
+npm run db:migration:smoke
+```
+
+Baseline and custom PostgreSQL DDL changes additionally use the same
+implementation in full mode. It creates two independent clean databases and
+proves the seed/integrity and fresh/adopted bootstrap paths separately:
+
+```bash
+npm run db:baseline:contract
 ```
 
 ### Database and service integrations

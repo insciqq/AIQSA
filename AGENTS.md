@@ -2,7 +2,7 @@
 
 Entry point for agent-driven development in this repository.
 
-AIQSA is an open-source, self-hosted, multi-user, model-agnostic web interface with explicit provider and model control, optional web search, Knowledge, files, Memory, and MCP tools. The product is conversation-first: optimize for working functionality, clear outputs, and reliable operation rather than post-hoc run inspection. This harness is a current operating manual: keep current contracts, commands, open work, and the local completed-task archive; delete obsolete narrative. Put durable rationale beside its owning rule.
+AIQSA is a self-hosted, multi-user, model-agnostic conversational web interface with Search, Knowledge, files, Memory, and MCP tools. Optimize for working functionality, clear outputs, and reliable operation. Keep this manual current and put durable rationale beside its owning rule.
 
 ## Autonomy Trigger
 
@@ -22,7 +22,7 @@ Stop only for missing secrets, unrequested destructive work, an unmockable unava
 
 ## Completion Policy
 
-There is no human-review task status or operator-acceptance gate. The integrating agent completes work after automated inspection and proportional verification. If required verification output is unavailable, block the task instead of completing it. Stop before implementation only when the requested outcome needs missing authority, secrets, destructive work, an unavailable unmockable service, or a product decision not covered by current contracts.
+There is no human-review status or acceptance gate. Complete work after automated inspection and proportional verification; block it when required evidence is unavailable.
 
 ## Reading Map
 
@@ -53,6 +53,10 @@ Then read only what the scope requires:
 - `PRODUCT_PRINCIPLES.md` and `DECISION_DEFAULTS.md` guide choices that current contracts leave open.
 
 Do not reconstruct current behavior from old plans or Git history when code and living contracts answer it. History is for archaeology.
+
+## Pre-production Compatibility
+
+Before the first production deployment, backward compatibility for persisted data, wire formats, environment aliases, URLs, backup formats, and local task layouts requires an explicit author decision for external state that actually exists. Development databases, disposable installations, local task files, and test fixtures are not compatibility contracts.
 
 ## Repository State
 

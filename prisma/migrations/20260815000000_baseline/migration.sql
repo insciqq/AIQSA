@@ -3631,7 +3631,7 @@ ALTER TABLE "MemoryToolEgressReceipt" ADD CONSTRAINT "MemoryToolEgressReceipt_mo
 -- AddForeignKey
 ALTER TABLE "MemoryToolEgressReceipt" ADD CONSTRAINT "MemoryToolEgressReceipt_toolCall_fkey" FOREIGN KEY ("modelRunId", "modelRunToolCallId") REFERENCES "ModelRunToolCall"("modelRunId", "id") ON DELETE CASCADE ON UPDATE RESTRICT;
 
--- PostgreSQL-only indexes preserved from the current production schema.
+-- PostgreSQL-only indexes required by the current pre-production schema.
 
 CREATE UNIQUE INDEX "AssistantPublication_installation_key" ON public."AssistantPublication" USING btree ("assistantId") WHERE (scope = 'installation'::"AssistantPublicationScope");
 
@@ -3643,27 +3643,15 @@ CREATE INDEX "KnowledgeChunk_embedding_1024_hnsw_idx" ON public."KnowledgeChunk"
 
 CREATE INDEX "KnowledgeChunk_embedding_1536_hnsw_idx" ON public."KnowledgeChunk" USING hnsw (((embedding)::vector(1536)) vector_cosine_ops) WHERE ("embeddingDimension" = 1536);
 
-CREATE UNIQUE INDEX "KnowledgeChunk_indexGenerationId_documentVersionId_chunkIndex_k" ON public."KnowledgeChunk" USING btree ("indexGenerationId", "documentVersionId", "chunkIndex");
-
 CREATE INDEX "KnowledgeChunk_searchVector_gin_idx" ON public."KnowledgeChunk" USING gin ("searchVector");
-
-CREATE INDEX "KnowledgeDocumentVersion_knowledgeBaseId_ingestState_ingestNext" ON public."KnowledgeDocumentVersion" USING btree ("knowledgeBaseId", "ingestState", "ingestNextAttemptAt");
-
-CREATE INDEX "KnowledgeDocumentVersion_knowledgeBaseId_visibleFromRevision_vi" ON public."KnowledgeDocumentVersion" USING btree ("knowledgeBaseId", "visibleFromRevision", "visibleUntilRevision");
 
 CREATE UNIQUE INDEX "KnowledgeDocumentVersion_one_active_ingest_idx" ON public."KnowledgeDocumentVersion" USING btree ("documentId") WHERE ("ingestState" = ANY (ARRAY['queued'::"KnowledgeDocumentIngestState", 'parsing'::"KnowledgeDocumentIngestState", 'chunking'::"KnowledgeDocumentIngestState", 'embedding'::"KnowledgeDocumentIngestState"]));
 
 CREATE INDEX "KnowledgeDocumentVersion_owner_due_active_idx" ON public."KnowledgeDocumentVersion" USING btree ("ownerUserId", "ingestNextAttemptAt", "createdAt", id) WHERE (("ingestGenerationId" IS NOT NULL) AND ("ingestState" = ANY (ARRAY['queued'::"KnowledgeDocumentIngestState", 'parsing'::"KnowledgeDocumentIngestState", 'chunking'::"KnowledgeDocumentIngestState", 'embedding'::"KnowledgeDocumentIngestState"])));
 
-CREATE INDEX "KnowledgeGenerationDocument_knowledgeBaseId_documentVersionId_i" ON public."KnowledgeGenerationDocument" USING btree ("knowledgeBaseId", "documentVersionId");
-
 CREATE INDEX "KnowledgeGenerationDocument_owner_due_active_idx" ON public."KnowledgeGenerationDocument" USING btree ("ownerUserId", "nextAttemptAt", "createdAt", "indexGenerationId", "documentVersionId") WHERE (state = ANY (ARRAY['queued'::"KnowledgeDocumentIngestState", 'embedding'::"KnowledgeDocumentIngestState"]));
 
-CREATE INDEX "KnowledgeGenerationDocument_state_nextAttemptAt_claimedAt_creat" ON public."KnowledgeGenerationDocument" USING btree (state, "nextAttemptAt", "claimedAt", "createdAt");
-
 CREATE UNIQUE INDEX "KnowledgeIndexGeneration_one_building_reindex_idx" ON public."KnowledgeIndexGeneration" USING btree ("knowledgeBaseId") WHERE ((status = 'building'::"KnowledgeIndexGenerationStatus") AND ("sourceIndexGenerationId" IS NOT NULL));
-
-CREATE INDEX "MemoryCandidate_userId_chatId_state_branchGeneration_sourceRevi" ON public."MemoryCandidate" USING btree ("userId", "chatId", state, "branchGeneration", "sourceRevision");
 
 CREATE UNIQUE INDEX "MemoryDeletionOutbox_temporary_chat_key" ON public."MemoryDeletionOutbox" USING btree ("userId", operation, "targetType", "targetId") WHERE ((operation = 'TEMPORARY_DELETE'::"MemoryDeletionOperation") AND (("targetType")::text = 'TEMPORARY_CHAT@temporary-24h-v1'::text));
 
@@ -3681,8 +3669,6 @@ CREATE INDEX "MemoryFact_active_owner_scope_idx" ON public."MemoryFact" USING bt
 
 CREATE UNIQUE INDEX "MemoryFactVersion_one_active_idx" ON public."MemoryFactVersion" USING btree ("userId", "factId") WHERE (state = 'ACTIVE'::"MemoryFactVersionState");
 
-CREATE INDEX "MemoryFeedback_userId_memoryFactId_memoryFactVersionId_createdA" ON public."MemoryFeedback" USING btree ("userId", "memoryFactId", "memoryFactVersionId", "createdAt");
-
 CREATE UNIQUE INDEX "MemoryIndexGeneration_one_active_idx" ON public."MemoryIndexGeneration" USING btree ("userId") WHERE (state = 'ACTIVE'::"MemoryIndexGenerationState");
 
 CREATE UNIQUE INDEX "MemoryIndexGeneration_one_shadow_idx" ON public."MemoryIndexGeneration" USING btree ("userId") WHERE (state = ANY (ARRAY['BUILDING'::"MemoryIndexGenerationState", 'CATCHING_UP'::"MemoryIndexGenerationState", 'READY'::"MemoryIndexGenerationState"]));
@@ -3690,8 +3676,6 @@ CREATE UNIQUE INDEX "MemoryIndexGeneration_one_shadow_idx" ON public."MemoryInde
 CREATE INDEX "MemoryJob_pending_owner_due_idx" ON public."MemoryJob" USING btree ("userId", "nextAttemptAt", "createdAt") WHERE (state = ANY (ARRAY['QUEUED'::"MemoryJobState", 'RETRYABLE_FAILED'::"MemoryJobState"]));
 
 CREATE UNIQUE INDEX "MemoryOperationReceipt_tool_idempotency_idx" ON public."MemoryOperationReceipt" USING btree ("userId", "modelRunId", "persistedToolCallId", operation, "targetVersionId") NULLS NOT DISTINCT WHERE ("persistedToolCallId" IS NOT NULL);
-
-CREATE INDEX "MemoryRecallChunk_userId_chatId_state_source_idx" ON public."MemoryRecallChunk" USING btree ("userId", "chatId", state, "branchGeneration", "sourceRevisionAtCreation");
 
 CREATE UNIQUE INDEX "MemoryRetrievalAttempt_one_nonterminal_idx" ON public."MemoryRetrievalAttempt" USING btree ("modelRunId") WHERE (state = ANY (ARRAY['PENDING'::"MemoryRetrievalAttemptState", 'EXECUTING'::"MemoryRetrievalAttemptState", 'READY'::"MemoryRetrievalAttemptState"]));
 
@@ -3723,15 +3707,9 @@ CREATE UNIQUE INDEX "ProviderDraftCheck_active_tuple_key" ON public."ProviderDra
 
 CREATE UNIQUE INDEX "ProviderDraftCheck_draft_tuple_key" ON public."ProviderDraftCheck" USING btree ("connectionId", "providerModelId", "credentialId", "credentialDraftVersion", "connectionDraftVersion", "modelDraftVersion") WHERE ("credentialDraftVersion" IS NOT NULL);
 
-CREATE UNIQUE INDEX "SearchIntegrationRevision_strategy_id_key" ON public."SearchIntegrationRevision" USING btree ("searchStrategyId", id);
-
-CREATE UNIQUE INDEX "SearchIntegrationRevision_strategy_revision_key" ON public."SearchIntegrationRevision" USING btree ("searchStrategyId", "revisionNumber");
-
 CREATE UNIQUE INDEX "SearchStrategy_searchOptionId_adapterKind_active_key" ON public."SearchStrategy" USING btree ("searchOptionId", "adapterKind") WHERE ("archivedAt" IS NULL);
 
-CREATE UNIQUE INDEX "UsageEvent_knowledge_batch_key" ON public."UsageEvent" USING btree ("knowledgeIndexGenerationId", "knowledgeDocumentVersionId", "knowledgeBatchIndex");
-
--- Integrity functions preserved from the current production schema.
+-- Integrity functions required by the current pre-production schema.
 
 CREATE OR REPLACE FUNCTION public.aiqsa_assert_temporary_chat_obligation(p_chat_id text, p_user_id text)
  RETURNS void
@@ -4962,7 +4940,7 @@ BEGIN
 END
 $function$;
 
--- PostgreSQL-only constraints preserved from the current production schema.
+-- PostgreSQL-only constraints required by the current pre-production schema.
 
 ALTER TABLE "AccessGrant" ADD CONSTRAINT "AccessGrant_subject_check" CHECK (num_nonnulls("userId", "groupId") = 1);
 
@@ -5651,7 +5629,7 @@ ALTER TABLE "ModelRun" ADD CONSTRAINT "ModelRun_memory_request_shape_check" CHEC
     OR status <> 'preparing'::"ModelRunStatus" AND "normalizedRequest" IS NOT NULL
   );
 
--- Deferred and row-level integrity triggers preserved from the current production schema.
+-- Deferred and row-level integrity triggers required by the current pre-production schema.
 
 CREATE TRIGGER "Attachment_permanent_chat_write_guard" BEFORE INSERT OR UPDATE OF "chatId" ON "Attachment" FOR EACH ROW EXECUTE FUNCTION aiqsa_permanent_chat_child_write_guard();
 
