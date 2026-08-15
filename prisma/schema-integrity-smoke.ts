@@ -190,80 +190,167 @@ async function createModelRunFixture(tx: Prisma.TransactionClient) {
   return { chat: chats[0], run, user, userMessage };
 }
 
+type QueryClient = Pick<Prisma.TransactionClient, "$queryRaw">;
+type SemanticDuplicateIndex = Readonly<{
+  indexNames: string[];
+  tableName: string;
+}>;
+
+async function semanticDuplicateIndexes(
+  client: QueryClient,
+  schemaName: string
+): Promise<SemanticDuplicateIndex[]> {
+  return client.$queryRaw<SemanticDuplicateIndex[]>(Prisma.sql`
+    WITH index_signatures AS (
+      SELECT
+        table_relation.oid AS "tableOid",
+        table_relation.relname AS "tableName",
+        index_relation.relname AS "indexName",
+        access_method.amname AS "accessMethod",
+        index_catalog.indisunique AS "isUnique",
+        index_catalog.indnullsnotdistinct AS "nullsNotDistinct",
+        index_catalog.indisexclusion AS "isExclusion",
+        index_catalog.indimmediate AS "isImmediate",
+        index_catalog.indnkeyatts AS "keyAttributeCount",
+        index_catalog.indnatts AS "attributeCount",
+        index_catalog.indkey::text AS "columns",
+        index_catalog.indcollation::text AS "collations",
+        index_catalog.indclass::text AS "operatorClasses",
+        index_catalog.indoption::text AS "columnOptions",
+        COALESCE(
+          pg_get_expr(index_catalog.indexprs, index_catalog.indrelid, true),
+          ''
+        ) AS "expressions",
+        COALESCE(
+          pg_get_expr(index_catalog.indpred, index_catalog.indrelid, true),
+          ''
+        ) AS "predicate",
+        COALESCE(
+          (
+            SELECT string_agg(option, ',' ORDER BY option)
+            FROM unnest(index_relation.reloptions) AS option
+          ),
+          ''
+        ) AS "storageOptions"
+      FROM pg_index AS index_catalog
+      INNER JOIN pg_class AS index_relation
+        ON index_relation.oid = index_catalog.indexrelid
+      INNER JOIN pg_class AS table_relation
+        ON table_relation.oid = index_catalog.indrelid
+      INNER JOIN pg_namespace AS namespace
+        ON namespace.oid = table_relation.relnamespace
+      INNER JOIN pg_am AS access_method
+        ON access_method.oid = index_relation.relam
+      WHERE namespace.nspname = ${schemaName}
+        AND index_catalog.indisvalid
+        AND index_catalog.indisready
+        AND index_catalog.indislive
+    )
+    SELECT
+      "tableName",
+      array_agg("indexName" ORDER BY "indexName") AS "indexNames"
+    FROM index_signatures
+    GROUP BY
+      "tableOid",
+      "tableName",
+      "accessMethod",
+      "isUnique",
+      "nullsNotDistinct",
+      "isExclusion",
+      "isImmediate",
+      "keyAttributeCount",
+      "attributeCount",
+      "columns",
+      "collations",
+      "operatorClasses",
+      "columnOptions",
+      "expressions",
+      "predicate",
+      "storageOptions"
+    HAVING count(*) > 1
+    ORDER BY "tableName", "indexNames"
+  `);
+}
+
+async function assertNoSemanticDuplicateIndexes(
+  client: QueryClient,
+  schemaName: string
+): Promise<void> {
+  const duplicates = await semanticDuplicateIndexes(client, schemaName);
+  if (duplicates.length > 0) {
+    const details = duplicates
+      .map((duplicate) => `${duplicate.tableName}: ${duplicate.indexNames.join(", ")}`)
+      .join("\n");
+    throw new Error(`Semantic duplicate indexes found in ${schemaName}:\n${details}`);
+  }
+}
+
+async function assertSemanticIndexSignatureCoverage(): Promise<void> {
+  await expectRolledBackSuccess("semantic index signature fixture", async (tx) => {
+    const schemaName = `aiqsa_index_signature_${randomUUID().replaceAll("-", "")}`;
+    if (!/^aiqsa_index_signature_[a-f0-9]{32}$/u.test(schemaName)) {
+      throw new Error("Invalid generated index-signature fixture schema.");
+    }
+    const fixture = `"${schemaName}"."IndexFixture"`;
+    await tx.$executeRawUnsafe(`CREATE SCHEMA "${schemaName}"`);
+    await tx.$executeRawUnsafe(
+      `CREATE TABLE ${fixture} (
+        "textValue" text,
+        "includeA" text,
+        "includeB" text,
+        "tags" text[],
+        "embedding" vector(3)
+      )`
+    );
+    for (const statement of [
+      `CREATE INDEX "duplicate_a" ON ${fixture} USING btree ("textValue")`,
+      `CREATE INDEX "duplicate_b" ON ${fixture} USING btree ("textValue")`,
+      `CREATE UNIQUE INDEX "unique_value" ON ${fixture} USING btree ("textValue")`,
+      `CREATE INDEX "partial_present" ON ${fixture} USING btree ("textValue") WHERE "includeA" IS NOT NULL`,
+      `CREATE INDEX "partial_absent" ON ${fixture} USING btree ("textValue") WHERE "includeA" IS NULL`,
+      `CREATE INDEX "expression_lower" ON ${fixture} USING btree (lower("textValue"))`,
+      `CREATE INDEX "expression_upper" ON ${fixture} USING btree (upper("textValue"))`,
+      `CREATE INDEX "include_a" ON ${fixture} USING btree ("textValue") INCLUDE ("includeA")`,
+      `CREATE INDEX "include_b" ON ${fixture} USING btree ("textValue") INCLUDE ("includeB")`,
+      `CREATE INDEX "pattern_ops" ON ${fixture} USING btree ("textValue" text_pattern_ops)`,
+      `CREATE INDEX "descending" ON ${fixture} USING btree ("textValue" DESC NULLS LAST)`,
+      `CREATE INDEX "fillfactor_70" ON ${fixture} USING btree ("textValue") WITH (fillfactor = 70)`,
+      `CREATE INDEX "fillfactor_80" ON ${fixture} USING btree ("textValue") WITH (fillfactor = 80)`,
+      `CREATE INDEX "method_btree" ON ${fixture} USING btree ("tags")`,
+      `CREATE INDEX "method_gin" ON ${fixture} USING gin ("tags")`,
+      `CREATE INDEX "method_hnsw_cosine" ON ${fixture} USING hnsw ("embedding" vector_cosine_ops)`,
+      `CREATE INDEX "method_hnsw_l2" ON ${fixture} USING hnsw ("embedding" vector_l2_ops)`
+    ]) {
+      await tx.$executeRawUnsafe(statement);
+    }
+
+    const duplicates = await semanticDuplicateIndexes(tx, schemaName);
+    if (
+      duplicates.length !== 1 ||
+      duplicates[0]!.tableName !== "IndexFixture" ||
+      duplicates[0]!.indexNames.join(",") !== "duplicate_a,duplicate_b"
+    ) {
+      throw new Error(
+        `Index signature failed to distinguish uniqueness, predicates, expressions, includes, operator classes, methods, ordering, or storage options: ${JSON.stringify(duplicates)}`
+      );
+    }
+  });
+}
+
 async function assertConstraintCatalog(): Promise<void> {
-  const constraints = await prisma.$queryRaw<Array<{ conname: string; convalidated: boolean }>>`
+  await assertSemanticIndexSignatureCoverage();
+  await assertNoSemanticDuplicateIndexes(prisma, "public");
+
+  const constraints = await prisma.$queryRaw<Array<{ conname: string; convalidated: boolean }>>(
+    Prisma.sql`
     SELECT conname, convalidated
     FROM pg_constraint
-    WHERE conname IN (
-      'AccessGrant_subject_check',
-      'AccessGrant_target_check',
-      'AuthRateLimitBucket_attemptCount_check',
-      'AuthSession_revocation_attribution_check',
-      'AuthSession_revokedByUserId_fkey',
-      'AttachmentProcessingJob_attachment_owner_fkey',
-      'ChatMemoryCheckpoint_shape_check',
-      'Chat_id_activeLeafMessageId_fkey',
-      'Chat_memory_state_check',
-      'DocumentProcessingFairnessCursor_pipeline_check',
-      'KnowledgeBase_activeIndexGeneration_fkey',
-      'KnowledgeBasePublication_scope_group_check',
-      'KnowledgeChunk_dimension_check',
-      'KnowledgeDocument_currentVersion_fkey',
-      'KnowledgeDocumentVersion_ingestGeneration_fkey',
-      'KnowledgeDocumentVersion_knowledgeBase_owner_fkey',
-      'KnowledgeDocumentVersion_ingest_progress_check',
-      'KnowledgeDocumentVersion_normalized_object_check',
-      'KnowledgeDocumentVersion_storage_key_check',
-      'KnowledgeDocumentVersion_visibility_check',
-      'KnowledgeGenerationDocument_error_check',
-      'KnowledgeGenerationDocument_generation_fkey',
-      'KnowledgeGenerationDocument_knowledgeBase_owner_fkey',
-      'KnowledgeGenerationDocument_progress_check',
-      'KnowledgeGenerationDocument_state_check',
-      'KnowledgeGenerationDocument_version_fkey',
-      'KnowledgeIndexGeneration_dimension_check',
-      'KnowledgeIndexGeneration_reindex_source_check',
-      'KnowledgePolicy_candidate_limit_check',
-      'KnowledgePolicy_result_limit_check',
-      'KnowledgePolicy_score_threshold_check',
-      'KnowledgePolicy_singleton_check',
-      'KnowledgePolicy_version_check',
-      'Message_chatId_parentMessageId_fkey',
-      'MemoryCandidateDecision_candidate_fkey',
-      'MemoryCandidateDecision_consolidation_execution_fkey',
-      'MemoryCandidateDecision_consolidation_job_fkey',
-      'MemoryCandidateDecision_shape_check',
-      'MemoryCandidateDecision_target_fact_fkey',
-      'MemoryCandidateDecision_target_version_fkey',
-      'MemoryCandidateDecision_verification_execution_fkey',
-      'MemoryCandidateDecision_verification_job_fkey',
-      'MemoryDeletionOutbox_user_fkey',
-      'MemoryCandidateMessage_candidate_fkey',
-      'MemoryCandidate_shape_check',
-      'MemoryExecutionBinding_shape_check',
-      'MemoryFact_current_version_fkey',
-      'MemoryFactVersion_created_event_fkey',
-      'MemoryRecallChunk_shape_check',
-      'MemoryRetrievalAttempt_shape_check',
-      'MemoryScope_target_shape_check',
-      'MemorySearchEntry_shape_check',
-      'ModelPolicy_defaultProviderModelId_fkey',
-      'ModelPolicy_singleton_check',
-      'ModelPolicy_version_check',
-      'SearchOption_archive_check',
-      'SearchOption_kind_check',
-      'SearchOption_source_check',
-      'SearchOption_sourceConnectionId_fkey',
-      'SearchStrategy_searchOptionId_fkey',
-      'SystemModelPolicy_providerModelId_fkey',
-      'SystemModelPolicy_reasoningEffort_check',
-      'SystemModelPolicy_reasoning_target_check',
-      'SystemModelPolicy_singleton_check',
-      'SystemModelPolicy_version_check',
-      'UsageEvent_knowledge_shape_check'
-    )
+    WHERE conname IN (${Prisma.join(
+      expectedConstraintNames.map((name) => Prisma.sql`${name}`)
+    )})
     ORDER BY conname
-  `;
+  `
+  );
   const actual = new Map(constraints.map((constraint) => [constraint.conname, constraint.convalidated]));
   for (const name of expectedConstraintNames) {
     if (actual.get(name) !== true) {
@@ -317,10 +404,10 @@ async function assertConstraintCatalog(): Promise<void> {
     FROM pg_indexes
     WHERE schemaname = current_schema()
       AND indexname IN (
-        'KnowledgeGenerationDocument_state_nextAttemptAt_claimedAt_createdAt_idx',
+        'KnowledgeGenerationDocument_state_nextAttemptAt_claimedAt_c_idx',
         'KnowledgeIndexGeneration_one_building_reindex_idx',
         'KnowledgeDocumentVersion_one_active_ingest_idx',
-        'UsageEvent_knowledge_batch_key'
+        'UsageEvent_knowledgeIndexGenerationId_knowledgeDocumentVers_key'
       )
     ORDER BY indexname
   `;
@@ -698,7 +785,7 @@ async function main() {
   await assertGrantShapes();
   await assertStatusEnums();
   console.log(
-    "AIQSA schema integrity smoke ok: validated constraints, tenant-safe pointers, direct-USER Memory candidates and fact decisions, Knowledge ingestion/indexes, six grant shapes, and lifecycle enums."
+    "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraints, tenant-safe pointers, direct-USER Memory candidates and fact decisions, Knowledge ingestion/indexes, six grant shapes, and lifecycle enums."
   );
 }
 
