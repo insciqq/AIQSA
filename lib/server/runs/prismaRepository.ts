@@ -691,19 +691,6 @@ async function insertAcceptedProviderRunBindings(
       role
     }))
   });
-  if (current.searches.length > 0) {
-    await tx.searchRunBinding.createMany({
-      data: current.searches.map((search) => ({
-        mode: current.requestedSearchPlan.mode,
-        modelRunId: input.runId,
-        optionId: search.optionId,
-        ordinal: search.ordinal,
-        revisionId: search.revisionId,
-        searchStrategyId: search.integrationId,
-        technicalBindingKey: search.bindingKey
-      }))
-    });
-  }
 }
 
 async function repeatableReadTransaction<Value>(

@@ -158,9 +158,6 @@ export type ChatDetail = WorkspaceChatSummary & {
   usageStats: ChatUsageStats | null;
 };
 
-/** Prefer the explicit workspace name in new code; this alias is summary-only. */
-export type ChatSummary = WorkspaceChatSummary;
-
 export type ChatMessageWire = {
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;

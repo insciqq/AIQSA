@@ -12,7 +12,7 @@ import { shellFetch } from "@/components/app-shell/shellApi";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import { latestResumableRunId } from "@/components/app-shell/threadPath";
-import type { ChatDetail, ChatSummary, Notice } from "@/components/app-shell/types";
+import type { ChatDetail, WorkspaceChatSummary, Notice } from "@/components/app-shell/types";
 import {
   RESUME_POLL_HORIZON_MS,
   RESUME_POLL_INITIAL_DELAY_MS,
@@ -353,13 +353,13 @@ export function useRunLifecycleActions({
     return stream?.resuming === true && stream.runId === runId;
   }
 
-  async function inspectResumedRun(chat: ChatSummary, runId: string): Promise<RunFetchOutcome> {
+  async function inspectResumedRun(chat: WorkspaceChatSummary, runId: string): Promise<RunFetchOutcome> {
     const outcome = await fetchRunOutcome(runId, chat.id);
     await refreshActiveChat(chat.id, { preserveControls: true, resumeRuns: false });
     return outcome;
   }
 
-  async function resumeChatRun(chat: ChatSummary) {
+  async function resumeChatRun(chat: WorkspaceChatSummary) {
     const runId = latestResumableRunId(
       selectThreadSnapshot(useThreadStore.getState(), chat.id)
     );

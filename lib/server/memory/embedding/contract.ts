@@ -42,7 +42,7 @@ type MemoryItemEmbeddingTargetBase = Readonly<{
   itemId: string;
   itemType: "FACT_VERSION" | "RECALL_CHUNK";
   safeContentHash: string;
-  safeSearchText: string;
+  normalizedSearchText: string;
   selectedEmbeddingProviderModelId: string | null;
   userId: string;
 }>;
@@ -128,8 +128,8 @@ export function memoryItemEmbeddingInputHash(
     itemId: target.itemId,
     itemType: target.itemType,
     safeContentHash: target.safeContentHash,
-    safeSearchTextHash: memorySha256(target.safeSearchText),
-    version: "v1"
+    normalizedSearchTextHash: memorySha256(target.normalizedSearchText),
+    version: "v2"
   });
 }
 

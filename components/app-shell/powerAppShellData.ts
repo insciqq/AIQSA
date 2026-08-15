@@ -11,7 +11,7 @@ import { isRecord } from "@/components/app-shell/shellValues";
 import type {
   CatalogModel,
   CatalogSearchStrategy,
-  ChatSummary,
+  WorkspaceChatSummary,
   RunEventView,
   ThreadMessage
 } from "@/components/app-shell/types";
@@ -49,7 +49,7 @@ function chatDetailBodyFromUnknown(value: unknown): ApiChatDetail | null {
 function chatUpdateFromEvent(
   event: RunEventView
 ): {
-  chat: ChatSummary;
+  chat: WorkspaceChatSummary;
   contextStats: ApiChatDetail["contextStats"];
   messages: ThreadMessage[];
   usageStats: ApiChatDetail["usageStats"];

@@ -11,7 +11,7 @@ import type { ThemeId } from "@/components/app-shell/theme";
 import type {
   Catalog,
   CatalogModel,
-  ChatSummary,
+  WorkspaceChatSummary,
   ChatUsageStats,
   FolderSummary,
   ModelParameterControls,
@@ -55,7 +55,7 @@ export type ShellWorkspacePaneState = {
 };
 
 export type ShellWorkspacePaneActions = {
-  activateChat(chat: ChatSummary): void;
+  activateChat(chat: WorkspaceChatSummary): void;
   cancelChatEdit(): void;
   cancelFolderEdit(): void;
   changeEditingChatTitle(value: string): void;
@@ -63,29 +63,29 @@ export type ShellWorkspacePaneActions = {
   createChat(
     folderId?: string | null,
     memoryMode?: "EXCLUDED" | "NORMAL" | "TEMPORARY"
-  ): Promise<ChatSummary | null> | void;
+  ): Promise<WorkspaceChatSummary | null> | void;
   createFolder(parentId?: string | null, nameOverride?: string): Promise<void> | void;
-  deleteChat(chat: ChatSummary): Promise<void> | void;
+  deleteChat(chat: WorkspaceChatSummary): Promise<void> | void;
   /**
    * Opens the existing permanent-deletion confirm surface for this chat.
    * Server-verified gating (`permanentChatDeletionAvailable`) and the
    * irreversible-deletion semantics stay owned by the deletion store.
    */
-  deleteChatPermanently(chat: ChatSummary): Promise<void> | void;
+  deleteChatPermanently(chat: WorkspaceChatSummary): Promise<void> | void;
   deleteFolder(folder: FolderSummary): Promise<void> | void;
-  exportChat(chat: ChatSummary, format?: "json" | "markdown"): void;
+  exportChat(chat: WorkspaceChatSummary, format?: "json" | "markdown"): void;
   moveChat(chatId: string, folderId: string | null): Promise<void> | void;
   moveFolder(folder: FolderSummary, folderId: string | null): Promise<void> | void;
   openArchivedChats(): void;
   openProjectSettings(folder: FolderSummary): void;
   retry(): Promise<unknown> | void;
-  saveChatTitle(chat: ChatSummary): Promise<void> | void;
+  saveChatTitle(chat: WorkspaceChatSummary): Promise<void> | void;
   saveFolder(folder: FolderSummary): Promise<void> | void;
-  shareChat(chat: ChatSummary): Promise<void> | void;
-  startChatEdit(chat: ChatSummary): void;
+  shareChat(chat: WorkspaceChatSummary): Promise<void> | void;
+  startChatEdit(chat: WorkspaceChatSummary): void;
   startFolderEdit(folder: FolderSummary): void;
-  toggleChatMemorySource(chat: ChatSummary): Promise<void> | void;
-  toggleChatFavorite(chat: ChatSummary): Promise<void> | void;
+  toggleChatMemorySource(chat: WorkspaceChatSummary): Promise<void> | void;
+  toggleChatFavorite(chat: WorkspaceChatSummary): Promise<void> | void;
 };
 
 export type ShellWorkspacePaneView = {
@@ -284,7 +284,7 @@ export type ShellOverlaysView = {
     cancelChat(): void;
     cancelFolder(): void;
     cancelMessage(): void;
-    chat: ChatSummary | null;
+    chat: WorkspaceChatSummary | null;
     confirmChat(): void;
     confirmFolder(): void;
     confirmMessage(): void;

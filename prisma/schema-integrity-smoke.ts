@@ -429,6 +429,38 @@ async function assertConstraintCatalog(): Promise<void> {
   if (fairnessQueueIndexes.length !== 4) {
     throw new Error("Expected tenant-fair document-processing queue indexes.");
   }
+  const memorySearchColumns = await prisma.$queryRaw<Array<{
+    columnName: string;
+    isGenerated: string;
+  }>>`
+    SELECT column_name AS "columnName", is_generated AS "isGenerated"
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'MemorySearchEntry'
+      AND (column_name ILIKE '%search%' OR column_name ILIKE '%vector%')
+    ORDER BY column_name
+  `;
+  if (
+    memorySearchColumns.length !== 2 ||
+    memorySearchColumns[0]?.columnName !== "normalizedSearchText" ||
+    memorySearchColumns[0]?.isGenerated !== "NEVER" ||
+    memorySearchColumns[1]?.columnName !== "searchVectorSimple" ||
+    memorySearchColumns[1]?.isGenerated !== "ALWAYS"
+  ) {
+    throw new Error("Expected one canonical Memory search text and one generated simple vector.");
+  }
+  const memoryOperationOutcomes = await prisma.$queryRaw<Array<{ label: string }>>`
+    SELECT enum_label.enumlabel AS label
+    FROM pg_type AS enum_type
+    INNER JOIN pg_enum AS enum_label ON enum_label.enumtypid = enum_type.oid
+    INNER JOIN pg_namespace AS namespace ON namespace.oid = enum_type.typnamespace
+    WHERE namespace.nspname = current_schema()
+      AND enum_type.typname = 'MemoryOperationOutcome'
+    ORDER BY enum_label.enumsortorder
+  `;
+  if (memoryOperationOutcomes.map(({ label }) => label).join(",") !== "APPLIED,REJECTED") {
+    throw new Error("MemoryOperationOutcome contains an unsupported compatibility value.");
+  }
 }
 
 async function assertSearchOptionSources(): Promise<void> {

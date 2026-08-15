@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ChatSummary } from "./types";
+import type { WorkspaceChatSummary } from "./types";
 import { buildChatGroups } from "./workspaceGroups";
 
-function chat(input: Partial<ChatSummary> & { id: string; title: string }): ChatSummary {
+function chat(input: Partial<WorkspaceChatSummary> & { id: string; title: string }): WorkspaceChatSummary {
   return {
     activeLeafMessageId: null,
     createdAt: "2026-06-10T00:00:00.000Z",

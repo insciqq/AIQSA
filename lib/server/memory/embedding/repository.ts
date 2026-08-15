@@ -38,7 +38,7 @@ type BaseTargetRow = Readonly<{
   recallChunkId: string | null;
   referenceChatHistory: boolean;
   safeContentHash: string;
-  safeSearchText: string;
+  normalizedSearchText: string;
   selectedEmbeddingProviderModelId: string | null;
   userId: string;
   vectorSpaceFingerprint: string | null;
@@ -112,7 +112,7 @@ async function loadBaseTarget(
       entry."itemType"::text AS "itemType",
       entry."factVersionId",
       entry."recallChunkId",
-      entry."safeSearchText",
+      entry."normalizedSearchText",
       entry."safeContentHash",
       entry."embeddingState"::text AS "embeddingState",
       generation."id" AS "generationId",
@@ -202,13 +202,13 @@ async function loadFactTarget(
   `);
   const current = rows[0];
   if (!current) return null;
-  const safeSearchText = normalizeMemorySearchText(current.versionDisplayText);
+  const normalizedSearchText = normalizeMemorySearchText(current.versionDisplayText);
   const safeContentHash = memorySha256({
     displayText: current.versionDisplayText,
     structuredValue: current.structuredValue
   });
   if (
-    safeSearchText !== row.safeSearchText ||
+    normalizedSearchText !== row.normalizedSearchText ||
     safeContentHash !== row.safeContentHash
   ) return null;
   return {
@@ -220,7 +220,7 @@ async function loadFactTarget(
     itemId: row.factVersionId,
     itemType: "FACT_VERSION",
     safeContentHash,
-    safeSearchText,
+    normalizedSearchText,
     selectedEmbeddingProviderModelId: row.selectedEmbeddingProviderModelId,
     userId: row.userId
   };
@@ -286,9 +286,9 @@ async function loadRecallChunkTarget(
   `);
   const current = rows[0];
   if (!current) return null;
-  const safeSearchText = normalizeMemorySearchText(current.safeText);
+  const normalizedSearchText = normalizeMemorySearchText(current.safeText);
   if (
-    safeSearchText !== row.safeSearchText ||
+    normalizedSearchText !== row.normalizedSearchText ||
     current.sourceContentHash !== row.safeContentHash
   ) return null;
   return {
@@ -299,7 +299,7 @@ async function loadRecallChunkTarget(
     itemType: "RECALL_CHUNK",
     recallChunkId: current.itemId,
     safeContentHash: current.sourceContentHash,
-    safeSearchText,
+    normalizedSearchText,
     selectedEmbeddingProviderModelId: row.selectedEmbeddingProviderModelId,
     userId: row.userId
   };
@@ -327,7 +327,7 @@ function sameTarget(
     left.itemId === right.itemId &&
     left.itemType === right.itemType &&
     left.safeContentHash === right.safeContentHash &&
-    left.safeSearchText === right.safeSearchText &&
+    left.normalizedSearchText === right.normalizedSearchText &&
     left.generation.id === right.generation.id &&
     left.generation.indexMode === right.generation.indexMode &&
     left.generation.embeddingConnectionId ===

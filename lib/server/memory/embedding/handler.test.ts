@@ -46,7 +46,7 @@ function target(
     itemId: "version-1",
     itemType: "FACT_VERSION",
     safeContentHash: "a".repeat(64),
-    safeSearchText: "the owner prefers tea",
+    normalizedSearchText: "the owner prefers tea",
     selectedEmbeddingProviderModelId: pin.providerModelId,
     userId: "user-1"
   };
@@ -95,7 +95,7 @@ function chunkTarget(): MemoryItemEmbeddingTarget {
     itemType: "RECALL_CHUNK",
     recallChunkId: "chunk-1",
     safeContentHash: fact.safeContentHash,
-    safeSearchText: fact.safeSearchText,
+    normalizedSearchText: fact.normalizedSearchText,
     selectedEmbeddingProviderModelId: fact.selectedEmbeddingProviderModelId,
     userId: fact.userId
   };
@@ -246,7 +246,7 @@ describe("Memory item vector enrichment handler", () => {
     expect(fixture.embed).toHaveBeenCalledWith({
       mode: "document",
       signal: expect.any(AbortSignal),
-      texts: [fixture.current.safeSearchText]
+      texts: [fixture.current.normalizedSearchText]
     });
     expect(fixture.bind.mock.invocationCallOrder[0]).toBeLessThan(
       fixture.start.mock.invocationCallOrder[0]!
@@ -281,7 +281,7 @@ describe("Memory item vector enrichment handler", () => {
     expect(fixture.embed).toHaveBeenCalledWith({
       mode: "document",
       signal: expect.any(AbortSignal),
-      texts: [current.safeSearchText]
+      texts: [current.normalizedSearchText]
     });
   });
 

@@ -27,7 +27,7 @@ import type {
   Catalog,
   CatalogModel,
   ChatDetail,
-  ChatSummary,
+  WorkspaceChatSummary,
   Notice,
   ThreadMessage
 } from "@/components/app-shell/types";
@@ -65,7 +65,7 @@ type MessageRunControlSnapshot = {
 };
 
 type MessageRunActionsInput = {
-  activeChat: ChatSummary | null;
+  activeChat: WorkspaceChatSummary | null;
   activeChatDetailLoading: boolean;
   activeChatId: string | null;
   activeChatIdRef: MutableRef<string | null>;
@@ -76,7 +76,7 @@ type MessageRunActionsInput = {
   createChat(
     folderId?: string | null,
     sourceSessionKey?: ComposerSessionKey
-  ): Promise<ChatSummary | null>;
+  ): Promise<WorkspaceChatSummary | null>;
   createStreamTokenBuffer(input: {
     chatId: string;
     getAssistantMessageId(): string;

@@ -8,8 +8,7 @@ import {
 import { enqueueMemoryJob } from "../../persistence/jobs";
 import {
   memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "../../persistence/lexical";
 import {
   advanceMemoryMutation,
@@ -270,8 +269,8 @@ async function ensureWinnerSearchEntry(
   if (evidence.length === 0) {
     throw new Error("memory_fact_source_normalization_support_missing");
   }
-  const safeSearchText = normalizeMemorySearchText(version.displayText);
-  if (!safeSearchText) throw new Error("memory_fact_source_normalization_content_missing");
+  const normalizedSearchText = normalizeMemorySearchText(version.displayText);
+  if (!normalizedSearchText) throw new Error("memory_fact_source_normalization_content_missing");
   const existing = await tx.memorySearchEntry.findFirst({
     select: { embeddingState: true, id: true },
     where: {
@@ -307,7 +306,7 @@ async function ensureWinnerSearchEntry(
     suppressionIdentitySnapshot: memorySha256({
       canonicalKey: fact.canonicalKey,
       category: version.category,
-      normalizedValue: safeSearchText
+      normalizedValue: normalizedSearchText
     })
   };
   const entry = existing
@@ -315,8 +314,7 @@ async function ensureWinnerSearchEntry(
         data: {
           embeddingState,
           languageCode: version.languageCode,
-          safeSearchText,
-          safeSearchTextYoNormalized: normalizeMemorySearchTextYo(version.displayText),
+          normalizedSearchText,
           ...snapshots
         },
         select: { id: true },
@@ -329,8 +327,7 @@ async function ensureWinnerSearchEntry(
           indexGenerationId: index.id,
           itemType: "FACT_VERSION",
           languageCode: version.languageCode,
-          safeSearchText,
-          safeSearchTextYoNormalized: normalizeMemorySearchTextYo(version.displayText),
+          normalizedSearchText,
           userId: settings.userId,
           ...snapshots
         },

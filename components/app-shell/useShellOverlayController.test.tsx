@@ -1,13 +1,13 @@
 import { act, fireEvent, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ChatSummary, FolderSummary } from "./types";
+import type { WorkspaceChatSummary, FolderSummary } from "./types";
 import {
   isShellShortcutTextEntryTarget,
   useShellOverlayController,
   type ShellOverlayControllerInput
 } from "./useShellOverlayController";
 
-const chat = (id: string): ChatSummary => ({
+const chat = (id: string): WorkspaceChatSummary => ({
   activeLeafMessageId: null,
   createdAt: "2026-07-13T00:00:00.000Z",
   defaultModelId: "fake-qsa",

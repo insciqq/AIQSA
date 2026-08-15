@@ -1,4 +1,4 @@
-import type { ChatSummary, FolderSummary } from "@/components/app-shell/types";
+import type { WorkspaceChatSummary, FolderSummary } from "@/components/app-shell/types";
 import { useCallback, useMemo, useState } from "react";
 
 type WorkspaceInteractionPaneState = Readonly<{
@@ -15,7 +15,7 @@ type WorkspaceInteractionPaneActions = Readonly<{
   changeEditingChatTitle(value: string): void;
   changeEditingFolderName(value: string): void;
   openProjectSettings(folder: FolderSummary): void;
-  startChatEdit(chat: ChatSummary): void;
+  startChatEdit(chat: WorkspaceChatSummary): void;
   startFolderEdit(folder: FolderSummary): void;
 }>;
 
@@ -89,7 +89,7 @@ export function useWorkspaceInteractionController(): WorkspaceInteractionControl
     setProjectMemoryDraft("");
     setProjectKnowledgeBaseIds([]);
   }, []);
-  const startChatEdit = useCallback((chat: ChatSummary) => {
+  const startChatEdit = useCallback((chat: WorkspaceChatSummary) => {
     setEditingChatId(chat.id);
     setEditingChatTitle(chat.title);
   }, []);

@@ -1,6 +1,4 @@
 import { PrismaClient } from "@prisma/client";
-import { defaultProviderModels, defaultSearchStrategies } from "../lib/domain/catalog";
-import { providerConnectionTemplates } from "../lib/domain/providerTemplates";
 import { decodeSearchPlan } from "../lib/domain/search";
 import { verifyPassword } from "../lib/server/auth/password";
 import { LOCAL_OPERATOR_EMAIL, LOCAL_OPERATOR_PASSWORD } from "./local-seed-auth";
@@ -69,9 +67,6 @@ async function main() {
     throw new Error("Seeded local operator is not an owner of the active Full access group");
   }
 
-  const expectedModelTemplateKeys = defaultProviderModels.map(
-    (model) => `${model.provider}:${model.modelId}`
-  );
   const [
     knowledgePolicy,
     memoryEgressAdminPolicy,
@@ -79,10 +74,7 @@ async function main() {
     searchPolicy,
     smtpControl,
     systemModelPolicy,
-    providerConnections,
-    providerModels,
-    searchOptions,
-    searchStrategies
+    fakeModel
   ] = await Promise.all([
     prisma.knowledgePolicy.findUnique({ where: { id: "installation" } }),
     prisma.memoryEgressAdminPolicy.findUnique({ where: { id: "installation" } }),
@@ -90,34 +82,11 @@ async function main() {
     prisma.searchPolicy.findUnique({ where: { id: "installation" } }),
     prisma.smtpControl.findUnique({ where: { id: "installation-smtp" } }),
     prisma.systemModelPolicy.findUnique({ where: { id: "installation" } }),
-    prisma.providerConnection.findMany({
-      where: {
-        templateKey: { in: providerConnectionTemplates.map((template) => template.templateKey) }
-      }
-    }),
-    prisma.providerModel.findMany({
-      where: { templateKey: { in: expectedModelTemplateKeys } }
-    }),
-    prisma.searchOption.findMany({
-      where: {
-        templateKey: {
-          in: [
-            "search:anthropic",
-            "search:gemini-google",
-            "search:none",
-            "search:openai",
-            "search:perplexity"
-          ]
-        }
-      }
-    }),
-    prisma.searchStrategy.findMany({
-      where: {
-        strategyId: { in: defaultSearchStrategies.map((strategy) => strategy.strategyId) }
-      }
+    prisma.providerModel.findUnique({
+      include: { connection: true },
+      where: { templateKey: "fake:fake-qsa" }
     })
   ]);
-  const fakeModel = providerModels.find((model) => model.templateKey === "fake:fake-qsa");
 
   if (
     !knowledgePolicy ||
@@ -130,88 +99,28 @@ async function main() {
     searchPolicy.version < 1 ||
     !smtpControl ||
     !systemModelPolicy ||
-    systemModelPolicy.version < 1 ||
-    providerConnections.length !== providerConnectionTemplates.length ||
-    providerModels.length !== defaultProviderModels.length ||
-    searchOptions.length !== 5 ||
-    searchStrategies.length !== defaultSearchStrategies.length ||
+    systemModelPolicy.version < 1
+  ) {
+    throw new Error("Seed smoke did not find the required installation policy foundation");
+  }
+  if (
     !fakeModel ||
     !fakeModel.enabled ||
     fakeModel.activeVersion !== 1 ||
     !fakeModel.activeConfig ||
-    !fakeModel.activatedAt
+    !fakeModel.activatedAt ||
+    !fakeModel.connection.enabled ||
+    fakeModel.connection.activeVersion !== 1 ||
+    !fakeModel.connection.activeConfig ||
+    !fakeModel.connection.activatedAt
   ) {
-    throw new Error("Seed smoke did not find the complete provider template catalog");
+    throw new Error("Seed smoke did not find the active local Fake deployment");
   }
   if (
     user.settings.defaultProviderModelId !== fakeModel.id ||
     !isDisabledSearchPlan(user.settings.defaultSearchPlan)
   ) {
     throw new Error("Seed smoke found inconsistent stable Fake defaults");
-  }
-
-  for (const template of providerConnectionTemplates) {
-    const connection = providerConnections.find(
-      (candidate) => candidate.templateKey === template.templateKey
-    );
-    const active = template.family === "fake";
-    if (
-      !connection ||
-      connection.enabled !== active ||
-      connection.activeVersion !== (active ? 1 : 0) ||
-      Boolean(connection.activeConfig) !== active ||
-      Boolean(connection.activatedAt) !== active ||
-      connection.defaultCredentialId !== null
-    ) {
-      throw new Error(`Seed smoke found invalid provider connection state: ${template.templateKey}`);
-    }
-  }
-
-  for (const model of providerModels) {
-    const active = model.templateKey === "fake:fake-qsa";
-    if (
-      model.enabled !== active ||
-      model.activeVersion !== (active ? 1 : 0) ||
-      Boolean(model.activeConfig) !== active ||
-      Boolean(model.activatedAt) !== active
-    ) {
-      throw new Error(`Seed smoke found invalid provider model state: ${model.templateKey}`);
-    }
-  }
-
-  const modelIdByTemplate = new Map(
-    providerModels.map((model) => [model.templateKey, model.id])
-  );
-  for (const strategyTemplate of defaultSearchStrategies) {
-    const route = strategyTemplate.routes[0];
-    const physicalStrategyId = route?.physicalStrategyId ?? strategyTemplate.strategyId;
-    const strategy = searchStrategies.find(
-      (candidate) => candidate.strategyId === physicalStrategyId
-    );
-    const expectedProviderModelId = route?.credentialMode === "provider_model"
-      ? modelIdByTemplate.get(
-          `${strategyTemplate.sourceConnectionId}:${route.providerModelId ?? ""}`
-        )
-      : null;
-    const expectedSearchOption = searchOptions.find((option) =>
-      strategyTemplate.strategyId === "search-disabled"
-        ? option.templateKey === "search:none"
-        : strategyTemplate.strategyId === "anthropic-web-search"
-          ? option.templateKey === "search:anthropic"
-          : strategyTemplate.strategyId === "openai-native-web-search"
-          ? option.templateKey === "search:openai"
-          : strategyTemplate.strategyId === "gemini-google-search"
-            ? option.templateKey === "search:gemini-google"
-            : option.templateKey === "search:perplexity"
-    );
-    if (
-      !strategy ||
-      !expectedSearchOption ||
-      strategy.providerModelId !== expectedProviderModelId ||
-      strategy.searchOptionId !== expectedSearchOption.id
-    ) {
-      throw new Error(`Seed smoke found invalid search deployment: ${physicalStrategyId}`);
-    }
   }
 
   const ordinaryUsers = await prisma.user.findMany({
@@ -335,7 +244,7 @@ async function main() {
   }
 
   console.log(
-    `AIQSA seed smoke ok: chats=${user.chats.length}, folders=${user.folders.length}, models=${providerModels.length}, searchStrategies=${searchStrategies.length}, ordinaryUsers=${ordinaryUsers.length}`
+    `AIQSA seed smoke ok: chats=${user.chats.length}, folders=${user.folders.length}, ordinaryUsers=${ordinaryUsers.length}`
   );
 }
 

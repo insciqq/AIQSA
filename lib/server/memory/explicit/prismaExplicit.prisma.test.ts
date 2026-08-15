@@ -138,26 +138,26 @@ describe("Prisma explicit Memory API", () => {
         scope: { type: "GLOBAL_USER" }
       })).resolves.toMatchObject({ memories: [{ id: factId }] });
       await expect(memoryService.search(userId, {
-        query: "ёлках",
+        query: "ЕЛКАХ",
         scope: { type: "GLOBAL_USER" }
+      })).resolves.toMatchObject({ memories: [{ id: factId }] });
+      await expect(memoryService.search(userId, {
+        query: "Я ПРЕДПОЧИТАЮ ОТВЕТЫ О ЕЛКАХ НА РУССКОМ ЯЗЫКЕ."
       })).resolves.toMatchObject({ memories: [{ id: factId }] });
 
       const [searchShape] = await prisma.$queryRaw<Array<{
-        englishReady: boolean;
-        russianReady: boolean;
-        simpleReady: boolean;
+        lexicalReady: boolean;
+        normalizedSearchText: string;
       }>>`
         SELECT
-          "searchVectorEnglish" IS NOT NULL AS "englishReady",
-          "searchVectorRussian" IS NOT NULL AS "russianReady",
-          "searchVectorSimple" IS NOT NULL AS "simpleReady"
+          "searchVectorSimple" IS NOT NULL AS "lexicalReady",
+          "normalizedSearchText"
         FROM "MemorySearchEntry"
         WHERE "userId" = ${userId} AND "factVersionId" = ${versionId}
       `;
       expect(searchShape).toEqual({
-        englishReady: true,
-        russianReady: true,
-        simpleReady: true
+        lexicalReady: true,
+        normalizedSearchText: "я предпочитаю ответы о елках на русском языке."
       });
       await expect(prisma.memoryExecutionBinding.count({ where: { userId } }))
         .resolves.toBe(0);
@@ -180,11 +180,15 @@ describe("Prisma explicit Memory API", () => {
       const second = await createMemory(
         memoryService,
         userId,
-        "For work travel, I prefer hotels in quiet cities.",
+        "For work travel, I prefer quiet cities and avoid елки.",
         "nonce-english"
       );
       await expect(memoryService.search(userId, {
         query: "cities",
+        scope: { type: "GLOBAL_USER" }
+      })).resolves.toMatchObject({ memories: [{ id: second.response.memory.id }] });
+      await expect(memoryService.search(userId, {
+        query: "ЁЛКИ",
         scope: { type: "GLOBAL_USER" }
       })).resolves.toMatchObject({ memories: [{ id: second.response.memory.id }] });
       const firstPage = await memoryService.list(userId, {
@@ -239,6 +243,21 @@ describe("Prisma explicit Memory API", () => {
         where: { id: secretAuthorization.mutationAuthorizationId }
       })).resolves.toMatchObject({ consumedAt: null });
       await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(2);
+
+      await prisma.$transaction([
+        prisma.memoryFact.update({
+          data: { currentVersionId: null, state: "RETRACTED" },
+          where: { id: factId }
+        }),
+        prisma.memoryFactVersion.update({
+          data: { state: "RETRACTED" },
+          where: { id: versionId }
+        })
+      ]);
+      await expect(memoryService.search(userId, {
+        query: "Я ПРЕДПОЧИТАЮ ОТВЕТЫ О ЁЛКАХ НА РУССКОМ ЯЗЫКЕ.",
+        state: "RETRACTED"
+      })).resolves.toMatchObject({ memories: [{ id: factId }] });
     } finally {
       await cleanupUser(userId);
     }

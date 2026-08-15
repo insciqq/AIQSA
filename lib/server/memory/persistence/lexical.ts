@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
-export const MEMORY_LEXICAL_LANGUAGE_PROFILE = "UNICODE_SIMPLE_V2";
-export const MEMORY_LEXICAL_NORMALIZATION_VERSION = "memory-search-normalization-v2";
+export const MEMORY_LEXICAL_LANGUAGE_PROFILE = "UNICODE_SIMPLE_V3";
+export const MEMORY_LEXICAL_NORMALIZATION_VERSION = "memory-search-normalization-v3";
 export const MEMORY_LEXICAL_CHUNKING_VERSION = "memory-no-chunking-v1";
 export const MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION = "memory-retrieval-v2";
 
@@ -29,11 +29,10 @@ export function memorySha256(value: unknown): string {
 }
 
 export function normalizeMemorySearchText(value: string): string {
-  return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("und");
-}
-
-export function normalizeMemorySearchTextYo(value: string): string {
-  // Compatibility column writer. New generations use one Unicode/simple
-  // normalization and do not rewrite language-specific characters.
-  return normalizeMemorySearchText(value);
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase("und")
+    .replaceAll("ё", "е")
+    .trim()
+    .replace(/\s+/gu, " ");
 }

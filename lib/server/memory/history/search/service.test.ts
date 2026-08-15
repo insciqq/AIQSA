@@ -33,7 +33,6 @@ function prepared(
     from: null,
     input: request,
     normalizedQuery: "history query",
-    normalizedYoQuery: "history query",
     offset: 0,
     snapshot: {
       activeGenerationId: "generation-1",

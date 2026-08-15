@@ -590,7 +590,7 @@ function factEligibleSelect(
   if (!snapshot.activeGenerationId) throw new Error("memory_retrieval_snapshot_invalid");
   return Prisma.sql`
     SELECT ${factColumns(Prisma.sql`entry."id"`)},
-      entry."safeSearchText", entry."searchVectorSimple"
+      entry."normalizedSearchText", entry."searchVectorSimple"
     FROM "MemorySearchEntry" AS entry
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = entry."userId" AND settings."useMemoryFacts" = TRUE
@@ -725,7 +725,7 @@ function historyEligibleSelect(
       TRUE AS "current", FALSE AS "historical", FALSE AS "conflict",
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
       NULL::timestamp AS "systemFrom", chunk."occurredFrom", chunk."occurredTo",
-      entry."safeSearchText", entry."searchVectorSimple"
+      entry."normalizedSearchText", entry."searchVectorSimple"
     FROM "MemorySearchEntry" AS entry
     INNER JOIN "UserMemorySettings" AS settings
       ON settings."userId" = entry."userId" AND settings."referenceChatHistory" = TRUE
@@ -785,7 +785,7 @@ function exactSql(
   return Prisma.sql`
     WITH eligible AS MATERIALIZED (${eligible})
     SELECT ${candidateColumns(Prisma.sql`1.0`)} FROM eligible
-    WHERE eligible."safeSearchText" = ${plan.normalizedExactQuery}
+    WHERE eligible."normalizedSearchText" = ${plan.normalizedExactQuery}
     ORDER BY eligible."itemId" LIMIT ${limit}
   `;
 }

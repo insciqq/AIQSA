@@ -13,7 +13,7 @@ export type {
 export type {
   ChatDetail,
   ChatContextStats,
-  ChatSummary,
+  WorkspaceChatSummary,
   ThreadAssistantIdentity,
   ChatUsageStats,
   ThreadArtifactSummary,
@@ -22,8 +22,7 @@ export type {
   ThreadKnowledgeCitation,
   ThreadKnowledgeOutcome,
   ThreadMessage,
-  ThreadSearchSource,
-  WorkspaceChatSummary
+  ThreadSearchSource
 } from "@/lib/contracts/chats";
 
 export type { RunEventView } from "@/lib/contracts/runs";

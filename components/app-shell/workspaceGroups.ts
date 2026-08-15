@@ -1,15 +1,15 @@
 import type {
   ChatGroup,
-  ChatSummary,
+  WorkspaceChatSummary,
   FolderSummary
 } from "@/components/app-shell/types";
 
-function chatSearchText(chat: ChatSummary): string {
+function chatSearchText(chat: WorkspaceChatSummary): string {
   return [chat.title, chat.defaultProvider, chat.defaultModelId].join(" ").toLowerCase();
 }
 
 function chatMatchesQuery(
-  chat: ChatSummary,
+  chat: WorkspaceChatSummary,
   query: string,
   contentMatchIds?: ReadonlySet<string>
 ): boolean {
@@ -18,7 +18,7 @@ function chatMatchesQuery(
 
 export function buildChatGroups(
   folders: FolderSummary[],
-  chats: ChatSummary[],
+  chats: WorkspaceChatSummary[],
   rawQuery: string,
   contentMatchIds?: ReadonlySet<string>
 ): ChatGroup[] {

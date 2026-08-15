@@ -20,9 +20,9 @@ import {
   workspaceNavigationChats
 } from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
-import type { Catalog, ChatDetail, ChatSummary, ThreadMessage } from "./types";
+import type { Catalog, ChatDetail, WorkspaceChatSummary, ThreadMessage } from "./types";
 
-function chat(input: Partial<ChatSummary> & { id: string; title: string }): ChatSummary {
+function chat(input: Partial<WorkspaceChatSummary> & { id: string; title: string }): WorkspaceChatSummary {
   return {
     activeLeafMessageId: null,
     createdAt: "2026-06-10T00:00:00.000Z",
@@ -73,7 +73,7 @@ function catalogModel(modelId: string, displayName: string): Catalog["models"][n
   };
 }
 
-function apiChatSummary(summary: ChatSummary) {
+function apiChatSummary(summary: WorkspaceChatSummary) {
   return {
     activeLeafMessageId: summary.activeLeafMessageId,
     createdAt: summary.createdAt,
@@ -90,7 +90,7 @@ function apiChatSummary(summary: ChatSummary) {
 }
 
 function apiChatMemoryState(
-  summary: ChatSummary,
+  summary: WorkspaceChatSummary,
   mode: "NORMAL" | "EXCLUDED" | "TEMPORARY" = "NORMAL",
   sourceRevision = 0
 ) {
@@ -107,7 +107,7 @@ function apiChatMemoryState(
   };
 }
 
-function apiArchivedChat(summary: ChatSummary, sourceRevision = 1) {
+function apiArchivedChat(summary: WorkspaceChatSummary, sourceRevision = 1) {
   return {
     chat: {
       archived: true,
@@ -136,7 +136,7 @@ function apiMessage(candidate: ThreadMessage) {
 }
 
 function apiChatDetail(
-  summary: ChatSummary,
+  summary: WorkspaceChatSummary,
   messages: ThreadMessage[],
   options: {
     activeLeafMessageId?: string | null;
@@ -193,7 +193,7 @@ function apiMessagesPage(
 }
 
 function threadHistory(
-  summary: ChatSummary,
+  summary: WorkspaceChatSummary,
   overrides: Partial<ThreadHistoryState> = {}
 ): ThreadHistoryState {
   return {

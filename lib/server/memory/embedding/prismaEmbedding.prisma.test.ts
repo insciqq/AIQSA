@@ -28,8 +28,7 @@ import {
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { MEMORY_PURGE_REQUIRED_CONTRIBUTORS } from "../purge/contract";
@@ -718,8 +717,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
               languageCode: "en",
               recallChunkId: chunkId,
               safeContentHash: memorySha256(chunkText),
-              safeSearchText: normalizeMemorySearchText(chunkText),
-              safeSearchTextYoNormalized: normalizeMemorySearchTextYo(chunkText),
+              normalizedSearchText: normalizeMemorySearchText(chunkText),
               safetyIdentitySnapshot: "4".repeat(64),
               sourceIdentitySnapshot: "3".repeat(64),
               suppressionIdentitySnapshot: "2".repeat(64),
@@ -733,8 +731,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
               languageCode: "en",
               recallChunkId: failingChunkId,
               safeContentHash: memorySha256(failingChunkText),
-              safeSearchText: normalizeMemorySearchText(failingChunkText),
-              safeSearchTextYoNormalized: normalizeMemorySearchTextYo(failingChunkText),
+              normalizedSearchText: normalizeMemorySearchText(failingChunkText),
               safetyIdentitySnapshot: "1".repeat(64),
               sourceIdentitySnapshot: "0".repeat(64),
               suppressionIdentitySnapshot: "a".repeat(64),
@@ -793,14 +790,14 @@ describe("Prisma explicit Memory vector enrichment", () => {
       })).resolves.toMatchObject({
         embeddingDimension: DIMENSION,
         embeddingState: "READY",
-        safeSearchText: normalizeMemorySearchText(chunkText)
+        normalizedSearchText: normalizeMemorySearchText(chunkText)
       });
       await expect(prisma.memorySearchEntry.findUniqueOrThrow({
         where: { id: failingChunkEntryId }
       })).resolves.toMatchObject({
         embeddingDimension: null,
         embeddingState: "FAILED",
-        safeSearchText: normalizeMemorySearchText(failingChunkText)
+        normalizedSearchText: normalizeMemorySearchText(failingChunkText)
       });
       const bindingIds = await prisma.memoryExecutionBinding.findMany({
         select: { id: true },

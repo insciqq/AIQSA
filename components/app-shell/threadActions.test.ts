@@ -7,9 +7,9 @@ import {
 import type { ShareDialogTarget } from "./ShareDialog";
 import { resetThreadStoreForTest, selectThreadSnapshot, useThreadStore } from "./threadStore";
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
-import type { ChatDetail, ChatSummary, Notice, ThreadMessage } from "./types";
+import type { ChatDetail, WorkspaceChatSummary, Notice, ThreadMessage } from "./types";
 
-function chatSummary(overrides: Partial<ChatSummary> = {}): ChatSummary {
+function chatSummary(overrides: Partial<WorkspaceChatSummary> = {}): WorkspaceChatSummary {
   return {
     activeLeafMessageId: "message-1",
     createdAt: "2026-06-12T00:00:00.000Z",
@@ -44,7 +44,7 @@ function threadMessages(): ThreadMessage[] {
 }
 
 function chatDetail(
-  summary: ChatSummary,
+  summary: WorkspaceChatSummary,
   messages: ThreadMessage[],
   usageStats: ChatDetail["usageStats"] = null
 ): ChatDetail {
@@ -64,7 +64,7 @@ function chatDetail(
   };
 }
 
-function apiChat(overrides: Partial<ChatSummary> = {}) {
+function apiChat(overrides: Partial<WorkspaceChatSummary> = {}) {
   const chat = chatSummary(overrides);
 
   return {

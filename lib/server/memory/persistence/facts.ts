@@ -21,8 +21,7 @@ import { enqueueMemoryJob } from "./jobs";
 import {
   memorySha256,
   memoryStableJson,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "./lexical";
 import { requireActiveOwnedMemoryScope } from "./scopes";
 import { assertMemoryWriteNotSuppressed } from "./suppressions";
@@ -533,7 +532,7 @@ async function createSearchEntry(
   embeddingState: "FAILED" | "NOT_APPLICABLE" | "PENDING" | "READY";
   id: string;
 }>> {
-  const safeSearchText = normalizeMemorySearchText(value.displayText);
+  const normalizedSearchText = normalizeMemorySearchText(value.displayText);
   return tx.memorySearchEntry.create({
     data: {
       embeddingState: activeIndex.indexMode === "LEXICAL_ONLY" ? "NOT_APPLICABLE" : "PENDING",
@@ -545,8 +544,7 @@ async function createSearchEntry(
         displayText: value.displayText,
         structuredValue: value.structuredValue
       }),
-      safeSearchText,
-      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(value.displayText),
+      normalizedSearchText,
       safetyIdentitySnapshot: memorySha256({
         safetyClass: value.sensitivityClass,
         secretTaintedSourceWindow: value.secretTaintedSourceWindow
@@ -560,7 +558,7 @@ async function createSearchEntry(
       suppressionIdentitySnapshot: memorySha256({
         canonicalKey: value.canonicalKey,
         category: value.category,
-        normalizedValue: safeSearchText
+        normalizedValue: normalizedSearchText
       }),
       userId
     },

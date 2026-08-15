@@ -185,7 +185,7 @@ CREATE TYPE "MemoryDeletionState" AS ENUM ('PENDING', 'RUNNING', 'RETRY_WAIT', '
 CREATE TYPE "MemoryMutationAction" AS ENUM ('SAVE', 'EDIT', 'MOVE_SCOPE', 'FORGET', 'BULK_DELETE');
 
 -- CreateEnum
-CREATE TYPE "MemoryOperationOutcome" AS ENUM ('APPLIED', 'NO_OP', 'REJECTED');
+CREATE TYPE "MemoryOperationOutcome" AS ENUM ('APPLIED', 'REJECTED');
 
 -- CreateEnum
 CREATE TYPE "MemoryIndexGenerationState" AS ENUM ('BUILDING', 'CATCHING_UP', 'READY', 'ACTIVE', 'SUPERSEDED', 'FAILED', 'CANCELLED');
@@ -983,21 +983,6 @@ CREATE TABLE "SearchIntegrationRevision" (
 );
 
 -- CreateTable
-CREATE TABLE "SearchRunBinding" (
-    "id" TEXT NOT NULL,
-    "modelRunId" TEXT NOT NULL,
-    "searchStrategyId" TEXT NOT NULL,
-    "revisionId" TEXT NOT NULL,
-    "optionId" TEXT NOT NULL,
-    "ordinal" INTEGER NOT NULL,
-    "mode" TEXT NOT NULL,
-    "technicalBindingKey" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "SearchRunBinding_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
 CREATE TABLE "Chat" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -1217,7 +1202,6 @@ CREATE TABLE "McpRuntimeGeneration" (
     "credentialSources" TEXT[] DEFAULT ARRAY[]::TEXT[],
     "externalAccountLabel" TEXT,
     "effectiveConfigEnvelope" TEXT,
-    "runtimeHandle" JSONB,
     "inventory" JSONB,
     "inventoryUpdatedAt" TIMESTAMP(3),
     "state" "McpRuntimeState" NOT NULL DEFAULT 'starting',
@@ -1833,8 +1817,7 @@ CREATE TABLE "MemorySearchEntry" (
     "itemType" "MemorySearchItemType" NOT NULL,
     "factVersionId" TEXT,
     "recallChunkId" TEXT,
-    "safeSearchText" TEXT NOT NULL,
-    "safeSearchTextYoNormalized" TEXT NOT NULL,
+    "normalizedSearchText" TEXT NOT NULL,
     "safeContentHash" VARCHAR(128) NOT NULL,
     "languageCode" VARCHAR(35) NOT NULL,
     "safetyIdentitySnapshot" VARCHAR(128) NOT NULL,
@@ -1843,9 +1826,7 @@ CREATE TABLE "MemorySearchEntry" (
     "embedding" vector,
     "embeddingDimension" INTEGER,
     "embeddingState" "MemoryEmbeddingState" NOT NULL DEFAULT 'NOT_APPLICABLE',
-    "searchVectorSimple" tsvector GENERATED ALWAYS AS (to_tsvector('simple'::regconfig, COALESCE("safeSearchTextYoNormalized", ''::text))) STORED,
-    "searchVectorRussian" tsvector GENERATED ALWAYS AS (to_tsvector('russian'::regconfig, COALESCE("safeSearchTextYoNormalized", ''::text))) STORED,
-    "searchVectorEnglish" tsvector GENERATED ALWAYS AS (to_tsvector('english'::regconfig, COALESCE("safeSearchText", ''::text))) STORED,
+    "searchVectorSimple" tsvector GENERATED ALWAYS AS (to_tsvector('simple'::regconfig, COALESCE("normalizedSearchText", ''::text))) STORED,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -2532,18 +2513,6 @@ CREATE UNIQUE INDEX "SearchIntegrationRevision_strategy_draft_validation_key" ON
 
 -- CreateIndex
 CREATE UNIQUE INDEX "SearchIntegrationRevision_searchStrategyId_id_key" ON "SearchIntegrationRevision"("searchStrategyId", "id");
-
--- CreateIndex
-CREATE INDEX "SearchRunBinding_revisionId_idx" ON "SearchRunBinding"("revisionId");
-
--- CreateIndex
-CREATE INDEX "SearchRunBinding_searchStrategyId_idx" ON "SearchRunBinding"("searchStrategyId");
-
--- CreateIndex
-CREATE UNIQUE INDEX "SearchRunBinding_modelRunId_ordinal_key" ON "SearchRunBinding"("modelRunId", "ordinal");
-
--- CreateIndex
-CREATE UNIQUE INDEX "SearchRunBinding_modelRunId_optionId_key" ON "SearchRunBinding"("modelRunId", "optionId");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Chat_permanentDeletionOperationId_key" ON "Chat"("permanentDeletionOperationId");
@@ -3473,15 +3442,6 @@ ALTER TABLE "SearchIntegrationRevision" ADD CONSTRAINT "SearchIntegrationRevisio
 ALTER TABLE "SearchIntegrationRevision" ADD CONSTRAINT "SearchIntegrationRevision_searchStrategyId_fkey" FOREIGN KEY ("searchStrategyId") REFERENCES "SearchStrategy"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "SearchRunBinding" ADD CONSTRAINT "SearchRunBinding_modelRunId_fkey" FOREIGN KEY ("modelRunId") REFERENCES "ModelRun"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "SearchRunBinding" ADD CONSTRAINT "SearchRunBinding_revisionId_fkey" FOREIGN KEY ("revisionId") REFERENCES "SearchIntegrationRevision"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "SearchRunBinding" ADD CONSTRAINT "SearchRunBinding_searchStrategyId_fkey" FOREIGN KEY ("searchStrategyId") REFERENCES "SearchStrategy"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
 ALTER TABLE "Chat" ADD CONSTRAINT "Chat_id_activeLeafMessageId_fkey" FOREIGN KEY ("id", "activeLeafMessageId") REFERENCES "Message"("chatId", "id") ON DELETE SET NULL ON UPDATE RESTRICT;
 
 -- AddForeignKey
@@ -3691,13 +3651,9 @@ CREATE INDEX "MemorySearchEntry_embedding_1024_hnsw_idx" ON public."MemorySearch
 
 CREATE INDEX "MemorySearchEntry_embedding_1536_hnsw_idx" ON public."MemorySearchEntry" USING hnsw (((embedding)::vector(1536)) vector_cosine_ops) WHERE (("embeddingState" = 'READY'::"MemoryEmbeddingState") AND ("embeddingDimension" = 1536));
 
-CREATE INDEX "MemorySearchEntry_english_gin_idx" ON public."MemorySearchEntry" USING gin ("searchVectorEnglish");
-
 CREATE UNIQUE INDEX "MemorySearchEntry_fact_target_key" ON public."MemorySearchEntry" USING btree ("userId", "indexGenerationId", "factVersionId") WHERE ("itemType" = 'FACT_VERSION'::"MemorySearchItemType");
 
 CREATE UNIQUE INDEX "MemorySearchEntry_recall_chunk_target_key" ON public."MemorySearchEntry" USING btree ("userId", "indexGenerationId", "recallChunkId") WHERE ("itemType" = 'RECALL_CHUNK'::"MemorySearchItemType");
-
-CREATE INDEX "MemorySearchEntry_russian_gin_idx" ON public."MemorySearchEntry" USING gin ("searchVectorRussian");
 
 CREATE INDEX "MemorySearchEntry_simple_gin_idx" ON public."MemorySearchEntry" USING gin ("searchVectorSimple");
 
@@ -5442,10 +5398,6 @@ ALTER TABLE "SearchPolicy" ADD CONSTRAINT "SearchPolicy_singleton_check" CHECK (
 
 ALTER TABLE "SearchPolicy" ADD CONSTRAINT "SearchPolicy_version_check" CHECK (version >= 1);
 
-ALTER TABLE "SearchRunBinding" ADD CONSTRAINT "SearchRunBinding_mode_check" CHECK (mode = ANY (ARRAY['all_selected'::text, 'model_choice'::text]));
-
-ALTER TABLE "SearchRunBinding" ADD CONSTRAINT "SearchRunBinding_ordinal_check" CHECK (ordinal >= 0 AND ordinal < 3);
-
 ALTER TABLE "SearchStrategy" ADD CONSTRAINT "SearchStrategy_adapterKind_check" CHECK ("adapterKind" = ANY (ARRAY['none'::text, 'answer_provider_hosted'::text, 'provider_model_client'::text]));
 
 ALTER TABLE "SearchStrategy" ADD CONSTRAINT "SearchStrategy_credentialMode_check" CHECK ("credentialMode" = ANY (ARRAY['answer_provider'::text, 'provider_model'::text]));
@@ -5573,8 +5525,7 @@ ALTER TABLE "MemorySearchEntry" ADD CONSTRAINT "MemorySearchEntry_shape_check" C
       AND "recallChunkId" IS NOT NULL
       AND "factVersionId" IS NULL
     )
-    AND char_length("safeSearchText") BETWEEN 1 AND 4000
-    AND char_length("safeSearchTextYoNormalized") BETWEEN 1 AND 4000
+    AND char_length("normalizedSearchText") BETWEEN 1 AND 4000
     AND (
       "embeddingState" IN ('NOT_APPLICABLE'::"MemoryEmbeddingState", 'PENDING'::"MemoryEmbeddingState", 'FAILED'::"MemoryEmbeddingState")
       AND num_nonnulls(embedding, "embeddingDimension") = 0

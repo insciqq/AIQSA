@@ -444,7 +444,6 @@ enum MemoryMutationAction {
 
 enum MemoryOperationOutcome {
   APPLIED
-  NO_OP
   REJECTED
 }
 
@@ -1480,7 +1479,6 @@ model SearchStrategy {
   activeRevision    SearchIntegrationRevision?  @relation("ActiveSearchRevision", fields: [id, activeRevisionId], references: [searchStrategyId, id], onDelete: Restrict, onUpdate: Restrict, map: "SearchStrategy_activeRevision_fkey")
   providerModel     ProviderModel?              @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
   revisions         SearchIntegrationRevision[] @relation("SearchIntegrationRevisions")
-  runBindings       SearchRunBinding[]
   searchOption      SearchOption                @relation(fields: [searchOptionId], references: [id], onDelete: Restrict)
 
   @@unique([id, activeRevisionId])
@@ -1490,7 +1488,7 @@ model SearchStrategy {
 }
 
 model SearchIntegrationRevision {
-  id                    String             @id @default(uuid())
+  id                    String          @id @default(uuid())
   searchStrategyId      String
   revisionNumber        Int
   adapterKind           String
@@ -1500,37 +1498,16 @@ model SearchIntegrationRevision {
   validationEvidence    Json
   draftHash             String
   validationFingerprint String
-  createdAt             DateTime           @default(now())
-  activeFor             SearchStrategy?    @relation("ActiveSearchRevision")
-  providerModel         ProviderModel?     @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
-  searchStrategy        SearchStrategy     @relation("SearchIntegrationRevisions", fields: [searchStrategyId], references: [id], onDelete: Restrict)
-  runBindings           SearchRunBinding[]
+  createdAt             DateTime        @default(now())
+  activeFor             SearchStrategy? @relation("ActiveSearchRevision")
+  providerModel         ProviderModel?  @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
+  searchStrategy        SearchStrategy  @relation("SearchIntegrationRevisions", fields: [searchStrategyId], references: [id], onDelete: Restrict)
   searchRuns            SearchRun[]
 
   @@unique([searchStrategyId, revisionNumber])
   @@unique([searchStrategyId, draftHash, validationFingerprint], map: "SearchIntegrationRevision_strategy_draft_validation_key")
   @@unique([searchStrategyId, id])
   @@index([providerModelId])
-}
-
-model SearchRunBinding {
-  id                  String                    @id @default(uuid())
-  modelRunId          String
-  searchStrategyId    String
-  revisionId          String
-  optionId            String
-  ordinal             Int
-  mode                String
-  technicalBindingKey String?
-  createdAt           DateTime                  @default(now())
-  modelRun            ModelRun                  @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  revision            SearchIntegrationRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
-  searchStrategy      SearchStrategy            @relation(fields: [searchStrategyId], references: [id], onDelete: Restrict)
-
-  @@unique([modelRunId, ordinal])
-  @@unique([modelRunId, optionId])
-  @@index([revisionId])
-  @@index([searchStrategyId])
 }
 
 model Chat {
@@ -1640,7 +1617,6 @@ model ModelRun {
   memoryToolEgressReceipts MemoryToolEgressReceipt[]
   providerRunBindings      ProviderRunBinding[]
   searchRuns               SearchRun[]
-  searchRunBindings        SearchRunBinding[]
   toolCalls                ModelRunToolCall[]
   user                     User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   userMessage              Message                   @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
@@ -1818,7 +1794,6 @@ model McpRuntimeGeneration {
   credentialSources       String[]            @default([])
   externalAccountLabel    String?
   effectiveConfigEnvelope String?
-  runtimeHandle           Json?
   inventory               Json?
   inventoryUpdatedAt      DateTime?
   state                   McpRuntimeState     @default(starting)
@@ -2522,8 +2497,7 @@ model MemorySearchEntry {
   itemType                    MemorySearchItemType
   factVersionId               String?
   recallChunkId               String?
-  safeSearchText              String
-  safeSearchTextYoNormalized  String
+  normalizedSearchText        String
   safeContentHash             String                   @db.VarChar(128)
   languageCode                String                   @db.VarChar(35)
   safetyIdentitySnapshot      String                   @db.VarChar(128)
@@ -2533,8 +2507,6 @@ model MemorySearchEntry {
   embeddingDimension          Int?
   embeddingState              MemoryEmbeddingState     @default(NOT_APPLICABLE)
   searchVectorSimple          Unsupported("tsvector")?
-  searchVectorRussian         Unsupported("tsvector")?
-  searchVectorEnglish         Unsupported("tsvector")?
   createdAt                   DateTime                 @default(now())
   updatedAt                   DateTime                 @default(now()) @updatedAt
 

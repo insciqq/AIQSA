@@ -6,7 +6,7 @@ import {
   memoryChunkSourceSafetyPredicate,
   memoryFactScopePredicate
 } from "../memory/retrieval/localRepository";
-import { normalizeMemorySearchTextYo } from "../memory/persistence/lexical";
+import { normalizeMemorySearchText } from "../memory/persistence/lexical";
 import {
   MemoryPreparingRunConflictError,
   memoryPreparingHash,
@@ -181,7 +181,7 @@ async function resolveFact(
   if (!core && !authority.indexGenerationId) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
-  const normalizedQueryYo = querySnapshot ? normalizeMemorySearchTextYo(querySnapshot) : "";
+  const normalizedQuery = querySnapshot ? normalizeMemorySearchText(querySnapshot) : "";
   const settingsJoin = core
     ? Prisma.sql`
         INNER JOIN "UserMemorySettings" AS settings
@@ -283,8 +283,8 @@ async function resolveFact(
         version."sensitivityClass" = 'NORMAL'::"MemorySensitivityClass"
         OR (
           version."sensitivityClass" = 'SENSITIVE'::"MemorySensitivityClass"
-          AND ${normalizedQueryYo} <> ''
-          AND version."normalizedSearchText" = ${normalizedQueryYo}
+          AND ${normalizedQuery} <> ''
+          AND version."normalizedSearchText" = ${normalizedQuery}
         )
       )
     FOR SHARE OF ${lockTargets}
@@ -412,7 +412,7 @@ async function resolveChunkRow(
   chunkId: string
 ): Promise<HistoryAuthorityRow | null> {
   if (!authority.indexGenerationId) return null;
-  const normalizedQueryYo = querySnapshot ? normalizeMemorySearchTextYo(querySnapshot) : "";
+  const normalizedQuery = querySnapshot ? normalizeMemorySearchText(querySnapshot) : "";
   const [row] = await tx.$queryRaw<HistoryAuthorityRow[]>(Prisma.sql`
     SELECT
       chunk."branchGeneration", chunk."chatId", chunk."contentHash",
@@ -458,8 +458,8 @@ async function resolveChunkRow(
         chunk."safetyClass" = 'NORMAL'::"MemoryDerivedSafetyClass"
         OR (
           chunk."safetyClass" = 'SENSITIVE'::"MemoryDerivedSafetyClass"
-          AND ${normalizedQueryYo} <> ''
-          AND entry."safeSearchTextYoNormalized" = ${normalizedQueryYo}
+          AND ${normalizedQuery} <> ''
+          AND entry."normalizedSearchText" = ${normalizedQuery}
         )
       )
     FOR SHARE OF chunk, entry, settings, generation, source_chat, checkpoint

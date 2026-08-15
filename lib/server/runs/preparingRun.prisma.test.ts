@@ -14,8 +14,7 @@ import { createPrismaMemorySettingsRepository } from "../memory/persistence/sett
 import {
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "../memory/persistence/lexical";
 import { createPrismaExplicitMemoryRepository } from "../memory/explicit/repository";
 import { createExplicitMemoryService } from "../memory/explicit/service";
@@ -462,8 +461,7 @@ async function createPreparingHistoryFixture(userId: string) {
       languageCode: "en",
       recallChunkId: chunk.id,
       safeContentHash: chunkHash,
-      safeSearchText: normalizeMemorySearchText(chunkText),
-      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(chunkText),
+      normalizedSearchText: normalizeMemorySearchText(chunkText),
       safetyIdentitySnapshot: memorySha256({ safety: "NORMAL" }),
       sourceIdentitySnapshot: memorySha256({ chunkId: chunk.id, sourceHash }),
       suppressionIdentitySnapshot: memorySha256({ sourceHash }),

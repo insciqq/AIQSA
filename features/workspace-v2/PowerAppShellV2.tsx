@@ -125,7 +125,7 @@ import type {
   Catalog,
   CatalogModel,
   ChatDetail,
-  ChatSummary,
+  WorkspaceChatSummary,
   Notice,
   ThreadMessage
 } from "@/components/app-shell/types";
@@ -575,7 +575,7 @@ export function PowerAppShellV2({
     setNotice
   });
 
-  function resumeChatRun(chat: ChatSummary) {
+  function resumeChatRun(chat: WorkspaceChatSummary) {
     void runLifecycleActions.resumeChatRun(chat);
   }
 
@@ -1103,7 +1103,7 @@ export function PowerAppShellV2({
     shareActiveBranch
   } satisfies ShellSessionView;
 
-  async function toggleChatMemorySource(chat: ChatSummary): Promise<void> {
+  async function toggleChatMemorySource(chat: WorkspaceChatSummary): Promise<void> {
     if (memorySourceMutationIdsRef.current.has(chat.id)) return;
     memorySourceMutationIdsRef.current.add(chat.id);
     try {
@@ -1161,7 +1161,7 @@ export function PowerAppShellV2({
    * keeps the `permanentChatDeletionAvailable` gate; nothing is deleted before
    * the surface's own confirmed authorization.
    */
-  async function deleteChatPermanently(chat: ChatSummary): Promise<void> {
+  async function deleteChatPermanently(chat: WorkspaceChatSummary): Promise<void> {
     try {
       openPermanentChatDeletion(await loadPermanentChatDeletionSnapshot(chat.id));
     } catch (error) {

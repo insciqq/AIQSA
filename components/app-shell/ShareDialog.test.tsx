@@ -1,9 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShareDialog, type ShareDialogTarget } from "./ShareDialog";
-import type { ChatSummary } from "./types";
+import type { WorkspaceChatSummary } from "./types";
 
-function chatSummary(overrides: Partial<ChatSummary> = {}): ChatSummary {
+function chatSummary(overrides: Partial<WorkspaceChatSummary> = {}): WorkspaceChatSummary {
   return {
     activeLeafMessageId: "message-2",
     createdAt: "2026-07-01T00:00:00.000Z",

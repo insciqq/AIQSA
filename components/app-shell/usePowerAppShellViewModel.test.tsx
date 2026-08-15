@@ -4,9 +4,9 @@ import { usePowerAppShellViewModel } from "./usePowerAppShellViewModel";
 import { formatComposerContextStats } from "./composerContextStats";
 import { estimateApproxTokens } from "@/lib/domain/contextBudget";
 import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
-import type { Catalog, ChatSummary, ThreadMessage } from "./types";
+import type { Catalog, WorkspaceChatSummary, ThreadMessage } from "./types";
 
-function chat(id: string): ChatSummary {
+function chat(id: string): WorkspaceChatSummary {
   return {
     activeLeafMessageId: null,
     createdAt: "2026-06-10T00:00:00.000Z",

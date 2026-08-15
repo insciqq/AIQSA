@@ -13,8 +13,7 @@ import { prisma } from "../../prisma";
 import {
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "../persistence/lexical";
 import { createPrismaLocalMemoryRetrievalRepository } from "./localRepository";
 
@@ -259,8 +258,7 @@ async function createFact(input: Readonly<{
         itemType: "FACT_VERSION",
         languageCode: input.languageCode,
         safeContentHash: memorySha256({ displayText: input.displayText }),
-        safeSearchText: normalized,
-        safeSearchTextYoNormalized: normalizeMemorySearchTextYo(input.displayText),
+        normalizedSearchText: normalized,
         safetyIdentitySnapshot: memorySha256({ sensitivity: input.sensitivityClass ?? "NORMAL" }),
         sourceIdentitySnapshot: memorySha256({ sourceMode, versionId }),
         suppressionIdentitySnapshot: memorySha256({
@@ -393,8 +391,7 @@ async function createChunk(input: Readonly<{
       languageCode: "ru",
       recallChunkId: chunk.id,
       safeContentHash: contentHash,
-      safeSearchText: normalizeMemorySearchText(input.safeText),
-      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(input.safeText),
+      normalizedSearchText: normalizeMemorySearchText(input.safeText),
       safetyIdentitySnapshot: memorySha256({ safety: input.safetyClass ?? "NORMAL" }),
       sourceIdentitySnapshot: memorySha256({ branch: input.branchGeneration ?? 0, chunkId: chunk.id }),
       suppressionIdentitySnapshot: input.suppressionSnapshot,

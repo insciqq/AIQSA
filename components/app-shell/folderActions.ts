@@ -5,12 +5,12 @@ import {
 } from "@/components/app-shell/composerSessionStore";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { shellFetch } from "@/components/app-shell/shellApi";
-import type { ChatSummary, FolderSummary, Notice } from "@/components/app-shell/types";
+import type { WorkspaceChatSummary, FolderSummary, Notice } from "@/components/app-shell/types";
 import type { WorkspaceFolderMutationPort } from "@/components/app-shell/useWorkspaceInteractionController";
 import { sortFoldersByOrder, useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 
 type FolderActionsInput = {
-  activeChat: ChatSummary | null;
+  activeChat: WorkspaceChatSummary | null;
   activeChatId: string | null;
   confirmDeleteFolder(folder: FolderSummary): Promise<boolean>;
   folderMutation: WorkspaceFolderMutationPort;
