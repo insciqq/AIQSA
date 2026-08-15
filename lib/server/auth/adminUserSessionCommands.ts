@@ -12,10 +12,7 @@ import { provisionActiveUser } from "./provisioning";
 import { lockAuthUser } from "./transactionLocks";
 import { MemoryCoordinatorError } from "../memory/coordinator/errors";
 import { countAccountMemoryOwnedData } from "../memory/accountDeletion/inventory";
-import {
-  defaultAccountMemoryDeletionRegistry,
-  type AccountMemoryDeletionRegistry
-} from "../memory/accountDeletion/registry";
+import type { AccountMemoryDeletionHook } from "../memory/accountDeletion/integration";
 
 export type AdminUserSessionCommands = Pick<
   AdminRepository,
@@ -30,11 +27,10 @@ export type AdminUserSessionCommands = Pick<
 export function createAdminUserSessionCommands(
   prisma: PrismaClient,
   options: Readonly<{
-    accountMemoryDeletionRegistry?: AccountMemoryDeletionRegistry;
+    accountMemoryDeletionHook?: () => AccountMemoryDeletionHook | null;
   }> = {}
 ): AdminUserSessionCommands {
-  const accountMemoryDeletionRegistry = options.accountMemoryDeletionRegistry ??
-    defaultAccountMemoryDeletionRegistry;
+  const accountMemoryDeletionHook = options.accountMemoryDeletionHook ?? (() => null);
   return {
     async approveUser(input) {
       return prisma.$transaction(async (tx) => {
@@ -115,13 +111,15 @@ export function createAdminUserSessionCommands(
             return "user_has_owned_data" as const;
           }
           if (ownedData.memory > 0) {
-            const hook = accountMemoryDeletionRegistry.current();
+            const hook = accountMemoryDeletionHook();
             if (!hook) return "user_has_owned_data" as const;
             const advanced = await hook.advance(tx, {
               now: new Date(),
               userId: user.id
             });
-            if (advanced.admitted) admittedMemoryDeletion = true;
+            if (advanced.admitted) {
+              admittedMemoryDeletion = true;
+            }
             if (!advanced.readyForUserDeletion) {
               return "user_has_owned_data" as const;
             }
@@ -136,7 +134,7 @@ export function createAdminUserSessionCommands(
           return "deleted" as const;
         });
         if (admittedMemoryDeletion) {
-          accountMemoryDeletionRegistry.current()?.kick();
+          accountMemoryDeletionHook()?.kick();
         }
         return result;
       } catch (error) {

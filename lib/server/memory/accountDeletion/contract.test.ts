@@ -1,10 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { MemoryDeletionClaim } from "../coordinator/types";
 import {
   ACCOUNT_MEMORY_DELETION_TARGET_TYPE,
   parseAccountMemoryDeletionClaim
 } from "./contract";
-import { AccountMemoryDeletionRegistry } from "./registry";
 
 function claim(overrides: Partial<MemoryDeletionClaim> = {}): MemoryDeletionClaim {
   return {
@@ -35,23 +34,5 @@ describe("account Memory deletion composition contract", () => {
     expect(parseAccountMemoryDeletionClaim(claim({ operation: "BULK_CLEAR" }))).toBeNull();
     expect(parseAccountMemoryDeletionClaim(claim({ admissionAuthorizationId: "auth" })))
       .toBeNull();
-  });
-
-  it("is empty by default, rejects duplicate owners, and unregisters by identity", () => {
-    const registry = new AccountMemoryDeletionRegistry();
-    const first = {
-      advance: vi.fn(async () => ({ admitted: false, readyForUserDeletion: false })),
-      kick: vi.fn()
-    };
-    const second = {
-      advance: vi.fn(async () => ({ admitted: false, readyForUserDeletion: false })),
-      kick: vi.fn()
-    };
-    expect(registry.current()).toBeNull();
-    const unregister = registry.register(first);
-    expect(registry.current()).toBe(first);
-    expect(() => registry.register(second)).toThrow("memory_account_deletion_hook_duplicate");
-    unregister();
-    expect(registry.current()).toBeNull();
   });
 });

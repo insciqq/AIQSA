@@ -38,11 +38,6 @@ export type AdminMemoryHealthSnapshot = Readonly<{
   waitingForEgressCount: number;
 }>;
 
-export type MemoryHealthRepository = Readonly<{
-  readAdmin(adminUserId: string, now: Date): Promise<AdminMemoryHealthSnapshot>;
-  readUser(userId: string, now: Date): Promise<UserMemoryHealthSnapshot>;
-}>;
-
 export type MemoryHealthService = Readonly<{
   admin(
     adminUserId: string,
@@ -261,14 +256,15 @@ function projectAdmin(input: Readonly<{
 
 export function createMemoryHealthService(input: Readonly<{
   now?: () => Date;
+  readAdmin(adminUserId: string, now: Date): Promise<AdminMemoryHealthSnapshot>;
   readSettings(userId: string): Promise<MemorySettingsResponse>;
-  repository: MemoryHealthRepository;
+  readUser(userId: string, now: Date): Promise<UserMemoryHealthSnapshot>;
 }>): MemoryHealthService {
   const now = input.now ?? (() => new Date());
   return Object.freeze({
     async admin(adminUserId, request) {
       const observedAt = now();
-      const snapshot = await input.repository.readAdmin(adminUserId, observedAt);
+      const snapshot = await input.readAdmin(adminUserId, observedAt);
       return projectAdmin({
         egressReviewRequired: request.egressReviewRequired,
         now: observedAt,
@@ -280,7 +276,7 @@ export function createMemoryHealthService(input: Readonly<{
       const observedAt = now();
       const [settings, snapshot] = await Promise.all([
         input.readSettings(userId),
-        input.repository.readUser(userId, observedAt)
+        input.readUser(userId, observedAt)
       ]);
       return projectUser({ now: observedAt, settings, snapshot });
     }

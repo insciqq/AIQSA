@@ -13,6 +13,8 @@ import {
 import { validateGeminiSearchSuggestionsHtml } from "./geminiInteractionsGrounding";
 import {
   geminiInteractionStepForWire,
+  isBoundedGeminiInteractionString as boundedString,
+  isGeminiInteractionRecord as isRecord,
   protectGeminiInteractionStep
 } from "./geminiInteractionsProtocol";
 import { parseSseStream } from "./sse";
@@ -88,19 +90,6 @@ type StreamStepAccumulator = {
   step: Record<string, unknown>;
   textDelta: BoundedTextAccumulator | null;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function boundedString(value: unknown, maxLength: number): value is string {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= maxLength &&
-    !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)
-  );
-}
 
 function isAbsent(value: unknown): value is null | undefined {
   return value === undefined || value === null;

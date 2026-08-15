@@ -3,7 +3,6 @@ import {
   createPermanentChatDeleteAdmissionHandler,
   type PermanentChatDeletionHandlerDeps
 } from "../chats/permanentDeletion/handlers";
-import { AccountMemoryDeletionRegistry } from "./accountDeletion/registry";
 import { MemoryCoordinatorRegistry } from "./coordinator/registry";
 import type { MemoryDeletionHandler } from "./coordinator/types";
 import { createMemoryDeletionComposition } from "./deletionComposition";
@@ -23,13 +22,11 @@ function composition(
     permanent: true
   }
 ) {
-  const accountRegistry = new AccountMemoryDeletionRegistry();
   const coordinatorRegistry = new MemoryCoordinatorRegistry();
   const accountDeletionHandler = handler("ACCOUNT_MEMORY_DELETE");
   const sourcePurgeHandler = handler("SOURCE_PURGE");
   const created = createMemoryDeletionComposition({
     accountDeletionHandler,
-    accountRegistry,
     coordinatorRegistry,
     createAccountHook: ({ admissionEnabled, kick }) => ({
       advance: vi.fn(async () => ({
@@ -51,7 +48,6 @@ function composition(
   });
   return {
     accountDeletionHandler,
-    accountRegistry,
     coordinatorRegistry,
     created,
     sourcePurgeHandler
@@ -93,7 +89,7 @@ describe("Memory deletion composition", () => {
     );
     expect(fixture.coordinatorRegistry.deletionHandler("ACCOUNT_MEMORY_DELETE"))
       .toBeNull();
-    expect(fixture.accountRegistry.current()).toBeNull();
+    expect(fixture.created.accountDeletionHook()).toBeNull();
     expect(fixture.created.permanentChatDeletionCapability.enabled).toBe(false);
   });
 
@@ -115,7 +111,7 @@ describe("Memory deletion composition", () => {
       .toBe(fixture.sourcePurgeHandler);
     expect(fixture.coordinatorRegistry.deletionHandler("ACCOUNT_MEMORY_DELETE"))
       .toBe(fixture.accountDeletionHandler);
-    await expect(fixture.accountRegistry.current()!.advance({} as never, {
+    await expect(fixture.created.accountDeletionHook()!.advance({} as never, {
       now: new Date("2026-08-12T12:00:00.000Z"),
       userId: "owner-1"
     })).resolves.toEqual({ admitted: false, readyForUserDeletion: false });
