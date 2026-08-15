@@ -226,6 +226,96 @@ const staticString = (node) => {
   return null;
 };
 
+const typographyUtilities = (value) =>
+  value
+    .split(/\s+/u)
+    .filter(Boolean)
+    .map((utility) => utility.split(":").at(-1));
+
+const classAttributeOpeningElement = (node) => {
+  let current = node.parent;
+  while (current) {
+    if (current.type === "JSXAttribute") {
+      return current.name.type === "JSXIdentifier" && current.name.name === "className"
+        ? current.parent
+        : null;
+    }
+    if (
+      current.type === "VariableDeclarator" ||
+      current.type === "CallExpression" ||
+      current.type === "Program"
+    ) {
+      return null;
+    }
+    current = current.parent;
+  }
+  return null;
+};
+
+const hasHiddenAttribute = (openingElement) =>
+  openingElement?.type === "JSXOpeningElement" &&
+  openingElement.attributes.some((attribute) => {
+    if (
+      attribute.type !== "JSXAttribute" ||
+      attribute.name.type !== "JSXIdentifier" ||
+      attribute.name.name !== "aria-hidden"
+    ) {
+      return false;
+    }
+    if (attribute.value?.type === "Literal") {
+      return attribute.value.value === true || attribute.value.value === "true";
+    }
+    return attribute.value?.type === "JSXExpressionContainer" &&
+      attribute.value.expression.type === "Literal" &&
+      attribute.value.expression.value === true;
+  });
+
+const uiTypographyRule = {
+  meta: {
+    type: "problem",
+    docs: {
+      description: "Enforce readable semantic typography utilities"
+    },
+    schema: [],
+    messages: {
+      incidentalHidden:
+        "Incidental microtype is allowed only on a JSX marker with aria-hidden=true.",
+      metadataLeading: "Metadata text must keep its readable line-height.",
+      tinyText:
+        "Use the semantic metadata or incidental typography utilities instead of raw 10–11px text."
+    }
+  },
+  create(context) {
+    const check = (node, value) => {
+      const utilities = typographyUtilities(value);
+      if (utilities.some((utility) => /^text-\[(?:10|11)px\]$/u.test(utility))) {
+        context.report({ messageId: "tinyText", node });
+      }
+      if (
+        utilities.includes("text-metadata") &&
+        utilities.some((utility) => /^(?:leading-3|leading-4|leading-none|leading-tight)$/u.test(utility))
+      ) {
+        context.report({ messageId: "metadataLeading", node });
+      }
+      if (
+        utilities.includes("text-incidental") &&
+        !hasHiddenAttribute(classAttributeOpeningElement(node))
+      ) {
+        context.report({ messageId: "incidentalHidden", node });
+      }
+    };
+
+    return {
+      Literal: (node) => {
+        if (typeof node.value === "string") check(node, node.value);
+      },
+      TemplateLiteral: (node) => {
+        check(node, node.quasis.map((quasi) => quasi.value.raw).join(" "));
+      }
+    };
+  }
+};
+
 const architectureBoundariesRule = {
   meta: {
     type: "problem",
@@ -307,7 +397,8 @@ const architectureBoundariesRule = {
 
 const architectureBoundariesPlugin = {
   rules: {
-    "architecture-boundaries": architectureBoundariesRule
+    "architecture-boundaries": architectureBoundariesRule,
+    "ui-typography": uiTypographyRule
   }
 };
 

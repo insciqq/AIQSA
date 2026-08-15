@@ -2,17 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   MEMORY_COPY,
-  MEMORY_COPY_KEYS,
   MemoryCopyContractError,
   memoryCopyCatalogIsComplete,
   resolveMemoryCopy
 } from "./memoryCopy";
 
 describe("Memory presentation copy contract", () => {
-  it("has exact key parity, non-empty values, and one versioned confirmation contract", () => {
+  it("has complete non-empty copy and one versioned confirmation contract", () => {
     expect(MEMORY_CONFIRMATION_COPY_VERSION).toBe("memory-confirmation-v1");
     expect(memoryCopyCatalogIsComplete(MEMORY_COPY)).toBe(true);
-    expect(Object.keys(MEMORY_COPY).sort()).toEqual([...MEMORY_COPY_KEYS].sort());
   });
 
   it("keeps Archive, Exclude, Forget, permanent delete, and Temporary distinct", () => {

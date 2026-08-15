@@ -1,7 +1,0 @@
-import "@/features/workspace-v2/PowerAppShellV2";
-import "../../../features/workspace-v2/PowerAppShellV2";
-import "features/workspace-v2/PowerAppShellV2";
-import "@/app/../features/workspace-v2/PowerAppShellV2";
-import "../../../app/../features/workspace-v2/PowerAppShellV2";
-void import("features/workspace-v2/PowerAppShellV2");
-require("@/features/workspace-v2/PowerAppShellV2");

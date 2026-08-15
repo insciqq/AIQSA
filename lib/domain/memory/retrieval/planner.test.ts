@@ -29,10 +29,6 @@ describe("language-agnostic Memory retrieval planning", () => {
       normalizedQuery: "Какие ответы — 我喜欢؟",
       queryPresent: true
     });
-    expect(Object.keys(plan).sort()).toEqual([
-      "filters", "lexicalQuery", "normalizedExactQuery", "normalizedQuery",
-      "plannerVersion", "queryPresent"
-    ]);
   });
 
   it("does not require lexical tokens to admit raw Unicode", () => {

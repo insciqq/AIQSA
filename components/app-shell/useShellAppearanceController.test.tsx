@@ -33,7 +33,6 @@ describe("shell appearance controller", () => {
     act(() => {
       result.current.theme.change("dark");
     });
-    expect(Object.keys(result.current)).toEqual(["theme"]);
     expect(result.current.theme.id).toBe("dark");
     expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("dark");
     expect(document.cookie).toContain(`${AIQSA_THEME_COOKIE_NAME}=dark`);

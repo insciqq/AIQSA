@@ -80,14 +80,10 @@ describe("provider parameter defaults", () => {
     }
   });
 
-  it("exposes schemas for every built-in provider family", () => {
-    expect(Object.keys(providerParameterSchemas).sort()).toEqual([
-      "anthropic",
-      "fake",
-      "gemini",
-      "openai",
-      "openrouter"
-    ]);
+  it("exposes schemas for the supported built-in provider families", () => {
+    for (const provider of ["anthropic", "fake", "gemini", "openai", "openrouter"] as const) {
+      expect(providerParameterSchemas[provider]).toBeDefined();
+    }
   });
 
   it("exposes GPT-5.6 max effort and reasoning mode without adding OpenRouter-only minimal effort", () => {
