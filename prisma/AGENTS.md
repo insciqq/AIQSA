@@ -2,7 +2,7 @@
 
 Scope: `prisma/**` schema, migrations, bootstrap/seed, integrity, and migration-contract fixtures.
 
-Root `AGENTS.md` and `agent_docs/CRITICAL_INVARIANTS.md` remain authoritative. Read `agent_docs/backend/PERSISTENCE_AND_RETENTION.md`, `ARCHITECTURE.md`, `SECURITY.md`, and the migration lane in `TESTING.md` before changing durable state.
+Root `AGENTS.md` and `agent_docs/CRITICAL_INVARIANTS.md` remain authoritative. Read `agent_docs/PERSISTENCE.md`, `ARCHITECTURE.md`, `SECURITY.md`, and the migration lane in `TESTING.md` before changing durable state.
 
 - Every schema change ships a forward migration and updates bootstrap/seed/integrity contracts when their assumptions change.
 - Preserve existing rows and accepted compatibility semantics unless the operator explicitly authorizes a destructive cutover.

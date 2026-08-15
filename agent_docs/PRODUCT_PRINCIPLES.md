@@ -16,7 +16,7 @@ Scope: Stable product intent and prioritization guidance that informs implementa
 - Current capabilities stay reachable through one presentation and one state owner. New visual treatments do not justify parallel classic/new applications, duplicate API clients, hidden fallback renderers, or invented product state.
 - Server-owned trust is visible where it affects action. Unavailable, unknown, pending, failed, revoked, and disabled facts remain distinct; the UI does not manufacture success, cost, readiness, entitlement, or completion.
 - Progressive disclosure protects the reading flow and next-run setup. It is not a reason to retain a hidden run inspector after the underlying user need has disappeared.
-- The first-use theme is `system`; the only supported stored theme IDs are `system`, `light`, and `dark`, and each presents the same semantic hierarchy. Visual specifics belong to the bounded owners routed by `DESIGN_SYSTEM.md`.
+- The first-use theme is `system`; the only supported stored theme IDs are `system`, `light`, and `dark`, and each presents the same semantic hierarchy. Visual specifics belong to `FRONTEND.md`.
 - Dedicated WCAG conformance work remains explicitly deferred, but responsive access, keyboard-safe text entry, touch operation, readable overflow, and focus-safe existing interactions remain current behavior contracts.
 
 ## Decision Use

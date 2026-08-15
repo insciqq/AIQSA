@@ -93,7 +93,7 @@ external payloads cross into durable state only through a bounded normalized
 projection. `CRITICAL_INVARIANTS.md` owns the cross-cutting safety outcomes;
 the persistence, API, run, and security owners below own their exact mechanics.
 
-Exact schema constraints, migration policy, retention, branch repair, usage accounting, upload cleanup, and share sanitization live in `backend/PERSISTENCE_AND_RETENTION.md`. The clean baseline migration is generated from the current schema and verified against a fresh database.
+Exact schema constraints, migration policy, retention, branch repair, usage accounting, and deletion mechanics live in `PERSISTENCE.md`; API sanitization lives in `BACKEND.md`. The baseline and later migrations are verified against fresh disposable databases.
 
 ## Run Architecture
 
@@ -119,10 +119,9 @@ or control-plane state.
 
 The atomic run graph binds every accepted logical choice to the immutable
 provider, Search, credential, and MCP identities required for continuation and
-recovery. [API state transitions](backend/api/CATALOG_CHATS_AND_RUNS.md) own the
-exact validation/commit sequence, [Search plans](run_pipeline/SEARCH_PLANS.md)
-own physical-route assignment, and [provider admission](backend/providers/ADMISSION_AND_BINDINGS.md)
-owns credential and deployment binding mechanics.
+recovery. [Backend](BACKEND.md) owns the API boundary, [Run contracts](RUN_CONTRACTS.md)
+own admission and Search assignment, and [Providers](PROVIDERS.md) own credential
+and deployment binding mechanics.
 
 ### Execution, tools, and recovery
 
@@ -137,7 +136,7 @@ batch persistence, outcome-unknown handling, terminal settlement, and
 provider-specific live-only exceptions are owned by the routed run and provider
 contracts rather than repeated in this topology map.
 
-`backend/RUNS_AND_STREAMING.md` owns exact lifecycle, cancellation, event, context, usage, and cost semantics. The bounded owners routed by `backend/PROVIDER_ADAPTERS.md` own provider-specific behavior. Bounded owners routed by `RUN_PIPELINE.md` own product-level run meaning.
+`RUN_CONTRACTS.md` owns lifecycle, cancellation, context, tools, output, usage, and recovery semantics. `PROVIDERS.md` owns provider-specific transport behavior.
 
 ## Frontend Boundary
 
@@ -151,7 +150,7 @@ The browser maintains strict summary/detail and server/client separation:
 
 Every async producer captures its source chat/session before awaiting. Optimistic rows, ID adoption, token flushes, errors, persisted refresh, and terminal updates affect only that source. Cached inactive state survives navigation, and stale responses merge without overwriting concurrent user/stream work.
 
-`features/workspace-v2/PowerAppShellV2` is the sole authenticated browser composition. It projects exactly seven semantic view contracts into the current presentation and does not pass a root setter bag. Focused stores, controllers, and API clients under `components/app-shell/` remain headless owners rather than an alternate renderer. `frontend/IMPLEMENTATION_STATE.md` owns exact state boundaries; other frontend behavior routes through `FRONTEND.md`. Theme remains browser-local with cookie-backed server first paint.
+`features/workspace-v2/PowerAppShellV2` is the sole authenticated browser composition. Focused stores, controllers, and API clients under `components/app-shell/` remain headless owners rather than an alternate renderer. `FRONTEND.md` owns state and presentation boundaries. Theme remains browser-local with cookie-backed server first paint.
 
 ## Change Rules
 

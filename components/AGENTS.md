@@ -2,7 +2,7 @@
 
 Scope: `components/**` browser rendering, interaction, and component-level state adapters.
 
-Root `AGENTS.md` and `agent_docs/CRITICAL_INVARIANTS.md` remain authoritative. Start at `agent_docs/FRONTEND.md`, then read only the linked product/layout, state, control, account/admin/share, message, or motion contract in scope. Read `DESIGN_SYSTEM.md` only for visual composition work.
+Root `AGENTS.md` and `agent_docs/CRITICAL_INVARIANTS.md` remain authoritative. Read `agent_docs/FRONTEND.md` for behavior, state, responsive access, and visual composition; add `agent_docs/TESTING.md` for the proportional UI lane.
 
 - Components consume client-safe contracts and callbacks; they do not import Prisma, server repositories, secrets, route handlers, or provider transports.
 - Preserve the existing state owner and responsive/focus/keyboard/touch behavior for the changed surface.
