@@ -123,7 +123,7 @@ Use the standalone `run --rm` form when the selected spec requires the configure
 - Use fake providers in automated tests. Vitest and routine Playwright never make paid external calls.
 - Preserve explicit loading, error, empty, queued, streaming, cancelled, and terminal states when changing their owner.
 - Keep fixtures small and isolated; avoid broad snapshots, duplicated governance assertions, or dependence on execution order.
-- Database/integration tests must default to a clean skip unless their explicit disposable dependency and opt-in gate are present. Create isolated schemas/resources where supported and clean only what the test owns.
+- Database/integration tests belong only to the explicit full lane. Once selected there, they must run against the acknowledged disposable target or fail closed; do not encode permanent environment-driven skips. Create isolated schemas/resources where supported and clean only what the test owns.
 - Migration, backup, prune, browser-reset, and installation tests must validate their exact disposable target before mutation.
 - Sanitize external evidence to stable booleans, counts, codes, and bounded metadata. Never emit secrets, private content, raw upstream responses, or provider-rendered answer text merely to prove a smoke passed.
 
@@ -144,7 +144,7 @@ Add only evidence justified by the changed boundary:
 | Provider adapter | Run deterministic adapter/fake tests first. A real-provider smoke is optional evidence only under the permission and data limits below. |
 | Retention or destructive data behavior | Run the focused retention tests and dry run first; execute deletion only when the requested scope explicitly authorizes it and only against the intended target. |
 | Native Memory phase gate | Run pure source/safety/handler fixtures first, then the exact stateful phase matrix below against disposable PostgreSQL/pgvector. Evidence may contain only aggregate counts, booleans, versions, plan names, Recall@k, latency, and job lag—never source text, embeddings, account IDs, or provider bodies. |
-| MCP, ToolHive, or auth durability | Run focused deterministic tests first, then only the relevant opt-in integration command below against the disposable stack. External package pulls, hosted consent, and live OAuth require their own authority. |
+| MCP, ToolHive, or auth durability | Run focused deterministic tests first, then the relevant explicit full-lane or local-runtime smoke against the disposable stack. External package pulls, hosted consent, and live OAuth require their own authority. |
 | Document parser protocol or sidecar topology | Run deterministic routing/bounds/decoder fakes first, build the locally derived Docling image from its digest/checksum-pinned inputs, then run the parser smoke against that image and digest-pinned Tika in the disposable dev stack. Stop both parsers and prove feature-local unavailability while app readiness remains healthy. |
 
 These rows are routing rules, not a cumulative release matrix. A change does not inherit unrelated checks because an earlier feature once used them.
@@ -197,58 +197,6 @@ docker compose -f docker-compose.dev.yml exec -T app \
   lib/server/memory/lifecycle/prismaLifecycle.prisma.test.ts
 ```
 
-Owner-isolated and aggregate-only Memory health persistence:
-
-```bash
-docker compose -f docker-compose.dev.yml exec -T \
-  -e AIQSA_MEMORY_HEALTH_INTEGRATION_TEST=1 app \
-  npm run test:full -- \
-  lib/server/memory/health/prismaRepository.integration.test.ts
-```
-
-Deletion composition, bounded populated-queue load, crash recovery, latency,
-usage completeness, deletion/provider cleanup, rebuild, Temporary overdue, and
-health evidence run together against an already healthy disposable development
-PostgreSQL/MinIO stack. Keep Prisma generation and the tests in the same
-one-shot container because its anonymous `node_modules` volume is not shared
-with another `docker compose run` invocation:
-
-```bash
-AIQSA_APP_MEMORY_LIMIT=2g AIQSA_APP_CPU_LIMIT=2 \
-docker compose -f docker-compose.dev.yml run --rm -T --no-deps \
-  -e NODE_OPTIONS=--max-old-space-size=1536 \
-  -e AIQSA_MEMORY_HEALTH_INTEGRATION_TEST=1 \
-  -e AIQSA_MEMORY_OPERATIONAL_INTEGRATION_TEST=1 app sh -c '
-    npx prisma generate >/dev/null &&
-    npm run test:full -- --maxWorkers=1 \
-      lib/server/memory/deletionComposition.test.ts \
-      lib/server/memory/capabilityPolicy.test.ts \
-      lib/server/memory/coordinator/policy.test.ts \
-      lib/server/memory/coordinator/scheduler.test.ts \
-      lib/server/memory/coordinator/defaultCoordinator.test.ts \
-      lib/server/memory/history/repository.prisma.test.ts \
-      lib/server/memory/embedding/prismaEmbedding.prisma.test.ts \
-      lib/server/memory/retrieval/localRepository.prisma.test.ts \
-      lib/server/memory/rebuild/prismaRebuild.prisma.test.ts \
-      lib/server/memory/lifecycle/prismaLifecycle.prisma.test.ts \
-      lib/server/memory/temporaryRetention.prisma.test.ts \
-      lib/server/chats/permanentDeletion/cleanup.prisma.test.ts \
-      lib/server/memory/accountDeletion/accountDeletion.prisma.test.ts \
-      lib/server/memory/health/prismaRepository.integration.test.ts \
-      lib/server/memory/operational/evidence.test.ts \
-      lib/server/memory/operational/queueLoad.integration.test.ts \
-      lib/server/memory/operational/contract.test.ts
-  '
-```
-
-The operational evidence schema is strict and aggregate-only. The load case
-uses 24 synthetic owners, 96 jobs, at most two concurrent claims, and one
-expired lease; it rejects an unbounded or larger-than-two-CPU/two-GiB cgroup and
-fails rather than touching a database with unrelated eligible work. The same
-matrix enforces local-retrieval p95 below 150 ms and settled-history lag below
-15 minutes. It never prints owner/job IDs, Memory/query/source text, embeddings,
-storage keys, provider bodies, or credentials.
-
 The operator-authorized production-path Memory smoke runs only against a local
 disposable app already bounded to two CPUs and two GiB. It refreshes exact
 active answer/System/embedding tuples when stale, acknowledges the current
@@ -285,67 +233,16 @@ isolation, and query-p95 evidence while exercising temporal and suppression filt
 emits only searchable-row count and enqueue-to-commit job lag. Test fixture IDs
 and content are explicitly excluded from every evidence object.
 
-Authentication admission concurrency/restart:
-
-```bash
-docker compose -f docker-compose.dev.yml exec -T \
-  -e AIQSA_AUTH_RATE_LIMIT_INTEGRATION_TEST=1 app \
-  npm run test:full -- lib/server/auth/prismaRateLimit.integration.test.ts
-```
-
-Provider Quick Setup repository integration:
-
-```bash
-docker compose -f docker-compose.dev.yml exec -T \
-  -e AIQSA_PROVIDER_QUICK_SETUP_INTEGRATION_TEST=1 app \
-  npm run test:full -- lib/server/admin/providers/quickSetupPrismaRepository.integration.test.ts
-```
-
-Assistant repository and run-acceptance authorization:
-
-```bash
-docker compose -f docker-compose.dev.yml exec -T \
-  -e AIQSA_ASSISTANTS_INTEGRATION_TEST=1 app \
-  npm run test:full -- lib/server/assistants/prismaRepository.integration.test.ts
-docker compose -f docker-compose.dev.yml exec -T \
-  -e AIQSA_ASSISTANT_RUN_AUTHORIZATION_INTEGRATION_TEST=1 app \
-  npm run test:full -- lib/server/runs/assistantProvenancePrismaRepository.integration.test.ts
-```
-
-Knowledge run admission, immutable binding persistence, and rollback after
-access loss:
-
-```bash
-docker compose -f docker-compose.dev.yml exec -T \
-  -e AIQSA_KNOWLEDGE_RUN_INTEGRATION_TEST=1 app \
-  npm run test:full -- lib/server/runs/knowledgeRunBindingsPrismaRepository.integration.test.ts
-```
-
-Knowledge retrieval execution, immutable revision/generation filtering,
-private receipts, negative outcomes, and EXPLAIN-backed HNSW/GIN paths:
-
-```bash
-docker compose -f docker-compose.dev.yml exec -T \
-  -e AIQSA_KNOWLEDGE_RETRIEVAL_INTEGRATION_TEST=1 app \
-  npm run test:full -- lib/server/knowledge/prismaRetrievalRepository.integration.test.ts
-```
-
-MCP protocol, database, and ToolHive boundaries:
+MCP protocol and local remote-runtime boundaries:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app \
   npm test -- lib/server/mcp/oauthService.test.ts
 docker compose -f docker-compose.dev.yml exec -T app \
   npm run test:full -- lib/server/mcp/remoteRuntime.integration.test.ts
-docker compose -f docker-compose.dev.yml exec -T \
-  -e AIQSA_MCP_INTEGRATION_TEST=1 app \
-  npm run test:full -- lib/server/mcp/prismaRepository.integration.test.ts
-docker compose -f docker-compose.dev.yml exec -T \
-  -e AIQSA_TOOLHIVE_INTEGRATION_TEST=1 app \
-  npm run test:full -- lib/server/mcp/toolhive.integration.test.ts
 ```
 
-The ToolHive case controls sibling Docker resources and may pull only its reviewed digest-pinned fixture. Live package-registry materialization, hosted consent, or brokered SaaS evidence remains separately authorized and sanitized; local metadata discovery alone is not end-to-end proof.
+The remote-runtime case starts only a bounded local SDK fixture. Live package-registry materialization, hosted consent, brokered SaaS evidence, or sibling Docker control remains separately authorized and sanitized; local metadata discovery alone is not end-to-end proof.
 
 Document parser sidecars and feature-local failure:
 
@@ -376,39 +273,6 @@ readiness route directly against the same Postgres and MinIO. An explicit
 `AIQSA_PARSER_SMOKE_READINESS_URL` instead checks a running deployment over
 HTTP. The stopped-sidecar step is valid only in the disposable dev topology
 and must restore both services afterward.
-
-The host-owned OCR benchmark reuses the same deterministic open-font,
-300-DPI A4 grayscale fixture at 10, 50, and 100 image-only PDF pages:
-
-```bash
-npm run benchmark:knowledge-ocr
-```
-
-Run it only while the exact disposable Docling service is healthy. Before the
-matrix it force-recreates only that disposable service with dependencies,
-image builds, and pulls disabled, then fails closed unless the replacement has
-the expected local tag, base-
-digest and version labels, 2 CPU/10 GiB limits, one local worker, disabled boot
-warm-up, one options-cache entry, matched four-page pipeline queues/batches, two inference
-threads, a 290-second server wait, and the app has the 300-second client timeout;
-it also executes the sealed offline asset verifier in the running container. It
-records
-fixture dimensions/bytes, wall time, peak container memory, normalized output
-size, page/text evidence, and whether the current 290/300-second synchronous
-boundary was reached. A recorded large-case timeout or Docker-event-verified
-container OOM is evidence for a later async/page-slicing or resource decision,
-not permission to raise the timeout/memory limit or a failure of the
-small-document OCR contract. Any 10-page resource/deadline failure is recorded
-and recovered but then fails the command; only measured 50/100-page limits are
-accepted as large-case benchmark results. After either recoverable outcome, the benchmark
-force-recreates only the disposable `docker-compose.dev.yml` `docling` service
-with `--no-deps --no-build --pull never`, waits for health, and re-verifies the
-exact tag/base/version identity, canonical resource/timing profile, and offline
-OCR assets before continuing; the same recovery is performed after a final
-large-case failure. Its JSON evidence records that replacement, health, and image
-verification so one still-running conversion cannot contaminate the next matrix
-item. A recovery failure is emitted beside the already measured case before the
-remaining matrix stops.
 
 ### Provider smokes
 

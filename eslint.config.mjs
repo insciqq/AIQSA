@@ -22,6 +22,12 @@ const eslintConfig = [
     }
   },
   {
+    files: [`app/${architectureModules}`, `components/${architectureModules}`],
+    rules: {
+      "aiqsa-architecture/ui-typography": "error"
+    }
+  },
+  {
     files: [`components/${architectureModules}`],
     rules: {
       "aiqsa-architecture/architecture-boundaries": architectureBoundary("components")

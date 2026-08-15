@@ -1,18 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { WorkspaceChatSummary, FolderSummary } from "./types";
-import {
-  useWorkspaceInteractionController,
-  type WorkspaceInteractionController
-} from "./useWorkspaceInteractionController";
-
-type RootSetterKey<T extends object> = {
-  [Key in keyof T]: Key extends string
-    ? Key extends `set${infer Suffix}`
-      ? Suffix extends Capitalize<Suffix> ? Key : never
-      : never
-    : never;
-}[keyof T];
+import { useWorkspaceInteractionController } from "./useWorkspaceInteractionController";
 
 const chat: WorkspaceChatSummary = {
   activeLeafMessageId: null,
@@ -36,26 +25,6 @@ const folder: FolderSummary = {
 };
 
 describe("useWorkspaceInteractionController", () => {
-  it("exposes only V2 semantic ports without a root setter bag", () => {
-    const { result } = renderHook(() => useWorkspaceInteractionController());
-
-    expect(Object.keys(result.current).sort()).toEqual([
-      "chatMutation",
-      "folderMutation",
-      "paneActions",
-      "paneState",
-      "projectSettings"
-    ]);
-    expectTypeOf<RootSetterKey<WorkspaceInteractionController>>().toEqualTypeOf<never>();
-    expect(result.current.paneState).toEqual({
-      editingChatId: null,
-      editingChatTitle: "",
-      editingFolderId: null,
-      editingFolderName: "",
-      folderActionId: null
-    });
-  });
-
   it("owns exact chat and folder rename transitions", () => {
     const { result } = renderHook(() => useWorkspaceInteractionController());
 

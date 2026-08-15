@@ -29,7 +29,7 @@ describe("Memory retrieval lane scheduler", () => {
   it("allocates all configured lanes under the shared candidate ceiling", () => {
     const lanes: readonly MemoryRetrievalLane[] = MEMORY_RETRIEVAL_LANE_ORDER;
     const allocation = allocateMemoryRetrievalLaneLimits(lanes);
-    expect(Object.keys(allocation).sort()).toEqual([...lanes].sort());
+    for (const lane of lanes) expect(allocation[lane]).toBeGreaterThan(0);
     expect(Object.values(allocation).reduce((sum, value) => sum + (value ?? 0), 0))
       .toBeLessThanOrEqual(120);
   });

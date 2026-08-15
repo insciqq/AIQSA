@@ -16,7 +16,6 @@
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
-    "benchmark:knowledge-ocr": "tsx scripts/benchmark-knowledge-ocr.ts",
     "check": "npm run check:hermetic",
     "check:container": "AIQSA_APP_MEMORY_LIMIT=2g AIQSA_APP_CPU_LIMIT=2 docker compose -f docker-compose.dev.yml run --rm -T --no-deps --name aiqsa-dev-check -e NODE_OPTIONS=--max-old-space-size=1536 app npm run check:container:inner",
     "check:container:inner": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE tsx scripts/stateful-test-target.ts && prisma generate && prisma migrate deploy && npm run docs:check && npm run test:full -- --maxWorkers=1",

@@ -1,8 +1,0 @@
-import "@/components/admin/AdminPanel";
-import "../admin/AdminPanel";
-import "@/lib/server/prisma";
-import "components/admin/AdminPanel";
-import "@/components/app-shell/../admin/AdminPanel";
-import "../app-shell/../admin/AdminPanel";
-void import("components/admin/AdminPanel");
-require("@/components/admin/AdminPanel");

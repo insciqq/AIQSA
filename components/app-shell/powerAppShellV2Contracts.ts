@@ -24,16 +24,6 @@ import type { RefObject } from "react";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
 
-export const powerAppShellViewFeatureKeys = [
-  "session",
-  "workspace",
-  "thread",
-  "composer",
-  "branches",
-  "settings",
-  "overlays"
-] as const;
-
 export type ShellSessionView = {
   accountId: string;
   accountEmail: string | null;

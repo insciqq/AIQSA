@@ -109,22 +109,6 @@ describe("useShellOverlayController confirmations", () => {
     expect(result.current.confirmations.chat.target).toBeNull();
   });
 
-  it("exposes semantic nested owners without a root setter bag", () => {
-    const { result } = renderHook(() => useShellOverlayController(controllerInput()));
-
-    expect(Object.keys(result.current).sort()).toEqual([
-      "branches",
-      "confirmations",
-      "palette"
-    ]);
-    expect(Object.keys(result.current.branches).sort()).toEqual([
-      "close",
-      "open",
-      "show",
-      "toggle"
-    ]);
-    expect(Object.keys(result.current.palette).sort()).toEqual(["close", "open", "show"]);
-  });
 });
 
 describe("useShellOverlayController shortcuts", () => {

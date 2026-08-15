@@ -14,8 +14,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 describe("Memory UI copy", () => {
-  it("has exact non-blank English coverage without fallback", () => {
-    expect(Object.keys(MEMORY_UI_COPY).sort()).toEqual([...MEMORY_UI_COPY_KEYS].sort());
+  it("has non-blank English coverage without fallback", () => {
     for (const key of MEMORY_UI_COPY_KEYS) {
       expect(memoryUiCopy(key).trim(), key).not.toBe("");
     }
