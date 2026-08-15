@@ -1,59 +1,32 @@
 import { defineConfig } from "vitest/config";
-import { fileURLToPath } from "node:url";
+import { assertDisposableStatefulTestTarget } from "./scripts/stateful-test-target";
+import {
+  vitestBaseExcludes,
+  vitestResolveConfig,
+  vitestSharedTestConfig,
+  vitestStatefulTests
+} from "./scripts/vitest-project-config";
 
-const defaultExcludes = ["node_modules/**", ".next/**", "tests/e2e/**"];
-const statefulTestFiles = [
-  "**/*.integration.test.{ts,tsx}",
-  "**/*.prisma.test.{ts,tsx}"
-];
+assertDisposableStatefulTestTarget(process.env);
 
 export default defineConfig({
-  resolve: {
-    alias: {
-      "@": fileURLToPath(new URL(".", import.meta.url))
-    }
-  },
   test: {
-    allowOnly: false,
-    css: true,
-    environment: "jsdom",
-    exclude: defaultExcludes,
-    globals: true,
-    include: [
-      "app/**/*.test.{ts,tsx}",
-      "components/**/*.test.{ts,tsx}",
-      "features/**/*.test.{ts,tsx}",
-      "lib/**/*.test.{ts,tsx}",
-      "ops/**/*.test.{ts,tsx}",
-      "prisma/**/*.test.{ts,tsx}",
-      "scripts/**/*.test.{ts,tsx}"
-    ],
-    maxWorkers: "33%",
-    setupFiles: "./vitest.setup.ts",
     projects: [
       {
-        extends: true,
+        extends: "./vitest.config.ts",
         test: {
-          exclude: [...defaultExcludes, ...statefulTestFiles],
-          name: "parallel"
+          name: "hermetic"
         }
       },
       {
-        resolve: {
-          alias: {
-            "@": fileURLToPath(new URL(".", import.meta.url))
-          }
-        },
+        resolve: vitestResolveConfig,
         test: {
-          allowOnly: false,
-          css: true,
-          environment: "jsdom",
-          exclude: defaultExcludes,
+          ...vitestSharedTestConfig,
+          exclude: vitestBaseExcludes,
           fileParallelism: false,
-          globals: true,
-          include: statefulTestFiles,
-          name: "stateful",
-          setupFiles: "./vitest.setup.ts"
+          include: vitestStatefulTests,
+          maxWorkers: 1,
+          name: "stateful"
         }
       }
     ]
