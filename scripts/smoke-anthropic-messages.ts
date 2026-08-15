@@ -68,7 +68,12 @@ const apiRoot = "https://api.anthropic.com/v1";
 const modelId = process.env.AIQSA_ANTHROPIC_SMOKE_MODEL || "claude-sonnet-5";
 let observedHttpStatus: number | null = null;
 const safeFetch = createProviderSafeFetch({
-  configuration: { allowPrivateNetwork: false, apiRoot }
+  configuration: {
+    allowPrivateNetwork: false,
+    apiRoot,
+    authenticationMode: "bearer",
+    responseTimeoutMs: 300_000
+  }
 });
 const observingFetch: typeof fetch = async (...args) => {
   const response = await safeFetch(...args);
@@ -120,29 +125,31 @@ function directBody(text: string): Record<string, unknown> {
   };
 }
 
-function historicalAttachmentRequest(): ProviderRunRequest {
+function priorAttachmentRequest(): ProviderRunRequest {
   const currentContent = { blocks: [{ text: "Reply with one short word.", type: "text" }] };
   return {
     attachmentIds: [],
     attachments: [],
-    chatId: "anthropic-smoke-history",
+    chatId: "anthropic-smoke-prior-attachment",
     content: currentContent,
     context: {
       messages: [
         {
-          content: { blocks: [{ attachmentId: "smoke-historical-image", type: "image" }] },
-          id: "historical-attachment-only",
+          content: { blocks: [{ attachmentId: "smoke-prior-image", type: "image" }] },
+          id: "prior-attachment-only",
           role: "user"
         },
         {
           content: { blocks: [{ text: "Acknowledged.", type: "text" }] },
-          id: "historical-assistant",
+          id: "prior-assistant",
           role: "assistant"
         },
         { content: currentContent, id: "current-user", role: "user" }
       ],
       mode: "branch_path"
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: true,
       nativeSearch: true,
@@ -164,33 +171,33 @@ function historicalAttachmentRequest(): ProviderRunRequest {
       system: "This is a bounded AIQSA request-shape smoke test."
     },
     provider: "anthropic",
-    searchStrategy: "search-disabled"
+    searchPlan: { mode: "all_selected", options: [] }
   };
 }
 
 async function main(): Promise<void> {
   const control = await probeBody(directBody("Reply with one short word."));
   const emptyText = await probeBody(directBody(""));
-  const historicalBody = buildAnthropicMessagesRequest(historicalAttachmentRequest());
-  const historicalMessages = Array.isArray(historicalBody.messages)
-    ? historicalBody.messages
+  const priorAttachmentBody = buildAnthropicMessagesRequest(priorAttachmentRequest());
+  const priorAttachmentMessages = Array.isArray(priorAttachmentBody.messages)
+    ? priorAttachmentBody.messages
     : [];
-  const historicalFirstMessage = isRecord(historicalMessages[0])
-    ? historicalMessages[0]
+  const priorFirstMessage = isRecord(priorAttachmentMessages[0])
+    ? priorAttachmentMessages[0]
     : {};
-  const historicalFirstContent = Array.isArray(historicalFirstMessage.content)
-    ? historicalFirstMessage.content
+  const priorFirstContent = Array.isArray(priorFirstMessage.content)
+    ? priorFirstMessage.content
     : [];
-  const historicalFirstBlock = isRecord(historicalFirstContent[0])
-    ? historicalFirstContent[0]
+  const priorFirstBlock = isRecord(priorFirstContent[0])
+    ? priorFirstContent[0]
     : {};
-  const historicalPlaceholderPresent = historicalFirstBlock.type === "text" &&
-    historicalFirstBlock.text === "[image attachment]";
-  const historical = await probeBody({ ...historicalBody, stream: false });
+  const priorAttachmentMarkerPresent = priorFirstBlock.type === "text" &&
+    priorFirstBlock.text === "[image attachment]";
+  const priorAttachment = await probeBody({ ...priorAttachmentBody, stream: false });
   const emptyObservationValid = emptyText.accepted || emptyText.httpStatus === 400;
   const passed = control.accepted && control.httpStatus === 200 &&
-    emptyObservationValid && historicalPlaceholderPresent &&
-    historical.accepted && historical.httpStatus === 200;
+    emptyObservationValid && priorAttachmentMarkerPresent &&
+    priorAttachment.accepted && priorAttachment.httpStatus === 200;
 
   console.log(JSON.stringify({
     controlAccepted: control.accepted,
@@ -201,10 +208,10 @@ async function main(): Promise<void> {
     emptyTextAccepted: emptyText.accepted,
     emptyTextHttpStatus: emptyText.httpStatus,
     emptyTextRejected: emptyText.httpStatus === 400,
-    historicalHttpStatus: historical.httpStatus,
-    historicalPlaceholderAccepted: historical.accepted,
-    historicalPlaceholderPresent,
-    historicalUsage: historical.usage,
+    priorAttachmentAccepted: priorAttachment.accepted,
+    priorAttachmentHttpStatus: priorAttachment.httpStatus,
+    priorAttachmentMarkerPresent,
+    priorAttachmentUsage: priorAttachment.usage,
     status: passed ? "passed" : "failed"
   }, null, 2));
   if (!passed) process.exitCode = 1;

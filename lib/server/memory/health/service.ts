@@ -4,7 +4,6 @@ import type {
   AdminMemoryHealth,
   UserMemoryHealth
 } from "../../../contracts/memoryHealth";
-import type { MemorySchedulerBudgetStatus } from "../coordinator/scheduler";
 
 const ACTIVE_REBUILD_STATES = new Set<MemoryJobState>([
   "QUEUED",
@@ -35,7 +34,6 @@ export type AdminMemoryHealthSnapshot = Readonly<{
   overdueTemporaryCount: number;
   recentExecutionCount: number;
   recentTerminalJobCount: number;
-  requestLocale: "EN" | "RU";
   retryingJobCount: number;
   waitingForEgressCount: number;
 }>;
@@ -87,16 +85,8 @@ function lagBand(
   return "OVER_24_HOURS";
 }
 
-function schedulerState(
-  status: MemorySchedulerBudgetStatus
-): AdminMemoryHealth["scheduler"]["state"] {
-  if (status.status === "unavailable") return "UNAVAILABLE";
-  return status.installation.deferred ? "DEFERRED" : "READY";
-}
-
 function projectUser(input: Readonly<{
   now: Date;
-  scheduler: MemorySchedulerBudgetStatus;
   settings: MemorySettingsResponse;
   snapshot: UserMemoryHealthSnapshot;
 }>): UserMemoryHealth {
@@ -115,37 +105,26 @@ function projectUser(input: Readonly<{
     : input.settings.egress.reviewRequired
       ? "USER_REQUIRED" as const
       : "NONE" as const;
-  const schedulerUnavailable = input.scheduler.status === "unavailable";
-  const schedulerDeferred = input.scheduler.installation.deferred ||
-    input.scheduler.user?.deferred === true;
   const learningDelayed = input.settings.settings.learnAutomatically && (
     !input.settings.capabilities.automaticLearning ||
-    input.snapshot.waitingForEgressCount > 0 ||
-    schedulerUnavailable ||
-    schedulerDeferred
+    input.snapshot.waitingForEgressCount > 0
   );
   const learning = !input.settings.settings.learnAutomatically
-    ? {
+      ? {
         reason: "USER_DISABLED" as const,
-        resumeAt: null,
         state: "DISABLED" as const
       }
     : learningDelayed
       ? (() => {
           const reason = !input.settings.capabilities.automaticLearning
             ? "CAPABILITY_UNAVAILABLE" as const
-            : input.snapshot.waitingForEgressCount > 0
-            ? "EGRESS_REVIEW" as const
-            : schedulerUnavailable
-              ? "SCHEDULER_UNAVAILABLE" as const
-              : "BUDGET" as const;
+            : "EGRESS_REVIEW" as const;
           return {
             reason,
-            resumeAt: reason === "BUDGET" ? input.scheduler.resetAt : null,
             state: "DELAYED" as const
           };
         })()
-      : { reason: "NONE" as const, resumeAt: null, state: "READY" as const };
+      : { reason: "NONE" as const, state: "READY" as const };
   const indexing = {
     completedChats,
     countTruncated: historyCount.truncated,
@@ -219,7 +198,6 @@ function projectUser(input: Readonly<{
 function projectAdmin(input: Readonly<{
   egressReviewRequired: boolean;
   now: Date;
-  scheduler: MemorySchedulerBudgetStatus;
   snapshot: AdminMemoryHealthSnapshot;
 }>): AdminMemoryHealth {
   const lag = lagBand(input.snapshot.oldestActiveJobAt, input.now);
@@ -247,12 +225,11 @@ function projectAdmin(input: Readonly<{
   const temporaryState = input.snapshot.overdueTemporaryCount > 0
     ? "OVERDUE" as const
     : "CLEAR" as const;
-  const scheduler = schedulerState(input.scheduler);
   const actionRequired = input.egressReviewRequired ||
     deletionState === "ATTENTION_REQUIRED" ||
     temporaryState === "OVERDUE";
   const degraded = queueState === "BLOCKED" || queueState === "DELAYED" ||
-    providerState === "DEGRADED" || scheduler !== "READY";
+    providerState === "DEGRADED";
 
   return Object.freeze({
     deletion: Object.freeze({
@@ -275,8 +252,6 @@ function projectAdmin(input: Readonly<{
       state: queueState,
       waitingForReview: countBand(input.snapshot.waitingForEgressCount)
     }),
-    requestLocale: input.snapshot.requestLocale,
-    scheduler: Object.freeze({ resetAt: input.scheduler.resetAt, state: scheduler }),
     temporary: Object.freeze({
       overdue: countBand(input.snapshot.overdueTemporaryCount),
       state: temporaryState
@@ -286,7 +261,6 @@ function projectAdmin(input: Readonly<{
 
 export function createMemoryHealthService(input: Readonly<{
   now?: () => Date;
-  readSchedulerStatus(userId?: string): Promise<MemorySchedulerBudgetStatus>;
   readSettings(userId: string): Promise<MemorySettingsResponse>;
   repository: MemoryHealthRepository;
 }>): MemoryHealthService {
@@ -294,26 +268,21 @@ export function createMemoryHealthService(input: Readonly<{
   return Object.freeze({
     async admin(adminUserId, request) {
       const observedAt = now();
-      const [snapshot, scheduler] = await Promise.all([
-        input.repository.readAdmin(adminUserId, observedAt),
-        input.readSchedulerStatus()
-      ]);
+      const snapshot = await input.repository.readAdmin(adminUserId, observedAt);
       return projectAdmin({
         egressReviewRequired: request.egressReviewRequired,
         now: observedAt,
-        scheduler,
         snapshot
       });
     },
 
     async user(userId) {
       const observedAt = now();
-      const [settings, snapshot, scheduler] = await Promise.all([
+      const [settings, snapshot] = await Promise.all([
         input.readSettings(userId),
-        input.repository.readUser(userId, observedAt),
-        input.readSchedulerStatus(userId)
+        input.repository.readUser(userId, observedAt)
       ]);
-      return projectUser({ now: observedAt, scheduler, settings, snapshot });
+      return projectUser({ now: observedAt, settings, snapshot });
     }
   });
 }

@@ -94,7 +94,6 @@ export async function cleanupE2eWorkspace(page: Page): Promise<string> {
       defaultSearchPlan: { mode: "all_selected", optionIds: [] },
       showCitations: true,
       showReasoningBlocks: false,
-      showToolActivity: true,
     }
   });
   if (!settingsResponse.ok()) {

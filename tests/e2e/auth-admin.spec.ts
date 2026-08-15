@@ -166,7 +166,20 @@ async function confirmAdminDialog(page: Page, testId: string, buttonName: RegExp
 }
 
 async function browserFetchStatus(page: Page, path: string): Promise<number> {
-  return page.evaluate((url) => fetch(url).then((response) => response.status), path);
+  try {
+    return await page.evaluate(
+      (url) => fetch(url).then((response) => response.status),
+      path
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      /execution context was destroyed|cannot find context with specified id/iu.test(error.message)
+    ) {
+      return -1;
+    }
+    throw error;
+  }
 }
 
 test.afterAll(async () => {
@@ -302,7 +315,7 @@ test("admin edits group membership from the group detail without dropping unrela
   }
 });
 
-test("admin sees the built-in Full access group with automatic resource coverage", async ({ page }, testInfo) => {
+test("admin sees the built-in Full access group with automatic resource coverage", async ({ page }) => {
   await bootstrapAdmin(page);
   await openAdminSection(page, adminSection("access"));
 
@@ -319,11 +332,6 @@ test("admin sees the built-in Full access group with automatic resource coverage
   await expect(detail.getByRole("button", { name: "Rename group" })).toHaveCount(0);
   await expect(detail.getByRole("button", { name: "Archive group" })).toHaveCount(0);
   await expect(detail.getByRole("button", { name: "Delete group" })).toHaveCount(0);
-  await page.screenshot({
-    fullPage: true,
-    path: testInfo.outputPath("full-access-overview-desktop.png")
-  });
-
   const systemGroup = await prisma.group.findUnique({
     select: {
       id: true,
@@ -366,10 +374,6 @@ test("admin sees the built-in Full access group with automatic resource coverage
     detail.getByText(/provider credentials and personal MCP setup remain separate/i)
   ).toBeVisible();
   await expectNoPageOverflow(page);
-  await page.screenshot({
-    fullPage: true,
-    path: testInfo.outputPath("full-access-overview-mobile.png")
-  });
 });
 
 test("admin creates and deletes an installation-owned MCP draft", async ({ page }) => {
@@ -626,7 +630,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
       data: {
         modelId: providerTemplateIds.fakeModel,
         provider: providerTemplateIds.fakeConnection,
-        searchStrategy: "search-disabled",
+        searchPlan: { mode: "all_selected", optionIds: [] },
         text: "stale entitlement check"
       }
     });
@@ -715,7 +719,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
   }
 });
 
-test("admin console keeps all redesigned sections operable end to end", async ({ page }, testInfo) => {
+test("admin console keeps all redesigned sections operable end to end", async ({ page }) => {
   test.setTimeout(90_000);
   page.setDefaultTimeout(5_000);
 
@@ -808,19 +812,8 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(page.getByTestId("admin-section-providers")).toBeVisible();
     await expect(page).toHaveURL(/\/admin$/);
 
-    await page.goto("/admin?section=groups");
+    await page.goto("/admin?section=access");
     await expect(page.getByTestId("admin-section-access")).toBeVisible();
-    await expect(page.getByRole("tab", { name: "Access & groups" })).toHaveAttribute("aria-selected", "true");
-    await expect(page).toHaveURL(/\/admin\?section=access$/);
-    await page.reload();
-    await expect(page.getByTestId("admin-section-access")).toBeVisible();
-    await expect(page.getByRole("tab", { name: "Access & groups" })).toHaveAttribute("aria-selected", "true");
-
-    await page.goto("/admin?section=model-access");
-    await expect(page.getByTestId("admin-section-access")).toBeVisible();
-    await expect(page.getByRole("tab", { name: "Access & groups" })).toHaveAttribute("aria-selected", "true");
-    await expect(page).toHaveURL(/\/admin\?section=access$/);
-
     const access = page.getByTestId("admin-section-access");
     await access.getByRole("button", { name: "New group" }).click();
     await access.getByLabel("Group name").fill(groupName);
@@ -1016,20 +1009,12 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     ).toBeVisible();
     await expect(archivedAccessDetail.getByLabel("Grant provider Fake QSA")).toBeDisabled();
 
-    await page.screenshot({
-      fullPage: true,
-      path: testInfo.outputPath("admin-desktop.png")
-    });
     await page.setViewportSize({
       height: 844,
       width: 390
     });
     await page.goto("/admin?section=users");
     await expect(page.getByTestId("admin-section-users")).toBeVisible();
-    await page.screenshot({
-      fullPage: true,
-      path: testInfo.outputPath("admin-compact.png")
-    });
 
     await openAdminSection(page, adminSection("safety"));
     await page.getByRole("button", { name: "Revoke all sessions" }).click();

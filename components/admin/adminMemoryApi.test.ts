@@ -41,8 +41,6 @@ function payload() {
         state: "DELAYED",
         waitingForReview: "SOME"
       },
-      requestLocale: "EN",
-      scheduler: { resetAt: "2026-08-13T00:00:00.000Z", state: "READY" },
       temporary: { overdue: "NONE", state: "CLEAR" }
     }
   };

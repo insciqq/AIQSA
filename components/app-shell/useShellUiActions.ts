@@ -1,35 +1,21 @@
-import type { InspectorTabId } from "@/components/app-shell/inspectorContracts";
 import { useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
-import type { InspectorMode, ThreadMessage } from "@/components/app-shell/types";
+import type { ThreadMessage } from "@/components/app-shell/types";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
-import type { Dispatch, SetStateAction } from "react";
 
 type ShellUiActionsInput = {
   branchChatFromMessage(messageId: string): Promise<void> | void;
   copyMessage(message: ThreadMessage): Promise<void> | void;
   deleteMessage(messageId: string): Promise<void> | void;
   regenerateMessage(messageId: string): Promise<void> | void;
-  setInspectorActiveTab(value: InspectorTabId): void;
-  setInspectorMode: Dispatch<SetStateAction<InspectorMode>>;
 };
 
 export function useShellUiActions({
   branchChatFromMessage,
   copyMessage,
   deleteMessage,
-  regenerateMessage,
-  setInspectorActiveTab,
-  setInspectorMode
+  regenerateMessage
 }: ShellUiActionsInput) {
-  function openDetails(tab?: InspectorTabId) {
-    if (tab) {
-      setInspectorActiveTab(tab);
-    }
-
-    setInspectorMode("overlay");
-  }
-
   const handleBranchFromMessage = useEventCallback((messageId: string) => {
     void branchChatFromMessage(messageId);
   });
@@ -53,7 +39,6 @@ export function useShellUiActions({
     handleCopyMessage,
     handleDeleteMessage,
     handleEditMessage,
-    handleRegenerateMessage,
-    openDetails
+    handleRegenerateMessage
   };
 }

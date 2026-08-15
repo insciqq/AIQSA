@@ -52,10 +52,6 @@ export type OpenRouterChatRequestBody = Record<string, unknown> & {
 
 export type OpenRouterChatRequestOptions = Readonly<{
   maxAttachmentTextChars?: number;
-  /** @deprecated Use buildOpenRouterChatRequestPreview for complete preview redaction. */
-  redactFiles?: boolean;
-  /** @deprecated Use buildOpenRouterChatRequestPreview for complete preview redaction. */
-  redactImages?: boolean;
 }>;
 
 export type OpenRouterChatRequestPreview = {
@@ -87,7 +83,7 @@ export type OpenRouterPerplexitySearchRequestPreview = {
   stage: "tool_search";
 };
 
-type PrivateBuildOptions = Omit<OpenRouterChatRequestOptions, "redactFiles" | "redactImages"> & {
+type PrivateBuildOptions = OpenRouterChatRequestOptions & {
   preview: boolean;
   redactFiles: boolean;
   redactImages: boolean;
@@ -450,7 +446,7 @@ function buildOpenRouterChatBody(
     }),
     metadata: {
       app: "aiqsa",
-      search_strategy: request.searchStrategy ?? "search-disabled",
+      search_strategy: request.searchPlan.options[0]?.optionId ?? "search-disabled",
       stage: "answer"
     },
     modelId: request.modelId,
@@ -470,8 +466,8 @@ export function buildOpenRouterChatRequest(
   return buildOpenRouterChatBody(request, {
     maxAttachmentTextChars: options.maxAttachmentTextChars,
     preview: false,
-    redactFiles: options.redactFiles ?? false,
-    redactImages: options.redactImages ?? false
+    redactFiles: false,
+    redactImages: false
   });
 }
 

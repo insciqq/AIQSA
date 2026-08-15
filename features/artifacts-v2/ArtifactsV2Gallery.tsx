@@ -95,7 +95,7 @@ export function ArtifactsV2Gallery({ state = "default" }: { state?: ArtifactsFix
                   </p>
                   <GeneratedArtifactStackV2
                     artifacts={artifacts}
-                    onDetails={() => setNotice("Validation details are limited to the fixture projection; Run details ships as a separate slice.")}
+                    onDetails={() => setNotice("Validation details are limited to this generated-output fixture.")}
                     onDownload={(_, version) => exactVersionNotice("Download not performed", version)}
                     onPreview={(artifact) => {
                       if (artifact.status === "ready") setPreviewArtifact(artifact);

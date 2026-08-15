@@ -7,7 +7,6 @@ export const MEMORY_EXECUTION_ERROR_CODES = [
   "memory_execution_output_invalid",
   "memory_execution_policy_drift",
   "memory_execution_policy_unavailable",
-  "memory_execution_qualification_required",
   "memory_execution_recovery_expired",
   "memory_execution_snapshot_invalid",
   "memory_execution_state_conflict",

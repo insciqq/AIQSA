@@ -264,12 +264,7 @@ describe("Memory source-state persistence", () => {
       });
       await expect(repository.commitJobSuccess({
         acceptedResultHash: "b".repeat(64),
-        apply: async (tx) => {
-          await tx.userMemorySettings.update({
-            data: { preferredProfileLanguage: "en" },
-            where: { userId }
-          });
-        },
+        apply: async () => undefined,
         claim: sourceClaim!,
         now: new Date(now.getTime() + 2_000),
         stage: "APPLIED"

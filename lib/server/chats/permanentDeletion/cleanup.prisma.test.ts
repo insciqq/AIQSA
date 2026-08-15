@@ -18,7 +18,6 @@ import { createPrismaMemoryFactRepository } from "../../memory/persistence/facts
 import { memorySha256, normalizeMemorySearchText } from
   "../../memory/persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../../memory/persistence/scopes";
-import { loadMemoryRunEvidence } from "../../memory/receipts/projection";
 import { MemorySuppressionKeyring } from "../../memory/suppressionKeyring";
 import { createPrismaPermanentChatDeletionHandler } from "./cleanup";
 import { createPrismaPermanentChatDeletionRepository } from "./repository";
@@ -73,7 +72,6 @@ async function createTurn(userId: string, title: string) {
       modelId: "permanent-chat-test-model",
       normalizedRequest: { accepted: title },
       provider: "permanent-chat-test-provider",
-      providerRequestPreview: { accepted: title },
       status: "complete",
       userId,
       userMessageId: userMessage.id
@@ -401,16 +399,6 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
       role: "user"
     }
   })).rejects.toThrow();
-  const fencedReceipt = (await loadMemoryRunEvidence(prisma, {
-    runIds: [accepted.destination.run.id],
-    userId
-  })).get(accepted.destination.run.id)?.receipt;
-  expect(fencedReceipt?.items[0]).toMatchObject({
-    includedText: accepted.includedText,
-    lifecycleState: "SOURCE_DELETED",
-    sourceChatId: null
-  });
-
   const registry = new MemoryCoordinatorRegistry();
   let injectFailure = true;
   const cleanupHandler = createPrismaPermanentChatDeletionHandler({
@@ -467,15 +455,6 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
   await expect(prisma.modelRun.findUniqueOrThrow({
     where: { id: accepted.destination.run.id }
   })).resolves.toMatchObject({ normalizedRequest: { accepted: "Destination" } });
-  const finalReceipt = (await loadMemoryRunEvidence(prisma, {
-    runIds: [accepted.destination.run.id],
-    userId
-  })).get(accepted.destination.run.id)?.receipt;
-  expect(finalReceipt?.items[0]).toMatchObject({
-    includedText: accepted.includedText,
-    lifecycleState: "SOURCE_DELETED",
-    sourceChatId: null
-  });
   await expect(service.status(userId, source.chat.id, admission.deletionId))
     .resolves.toMatchObject({ cleanupComplete: true, state: "SUCCEEDED" });
   const fact = await prisma.memoryFact.findUniqueOrThrow({
@@ -494,7 +473,7 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
     acceptedDestinationEvidencePreserved: true,
     cleanupLatencyMs: completedDeletion.completedAt.getTime() -
       completedDeletion.createdAt.getTime(),
-    evidenceVersion: "memory-phase8-permanent-chat-cleanup-v1",
+    evidenceVersion: "memory-permanent-chat-cleanup-v1",
     maximumCleanupLatencyMs: 15 * 60_000,
     recoveredObjectStageFailureCount: 1,
     sanitizedAggregatesOnly: true
@@ -503,7 +482,7 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
   expect(evidence.cleanupLatencyMs).toBeLessThan(evidence.maximumCleanupLatencyMs);
   expect(JSON.stringify(evidence)).not.toContain(userId);
   expect(JSON.stringify(evidence)).not.toContain(accepted.includedText);
-  console.info("memory_phase8_permanent_chat_cleanup", evidence);
+  console.info("memory_permanent_chat_cleanup", evidence);
   return { evidence, userId };
 }
 

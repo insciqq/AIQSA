@@ -21,7 +21,7 @@ function localDraft(source: unknown, slots: unknown[] = []) {
 function remoteDraft(url: string) {
   return {
     auth: { mode: "none" },
-    runtime: {},
+    runtime: { callTimeoutMs: 60_000, startupTimeoutMs: 60_000 },
     slots: [],
     source: { kind: "remote", url },
     transport: "streamable_http"
@@ -41,19 +41,28 @@ function environmentSlot(overrides: Record<string, unknown> = {}) {
 }
 
 describe("MCP definition validation", () => {
-  it("keeps missing and empty tool policies identity-compatible", () => {
-    const legacy = validateMcpDraft(remoteDraft("https://mcp.example.test/api"));
+  it("canonicalizes missing and empty disabled-tool policies identically", () => {
+    const omitted = validateMcpDraft(remoteDraft("https://mcp.example.test/api"));
     const empty = validateMcpDraft({
       ...remoteDraft("https://mcp.example.test/api"),
       disabledToolNames: []
     });
 
-    expect(legacy.ok).toBe(true);
+    expect(omitted.ok).toBe(true);
     expect(empty.ok).toBe(true);
-    if (!legacy.ok || !empty.ok) throw new Error("invalid test fixture");
-    expect(empty.value).toEqual(legacy.value);
-    expect(hashCanonicalMcpValue(empty.value)).toBe(hashCanonicalMcpValue(legacy.value));
+    if (!omitted.ok || !empty.ok) throw new Error("invalid test fixture");
+    expect(empty.value).toEqual(omitted.value);
+    expect(hashCanonicalMcpValue(empty.value)).toBe(hashCanonicalMcpValue(omitted.value));
     expect(empty.value).not.toHaveProperty("disabledToolNames");
+  });
+
+  it("requires both current runtime deadlines", () => {
+    const draft = remoteDraft("https://mcp.example.test/api");
+    expect(validateMcpDraft({ ...draft, runtime: {} })).toMatchObject({ ok: false });
+    expect(validateMcpDraft({ ...draft, runtime: { callTimeoutMs: 60_000 } }))
+      .toMatchObject({ ok: false });
+    expect(validateMcpDraft({ ...draft, runtime: { startupTimeoutMs: 60_000 } }))
+      .toMatchObject({ ok: false });
   });
 
   it("canonicalizes a bounded exact-name disabled tool set", () => {
@@ -103,7 +112,7 @@ describe("MCP definition validation", () => {
     }));
     const remote = validateMcpDraft({
       auth: { mode: "none" },
-      runtime: {},
+      runtime: { callTimeoutMs: 60_000, startupTimeoutMs: 60_000 },
       slots: [{
         label: "Authorization",
         policy: { kind: "personal", required: true },

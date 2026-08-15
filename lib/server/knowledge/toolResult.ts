@@ -22,6 +22,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(value).every((key) => allowedKeys.has(key));
+}
+
 function boundedString(value: unknown, maximum: number, allowEmpty = false): string | null {
   return typeof value === "string" && value.length <= maximum &&
     (allowEmpty || value.length > 0) && !/\u0000/u.test(value)
@@ -127,9 +132,7 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
   const chunkIndex = nonNegativeInteger(value.chunkIndex);
   const documentId = boundedString(value.documentId, 512);
   const documentVersionId = boundedString(value.documentVersionId, 512);
-  const documentVersionNumber = value.documentVersionNumber === undefined
-    ? undefined
-    : nonNegativeInteger(value.documentVersionNumber);
+  const documentVersionNumber = nonNegativeInteger(value.documentVersionNumber);
   const fileName = boundedString(value.fileName, 1_024);
   const ftsRank = nullablePositiveRank(value.ftsRank);
   const ftsScore = nullableFiniteNumber(value.ftsScore);
@@ -147,8 +150,7 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
   if (
     annRank === undefined || !baseName || bindingOrdinal === null || bindingOrdinal > 2 ||
     !chunkId || chunkIndex === null || !documentId || !documentVersionId ||
-    (documentVersionNumber !== undefined &&
-      (documentVersionNumber === null || documentVersionNumber < 1)) || !fileName ||
+    (documentVersionNumber === null || documentVersionNumber < 1) || !fileName ||
     ftsRank === undefined || ftsScore === undefined || fusedScore === null || fusedScore < 0 ||
     !handle || !/^K[1-3]\.[1-8]$/u.test(handle) || includedText === null ||
     includedTextBytes === null || includedTextBytes !== Buffer.byteLength(includedText, "utf8") ||
@@ -173,9 +175,7 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
     chunkIndex,
     documentId,
     documentVersionId,
-    ...(documentVersionNumber !== undefined && documentVersionNumber !== null
-      ? { documentVersionNumber }
-      : {}),
+    documentVersionNumber,
     fileName,
     ftsRank,
     ftsScore,
@@ -315,8 +315,10 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
 }
 
 function evidenceFromPreview(result: ToolExecutionResult): KnowledgeRetrievalEvidence | null {
-  const preview = result.rawPreview?.finalProviderResponsePreview;
-  return isRecord(preview)
+  const preview = result.rawPreview;
+  return preview?.knowledgeResultVersion === KNOWLEDGE_RESULT_VERSION &&
+    preview.providerCall === true &&
+    hasOnlyKeys(preview, ["knowledgeResultVersion", "knowledgeRetrieval", "providerCall"])
     ? decodeKnowledgeRetrievalEvidence(preview.knowledgeRetrieval)
     : null;
 }
@@ -387,7 +389,15 @@ export function compactKnowledgeToolExecutionResult(
   const evidence = evidenceFromPreview(result);
   if (!evidence || result.content.length !== 1 || result.content[0]?.type !== "text" ||
     result.content[0].text !== knowledgeToolResultText(evidence)) return null;
-  return { ...result, content: [persistedContentMarker] };
+  return {
+    ...result,
+    content: [persistedContentMarker],
+    rawPreview: {
+      knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
+      knowledgeRetrieval: evidence,
+      providerCall: true
+    }
+  };
 }
 
 export function rehydratePersistedKnowledgeToolExecutionResult(

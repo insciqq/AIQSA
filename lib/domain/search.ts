@@ -77,26 +77,7 @@ export function isSearchPlanMode(value: unknown): value is SearchPlanMode {
   return value === "all_selected" || value === "model_choice";
 }
 
-export function decodeSearchPlan(
-  value: unknown,
-  legacyStrategy: unknown = undefined
-): SearchPlanDecodeResult {
-  if (value === undefined) {
-    if (legacyStrategy === undefined || legacyStrategy === null) {
-      return { ok: true, plan: { mode: "all_selected", optionIds: [] } };
-    }
-    if (typeof legacyStrategy !== "string") {
-      return { code: "search_plan_invalid", ok: false };
-    }
-    const optionId = legacyStrategy.trim();
-    if (optionId === SEARCH_DISABLED_STRATEGY_ID) {
-      return { ok: true, plan: { mode: "all_selected", optionIds: [] } };
-    }
-    return optionId && optionId.length <= 160 && !/[\u0000-\u001f\u007f]/u.test(optionId)
-      ? { ok: true, plan: { mode: "all_selected", optionIds: [optionId] } }
-      : { code: "search_plan_invalid", ok: false };
-  }
-
+export function decodeSearchPlan(value: unknown): SearchPlanDecodeResult {
   if (!isRecord(value) || !Array.isArray(value.optionIds) || !isSearchPlanMode(value.mode)) {
     return { code: "search_plan_invalid", ok: false };
   }
@@ -128,10 +109,6 @@ export function decodeSearchPlan(
       optionIds
     }
   };
-}
-
-export function legacySearchStrategyFromPlan(plan: SearchPlan): string {
-  return plan.optionIds[0] ?? SEARCH_DISABLED_STRATEGY_ID;
 }
 
 function normalizedUrl(value: string): string | null {

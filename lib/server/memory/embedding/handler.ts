@@ -29,16 +29,12 @@ import { memoryExecutionSha256 } from "../execution/canonical";
 import { memoryVectorSpaceFingerprint } from "../execution/policy";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
-  MEMORY_EXPLICIT_EMBEDDING_VERSIONS,
   MEMORY_ITEM_EMBEDDING_VERSIONS,
-  memoryExplicitEmbeddingInputHash,
-  memoryExplicitEmbeddingOutputHash,
   memoryItemEmbeddingGenerationMatchesPin,
   memoryItemEmbeddingInputHash,
   memoryItemEmbeddingOutputHash,
   memoryItemEmbeddingPinFromSnapshot,
   parseMemoryEmbeddingJobFingerprint,
-  type MemoryEmbeddingJobIdentity,
   type MemoryItemEmbeddingPin,
   type MemoryItemEmbeddingTarget
 } from "./contract";
@@ -51,7 +47,7 @@ type AcceptedEmbeddingRuntime = ReturnType<
   typeof createAcceptedEmbeddingRuntime
 >;
 
-export type MemoryExplicitEmbeddingHandlerDependencies = Readonly<{
+export type MemoryItemEmbeddingHandlerDependencies = Readonly<{
   execution: PrismaMemoryExecutionService;
   now: () => Date;
   probeAuthority: (
@@ -61,9 +57,6 @@ export type MemoryExplicitEmbeddingHandlerDependencies = Readonly<{
   repository: MemoryItemEmbeddingRepository;
   runtime: AcceptedEmbeddingRuntime;
 }>;
-
-export type MemoryItemEmbeddingHandlerDependencies =
-  MemoryExplicitEmbeddingHandlerDependencies;
 
 const unavailableUsage: MemoryReportedUsage = Object.freeze({
   cachedInputTokens: null,
@@ -108,7 +101,7 @@ function terminalResult(
 ): MemoryJobExecutionResult {
   return {
     acceptedResultHash: memoryExecutionSha256({
-      domain: "aiqsa.memory.explicit-embedding-local-terminal",
+      domain: "aiqsa.memory.item-embedding-local-terminal",
       entryId: target?.entryId ?? null,
       generationId: target?.generation.id ?? null,
       itemId: target?.itemId ?? null,
@@ -126,7 +119,6 @@ function authorityGate(error: unknown) {
   if (error instanceof MemoryExecutionError) {
     if (
       error.code === "memory_execution_egress_consent_required" ||
-      error.code === "memory_execution_qualification_required" ||
       error.code === "memory_execution_target_unavailable" ||
       error.code === "memory_execution_capability_unavailable" ||
       error.code === "memory_execution_policy_unavailable"
@@ -174,7 +166,7 @@ function maxOrdinal(bindings: Awaited<
 }
 
 async function settleAbandonedBindings(
-  deps: MemoryExplicitEmbeddingHandlerDependencies,
+  deps: MemoryItemEmbeddingHandlerDependencies,
   job: MemoryJobDescriptor,
   target: MemoryItemEmbeddingTarget,
   inputHash: string
@@ -221,23 +213,11 @@ async function settleAbandonedBindings(
   return { bindings, succeededHash: null };
 }
 
-function contractFor(
-  identity: MemoryEmbeddingJobIdentity,
-  target: MemoryItemEmbeddingTarget
-): Readonly<{
+function embeddingContract(target: MemoryItemEmbeddingTarget): Readonly<{
   inputHash: string;
   outputHash: (vector: readonly number[]) => string;
   versions: MemoryExecutionVersions;
-}> | null {
-  if (identity.contract === "EXPLICIT_V1") {
-    if (target.itemType !== "FACT_VERSION") return null;
-    const inputHash = memoryExplicitEmbeddingInputHash(target);
-    return {
-      inputHash,
-      outputHash: (vector) => memoryExplicitEmbeddingOutputHash({ inputHash, vector }),
-      versions: MEMORY_EXPLICIT_EMBEDDING_VERSIONS
-    };
-  }
+}> {
   const inputHash = memoryItemEmbeddingInputHash(target);
   return {
     inputHash,
@@ -246,8 +226,8 @@ function contractFor(
   };
 }
 
-export function createMemoryExplicitEmbeddingHandler(
-  deps: MemoryExplicitEmbeddingHandlerDependencies
+export function createMemoryItemEmbeddingHandler(
+  deps: MemoryItemEmbeddingHandlerDependencies
 ): MemoryJobHandler {
   return Object.freeze({
     kind: "EMBED_ITEMS" as const,
@@ -270,10 +250,7 @@ export function createMemoryExplicitEmbeddingHandler(
       if (!target) {
         return { errorCode: "memory_embedding_target_stale", status: "STALE" };
       }
-      const contract = contractFor(identity, target);
-      if (!contract) {
-        return { errorCode: "memory_embedding_target_stale", status: "STALE" };
-      }
+      const contract = embeddingContract(target);
       if (target.embeddingState === "READY") return { status: "READY" };
       try {
         const pin = await deps.probeAuthority(job.userId, contract.versions);
@@ -296,8 +273,8 @@ export function createMemoryExplicitEmbeddingHandler(
       if (!identity) return terminalResult(job, null, "invalid");
       const target = await deps.repository.loadTarget(job.userId, identity.entryId);
       if (!target) return terminalResult(job, null, "stale");
-      const contract = contractFor(identity, target);
-      if (!contract || job.pipelineVersion !== identity.pipelineVersion) {
+      const contract = embeddingContract(target);
+      if (job.pipelineVersion !== identity.pipelineVersion) {
         return terminalResult(job, target, "invalid_contract");
       }
       const { inputHash } = contract;
@@ -476,7 +453,7 @@ export function createMemoryExplicitEmbeddingHandler(
   });
 }
 
-export function createPrismaMemoryExplicitEmbeddingHandler(
+export function createPrismaMemoryItemEmbeddingHandler(
   authority: MemoryExecutionAuthorityDependencies,
   client: PrismaClient = prisma,
   options: Readonly<{
@@ -485,7 +462,7 @@ export function createPrismaMemoryExplicitEmbeddingHandler(
   }> = {}
 ): MemoryJobHandler {
   const now = () => memoryExecutionNow(authority);
-  return createMemoryExplicitEmbeddingHandler({
+  return createMemoryItemEmbeddingHandler({
     execution: createPrismaMemoryExecutionService(authority, client),
     now,
     probeAuthority: (userId, versions) => probeCurrentMemoryEmbeddingPin(
@@ -530,7 +507,7 @@ export function probeCurrentMemoryEmbeddingPin(
       }
       return {
         configurationFingerprint:
-          resolved.qualification.requirement.configFingerprint,
+          resolved.compatibility.requirement.configFingerprint,
         connectionId: resolved.target.authority.connectionId,
         dimension: model.embedding.targetDimension,
         providerModelId: resolved.target.authority.providerModelId,
@@ -539,8 +516,3 @@ export function probeCurrentMemoryEmbeddingPin(
     }
   );
 }
-
-export const createMemoryItemEmbeddingHandler =
-  createMemoryExplicitEmbeddingHandler;
-export const createPrismaMemoryItemEmbeddingHandler =
-  createPrismaMemoryExplicitEmbeddingHandler;

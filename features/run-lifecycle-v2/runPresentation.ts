@@ -11,7 +11,7 @@ export type RunFailureV2 = Readonly<{
   recovery?: "change_parameters" | "retry";
 }>;
 
-export type RunLifecycleEvidenceV2 = Readonly<{
+export type RunLifecycleStateV2 = Readonly<{
   authoritativeMessageStatus?: "cancelled" | "complete" | "error" | null;
   connectionLost?: boolean;
   content: string;
@@ -171,13 +171,13 @@ function statusActivity(status: RunLifecycleStatusV2 | null | undefined) {
   return null;
 }
 
-function failureFromEvidence(
-  evidence: RunLifecycleEvidenceV2,
+function failureFromState(
+  state: RunLifecycleStateV2,
   eventFailure: RunFailureV2 | null
 ): NonNullable<RunPresentationV2["failure"]> {
-  const failure = evidence.failure ?? eventFailure ?? {};
+  const failure = state.failure ?? eventFailure ?? {};
   const recovery = failure.recovery === "retry" ? "retry" : "change_parameters";
-  const partial = evidence.content.trim().length > 0;
+  const partial = state.content.trim().length > 0;
   const fallback = partial && recovery === "retry"
     ? "The answer was interrupted mid-run. The partial result is kept; you can retry with the same parameters."
     : "The run failed. Change the request parameters and try again.";
@@ -190,9 +190,9 @@ function failureFromEvidence(
 }
 
 /**
- * True only for authoritative terminal presentations. The settled answer
- * chrome (action dock, evidence row, disclosures) renders exclusively behind
- * this predicate; live runs show the status line and Stop instead.
+ * True only for authoritative terminal presentations. Settled-answer actions
+ * and outputs render exclusively behind this predicate; live runs show the
+ * status line and Stop instead.
  */
 export function settledRunPresentationV2(presentation: RunPresentationV2): boolean {
   return presentation.kind === "cancelled" ||
@@ -202,20 +202,20 @@ export function settledRunPresentationV2(presentation: RunPresentationV2): boole
 }
 
 /**
- * Projects only explicit server/client lifecycle evidence. It never infers a
+ * Projects only explicit server and client lifecycle state. It never infers a
  * phase from elapsed time, answer text, or a missing terminal frame.
  */
 export function presentRunLifecycleV2(
-  evidence: RunLifecycleEvidenceV2
+  state: RunLifecycleStateV2
 ): RunPresentationV2 {
   let terminal: TerminalSignal | null = terminalStatus(
-    evidence.authoritativeMessageStatus
+    state.authoritativeMessageStatus
   );
   const activitySignals: ActivitySignal[] = [];
   let latestTokenIndex = -1;
   let eventFailure: RunFailureV2 | null = null;
 
-  for (const [index, event] of evidence.events.entries()) {
+  for (const [index, event] of state.events.entries()) {
     if (event.type === "token") {
       latestTokenIndex = index;
       continue;
@@ -243,31 +243,31 @@ export function presentRunLifecycleV2(
     }
   }
 
-  terminal = terminalStatus(evidence.status) ?? terminal;
+  terminal = terminalStatus(state.status) ?? terminal;
 
   if (terminal === "complete") {
-    return { kind: "complete", runId: evidence.runId };
+    return { kind: "complete", runId: state.runId };
   }
   if (terminal === "cancelled") {
-    return { kind: "cancelled", runId: evidence.runId };
+    return { kind: "cancelled", runId: state.runId };
   }
   if (terminal === "error") {
-    const failure = failureFromEvidence(evidence, eventFailure);
-    const recoverable = evidence.content.trim().length > 0 && failure.recovery === "retry";
+    const failure = failureFromState(state, eventFailure);
+    const recoverable = state.content.trim().length > 0 && failure.recovery === "retry";
     return {
       failure,
       kind: recoverable ? "recoverable_error" : "terminal_error",
-      runId: evidence.runId
+      runId: state.runId
     };
   }
 
-  if (evidence.connectionLost) {
-    return { kind: "connection_lost", runId: evidence.runId };
+  if (state.connectionLost) {
+    return { kind: "connection_lost", runId: state.runId };
   }
 
   const selectedActivity = activitySignals.at(-1) ?? null;
   if (latestTokenIndex >= 0 && latestTokenIndex >= (selectedActivity?.index ?? -1)) {
-    return { kind: "streaming", runId: evidence.runId };
+    return { kind: "streaming", runId: state.runId };
   }
 
   if (selectedActivity) {
@@ -278,12 +278,12 @@ export function presentRunLifecycleV2(
         label: activityLabel(signal)
       },
       kind: "activity",
-      runId: evidence.runId
+      runId: state.runId
     };
   }
 
-  const activity = statusActivity(evidence.status);
+  const activity = statusActivity(state.status);
   return activity
-    ? { activity, kind: "activity", runId: evidence.runId }
-    : { kind: "idle", runId: evidence.runId };
+    ? { activity, kind: "activity", runId: state.runId }
+    : { kind: "idle", runId: state.runId };
 }

@@ -1,5 +1,3 @@
-import type { MemoryUiLocale } from "@/lib/contracts/memory";
-
 export const MEMORY_HISTORY_UI_COPY_KEYS = [
   "entry",
   "entryDescription",
@@ -32,7 +30,6 @@ export const MEMORY_HISTORY_UI_COPY_KEYS = [
   "archived",
   "sourceTrail",
   "excerpt",
-  "episode",
   "lexicalReady",
   "vectorReady",
   "vectorNotConfigured",
@@ -55,7 +52,7 @@ const EN = {
   entryDescription: "Recover an earlier passage or decision from eligible retained chats.",
   title: "Search chat history",
   back: "Back to saved memories",
-  intro: "Search safe Memory excerpts and episodes. This is separate from workspace and sidebar search.",
+  intro: "Search safe Memory excerpts. This is separate from workspace and sidebar search.",
   queryLabel: "History search",
   queryPlaceholder: "Decision, passage, or earlier context",
   search: "Search history",
@@ -82,7 +79,6 @@ const EN = {
   archived: "Archived source",
   sourceTrail: "Source trail",
   excerpt: "Chat excerpt",
-  episode: "Conversation episode",
   lexicalReady: "Lexical search is active.",
   vectorReady: "Semantic and lexical search are active.",
   vectorNotConfigured: "Lexical search is active; semantic matching is not configured.",
@@ -99,9 +95,6 @@ const EN = {
 
 
 
-export function memoryHistoryUiCopy(
-  _locale: MemoryUiLocale,
-  key: MemoryHistoryUiCopyKey
-): string {
+export function memoryHistoryUiCopy(key: MemoryHistoryUiCopyKey): string {
   return EN[key];
 }

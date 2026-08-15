@@ -152,7 +152,7 @@ describe("OpenAI Responses response normalization", () => {
           arguments: "{\"keyword\":\"latest model\"}",
           call_id: "call-1",
           id: "function-1",
-          name: "search_via_perplexity",
+          name: "search_engine_1",
           status: "completed",
           type: "function_call"
         }
@@ -212,7 +212,7 @@ describe("OpenAI Responses response normalization", () => {
         expect.objectContaining({
           arguments: { keyword: "latest model" },
           id: "call-1",
-          name: "search_via_perplexity"
+          name: "search_engine_1"
         })
       ],
       usage: {
@@ -456,7 +456,7 @@ describe("OpenAI Responses response normalization", () => {
     await expect(stream.next()).rejects.toThrow("openai_response_identity_mismatch");
   });
 
-  it("checks native identity and supported compatibility aliases while ignoring item ids", async () => {
+  it("checks native identity and supported stream envelope variants while ignoring item ids", async () => {
     const conflictingDelta = parseOpenAIResponsesSse(sseInput([
       'event: response.created\ndata: {"type":"response.created","response":{"id":"resp-a","status":"in_progress"}}\n\n',
       'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","response_id":"resp-b","id":"item-id","delta":"no"}\n\n'

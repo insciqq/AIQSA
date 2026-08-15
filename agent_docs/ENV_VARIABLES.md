@@ -88,8 +88,8 @@ selects the exact `fingerprintKeyVersion` stored with an existing suppression
 row. To rotate, generate another independent 32-byte key, add it under a new
 ID, change `current` to that ID, and deploy the complete keyring atomically to
 every Memory writer. Retain every prior ID still referenced by suppression
-rows. Removing or losing one blocks automatic extraction, resume, redream,
-rebuild, and restore promotion; it never resets the barrier or resumes
+rows. Removing or losing one blocks automatic extraction, resume, rebuild,
+and restore promotion; it never resets the barrier or resumes
 learning.
 
 Key values never belong in PostgreSQL, events, exports, logs, metrics, error
@@ -101,7 +101,7 @@ distinct required ID before starting automatic Memory work. Core web readiness
 remains independent while Memory reports a feature-local blocked status.
 Compose forwards the complete keyring to the web role, the standalone Memory
 worker, and the one-shot tools role used for restore preflight. The worker
-refuses startup when configuration is invalid or a referenced historical ID is
+refuses startup when configuration is invalid or a referenced key ID is
 missing; this does not become a web dependency.
 
 ## Memory Egress Consent Ownership
@@ -132,7 +132,7 @@ ownership only. It does not weaken storage-time secret screening, Temporary-chat
 isolation, or the rule that Memory cannot authorize actions or select tools and
 credentials.
 
-## Memory Scheduler And Background Budgets
+## Memory Coordinator
 
 ```text
 AIQSA_MEMORY_JOB_PARALLELISM=2
@@ -140,20 +140,15 @@ AIQSA_MEMORY_JOB_PER_USER_PARALLELISM=1
 AIQSA_MEMORY_JOB_CLAIMS_PER_PASS=16
 AIQSA_MEMORY_DELETION_PARALLELISM=1
 AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS=64
-AIQSA_MEMORY_BACKGROUND_BUDGET_REFRESH_MS=60000
-AIQSA_MEMORY_BACKGROUND_USER_DAILY_CALLS=64
-AIQSA_MEMORY_BACKGROUND_USER_DAILY_COST_MICROS=500000
 AIQSA_MEMORY_COORDINATOR_INTERVAL_MS=1000
-AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_CALLS=4096
-AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_COST_MICROS=25000000
 ```
 
 These optional bounded integers configure the feature-local coordinator. The
 shipped single-coordinator topology admits two ordinary job handlers, at most
 one for the same user, and one independent deletion handler. Claim-pass limits
 bound one scheduler tick rather than truncate durable backlog. The job policy
-weights safety reconciliation, still gives ordinary and background tiers a
-bounded turn, and retains PostgreSQL owner rotation within every tier.
+weights safety reconciliation, gives ordinary work a bounded turn, and retains
+PostgreSQL owner rotation within each tier.
 
 `AIQSA_MEMORY_COORDINATOR_INTERVAL_MS` bounds periodic durable reconciliation
 between 1 and 60 seconds. Explicit lifecycle/settings/job kicks remain
@@ -161,17 +156,9 @@ immediate. Production compose keeps the one-second worker default; development
 compose uses 30 seconds because Next development tracing retains substantially
 more state per background pass than the standalone worker.
 
-The two daily limits are soft UTC-day ceilings for `GLOBAL_DREAM` and
-`RECALCULATE_WORKING_SET` only. Calls count their persisted execution bindings;
-cost uses stored operator-priced estimates in micro-units and remains an
-estimate rather than billing truth. Missing cost stays call-bounded. A reached
-user or installation limit defers the background job to the next UTC day
-without spending a provider retry; unavailable usage accounting defers it for
-the refresh interval. Active bounded work can create a small soft-limit
-overshoot. Explicit operations, Forget/purge, Temporary/account deletion, and
-safety reconciliation never consult these budgets. Invalid values block Memory
-coordinator construction with a content-free feature-local error. Compose
-forwards one policy to the web status reader and the standalone worker.
+Invalid values block Memory coordinator construction with a content-free
+feature-local error. Compose forwards one policy to the web process and the
+standalone worker.
 
 ## Address, Cookies, And Proxy Trust
 
@@ -202,13 +189,11 @@ AIQSA_PROVIDER_STREAM_MAX_OUTPUT_CHARS=8388608
 
 Provider connections, endpoints, adapter protocols, explicit compatible authentication mode, models, routing, credentials, direct-user/group assignments, activation evidence, stored diagnostics, enabled state, and response deadlines are database-owned and configured through `Control Center -> Providers`. Reviewed Quick and Custom endpoint setup persist neither an unsuccessful key nor failed test evidence. The long-running application receives no provider key/base-URL variables and has no environment fallback.
 
-The connection response deadline is a whole 5–900 seconds in Admin and integer milliseconds in versioned storage/runtime. New and legacy/missing connection values use 300 seconds. A model may override that value in the same range; blank inherits the connection. Accepted `ProviderRunBinding` snapshots retain both versioned configurations, and every answer round resolves `model override ?? connection default` from that immutable snapshot. Buffered bodies, streamed responses, stream idle/absolute guards, and every native OpenAI create/retrieve exchange use that effective ceiling. Connection discovery and diagnostics use the connection value. External provider, reverse-proxy, and platform limits may still end an exchange earlier and are outside this application-owned guarantee.
+The connection response deadline is a whole 5–900 seconds in Admin and integer milliseconds in versioned storage/runtime. Admin initializes a new connection to 300 seconds; missing or invalid stored values fail closed. A model may override that value in the same range; blank inherits the connection. Accepted `ProviderRunBinding` snapshots retain both versioned configurations, and every answer round resolves `model override ?? connection default` from that immutable snapshot. Buffered bodies, streamed responses, stream idle/absolute guards, and every native OpenAI create/retrieve exchange use that effective ceiling. Connection discovery and diagnostics use the connection value. External provider, reverse-proxy, and platform limits may still end an exchange earlier and are outside this application-owned guarantee.
 
-Native OpenAI non-streaming background polling has a separate complete-lifecycle window because it may require many individually bounded retrieve exchanges. `AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS` defaults to 660,000 ms and accepts a whole decimal value from 5,000 through 86,400,000 ms; invalid, fractional, or out-of-range values use the default. The effective lifecycle window is the greater of this control and the accepted connection/model response deadline, so it can exceed the 900-second response-deadline ceiling but can never undercut one exchange. This is the same variable used by installations before response deadlines moved into Admin; it is supported again without a migration alias.
+Native OpenAI non-streaming background polling has a separate complete-lifecycle window because it may require many individually bounded retrieve exchanges. `AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS` defaults to 660,000 ms and accepts a whole decimal value from 5,000 through 86,400,000 ms; invalid, fractional, or out-of-range values use the default. The effective lifecycle window is the greater of this control and the accepted connection/model response deadline, so it can exceed the 900-second response-deadline ceiling but can never undercut one exchange.
 
 Client Search retains its immutable revision-owned end-to-end deadline, also bounded from 5 seconds through 15 minutes and defaulting new integrations to 5 minutes. When its technical provider model has an earlier snapshotted response deadline, the effective invocation ceiling is the minimum of the two explicit budgets; Admin shows the Search budget, model deadline, and result.
-
-`AIQSA_PROVIDER_TIMEOUT_MS`, `AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS`, and `AIQSA_PROVIDER_STREAM_MAX_DURATION_MS` are removed controls. Non-empty legacy values are ignored and produce one value-free startup warning with code `provider_timeout_environment_ignored` and variable names only. Compose forwards those names only during migration so an existing installation receives that warning; they are not supported configuration and are absent from `.env.example`.
 
 `AIQSA_PROVIDER_RESPONSE_MAX_BYTES` caps buffered success/error bodies. Streaming keeps independent size/retention bounds of 4 MiB per event frame, 64 MiB total raw wire, and 8 Mi characters of retained provider output by default. Size values accept positive safe decimal integers; invalid or out-of-range values fall back to defaults. Hard ceilings are 16 MiB/event, 256 MiB/stream, and 32 Mi characters retained output, and the effective event limit is clamped to the total stream limit. Ordinary exchange and stream timing derives only from the accepted Admin configuration; the native OpenAI background lifecycle is the explicit exception above.
 
@@ -277,10 +262,6 @@ AIQSA_SMTP_TOTAL_TIMEOUT_MS=60000
 SMTP host, port, sender, authentication, password, transport, test/active state, and health are database-owned and configured through `Control Center -> Email delivery`. The long-running application receives no SMTP configuration variables and has no environment fallback. SMTP remains optional for bootstrap, login, manual invitation links, and core readiness.
 
 Timeouts are positive whole milliseconds capped at 600,000. Their defaults bound connection/TLS, each SMTP command, and the complete send. Failure output must never contain credentials, recipients, message bodies, server response bodies, or token-bearing URLs.
-
-## Stopped-Cutover Inputs
-
-The one-shot `migrate-bootstrap` tools boundary recognizes legacy `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, and `AIQSA_SMTP_HOST`, `AIQSA_SMTP_PORT`, `AIQSA_SMTP_USER`, `AIQSA_SMTP_PASSWORD`, `AIQSA_SMTP_FROM`, `AIQSA_SMTP_SECURE`, `AIQSA_SMTP_STARTTLS` only to migrate an older stopped installation. It validates and imports complete values as disabled, untested encrypted drafts under the installation lock. These names are not normal runtime settings, are absent from `.env.example`, never reach `app`, and must be removed from the private `.env` after the successful cutover. Partial/invalid input aborts the atomic cutover with a value-free field-class error.
 
 ## Optional OAuth
 

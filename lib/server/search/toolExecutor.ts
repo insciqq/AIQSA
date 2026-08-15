@@ -1,5 +1,5 @@
 import type { ValidatedSearchQuery } from "../../domain/search";
-import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
+import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import {
   adminSearchExecutionDefaults,
   adminSearchExecutionLimits,
@@ -24,7 +24,6 @@ import {
   normalizeSearchSources,
   type SearchSource
 } from "./evidence";
-import { providerSearchOperationsFromArtifacts } from "./providerOperations";
 import { validateSearchToolArguments } from "./query";
 import {
   SEARCH_TOOL_RESULT_VERSION,
@@ -98,14 +97,6 @@ function toolDescription(option: NormalizedSearchPlanOption): string {
 
 function searchDisplayName(option: NormalizedSearchPlanOption): string {
   return option.displayName?.trim().slice(0, 256) || "Search source";
-}
-
-function legacyToolName(option: NormalizedSearchPlanOption, ordinal: number): string {
-  const slug = option.optionId.toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "_")
-    .replace(/^_+|_+$/gu, "")
-    .slice(0, 36);
-  return `search_${ordinal + 1}_${slug || "engine"}`;
 }
 
 function searchTool(name: string, description: string, queryMaxCharacters: number): RunTool {
@@ -253,9 +244,7 @@ async function consumeProviderSearch(
   signal?: AbortSignal,
   timeoutMs?: number
 ): Promise<{
-  artifacts: ModelRunSseEvent[];
   findings: string;
-  requestPreview: Record<string, unknown>;
   sources: SearchSource[];
   usage: ModelRunUsage;
 }> {
@@ -280,9 +269,7 @@ async function consumeProviderSearch(
     });
   }
   return {
-    artifacts: result.artifacts,
     findings,
-    requestPreview: result.requestPreview,
     sources,
     usage: result.usage
   };
@@ -295,20 +282,15 @@ async function executeOne(input: Readonly<{
   runtime: ProviderRuntimeBinding | undefined;
   signal?: AbortSignal;
 }>): Promise<SearchExecutionResult> {
-  const started = Date.now();
   const invocationId = `${input.call.id}:${input.option.optionId}`.slice(0, 500);
   if (!input.runtime || !input.option.modelId) {
     return {
       displayName: searchDisplayName(input.option),
-      durationMs: Date.now() - started,
       failure: { code: "search_runtime_not_available" },
       invocationId,
       modelId: input.option.modelId,
       optionId: input.option.optionId,
       provider: input.option.provider,
-      providerOperationsTruncated: false,
-      query: input.query,
-      requestPreview: { queryCharacters: input.query.length },
       revisionId: input.option.revisionId,
       sources: [],
       status: "error",
@@ -321,21 +303,6 @@ async function executeOne(input: Readonly<{
     configured.timeoutMs,
     input.runtime.responseTimeoutMs
   );
-  const executionRequestPreview = {
-    effectiveTimeoutMs,
-    maxOutputTokens: configured.maxOutputTokens,
-    modelId: input.option.modelId,
-    protocol: input.option.protocol,
-    provider: input.option.provider,
-    providerResponseTimeoutMs: input.runtime.responseTimeoutMs,
-    queryCharacters: input.query.length,
-    reasoningPolicy: configured.reasoningPolicy,
-    searchTimeoutMs: configured.timeoutMs,
-    sourceLimit: configured.maxResults,
-    ...(input.runtime.searchAdapter
-      ? { providerRequest: input.runtime.searchAdapter.buildRequestPreview(request) }
-      : {})
-  };
   const timeoutController = new AbortController();
   const relayAbort = () => timeoutController.abort(input.signal?.reason);
   input.signal?.addEventListener("abort", relayAbort, { once: true });
@@ -351,22 +318,13 @@ async function executeOne(input: Readonly<{
       timeoutController.signal,
       effectiveTimeoutMs
     );
-    const providerTrace = providerSearchOperationsFromArtifacts(result.artifacts);
     return {
       displayName: searchDisplayName(input.option),
-      durationMs: Date.now() - started,
       findings: result.findings,
       invocationId,
       modelId: input.option.modelId,
       optionId: input.option.optionId,
       provider: input.option.provider,
-      ...(providerTrace
-        ? { providerOperations: providerTrace.operations }
-        : {}),
-      providerOperationsTruncated: providerTrace?.truncated ?? false,
-      ...(providerTrace.providerUsage ? { providerUsage: providerTrace.providerUsage } : {}),
-      query: input.query,
-      requestPreview: executionRequestPreview,
       revisionId: input.option.revisionId,
       sources: result.sources,
       status: "complete",
@@ -389,22 +347,13 @@ async function executeOne(input: Readonly<{
               : {})
           }
         : { code: normalizedFailureCode(error instanceof Error ? error.message : undefined) };
-    const providerTrace = providerFailure
-      ? providerSearchOperationsFromArtifacts(providerFailure.artifacts)
-      : null;
     return {
       displayName: searchDisplayName(input.option),
-      durationMs: Date.now() - started,
       failure,
       invocationId,
       modelId: input.option.modelId,
       optionId: input.option.optionId,
       provider: input.option.provider,
-      ...(providerTrace ? { providerOperations: providerTrace.operations } : {}),
-      providerOperationsTruncated: providerTrace?.truncated ?? false,
-      ...(providerTrace?.providerUsage ? { providerUsage: providerTrace.providerUsage } : {}),
-      query: input.query,
-      requestPreview: executionRequestPreview,
       revisionId: input.option.revisionId,
       sources: [],
       status: "error",
@@ -431,17 +380,13 @@ function searchToolExecutionResult(input: Readonly<{
   call: ModelToolCall;
   executions: readonly SearchExecutionEvidence[];
   name: string;
-  requestPreview: Readonly<Record<string, unknown>>;
 }>): ToolExecutionResult {
   return {
     callId: input.call.id,
     content: searchToolResultContent(input.executions),
     name: input.name,
     rawPreview: {
-      finalProviderResponsePreview: {
-        searchExecutions: input.executions
-      },
-      requestPreview: input.requestPreview,
+      searchExecutions: input.executions,
       searchResultVersion: SEARCH_TOOL_RESULT_VERSION
     },
     status: input.executions.some((execution) => execution.status === "complete")
@@ -451,27 +396,14 @@ function searchToolExecutionResult(input: Readonly<{
   };
 }
 
-function oversizedSearchExecution(
-  execution: SearchExecutionEvidence,
-  preserveOperations = true
-): SearchExecutionEvidence {
+function oversizedSearchExecution(execution: SearchExecutionEvidence): SearchExecutionEvidence {
   return {
     displayName: execution.displayName,
-    durationMs: execution.durationMs,
     failure: { code: "search_result_too_large" },
     invocationId: execution.invocationId,
     modelId: execution.modelId,
     optionId: execution.optionId,
     provider: execution.provider,
-    ...(preserveOperations && execution.providerOperations
-      ? { providerOperations: execution.providerOperations }
-      : {}),
-    providerOperationsTruncated: preserveOperations
-      ? execution.providerOperationsTruncated
-      : execution.providerOperationsTruncated || Boolean(execution.providerOperations?.length),
-    ...(execution.providerUsage ? { providerUsage: execution.providerUsage } : {}),
-    query: execution.query,
-    requestPreview: preserveOperations ? execution.requestPreview : {},
     revisionId: execution.revisionId,
     sources: [],
     status: "error",
@@ -487,7 +419,6 @@ function fitDurableSearchToolResult(input: Readonly<{
   call: ModelToolCall;
   executions: readonly SearchExecutionEvidence[];
   name: string;
-  requestPreview: Readonly<Record<string, unknown>>;
 }>): ToolExecutionResult {
   const executions = [...input.executions];
   const result = () => searchToolExecutionResult({ ...input, executions });
@@ -512,7 +443,7 @@ function fitDurableSearchToolResult(input: Readonly<{
   }
 
   for (const [index, execution] of executions.entries()) {
-    executions[index] = oversizedSearchExecution(execution, false);
+    executions[index] = oversizedSearchExecution(execution);
   }
   candidate = result();
   if (snapshotToolExecutionResult(candidate, toolLoopPersistenceLimits.resultBytes)) {
@@ -524,9 +455,7 @@ function fitDurableSearchToolResult(input: Readonly<{
     content: [{ text: "Search failed: search_result_too_large", type: "text" }],
     name: input.name,
     rawPreview: {
-      finalProviderResponsePreview: { error: "search_result_too_large" },
-      providerCall: true,
-      requestPreview: {}
+      providerCall: true
     },
     status: "error",
     usage: aggregateSearchUsage(input.executions)
@@ -534,7 +463,6 @@ function fitDurableSearchToolResult(input: Readonly<{
 }
 
 export function createSearchPlanToolRouter(input: Readonly<{
-  acceptLegacyToolNames?: boolean;
   initialInvocationCounts?: Readonly<Record<string, number>>;
   plan: NormalizedSearchPlan;
   runtimes: Readonly<Record<string, ProviderRuntimeBinding | undefined>>;
@@ -576,14 +504,8 @@ export function createSearchPlanToolRouter(input: Readonly<{
           configuration(option).queryMaxCharacters
         )
       }));
-  const legacyRoute = (name: string) => input.acceptLegacyToolNames &&
-    input.plan.mode === "model_choice"
-    ? routes.find((candidate, ordinal) =>
-        candidate.options.length === 1 &&
-        legacyToolName(candidate.options[0]!, ordinal) === name)
-    : undefined;
   const routeForName = (name: string) =>
-    routes.find((candidate) => candidate.tool.name === name) ?? legacyRoute(name);
+    routes.find((candidate) => candidate.tool.name === name);
 
   return {
     accepts(name) {
@@ -602,17 +524,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
           callId: call.id,
           content: [{ text: `Search failed: ${code}`, type: "text" }],
           name: call.name,
-          rawPreview: {
-            finalProviderResponsePreview: { error: code },
-            providerCall: false,
-            requestPreview: {
-              queryCharacters:
-                typeof call.arguments.query === "string"
-                  ? Math.min(call.arguments.query.length, queryLimit + 1)
-                  : 0,
-              selectedOptionIds: route.options.map((option) => option.optionId)
-            }
-          },
+          rawPreview: { providerCall: false },
           status: "error",
           usage: zeroUsage()
         };
@@ -624,8 +536,6 @@ export function createSearchPlanToolRouter(input: Readonly<{
       );
       if (exhaustedOption) {
         const limitCode = "search_invocation_limit_reached";
-        const invocationCount = invocationCounts.get(exhaustedOption.optionId) ?? 0;
-        const maxInvocations = configuration(exhaustedOption).maxSearchCallsPerAnswer;
         return {
           callId: call.id,
           content: [{
@@ -633,18 +543,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
             type: "text"
           }],
           name: call.name,
-          rawPreview: {
-            finalProviderResponsePreview: {
-              error: limitCode,
-              invocationCount,
-              maxInvocations
-            },
-            providerCall: false,
-            requestPreview: {
-              queryCharacters: validation.query.length,
-              selectedOptionIds: route.options.map((option) => option.optionId)
-            }
-          },
+          rawPreview: { providerCall: false },
           status: "error",
           usage: zeroUsage()
         };
@@ -663,19 +562,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
       return fitDurableSearchToolResult({
         call,
         executions,
-        name: call.name,
-        requestPreview: {
-          invocationCounts: Object.fromEntries(route.options.map((option) => [
-            option.optionId,
-            invocationCounts.get(option.optionId) ?? 0
-          ])),
-          maxInvocations: Object.fromEntries(route.options.map((option) => [
-            option.optionId,
-            configuration(option).maxSearchCallsPerAnswer
-          ])),
-          queryCharacters: query.length,
-          selectedOptionIds: route.options.map((option) => option.optionId)
-        }
+        name: call.name
       });
     },
     optionIdsForTool(name) {

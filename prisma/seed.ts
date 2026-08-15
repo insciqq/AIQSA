@@ -181,7 +181,6 @@ async function synchronizeLocalProviderTemplates(): Promise<Map<string, string>>
         activatedAt: active ? new Date() : undefined,
         capabilities: asJson(model.capabilities),
         connectionId,
-        contextWindow: model.contextWindow,
         defaultParams: asJson(model.defaultParams),
         displayName: model.displayName,
         draftConfig: asJson(draftConfig),
@@ -204,7 +203,6 @@ async function synchronizeLocalProviderTemplates(): Promise<Map<string, string>>
         activatedAt: active ? new Date() : null,
         capabilities: asJson(model.capabilities),
         connectionId,
-        contextWindow: model.contextWindow,
         defaultParams: asJson(model.defaultParams),
         displayName: model.displayName,
         draftConfig: asJson(draftConfig),
@@ -592,16 +590,13 @@ async function main() {
         defaultFolderId: null,
         defaultProviderModelId: fakeProviderModelId,
         defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] }),
-        defaultSearchStrategyId: "search-disabled",
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true,
         userId: user.id
       },
       update: {
         defaultProviderModelId: fakeProviderModelId,
-        defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] }),
-        defaultSearchStrategyId: "search-disabled"
+        defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] })
       },
       where: { userId: user.id }
     });
@@ -729,16 +724,13 @@ async function main() {
       defaultFolderId: null,
       defaultProviderModelId: fakeProviderModelId,
       defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] }),
-      defaultSearchStrategyId: "search-disabled",
       showCitations: true,
       showReasoningBlocks: false,
-      showToolActivity: true,
       userId: ids.user
     },
     update: {
       defaultProviderModelId: fakeProviderModelId,
-      defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] }),
-      defaultSearchStrategyId: "search-disabled"
+      defaultSearchPlan: asJson({ mode: "all_selected", optionIds: [] })
     },
     where: {
       userId: ids.user

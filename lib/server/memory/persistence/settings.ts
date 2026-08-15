@@ -37,8 +37,6 @@ export type MemorySettingsPersistenceSnapshot = Readonly<{
   memoryConsentRevision: number;
   memoryGeneration: number;
   memoryRevision: number;
-  memoryUiLocale: "EN" | "RU";
-  preferredProfileLanguage: string;
   referenceChatHistory: boolean;
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY";
   settingsRevision: number;
@@ -57,8 +55,6 @@ const settingsSelect = {
   memoryConsentRevision: true,
   memoryGeneration: true,
   memoryRevision: true,
-  memoryUiLocale: true,
-  preferredProfileLanguage: true,
   referenceChatHistory: true,
   sensitiveAutomaticPolicy: true,
   settingsRevision: true,
@@ -82,7 +78,6 @@ type MemorySettingsRepositoryOptions = Readonly<{
 const visibleKeys = [
   "embeddingDeploymentId",
   "learnAutomatically",
-  "preferredProfileLanguage",
   "referenceChatHistory",
   "sensitiveAutomaticPolicy",
   "useMemoryFacts"
@@ -105,8 +100,6 @@ function visiblePatchChanges(
       patch.embeddingDeploymentId !== settings.embeddingProviderModelId) ||
     (owns(patch, "learnAutomatically") &&
       patch.learnAutomatically !== settings.learnAutomatically) ||
-    (owns(patch, "preferredProfileLanguage") &&
-      patch.preferredProfileLanguage !== settings.preferredProfileLanguage) ||
     (owns(patch, "referenceChatHistory") &&
       patch.referenceChatHistory !== settings.referenceChatHistory) ||
     (owns(patch, "sensitiveAutomaticPolicy") &&
@@ -117,11 +110,10 @@ function visiblePatchChanges(
 
 function validatePatchShape(patch: MemorySettingsPatch): void {
   const hasVisibleKey = visibleKeys.some((key) => owns(patch, key));
-  const hasLocale = owns(patch, "memoryUiLocale");
   if (
     !validRevision(patch.expectedSettingsRevision) ||
-    (!hasVisibleKey && !hasLocale) ||
-    [...visibleKeys, "memoryUiLocale" as const].some(
+    !hasVisibleKey ||
+    visibleKeys.some(
       (key) => owns(patch, key) && patch[key] === undefined
     )
   ) {
@@ -280,10 +272,6 @@ export function createPrismaMemorySettingsRepository(
           data.embeddingProviderModelId = patch.embeddingDeploymentId;
         }
         if (owns(patch, "learnAutomatically")) data.learnAutomatically = patch.learnAutomatically;
-        if (owns(patch, "memoryUiLocale")) data.memoryUiLocale = patch.memoryUiLocale;
-        if (owns(patch, "preferredProfileLanguage")) {
-          data.preferredProfileLanguage = patch.preferredProfileLanguage;
-        }
         if (owns(patch, "referenceChatHistory")) {
           data.referenceChatHistory = patch.referenceChatHistory;
         }
@@ -298,12 +286,6 @@ export function createPrismaMemorySettingsRepository(
         });
         if (updated.count !== 1) return memoryPersistenceFailure("memory_settings_conflict");
         settings.settingsRevision += 1;
-        if (owns(patch, "memoryUiLocale")) {
-          settings.memoryUiLocale = patch.memoryUiLocale!;
-        }
-        if (owns(patch, "preferredProfileLanguage")) {
-          settings.preferredProfileLanguage = patch.preferredProfileLanguage!;
-        }
         if (owns(patch, "referenceChatHistory")) {
           settings.referenceChatHistory = patch.referenceChatHistory!;
         }

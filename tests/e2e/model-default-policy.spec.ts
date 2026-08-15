@@ -43,6 +43,7 @@ const modelConfiguration = {
   answerSelectable: true,
   capabilities,
   defaultParams: {},
+  modelClass: "answer" as const,
   upstreamModelId: "browser-policy-model"
 };
 
@@ -101,13 +102,13 @@ test.describe("installation model default policy", () => {
           activatedAt: now,
           capabilities,
           connectionId: fixture.connectionId,
-          contextWindow: capabilities.contextWindow,
           defaultParams: {},
           displayName: "Browser Policy Model",
           draftConfig: modelConfiguration,
           draftVersion: 1,
           enabled: true,
           id: fixture.modelId,
+          modelClass: "answer",
           modelId: modelConfiguration.upstreamModelId,
           provider: "openai_compatible"
         }
@@ -312,14 +313,13 @@ test.describe("installation model default policy", () => {
         "Personal default model updated."
       );
       expect(settingsBodies).toEqual([{
-        defaultModelId: providerTemplateIds.fakeModel,
-        defaultProvider: providerTemplateIds.fakeConnection
+        defaultProviderModelId: providerTemplateIds.fakeModel
       }]);
       await modelPicker.getByRole("option", { name: /Browser Policy Model/ }).click();
       await expectRunSummary(userPage, { model: "Browser Policy Model" });
       await userPage
         .getByRole("complementary", { name: "Chat navigation" })
-        .getByRole("button", { name: "New chat" })
+        .getByRole("button", { name: "New chat", exact: true })
         .click();
       await expectRunSummary(userPage, { model: "Fake QSA" });
 
@@ -340,8 +340,7 @@ test.describe("installation model default policy", () => {
       await expectRunSummary(userPage, { model: "Fake QSA" });
       expect(settingsBodies).toEqual([
         {
-          defaultModelId: providerTemplateIds.fakeModel,
-          defaultProvider: providerTemplateIds.fakeConnection
+          defaultProviderModelId: providerTemplateIds.fakeModel
         },
         { defaultProviderModelId: null }
       ]);

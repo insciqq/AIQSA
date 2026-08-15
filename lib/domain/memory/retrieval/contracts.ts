@@ -6,9 +6,7 @@ import type {
 } from "../../../contracts/memory";
 import type { MemoryRetrievalLane } from "./config";
 
-// EPISODE remains decodable only for immutable legacy run evidence. New
-// retrieval lanes and packs never produce it.
-export type MemoryRetrievalItemType = "EPISODE" | "FACT_VERSION" | "RECALL_CHUNK";
+export type MemoryRetrievalItemType = "FACT_VERSION" | "RECALL_CHUNK";
 export type MemoryRetrievalDirectness = "DIRECT" | "INFERRED" | "PARAPHRASED";
 export type MemoryRetrievalTemperatureClass = "COLD" | "HOT" | "WARM";
 export type MemoryRetrievalHistorySafetyClass =
@@ -114,7 +112,6 @@ export type MemoryCoreCandidate = Readonly<{
 }>;
 
 export const MEMORY_SAFE_PROJECTION_KINDS = [
-  "EPISODE_SAFE_SUMMARY",
   "FACT_DISPLAY_TEXT",
   "RECALL_CHUNK_SAFE_PROJECTED_TEXT"
 ] as const;

@@ -22,6 +22,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       }],
       mode: "branch_path"
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       contextWindow: 100,
       defaultMaxOutputTokens: 0,
@@ -35,7 +37,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     params: {},
     prompt: { developer: null, system: null },
     provider: "openai",
-    searchStrategy: null,
+    searchPlan: { mode: "all_selected", options: [] },
     ...overrides
   };
 }
@@ -62,7 +64,24 @@ describe("provider request context budget", () => {
   });
 
   it("counts provider-hosted tools through the provider bridge", () => {
-    const input = request({ searchStrategy: "openai-native-web-search" });
+    const input = request({
+      searchPlan: {
+        mode: "model_choice",
+        options: [{
+          adapterKind: "answer_provider_hosted",
+          config: {},
+          credentialMode: "answer_provider",
+          executionModes: ["model_choice"],
+          modelId: null,
+          optionId: "openai-native-web-search",
+          protocol: "openai_responses_web_search",
+          provider: "openai",
+          providerModelId: null,
+          revisionId: "revision-hosted",
+          searchStrategyRowId: "route-hosted"
+        }]
+      }
+    });
 
     expect(providerFacingSerializedTools(input, openAIResponsesToolBridge)).toEqual([
       { type: "web_search" }

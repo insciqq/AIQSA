@@ -100,7 +100,6 @@ export function runAdminSearchAction(input: Readonly<{
 export function adminSearchErrorMessage(code: string): string {
   const messages: Record<string, string> = {
     network_error: "The Search control plane could not be reached.",
-    search_activation_evidence_missing: "This Search source is not ready. Check its provider connection, Search-capable model, and saved configuration.",
     search_admin_action_failed: "The Search action failed.",
     search_catalog_malformed: "The Search catalog response was invalid.",
     search_configuration_invalid: "Review the Search configuration and bounded limits.",

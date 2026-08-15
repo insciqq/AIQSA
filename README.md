@@ -4,21 +4,21 @@
 [![GitHub release](https://img.shields.io/github/v/release/insciqq/AIQSA)](https://github.com/insciqq/AIQSA/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/github/license/insciqq/AIQSA)](LICENSE)
 
-**Self-hosted AI workspace for multiple LLM providers, MCP tools, and web search.**
+**Self-hosted, conversation-first AI for multiple model providers, MCP tools, and web search.**
 
 ![AIQSA chat workspace with model, search, tool, and attachment controls](.github/assets/aiqsa-workspace.png)
 
-AIQSA is a multi-user web interface for working with LLMs without tying an installation to one provider or one workflow. Connect OpenAI, Anthropic, Gemini, OpenRouter, or an OpenAI-compatible endpoint; choose the exact model for each message; add MCP tools or web search when needed; and keep conversations, prompts, projects, and files in one workspace.
+AIQSA is a multi-user web interface for working with LLMs without tying an installation to one provider. Connect OpenAI, Anthropic, Gemini, OpenRouter, or an OpenAI-compatible endpoint; choose the exact model for each message; add MCP tools, Knowledge, Memory, or web search when useful; and keep conversations, projects, Assistants, and files in one workspace.
 
-The project emphasizes explicit control and inspectable execution. A completed run can expose citations, search and tool activity, provider events, reasoning artifacts, request previews, usage, and branch history instead of hiding everything behind a single response bubble.
+The product keeps control explicit and the conversation calm. You choose the model and optional capabilities before sending, see concise live status while work is in progress, and receive the answer with safe Sources, generated outputs, and direct follow-up actions when present. Provider requests, retrieval internals, tool traces, event timelines, and per-answer usage details remain private operational data rather than a second inspection workspace.
 
 Workspace state is stored in PostgreSQL and private S3-compatible storage. Content selected for a run is sent to the configured model provider and any tools used by that run. Client-side web-search integrations receive only a bounded generated query.
 
 ## Why AIQSA
 
 - **Multiple providers, one interface.** Use native OpenAI, Anthropic, Gemini, and OpenRouter adapters or configure compatible endpoints.
-- **Tools and search are optional capabilities.** Enable MCP servers and select an ordered web-search plan per run instead of forcing every conversation through the same pipeline.
-- **Runs remain inspectable.** Review citations, tool calls, search evidence, events, reasoning, request previews, and provider-reported usage.
+- **Tools and search are optional capabilities.** Enable MCP servers and select an ordered web-search plan per message instead of forcing every conversation through the same pipeline.
+- **Answers stay conversation-first.** Read the response, open safe Sources or generated outputs when present, and continue or branch without navigating an execution dashboard.
 - **Built for operator-managed teams.** Manage accounts, invitations, access groups, provider credentials, model availability, search integrations, SMTP, and MCP servers from the Control Center.
 - **Self-hosted application data.** Keep workspace records and uploaded objects in infrastructure you control while choosing which external providers receive run content.
 
@@ -28,10 +28,11 @@ Workspace state is stored in PostgreSQL and private S3-compatible storage. Conte
 - Private Knowledge bases with hybrid retrieval over native document text and printed Russian/English text recognized from scanned PDFs and raster images.
 - Reusable versioned Assistants: save a model, instructions, run controls, Search plan, MCP tool allowlist, and starter prompts as one shareable object in the internal Assistants surface, with exact revision provenance on every accepted run.
 - Exact model selection with per-model controls and optional reasoning or streaming settings where supported.
-- Ordered web-search plans with up to three entitled sources, compatibility checks, normalized citations, and per-source evidence.
-- MCP server administration, user enablement, personal fields, OAuth flows, tool readiness, and tool activity in chat.
+- Ordered web-search plans with up to three entitled sources, compatibility checks, normalized citations, and answer-bound Sources.
+- Optional Memory for explicitly saved facts and retained-chat recall, with private management, lifecycle, and deletion controls.
+- MCP server administration, user enablement, personal fields, OAuth flows, readiness checks, and approval before protected tool execution.
 - Multi-user accounts, invitations, access rules and groups, optional Google/Yandex sign-in, usage views, and an administrative Control Center.
-- Six persisted themes, responsive desktop/mobile layouts, command palette, code and math rendering, and private S3-compatible uploads.
+- System, light, and dark themes; responsive desktop/mobile layouts; a command palette; code and math rendering; and private S3-compatible uploads.
 
 ## Quick start
 

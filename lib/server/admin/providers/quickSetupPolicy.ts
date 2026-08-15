@@ -152,7 +152,7 @@ export function providerModelConfigurationFromCatalogEntry(
     answerSelectable: true,
     capabilities: {
       ...model.capabilities,
-      contextWindow: model.contextWindow
+      ...(model.contextWindow === null ? {} : { contextWindow: model.contextWindow })
     },
     defaultParams: model.defaultParams,
     modelClass: "answer",

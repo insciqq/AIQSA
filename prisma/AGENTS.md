@@ -8,4 +8,4 @@ Root `AGENTS.md` and `agent_docs/CRITICAL_INVARIANTS.md` remain authoritative. R
 - Preserve existing rows and accepted compatibility semantics unless the operator explicitly authorizes a destructive cutover.
 - Never run migration, seed, prune, or reset commands against the default persistent installation during development.
 - Regenerate the API/schema reference after schema changes; do not hand-edit its output.
-- Verify with the focused migration contract and disposable Compose parity lane required by `TESTING.md`.
+- Verify with the clean-install migration contract and disposable Compose parity lane required by `TESTING.md`.

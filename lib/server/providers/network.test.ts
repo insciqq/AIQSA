@@ -59,9 +59,7 @@ describe("provider network response bounds", () => {
 
   it("falls back independently and clamps event bytes to total stream bytes", () => {
     expect(getProviderStreamLimits({
-      AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS: "-1",
       AIQSA_PROVIDER_STREAM_MAX_BYTES: "1024",
-      AIQSA_PROVIDER_STREAM_MAX_DURATION_MS: "0",
       AIQSA_PROVIDER_STREAM_MAX_EVENT_BYTES: "2048",
       AIQSA_PROVIDER_STREAM_MAX_OUTPUT_CHARS: "1.5"
     })).toEqual({
@@ -92,26 +90,6 @@ describe("provider network response bounds", () => {
       maxBytes: PROVIDER_STREAM_LIMIT_CEILINGS.maxBytes + 1,
       maxOutputChars: Number.POSITIVE_INFINITY
     }, {})).toEqual(DEFAULT_PROVIDER_STREAM_LIMITS);
-  });
-
-  it("ignores removed environment timing controls", () => {
-    const previous = process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS;
-
-    try {
-      process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS = "1234";
-      expect(providerStreamIdleTimeoutMs()).toBe(DEFAULT_PROVIDER_STREAM_LIMITS.idleTimeoutMs);
-
-      process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS = String(
-        PROVIDER_STREAM_LIMIT_CEILINGS.idleTimeoutMs + 1
-      );
-      expect(providerStreamIdleTimeoutMs()).toBe(DEFAULT_PROVIDER_STREAM_LIMITS.idleTimeoutMs);
-    } finally {
-      if (typeof previous === "undefined") {
-        delete process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS;
-      } else {
-        process.env.AIQSA_PROVIDER_STREAM_IDLE_TIMEOUT_MS = previous;
-      }
-    }
   });
 
   it("derives both stream timing guards from the response deadline", () => {

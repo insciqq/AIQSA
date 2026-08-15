@@ -6,7 +6,7 @@ import type { MemoryDeletionClaim } from "../../memory/coordinator/types";
 import { memorySha256 } from "../../memory/persistence/lexical";
 
 export const PERMANENT_CHAT_DELETION_MANIFEST_VERSION =
-  "memory-p8-chat-delete-v1" as const;
+  "memory-chat-delete-v1" as const;
 export const PERMANENT_CHAT_DELETION_TARGET_TYPE =
   `CHAT@${PERMANENT_CHAT_DELETION_MANIFEST_VERSION}` as const;
 

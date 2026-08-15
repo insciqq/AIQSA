@@ -34,7 +34,9 @@ function model() {
     connection: {
       activeConfig: {
         allowPrivateNetwork: false,
-        apiRoot: "https://openrouter.ai/api/v1"
+        apiRoot: "https://openrouter.ai/api/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       activeVersion: 3,
       defaultCredentialId: "credential-1",

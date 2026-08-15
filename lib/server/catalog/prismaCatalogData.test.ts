@@ -74,7 +74,8 @@ function providerModel(options: ProviderModelFixtureOptions = {}): CatalogProvid
   const activeVersion = options.model?.activeVersion ?? 7;
   const connectionVersion = options.connection?.activeVersion ?? 5;
   const credentials = options.credentials ?? (fake ? [] : [credential("credential-default")]);
-  const activeConfig = options.activeConfig ?? (fake
+  const activeConfig = options.activeConfig === undefined
+    ? (fake
     ? {
         adapterKind: "fake",
         capabilities,
@@ -85,8 +86,17 @@ function providerModel(options: ProviderModelFixtureOptions = {}): CatalogProvid
         adapterKind: "openai_responses_native",
         capabilities,
         defaultParams: { maxOutputTokens: 2048, stream: false },
+        answerSelectable: true,
+        modelClass: "answer",
         upstreamModelId: "upstream/answer"
-      });
+      })
+    : fake
+      ? options.activeConfig
+      : {
+          answerSelectable: true,
+          modelClass: "answer",
+          ...(options.activeConfig as Record<string, unknown>)
+        };
   const row: CatalogProviderModelRow = {
     activeConfig: activeConfig as never,
     activeCredentialChecks: [],
@@ -96,7 +106,9 @@ function providerModel(options: ProviderModelFixtureOptions = {}): CatalogProvid
     connection: {
       activeConfig: {
         allowPrivateNetwork: fake,
-        apiRoot: fake ? "http://127.0.0.1" : "https://api.example.com/v1"
+        apiRoot: fake ? "http://127.0.0.1" : "https://api.example.com/v1",
+        authenticationMode: fake ? "none" : "bearer",
+        responseTimeoutMs: 300_000
       },
       activeVersion: connectionVersion,
       activatedAt: now,
@@ -111,7 +123,6 @@ function providerModel(options: ProviderModelFixtureOptions = {}): CatalogProvid
       ...options.connection
     },
     connectionId,
-    contextWindow: 8192,
     createdAt: now,
     defaultParams: { stale: true },
     displayName: "Answer deployment",
@@ -121,9 +132,9 @@ function providerModel(options: ProviderModelFixtureOptions = {}): CatalogProvid
     id,
     inputTokenPriceMicros: 0,
     modelClass: "answer",
-    modelId: "legacy-upstream",
+    modelId: "retired-upstream",
     outputTokenPriceMicros: 0,
-    provider: "legacy-family",
+    provider: "retired-family",
     supportsNativeSearch: false,
     supportsPdf: false,
     supportsReasoning: false,
@@ -225,10 +236,15 @@ function searchStrategy(
         configuration: {
           adapterKind,
           credentialMode,
+          maxOutputTokens: 4_096,
           maxResults: 8,
+          maxSearchCallsPerAnswer: 2,
           protocol,
           providerModelId,
           queryMaxCharacters: 500,
+          reasoningPolicy: adapterKind === "provider_model_client"
+            ? "lowest_supported"
+            : "provider_default",
           timeoutMs: 300_000
         },
         credentialMode,
@@ -535,15 +551,14 @@ describe("prisma catalog data loader", () => {
     });
   });
 
-  it("never exposes the provider compatibility sentinel as a context window", () => {
+  it("uses an explicit null when a deployment has no known context window", () => {
     const known = providerModelToCatalogEntry(providerModel({
       activeConfig: {
         adapterKind: "openai_responses_native",
         capabilities,
         defaultParams: {},
         upstreamModelId: "gpt-5.6-sol"
-      },
-      model: { contextWindow: 1 }
+      }
     }));
     const unknown = providerModelToCatalogEntry(providerModel({
       activeConfig: {
@@ -552,12 +567,11 @@ describe("prisma catalog data loader", () => {
         defaultParams: {},
         upstreamModelId: "private/model"
       },
-      connection: { family: "openai_compatible" },
-      model: { contextWindow: 1 }
+      connection: { family: "openai_compatible" }
     }));
 
     expect(known?.contextWindow).toBe(1_050_000);
-    expect(unknown?.contextWindow).toBe(0);
+    expect(unknown?.contextWindow).toBeNull();
   });
 
   it("fails closed on unreadable active model configuration", () => {
@@ -937,14 +951,13 @@ describe("prisma catalog data loader", () => {
           groups: [],
           settings: {
             defaultControlValues: {},
-            defaultModelId: "legacy-upstream",
-            defaultProvider: "legacy-family",
-            defaultProviderModel: { connectionId: "connection-answer" },
             defaultProviderModelId: "deployment-answer",
-            defaultSearchStrategyId: "perplexity-tool-search",
+            defaultSearchPlan: {
+              mode: "all_selected",
+              optionIds: ["perplexity-tool-search"]
+            },
             showCitations: false,
             showReasoningBlocks: true,
-            showToolActivity: true
           }
         }))
       }
@@ -996,7 +1009,10 @@ describe("prisma catalog data loader", () => {
     expect(catalog.defaults).toMatchObject({
       modelId: "deployment-answer",
       provider: "connection-answer",
-      searchStrategyId: "perplexity-tool-search"
+      searchPlan: {
+        mode: "all_selected",
+        optionIds: ["perplexity-tool-search"]
+      }
     });
     expect(catalog.searchStrategies).toEqual([
       {
@@ -1034,14 +1050,10 @@ describe("prisma catalog data loader", () => {
       searchStrategies: [],
       settings: {
         defaultControlValues: {},
-        defaultModelId: "legacy-stale",
-        defaultProvider: "legacy-stale",
-        defaultProviderConnectionId: "connection-unavailable",
         defaultProviderModelId: "deployment-unavailable",
-        defaultSearchStrategyId: "search-disabled",
+        defaultSearchPlan: { mode: "all_selected", optionIds: [] },
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true
       }
     });
 

@@ -79,6 +79,8 @@ function tinyGenerationRequest(input: AdminProviderDraftTesterInput): ProviderRu
     chatId: "provider-admin-test",
     content: { blocks: [{ text: "Reply with OK.", type: "text" }] },
     forceNonStreaming: true,
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: input.model.capabilities,
     modelId: input.model.upstreamModelId,
     params: {
@@ -97,7 +99,7 @@ function tinyGenerationRequest(input: AdminProviderDraftTesterInput): ProviderRu
       system: "This is an administrator-requested connectivity test."
     },
     provider: input.providerFamily,
-    searchStrategy: null
+    searchPlan: { mode: "all_selected", options: [] }
   };
 }
 

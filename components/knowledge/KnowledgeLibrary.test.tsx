@@ -385,7 +385,7 @@ describe("KnowledgeLibrary", () => {
 
     expect(screen.getByText("No documents match this filename")).toBeVisible();
     expect(screen.getByText(/does not inspect document contents/)).toBeVisible();
-    expect(screen.queryByText("honest empty retrieval evidence")).not.toBeInTheDocument();
+    expect(screen.queryByText(/honest empty retrieval result/)).not.toBeInTheDocument();
   });
 
   it("renders truthful reindex and live-publication controls with their disclosures", () => {
@@ -424,7 +424,7 @@ describe("KnowledgeLibrary", () => {
     expect(detailView.onReindex).toHaveBeenCalledWith("embedding-1");
 
     expect(screen.getByTestId("knowledge-publication-disclosure")).toHaveTextContent(
-      "Revoking stops future run admission; runs accepted earlier keep their frozen evidence"
+      "Revoking stops future run admission; runs accepted earlier keep their admitted revision"
     );
     fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
     expect(detailView.onRevokePublication).toHaveBeenCalledWith("publication-installation");

@@ -5,10 +5,7 @@ function validResponse(): UpdateSettingsResponse {
   return {
     settings: {
       defaultControlValues: {},
-      defaultModelId: "deployment-test",
-      defaultProvider: "connection-test",
       defaultSearchPlan: { mode: "all_selected", optionIds: [] },
-      defaultSearchStrategyId: "search-disabled",
       hasPersonalModelDefault: false,
       modelPreferenceSource: "organization",
       organizationModelDefault: {
@@ -20,7 +17,6 @@ function validResponse(): UpdateSettingsResponse {
       searchPreferenceSource: "organization",
       showCitations: true,
       showReasoningBlocks: false,
-      showToolActivity: true
     }
   };
 }
@@ -28,8 +24,6 @@ function validResponse(): UpdateSettingsResponse {
 describe("settings wire contract", () => {
   it("preserves a null personal default when the effective model is the organization default", () => {
     expect(decodeUpdateSettingsResponse(validResponse())?.settings).toMatchObject({
-      defaultModelId: "deployment-test",
-      defaultProvider: "connection-test",
       hasPersonalModelDefault: false,
       modelPreferenceSource: "organization",
       organizationModelDefault: {
@@ -41,11 +35,14 @@ describe("settings wire contract", () => {
   });
 
   it.each([
+    "defaultSearchPlan",
     "hasPersonalModelDefault",
     "modelPreferenceSource",
     "organizationModelDefault",
-    "personalModelDefault"
-  ])("rejects settings that omit current model-default provenance: %s", (field) => {
+    "organizationSearchPlan",
+    "personalModelDefault",
+    "searchPreferenceSource"
+  ])("rejects settings that omit a current required field: %s", (field) => {
     const response = validResponse() as unknown as {
       settings: Record<string, unknown>;
     };

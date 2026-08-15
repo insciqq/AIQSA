@@ -29,7 +29,16 @@ const NOW = new Date("2026-07-23T12:00:00.000Z");
 
 const connectionConfiguration = {
   allowPrivateNetwork: false,
-  apiRoot: "https://compatible.example.test/v1/"
+  apiRoot: "https://compatible.example.test/v1/",
+  authenticationMode: "bearer" as const,
+  responseTimeoutSeconds: 300
+};
+
+const storedConnectionConfiguration = {
+  allowPrivateNetwork: false,
+  apiRoot: "https://compatible.example.test/v1/",
+  authenticationMode: "bearer" as const,
+  responseTimeoutMs: 300_000
 };
 
 const modelConfiguration = {
@@ -43,6 +52,7 @@ const modelConfiguration = {
     vision: false
   },
   defaultParams: {},
+  modelClass: "answer" as const,
   upstreamModelId: "vendor/model"
 };
 
@@ -65,7 +75,8 @@ function adminConnection(): AdminProviderConnection {
     id: "connection-1",
     models: [],
     unassignedPolicy: "use_default",
-    updatedAt: NOW.toISOString()
+    updatedAt: NOW.toISOString(),
+    userAssignments: []
   };
 }
 
@@ -148,7 +159,7 @@ function service(
 function draftCandidate(): ProviderDraftTestCandidate {
   return {
     connection: {
-      configuration: connectionConfiguration,
+      configuration: storedConnectionConfiguration,
       displayName: "Compatible",
       draftVersion: 3,
       family: "openai_compatible",
@@ -179,7 +190,7 @@ function draftCandidate(): ProviderDraftTestCandidate {
 function activationCandidate(): ProviderActivationCandidate {
   return {
     connection: {
-      configuration: connectionConfiguration,
+      configuration: storedConnectionConfiguration,
       draftVersion: 3,
       family: "openai_compatible",
       id: "connection-1"
@@ -265,6 +276,7 @@ describe("admin provider service", () => {
         reasoning: { effort: "low" },
         stream: true
       },
+      modelClass: "answer" as const,
       upstreamModelId: "gemini-3.6-flash"
     };
 
@@ -659,7 +671,9 @@ describe("admin provider service", () => {
             connection: {
               configuration: {
                 allowPrivateNetwork: false,
-                apiRoot: "https://openrouter.example.test/api/v1"
+                apiRoot: "https://openrouter.example.test/api/v1",
+                authenticationMode: "bearer",
+                responseTimeoutMs: 300_000
               },
               family: "openrouter",
               id: "connection-or"
@@ -731,7 +745,8 @@ describe("admin provider service", () => {
               configuration: {
                 allowPrivateNetwork: false,
                 apiRoot: "https://compatible.example.test/v1",
-                authenticationMode: "bearer"
+                authenticationMode: "bearer",
+                responseTimeoutMs: 300_000
               },
               family: "openai_compatible",
               id: "connection-compatible"
@@ -777,7 +792,8 @@ describe("admin provider service", () => {
               configuration: {
                 allowPrivateNetwork: true,
                 apiRoot: "http://127.0.0.1:11434/v1",
-                authenticationMode: "none"
+                authenticationMode: "none",
+                responseTimeoutMs: 300_000
               },
               family: "openai_compatible",
               id: "connection-local"
@@ -809,7 +825,9 @@ describe("admin provider service", () => {
       connection: {
         configuration: {
           allowPrivateNetwork: false,
-          apiRoot: "https://openrouter.example.test/api/v1"
+          apiRoot: "https://openrouter.example.test/api/v1",
+          authenticationMode: "bearer",
+          responseTimeoutMs: 300_000
         },
         displayName: "OpenRouter",
         family: "openrouter",
@@ -824,6 +842,7 @@ describe("admin provider service", () => {
       model: {
         configuration: {
           adapterKind: "openrouter_chat_completions" as const,
+          answerSelectable: true,
           capabilities: {
             nativePdfInput: false,
             nativeSearch: false,
@@ -832,6 +851,7 @@ describe("admin provider service", () => {
             vision: false
           },
           defaultParams: {},
+          modelClass: "answer" as const,
           openRouterRouting: { mode: "automatic" as const, providers: [] as [] },
           upstreamModelId: "vendor/model"
         },
@@ -893,7 +913,9 @@ describe("admin provider service", () => {
       connection: {
         configuration: {
           allowPrivateNetwork: false,
-          apiRoot: "https://openrouter.example.test/api/v1"
+          apiRoot: "https://openrouter.example.test/api/v1",
+          authenticationMode: "bearer",
+          responseTimeoutMs: 300_000
         },
         displayName: "OpenRouter",
         family: "openrouter",
@@ -908,6 +930,7 @@ describe("admin provider service", () => {
       model: {
         configuration: {
           adapterKind: "openrouter_chat_completions" as const,
+          answerSelectable: true,
           capabilities: {
             nativePdfInput: false,
             nativeSearch: false,
@@ -916,6 +939,7 @@ describe("admin provider service", () => {
             vision: false
           },
           defaultParams: {},
+          modelClass: "answer" as const,
           openRouterRouting: {
             mode: "only_selected" as const,
             providers: ["provider-a"]
@@ -983,7 +1007,7 @@ describe("admin provider service", () => {
     });
     const candidate = {
       connection: {
-        configuration: connectionConfiguration,
+        configuration: storedConnectionConfiguration,
         displayName: "Compatible",
         family: "openai_compatible",
         id: "connection-1",

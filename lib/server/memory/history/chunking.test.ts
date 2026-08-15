@@ -93,7 +93,7 @@ describe("Memory history recall chunking", () => {
 
     const first = chunkMemoryRecallProjection(snapshot, options);
     const second = chunkMemoryRecallProjection(snapshot, options);
-    const groupIds = snapshot.recallEpisodeProjection.turnGroups.map((group) => group.id);
+    const groupIds = snapshot.recallChunkProjection.turnGroups.map((group) => group.id);
 
     expect(first).toEqual(second);
     expect(first.map((chunk) => chunk.turnGroupIds)).toEqual([
@@ -116,7 +116,7 @@ describe("Memory history recall chunking", () => {
       expect(chunk.messageJoins).toHaveLength(4);
       expect(chunk.messageJoins.map((join) => join.ordinal)).toEqual([0, 1, 2, 3]);
       for (const join of chunk.messageJoins) {
-        const sourceMessage = snapshot.recallEpisodeProjection.turnGroups
+        const sourceMessage = snapshot.recallChunkProjection.turnGroups
           .flatMap((group) => group.messages)
           .find((message) => message.id === join.messageId);
         expect(sourceMessage).toBeDefined();
@@ -139,7 +139,7 @@ describe("Memory history recall chunking", () => {
       overlapTurnGroups: 0
     });
     const messages = new Map(
-      snapshot.recallEpisodeProjection.turnGroups[0]?.messages.map((message) =>
+      snapshot.recallChunkProjection.turnGroups[0]?.messages.map((message) =>
         [message.id, message.safeText]) ?? []
     );
 
@@ -174,7 +174,7 @@ describe("Memory history recall chunking", () => {
 
   it("re-screens a forged secret-bearing safe projection before any provider text exists", () => {
     const snapshot = multiTurnSnapshot(1);
-    const group = snapshot.recallEpisodeProjection.turnGroups[0];
+    const group = snapshot.recallChunkProjection.turnGroups[0];
     if (!group) throw new Error("missing turn group fixture");
     const secret = "api key: sk-forgedHistorySecret123456";
     const forgedUser = {
@@ -192,7 +192,7 @@ describe("Memory history recall chunking", () => {
     };
     const forgedSnapshot: MemorySafeSourceSnapshot = {
       ...snapshot,
-      recallEpisodeProjection: {
+      recallChunkProjection: {
         projectionHash: memorySha256([forgedGroup]),
         turnGroups: [forgedGroup]
       }
@@ -210,7 +210,7 @@ describe("Memory history recall chunking", () => {
       return role === "user" ? "correct-horse-battery" : "Acknowledged.";
     });
 
-    expect(snapshot.recallEpisodeProjection.turnGroups).toHaveLength(2);
+    expect(snapshot.recallChunkProjection.turnGroups).toHaveLength(2);
     const chunks = chunkMemoryRecallProjection(snapshot);
     expect(chunks).toHaveLength(1);
     expect(chunks[0]).toMatchObject({
@@ -222,7 +222,7 @@ describe("Memory history recall chunking", () => {
 
   it("applies source cutoffs and message suppressions before forming chunks", () => {
     const snapshot = multiTurnSnapshot(3);
-    const groups = snapshot.recallEpisodeProjection.turnGroups;
+    const groups = snapshot.recallChunkProjection.turnGroups;
     const chunks = chunkMemoryRecallProjection(snapshot, undefined, {
       excludedMessageIds: [groups[2]!.userMessageId],
       sourceCreatedAtCutoff: groups[0]!.occurredTo

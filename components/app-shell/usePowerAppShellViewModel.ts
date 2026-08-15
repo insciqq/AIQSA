@@ -134,7 +134,7 @@ export function usePowerAppShellViewModel({
   selectedProvider,
   visibleMessages
 }: PowerAppShellViewModelInput) {
-  const { events: runEvents, lastRun } = runSurface;
+  const { events: runEvents } = runSurface;
   const currentModel = useMemo(
     () => catalog?.models.find((model) => model.provider === selectedProvider && model.modelId === selectedModelId),
     [catalog, selectedModelId, selectedProvider]
@@ -173,8 +173,8 @@ export function usePowerAppShellViewModel({
     [chats, folders]
   );
   const liveArtifactSummary = useMemo(
-    () => summarizeThreadArtifacts(runEvents, lastRun?.searchRuns, lastRun?.toolCalls, lastRun?.status),
-    [lastRun?.searchRuns, lastRun?.status, lastRun?.toolCalls, runEvents]
+    () => summarizeThreadArtifacts(runEvents),
+    [runEvents]
   );
   const searchOptions = useMemo<CatalogSearchStrategy[]>(() => {
     return catalog?.searchStrategies ?? [];
@@ -190,7 +190,8 @@ export function usePowerAppShellViewModel({
         : null;
   const projectMemory = folders.find((folder) => folder.id === activeChatFolderId)?.projectMemory?.trim() ?? "";
   const currentContextWindow =
-    currentModel && Number.isFinite(currentModel.contextWindow) && currentModel.contextWindow > 1
+    currentModel && typeof currentModel.contextWindow === "number" &&
+        Number.isFinite(currentModel.contextWindow) && currentModel.contextWindow > 0
       ? Math.floor(currentModel.contextWindow)
       : 0;
   const selectedMaxOutputTokens = Math.round(
@@ -251,7 +252,7 @@ export function usePowerAppShellViewModel({
     activeBranchMessageCount: visibleMessages.length,
     cachedInputTokens: 0,
     cacheWriteInputTokens: 0,
-    totalTokens: lastRun?.status === "complete" ? lastRun.totalTokens || lastRun.inputTokens + lastRun.outputTokens : 0
+    totalTokens: 0
   };
   return {
     activeChat,

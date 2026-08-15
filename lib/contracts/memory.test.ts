@@ -25,8 +25,6 @@ import {
   decodeMemoryMutationAuthorizationInput,
   decodeMemoryMutationAuthorizationResponse,
   decodeMemoryMutationResponse,
-  decodeMemoryProfileResponse,
-  decodeMemoryReceipt,
   decodeMemoryActionFeedback,
   decodeMemoryRebuildInput,
   decodeMemoryRebuildStatus,
@@ -70,7 +68,6 @@ function settingsResponse() {
       explicitMemory: true,
       historyRecall: true,
       permanentChatDeletion: false,
-      russianQualified: true,
       temporaryChats: true
     },
     egress: {
@@ -100,8 +97,6 @@ function settingsResponse() {
       memoryConsentRevision: 3,
       memoryGeneration: 7,
       memoryRevision: 42,
-      memoryUiLocale: "RU",
-      preferredProfileLanguage: "AUTO",
       referenceChatHistory: true,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
       settingsRevision: 12,
@@ -139,15 +134,9 @@ describe("Memory request contracts", () => {
       expectedSettingsRevision: 12,
       useMemoryFacts: true
     })).toMatchObject({ ok: true });
-    expect(decodeMemorySettingsPatch({
-      expectedSettingsRevision: 12,
-      memoryUiLocale: "EN"
-    })).toMatchObject({ ok: true });
-
     for (const invalid of [
       { expectedSettingsRevision: 12 },
       { expectedSettingsRevision: 12, useMemoryFacts: true },
-      { expectedMemoryRevision: 42, expectedSettingsRevision: 12, memoryUiLocale: "EN" },
       { expectedMemoryRevision: 42, expectedSettingsRevision: 12, useMemoryFacts: true, userId: "other" }
     ]) {
       expect(decodeMemorySettingsPatch(invalid)).toMatchObject({ ok: false });
@@ -349,17 +338,6 @@ describe("Memory request contracts", () => {
     expect(decodeMemoryRebuildInput({
       expectedMemoryRevision: 42,
       expectedSettingsRevision: 12,
-      operation: "REDREAM_EXISTING_CHATS"
-    })).toMatchObject({ ok: false });
-    expect(decodeMemoryRebuildInput({
-      expectedMemoryRevision: 42,
-      expectedSettingsRevision: 12,
-      mutationAuthorizationId: "authorization-1",
-      operation: "REDREAM_EXISTING_CHATS"
-    })).toMatchObject({ ok: true });
-    expect(decodeMemoryRebuildInput({
-      expectedMemoryRevision: 42,
-      expectedSettingsRevision: 12,
       mutationAuthorizationId: "authorization-1",
       operation: "REBUILD_SEARCH_INDEX"
     })).toMatchObject({ ok: false });
@@ -473,73 +451,6 @@ describe("Memory response contracts", () => {
       }],
       nextCursor: null
     })).toMatchObject({ ok: false });
-  });
-
-  it("accepts only contributor-exact ready Memory profiles", () => {
-    const profile = {
-      asOf: now,
-      contributors: [
-        {
-          displayText: "Отвечай по-русски.",
-          factId: "fact-1",
-          factVersionId: "version-1",
-          ordinal: 0,
-          pinned: true,
-          sourceMode: "EXPLICIT",
-          temperatureClass: "HOT"
-        },
-        {
-          displayText: "Используй короткие примеры.",
-          factId: "fact-2",
-          factVersionId: "version-2",
-          ordinal: 1,
-          pinned: false,
-          sourceMode: "AUTOMATIC",
-          temperatureClass: "WARM"
-        }
-      ],
-      createdAt: now,
-      id: "profile-1",
-      languageCode: "ru",
-      memoryRevision: 41,
-      redactionState: "NOT_NEEDED",
-      summary: "Отвечай по-русски.\nИспользуй короткие примеры."
-    };
-    expect(decodeMemoryProfileResponse({
-      memoryRevision: 42,
-      profile,
-      state: "READY"
-    })).toMatchObject({ ok: true });
-    for (const invalid of [
-      {
-        memoryRevision: 42,
-        profile: { ...profile, summary: "Перефразированное резюме" },
-        state: "READY"
-      },
-      {
-        memoryRevision: 42,
-        profile: {
-          ...profile,
-          contributors: profile.contributors.map((item, index) => ({
-            ...item,
-            ordinal: index + 1
-          }))
-        },
-        state: "READY"
-      },
-      { memoryRevision: 42, profile, state: "PENDING" },
-      { memoryRevision: 40, profile, state: "READY" }
-    ]) {
-      expect(decodeMemoryProfileResponse(invalid)).toEqual({
-        code: "memory_contract_invalid",
-        ok: false
-      });
-    }
-    expect(decodeMemoryProfileResponse({
-      memoryRevision: 42,
-      profile: null,
-      state: "WAITING_FOR_EGRESS_CONSENT"
-    })).toMatchObject({ ok: true });
   });
 
   it("decodes bounded evidence without accepting impossible source shapes", () => {
@@ -701,49 +612,6 @@ describe("Memory response contracts", () => {
       state: "SUCCEEDED",
       totalUnits: 3,
       updatedAt: now
-    })).toMatchObject({ ok: false });
-  });
-
-  it("accepts only item-bearing used/degraded immutable receipts", () => {
-    const item = {
-      includedText: "Prefers Russian answers.",
-      itemType: "FACT_VERSION",
-      lifecycleState: "CURRENT",
-      ordinal: 0,
-      scopeType: "GLOBAL_USER",
-      selectionReason: "exact preference",
-      sourceChatId: "chat-1",
-      sourceMessageIds: ["message-1"],
-      sourceMode: "EXPLICIT",
-      versionId: "version-1"
-    };
-    expect(decodeMemoryReceipt({
-      degradationCode: null,
-      itemCount: 1,
-      items: [item],
-      outcome: "USED",
-      summary: "Used 1 memory"
-    })).toMatchObject({ ok: true });
-    expect(decodeMemoryReceipt({
-      degradationCode: "vector_unavailable",
-      itemCount: 1,
-      items: [item],
-      outcome: "DEGRADED",
-      summary: "Used 1 memory"
-    })).toMatchObject({ ok: true });
-    expect(decodeMemoryReceipt({
-      degradationCode: null,
-      itemCount: 0,
-      items: [],
-      outcome: "USED",
-      summary: "Used memory"
-    })).toMatchObject({ ok: false });
-    expect(decodeMemoryReceipt({
-      degradationCode: null,
-      itemCount: 1,
-      items: [{ ...item, lifecycleState: "SOURCE_DELETED" }],
-      outcome: "USED",
-      summary: "Used 1 memory"
     })).toMatchObject({ ok: false });
   });
 

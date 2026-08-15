@@ -29,17 +29,6 @@ describe("tool-loop persistence values", () => {
     expect(parseToolLoopCheckpoint(checkpoint)).toEqual(checkpoint);
   });
 
-  it("still accepts a strict legacy v1 checkpoint", () => {
-    const checkpoint = {
-      phase: "provider_running",
-      providerContinuation: null,
-      providerCursor: null,
-      roundIndex: 1,
-      version: 1
-    } as const;
-    expect(parseToolLoopCheckpoint(checkpoint)).toEqual(checkpoint);
-  });
-
   it("replaces partial round usage with terminal evidence and keeps terminal repeats idempotent", () => {
     const partial = {
       completeness: "partial" as const,
@@ -121,19 +110,21 @@ describe("tool-loop persistence values", () => {
 
   it("rejects invalid and oversized continuation data", () => {
     expect(parseToolLoopCheckpoint({
+      answerRoundUsage: [],
       phase: "provider_running",
       providerContinuation: { value: Number.NaN },
       providerCursor: null,
       roundIndex: 0,
-      version: 1
+      version: 2
     })).toBeNull();
     expect(parseToolLoopCheckpoint({
+      answerRoundUsage: [],
       extra: "not compact",
       phase: "provider_running",
       providerContinuation: null,
       providerCursor: null,
       roundIndex: 0,
-      version: 1
+      version: 2
     })).toBeNull();
     expect(toolLoopCheckpoint({
       phase: "provider_running",

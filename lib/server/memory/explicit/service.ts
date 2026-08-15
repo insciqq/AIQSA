@@ -442,8 +442,7 @@ export function createExplicitMemoryService(input: Readonly<{
         authorizationInput.operation !== "DELETE_EXPLICIT" &&
         authorizationInput.operation !== "DELETE_LEARNED" &&
         authorizationInput.operation !== "CLEAR_HISTORY_INDEX" &&
-        authorizationInput.operation !== "DELETE_ALL_REUSABLE" &&
-        authorizationInput.operation !== "REDREAM_EXISTING_CHATS"
+        authorizationInput.operation !== "DELETE_ALL_REUSABLE"
       ) {
         return failure("memory_operation_unsupported");
       }

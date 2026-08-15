@@ -1,9 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/features/composer-v2/ComposerV2Gallery";
-import type { ThreadArtifactSummary } from "@/lib/contracts/chats";
 import {
-  LiveEvidenceV2,
   RunSetupV2,
   TemporaryChatIndicatorV2,
   WelcomeOrientationV2,
@@ -14,7 +12,6 @@ import {
 } from "./PowerAppShellV2View";
 
 const galleryModels = composerGalleryConfig.catalog.models;
-const galleryCatalog = composerGalleryConfig.catalog;
 
 function runSetupComposer(overrides: Partial<RunSetupComposerV2> = {}): RunSetupComposerV2 {
   return {
@@ -36,13 +33,11 @@ function runSetupComposer(overrides: Partial<RunSetupComposerV2> = {}): RunSetup
     selectedSearchOptionIds: [],
     showCitations: true,
     showReasoningBlocks: false,
-    showToolActivity: true,
     streamMode: true,
     temperature: "0.7",
     toggleCitationsVisibility: vi.fn(),
     toggleNotificationSound: vi.fn(),
     toggleReasoningBlockVisibility: vi.fn(),
-    toggleToolActivityVisibility: vi.fn(),
     useOrganizationModelDefault: vi.fn(),
     useOrganizationSearchDefault: vi.fn(),
     ...overrides
@@ -121,26 +116,12 @@ describe("Run setup v2", () => {
 });
 
 describe("Answer identity v2", () => {
-  it("resolves only catalog display names and never adapter, model, or UUID ids", () => {
-    expect(answerIdentityV2(galleryCatalog, {
-      modelId: "gpt-5.2",
-      provider: "openai-work"
-    })).toEqual({ label: "GPT-5.2", testId: "evidence-row-model" });
-
-    // Unknown historical binding: omit instead of leaking a raw identifier.
-    expect(answerIdentityV2(galleryCatalog, {
-      modelId: "gpt-5.6-terra",
-      provider: "openai_compatible"
-    })).toBeNull();
-    expect(answerIdentityV2(galleryCatalog, {
-      modelId: "6681cb85-2f4d-4bd1-9a53-8d21c7e64b02",
-      provider: "396b627a-1c9f-4e58-9d1f-2b9a5c1e7a10"
-    })).toBeNull();
-    expect(answerIdentityV2(null, { modelId: "gpt-5.2" })).toBeNull();
+  it("keeps ordinary answers neutral", () => {
+    expect(answerIdentityV2({})).toBeNull();
   });
 
-  it("prefers the accepted Assistant identity", () => {
-    expect(answerIdentityV2(galleryCatalog, {
+  it("projects only the accepted Assistant identity", () => {
+    expect(answerIdentityV2({
       assistantIdentity: {
         avatar: {
           accents: [1],
@@ -153,87 +134,11 @@ describe("Answer identity v2", () => {
         },
         name: "Quarterly analyst",
         revisionNumber: 3
-      },
-      modelId: "gpt-5.2",
-      provider: "openai-work"
+      }
     })).toEqual({
       label: "Quarterly analyst · revision 3",
       testId: "answer-assistant-identity"
     });
-  });
-});
-
-describe("Live evidence v2", () => {
-  const artifact: ThreadArtifactSummary = {
-    citationCount: 0,
-    citations: [],
-    reasoningCount: 1,
-    reasoningText: ["**Identifying need**\n\nCompare the sources."],
-    searchActivity: [{
-      displayName: "OpenAI Search",
-      providerOperations: null,
-      providerOperationsTruncated: false,
-      query: "quarterly comparison",
-      sourceCount: 3,
-      sources: [
-        { rank: 1, title: "Quarterly guide", url: "https://example.com/guide" }
-      ],
-      status: "complete"
-    }],
-    searchCount: 1,
-    searchDisplayName: "OpenAI Search",
-    searchStrategy: "openai-native-web-search",
-    toolCallCount: 0,
-    toolCalls: []
-  };
-
-  it("assembles one muted row with non-zero counters, optional identity, and no token text", () => {
-    render(
-      <LiveEvidenceV2
-        artifact={artifact}
-        identity={{ label: "GPT-5.2", testId: "evidence-row-model" }}
-        locale="RU"
-        showReasoning
-        showTools
-        summary={{ fileCount: 2, hasUsage: true, sourceCount: 3, toolCallCount: 0 }}
-        onOpenRunDetails={vi.fn()}
-      />
-    );
-
-    const row = screen.getByTestId("evidence-row");
-    expect(row).toHaveTextContent("GPT-5.2");
-    expect(row).toHaveTextContent("Sources 3");
-    expect(row).toHaveTextContent("Files 2");
-    expect(row).toHaveTextContent("Run details");
-    expect(row).not.toHaveTextContent("Tools");
-
-    // Token counts live only in the Run details drawer; adapter ids never
-    // render anywhere in the feed.
-    expect(document.body.textContent).not.toMatch(/token/iu);
-    expect(document.body.textContent).not.toContain("openai_compatible");
-    expect(document.body.textContent).not.toContain("openai-work");
-
-    // Reasoning renders sanitized with a counter-free header.
-    const reasoning = screen.getByTestId("reasoning-evidence");
-    expect(reasoning.querySelector("summary")).toHaveTextContent(/^Reasoning$/u);
-    expect(reasoning.textContent).not.toContain("**");
-  });
-
-  it("keeps the row to Run details alone when no counters and no identity exist", () => {
-    render(
-      <LiveEvidenceV2
-        artifact={null}
-        identity={null}
-        locale="RU"
-        showReasoning={false}
-        showTools={false}
-        summary={null}
-        onOpenRunDetails={vi.fn()}
-      />
-    );
-
-    expect(screen.getByTestId("evidence-row")).toHaveTextContent(/^Run details$/u);
-    expect(screen.queryByTestId("evidence-row-model")).toBeNull();
   });
 });
 
@@ -300,7 +205,6 @@ describe("Workspace header v2", () => {
       onRenameChange: vi.fn(),
       onRenameSave: vi.fn(),
       onRenameStart: vi.fn(),
-      onRunDetails: vi.fn(),
       onSettings: vi.fn(),
       onShare: vi.fn(),
       shareDisabled: false,
@@ -335,8 +239,7 @@ describe("Workspace header v2", () => {
       "Export",
       "Export as JSON",
       "Copy entire thread",
-      "Branches",
-      "Run details"
+      "Branches"
     ]);
     // Share is a mobile-only route; ≤899px CSS owns the breakpoint and
     // toggles this exact marker.
@@ -358,10 +261,6 @@ describe("Workspace header v2", () => {
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("menuitem", { name: "Branches" }));
     expect(props.onBranches).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Run details" }));
-    expect(props.onRunDetails).toHaveBeenCalledTimes(1);
 
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
@@ -457,12 +356,6 @@ describe("Workspace header v2", () => {
     expect(screen.queryByTestId("header-more-menu")).toBeNull();
   });
 
-  it("disables Run details without a settled answer run", () => {
-    render(<WorkspaceHeaderV2 {...headerProps({ onRunDetails: null })} />);
-
-    fireEvent.click(screen.getByTestId("header-more-trigger"));
-    expect(screen.getByRole("menuitem", { name: "Run details" })).toBeDisabled();
-  });
 });
 
 describe("Blank welcome v2", () => {

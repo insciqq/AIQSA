@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { validateSearchToolArguments } from "../search/query";
-import { providerSearchOperationsFromArtifacts } from "../search/providerOperations";
 import { createFetchAnthropicMessagesClient } from "./anthropicMessages";
 import {
   buildAnthropicMessagesSearchRequest,
@@ -227,11 +226,6 @@ describe("Anthropic Messages query-only Search adapter", () => {
       title: "https://example.com/report",
       url: "https://example.com/report"
     }]);
-    expect(providerSearchOperationsFromArtifacts(result.artifacts)).toMatchObject({
-      operations: [{ queries: ["Moscow news"], status: "complete" }],
-      providerUsage: { webSearchRequests: 1 },
-      truncated: false
-    });
     expect(JSON.stringify(result)).not.toMatch(/PRIVATE_ENCRYPTED_RESULT|PRIVATE_ENCRYPTED_INDEX/u);
   });
 
@@ -447,9 +441,6 @@ describe("Anthropic Messages query-only Search adapter", () => {
       code: "search_timeout",
       usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 }
     });
-    expect(providerSearchOperationsFromArtifacts(error.artifacts).operations).toMatchObject([
-      { queries: ["Moscow news"], status: "complete" }
-    ]);
   });
 
   it("preserves non-timeout caller cancellation", async () => {

@@ -1,5 +1,4 @@
 import type { RunTool } from "../../tools/types";
-import type { MemoryActionPlan } from "./intent";
 
 export const MEMORY_SAVE_TOOL_NAME = "save_memory";
 export const MEMORY_LIST_TOOL_NAME = "list_memories";
@@ -111,20 +110,6 @@ export const memoryActionTools = Object.freeze([
   forgetTool,
   incorrectTool
 ] satisfies readonly RunTool[]);
-
-/** Legacy recovery only. New runs expose the complete model-driven tool set. */
-export function memoryActionToolForPlan(plan: MemoryActionPlan): RunTool {
-  const name = plan.kind === "SAVE" ? MEMORY_SAVE_TOOL_NAME
-    : plan.kind === "LIST" ? MEMORY_LIST_TOOL_NAME
-      : plan.kind === "UPDATE" ? MEMORY_UPDATE_TOOL_NAME
-        : plan.kind === "FORGET" ? MEMORY_FORGET_TOOL_NAME
-          : MEMORY_MARK_INCORRECT_TOOL_NAME;
-  return memoryActionTools.find((tool) => tool.name === name)!;
-}
-
-export function memoryActionToolName(plan: MemoryActionPlan): string {
-  return memoryActionToolForPlan(plan).name;
-}
 
 export function isMemoryActionToolName(value: string): boolean {
   return memoryActionTools.some((tool) => tool.name === value);

@@ -67,6 +67,8 @@ const request: ProviderRunRequest = {
       }
     ]
   },
+  knowledgePlan: { baseIds: [] },
+  toolMode: "auto",
   modelCapabilities: {
     nativePdfInput: false,
     nativeSearch: true,
@@ -90,7 +92,23 @@ const request: ProviderRunRequest = {
     system: "You are running a tiny AIQSA provider adapter smoke test."
   },
   provider: "openai",
-  searchStrategy: searchEnabled ? "openai-native-web-search" : "search-disabled"
+  searchPlan: {
+    mode: "all_selected",
+    options: searchEnabled ? [{
+      adapterKind: "answer_provider_hosted",
+      config: {},
+      credentialMode: "answer_provider",
+      displayName: "OpenAI Web Search",
+      executionModes: ["all_selected"],
+      modelId: null,
+      optionId: "openai-native-web-search",
+      protocol: "openai_responses_web_search",
+      provider: "openai",
+      providerModelId: null,
+      revisionId: "smoke-openai-search",
+      searchStrategyRowId: "smoke-openai-search"
+    }] : []
+  }
 };
 
 function safeSourceCount(value: unknown, seen = new WeakSet<object>()): number {

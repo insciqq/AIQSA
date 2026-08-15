@@ -446,7 +446,7 @@ describe("share route handlers", () => {
     }
   });
 
-  it("re-projects legacy stored JSON before the anonymous response", async () => {
+  it("re-projects stored JSON with extra private fields before the anonymous response", async () => {
     const privateValues = [
       "private-personal-context",
       "private-binding-id",
@@ -457,7 +457,7 @@ describe("share route handlers", () => {
     const repository: ShareRepository = {
       createChatShare: vi.fn(),
       findPublicShare: vi.fn(async () => ({
-        id: "share-legacy",
+        id: "share-extra-fields",
         snapshot: {
           attempts: privateValues[4],
           messages: [{
@@ -474,17 +474,17 @@ describe("share route handlers", () => {
             memoryReceipt: privateValues[4],
             role: "assistant"
           }],
-          title: "Legacy",
+          title: "Sanitized",
           version: 1
         } as never,
-        title: "Legacy"
+        title: "Sanitized"
       })),
       listChatShares: vi.fn(async () => []),
       revokeShare: vi.fn()
     };
     const GET = createGetPublicShareHandler({ repository });
-    const response = await GET(new Request("http://app.local/api/public-shares/legacy"), {
-      params: { shareToken: "legacy" }
+    const response = await GET(new Request("http://app.local/api/public-shares/extra-fields"), {
+      params: { shareToken: "extra-fields" }
     });
     const body = await response.json();
 
@@ -494,7 +494,7 @@ describe("share route handlers", () => {
         content: { blocks: [{ text: "Visible answer prose", type: "text" }] },
         role: "assistant"
       }],
-      title: "Legacy",
+      title: "Sanitized",
       version: 1
     });
     for (const privateValue of privateValues) {

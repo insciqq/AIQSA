@@ -269,7 +269,7 @@ describe("S3 storage bounded reads", () => {
     await expect(reading).rejects.toBe(reason);
   });
 
-  it("keeps the legacy transformer path but fails closed for a bounded non-streaming body", async () => {
+  it("keeps the byte-array transformer path but fails closed for a bounded non-streaming body", async () => {
     const transformToByteArray = vi.fn().mockResolvedValue(new Uint8Array(Buffer.from("four")));
     s3Send.mockResolvedValue({ Body: { transformToByteArray }, ContentLength: 4 });
     const storage = createS3StorageAdapter(s3Env);

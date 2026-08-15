@@ -4,7 +4,7 @@ import {
   createOpenAIResponsesAdapter,
   type OpenAIResponsesClient
 } from "./openaiResponses";
-import { perplexityWebSearchTool } from "../tools/perplexitySearch";
+import { currentSearchToolFixture } from "../tools/testFixtures";
 import type { ProviderRunRequest } from "./types";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 
@@ -22,6 +22,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     content: {
       blocks: [{ text: "Find one concise fact.", type: "text" }]
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: true,
@@ -42,7 +44,23 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       system: "You are precise."
     },
     provider: "openai",
-    searchStrategy: "openai-native-web-search",
+    searchPlan: {
+      mode: "model_choice",
+      options: [{
+        adapterKind: "answer_provider_hosted",
+        config: {},
+        credentialMode: "answer_provider",
+        displayName: "OpenAI Web Search",
+        executionModes: ["model_choice"],
+        modelId: null,
+        optionId: "openai-native-web-search",
+        protocol: "openai_responses_web_search",
+        provider: "openai",
+        providerModelId: null,
+        revisionId: "test-openai-search",
+        searchStrategyRowId: "test-openai-search"
+      }]
+    },
     ...overrides
   };
 }
@@ -121,7 +139,7 @@ describe("OpenAI Responses adapter", () => {
           ...base.modelCapabilities,
           nativePdfInput: true
         },
-        searchStrategy: "search-disabled"
+        searchPlan: { mode: "all_selected", options: [] }
       })
     ) as {
       body: { input: Array<{ content: unknown[]; role: string }> };
@@ -321,7 +339,7 @@ describe("OpenAI Responses adapter", () => {
             arguments: "{\"keyword\":\"latest Anthropic model\"}",
             call_id: "call-search-1",
             id: "fc-1",
-            name: "search_via_perplexity",
+            name: "search_engine_1",
             status: "completed",
             type: "function_call"
           }
@@ -338,9 +356,9 @@ describe("OpenAI Responses adapter", () => {
     const stream = adapter.stream(
       request({
         forceNonStreaming: true,
-        searchStrategy: "perplexity-tool-search",
+        searchPlan: { mode: "all_selected", options: [] },
         toolChoice: "auto",
-        tools: [perplexityWebSearchTool]
+        tools: [currentSearchToolFixture]
       })
     );
     let next = await stream.next();
@@ -355,7 +373,7 @@ describe("OpenAI Responses adapter", () => {
           keyword: "latest Anthropic model"
         },
         id: "call-search-1",
-        name: "search_via_perplexity"
+        name: "search_engine_1"
       })
     ]);
     expect(next.value.providerToolCallMessage).toEqual([

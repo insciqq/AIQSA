@@ -67,7 +67,6 @@ describe("Prisma chat navigation repository", () => {
           modelId: "navigation-model",
           normalizedRequest: {},
           provider: "navigation-provider",
-          providerRequestPreview: {},
           status: "streaming",
           userId: ownerId,
           userMessageId: userMessage.id

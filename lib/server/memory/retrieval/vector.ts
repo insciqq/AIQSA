@@ -20,6 +20,10 @@ export const MEMORY_VECTOR_MAX_RESULT_LIMIT = 50;
 
 export type MemoryVectorDimension = 1_024 | 1_536;
 export type MemoryVectorStrategy = "EXACT" | "HNSW";
+export type CurrentMemorySearchItemType = Extract<
+  MemorySearchItemType,
+  "FACT_VERSION" | "RECALL_CHUNK"
+>;
 
 export type MemoryVectorProfile = Readonly<{
   configurationFingerprint: string;
@@ -61,7 +65,7 @@ export type MemoryVectorEligibility = Readonly<{
 
 export type MemoryVectorSearchInput = Readonly<{
   eligibility: MemoryVectorEligibility;
-  itemTypes: readonly MemorySearchItemType[];
+  itemTypes: readonly CurrentMemorySearchItemType[];
   limit: number;
   minimumScore: number;
   profile: MemoryVectorProfile;
@@ -73,7 +77,7 @@ export type MemoryVectorHit = Readonly<{
   distance: number;
   entryId: string;
   itemId: string;
-  itemType: MemorySearchItemType;
+  itemType: CurrentMemorySearchItemType;
   score: number;
 }>;
 
@@ -81,7 +85,7 @@ export type MemoryVectorLaneEvidence = Readonly<{
   candidateCount: number;
   eligibleCount: number;
   exactFallbackUsed: boolean;
-  itemType: MemorySearchItemType;
+  itemType: CurrentMemorySearchItemType;
   resultCount: number;
   strategy: MemoryVectorStrategy;
 }>;
@@ -107,17 +111,17 @@ type MemoryVectorCandidate = Readonly<{
 export type MemoryVectorLaneExecutor = Readonly<{
   candidateScan(
     input: MemoryVectorSearchInput,
-    itemType: MemorySearchItemType,
+    itemType: CurrentMemorySearchItemType,
     strategy: MemoryVectorStrategy,
     limit: number
   ): Promise<readonly MemoryVectorCandidate[]>;
   eligibleCount(
     input: MemoryVectorSearchInput,
-    itemType: MemorySearchItemType
+    itemType: CurrentMemorySearchItemType
   ): Promise<number>;
   rejoin(
     input: MemoryVectorSearchInput,
-    itemType: MemorySearchItemType,
+    itemType: CurrentMemorySearchItemType,
     candidateIds: readonly string[]
   ): Promise<readonly MemoryVectorHit[]>;
   resolveActiveProfile(userId: string): Promise<MemoryVectorProfileResolution>;
@@ -144,13 +148,13 @@ type HitRow = Readonly<{
   distance: number;
   entryId: string;
   itemId: string;
-  itemType: MemorySearchItemType;
+  itemType: CurrentMemorySearchItemType;
 }>;
 
 export type MemoryVectorSqlInput = Readonly<{
   candidateIds?: readonly string[];
   input: MemoryVectorSearchInput;
-  itemType: MemorySearchItemType;
+  itemType: CurrentMemorySearchItemType;
   limit?: number;
 }>;
 
@@ -213,7 +217,10 @@ function validateSearchInput(input: MemoryVectorSearchInput): void {
     "HIGHLY_SENSITIVE",
     "SECRET_TAINTED"
   ]);
-  const itemTypes = new Set(["FACT_VERSION", "EPISODE", "RECALL_CHUNK"]);
+  const itemTypes = new Set<CurrentMemorySearchItemType>([
+    "FACT_VERSION",
+    "RECALL_CHUNK"
+  ]);
   const sourceChatIds = input.eligibility.sourceChatIds;
   const squaredNorm = input.vector.reduce((total, value) => total + value * value, 0);
   if (
@@ -322,26 +329,15 @@ function valuesSql(values: readonly string[]): Prisma.Sql {
   return Prisma.join(values.map((value) => Prisma.sql`${value}`));
 }
 
-function optionalHistoryPredicates(
-  alias: "chunk" | "episode",
-  input: MemoryVectorSearchInput
-): Prisma.Sql[] {
+function optionalHistoryPredicates(input: MemoryVectorSearchInput): Prisma.Sql[] {
   const eligibility = input.eligibility;
-  const prefix = alias === "chunk"
-    ? {
-        assistant: Prisma.sql`chunk."sourceAssistantId"`,
-        chat: Prisma.sql`chunk."chatId"`,
-        folder: Prisma.sql`chunk."sourceFolderId"`,
-        from: Prisma.sql`chunk."occurredFrom"`,
-        to: Prisma.sql`chunk."occurredTo"`
-      }
-    : {
-        assistant: Prisma.sql`episode."sourceAssistantId"`,
-        chat: Prisma.sql`episode."chatId"`,
-        folder: Prisma.sql`episode."sourceFolderId"`,
-        from: Prisma.sql`episode."occurredFrom"`,
-        to: Prisma.sql`episode."occurredTo"`
-      };
+  const prefix = {
+    assistant: Prisma.sql`chunk."sourceAssistantId"`,
+    chat: Prisma.sql`chunk."chatId"`,
+    folder: Prisma.sql`chunk."sourceFolderId"`,
+    from: Prisma.sql`chunk."occurredFrom"`,
+    to: Prisma.sql`chunk."occurredTo"`
+  };
   const predicates: Prisma.Sql[] = [];
   if (eligibility.sourceChatIds) {
     predicates.push(Prisma.sql`${prefix.chat} IN (${valuesSql(eligibility.sourceChatIds)})`);
@@ -506,7 +502,7 @@ function chunkEligibilityPredicates(
   input: MemoryVectorSearchInput
 ): readonly Prisma.Sql[] {
   const allowed = valuesSql(input.eligibility.allowedHistorySafety);
-  const historyPredicates = optionalHistoryPredicates("chunk", input);
+  const historyPredicates = optionalHistoryPredicates(input);
   return [
     Prisma.sql`history_settings."referenceChatHistory" = TRUE`,
     Prisma.sql`chunk."state" = 'ACTIVE'::"MemoryHistoryItemState"`,
@@ -621,109 +617,12 @@ function chunkCountEligibility(input: MemoryVectorSearchInput): EligibilitySql {
   };
 }
 
-function episodeEligibility(input: MemoryVectorSearchInput): EligibilitySql {
-  const allowed = valuesSql(input.eligibility.allowedHistorySafety);
-  const historyPredicates = optionalHistoryPredicates("episode", input);
-  return {
-    itemId: Prisma.sql`entry."episodeId"`,
-    joins: commonJoins(),
-    predicates: [
-      ...commonPredicates(input),
-      Prisma.sql`entry."itemType" = 'EPISODE'::"MemorySearchItemType"`,
-      Prisma.sql`EXISTS (
-        SELECT 1
-        FROM "UserMemorySettings" AS history_settings
-        INNER JOIN "MemoryEpisode" AS episode
-          ON episode."userId" = history_settings."userId"
-          AND episode."id" = entry."episodeId"
-        INNER JOIN "Chat" AS source_chat
-          ON source_chat."userId" = episode."userId"
-          AND source_chat."id" = episode."chatId"
-        INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
-          ON checkpoint."userId" = episode."userId"
-          AND checkpoint."chatId" = episode."chatId"
-        WHERE history_settings."userId" = entry."userId"
-          AND history_settings."referenceChatHistory" = TRUE
-          AND episode."state" = 'ACTIVE'::"MemoryHistoryItemState"
-          AND episode."safetyClass"::text IN (${allowed})
-          AND episode."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
-          AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-          AND source_chat."memoryBranchGeneration" = episode."branchGeneration"
-          AND source_chat."memorySourceRevision" = episode."sourceRevisionAtCreation"
-          AND checkpoint."branchGeneration" = episode."branchGeneration"
-          AND checkpoint."sourceRevision" = episode."sourceRevisionAtCreation"
-          AND checkpoint."sourceContentHash" = episode."sourceHash"
-          AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
-          AND checkpoint."lastDreamedMessageId" = source_chat."activeLeafMessageId"
-          AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
-          AND NOT EXISTS (
-            SELECT 1
-            FROM "MemorySuppression" AS suppression
-            WHERE suppression."userId" = episode."userId"
-              AND (
-                suppression."expiresAt" IS NULL
-                OR suppression."expiresAt" > CURRENT_TIMESTAMP
-              )
-              AND (
-                suppression."scope" = 'ALL'::"MemorySuppressionScope"
-                OR (
-                  suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
-                  AND suppression."sourceEpisodeId" = episode."id"
-                )
-                OR (
-                  suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-                  AND suppression."sourceChatId" = episode."chatId"
-                  AND (
-                    suppression."sourceBranchGeneration" IS NULL
-                    OR suppression."sourceBranchGeneration" = episode."branchGeneration"
-                  )
-                  AND EXISTS (
-                    SELECT 1
-                    FROM "MemoryEpisodeMessage" AS suppressed_message
-                    WHERE suppressed_message."userId" = episode."userId"
-                      AND suppressed_message."episodeId" = episode."id"
-                      AND suppressed_message."messageId" = suppression."sourceMessageId"
-                  )
-                )
-              )
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM "MemorySourceBarrier" AS barrier
-            WHERE barrier."userId" = episode."userId"
-              AND barrier."kind" IN (
-                'HISTORY_INDEX'::"MemorySourceBarrierKind",
-                'ALL_REUSABLE'::"MemorySourceBarrierKind"
-              )
-              AND (
-                episode."createdAt" <= barrier."createdAt"
-                OR EXISTS (
-                  SELECT 1
-                  FROM "MemoryEpisodeMessage" AS barrier_source
-                  INNER JOIN "Message" AS barrier_message
-                    ON barrier_message."chatId" = barrier_source."chatId"
-                    AND barrier_message."id" = barrier_source."messageId"
-                  WHERE barrier_source."userId" = episode."userId"
-                    AND barrier_source."episodeId" = episode."id"
-                    AND barrier_message."createdAt" <= barrier."sourceCreatedAtCutoff"
-                )
-              )
-          )
-          AND ${Prisma.join(historyPredicates.length > 0
-            ? historyPredicates
-            : [Prisma.sql`TRUE`], " AND ")}
-      )`
-    ]
-  };
-}
-
 function eligibilitySql(
   input: MemoryVectorSearchInput,
-  itemType: MemorySearchItemType
+  itemType: CurrentMemorySearchItemType
 ): EligibilitySql {
   switch (itemType) {
     case "FACT_VERSION": return factEligibility(input);
-    case "EPISODE": return episodeEligibility(input);
     case "RECALL_CHUNK": return chunkEligibility(input);
   }
 }
@@ -809,7 +708,7 @@ function decodedCandidates(rows: readonly CandidateRow[]): readonly MemoryVector
 
 function decodedHits(
   rows: readonly HitRow[],
-  expectedType: MemorySearchItemType
+  expectedType: CurrentMemorySearchItemType
 ): readonly MemoryVectorHit[] {
   const hits = rows.map((row): MemoryVectorHit => {
     if (

@@ -94,7 +94,9 @@ function store(options: StoreOptions = {}) {
         connection: {
           activeConfig: {
             allowPrivateNetwork: false,
-            apiRoot: "https://embedding.example.test/v1"
+            apiRoot: "https://embedding.example.test/v1",
+            authenticationMode: "bearer",
+            responseTimeoutMs: 300_000
           },
           activeVersion: 3,
           credentials: [{

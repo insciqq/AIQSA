@@ -335,10 +335,9 @@ function authFrom(value: unknown, source: McpSource | null, issues: McpValidatio
   };
 }
 
-function boundedMilliseconds(value: unknown, fallback: number): number | null {
-  const candidate = typeof value === "undefined" ? fallback : value;
-  return typeof candidate === "number" && Number.isInteger(candidate) && candidate >= 1_000 && candidate <= 600_000
-    ? candidate
+function boundedMilliseconds(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1_000 && value <= 600_000
+    ? value
     : null;
 }
 
@@ -356,9 +355,9 @@ export function validateMcpDraft(value: unknown): McpDraftValidationResult {
   const slots = slotsFrom(value.slots, source, issues);
   const auth = authFrom(value.auth, source, issues);
   const disabledToolNames = disabledToolNamesFrom(value.disabledToolNames, issues);
-  const runtime = isObject(value.runtime) ? value.runtime : {};
-  const startupTimeoutMs = boundedMilliseconds(runtime.startupTimeoutMs, 60_000);
-  const callTimeoutMs = boundedMilliseconds(runtime.callTimeoutMs, 60_000);
+  const runtime = isObject(value.runtime) ? value.runtime : null;
+  const startupTimeoutMs = boundedMilliseconds(runtime?.startupTimeoutMs);
+  const callTimeoutMs = boundedMilliseconds(runtime?.callTimeoutMs);
   if (!startupTimeoutMs) issues.push({ code: "startup_timeout_invalid", path: "runtime.startupTimeoutMs" });
   if (!callTimeoutMs) issues.push({ code: "call_timeout_invalid", path: "runtime.callTimeoutMs" });
 

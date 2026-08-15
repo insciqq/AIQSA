@@ -15,33 +15,19 @@ describe("provider model capability resolution", () => {
       resolveProviderModelCapabilities({
         adapterKind: "openai_responses_native",
         capabilities: { ...capabilities, contextWindow: 200_000 },
-        legacyContextWindow: 1_050_000,
         providerFamily: "openai",
         upstreamModelId: "gpt-5.5"
       }).contextWindow
     ).toBe(200_000);
   });
 
-  it("prefers usable migrated metadata over a code-owned model default", () => {
+  it("uses a code-owned model default when current capabilities omit the value", () => {
     expect(
       resolveProviderModelCapabilities({
         adapterKind: "openai_responses_native",
         capabilities,
-        legacyContextWindow: 300_000,
         providerFamily: "openai",
         upstreamModelId: "gpt-5.5"
-      }).contextWindow
-    ).toBe(300_000);
-  });
-
-  it("replaces the compatibility sentinel with a verified template value", () => {
-    expect(
-      resolveProviderModelCapabilities({
-        adapterKind: "openai_responses_native",
-        capabilities,
-        legacyContextWindow: 1,
-        providerFamily: "openai",
-        upstreamModelId: "gpt-5.6-sol"
       }).contextWindow
     ).toBe(1_050_000);
   });
@@ -51,7 +37,6 @@ describe("provider model capability resolution", () => {
       resolveProviderModelCapabilities({
         adapterKind: "openai_responses_compatible",
         capabilities,
-        legacyContextWindow: 1,
         providerFamily: "openai_compatible",
         upstreamModelId: "private/model"
       }).contextWindow

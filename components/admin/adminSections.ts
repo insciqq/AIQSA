@@ -137,10 +137,6 @@ export const adminSections = [
 ] as const satisfies readonly AdminSection[];
 
 const adminSectionIds = new Set<AdminSectionId>(adminSections.map((section) => section.id));
-const legacyAdminSectionAliases = new Map<string, AdminSectionId>([
-  ["groups", "access"],
-  ["model-access", "access"]
-]);
 
 export function isAdminSectionId(value: string | null): value is AdminSectionId {
   return value !== null && adminSectionIds.has(value as AdminSectionId);
@@ -148,10 +144,7 @@ export function isAdminSectionId(value: string | null): value is AdminSectionId 
 
 export function parseAdminSection(search: string): AdminSectionId {
   const section = new URLSearchParams(search).get("section");
-
-  return isAdminSectionId(section)
-    ? section
-    : legacyAdminSectionAliases.get(section ?? "") ?? defaultAdminSection;
+  return isAdminSectionId(section) ? section : defaultAdminSection;
 }
 
 export function normalizeAdminSectionPath(currentHref: string): string {

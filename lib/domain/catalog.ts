@@ -28,7 +28,7 @@ export type ProviderModelCatalogEntry = {
   modelId: string;
   upstreamModelId: string;
   displayName: string;
-  contextWindow: number;
+  contextWindow: number | null;
   inputTokenPriceMicros: number;
   outputTokenPriceMicros: number;
   capabilities: {
@@ -940,8 +940,7 @@ export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
           requireParameters: false,
           sort: "throughput",
           zdr: false
-        },
-        tool: { capability: "web_search", name: "search_via_perplexity" }
+        }
       },
       credentialMode: "provider_model",
       executionModes: ["all_selected", "model_choice"],

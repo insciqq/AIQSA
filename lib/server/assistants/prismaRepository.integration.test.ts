@@ -219,7 +219,6 @@ integration("assistant repository integration", () => {
       data: {
         capabilities: {},
         connectionId,
-        contextWindow: 128_000,
         defaultParams: {},
         displayName: "Integration model",
         id: modelId,

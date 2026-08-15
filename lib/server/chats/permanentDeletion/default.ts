@@ -6,8 +6,8 @@ import { kickDefaultMemoryCoordinator } from "../../memory/coordinator/defaultCo
 import { createPrismaMemoryMutationAuthorizationRepository } from "../../memory/persistence/authorizations";
 import {
   defaultPermanentChatDeletionCapability,
-  tryEnsureDefaultMemoryPhase8Composition
-} from "../../memory/phase8Composition";
+  tryEnsureDefaultMemoryDeletionComposition
+} from "../../memory/deletionComposition";
 import type { PermanentChatDeletionHandlerDeps } from "./handlers";
 import { createPrismaPermanentChatDeletionRepository } from "./repository";
 import {
@@ -15,11 +15,11 @@ import {
   type PermanentChatDeletionCapability
 } from "./service";
 
-/** Admission stays feature-dark until the sole Phase 8 composition gate opens. */
+/** Admission stays feature-dark until the complete deletion composition opens. */
 export const permanentChatDeletionCapability: PermanentChatDeletionCapability =
   defaultPermanentChatDeletionCapability;
 
-tryEnsureDefaultMemoryPhase8Composition(kickDefaultMemoryCoordinator);
+tryEnsureDefaultMemoryDeletionComposition(kickDefaultMemoryCoordinator);
 
 const repository = createPrismaPermanentChatDeletionRepository(prisma);
 const authorizationRepository =

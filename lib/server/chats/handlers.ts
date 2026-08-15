@@ -19,8 +19,6 @@ import type {
   CreateChatRequestWire,
   ThreadArtifactSummary,
   ThreadAssistantIdentity,
-  ThreadRunEvidenceSummary,
-  ThreadRunUsage,
   UpdateChatRequestWire,
   UpdateFolderRequestWire,
   WorkspaceChatSummaryWire,
@@ -31,8 +29,7 @@ import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowled
 export type {
   ChatUsageStats,
   ThreadArtifactSummary,
-  ThreadCitation,
-  ThreadSearchActivity
+  ThreadCitation
 } from "../../contracts/chats";
 
 export type ChatMessageRecord = {
@@ -40,7 +37,6 @@ export type ChatMessageRecord = {
   assistantIdentity?: ThreadAssistantIdentity | null;
   content: unknown;
   createdAt: Date | string;
-  evidenceSummary?: ThreadRunEvidenceSummary | null;
   errorMessage?: string | null;
   id: string;
   modelId: string | null;
@@ -48,7 +44,6 @@ export type ChatMessageRecord = {
   parentMessageId: string | null;
   provider: string | null;
   role: string;
-  runUsage?: ThreadRunUsage | null;
   status: string;
 };
 
@@ -249,7 +244,6 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
     assistantIdentity: message.assistantIdentity ?? null,
     content: message.content,
     createdAt: iso(message.createdAt),
-    evidenceSummary: message.evidenceSummary ?? null,
     errorMessage: message.errorMessage ?? null,
     id: message.id,
     modelId: message.modelId,
@@ -257,7 +251,6 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
     parentMessageId: message.parentMessageId,
     provider: message.provider,
     role: message.role,
-    runUsage: message.runUsage ?? null,
     status: message.status
   };
 }

@@ -149,7 +149,8 @@ describe("OpenAI Search source probe", () => {
       connection: {
         allowPrivateNetwork: false,
         apiRoot: "https://compatible.example.test/v1",
-        authenticationMode: "bearer"
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       model: {
         ...candidate.configuration,

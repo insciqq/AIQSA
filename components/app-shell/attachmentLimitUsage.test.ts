@@ -158,10 +158,10 @@ describe("attachment limit usage", () => {
     expect(usage.feedback).toContain("1000 bytes provider-input limit");
   });
 
-  it("keeps a count-only summary when legacy attachment bytes are unavailable", () => {
+  it("keeps a count-only summary when stored attachment bytes are unavailable", () => {
     expect(
       calculateAttachmentLimitUsage(
-        [{ fileName: "legacy.pdf", id: "legacy", kind: "pdf" }],
+        [{ fileName: "stored.pdf", id: "stored", kind: "pdf" }],
         model("native_pdf"),
         limits
       )

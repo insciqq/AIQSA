@@ -110,7 +110,7 @@ function selectionReason(laneRanks: Aggregate["laneRanks"]): string {
 }
 
 /** Relative ranks are the only cross-lane score. Raw lexical and cosine values
- * remain inspection evidence and are never combined or thresholded here. */
+ * remain per-lane diagnostics and are never combined or thresholded here. */
 export function fuseMemoryRetrievalCandidates(
   plan: MemoryRetrievalPlan,
   results: readonly MemoryLaneResult[],

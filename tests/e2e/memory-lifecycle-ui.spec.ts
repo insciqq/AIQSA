@@ -82,7 +82,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   await page.route("**/api/me/memory/settings", async (route: Route) => {
     await route.fulfill({
       contentType: "application/json",
-      json: memorySettingsFixture({ settings: { memoryRevision } }, "EN")
+      json: memorySettingsFixture({ settings: { memoryRevision } })
     });
   });
   await page.route("**/api/me/chats/*/memory-mode", async (route: Route) => {
@@ -283,7 +283,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
     await page.getByRole("menu", { name: "New chat mode" })
       .getByRole("menuitem", { name: itemName }).click();
   };
-  await workspace.getByRole("button", { name: "New chat" }).click();
+  await workspace.getByRole("button", { name: "New chat", exact: true }).click();
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Normal draft marker");
   await selectNewChatMode(/Temporary chat/);

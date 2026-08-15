@@ -24,25 +24,20 @@ describe("language-agnostic Memory architecture", () => {
     expect(planner).toContain("/[\\p{L}\\p{N}]+/gu");
   });
 
-  it("keeps fresh action routing model-driven and v1 decoding syntax-only", () => {
-    const intent = source("lib/server/memory/actions/intent.ts");
-    expect(intent).not.toContain(".includes(");
-    expect(intent).not.toMatch(/запом|забуд|помн|предпочита/iu);
-    expect(intent).not.toMatch(/\/[^\n]*(?:remember|forget)[^\n]*\/[a-z]*/iu);
-    expect(intent).toMatch(/planMemoryActionFromText[\s\S]*?return \{ kind: "NONE" \}/u);
-    expect(intent).toMatch(/planMemoryAction\([\s\S]*?return \{ kind: "NONE" \}/u);
+  it("keeps action routing model-driven and language-agnostic", () => {
+    const executor = source("lib/server/memory/actions/toolExecutor.ts");
+    expect(executor).not.toMatch(/запом|забуд|помн|предпочита/iu);
+    expect(executor).not.toMatch(/\/[^\n]*(?:remember|forget)[^\n]*\/[a-z]*/iu);
+    expect(executor).toContain("currentUserText(context)");
+    expect(executor).toContain("isMemoryActionToolName(toolName)");
   });
 
   it("leaves extraction meaning and safety to one structured model decision", () => {
     const decoder = source("lib/server/memory/learning/extraction/decoder.ts");
-    const safety = source("lib/server/memory/learning/extraction/safety.ts");
     expect(decoder).not.toContain(".includes(");
     expect(decoder).not.toMatch(/detectMemoryTextLanguage|semanticCategory|hypothetical|quotedPattern/u);
     expect(decoder).not.toMatch(/(?:confidence|importance)\s*[<>]=?/u);
     expect(decoder).not.toContain("canonical_key");
-    expect(safety).not.toContain(".includes(");
-    expect(safety).not.toMatch(/diagnos|politic|address|password|парол|диагноз|адрес/iu);
-    expect(safety).toContain("memoryExplicitStatementContainsSecret");
   });
 
   it("keeps consolidation checks structural, scoped, authoritative, and temporal", () => {
@@ -64,14 +59,5 @@ describe("language-agnostic Memory architecture", () => {
     expect(core).not.toMatch(/category|canonicalKey|confidence|importance/u);
     expect(core).toContain('version."coreEligible"');
     expect(core).toContain('version."coreSalience"');
-  });
-
-  it("does not enqueue or rebuild extractive episodes on the normal path", () => {
-    const history = source("lib/server/memory/history/repository.ts");
-    const rebuild = source("lib/server/memory/rebuild/repository.ts");
-    expect(history).not.toContain('kind: "EXTRACT_EPISODE"');
-    expect(rebuild).not.toContain("memoryEpisodeRedreamJobFingerprint");
-    expect(rebuild).not.toContain("eligibleEpisodes");
-    expect(rebuild).not.toContain("MEMORY_EPISODE_EXTRACTION_PIPELINE_VERSION");
   });
 });

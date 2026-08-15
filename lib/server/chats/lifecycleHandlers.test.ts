@@ -106,7 +106,7 @@ describe("chat lifecycle handlers", () => {
     expectPrivate(response);
   });
 
-  it("keeps explicit Archive and Restore CAS-shaped and distinct from legacy DELETE", async () => {
+  it("keeps explicit Archive and Restore CAS-shaped and distinct from Archive DELETE", async () => {
     const setArchived = vi.fn<ChatLifecycleRepository["setArchived"]>(async (input) => ({
       chat: {
         archived: input.archived,

@@ -55,13 +55,10 @@ function suppliedProviderMessages(value: unknown): unknown[] | null {
 
 function usesHostedSearchRoute(
   request: ProviderRunRequest,
-  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search",
-  legacyStrategyId: string
+  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search"
 ): boolean {
-  return request.searchPlan
-    ? request.searchPlan.options.some((option) =>
-        option.adapterKind === "answer_provider_hosted" && option.protocol === protocol)
-    : request.searchStrategy === legacyStrategyId;
+  return request.searchPlan.options.some((option) =>
+    option.adapterKind === "answer_provider_hosted" && option.protocol === protocol);
 }
 
 export const ANTHROPIC_WEB_SEARCH_TOOL_DECLARATION = Object.freeze({
@@ -168,8 +165,7 @@ export const openAIResponsesToolBridge: ProviderToolBridge = {
   serializeHostedTools(request) {
     return usesHostedSearchRoute(
       request,
-      "openai_responses_web_search",
-      "openai-native-web-search"
+      "openai_responses_web_search"
     )
       ? [{ type: "web_search" }]
       : [];
@@ -315,8 +311,7 @@ export const geminiInteractionsToolBridge: ProviderToolBridge = {
   serializeHostedTools(request) {
     return usesHostedSearchRoute(
       request,
-      "gemini_google_search",
-      "gemini-google-search"
+      "gemini_google_search"
     )
       ? [{ type: "google_search" }]
       : [];
@@ -381,8 +376,7 @@ export const anthropicMessagesToolBridge: ProviderToolBridge = {
   serializeHostedTools(request) {
     return usesHostedSearchRoute(
       request,
-      "anthropic_web_search",
-      "anthropic-web-search"
+      "anthropic_web_search"
     )
       ? [{
           ...ANTHROPIC_WEB_SEARCH_TOOL_DECLARATION,

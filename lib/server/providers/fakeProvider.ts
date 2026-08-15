@@ -39,7 +39,7 @@ export function createFakeProviderAdapter(): ProviderAdapter {
         prompt: request.prompt,
         provider: "fake",
         replayedContext: conversationPreview(request),
-        searchStrategy: request.searchStrategy,
+        searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
         text: textFromContentBlocks(request.content)
       };
     },
@@ -61,7 +61,7 @@ export function createFakeProviderAdapter(): ProviderAdapter {
         data: {
           artifactType: "summary",
           payload: {
-            searchStrategy: request.searchStrategy ?? "search-disabled",
+            searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
             source: "fake-provider"
           }
         },

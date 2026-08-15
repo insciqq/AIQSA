@@ -8,10 +8,8 @@ import type {
   CatalogModel,
   CatalogSearchStrategy,
   ChatGroup,
-  ChatSummary,
-  InspectorMode
+  ChatSummary
 } from "@/components/app-shell/types";
-import type { Dispatch, SetStateAction } from "react";
 import { useMemo } from "react";
 
 function searchCommandSubtitle(strategy: CatalogSearchStrategy): string {
@@ -42,12 +40,11 @@ type CommandPaletteActionsInput = {
   ): void;
   activeChatId: string | null;
   assistantLibraryOpen: boolean;
+  branchesOpen: boolean;
   catalog: Catalog | null;
   chatGroups: ChatGroup[];
   chats: ChatSummary[];
-  changeInspectorMode: Dispatch<SetStateAction<InspectorMode>>;
   closePalette(): void;
-  inspectorMode: InspectorMode;
   knowledgeOpen: boolean;
   memoryOpen: boolean;
   openKnowledge(): void;
@@ -59,8 +56,9 @@ type CommandPaletteActionsInput = {
   selectSearchStrategy(strategyId: string): void;
   selectedModelId: string;
   selectedProvider: string;
-  selectedSearchStrategy: string;
+  selectedSearchOptionIds: readonly string[];
   settingsOpen: boolean;
+  toggleBranches(): void;
   workspaceReady: boolean;
 };
 
@@ -69,12 +67,11 @@ export function useCommandPaletteActions({
   activateBlankWorkspace,
   activeChatId,
   assistantLibraryOpen,
+  branchesOpen,
   catalog,
   chatGroups,
   chats,
-  changeInspectorMode,
   closePalette,
-  inspectorMode,
   knowledgeOpen,
   memoryOpen,
   openKnowledge,
@@ -86,8 +83,9 @@ export function useCommandPaletteActions({
   selectSearchStrategy,
   selectedModelId,
   selectedProvider,
-  selectedSearchStrategy,
+  selectedSearchOptionIds,
   settingsOpen,
+  toggleBranches,
   workspaceReady
 }: CommandPaletteActionsInput) {
   const commandItems = useMemo<CommandItem[]>(() => {
@@ -104,12 +102,12 @@ export function useCommandPaletteActions({
     }
     items.push(
       {
-        current: inspectorMode !== "closed",
-        id: "action:toggle-inspector",
+        current: branchesOpen,
+        id: "action:toggle-branches",
         kind: "action",
-        keywords: ["right", "panel", "details"],
-        label: inspectorMode === "closed" ? "Open details" : "Close details",
-        subtitle: "Details"
+        keywords: ["branches", "versions", "history"],
+        label: branchesOpen ? "Close Branches" : "Open Branches",
+        subtitle: "Conversation history"
       },
       {
         current: settingsOpen,
@@ -182,7 +180,9 @@ export function useCommandPaletteActions({
 
     for (const strategy of searchOptions) {
       items.push({
-        current: strategy.strategyId === selectedSearchStrategy,
+        current: strategy.kind === "none"
+          ? selectedSearchOptionIds.length === 0
+          : selectedSearchOptionIds.includes(strategy.strategyId),
         id: `search:${strategy.strategyId}`,
         kind: "search",
         keywords: [strategy.kind, strategy.strategyId],
@@ -195,26 +195,23 @@ export function useCommandPaletteActions({
   }, [
     activeChatId,
     assistantLibraryOpen,
+    branchesOpen,
     catalog,
     chatGroups,
-    inspectorMode,
     knowledgeOpen,
     memoryOpen,
     searchOptions,
     selectedModelId,
     selectedProvider,
-    selectedSearchStrategy,
+    selectedSearchOptionIds,
     settingsOpen,
     workspaceReady
   ]);
 
   function runCommand(item: CommandItem) {
-    if (item.id === "action:toggle-inspector") {
+    if (item.id === "action:toggle-branches") {
       closePalette();
-      window.setTimeout(
-        () => changeInspectorMode((mode) => (mode === "closed" ? "overlay" : "closed")),
-        0
-      );
+      window.setTimeout(toggleBranches, 0);
       return;
     }
 

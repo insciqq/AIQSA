@@ -72,8 +72,7 @@ function documentStatus() {
 }
 
 describe("Knowledge Base contracts", () => {
-  it("decodes an ordered three-base plan and keeps absent input backward-compatible with Off", () => {
-    expect(decodeKnowledgePlan(undefined)).toEqual({ ok: true, plan: { baseIds: [] } });
+  it("decodes an ordered three-base plan", () => {
     expect(decodeKnowledgePlan({ baseIds: [" base-1 ", "base-2", "base-3"] })).toEqual({
       ok: true,
       plan: { baseIds: ["base-1", "base-2", "base-3"] }
@@ -83,6 +82,7 @@ describe("Knowledge Base contracts", () => {
   it("rejects malformed, duplicate, over-limit, and expanded Knowledge plans", () => {
     for (const value of [
       null,
+      undefined,
       {},
       { baseIds: "base-1" },
       { baseIds: ["base-1", "base-1"] },

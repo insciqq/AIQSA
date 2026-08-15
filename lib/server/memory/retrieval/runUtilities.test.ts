@@ -80,13 +80,11 @@ function snapshot(
       providerFamily: "openai",
       providerModelId: embedding ? "embedding-model-1" : "answer-model-1"
     },
-    qualificationId: "qualification-1",
-    qualificationRequirement: {
+    compatibilityId: "compatibility-1",
+    compatibilityRequirement: {
+      compatibilityVersion: "memory-runtime-compatibility-v2",
       configFingerprint: embedding ? profile.configurationFingerprint : "f".repeat(64),
-      corpusHash: "1".repeat(64),
-      corpusVersion: "corpus-v1",
       deploymentFingerprint: "2".repeat(64),
-      language: "EN",
       modelFingerprint: "3".repeat(64),
       pipelineVersion: "pipeline-v1",
       policyVersion: "policy-v1",
@@ -97,13 +95,11 @@ function snapshot(
         : "5".repeat(64),
       role,
       schemaVersion: "schema-v1",
-      scorerVersion: "scorer-v1",
-      suiteVersion: "suite-v1",
       vectorSpaceFingerprint: embedding ? profile.vectorSpaceFingerprint : null
     },
     requiresStrictStructuredOutput: false,
-    schemaVersion: 1,
-    utilityPolicyVersion: "memory-utility-egress-v1"
+    utilityPolicyVersion: "memory-utility-egress-v1",
+    version: 2
   } as unknown as MemorySecretFreeExecutionSnapshot;
 }
 

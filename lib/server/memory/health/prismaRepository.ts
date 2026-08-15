@@ -22,7 +22,7 @@ export function createPrismaMemoryHealthRepository(
   client: PrismaClient
 ): MemoryHealthRepository {
   return Object.freeze({
-    async readAdmin(adminUserId, now): Promise<AdminMemoryHealthSnapshot> {
+    async readAdmin(_adminUserId, now): Promise<AdminMemoryHealthSnapshot> {
       const recentSince = new Date(now.getTime() - 24 * 60 * 60_000);
       const [
         activeJobCount,
@@ -36,8 +36,7 @@ export function createPrismaMemoryHealthRepository(
         recentExecutionCount,
         failedExecutionCount,
         outcomeUnknownCount,
-        incompleteUsageCount,
-        locale
+        incompleteUsageCount
       ] = await Promise.all([
         client.memoryJob.count({ where: { state: { in: [...ACTIVE_JOB_STATES] } } }),
         client.memoryJob.count({ where: { state: "RETRYABLE_FAILED" } }),
@@ -77,10 +76,6 @@ export function createPrismaMemoryHealthRepository(
             state: { in: ["SUCCEEDED", "FAILED", "OUTCOME_UNKNOWN"] },
             usageCompleteness: { in: ["UNAVAILABLE", "PARTIAL"] }
           }
-        }),
-        client.userMemorySettings.findUnique({
-          select: { memoryUiLocale: true },
-          where: { userId: adminUserId }
         })
       ]);
       return Object.freeze({
@@ -94,7 +89,6 @@ export function createPrismaMemoryHealthRepository(
         overdueTemporaryCount,
         recentExecutionCount,
         recentTerminalJobCount,
-        requestLocale: locale?.memoryUiLocale ?? "EN",
         retryingJobCount,
         waitingForEgressCount
       });

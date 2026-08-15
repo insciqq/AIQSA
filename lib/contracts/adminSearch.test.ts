@@ -4,13 +4,16 @@ import {
   decodeAdminSearchDraft
 } from "./adminSearch";
 
-const legacyDraft = {
+const currentDraft = {
   adapterKind: "provider_model_client",
   credentialMode: "provider_model",
+  maxOutputTokens: 4_096,
   maxResults: 8,
+  maxSearchCallsPerAnswer: 2,
   protocol: "openai_responses_web_search",
   providerModelId: "search-model-1",
   queryMaxCharacters: 500,
+  reasoningPolicy: "lowest_supported",
   timeoutMs: 300_000
 };
 
@@ -55,32 +58,39 @@ function catalog(configuration: unknown, providerModels: unknown[] = []) {
 }
 
 describe("administrator Search contract", () => {
-  it("synthesizes execution defaults when an existing revision omits them", () => {
-    expect(decodeAdminSearchDraft(legacyDraft)).toEqual({
-      ...legacyDraft,
-      maxOutputTokens: 4_096,
-      maxSearchCallsPerAnswer: 2,
-      reasoningPolicy: "lowest_supported"
-    });
-    expect(decodeAdminSearchCatalog(catalog(legacyDraft))?.integrations[0]?.configuration)
-      .toMatchObject({
-        maxOutputTokens: 4_096,
-        maxSearchCallsPerAnswer: 2,
-        reasoningPolicy: "lowest_supported"
-      });
-    expect(decodeAdminSearchCatalog(catalog(legacyDraft, [{
+  it("requires the complete current execution and capability contract", () => {
+    expect(decodeAdminSearchDraft(currentDraft)).toEqual(currentDraft);
+    for (const key of [
+      "maxOutputTokens",
+      "maxSearchCallsPerAnswer",
+      "reasoningPolicy"
+    ] as const) {
+      const incomplete = { ...currentDraft };
+      delete incomplete[key];
+      expect(decodeAdminSearchDraft(incomplete)).toBeNull();
+    }
+    expect(decodeAdminSearchCatalog(catalog(currentDraft, [{
+      connectionDisplayName: "OpenAI",
+      connectionId: "connection-1",
+      displayName: "Search model",
+      enabled: true,
+      id: "search-model-1",
+      searchKind: "web_search",
+      searchReasoningSupported: false
+    }]))?.providerModels[0]).toMatchObject({ searchReasoningSupported: false });
+    expect(decodeAdminSearchCatalog(catalog(currentDraft, [{
       connectionDisplayName: "OpenAI",
       connectionId: "connection-1",
       displayName: "Search model",
       enabled: true,
       id: "search-model-1",
       searchKind: "web_search"
-    }]))?.providerModels[0]).toMatchObject({ searchReasoningSupported: false });
+    }]))).toBeNull();
   });
 
   it("accepts bounded explicit controls and rejects invalid execution policy", () => {
     expect(decodeAdminSearchDraft({
-      ...legacyDraft,
+      ...currentDraft,
       maxOutputTokens: 32_768,
       maxSearchCallsPerAnswer: 4,
       reasoningPolicy: "provider_default"
@@ -89,14 +99,14 @@ describe("administrator Search contract", () => {
       maxSearchCallsPerAnswer: 4,
       reasoningPolicy: "provider_default"
     });
-    expect(decodeAdminSearchDraft({ ...legacyDraft, maxOutputTokens: 1_023 })).toBeNull();
-    expect(decodeAdminSearchDraft({ ...legacyDraft, maxSearchCallsPerAnswer: 5 })).toBeNull();
-    expect(decodeAdminSearchDraft({ ...legacyDraft, reasoningPolicy: "answer_default" })).toBeNull();
+    expect(decodeAdminSearchDraft({ ...currentDraft, maxOutputTokens: 1_023 })).toBeNull();
+    expect(decodeAdminSearchDraft({ ...currentDraft, maxSearchCallsPerAnswer: 5 })).toBeNull();
+    expect(decodeAdminSearchDraft({ ...currentDraft, reasoningPolicy: "answer_default" })).toBeNull();
     expect(decodeAdminSearchCatalog(catalog({
-      ...legacyDraft,
+      ...currentDraft,
       maxOutputTokens: 32_769
     }))).toBeNull();
-    expect(decodeAdminSearchCatalog(catalog(legacyDraft, [{
+    expect(decodeAdminSearchCatalog(catalog(currentDraft, [{
       connectionDisplayName: "OpenAI",
       connectionId: "connection-1",
       displayName: "Search model",

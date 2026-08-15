@@ -79,9 +79,8 @@ export type EmbeddingModelConfiguration = Readonly<{
 export type ProviderConnectionConfiguration = {
   allowPrivateNetwork: boolean;
   apiRoot: string;
-  authenticationMode?: ProviderAuthenticationMode;
-  /** Missing only on legacy persisted JSON and normalized to the default. */
-  responseTimeoutMs?: number;
+  authenticationMode: ProviderAuthenticationMode;
+  responseTimeoutMs: number;
 };
 
 export type OpenRouterRoutingConfiguration =
@@ -200,9 +199,7 @@ export function effectiveProviderResponseTimeoutMs(
   connection: ProviderConnectionConfiguration,
   model?: Pick<ProviderModelConfiguration, "responseTimeoutMs"> | null
 ): number {
-  return normalizeProviderResponseTimeoutMs(
-    model?.responseTimeoutMs ?? connection.responseTimeoutMs
-  )!;
+  return model?.responseTimeoutMs ?? connection.responseTimeoutMs;
 }
 
 function normalizeReasoningPath(value: unknown): string {
@@ -292,14 +289,16 @@ export function normalizeProviderConnectionConfiguration(
   }
 
   if (
-    value.authenticationMode !== undefined &&
     value.authenticationMode !== "bearer" &&
     value.authenticationMode !== "none"
   ) {
     throw new ProviderConfigurationError("provider_authentication_mode_invalid");
   }
   const apiRoot = normalizeProviderApiRoot(value.apiRoot, value.allowPrivateNetwork);
-  const responseTimeoutMs = normalizeProviderResponseTimeoutMs(value.responseTimeoutMs)!;
+  const responseTimeoutMs = normalizeProviderResponseTimeoutMs(value.responseTimeoutMs, null);
+  if (responseTimeoutMs === undefined) {
+    throw new ProviderConfigurationError("provider_response_timeout_invalid");
+  }
   if (
     value.authenticationMode === "none" &&
     (!value.allowPrivateNetwork || new URL(apiRoot).protocol !== "http:")
@@ -310,9 +309,7 @@ export function normalizeProviderConnectionConfiguration(
   return {
     allowPrivateNetwork: value.allowPrivateNetwork,
     apiRoot,
-    ...(value.authenticationMode === "bearer" || value.authenticationMode === "none"
-      ? { authenticationMode: value.authenticationMode }
-      : {}),
+    authenticationMode: value.authenticationMode,
     responseTimeoutMs
   };
 }
@@ -320,7 +317,7 @@ export function normalizeProviderConnectionConfiguration(
 export function providerAuthenticationMode(
   configuration: ProviderConnectionConfiguration
 ): ProviderAuthenticationMode {
-  return configuration.authenticationMode ?? "bearer";
+  return configuration.authenticationMode;
 }
 
 export function providerRequestEndpoint(
@@ -546,7 +543,7 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   if (!isRecord(value) || !providerAdapterKinds.includes(value.adapterKind as ProviderAdapterKind)) {
     throw new ProviderConfigurationError("provider_adapter_kind_invalid");
   }
-  if (value.answerSelectable !== undefined && typeof value.answerSelectable !== "boolean") {
+  if (typeof value.answerSelectable !== "boolean") {
     throw new ProviderConfigurationError("provider_answer_selection_invalid");
   }
   if (!boundedText(value.upstreamModelId, 256)) {
@@ -555,7 +552,7 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   const rawDefaultParams = normalizeProviderDefaultParams(value.defaultParams);
 
   const adapterKind = value.adapterKind as ProviderAdapterKind;
-  const modelClass = value.modelClass === undefined ? "answer" : value.modelClass;
+  const modelClass = value.modelClass;
   if (modelClass !== "answer" && modelClass !== "embedding") {
     throw new ProviderConfigurationError("provider_model_class_invalid");
   }
@@ -614,7 +611,7 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
 
   return {
     adapterKind,
-    answerSelectable: modelClass === "embedding" ? false : value.answerSelectable ?? true,
+    answerSelectable: value.answerSelectable,
     capabilities,
     defaultParams,
     ...(embedding ? { embedding } : {}),

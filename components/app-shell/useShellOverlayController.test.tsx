@@ -1,6 +1,6 @@
 import { act, fireEvent, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ChatSummary, FolderSummary, InspectorMode } from "./types";
+import type { ChatSummary, FolderSummary } from "./types";
 import {
   isShellShortcutTextEntryTarget,
   useShellOverlayController,
@@ -30,14 +30,8 @@ const folder = (id: string): FolderSummary => ({
 
 function controllerInput(overrides: {
   blockers?: Partial<ShellOverlayControllerInput["blockers"]>;
-  changeMode?: (mode: InspectorMode) => void;
-  mode?: InspectorMode;
 } = {}): ShellOverlayControllerInput {
   return {
-    appearance: {
-      changeMode: overrides.changeMode ?? vi.fn(),
-      mode: overrides.mode ?? "closed"
-    },
     blockers: {
       projectSettingsOpen: false,
       settingsOpen: false,
@@ -119,8 +113,15 @@ describe("useShellOverlayController confirmations", () => {
     const { result } = renderHook(() => useShellOverlayController(controllerInput()));
 
     expect(Object.keys(result.current).sort()).toEqual([
+      "branches",
       "confirmations",
       "palette"
+    ]);
+    expect(Object.keys(result.current.branches).sort()).toEqual([
+      "close",
+      "open",
+      "show",
+      "toggle"
     ]);
     expect(Object.keys(result.current.palette).sort()).toEqual(["close", "open", "show"]);
   });
@@ -175,16 +176,15 @@ describe("useShellOverlayController shortcuts", () => {
     }
   });
 
-  it("closes overlay Details before opening the palette on the next task", () => {
+  it("closes Branches before opening the palette on the next task", () => {
     vi.useFakeTimers();
-    const changeMode = vi.fn();
-    const { result } = renderHook(() =>
-      useShellOverlayController(controllerInput({ changeMode, mode: "overlay" }))
-    );
+    const { result } = renderHook(() => useShellOverlayController(controllerInput()));
     const button = document.createElement("button");
 
+    act(() => result.current.branches.show());
+    expect(result.current.branches.open).toBe(true);
     expect(globalShortcut(button)).toBe(false);
-    expect(changeMode).toHaveBeenCalledWith("closed");
+    expect(result.current.branches.open).toBe(false);
     expect(result.current.palette.open).toBe(false);
 
     act(() => vi.runOnlyPendingTimers());

@@ -98,8 +98,8 @@ network opt-in and retains resolution pinning plus redirect validation.
 Explicit no-auth is recorded in both connection configuration and immutable
 tested-version evidence, uses a null envelope rather than an empty secret,
 emits no Authorization header, and still performs the locked non-revoked
-credential-version guard on every request. A legacy missing mode remains
-bearer; empty/sentinel credentials, a null bearer envelope, and implicit
+credential-version guard on every request. Authentication mode is required;
+missing modes, empty/sentinel credentials, a null bearer envelope, and implicit
 keyless fallbacks fail closed. [Provider admission](../backend/providers/ADMISSION_AND_BINDINGS.md)
 owns the configuration and binding transitions that consume this policy.
 

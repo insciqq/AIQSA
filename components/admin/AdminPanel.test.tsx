@@ -125,7 +125,7 @@ const dashboard: AdminDashboard = {
         summary: "Remove 1 active grant before deleting this group."
       },
       id: "group-archived",
-      name: "legacy-archive",
+      name: "archived-record",
       systemRole: null,
       userCount: 0
     }
@@ -1276,7 +1276,7 @@ describe("AdminPanel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
     const access = await screen.findByTestId("admin-section-access");
     fireEvent.click(within(access).getByRole("button", { name: "all" }));
-    const archivedRow = findResourceListItem(access, "legacy-archive");
+    const archivedRow = findResourceListItem(access, "archived-record");
     fireEvent.click(archivedRow);
     const detail = await screen.findByTestId("admin-access-group-detail");
 

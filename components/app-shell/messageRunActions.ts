@@ -21,7 +21,6 @@ import {
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { mergeThreadMessages } from "@/components/app-shell/runState";
-import { projectSearchPlanCompatibility } from "@/components/app-shell/searchPlanCompatibility";
 import { effectiveActiveLeafId } from "@/components/app-shell/threadPath";
 import { selectThreadSnapshot, useThreadStore } from "@/components/app-shell/threadStore";
 import type {
@@ -41,9 +40,9 @@ import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData
 import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { SearchPlanMode } from "@/lib/domain/search";
+import { reconcileModelSearchPlan } from "@/lib/domain/catalogMatrix";
 import type { ComposerKnowledgePlanSource } from "@/components/app-shell/composerControlStore";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
-import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 
 type MutableRef<T> = { current: T };
 
@@ -145,12 +144,12 @@ export function useMessageRunActions({
     }
     setNotice({
       action: {
-        label: memoryUiCopy(MEMORY_PRESENTATION_LOCALE, "action.manage"),
+        label: memoryUiCopy("action.manage"),
         onClick: openMemorySettings
       },
       kind: "error",
       persistent: true,
-      text: memoryUiCopy(MEMORY_PRESENTATION_LOCALE, "action.ambiguous")
+      text: memoryUiCopy("action.ambiguous")
     });
   }
 
@@ -204,8 +203,7 @@ export function useMessageRunActions({
         mode: searchPlanMode,
         optionIds: searchPreferenceOptionIds
       },
-      searchPreferenceSource:
-        catalog?.defaults.searchPreferenceSource,
+      searchPreferenceSource: catalog?.defaults.searchPreferenceSource ?? "personal",
       searchOptions: (catalog?.searchStrategies ?? []).map((option) => ({
         ...option,
         ...(option.executionModes
@@ -273,12 +271,12 @@ export function useMessageRunActions({
       return { assistantId: snapshot.assistantId };
     }
 
-    const effectiveSearchPlan = projectSearchPlanCompatibility({
-      mode: snapshot.searchPreferencePlan.mode,
-      model: snapshot.model,
-      searchOptions: snapshot.searchOptions,
-      selectedOptionIds: snapshot.searchPreferencePlan.optionIds
-    }).effectivePlan;
+    const effectiveSearchPlan = reconcileModelSearchPlan(
+      snapshot.model,
+      snapshot.searchPreferencePlan.optionIds,
+      snapshot.searchPreferencePlan.mode,
+      snapshot.searchOptions
+    );
     const timeZone = clientTimeZone();
 
     return {
@@ -296,8 +294,6 @@ export function useMessageRunActions({
             searchPreferenceSource: snapshot.searchPreferenceSource
           }
         : {}),
-      searchStrategy:
-        effectiveSearchPlan.optionIds[0] ?? "search-disabled",
       ...(timeZone ? { timeZone } : {}),
       ...snapshot.toolsOverride
     };
@@ -485,11 +481,17 @@ export function useMessageRunActions({
   }
 
   async function refreshInterruptedRun(chatId = activeChatId): Promise<boolean> {
-    if (!chatId || !useRunLifecycleStore.getState().ambiguousFailures[chatId]) {
+    const interrupted = chatId
+      ? useRunLifecycleStore.getState().ambiguousFailures[chatId]
+      : null;
+    if (!chatId || !interrupted) {
       return false;
     }
 
     try {
+      if (interrupted.runId) {
+        await fetchRun(interrupted.runId, chatId);
+      }
       const detail = await refreshActiveChat(chatId, {
         forceDetail: true,
         preserveControls: true

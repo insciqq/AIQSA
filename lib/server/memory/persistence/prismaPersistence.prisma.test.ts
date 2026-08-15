@@ -225,7 +225,6 @@ describe("Prisma Memory persistence", () => {
           modelId: "memory-tool-authorization-model",
           normalizedRequest: {},
           provider: "memory-tool-authorization-provider",
-          providerRequestPreview: {},
           status: "complete",
           userId,
           userMessageId: userMessage.id
@@ -372,7 +371,6 @@ describe("Prisma Memory persistence", () => {
           explicitMemory: true,
           historyRecall: true,
           permanentChatDeletion: false,
-          russianQualified: true,
           temporaryChats: true
         },
         egress: {
@@ -425,21 +423,6 @@ describe("Prisma Memory persistence", () => {
         });
       }
 
-      const localeOnly = await repository.patch(userId, {
-        expectedSettingsRevision: 7,
-        memoryUiLocale: "EN"
-      });
-      expect(localeOnly).toMatchObject({
-        memoryRevision: 7,
-        memoryUiLocale: "EN",
-        settingsRevision: 8
-      });
-      const workingSetJobs = await prisma.memoryJob.findMany({
-        orderBy: { createdAt: "asc" },
-        where: { kind: "RECALCULATE_WORKING_SET", userId }
-      });
-      expect(workingSetJobs).toHaveLength(0);
-
       const observedFingerprint = currentFingerprint;
       currentFingerprint = "d".repeat(64);
       await expect(repository.acceptUtilityEgress(userId, {
@@ -448,14 +431,14 @@ describe("Prisma Memory persistence", () => {
         currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
         expectedMemoryConsentRevision: 0,
         expectedMemoryRevision: 7,
-        expectedSettingsRevision: 8
+        expectedSettingsRevision: 7
       })).rejects.toMatchObject({ code: "memory_consent_policy_changed" });
       await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
         .resolves.toMatchObject({
           acceptedUtilityEgressFingerprint: null,
           memoryConsentRevision: 0,
           memoryRevision: 7,
-          settingsRevision: 8
+          settingsRevision: 7
         });
 
       const accepted = await repository.acceptUtilityEgress(userId, {
@@ -464,23 +447,23 @@ describe("Prisma Memory persistence", () => {
         currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
         expectedMemoryConsentRevision: 0,
         expectedMemoryRevision: 7,
-        expectedSettingsRevision: 8
+        expectedSettingsRevision: 7
       });
       expect(accepted).toMatchObject({
         acceptedUtilityEgressFingerprint: currentFingerprint,
         acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
         memoryConsentRevision: 1,
         memoryRevision: 8,
-        settingsRevision: 9
+        settingsRevision: 8
       });
       await expect(repository.patch(userId, {
         expectedMemoryRevision: 7,
-        expectedSettingsRevision: 9,
+        expectedSettingsRevision: 8,
         useMemoryFacts: false
       })).rejects.toMatchObject({ code: "memory_revision_conflict" });
       await expect(repository.get(userId)).resolves.toMatchObject({
         memoryRevision: 8,
-        settingsRevision: 9,
+        settingsRevision: 8,
         useMemoryFacts: true
       });
       const generations = await prisma.memoryIndexGeneration.findMany({
@@ -688,14 +671,14 @@ describe("Prisma Memory persistence", () => {
     }
   });
 
-  it("deduplicates global jobs and destructive deletion obligations", async () => {
+  it("deduplicates jobs and destructive deletion obligations", async () => {
     const userId = await createActiveUser("work-queues");
     try {
       const jobs = createPrismaMemoryJobRepository(prisma);
       const deletion = createPrismaMemoryDeletionRepository(prisma);
       const jobInput = {
-        idempotencyFingerprint: "memory-global-dream-test-v1",
-        kind: "GLOBAL_DREAM" as const,
+        idempotencyFingerprint: "memory-rebuild-index-test-v1",
+        kind: "REBUILD_INDEX" as const,
         pipelineVersion: "memory-persistence-test-v1"
       };
       const firstJob = await jobs.enqueue(userId, jobInput);

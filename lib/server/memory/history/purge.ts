@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { MemoryCoordinatorError } from "../coordinator/errors";
@@ -8,10 +7,6 @@ import type {
 } from "../coordinator/types";
 import type { MemoryTransaction } from "../persistence/transaction";
 import {
-  countInvalidMemoryProfileProjections,
-  purgeInvalidMemoryProfileProjections
-} from "../profile/purge";
-import {
   inspectMemoryFeedbackHistoryClear,
   inspectMemoryFeedbackInvalidSource,
   purgeMemoryFeedbackHistoryClear,
@@ -19,9 +14,9 @@ import {
 } from "../review/purge";
 
 export const MEMORY_HISTORY_CLEAR_MANIFEST_VERSION =
-  "memory-p4-history-clear-v1";
+  "memory-history-clear-v1";
 export const MEMORY_HISTORY_SOURCE_PURGE_MANIFEST_VERSION =
-  "memory-p4-history-source-v1";
+  "memory-history-source-v1";
 export const MEMORY_HISTORY_CLEAR_TARGET_TYPE =
   `HISTORY_INDEX@${MEMORY_HISTORY_CLEAR_MANIFEST_VERSION}`;
 export const MEMORY_HISTORY_SOURCE_TARGET_TYPE =
@@ -36,7 +31,6 @@ type HistoryPurgeSelection =
 type HistoryTargetIds = Readonly<{
   candidateIds: readonly string[];
   chunkIds: readonly string[];
-  episodeIds: readonly string[];
 }>;
 
 export type MemoryHistoryPurgeProgress = Readonly<{
@@ -102,26 +96,9 @@ async function targetIds(
         )
       ORDER BY chunk."id"
     `);
-    const episodes = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT DISTINCT episode."id"
-      FROM "MemoryEpisode" AS episode
-      LEFT JOIN "MemoryEpisodeMessage" AS source_message
-        ON source_message."userId" = episode."userId"
-        AND source_message."episodeId" = episode."id"
-      LEFT JOIN "Message" AS message
-        ON message."chatId" = source_message."chatId"
-        AND message."id" = source_message."messageId"
-      WHERE episode."userId" = ${userId}
-        AND (
-          episode."createdAt" <= ${barrier.createdAt}
-          OR message."createdAt" <= ${barrier.sourceCreatedAtCutoff}
-        )
-      ORDER BY episode."id"
-    `);
     return {
       candidateIds: [],
-      chunkIds: chunks.map(({ id }) => id),
-      episodeIds: episodes.map(({ id }) => id)
+      chunkIds: chunks.map(({ id }) => id)
     };
   }
   if (selection.kind === "SOURCE") {
@@ -140,22 +117,6 @@ async function targetIds(
           OR chat."memorySourceRevision" <> chunk."sourceRevisionAtCreation"
         )
       ORDER BY chunk."id"
-    `);
-    const episodes = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT episode."id"
-      FROM "MemoryEpisode" AS episode
-      LEFT JOIN "Chat" AS chat
-        ON chat."userId" = episode."userId" AND chat."id" = episode."chatId"
-      WHERE episode."userId" = ${userId}
-        AND episode."chatId" = ${selection.chatId}
-        AND (
-          episode."state" <> 'ACTIVE'::"MemoryHistoryItemState"
-          OR chat."id" IS NULL
-          OR chat."memoryMode" <> 'NORMAL'::"MemoryChatMode"
-          OR chat."memoryBranchGeneration" <> episode."branchGeneration"
-          OR chat."memorySourceRevision" <> episode."sourceRevisionAtCreation"
-        )
-      ORDER BY episode."id"
     `);
     const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT candidate."id"
@@ -180,8 +141,7 @@ async function targetIds(
     `);
     return {
       candidateIds: candidates.map(({ id }) => id),
-      chunkIds: chunks.map(({ id }) => id),
-      episodeIds: episodes.map(({ id }) => id)
+      chunkIds: chunks.map(({ id }) => id)
     };
   }
 
@@ -209,34 +169,6 @@ async function targetIds(
       AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
     ORDER BY chunk."id"
   `);
-  const episodes = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT DISTINCT episode."id"
-    FROM "MemoryEpisode" AS episode
-    LEFT JOIN "MemoryEpisodeMessage" AS source_message
-      ON source_message."userId" = episode."userId"
-      AND source_message."episodeId" = episode."id"
-    INNER JOIN "MemorySuppression" AS suppression
-      ON suppression."userId" = episode."userId"
-      AND (
-        suppression."scope" = 'ALL'::"MemorySuppressionScope"
-        OR (
-          suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
-          AND suppression."sourceEpisodeId" = episode."id"
-        )
-        OR (
-          suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-          AND suppression."sourceChatId" = source_message."chatId"
-          AND suppression."sourceMessageId" = source_message."messageId"
-          AND (
-            suppression."sourceBranchGeneration" IS NULL
-            OR suppression."sourceBranchGeneration" = episode."branchGeneration"
-          )
-        )
-      )
-    WHERE episode."userId" = ${userId}
-      AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
-    ORDER BY episode."id"
-  `);
   const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT DISTINCT candidate."id"
     FROM "MemoryCandidate" AS candidate
@@ -263,8 +195,7 @@ async function targetIds(
   `);
   return {
     candidateIds: candidates.map(({ id }) => id),
-    chunkIds: chunks.map(({ id }) => id),
-    episodeIds: episodes.map(({ id }) => id)
+    chunkIds: chunks.map(({ id }) => id)
   };
 }
 
@@ -272,9 +203,6 @@ function targetPredicate(ids: HistoryTargetIds): Prisma.Sql {
   const predicates: Prisma.Sql[] = [];
   if (ids.chunkIds.length > 0) {
     predicates.push(Prisma.sql`item."recallChunkId" IN (${Prisma.join([...ids.chunkIds])})`);
-  }
-  if (ids.episodeIds.length > 0) {
-    predicates.push(Prisma.sql`item."episodeId" IN (${Prisma.join([...ids.episodeIds])})`);
   }
   return predicates.length === 0
     ? Prisma.sql`FALSE`
@@ -354,78 +282,6 @@ async function settleAttemptItems(
   `);
 }
 
-async function detachEpisodeSuppressions(
-  tx: MemoryTransaction,
-  userId: string,
-  episodeIds: readonly string[],
-  selection: HistoryPurgeSelection
-): Promise<void> {
-  if (episodeIds.length === 0) return;
-  const suppressions = await tx.memorySuppression.findMany({
-    orderBy: { id: "asc" },
-    select: {
-      deletionGeneration: true,
-      explicitOverrideAllowed: true,
-      expiresAt: true,
-      fingerprintKeyVersion: true,
-      id: true,
-      normalizationVersion: true,
-      sourceBranchGeneration: true,
-      sourceChatId: true,
-      sourceEpisodeId: true
-    },
-    where: {
-      scope: "SOURCE_EPISODE",
-      sourceEpisodeId: { in: [...episodeIds] },
-      userId
-    }
-  });
-  if (suppressions.length === 0) return;
-
-  const sourceStillExists = selection.kind === "SOURCE"
-    ? await tx.chat.count({ where: { id: selection.chatId, userId } }) > 0
-    : selection.kind === "SUPPRESSED";
-  if (sourceStillExists) {
-    const joins = await tx.memoryEpisodeMessage.findMany({
-      orderBy: [{ episodeId: "asc" }, { ordinal: "asc" }],
-      select: { chatId: true, episodeId: true, messageId: true },
-      where: { episodeId: { in: [...episodeIds] }, userId }
-    });
-    const replacementRows = [];
-    for (const suppression of suppressions) {
-      const sources = joins.filter((join) =>
-        join.episodeId === suppression.sourceEpisodeId);
-      if (
-        !suppression.sourceChatId ||
-        suppression.sourceBranchGeneration === null ||
-        sources.length === 0 ||
-        sources.some((source) => source.chatId !== suppression.sourceChatId)
-      ) {
-        throw new MemoryCoordinatorError("memory_purge_incomplete", true);
-      }
-      replacementRows.push(...sources.map((source) => ({
-        deletionGeneration: suppression.deletionGeneration,
-        explicitOverrideAllowed: suppression.explicitOverrideAllowed,
-        expiresAt: suppression.expiresAt,
-        fingerprintKeyVersion: suppression.fingerprintKeyVersion,
-        id: randomUUID(),
-        normalizationVersion: suppression.normalizationVersion,
-        scope: "SOURCE_MESSAGE" as const,
-        sourceBranchGeneration: suppression.sourceBranchGeneration!,
-        sourceChatId: suppression.sourceChatId!,
-        sourceMessageId: source.messageId,
-        userId
-      })));
-    }
-    if (replacementRows.length > 0) {
-      await tx.memorySuppression.createMany({ data: replacementRows });
-    }
-  }
-  await tx.memorySuppression.deleteMany({
-    where: { id: { in: suppressions.map(({ id }) => id) }, userId }
-  });
-}
-
 async function receiptSelectionPredicates(
   tx: MemoryTransaction,
   userId: string,
@@ -473,17 +329,6 @@ async function receiptSelectionPredicates(
               suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
               AND suppression."sourceChatId" = result ->> 'sourceChatId'
               AND result -> 'sourceMessageIds' ? suppression."sourceMessageId"
-            )
-            OR (
-              suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
-              AND EXISTS (
-                SELECT 1
-                FROM "MemoryEpisodeMessage" AS episode_message
-                WHERE episode_message."userId" = suppression."userId"
-                  AND episode_message."episodeId" = suppression."sourceEpisodeId"
-                  AND episode_message."chatId" = result ->> 'sourceChatId'
-                  AND result -> 'sourceMessageIds' ? episode_message."messageId"
-              )
             )
           )
       )
@@ -632,37 +477,11 @@ export async function purgeMemoryHistorySelection(
   await purgeMemoryHistoryReceiptDerivatives(tx, userId, selection);
   while (true) {
     const ids = await targetIds(tx, userId, selection);
-    if (
-      ids.candidateIds.length === 0 &&
-      ids.chunkIds.length === 0 &&
-      ids.episodeIds.length === 0
-    ) break;
+    if (ids.candidateIds.length === 0 && ids.chunkIds.length === 0) break;
     await settleAttemptItems(tx, userId, ids);
     await tx.memorySearchEntry.deleteMany({
-      where: {
-        OR: [
-          ...(ids.chunkIds.length > 0
-            ? [{ recallChunkId: { in: [...ids.chunkIds] } }]
-            : []),
-          ...(ids.episodeIds.length > 0
-            ? [{ episodeId: { in: [...ids.episodeIds] } }]
-            : [])
-        ],
-        userId
-      }
+      where: { recallChunkId: { in: [...ids.chunkIds] }, userId }
     });
-    if (ids.episodeIds.length > 0) {
-      await tx.memoryEvidence.deleteMany({
-        where: { episodeId: { in: [...ids.episodeIds] }, userId }
-      });
-      await detachEpisodeSuppressions(tx, userId, ids.episodeIds, selection);
-      await tx.memoryEpisodeMessage.deleteMany({
-        where: { episodeId: { in: [...ids.episodeIds] }, userId }
-      });
-      await tx.memoryEpisode.deleteMany({
-        where: { id: { in: [...ids.episodeIds] }, userId }
-      });
-    }
     if (ids.chunkIds.length > 0) {
       await tx.memoryRecallChunkMessage.deleteMany({
         where: { chunkId: { in: [...ids.chunkIds] }, userId }
@@ -681,13 +500,6 @@ export async function purgeMemoryHistorySelection(
     }
     if (selection.kind !== "SUPPRESSED") break;
   }
-  if (selection.kind !== "CLEAR" && selection.kind !== "ALL_REUSABLE") {
-    await purgeInvalidMemoryProfileProjections(
-      tx,
-      userId,
-      selection.kind === "SOURCE" ? "source_invalidated" : "suppressed_source"
-    );
-  }
 }
 
 export async function inspectMemoryHistoryPurge(
@@ -702,35 +514,20 @@ export async function inspectMemoryHistoryPurge(
     : selection.kind === "SOURCE"
       ? await inspectMemoryFeedbackInvalidSource(tx, userId, selection.chatId, ids)
       : await inspectMemoryFeedbackHistoryClear(tx, userId, ids);
-  const historyItemCount = ids.candidateIds.length + ids.chunkIds.length + ids.episodeIds.length;
-  const profileCount = selection.kind === "CLEAR" || selection.kind === "ALL_REUSABLE"
-    ? 0
-    : await countInvalidMemoryProfileProjections(tx, userId);
+  const historyItemCount = ids.candidateIds.length + ids.chunkIds.length;
   let referenceCount = 0;
   let searchCount = 0;
   if (historyItemCount > 0) {
     [referenceCount, searchCount] = await Promise.all([
       tx.memoryRetrievalAttemptItem.count({
-        where: {
-          OR: [
-            ...(ids.chunkIds.length > 0 ? [{ recallChunkId: { in: [...ids.chunkIds] } }] : []),
-            ...(ids.episodeIds.length > 0 ? [{ episodeId: { in: [...ids.episodeIds] } }] : [])
-          ],
-          userId
-        }
+        where: { recallChunkId: { in: [...ids.chunkIds] }, userId }
       }),
       tx.memorySearchEntry.count({
-        where: {
-          OR: [
-            ...(ids.chunkIds.length > 0 ? [{ recallChunkId: { in: [...ids.chunkIds] } }] : []),
-            ...(ids.episodeIds.length > 0 ? [{ episodeId: { in: [...ids.episodeIds] } }] : [])
-          ],
-          userId
-        }
+        where: { recallChunkId: { in: [...ids.chunkIds] }, userId }
       })
     ]);
   }
-  const completedUnits = Number(historyItemCount + profileCount === 0) +
+  const completedUnits = Number(historyItemCount === 0) +
     Number(referenceCount === 0) +
     Number(searchCount === 0) +
     Number(receiptDerivatives.historyRuns === 0) +

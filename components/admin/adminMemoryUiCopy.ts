@@ -34,7 +34,6 @@ type Copy = Readonly<{
   recentFailures: string;
   reviewDescription: string;
   reviewTitle: string;
-  scheduler: string;
   safetyBlocked: string;
   safetyTemporary: string;
   trustDescription: string;
@@ -76,7 +75,6 @@ const COPY: Readonly<Record<"EN", Copy>> = {
     recentFailures: "Recent failures",
     reviewDescription: "New or changed destinations keep only affected external Memory work waiting.",
     reviewTitle: "Destination review required",
-    scheduler: "Background allowance",
     safetyBlocked: "A durable Memory cleanup has exhausted fast retries. Retrieval remains fenced and slow reconciliation continues.",
     safetyTemporary: "At least one Temporary chat is past its retention deadline and remains hidden while cleanup continues.",
     trustDescription: "Destination acknowledgment is an installation trust decision. Per-call evidence remains inspectable without exposing personal Memory content here.",
@@ -122,7 +120,7 @@ export function adminMemoryOverallCopy(
 
 export function adminMemoryStateCopy(
   locale: AdminMemoryLocale,
-  domain: "deletion" | "provider" | "queue" | "scheduler",
+  domain: "deletion" | "provider" | "queue",
   state: string
 ): string {
   const values: Readonly<Record<"EN", Readonly<Record<string, string>>>> = {
@@ -131,7 +129,6 @@ export function adminMemoryStateCopy(
       BLOCKED: "Recent failures need review",
       CLEAR: "No waiting work",
       DEGRADED: "Recent provider work is incomplete",
-      DEFERRED: "Daily background allowance reached",
       DELAYED: "Some work is delayed",
       HEALTHY: "Ready",
       IDLE: "No recent provider work",
@@ -193,7 +190,7 @@ export function adminMemoryDestinationCopy(
         label: "Remote reranker"
       },
       system_model: {
-        description: "Background extraction, verification, profiles, and query expansion use this role.",
+        description: "Background extraction, verification, and query expansion use this role.",
         label: "System Memory model"
       }
     }

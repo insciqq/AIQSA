@@ -41,6 +41,7 @@ const modelConfiguration = {
   answerSelectable: true,
   capabilities,
   defaultParams: {},
+  modelClass: "answer" as const,
   upstreamModelId: "system-policy-model"
 };
 
@@ -94,13 +95,13 @@ test.describe("system model policy", () => {
           activatedAt: now,
           capabilities,
           connectionId: fixture.connectionId,
-          contextWindow: capabilities.contextWindow,
           defaultParams: {},
           displayName: "System Policy Model",
           draftConfig: modelConfiguration,
           draftVersion: 1,
           enabled: true,
           id: fixture.modelId,
+          modelClass: "answer",
           modelId: modelConfiguration.upstreamModelId,
           provider: "openai_compatible"
         }

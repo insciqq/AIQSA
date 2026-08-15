@@ -1,6 +1,6 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { describe, expect, it, vi } from "vitest";
-import { perplexityWebSearchTool } from "../tools/perplexitySearch";
+import { currentSearchToolFixture } from "../tools/testFixtures";
 import { validateSearchToolArguments } from "../search/query";
 import * as openRouterFacade from "./openRouterChat";
 import {
@@ -27,6 +27,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     content: {
       blocks: [{ text: "Find one concise fact.", type: "text" }]
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -58,7 +60,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       system: "You are precise."
     },
     provider: "openrouter",
-    searchStrategy: "perplexity-tool-search",
+    searchPlan: { mode: "all_selected", options: [] },
     ...overrides
   };
 }
@@ -355,7 +357,7 @@ describe("OpenRouter Chat facade", () => {
                     {
                       function: {
                         arguments: '{"keyword":"latest ',
-                        name: "search_via_perplexity"
+                        name: "search_engine_1"
                       },
                       id: "call-1",
                       index: 0,
@@ -398,7 +400,7 @@ describe("OpenRouter Chat facade", () => {
         request({
           parallelToolCalls: true,
           toolChoice: "auto",
-          tools: [perplexityWebSearchTool]
+          tools: [currentSearchToolFixture]
         })
       )
     );
@@ -411,7 +413,7 @@ describe("OpenRouter Chat facade", () => {
       tool_choice: "auto",
       tools: [
         {
-          function: { name: "search_via_perplexity" },
+          function: { name: "search_engine_1" },
           type: "function"
         }
       ]
@@ -424,7 +426,7 @@ describe("OpenRouter Chat facade", () => {
         expect.objectContaining({
           arguments: { keyword: "latest Anthropic model" },
           id: "call-1",
-          name: "search_via_perplexity"
+          name: "search_engine_1"
         })
       ]
     });

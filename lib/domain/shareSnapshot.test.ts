@@ -176,7 +176,7 @@ describe("share snapshots", () => {
         },
         parentMessageId: null,
         role: "assistant"
-      }],
+      }] as unknown as ShareSnapshotMessageInput[],
       title: "Knowledge answer"
     });
 
@@ -220,7 +220,7 @@ describe("share snapshots", () => {
         },
         parentMessageId: null,
         role: "assistant"
-      }],
+      }] as unknown as ShareSnapshotMessageInput[],
       title: "Memory-safe share"
     });
     const reread = projectPublicShareSnapshot({

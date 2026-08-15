@@ -196,7 +196,6 @@ describe("Prisma Memory review feedback", () => {
           modelId: "memory-review-test-model",
           normalizedRequest: {},
           provider: "memory-review-test-provider",
-          providerRequestPreview: {},
           status: "complete",
           userId,
           userMessageId: source.messageId

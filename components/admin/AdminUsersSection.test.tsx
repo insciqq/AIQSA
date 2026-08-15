@@ -268,8 +268,8 @@ describe("AdminUsersSection", () => {
       effectiveEntitlements: {
         models: [
           { modelId: "gpt-5.5", provider: "openai" },
-          { modelId: "retired-alpha", provider: "legacy-openai" },
-          { modelId: "retired-beta", provider: "legacy-anthropic" }
+          { modelId: "retired-alpha", provider: "retired-openai" },
+          { modelId: "retired-beta", provider: "retired-anthropic" }
         ],
         providers: ["openai"],
         searchStrategies: ["web"]
@@ -280,8 +280,8 @@ describe("AdminUsersSection", () => {
 
     expect(screen.getByText("OpenAI / GPT 5.5")).toBeVisible();
     fireEvent.click(screen.getByText("2 unavailable model grants"));
-    expect(screen.getByText("legacy-openai / retired-alpha")).toBeVisible();
-    expect(screen.getByText("legacy-anthropic / retired-beta")).toBeVisible();
+    expect(screen.getByText("retired-openai / retired-alpha")).toBeVisible();
+    expect(screen.getByText("retired-anthropic / retired-beta")).toBeVisible();
   });
 
   it("keeps the acting admin read-only", () => {

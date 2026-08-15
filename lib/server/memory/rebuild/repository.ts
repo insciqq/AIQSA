@@ -20,9 +20,6 @@ import {
   type MemoryItemEmbeddingPin
 } from "../embedding/contract";
 import {
-  MEMORY_EPISODE_REDREAM_JOB_PREFIX
-} from "../history/episode/contract";
-import {
   advanceMemoryMutation,
   ensureActiveLexicalGeneration,
   lockMemorySettings,
@@ -30,10 +27,6 @@ import {
   type MemoryTransaction,
   withLockedMemoryTransaction
 } from "../persistence/transaction";
-import {
-  consumeMemoryMutationAuthorization,
-  type MemoryMutationAuthorizationUse
-} from "../persistence/authorizations";
 import { enqueueMemoryJob } from "../persistence/jobs";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
@@ -56,18 +49,21 @@ import { requireAdminAcceptedMemoryDestination } from "../execution/adminConsent
 import { resolveMemoryEgressConsentMode } from "../execution/consentMode";
 import { MemoryExecutionError } from "../execution/errors";
 import {
-  MEMORY_REDREAM_BATCH_PIPELINE_VERSION,
   MEMORY_SHADOW_REBUILD_PIPELINE_VERSION,
-  memoryRedreamBatchJobFingerprint,
   memoryShadowRebuildJobFingerprint,
   memoryShadowRebuildJobPrefixes,
   parseMemoryRebuildJobFingerprint,
   type MemoryShadowRebuildOperation
 } from "./contract";
 
+type CurrentSearchItemType = Extract<
+  MemorySearchItemType,
+  "FACT_VERSION" | "RECALL_CHUNK"
+>;
+
 type SearchIdentity = Readonly<{
   itemId: string;
-  itemType: MemorySearchItemType;
+  itemType: CurrentSearchItemType;
   languageCode: string;
   safeContentHash: string;
   safeSearchText: string;
@@ -143,7 +139,6 @@ type GenerationConfiguration = Readonly<{
 }>;
 
 export type MemoryRebuildAdmissionInput = Readonly<{
-  authorization?: MemoryMutationAuthorizationUse & Readonly<{ requestId: string }>;
   embeddingDeploymentId?: string | null;
   expectedMemoryRevision: number;
   expectedSettingsRevision: number;
@@ -169,19 +164,17 @@ const nonterminalJobStates: readonly MemoryJobState[] = [
   "WAITING_FOR_EGRESS_CONSENT"
 ];
 
-function itemKey(itemType: MemorySearchItemType, itemId: string): string {
+function itemKey(itemType: CurrentSearchItemType, itemId: string): string {
   return `${itemType}:${itemId}`;
 }
 
 function exactItemId(entry: Readonly<{
-  episodeId: string | null;
   factVersionId: string | null;
-  itemType: MemorySearchItemType;
+  itemType: CurrentSearchItemType;
   recallChunkId: string | null;
 }>): string | null {
   switch (entry.itemType) {
     case "FACT_VERSION": return entry.factVersionId;
-    case "EPISODE": return entry.episodeId;
     case "RECALL_CHUNK": return entry.recallChunkId;
   }
 }
@@ -227,7 +220,6 @@ async function currentSuppressionIdentity(
         scope: true,
         sourceBranchGeneration: true,
         sourceChatId: true,
-        sourceEpisodeId: true,
         sourceMessageId: true
       },
       where: {
@@ -444,7 +436,6 @@ async function existingGenerationEntries(
     orderBy: { id: "asc" },
     select: {
       embeddingState: true,
-      episodeId: true,
       factVersionId: true,
       id: true,
       itemType: true,
@@ -457,18 +448,23 @@ async function existingGenerationEntries(
       sourceIdentitySnapshot: true,
       suppressionIdentitySnapshot: true
     },
-    where: { indexGenerationId: generationId, userId }
+    where: {
+      indexGenerationId: generationId,
+      itemType: { in: ["FACT_VERSION", "RECALL_CHUNK"] },
+      userId
+    }
   });
   return rows.flatMap((row) => {
-    const itemId = exactItemId(row);
-    return itemId ? [{ ...row, itemId }] : [];
+    if (row.itemType !== "FACT_VERSION" && row.itemType !== "RECALL_CHUNK") return [];
+    const itemType: CurrentSearchItemType = row.itemType;
+    const itemId = exactItemId({ ...row, itemType: row.itemType });
+    return itemId ? [{ ...row, itemId, itemType }] : [];
   });
 }
 
 function targetData(item: SearchIdentity, userId: string, generationId: string) {
   return {
     ...(item.itemType === "FACT_VERSION" ? { factVersionId: item.itemId } : {}),
-    ...(item.itemType === "EPISODE" ? { episodeId: item.itemId } : {}),
     ...(item.itemType === "RECALL_CHUNK" ? { recallChunkId: item.itemId } : {}),
     indexGenerationId: generationId,
     itemType: item.itemType,
@@ -666,7 +662,7 @@ async function currentEmbeddingPin(
   return vectorSpaceFingerprint
     ? {
         configurationFingerprint:
-          current.qualificationFingerprints.configFingerprint,
+          current.compatibilityFingerprints.configFingerprint,
         connectionId: current.authority.connectionId,
         dimension: model.embedding.targetDimension,
         providerModelId: current.authority.providerModelId,
@@ -848,20 +844,6 @@ async function applyShadowCatchUp(
   await purgeRetainedSupersededSearch(tx, claim.userId);
 }
 
-async function applyRedreamBatch(
-  _tx: MemoryTransaction,
-  claim: MemoryJobClaim,
-  _now: Date
-): Promise<void> {
-  const identity = parseMemoryRebuildJobFingerprint(claim.idempotencyFingerprint);
-  if (!identity || identity.type !== "REDREAM") {
-    throw new Error("memory_redream_job_invalid");
-  }
-  // Persisted v1 batch jobs settle successfully without creating any new
-  // extractive episodes. Eligible history chunks and grounded EVENT facts are
-  // the serving representations in v2.
-}
-
 function configurationData(
   source: GenerationConfiguration,
   operation: MemoryShadowRebuildOperation,
@@ -930,52 +912,6 @@ export function createPrismaMemoryRebuildRepository(
     if (!job) return null;
     const identity = parseMemoryRebuildJobFingerprint(job.idempotencyFingerprint);
     if (!identity) return null;
-    if (identity.type === "REDREAM") {
-      const children = await client.memoryJob.findMany({
-        select: { errorCode: true, state: true, updatedAt: true },
-        where: {
-          idempotencyFingerprint: { startsWith: `memory-episode-redream-v1:${identity.batchId}:` },
-          kind: "EXTRACT_EPISODE",
-          userId
-        }
-      });
-      const failed = children.find(({ state }) => state === "TERMINAL_FAILED");
-      const cancelled = children.some(({ state }) => state === "CANCELLED");
-      const stale = children.some(({ state }) => state === "STALE");
-      const waiting = children.some(({ state }) => state === "WAITING_FOR_EGRESS_CONSENT");
-      const active = children.some(({ state }) => nonterminalJobStates.includes(state));
-      const complete = children.filter(({ state }) => state === "SUCCEEDED").length;
-      let state = statusStateForJob(job.state);
-      let errorCode: MemoryRebuildStatus["errorCode"] = null;
-      if (job.state === "SUCCEEDED") {
-        if (active) {
-          state = waiting ? "WAITING_FOR_EGRESS_CONSENT" : "RUNNING";
-        } else if (failed) {
-          state = "FAILED";
-          errorCode = publicFailureCode(failed.errorCode);
-        } else if (cancelled) state = "CANCELLED";
-        else if (stale) state = "STALE";
-        else if (complete === children.length) state = "SUCCEEDED";
-        else state = "RUNNING";
-      } else if (state === "FAILED") {
-        errorCode = publicFailureCode(job.errorCode);
-      }
-      const updatedAt = children.reduce(
-        (latest, child) => child.updatedAt > latest ? child.updatedAt : latest,
-        job.updatedAt
-      );
-      return {
-        completedUnits: complete,
-        createdAt: job.createdAt.toISOString(),
-        errorCode,
-        jobId: job.id,
-        operation: identity.operation,
-        state,
-        totalUnits: job.state === "SUCCEEDED" ? children.length : null,
-        updatedAt: updatedAt.toISOString()
-      };
-    }
-
     const generation = await client.memoryIndexGeneration.findFirst({
       where: { id: identity.generationId, userId }
     });
@@ -1043,30 +979,7 @@ export function createPrismaMemoryRebuildRepository(
       userId: string,
       input: MemoryRebuildAdmissionInput
     ): Promise<MemoryRebuildAdmissionResult> {
-      if (input.operation === "REDREAM_EXISTING_CHATS") {
-        throw new Error("memory_contract_invalid");
-      }
       return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
-        let redreamFingerprint: string | null = null;
-        if (input.operation === "REDREAM_EXISTING_CHATS") {
-          if (!input.authorization || input.authorization.action !== "BULK_DELETE") {
-            throw new Error("memory_redream_authorization_invalid");
-          }
-          redreamFingerprint = memoryRedreamBatchJobFingerprint({
-            batchId: input.authorization.authorizationId,
-            requestIdentity: input.requestIdentity
-          });
-          const replay = await tx.memoryJob.findUnique({
-            select: { id: true },
-            where: {
-              userId_idempotencyFingerprint: {
-                idempotencyFingerprint: redreamFingerprint,
-                userId
-              }
-            }
-          });
-          if (replay) return { jobId: replay.id, kind: "ok" } as const;
-        }
         if (settings.settingsRevision !== input.expectedSettingsRevision) {
           return { kind: "settings_revision_conflict" } as const;
         }
@@ -1076,38 +989,12 @@ export function createPrismaMemoryRebuildRepository(
         const running = await tx.memoryJob.count({
           where: { kind: "REBUILD_INDEX", state: { in: [...nonterminalJobStates] }, userId }
         });
-        const [shadow, redreamChildren] = await Promise.all([
-          tx.memoryIndexGeneration.count({
-            where: { state: { in: ["BUILDING", "CATCHING_UP", "READY"] }, userId }
-          }),
-          tx.memoryJob.count({
-            where: {
-              idempotencyFingerprint: {
-                startsWith: MEMORY_EPISODE_REDREAM_JOB_PREFIX
-              },
-              kind: "EXTRACT_EPISODE",
-              state: { in: [...nonterminalJobStates] },
-              userId
-            }
-          })
-        ]);
-        if (running > 0 || shadow > 0 || redreamChildren > 0) {
+        const shadow = await tx.memoryIndexGeneration.count({
+          where: { state: { in: ["BUILDING", "CATCHING_UP", "READY"] }, userId }
+        });
+        if (running > 0 || shadow > 0) {
           return { kind: "in_progress" } as const;
         }
-        if (input.operation === "REDREAM_EXISTING_CHATS") {
-          await consumeMemoryMutationAuthorization(
-            tx,
-            userId,
-            input.authorization!
-          );
-          const queued = await enqueueMemoryJob(tx, settings, {
-            idempotencyFingerprint: redreamFingerprint!,
-            kind: "REBUILD_INDEX",
-            pipelineVersion: MEMORY_REDREAM_BATCH_PIPELINE_VERSION
-          });
-          return { jobId: queued.id, kind: "ok" } as const;
-        }
-
         const active = await ensureActiveLexicalGeneration(
           tx,
           settings,
@@ -1165,10 +1052,7 @@ export function createPrismaMemoryRebuildRepository(
       claim: MemoryJobClaim,
       now: Date
     ): Promise<void> {
-      const identity = parseMemoryRebuildJobFingerprint(claim.idempotencyFingerprint);
-      return identity?.type === "REDREAM"
-        ? applyRedreamBatch(tx, claim, now)
-        : applyShadowCatchUp(tx, claim, now);
+      return applyShadowCatchUp(tx, claim, now);
     },
 
     async cancel(userId: string, jobId: string, now = new Date()): Promise<MemoryRebuildStatus | null> {
@@ -1188,16 +1072,15 @@ export function createPrismaMemoryRebuildRepository(
         if (!job) return;
         const identity = parseMemoryRebuildJobFingerprint(job.idempotencyFingerprint);
         if (!identity) return;
-        if (identity.type === "SHADOW") {
-          const generation = await tx.memoryIndexGeneration.findFirst({
-            select: { state: true },
-            where: { id: identity.generationId, userId }
-          });
-          if (
-            !generation ||
-            !["BUILDING", "CATCHING_UP", "READY"].includes(generation.state)
-          ) return;
-          await tx.$executeRaw(Prisma.sql`
+        const generation = await tx.memoryIndexGeneration.findFirst({
+          select: { state: true },
+          where: { id: identity.generationId, userId }
+        });
+        if (
+          !generation ||
+          !["BUILDING", "CATCHING_UP", "READY"].includes(generation.state)
+        ) return;
+        await tx.$executeRaw(Prisma.sql`
             UPDATE "MemoryJob" AS job
             SET
               "completedAt" = ${now},
@@ -1223,53 +1106,18 @@ export function createPrismaMemoryRebuildRepository(
                   AND job."idempotencyFingerprint" LIKE
                     ('memory-item-embed-v1:' || entry."id" || ':%')
               )
-          `);
-          await tx.memorySearchEntry.deleteMany({
-            where: { indexGenerationId: identity.generationId, userId }
-          });
-          await tx.memoryIndexGeneration.updateMany({
-            data: { state: "CANCELLED" },
-            where: {
-              id: identity.generationId,
-              state: { in: ["BUILDING", "CATCHING_UP", "READY"] },
-              userId
-            }
-          });
-        } else {
-          const childCount = await tx.memoryJob.count({
-            where: {
-              idempotencyFingerprint: {
-                startsWith: `memory-episode-redream-v1:${identity.batchId}:`
-              },
-              kind: "EXTRACT_EPISODE",
-              state: { in: [...nonterminalJobStates] },
-              userId
-            }
-          });
-          if (
-            !nonterminalJobStates.includes(job.state) &&
-            !(job.state === "SUCCEEDED" && childCount > 0)
-          ) return;
-          await tx.memoryJob.updateMany({
-            data: {
-              completedAt: now,
-              errorCode: "memory_rebuild_cancelled",
-              leaseExpiresAt: null,
-              leaseToken: null,
-              nextAttemptAt: null,
-              state: "CANCELLED",
-              updatedAt: now
-            },
-            where: {
-              idempotencyFingerprint: {
-                startsWith: `memory-episode-redream-v1:${identity.batchId}:`
-              },
-              kind: "EXTRACT_EPISODE",
-              state: { in: [...nonterminalJobStates] },
-              userId
-            }
-          });
-        }
+        `);
+        await tx.memorySearchEntry.deleteMany({
+          where: { indexGenerationId: identity.generationId, userId }
+        });
+        await tx.memoryIndexGeneration.updateMany({
+          data: { state: "CANCELLED" },
+          where: {
+            id: identity.generationId,
+            state: { in: ["BUILDING", "CATCHING_UP", "READY"] },
+            userId
+          }
+        });
         await tx.memoryJob.updateMany({
           data: {
             completedAt: now,

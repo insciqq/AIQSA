@@ -244,11 +244,11 @@ function embeddingSnapshotMatchesProfile(
     embedding?.targetDimension === profile.dimension &&
     provider.connectionId === profile.connectionId &&
     provider.providerModelId === profile.providerModelId &&
-    snapshot.qualificationRequirement.configFingerprint ===
+    snapshot.compatibilityRequirement.configFingerprint ===
       profile.configurationFingerprint &&
-    snapshot.qualificationRequirement.vectorSpaceFingerprint ===
+    snapshot.compatibilityRequirement.vectorSpaceFingerprint ===
       profile.vectorSpaceFingerprint &&
-    snapshot.qualificationRequirement.retrievalConfigFingerprint ===
+    snapshot.compatibilityRequirement.retrievalConfigFingerprint ===
       profile.retrievalConfigFingerprint;
 }
 

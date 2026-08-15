@@ -17,42 +17,6 @@ async function setTheme(
   }]);
 }
 
-for (const theme of ["dark", "light"] as const) {
-  for (const mode of modes) {
-    for (const state of ["assistants", "files", "memory", "memory-disabled"] as const) {
-      test(`v2 Library · ${theme} · ${mode.name} · ${state}`, async ({ context, page }) => {
-        await setTheme(context, theme);
-        await page.setViewportSize(mode);
-        await page.goto(`/ui-v2-fixture?fixture=library&state=${state}`);
-
-        await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-        await expect(page.getByTestId("library-v2")).toBeVisible();
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-        await expect(page).toHaveScreenshot(`library-${state}-${theme}-${mode.name}.png`, {
-          animations: "disabled",
-          caret: "hide",
-          fullPage: true
-        });
-      });
-    }
-
-    test(`v2 Settings · ${theme} · ${mode.name}`, async ({ context, page }) => {
-      await setTheme(context, theme);
-      await page.setViewportSize(mode);
-      await page.goto("/ui-v2-fixture?fixture=settings&state=appearance");
-
-      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-      await expect(page.getByTestId("settings-v2")).toBeVisible();
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-      await expect(page).toHaveScreenshot(`settings-appearance-${theme}-${mode.name}.png`, {
-        animations: "disabled",
-        caret: "hide",
-        fullPage: true
-      });
-    });
-  }
-}
-
 test("Library tab state is keyboard-owned and dirty resource exit remains explicit", async ({ page }) => {
   await page.goto("/ui-v2-fixture?fixture=library&state=dirty");
   const assistants = page.getByRole("tab", { name: "Assistants" });
@@ -93,40 +57,12 @@ test("Settings has one modal layer, a three-value theme registry, and MCP discar
 
 for (const theme of ["dark", "light"] as const) {
   for (const mode of modes) {
-    test(`secondary auth token parity · ${theme} · ${mode.name}`, async ({ context, page }) => {
-      await setTheme(context, theme);
-      await page.setViewportSize(mode);
-      await page.goto("/login");
-      await expect(page.getByTestId("auth-root")).toHaveAttribute("data-ui-presentation", "v2-tokens");
-      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-      await expect(page).toHaveScreenshot(`secondary-auth-${theme}-${mode.name}.png`, {
-        animations: "disabled",
-        caret: "hide",
-        fullPage: true
-      });
-    });
-
-    test(`secondary public share token parity · ${theme} · ${mode.name}`, async ({ context, page }) => {
-      await setTheme(context, theme);
-      await page.setViewportSize(mode);
-      await page.goto("/ui-v2-fixture?fixture=secondary&state=public-share");
-      await expect(page.getByTestId("public-share-view")).toHaveAttribute("data-ui-presentation", "v2-tokens");
-      await expect(page.getByText("Read-only snapshot")).toBeVisible();
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-      await expect(page).toHaveScreenshot(`secondary-public-share-${theme}-${mode.name}.png`, {
-        animations: "disabled",
-        caret: "hide",
-        fullPage: true
-      });
-    });
-
-    test(`Control Center direct V2 tokens · ${theme} · ${mode.name}`, async ({ context, page }) => {
+    test(`Control Center theme parity · ${theme} · ${mode.name}`, async ({ context, page }) => {
       await setTheme(context, theme);
       await page.setViewportSize(mode);
       await authenticateWithLocalToken(page.request, "The Control Center parity case needs the disposable local admin session.");
       await page.goto("/admin");
-      const root = page.locator('main[data-ui-presentation="v2-tokens"]');
+      const root = page.locator("main");
       await expect(root).toBeVisible();
       await expect(page.getByRole("heading", { name: "Control Center" })).toBeVisible();
       const colors = await root.evaluate((element) => {

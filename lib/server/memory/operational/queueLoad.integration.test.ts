@@ -6,11 +6,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../prisma";
 import { resolveMemoryCoordinatorPolicy } from "../coordinator/policy";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
-import {
-  createEmptyMemorySchedulerUsageSource,
-  createPrismaMemorySchedulerUsageSource,
-  MemoryScheduler
-} from "../coordinator/scheduler";
+import { MemoryScheduler } from "../coordinator/scheduler";
 import {
   MEMORY_OPERATIONAL_QUEUE_EVIDENCE_VERSION,
   memoryOperationalQueueEvidenceSchema
@@ -29,8 +25,8 @@ const MAXIMUM_CLAIM_LATENCY_P95_MS = 1_000;
 const JOB_KINDS = Object.freeze([
   "RECONCILE_SOURCE",
   "INDEX_HISTORY",
-  "GLOBAL_DREAM",
-  "RECALCULATE_WORKING_SET"
+  "EXTRACT_FACTS",
+  "EMBED_ITEMS"
 ] satisfies readonly MemoryJobKind[]);
 
 function percentile95(values: readonly number[]): number {
@@ -141,10 +137,7 @@ describeOperational("Memory operational queue load", () => {
     });
     const policy = resolveMemoryCoordinatorPolicy();
     const repository = createPrismaMemoryCoordinatorRepository(prisma);
-    const scheduler = new MemoryScheduler({
-      policy,
-      usageSource: createEmptyMemorySchedulerUsageSource()
-    });
+    const scheduler = new MemoryScheduler({ policy });
     const rssStart = process.memoryUsage().rss;
     let peakRssBytes = rssStart;
 
@@ -184,8 +177,8 @@ describeOperational("Memory operational queue load", () => {
           AND job."kind" IN (
             'RECONCILE_SOURCE'::"MemoryJobKind",
             'INDEX_HISTORY'::"MemoryJobKind",
-            'GLOBAL_DREAM'::"MemoryJobKind",
-            'RECALCULATE_WORKING_SET'::"MemoryJobKind"
+            'EXTRACT_FACTS'::"MemoryJobKind",
+            'EMBED_ITEMS'::"MemoryJobKind"
           )
           AND (
             (job."state" = 'QUEUED'::"MemoryJobState"
@@ -236,7 +229,7 @@ describeOperational("Memory operational queue load", () => {
       }
 
       const usageAt = new Date();
-      const usageJobs = jobs.filter(({ kind }) => kind === "GLOBAL_DREAM").slice(0, 4);
+      const usageJobs = jobs.filter(({ kind }) => kind === "EXTRACT_FACTS").slice(0, 4);
       await prisma.memoryExecutionBinding.createMany({
         data: usageJobs.map((job, index) => ({
           acceptedOutputHash: `memory-operational-output-${index}`,
@@ -248,7 +241,7 @@ describeOperational("Memory operational queue load", () => {
           id: `memory-operational-binding-${index}-${suffix}`,
           inputHash: `memory-operational-input-${index}-${suffix}`,
           inputTokens: 10,
-          logicalRole: "MEMORY_PROFILE",
+          logicalRole: "MEMORY_FACT_EXTRACT",
           memoryJobId: job.id,
           ordinal: 0,
           outputTokens: 5,
@@ -270,22 +263,6 @@ describeOperational("Memory operational queue load", () => {
         }))
       });
       peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
-
-      const windowStart = new Date(Date.UTC(
-        usageAt.getUTCFullYear(),
-        usageAt.getUTCMonth(),
-        usageAt.getUTCDate()
-      ));
-      const dailyUsage = await createPrismaMemorySchedulerUsageSource(prisma)
-        .readDailyBackgroundUsage({
-          windowEnd: new Date(windowStart.getTime() + 24 * 60 * 60_000),
-          windowStart
-        });
-      const fixtureUsageCalls = ownerIds.reduce(
-        (total, ownerId) => total + (dailyUsage.users.get(ownerId)?.calls ?? 0),
-        0
-      );
-      expect(fixtureUsageCalls).toBe(usageJobs.length);
 
       const usageBindingCount = await prisma.memoryExecutionBinding.count({
         where: { userId: { in: ownerIds } }
@@ -353,7 +330,7 @@ describeOperational("Memory operational queue load", () => {
       expect(evidence.maxConsecutiveOwnerClaims).toBe(1);
       expect(JSON.stringify(evidence)).not.toContain(suffix);
       expect(JSON.stringify(evidence)).not.toContain(ownerIds[0]);
-      console.info("memory_phase8_operational_queue", evidence);
+      console.info("memory_operational_queue", evidence);
     } finally {
       await prisma.memoryExecutionBinding.deleteMany({
         where: { userId: { in: ownerIds } }

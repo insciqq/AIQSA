@@ -173,7 +173,7 @@ export function extractOpenRouterUsage(response: OpenRouterResponseRecord): Mode
 function citationFromValue(
   value: unknown,
   index: number,
-  shape: "annotation" | "legacy"
+  shape: "annotation" | "flat"
 ): Record<string, unknown> | null {
   let candidate: Record<string, unknown> | null = null;
   if (shape === "annotation") {
@@ -225,7 +225,7 @@ function citationFromValue(
 function citationArtifacts(
   values: unknown,
   source: string,
-  shape: "annotation" | "legacy" = "legacy"
+  shape: "annotation" | "flat" = "flat"
 ): ModelRunSseEvent[] {
   if (!Array.isArray(values)) {
     return [];
@@ -265,7 +265,7 @@ function appendCitationArtifacts(
   target: ModelRunSseEvent[],
   values: unknown,
   source: string,
-  shape: "annotation" | "legacy" = "legacy"
+  shape: "annotation" | "flat" = "flat"
 ): void {
   for (const artifact of citationArtifacts(values, source, shape)) {
     target.push(artifact);

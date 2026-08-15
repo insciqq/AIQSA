@@ -221,10 +221,9 @@ function codeOwnedModel(templateKey: string, provider: string) {
   };
 }
 
-function modelLegacyFields(configuration: ProviderModelConfiguration) {
+function modelColumns(configuration: ProviderModelConfiguration) {
   return {
     capabilities: json(configuration.capabilities),
-    contextWindow: configuration.capabilities.contextWindow ?? 1,
     defaultParams: json(configuration.defaultParams),
     modelId: configuration.upstreamModelId,
     supportsNativeSearch: configuration.capabilities.nativeSearch,
@@ -1408,7 +1407,7 @@ async function applyQuickSetupPlan(
           outputTokenPriceMicros: candidate.model.outputTokenPriceMicros,
           provider: policy.provider,
           templateKey: candidate.templateKey,
-          ...modelLegacyFields(candidate.configuration)
+          ...modelColumns(candidate.configuration)
         }
       });
     } else if (existingModel.activeConfig === null) {
@@ -1418,7 +1417,7 @@ async function applyQuickSetupPlan(
           activeVersion: existingModel.draftVersion,
           activatedAt: plan.now,
           enabled: true,
-          ...modelLegacyFields(candidate.configuration)
+          ...modelColumns(candidate.configuration)
         },
         where: { id: candidate.modelId }
       });

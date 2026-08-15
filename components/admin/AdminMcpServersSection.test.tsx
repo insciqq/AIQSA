@@ -468,17 +468,17 @@ describe("AdminMcpServersSection", () => {
     expect(screen.getByLabelText("Test workspace")).toHaveValue("");
   });
 
-  it("keeps legacy archived MCP records read-only", () => {
+  it("keeps archived MCP records read-only", () => {
     const archived = { ...server, archivedAt: "2026-07-24T00:00:00.000Z", enabled: false };
     render(<TestSection controller={viewController(archived).controller} />);
 
-    expect(screen.getByText("Legacy archived")).toBeInTheDocument();
+    expect(screen.getAllByText("Archived").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /Definition Source, auth, and fields/i }));
     expect(screen.getByRole("button", { name: "Edit draft" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /Validate & tools/i }));
     expect(screen.getByRole("checkbox", { name: "Enabled for remember" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /Delete Irreversible removal/i }));
-    expect(screen.getByText(/Legacy archived records are read-only/i)).toBeInTheDocument();
+    expect(screen.getByText(/Archived records are read-only/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete…" })).not.toBeInTheDocument();
   });
 

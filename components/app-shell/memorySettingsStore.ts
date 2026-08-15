@@ -7,8 +7,7 @@ import {
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   type MemorySettingsPatch,
-  type MemorySettingsResponse,
-  type MemoryUiLocale
+  type MemorySettingsResponse
 } from "@/lib/contracts/memory";
 import { create } from "zustand";
 
@@ -16,7 +15,6 @@ export type MemorySettingsLoadState = "error" | "idle" | "loading" | "ready";
 export type MemorySettingsMutation =
   | "consent"
   | "learnAutomatically"
-  | "memoryUiLocale"
   | "referenceChatHistory"
   | "useMemoryFacts";
 
@@ -106,15 +104,6 @@ export async function updateMemoryGate(
     } satisfies MemorySettingsPatch;
     return patchMemorySettings(body);
   });
-}
-
-export async function updateMemoryLocale(
-  locale: MemoryUiLocale
-): Promise<MemorySettingsResponse> {
-  return mutation("memoryUiLocale", (current) => patchMemorySettings({
-    expectedSettingsRevision: current.settings.settingsRevision,
-    memoryUiLocale: locale
-  }));
 }
 
 export async function acceptCurrentMemoryDestinations(): Promise<MemorySettingsResponse> {

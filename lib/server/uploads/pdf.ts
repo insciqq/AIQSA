@@ -85,8 +85,6 @@ export type PdfExtractionOptions = {
   createWorker?: (source: string, options: WorkerOptions) => Worker;
   /** Test-only injection point for deterministic page proxies. */
   getDocumentProxy?: (data: Uint8Array, options: { signal: AbortSignal }) => Promise<PdfDocument>;
-  /** Backwards-compatible alias for the former per-chunk option. */
-  maxChars?: number;
   config?: Partial<PdfExtractionConfig>;
   signal?: AbortSignal;
 };
@@ -102,8 +100,7 @@ function positiveIntegerAtMost(value: number | undefined, fallback: number, ceil
   return Number.isSafeInteger(value) && (value ?? 0) > 0 && (value ?? 0) <= ceiling ? (value as number) : fallback;
 }
 
-function normalizeOptions(optionsOrChunkMaxChars: PdfExtractionOptions | number): NormalizedPdfExtractionOptions {
-  const options = typeof optionsOrChunkMaxChars === "number" ? { maxChars: optionsOrChunkMaxChars } : optionsOrChunkMaxChars;
+function normalizeOptions(options: PdfExtractionOptions): NormalizedPdfExtractionOptions {
   const requested = options.config;
   const defaults = requested
     ? {
@@ -118,7 +115,7 @@ function normalizeOptions(optionsOrChunkMaxChars: PdfExtractionOptions | number)
   return {
     config: {
       chunkMaxChars: positiveIntegerAtMost(
-        options.maxChars ?? requested?.chunkMaxChars,
+        requested?.chunkMaxChars,
         defaults.chunkMaxChars,
         DEFAULT_PDF_CHUNK_MAX_CHARS
       ),
@@ -721,11 +718,11 @@ function runWorkerExtraction(buffer: Buffer, options: NormalizedPdfExtractionOpt
 
 export function extractPdfTextChunks(
   buffer: Buffer,
-  optionsOrChunkMaxChars: PdfExtractionOptions | number = {}
+  options: PdfExtractionOptions = {}
 ): Promise<PdfExtractionResult> {
-  const options = normalizeOptions(optionsOrChunkMaxChars);
-  if (options.getDocumentProxy) {
-    return runDirectExtraction(buffer, options.getDocumentProxy, options.config, options.signal);
+  const normalized = normalizeOptions(options);
+  if (normalized.getDocumentProxy) {
+    return runDirectExtraction(buffer, normalized.getDocumentProxy, normalized.config, normalized.signal);
   }
-  return runWorkerExtraction(buffer, options);
+  return runWorkerExtraction(buffer, normalized);
 }

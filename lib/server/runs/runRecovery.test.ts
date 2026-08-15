@@ -70,9 +70,9 @@ const runId = "run-1";
 
 const providerEvent = {
   data: {
-    artifactType: "summary",
+    artifactType: "reasoning",
     payload: {
-      status: "provider_complete"
+      text: "Recovered reasoning"
     }
   },
   type: "artifact"
@@ -191,12 +191,10 @@ function createHarness(options: Readonly<{
   const initialControl = controls.find((candidate): candidate is RunControlRecord => candidate !== null) ??
     control();
   let controlIndex = 0;
-  let appendCollision = false;
   let nextSequence = 0;
   const state: {
-    assistantAppendOptions: Array<Readonly<{ allowErrored?: boolean }> | undefined>;
+    assistantAppendOptions: Array<Readonly<{ allowErrored?: boolean; runId: string }> | undefined>;
     assistantTexts: string[];
-    appendAttempts: { event: ModelRunSseEvent; runId: string; sequence: number }[];
     completed: Parameters<RunRecoveryRepository["completeRun"]>[0] | null;
     events: { event: ModelRunSseEvent; runId: string; sequence: number }[];
     failed: {
@@ -219,7 +217,6 @@ function createHarness(options: Readonly<{
   } = {
     assistantAppendOptions: [],
     assistantTexts: [],
-    appendAttempts: [],
     completed: null,
     events: [],
     failed: [],
@@ -243,17 +240,10 @@ function createHarness(options: Readonly<{
       state.assistantAppendOptions.push(appendOptions);
       state.assistantTexts.push(text);
     },
-    appendRunEvent: async (eventRunId, sequence, event) => {
-      state.appendAttempts.push({ event, runId: eventRunId, sequence });
-      if (appendCollision) {
-        appendCollision = false;
-        nextSequence = Math.max(nextSequence, sequence + 1);
-        throw new Error("sequence_collision");
-      }
-
+    appendRunOutputEvent: async (eventRunId, event) => {
       state.operations.push(`append:${event.type}`);
-      state.events.push({ event, runId: eventRunId, sequence });
-      nextSequence = Math.max(nextSequence, sequence + 1);
+      state.events.push({ event, runId: eventRunId, sequence: nextSequence });
+      nextSequence += 1;
     },
     completeRun: async (input) => {
       state.operations.push("complete");
@@ -269,14 +259,7 @@ function createHarness(options: Readonly<{
       state.completed = input;
       state.run.providerResponseId = input.providerResponseId ?? state.run.providerResponseId;
       state.run.status = "complete";
-      for (const event of [
-        ...(input.eventsBeforeTerminal ?? []),
-        { data: input.usage, type: "usage" as const },
-        {
-          data: { runId: input.runId, status: "complete" as const },
-          type: "done" as const
-        }
-      ]) {
+      for (const event of input.outputEvents ?? []) {
         state.events.push({ event, runId: input.runId, sequence: nextSequence });
         nextSequence += 1;
       }
@@ -292,12 +275,6 @@ function createHarness(options: Readonly<{
       state.run.recoverySettled = failOptions?.recoveryTerminal === true;
       state.run.status = "error";
       state.failed.push({ assistantMessageId, error, runId: failedRunId });
-      state.events.push({
-        event: { data: error, type: "error" },
-        runId: failedRunId,
-        sequence: nextSequence
-      });
-      nextSequence += 1;
       return true;
     },
     findStaleActiveRunsForUser: async (input) => {
@@ -329,7 +306,6 @@ function createHarness(options: Readonly<{
     },
     loadRunUsageAttributions: async () => [],
     markAssistantMessageGroundedLiveOnly: async () => true,
-    nextRunEventSequence: async () => nextSequence,
     persistToolLoopCallBatch: async () => ({ kind: "not_found" }),
     recordRunUsageEvents: async (input) => {
       if (state.run.status === "complete") return false;
@@ -355,10 +331,7 @@ function createHarness(options: Readonly<{
         error: input.error,
         runId: input.runId
       });
-      for (const event of [
-        ...input.events,
-        { data: input.error, type: "error" as const }
-      ]) {
+      for (const event of input.outputEvents) {
         state.events.push({ event, runId: input.runId, sequence: nextSequence });
         nextSequence += 1;
       }
@@ -380,8 +353,7 @@ function createHarness(options: Readonly<{
       state.run.providerResponseId = providerResponseId;
       state.providerResponseIds.push({ providerResponseId, runId: responseRunId });
       return "published";
-    },
-    updateRunProviderRequestPreview: async () => undefined
+    }
   };
   const deps: RunRecoveryDeps = {
     ...(options.attachmentLimits
@@ -404,9 +376,6 @@ function createHarness(options: Readonly<{
   };
 
   return {
-    collideNextAppend() {
-      appendCollision = true;
-    },
     deps,
     repository,
     setStoredRun(input: Partial<typeof state.run>) {
@@ -466,6 +435,8 @@ function normalizedToolRequest(): NormalizedRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "remember this", type: "text" }] },
     context: { messages: [], mode: "branch_path" },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     mcp: {
       servers: [{
         fingerprint: recoveryFingerprint,
@@ -498,11 +469,11 @@ function normalizedToolRequest(): NormalizedRunRequest {
     params: { background: true, stream: true },
     prompt: { developer: null, system: null },
     provider: "openai",
-    searchStrategy: null
+    searchPlan: { mode: "all_selected", options: [] }
   };
 }
 
-function normalizedLegacySearchRequest(): NormalizedRunRequest {
+function normalizedClientSearchRequest(): NormalizedRunRequest {
   const { mcp: _mcp, ...request } = normalizedToolRequest();
   return {
     ...request,
@@ -536,8 +507,7 @@ function normalizedLegacySearchRequest(): NormalizedRunRequest {
         revisionId: "search-revision-1",
         searchStrategyRowId: "search-strategy-row-1"
       }]
-    },
-    searchStrategy: "openai-native-web-search"
+    }
   };
 }
 
@@ -599,6 +569,7 @@ function recoveryKnowledgeEvidence(includedText: string): KnowledgeRetrievalEvid
       chunkIndex: 0,
       documentId: "knowledge-document-1",
       documentVersionId: "knowledge-document-version-1",
+      documentVersionNumber: 1,
       fileName: "recovery.txt",
       ftsRank: 1,
       ftsScore: 0.1,
@@ -623,13 +594,7 @@ function normalizedMemoryActionRequest(): NormalizedRunRequest {
   const { mcp: _mcp, ...request } = normalizedToolRequest();
   return {
     ...request,
-    memoryActionPlan: {
-      kind: "SAVE",
-      sourceEnd: 24,
-      sourceStart: 14,
-      statement: "I like tea",
-      version: "memory-action-plan-v1"
-    },
+    memoryActionTools: { version: "model-driven-v2" },
     modelCapabilities: {
       ...request.modelCapabilities,
       toolCalling: true
@@ -653,7 +618,7 @@ function normalizedMemoryHistoryRequest(): NormalizedRunRequest {
 
 function normalizedHostedMemoryHistoryRequest(): NormalizedRunRequest {
   const request = normalizedMemoryHistoryRequest();
-  const option = normalizedLegacySearchRequest().searchPlan!.options[0]!;
+  const option = normalizedClientSearchRequest().searchPlan.options[0]!;
   return {
     ...request,
     searchPlan: {
@@ -662,18 +627,17 @@ function normalizedHostedMemoryHistoryRequest(): NormalizedRunRequest {
         ...option,
         adapterKind: "answer_provider_hosted",
         credentialMode: "answer_provider",
-        modelId: request.modelId,
+        modelId: null,
         provider: request.provider,
-        providerModelId: request.modelId
+        providerModelId: null
       }]
-    },
-    searchStrategy: "openai-native-web-search"
+    }
   };
 }
 
 function normalizedAnthropicSearchRequest(): NormalizedRunRequest {
-  const request = normalizedLegacySearchRequest();
-  const option = request.searchPlan!.options[0]!;
+  const request = normalizedClientSearchRequest();
+  const option = request.searchPlan.options[0]!;
   return {
     ...request,
     searchPlan: {
@@ -705,8 +669,7 @@ function normalizedAnthropicSearchRequest(): NormalizedRunRequest {
         revisionId: "anthropic-search-revision-1",
         searchStrategyRowId: "anthropic-search-client-route"
       }]
-    },
-    searchStrategy: "anthropic-web-search"
+    }
   };
 }
 
@@ -716,17 +679,22 @@ function checkpoint(
   continuation: ToolLoopJsonValue,
   answerRoundUsage?: readonly PersistedAnswerRoundUsage[]
 ): ToolLoopCheckpoint {
-  if (answerRoundUsage === undefined) {
-    return {
-      phase,
-      providerContinuation: continuation,
-      providerCursor: null,
-      roundIndex,
-      version: 1
-    };
-  }
+  const currentUsage = answerRoundUsage ?? (phase === "provider_running" || roundIndex === 0
+    ? []
+    : [{
+        completeness: "terminal" as const,
+        roundIndex,
+        usage: {
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 0
+        }
+      }]);
   const value = toolLoopCheckpoint({
-    answerRoundUsage,
+    answerRoundUsage: currentUsage,
     phase,
     providerContinuation: continuation,
     roundIndex
@@ -841,7 +809,7 @@ function installCheckpointState(
       "tools_running",
       currentCheckpoint.roundIndex,
       currentCheckpoint.providerContinuation,
-      currentCheckpoint.version === 2 ? currentCheckpoint.answerRoundUsage : undefined
+      currentCheckpoint.answerRoundUsage
     );
     return { call: claimed, kind: "claimed" };
   };
@@ -885,7 +853,7 @@ function installCheckpointState(
       "tools_pending",
       input.roundIndex,
       input.providerContinuation,
-      currentCheckpoint.version === 2 ? currentCheckpoint.answerRoundUsage : undefined
+      currentCheckpoint.answerRoundUsage
     );
     return { calls: created, kind: "persisted" };
   };
@@ -899,13 +867,11 @@ function installCheckpointState(
       "provider_running",
       roundIndex + 1,
       currentCheckpoint.providerContinuation,
-      currentCheckpoint.version === 2 ? currentCheckpoint.answerRoundUsage : undefined
+      currentCheckpoint.answerRoundUsage
     );
     harness.setStoredRun({ providerResponseId: null });
     return "advanced";
   };
-  harness.repository.updateRunProviderRequestPreview = async () => undefined;
-
   return {
     calls: () => calls,
     checkpoint: () => currentCheckpoint
@@ -1046,9 +1012,7 @@ describe("run recovery", () => {
     });
     expect(harness.state.operations).toEqual(["update_response_id", "complete"]);
     expect(harness.state.events.map(({ event, sequence }) => ({ sequence, type: event.type }))).toEqual([
-      { sequence: 0, type: "artifact" },
-      { sequence: 1, type: "usage" },
-      { sequence: 2, type: "done" }
+      { sequence: 0, type: "artifact" }
     ]);
   });
 
@@ -1064,7 +1028,7 @@ describe("run recovery", () => {
         {
           arguments: { query: "current information" },
           id: "call-1",
-          name: "search_via_perplexity"
+          name: "search_engine_1"
         }
       ],
       usage: {
@@ -1106,7 +1070,7 @@ describe("run recovery", () => {
           code: "tool_loop_recovery_required",
           message: "The provider response contains outstanding tool calls and cannot be finalized as an answer. Retry the run."
         },
-        events: [providerEvent],
+        outputEvents: [providerEvent],
         providerResponseId: "response-tool-call",
         runId,
         usageAttributions: [
@@ -1127,7 +1091,7 @@ describe("run recovery", () => {
         userId
       })
     ]);
-    expect(harness.state.events.map(({ event }) => event.type)).toEqual(["artifact", "error"]);
+    expect(harness.state.events.map(({ event }) => event.type)).toEqual(["artifact"]);
   });
 
   it("does not append terminal refresh events when another writer wins completion", async () => {
@@ -1171,7 +1135,7 @@ describe("run recovery", () => {
     expect(harness.state.events).toEqual([]);
   });
 
-  it("appends non-terminal refresh events with sequence-collision retry", async () => {
+  it("persists reloadable output artifacts from a non-terminal refresh", async () => {
     const harness = createHarness({
       controls: [control({ status: "error" })],
       providers: {
@@ -1183,16 +1147,13 @@ describe("run recovery", () => {
         }))
       }
     });
-    harness.collideNextAppend();
-
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
-    expect(harness.state.appendAttempts.map(({ sequence }) => sequence)).toEqual([0, 1]);
     expect(harness.state.events).toEqual([
       {
         event: providerEvent,
         runId,
-        sequence: 1
+        sequence: 0
       }
     ]);
     expect(harness.state.providerResponseIds).toEqual([
@@ -1221,15 +1182,7 @@ describe("run recovery", () => {
         runId
       }
     ]);
-    expect(activeHarness.state.events.map(({ event }) => event)).toEqual([
-      {
-        data: {
-          code: "provider_refresh_failed",
-          message: "provider unavailable"
-        },
-        type: "error"
-      }
-    ]);
+    expect(activeHarness.state.events).toEqual([]);
 
     const cancelledHarness = createHarness({
       controls: [control(), control({ status: "cancelled" })],
@@ -1240,7 +1193,7 @@ describe("run recovery", () => {
     expect(cancelledHarness.state.events).toEqual([]);
   });
 
-  it("persists terminal provider errors after refreshed events only for active runs", async () => {
+  it("settles terminal provider errors while retaining only refreshed output artifacts", async () => {
     const providerError = {
       code: "provider_terminal_error",
       message: "Provider stopped"
@@ -1262,7 +1215,7 @@ describe("run recovery", () => {
     expect(harness.state.operations).toEqual([
       "settle_recovered:provider_terminal_error"
     ]);
-    expect(harness.state.events.map(({ event }) => event.type)).toEqual(["artifact", "error"]);
+    expect(harness.state.events.map(({ event }) => event.type)).toEqual(["artifact"]);
   });
 
   it("does not append a recovery error when completion wins the failure CAS", async () => {
@@ -1319,10 +1272,7 @@ describe("run recovery", () => {
 
     expect(refresh).toHaveBeenCalledOnce();
     expect(harness.state.recoveredErrors).toHaveLength(1);
-    expect(harness.state.events.map(({ event }) => event.type)).toEqual([
-      "artifact",
-      "error"
-    ]);
+    expect(harness.state.events.map(({ event }) => event.type)).toEqual(["artifact"]);
   });
 
   it("does not refresh a definitively settled recovery error again", async () => {
@@ -1352,10 +1302,7 @@ describe("run recovery", () => {
 
     expect(refresh).toHaveBeenCalledOnce();
     expect(harness.state.recoveredErrors).toHaveLength(1);
-    expect(harness.state.events.map(({ event }) => event.type)).toEqual([
-      "artifact",
-      "error"
-    ]);
+    expect(harness.state.events.map(({ event }) => event.type)).toEqual(["artifact"]);
   });
 
   it("does not block recovery for a different run while one provider read is pending", async () => {
@@ -1466,7 +1413,7 @@ describe("run recovery", () => {
         runId
       }
     ]);
-    expect(harness.state.events.map(({ event }) => event.type)).toEqual(["error"]);
+    expect(harness.state.events).toEqual([]);
   });
 
   it("routes stale PREPARING rows only to their owned-attempt recovery", async () => {
@@ -1567,13 +1514,13 @@ describe("run recovery", () => {
     expect(harness.state.providerResponseIds).toEqual(providerResponseId
       ? [{ providerResponseId, runId }]
       : []);
-    expect(harness.state.usageAttributions.flat()).toEqual([
+    expect(harness.state.usageAttributions.flat()).toEqual(expect.arrayContaining([
       expect.objectContaining({
         modelId: "gpt-test",
         provider: "openai",
         usage: expect.objectContaining({ inputTokens: 6, outputTokens: 4, reasoningTokens: 1 })
       })
-    ]);
+    ]));
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
@@ -1617,11 +1564,11 @@ describe("run recovery", () => {
     expect(harness.state.providerResponseIds).toEqual([]);
     expect(harness.state.completed).toBeNull();
     expect(harness.state.run.status).toBe("cancelled");
-    expect(harness.state.usageAttributions.flat()).toEqual([
+    expect(harness.state.usageAttributions.flat()).toEqual(expect.arrayContaining([
       expect.objectContaining({
         usage: expect.objectContaining({ inputTokens: 8, outputTokens: 5 })
       })
-    ]);
+    ]));
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
@@ -1700,26 +1647,7 @@ describe("run recovery", () => {
     expect(installed.calls()).toEqual([
       expect.objectContaining({ result: expect.any(Object), state: "complete" })
     ]);
-    expect(harness.state.events.map(({ event }) => event)).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        data: expect.objectContaining({
-          artifactType: "tool_call",
-          payload: expect.objectContaining({ callId: "provider-call-1", ordinal: 0 })
-        }),
-        type: "artifact"
-      }),
-      expect.objectContaining({
-        data: expect.objectContaining({
-          artifactType: "tool_result",
-          payload: expect.objectContaining({
-            callId: "provider-call-1",
-            ordinal: 0,
-            status: "complete"
-          })
-        }),
-        type: "artifact"
-      })
-    ]));
+    expect(harness.state.events.map(({ event }) => event)).toEqual([providerEvent]);
     expect(requests).toHaveLength(1);
     expect(requests[0]?.previousProviderResponseId).toBeUndefined();
     expect(requests[0]).toMatchObject({
@@ -1851,10 +1779,7 @@ describe("run recovery", () => {
     const toolResultEvent = events.find((event) =>
       event.type === "artifact" && event.data.artifactType === "tool_result"
     );
-    expect(toolResultEvent).toMatchObject({
-      data: { payload: { message: overflow.message, status: "error" } }
-    });
-    expect(JSON.stringify(toolResultEvent)).not.toContain(argumentMarker);
+    expect(toolResultEvent).toBeUndefined();
     expect(JSON.stringify(events)).not.toContain(argumentMarker);
     for (const marker of Object.values(prohibitedMarkers)) {
       expect(JSON.stringify(events)).not.toContain(marker);
@@ -1916,8 +1841,8 @@ describe("run recovery", () => {
 
     expect(refresh).toHaveBeenCalledOnce();
     expect(harness.state.assistantTexts).toEqual(["durable recovered"]);
-    expect(harness.state.assistantAppendOptions).toEqual([{ allowErrored: true }]);
-    expect(harness.state.events.some(({ event }) => event.type === "token")).toBe(true);
+    expect(harness.state.assistantAppendOptions).toEqual([{ allowErrored: true, runId }]);
+    expect(harness.state.events.some(({ event }) => event.type === "token")).toBe(false);
     expect(harness.state.completed).toBeNull();
     expect(harness.state.recoveredErrors).toEqual([]);
   });
@@ -1960,7 +1885,6 @@ describe("run recovery", () => {
         callTool: runtimeCall,
         ensureAcceptedGeneration: async () => true
       },
-      pricingError: new Error("pricing_lookup_unavailable"),
       providers: { openai: adapter }
     });
     const durable = checkpointedRun({
@@ -1976,7 +1900,7 @@ describe("run recovery", () => {
     expect(runtimeCall).toHaveBeenCalledOnce();
     expect(answerRounds).toBe(1);
     expect(harness.state.assistantTexts).toEqual(["recovered partial"]);
-    expect(harness.state.assistantAppendOptions).toEqual([{ allowErrored: true }]);
+    expect(harness.state.assistantAppendOptions).toEqual([{ allowErrored: true, runId }]);
     expect(harness.state.recoveredErrors).toHaveLength(1);
     expect(harness.state.recoveredErrors[0]).toMatchObject({
       error: {
@@ -2042,105 +1966,6 @@ describe("run recovery", () => {
     ]);
   });
 
-  it("recovers a persisted pre-release Search tool name through its pinned logical source", async () => {
-    const legacyToolName = "search_1_openai_native_web_search";
-    const answerRequests: ProviderRunRequest[] = [];
-    const searchRequests: ProviderSearchRequest[] = [];
-    const answerAdapter: ProviderAdapter = {
-      buildRequestPreview: () => ({}),
-      async *stream(request) {
-        answerRequests.push(request);
-        return {
-          finalProviderResponsePreview: {},
-          finalText: "Recovered sourced answer",
-          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
-        };
-      }
-    };
-    const searchAdapter: ProviderSearchAdapter = {
-      buildRequestPreview: () => ({}),
-      async search(request) {
-        searchRequests.push(request);
-        return {
-          artifacts: [],
-          finalProviderResponsePreview: {
-            sources: [{ title: "Source", url: "https://example.test/source" }]
-          },
-          findings: "Recovered findings",
-          requestPreview: {},
-          sources: [{ rank: 1, title: "Source", url: "https://example.test/source" }],
-          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
-        };
-      }
-    };
-    const harness = createHarness({
-      providers: {
-        openai: answerAdapter,
-        openai_compatible: answerAdapter
-      },
-      searchProviders: { openai_compatible: searchAdapter }
-    });
-    const createSearchRun = vi.fn<RunRecoveryRepository["createSearchRun"]>();
-    harness.repository.createSearchRun = createSearchRun;
-    const storedCall: PersistedToolLoopCall = {
-      ...persistedRecoveryCall(),
-      arguments: { query: "latest verified news" },
-      mcpBinding: null,
-      toolName: legacyToolName
-    };
-    const base = checkpointedRun({
-      calls: [storedCall],
-      phase: "tools_pending",
-      providerToolMessages: [{
-        arguments: "{\"query\":\"latest verified news\"}",
-        call_id: "provider-call-1",
-        name: legacyToolName,
-        type: "function_call"
-      }]
-    });
-    installCheckpointState(harness, {
-      ...base,
-      normalizedRequest: normalizedLegacySearchRequest()
-    }, [{
-      modelId: "search-model",
-      provider: "openai_compatible",
-      recordedAt: "2026-07-12T09:00:00.000Z",
-      usage: { inputTokens: 4, outputTokens: 5, reasoningTokens: 0 }
-    }]);
-
-    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
-
-    expect(searchRequests).toHaveLength(1);
-    expect(searchRequests[0]).toMatchObject({
-      query: "latest verified news",
-      searchPolicy: {
-        modelId: "search-model",
-        provider: "openai_compatible",
-        strategyId: "openai-responses-web-search"
-      },
-      strategyId: "openai-native-web-search"
-    });
-    expect(createSearchRun).toHaveBeenCalledWith(expect.objectContaining({
-      searchRevisionId: "search-revision-1",
-      strategyId: "openai-native-web-search"
-    }));
-    expect(answerRequests).toHaveLength(1);
-    expect(answerRequests[0]?.providerToolMessages).toEqual([
-      expect.objectContaining({ name: legacyToolName, type: "function_call" }),
-      expect.objectContaining({ output: expect.stringContaining("Recovered findings") })
-    ]);
-    expect(harness.state.completed).toMatchObject({
-      finalText: "Recovered sourced answer",
-      usage: { inputTokens: 7, outputTokens: 9, totalTokens: 16 },
-      usageAttributions: expect.arrayContaining([expect.objectContaining({
-        modelId: "search-model",
-        provider: "openai_compatible",
-        usage: expect.objectContaining({ inputTokens: 5, outputTokens: 6 })
-      })])
-    });
-    expect(harness.state.recoveredErrors).toEqual([]);
-  });
-
   it("recovers a pending Gemini client Search without repeating settled answer context", async () => {
     const answerRequests: ProviderRunRequest[] = [];
     const searchRequests: ProviderSearchRequest[] = [];
@@ -2183,9 +2008,9 @@ describe("run recovery", () => {
     const createSearchRun = vi.fn<RunRecoveryRepository["createSearchRun"]>();
     harness.repository.createSearchRun = createSearchRun;
     const option = {
-      ...normalizedLegacySearchRequest().searchPlan!.options[0]!,
+      ...normalizedClientSearchRequest().searchPlan.options[0]!,
       config: {
-        ...normalizedLegacySearchRequest().searchPlan!.options[0]!.config,
+        ...normalizedClientSearchRequest().searchPlan.options[0]!.config,
         maxOutputTokens: 4_096,
         maxSearchCallsPerAnswer: 2,
         reasoningPolicy: "lowest_supported"
@@ -2218,9 +2043,8 @@ describe("run recovery", () => {
     installCheckpointState(harness, {
       ...base,
       normalizedRequest: {
-        ...normalizedLegacySearchRequest(),
-        searchPlan: { mode: "model_choice", options: [option] },
-        searchStrategy: "gemini-google-search"
+        ...normalizedClientSearchRequest(),
+        searchPlan: { mode: "model_choice", options: [option] }
       }
     });
 
@@ -2244,7 +2068,6 @@ describe("run recovery", () => {
     ]));
     expect(createSearchRun).toHaveBeenCalledWith(expect.objectContaining({
       artifacts: expect.objectContaining({
-        findings: "Recovered Gemini findings",
         sources: [{
           rank: 1,
           title: "Recovered Gemini source",
@@ -2253,7 +2076,6 @@ describe("run recovery", () => {
       }),
       modelId: "gemini-3.6-flash",
       provider: "gemini",
-      query: "weather in Valencia",
       searchRevisionId: "gemini-search-revision-1",
       strategyId: "gemini-google-search"
     }));
@@ -2374,13 +2196,6 @@ describe("run recovery", () => {
     ]));
     expect(createSearchRun).toHaveBeenCalledWith(expect.objectContaining({
       artifacts: expect.objectContaining({
-        findings: "Recovered Anthropic findings",
-        providerOperations: [expect.objectContaining({
-          id: "srvtoolu_recovery_1",
-          kind: "search",
-          status: "complete"
-        })],
-        providerUsage: { webSearchRequests: 2 },
         sources: [{
           rank: 1,
           title: "Recovered Anthropic source",
@@ -2389,7 +2204,6 @@ describe("run recovery", () => {
       }),
       modelId: "claude-opus-5",
       provider: "anthropic",
-      query: "latest Anthropic evidence",
       searchRevisionId: "anthropic-search-revision-1",
       strategyId: "anthropic-web-search"
     }));
@@ -2506,9 +2320,12 @@ describe("run recovery", () => {
     expect(JSON.stringify(search.mock.calls)).not.toContain("Private attachment evidence");
     expect(createSearchRun).toHaveBeenCalledWith(expect.objectContaining({
       artifacts: expect.objectContaining({
-        findings: "Recovered attachment-safe findings"
+        sources: [{
+          rank: 1,
+          title: "Recovered source",
+          url: "https://example.test/recovered-attachment-search"
+        }]
       }),
-      query: "public query with attachment",
       status: "complete",
       strategyId: "anthropic-web-search"
     }));
@@ -2561,7 +2378,7 @@ describe("run recovery", () => {
       providers: { openai: answerAdapter, openai_compatible: answerAdapter },
       searchProviders: { openai_compatible: searchAdapter }
     });
-    const baseRequest = normalizedLegacySearchRequest();
+    const baseRequest = normalizedClientSearchRequest();
     const baseOption = baseRequest.searchPlan!.options[0]!;
     const options = Array.from({ length: 3 }, (_, index) => ({
       ...baseOption,
@@ -2625,7 +2442,7 @@ describe("run recovery", () => {
   });
 
   it("restores Search budgets per source and replays settled Search usage without duplicating it", async () => {
-    const baseRequest = normalizedLegacySearchRequest();
+    const baseRequest = normalizedClientSearchRequest();
     const baseOption = baseRequest.searchPlan!.options[0]!;
     const firstOption = {
       ...baseOption,
@@ -2649,15 +2466,11 @@ describe("run recovery", () => {
     };
     const settledExecution: SearchExecutionEvidence = {
       displayName: firstOption.displayName,
-      durationMs: 10,
       findings: "already persisted findings",
       invocationId: "provider-call-1:search-option-1",
       modelId: firstOption.modelId,
       optionId: firstOption.optionId,
       provider: firstOption.provider,
-      providerOperationsTruncated: false,
-      query: "first source query",
-      requestPreview: {},
       revisionId: firstOption.revisionId,
       sources: [{
         rank: 1,
@@ -2672,11 +2485,8 @@ describe("run recovery", () => {
       content: searchToolResultContent([settledExecution]),
       name: "search_engine_1",
       rawPreview: {
-        finalProviderResponsePreview: {
-          searchExecutions: [settledExecution]
-        },
         providerCall: true,
-        requestPreview: {},
+        searchExecutions: [settledExecution],
         searchResultVersion: SEARCH_TOOL_RESULT_VERSION
       },
       status: "complete",
@@ -2786,7 +2596,7 @@ describe("run recovery", () => {
 
   it("executes a pending first-party Memory action once from its durable recovery call", async () => {
     const requests: ProviderRunRequest[] = [];
-    const execute = vi.fn<MemoryActionExecutor["execute"]>(async (_plan, call, context) => {
+    const execute = vi.fn<MemoryActionExecutor["execute"]>(async (call, context) => {
       expect(context).toMatchObject({
         persistedToolCallId: "stored-call-1",
         runId,
@@ -2801,7 +2611,7 @@ describe("run recovery", () => {
       };
     });
     const memoryActionExecutor: MemoryActionExecutor = {
-      accepts: (plan, name) => plan?.kind === "SAVE" && name === "save_memory",
+      accepts: (name) => name === "save_memory",
       execute
     };
     const harness = createHarness({
@@ -3082,10 +2892,9 @@ describe("run recovery", () => {
           content: knowledgeToolResultContent(evidence),
           name: call.name,
           rawPreview: {
-            finalProviderResponsePreview: { knowledgeRetrieval: evidence },
             knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
-            providerCall: true,
-            requestPreview: {}
+            knowledgeRetrieval: evidence,
+            providerCall: true
           },
           status: "complete",
           usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
@@ -3370,6 +3179,7 @@ describe("run recovery", () => {
         chunkIndex: 0,
         documentId: "private-document-id",
         documentVersionId: "private-document-version-id",
+        documentVersionNumber: 1,
         fileName: "PRIVATE-FILE-NAME.pdf",
         ftsRank: 1,
         ftsScore: 0.1,
@@ -3396,10 +3206,9 @@ describe("run recovery", () => {
       content: knowledgeToolResultContent(evidence),
       name: KNOWLEDGE_TOOL_NAME,
       rawPreview: {
-        finalProviderResponsePreview: { knowledgeRetrieval: evidence },
         knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
-        providerCall: true,
-        requestPreview: {}
+        knowledgeRetrieval: evidence,
+        providerCall: true
       },
       status: "complete",
       usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
@@ -3542,35 +3351,29 @@ describe("run recovery", () => {
       revisionId: "search-revision-1",
       searchStrategyRowId: "search-strategy-row-1"
     };
+    const settledExecution: SearchExecutionEvidence = {
+      displayName: "Anthropic Web Search",
+      invocationId: "provider-call-1:search-option-1",
+      modelId: selected.modelId,
+      optionId: selected.optionId,
+      provider: selected.provider,
+      revisionId: selected.revisionId,
+      findings: "settled findings",
+      sources: [{
+        rank: 1,
+        title: "Settled source",
+        url: "https://example.com/settled-source"
+      }],
+      status: "complete",
+      usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
+    };
     const settledResult = snapshotToolExecutionResult({
       callId: "provider-call-1",
-      content: [{ text: "settled findings", type: "text" }],
+      content: searchToolResultContent([settledExecution]),
       name: "search_engine_1",
       rawPreview: {
-        finalProviderResponsePreview: {
-          searchExecutions: [{
-            displayName: "Anthropic Web Search",
-            durationMs: 10,
-            invocationId: "provider-call-1:search-option-1",
-            modelId: selected.modelId,
-            optionId: selected.optionId,
-            provider: selected.provider,
-            providerOperationsTruncated: false,
-            query: "settled query",
-            requestPreview: {},
-            revisionId: selected.revisionId,
-            findings: "settled findings",
-            sources: [{
-              rank: 1,
-              title: "Settled source",
-              url: "https://example.com/settled-source"
-            }],
-            status: "complete",
-            usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
-          }]
-        },
-        providerCall: true,
-        requestPreview: {}
+        searchExecutions: [settledExecution],
+        searchResultVersion: SEARCH_TOOL_RESULT_VERSION
       },
       status: "complete",
       usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }

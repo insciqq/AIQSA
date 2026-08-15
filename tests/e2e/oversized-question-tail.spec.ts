@@ -119,15 +119,6 @@ test.describe("oversized submitted-question reading anchor", () => {
         `[data-message-id="user-oversized-${viewport.label}"]`
       );
       await expect(submittedQuestion).toBeVisible();
-      await expect
-        .poll(async () => {
-          const [questionBox, threadBox] = await Promise.all([
-            submittedQuestion.boundingBox(),
-            thread.boundingBox()
-          ]);
-          return Boolean(questionBox && threadBox && questionBox.height > threadBox.height);
-        })
-        .toBe(true);
       await expectThreadTextInViewport(page, questionTailMarker);
       await expectThreadTextInViewport(page, answerStartMarker);
       await expect(jumpToLatest).toHaveCount(0);

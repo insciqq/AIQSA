@@ -52,7 +52,7 @@ type StoredOperationReferences = Readonly<{
   version: 3;
 }>;
 
-const STORAGE_PREFIX = "aiqsa:memory:operations:v1:";
+const STORAGE_PREFIX = "aiqsa:memory:operations:v3:";
 
 const initialState = {
   accountId: null,
@@ -115,32 +115,6 @@ function readReferences(accountId: string): StoredOperationReferences {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return empty;
     const value = parsed as Record<string, unknown>;
-    if (value.version === 1 &&
-      Object.keys(value).sort().join(",") === "clearDeletionId,rebuildJobId,version" &&
-      (value.clearDeletionId === null || validOpaqueId(value.clearDeletionId)) &&
-      (value.rebuildJobId === null || validOpaqueId(value.rebuildJobId))) {
-      return {
-        allDeletionId: null,
-        clearDeletionId: value.clearDeletionId as string | null,
-        learnedDeletionId: null,
-        rebuildJobId: value.rebuildJobId as string | null,
-        version: 3
-      };
-    }
-    if (value.version === 2 &&
-      Object.keys(value).sort().join(",") ===
-        "clearDeletionId,learnedDeletionId,rebuildJobId,version" &&
-      (value.clearDeletionId === null || validOpaqueId(value.clearDeletionId)) &&
-      (value.learnedDeletionId === null || validOpaqueId(value.learnedDeletionId)) &&
-      (value.rebuildJobId === null || validOpaqueId(value.rebuildJobId))) {
-      return {
-        allDeletionId: null,
-        clearDeletionId: value.clearDeletionId as string | null,
-        learnedDeletionId: value.learnedDeletionId as string | null,
-        rebuildJobId: value.rebuildJobId as string | null,
-        version: 3
-      };
-    }
     if (
       Object.keys(value).sort().join(",") !==
         "allDeletionId,clearDeletionId,learnedDeletionId,rebuildJobId,version" ||
@@ -324,22 +298,11 @@ export async function confirmSelectedMemoryOperation(): Promise<void> {
     if (operation === "REEMBED" && !embeddingDeploymentId) {
       throw new MemoryApiError("memory_embedding_unavailable", 409);
     }
-    const authorization = operation === "REDREAM_EXISTING_CHATS"
-      ? await authorizeMemoryMutation({
-          action: "BULK_DELETE",
-          expectedMemoryRevision,
-          expectedSettingsRevision,
-          operation
-        })
-      : null;
     if (!currentAccount(generation, accountId)) return;
     const status = await startMemoryRebuild({
       ...(operation === "REEMBED" ? { embeddingDeploymentId } : {}),
       expectedMemoryRevision,
       expectedSettingsRevision,
-      ...(authorization
-        ? { mutationAuthorizationId: authorization.mutationAuthorizationId }
-        : {}),
       operation
     });
     if (!currentAccount(generation, accountId)) return;

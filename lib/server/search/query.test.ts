@@ -8,7 +8,7 @@ describe("search tool query validation", () => {
     ["whitespace", { query: " \t\n " }],
     ["wrong type", { query: 42 }],
     ["extra property", { extra: true, query: "current news" }],
-    ["legacy alias", { keyword: "current news" }],
+    ["unknown alias", { keyword: "current news" }],
     ["array", ["current news"]]
   ])("rejects %s arguments", (_label, value) => {
     expect(validateSearchToolArguments(value, 100)).toMatchObject({ ok: false });

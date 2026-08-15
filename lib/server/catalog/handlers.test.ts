@@ -28,14 +28,13 @@ describe("catalog handler", () => {
         searchStrategies: defaultSearchStrategies,
         settings: {
           defaultControlValues: {},
-          defaultModelId: "gpt-5.5",
-          defaultProviderConnectionId: "openai",
           defaultProviderModelId: "gpt-5.5",
-          defaultProvider: "openai",
-          defaultSearchStrategyId: "openai-native-web-search",
+          defaultSearchPlan: {
+            mode: "all_selected",
+            optionIds: ["openai-native-web-search"]
+          },
           showCitations: true,
           showReasoningBlocks: false,
-          showToolActivity: true,
         }
       }),
       resolveAuth: auth.resolveAuth,
@@ -81,13 +80,11 @@ describe("catalog handler", () => {
       "organizationModelDefault",
       "personalModelDefault",
       "provider",
-      "searchStrategyId",
       "organizationSearchPlan",
       "searchPlan",
       "searchPreferenceSource",
       "showCitations",
       "showReasoningBlocks",
-      "showToolActivity"
     ]);
     expect(Object.keys(body.catalog.models[0])).toEqual([
       "capabilities",
@@ -138,14 +135,13 @@ describe("catalog handler", () => {
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
-        defaultModelId: "gpt-5.5",
-        defaultProviderConnectionId: "openai",
         defaultProviderModelId: "gpt-5.5",
-        defaultProvider: "openai",
-        defaultSearchStrategyId: "openai-native-web-search",
+        defaultSearchPlan: {
+          mode: "all_selected",
+          optionIds: ["openai-native-web-search"]
+        },
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true
       }
     });
 
@@ -168,14 +164,13 @@ describe("catalog handler", () => {
         searchStrategies: defaultSearchStrategies,
         settings: {
           defaultControlValues: {},
-          defaultModelId: "gpt-5.5",
-          defaultProviderConnectionId: "openai",
           defaultProviderModelId: "gpt-5.5",
-          defaultProvider: "openai",
-          defaultSearchStrategyId: "openai-native-web-search",
+          defaultSearchPlan: {
+            mode: "all_selected",
+            optionIds: ["openai-native-web-search"]
+          },
           showCitations: true,
           showReasoningBlocks: false,
-          showToolActivity: true,
         }
       }),
       resolveAuth: auth.resolveAuth
@@ -192,7 +187,7 @@ describe("catalog handler", () => {
     const catalog = decodeCatalogResponse(await response.json());
 
     expect(catalog).not.toBeNull();
-    expect(catalog?.defaults.searchStrategyId).toBe("search-disabled");
+    expect(catalog?.defaults.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
     expect(catalog?.models.map((model) => model.modelId)).toEqual([
       "google/gemini-3.5-flash",
       "~google/gemini-pro-latest"
@@ -226,14 +221,13 @@ describe("catalog handler", () => {
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
-        defaultModelId: "claude-opus-4-8",
-        defaultProviderConnectionId: "anthropic",
         defaultProviderModelId: "claude-opus-4-8",
-        defaultProvider: "anthropic",
-        defaultSearchStrategyId: "openai-native-web-search",
+        defaultSearchPlan: {
+          mode: "all_selected",
+          optionIds: ["openai-native-web-search"]
+        },
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true,
       }
     });
 
@@ -244,7 +238,7 @@ describe("catalog handler", () => {
       organizationModelDefault: null,
       personalModelDefault: null,
       provider: "",
-      searchStrategyId: "search-disabled"
+      searchPlan: { mode: "all_selected", optionIds: [] }
     });
   });
 
@@ -260,14 +254,10 @@ describe("catalog handler", () => {
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
-        defaultModelId: "",
-        defaultProviderConnectionId: null,
         defaultProviderModelId: null,
-        defaultProvider: "",
-        defaultSearchStrategyId: "search-disabled",
+        defaultSearchPlan: { mode: "all_selected", optionIds: [] },
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true
       }
     };
     const inherited = buildCurrentUserCatalog(base);
@@ -284,10 +274,7 @@ describe("catalog handler", () => {
       ...base,
       settings: {
         ...base.settings,
-        defaultModelId: "claude-opus-4-8",
-        defaultProviderConnectionId: "anthropic",
-        defaultProviderModelId: "claude-opus-4-8",
-        defaultProvider: "anthropic"
+        defaultProviderModelId: "claude-opus-4-8"
       }
     });
     expect(unavailablePersonal.defaults).toMatchObject({
@@ -311,14 +298,13 @@ describe("catalog handler", () => {
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
-        defaultModelId: "gpt-5.5",
-        defaultProviderConnectionId: null,
         defaultProviderModelId: null,
-        defaultProvider: "openai",
-        defaultSearchStrategyId: "openai-native-web-search",
+        defaultSearchPlan: {
+          mode: "all_selected",
+          optionIds: ["openai-native-web-search"]
+        },
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true,
       }
     });
 
@@ -345,15 +331,10 @@ describe("catalog handler", () => {
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
-        defaultModelId: "fake-qsa",
-        defaultProviderConnectionId: "fake",
         defaultProviderModelId: "fake-qsa",
-        defaultProvider: "fake",
         defaultSearchPlan: null,
-        defaultSearchStrategyId: "search-disabled",
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true
       }
     };
     const inherited = buildCurrentUserCatalog(base);
@@ -388,10 +369,7 @@ describe("catalog handler", () => {
       },
       settings: {
         ...base.settings,
-        defaultModelId: "gpt-5.5",
-        defaultProviderConnectionId: "openai",
-        defaultProviderModelId: "gpt-5.5",
-        defaultProvider: "openai"
+        defaultProviderModelId: "gpt-5.5"
       }
     });
     expect(restricted.defaults.searchPlan).toEqual({

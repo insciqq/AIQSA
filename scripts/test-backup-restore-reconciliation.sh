@@ -200,7 +200,7 @@ target_sql "
     'restore-test-account-obligation',
     settings.\"userId\",
     'ACCOUNT_MEMORY_DELETE'::\"MemoryDeletionOperation\",
-    'ACCOUNT@memory-p8-account-delete-v1',
+    'ACCOUNT@memory-account-delete-v1',
     settings.\"userId\",
     settings.\"memoryGeneration\"
   FROM \"UserMemorySettings\" AS settings

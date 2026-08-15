@@ -200,16 +200,8 @@ function boundedId(value: unknown): string | null {
     : null;
 }
 
-/**
- * Strict bounded decoder shared by run requests and persisted defaults.
- * Missing input is the backward-compatible Off plan; callers that need to
- * distinguish inheritance from explicit Off do so from field presence/null
- * before invoking this decoder.
- */
+/** Strict bounded decoder shared by run requests and persisted defaults. */
 export function decodeKnowledgePlan(value: unknown): KnowledgePlanDecodeResult {
-  if (value === undefined) {
-    return { ok: true, plan: { baseIds: [] } };
-  }
   if (!isRecord(value) || !allowedKeys(value, ["baseIds"]) || !Array.isArray(value.baseIds)) {
     return { code: "knowledge_plan_invalid", ok: false };
   }

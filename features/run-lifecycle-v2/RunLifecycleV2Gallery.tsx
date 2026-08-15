@@ -14,7 +14,7 @@ import {
 } from "./RunLifecycleV2";
 import {
   presentRunLifecycleV2,
-  type RunLifecycleEvidenceV2,
+  type RunLifecycleStateV2,
   type RunLifecycleStatusV2
 } from "./runPresentation";
 
@@ -35,7 +35,7 @@ const chats: ChatNavigationSummaryWire[] = [
   }
 ];
 
-function runEvidence(overrides: Partial<RunLifecycleEvidenceV2>): RunLifecycleEvidenceV2 {
+function runState(overrides: Partial<RunLifecycleStateV2>): RunLifecycleStateV2 {
   return {
     content: "",
     events: [],
@@ -55,23 +55,23 @@ function summary(stage: string, status: string, extra: Record<string, unknown> =
 }
 
 const activityCases: Array<{
-  evidence: RunLifecycleEvidenceV2;
+  state: RunLifecycleStateV2;
   label: string;
 }> = [
   {
-    evidence: runEvidence({ status: "queued" as RunLifecycleStatusV2 }),
+    state: runState({ status: "queued" as RunLifecycleStatusV2 }),
     label: "Queued"
   },
   {
-    evidence: runEvidence({ status: "preparing" }),
+    state: runState({ status: "preparing" }),
     label: "Preparing"
   },
   {
-    evidence: runEvidence({ events: [summary("search", "running")] }),
+    state: runState({ events: [summary("search", "running")] }),
     label: "Search"
   },
   {
-    evidence: runEvidence({
+    state: runState({
       events: [{
         data: {
           artifactType: "tool_call",
@@ -83,15 +83,15 @@ const activityCases: Array<{
     label: "Tool round"
   },
   {
-    evidence: runEvidence({ events: [summary("compute", "running")] }),
+    state: runState({ events: [summary("compute", "running")] }),
     label: "Compute"
   },
   {
-    evidence: runEvidence({ events: [summary("preview", "running")] }),
+    state: runState({ events: [summary("preview", "running")] }),
     label: "Preview"
   },
   {
-    evidence: runEvidence({ status: "in_progress" }),
+    state: runState({ status: "in_progress" }),
     label: "Provider"
   }
 ];
@@ -114,7 +114,7 @@ function StateSpec({
 export function RunLifecycleV2Gallery() {
   const [connectionLost, setConnectionLost] = useState(true);
   const [selectedChatId, setSelectedChatId] = useState("run-lifecycle");
-  const connectionPresentation = presentRunLifecycleV2(runEvidence({
+  const connectionPresentation = presentRunLifecycleV2(runState({
     authoritativeMessageStatus: connectionLost ? null : "complete",
     connectionLost,
     content: "Собрал книгу из трёх листов: **Данные**, **Сводная** и **Гра**.",
@@ -168,7 +168,7 @@ export function RunLifecycleV2Gallery() {
                   <StateSpec key={item.label} label={item.label}>
                     <RunAnswerV2
                       content=""
-                      presentation={presentRunLifecycleV2(item.evidence)}
+                      presentation={presentRunLifecycleV2(item.state)}
                     />
                   </StateSpec>
                 ))}
@@ -184,7 +184,7 @@ export function RunLifecycleV2Gallery() {
               <StateSpec label="Streaming">
                 <RunAnswerV2
                   content="Собрал книгу из трёх листов: **Данные**, **Сводная** и"
-                  presentation={presentRunLifecycleV2(runEvidence({
+                  presentation={presentRunLifecycleV2(runState({
                     content: "Собрал книгу из трёх листов: Данные, Сводная и",
                     events: [{ data: { delta: "и" }, type: "token" }]
                   }))}
@@ -195,7 +195,7 @@ export function RunLifecycleV2Gallery() {
                 <RunAnswerV2
                   content="Собрал книгу из трёх листов: **Данные**, **Сводная** и **Гра**"
                   onRegenerate={() => undefined}
-                  presentation={presentRunLifecycleV2(runEvidence({
+                  presentation={presentRunLifecycleV2(runState({
                     content: "Собрал книгу из трёх листов: Данные, Сводная и Гра",
                     events: [{ data: { status: "cancelled" }, type: "done" }]
                   }))}
@@ -214,7 +214,7 @@ export function RunLifecycleV2Gallery() {
                 <RunAnswerV2
                   content="Собрал книгу из трёх листов: **Данные**, **Сводная** и **Гра**"
                   onRetry={() => undefined}
-                  presentation={presentRunLifecycleV2(runEvidence({
+                  presentation={presentRunLifecycleV2(runState({
                     content: "Собрал книгу из трёх листов: Данные, Сводная и Гра",
                     failure: {
                       code: "provider_stream_reset",
@@ -231,7 +231,7 @@ export function RunLifecycleV2Gallery() {
                   content=""
                   onRegenerate={() => undefined}
                   onSelectModel={() => undefined}
-                  presentation={presentRunLifecycleV2(runEvidence({
+                  presentation={presentRunLifecycleV2(runState({
                     failure: {
                       code: "context_budget_exceeded",
                       message: "The selected model’s context is smaller than this conversation with its attachments. Reduce attachments or choose a model with a larger context.",
@@ -244,8 +244,8 @@ export function RunLifecycleV2Gallery() {
 
               <StateSpec label="Complete · terminal server transition">
                 <RunAnswerV2
-                  content="Готовый ответ остаётся спокойным документом; evidence появится отдельной строкой."
-                  presentation={presentRunLifecycleV2(runEvidence({
+                  content="Готовый ответ остаётся спокойным документом с прямыми действиями и результатами."
+                  presentation={presentRunLifecycleV2(runState({
                     content: "Готовый ответ",
                     events: [{ data: { status: "complete" }, type: "done" }]
                   }))}
@@ -273,7 +273,7 @@ export function RunLifecycleV2Gallery() {
 
       <RunLifecycleAnnouncerV2
         activeChatId={selectedChatId}
-        presentation={presentRunLifecycleV2(activityCases[2]!.evidence)}
+        presentation={presentRunLifecycleV2(activityCases[2]!.state)}
         sourceChatId="run-lifecycle"
       />
     </div>

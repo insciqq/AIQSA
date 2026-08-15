@@ -2,8 +2,7 @@ import type { ChatUpdateDataWire } from "../../contracts/chats";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { textMessageContent } from "../../domain/content";
 import {
-  GROUNDED_LIVE_ONLY_PLACEHOLDER,
-  groundedLiveOnlyProviderPreview
+  GROUNDED_LIVE_ONLY_PLACEHOLDER
 } from "../../domain/grounding";
 import {
   encodeSseEvent,
@@ -25,8 +24,7 @@ import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservabi
 import type {
   ProviderAdapter,
   ProviderRunRequest,
-  ProviderRunResult,
-  ProviderSearchAdapter
+  ProviderRunResult
 } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
@@ -37,7 +35,6 @@ import {
   resolveMcpRunTool
 } from "../mcp/toolExecutor";
 import { providerToolBridges } from "../tools/bridges";
-import { createPerplexitySearchToolExecutor, perplexityWebSearchTool } from "../tools/perplexitySearch";
 import {
   createSearchPlanToolRouter,
   searchExecutionPreviewCount,
@@ -50,10 +47,8 @@ import {
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
 import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
-import { decodeMemoryActionPlan } from "../memory/actions/intent";
 import {
   MEMORY_LIST_TOOL_NAME,
-  memoryActionToolForPlan,
   memoryActionTools
 } from "../memory/actions/tools";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
@@ -81,10 +76,8 @@ import {
 } from "../providers/memoryEgress";
 import { withPinnedHostedSearchIdentity } from "./searchArtifactIdentity";
 import {
-  appendRunEventWithRetry,
   finalizeRunCompletion,
-  usageAttributionsWithEstimatedCost,
-  type RunEventSequence
+  usageAttributionsWithEstimatedCost
 } from "./runFinalization";
 import type { MaterializedPreparedRunData } from "./runPreparation";
 import type {
@@ -104,12 +97,8 @@ import {
   type PersistedToolLoopCall,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
-import {
-  persistedToolDurationMs,
-  toolCallInspectionArtifact,
-  toolLoopPhaseArtifact,
-  toolResultInspectionArtifact
-} from "./toolInspection";
+import { liveToolCallStatus, liveToolLoopStatus } from "./liveToolStatus";
+import { projectRunOutputArtifactEvent } from "./runOutputEvents";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
 import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 
@@ -173,7 +162,7 @@ export type RunExecutionRepository = Pick<
   RunRepository,
   | "advanceToolLoopCallBatch"
   | "appendAssistantText"
-  | "appendRunEvent"
+  | "appendRunOutputEvent"
   | "beginToolLoopProviderRound"
   | "cancelPendingToolLoopCalls"
   | "claimToolLoopCall"
@@ -184,15 +173,12 @@ export type RunExecutionRepository = Pick<
   | "getRunControlForUser"
   | "isSearchStrategyEnabled"
   | "loadEntitlements"
-  | "loadModelConfiguration"
   | "loadModelPricing"
   | "markAssistantMessageGroundedLiveOnly"
-  | "nextRunEventSequence"
   | "persistToolLoopCallBatch"
   | "recordRunUsageEvents"
   | "resetToolLoopAssistantDraft"
   | "settleToolLoopCall"
-  | "updateRunProviderRequestPreview"
   | "updateRunProviderResponseId"
 >;
 
@@ -208,7 +194,7 @@ export type RunExecutionInput = Readonly<{
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeAdmission?: Readonly<{
     load(input: {
-      knowledgePlan: NonNullable<ProviderRunRequest["knowledgePlan"]>;
+      knowledgePlan: ProviderRunRequest["knowledgePlan"];
       userId: string;
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
@@ -231,7 +217,6 @@ export type RunExecutionInput = Readonly<{
     }): Promise<AiqsaMcpToolCallResult>;
     ensureAcceptedGeneration(generationId: string): Promise<boolean>;
   }>;
-  searchAdapter?: ProviderSearchAdapter;
   searchRuntimes?: Readonly<Record<string, ProviderRuntimeBinding>>;
   toolBridge?: ProviderToolBridge;
   userId: string;
@@ -301,7 +286,6 @@ function serializeChatUpdate(
       parentMessageId: message.parentMessageId,
       provider: message.provider,
       role: message.role,
-      runUsage: message.runUsage ?? null,
       status: message.status
     }))
   } satisfies ChatUpdateDataWire;
@@ -312,10 +296,12 @@ async function emit(
   encoder: TextEncoder,
   repository: RunExecutionRepository,
   runId: string,
-  sequence: RunEventSequence,
   event: ModelRunSseEvent
 ): Promise<void> {
-  await appendRunEventWithRetry(repository, runId, sequence, event);
+  const outputEvent = projectRunOutputArtifactEvent(event);
+  if (outputEvent) {
+    await repository.appendRunOutputEvent(runId, outputEvent);
+  }
 
   try {
     controller.enqueue(encoder.encode(encodeSseEvent(event)));
@@ -467,53 +453,6 @@ function toolLoopJson(value: unknown, maxBytes: number, code: string): ToolLoopJ
   return snapshot;
 }
 
-function providerRequestPreviewForToolRound(adapter: ProviderAdapter, request: ProviderRunRequest) {
-  const preview = adapter.buildRequestPreview(request);
-  const truncation = request.context?.summary?.truncation;
-
-  return truncation
-    ? {
-        ...preview,
-        contextTruncation: truncation
-      }
-    : preview;
-}
-
-function recordFromPreview(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {};
-}
-
-async function persistToolSearchRun(input: Readonly<{
-  call: ModelToolCall;
-  modelRunId: string;
-  repository: RunExecutionRepository;
-  result: ToolExecutionResult;
-  searchModelId: string;
-  strategyId: string;
-}>): Promise<void> {
-  const preview = input.result.rawPreview ?? {};
-  if (preview.providerCall === false) return;
-  await input.repository.createSearchRun({
-    artifacts: {
-      events: input.result.artifacts?.map((artifact) => artifact.data) ?? [],
-      finalProviderResponsePreview: recordFromPreview(preview.finalProviderResponsePreview),
-      providerResponseId: typeof preview.providerResponseId === "string" ? preview.providerResponseId : undefined,
-      toolCall: {
-        arguments: input.call.arguments,
-        id: input.call.id,
-        name: input.call.name
-      },
-      usage: input.result.usage
-    },
-    modelId: input.searchModelId,
-    modelRunId: input.modelRunId,
-    provider: "openrouter",
-    requestPreview: recordFromPreview(preview.requestPreview),
-    status: input.result.status === "complete" ? "complete" : "error",
-    strategyId: input.strategyId
-  });
-}
-
 async function persistPlanSearchExecution(input: Readonly<{
   execution: SearchExecutionEvidence;
   modelRunId: string;
@@ -521,26 +460,12 @@ async function persistPlanSearchExecution(input: Readonly<{
 }>): Promise<void> {
   await input.repository.createSearchRun({
     artifacts: {
-      displayName: input.execution.displayName,
-      ...(input.execution.failure ? { failure: input.execution.failure } : {}),
-      ...(input.execution.findings ? { findings: input.execution.findings } : {}),
-      invocationId: input.execution.invocationId,
-      ...(input.execution.providerOperations
-        ? { providerOperations: input.execution.providerOperations }
-        : {}),
-      providerOperationsTruncated: input.execution.providerOperationsTruncated,
-      ...(input.execution.providerUsage ? { providerUsage: input.execution.providerUsage } : {}),
-      sources: input.execution.sources,
-      usage: input.execution.usage,
-      ...(input.execution.warning ? { warning: input.execution.warning } : {})
+      sources: input.execution.sources
     },
-    durationMs: input.execution.durationMs,
     invocationId: input.execution.invocationId,
     modelId: input.execution.modelId,
     modelRunId: input.modelRunId,
     provider: input.execution.provider,
-    query: input.execution.query,
-    requestPreview: { ...input.execution.requestPreview },
     searchRevisionId: input.execution.revisionId,
     status: input.execution.status,
     strategyId: input.execution.optionId
@@ -549,25 +474,18 @@ async function persistPlanSearchExecution(input: Readonly<{
 
 export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const encoder = new TextEncoder();
-  const sequence: RunEventSequence = { value: 0 };
   const abortController = new AbortController();
   const runId = input.created.runId;
   const normalizedRequest = input.prepared.normalizedRequest;
-  const memoryActionPlan = normalizedRequest.memoryActionPlan === undefined
-    ? null
-    : decodeMemoryActionPlan(normalizedRequest.memoryActionPlan);
-  if (normalizedRequest.memoryActionPlan !== undefined && !memoryActionPlan) {
-    throw new Error("memory_action_plan_invalid");
-  }
-  const modelDrivenMemoryActions =
+  const memoryActionsRequested =
     normalizedRequest.memoryActionTools?.version === "model-driven-v2";
   const clientToolsEnabled = normalizedRequest.toolMode !== "none";
   const knowledgeEnabled = clientToolsEnabled &&
     normalizedRequest.modelCapabilities.toolCalling === true &&
-    (normalizedRequest.knowledgePlan?.baseIds.length ?? 0) > 0;
+    normalizedRequest.knowledgePlan.baseIds.length > 0;
   const memoryActionEnabled = clientToolsEnabled &&
     normalizedRequest.modelCapabilities.toolCalling === true &&
-    (memoryActionPlan !== null || modelDrivenMemoryActions);
+    memoryActionsRequested;
   const memoryHistoryEnabled = clientToolsEnabled &&
     normalizedRequest.modelCapabilities.toolCalling === true &&
     normalizedRequest.memoryHistoryTool?.maxCalls === 2 &&
@@ -588,8 +506,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       const tokenBuffer = createRunTokenPersistenceBuffer({
         assistantMessageId: input.created.assistantMessageId,
         repository: input.repository,
-        runId,
-        sequence
+        runId
       });
       let persistedProviderResponseId: string | null = null;
       let groundedLiveOnly = false;
@@ -647,7 +564,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               groundedAt: new Date(),
               provider: normalizedRequest.provider,
               runId,
-              strategy: normalizedRequest.searchStrategy ?? "provider-grounding"
+              strategy: normalizedRequest.searchPlan.options.find((option) =>
+                option.adapterKind === "answer_provider_hosted")?.optionId ?? "provider-grounding"
             });
             if (!marked) {
               throw new RunPipelineError(
@@ -683,7 +601,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const eventProviderResponseId = providerResponseIdFromEvent(effectiveEvent);
         if (eventProviderResponseId) await publishProviderResponseId(eventProviderResponseId);
 
-        await emit(controller, encoder, input.repository, runId, sequence, effectiveEvent);
+        await emit(controller, encoder, input.repository, runId, effectiveEvent);
       }
 
       async function publishProviderResponseId(providerResponseId: string): Promise<void> {
@@ -727,15 +645,29 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       }
 
       async function currentSearchDispatchAllowed(): Promise<boolean> {
-        const selectedSearchStrategy = normalizedRequest.searchStrategy ?? "search-disabled";
+        const optionIds = normalizedRequest.searchPlan.options.map((option) => option.optionId);
         const [entitlements, enabled] = await Promise.all([
           input.repository.loadEntitlements(input.userId),
-          input.repository.isSearchStrategyEnabled(selectedSearchStrategy)
+          Promise.all(optionIds.map((optionId) =>
+            input.repository.isSearchStrategyEnabled(optionId)))
         ]);
-        return enabled && validateRunAccess(entitlements, {
+        const modelAccess = validateRunAccess(entitlements, {
           modelId: normalizedRequest.modelId,
-          provider: normalizedRequest.provider,
-          searchStrategy: selectedSearchStrategy
+          provider: normalizedRequest.provider
+        });
+        return modelAccess.ok && optionIds.every((optionId, index) => enabled[index] === true &&
+          validateRunAccess(entitlements, {
+            modelId: normalizedRequest.modelId,
+            provider: normalizedRequest.provider,
+            searchStrategy: optionId
+          }).ok);
+      }
+
+      async function currentAnswerDispatchAllowed(): Promise<boolean> {
+        const entitlements = await input.repository.loadEntitlements(input.userId);
+        return validateRunAccess(entitlements, {
+          modelId: normalizedRequest.modelId,
+          provider: normalizedRequest.provider
         }).ok;
       }
 
@@ -745,7 +677,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
         try {
           const current = await input.knowledgeAdmission.load({
-            knowledgePlan: normalizedRequest.knowledgePlan ?? { baseIds: [] },
+            knowledgePlan: normalizedRequest.knowledgePlan,
             userId: input.userId
           });
           return sameKnowledgeRunAdmissionPlan(
@@ -792,6 +724,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         request: ProviderRunRequest,
         dispatchSignal: AbortSignal = signal
       ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        if (!(await currentAnswerDispatchAllowed())) {
+          throw new RunPipelineError(
+            "model_not_available",
+            "The selected model is no longer available"
+          );
+        }
         if (egressReceiptRequired && !input.memoryEgress &&
           process.env.NODE_ENV === "production") {
           throw new RunPipelineError(
@@ -811,8 +749,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             destinationSnapshot: {
               modelId: request.modelId,
               provider: request.provider,
-              searchOptionIds: request.searchPlan?.options.map((option) => option.optionId) ?? [],
-              searchStrategy: request.searchStrategy,
+              searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
               version: 1
             },
             errorCode: "memory_egress_search_revoked",
@@ -833,8 +770,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               destinationSnapshot: {
                 modelId: request.modelId,
                 provider: request.provider,
-                searchOptionIds: request.searchPlan?.options.map((option) => option.optionId) ?? [],
-                searchStrategy: request.searchStrategy,
+                searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
                 version: 1
               },
               mode: "PROVIDER_REQUEST",
@@ -882,20 +818,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           );
         }
 
-        const searchPolicy = normalizedRequest.searchPolicy;
-        const searchEnabled = clientToolsEnabled && !normalizedRequest.searchPlan &&
-          normalizedRequest.searchStrategy === "perplexity-tool-search";
-        if (searchEnabled && (!input.searchAdapter || !searchPolicy ||
-          searchPolicy.strategyId !== normalizedRequest.searchStrategy)) {
-          throw new RunPipelineError("search_policy_not_available", "Search policy is not available");
-        }
-        const searchExecutor = searchEnabled
-          ? createPerplexitySearchToolExecutor({
-              searchAdapter: input.searchAdapter!,
-              searchPolicy: searchPolicy!
-            })
-          : null;
-        const searchPlanRouter = clientToolsEnabled && normalizedRequest.searchPlan
+        const searchPlanRouter = clientToolsEnabled
           ? createSearchPlanToolRouter({
               plan: normalizedRequest.searchPlan,
               runtimes: input.searchRuntimes ?? {}
@@ -915,24 +838,16 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           ? input.memoryHistoryToolExecutor ?? defaultMemoryHistoryToolExecutor
           : null;
         const isSearchCall = (name: string) =>
-          (searchExecutor !== null && name === searchExecutor.tool.name) ||
           searchPlanRouter?.accepts(name) === true;
         const isKnowledgeCall = (name: string) => knowledgeExecutor?.accepts(name) === true;
         const isMemoryCall = (name: string) =>
-          memoryActionExecutor?.accepts(
-            modelDrivenMemoryActions ? null : memoryActionPlan,
-            name
-          ) === true;
+          memoryActionExecutor?.accepts(name) === true;
         const isMemoryHistoryCall = (name: string) =>
           memoryHistoryExecutor?.accepts(name) === true;
         const tools: RunTool[] = [
           ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
-          ...(searchPlanRouter?.tools ?? (searchExecutor ? [perplexityWebSearchTool] : [])),
-          ...(memoryActionExecutor
-            ? modelDrivenMemoryActions
-              ? memoryActionTools
-              : memoryActionPlan ? [memoryActionToolForPlan(memoryActionPlan)] : []
-            : []),
+          ...(searchPlanRouter?.tools ?? []),
+          ...(memoryActionExecutor ? memoryActionTools : []),
           ...(memoryHistoryExecutor ? [memoryHistoryExecutor.tool] : []),
           ...(clientToolsEnabled ? mcpRunTools(normalizedRequest.mcp) : [])
         ];
@@ -941,7 +856,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         const persistedCalls = new Map<string, PersistedToolLoopCall>();
-        const toolDurations = new Map<string, number>();
         let memoryMutationAttempted = false;
         const hasMcpTools = tools.some((tool) => tool.capability === "mcp");
         let mcpRuntime = input.mcpRuntime ?? null;
@@ -976,19 +890,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               const result = settled.result.status === "complete"
                 ? settled.result.value
                 : toolExecutionErrorResult(call, new Error(settled.result.error.message));
-              if (searchExecutor && call.name === searchExecutor.tool.name) {
-                if (hasReportedUsage(result.usage)) {
-                  rememberReportedUsage("openrouter", searchPolicy!.modelId, result.usage!);
-                }
-                await persistToolSearchRun({
-                  call,
-                  modelRunId: runId,
-                  repository: input.repository,
-                  result,
-                  searchModelId: searchPolicy!.modelId,
-                  strategyId: searchPolicy!.strategyId
-                });
-              } else if (searchPlanRouter?.accepts(call.name)) {
+              if (searchPlanRouter?.accepts(call.name)) {
                 const executions = searchExecutionsFromToolResult(result);
                 const previewCount = searchExecutionPreviewCount(result);
                 if (previewCount !== null && executions.length !== previewCount) {
@@ -1022,24 +924,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 }
               }
               for (const artifact of result.artifacts ?? []) {
-                await emit(controller, encoder, input.repository, runId, sequence, artifact);
+                await emit(controller, encoder, input.repository, runId, artifact);
               }
-              await emit(
-                controller,
-                encoder,
-                input.repository,
-                runId,
-                sequence,
-                toolResultInspectionArtifact({
-                  call,
-                  durationMs: toolDurations.get(call.id) ??
-                    persistedToolDurationMs(persistedCalls.get(call.id)),
-                  mcp: normalizedRequest.mcp,
-                  ordinal: settled.ordinal,
-                  result,
-                  round
-                })
-              );
             }
             await persistReportedUsageForIncompleteRun();
           },
@@ -1060,18 +946,13 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 throw new RunPipelineError("tool_loop_checkpoint_conflict", "Provider round could not start");
               }
             }
-            await input.repository.updateRunProviderRequestPreview(
-              runId,
-              providerRequestPreviewForToolRound(input.adapter, roundRequest)
-            );
             if (hasMcpTools) {
               await emit(
                 controller,
                 encoder,
                 input.repository,
                 runId,
-                sequence,
-                toolLoopPhaseArtifact({ phase: "model", round })
+                liveToolLoopStatus({ phase: "model" })
               );
             }
           },
@@ -1082,8 +963,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             maxToolRounds
           },
           executeTool: async (call, context) => {
-            const startedAt = Date.now();
-            try {
               const persisted = persistedCalls.get(call.id);
               if (!persisted) {
                 return {
@@ -1124,8 +1003,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               }
               if (claim.kind === "settled") {
                 const stored = parsePersistedToolExecutionResult(call, claim.call.result);
-                const persistedDuration = persistedToolDurationMs(claim.call);
-                if (persistedDuration !== undefined) toolDurations.set(call.id, persistedDuration);
                 return stored
                   ? { status: "complete", value: stored }
                   : {
@@ -1150,7 +1027,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 if (externalCall) {
                   const destinationSnapshot = isKnowledgeCall(call.name)
                     ? {
-                        baseIds: normalizedRequest.knowledgePlan?.baseIds ?? [],
+                        baseIds: normalizedRequest.knowledgePlan.baseIds,
                         kind: "knowledge",
                         toolName: call.name,
                         version: 1
@@ -1159,8 +1036,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       ? {
                           kind: "search",
                           optionIds: searchPlanRouter?.optionIdsForTool(call.name) ?? [],
-                          provider: searchPolicy?.provider ?? null,
-                          strategy: normalizedRequest.searchStrategy,
                           toolName: call.name,
                           version: 1
                         }
@@ -1236,7 +1111,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   }
                   if (call.name !== MEMORY_LIST_TOOL_NAME) memoryMutationAttempted = true;
                   result = await memoryActionExecutor!.execute(
-                    modelDrivenMemoryActions ? null : memoryActionPlan,
                     call,
                     {
                     persistedToolCallId: claim.call.id,
@@ -1256,12 +1130,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   result = await searchPlanRouter.execute(
                     call,
                     request,
-                    { signal: context.signal }
-                  );
-                } else if (searchExecutor && call.name === searchExecutor.tool.name) {
-                  result = await searchExecutor.execute(
-                    call,
-                    { request, runId },
                     { signal: context.signal }
                   );
                 } else {
@@ -1333,11 +1201,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 };
               }
               return { status: "complete", value: result };
-            } finally {
-              if (!toolDurations.has(call.id)) {
-                toolDurations.set(call.id, Date.now() - startedAt);
-              }
-            }
           },
           initialRequest: request,
           onEvent: applyProviderEvent,
@@ -1353,11 +1216,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             const reset = await input.repository.resetToolLoopAssistantDraft({
               roundIndex: toolSignal.round,
               runId,
-              sequence: sequence.value,
               userId: input.userId
             });
             if (!reset) throw new RunPipelineError("tool_loop_reset_conflict", "Assistant draft could not reset");
-            sequence.value += 1;
             tokenBuffer.resetLocal();
             emitTransient(controller, encoder, {
               data: { round: toolSignal.round },
@@ -1415,23 +1276,16 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 encoder,
                 input.repository,
                 runId,
-                sequence,
-                toolLoopPhaseArtifact({ count: calls.length, phase: "tools", round })
+                liveToolLoopStatus({ count: calls.length, phase: "tools" })
               );
             }
-            for (const [ordinal, call] of calls.entries()) {
+            for (const call of calls) {
               await emit(
                 controller,
                 encoder,
                 input.repository,
                 runId,
-                sequence,
-                toolCallInspectionArtifact({
-                  call: modelToolCall(call),
-                  mcp: normalizedRequest.mcp,
-                  ordinal,
-                  round
-                })
+                liveToolCallStatus(modelToolCall(call))
               );
             }
           },
@@ -1449,7 +1303,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 encoder,
                 input.repository,
                 runId,
-                sequence,
                 contextTruncationArtifact(budgeted.contextTruncation)
               );
             }
@@ -1472,12 +1325,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             streamSafetyReport?.message ??
               (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
             streamSafetyReport
-          );
-        }
-        if (memoryActionPlan && !memoryMutationAttempted && memoryActionPlan.kind !== "LIST") {
-          throw new RunPipelineError(
-            "memory_action_required",
-            "The requested Memory operation was not executed."
           );
         }
         return {
@@ -1504,7 +1351,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             "Run is not finalized for provider dispatch"
           );
         }
-        await emit(controller, encoder, input.repository, runId, sequence, {
+        await emit(controller, encoder, input.repository, runId, {
           data: {
             modelId: normalizedRequest.modelId,
             provider: normalizedRequest.provider,
@@ -1513,7 +1360,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           },
           type: "run_start"
         });
-        await emit(controller, encoder, input.repository, runId, sequence, {
+        await emit(controller, encoder, input.repository, runId, {
           data: {
             assistantMessageId: input.created.assistantMessageId,
             userMessageId: input.created.userMessageId
@@ -1526,52 +1373,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             encoder,
             input.repository,
             runId,
-            sequence,
             contextTruncationArtifact(input.prepared.contextTruncation)
           );
         }
 
-        // A provider admission plan was revalidated and bound atomically with
-        // the run. Later ordinary RBAC/config changes affect future runs only.
-        // The legacy injected test path retains its pre-dispatch guard.
-        if (!input.prepared.providerAdmissionPlan) {
-          const selectedSearchStrategy = normalizedRequest.searchStrategy ?? "search-disabled";
-          const [entitlements, modelConfiguration, searchStrategyEnabled] = await Promise.all([
-            input.repository.loadEntitlements(input.userId),
-            input.repository.loadModelConfiguration(normalizedRequest.provider, normalizedRequest.modelId),
-            input.repository.isSearchStrategyEnabled(selectedSearchStrategy)
-          ]);
-          const dispatchAccess = validateRunAccess(entitlements, {
-            modelId: normalizedRequest.modelId,
-            provider: normalizedRequest.provider,
-            searchStrategy: selectedSearchStrategy
-          });
-          if (!dispatchAccess.ok) {
-            throw new RunPipelineError(
-              dispatchAccess.code,
-              dispatchAccess.code === "model_not_available"
-                ? "The selected model is no longer available"
-                : "The selected search strategy is no longer available"
-            );
-          }
-          if (!modelConfiguration) {
-            throw new RunPipelineError(
-              "model_not_available",
-              "The selected model is no longer available"
-            );
-          }
-          if (!searchStrategyEnabled) {
-            throw new RunPipelineError(
-              "search_strategy_not_available",
-              "The selected search strategy is no longer available"
-            );
-          }
-        }
-
-        const hasClientSearch = clientToolsEnabled && ((normalizedRequest.searchPlan?.options.some((option) =>
-          option.adapterKind === "provider_model_client") ?? false) ||
-          (!normalizedRequest.searchPlan &&
-            normalizedRequest.searchStrategy === "perplexity-tool-search"));
+        const hasClientSearch = clientToolsEnabled && normalizedRequest.searchPlan.options.some((option) =>
+          option.adapterKind === "provider_model_client");
         const hasClientTools = hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           knowledgeEnabled || memoryActionEnabled || memoryHistoryEnabled;
@@ -1585,7 +1392,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const persistedProviderResult = groundedLiveOnly
           ? {
               ...providerResult,
-              finalProviderResponsePreview: groundedLiveOnlyProviderPreview(),
               finalText: GROUNDED_LIVE_ONLY_PLACEHOLDER
             }
           : providerResult;

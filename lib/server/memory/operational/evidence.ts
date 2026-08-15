@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const MEMORY_OPERATIONAL_QUEUE_EVIDENCE_VERSION =
-  "memory-phase8-operational-queue-v1";
+  "memory-operational-queue-v1";
 
 const boundedCount = z.number().int().nonnegative().max(1_000_000);
 const boundedMilliseconds = z.number().finite().nonnegative().max(24 * 60 * 60_000);

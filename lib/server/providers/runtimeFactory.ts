@@ -166,6 +166,7 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
   }
   if (
     providerAuthenticationMode(connection) === "none" &&
+    model.adapterKind !== "fake" &&
     model.adapterKind !== "openai_chat_completions_compatible" &&
     model.adapterKind !== "openai_responses_compatible" &&
     model.adapterKind !== "openai_embeddings_compatible"

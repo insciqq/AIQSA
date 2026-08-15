@@ -41,7 +41,9 @@ function snapshot(
       allowPrivateNetwork: false,
       apiRoot: adapterKind === "anthropic_messages"
         ? "https://api.anthropic.com/v1"
-        : "https://provider.example.test/v1"
+        : "https://provider.example.test/v1",
+      authenticationMode: "bearer",
+      responseTimeoutMs: 300_000
     },
     connectionDisplayName: "Connection",
     connectionId: "connection-1",
@@ -79,6 +81,8 @@ function compatibleRequest(): ProviderRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "hello", type: "text" }] },
     forceNonStreaming: true,
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -91,7 +95,7 @@ function compatibleRequest(): ProviderRunRequest {
     params: { stream: false },
     prompt: { developer: null, system: null },
     provider: "openai_compatible",
-    searchStrategy: "search-disabled"
+    searchPlan: { mode: "all_selected", options: [] }
   };
 }
 
@@ -121,11 +125,11 @@ describe("provider runtime factory", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
-  it("resolves legacy, connection, and model response deadlines into the immutable binding", () => {
-    const legacy = snapshot("openai_chat_completions_compatible");
+  it("resolves connection and model response deadlines into the immutable binding", () => {
+    const defaults = snapshot("openai_chat_completions_compatible");
     const connection = {
-      ...legacy,
-      connection: { ...legacy.connection, responseTimeoutMs: 500_000 }
+      ...defaults,
+      connection: { ...defaults.connection, responseTimeoutMs: 500_000 }
     };
     const overridden = {
       ...connection,
@@ -137,7 +141,7 @@ describe("provider runtime factory", () => {
       snapshot: value
     });
 
-    expect(create(legacy).responseTimeoutMs).toBe(300_000);
+    expect(create(defaults).responseTimeoutMs).toBe(300_000);
     expect(create(connection).responseTimeoutMs).toBe(500_000);
     expect(create(overridden).responseTimeoutMs).toBe(800_000);
     expect(normalizeProviderExecutionSnapshot(overridden)).toMatchObject({
@@ -390,7 +394,8 @@ describe("provider runtime factory", () => {
       connection: {
         allowPrivateNetwork: true,
         apiRoot: "http://127.0.0.1:11434/v1",
-        authenticationMode: "none"
+        authenticationMode: "none",
+        responseTimeoutMs: 300_000
       }
     };
     const runtime = createProviderRuntimeBinding({
@@ -432,7 +437,8 @@ describe("provider runtime factory", () => {
       connection: {
         allowPrivateNetwork: true,
         apiRoot: "http://127.0.0.1:11434/v1",
-        authenticationMode: "none"
+        authenticationMode: "none",
+        responseTimeoutMs: 300_000
       },
       model: {
         ...base.model,
@@ -466,7 +472,6 @@ describe("provider runtime factory", () => {
           searchStrategyRowId: "route-hosted"
         }]
       },
-      searchStrategy: "custom-web-search:connection-1"
     };
 
     await expect(collect(runtime.adapter.stream(request))).resolves.toMatchObject({
@@ -477,7 +482,7 @@ describe("provider runtime factory", () => {
     expect(fetchFn).toHaveBeenCalledOnce();
   });
 
-  it("keeps legacy and explicit bearer snapshots fail-closed without a credential", () => {
+  it("keeps bearer snapshots fail-closed without a credential", () => {
     const fetchFn = vi.fn<typeof fetch>();
     expect(() => createProviderRuntimeBinding({
       options: { allowFake: false, fetchFn },
@@ -503,7 +508,8 @@ describe("provider runtime factory", () => {
       connection: {
         allowPrivateNetwork: true,
         apiRoot: "http://127.0.0.1:11434/v1",
-        authenticationMode: "none"
+        authenticationMode: "none",
+        responseTimeoutMs: 300_000
       }
     })).toThrow("provider_execution_snapshot_invalid");
   });
@@ -525,6 +531,8 @@ describe("provider runtime factory", () => {
       attachments: [],
       chatId: "chat-1",
       content: { blocks: [{ text: "hello", type: "text" }] },
+      knowledgePlan: { baseIds: [] },
+      toolMode: "auto",
       modelCapabilities: {
         nativePdfInput: false,
         nativeSearch: false,
@@ -537,7 +545,7 @@ describe("provider runtime factory", () => {
       params: { stream: false },
       prompt: { developer: null, system: null },
       provider: "gemini",
-      searchStrategy: "search-disabled"
+      searchPlan: { mode: "all_selected", options: [] }
     };
     const stream = runtime.adapter.stream(request);
     while (!(await stream.next()).done) {
@@ -551,7 +559,12 @@ describe("provider runtime factory", () => {
 
   it("keeps Fake behind the explicit test boundary and credential-free", () => {
     const fake: ProviderExecutionSnapshot = {
-      connection: { allowPrivateNetwork: true, apiRoot: "http://127.0.0.1" },
+      connection: {
+        allowPrivateNetwork: true,
+        apiRoot: "http://127.0.0.1",
+        authenticationMode: "none",
+        responseTimeoutMs: 300_000
+      },
       connectionDisplayName: "Fake",
       connectionId: "fake-connection",
       credentialId: null,

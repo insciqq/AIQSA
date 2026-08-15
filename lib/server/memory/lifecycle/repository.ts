@@ -103,14 +103,6 @@ export type MemoryDeleteExplicitMutationResult = Readonly<{
 const boundedIdPattern = /^\S{1,256}$/u;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 
-async function enqueueWorkingSetAfterDeletion(
-  _tx: MemoryTransaction,
-  _settings: LockedMemorySettings,
-  _deletionId: string
-): Promise<void> {
-  // Direct Core projection has no generated working-set invalidation job.
-}
-
 function validateCommon(input: LifecycleMutationCommon): void {
   if (
     !boundedIdPattern.test(input.authorization.authorizationId) ||
@@ -600,7 +592,6 @@ export async function forgetExplicitOriginFactsForPermanentChatDeletion(
     });
     await applyForgetFence(tx, settings, keyring, [fact], input.now, deletion.id);
   }
-  await enqueueWorkingSetAfterDeletion(tx, settings, input.rootDeletionId);
   return facts.length;
 }
 
@@ -704,8 +695,6 @@ async function applyLearnedDeletionFence(
         in: [
           "CONSOLIDATE_CANDIDATE",
           "EXTRACT_FACTS",
-          "GLOBAL_DREAM",
-          "RECALCULATE_WORKING_SET",
           "VERIFY_CANDIDATE"
         ]
       },
@@ -766,14 +755,6 @@ async function applyAllReusableDeletionFence(
   await tx.memorySearchEntry.deleteMany({
     where: { createdAt: { lte: barrier.createdAt }, userId: settings.userId }
   });
-  await tx.memoryEpisode.updateMany({
-    data: { invalidatedAt: now, state: "INVALIDATED" },
-    where: {
-      createdAt: { lte: barrier.createdAt },
-      state: "ACTIVE",
-      userId: settings.userId
-    }
-  });
   await tx.memoryRecallChunk.updateMany({
     data: { invalidatedAt: now, state: "INVALIDATED" },
     where: {
@@ -782,20 +763,6 @@ async function applyAllReusableDeletionFence(
       userId: settings.userId
     }
   });
-  await tx.$executeRaw(Prisma.sql`
-    UPDATE "MemoryProfileProjection" AS profile
-    SET
-      "plaintextPurgedAt" = GREATEST(profile."updatedAt", ${now}),
-      "purgeReason" = 'all_reusable_delete',
-      "redactionState" = 'EXCLUDED'::"MemoryRedactionState",
-      "safeContentHash" = NULL,
-      "state" = 'INVALIDATED'::"MemoryProfileProjectionState",
-      "summary" = NULL,
-      "updatedAt" = GREATEST(profile."updatedAt", ${now})
-    WHERE profile."userId" = ${settings.userId}
-      AND profile."createdAt" <= ${barrier.createdAt}
-      AND profile."plaintextPurgedAt" IS NULL
-  `);
   await tx.chatMemoryCheckpoint.deleteMany({
     where: { createdAt: { lte: barrier.createdAt }, userId: settings.userId }
   });
@@ -1000,10 +967,7 @@ export function createPrismaMemoryLifecycleRepository(
           ...input.authorization,
           requestId: input.requestId
         }, input.now);
-        const [chunks, episodes] = await Promise.all([
-          tx.memoryRecallChunk.count({ where: { userId } }),
-          tx.memoryEpisode.count({ where: { userId } })
-        ]);
+        const chunks = await tx.memoryRecallChunk.count({ where: { userId } });
         await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
         const barrierId = randomUUID();
         await tx.memorySourceBarrier.create({
@@ -1017,17 +981,7 @@ export function createPrismaMemoryLifecycleRepository(
           }
         });
         await tx.memorySearchEntry.deleteMany({
-          where: {
-            OR: [
-              { episodeId: { not: null } },
-              { recallChunkId: { not: null } }
-            ],
-            userId
-          }
-        });
-        await tx.memoryEpisode.updateMany({
-          data: { invalidatedAt: input.now, state: "INVALIDATED" },
-          where: { state: "ACTIVE", userId }
+          where: { recallChunkId: { not: null }, userId }
         });
         await tx.memoryRecallChunk.updateMany({
           data: { invalidatedAt: input.now, state: "INVALIDATED" },
@@ -1035,7 +989,6 @@ export function createPrismaMemoryLifecycleRepository(
         });
         await tx.chatMemoryCheckpoint.updateMany({
           data: {
-            lastDreamedMessageId: null,
             lastErrorCode: "memory_history_cleared",
             lastIndexedMessageId: null,
             lastSucceededAt: null,
@@ -1054,7 +1007,7 @@ export function createPrismaMemoryLifecycleRepository(
             updatedAt: input.now
           },
           where: {
-            kind: { in: ["EXTRACT_EPISODE", "INDEX_HISTORY"] },
+            kind: "INDEX_HISTORY",
             state: {
               in: [
                 "CLAIMED",
@@ -1072,7 +1025,7 @@ export function createPrismaMemoryLifecycleRepository(
           targetType: MEMORY_HISTORY_CLEAR_TARGET_TYPE
         });
         const result: MemoryDeleteExplicitMutationResult = {
-          affectedFacts: chunks + episodes,
+          affectedFacts: chunks,
           deletionId: deletion.id,
           memoryGeneration: settings.memoryGeneration,
           memoryRevision: settings.memoryRevision,
@@ -1174,7 +1127,6 @@ export function createPrismaMemoryLifecycleRepository(
           targetType: memoryPurgeTargetType("EXPLICIT_SET")
         });
         await applyForgetFence(tx, settings, keyring, facts, input.now, deletion.id);
-        await enqueueWorkingSetAfterDeletion(tx, settings, deletion.id);
         const result: MemoryDeleteExplicitMutationResult = {
           affectedFacts: facts.length,
           deletionId: deletion.id,
@@ -1234,7 +1186,6 @@ export function createPrismaMemoryLifecycleRepository(
           barrier.id,
           input.now
         );
-        await enqueueWorkingSetAfterDeletion(tx, settings, deletion.id);
         const result: MemoryDeleteExplicitMutationResult = {
           affectedFacts,
           deletionId: deletion.id,
@@ -1297,7 +1248,6 @@ export function createPrismaMemoryLifecycleRepository(
         );
         const eventId = events.get(fact.factId);
         if (!eventId) return memoryPersistenceFailure("memory_counter_contract_invalid");
-        await enqueueWorkingSetAfterDeletion(tx, settings, deletion.id);
         const result: MemoryForgetMutationResult = {
           deletionId: deletion.id,
           eventId,

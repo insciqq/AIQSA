@@ -17,7 +17,6 @@ export const MEMORY_PREPARING_QUERY_PLANNER_VERSION =
   MEMORY_RETRIEVAL_PLANNER_VERSION;
 export const MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION =
   MEMORY_RETRIEVAL_PIPELINE_VERSION;
-export const MEMORY_PREPARING_AUTHORITATIVE_EMPTY_LIST = "AUTHORITATIVE_EMPTY_LIST";
 
 const safeCode = /^[a-z][a-z0-9_]{0,63}$/u;
 const safeSelectionReason = /^[a-z][a-z0-9_.:+-]{0,127}$/u;
@@ -60,11 +59,6 @@ export type MemoryPreparingItemInput = MemoryPreparingItemInputBase & (
       itemType?: "FACT_VERSION";
     }>
   | Readonly<{
-      episodeId: string;
-      exactItemId: string;
-      itemType: "EPISODE";
-    }>
-  | Readonly<{
       exactItemId: string;
       itemType: "RECALL_CHUNK";
       recallChunkId: string;
@@ -75,7 +69,6 @@ export type MemoryPreparingItemTarget = Readonly<{
   exactItemId: string;
   factVersionId: string | null;
   itemType: MemoryRetrievalItemType;
-  episodeId: string | null;
   recallChunkId: string | null;
 }>;
 
@@ -87,7 +80,6 @@ export function memoryPreparingItemTarget(
     const exactItemId = item.exactItemId ?? item.factVersionId;
     return exactItemId === item.factVersionId
       ? {
-          episodeId: null,
           exactItemId,
           factVersionId: item.factVersionId,
           itemType: "FACT_VERSION",
@@ -95,20 +87,9 @@ export function memoryPreparingItemTarget(
         }
       : null;
   }
-  if (item.itemType === "EPISODE" && "episodeId" in item && item.episodeId &&
-    item.exactItemId === item.episodeId) {
-    return {
-      episodeId: item.episodeId,
-      exactItemId: item.exactItemId,
-      factVersionId: null,
-      itemType: "EPISODE",
-      recallChunkId: null
-    };
-  }
   if (item.itemType === "RECALL_CHUNK" && "recallChunkId" in item &&
     item.recallChunkId && item.exactItemId === item.recallChunkId) {
     return {
-      episodeId: null,
       exactItemId: item.exactItemId,
       factVersionId: null,
       itemType: "RECALL_CHUNK",
@@ -205,13 +186,6 @@ function boundedJson(value: unknown, maximumBytes: number): boolean {
   } catch {
     return false;
   }
-}
-
-export function memoryPreparingHasAuthoritativeEmptyList(
-  budgetSnapshot: unknown
-): boolean {
-  return isRecord(budgetSnapshot) &&
-    budgetSnapshot.managementResult === MEMORY_PREPARING_AUTHORITATIVE_EMPTY_LIST;
 }
 
 export function decodeMemoryPreparingBaseSnapshot(
@@ -333,19 +307,10 @@ export function validateMemoryPreparingAttemptResult(
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
   const visibleOutcome = input.outcome === "USED" || input.outcome === "DEGRADED";
-  const authoritativeEmptyList = input.outcome === "EMPTY" &&
-    memoryPreparingHasAuthoritativeEmptyList(input.budgetSnapshot);
   if (visibleOutcome && (!context || items.length === 0)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
-  if (authoritativeEmptyList && (!context || items.length > 0)) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
-  }
-  if (memoryPreparingHasAuthoritativeEmptyList(input.budgetSnapshot) &&
-    !authoritativeEmptyList) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
-  }
-  if (!visibleOutcome && !authoritativeEmptyList && (context || items.length > 0)) {
+  if (!visibleOutcome && (context || items.length > 0)) {
     throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
   }
   if ((input.outcome === "DEGRADED") !== Boolean(input.degradationCode)) {
@@ -366,7 +331,6 @@ export function validateMemoryPreparingAttemptResult(
       seenItems.has(identity) ||
       (item.projectionKind !== undefined &&
         item.projectionKind !== "FACT_DISPLAY_TEXT" &&
-        item.projectionKind !== "EPISODE_SAFE_SUMMARY" &&
         item.projectionKind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT") ||
       (item.supportingItemId !== undefined && item.supportingItemId !== null &&
         (item.supportingItemId.length === 0 || item.supportingItemId.length > 256)) ||

@@ -61,24 +61,24 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
     adapterKind,
     credentialMode,
     maxOutputTokens: boundedInteger(
-      value.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
+      value.maxOutputTokens,
       adminSearchExecutionLimits.maxOutputTokens.minimum,
       adminSearchExecutionLimits.maxOutputTokens.maximum
     ),
-    maxResults: boundedInteger(value.maxResults ?? 8, 1, 20),
+    maxResults: boundedInteger(value.maxResults, 1, 20),
     maxSearchCallsPerAnswer: boundedInteger(
-      value.maxSearchCallsPerAnswer ?? adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
+      value.maxSearchCallsPerAnswer,
       adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,
       adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum
     ),
     protocol,
-    providerModelId: providerModelId(value.providerModelId ?? null),
-    queryMaxCharacters: boundedInteger(value.queryMaxCharacters ?? 500, 32, 1_000),
+    providerModelId: providerModelId(value.providerModelId),
+    queryMaxCharacters: boundedInteger(value.queryMaxCharacters, 32, 1_000),
     reasoningPolicy: enumValue<AdminSearchReasoningPolicy>(
-      value.reasoningPolicy ?? adminSearchExecutionDefaults.reasoningPolicy,
+      value.reasoningPolicy,
       ["lowest_supported", "provider_default"]
     ),
-    timeoutMs: boundedInteger(value.timeoutMs ?? 300_000, 5_000, 900_000)
+    timeoutMs: boundedInteger(value.timeoutMs, 5_000, 900_000)
   };
 
   const hosted = adapterKind === "answer_provider_hosted";
@@ -113,7 +113,7 @@ export function searchExecutionModes(adapterKind: SearchAdapterKind): SearchPlan
     : ["model_choice"];
 }
 
-export function legacySearchKind(
+export function searchStrategyKind(
   protocol: SearchProtocol,
   adapterKind: SearchAdapterKind
 ): string {
@@ -127,13 +127,6 @@ export function legacySearchKind(
   return adapterKind === "answer_provider_hosted"
     ? "openai_native_web_search"
     : "provider_model_web_search";
-}
-
-export function legacyProvider(protocol: SearchProtocol): string {
-  if (protocol === "anthropic_web_search") return "anthropic";
-  if (protocol === "gemini_google_search") return "gemini";
-  if (protocol === "openrouter_perplexity_chat") return "openrouter";
-  return "openai_compatible";
 }
 
 export function compatibleTechnicalAdapter(protocol: SearchProtocol, adapterKind: string): boolean {

@@ -11,7 +11,6 @@ import {
   normalizeOpenRouterRoutePreferences,
   reconcileSearchPlanSelection,
   resolveSearchRouteForModel,
-  resolveSearchStrategyId,
   toCatalogSearchStrategy
 } from "./catalogMatrix";
 
@@ -459,41 +458,6 @@ describe("catalog capability matrix", () => {
     });
     expect(strategy).not.toHaveProperty("config");
     expect(strategy).not.toHaveProperty("providerModelId");
-  });
-
-  it("resolves selected search strategy by saved default, disabled search, then fallback", () => {
-    expect(
-      resolveSearchStrategyId(
-        {
-          searchStrategyIds: ["perplexity-tool-search", "search-disabled"]
-        },
-        "perplexity-tool-search"
-      )
-    ).toBe("perplexity-tool-search");
-    expect(
-      resolveSearchStrategyId(
-        {
-          searchStrategyIds: ["perplexity-tool-search", "search-disabled"]
-        },
-        "openai-native-web-search"
-      )
-    ).toBe("search-disabled");
-    expect(
-      resolveSearchStrategyId(
-        {
-          searchStrategyIds: ["perplexity-tool-search", "search-disabled"]
-        },
-        "openai-native-web-search"
-      )
-    ).toBe("search-disabled");
-    expect(
-      resolveSearchStrategyId(
-        {
-          searchStrategyIds: ["perplexity-tool-search"]
-        },
-        "openai-native-web-search"
-      )
-    ).toBe("perplexity-tool-search");
   });
 
   it("keeps OpenRouter Gemini reasoning options on the model entry", () => {

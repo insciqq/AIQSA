@@ -12,10 +12,6 @@ export const MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES = 24;
 // candidates enter the dynamic pack. -1 is the complete cosine range floor.
 export const MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR = -1;
 
-// Kept only for the opt-in historical evaluation scripts. Production code must
-// use MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR.
-export const MEMORY_RETRIEVAL_MINIMUM_VECTOR_SCORE = 0.35;
-
 export const MEMORY_CORE_CONTEXT_TARGET_TOKENS = 512;
 export const MEMORY_CONTEXT_TARGET_TOKENS = 2_000;
 export const MEMORY_CONTEXT_HARD_CAP_TOKENS = 2_500;

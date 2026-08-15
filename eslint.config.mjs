@@ -22,30 +22,9 @@ const eslintConfig = [
     }
   },
   {
-    files: [
-      `app/${architectureModules}`,
-      `components/${architectureModules}`,
-      `features/${architectureModules}`,
-      `lib/${architectureModules}`
-    ],
-    ignores: ["**/*.test.*", "**/*.spec.*"],
-    rules: {
-      "aiqsa-architecture/no-memory-reference": "error"
-    }
-  },
-  {
     files: [`components/${architectureModules}`],
     rules: {
       "aiqsa-architecture/architecture-boundaries": architectureBoundary("components")
-    }
-  },
-  {
-    files: [
-      `components/${architectureModules}`,
-      `features/${architectureModules}`
-    ],
-    rules: {
-      "aiqsa-architecture/v2-presentation-boundaries": "error"
     }
   },
   {

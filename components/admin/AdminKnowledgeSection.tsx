@@ -130,7 +130,7 @@ export function AdminKnowledgeSection({
             <p className="text-metadata font-semibold uppercase tracking-[0.1em] text-ink-muted">Installation policy</p>
             <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink" id="admin-knowledge-heading">Knowledge retrieval</h2>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-secondary">
-              Tune how many passages are considered and returned by future Knowledge invocations. Existing run receipts keep the exact policy they used.
+              Tune how many passages are considered and returned by future Knowledge invocations. Already admitted runs keep the exact policy snapshot they received.
             </p>
           </div>
           <button
@@ -156,7 +156,7 @@ export function AdminKnowledgeSection({
           <div className="mt-6 grid gap-8 xl:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)]">
             <div>
               <h3 className="text-sm font-semibold text-ink">Retrieval policy</h3>
-              <p className="mt-1 text-xs leading-5 text-ink-muted">Applied at each invocation and recorded with its durable receipt.</p>
+              <p className="mt-1 text-xs leading-5 text-ink-muted">Applied at each invocation and retained with its private recovery record.</p>
               <div className="mt-4 grid gap-4 sm:grid-cols-3">
                 <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">
                   Candidate passages

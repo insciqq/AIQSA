@@ -100,9 +100,9 @@ test.describe("seeded ordinary-user MCP access", () => {
     expect(disabled.status()).toBe(200);
 
     await page.goto("/?settings=mcp");
-    const settings = page.getByTestId("settings-dialog");
-    await expect(settings.getByRole("heading", { name: LOCAL_SHARED_MCP_FIXTURE.displayName })).toBeVisible();
-    await expect(settings.getByRole("heading", { name: LOCAL_PRIVATE_MCP_FIXTURE.displayName })).toBeVisible();
+    const settings = page.getByTestId("settings-v2");
+    await expect(settings.getByRole("article", { name: LOCAL_SHARED_MCP_FIXTURE.displayName })).toBeVisible();
+    await expect(settings.getByRole("article", { name: LOCAL_PRIVATE_MCP_FIXTURE.displayName })).toBeVisible();
     await expect(settings.getByLabel("Fixture workspace")).toHaveValue("member-workspace");
 
     await page.goto("/admin");
@@ -159,9 +159,9 @@ test.describe("seeded ordinary-user MCP access", () => {
     });
 
     await page.goto("/?settings=mcp");
-    const settings = page.getByTestId("settings-dialog");
-    await expect(settings.getByRole("heading", { name: LOCAL_SHARED_MCP_FIXTURE.displayName })).toBeVisible();
-    await expect(settings.getByRole("heading", { name: LOCAL_PRIVATE_MCP_FIXTURE.displayName })).toHaveCount(0);
+    const settings = page.getByTestId("settings-v2");
+    await expect(settings.getByRole("article", { name: LOCAL_SHARED_MCP_FIXTURE.displayName })).toBeVisible();
+    await expect(settings.getByRole("article", { name: LOCAL_PRIVATE_MCP_FIXTURE.displayName })).toHaveCount(0);
     await expect(settings.getByText("Personal configuration")).toHaveCount(0);
     await settings.getByRole("button", { name: `Enable ${LOCAL_SHARED_MCP_FIXTURE.displayName}` }).click();
     await expect(settings.getByRole("alert")).toContainText(

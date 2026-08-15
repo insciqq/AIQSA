@@ -10,9 +10,7 @@ import {
 function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
   return {
     defaultControlValues: {},
-    defaultModelId: "gpt-5.5",
-    defaultProvider: "openai",
-    defaultSearchStrategyId: "search-disabled",
+    defaultSearchPlan: { mode: "all_selected", optionIds: [] },
     hasPersonalModelDefault: true,
     modelPreferenceSource: "personal",
     organizationModelDefault: null,
@@ -21,7 +19,6 @@ function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
     searchPreferenceSource: "personal",
     showCitations: true,
     showReasoningBlocks: false,
-    showToolActivity: true,
     ...overrides
   };
 }
@@ -88,7 +85,6 @@ describe("settings mutation coordinator", () => {
         }
       },
       showReasoningBlocks: true,
-      showToolActivity: true,
     });
 
     expect(send).toHaveBeenCalledTimes(1);
@@ -107,7 +103,6 @@ describe("settings mutation coordinator", () => {
       },
       showCitations: true,
       showReasoningBlocks: true,
-      showToolActivity: true,
     });
     expect(send.mock.calls[1]?.[0]).toEqual({
       controlValues: {
@@ -121,7 +116,6 @@ describe("settings mutation coordinator", () => {
       },
       showCitations: true,
       showReasoningBlocks: true,
-      showToolActivity: true,
     });
 
     responses[1]?.resolve(
@@ -137,7 +131,6 @@ describe("settings mutation coordinator", () => {
         },
         showCitations: true,
         showReasoningBlocks: true,
-        showToolActivity: true,
       })
     );
     await Promise.all([first, second, third]);
@@ -231,35 +224,18 @@ describe("settings mutation coordinator", () => {
     );
   });
 
-  it("sends and decodes the persisted tool activity preference", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      Response.json({ settings: settings({ showToolActivity: false }) })
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(sendSettingsDefaultsPatch({ showToolActivity: false })).resolves.toMatchObject({
-      showToolActivity: false
-    });
-    const request = fetchMock.mock.calls[0]?.[1];
-    expect(JSON.parse(String(request?.body))).toEqual({ showToolActivity: false });
-  });
-
   it("uses dedicated explicit payloads for setting and clearing the personal model default", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       return Response.json({
         settings: settings(body.defaultProviderModelId === null
           ? {
-              defaultModelId: "gpt-5.5",
-              defaultProvider: "openai",
               hasPersonalModelDefault: false,
               modelPreferenceSource: "organization",
               organizationModelDefault: { modelId: "gpt-5.5", provider: "openai" },
               personalModelDefault: null
             }
           : {
-              defaultModelId: "model-b",
-              defaultProvider: "openrouter",
               hasPersonalModelDefault: true,
               modelPreferenceSource: "personal",
               organizationModelDefault: { modelId: "gpt-5.5", provider: "openai" },
@@ -275,7 +251,7 @@ describe("settings mutation coordinator", () => {
     await sendSettingsDefaultsPatch({ personalModelDefault: null });
 
     expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
-      { defaultModelId: "model-b", defaultProvider: "openrouter" },
+      { defaultProviderModelId: "model-b" },
       { defaultProviderModelId: null }
     ]);
   });
@@ -296,12 +272,13 @@ describe("settings mutation coordinator", () => {
         modelId: "gpt-5.5",
         modelPreferenceSource: "personal",
         organizationModelDefault: null,
+        organizationSearchPlan: { mode: "all_selected", optionIds: [] },
         personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
         provider: "openai",
-        searchStrategyId: "search-disabled",
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        searchPreferenceSource: "personal",
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true,
       },
       {
         controlValues: {

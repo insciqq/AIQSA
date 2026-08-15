@@ -148,15 +148,7 @@ function errorResult(call: ModelToolCall, code: string, message?: string): ToolE
     callId: call.id,
     content: [{ text: message ?? `Knowledge retrieval failed: ${code}.`, type: "text" }],
     name: call.name,
-    rawPreview: {
-      finalProviderResponsePreview: { error: code },
-      providerCall: false,
-      requestPreview: {
-        queryCharacters: typeof call.arguments.query === "string"
-          ? Math.min(call.arguments.query.length, KNOWLEDGE_QUERY_MAX_CHARACTERS + 1)
-          : 0
-      }
-    },
+    rawPreview: { providerCall: false },
     status: "error",
     usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }
   };
@@ -354,16 +346,9 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           content: knowledgeToolResultContent(evidence),
           name: call.name,
           rawPreview: {
-            finalProviderResponsePreview: { knowledgeRetrieval: evidence },
+            knowledgeRetrieval: evidence,
             knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
-            providerCall: true,
-            requestPreview: {
-              candidateLimit,
-              invocationOrdinal,
-              queryCharacters: validation.query.length,
-              resultLimit,
-              threshold
-            }
+            providerCall: true
           },
           status: "complete" as const,
           usage: aggregateKnowledgeUsage(evidence.embeddingExecutions)

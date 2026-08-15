@@ -25,10 +25,9 @@ function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
 }
 
-function modelLegacyFields(configuration: ProviderModelConfiguration) {
+function modelColumns(configuration: ProviderModelConfiguration) {
   return {
     capabilities: json(configuration.capabilities),
-    contextWindow: configuration.capabilities.contextWindow ?? 1,
     defaultParams: json(configuration.defaultParams),
     modelId: configuration.upstreamModelId,
     supportsNativeSearch: configuration.capabilities.nativeSearch,
@@ -329,7 +328,7 @@ async function applyCustomSetupPlan(
         enabled: true,
         id: model.id,
         provider: "openai_compatible",
-        ...modelLegacyFields(model.configuration)
+        ...modelColumns(model.configuration)
       }
     });
   }

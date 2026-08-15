@@ -5,8 +5,8 @@ import { kickDefaultMemoryCoordinator } from "../coordinator/defaultCoordinator"
 import { readMemoryHistoryIndexingProgress } from "../history/backfill";
 import {
   defaultPermanentChatDeletionCapability,
-  tryEnsureDefaultMemoryPhase8Composition
-} from "../phase8Composition";
+  tryEnsureDefaultMemoryDeletionComposition
+} from "../deletionComposition";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import type { MemorySettingsHandlerDeps } from "./handlers";
 import {
@@ -17,7 +17,7 @@ import {
 export const defaultMemorySettingsRepository =
   createPrismaMemorySettingsRepository(prisma);
 
-tryEnsureDefaultMemoryPhase8Composition(kickDefaultMemoryCoordinator);
+tryEnsureDefaultMemoryDeletionComposition(kickDefaultMemoryCoordinator);
 
 export const defaultMemorySettingsService = createMemorySettingsService({
   kick: kickDefaultMemoryCoordinator,

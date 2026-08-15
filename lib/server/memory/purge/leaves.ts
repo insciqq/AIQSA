@@ -11,7 +11,6 @@ import {
   suppressedMemoryHistoryPurgeSelection
 } from "../history/purge";
 import { memoryPurgeVersionCondition } from "./selection";
-import { memoryProfileDeletionContributor } from "../profile/purge";
 import {
   allReusableIndexesContributor,
   allReusableLedgerContributor,
@@ -375,11 +374,6 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
               selected."boundedPrivateBaseRequestSnapshot" -> 'normalizedRequest',
               '{}'::jsonb
             ),
-            "providerRequestPreview" = COALESCE(
-              run."providerRequestPreview",
-              selected."boundedPrivateBaseRequestSnapshot" -> 'providerRequestPreview',
-              '{}'::jsonb
-            ),
             "status" = 'error'::"ModelRunStatus",
             "updatedAt" = CURRENT_TIMESTAMP
           FROM selected
@@ -486,11 +480,6 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
             attempt."boundedPrivateBaseRequestSnapshot" -> 'normalizedRequest',
             '{}'::jsonb
           ),
-          "providerRequestPreview" = COALESCE(
-            run."providerRequestPreview",
-            attempt."boundedPrivateBaseRequestSnapshot" -> 'providerRequestPreview',
-            '{}'::jsonb
-          ),
           "status" = 'error'::"ModelRunStatus",
           "updatedAt" = CURRENT_TIMESTAMP
         FROM settled_attempts AS attempt
@@ -563,7 +552,6 @@ const feedbackContributor: MemoryDeletionContributor = Object.freeze({
       SET
         "memoryFactId" = NULL,
         "memoryFactVersionId" = NULL,
-        "episodeId" = NULL,
         "recallChunkId" = NULL,
         "modelRunId" = NULL,
         "modelRunMemoryItemId" = NULL,
@@ -738,13 +726,12 @@ const versionContentContributor: MemoryDeletionContributor = Object.freeze({
   version: "v1"
 });
 
-export const phase2MemoryDeletionContributors = Object.freeze([
+export const memoryDeletionContributors = Object.freeze([
   unacceptedAttemptsContributor,
   historyDerivativesContributor,
   candidateDerivativesContributor,
   feedbackContributor,
   searchContributor,
-  memoryProfileDeletionContributor,
   versionContentContributor,
   allReusableLedgerContributor,
   evidenceContributor,
@@ -752,9 +739,9 @@ export const phase2MemoryDeletionContributors = Object.freeze([
   allReusableIndexesContributor
 ]);
 
-export function registerPhase2MemoryDeletionContributors(
+export function registerMemoryDeletionContributors(
   registry: MemoryDeletionContributorRegistry
 ): readonly (() => void)[] {
-  return Object.freeze(phase2MemoryDeletionContributors.map((contributor) =>
+  return Object.freeze(memoryDeletionContributors.map((contributor) =>
     registry.register(contributor)));
 }

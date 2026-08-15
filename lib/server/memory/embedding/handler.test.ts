@@ -5,22 +5,20 @@ import type { MemoryJobClaim } from "../coordinator/types";
 import { MemoryCoordinatorError } from "../coordinator/errors";
 import { MemoryExecutionError } from "../execution";
 import {
-  MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION,
   MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
   MEMORY_ITEM_EMBEDDING_VERSIONS,
-  memoryExplicitEmbeddingJobFingerprint,
-  memoryExplicitEmbeddingInputHash,
   memoryItemEmbeddingJobFingerprint,
-  type MemoryExplicitEmbeddingPin,
-  type MemoryExplicitEmbeddingTarget,
+  memoryItemEmbeddingInputHash,
+  type MemoryFactEmbeddingTarget,
+  type MemoryItemEmbeddingPin,
   type MemoryItemEmbeddingTarget
 } from "./contract";
 import {
-  createMemoryExplicitEmbeddingHandler,
-  type MemoryExplicitEmbeddingHandlerDependencies
+  createMemoryItemEmbeddingHandler,
+  type MemoryItemEmbeddingHandlerDependencies
 } from "./handler";
 
-const pin: MemoryExplicitEmbeddingPin = Object.freeze({
+const pin: MemoryItemEmbeddingPin = Object.freeze({
   configurationFingerprint: "c".repeat(64),
   connectionId: "connection-1",
   dimension: 2,
@@ -29,8 +27,8 @@ const pin: MemoryExplicitEmbeddingPin = Object.freeze({
 });
 
 function target(
-  embeddingState: MemoryExplicitEmbeddingTarget["embeddingState"] = "PENDING"
-): MemoryExplicitEmbeddingTarget {
+  embeddingState: MemoryFactEmbeddingTarget["embeddingState"] = "PENDING"
+): MemoryFactEmbeddingTarget {
   return {
     embeddingState,
     entryId: "11111111-1111-4111-8111-111111111111",
@@ -63,12 +61,12 @@ function claim(): MemoryJobClaim {
     chatId: null,
     claimToken: randomUUID(),
     id: randomUUID(),
-    idempotencyFingerprint: memoryExplicitEmbeddingJobFingerprint(entryId, "save-1"),
+    idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(entryId, "save-1"),
     kind: "EMBED_ITEMS",
     leaseExpiresAt: new Date("2026-08-10T12:05:00.000Z"),
     memoryGenerationSnapshot: 0,
     memoryRevisionSnapshot: 1,
-    pipelineVersion: MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION,
+    pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
     recoveredLease: false,
     sourceHash: null,
     sourceRevision: null,
@@ -129,18 +127,30 @@ function snapshot() {
       providerFamily: "openai_compatible",
       providerModelId: pin.providerModelId
     },
-    qualificationId: "qualification-1",
-    qualificationRequirement: {
+    compatibilityId: "compatibility-1",
+    compatibilityRequirement: {
+      compatibilityVersion: "memory-runtime-compatibility-v2",
       configFingerprint: pin.configurationFingerprint,
+      deploymentFingerprint: "1".repeat(64),
+      modelFingerprint: "2".repeat(64),
+      pipelineVersion: MEMORY_ITEM_EMBEDDING_VERSIONS.pipelineVersion,
+      policyVersion: MEMORY_ITEM_EMBEDDING_VERSIONS.policyVersion,
+      promptVersion: MEMORY_ITEM_EMBEDDING_VERSIONS.promptVersion,
+      providerFingerprint: "3".repeat(64),
+      retrievalConfigFingerprint:
+        MEMORY_ITEM_EMBEDDING_VERSIONS.retrievalConfigFingerprint,
+      role: "MEMORY_DOCUMENT_EMBED" as const,
+      schemaVersion: MEMORY_ITEM_EMBEDDING_VERSIONS.schemaVersion,
       vectorSpaceFingerprint: pin.vectorSpaceFingerprint
     },
     requiresStrictStructuredOutput: false,
-    utilityPolicyVersion: "memory-utility-egress-v1"
+    utilityPolicyVersion: "memory-utility-egress-v1",
+    version: 2 as const
   };
 }
 
 function dependencies(
-  overrides: Partial<MemoryExplicitEmbeddingHandlerDependencies> = {},
+  overrides: Partial<MemoryItemEmbeddingHandlerDependencies> = {},
   current: MemoryItemEmbeddingTarget = target()
 ) {
   const applyReady = vi.fn(async () => "APPLIED" as const);
@@ -182,11 +192,11 @@ function dependencies(
     runtime: {
       resolve: vi.fn(async () => ({ adapter: { embed } }))
     }
-  } as unknown as MemoryExplicitEmbeddingHandlerDependencies;
+  } as unknown as MemoryItemEmbeddingHandlerDependencies;
   return {
     applyFailed,
     applyReady,
-    base: { ...base, ...overrides } as MemoryExplicitEmbeddingHandlerDependencies,
+    base: { ...base, ...overrides } as MemoryItemEmbeddingHandlerDependencies,
     bind,
     current,
     embed,
@@ -203,11 +213,11 @@ function context() {
   };
 }
 
-describe("explicit Memory vector enrichment handler", () => {
-  it("parks missing consent, qualification, or credential authority before binding", async () => {
+describe("Memory item vector enrichment handler", () => {
+  it("parks missing consent or runtime capability before binding", async () => {
     for (const code of [
       "memory_execution_egress_consent_required",
-      "memory_execution_qualification_required",
+      "memory_execution_capability_unavailable",
       "memory_execution_target_unavailable"
     ] as const) {
       const fixture = dependencies({
@@ -215,7 +225,7 @@ describe("explicit Memory vector enrichment handler", () => {
           throw new MemoryExecutionError(code);
         })
       });
-      const handler = createMemoryExplicitEmbeddingHandler(fixture.base);
+      const handler = createMemoryItemEmbeddingHandler(fixture.base);
       await expect(handler.preflight(claim())).resolves.toEqual({
         errorCode: code,
         status: "WAITING_FOR_EGRESS_CONSENT"
@@ -227,7 +237,7 @@ describe("explicit Memory vector enrichment handler", () => {
 
   it("binds and starts before one document call, then applies through authorization", async () => {
     const fixture = dependencies();
-    const handler = createMemoryExplicitEmbeddingHandler(fixture.base);
+    const handler = createMemoryItemEmbeddingHandler(fixture.base);
     const result = await handler.execute(claim(), context());
 
     expect(result).toMatchObject({ stage: "vector_ready" });
@@ -253,10 +263,10 @@ describe("explicit Memory vector enrichment handler", () => {
     expect(fixture.applyFailed).not.toHaveBeenCalled();
   });
 
-  it("binds history-item work to the item-vector qualification contract", async () => {
+  it("binds history-item work to the item-vector compatibility contract", async () => {
     const current = chunkTarget();
     const fixture = dependencies({}, current);
-    const handler = createMemoryExplicitEmbeddingHandler(fixture.base);
+    const handler = createMemoryItemEmbeddingHandler(fixture.base);
 
     await expect(handler.execute(itemClaim(), context())).resolves.toMatchObject({
       stage: "vector_ready"
@@ -281,8 +291,8 @@ describe("explicit Memory vector enrichment handler", () => {
     if (recovered.current.itemType !== "FACT_VERSION") {
       throw new Error("memory_embedding_test_target_invalid");
     }
-    const inputHash = memoryExplicitEmbeddingInputHash(recovered.current);
-    const recoveredHandler = createMemoryExplicitEmbeddingHandler({
+    const inputHash = memoryItemEmbeddingInputHash(recovered.current);
+    const recoveredHandler = createMemoryItemEmbeddingHandler({
       ...recovered.base,
       repository: {
         ...recovered.base.repository,
@@ -308,7 +318,7 @@ describe("explicit Memory vector enrichment handler", () => {
     expect(recovered.applyFailed).toHaveBeenCalledTimes(1);
 
     const uncertain = dependencies();
-    const uncertainHandler = createMemoryExplicitEmbeddingHandler({
+    const uncertainHandler = createMemoryItemEmbeddingHandler({
       ...uncertain.base,
       runtime: {
         resolve: vi.fn(async () => ({

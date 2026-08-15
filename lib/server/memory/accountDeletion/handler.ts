@@ -163,8 +163,6 @@ async function purgeReusableAndPrivateMemory(
   const userId = claim.userId;
 
   await purgeMemoryFeedbackAccount(tx, userId);
-  await tx.memoryProfileProjectionFact.deleteMany({ where: { userId } });
-  await tx.memoryProfileProjection.deleteMany({ where: { userId } });
   await tx.memoryCandidate.deleteMany({ where: { userId } });
   await tx.memoryMutationAuthorization.deleteMany({ where: { userId } });
   await tx.memoryOperationReceipt.deleteMany({ where: { userId } });
@@ -173,9 +171,7 @@ async function purgeReusableAndPrivateMemory(
   await tx.memorySearchEntry.deleteMany({ where: { userId } });
   await tx.memorySuppression.deleteMany({ where: { userId } });
   await tx.memorySourceBarrier.deleteMany({ where: { userId } });
-  await tx.memoryEpisodeMessage.deleteMany({ where: { userId } });
   await tx.memoryRecallChunkMessage.deleteMany({ where: { userId } });
-  await tx.memoryEpisode.deleteMany({ where: { userId } });
   await tx.memoryRecallChunk.deleteMany({ where: { userId } });
   await tx.chatMemoryCheckpoint.deleteMany({ where: { userId } });
 
@@ -246,10 +242,7 @@ async function purgeReusableAndPrivateMemory(
       acceptedUtilityPolicyVersion: null,
       activeIndexGenerationId: null,
       embeddingProviderModelId: null,
-      lastGlobalDreamAt: null,
       learnAutomatically: false,
-      memoryUiLocale: "RU",
-      preferredProfileLanguage: "AUTO",
       referenceChatHistory: false,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
       useMemoryFacts: false,
@@ -282,7 +275,6 @@ export async function inspectAccountMemoryDeletionResiduals(
           AND settings."acceptedUtilityEgressFingerprint" IS NULL
           AND settings."acceptedUtilityPolicyVersion" IS NULL
           AND settings."acceptedUtilityEgressAt" IS NULL
-          AND settings."lastGlobalDreamAt" IS NULL
         )
       UNION ALL SELECT 'settings-count',
         CASE WHEN COUNT(*) = 1 THEN 0 ELSE 1 END::integer
@@ -291,16 +283,12 @@ export async function inspectAccountMemoryDeletionResiduals(
       UNION ALL SELECT 'checkpoints', COUNT(*)::integer FROM "ChatMemoryCheckpoint" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'chunks', COUNT(*)::integer FROM "MemoryRecallChunk" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'chunk-messages', COUNT(*)::integer FROM "MemoryRecallChunkMessage" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'episodes', COUNT(*)::integer FROM "MemoryEpisode" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'episode-messages', COUNT(*)::integer FROM "MemoryEpisodeMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'candidates', COUNT(*)::integer FROM "MemoryCandidate" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'candidate-messages', COUNT(*)::integer FROM "MemoryCandidateMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'candidate-decisions', COUNT(*)::integer FROM "MemoryCandidateDecision" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'facts', COUNT(*)::integer FROM "MemoryFact" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'versions', COUNT(*)::integer FROM "MemoryFactVersion" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'evidence', COUNT(*)::integer FROM "MemoryEvidence" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'profiles', COUNT(*)::integer FROM "MemoryProfileProjection" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'profile-facts', COUNT(*)::integer FROM "MemoryProfileProjectionFact" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'events', COUNT(*)::integer FROM "MemoryEvent" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'feedback', COUNT(*)::integer FROM "MemoryFeedback" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'suppressions', COUNT(*)::integer FROM "MemorySuppression" WHERE "userId" = ${input.userId}

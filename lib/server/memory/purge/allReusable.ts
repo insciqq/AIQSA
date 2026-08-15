@@ -119,10 +119,6 @@ export const allReusableLedgerContributor: MemoryDeletionContributor = Object.fr
               SELECT 1 FROM "MemoryFact" AS fact
               WHERE fact."userId" = scope."userId" AND fact."scopeId" = scope."id"
             )
-            AND NOT EXISTS (
-              SELECT 1 FROM "MemoryProfileProjection" AS profile
-              WHERE profile."userId" = scope."userId" AND profile."scopeId" = scope."id"
-            )
         `),
         tx.memorySuppression.count({
           where: { createdAt: { lte: barrier.createdAt }, userId: target.userId }
@@ -278,10 +274,6 @@ export const allReusableLedgerContributor: MemoryDeletionContributor = Object.fr
         AND NOT EXISTS (
           SELECT 1 FROM "MemoryFact" AS fact
           WHERE fact."userId" = scope."userId" AND fact."scopeId" = scope."id"
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM "MemoryProfileProjection" AS profile
-          WHERE profile."userId" = scope."userId" AND profile."scopeId" = scope."id"
         )
     `);
   },

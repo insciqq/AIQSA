@@ -4,22 +4,7 @@ import {
   memoryCounterEffectMatches
 } from "./counters";
 import {
-  MEMORY_DELETION_OPERATION_FIXTURES,
-  memoryDeletionOperationMatches
-} from "./deletion";
-import {
-  MEMORY_GATE_FIXTURES,
-  memoryCapabilitiesForGates
-} from "./gates";
-import {
-  memoryScopeEligibleForRun,
-  memoryScopeTransitionAllowed,
-  memoryScopeTargetShapeIsValid
-} from "./scopes";
-import {
-  memoryAutomaticPromotionAllowed,
   memoryDerivativePlaintextAllowed,
-  memoryEpisodicRecallDecision,
   memoryMutationIntentAllowed
 } from "./safety";
 import {
@@ -34,23 +19,6 @@ import {
   memoryJobTransitionAllowed,
   memoryRetrievalAttemptTransitionAllowed
 } from "./stateMachines";
-
-describe("Memory independent gate fixtures", () => {
-  it("covers all eight combinations exactly once and never disables explicit management", () => {
-    expect(MEMORY_GATE_FIXTURES).toHaveLength(8);
-    const signatures = MEMORY_GATE_FIXTURES.map(({ gates }) =>
-      `${Number(gates.useMemoryFacts)}${Number(gates.referenceChatHistory)}${Number(gates.learnAutomatically)}`
-    );
-    expect(new Set(signatures).size).toBe(8);
-    for (const fixture of MEMORY_GATE_FIXTURES) {
-      expect(fixture.capabilities).toEqual(memoryCapabilitiesForGates(fixture.gates));
-      expect(fixture.capabilities.explicitManagement).toBe(true);
-      expect(fixture.capabilities.factReads).toBe(fixture.gates.useMemoryFacts);
-      expect(fixture.capabilities.historyReads).toBe(fixture.gates.referenceChatHistory);
-      expect(fixture.capabilities.automaticFactWrites).toBe(fixture.gates.learnAutomatically);
-    }
-  });
-});
 
 describe("Memory state machines", () => {
   it("allows candidate quarantine outcomes and rejects terminal rewrites", () => {
@@ -151,7 +119,7 @@ describe("Memory state machines", () => {
   });
 });
 
-describe("Memory counter and deletion fixtures", () => {
+describe("Memory counters", () => {
   it("encodes no-op archive, branch fencing, source-conditional deletion, and visible changes", () => {
     expect(MEMORY_COUNTER_EFFECTS.CHAT_ARCHIVE_OR_RESTORE).toMatchObject({
       branchGeneration: false,
@@ -176,78 +144,13 @@ describe("Memory counter and deletion fixtures", () => {
       memoryRevision: true
     })).toBe(false);
   });
-
-  it("covers every destructive bulk operation with the required fence/barrier", () => {
-    expect(MEMORY_DELETION_OPERATION_FIXTURES).toHaveLength(4);
-    expect(new Set(MEMORY_DELETION_OPERATION_FIXTURES.map(({ operation }) => operation)).size).toBe(4);
-    for (const fixture of MEMORY_DELETION_OPERATION_FIXTURES) {
-      expect(fixture.advancesMemoryGeneration).toBe(true);
-      expect(fixture.advancesMemoryRevision).toBe(true);
-      expect(memoryDeletionOperationMatches(fixture.operation, fixture)).toBe(true);
-    }
-    expect(memoryDeletionOperationMatches("CLEAR_HISTORY_INDEX", {
-      advancesMemoryGeneration: true,
-      advancesMemoryRevision: true,
-      sourceBarrier: null,
-      suppressesExactSourceEvidence: false
-    })).toBe(false);
-  });
 });
 
-describe("Memory scope, sensitivity, intent, and tool-taint safety", () => {
-  const globalScope = {
-    assistantId: null,
-    chatId: null,
-    folderId: null,
-    scopeType: "GLOBAL_USER" as const,
-    state: "ACTIVE" as const,
-    targetIdSnapshot: null
-  };
-  const folderScope = {
-    assistantId: null,
-    chatId: null,
-    folderId: "folder-1",
-    scopeType: "FOLDER" as const,
-    state: "ACTIVE" as const,
-    targetIdSnapshot: "folder-1"
-  };
-
-  it("rejects malformed, orphan-live, and unrelated scope targets", () => {
-    expect(memoryScopeTargetShapeIsValid(globalScope)).toBe(true);
-    expect(memoryScopeTargetShapeIsValid(folderScope)).toBe(true);
-    expect(memoryScopeTargetShapeIsValid({ ...folderScope, folderId: "folder-2" })).toBe(false);
-    expect(memoryScopeTargetShapeIsValid({ ...folderScope, state: "ORPHANED" })).toBe(false);
-    expect(memoryScopeTargetShapeIsValid({
-      ...folderScope,
-      folderId: null,
-      state: "ORPHANED"
-    })).toBe(true);
-    expect(memoryScopeEligibleForRun(folderScope, {
-      assistantId: null,
-      chatId: "chat-1",
-      folderId: "folder-2"
-    })).toBe(false);
-    expect(memoryScopeEligibleForRun(folderScope, {
-      assistantId: null,
-      chatId: "chat-1",
-      folderId: "folder-1"
-    })).toBe(true);
-    expect(memoryScopeTransitionAllowed("FOLDER", "ACTIVE", "ORPHANED")).toBe(true);
-    expect(memoryScopeTransitionAllowed("FOLDER", "ORPHANED", "ACTIVE")).toBe(false);
-    expect(memoryScopeTransitionAllowed("GLOBAL_USER", "ACTIVE", "ORPHANED")).toBe(false);
-  });
-
-  it("prevents automatic sensitive truth and secret episodic recall", () => {
-    expect(memoryAutomaticPromotionAllowed("NORMAL")).toBe(true);
-    expect(memoryAutomaticPromotionAllowed("SENSITIVE")).toBe(false);
-    expect(memoryAutomaticPromotionAllowed("SECRET")).toBe(false);
+describe("Memory sensitivity and mutation-intent safety", () => {
+  it("rejects secret-tainted derivative plaintext", () => {
     expect(memoryDerivativePlaintextAllowed("NORMAL", false)).toBe(true);
     expect(memoryDerivativePlaintextAllowed("NORMAL", true)).toBe(false);
     expect(memoryDerivativePlaintextAllowed("SECRET", false)).toBe(false);
-    expect(memoryEpisodicRecallDecision("SENSITIVE", true, true)).toBe("ALLOW_EXACT_MATCH_ONLY");
-    expect(memoryEpisodicRecallDecision("SENSITIVE", true, false)).toBe("DENY");
-    expect(memoryEpisodicRecallDecision("HIGHLY_SENSITIVE", true, true)).toBe("DENY");
-    expect(memoryEpisodicRecallDecision("SECRET", true, true)).toBe("DENY");
   });
 
   it("permits only direct exact owner intent and rejects model/background authority", () => {

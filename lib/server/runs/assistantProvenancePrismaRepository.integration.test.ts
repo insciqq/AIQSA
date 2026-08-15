@@ -173,6 +173,8 @@ function createRunInput(
       attachmentIds: [],
       chatId: fixture.chatId,
       content,
+      knowledgePlan: { baseIds: [] },
+      toolMode: "auto",
       modelCapabilities: {
         nativePdfInput: false,
         nativeSearch: false,
@@ -184,7 +186,7 @@ function createRunInput(
       params: {},
       prompt: { developer: null, system: "Test Assistant run authorization." },
       provider: "fake",
-      searchStrategy: "search-disabled"
+      searchPlan: { mode: "all_selected", options: [] }
     },
     provider: "fake",
     providerRequestPreview: {},
@@ -232,6 +234,7 @@ async function prepareRepositoryRun(
       chatId: sendInput.chatId,
       modelId: sendInput.modelId,
       normalizedRequest: sendInput.normalizedRequest,
+      preSendAssistantMessageId: null,
       provider: sendInput.provider,
       providerRequestPreview: sendInput.providerRequestPreview,
       userId: sendInput.userId,
@@ -307,7 +310,6 @@ integration("Assistant run authorization transaction", () => {
       data: {
         capabilities: {},
         connectionId,
-        contextWindow: 128_000,
         defaultParams: {},
         displayName: "Assistant run authorization model",
         id: modelId,

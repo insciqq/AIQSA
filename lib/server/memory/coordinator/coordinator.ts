@@ -11,10 +11,7 @@ import {
 } from "./policy";
 import type { MemoryCoordinatorRepository } from "./prismaRepository";
 import type { MemoryCoordinatorRegistry } from "./registry";
-import {
-  createEmptyMemorySchedulerUsageSource,
-  MemoryScheduler
-} from "./scheduler";
+import { MemoryScheduler } from "./scheduler";
 import type {
   MemoryDeletionClaim,
   MemoryJobClaim,
@@ -74,8 +71,7 @@ export class MemoryCoordinator {
     this.#registry = input.registry;
     this.#repository = input.repository;
     this.#scheduler = input.scheduler ?? new MemoryScheduler({
-      policy: this.#policy,
-      usageSource: createEmptyMemorySchedulerUsageSource()
+      policy: this.#policy
     });
   }
 
@@ -297,17 +293,6 @@ export class MemoryCoordinator {
     let currentStage = claim.stage;
     let releaseOwner: (() => void) | null = null;
     try {
-      const schedulerDecision = await this.#scheduler.decide(claim, this.#clock());
-      if (schedulerDecision.status === "DEFER") {
-        const accepted = await this.#repository.deferJob({
-          claim,
-          errorCode: schedulerDecision.errorCode,
-          nextAttemptAt: schedulerDecision.nextAttemptAt,
-          now: this.#clock()
-        });
-        if (!accepted) controller.abort(new Error("memory_job_lease_lost"));
-        return;
-      }
       releaseOwner = await this.#scheduler.acquireOwner(
         claim.userId,
         controller.signal

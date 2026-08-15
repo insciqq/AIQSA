@@ -81,6 +81,7 @@ function createRunInput(
       knowledgePlan: {
         baseIds: [...knowledgeAdmissionPlan.knowledgePlan.baseIds]
       },
+      toolMode: "auto",
       modelCapabilities: {
         nativePdfInput: false,
         nativeSearch: false,
@@ -92,7 +93,7 @@ function createRunInput(
       params: {},
       prompt: { developer: null, system: "Knowledge run integration" },
       provider: "fake",
-      searchStrategy: null
+      searchPlan: { mode: "all_selected", options: [] }
     },
     provider: "fake",
     providerRequestPreview: {},
@@ -178,7 +179,6 @@ integration("Knowledge run binding transaction", () => {
         activeVersion: 1,
         capabilities: configuration.capabilities,
         connectionId,
-        contextWindow: 32_768,
         defaultParams: {},
         displayName: "Knowledge run embedding model",
         draftConfig: {},
@@ -300,18 +300,6 @@ integration("Knowledge run binding transaction", () => {
       credentialVersionId,
       providerModelId: embeddingModelId
     });
-    const inspection = await runs.getRunForUser(accepted.runId, memberId);
-    expect(inspection).toMatchObject({
-      knowledgeBindings: [{
-        indexGenerationId: persistedBeforeMutation.indexGenerationId,
-        knowledgeBaseId,
-        ordinal: 0
-      }],
-      knowledgePlan: { baseIds: [knowledgeBaseId] }
-    });
-    expect(inspection?.knowledgeBindings?.[0]).not.toHaveProperty("embeddingCredentialId");
-    expect(inspection?.knowledgeBindings?.[0]).not.toHaveProperty("embeddingExecutionSnapshot");
-
     await database.knowledgeBasePublication.delete({ where: { id: publicationId } });
     const rejectedChatId = await createChat("Rejected Knowledge run");
     await expect(
@@ -365,11 +353,5 @@ integration("Knowledge run binding transaction", () => {
       where: { id: persistedBeforeMutation.id }
     });
     expect(persistedAfterMutation).toEqual(persistedBeforeMutation);
-    expect((await runs.getRunForUser(accepted.runId, memberId))?.knowledgeBindings?.[0])
-      .toMatchObject({
-        baseContentRevision: 0,
-        indexGenerationId: oldGeneration.id,
-        indexedContentRevision: 0
-      });
   });
 });

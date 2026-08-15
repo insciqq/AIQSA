@@ -1,9 +1,4 @@
 export type MemoryCoordinatorPolicy = Readonly<{
-  backgroundBudgetRefreshMs: number;
-  backgroundInstallDailyCallLimit: number;
-  backgroundInstallDailyCostMicrosLimit: number;
-  backgroundUserDailyCallLimit: number;
-  backgroundUserDailyCostMicrosLimit: number;
   blockedDeletionRetryMs: number;
   deletionFastRetryDelaysMs: readonly number[];
   heartbeatMs: number;
@@ -21,11 +16,6 @@ export type MemoryCoordinatorPolicy = Readonly<{
 }>;
 
 export const DEFAULT_MEMORY_COORDINATOR_POLICY: MemoryCoordinatorPolicy = Object.freeze({
-  backgroundBudgetRefreshMs: 60_000,
-  backgroundInstallDailyCallLimit: 4_096,
-  backgroundInstallDailyCostMicrosLimit: 25_000_000,
-  backgroundUserDailyCallLimit: 64,
-  backgroundUserDailyCostMicrosLimit: 500_000,
   blockedDeletionRetryMs: 15 * 60_000,
   deletionFastRetryDelaysMs: Object.freeze([1_000, 5_000, 30_000]),
   heartbeatMs: 10_000,
@@ -43,35 +33,10 @@ export const DEFAULT_MEMORY_COORDINATOR_POLICY: MemoryCoordinatorPolicy = Object
 });
 
 const ENVIRONMENT_POLICY_FIELDS = Object.freeze({
-  AIQSA_MEMORY_BACKGROUND_BUDGET_REFRESH_MS: Object.freeze({
-    field: "backgroundBudgetRefreshMs" as const,
-    max: 60 * 60_000,
-    min: 1_000
-  }),
   AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: Object.freeze({
     field: "intervalMs" as const,
     max: 60_000,
     min: 1_000
-  }),
-  AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_CALLS: Object.freeze({
-    field: "backgroundInstallDailyCallLimit" as const,
-    max: 1_000_000,
-    min: 1
-  }),
-  AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_COST_MICROS: Object.freeze({
-    field: "backgroundInstallDailyCostMicrosLimit" as const,
-    max: 2_000_000_000,
-    min: 1
-  }),
-  AIQSA_MEMORY_BACKGROUND_USER_DAILY_CALLS: Object.freeze({
-    field: "backgroundUserDailyCallLimit" as const,
-    max: 100_000,
-    min: 1
-  }),
-  AIQSA_MEMORY_BACKGROUND_USER_DAILY_COST_MICROS: Object.freeze({
-    field: "backgroundUserDailyCostMicrosLimit" as const,
-    max: 2_000_000_000,
-    min: 1
   }),
   AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS: Object.freeze({
     field: "maxDeletionClaimsPerWorkerPass" as const,
@@ -127,15 +92,6 @@ export function resolveMemoryCoordinatorPolicy(
     !boundedInteger(policy.intervalMs, 10, 60_000) ||
     !boundedInteger(policy.leaseMs, 100, 15 * 60_000) ||
     !boundedInteger(policy.heartbeatMs, 10, policy.leaseMs - 1) ||
-    !boundedInteger(policy.backgroundBudgetRefreshMs, 1_000, 60 * 60_000) ||
-    !boundedInteger(policy.backgroundUserDailyCallLimit, 1, 100_000) ||
-    !boundedInteger(policy.backgroundInstallDailyCallLimit, 1, 1_000_000) ||
-    !boundedInteger(policy.backgroundUserDailyCostMicrosLimit, 1, 2_000_000_000) ||
-    !boundedInteger(
-      policy.backgroundInstallDailyCostMicrosLimit,
-      1,
-      2_000_000_000
-    ) ||
     !boundedInteger(policy.maxJobAttempts, 1, 20) ||
     !boundedInteger(policy.maxDeletionFastAttempts, 1, 20) ||
     !boundedInteger(policy.maxJobParallel, 1, 16) ||
@@ -144,10 +100,6 @@ export function resolveMemoryCoordinatorPolicy(
     !boundedInteger(policy.maxJobClaimsPerWorkerPass, 1, 1_000) ||
     !boundedInteger(policy.maxDeletionClaimsPerWorkerPass, 1, 1_000) ||
     !boundedInteger(policy.reconciliationBatchSize, 1, 1_000) ||
-    policy.backgroundUserDailyCallLimit >
-      policy.backgroundInstallDailyCallLimit ||
-    policy.backgroundUserDailyCostMicrosLimit >
-      policy.backgroundInstallDailyCostMicrosLimit ||
     !boundedInteger(policy.blockedDeletionRetryMs, 1_000, 7 * 24 * 60 * 60_000) ||
     !validDelays(policy.jobRetryDelaysMs) ||
     !validDelays(policy.deletionFastRetryDelaysMs)

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { presentRunLifecycleV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import {
-  runTransportEvidenceV2,
+  runTransportStateV2,
   transportLostForMessageV2
 } from "./runTransportPresentation";
 
@@ -12,7 +12,7 @@ const streamingMessage = {
 };
 
 function present(
-  slice: ReturnType<typeof runTransportEvidenceV2>,
+  slice: ReturnType<typeof runTransportStateV2>,
   content = "Частичный ответ"
 ) {
   return presentRunLifecycleV2({
@@ -40,8 +40,8 @@ describe("Run transport presentation v2", () => {
   it("presents a genuine transport error as connection_lost, never as error", () => {
     // After a dropped stream the lifecycle store marks the chat ambiguous and
     // the local message was stamped "error" — that stamp is not server
-    // evidence and must not masquerade as a terminal failure.
-    const slice = runTransportEvidenceV2({
+    // server truth and must not masquerade as a terminal failure.
+    const slice = runTransportStateV2({
       activeChatStreaming: false,
       interruptedRun: { assistantMessageId: "assistant-1", runId: "run-1" },
       message: { ...streamingMessage, status: "error" },
@@ -57,7 +57,7 @@ describe("Run transport presentation v2", () => {
   });
 
   it("never reports connection loss while the transport is healthy", () => {
-    const slice = runTransportEvidenceV2({
+    const slice = runTransportStateV2({
       activeChatStreaming: true,
       interruptedRun: null,
       message: streamingMessage,
@@ -71,7 +71,7 @@ describe("Run transport presentation v2", () => {
   it("clears the indicator once refresh reconciles with server truth", () => {
     // refreshInterruptedRun clears the ambiguity record and replaces the
     // message with durable server state; the presentation follows it.
-    const recovered = runTransportEvidenceV2({
+    const recovered = runTransportStateV2({
       activeChatStreaming: false,
       interruptedRun: null,
       message: { ...streamingMessage, status: "complete" },
@@ -85,7 +85,7 @@ describe("Run transport presentation v2", () => {
   it("keeps the honest resume-orphan derivation for persisted streaming runs", () => {
     // A persisted run still reports streaming but no client stream exists:
     // the existing derivation shows connection loss rather than fake activity.
-    const slice = runTransportEvidenceV2({
+    const slice = runTransportStateV2({
       activeChatStreaming: false,
       interruptedRun: null,
       message: streamingMessage,

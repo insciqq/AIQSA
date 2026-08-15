@@ -35,22 +35,13 @@ export const AIQSA_THEMES: ThemeOption[] = [
 ];
 
 const THEME_IDS = new Set<ThemeId>(AIQSA_THEMES.map((theme) => theme.id));
-const LEGACY_DARK_THEME_IDS = new Set(["aiqsa", "classic-dark", "graphite", "verdant"]);
-const LEGACY_LIGHT_THEME_IDS = new Set(["neutral", "paper"]);
 
 export function isThemeId(value: unknown): value is ThemeId {
   return typeof value === "string" && THEME_IDS.has(value as ThemeId);
 }
 
-/**
- * Normalizes both the current three-value contract and every shipped legacy
- * browser value. Unknown or absent values deliberately choose System.
- */
 export function resolveThemeId(value: unknown): ThemeId {
-  if (isThemeId(value)) return value;
-  if (typeof value === "string" && LEGACY_DARK_THEME_IDS.has(value)) return "dark";
-  if (typeof value === "string" && LEGACY_LIGHT_THEME_IDS.has(value)) return "light";
-  return DEFAULT_THEME_ID;
+  return isThemeId(value) ? value : DEFAULT_THEME_ID;
 }
 
 export function resolveThemeOption(value: unknown): ThemeOption {

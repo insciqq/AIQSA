@@ -45,11 +45,14 @@ if (!apiKey) {
 const apiRoot = "https://generativelanguage.googleapis.com/v1";
 const modelId = process.env.AIQSA_GEMINI_SMOKE_MODEL || "gemini-3.6-flash";
 const searchEnabled = process.env.AIQSA_GEMINI_SMOKE_SEARCH === "1";
-const emptyTextEnabled = process.env.AIQSA_GEMINI_SMOKE_EMPTY_TEXT === "1";
-const maxOutputTokens = searchEnabled ? 4_096 : emptyTextEnabled ? 8 : 64;
+const attachmentContextEnabled =
+  process.env.AIQSA_GEMINI_SMOKE_ATTACHMENT_CONTEXT === "1";
+const maxOutputTokens = searchEnabled ? 4_096 : attachmentContextEnabled ? 8 : 64;
 const connection = {
   allowPrivateNetwork: false,
-  apiRoot
+  apiRoot,
+  authenticationMode: "bearer" as const,
+  responseTimeoutMs: 300_000
 };
 const modelCapabilities = {
   nativePdfInput: false,
@@ -64,7 +67,7 @@ const modelCapabilities = {
 const defaultParams = {
   maxTokens: maxOutputTokens,
   reasoning: { effort: searchEnabled ? "medium" : "minimal" },
-  stream: !emptyTextEnabled
+  stream: !attachmentContextEnabled
 };
 const smokeTool = {
   capability: "mcp" as const,
@@ -89,24 +92,24 @@ const request: ProviderRunRequest = {
     blocks: [{
       text: searchEnabled
         ? "Find one current news headline from Spain today and answer in one short sentence."
-        : emptyTextEnabled
+        : attachmentContextEnabled
           ? "Reply with one short word."
         : "Call aiqsa_smoke_marker exactly once. After its result, reply exactly AIQSA_TOOL_OK.",
       type: "text"
     }]
   },
-  ...(emptyTextEnabled
+  ...(attachmentContextEnabled
     ? {
         context: {
           messages: [
             {
-              content: { blocks: [{ attachmentId: "smoke-historical-image", type: "image" }] },
-              id: "historical-attachment-only",
+              content: { blocks: [{ attachmentId: "smoke-prior-image", type: "image" }] },
+              id: "prior-attachment-only",
               role: "user"
             },
             {
               content: { blocks: [{ text: "Acknowledged.", type: "text" }] },
-              id: "historical-assistant",
+              id: "prior-assistant",
               role: "assistant"
             },
             {
@@ -120,6 +123,8 @@ const request: ProviderRunRequest = {
         forceNonStreaming: true
       }
     : {}),
+  knowledgePlan: { baseIds: [] },
+  toolMode: "auto",
   modelCapabilities,
   modelId,
   params: defaultParams,
@@ -127,7 +132,7 @@ const request: ProviderRunRequest = {
     developer: null,
     system: searchEnabled
       ? "This is a bounded AIQSA Google Search smoke test. Use Google Search before answering."
-      : emptyTextEnabled
+      : attachmentContextEnabled
         ? "This is a bounded AIQSA request-shape smoke test."
       : [
           "This is a tiny deterministic AIQSA provider tool-loop smoke test.",
@@ -136,8 +141,24 @@ const request: ProviderRunRequest = {
         ].join(" ")
   },
   provider: "gemini",
-  searchStrategy: searchEnabled ? "gemini-google-search" : "search-disabled",
-  tools: searchEnabled || emptyTextEnabled ? [] : [smokeTool]
+  searchPlan: {
+    mode: "all_selected",
+    options: searchEnabled ? [{
+      adapterKind: "answer_provider_hosted",
+      config: {},
+      credentialMode: "answer_provider",
+      displayName: "Google Search",
+      executionModes: ["all_selected"],
+      modelId: null,
+      optionId: "gemini-google-search",
+      protocol: "gemini_google_search",
+      provider: "gemini",
+      providerModelId: null,
+      revisionId: "smoke-gemini-search",
+      searchStrategyRowId: "smoke-gemini-search"
+    }] : []
+  },
+  tools: searchEnabled || attachmentContextEnabled ? [] : [smokeTool]
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -162,7 +183,7 @@ function httpStatusFromError(error: unknown): number | null {
   return match ? Number(match[1]) : null;
 }
 
-async function runEmptyTextProbe(): Promise<void> {
+async function runAttachmentContextProbe(): Promise<void> {
   const body = buildGeminiInteractionsRequest(request);
   const input = Array.isArray(body.input) ? body.input : [];
   const firstStep = isRecord(input[0]) ? input[0] : {};
@@ -174,13 +195,13 @@ async function runEmptyTextProbe(): Promise<void> {
       isRecord(part) && part.type === "text" &&
       typeof part.text === "string" && !part.text.trim());
   });
-  const historicalAttachmentMarkerPresent = firstStep.type === "user_input" &&
+  const priorAttachmentMarkerPresent = firstStep.type === "user_input" &&
     firstPart.type === "text" && firstPart.text === "[image attachment]";
 
-  if (emptyTextPartPresent || !historicalAttachmentMarkerPresent) {
+  if (emptyTextPartPresent || !priorAttachmentMarkerPresent) {
     console.error(JSON.stringify({
       emptyTextPartPresent,
-      historicalAttachmentMarkerPresent,
+      priorAttachmentMarkerPresent,
       status: "failed"
     }, null, 2));
     process.exitCode = 1;
@@ -208,7 +229,7 @@ async function runEmptyTextProbe(): Promise<void> {
       responseStepCount > 0 && (usage.totalTokens ?? 0) > 0;
     console.log(JSON.stringify({
       emptyTextPartPresent,
-      historicalAttachmentMarkerPresent,
+      priorAttachmentMarkerPresent,
       httpStatus: observedHttpStatus,
       inputStepCount: input.length,
       providerAccepted: true,
@@ -222,7 +243,7 @@ async function runEmptyTextProbe(): Promise<void> {
     const httpStatus = observedHttpStatus ?? httpStatusFromError(error);
     console.log(JSON.stringify({
       emptyTextPartPresent,
-      historicalAttachmentMarkerPresent,
+      priorAttachmentMarkerPresent,
       httpStatus,
       inputStepCount: input.length,
       providerAccepted: false,
@@ -234,11 +255,11 @@ async function runEmptyTextProbe(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (searchEnabled && emptyTextEnabled) {
+  if (searchEnabled && attachmentContextEnabled) {
     throw new Error("gemini_smoke_modes_conflict");
   }
-  if (emptyTextEnabled) {
-    await runEmptyTextProbe();
+  if (attachmentContextEnabled) {
+    await runAttachmentContextProbe();
     return;
   }
 

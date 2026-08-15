@@ -38,10 +38,7 @@ import type {
 } from "@/components/app-shell/powerAppShellV2Contracts";
 import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
 import type {
-  Catalog,
   ChatSummary,
-  PersistedRun,
-  RunEventView,
   ThreadMessage
 } from "@/components/app-shell/types";
 import {
@@ -77,17 +74,8 @@ import {
   type ConversationMessageV2
 } from "@/features/conversation-v2/ConversationV2";
 import {
-  EvidenceRowV2,
-  EvidenceStackV2,
-  KnowledgeEvidenceV2,
-  ReasoningEvidenceV2,
-  SearchEvidenceV2,
-  ToolEvidenceV2
-} from "@/features/evidence-v2/EvidenceV2";
-import {
-  MemoryActionConfirmationV2,
-  MemoryEvidenceV2
-} from "@/features/evidence-v2/MemoryEvidenceV2";
+  AnswerOutputsV2
+} from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import {
   AssistantsPanelV2,
   FilesPanelV2,
@@ -109,8 +97,6 @@ import {
   type NavigationChatRowState,
   type NewChatMode
 } from "@/features/navigation-v2/NavigationV2";
-import { ExactRunDetailsDrawerV2 } from "@/features/run-details-v2/RunDetailsV2";
-import type { RunDetailsTargetV2 } from "@/features/run-details-v2/runDetailsModel";
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import {
   presentRunLifecycleV2,
@@ -118,7 +104,7 @@ import {
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { documentTitleV2 } from "@/features/workspace-v2/documentTitle";
 import {
-  runTransportEvidenceV2,
+  runTransportStateV2,
   transportLostForMessageV2
 } from "@/features/workspace-v2/runTransportPresentation";
 import { SettingsV2 } from "@/features/settings-v2/SettingsV2";
@@ -127,13 +113,10 @@ import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
 import type {
   ChatNavigationFolderWire,
-  ChatNavigationSummaryWire,
-  ThreadArtifactSummary,
-  ThreadRunEvidenceSummary
+  ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
 import {
   Fragment,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -142,28 +125,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-const EMPTY_EVIDENCE_SUMMARY: ThreadRunEvidenceSummary = {
-  fileCount: 0,
-  hasUsage: false,
-  sourceCount: 0,
-  toolCallCount: 0
-};
-
 function messageText(message: ThreadMessage): string {
   return textFromThreadContent(message.content);
-}
-
-function persistedEvents(run: PersistedRun | null): RunEventView[] {
-  return run?.events.map((event) => ({
-    data: event.payload,
-    type: event.eventType
-  })) ?? [];
-}
-
-function assistantAnswerLabel(messages: readonly ThreadMessage[], messageId: string): string {
-  const index = messages.filter((message) => message.role === "assistant")
-    .findIndex((message) => message.id === messageId);
-  return index >= 0 ? `Answer ${index + 1}` : "Answer";
 }
 
 function currentWorkspaceChat(chatId: string): ChatSummary | null {
@@ -180,24 +143,17 @@ function scopeLabel(scope: Readonly<{ projectId?: string; type: string }>): stri
   return scope.type.toLocaleLowerCase().replaceAll("_", " ");
 }
 
-const opaqueUuidPattern =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-
 export type AnswerIdentityV2 = Readonly<{
   label: string;
-  testId: "answer-assistant-identity" | "evidence-row-model";
+  testId: "answer-assistant-identity";
 }>;
 
 /**
- * Optional quiet identity for the evidence row: the accepted Assistant
- * identity, otherwise the catalog-resolved model display name. Adapter ids,
- * raw model ids, and opaque UUIDs never render; when the catalog cannot
- * resolve a display name the item is simply omitted (Run details keeps the
- * exact historical binding).
+ * Optional quiet accepted Assistant identity. Ordinary answers stay neutral:
+ * provider, adapter, raw model, and opaque ids never become answer chrome.
  */
 export function answerIdentityV2(
-  catalog: Catalog | null,
-  message: Pick<ThreadMessage, "assistantIdentity" | "modelId" | "provider">
+  message: Pick<ThreadMessage, "assistantIdentity">
 ): AnswerIdentityV2 | null {
   if (message.assistantIdentity) {
     return {
@@ -205,99 +161,7 @@ export function answerIdentityV2(
       testId: "answer-assistant-identity"
     };
   }
-  const modelId = message.modelId;
-  if (!modelId || opaqueUuidPattern.test(modelId)) return null;
-  const models = catalog?.models ?? [];
-  const provider = message.provider ?? null;
-  const exact = models.find((model) =>
-    model.modelId === modelId &&
-    (!provider || model.provider === provider || model.providerFamily === provider)
-  );
-  const matches = exact
-    ? [exact]
-    : models.filter((model) => model.modelId === modelId || model.upstreamModelId === modelId);
-  const names = new Set(matches.map((model) => model.displayName));
-  return names.size === 1
-    ? { label: matches[0]!.displayName, testId: "evidence-row-model" }
-    : null;
-}
-
-export function LiveEvidenceV2({
-  artifact,
-  identity = null,
-  locale,
-  onOpenMemorySource,
-  onOpenRunDetails,
-  showReasoning,
-  showTools,
-  summary
-}: Readonly<{
-  artifact: ThreadArtifactSummary | null;
-  identity?: AnswerIdentityV2 | null;
-  locale: "EN" | "RU";
-  onOpenMemorySource?(chatId: string): void;
-  onOpenRunDetails(): void;
-  showReasoning: boolean;
-  showTools: boolean;
-  summary: ThreadRunEvidenceSummary | null;
-}>) {
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
-  const rowSummary = summary ?? EMPTY_EVIDENCE_SUMMARY;
-  return (
-    <div className="v2-live-evidence">
-      <EvidenceRowV2
-        identitySlot={identity ? (
-          <span data-testid={identity.testId}>{identity.label}</span>
-        ) : null}
-        summary={rowSummary}
-        onOpenRunDetails={onOpenRunDetails}
-        onOpenSources={() => setSearchOpen(true)}
-        onOpenTools={() => setToolsOpen(true)}
-      />
-      {artifact ? (
-        <EvidenceStackV2>
-          {artifact.searchCount > 0 ||
-          (artifact.searchActivity?.length ?? 0) > 0 ||
-          artifact.groundingDisplay?.provider === "gemini" ? (
-            <SearchEvidenceV2
-              open={searchOpen}
-              summary={artifact}
-              onOpenChange={setSearchOpen}
-            />
-          ) : null}
-          <KnowledgeEvidenceV2 summary={artifact} />
-          {showTools ? (
-            <ToolEvidenceV2
-              open={toolsOpen}
-              toolCalls={artifact.toolCalls}
-              onOpenChange={setToolsOpen}
-            />
-          ) : null}
-          {showReasoning ? (
-            // Persisted run events carry no timestamps, so no reasoning
-            // duration is derivable; the header stays a plain "Reasoning".
-            <ReasoningEvidenceV2 texts={artifact.reasoningText} />
-          ) : null}
-          {artifact.contextTruncation ? (
-            <p className="v2-live-context-note">
-              Context trimmed: {artifact.contextTruncation.droppedMessages} messages were not sent with this request.
-            </p>
-          ) : null}
-          {artifact.memoryReceipt ? (
-            <MemoryEvidenceV2
-              locale={locale}
-              onOpenSourceChat={onOpenMemorySource}
-              receipt={artifact.memoryReceipt}
-            />
-          ) : null}
-          {artifact.memoryAction ? (
-            <MemoryActionConfirmationV2 action={artifact.memoryAction} locale={locale} />
-          ) : null}
-        </EvidenceStackV2>
-      ) : null}
-    </div>
-  );
+  return null;
 }
 
 export type RunSetupComposerV2 = Pick<
@@ -320,13 +184,11 @@ export type RunSetupComposerV2 = Pick<
   | "selectedSearchOptionIds"
   | "showCitations"
   | "showReasoningBlocks"
-  | "showToolActivity"
   | "streamMode"
   | "temperature"
   | "toggleCitationsVisibility"
   | "toggleNotificationSound"
   | "toggleReasoningBlockVisibility"
-  | "toggleToolActivityVisibility"
   | "useOrganizationModelDefault"
   | "useOrganizationSearchDefault"
 >;
@@ -487,12 +349,6 @@ export function RunSetupV2({ composer, onClose }: Readonly<{
               label="Reasoning blocks"
               stateLabels={["Shown", "Hidden"]}
               onToggle={composer.toggleReasoningBlockVisibility}
-            />
-            <RunSetupSwitchV2
-              checked={composer.showToolActivity}
-              label="Tool activity"
-              stateLabels={["Shown", "Hidden"]}
-              onToggle={composer.toggleToolActivityVisibility}
             />
             <RunSetupSwitchV2
               checked={composer.notificationSoundEnabled}
@@ -714,7 +570,6 @@ export function WorkspaceHeaderV2({
   onRenameChange,
   onRenameSave,
   onRenameStart,
-  onRunDetails = null,
   onSettings,
   onShare,
   shareDisabled,
@@ -742,8 +597,6 @@ export function WorkspaceHeaderV2({
   onRenameChange(value: string): void;
   onRenameSave(): void;
   onRenameStart(): void;
-  /** Null disables "Run details" (no settled answer with a run yet). */
-  onRunDetails?: (() => void) | null;
   onSettings(): void;
   onShare(): void;
   shareDisabled: boolean;
@@ -794,8 +647,7 @@ export function WorkspaceHeaderV2({
     { label: "Export", onSelect: () => onExport("markdown") },
     { label: "Export as JSON", onSelect: () => onExport("json") },
     { label: "Copy entire thread", onSelect: onCopyThread },
-    { label: "Branches", onSelect: onBranches },
-    { disabled: !onRunDetails, label: "Run details", onSelect: onRunDetails ?? undefined }
+    { label: "Branches", onSelect: onBranches }
   ];
 
   return (
@@ -1127,8 +979,7 @@ export function WelcomeOrientationV2({
 }
 
 export function PowerAppShellV2View(props: PowerAppShellV2Props) {
-  const { composer, details, overlays, session, settings, thread, workspace } = props;
-  const [runDetailsTarget, setRunDetailsTarget] = useState<RunDetailsTargetV2 | null>(null);
+  const { branches, composer, overlays, session, settings, thread, workspace } = props;
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [memoryOwnerOpen, setMemoryOwnerOpen] = useState(false);
   const [mcpBusy, setMcpBusy] = useState(false);
@@ -1143,13 +994,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
   );
   const composerDockRef = useRef<HTMLDivElement>(null);
-  const loadRunRef = useRef(thread.loadRunReceipt);
-  const loadRun = useCallback((runId: string) => loadRunRef.current(runId), []);
   const libraryOpen = Boolean(settings.library || settings.knowledge || settings.memory.open);
 
-  useEffect(() => {
-    loadRunRef.current = thread.loadRunReceipt;
-  }, [thread.loadRunReceipt]);
   useEffect(() => {
     void refreshMcpSettings().catch(() => undefined);
   }, []);
@@ -1312,6 +1158,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     />
   ) : undefined;
   const messageById = new Map(thread.visibleMessages.map((message) => [message.id, message]));
+  const liveTail = thread.visibleMessages.at(-1);
+  const readingAnchorMessageId = liveTail?.role === "assistant"
+    ? liveTail.parentMessageId
+    : null;
   const conversationMessages: ConversationMessageV2[] = thread.visibleMessages.map((message) => ({
     content: messageText(message),
     id: message.id,
@@ -1363,9 +1213,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const pagerSlot = (
       <BranchPagerSlotV2
         disabledReason={thread.activeChatStreaming ? "Wait for the current answer to finish." : null}
-        graph={details.branchGraph}
+        graph={branches.graph}
         messageId={source.id}
-        onCheckout={details.checkoutBranch}
+        onCheckout={branches.checkoutBranch}
       />
     );
     if (source.role === "user") {
@@ -1383,70 +1233,54 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           )}
           anchorId={source.id}
           content={messageText(source)}
+          expandForReadingAnchor={source.id === readingAnchorMessageId}
           role="user"
         />
       );
     }
-    const run = source.runId
-      ? thread.persistedRunsById[source.runId] ?? (thread.lastRun?.id === source.runId ? thread.lastRun : null)
-      : null;
-    const events = source.runId === thread.currentRunId ? details.events : persistedEvents(run);
+    const events = source.runId === thread.currentRunId ? thread.events : [];
     const artifact = source.runId === thread.currentRunId
       ? thread.liveArtifactSummary ?? source.artifactSummary ?? null
       : source.artifactSummary ?? null;
-    const target = source.runId ? {
-      answerLabel: assistantAnswerLabel(thread.visibleMessages, source.id),
-      assistantMessageId: source.id,
-      runId: source.runId
-    } satisfies RunDetailsTargetV2 : null;
     // A genuinely lost stream transport (reader error / end without a
     // terminal frame, recorded by the run-lifecycle store) presents as the
     // honest connection-lost strip; the transport slice suppresses the
     // locally invented post-loss "error" status until refresh reconciles.
     const transportLost = transportLostForMessageV2(thread.interruptedRun, source);
     const presentation = presentRunLifecycleV2({
-      ...runTransportEvidenceV2({
+      ...runTransportStateV2({
         activeChatStreaming: thread.activeChatStreaming,
         interruptedRun: thread.interruptedRun,
         message: { id: source.id, runId: source.runId ?? null, status: source.status },
-        persistedRunStatus: run?.status ?? null
+        persistedRunStatus: null
       }),
       content: messageText(source),
       events,
       runId: source.runId ?? null
     });
-    // A live run shows only its honest status line (plus Stop in the
-    // composer): no action dock, no evidence row, and never a raw run or
-    // request id. The settled answer gets exactly one muted evidence row —
-    // non-zero counters, optional catalog-resolved identity, and Run details
-    // as an ordinary item — plus the collapsed disclosures. Token counts live
-    // only in the Run details drawer.
+    // A live run shows only its factual status and streamed content. A settled
+    // answer adds only direct user outputs; it never grows a receipt row or
+    // post-hoc execution surface.
     const settled = settledRunPresentationV2(presentation);
+    const identity = answerIdentityV2(source);
     return (
       <RunAnswerV2
         actions={settled ? actions : undefined}
         actionsSlot={settled ? (
           <>
-            {target ? (
-              <LiveEvidenceV2
-                artifact={artifact}
-                identity={answerIdentityV2(composer.catalog, source)}
-                locale={composer.memory.locale}
-                onOpenMemorySource={thread.openMemorySourceChat}
-                showReasoning={composer.showReasoningBlocks}
-                showTools={composer.showToolActivity}
-                summary={source.evidenceSummary ?? null}
-                onOpenRunDetails={() => setRunDetailsTarget(target)}
-              />
-            ) : null}
+            <AnswerOutputsV2
+              artifact={artifact}
+              identitySlot={identity ? (
+                <span data-testid={identity.testId}>{identity.label}</span>
+              ) : null}
+              showReasoning={composer.showReasoningBlocks}
+            />
             {pagerSlot}
           </>
         ) : pagerSlot}
         anchorId={source.id}
         content={messageText(source)}
-        onRefresh={() => transportLost
-          ? thread.refreshInterruptedRun()
-          : source.runId ? thread.loadRunReceipt(source.runId) : null}
+        onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}
         onRegenerate={() => thread.handleRegenerateMessage(source.id)}
         onRetry={() => thread.handleRegenerateMessage(source.id)}
         onSelectModel={() => setRunSetupOpen(true)}
@@ -1482,25 +1316,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     if (full) action(full);
     else void workspace.pane.actions.retry();
   };
-  // "Run details" in the header "⋯" opens the existing Run details drawer for
-  // the latest answer that has a persisted run; without one the item disables.
-  const lastAnswerWithRun = [...thread.visibleMessages].reverse().find(
-    (message) => message.role === "assistant" && message.runId
-  );
-  const headerRunDetailsTarget: RunDetailsTargetV2 | null = lastAnswerWithRun?.runId
-    ? {
-        answerLabel: assistantAnswerLabel(thread.visibleMessages, lastAnswerWithRun.id),
-        assistantMessageId: lastAnswerWithRun.id,
-        runId: lastAnswerWithRun.runId
-      }
-    : null;
   const temporarySession = composer.memory.mode === "TEMPORARY";
   const deleteActiveChatPermanently = permanentChatDeletionAvailable
     ? withActiveChat((full) => void workspace.pane.actions.deleteChatPermanently(full))
     : null;
 
   return (
-    <main className="v2-live-root" data-testid="app-shell" data-ui-version="v2">
+    <main className="v2-live-root" data-testid="app-shell">
       <UiV2IconSprite />
       {libraryOpen ? (
         <LibrarySurfaceV2 composer={composer} props={props} onOpenMemoryOwner={() => setMemoryOwnerOpen(true)} />
@@ -1598,7 +1420,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               }
               folders={navigationFolders}
               onArchive={withActiveChat((full) => void workspace.pane.actions.deleteChat(full))}
-              onBranches={() => details.open("branch")}
+              onBranches={branches.show}
               onCommands={overlays.palette.show}
               onCopyThread={() => void thread.copyVisibleThread()}
               onDelete={deleteActiveChatPermanently}
@@ -1616,9 +1438,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               onRenameChange={workspace.pane.actions.changeEditingChatTitle}
               onRenameSave={withActiveChat((full) => void workspace.pane.actions.saveChatTitle(full))}
               onRenameStart={withActiveChat((full) => workspace.pane.actions.startChatEdit(full))}
-              onRunDetails={headerRunDetailsTarget
-                ? () => setRunDetailsTarget(headerRunDetailsTarget)
-                : null}
               onSettings={settings.open}
               onShare={() => void session.shareActiveBranch()}
               shareDisabled={temporarySession}
@@ -1663,28 +1482,18 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         </ReadingRoomShellV2>
       )}
 
-      {details.activeTab === "branch" && details.mode !== "closed" ? (
+      {branches.open ? (
         <BranchDrawerV2
           checkoutDisabledReason={thread.activeChatStreaming ? "Wait for the current answer to finish." : null}
-          error={details.branchError}
-          graph={details.branchGraph}
-          loading={details.branchLoading}
+          error={branches.error}
+          graph={branches.graph}
+          loading={branches.loading}
           onCheckout={(leafId) => {
-            details.checkoutBranch(leafId);
+            branches.checkoutBranch(leafId);
             return true;
           }}
-          onClose={() => details.changeMode("closed")}
-          onRetry={details.retryBranches}
-        />
-      ) : null}
-      {runDetailsTarget ? (
-        <ExactRunDetailsDrawerV2
-          cachedRun={thread.persistedRunsById[runDetailsTarget.runId] ?? null}
-          catalog={composer.catalog}
-          loadRun={loadRun}
-          target={runDetailsTarget}
-          onClose={() => setRunDetailsTarget(null)}
-          onOpenMemorySource={thread.openMemorySourceChat}
+          onClose={branches.close}
+          onRetry={branches.retry}
         />
       ) : null}
       {runSetupOpen ? <RunSetupV2 composer={composer} onClose={() => setRunSetupOpen(false)} /> : null}
@@ -1767,12 +1576,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       ) : null}
       {workspace.archived.open ? (
-        <ArchivedChatsDialog locale={composer.memory.locale} onRestored={workspace.archived.onRestored} />
+        <ArchivedChatsDialog onRestored={workspace.archived.onRestored} />
       ) : null}
       {overlays.confirmations.chat ? (
         <ChatDeleteConfirmationDialog
           chatTitle={overlays.confirmations.chat.title}
-          locale={composer.memory.locale}
           onCancel={overlays.confirmations.cancelChat}
           onConfirm={overlays.confirmations.confirmChat}
         />
@@ -1790,7 +1598,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onConfirm={overlays.confirmations.confirmMessage}
         />
       ) : null}
-      <PermanentChatDeletionSurface locale={composer.memory.locale} />
+      <PermanentChatDeletionSurface />
       {overlays.palette.open ? (
         <CommandPalette items={overlays.palette.items} onClose={overlays.palette.close} onRun={overlays.palette.run} />
       ) : null}

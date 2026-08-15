@@ -49,12 +49,6 @@ const message = {
   artifactSummary: null,
   content: { blocks: [{ text: "Answer", type: "text" }] },
   createdAt: "2026-07-14T08:00:30.000Z",
-  evidenceSummary: {
-    fileCount: 2,
-    hasUsage: true,
-    sourceCount: 3,
-    toolCallCount: 1
-  },
   errorMessage: null,
   id: "message-1",
   modelId: "gpt-5.5",
@@ -62,7 +56,6 @@ const message = {
   parentMessageId: null,
   provider: "openai",
   role: "assistant",
-  runUsage: { totalTokens: 10 },
   status: "complete"
 };
 
@@ -84,22 +77,6 @@ const pageInfo = {
 function detailChat(overrides: Record<string, unknown> = {}) {
   return { ...summary, contextStats, pageInfo, ...overrides };
 }
-
-const toolActivity = {
-  argumentsPreview: { query: "memory" },
-  callId: "call-1",
-  capability: "mcp",
-  credentialSources: ["personal"],
-  durationMs: 42,
-  errorMessage: null,
-  externalAccountLabel: null,
-  ordinal: 0,
-  resultPreview: { content: [{ text: "found", type: "text" }] },
-  round: 1,
-  serverName: "Mem0",
-  status: "complete",
-  toolName: "search"
-};
 
 describe("chat wire contracts", () => {
   it("decodes the exact content-free navigation page", () => {
@@ -178,18 +155,9 @@ describe("chat wire contracts", () => {
     });
   });
 
-  it("normalizes the legacy paired empty chat default and rejects inconsistent pairs", () => {
-    expect(
-      decodeChatSummaryResponse({
-        chat: { ...summary, defaultModelId: "", defaultProvider: "" }
-      })
-    ).toEqual({
-      ...summary,
-      defaultModelId: null,
-      defaultProvider: null
-    });
-
+  it("rejects incomplete or empty chat defaults", () => {
     for (const [defaultModelId, defaultProvider] of [
+      ["", ""],
       [null, "openai"],
       ["gpt-5.5", null],
       ["", "openai"],
@@ -253,147 +221,113 @@ describe("chat wire contracts", () => {
     ).toBeNull();
   });
 
-  it("requires a valid message array and nullable usage projection for detail", () => {
+  it("decodes only direct answer outputs and strips retired receipt fields", () => {
     const artifactSummary = {
-      citationCount: 0,
-      citations: [],
-      reasoningCount: 1,
-      reasoningText: ["Checked reasoning"],
-      searchActivity: [],
-      searchCount: 0,
-      searchDisplayName: "Company Gateway Search",
-      searchStrategy: null,
-      toolCallCount: 0,
-      toolCalls: []
-    };
-    expect(
-      decodeChatDetailResponse({
-        chat: {
-          ...detailChat(),
-          messages: [{ ...message, artifactSummary }],
-          usageStats
-        }
-      })
-    ).toEqual({
-      ...detailChat(),
-      messages: [{ ...message, artifactSummary }],
-      usageStats
-    });
-    expect(
-      decodeChatDetailResponse({ chat: detailChat({ messages: [message], usageStats: null }) })
-    ).toEqual(detailChat({ messages: [message], usageStats: null }));
-    expect(decodeChatDetailResponse({ chat: detailChat({ usageStats }) })).toBeNull();
-    expect(
-      decodeChatDetailResponse({ chat: detailChat({ messages: [message] }) })
-    ).toBeNull();
-    expect(
-      decodeChatDetailResponse({
-        chat: detailChat({ messages: [{ ...message, createdAt: undefined }], usageStats })
-      })
-    ).toBeNull();
-    for (const malformedMessage of [
-      { ...message, role: "owner" },
-      { ...message, status: "finished" },
-      { ...message, evidenceSummary: { ...message.evidenceSummary, fileCount: -1 } },
-      { ...message, evidenceSummary: { ...message.evidenceSummary, hasUsage: "yes" } },
-      { ...message, evidenceSummary: { ...message.evidenceSummary, sourceCount: 1.5 } },
-      { ...message, evidenceSummary: { ...message.evidenceSummary, privateId: "leak" } },
-      { ...message, runUsage: { totalTokens: -1 } },
-      { ...message, artifactSummary: { ...artifactSummary, searchDisplayName: 7 } },
-      { ...message, artifactSummary: { ...artifactSummary, reasoningText: "not-an-array" } }
-    ]) {
-      expect(
-        decodeChatDetailResponse({
-          chat: detailChat({ messages: [malformedMessage], usageStats })
-        })
-      ).toBeNull();
-    }
-  });
-
-  it("keeps legacy messages without a run usage projection readable", () => {
-    const {
-      evidenceSummary: _evidenceSummary,
-      runUsage: _runUsage,
-      ...legacyMessage
-    } = message;
-
-    expect(
-      decodeChatDetailResponse({
-        chat: detailChat({ messages: [legacyMessage], usageStats: null })
-      })?.messages[0]
-    ).toEqual(legacyMessage);
-  });
-
-  it("accepts a null terminal evidence summary but rejects one on an active or user message", () => {
-    expect(decodeChatDetailResponse({
-      chat: detailChat({
-        messages: [{ ...message, evidenceSummary: null }],
-        usageStats
-      })
-    })?.messages[0]?.evidenceSummary).toBeNull();
-
-    for (const malformedMessage of [
-      { ...message, role: "user" },
-      { ...message, status: "streaming" }
-    ]) {
-      expect(decodeChatDetailResponse({
-        chat: detailChat({ messages: [malformedMessage], usageStats })
-      })).toBeNull();
-    }
-  });
-
-  it("requires a complete, sequential Knowledge artifact projection", () => {
-    const knowledgeSummary = {
-      citationCount: 0,
-      citations: [],
+      citationCount: 3,
+      citations: [{
+        index: 1,
+        privateRoute: "route-secret",
+        title: "Direct citation",
+        url: "https://example.com/citation"
+      }],
+      contextTruncation: { approxDroppedTokens: 100, droppedMessages: 2 },
       knowledgeCitations: [{
         baseName: "Policies",
         documentVersionNumber: 3,
         fileName: "handbook.pdf",
         handle: "K1.1",
-        knowledgeBaseId: "base-policies",
+        knowledgeBaseId: "private-base-id",
         page: 12
       }],
-      knowledgeInvocationCount: 2,
-      knowledgeOutcomes: [
-        { invocationOrdinal: 1, outcome: "complete" },
-        { invocationOrdinal: 2, outcome: "zero_above_threshold" }
-      ],
-      reasoningCount: 0,
-      reasoningText: [],
-      searchCount: 0,
-      searchStrategy: null,
-      toolCallCount: 0,
-      toolCalls: []
+      knowledgeInvocationCount: 1,
+      knowledgeOutcomes: [{ invocationOrdinal: 1, outcome: "complete" }],
+      memoryReceipt: { itemCount: 1, summary: "private receipt" },
+      reasoningCount: 1,
+      reasoningText: ["Checked reasoning"],
+      searchActivity: [{ query: "private generated query" }],
+      searchCount: 1,
+      searchStrategy: "private-route",
+      sources: [{
+        rank: 1,
+        snippet: "Safe summary",
+        title: "Evidence",
+        url: "https://example.com/evidence"
+      }],
+      toolCallCount: 1,
+      toolCalls: [{ argumentsPreview: { secret: true } }]
     };
-    const decode = (artifactSummary: unknown) => decodeChatDetailResponse({
-      chat: detailChat({ messages: [{ ...message, artifactSummary }], usageStats })
+    const decoded = decodeChatDetailResponse({
+      chat: {
+        ...detailChat(),
+        messages: [{
+          ...message,
+          evidenceSummary: { sourceCount: 99 },
+          artifactSummary,
+          runUsage: { totalTokens: 99 }
+        }],
+        usageStats
+      }
+    })?.messages[0];
+
+    expect(decoded).not.toHaveProperty("evidenceSummary");
+    expect(decoded).not.toHaveProperty("runUsage");
+    expect(decoded?.artifactSummary).toEqual({
+      citations: [{
+        index: 1,
+        title: "Direct citation",
+        url: "https://example.com/citation"
+      }],
+      knowledgeCitations: [{
+        baseName: "Policies",
+        fileName: "handbook.pdf",
+        handle: "K1.1",
+        page: 12
+      }],
+      reasoningText: ["Checked reasoning"],
+      sources: [{
+        rank: 1,
+        snippet: "Safe summary",
+        title: "Evidence",
+        url: "https://example.com/evidence"
+      }]
+    });
+    expect(JSON.stringify(decoded)).not.toMatch(
+      /private-base-id|private generated query|private-route|receipt|toolCall|contextTruncation/
+    );
+  });
+
+  it("rejects malformed direct output fields and duplicate Knowledge handles", () => {
+    const artifactSummary = {
+      citations: [],
+      knowledgeCitations: [{
+        baseName: "Policies",
+        fileName: "handbook.pdf",
+        handle: "K1.1",
+        page: 12
+      }],
+      reasoningText: [],
+      sources: []
+    };
+    const decode = (value: unknown) => decodeChatDetailResponse({
+      chat: detailChat({
+        messages: [{ ...message, artifactSummary: value }],
+        usageStats
+      })
     });
 
-    expect(decode(knowledgeSummary)?.messages[0]?.artifactSummary).toEqual(knowledgeSummary);
-    for (const malformed of [
-      { ...knowledgeSummary, knowledgeOutcomes: undefined },
-      {
-        ...knowledgeSummary,
-        knowledgeOutcomes: [
-          { invocationOrdinal: 1, outcome: "complete" },
-          { invocationOrdinal: 3, outcome: "zero_above_threshold" }
-        ]
-      },
-      {
-        ...knowledgeSummary,
-        knowledgeCitations: [
-          knowledgeSummary.knowledgeCitations[0],
-          knowledgeSummary.knowledgeCitations[0]
-        ]
-      },
-      {
-        ...knowledgeSummary,
-        knowledgeCitations: [{ ...knowledgeSummary.knowledgeCitations[0], handle: "K3.1" }]
-      }
-    ]) {
-      expect(decode(malformed)).toBeNull();
-    }
+    expect(decode(artifactSummary)).not.toBeNull();
+    expect(decode({ ...artifactSummary, reasoningText: "not-an-array" })).toBeNull();
+    expect(decode({
+      ...artifactSummary,
+      sources: [{ rank: 1, title: "Unsafe", url: "javascript:alert(1)" }]
+    })).toBeNull();
+    expect(decode({
+      ...artifactSummary,
+      knowledgeCitations: [
+        artifactSummary.knowledgeCitations[0],
+        artifactSummary.knowledgeCitations[0]
+      ]
+    })).toBeNull();
   });
 
   it("round-trips the snapshot-bound assistant identity and fails closed on malformed identities", () => {
@@ -562,225 +496,31 @@ describe("chat wire contracts", () => {
     expect(preview.charCodeAt(preview.length - 1)).not.toBeGreaterThanOrEqual(0xd800);
   });
 
-  it("decodes complete tool activity summaries and fails closed on inconsistent counts", () => {
+  it("keeps committed Memory action feedback and strips retrieval receipts", () => {
     const artifactSummary = {
-      citationCount: 0,
-      citations: [],
-      reasoningCount: 0,
-      reasoningText: [],
-      searchCount: 0,
-      searchStrategy: null,
-      toolCallCount: 1,
-      toolCalls: [toolActivity]
-    };
-
-    expect(
-      decodeChatDetailResponse({
-        chat: {
-          ...detailChat(),
-          messages: [{ ...message, artifactSummary }],
-          usageStats
-        }
-      })?.messages[0]?.artifactSummary
-    ).toEqual(artifactSummary);
-
-    expect(
-      decodeChatDetailResponse({
-        chat: {
-          ...detailChat(),
-          messages: [{
-            ...message,
-            artifactSummary: { ...artifactSummary, toolCallCount: 0 }
-          }],
-          usageStats
-        }
-      })
-    ).toBeNull();
-  });
-
-  it("keeps only bounded friendly Search disclosure facts in chat messages", () => {
-    const searchActivity = [{
-      credential: "secret",
-      displayName: "Company Gateway Search",
-      endpoint: "https://provider.example/v1/responses",
-      failure: { code: "private_provider_code", raw: "private" },
-      failureReason: "Search reached its output limit before completing.",
-      providerOperations: [{
-        id: "provider-operation-id",
-        kind: "search",
-        ordinal: 0,
-        pattern: null,
-        queries: ["current evidence"],
-        status: "complete",
-        url: null
-      }],
-      providerOperationsTruncated: false,
-      query: "current evidence",
-      rawPayload: { private: true },
-      routeId: "route-1",
-      sourceCount: 1,
-      sources: [{
-        rank: 1,
-        snippet: "Safe summary",
-        title: "Evidence",
-        url: "https://example.com/evidence"
-      }],
-      status: "error"
-    }];
-    const artifactSummary = {
-      citationCount: 0,
-      citations: [],
-      reasoningCount: 0,
-      reasoningText: [],
-      searchActivity,
-      searchCount: 1,
-      searchDetails: [{ rawProviderResponse: "private" }],
-      searchStrategy: "custom-web-search:connection-1",
-      toolCallCount: 0,
-      toolCalls: []
-    };
-
-    const decoded = decodeChatDetailResponse({
-      chat: {
-        ...detailChat(),
-        messages: [{ ...message, artifactSummary }],
-        usageStats
-      }
-    })?.messages[0]?.artifactSummary;
-
-    expect(decoded?.searchActivity).toEqual([{
-      displayName: "Company Gateway Search",
-      failureReason: "Search reached its output limit before completing.",
-      providerOperations: [{
-        kind: "search",
-        ordinal: 0,
-        pattern: null,
-        queries: ["current evidence"],
-        status: "complete",
-        url: null
-      }],
-      providerOperationsTruncated: false,
-      query: "current evidence",
-      sourceCount: 1,
-      sources: [{
-        rank: 1,
-        snippet: "Safe summary",
-        title: "Evidence",
-        url: "https://example.com/evidence"
-      }],
-      status: "error"
-    }]);
-    expect(JSON.stringify(decoded)).not.toMatch(/secret|provider\.example|provider-operation-id|private_provider_code|rawPayload|route-1|rawProviderResponse/);
-  });
-
-  it("rejects an unbounded Search failure reason", () => {
-    const artifactSummary = {
-      citationCount: 0,
-      citations: [],
-      reasoningCount: 0,
-      reasoningText: [],
-      searchActivity: [{
-        displayName: "Company Gateway Search",
-        failureReason: "x".repeat(257),
-        providerOperations: [],
-        providerOperationsTruncated: false,
-        query: "current evidence",
-        sourceCount: 0,
-        sources: [],
-        status: "error"
-      }],
-      searchCount: 1,
-      searchStrategy: "custom-web-search:connection-1",
-      toolCallCount: 0,
-      toolCalls: []
-    };
-
-    expect(decodeChatDetailResponse({
-      chat: {
-        ...detailChat(),
-        messages: [{ ...message, artifactSummary }],
-        usageStats
-      }
-    })).toBeNull();
-  });
-
-  it("rejects a Search provider-operation trace above the wire inspection limit", () => {
-    const providerOperations = Array.from({ length: 32 }, (_, ordinal) => ({
-      kind: "search",
-      ordinal,
-      pattern: null,
-      queries: ["q".repeat(512)],
-      status: "complete",
-      url: null
-    }));
-    const artifactSummary = {
-      citationCount: 0,
-      citations: [],
-      reasoningCount: 0,
-      reasoningText: [],
-      searchActivity: [{
-        displayName: "Company Gateway Search",
-        providerOperations,
-        providerOperationsTruncated: false,
-        query: "current evidence",
-        sourceCount: 0,
-        sources: [],
-        status: "complete"
-      }],
-      searchCount: 1,
-      searchStrategy: "custom-web-search:connection-1",
-      toolCallCount: 0,
-      toolCalls: []
-    };
-
-    expect(decodeChatDetailResponse({
-      chat: {
-        ...detailChat(),
-        messages: [{ ...message, artifactSummary }],
-        usageStats
-      }
-    })).toBeNull();
-  });
-
-  it("strictly decodes message-bound Memory receipt and committed action feedback", () => {
-    const artifactSummary = {
-      citationCount: 0,
       citations: [],
       memoryAction: { operation: "UPDATE", status: "COMMITTED" },
       memoryReceipt: {
-        degradationCode: null,
         itemCount: 1,
-        items: [{
-          includedText: "Frozen answer-bound memory.",
-          itemType: "FACT_VERSION",
-          lifecycleState: "LATER_FORGOTTEN",
-          ordinal: 0,
-          scopeType: "GLOBAL_USER",
-          selectionReason: "explicit_lexical_relevance",
-          sourceChatId: null,
-          sourceMessageIds: [],
-          sourceMode: "EXPLICIT",
-          versionId: "version-1"
-        }],
-        outcome: "USED",
-        summary: "memory_receipt:used:1"
+        items: [{ includedText: "private retrieved content" }],
+        outcome: "USED"
       },
-      reasoningCount: 0,
       reasoningText: [],
-      searchCount: 0,
-      searchStrategy: null,
-      toolCallCount: 0,
-      toolCalls: []
+      sources: []
     };
     const decode = (value: unknown) => decodeChatDetailResponse({
-      chat: detailChat({ messages: [{ ...message, artifactSummary: value }], usageStats })
+      chat: detailChat({
+        messages: [{ ...message, artifactSummary: value }],
+        usageStats
+      })
     });
 
-    expect(decode(artifactSummary)?.messages[0]?.artifactSummary).toEqual(artifactSummary);
-    expect(decode({
-      ...artifactSummary,
-      memoryReceipt: { ...artifactSummary.memoryReceipt, itemCount: 2 }
-    })).toBeNull();
+    expect(decode(artifactSummary)?.messages[0]?.artifactSummary).toEqual({
+      citations: [],
+      memoryAction: { operation: "UPDATE", status: "COMMITTED" },
+      reasoningText: [],
+      sources: []
+    });
     expect(decode({
       ...artifactSummary,
       memoryAction: { ...artifactSummary.memoryAction, targetId: "private" }

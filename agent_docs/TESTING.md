@@ -15,14 +15,12 @@ Scope: Stable verification routing, disposable-environment rules, non-obvious op
 
 Executable scripts in `package.json`, runner configuration, and the current test tree own exact code coverage and discoverable test names. Do not maintain volatile counts, exhaustive file inventories, exact test-title instructions, or feature-by-feature regression histories here. Accessibility and responsive product scope are routed by `FRONTEND.md`; provider, auth, persistence, and security assertions live in their subject owners.
 
-`scripts/docs-manifest.mjs` is the sole executable inventory of mandatory
-documentation. The documentation checker also rejects a substantial normalized
-prose or list-item block copied between bounded normative living owners. It
-excludes routing indexes, metadata, headings, code fences, generated output,
-and task state; similarity remains a human audit input rather than an automated
-rewrite signal. Cross-layer ownership follows `DECISION_DEFAULTS.md`: tests may
-enforce the absence of a copied block, but only contract review can decide
-whether differently worded statements own the same proposition.
+`scripts/docs-manifest.mjs` is the sole compact inventory of mandatory
+documentation. The checker enforces only mechanically verifiable repository
+contracts: required files, local links, scoped instruction imports and budgets,
+documented example environment keys, generated-reference drift, and private
+task-ledger state. Document size, prose similarity, and narrative organization
+remain review concerns rather than executable policy.
 
 ## Core Verification Lanes
 
@@ -35,7 +33,7 @@ npm ci
 npm run check:hermetic
 ```
 
-`check:hermetic` generates the Prisma client without connecting to a database, runs documentation/reference drift checks, ESLint, TypeScript, and every deterministic Vitest/Testing Library case through `vitest.hermetic.config.ts`. Direct Prisma-singleton tests are a reviewed explicit list; `*.integration.test.*` files stay outside this lane, and the harness test rejects an unclassified direct database test. The lane requires no Docker, `DATABASE_URL`, provider key, registry, or external service.
+`check:hermetic` generates the Prisma client without connecting to a database, runs documentation/reference drift checks, ESLint, TypeScript, and every deterministic Vitest/Testing Library case through `vitest.hermetic.config.ts`. Files named `*.prisma.test.*` and `*.integration.test.*` stay outside this lane; direct-database tests must use one of those suffixes. The lane requires no Docker, `DATABASE_URL`, provider key, or external service.
 
 Keep iteration narrower when possible:
 
@@ -104,7 +102,7 @@ When a prior container run left the default result directory host-unwritable,
 set `AIQSA_PLAYWRIGHT_OUTPUT_DIR` to a fresh task-owned path under `/tmp` rather
 than changing or deleting another process's artifacts.
 
-Use the standalone `run --rm` form when the selected spec requires the configured reset and loss of interactive development fixtures is acceptable. Inspect material visual changes directly at the viewport, input, theme, zoom, and motion conditions owned by the frontend contract. The replacement UI owns one bounded exception to the ordinary no-gallery rule: dev/test-only fixture routes feed reviewed dark/light Playwright baselines in `tests/e2e/ui-baseline/`. Each baseline represents a named contract state, is updated only after direct inspection, and carries no account, provider, chat, Memory, or other private data. It is not a generic final-evidence ceremony or permission to snapshot arbitrary application content. Local auth fixtures and session-mutation safety are owned by the bounded security contracts routed by `SECURITY.md`.
+Use the standalone `run --rm` form when the selected spec requires the configured reset and loss of interactive development fixtures is acceptable. Automated browser coverage does not use screenshot or pixel-baseline assertions. Assert observable behavior instead: roles and labels, focus ownership, state transitions, containment, geometry, overflow, breakpoint composition, and theme state. Material visual changes may still be inspected directly during implementation, but screenshots are neither stored test fixtures nor an automated acceptance gate. Local auth fixtures and session-mutation safety are owned by the bounded security contracts routed by `SECURITY.md`.
 
 ## Test Authoring
 
@@ -125,7 +123,7 @@ Add only evidence justified by the changed boundary:
 
 | Changed boundary | Proportional evidence |
 | --- | --- |
-| Prisma schema or migration | Commit an append-only migration; run deploy, seed/integrity smoke, and the focused migration contract against an explicitly disposable database. Never use a persistent installation as a migration test target. |
+| Prisma schema or migration | Keep the current clean baseline immutable and add an append-only migration; run deploy, seed/integrity smoke, and the clean-install contract against an explicitly disposable database. Never use a persistent installation as a migration test target. |
 | Installation bootstrap, image, or Compose topology | Run focused bootstrap/config tests, build the single `release` target, and prove fresh bootstrap plus adopted repeat in a uniquely named disposable project. Stable volume/image names require unique temporary `AIQSA_POSTGRES_VOLUME_NAME`, `AIQSA_MINIO_VOLUME_NAME`, `AIQSA_TOOLHIVE_VOLUME_NAME`, and `AIQSA_IMAGE`; `-p` alone is not isolation. Prove update preservation and the required non-root runtime roles when those behaviors changed. |
 | First-install helper | Run shell syntax plus its focused harness test against temporary files; never invoke it against the repository's real `.env`. |
 | Backup or restore | Perform a real write-quiesced backup and restore only into explicitly acknowledged disposable empty targets, then compare database and object evidence. |
@@ -133,7 +131,7 @@ Add only evidence justified by the changed boundary:
 | Repository publication or Docker context | Run `npm run release:privacy:check`, build the `release` target, and inspect the image for forbidden agent/task artifacts. Release publication still requires its separate privacy/readiness review. |
 | Dependency or security boundary | Run focused threat tests. Run `npm run security:deps` for dependency changes and review lockfile/lifecycle impact; automated remediation is never implicit authority for a breaking change. |
 | Provider adapter | Run deterministic adapter/fake tests first. A real-provider smoke is optional evidence only under the permission and data limits below. |
-| Retention or destructive data behavior | Run the focused migration contract and dry run first; execute deletion only when the requested scope explicitly authorizes it and only against the intended target. |
+| Retention or destructive data behavior | Run the focused retention tests and dry run first; execute deletion only when the requested scope explicitly authorizes it and only against the intended target. |
 | Native Memory phase gate | Run pure source/safety/handler fixtures first, then the exact stateful phase matrix below against disposable PostgreSQL/pgvector. Evidence may contain only aggregate counts, booleans, versions, plan names, Recall@k, latency, and job lag—never source text, embeddings, account IDs, or provider bodies. |
 | MCP, ToolHive, or auth durability | Run focused deterministic tests first, then only the relevant opt-in integration command below against the disposable stack. External package pulls, hosted consent, and live OAuth require their own authority. |
 | Document parser protocol or sidecar topology | Run deterministic routing/bounds/decoder fakes first, build the locally derived Docling image from its digest/checksum-pinned inputs, then run the parser smoke against that image and digest-pinned Tika in the disposable dev stack. Stop both parsers and prove feature-local unavailability while app readiness remains healthy. |
@@ -144,38 +142,23 @@ These rows are routing rules, not a cumulative release matrix. A change does not
 
 The commands below are recorded because their environment gate, process boundary, or external effect is not reliably inferred from an ordinary focused-test name. Run only the entry point owned by the changed boundary.
 
-### Migration contracts
+### Migration contract
 
-Migration contracts create temporary databases or use bounded in-memory fixtures. Current entry points are:
+The baseline contract creates uniquely named disposable databases inside the
+development PostgreSQL service, deploys the single current baseline, and proves
+the catalog, repeatable seed, schema integrity, and fresh/adopted installation
+bootstrap:
 
 ```bash
-npm run db:auth-rate-limit:migration:contract
-npm run db:attachment-processing:migration:contract
-npm run db:gemini:migration:contract
-npm run db:knowledge:migration:contract
-npm run db:knowledge-ingestion:migration:contract
-npm run db:knowledge-run:migration:contract
-npm run db:knowledge-policy:migration:contract
-npm run db:memory:migration:contract
-npm run db:provider:migration:contract
-npm run db:full-access:migration:contract
-npm run db:control-plane:migration:contract
-npm run db:retention:migration:contract
-npm run db:search:migration:contract
-npm run db:assistants:migration:contract
-npm run db:document-processing-fairness:migration:contract
+npm run db:migration:contract
 ```
-
-Select the script owned by the migration; do not run this list as a generic release suite.
 
 ### Database and service integrations
 
 Native Memory source settlement through default-on learning and three-tier
 retrieval: recognizable-format safety projection, lexical/vector chunk/fact
 indexing, extraction/consolidation, Core and automatic retrieval, unified search,
-review feedback/conflict resolution, rebuild/recovery, and destructive replay.
-The episode, Global Dream, and profile rows in this matrix verify only that
-historical data is non-serving and remains safely purgeable/settleable:
+review feedback/conflict resolution, rebuild/recovery, and destructive replay:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app \
@@ -184,13 +167,11 @@ docker compose -f docker-compose.dev.yml exec -T app \
   lib/server/memory/history/sourceProjection.test.ts \
   lib/server/memory/history/chunking.test.ts \
   lib/server/memory/history/handler.test.ts \
-  lib/server/memory/history/episode/handler.test.ts \
   lib/server/memory/history/repository.prisma.test.ts \
   lib/server/memory/learning/extraction/repository.prisma.test.ts \
   lib/server/memory/learning/consolidation/repository.prisma.test.ts \
-  lib/server/memory/globalDream/repository.prisma.test.ts \
-  lib/server/memory/profile/purge.prisma.test.ts \
   lib/server/memory/review/repository.prisma.test.ts \
+  lib/server/memory/embedding/prismaEmbedding.prisma.test.ts \
   lib/server/memory/retrieval/localRepository.prisma.test.ts \
   lib/server/memory/retrieval/vector.prisma.test.ts \
   lib/server/memory/rebuild/prismaRebuild.prisma.test.ts \
@@ -206,7 +187,7 @@ docker compose -f docker-compose.dev.yml exec -T \
   lib/server/memory/health/prismaRepository.integration.test.ts
 ```
 
-Phase 8 composition, bounded populated-queue load, crash recovery, latency,
+Deletion composition, bounded populated-queue load, crash recovery, latency,
 usage completeness, deletion/provider cleanup, rebuild, Temporary overdue, and
 health evidence run together against an already healthy disposable development
 PostgreSQL/MinIO stack. Keep Prisma generation and the tests in the same
@@ -221,22 +202,23 @@ docker compose -f docker-compose.dev.yml run --rm -T --no-deps \
   -e AIQSA_MEMORY_OPERATIONAL_INTEGRATION_TEST=1 app sh -c '
     npx prisma generate >/dev/null &&
     npx vitest run --config vitest.full.config.ts --maxWorkers=1 \
-      lib/server/memory/phase8Composition.test.ts \
+      lib/server/memory/deletionComposition.test.ts \
       lib/server/memory/capabilityPolicy.test.ts \
       lib/server/memory/coordinator/policy.test.ts \
       lib/server/memory/coordinator/scheduler.test.ts \
       lib/server/memory/coordinator/defaultCoordinator.test.ts \
-      lib/server/memory/coordinator/prismaRepository.prisma.test.ts \
       lib/server/memory/history/repository.prisma.test.ts \
+      lib/server/memory/embedding/prismaEmbedding.prisma.test.ts \
       lib/server/memory/retrieval/localRepository.prisma.test.ts \
       lib/server/memory/rebuild/prismaRebuild.prisma.test.ts \
+      lib/server/memory/lifecycle/prismaLifecycle.prisma.test.ts \
       lib/server/memory/temporaryRetention.prisma.test.ts \
       lib/server/chats/permanentDeletion/cleanup.prisma.test.ts \
       lib/server/memory/accountDeletion/accountDeletion.prisma.test.ts \
       lib/server/memory/health/prismaRepository.integration.test.ts \
       lib/server/memory/operational/evidence.test.ts \
       lib/server/memory/operational/queueLoad.integration.test.ts \
-      tests/harness/memory-operational-contract.test.ts
+      lib/server/memory/operational/contract.test.ts
   '
 ```
 
@@ -283,54 +265,6 @@ multi-script/cross-language Recall@5, irrelevant-injection, candidate-bound,
 isolation, and query-p95 evidence while exercising temporal and suppression filters. The history fixture
 emits only searchable-row count and enqueue-to-commit job lag. Test fixture IDs
 and content are explicitly excluded from every evidence object.
-
-The optional recall evaluation additionally has a frozen synthetic multilingual holdout
-runner. It exercises PostgreSQL lexical scoring plus the exactly selected
-embedding deployment, and emits only hashes, version fingerprints, aggregate
-Recall@5/bootstrap intervals, irrelevant-injection/Wilson intervals, source
-diversity, latency, usage, cost completeness, and provider request-ID presence.
-Its checked-in sanitized manifest is pinned by
-`tests/harness/memory-corpus/recallReleaseEvidence.test.ts`. A live rerun is not
-part of routine checks and requires fresh explicit operator authorization, the
-exact frozen corpus hash, and the exact upstream model:
-
-```bash
-npx tsx scripts/memory-recall-release-evaluation.ts \
-  --split=holdout \
-  --authorized-live-provider \
-  --holdout-corpus-hash=AUTHORIZED_HOLDOUT_SHA256 \
-  --upstream-model=AUTHORIZED_UPSTREAM_MODEL
-```
-
-Use `AIQSA_MEMORY_EVALUATION_USER_ID` only to disambiguate the already
-authorized owner; the runner otherwise requires exactly one active admin. It
-never grants provider authority by itself and never emits account/model IDs,
-source text, vectors, raw provider bodies, or credentials. Recall evidence is
-advisory for tested/recommended model combinations and never grants runtime
-authority.
-
-Automatic learning retains a separate optional live evaluator for regression
-and model recommendations. It does not qualify an installation or toggle the
-feature. The runner resolves the persisted System Model and embedding
-deployment, makes no call without explicit authorization, writes the sanitized
-aggregate once with exclusive creation, and runs in a 2 GiB/two-CPU one-shot
-dev container:
-
-```bash
-npm run memory:learning:evaluate -- \
-  --split=holdout \
-  --authorized-live-provider \
-  --holdout-corpus-hash=AUTHORIZED_HOLDOUT_SHA256 \
-  --embedding-holdout-evidence=.aiqsa/PRIVATE_EMBEDDING_EVIDENCE.json \
-  --evidence-output=.aiqsa/PRIVATE_LEARNING_EVIDENCE.json
-```
-
-The old verifier/signing registry commands are retained only for archaeology or
-offline comparison. They are not release gates, runtime authorities, Settings
-capabilities, or prerequisites for automatic learning. Focused tests instead
-verify strict extraction/consolidation/relevance schemas, exact evidence,
-multi-script handling, compatibility/drift, and the absence of semantic
-post-processing gates.
 
 Authentication admission concurrency/restart:
 
@@ -467,15 +401,15 @@ npm run smoke:gemini
 
 It reads `GEMINI_API_KEY` and optional `AIQSA_GEMINI_SMOKE_MODEL`, uses the native v1 runtime with `store: false`, and keeps the call bounded. Output may contain only sanitized booleans, counts, status, and usage evidence; it must not print the key, response text, Suggestions markup, citation links, raw provider payload, or signatures. A missing key skips cleanly. Do not run large-context, deep-research, attachment-heavy, or long-background variants without fresh approval.
 
-The same authorized smoke has an explicit unary request-shape variant for the
-historical attachment-only edge case:
+The same authorized smoke has an explicit unary request-shape variant for a
+prior attachment-only turn:
 
 ```bash
-AIQSA_GEMINI_SMOKE_EMPTY_TEXT=1 npm run smoke:gemini
+AIQSA_GEMINI_SMOKE_ATTACHMENT_CONTEXT=1 npm run smoke:gemini
 ```
 
 It sends the exact bounded `store: false` body produced by the current request
-builder, requires the historical attachment marker with no empty text part,
+builder, requires the prior-turn attachment marker with no empty text part,
 HTTP 200 acceptance, a terminal response, and nonzero usage, and reports only
 those booleans, HTTP status, step counts, and usage. It never prints provider
 content or a raw payload.
@@ -504,7 +438,7 @@ npm run smoke:anthropic
 ```
 
 It makes one tiny valid control request, one empty-text-block request, and one
-request built through the production historical-attachment marker path. Output
+request built through the production prior-turn attachment-marker path. Output
 is limited to acceptance booleans, HTTP status, content-block counts,
 stop-reason presence, marker presence, and usage; it never prints message
 content, response text, ids, raw payloads, or the key. A missing key skips

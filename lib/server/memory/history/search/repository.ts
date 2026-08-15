@@ -30,7 +30,7 @@ type SnapshotRow = Readonly<{
 type SearchRow = Readonly<{
   embeddingState: "FAILED" | "NOT_APPLICABLE" | "PENDING" | "READY";
   entryId: string;
-  itemType: "EPISODE" | "RECALL_CHUNK";
+  itemType: "RECALL_CHUNK";
   occurredAt: Date;
   safeSnippet: string;
   sourceChatId: string;
@@ -315,7 +315,7 @@ function resultFromRow(
     (row.sourceFolderName !== null && (
       row.sourceFolderName.trim().length === 0 || row.sourceFolderName.length > 200
     )) ||
-    !["EPISODE", "RECALL_CHUNK"].includes(row.itemType) ||
+    row.itemType !== "RECALL_CHUNK" ||
     !["AVAILABLE", "ARCHIVED"].includes(row.sourceState)
   ) return fail("memory_action_failed");
   return {
@@ -342,14 +342,6 @@ function searchSql(
     folderId: Prisma.sql`source_folder."id"`,
     occurredFrom: Prisma.sql`chunk."occurredFrom"`,
     occurredTo: Prisma.sql`chunk."occurredTo"`
-  });
-  const episodeFrom = Prisma.sql`COALESCE(episode."occurredFrom", episode."createdAt")`;
-  const episodeTo = Prisma.sql`COALESCE(episode."occurredTo", episode."occurredFrom", episode."createdAt")`;
-  const episodeFilters = sourceFilters(prepared, {
-    chatId: Prisma.sql`episode."chatId"`,
-    folderId: Prisma.sql`source_folder."id"`,
-    occurredFrom: episodeFrom,
-    occurredTo: episodeTo
   });
   const vectorScore = vectorScoreSql(hits);
   const vectorPredicate = hits.length > 0
@@ -470,129 +462,6 @@ function searchSql(
             )
         )
         AND ${Prisma.join(chunkFilters.length > 0 ? chunkFilters : [Prisma.sql`TRUE`], " AND ")}
-
-      UNION ALL
-
-      SELECT
-        entry."id" AS "entryId",
-        entry."safeSearchTextYoNormalized",
-        entry."searchVectorSimple",
-        entry."searchVectorRussian",
-        entry."searchVectorEnglish",
-        entry."embeddingState"::text AS "embeddingState",
-        'EPISODE'::text AS "itemType",
-        LEFT(episode."safeSummary", 1000) AS "safeSnippet",
-        ${episodeTo} AS "occurredAt",
-        source_chat."id" AS "sourceChatId",
-        LEFT(source_chat."title", 200) AS "sourceChatTitle",
-        source_folder."id" AS "sourceFolderId",
-        LEFT(source_folder."name", 200) AS "sourceFolderName",
-        source_messages."messageIds" AS "sourceMessageIds",
-        CASE WHEN source_chat."archived" THEN 'ARCHIVED' ELSE 'AVAILABLE' END AS "sourceState"
-      FROM "MemorySearchEntry" AS entry
-      INNER JOIN "MemoryIndexGeneration" AS generation
-        ON generation."userId" = entry."userId"
-        AND generation."id" = entry."indexGenerationId"
-        AND generation."id" = ${prepared.snapshot.activeGenerationId}
-        AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
-      INNER JOIN "UserMemorySettings" AS settings
-        ON settings."userId" = entry."userId"
-        AND settings."referenceChatHistory" = TRUE
-        AND settings."activeIndexGenerationId" = generation."id"
-      INNER JOIN "MemoryEpisode" AS episode
-        ON episode."userId" = entry."userId"
-        AND episode."id" = entry."episodeId"
-      INNER JOIN "Chat" AS source_chat
-        ON source_chat."userId" = episode."userId"
-        AND source_chat."id" = episode."chatId"
-      LEFT JOIN "Folder" AS source_folder
-        ON source_folder."userId" = episode."userId"
-        AND source_folder."id" = episode."sourceFolderId"
-      INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
-        ON checkpoint."userId" = episode."userId"
-        AND checkpoint."chatId" = episode."chatId"
-      INNER JOIN LATERAL (
-        SELECT array_agg(source_message."messageId" ORDER BY source_message."ordinal")::text[] AS "messageIds"
-        FROM "MemoryEpisodeMessage" AS source_message
-        INNER JOIN "Message" AS message
-          ON message."chatId" = source_message."chatId"
-          AND message."id" = source_message."messageId"
-        WHERE source_message."userId" = episode."userId"
-          AND source_message."chatId" = episode."chatId"
-          AND source_message."episodeId" = episode."id"
-        HAVING count(*) BETWEEN 1 AND 50
-      ) AS source_messages ON TRUE
-      WHERE entry."userId" = ${prepared.userId}
-        -- Legacy extractive episodes remain deletion-compatible but are not a
-        -- serving source. Grounded EVENT facts and raw chunks replace them.
-        AND FALSE
-        AND entry."itemType" = 'EPISODE'::"MemorySearchItemType"
-        AND episode."state" = 'ACTIVE'::"MemoryHistoryItemState"
-        AND episode."safetyClass" IN (
-          'NORMAL'::"MemoryDerivedSafetyClass",
-          'SENSITIVE'::"MemoryDerivedSafetyClass"
-        )
-        AND episode."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
-        AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-        AND source_chat."memoryBranchGeneration" = episode."branchGeneration"
-        AND source_chat."memorySourceRevision" = episode."sourceRevisionAtCreation"
-        AND checkpoint."branchGeneration" = episode."branchGeneration"
-        AND checkpoint."sourceRevision" = episode."sourceRevisionAtCreation"
-        AND checkpoint."sourceContentHash" = episode."sourceHash"
-        AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
-        AND checkpoint."lastDreamedMessageId" = source_chat."activeLeafMessageId"
-        AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
-        AND NOT EXISTS (
-          SELECT 1
-          FROM "MemorySuppression" AS suppression
-          WHERE suppression."userId" = episode."userId"
-            AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
-            AND (
-              suppression."scope" = 'ALL'::"MemorySuppressionScope"
-              OR (
-                suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
-                AND suppression."sourceEpisodeId" = episode."id"
-              )
-              OR (
-                suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-                AND suppression."sourceChatId" = episode."chatId"
-                AND (
-                  suppression."sourceBranchGeneration" IS NULL
-                  OR suppression."sourceBranchGeneration" = episode."branchGeneration"
-                )
-                AND EXISTS (
-                  SELECT 1
-                  FROM "MemoryEpisodeMessage" AS suppressed_message
-                  WHERE suppressed_message."userId" = episode."userId"
-                    AND suppressed_message."episodeId" = episode."id"
-                    AND suppressed_message."messageId" = suppression."sourceMessageId"
-                )
-              )
-            )
-        )
-        AND NOT EXISTS (
-          SELECT 1
-          FROM "MemorySourceBarrier" AS barrier
-          WHERE barrier."userId" = episode."userId"
-            AND barrier."kind" IN (
-              'HISTORY_INDEX'::"MemorySourceBarrierKind",
-              'ALL_REUSABLE'::"MemorySourceBarrierKind"
-            )
-            AND (
-              episode."createdAt" <= barrier."createdAt"
-              OR EXISTS (
-                SELECT 1
-                FROM "MemoryEpisodeMessage" AS barrier_source
-                INNER JOIN "Message" AS barrier_message
-                  ON barrier_message."chatId" = barrier_source."chatId"
-                  AND barrier_message."id" = barrier_source."messageId"
-                WHERE barrier_source."userId" = episode."userId"
-                  AND barrier_source."episodeId" = episode."id"
-                  AND barrier_message."createdAt" <= barrier."sourceCreatedAtCutoff"
-              )
-            )
-        )
-        AND ${Prisma.join(episodeFilters.length > 0 ? episodeFilters : [Prisma.sql`TRUE`], " AND ")}
     )
     SELECT
       eligible."entryId",

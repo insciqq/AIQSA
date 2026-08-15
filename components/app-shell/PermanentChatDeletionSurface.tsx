@@ -12,7 +12,6 @@ import {
   type PermanentChatDeletionUiCopyKey
 } from "@/components/app-shell/permanentChatDeletionUiCopy";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
-import type { MemoryUiLocale } from "@/lib/contracts/memory";
 import {
   AlertTriangle,
   Check,
@@ -30,11 +29,11 @@ const focusRing =
 const button =
   `inline-flex min-h-touch items-center justify-center gap-2 rounded-control px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control ${focusRing}`;
 
-function t(locale: MemoryUiLocale, key: PermanentChatDeletionUiCopyKey): string {
-  return permanentChatDeletionUiCopy(locale, key);
+function t(key: PermanentChatDeletionUiCopyKey): string {
+  return permanentChatDeletionUiCopy(key);
 }
 
-function formattedDate(locale: MemoryUiLocale, value: string | null): string {
+function formattedDate(value: string | null): string {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.getTime())
@@ -45,31 +44,30 @@ function formattedDate(locale: MemoryUiLocale, value: string | null): string {
       }).format(date);
 }
 
-function errorText(locale: MemoryUiLocale, code: string | null): string {
+function errorText(code: string | null): string {
   switch (code) {
     case "chat_permanent_delete_stale":
     case "chat_permanent_delete_stale_review_required":
     case "active_run_in_progress":
-      return t(locale, "stale");
+      return t("stale");
     case "chat_permanent_delete_unavailable":
-      return t(locale, "unavailable");
+      return t("unavailable");
     default:
-      return t(locale, "unknownError");
+      return t("unknownError");
   }
 }
 
 function statusText(
-  locale: MemoryUiLocale,
   state: ReturnType<typeof usePermanentChatDeletionStore.getState>["status"]
 ): string {
   switch (state?.state) {
-    case "PENDING": return t(locale, "statePending");
-    case "RUNNING": return t(locale, "stateRunning");
-    case "RETRY_WAIT": return t(locale, "retryWait");
-    case "BLOCKED_REQUIRES_ADMIN": return t(locale, "blocked");
-    case "SUCCEEDED": return t(locale, "stateSucceeded");
-    case "CANCELLED": return t(locale, "blocked");
-    default: return t(locale, "statusBody");
+    case "PENDING": return t("statePending");
+    case "RUNNING": return t("stateRunning");
+    case "RETRY_WAIT": return t("retryWait");
+    case "BLOCKED_REQUIRES_ADMIN": return t("blocked");
+    case "SUCCEEDED": return t("stateSucceeded");
+    case "CANCELLED": return t("blocked");
+    default: return t("statusBody");
   }
 }
 
@@ -101,7 +99,7 @@ function ModalFrame({
   );
 }
 
-function Confirmation({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
+function Confirmation() {
   const alsoForget = usePermanentChatDeletionStore(
     (state) => state.alsoForgetOriginMemories
   );
@@ -120,17 +118,17 @@ function Confirmation({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
             className="break-words text-base font-semibold [overflow-wrap:anywhere]"
             id="permanent-chat-deletion-heading"
           >
-            {t(locale, "confirmTitle")}
+            {t("confirmTitle")}
           </h2>
           <p className="mt-1 text-sm leading-6 text-ink-secondary">
-            {t(locale, "confirmBody")}
+            {t("confirmBody")}
           </p>
           <p className="mt-1 break-words text-sm font-semibold [overflow-wrap:anywhere]">
             “{target.title}”
           </p>
         </div>
         <button
-          aria-label={t(locale, "cancel")}
+          aria-label={t("cancel")}
           className={`grid size-10 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
           disabled={busy}
           type="button"
@@ -150,25 +148,25 @@ function Confirmation({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
             setPermanentChatDeletionOriginForget(event.currentTarget.checked)}
         />
         <span>
-          <span className="block font-semibold text-ink">{t(locale, "forgetLabel")}</span>
-          <span className="mt-1 block leading-5 text-ink-muted">{t(locale, "forgetHelp")}</span>
+          <span className="block font-semibold text-ink">{t("forgetLabel")}</span>
+          <span className="mt-1 block leading-5 text-ink-muted">{t("forgetHelp")}</span>
         </span>
       </label>
 
       <details className="mt-3 border-y border-trace-subtle py-1">
         <summary className={`min-h-touch cursor-pointer py-3 text-sm font-semibold text-ink-secondary ${focusRing}`}>
-          {t(locale, "advanced")}
+          {t("advanced")}
         </summary>
         <div className="space-y-2 pb-3 text-xs leading-5 text-ink-muted">
-          <p>{t(locale, "disclosureCrossChat")}</p>
-          <p>{t(locale, "disclosureProvider")}</p>
-          <p>{t(locale, "disclosureBackups")}</p>
+          <p>{t("disclosureCrossChat")}</p>
+          <p>{t("disclosureProvider")}</p>
+          <p>{t("disclosureBackups")}</p>
         </div>
       </details>
 
       {error ? (
         <p className="mt-3 text-sm text-critical" role="alert">
-          {errorText(locale, error)}
+          {errorText(error)}
         </p>
       ) : null}
 
@@ -179,7 +177,7 @@ function Confirmation({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
           type="button"
           onClick={closePermanentChatDeletionDialog}
         >
-          {t(locale, "cancel")}
+          {t("cancel")}
         </button>
         <button
           className={`${button} bg-critical px-4 text-proof-contrast hover:opacity-90`}
@@ -190,14 +188,14 @@ function Confirmation({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
           {busy
             ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
             : <Trash2 className="size-4" aria-hidden="true" />}
-          {t(locale, "confirmLabel")}
+          {t("confirmLabel")}
         </button>
       </div>
     </ModalFrame>
   );
 }
 
-function StatusDialog({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
+function StatusDialog() {
   const loadState = usePermanentChatDeletionStore((state) => state.statusLoadState);
   const error = usePermanentChatDeletionStore((state) => state.statusError);
   const reference = usePermanentChatDeletionStore((state) => state.reference);
@@ -225,17 +223,17 @@ function StatusDialog({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
         </span>
         <div className="min-w-0 flex-1" aria-live="polite">
           <h2 className="text-base font-semibold" id="permanent-chat-deletion-status-heading">
-            {t(locale, "statusTitle")}
+            {t("statusTitle")}
           </h2>
           <p className={`mt-1 text-sm leading-6 ${blocked ? "text-critical" : "text-ink-secondary"}`}>
-            {statusText(locale, status)}
+            {statusText(status)}
           </p>
           {!completed && !blocked ? (
-            <p className="mt-1 text-xs leading-5 text-ink-muted">{t(locale, "statusBody")}</p>
+            <p className="mt-1 text-xs leading-5 text-ink-muted">{t("statusBody")}</p>
           ) : null}
         </div>
         <button
-          aria-label={t(locale, "close")}
+          aria-label={t("close")}
           className={`grid size-10 shrink-0 place-items-center rounded-control text-ink-muted hover:bg-control-hover hover:text-ink ${focusRing}`}
           type="button"
           onClick={closePermanentChatDeletionDialog}
@@ -246,22 +244,22 @@ function StatusDialog({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
 
       {error ? (
         <p className="mt-3 text-sm text-critical" role="alert">
-          {errorText(locale, error)}
+          {errorText(error)}
         </p>
       ) : null}
 
       <details className="mt-4 border-y border-trace-subtle py-1">
         <summary className={`min-h-touch cursor-pointer py-3 text-sm font-semibold text-ink-secondary ${focusRing}`}>
-          {t(locale, "advanced")}
+          {t("advanced")}
         </summary>
         <dl className="divide-y divide-trace-subtle pb-2 text-xs">
           {[
-            [t(locale, "advancedReference"), reference.deletionId],
-            [t(locale, "advancedAttempts"), String(status?.attemptCount ?? 0)],
-            [t(locale, "advancedFenced"), formattedDate(locale, status?.fencedAt ?? null)],
-            [t(locale, "advancedUpdated"), formattedDate(locale, status?.updatedAt ?? null)],
-            [t(locale, "advancedLastAudit"), formattedDate(locale, status?.lastAuditAt ?? null)],
-            [t(locale, "advancedError"), status?.errorCode ?? "—"]
+            [t("advancedReference"), reference.deletionId],
+            [t("advancedAttempts"), String(status?.attemptCount ?? 0)],
+            [t("advancedFenced"), formattedDate(status?.fencedAt ?? null)],
+            [t("advancedUpdated"), formattedDate(status?.updatedAt ?? null)],
+            [t("advancedLastAudit"), formattedDate(status?.lastAuditAt ?? null)],
+            [t("advancedError"), status?.errorCode ?? "—"]
           ].map(([label, value]) => (
             <div className="grid gap-1 py-2 sm:grid-cols-[9rem_minmax(0,1fr)]" key={label}>
               <dt className="font-medium text-ink-muted">{label}</dt>
@@ -280,7 +278,7 @@ function StatusDialog({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
             onClick={() => void refreshPermanentChatDeletionStatus().catch(() => undefined)}
           >
             <RotateCw className={`size-4 ${loadState === "loading" ? "animate-spin" : ""}`} aria-hidden="true" />
-            {loadState === "loading" ? t(locale, "refreshing") : t(locale, "refresh")}
+            {loadState === "loading" ? t("refreshing") : t("refresh")}
           </button>
         ) : null}
         <button
@@ -291,14 +289,14 @@ function StatusDialog({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
             else closePermanentChatDeletionDialog();
           }}
         >
-          {t(locale, "close")}
+          {t("close")}
         </button>
       </div>
     </ModalFrame>
   );
 }
 
-function ProgressNotice({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
+function ProgressNotice() {
   const reference = usePermanentChatDeletionStore((state) => state.reference);
   const status = usePermanentChatDeletionStore((state) => state.status);
   const statusOpen = usePermanentChatDeletionStore((state) => state.statusOpen);
@@ -321,23 +319,21 @@ function ProgressNotice({ locale }: Readonly<{ locale: MemoryUiLocale }>) {
             ? <Check className="size-4 shrink-0 text-positive" aria-hidden="true" />
             : <LoaderCircle className="size-4 shrink-0 animate-spin text-proof" aria-hidden="true" />}
         <p className="min-w-0 flex-1 text-sm font-medium text-ink-secondary">
-          {t(locale, blocked ? "noticeBlocked" : completed ? "noticeSucceeded" : "noticePending")}
+          {t(blocked ? "noticeBlocked" : completed ? "noticeSucceeded" : "noticePending")}
         </p>
         <button
           className={`${button} shrink-0 bg-control-surface text-ink-secondary hover:bg-control-hover hover:text-ink`}
           type="button"
           onClick={openPermanentChatDeletionStatus}
         >
-          {t(locale, "noticeAction")}
+          {t("noticeAction")}
         </button>
       </div>
     </div>
   );
 }
 
-export function PermanentChatDeletionSurface({ locale }: Readonly<{
-  locale: MemoryUiLocale;
-}>) {
+export function PermanentChatDeletionSurface() {
   const reference = usePermanentChatDeletionStore((state) => state.reference);
   const state = usePermanentChatDeletionStore((current) => current.status?.state ?? null);
 
@@ -351,9 +347,9 @@ export function PermanentChatDeletionSurface({ locale }: Readonly<{
 
   return (
     <>
-      <Confirmation locale={locale} />
-      <StatusDialog locale={locale} />
-      <ProgressNotice locale={locale} />
+      <Confirmation />
+      <StatusDialog />
+      <ProgressNotice />
     </>
   );
 }

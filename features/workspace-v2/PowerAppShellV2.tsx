@@ -36,7 +36,7 @@ import {
 import { PowerAppShellV2View } from "@/features/workspace-v2/PowerAppShellV2View";
 import type {
   ShellComposerView,
-  ShellDetailsView,
+  ShellBranchesView,
   ShellOverlaysView,
   ShellSessionView,
   ShellSettingsView,
@@ -85,7 +85,6 @@ import {
   type BranchCheckoutSettlement
 } from "@/components/app-shell/threadActions";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
-import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 import { useAnswerNotification } from "@/components/app-shell/useAnswerNotification";
 import { useCommandPaletteActions } from "@/components/app-shell/useCommandPaletteActions";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
@@ -156,7 +155,6 @@ export function workspaceDefaultControlsFingerprint(state: ComposerControlSnapsh
     selectedProvider: state.selectedProvider,
     selectedSearchOptionIds: state.selectedSearchOptionIds,
     searchPlanMode: state.searchPlanMode,
-    selectedSearchStrategy: state.selectedSearchStrategy,
     streamMode: state.streamMode,
     temperature: state.temperature
   });
@@ -277,10 +275,8 @@ export function PowerAppShellV2({
   const selectedProvider = useComposerControlStore((state) => state.selectedProvider);
   const selectedSearchOptionIds = useComposerControlStore((state) => state.selectedSearchOptionIds);
   const searchPlanMode = useComposerControlStore((state) => state.searchPlanMode);
-  const selectedSearchStrategy = useComposerControlStore((state) => state.selectedSearchStrategy);
   const showCitations = useComposerControlStore((state) => state.showCitations);
   const showReasoningBlocks = useComposerControlStore((state) => state.showReasoningBlocks);
-  const showToolActivity = useComposerControlStore((state) => state.showToolActivity);
   const streamMode = useComposerControlStore((state) => state.streamMode);
   const temperature = useComposerControlStore((state) => state.temperature);
   const applyControlDefaults = useComposerControlStore((state) => state.applyControlDefaults);
@@ -292,7 +288,6 @@ export function PowerAppShellV2({
   const setSelectedSearchPlan = useComposerControlStore((state) => state.setSelectedSearchPlan);
   const setShowCitations = useComposerControlStore((state) => state.setShowCitations);
   const setShowReasoningBlocks = useComposerControlStore((state) => state.setShowReasoningBlocks);
-  const setShowToolActivity = useComposerControlStore((state) => state.setShowToolActivity);
   const settingsOpen = useSettingsDestinationStore((state) => state.settingsOpen);
   const settingsSection = useSettingsDestinationStore((state) => state.settingsSection);
   const memoryOpen = useSettingsDestinationStore((state) => state.memoryOpen);
@@ -304,22 +299,12 @@ export function PowerAppShellV2({
   const librarySnapshot = useAssistantLibraryStore();
   const knowledgeSnapshot = useKnowledgeLibraryStore();
   const appearance = useShellAppearanceController();
-  const {
-    activeTab: inspectorActiveTab,
-    changeActiveTab: setInspectorActiveTabManually,
-    changeMode: setInspectorModeManually,
-    mode: inspectorMode
-  } = appearance.details;
   const { change: changeTheme, id: themeId } = appearance.theme;
   const workspaceInteraction = useWorkspaceInteractionController();
   const projectSettingsFolderId = workspaceInteraction.projectSettings.folderId;
   const projectMemoryDraft = workspaceInteraction.projectSettings.draft;
   const projectKnowledgeBaseIds = workspaceInteraction.projectSettings.knowledgeBaseIds;
   const shellOverlays = useShellOverlayController({
-    appearance: {
-      changeMode: setInspectorModeManually,
-      mode: inspectorMode
-    },
     blockers: {
       projectSettingsOpen: Boolean(projectSettingsFolderId),
       settingsOpen: settingsOpen || memoryOpen || librarySnapshot.open || knowledgeSnapshot.open
@@ -343,7 +328,7 @@ export function PowerAppShellV2({
     () => new Set(activeRunChatIdsKey ? activeRunChatIdsKey.split("\u0000") : []),
     [activeRunChatIdsKey]
   );
-  const currentRunId = activeChatStream?.runId ?? activeRunSurface.lastRun?.id ?? null;
+  const currentRunId = activeChatStream?.runId ?? null;
   const { notificationSoundEnabled, notifyAnswerReady, primeAnswerSound, toggleNotificationSound } =
     useAnswerNotification();
 
@@ -445,7 +430,6 @@ export function PowerAppShellV2({
     visibleMessages
   });
 
-  const memoryLocale = MEMORY_PRESENTATION_LOCALE;
   const composerTemporary = activeChat
     ? activeChat.memoryMode === "TEMPORARY" ||
       activeChat.pendingInitialMemoryMode === "TEMPORARY"
@@ -536,7 +520,6 @@ export function PowerAppShellV2({
     selectSearchStrategy,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
-    toggleToolActivityVisibility,
     useOrganizationModelDefault,
     useOrganizationSearchDefault
   } = useRunControlsActions({
@@ -730,13 +713,13 @@ export function PowerAppShellV2({
     if (!activeChatId) return;
     const summary = chats.find((chat) => chat.id === activeChatId);
     if (!summary) return;
-    const branchTabOpen = inspectorMode !== "closed" && inspectorActiveTab === "branch";
+    const branchDrawerOpen = shellOverlays.branches.open;
     // Beyond the explicit Branch drawer, the per-message ‹N/M› version pager
     // needs the compact branch graph for any saved chat with committed
     // messages, so the graph stays current per (chat, updatedAt) revision.
     // A live stream defers background refresh until settlement bumps
     // `updatedAt`.
-    if (!branchTabOpen && (summary.messageCount === 0 || activeChatStreaming)) {
+    if (!branchDrawerOpen && (summary.messageCount === 0 || activeChatStreaming)) {
       return;
     }
     const current = branchGraph?.chatId === activeChatId ? branchGraph : null;
@@ -752,9 +735,8 @@ export function PowerAppShellV2({
     activeChatStreaming,
     branchGraph,
     chats,
-    inspectorActiveTab,
-    inspectorMode,
-    loadBranchGraph
+    loadBranchGraph,
+    shellOverlays.branches.open
   ]);
 
   const retryActiveChatDetail = useEventCallback(() => {
@@ -795,13 +777,11 @@ export function PowerAppShellV2({
           setSelectedModelId(defaultModel?.modelId ?? "", "system");
           const defaultSearchPlan = resolvePreferredSearchPlan(
             nextCatalog.defaults.searchPlan,
-            nextCatalog.defaults.searchStrategyId,
             nextCatalog.searchStrategies
           );
           setSelectedSearchPlan(defaultSearchPlan.optionIds, defaultSearchPlan.mode, "system");
           setShowCitations(nextCatalog.defaults.showCitations);
           setShowReasoningBlocks(nextCatalog.defaults.showReasoningBlocks);
-          setShowToolActivity(nextCatalog.defaults.showToolActivity);
           if (defaultModel) {
             const defaults = resolveModelControlDefaults(defaultModel, nextCatalog.defaults.controlValues);
             applyControlDefaults(defaults);
@@ -966,12 +946,11 @@ export function PowerAppShellV2({
     activateBlankWorkspace,
     activeChatId,
     assistantLibraryOpen: librarySnapshot.open,
+    branchesOpen: shellOverlays.branches.open,
     catalog,
     chatGroups: commandChatGroups,
     chats,
-    changeInspectorMode: setInspectorModeManually,
     closePalette: shellOverlays.palette.close,
-    inspectorMode,
     knowledgeOpen: knowledgeSnapshot.open,
     memoryOpen,
     openKnowledge: openKnowledgeLibrary,
@@ -983,8 +962,9 @@ export function PowerAppShellV2({
     selectSearchStrategy,
     selectedModelId,
     selectedProvider,
-    selectedSearchStrategy,
+    selectedSearchOptionIds,
     settingsOpen,
+    toggleBranches: shellOverlays.branches.toggle,
     workspaceReady
   });
 
@@ -1000,7 +980,7 @@ export function PowerAppShellV2({
     refreshActiveChat,
     setNotice
   });
-  const { fetchRun, fetchRunReceipt, retryAttachment, stopCurrentRun, uploadFiles } = runLifecycleActions;
+  const { fetchRun, retryAttachment, stopCurrentRun, uploadFiles } = runLifecycleActions;
 
   const {
     branchChatFromMessage,
@@ -1063,15 +1043,12 @@ export function PowerAppShellV2({
     handleCopyMessage,
     handleDeleteMessage,
     handleEditMessage,
-    handleRegenerateMessage,
-    openDetails
+    handleRegenerateMessage
   } = useShellUiActions({
     branchChatFromMessage,
     copyMessage,
     deleteMessage,
-    regenerateMessage,
-    setInspectorActiveTab: setInspectorActiveTabManually,
-    setInspectorMode: setInspectorModeManually
+    regenerateMessage
   });
 
   const composerActions = {
@@ -1168,7 +1145,6 @@ export function PowerAppShellV2({
       setNotice({
         kind: "success",
         text: resolveMemoryCopy(
-          MEMORY_PRESENTATION_LOCALE,
           response.mode === "EXCLUDED" ? "exclude.action" : "resume.action"
         )
       });
@@ -1268,7 +1244,7 @@ export function PowerAppShellV2({
     } catch {
       const sourceNotice = {
         kind: "error" as const,
-        text: memoryUiCopy(MEMORY_PRESENTATION_LOCALE, "receipt.sourceUnavailable")
+        text: memoryUiCopy("manager.sourceUnavailable")
       };
       if (fromSettings && !settingsClosed) setSettingsNotice(sourceNotice);
       else setNotice(sourceNotice);
@@ -1287,6 +1263,7 @@ export function PowerAppShellV2({
     currentRunId,
     editingMessageId,
     editingMessagePending,
+    events: activeRunSurface.events,
     handleBranchFromMessage,
     handleCopyMessage,
     handleDeleteMessage,
@@ -1295,13 +1272,8 @@ export function PowerAppShellV2({
     handleThreadScroll,
     interruptedRun: activeChatInterruptedRun,
     refreshInterruptedRun: () => refreshInterruptedRun(),
-    loadRunReceipt: async (runId: string) => {
-      return activeChatId ? fetchRunReceipt(runId, activeChatId) : null;
-    },
     jumpToLatest,
     hasOlderMessages: activeThreadHistory.hasOlder,
-    lastRun: activeRunSurface.lastRun,
-    persistedRunsById: activeRunSurface.runsById,
     liveArtifactSummary,
     loadEarlierMessages,
     loadingOlderMessages: activeThreadHistory.loading,
@@ -1362,12 +1334,11 @@ export function PowerAppShellV2({
     maxOutputTokens,
     memory: {
       canToggleTemporary,
-      explanation: resolveMemoryCopy(memoryLocale, "temporary.explanation"),
-      externalRetention: resolveMemoryCopy(memoryLocale, "temporary.externalRetention"),
-      label: resolveMemoryCopy(memoryLocale, "temporary.label"),
-      locale: memoryLocale,
+      explanation: resolveMemoryCopy("temporary.explanation"),
+      externalRetention: resolveMemoryCopy("temporary.externalRetention"),
+      label: resolveMemoryCopy("temporary.label"),
       mode: composerTemporary ? "TEMPORARY" : "NORMAL",
-      retention: resolveMemoryCopy(memoryLocale, "temporary.retention"),
+      retention: resolveMemoryCopy("temporary.retention"),
       retentionDeadline: activeChat?.temporaryRetentionDeadline ?? null,
       toggleTemporary: toggleTemporaryComposer
     },
@@ -1386,7 +1357,6 @@ export function PowerAppShellV2({
     selectedSearchOptionIds,
     showCitations,
     showReasoningBlocks,
-    showToolActivity,
     stopCurrentRun,
     streamMode,
     submitComposer,
@@ -1394,28 +1364,23 @@ export function PowerAppShellV2({
     toggleCitationsVisibility,
     toggleNotificationSound,
     toggleReasoningBlockVisibility,
-    toggleToolActivityVisibility,
     useOrganizationSearchDefault,
     useOrganizationModelDefault,
     uploadFiles,
     uploading
   } satisfies ShellComposerView;
 
-  const detailsView = {
-    activeTab: inspectorActiveTab,
-    branchError: branchGraph?.chatId === activeChatId ? branchGraph.error : null,
-    branchLoading:
-      inspectorActiveTab === "branch" &&
-      Boolean(activeChatId) &&
-      (branchGraph?.chatId !== activeChatId || branchGraph.loading),
-    branchGraph: branchGraph?.chatId === activeChatId ? branchGraph.graph : null,
-    changeMode: setInspectorModeManually,
+  const branchesView = {
+    close: shellOverlays.branches.close,
     checkoutBranch,
-    events: activeRunSurface.events,
-    mode: inspectorMode,
-    open: openDetails,
-    retryBranches: loadBranchGraph
-  } satisfies ShellDetailsView;
+    error: branchGraph?.chatId === activeChatId ? branchGraph.error : null,
+    graph: branchGraph?.chatId === activeChatId ? branchGraph.graph : null,
+    loading: Boolean(activeChatId) &&
+      (branchGraph?.chatId !== activeChatId || branchGraph.loading),
+    open: shellOverlays.branches.open,
+    retry: loadBranchGraph,
+    show: shellOverlays.branches.show
+  } satisfies ShellBranchesView;
 
   const settingsView = {
     closeMemory: closeMemoryWorkspace,
@@ -1487,8 +1452,8 @@ export function PowerAppShellV2({
 
   return (
     <PowerAppShellV2View
+      branches={branchesView}
       composer={composerView}
-      details={detailsView}
       overlays={overlaysView}
       session={sessionView}
       settings={settingsView}

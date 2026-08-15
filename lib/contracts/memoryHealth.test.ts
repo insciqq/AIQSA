@@ -20,7 +20,7 @@ function userHealth() {
       state: "DISABLED",
       totalChats: 0
     },
-    learning: { reason: "USER_DISABLED", resumeAt: null, state: "DISABLED" },
+    learning: { reason: "USER_DISABLED", state: "DISABLED" },
     observedAt: "2026-08-12T10:00:00.000Z",
     rebuild: { state: "IDLE" },
     state: "UP_TO_DATE",
@@ -79,8 +79,6 @@ describe("Memory health wire contracts", () => {
         state: "WORKING",
         waitingForReview: "NONE"
       },
-      requestLocale: "RU",
-      scheduler: { resetAt: "2026-08-13T00:00:00.000Z", state: "READY" },
       temporary: { overdue: "NONE", state: "CLEAR" }
     };
     expect(adminMemoryHealthSchema.safeParse(value).success).toBe(true);

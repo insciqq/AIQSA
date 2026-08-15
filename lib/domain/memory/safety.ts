@@ -1,30 +1,11 @@
 import type { MemorySensitivityClass } from "../../contracts/memory";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 
-export type MemoryEpisodicRecallDecision =
-  | "ALLOW_GENERIC"
-  | "ALLOW_EXACT_MATCH_ONLY"
-  | "DENY";
-
-export function memoryAutomaticPromotionAllowed(sensitivity: MemorySensitivityClass): boolean {
-  return sensitivity === "NORMAL";
-}
-
 export function memoryDerivativePlaintextAllowed(
   sensitivity: MemorySensitivityClass,
   secretTaintedSourceWindow: boolean
 ): boolean {
   return !secretTaintedSourceWindow && sensitivity !== "SECRET";
-}
-
-export function memoryEpisodicRecallDecision(
-  sensitivity: MemorySensitivityClass,
-  exactCurrentUserQuery: boolean,
-  acceptedSensitivePolicy: boolean
-): MemoryEpisodicRecallDecision {
-  if (sensitivity === "SECRET" || sensitivity === "HIGHLY_SENSITIVE") return "DENY";
-  if (sensitivity === "NORMAL") return "ALLOW_GENERIC";
-  return exactCurrentUserQuery && acceptedSensitivePolicy ? "ALLOW_EXACT_MATCH_ONLY" : "DENY";
 }
 
 export const MEMORY_MUTATION_INTENT_ORIGINS = [

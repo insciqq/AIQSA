@@ -1,7 +1,6 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
-import { invalidRunParamsError } from "../../domain/runParams";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import {
@@ -13,8 +12,7 @@ import type {
   ProviderAdapter,
   ProviderConversationMessage,
   ProviderModelCapabilities,
-  ProviderRunRequest,
-  ProviderSearchAdapter
+  ProviderRunRequest
 } from "../providers/types";
 import type { RunAttachmentRecord } from "./runRepositoryContract";
 import type { RunAttachmentLimits } from "./attachmentLimits";
@@ -132,7 +130,6 @@ function compatibleAdmissionPlan(
   adapterKind: "openai_chat_completions_compatible" | "openai_responses_compatible",
   options: Readonly<{
     nativeSearch?: boolean;
-    searchStrategyId?: string;
   }> = {}
 ): ProviderAdmissionPlan {
   const capabilities: ProviderModelCapabilities = {
@@ -155,7 +152,9 @@ function compatibleAdmissionPlan(
       snapshot: {
         connection: {
           allowPrivateNetwork: false,
-          apiRoot: "https://compatible.example.test/v1"
+          apiRoot: "https://compatible.example.test/v1",
+          authenticationMode: "bearer",
+          responseTimeoutMs: 300_000
         },
         connectionDisplayName: "Compatible endpoint",
         connectionId: "connection-compatible",
@@ -176,7 +175,8 @@ function compatibleAdmissionPlan(
       }
     },
     fingerprint: "a".repeat(64),
-    requestedSearchStrategyId: options.searchStrategyId ?? "search-disabled",
+    requestedSearchPlan: { mode: "all_selected", optionIds: [] },
+    searches: [],
     selection: {
       providerConnectionId: "connection-compatible",
       providerModelId: "deployment-compatible"
@@ -228,7 +228,9 @@ function providerNeutralOpenAISearchPlan(
         allowPrivateNetwork: false,
         apiRoot: customSource
           ? "https://custom-search.example.test/v1"
-          : "https://api.openai.com/v1"
+          : "https://api.openai.com/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       connectionDisplayName: customSource ? "Custom Search" : "OpenAI",
       connectionId: sourceConnectionId,
@@ -260,7 +262,9 @@ function providerNeutralOpenAISearchPlan(
           allowPrivateNetwork: false,
           apiRoot: adapterKind === "anthropic_messages"
             ? "https://api.anthropic.com/v1"
-            : "https://generativelanguage.googleapis.com/v1beta"
+            : "https://generativelanguage.googleapis.com/v1beta",
+          authenticationMode: "bearer",
+          responseTimeoutMs: 300_000
         },
         connectionDisplayName: providerFamily === "anthropic" ? "Anthropic" : "Gemini",
         connectionId: providerConnectionId,
@@ -282,7 +286,6 @@ function providerNeutralOpenAISearchPlan(
     },
     fingerprint: "b".repeat(64),
     requestedSearchPlan: { mode: "model_choice", optionIds: [optionId] },
-    requestedSearchStrategyId: optionId,
     searches: [{
       bindingKey: `search:${optionId}`,
       configuration: {
@@ -338,7 +341,6 @@ function nativeSearchCoexistencePlans(
   const hosted: ProviderAdmissionPlan = {
     ...base,
     requestedSearchPlan,
-    requestedSearchStrategyId: optionId,
     searches: [{
       bindingKey: null,
       configuration: {
@@ -366,7 +368,6 @@ function nativeSearchCoexistencePlans(
     ...base,
     requiresClientToolCoexistence: true,
     requestedSearchPlan,
-    requestedSearchStrategyId: optionId,
     searches: [{
       bindingKey: `search:${optionId}`,
       configuration: {
@@ -438,15 +439,8 @@ type HarnessOptions = Readonly<{
   defaultParams?: Readonly<Record<string, unknown>>;
   entitlements?: ResolvedEntitlements;
   mcpPlan?: McpRunPlanResult;
-  previewError?: Error;
   providerIds?: readonly string[];
   regenerateContext?: readonly ProviderConversationMessage[];
-  searchStrategyEnabled?: boolean;
-  searchProviderAvailable?: boolean;
-  searchStrategyConfig?: Readonly<Record<string, unknown>>;
-  searchStrategyKind?: string;
-  searchStrategyModelId?: string | null;
-  searchStrategyProvider?: string;
   sendContext?: readonly ProviderConversationMessage[];
   storageObjects?: Readonly<Record<string, Readonly<{ body: Buffer; contentType: string }>>>;
 }>;
@@ -456,23 +450,15 @@ function createHarness(options: HarnessOptions = {}) {
   const attachmentLoads: { attachmentIds: string[]; userId: string }[] = [];
   const capabilityLoads: { modelId: string; provider: string }[] = [];
   const entitlementLoads: string[] = [];
-  const previewRequests: ProviderRunRequest[] = [];
   const regenerateContextLoads: { chatId: string; leafMessageId: string; userId: string }[] = [];
   const sendContextLoads: { chatId: string; userId: string }[] = [];
   const storageReads: string[] = [];
-  const searchStrategyChecks: string[] = [];
   const attachments = options.attachments ?? [];
   const capabilities = Object.prototype.hasOwnProperty.call(options, "capabilities")
     ? (options.capabilities ?? null)
     : baseCapabilities;
   const adapter: ProviderAdapter = {
     buildRequestPreview(request) {
-      calls.push("preview");
-      previewRequests.push(request);
-      if (options.previewError) {
-        throw options.previewError;
-      }
-
       return {
         attachments: request.attachments.map((attachment) => ({
           fileName: attachment.fileName,
@@ -496,61 +482,9 @@ function createHarness(options: HarnessOptions = {}) {
       };
     }
   };
-  const searchAdapter: ProviderSearchAdapter = {
-    buildRequestPreview: () => ({}),
-    async search() {
-      return {
-        artifacts: [],
-        finalProviderResponsePreview: {},
-        findings: "unused",
-        requestPreview: {},
-        sources: [],
-        usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          reasoningTokens: 0,
-          totalTokens: 0
-        }
-      };
-    }
-  };
   const providerIds = options.providerIds ?? ["fake", "openai", "openrouter"];
   const providers = Object.fromEntries(providerIds.map((provider) => [provider, adapter]));
   const repository: RunPreparationDeps["repository"] = {
-    async isSearchStrategyEnabled(searchStrategyId) {
-      searchStrategyChecks.push(searchStrategyId);
-      return options.searchStrategyEnabled ?? true;
-    },
-    async loadSearchStrategyConfiguration(searchStrategyId) {
-      return {
-        config: {
-          executor: {
-            modelId: "perplexity/sonar-pro-search",
-            provider: "openrouter"
-          },
-          params: {
-            maxOutputTokens: 1024,
-            temperature: 0
-          },
-          routeProvider: {
-            allowFallbacks: true,
-            dataCollection: "deny",
-            order: ["perplexity"],
-            requireParameters: false,
-            sort: "throughput",
-            zdr: false
-          },
-          ...(options.searchStrategyConfig ?? {})
-        },
-        kind: options.searchStrategyKind ?? "perplexity_tool_search",
-        modelId:
-          options.searchStrategyModelId === undefined
-            ? "perplexity/sonar-pro-search"
-            : options.searchStrategyModelId,
-        provider: options.searchStrategyProvider ?? "openrouter",
-        strategyId: searchStrategyId
-      };
-    },
     async loadAttachments(userId, attachmentIds) {
       calls.push("attachments");
       attachmentLoads.push({ attachmentIds: [...attachmentIds], userId });
@@ -572,42 +506,6 @@ function createHarness(options: HarnessOptions = {}) {
       calls.push("context:regenerate");
       regenerateContextLoads.push({ chatId, leafMessageId, userId });
       return [...(options.regenerateContext ?? [priorMessage, storedUserMessage])];
-    },
-    async loadEntitlements(userId) {
-      calls.push("entitlements");
-      entitlementLoads.push(userId);
-      return options.entitlements ?? defaultEntitlements();
-    },
-    async loadModelConfiguration(provider, modelId) {
-      calls.push("capabilities");
-      capabilityLoads.push({ modelId, provider });
-      if (provider === "openrouter" && modelId === "perplexity/sonar-pro-search") {
-        return {
-          capabilities: {
-            ...baseCapabilities,
-            contextWindow: 200_000,
-            defaultMaxOutputTokens: 8192,
-            reasoning: false
-          },
-          defaultParams: {
-            maxTokens: 8192,
-            provider: {
-              dataCollection: "deny",
-              order: ["perplexity"]
-            },
-            reasoning: {
-              exclude: true
-            },
-            temperature: 1
-          }
-        };
-      }
-      return capabilities
-        ? {
-            capabilities,
-            defaultParams: { ...(options.defaultParams ?? {}) }
-          }
-        : null;
     }
   };
   const storage = options.storageObjects
@@ -635,18 +533,114 @@ function createHarness(options: HarnessOptions = {}) {
       }
     : undefined;
   const deps: RunPreparationDeps = {
+    allowFakeProvider: true,
     ...(options.attachmentLimits
       ? { getAttachmentLimits: () => options.attachmentLimits! }
       : {}),
     ...(options.mcpPlan ? { mcp: { async prepare() { return options.mcpPlan!; } } } : {}),
+    providerAdmission: {
+      async load(input) {
+        if (!providerIds.includes(input.providerConnectionId)) {
+          throw new ProviderAdmissionError("model_not_available");
+        }
+        calls.push("entitlements");
+        entitlementLoads.push(input.userId);
+        const entitlements = options.entitlements ?? defaultEntitlements();
+        if (
+          !entitlements.providerKeys.has(input.providerConnectionId) &&
+          !entitlements.modelKeys.has(`${input.providerConnectionId}:${input.providerModelId}`)
+        ) {
+          throw new ProviderAdmissionError("model_not_available");
+        }
+        if (input.searchPlan.optionIds.some((optionId) =>
+          !entitlements.searchStrategies.has(optionId))) {
+          throw new ProviderAdmissionError("search_strategy_not_available");
+        }
+        calls.push("capabilities");
+        capabilityLoads.push({
+          modelId: input.providerModelId,
+          provider: input.providerConnectionId
+        });
+        if (!capabilities) {
+          throw new ProviderAdmissionError("model_not_available");
+        }
+        if (input.searchPlan.optionIds.length > 0) {
+          throw new ProviderAdmissionError("search_strategy_not_available");
+        }
+
+        const defaultParams = { ...(options.defaultParams ?? {}) };
+        const adapterKind = input.providerConnectionId === "openrouter"
+          ? "openrouter_chat_completions" as const
+          : input.providerConnectionId === "fake"
+            ? "fake" as const
+            : "openai_responses_native" as const;
+        const fake = adapterKind === "fake";
+        const openRouterRouting = adapterKind === "openrouter_chat_completions"
+          ? { mode: "automatic" as const, providers: [] as [] }
+          : undefined;
+        return {
+          answer: {
+            credentialSource: "default" as const,
+            modelConfiguration: {
+              adapterKind,
+              capabilities,
+              defaultParams,
+              ...(openRouterRouting ? { openRouterRouting } : {})
+            },
+            snapshot: {
+              connection: {
+                allowPrivateNetwork: fake,
+                apiRoot: fake ? "http://127.0.0.1" : "https://api.example.test/v1",
+                authenticationMode: fake ? "none" as const : "bearer" as const,
+                responseTimeoutMs: 300_000
+              },
+              connectionDisplayName: input.providerConnectionId,
+              connectionId: input.providerConnectionId,
+              credentialId: fake ? null : `credential:${input.providerConnectionId}`,
+              credentialVersionId: fake
+                ? null
+                : `credential-version:${input.providerConnectionId}`,
+              model: fake
+                ? {
+                    adapterKind: "fake" as const,
+                    capabilities,
+                    defaultParams,
+                    upstreamModelId: input.providerModelId
+                  }
+                : {
+                    adapterKind,
+                    answerSelectable: true,
+                    capabilities,
+                    defaultParams,
+                    modelClass: "answer" as const,
+                    ...(openRouterRouting ? { openRouterRouting } : {}),
+                    upstreamModelId: input.providerModelId
+                  },
+              modelDisplayName: input.providerModelId,
+              providerFamily: input.providerConnectionId,
+              providerModelId: input.providerModelId,
+              version: 1 as const
+            }
+          },
+          fingerprint: "f".repeat(64),
+          requestedSearchPlan: input.searchPlan,
+          ...(input.searchPreferenceSource
+            ? {
+                requestedSearchPreferencePlan: input.searchPreferencePlan,
+                requestedSearchPreferenceSource: input.searchPreferenceSource
+              }
+            : {}),
+          searches: [],
+          selection: {
+            providerConnectionId: input.providerConnectionId,
+            providerModelId: input.providerModelId
+          },
+          userId: input.userId
+        };
+      }
+    },
     providers,
     repository,
-    searchProviders:
-      options.searchProviderAvailable === false
-        ? {}
-        : {
-            openrouter: searchAdapter
-          },
     ...(storage ? { storage } : {})
   };
 
@@ -657,10 +651,7 @@ function createHarness(options: HarnessOptions = {}) {
     capabilityLoads,
     deps,
     entitlementLoads,
-    previewRequests,
     regenerateContextLoads,
-    searchStrategyChecks,
-    searchAdapter,
     sendContextLoads,
     storageReads
   };
@@ -692,7 +683,7 @@ function successBody(overrides: Readonly<Record<string, unknown>> = {}): Readonl
       developer: "Client developer prompt",
       system: "Client system prompt"
     },
-    searchStrategy: "search-disabled",
+    searchPlan: { mode: "all_selected", optionIds: [] },
     timeZone: "Europe/Berlin",
     ...overrides
   };
@@ -823,8 +814,7 @@ describe("run preparation", () => {
           content: { blocks: [originalBlock] },
           modelId: "openai-answer-model",
           params: originalParams,
-          provider: "openai",
-          searchStrategy: "perplexity-tool-search"
+          provider: "openai"
         })
       )
     );
@@ -853,10 +843,8 @@ describe("run preparation", () => {
     expect(Object.isFrozen(prepared.providerRequest.attachments)).toBe(true);
     expect(Object.isFrozen(prepared.providerRequestPreview)).toBe(true);
     expect(Object.isFrozen(previewAttachments)).toBe(true);
-    expect(result.adapter).toBe(harness.adapter);
-    expect(result.searchAdapter).toBe(harness.searchAdapter);
+    expect(result.adapter).toBeDefined();
     expect(Object.isFrozen(result.adapter)).toBe(false);
-    expect(Object.isFrozen(result.searchAdapter)).toBe(false);
     expect(Object.isFrozen(originalBlock)).toBe(false);
     expect(Object.isFrozen(originalParams)).toBe(false);
     expect(preparedBlock).not.toBe(originalBlock);
@@ -924,7 +912,6 @@ describe("run preparation", () => {
       }))
     ));
 
-    expect(prepared.normalizedRequest.memoryActionPlan).toBeUndefined();
     expect(prepared.normalizedRequest.memoryActionTools).toEqual({
       version: "model-driven-v2"
     });
@@ -944,7 +931,6 @@ describe("run preparation", () => {
       }))
     ));
 
-    expect(prepared.normalizedRequest.memoryActionPlan).toBeUndefined();
     expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
     expect(prepared.providerRequest.tools).toBeUndefined();
   });
@@ -1007,7 +993,7 @@ describe("run preparation", () => {
       createHarness().deps,
       sendInput(successBody({
         chatMode: "TEMPORARY",
-        temporaryRetentionPolicyVersion: "temporary-legacy"
+        temporaryRetentionPolicyVersion: "temporary-invalid"
       }), { activeLeafMessageId: null, memoryMode: "NORMAL", messageCount: 0 })
     );
     const lateConversion = await prepareRun(
@@ -1103,7 +1089,6 @@ describe("run preparation", () => {
         mode: "all_selected",
         optionIds: []
       },
-      searchStrategy: "search-disabled",
       userId: "user-1"
     });
     expect(sendPrepared.sourceKind).toBe("send");
@@ -1111,14 +1096,12 @@ describe("run preparation", () => {
     expect(sendHarness.calls).toEqual([
       "entitlements",
       "capabilities",
-      "context:send",
-      "preview"
+      "context:send"
     ]);
     expect(regenerateHarness.calls).toEqual([
       "entitlements",
       "capabilities",
-      "context:regenerate",
-      "preview"
+      "context:regenerate"
     ]);
     expect(sendHarness.entitlementLoads).toEqual(["user-1"]);
     expect(regenerateHarness.entitlementLoads).toEqual(["user-1"]);
@@ -1301,121 +1284,6 @@ describe("run preparation", () => {
     expect(preparedFrom(trustedUnsupportedDefault).normalizedRequest.params.temperature).toBe(1);
   });
 
-  it("prepares the same server-owned Perplexity policy for send and regenerate", async () => {
-    const body = successBody({
-      modelId: "openai-answer-model",
-      params: {
-        search: {
-          maxOutputTokens: 2048,
-          temperature: 0.25
-        }
-      },
-      provider: "openai",
-      searchStrategy: "perplexity-tool-search"
-    });
-    const sendPrepared = preparedFrom(
-      await prepareRun(createHarness().deps, sendInput(body))
-    );
-    const regeneratePrepared = preparedFrom(
-      await prepareRun(createHarness().deps, regenerateInput(body))
-    );
-
-    expect(sendPrepared.normalizedRequest.params.search).toEqual({
-      maxOutputTokens: 2048,
-      temperature: 0.25
-    });
-    expect(sendPrepared.normalizedRequest.searchPolicy).toEqual({
-      controls: {
-        maxOutputTokens: {
-          defaultValue: 8192,
-          maxValue: 8192
-        },
-        temperature: {
-          defaultValue: 1,
-          maxValue: 2,
-          minValue: 0,
-          supported: true
-        }
-      },
-      defaultParams: {
-        maxOutputTokens: 1024,
-        provider: {
-          allowFallbacks: true,
-          dataCollection: "deny",
-          order: ["perplexity"],
-          only: [],
-          requireParameters: false,
-          sort: "throughput",
-          zdr: false
-        },
-        reasoning: {
-          effort: "medium",
-          enabled: false,
-          exclude: true,
-          maxTokens: 0
-        },
-        stream: false,
-        temperature: 0
-      },
-      modelId: "perplexity/sonar-pro-search",
-      provider: "openrouter",
-      strategyId: "perplexity-tool-search"
-    });
-    expect(regeneratePrepared.normalizedRequest.searchPolicy).toEqual(
-      sendPrepared.normalizedRequest.searchPolicy
-    );
-  });
-
-  it("rejects tool-search aliases, routing/privacy objects, unknown keys, and excessive output", async () => {
-    for (const search of [
-      { maxTokens: 1024 },
-      { maxOutputTokens: 8193 },
-      { maxOutputTokens: 1024, unknown: true },
-      { provider: { dataCollection: "allow", order: ["untrusted"] } },
-      { reasoning: { exclude: false } }
-    ]) {
-      const result = await prepareRun(
-        createHarness().deps,
-        sendInput(
-          successBody({
-            modelId: "openai-answer-model",
-            params: { search },
-            provider: "openai",
-            searchStrategy: "perplexity-tool-search"
-          })
-        )
-      );
-
-      expect(result).toMatchObject({
-        code: invalidRunParamsError,
-        ok: false,
-        status: 400
-      });
-    }
-  });
-
-  it("rejects a stale search grant when the concrete strategy is disabled or missing", async () => {
-    const harness = createHarness({ searchStrategyEnabled: false });
-    const result = await prepareRun(
-      harness.deps,
-      sendInput(
-        successBody({
-          modelId: "openai-answer-model",
-          provider: "openai",
-          searchStrategy: "openai-native-web-search"
-        })
-      )
-    );
-
-    expect(result).toMatchObject({
-      code: "search_strategy_not_available",
-      ok: false,
-      status: 403
-    });
-    expect(harness.searchStrategyChecks).toEqual(["openai-native-web-search"]);
-    expect(harness.calls).toEqual(["entitlements", "capabilities"]);
-  });
-
   it.each([
     {
       capabilities: { toolCalling: false },
@@ -1452,7 +1320,6 @@ describe("run preparation", () => {
     );
 
     expect(result).toMatchObject({ code: expectedCode, ok: false, status: 400 });
-    expect(harness.previewRequests).toHaveLength(0);
   });
 
   it("skips the persisted MCP plan when the run explicitly suppresses tools", async () => {
@@ -1468,7 +1335,6 @@ describe("run preparation", () => {
 
     expect(prepared.normalizedRequest.mcp).toBeUndefined();
     expect(prepared.mcpBindings).toBeUndefined();
-    expect(harness.previewRequests[0]?.tools).toBeUndefined();
   });
 
   it("accepts an MCP snapshot for a provider model with explicit effective tool capabilities", async () => {
@@ -1557,10 +1423,36 @@ describe("run preparation", () => {
   });
 
   it("keeps declared hosted web search on a compatible Responses run", async () => {
-    const plan = compatibleAdmissionPlan("openai_responses_compatible", {
-      nativeSearch: true,
-      searchStrategyId: "openai-native-web-search"
+    const optionId = "openai-native-web-search";
+    const base = compatibleAdmissionPlan("openai_responses_compatible", {
+      nativeSearch: true
     });
+    const plan: ProviderAdmissionPlan = {
+      ...base,
+      requestedSearchPlan: { mode: "model_choice", optionIds: [optionId] },
+      searches: [{
+        bindingKey: null,
+        configuration: {
+          adapterKind: "answer_provider_hosted",
+          config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 15_000 },
+          credentialMode: "answer_provider",
+          displayName: "OpenAI Web Search",
+          executionModes: ["model_choice"],
+          kind: "openai_native_web_search",
+          modelId: null,
+          protocol: "openai_responses_web_search",
+          provider: "openai_compatible",
+          providerModelId: null,
+          revisionId: "revision-hosted",
+          searchStrategyRowId: "integration-hosted",
+          strategyId: optionId
+        },
+        integrationId: "integration-hosted",
+        optionId,
+        ordinal: 0,
+        revisionId: "revision-hosted"
+      }]
+    };
     const harness = createHarness();
     const result = await prepareRun(
       {
@@ -1571,15 +1463,17 @@ describe("run preparation", () => {
       sendInput(successBody({
         modelId: plan.selection.providerModelId,
         provider: plan.selection.providerConnectionId,
-        searchStrategy: "openai-native-web-search"
+        searchPlan: plan.requestedSearchPlan
       }))
     );
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
-    expect(prepared.providerRequest.searchStrategy).toBe("openai-native-web-search");
+    expect(prepared.normalizedRequest.searchPlan).toMatchObject({
+      mode: "model_choice",
+      options: [expect.objectContaining({ optionId })]
+    });
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       ...memoryToolNames
     ]);
@@ -1644,7 +1538,6 @@ describe("run preparation", () => {
         providerModelId: hosted.selection.providerModelId
       })]
     });
-    expect(prepared.providerRequest.searchStrategy).toBe(optionId);
     expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain('"type":"google_search"');
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "search_engine_1",
@@ -1809,7 +1702,6 @@ describe("run preparation", () => {
         })]
       });
       expect(prepared.providerAdmissionPlan).toEqual(client);
-      expect(prepared.providerRequest.searchStrategy).toBe(optionId);
       expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         "retrieve_knowledge",
         "search_engine_1",
@@ -2068,7 +1960,7 @@ describe("run preparation", () => {
     ]);
   });
 
-  it("routes a provider-admitted multi-engine plan without requiring the legacy Perplexity service", async () => {
+  it("routes a provider-admitted multi-engine plan", async () => {
     const base = compatibleAdmissionPlan("openai_responses_compatible");
     const optionIds = ["perplexity-tool-search", "company-search"];
     const searches: NonNullable<ProviderAdmissionPlan["searches"]> = optionIds.map(
@@ -2084,6 +1976,7 @@ describe("run preparation", () => {
             timeoutMs: 15_000
           },
           credentialMode: "provider_model",
+          displayName: `Search ${ordinal + 1}`,
           executionModes: ["all_selected", "model_choice"],
           kind: optionId === "perplexity-tool-search"
             ? "perplexity_tool_search"
@@ -2108,10 +2001,9 @@ describe("run preparation", () => {
     const plan: ProviderAdmissionPlan = {
       ...base,
       requestedSearchPlan: { mode: "all_selected", optionIds },
-      requestedSearchStrategyId: optionIds[0]!,
       searches
     };
-    const harness = createHarness({ searchProviderAvailable: false });
+    const harness = createHarness();
     const result = await prepareRun(
       {
         ...harness.deps,
@@ -2128,7 +2020,6 @@ describe("run preparation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(prepared.normalizedRequest.searchPolicy).toBeUndefined();
     expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       "search_selected_engines",
       ...memoryToolNames
@@ -2139,17 +2030,13 @@ describe("run preparation", () => {
     { adapterKind: "anthropic_messages" as const, provider: "anthropic" },
     { adapterKind: "gemini_interactions_native" as const, provider: "gemini" }
   ])(
-    "serializes logical OpenAI Search as a client tool for $provider answers",
+    "serializes admitted OpenAI Search as a client tool for $provider answers",
     async ({ adapterKind, provider }) => {
       const plan = providerNeutralOpenAISearchPlan(adapterKind);
       const admissionLoad = vi.fn(async () => plan);
-      const legacyPlan = {
-        mode: "model_choice" as const,
-        optionIds: ["openai-provider-web-search"]
-      };
       const result = await prepareRun(
         {
-          ...createHarness({ searchProviderAvailable: false }).deps,
+          ...createHarness().deps,
           allowFakeProvider: false,
           providerAdmission: { load: admissionLoad }
         },
@@ -2157,7 +2044,7 @@ describe("run preparation", () => {
           modelId: plan.selection.providerModelId,
           params: {},
           provider: plan.selection.providerConnectionId,
-          searchPlan: legacyPlan
+          searchPlan: plan.requestedSearchPlan
         }))
       );
 
@@ -2175,12 +2062,9 @@ describe("run preparation", () => {
           providerModelId: "technical-openai-search"
         })]
       });
-      expect(prepared.normalizedRequest.searchStrategy).toBe("openai-native-web-search");
       expect(prepared.defaults?.searchPlan).toEqual(plan.requestedSearchPlan);
-      expect(prepared.defaults?.searchStrategy).toBe("openai-native-web-search");
       expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
-        searchPlan: legacyPlan,
-        searchStrategyId: "openai-provider-web-search"
+        searchPlan: plan.requestedSearchPlan
       }));
       expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         "search_engine_1",
@@ -2199,7 +2083,7 @@ describe("run preparation", () => {
     });
     const result = await prepareRun(
       {
-        ...createHarness({ searchProviderAvailable: false }).deps,
+        ...createHarness().deps,
         allowFakeProvider: false,
         providerAdmission: { async load() { return plan; } }
       },
@@ -2214,7 +2098,6 @@ describe("run preparation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(prepared.normalizedRequest.searchStrategy).toBe(optionId);
     expect(prepared.normalizedRequest.searchPlan).toEqual({
       mode: "model_choice",
       options: [expect.objectContaining({
@@ -2236,7 +2119,6 @@ describe("run preparation", () => {
     const plan: ProviderAdmissionPlan = {
       ...base,
       requestedSearchPlan: { mode: "all_selected", optionIds: [optionId] },
-      requestedSearchStrategyId: optionId,
       searches: [{
         bindingKey: `search:${optionId}`,
         configuration: {
@@ -2249,6 +2131,7 @@ describe("run preparation", () => {
             timeoutMs: 15_000
           },
           credentialMode: "provider_model",
+          displayName: "Perplexity Search",
           executionModes: ["all_selected", "model_choice"],
           kind: "perplexity_tool_search",
           modelId: "perplexity/sonar-pro-search",
@@ -2318,8 +2201,7 @@ describe("run preparation", () => {
   it("keeps provider-hosted native Search available with attachments", async () => {
     const optionId = "openai-native-web-search";
     const base = compatibleAdmissionPlan("openai_responses_compatible", {
-      nativeSearch: true,
-      searchStrategyId: optionId
+      nativeSearch: true
     });
     const plan: ProviderAdmissionPlan = {
       ...base,
@@ -2330,6 +2212,7 @@ describe("run preparation", () => {
           adapterKind: "answer_provider_hosted",
           config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 15_000 },
           credentialMode: "answer_provider",
+          displayName: "OpenAI Web Search",
           executionModes: ["model_choice"],
           kind: "openai_native_web_search",
           modelId: null,
@@ -2376,106 +2259,12 @@ describe("run preparation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(prepared.normalizedRequest.searchStrategy).toBe(optionId);
+    expect(prepared.normalizedRequest.searchPlan.options).toEqual([
+      expect.objectContaining({ optionId })
+    ]);
     expect(prepared.providerRequest.attachments).toEqual([
       expect.objectContaining({ id: "pdf-1" })
     ]);
-  });
-
-  it("keeps the first selected option as the legacy default mirror in a mixed hosted plan", async () => {
-    const base = compatibleAdmissionPlan("openai_responses_compatible", {
-      nativeSearch: true
-    });
-    const optionIds = ["company-search", "openai-native-web-search"];
-    const plan: ProviderAdmissionPlan = {
-      ...base,
-      requestedSearchPlan: { mode: "model_choice", optionIds },
-      requestedSearchStrategyId: optionIds[0]!,
-      searches: [
-        {
-          bindingKey: "search:company-search",
-          configuration: {
-            adapterKind: "provider_model_client",
-            config: {
-              maxResults: 8,
-              modelCapabilities: { ...baseCapabilities, nativeSearch: true },
-              modelDefaultParams: {},
-              queryMaxCharacters: 500,
-              timeoutMs: 15_000
-            },
-            credentialMode: "provider_model",
-            executionModes: ["all_selected", "model_choice"],
-            kind: "provider_model_web_search",
-            modelId: "search-model",
-            protocol: "openai_responses_web_search",
-            provider: "openai_compatible",
-            providerModelId: "technical-search-model",
-            revisionId: "revision-client",
-            searchStrategyRowId: "integration-client",
-            strategyId: optionIds[0]!
-          },
-          integrationId: "integration-client",
-          optionId: optionIds[0]!,
-          ordinal: 0,
-          revisionId: "revision-client",
-          role: base.answer
-        },
-        {
-          bindingKey: null,
-          configuration: {
-            adapterKind: "answer_provider_hosted",
-            config: {
-              maxResults: 8,
-              queryMaxCharacters: 500,
-              timeoutMs: 15_000
-            },
-            credentialMode: "answer_provider",
-            executionModes: ["model_choice"],
-            kind: "openai_native_web_search",
-            modelId: null,
-            protocol: "openai_responses_web_search",
-            provider: "openai_compatible",
-            providerModelId: null,
-            revisionId: "revision-hosted",
-            searchStrategyRowId: "integration-hosted",
-            strategyId: optionIds[1]!
-          },
-          integrationId: "integration-hosted",
-          optionId: optionIds[1]!,
-          ordinal: 1,
-          revisionId: "revision-hosted"
-        }
-      ]
-    };
-    const result = await prepareRun(
-      {
-        ...createHarness().deps,
-        allowFakeProvider: false,
-        providerAdmission: { async load() { return plan; } }
-      },
-      sendInput(successBody({
-        modelId: plan.selection.providerModelId,
-        provider: plan.selection.providerConnectionId,
-        searchPlan: { mode: "model_choice", optionIds }
-      }))
-    );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(result.code);
-    const prepared = materializePreparedRunData(result.prepared);
-    expect(prepared.normalizedRequest.searchStrategy).toBe("company-search");
-    expect(prepared.defaults).not.toBeNull();
-    expect(prepared.defaults?.searchPlan).toEqual({ mode: "model_choice", optionIds });
-    expect(prepared.defaults?.searchStrategy).toBe("company-search");
-    expect(prepared.defaults?.controlDefaults).not.toHaveProperty("searchStrategyId");
-    expect(prepared.providerRequestPreview).toMatchObject({
-      body: {
-        tools: expect.arrayContaining([
-          { type: "web_search" },
-          expect.objectContaining({ type: "function" })
-        ])
-      }
-    });
   });
 
   it("keeps a full personal Search preference separate from the effective run plan", async () => {
@@ -2570,13 +2359,12 @@ describe("run preparation", () => {
     );
 
     expect(result).toMatchObject({ code: "context_too_large", ok: false, status: 400 });
-    expect(harness.previewRequests).toHaveLength(0);
   });
 
   it("returns each validation failure at its authoritative precedence and skips later work", async () => {
     await expectFailure({
       calls: [],
-      expected: { code: "provider_not_available", status: 400 },
+      expected: { code: "model_not_available", status: 403 },
       harness: { providerIds: [] }
     });
     await expectFailure({
@@ -2598,14 +2386,22 @@ describe("run preparation", () => {
         successBody({
           modelId: "openai-model",
           provider: "openai",
-          searchStrategy: "openai-native-web-search"
+          searchPlan: {
+            mode: "all_selected",
+            optionIds: ["openai-native-web-search"]
+          }
         })
       )
     });
     await expectFailure({
-      calls: ["entitlements"],
+      calls: [],
+      expected: { code: "search_plan_invalid", status: 400 },
+      request: sendInput({ content: textMessageContent("Question") })
+    });
+    await expectFailure({
+      calls: ["entitlements", "capabilities"],
       expected: { code: "content_required", status: 400 },
-      request: sendInput({})
+      request: sendInput({ searchPlan: { mode: "all_selected", optionIds: [] } })
     });
     await expectFailure({
       calls: ["entitlements", "capabilities"],
@@ -2616,28 +2412,6 @@ describe("run preparation", () => {
       calls: ["entitlements", "capabilities", "context:send"],
       expected: { code: "invalid_run_params", status: 400 },
       request: sendInput(successBody({ params: { unknown: true } }))
-    });
-    await expectFailure({
-      calls: ["entitlements", "capabilities", "context:send"],
-      expected: { code: "search_strategy_unknown", status: 400 },
-      request: sendInput(successBody({ searchStrategy: "unknown-search" }))
-    });
-    await expectFailure({
-      calls: ["entitlements", "capabilities", "context:send"],
-      expected: { code: "search_strategy_not_supported_by_model", status: 400 },
-      request: sendInput(successBody({ searchStrategy: "openai-native-web-search" }))
-    });
-    await expectFailure({
-      calls: ["entitlements", "capabilities", "context:send"],
-      expected: { code: "search_provider_not_available", status: 400 },
-      harness: { searchProviderAvailable: false },
-      request: sendInput(
-        successBody({
-          modelId: "openai-answer-model",
-          provider: "openai",
-          searchStrategy: "perplexity-tool-search"
-        })
-      )
     });
     await expectFailure({
       calls: ["entitlements", "capabilities", "context:send", "attachments"],
@@ -2711,25 +2485,15 @@ describe("run preparation", () => {
         capabilities: {
           ...baseCapabilities,
           contextWindow: 40,
-          defaultMaxOutputTokens: 0
+          defaultMaxOutputTokens: 1
         }
       },
       messageContains: "exceed the model context budget"
     });
 
-    const previewHarness = createHarness({
-      previewError: new Error("preview_failed")
-    });
-    await expect(prepareRun(previewHarness.deps, sendInput())).rejects.toThrow("preview_failed");
-    expect(previewHarness.calls).toEqual([
-      "entitlements",
-      "capabilities",
-      "context:send",
-      "preview"
-    ]);
   });
 
-  it("rejects typed no-text, zero-emitted partial, and legacy blank PDFs for text-extraction models", async () => {
+  it("rejects typed no-text, zero-emitted partial, and stored blank PDFs for text-extraction models", async () => {
     const expected = {
       code: "pdf_text_unavailable",
       message:
@@ -3011,7 +2775,7 @@ describe("run preparation", () => {
 
   it("rejects an attachment-count overflow before repository or storage reads", async () => {
     await expectFailure({
-      calls: ["entitlements"],
+      calls: ["entitlements", "capabilities"],
       expected: {
         actual: { count: 3 },
         code: "attachment_count_limit_exceeded",
@@ -3111,7 +2875,6 @@ describe("run preparation", () => {
     });
     expect(harness.attachmentLoads).toHaveLength(1);
     expect(harness.storageReads).toEqual([]);
-    expect(harness.previewRequests).toEqual([]);
   });
 
   it("keeps ordered private payloads ephemeral outside the provider request", async () => {
@@ -3186,14 +2949,10 @@ describe("run preparation", () => {
       })
     ]);
     expect(prepared.providerRequest.attachments.some((attachment) => "storageKey" in attachment)).toBe(false);
-    expect(harness.previewRequests).toEqual([prepared.providerRequest]);
-    expect(prepared.providerRequestPreview).toEqual({
-      attachments: [
-        { fileName: "image-1.png", id: "image-1", kind: "image" },
-        { fileName: "pdf-1.pdf", id: "pdf-1", kind: "pdf" }
-      ],
-      modelId: "fake-qsa",
-      provider: "fake"
+    expect(prepared.providerRequestPreview).toMatchObject({
+      model: "fake-qsa",
+      provider: "fake",
+      searchOptionIds: []
     });
 
     const normalizedJson = JSON.stringify(prepared.normalizedRequest);

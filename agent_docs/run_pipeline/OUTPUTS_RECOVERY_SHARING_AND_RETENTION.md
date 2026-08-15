@@ -58,11 +58,11 @@ Custom image-generation declarations remain future configuration data and do not
 
 ## Sharing
 
-`Share (anonymously)` creates a sanitized immutable snapshot of the active visible branch. It must not expose raw provider payloads, private attachments, API keys, internal run ids, private folder metadata, auth data, structured Knowledge data, Memory personal context, internal recovery/checkpoint records, tool arguments/results, or lifecycle metadata. Creation and every anonymous read both apply the same positive public schema: only approved user/assistant text blocks, safe public citations when the existing share contract permits them, and the public title/version survive. Unknown legacy fields are dropped.
+`Share (anonymously)` creates a sanitized immutable snapshot of the active visible branch. It must not expose raw provider payloads, private attachments, API keys, internal run ids, private folder metadata, auth data, structured Knowledge data, Memory personal context, internal recovery/checkpoint records, tool arguments/results, or lifecycle metadata. Creation and every anonymous read both apply the same positive public schema: only approved user/assistant text blocks, safe public citations when the existing share contract permits them, and the public title/version survive. Unknown fields are dropped.
 
 Knowledge- or Memory-bearing branches remain shareable because private retrieval/context data is omitted. A branch containing hosted-answer Gemini grounded live-only provenance is rejected rather than publishing its placeholder or reconstructing content. The public snapshot does not mutate when the private chat changes.
 
-Publishing requires explicit confirmation. The Share action opens a dialog that explains the sanitized-snapshot semantics, and a link exists only after the confirming create action. Each snapshot records its source chat, and the chat's live links remain listed in that dialog with per-link revocation. Stored tokens remain hashes; the full URL is visible only immediately after creation. Legacy snapshots created before the chat link existed are not listed and can be revoked only by their original id.
+Publishing requires explicit confirmation. The Share action opens a dialog that explains the sanitized-snapshot semantics, and a link exists only after the confirming create action. Each linked snapshot records its source chat, and the chat's live links remain listed in that dialog with per-link revocation. Detached snapshots are not listed and can be revoked only by their original id.
 
 ## Logging And Retention
 
@@ -70,4 +70,4 @@ Publishing requires explicit confirmation. The Share action opens a dialog that 
 
 Removing the inspector does not authorize moving its payloads into debug logs. Ordinary application logs remain structured and content-free. When a real diagnostic need exists, log only reviewed fields such as event name, correlation/run id, stage, adapter family, status, duration, attempt count, HTTP status, stable error code, and bounded counts/limits. Do not log prompts, answers, generated Search queries, tool arguments/results, Memory text, attachment names, custom endpoints, credentials, or raw provider payloads.
 
-Retention must be purpose-based. Stop writing data that has no remaining execution, recovery, side-effect-safety, security, deletion, citation/output, or aggregate-accounting consumer. Remove obsolete rows/columns only through forward migrations and after recovery tests prove they are no longer needed.
+Retention must be purpose-based. Stop writing data that has no remaining execution, recovery, side-effect-safety, security, deletion, citation/output, or aggregate-accounting consumer. Remove unused rows and columns from the schema and migration contract after recovery tests prove they are no longer needed.

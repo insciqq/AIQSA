@@ -35,7 +35,7 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
       pendingChatFolderId: null,
       projectSettingsFolderId: null,
       renderActiveLeafId: null,
-      runSurface: { events: [], lastRun: null, runsById: {} },
+      runSurface: { events: [] },
       selectedAssistantPromptCharacterCount: null,
       selectedModelId: "gpt-5.5",
       selectedProvider: "openai",
@@ -52,12 +52,13 @@ const emptyCatalog: Catalog = {
     modelId: "gpt-5.5",
     modelPreferenceSource: "personal",
     organizationModelDefault: null,
+    organizationSearchPlan: { mode: "all_selected", optionIds: [] },
     personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
     provider: "openai",
-    searchStrategyId: "search-disabled",
+    searchPlan: { mode: "all_selected", optionIds: [] },
+    searchPreferenceSource: "personal",
     showCitations: true,
     showReasoningBlocks: false,
-    showToolActivity: true,
   },
   models: [],
   providers: [],
@@ -133,7 +134,7 @@ describe("usePowerAppShellViewModel", () => {
     expect(result.current.composerDisabledHint).toBe("No model access. Ask an admin to grant model access.");
   });
 
-  it("does not present a one-token compatibility sentinel as model context", () => {
+  it("does not present an unknown context window as model context", () => {
     const catalog: Catalog = {
       ...emptyCatalog,
       models: [{
@@ -147,7 +148,7 @@ describe("usePowerAppShellViewModel", () => {
           streaming: true,
           toolCalling: false
         },
-        contextWindow: 1,
+        contextWindow: null,
         defaultParams: {},
         displayName: "Private model",
         modelId: "private-model",
@@ -216,12 +217,13 @@ describe("usePowerAppShellViewModel", () => {
         modelId: "gpt-5.5",
         modelPreferenceSource: "personal",
         organizationModelDefault: null,
+        organizationSearchPlan: { mode: "all_selected", optionIds: [] },
         personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
         provider: "openai",
-        searchStrategyId: "search-disabled",
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        searchPreferenceSource: "personal",
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true,
       },
       models: [
         {
@@ -301,15 +303,16 @@ describe("usePowerAppShellViewModel", () => {
         modelId: "fake-model-id",
         modelPreferenceSource: "personal",
         organizationModelDefault: null,
+        organizationSearchPlan: { mode: "all_selected", optionIds: [] },
         personalModelDefault: {
           modelId: "fake-model-id",
           provider: "fake-connection-id"
         },
         provider: "fake-connection-id",
-        searchStrategyId: "search-disabled",
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        searchPreferenceSource: "personal",
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true,
       },
       models: [
         {
@@ -369,12 +372,13 @@ describe("usePowerAppShellViewModel", () => {
         modelId: "gpt-5.5",
         modelPreferenceSource: "personal",
         organizationModelDefault: null,
+        organizationSearchPlan: { mode: "all_selected", optionIds: [] },
         personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
         provider: "openai",
-        searchStrategyId: "search-disabled",
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        searchPreferenceSource: "personal",
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true,
       },
       models: [
         {

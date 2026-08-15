@@ -1,11 +1,10 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
-import { databaseRequiredTestFiles } from "./vitest.hermetic.policy";
 
 const defaultExcludes = ["node_modules/**", ".next/**", "tests/e2e/**"];
 const statefulTestFiles = [
   "**/*.integration.test.{ts,tsx}",
-  ...databaseRequiredTestFiles
+  "**/*.prisma.test.{ts,tsx}"
 ];
 
 export default defineConfig({
@@ -25,7 +24,9 @@ export default defineConfig({
       "components/**/*.test.{ts,tsx}",
       "features/**/*.test.{ts,tsx}",
       "lib/**/*.test.{ts,tsx}",
-      "tests/harness/**/*.test.ts"
+      "ops/**/*.test.{ts,tsx}",
+      "prisma/**/*.test.{ts,tsx}",
+      "scripts/**/*.test.{ts,tsx}"
     ],
     maxWorkers: "33%",
     setupFiles: "./vitest.setup.ts",

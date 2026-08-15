@@ -22,7 +22,8 @@ export function normalizeAdminProviderConnectionConfiguration(
   return normalizeProviderConnectionConfiguration({
     ...record,
     responseTimeoutMs: providerResponseTimeoutMsFromSeconds(
-      record.responseTimeoutSeconds
+      record.responseTimeoutSeconds,
+      null
     )
   });
 }
@@ -48,9 +49,7 @@ export function adminProviderConnectionConfiguration(
   return {
     allowPrivateNetwork: configuration.allowPrivateNetwork,
     apiRoot: configuration.apiRoot,
-    ...(configuration.authenticationMode
-      ? { authenticationMode: configuration.authenticationMode }
-      : {}),
+    authenticationMode: configuration.authenticationMode,
     responseTimeoutSeconds: effectiveProviderResponseTimeoutMs(configuration) / 1_000
   };
 }

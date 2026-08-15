@@ -114,6 +114,7 @@ function validDraft(): Record<string, unknown> {
     category: "coding",
     description: "Reviews changes for correctness.",
     developerPrompt: null,
+    knowledgeBaseIds: [],
     mcpServerIds: ["server-1"],
     name: "Code Reviewer",
     providerModelId: "model-1",
@@ -226,14 +227,16 @@ describe("assistant wire decoders", () => {
     ).toBeNull();
   });
 
-  it("decodes bounded revision Knowledge ids with absent-field compatibility", () => {
+  it("requires and decodes bounded revision Knowledge ids", () => {
     const revision = {
       ...validDraft(),
       authorDisplayName: "Alex",
       createdAt: "2026-08-08T00:00:00.000Z",
       revisionNumber: 2
     };
-    expect(decodeAssistantRevisionContent(revision)?.knowledgeBaseIds).toEqual([]);
+    const withoutKnowledge: Record<string, unknown> = { ...revision };
+    delete withoutKnowledge.knowledgeBaseIds;
+    expect(decodeAssistantRevisionContent(withoutKnowledge)).toBeNull();
     expect(decodeAssistantRevisionContent({
       ...revision,
       knowledgeBaseIds: ["base-a", "base-b"]

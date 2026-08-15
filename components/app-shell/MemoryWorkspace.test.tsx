@@ -23,7 +23,7 @@ describe("MemoryWorkspace", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
       String(input) === "/api/me/memory/health"
         ? json({ health: memoryHealthFixture() })
-        : json(memorySettingsFixture({}, "RU"))));
+        : json(memorySettingsFixture())));
   });
 
   afterEach(() => {

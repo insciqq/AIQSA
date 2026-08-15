@@ -370,7 +370,7 @@ describe("useAdminSectionNavigation", () => {
   });
 
   it("treats focus inside hidden or inert content as unstable", async () => {
-    window.history.replaceState(null, "", "/admin?section=groups");
+    window.history.replaceState(null, "", "/admin?section=access");
     const harness = renderNavigation();
     const activeTab = await screen.findByRole("tab", { name: "Access & groups" });
     await waitFor(() => expect(activeTab).toHaveAttribute("aria-selected", "true"));

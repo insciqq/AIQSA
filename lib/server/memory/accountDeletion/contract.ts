@@ -1,7 +1,7 @@
 import type { MemoryDeletionClaim } from "../coordinator/types";
 
 export const ACCOUNT_MEMORY_DELETION_MANIFEST_VERSION =
-  "memory-p8-account-delete-v1" as const;
+  "memory-account-delete-v1" as const;
 export const ACCOUNT_MEMORY_DELETION_TARGET_TYPE =
   `ACCOUNT@${ACCOUNT_MEMORY_DELETION_MANIFEST_VERSION}` as const;
 

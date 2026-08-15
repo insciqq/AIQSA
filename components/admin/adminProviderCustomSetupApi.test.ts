@@ -10,6 +10,8 @@ const request = {
   authenticationMode: "bearer" as const,
   confirmPaidRequest: true as const,
   modelId: "vendor/model-1",
+  protocol: "chat_completions" as const,
+  responseTimeoutSeconds: 300,
   secret: "browser-only-key"
 };
 
@@ -51,6 +53,7 @@ describe("custom provider setup API", () => {
       allowPrivateNetwork: false,
       apiRoot: "https://llm.example.test/v1",
       authenticationMode: "bearer",
+      responseTimeoutSeconds: 300,
       secret: "browser-only-key"
     }, fetcher)).resolves.toEqual({ data: body, ok: true });
     expect(fetcher).toHaveBeenCalledWith(
@@ -64,6 +67,7 @@ describe("custom provider setup API", () => {
       allowPrivateNetwork: false,
       apiRoot: "https://llm.example.test/v1",
       authenticationMode: "bearer",
+      responseTimeoutSeconds: 300,
       secret: "browser-only-key"
     }, vi.fn(async () => Response.json({
       apiRoot: "https://leaked.example.test/v1",
@@ -84,6 +88,7 @@ describe("custom provider setup API", () => {
       allowPrivateNetwork: false,
       apiRoot: "https://llm.example.test/v1",
       authenticationMode: "bearer",
+      responseTimeoutSeconds: 300,
       secret: "browser-only-key"
     }, vi.fn(async () => Response.json({
       checkedAt: "2026-07-26T10:00:00.000Z",

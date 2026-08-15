@@ -110,7 +110,6 @@ async function createTurn(input: Readonly<{
         }
       },
       provider: "memory-fact-test-provider",
-      providerRequestPreview: {},
       status: "complete",
       userId: input.userId,
       userMessageId: userMessage.id

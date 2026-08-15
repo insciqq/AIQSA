@@ -1,5 +1,4 @@
 import type { MemorySettingsResponse } from "../../../contracts/memory";
-import type { MemorySchedulerBudgetStatus } from "../coordinator/scheduler";
 import { describe, expect, it, vi } from "vitest";
 import {
   createMemoryHealthService,
@@ -23,7 +22,6 @@ function settings(
       explicitMemory: true,
       historyRecall: true,
       permanentChatDeletion: true,
-      russianQualified: true,
       temporaryChats: true
     },
     egress: {
@@ -53,8 +51,6 @@ function settings(
       memoryConsentRevision: 1,
       memoryGeneration: 1,
       memoryRevision: 1,
-      memoryUiLocale: "EN",
-      preferredProfileLanguage: "AUTO",
       referenceChatHistory,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
       settingsRevision: 1,
@@ -62,24 +58,6 @@ function settings(
       useMemoryFacts: true,
       ...overrides
     }
-  };
-}
-
-function scheduler(overrides: Partial<MemorySchedulerBudgetStatus> = {}): MemorySchedulerBudgetStatus {
-  return {
-    backgroundKinds: ["GLOBAL_DREAM", "RECALCULATE_WORKING_SET"],
-    installation: { calls: 0, costMicros: 0, deferred: false },
-    limits: {
-      installationCalls: 100,
-      installationCostMicros: 1_000_000,
-      userCalls: 10,
-      userCostMicros: 100_000
-    },
-    resetAt: "2026-08-13T00:00:00.000Z",
-    status: "ready",
-    user: { calls: 0, costMicros: 0, deferred: false },
-    windowStart: "2026-08-12T00:00:00.000Z",
-    ...overrides
   };
 }
 
@@ -103,20 +81,17 @@ const adminSnapshot: AdminMemoryHealthSnapshot = {
   overdueTemporaryCount: 0,
   recentExecutionCount: 0,
   recentTerminalJobCount: 0,
-  requestLocale: "EN",
   retryingJobCount: 0,
   waitingForEgressCount: 0
 };
 
 function service(input: Readonly<{
   admin?: Partial<AdminMemoryHealthSnapshot>;
-  scheduler?: MemorySchedulerBudgetStatus;
   settings?: MemorySettingsResponse;
   user?: Partial<UserMemoryHealthSnapshot>;
 }> = {}) {
   return createMemoryHealthService({
     now: () => new Date("2026-08-12T10:00:00.000Z"),
-    readSchedulerStatus: vi.fn().mockResolvedValue(input.scheduler ?? scheduler()),
     readSettings: vi.fn().mockResolvedValue(input.settings ?? settings()),
     repository: {
       readAdmin: vi.fn().mockResolvedValue({ ...adminSnapshot, ...input.admin }),
@@ -163,15 +138,7 @@ describe("Memory health projections", () => {
     expect(health.state).toBe(expected);
   });
 
-  it("distinguishes background budget, capability, and admin-review delays", async () => {
-    const budget = scheduler({
-      installation: { calls: 100, costMicros: 0, deferred: true },
-      user: { calls: 0, costMicros: 0, deferred: false }
-    });
-    await expect(service({ scheduler: budget }).user("owner-1")).resolves.toMatchObject({
-      learning: { reason: "BUDGET", state: "DELAYED" },
-      state: "LEARNING_DELAYED"
-    });
+  it("distinguishes capability and admin-review delays", async () => {
     await expect(service({
       settings: settings({}, { automaticLearning: false })
     }).user("owner-1")).resolves.toMatchObject({
@@ -195,7 +162,6 @@ describe("Memory health projections", () => {
         failedExecutionCount: 2,
         oldestActiveJobAt: new Date("2026-08-12T08:00:00.000Z"),
         recentExecutionCount: 4,
-        requestLocale: "RU",
         waitingForEgressCount: 3
       }
     }).admin("admin-1", { egressReviewRequired: true });
@@ -209,8 +175,7 @@ describe("Memory health projections", () => {
         oldestLag: "UNDER_24_HOURS",
         state: "DELAYED",
         waitingForReview: "SOME"
-      },
-      requestLocale: "RU"
+      }
     });
     expect(JSON.stringify(health)).not.toMatch(/admin-1|userId|owner|query|source/iu);
   });

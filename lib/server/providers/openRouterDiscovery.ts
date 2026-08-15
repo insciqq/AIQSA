@@ -6,6 +6,7 @@ import {
   withTimeoutSignal
 } from "./network";
 import {
+  DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS,
   normalizeProviderConnectionConfiguration,
   type ProviderConnectionConfiguration
 } from "./providerConfiguration";
@@ -294,7 +295,8 @@ export function createOpenRouterDiscoveryClient(input: {
     normalizeProviderConnectionConfiguration({
       allowPrivateNetwork: input.allowPrivateNetwork === true,
       apiRoot: input.apiRoot,
-      responseTimeoutMs: input.responseTimeoutMs
+      authenticationMode: "bearer",
+      responseTimeoutMs: input.responseTimeoutMs ?? DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS
     });
   assertProviderCredentialSource(
     input.bearerToken,

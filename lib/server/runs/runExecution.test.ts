@@ -2,8 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import {
-  GROUNDED_LIVE_ONLY_PLACEHOLDER,
-  groundedLiveOnlyProviderPreview
+  GROUNDED_LIVE_ONLY_PLACEHOLDER
 } from "../../domain/grounding";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
@@ -11,6 +10,7 @@ import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpRunTools } from "../mcp/toolExecutor";
+import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
 import { buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
 import { ProviderRequestTimeoutError } from "../providers/network";
@@ -36,7 +36,6 @@ import type { RunChatUpdateRecord, RunRepository } from "./runRepositoryContract
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import { knowledgeRetrievalTool, type KnowledgeToolExecutor } from "../knowledge/toolExecutor";
-import type { MemoryActionPlan } from "../memory/actions/intent";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import {
@@ -61,7 +60,6 @@ type RepositoryOptions = Readonly<{
   completionWins?: boolean;
   entitlements?: ResolvedEntitlements;
   failureWins?: boolean;
-  modelAvailable?: boolean;
   runStatus?: string;
   searchStrategyEnabled?: boolean;
   responseIdPublication?: "cancelled" | "published" | "terminal";
@@ -131,6 +129,7 @@ function knowledgeEvidence(): KnowledgeRetrievalEvidence {
       chunkIndex: 0,
       documentId: "document-1",
       documentVersionId: "version-1",
+      documentVersionNumber: 1,
       fileName: "private.pdf",
       ftsRank: 1,
       ftsScore: 0.5,
@@ -151,60 +150,183 @@ function knowledgeEvidence(): KnowledgeRetrievalEvidence {
   return { ...draft, providerText: knowledgeToolResultText(draft) };
 }
 
+function hostedSearchPlan(
+  optionId: string,
+  provider: "gemini" | "openai" = "openai"
+): NormalizedRunRequest["searchPlan"] {
+  return {
+    mode: "model_choice",
+    options: [{
+      adapterKind: "answer_provider_hosted",
+      config: {},
+      credentialMode: "answer_provider",
+      displayName: provider === "gemini" ? "Google Search" : "OpenAI Web Search",
+      executionModes: ["model_choice"],
+      modelId: null,
+      optionId,
+      protocol: provider === "gemini" ? "gemini_google_search" : "openai_responses_web_search",
+      provider,
+      providerModelId: null,
+      revisionId: `revision:${optionId}`,
+      searchStrategyRowId: `route:${optionId}`
+    }]
+  };
+}
+
+function providerClientSearchPlan(input: Readonly<{
+  modelId: string;
+  optionId: string;
+  protocol: "anthropic_web_search" | "gemini_google_search" | "openrouter_perplexity_chat";
+  provider: "anthropic" | "gemini" | "openrouter";
+}>): NormalizedRunRequest["searchPlan"] {
+  return {
+    mode: "model_choice",
+    options: [{
+      adapterKind: "provider_model_client",
+      config: {
+        maxOutputTokens: 8192,
+        maxResults: 8,
+        maxSearchCallsPerAnswer: 3,
+        modelCapabilities: {
+          nativePdfInput: false,
+          nativeSearch: true,
+          pdf: false,
+          reasoning: false,
+          streaming: true,
+          toolCalling: false,
+          vision: false
+        },
+        modelDefaultParams: {},
+        queryMaxCharacters: 500,
+        reasoningPolicy: "lowest_supported",
+        timeoutMs: 300_000
+      },
+      credentialMode: "provider_model",
+      displayName: "Client Search",
+      executionModes: ["all_selected", "model_choice"],
+      modelId: input.modelId,
+      optionId: input.optionId,
+      protocol: input.protocol,
+      provider: input.provider,
+      providerModelId: `provider-model:${input.optionId}`,
+      revisionId: `revision:${input.optionId}`,
+      searchStrategyRowId: `route:${input.optionId}`
+    }]
+  };
+}
+
+function perplexityClientSearchPlan(): NormalizedRunRequest["searchPlan"] {
+  return providerClientSearchPlan({
+    modelId: "perplexity/sonar-pro-search",
+    optionId: "perplexity-tool-search",
+    protocol: "openrouter_perplexity_chat",
+    provider: "openrouter"
+  });
+}
+
+function executionAdmissionPlan(input: Readonly<{
+  capabilities: NormalizedRunRequest["modelCapabilities"];
+  modelId: string;
+  provider: string;
+  searchPlan: NormalizedRunRequest["searchPlan"];
+}>): ProviderAdmissionPlan {
+  const fake = input.provider === "fake";
+  const answer: ProviderAdmissionPlan["answer"] = fake
+    ? {
+        credentialSource: "default",
+        modelConfiguration: {
+          adapterKind: "fake",
+          capabilities: input.capabilities,
+          defaultParams: {}
+        },
+        snapshot: {
+          connection: {
+            allowPrivateNetwork: true,
+            apiRoot: "http://127.0.0.1",
+            authenticationMode: "none",
+            responseTimeoutMs: 300_000
+          },
+          connectionDisplayName: input.provider,
+          connectionId: input.provider,
+          credentialId: null,
+          credentialVersionId: null,
+          model: {
+            adapterKind: "fake",
+            capabilities: input.capabilities,
+            defaultParams: {},
+            upstreamModelId: input.modelId
+          },
+          modelDisplayName: input.modelId,
+          providerFamily: input.provider,
+          providerModelId: input.modelId,
+          version: 1
+        }
+      }
+    : {
+        credentialSource: "default",
+        modelConfiguration: {
+          adapterKind: "openai_responses_native",
+          capabilities: input.capabilities,
+          defaultParams: {}
+        },
+        snapshot: {
+          connection: {
+            allowPrivateNetwork: false,
+            apiRoot: "https://provider.example.test/v1",
+            authenticationMode: "bearer",
+            responseTimeoutMs: 300_000
+          },
+          connectionDisplayName: input.provider,
+          connectionId: input.provider,
+          credentialId: `credential:${input.provider}`,
+          credentialVersionId: `credential-version:${input.provider}`,
+          model: {
+            adapterKind: "openai_responses_native",
+            answerSelectable: true,
+            capabilities: input.capabilities,
+            defaultParams: {},
+            modelClass: "answer",
+            upstreamModelId: input.modelId
+          },
+          modelDisplayName: input.modelId,
+          providerFamily: input.provider,
+          providerModelId: input.modelId,
+          version: 1
+        }
+      };
+
+  return {
+    answer,
+    fingerprint: "f".repeat(64),
+    requestedSearchPlan: {
+      mode: input.searchPlan.mode,
+      optionIds: input.searchPlan.options.map((option) => option.optionId)
+    },
+    searches: [],
+    selection: {
+      providerConnectionId: input.provider,
+      providerModelId: input.modelId
+    },
+    userId: "user-1"
+  };
+}
+
 function preparedData(input: Readonly<{
   chatId?: string;
   contextTruncation?: ContextTruncationSummary | null;
   knowledgeBaseIds?: string[];
-  memoryActionPlan?: MemoryActionPlan;
+  memoryActions?: boolean;
   mcp?: McpRunPlanSnapshot;
   modelId?: string;
   provider?: string;
-  searchStrategy?: string | null;
+  searchPlan?: NormalizedRunRequest["searchPlan"];
   toolMode?: "auto" | "none";
 }> = {}): MaterializedPreparedRunData {
   const provider = input.provider ?? "fake";
   const modelId = input.modelId ?? "fake-qsa";
-  const searchStrategy = input.searchStrategy ?? "search-disabled";
+  const searchPlan = input.searchPlan ?? { mode: "all_selected" as const, options: [] };
   const chatId = input.chatId ?? "chat-1";
   const content = textMessageContent("Current question");
-  const searchPolicy =
-    searchStrategy === "perplexity-tool-search"
-      ? {
-          controls: {
-            maxOutputTokens: {
-              defaultValue: 8192,
-              maxValue: 8192
-            },
-            temperature: {
-              defaultValue: 1,
-              maxValue: 2,
-              minValue: 0,
-              supported: true
-            }
-          },
-          defaultParams: {
-            maxOutputTokens: 1024,
-            provider: {
-              allowFallbacks: true,
-              dataCollection: "deny",
-              order: ["perplexity"],
-              only: [],
-              requireParameters: false,
-              sort: "throughput",
-              zdr: false
-            },
-            reasoning: {
-              enabled: false,
-              exclude: true
-            },
-            stream: false,
-            temperature: 0
-          },
-          modelId: "perplexity/sonar-pro-search",
-          provider: "openrouter" as const,
-          strategyId: "perplexity-tool-search" as const
-        }
-      : undefined;
   const normalizedRequest: NormalizedRunRequest = {
     attachmentIds: [],
     chatId,
@@ -234,7 +356,10 @@ function preparedData(input: Readonly<{
       vision: true
     },
     knowledgePlan: { baseIds: input.knowledgeBaseIds ?? [] },
-    ...(input.memoryActionPlan ? { memoryActionPlan: input.memoryActionPlan } : {}),
+    toolMode: input.toolMode ?? "auto",
+    ...(input.memoryActions
+      ? { memoryActionTools: { version: "model-driven-v2" as const } }
+      : {}),
     ...(input.mcp ? { mcp: input.mcp } : {}),
     modelId,
     params: {},
@@ -243,22 +368,29 @@ function preparedData(input: Readonly<{
       system: null
     },
     provider,
-    ...(searchPolicy ? { searchPolicy } : {}),
-    searchStrategy,
-    ...(input.toolMode ? { toolMode: input.toolMode } : {})
+    searchPlan
   };
 
   return {
     contextTruncation: input.contextTruncation ?? null,
     defaults: {
-      controlDefaults: { searchStrategyId: searchStrategy },
+      controlDefaults: {},
       modelId,
       provider,
-      searchStrategy,
+      searchPlan: {
+        mode: searchPlan.mode,
+        optionIds: searchPlan.options.map((option) => option.optionId)
+      },
       userId: "user-1"
     },
     expectedActiveLeafId: "prior-user-message",
     normalizedRequest,
+    providerAdmissionPlan: executionAdmissionPlan({
+      capabilities: normalizedRequest.modelCapabilities,
+      modelId,
+      provider,
+      searchPlan
+    }),
     providerRequest: {
       ...normalizedRequest,
       attachments: []
@@ -321,7 +453,6 @@ function chatUpdate(): RunChatUpdateRecord {
         parentMessageId: "user-message-1",
         provider: "fake",
         role: "assistant",
-        runUsage: { totalTokens: 5 },
         status: "complete"
       }
     ]
@@ -349,7 +480,8 @@ function createRepository(options: RepositoryOptions = {}) {
     async appendAssistantText(_assistantMessageId, text) {
       assistantTexts.push(text);
     },
-    async appendRunEvent(runId, sequence, event) {
+    async appendRunOutputEvent(runId, event) {
+      const sequence = persistedEvents.length;
       persistedEvents.push({ event, runId, sequence });
     },
     async beginToolLoopProviderRound() {
@@ -379,16 +511,7 @@ function createRepository(options: RepositoryOptions = {}) {
       if (options.completionWins === false) {
         return false;
       }
-      durableProviderResponsePreview = input.finalProviderResponsePreview;
-
-      for (const event of [
-        ...(input.eventsBeforeTerminal ?? []),
-        { data: input.usage, type: "usage" as const },
-        {
-          data: { runId: input.runId, status: "complete" as const },
-          type: "done" as const
-        }
-      ]) {
+      for (const event of input.outputEvents ?? []) {
         persistedEvents.push({ event, runId: input.runId, sequence: persistedEvents.length });
       }
       return true;
@@ -405,11 +528,6 @@ function createRepository(options: RepositoryOptions = {}) {
         error,
         ...(failureOptions ? { options: failureOptions } : {}),
         runId
-      });
-      persistedEvents.push({
-        event: { data: error, type: "error" },
-        runId,
-        sequence: persistedEvents.length
       });
       return true;
     },
@@ -440,42 +558,14 @@ function createRepository(options: RepositoryOptions = {}) {
         }
       );
     },
-    async loadModelConfiguration() {
-      if (options.modelAvailable === false) {
-        return null;
-      }
-
-      return {
-        capabilities: {
-          contextWindow: 32_768,
-          defaultMaxOutputTokens: 512,
-          nativePdfInput: false,
-          nativeSearch: false,
-          pdf: true,
-          reasoning: true,
-          streaming: true,
-          vision: true
-        },
-        defaultParams: {}
-      };
-    },
     async loadModelPricing() {
       return null;
     },
     async markAssistantMessageGroundedLiveOnly(input) {
       groundedMarks.push(input);
-      durableProviderResponsePreview = groundedLiveOnlyProviderPreview();
       assistantTexts.splice(0);
-      for (let index = persistedEvents.length - 1; index >= 0; index -= 1) {
-        const event = persistedEvents[index]?.event;
-        if (event?.type === "artifact" || event?.type === "token") {
-          persistedEvents.splice(index, 1);
-        }
-      }
+      persistedEvents.splice(0);
       return true;
-    },
-    async nextRunEventSequence() {
-      return persistedEvents.length;
     },
     async persistToolLoopCallBatch(input) {
       const calls = input.calls.map((call) => {
@@ -513,12 +603,7 @@ function createRepository(options: RepositoryOptions = {}) {
       recordedRunUsageEvents.push(input);
       return true;
     },
-    async resetToolLoopAssistantDraft({ roundIndex, runId, sequence }) {
-      persistedEvents.push({
-        event: { data: { round: roundIndex }, type: "message_reset" },
-        runId,
-        sequence
-      });
+    async resetToolLoopAssistantDraft() {
       return true;
     },
     async settleToolLoopCall({ callId, result, state }) {
@@ -533,9 +618,6 @@ function createRepository(options: RepositoryOptions = {}) {
         state
       });
       return "settled";
-    },
-    async updateRunProviderRequestPreview(_runId, preview) {
-      providerRequestPreviews.push(preview);
     },
     async updateRunProviderResponseId(_runId, providerResponseId) {
       providerResponseIds.push(providerResponseId);
@@ -578,6 +660,17 @@ function executionInput(input: Readonly<{
   searchAdapter?: ProviderSearchAdapter;
   searchRuntimes?: RunExecutionInput["searchRuntimes"];
 }>): RunExecutionInput {
+  const prepared = input.prepared ?? preparedData();
+  const searchRuntimes = input.searchRuntimes ?? (input.searchAdapter
+    ? Object.fromEntries(prepared.normalizedRequest.searchPlan.options.map((option) => [
+        option.optionId,
+        {
+          adapter: input.adapter,
+          responseTimeoutMs: 300_000,
+          searchAdapter: input.searchAdapter
+        }
+      ]))
+    : undefined);
   return {
     adapter: input.adapter,
     created: {
@@ -585,7 +678,7 @@ function executionInput(input: Readonly<{
       runId: input.runId ?? "run-1",
       userMessageId: "user-message-1"
     },
-    prepared: input.prepared ?? preparedData(),
+    prepared,
     repository: input.repository,
     ...(input.knowledgeAdmission ? { knowledgeAdmission: input.knowledgeAdmission } : {}),
     ...(input.knowledgeExecutor ? { knowledgeExecutor: input.knowledgeExecutor } : {}),
@@ -593,8 +686,7 @@ function executionInput(input: Readonly<{
     ...(input.memoryEgress ? { memoryEgress: input.memoryEgress } : {}),
     ...(input.mcp ? { mcp: input.mcp } : {}),
     ...(input.mcpRuntime ? { mcpRuntime: input.mcpRuntime } : {}),
-    ...(input.searchAdapter ? { searchAdapter: input.searchAdapter } : {}),
-    ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
+    ...(searchRuntimes ? { searchRuntimes } : {}),
     userId: "user-1"
   };
 }
@@ -721,7 +813,7 @@ describe("run execution", () => {
         adapter,
         prepared: preparedData({
           provider: "openai",
-          searchStrategy: "openai-native-web-search"
+          searchPlan: hostedSearchPlan("openai-native-web-search")
         }),
         repository: repository.repository
       })
@@ -736,7 +828,7 @@ describe("run execution", () => {
         assistantMessageId: "assistant-1",
         error: {
           code: "search_strategy_not_available",
-          message: "The selected search strategy is no longer available"
+          message: "The selected search destination is no longer available."
         },
         runId: "run-1"
       }
@@ -744,7 +836,7 @@ describe("run execution", () => {
     expect(events.at(-1)).toEqual({
       data: {
         code: "search_strategy_not_available",
-        message: "The selected search strategy is no longer available"
+        message: "The selected search destination is no longer available."
       },
       type: "error"
     });
@@ -764,14 +856,8 @@ describe("run execution", () => {
       prepared: preparedData()
     },
     {
-      expectedCode: "model_not_available",
-      expectedMessage: "The selected model is no longer available",
-      options: { modelAvailable: false },
-      prepared: preparedData()
-    },
-    {
       expectedCode: "search_strategy_not_available",
-      expectedMessage: "The selected search strategy is no longer available",
+      expectedMessage: "The selected search destination is no longer available.",
       options: {
         entitlements: {
           modelKeys: new Set<string>(),
@@ -781,7 +867,7 @@ describe("run execution", () => {
       },
       prepared: preparedData({
         provider: "openai",
-        searchStrategy: "openai-native-web-search"
+        searchPlan: hostedSearchPlan("openai-native-web-search")
       })
     }
   ])(
@@ -862,7 +948,7 @@ describe("run execution", () => {
     expect(repository.completeRuns.map((run) => run.runId).sort()).toEqual(["run-a", "run-b"]);
   });
 
-  it("preserves SSE order, batches durable tokens, updates response ids, and keeps chat_update transient", async () => {
+  it("preserves SSE order, batches durable text, and persists only reloadable output artifacts", async () => {
     const truncation: ContextTruncationSummary = {
       approxDroppedTokens: 10,
       approxFinalTokens: 20,
@@ -916,22 +1002,12 @@ describe("run execution", () => {
       data: { artifactType: "context_truncated", payload: truncation },
       type: "artifact"
     });
-    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
-      "run_start",
-      "message_start",
-      "artifact",
-      "token",
-      "token",
-      "artifact",
-      "artifact",
-      "usage",
-      "done"
-    ]);
+    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual(["artifact"]);
     expect(
       repository.persistedEvents
         .filter(({ event }) => event.type === "token")
         .map(({ event }) => (event.type === "token" ? event.data.delta : ""))
-    ).toEqual(["x".repeat(32), "x"]);
+    ).toEqual([]);
     expect(repository.assistantTexts).toEqual(["x".repeat(32), "x".repeat(33)]);
     expect(repository.providerResponseIds).toEqual(["response-1"]);
     expect(repository.completeRuns).toHaveLength(1);
@@ -942,7 +1018,7 @@ describe("run execution", () => {
           contextStats: { approximateActiveBranchInputTokens: 37 }
         },
         messages: expect.arrayContaining([
-          expect.objectContaining({ id: "assistant-1", runUsage: { totalTokens: 5 } })
+          expect.objectContaining({ id: "assistant-1" })
         ])
       }
     });
@@ -954,8 +1030,7 @@ describe("run execution", () => {
   it("pins the friendly custom source identity onto live hosted Search artifacts", async () => {
     const optionId = "custom-web-search:connection-custom";
     const base = preparedData({
-      provider: "connection-custom",
-      searchStrategy: optionId
+      provider: "connection-custom"
     });
     const searchPlan = {
       mode: "model_choice" as const,
@@ -1034,7 +1109,7 @@ describe("run execution", () => {
       },
       type: "artifact"
     });
-    expect(repository.persistedEvents.map(({ event }) => event)).toContainEqual(searchEvent);
+    expect(repository.persistedEvents).toEqual([]);
     expect(dispatched).toEqual([
       expect.objectContaining({
         personalContext: expect.objectContaining({ text: personalContext.text }),
@@ -1096,7 +1171,7 @@ describe("run execution", () => {
       prepared: preparedData({
         modelId: "gemini-3.6-flash",
         provider: "gemini",
-        searchStrategy: "gemini-google-search"
+        searchPlan: hostedSearchPlan("gemini-google-search", "gemini")
       }),
       repository: repository.repository
     })).text());
@@ -1111,16 +1186,9 @@ describe("run execution", () => {
     expect(repository.assistantTexts).toEqual([]);
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.completeRuns[0]?.finalText).toBe(GROUNDED_LIVE_ONLY_PLACEHOLDER);
-    expect(repository.completeRuns[0]?.finalProviderResponsePreview).toEqual(
-      groundedLiveOnlyProviderPreview()
-    );
-    expect(repository.durableProviderResponsePreview).toEqual(groundedLiveOnlyProviderPreview());
-    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
-      "run_start",
-      "message_start",
-      "usage",
-      "done"
-    ]);
+    expect(repository.completeRuns[0]).not.toHaveProperty("finalProviderResponsePreview");
+    expect(repository.durableProviderResponsePreview).toBeNull();
+    expect(repository.persistedEvents).toEqual([]);
     const persisted = JSON.stringify({
       assistantTexts: repository.assistantTexts,
       completeRuns: repository.completeRuns,
@@ -1175,12 +1243,8 @@ describe("run execution", () => {
     expect(repository.assistantTexts).toEqual([]);
     expect(repository.completeRuns).toEqual([]);
     expect(repository.failedRuns).toHaveLength(1);
-    expect(repository.durableProviderResponsePreview).toEqual(groundedLiveOnlyProviderPreview());
-    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
-      "run_start",
-      "message_start",
-      "error"
-    ]);
+    expect(repository.durableProviderResponsePreview).toBeNull();
+    expect(repository.persistedEvents).toEqual([]);
     const persisted = JSON.stringify({
       assistantTexts: repository.assistantTexts,
       events: repository.persistedEvents,
@@ -1200,15 +1264,8 @@ describe("run execution", () => {
     ]);
   });
 
-  it("cannot append a contradictory error after durable completion because terminal evidence is repository-owned", async () => {
+  it("streams terminal frames after durable completion without persisting a timeline", async () => {
     const repository = createRepository();
-    const appendRunEvent = repository.repository.appendRunEvent;
-    repository.repository.appendRunEvent = async (runId, sequence, event) => {
-      if (event.type === "usage" || event.type === "done") {
-        throw new Error("legacy_terminal_append_failed");
-      }
-      return appendRunEvent(runId, sequence, event);
-    };
     const adapter = createAdapter(async function* () {
       yield { data: { delta: "answer" }, type: "token" };
       return providerResult({ finalText: "answer" });
@@ -1222,6 +1279,7 @@ describe("run execution", () => {
 
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.failedRuns).toHaveLength(0);
+    expect(repository.persistedEvents).toEqual([]);
     expect(events.map((event) => event.type)).toEqual([
       "run_start",
       "message_start",
@@ -1229,13 +1287,10 @@ describe("run execution", () => {
       "usage",
       "done"
     ]);
-    expect(repository.persistedEvents.map(({ event }) => event.type).slice(-2)).toEqual([
-      "usage",
-      "done"
-    ]);
+    expect(repository.persistedEvents).toEqual([]);
   });
 
-  it("flushes partial text and persists error without terminal success for a truncated provider stream", async () => {
+  it("flushes partial text and records failure without persisting a timeline", async () => {
     const repository = createRepository();
     const adapter = createAdapter(async function* () {
       yield { data: { delta: "partial" }, type: "token" };
@@ -1249,12 +1304,7 @@ describe("run execution", () => {
 
     expect(events.map((event) => event.type)).toEqual(["run_start", "message_start", "token", "error"]);
     expect(repository.assistantTexts).toEqual(["partial"]);
-    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
-      "run_start",
-      "message_start",
-      "token",
-      "error"
-    ]);
+    expect(repository.persistedEvents).toEqual([]);
     expect(repository.failedRuns).toEqual([
       {
         assistantMessageId: "assistant-1",
@@ -1439,7 +1489,7 @@ describe("run execution", () => {
         prepared: preparedData({
           modelId: "openai-answer-model",
           provider: "openai",
-          searchStrategy: "perplexity-tool-search"
+          searchPlan: perplexityClientSearchPlan()
         }),
         repository: repository.repository,
         searchAdapter
@@ -1494,11 +1544,7 @@ describe("run execution", () => {
 
     expect(repository.failedRuns).toEqual([]);
     expect(events.map((event) => event.type)).toEqual(["run_start", "message_start", "token"]);
-    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
-      "run_start",
-      "message_start",
-      "token"
-    ]);
+    expect(repository.persistedEvents).toEqual([]);
   });
 
   it("suppresses usage, chat_update, and done when status-guarded completion loses", async () => {
@@ -1513,11 +1559,7 @@ describe("run execution", () => {
     );
 
     expect(events.map((event) => event.type)).toEqual(["run_start", "message_start", "token"]);
-    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
-      "run_start",
-      "message_start",
-      "token"
-    ]);
+    expect(repository.persistedEvents).toEqual([]);
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.recordedRunUsageEvents).toHaveLength(1);
     expect(repository.recordedRunUsageEvents[0]?.usageAttributions).toMatchObject([
@@ -1606,10 +1648,7 @@ describe("run execution", () => {
     expect(providerCancels).toEqual(["response-late"]);
     expect(repository.completeRuns).toHaveLength(0);
     expect(repository.failedRuns).toHaveLength(0);
-    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
-      "run_start",
-      "message_start"
-    ]);
+    expect(repository.persistedEvents).toEqual([]);
   });
 
   it("keeps execution and durable finalization alive after the SSE consumer disconnects", async () => {
@@ -1632,13 +1671,7 @@ describe("run execution", () => {
 
     expect(repository.assistantTexts).toEqual(["finished without consumer"]);
     expect(repository.completeRuns).toHaveLength(1);
-    expect(repository.persistedEvents.map(({ event }) => event.type)).toEqual([
-      "run_start",
-      "message_start",
-      "token",
-      "usage",
-      "done"
-    ]);
+    expect(repository.persistedEvents).toEqual([]);
     expect(repository.failedRuns).toEqual([]);
     await expect.poll(() => activeRunControllerRegistry.has("run-1")).toBe(false);
   });
@@ -1685,7 +1718,7 @@ describe("run execution", () => {
     const prepared = preparedData({
       modelId: "openai-answer-model",
       provider: "openai",
-      searchStrategy: "perplexity-tool-search"
+      searchPlan: perplexityClientSearchPlan()
     });
 
     const events = parseSse(
@@ -1706,9 +1739,9 @@ describe("run execution", () => {
       toolChoice: "auto"
     });
     expect(requests[0]?.forceNonStreaming).toBeUndefined();
-    expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["search_via_perplexity"]);
-    expect(previewRequests).toHaveLength(1);
-    expect(repository.providerRequestPreviews).toHaveLength(1);
+    expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["search_engine_1"]);
+    expect(previewRequests).toHaveLength(0);
+    expect(repository.providerRequestPreviews).toEqual([]);
     expect(repository.searchRuns).toEqual([]);
     expect(searches).toBe(0);
   });
@@ -1753,16 +1786,9 @@ describe("run execution", () => {
     expect(repository.failedRuns).toHaveLength(0);
   });
 
-  it("executes the exact first-party Memory action through the durable tool loop", async () => {
+  it("executes a model-driven first-party Memory action through the durable tool loop", async () => {
     const repository = createRepository();
     const providerRequests: ProviderRunRequest[] = [];
-    const plan: MemoryActionPlan = {
-      kind: "SAVE",
-      sourceEnd: 24,
-      sourceStart: 14,
-      statement: "I like tea",
-      version: "memory-action-plan-v1"
-    };
     const adapter = createAdapter(async function* (request) {
       providerRequests.push(request);
       if (providerRequests.length === 1) {
@@ -1777,7 +1803,7 @@ describe("run execution", () => {
       }
       return providerResult({ finalText: "I saved that memory." });
     });
-    const execute = vi.fn<MemoryActionExecutor["execute"]>(async (_plan, call, context) => {
+    const execute = vi.fn<MemoryActionExecutor["execute"]>(async (call, context) => {
       expect(context).toMatchObject({
         persistedToolCallId: "persisted-tool-call-1",
         runId: "run-1",
@@ -1792,7 +1818,7 @@ describe("run execution", () => {
       };
     });
     const memoryActionExecutor: MemoryActionExecutor = {
-      accepts: (candidate, name) => candidate?.kind === "SAVE" && name === "save_memory",
+      accepts: (name) => name === "save_memory",
       execute
     };
 
@@ -1800,7 +1826,7 @@ describe("run execution", () => {
       adapter,
       memoryActionExecutor,
       prepared: preparedData({
-        memoryActionPlan: plan,
+        memoryActions: true,
         modelId: "openai-answer-model",
         provider: "openai"
       }),
@@ -1809,7 +1835,13 @@ describe("run execution", () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(providerRequests).toHaveLength(2);
-    expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["save_memory"]);
+    expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "save_memory",
+      "list_memories",
+      "update_memory",
+      "forget_memory",
+      "mark_memory_incorrect"
+    ]);
     expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain("operation");
     expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain("SAVE");
     expect([...repository.toolCalls.values()][0]).toMatchObject({
@@ -1818,43 +1850,6 @@ describe("run execution", () => {
     });
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.failedRuns).toHaveLength(0);
-  });
-
-  it("fails honestly when a provider answers without executing the requested Memory action", async () => {
-    const repository = createRepository();
-    const plan: MemoryActionPlan = {
-      kind: "SAVE",
-      sourceEnd: 24,
-      sourceStart: 14,
-      statement: "I like tea",
-      version: "memory-action-plan-v1"
-    };
-    const adapter = createAdapter(async function* () {
-      return providerResult({ finalText: "I saved that memory without calling the tool." });
-    });
-    const memoryActionExecutor: MemoryActionExecutor = {
-      accepts: (_candidate, name) => name === "save_memory",
-      execute: vi.fn()
-    };
-
-    await createRunExecutionResponse(executionInput({
-      adapter,
-      memoryActionExecutor,
-      prepared: preparedData({
-        memoryActionPlan: plan,
-        modelId: "openai-answer-model",
-        provider: "openai"
-      }),
-      repository: repository.repository
-    })).text();
-
-    expect(memoryActionExecutor.execute).not.toHaveBeenCalled();
-    expect(repository.completeRuns).toHaveLength(0);
-    expect(repository.failedRuns).toEqual([
-      expect.objectContaining({
-        error: expect.objectContaining({ code: "memory_action_required" })
-      })
-    ]);
   });
 
   it("wires accepted Knowledge retrieval through the durable tool loop and usage ledger", async () => {
@@ -1887,10 +1882,9 @@ describe("run execution", () => {
         content: knowledgeToolResultContent(evidence),
         name: "retrieve_knowledge",
         rawPreview: {
-          finalProviderResponsePreview: { knowledgeRetrieval: evidence },
           knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
-          providerCall: true,
-          requestPreview: { queryCharacters: evidence.query.length }
+          knowledgeRetrieval: evidence,
+          providerCall: true
         },
         status: "complete",
         usage: usage(7, 0, 0)
@@ -1924,9 +1918,7 @@ describe("run execution", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           artifactType: "tool_call",
-          payload: expect.objectContaining({
-            snapshot: { capability: "knowledge", toolName: "retrieve_knowledge" }
-          })
+          payload: { name: "retrieve_knowledge", status: "requested" }
         })
       })
     ]));
@@ -2072,7 +2064,7 @@ describe("run execution", () => {
               arguments: "{\"query\":\"TOOL_ARGUMENT_CANARY\"}",
               call_id: "tool-call-1",
               encrypted_content: "ENCRYPTED_CONTINUATION_CANARY",
-              name: "search_via_perplexity",
+              name: "search_engine_1",
               signature: "PROVIDER_SIGNATURE_CANARY",
               type: "function_call"
             }],
@@ -2080,7 +2072,7 @@ describe("run execution", () => {
               {
                 arguments: { query: "latest AIQSA news" },
                 id: "tool-call-1",
-                name: "search_via_perplexity"
+              name: "search_engine_1"
               }
             ],
             usage: usage(1, 2, 0)
@@ -2114,7 +2106,7 @@ describe("run execution", () => {
     const prepared = preparedData({
       modelId: "openai-answer-model",
       provider: "openai",
-      searchStrategy: "perplexity-tool-search"
+      searchPlan: perplexityClientSearchPlan()
     });
 
     const events = parseSse(
@@ -2130,8 +2122,6 @@ describe("run execution", () => {
       "token",
       "artifact",
       "message_reset",
-      "artifact",
-      "artifact",
       "token",
       "usage",
       "done"
@@ -2140,42 +2130,38 @@ describe("run execution", () => {
       events
         .filter((event) => event.type === "artifact")
         .map((event) => (event.type === "artifact" ? event.data.artifactType : ""))
-    ).toEqual(["reasoning", "tool_call", "search", "tool_result"]);
+    ).toEqual(["reasoning", "tool_call"]);
     expect(events.some((event) =>
       event.type === "token" && event.data.delta === "discarded draft"
     )).toBe(true);
     expect(events.some((event) => event.type === "message_reset")).toBe(true);
     expect(providerRequests).toHaveLength(2);
     expect(providerRequests[1]?.providerToolMessages).toHaveLength(2);
-    expect(previewRequests).toHaveLength(2);
-    expect(repository.providerRequestPreviews).toHaveLength(2);
+    expect(previewRequests).toHaveLength(0);
+    expect(repository.providerRequestPreviews).toEqual([]);
     const secondTransportJson = JSON.stringify(providerRequests[1]);
-    const secondDurablePreviewJson = JSON.stringify(repository.providerRequestPreviews[1]);
     expect(secondTransportJson).toContain("TOOL_ARGUMENT_CANARY");
     expect(secondTransportJson).toContain("ENCRYPTED_CONTINUATION_CANARY");
     expect(secondTransportJson).toContain("Search findings");
-    for (const canary of [
-      "TOOL_ARGUMENT_CANARY",
-      "ENCRYPTED_CONTINUATION_CANARY",
-      "PROVIDER_SIGNATURE_CANARY",
-      "Search findings"
-    ]) {
-      expect(secondDurablePreviewJson).not.toContain(canary);
-    }
-    expect(secondDurablePreviewJson).toContain("[tool output omitted]");
     expect(searchRequests).toHaveLength(1);
     expect(searchRequests[0]?.query).toBe("latest AIQSA news");
-    expect(searchRequests[0]?.searchPolicy).toEqual(
-      prepared.normalizedRequest.searchPolicy
-    );
+    expect(searchRequests[0]?.searchPolicy).toMatchObject({
+      modelId: "perplexity/sonar-pro-search",
+      provider: "openrouter",
+      strategyId: "perplexity-tool-search"
+    });
     expect(repository.searchRuns).toHaveLength(1);
     expect(repository.searchRuns[0]).toMatchObject({
+      artifacts: {
+        sources: [{ rank: 1, title: "Search source", url: "https://example.com/search" }]
+      },
       modelId: "perplexity/sonar-pro-search",
       modelRunId: "run-1",
       provider: "openrouter",
       status: "complete",
       strategyId: "perplexity-tool-search"
     });
+    expect(JSON.stringify(repository.searchRuns)).not.toContain("latest AIQSA news");
     expect(repository.completeRuns).toHaveLength(1);
     expect(repository.completeRuns[0]?.usage).toMatchObject({
       inputTokens: 9,
@@ -2231,7 +2217,7 @@ describe("run execution", () => {
                 {
                   function: {
                     arguments: "{\"query\":\"OPENROUTER_ARGUMENT_CANARY\"}",
-                    name: "search_via_perplexity",
+                    name: "search_engine_1",
                     opaque_function_field: "OPENROUTER_FUNCTION_FIELD_CANARY"
                   },
                   id: "tool-call-1",
@@ -2244,7 +2230,7 @@ describe("run execution", () => {
               {
                 arguments: { query: "latest AIQSA news" },
                 id: "tool-call-1",
-                name: "search_via_perplexity"
+              name: "search_engine_1"
               }
             ]
           });
@@ -2271,7 +2257,7 @@ describe("run execution", () => {
     const prepared = preparedData({
       modelId: "openrouter-answer-model",
       provider: "openrouter",
-      searchStrategy: "perplexity-tool-search"
+      searchPlan: perplexityClientSearchPlan()
     });
 
     await createRunExecutionResponse(
@@ -2279,9 +2265,8 @@ describe("run execution", () => {
     ).text();
 
     expect(providerRequests).toHaveLength(2);
-    expect(repository.providerRequestPreviews).toHaveLength(2);
+    expect(repository.providerRequestPreviews).toEqual([]);
     const transportJson = JSON.stringify(providerRequests[1]?.providerToolMessages);
-    const durablePreviewJson = JSON.stringify(repository.providerRequestPreviews[1]);
     for (const canary of [
       "OPENROUTER_MESSAGE_FIELD_CANARY",
       "OPENROUTER_ARGUMENT_CANARY",
@@ -2290,12 +2275,7 @@ describe("run execution", () => {
       "OPENROUTER_TOOL_OUTPUT_CANARY"
     ]) {
       expect(transportJson).toContain(canary);
-      expect(durablePreviewJson).not.toContain(canary);
     }
-    expect(durablePreviewJson).toContain("[tool output omitted]");
-    expect(repository.providerRequestPreviews[1]).toMatchObject({
-      redactions: expect.arrayContaining(["provider_continuation_opaque_fields"])
-    });
   });
 
   it("persists normalized Gemini client findings and reuses them in foreground continuation", async () => {
@@ -2369,7 +2349,12 @@ describe("run execution", () => {
     const base = preparedData({
       modelId: "claude-opus-5",
       provider: "anthropic",
-      searchStrategy: "gemini-google-search"
+      searchPlan: providerClientSearchPlan({
+        modelId: "gemini-3.6-flash",
+        optionId: "gemini-google-search",
+        protocol: "gemini_google_search",
+        provider: "gemini"
+      })
     });
     const searchPlan = {
       mode: "model_choice" as const,
@@ -2459,18 +2444,15 @@ describe("run execution", () => {
     expect(repository.searchRuns).toEqual([
       expect.objectContaining({
         artifacts: expect.objectContaining({
-          findings: "Valencia is sunny and 29 °C.",
           sources: [{
             rank: 1,
             title: "Valencia weather",
             url: "https://weather.example.test/valencia"
-          }],
-          usage: expect.objectContaining({ inputTokens: 3, outputTokens: 4 })
+          }]
         }),
         invocationId: "gemini-search-call-1:gemini-google-search",
         modelId: "gemini-3.6-flash",
         provider: "gemini",
-        query: "weather in Valencia",
         searchRevisionId: "gemini-search-revision-1",
         status: "complete",
         strategyId: "gemini-google-search"
@@ -2480,6 +2462,8 @@ describe("run execution", () => {
     expect(durableSearch).not.toContain("RAW_GEMINI_BODY_CANARY");
     expect(durableSearch).not.toContain("RAW_SUGGESTIONS_CANARY");
     expect(durableSearch).not.toContain("RAW_SIGNATURE_CANARY");
+    expect(durableSearch).not.toContain("weather in Valencia");
+    expect(durableSearch).not.toContain("Valencia is sunny and 29 °C.");
     expect(repository.completeRuns[0]?.usage).toMatchObject({
       inputTokens: 10,
       outputTokens: 9,
@@ -2569,7 +2553,12 @@ describe("run execution", () => {
     const base = preparedData({
       modelId: "gpt-answer-model",
       provider: "openai",
-      searchStrategy: "anthropic-web-search"
+      searchPlan: providerClientSearchPlan({
+        modelId: "claude-opus-5",
+        optionId: "anthropic-web-search",
+        protocol: "anthropic_web_search",
+        provider: "anthropic"
+      })
     });
     const personalContextText =
       `${PERSONAL_CONTEXT_HEADING}\nCLIENT_SEARCH_MEMORY_CANARY_5521`;
@@ -2677,29 +2666,22 @@ describe("run execution", () => {
     expect(repository.searchRuns).toEqual([
       expect.objectContaining({
         artifacts: expect.objectContaining({
-          findings: "The current run evidence is verified.",
-          providerOperations: [expect.objectContaining({
-            id: "srvtoolu_client_search_1",
-            kind: "search",
-            status: "complete"
-          })],
-          providerUsage: { webSearchRequests: 2 },
           sources: [{
             rank: 1,
             title: "Verified run source",
             url: "https://example.test/anthropic-search"
-          }],
-          usage: expect.objectContaining({ inputTokens: 3, outputTokens: 4 })
+          }]
         }),
         invocationId: "anthropic-search-call-1:anthropic-web-search",
         modelId: "claude-opus-5",
         provider: "anthropic",
-        query: "current run evidence",
         searchRevisionId: "anthropic-search-revision-1",
         status: "complete",
         strategyId: "anthropic-web-search"
       })
     ]);
+    expect(JSON.stringify(repository.searchRuns)).not.toContain("providerOperations");
+    expect(JSON.stringify(repository.searchRuns)).not.toContain("current run evidence");
     expect(repository.completeRuns[0]?.usage).toMatchObject({
       inputTokens: 10,
       outputTokens: 9,
@@ -2939,7 +2921,7 @@ describe("run execution", () => {
     for (const marker of Object.values(canaries)) {
       expect(receiptEvidence).not.toContain(marker);
     }
-    expect(previewRequests).toHaveLength(4);
+    expect(previewRequests).toHaveLength(2);
     expect(repository.completeRuns[0]?.finalText).toBe("Safe synthesized answer");
   });
 
@@ -3190,21 +3172,14 @@ describe("run execution", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           artifactType: "summary",
-          payload: expect.objectContaining({ message: "Waiting for model" })
+          payload: { stage: "model", status: "waiting" }
         }),
         type: "artifact"
       }),
       expect.objectContaining({
         data: expect.objectContaining({
           artifactType: "summary",
-          payload: expect.objectContaining({ count: 2, message: "Running 2 tools" })
-        }),
-        type: "artifact"
-      }),
-      expect.objectContaining({
-        data: expect.objectContaining({
-          artifactType: "tool_result",
-          payload: expect.objectContaining({ durationMs: expect.any(Number) })
+          payload: { count: 2, stage: "tools", status: "running" }
         }),
         type: "artifact"
       })
@@ -3214,10 +3189,7 @@ describe("run execution", () => {
     );
     expect(toolCallEvent).toMatchObject({
       data: {
-        payload: {
-          argumentsPreview: { query: "AIQSA" },
-          snapshot: { capability: "mcp", serverName: "Memory", toolName: "lookup" }
-        }
+        payload: { name: firstTool, status: "requested" }
       }
     });
     expect(repository.completeRuns[0]?.finalText).toBe("Combined answer");
@@ -3301,17 +3273,9 @@ describe("run execution", () => {
     const toolResultEvent = events.find((event) =>
       event.type === "artifact" && event.data.artifactType === "tool_result"
     );
-    expect(toolResultEvent).toMatchObject({
-      data: {
-        payload: {
-          message: overflow.message,
-          status: "error"
-        }
-      }
-    });
-    expect(JSON.stringify(toolResultEvent)).not.toContain(argumentMarker);
+    expect(toolResultEvent).toBeUndefined();
     for (const marker of Object.values(prohibitedMarkers)) {
-      expect(JSON.stringify(toolResultEvent)).not.toContain(marker);
+      expect(JSON.stringify(events)).not.toContain(marker);
     }
     const settledCall = [...repository.toolCalls.values()][0];
     expect(settledCall).toMatchObject({
@@ -3359,157 +3323,6 @@ describe("run execution", () => {
     }
   });
 
-  it("executes a legacy attachment-bearing Perplexity tool call without disclosing attachment data", async () => {
-    const providerRequests: ProviderRunRequest[] = [];
-    const repository = createRepository();
-    const adapter = createAdapter(async function* (request) {
-      providerRequests.push(request);
-      if (providerRequests.length === 1) {
-        return providerResult({
-          finalText: "",
-          toolCalls: [
-            {
-              arguments: { query: "current sources" },
-              id: "tool-call-1",
-              name: "search_via_perplexity"
-            }
-          ],
-          usage: usage(2, 1, 0)
-        });
-      }
-
-      yield { data: { delta: "Final" }, type: "token" };
-      return providerResult({ finalText: "Final", usage: usage(4, 2, 0) });
-    });
-    const searchRequests: ProviderSearchRequest[] = [];
-    const search = vi.fn<ProviderSearchAdapter["search"]>(async (request) => {
-      searchRequests.push(request);
-      return {
-        artifacts: [],
-        finalProviderResponsePreview: {},
-        findings: "Search findings for the generated query",
-        requestPreview: { queryCharacters: request.query.length },
-        sources: [{ rank: 1, title: "Search source", url: "https://example.com/search" }],
-        usage: usage(3, 4, 0)
-      };
-    });
-    const searchAdapter: ProviderSearchAdapter = {
-      buildRequestPreview: () => ({}),
-      search
-    };
-    const initialTruncation: ContextTruncationSummary = {
-      approxDroppedTokens: 100,
-      approxFinalTokens: 920,
-      approxOriginalTokens: 1_020,
-      budgetTokens: 1_160,
-      contextWindow: 1_400,
-      droppedMessages: 2,
-      keptMessages: 3,
-      maxOutputTokens: 100,
-      safetyMarginTokens: 140
-    };
-    const base = preparedData({
-      contextTruncation: initialTruncation,
-      modelId: "openai-answer-model",
-      provider: "openai",
-      searchStrategy: "perplexity-tool-search"
-    });
-    const context = {
-      messages: [
-        {
-          content: textMessageContent("u".repeat(800)),
-          id: "kept-prior-user",
-          role: "user" as const
-        },
-        {
-          content: textMessageContent("a".repeat(800)),
-          id: "kept-prior-assistant",
-          role: "assistant" as const
-        },
-        {
-          content: textMessageContent("Current question"),
-          id: "current-user-message",
-          role: "user" as const
-        }
-      ],
-      mode: "branch_path" as const,
-      summary: {
-        truncation: initialTruncation
-      }
-    };
-    const modelCapabilities = {
-      ...base.normalizedRequest.modelCapabilities,
-      contextWindow: 1_400,
-      defaultMaxOutputTokens: 100
-    };
-    const normalizedRequest = {
-      ...base.normalizedRequest,
-      context,
-      modelCapabilities
-    };
-    const prepared: MaterializedPreparedRunData = {
-      ...base,
-      normalizedRequest,
-      providerRequest: {
-        ...normalizedRequest,
-        attachments: [
-          {
-            byteSize: 50_000,
-            extractedText: null,
-            fileName: "ATTACHMENT_FILENAME_CANARY.png",
-            id: "attachment-1",
-            kind: "image",
-            metadata: {},
-            mimeType: "image/png",
-            status: "ready"
-          }
-        ]
-      }
-    };
-
-    const events = parseSse(
-      await createRunExecutionResponse(
-        executionInput({ adapter, prepared, repository: repository.repository, searchAdapter })
-      ).text()
-    );
-    const truncations = events.flatMap((event) =>
-      event.type === "artifact" && event.data.artifactType === "context_truncated"
-        ? [event.data.payload as ContextTruncationSummary]
-        : []
-    );
-
-    expect(providerRequests).toHaveLength(2);
-    expect(search).toHaveBeenCalledOnce();
-    expect(searchRequests).toEqual([
-      expect.objectContaining({ query: "current sources" })
-    ]);
-    expect(JSON.stringify(searchRequests)).not.toContain("ATTACHMENT_FILENAME_CANARY");
-    expect(repository.searchRuns).toEqual([
-      expect.objectContaining({
-        modelRunId: "run-1",
-        status: "complete",
-        strategyId: "perplexity-tool-search"
-      })
-    ]);
-    expect(truncations).toHaveLength(1);
-    const toolResult = events.find((event) =>
-      event.type === "artifact" && event.data.artifactType === "tool_result"
-    );
-    expect(toolResult).toMatchObject({
-      data: {
-        payload: {
-          resultPreview: expect.objectContaining({
-            content: expect.arrayContaining([
-              expect.objectContaining({
-                text: expect.stringContaining("Search findings for the generated query")
-              })
-            ])
-          })
-        }
-      }
-    });
-  });
-
   it("retains completed and partial answer usage with Search when a later tool round fails", async () => {
     let answerRounds = 0;
     const repository = createRepository();
@@ -3522,7 +3335,7 @@ describe("run execution", () => {
             {
               arguments: { query: "current sources" },
               id: "tool-call-1",
-              name: "search_via_perplexity"
+              name: "search_engine_1"
             }
           ],
           usage: usage(2, 1, 0)
@@ -3548,7 +3361,7 @@ describe("run execution", () => {
     const prepared = preparedData({
       modelId: "openai-answer-model",
       provider: "openai",
-      searchStrategy: "perplexity-tool-search"
+      searchPlan: perplexityClientSearchPlan()
     });
 
     const events = parseSse(

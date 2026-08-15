@@ -48,7 +48,7 @@ describe("ArchivedChatsDialog", () => {
       summaries: [summary]
     });
 
-    render(<ArchivedChatsDialog locale="EN" onRestored={vi.fn()} />);
+    render(<ArchivedChatsDialog onRestored={vi.fn()} />);
 
     const dialog = screen.getByRole("dialog", { name: "Archived chats" });
     expect(within(dialog).getByRole("button", { name: /^Archived source/ })).toBeVisible();
@@ -96,7 +96,7 @@ describe("ArchivedChatsDialog", () => {
       open: true
     });
 
-    render(<ArchivedChatsDialog locale="EN" onRestored={vi.fn()} />);
+    render(<ArchivedChatsDialog onRestored={vi.fn()} />);
 
     const dialog = screen.getByRole("dialog", { name: "Archived source" });
     expect(within(dialog).getByText("Retained evidence")).toBeVisible();
@@ -143,7 +143,7 @@ describe("ArchivedChatsDialog", () => {
       open: true
     });
 
-    render(<ArchivedChatsDialog locale="EN" onRestored={vi.fn()} />);
+    render(<ArchivedChatsDialog onRestored={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
 
     expect(usePermanentChatDeletionStore.getState().target).toEqual({
@@ -190,7 +190,7 @@ describe("ArchivedChatsDialog", () => {
     vi.stubGlobal("fetch", fetchMock);
     const onRestored = vi.fn();
 
-    render(<ArchivedChatsDialog locale="EN" onRestored={onRestored} />);
+    render(<ArchivedChatsDialog onRestored={onRestored} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Restore: Archived source" }));
     await waitFor(() => expect(onRestored).toHaveBeenCalledWith("chat-1"));
@@ -222,7 +222,7 @@ describe("ArchivedChatsDialog", () => {
       ]
     });
 
-    render(<ArchivedChatsDialog locale="EN" onRestored={vi.fn()} />);
+    render(<ArchivedChatsDialog onRestored={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: /^Archived source/ })).toBeVisible();
     fireEvent.change(screen.getByRole("searchbox", { name: "Search archive" }), {
@@ -239,7 +239,7 @@ describe("ArchivedChatsDialog", () => {
 
   it("keeps direct source navigation in an explicit loading state", () => {
     useArchivedChatsStore.setState({ detailLoadState: "loading", open: true });
-    render(<ArchivedChatsDialog locale="EN" onRestored={vi.fn()} />);
+    render(<ArchivedChatsDialog onRestored={vi.fn()} />);
 
     expect(screen.getByRole("status")).toHaveTextContent("Loading preview…");
     fireEvent.click(screen.getByRole("button", { name: "Close archive" }));

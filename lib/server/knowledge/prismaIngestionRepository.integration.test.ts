@@ -109,7 +109,9 @@ function runtimeBinding(providerModelId: string): EmbeddingRuntimeBinding {
     executionSnapshot: {
       connection: {
         allowPrivateNetwork: false,
-        apiRoot: "https://embedding.example.test/v1"
+        apiRoot: "https://embedding.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       connectionDisplayName: "Embedding endpoint",
       connectionId,
@@ -247,7 +249,6 @@ integration("Knowledge ingestion Prisma repository", () => {
           activeVersion: 1,
           capabilities: configuration.capabilities,
           connectionId,
-          contextWindow: 32768,
           defaultParams: {},
           displayName: upstream,
           draftConfig: {},
@@ -381,21 +382,21 @@ integration("Knowledge ingestion Prisma repository", () => {
       select: { activeIndexGenerationId: true },
       where: { id: baseId }
     })).activeIndexGenerationId!;
-    const legacyNormalized = Buffer.from('{"schemaVersion":0,"blocks":[]}');
+    const unreadableNormalized = Buffer.from('{"schemaVersion":0,"blocks":[]}');
     const goodStorage = await database.knowledgeDocumentVersion.findUniqueOrThrow({
       select: { normalizedTextStorageKey: true },
       where: { id: good.documentVersionId }
     });
     if (!goodStorage.normalizedTextStorageKey) throw new Error("normalized fixture missing");
     await storage.putObject({
-      body: legacyNormalized,
+      body: unreadableNormalized,
       contentType: "application/json",
       storageKey: goodStorage.normalizedTextStorageKey
     });
     await database.knowledgeDocumentVersion.update({
       data: {
-        normalizedTextByteSize: legacyNormalized.byteLength,
-        normalizedTextChecksum: checksum(legacyNormalized)
+        normalizedTextByteSize: unreadableNormalized.byteLength,
+        normalizedTextChecksum: checksum(unreadableNormalized)
       },
       where: { id: good.documentVersionId }
     });

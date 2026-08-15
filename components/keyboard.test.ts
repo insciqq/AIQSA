@@ -6,7 +6,7 @@ describe("isImeCompositionEvent", () => {
     ["native composition", { isComposing: true, key: "Enter" }],
     ["React native composition", { key: "Escape", nativeEvent: { isComposing: true } }],
     ["Process fallback", { key: "Process" }],
-    ["legacy 229 fallback", { key: "Enter", keyCode: 229 }]
+    ["keyCode 229 fallback", { key: "Enter", keyCode: 229 }]
   ])("recognizes %s", (_label, event) => {
     expect(isImeCompositionEvent(event)).toBe(true);
   });

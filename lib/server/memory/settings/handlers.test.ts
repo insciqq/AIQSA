@@ -20,8 +20,7 @@ const response: MemorySettingsResponse = {
   explicitMemory: false,
   historyRecall: false,
   permanentChatDeletion: false,
-  russianQualified: false,
-    temporaryChats: false
+  temporaryChats: false
   },
   egress: {
     acceptedAt: null,
@@ -46,8 +45,6 @@ const response: MemorySettingsResponse = {
     memoryConsentRevision: 0,
     memoryGeneration: 0,
     memoryRevision: 0,
-    memoryUiLocale: "RU",
-    preferredProfileLanguage: "AUTO",
     referenceChatHistory: false,
     sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
     settingsRevision: 0,

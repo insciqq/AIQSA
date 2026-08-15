@@ -51,7 +51,7 @@ export function createMemoryRebuildHandler(
       if (!identity) {
         throw new MemoryCoordinatorError("memory_rebuild_job_invalid", false);
       }
-      await context.setStage(identity.type === "SHADOW" ? "catching_up" : "redream_batch");
+      await context.setStage("catching_up");
       return {
         acceptedResultHash: memorySha256({
           identity,
@@ -64,7 +64,7 @@ export function createMemoryRebuildHandler(
           committedClaim,
           context.now()
         ),
-        stage: identity.type === "SHADOW" ? "catching_up" : "redream_batch"
+        stage: "catching_up"
       };
     }
   });

@@ -69,7 +69,7 @@ export type CatalogWireModelCapabilities = {
 
 export type CatalogWireModel = {
   capabilities: CatalogWireModelCapabilities;
-  contextWindow: number;
+  contextWindow: number | null;
   defaultParams: Record<string, unknown>;
   displayName: string;
   modelId: string;
@@ -116,14 +116,12 @@ export type CatalogDefaults = {
   modelPreferenceSource: "none" | "organization" | "personal";
   organizationModelDefault: { modelId: string; provider: string } | null;
   personalModelDefault: { modelId: string; provider: string } | null;
-  organizationSearchPlan?: SearchPlan;
+  organizationSearchPlan: SearchPlan;
   provider: string;
-  searchStrategyId: string;
-  searchPlan?: SearchPlan;
-  searchPreferenceSource?: "organization" | "personal";
+  searchPlan: SearchPlan;
+  searchPreferenceSource: "organization" | "personal";
   showCitations: boolean;
   showReasoningBlocks: boolean;
-  showToolActivity: boolean;
 };
 
 export type CatalogProvider = {
@@ -248,7 +246,11 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
     !nonEmptyString(value.provider) ||
     !nonEmptyString(value.providerFamily) ||
     !nonEmptyString(value.upstreamModelId) ||
-    !finiteNumber(value.contextWindow) ||
+    !(value.contextWindow === null || (
+      finiteNumber(value.contextWindow) &&
+      Number.isInteger(value.contextWindow) &&
+      value.contextWindow > 0
+    )) ||
     !stringArray(value.searchStrategyIds) ||
     !isModelParameterControls(value.parameterControls)
   ) {
@@ -432,10 +434,8 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     !modelDefaultSelection(defaults.organizationModelDefault) ||
     !modelDefaultSelection(defaults.personalModelDefault) ||
     typeof defaults.provider !== "string" ||
-    !nonEmptyString(defaults.searchStrategyId) ||
     typeof defaults.showCitations !== "boolean" ||
     typeof defaults.showReasoningBlocks !== "boolean" ||
-    typeof defaults.showToolActivity !== "boolean" ||
     !Array.isArray(catalog.models) ||
     !Array.isArray(catalog.providers) ||
     !Array.isArray(catalog.searchStrategies)
@@ -446,16 +446,16 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const models = catalog.models.map(decodeCatalogModel);
   const providers = catalog.providers.map(decodeCatalogProvider);
   const searchStrategies = catalog.searchStrategies.map(decodeSearchStrategy);
-  const decodedSearchPlan = defaults.searchPlan === undefined
-    ? null
-    : decodeSearchPlan(defaults.searchPlan, defaults.searchStrategyId);
+  const decodedSearchPlan = decodeSearchPlan(defaults.searchPlan);
   const decodedOrganizationSearchPlan = decodeSearchPlan(defaults.organizationSearchPlan);
   if (
     models.some((model) => model === null) ||
     providers.some((provider) => provider === null) ||
     searchStrategies.some((strategy) => strategy === null) ||
     (hasAttachmentLimits && attachmentLimits === null) ||
-    (defaults.searchPlan !== undefined && !decodedSearchPlan?.ok) ||
+    defaults.searchPlan === undefined ||
+    defaults.organizationSearchPlan === undefined ||
+    !decodedSearchPlan.ok ||
     !decodedOrganizationSearchPlan.ok ||
     (defaults.searchPreferenceSource !== "organization" && defaults.searchPreferenceSource !== "personal")
   ) {
@@ -487,12 +487,10 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       personalModelDefault: defaults.personalModelDefault,
       organizationSearchPlan: decodedOrganizationSearchPlan.plan,
       provider: defaults.provider,
-      searchStrategyId: defaults.searchStrategyId,
-      ...(decodedSearchPlan?.ok ? { searchPlan: decodedSearchPlan.plan } : {}),
+      searchPlan: decodedSearchPlan.plan,
       searchPreferenceSource: defaults.searchPreferenceSource,
       showCitations: defaults.showCitations,
-      showReasoningBlocks: defaults.showReasoningBlocks,
-      showToolActivity: defaults.showToolActivity
+      showReasoningBlocks: defaults.showReasoningBlocks
     },
     models: models.filter((model): model is CatalogModel => model !== null),
     providers: decodedProviders.map((provider) => ({

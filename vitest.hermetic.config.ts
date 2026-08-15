@@ -1,6 +1,5 @@
 import { defineConfig, mergeConfig } from "vitest/config";
 import baseConfig from "./vitest.config";
-import { databaseRequiredTestFiles } from "./vitest.hermetic.policy";
 
 export default mergeConfig(
   baseConfig,
@@ -11,7 +10,7 @@ export default mergeConfig(
         ".next/**",
         "tests/e2e/**",
         "**/*.integration.test.{ts,tsx}",
-        ...databaseRequiredTestFiles
+        "**/*.prisma.test.{ts,tsx}"
       ]
     }
   })

@@ -1,7 +1,5 @@
 import { AlertTriangle, Archive, Trash2, X } from "lucide-react";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
-import type { MemoryUiLocale } from "@/lib/contracts/memory";
-import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 import { useDialogFocus } from "./useDialogFocus";
 
 type ConfirmationTone = "destructive" | "warning";
@@ -98,22 +96,18 @@ export function ConfirmationDialog({
 
 export function ChatDeleteConfirmationDialog({
   chatTitle,
-  locale: localeOverride,
   onCancel,
   onConfirm
 }: {
   chatTitle: string;
-  locale?: MemoryUiLocale;
   onCancel(): void;
   onConfirm(): void;
 }) {
-  void localeOverride;
-  const locale = MEMORY_PRESENTATION_LOCALE;
   return (
     <ConfirmationDialog
       cancelLabel="Cancel"
       confirmAriaLabel="Confirm archive"
-      confirmLabel={resolveMemoryCopy(locale, "archive.action")}
+      confirmLabel={resolveMemoryCopy("archive.action")}
       dialogLabel={`Archive chat ${chatTitle}`}
       icon="archive"
       onCancel={onCancel}
@@ -122,7 +116,7 @@ export function ChatDeleteConfirmationDialog({
       title="Archive chat?"
       tone="warning"
     >
-      {`${resolveMemoryCopy(locale, "archive.explanation")} “${chatTitle}”`}
+      {`${resolveMemoryCopy("archive.explanation")} “${chatTitle}”`}
     </ConfirmationDialog>
   );
 }

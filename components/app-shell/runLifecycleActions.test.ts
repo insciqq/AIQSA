@@ -11,7 +11,6 @@ import {
 } from "./runLifecycleActions";
 import { resetRunLifecycleStoreForTest, useRunLifecycleStore } from "./runLifecycleStore";
 import {
-  emptyRunSurfaceSnapshot,
   resetRunSurfaceStoreForTest,
   selectRunSurface,
   useRunSurfaceStore
@@ -115,27 +114,10 @@ function runResponse(
 ) {
   return {
     run: {
-      errorPayload: null,
-      estimatedCostMicros: null,
-      events: [
-        {
-          eventType: "usage",
-          payload: {
-            inputTokens: 1
-          },
-          sequence: 1
-        }
-      ],
       id: "run-1",
-      inputTokens: 1,
-      modelId: "fake-model",
-      outputTokens: 2,
-      provider: "fake",
-      reasoningTokens: 0,
-      searchRuns: [],
-      status,
-      toolCalls: []
-    }
+      status
+    },
+    version: 1
   };
 }
 
@@ -295,7 +277,7 @@ describe("run lifecycle actions", () => {
     expect(notifyAnswerReady).not.toHaveBeenCalled();
   });
 
-  it("applies a late persisted run only to its source chat after selection changes", async () => {
+  it("returns a late outcome without painting it into any chat surface", async () => {
     let resolveFetch!: (response: Response) => void;
     const fetchMock = vi.fn(
       () =>
@@ -324,17 +306,9 @@ describe("run lifecycle actions", () => {
     await expect(fetchPromise).resolves.toMatchObject({
       id: "run-1"
     });
-    expect(surface("chat-1").lastRun).toMatchObject({ id: "run-1", status: "complete" });
-    expect(surface("chat-1").events).toEqual([
-      {
-        data: { estimatedCostMicros: null, inputTokens: 1 },
-        type: "usage"
-      }
-    ]);
+    expect(surface("chat-1")).toEqual({ events: [] });
     expect(surface("chat-2")).toEqual({
-      events: [{ data: { runId: "run-2" }, type: "start" }],
-      lastRun: null,
-      runsById: {}
+      events: [{ data: { runId: "run-2" }, type: "start" }]
     });
 
     const staleFetch = actions.fetchRun("run-1", "chat-1");
@@ -351,13 +325,13 @@ describe("run lifecycle actions", () => {
     );
 
     await expect(staleFetch).resolves.toMatchObject({ id: "run-1" });
-    expect(surface("chat-1")).toEqual({ events: [], lastRun: null, runsById: {} });
+    expect(surface("chat-1")).toEqual({ events: [] });
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]?.runId).toBe("run-new");
   });
 
-  it("rejects malformed persisted-run events before updating client state", async () => {
+  it("rejects a malformed outcome before updating client state", async () => {
     const malformed = runResponse();
-    malformed.run.events[0]!.sequence = Number.NaN;
+    malformed.run.status = "preparing" as "complete";
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -373,90 +347,11 @@ describe("run lifecycle actions", () => {
 
     await expect(actions.fetchRun("run-1", "chat-1")).resolves.toBeNull();
 
-    expect(surface("chat-1")).toEqual({ events: [], lastRun: null, runsById: {} });
+    expect(surface("chat-1")).toEqual({ events: [] });
     expect(notice()).toEqual({
       kind: "error",
       text: "Run response was malformed (run_malformed)"
     });
-  });
-
-  it("loads exact historical receipts without replacing the selected run surface", async () => {
-    const selectedResponse = runResponse();
-    const historicalResponse = runResponse();
-    historicalResponse.run.id = "run-historical";
-    historicalResponse.run.events[0]!.payload = { inputTokens: 9 };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn()
-        .mockResolvedValueOnce(Response.json(selectedResponse))
-        .mockResolvedValueOnce(Response.json(historicalResponse))
-    );
-    const { actions, surface } = useRunLifecycleActionsForTest();
-    await actions.fetchRun("run-1", "chat-1");
-    const selectedSurface = surface("chat-1");
-
-    await expect(actions.fetchRunReceipt("run-historical", "chat-1"))
-      .resolves.toMatchObject({ id: "run-historical" });
-
-    expect(surface("chat-1")).toMatchObject({
-      events: selectedSurface.events,
-      lastRun: { id: "run-1" },
-      runsById: {
-        "run-1": { id: "run-1" },
-        "run-historical": { id: "run-historical" }
-      }
-    });
-  });
-
-  it("refetches an active cached run before returning a terminal receipt", async () => {
-    const active = runResponse("streaming");
-    const complete = runResponse("complete");
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(Response.json(active))
-      .mockResolvedValueOnce(Response.json(complete));
-    vi.stubGlobal("fetch", fetchMock);
-    const { actions, surface } = useRunLifecycleActionsForTest();
-
-    await expect(actions.fetchRunReceipt("run-1", "chat-1"))
-      .resolves.toMatchObject({ status: "streaming" });
-    await expect(actions.fetchRunReceipt("run-1", "chat-1"))
-      .resolves.toMatchObject({ status: "complete" });
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(surface("chat-1")).toMatchObject({
-      lastRun: null,
-      runsById: { "run-1": { status: "complete" } }
-    });
-  });
-
-  it("keeps out-of-order receipt fetches keyed to their exact run and source chat", async () => {
-    const resolvers = new Map<string, (response: Response) => void>();
-    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
-      const runId = String(input).split("/").at(-1)!;
-      return new Promise<Response>((resolve) => resolvers.set(runId, resolve));
-    }));
-    const { actions, activeChatIdRef, surface } = useRunLifecycleActionsForTest();
-    const first = actions.fetchRunReceipt("run-first", "chat-1");
-    const second = actions.fetchRunReceipt("run-second", "chat-1");
-    activeChatIdRef.current = "chat-2";
-    const secondResponse = runResponse();
-    secondResponse.run.id = "run-second";
-    resolvers.get("run-second")!(Response.json(secondResponse));
-    await second;
-    const firstResponse = runResponse();
-    firstResponse.run.id = "run-first";
-    resolvers.get("run-first")!(Response.json(firstResponse));
-    await first;
-
-    expect(surface("chat-1")).toMatchObject({
-      events: [],
-      lastRun: null,
-      runsById: {
-        "run-first": { id: "run-first" },
-        "run-second": { id: "run-second" }
-      }
-    });
-    expect(surface("chat-2")).toBe(emptyRunSurfaceSnapshot);
   });
 
   it("settles a delayed partial upload only in its source composer session", async () => {
@@ -1052,7 +947,10 @@ describe("run lifecycle actions", () => {
     await actions.stopCurrentRun();
 
     expect(controller.signal.aborted).toBe(true);
-    expect(surface("chat-1").lastRun).toMatchObject({ id: "run-1", status: "cancelled" });
+    expect(surface("chat-1").events).toEqual([{
+      data: { runId: "run-1", status: "cancelled" },
+      type: "done"
+    }]);
     expect(surface("chat-2").events).toEqual([
       { data: { runId: "run-2" }, type: "start" }
     ]);
@@ -1102,7 +1000,7 @@ describe("run lifecycle actions", () => {
     await actions.stopCurrentRun();
 
     expect(controller.signal.aborted).toBe(false);
-    expect(surface("chat-1").lastRun).toMatchObject({ id: "run-1", status: "complete" });
+    expect(surface("chat-1")).toEqual({ events: [] });
     expect(useThreadStore.getState().threadsByChatId["chat-1"]?.messages[1]).toMatchObject({
       content: "",
       status: "streaming"
@@ -1143,7 +1041,7 @@ describe("run lifecycle actions", () => {
     await actions.stopCurrentRun();
 
     expect(controller.signal.aborted).toBe(false);
-    expect(surface("chat-1").lastRun).toMatchObject({ id: "run-1", status: "complete" });
+    expect(surface("chat-1")).toEqual({ events: [] });
     expect(useRunLifecycleStore.getState().cancelledRunIds.has("run-1")).toBe(false);
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({
       runId: "run-1"
@@ -1185,7 +1083,7 @@ describe("run lifecycle actions", () => {
     await actions.stopCurrentRun();
 
     expect(controller.signal.aborted).toBe(false);
-    expect(surface("chat-1").lastRun).toMatchObject({ id: "run-1", status: "streaming" });
+    expect(surface("chat-1")).toEqual({ events: [] });
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({
       runId: "run-1"
     });

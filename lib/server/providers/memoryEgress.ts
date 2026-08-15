@@ -15,10 +15,8 @@ export type MemoryEgressDestinationSnapshot = Readonly<{
 }>;
 
 export function requestHasHostedSearchCapability(request: ProviderRunRequest): boolean {
-  return (request.searchPolicy?.strategyId !== undefined &&
-    request.searchPolicy.strategyId !== "perplexity-tool-search") ||
-    (request.searchPlan?.options.some((option) =>
-      option.adapterKind === "answer_provider_hosted") ?? false);
+  return request.searchPlan.options.some((option) =>
+    option.adapterKind === "answer_provider_hosted");
 }
 
 export function requestHasServerExternalTools(request: ProviderRunRequest): boolean {
@@ -40,7 +38,7 @@ export function memoryEgressDestinations(
       version: 1
     });
   }
-  for (const option of request.searchPlan?.options ?? []) {
+  for (const option of request.searchPlan.options) {
     destinations.push({
       adapterKind: option.adapterKind,
       displayName: option.displayName ?? "Search",
@@ -51,19 +49,9 @@ export function memoryEgressDestinations(
       version: 1
     });
   }
-  if (!request.searchPlan && request.searchPolicy) {
-    destinations.push({
-      displayName: `Search · ${request.searchPolicy.provider}`,
-      kind: "search",
-      modelId: request.searchPolicy.modelId,
-      optionId: request.searchPolicy.strategyId,
-      provider: request.searchPolicy.provider,
-      version: 1
-    });
-  }
   for (const baseId of request.toolMode === "none"
     ? []
-    : request.knowledgePlan?.baseIds ?? []) {
+    : request.knowledgePlan.baseIds) {
     destinations.push({
       baseId,
       displayName: "Knowledge base",
@@ -111,9 +99,8 @@ export function memoryEgressRequestEvidence(request: ProviderRunRequest) {
       role: message.role
     })),
     currentContentHash: memorySha256(request.content),
-    knowledgePlanHash: memorySha256(request.knowledgePlan ?? null),
+    knowledgePlanHash: memorySha256(request.knowledgePlan),
     memoryPlanHash: memorySha256({
-      action: request.memoryActionPlan ?? null,
       actionTools: request.memoryActionTools ?? null,
       history: request.memoryHistoryTool ?? null
     }),
@@ -127,9 +114,7 @@ export function memoryEgressRequestEvidence(request: ProviderRunRequest) {
     provider: request.provider,
     providerToolMessagesHash: memorySha256(request.providerToolMessages ?? []),
     searchHash: memorySha256({
-      plan: request.searchPlan ?? null,
-      policy: request.searchPolicy ?? null,
-      strategy: request.searchStrategy ?? null
+      plan: request.searchPlan
     }),
     transportHash: memorySha256({
       chatId: request.chatId,
@@ -138,7 +123,7 @@ export function memoryEgressRequestEvidence(request: ProviderRunRequest) {
       parallelToolCalls: request.parallelToolCalls ?? false,
       previousProviderResponseId: request.previousProviderResponseId ?? null,
       toolChoice: request.toolChoice ?? null,
-      toolMode: request.toolMode ?? null
+      toolMode: request.toolMode
     }),
     toolsHash: memorySha256(request.tools ?? []),
     version: 3

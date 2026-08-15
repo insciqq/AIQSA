@@ -3,7 +3,6 @@ export const MEMORY_COUNTER_CHECKS = [
   "ACTIVE_LEAF_BRANCH_ITEMS",
   "FACT_CURRENT_POINTER",
   "ITEM_GENERATION_FINGERPRINT",
-  "PROFILE_CONTRIBUTORS",
   "SCOPE_TARGET_ITEMS",
   "SETTINGS_FINGERPRINT_ITEMS",
   "SETTINGS_LOCK_ACTIVE_POINTER",
@@ -30,10 +29,8 @@ export const MEMORY_COUNTER_MUTATIONS = [
   "AUTOMATIC_ADD_OR_REINFORCE",
   "EXPLICIT_EDIT_PIN_RESCOPE_OR_RESOLVE",
   "AUTOMATIC_VERSION_TRANSITION",
-  "CHUNK_OR_EPISODE_VISIBILITY_CHANGE",
+  "CHUNK_VISIBILITY_CHANGE",
   "ACTIVE_VECTOR_SETTLEMENT",
-  "WORKING_SET_RECALCULATION",
-  "PROFILE_REPLACEMENT",
   "FORGET_OR_BULK_CLEAR",
   "SOURCE_HARD_DELETE",
   "SOURCE_EXCLUDE",
@@ -102,7 +99,7 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       memoryRevision: false,
       sourceRevision: false
     }),
-    CHUNK_OR_EPISODE_VISIBILITY_CHANGE: Object.freeze({
+    CHUNK_VISIBILITY_CHANGE: Object.freeze({
       branchGeneration: false,
       check: "SOURCE_HASH_REVISION",
       memoryGeneration: false,
@@ -172,13 +169,6 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       memoryRevision: false,
       sourceRevision: true
     }),
-    PROFILE_REPLACEMENT: Object.freeze({
-      branchGeneration: false,
-      check: "PROFILE_CONTRIBUTORS",
-      memoryGeneration: false,
-      memoryRevision: true,
-      sourceRevision: false
-    }),
     SCOPE_TARGET_DELETE: Object.freeze({
       branchGeneration: false,
       check: "SCOPE_TARGET_ITEMS",
@@ -220,13 +210,6 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       memoryGeneration: false,
       memoryRevision: false,
       sourceRevision: true
-    }),
-    WORKING_SET_RECALCULATION: Object.freeze({
-      branchGeneration: false,
-      check: "VERSION_CURRENT_POINTER",
-      memoryGeneration: false,
-      memoryRevision: true,
-      sourceRevision: false
     })
   });
 

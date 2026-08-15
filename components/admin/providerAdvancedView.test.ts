@@ -45,6 +45,7 @@ const model: AdminProviderModel = {
       vision: false
     },
     defaultParams: {},
+    modelClass: "answer",
     openRouterRouting: { mode: "automatic", providers: [] },
     upstreamModelId: "vendor/model"
   },
@@ -66,14 +67,20 @@ function connection(id = "connection-1"): AdminProviderConnection {
     defaultCredentialId: credential.id,
     displayName: "OpenRouter",
     draftChecks: [],
-    draftConfig: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+    draftConfig: {
+      allowPrivateNetwork: false,
+      apiRoot: "https://openrouter.ai/api/v1",
+      authenticationMode: "bearer",
+      responseTimeoutSeconds: 300
+    },
     draftVersion: 1,
     enabled: false,
     family: "openrouter",
     id,
     models: [],
     unassignedPolicy: "use_default",
-    updatedAt: "2026-07-26T00:00:00.000Z"
+    updatedAt: "2026-07-26T00:00:00.000Z",
+    userAssignments: []
   };
 }
 

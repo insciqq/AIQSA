@@ -22,7 +22,7 @@ const searchTool: RunTool = {
     required: ["keyword"],
     type: "object"
   },
-  name: "search_via_perplexity",
+  name: "search_engine_1",
   strict: true
 };
 
@@ -34,7 +34,7 @@ const result: ToolExecutionResult = {
       type: "text"
     }
   ],
-  name: "search_via_perplexity",
+  name: "search_engine_1",
   status: "complete"
 };
 
@@ -59,11 +59,11 @@ describe("provider tool bridges", () => {
     expect(openAICompatibleChatToolBridge.supportsToolCalling(input)).toBe(true);
     expect(openAICompatibleResponsesToolBridge.serializeTool(searchTool).tool).toHaveProperty(
       "name",
-      "search_via_perplexity"
+      "search_engine_1"
     );
     expect(openAICompatibleChatToolBridge.serializeTool(searchTool).tool).toHaveProperty(
       "function.name",
-      "search_via_perplexity"
+      "search_engine_1"
     );
   });
 
@@ -75,7 +75,7 @@ describe("provider tool bridges", () => {
       provider: "gemini",
       tool: {
         description: "Search the web.",
-        name: "search_via_perplexity",
+        name: "search_engine_1",
         parameters: searchTool.inputSchema,
         type: "function"
       }
@@ -84,7 +84,7 @@ describe("provider tool bridges", () => {
       .toBe(false);
     expect(geminiInteractionsToolBridge.appendToolResult({}, result)).toEqual({
       call_id: "call-1",
-      name: "search_via_perplexity",
+      name: "search_engine_1",
       result: [{ text: "Search result text", type: "text" }],
       type: "function_result"
     });
@@ -169,7 +169,7 @@ describe("provider tool bridges", () => {
     expect(openRouterChatToolBridge.serializeTool(searchTool).tool).toEqual({
       function: {
         description: "Search the web.",
-        name: "search_via_perplexity",
+        name: "search_engine_1",
         parameters: searchTool.inputSchema
       },
       type: "function"
@@ -186,7 +186,7 @@ describe("provider tool bridges", () => {
                 {
                   function: {
                     arguments: "{\"keyword\":\"latest Anthropic model\"}",
-                    name: "search_via_perplexity"
+                    name: "search_engine_1"
                   },
                   id: "call-1"
                 }
@@ -201,11 +201,11 @@ describe("provider tool bridges", () => {
           keyword: "latest Anthropic model"
         },
         id: "call-1",
-        name: "search_via_perplexity",
+        name: "search_engine_1",
         raw: {
           function: {
             arguments: "{\"keyword\":\"latest Anthropic model\"}",
-            name: "search_via_perplexity"
+            name: "search_engine_1"
           },
           id: "call-1"
         }
@@ -214,7 +214,7 @@ describe("provider tool bridges", () => {
 
     expect(openRouterChatToolBridge.appendToolResult({}, result)).toEqual({
       content: "Search result text",
-      name: "search_via_perplexity",
+      name: "search_engine_1",
       role: "tool",
       tool_call_id: "call-1"
     });
@@ -222,7 +222,7 @@ describe("provider tool bridges", () => {
 
   it("maps OpenAI Responses function calls to the same neutral call shape", () => {
     expect(openAIResponsesToolBridge.serializeTool(searchTool).tool).toMatchObject({
-      name: "search_via_perplexity",
+      name: "search_engine_1",
       parameters: searchTool.inputSchema,
       strict: true,
       type: "function"
@@ -233,7 +233,7 @@ describe("provider tool bridges", () => {
           {
             arguments: "{\"keyword\":\"latest Anthropic model\"}",
             call_id: "call-1",
-            name: "search_via_perplexity",
+            name: "search_engine_1",
             type: "function_call"
           }
         ]
@@ -244,7 +244,7 @@ describe("provider tool bridges", () => {
           keyword: "latest Anthropic model"
         },
         id: "call-1",
-        name: "search_via_perplexity"
+        name: "search_engine_1"
       }
     ]);
     expect(openAIResponsesToolBridge.appendToolResult({}, result)).toEqual({

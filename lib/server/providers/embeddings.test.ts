@@ -13,6 +13,12 @@ import {
 } from "./providerConfiguration";
 
 const queryTemplate = "Instruct: retrieve relevant passages\nQuery: {text}";
+const openRouterConnection = {
+  allowPrivateNetwork: false,
+  apiRoot: "https://openrouter.ai/api/v1",
+  authenticationMode: "bearer" as const,
+  responseTimeoutMs: 300_000
+};
 
 function embeddingModel(
   overrides: Partial<EmbeddingModelConfiguration> = {}
@@ -80,8 +86,7 @@ describe("OpenAI-compatible embeddings", () => {
     ], { usage: { prompt_tokens: 0, total_tokens: 0 } }));
     const adapter = createOpenAICompatibleEmbeddingAdapter({
       connection: {
-        allowPrivateNetwork: false,
-        apiRoot: "https://openrouter.ai/api/v1",
+        ...openRouterConnection,
         responseTimeoutMs: 30_000
       },
       model: embeddingModel(),
@@ -121,7 +126,7 @@ describe("OpenAI-compatible embeddings", () => {
       vector(4_096)
     ], { model: "qwen3-embedding-8b" }));
     const adapter = createOpenAICompatibleEmbeddingAdapter({
-      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      connection: openRouterConnection,
       model: embeddingModel(),
       network: { fetchFn },
       secret: "openrouter-key"
@@ -136,7 +141,7 @@ describe("OpenAI-compatible embeddings", () => {
       vector(4_096)
     ], { model: "Qwen/Qwen3-Embedding-8B" }));
     const adapter = createOpenAICompatibleEmbeddingAdapter({
-      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      connection: openRouterConnection,
       model: embeddingModel(),
       network: { fetchFn },
       secret: "openrouter-key"
@@ -151,7 +156,7 @@ describe("OpenAI-compatible embeddings", () => {
       vector(4_096)
     ], { model: "other/qwen3-embedding-8b" }));
     const adapter = createOpenAICompatibleEmbeddingAdapter({
-      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      connection: openRouterConnection,
       model: embeddingModel(),
       network: { fetchFn },
       secret: "openrouter-key"
@@ -168,7 +173,7 @@ describe("OpenAI-compatible embeddings", () => {
       return providerResponse([vector(4_096)]);
     });
     const adapter = createOpenAICompatibleEmbeddingAdapter({
-      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      connection: openRouterConnection,
       model: embeddingModel(),
       network: { fetchFn },
       secret: "openrouter-key"
@@ -188,7 +193,7 @@ describe("OpenAI-compatible embeddings", () => {
   it("inserts every native replacement-token sequence as literal query text", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([vector(4_096)]));
     const adapter = createOpenAICompatibleEmbeddingAdapter({
-      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      connection: openRouterConnection,
       model: embeddingModel(),
       network: { fetchFn },
       secret: "openrouter-key"
@@ -224,7 +229,7 @@ describe("OpenAI-compatible embeddings", () => {
   ])("fails closed with $code", async ({ code, response }) => {
     const fetchFn = vi.fn<typeof fetch>(async () => response);
     const adapter = createOpenAICompatibleEmbeddingAdapter({
-      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      connection: openRouterConnection,
       model: embeddingModel(),
       network: { fetchFn },
       secret: "openrouter-key"
@@ -238,7 +243,7 @@ describe("OpenAI-compatible embeddings", () => {
   it("does not retry or fall back after an upstream failure", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response("unavailable", { status: 503 }));
     const adapter = createOpenAICompatibleEmbeddingAdapter({
-      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      connection: openRouterConnection,
       model: embeddingModel(),
       network: { fetchFn },
       secret: "openrouter-key"
@@ -254,7 +259,7 @@ describe("OpenAI-compatible embeddings", () => {
       throw new Error("upstream connect error: connection timeout");
     });
     const adapter = createOpenAICompatibleEmbeddingAdapter({
-      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      connection: openRouterConnection,
       model: embeddingModel(),
       network: { fetchFn },
       secret: "openrouter-key"
@@ -276,8 +281,7 @@ describe("OpenAI-compatible embeddings", () => {
       });
       const adapter = createOpenAICompatibleEmbeddingAdapter({
         connection: {
-          allowPrivateNetwork: false,
-          apiRoot: "https://openrouter.ai/api/v1",
+          ...openRouterConnection,
           responseTimeoutMs: 5_000
         },
         model: embeddingModel(),
@@ -298,7 +302,7 @@ describe("OpenAI-compatible embeddings", () => {
   it("enforces bounded batches before the network", async () => {
     const fetchFn = vi.fn<typeof fetch>();
     const adapter = createOpenAICompatibleEmbeddingAdapter({
-      connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+      connection: openRouterConnection,
       model: embeddingModel(),
       network: { fetchFn },
       secret: "openrouter-key"

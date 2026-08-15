@@ -417,7 +417,7 @@ function ReadyProvider({
       {confirmation ? (
         <div
           className="mt-4 border-l-2 border-positive/50 pl-3 text-xs leading-5 text-ink-secondary"
-          data-testid="provider-quick-ready-receipt"
+          data-testid="provider-quick-ready-summary"
         >
           <p>API key: saved and verified.</p>
           <p>Prepared model: {confirmation.model.displayName}.</p>

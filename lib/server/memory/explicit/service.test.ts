@@ -177,7 +177,7 @@ describe("explicit Memory service", () => {
     expect(JSON.stringify(vi.mocked(authorizations.mint).mock.calls)).not.toContain(STATEMENT);
   });
 
-  it("mints shipped Move, bulk-delete, clear-history, and redream authorizations", async () => {
+  it("mints shipped Move and bulk-delete authorizations", async () => {
     const authorizations = authorizationRepository();
     const service = createExplicitMemoryService({
       authorizationRepository: authorizations,
@@ -207,14 +207,6 @@ describe("explicit Memory service", () => {
       confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
       expectedMemoryRevision: 4,
       expectedSettingsRevision: 2,
-      operation: "REDREAM_EXISTING_CHATS",
-      requestNonce: "nonce-redream"
-    })).resolves.toMatchObject({ mutationAuthorizationId: "authorization-1" });
-    await expect(service.mintAuthorization("user-1", {
-      action: "BULK_DELETE",
-      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-      expectedMemoryRevision: 4,
-      expectedSettingsRevision: 2,
       operation: "DELETE_LEARNED",
       requestNonce: "nonce-delete-learned"
     })).resolves.toMatchObject({ mutationAuthorizationId: "authorization-1" });
@@ -226,7 +218,7 @@ describe("explicit Memory service", () => {
       operation: "DELETE_ALL_REUSABLE",
       requestNonce: "nonce-delete-all-reusable"
     })).resolves.toMatchObject({ mutationAuthorizationId: "authorization-1" });
-    expect(authorizations.mint).toHaveBeenCalledTimes(5);
+    expect(authorizations.mint).toHaveBeenCalledTimes(4);
   });
 
   it("commits the exact display statement through an authorized local lexical write", async () => {

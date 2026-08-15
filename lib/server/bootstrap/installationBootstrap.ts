@@ -390,7 +390,6 @@ async function synchronizeCodeOwnedCatalog(tx: Prisma.TransactionClient): Promis
     create: {
       capabilities: json(fake.capabilities),
       connectionId: providerTemplateIds.fakeConnection,
-      contextWindow: fake.contextWindow,
       defaultParams: json(fake.defaultParams),
       displayName: fake.displayName,
       draftConfig: json(fakeConfig),
@@ -592,10 +591,9 @@ async function createInitialAdminFoundation(
       defaultControlValues: json({}),
       defaultFolderId: null,
       defaultProviderModelId: null,
-      defaultSearchStrategyId: "search-disabled",
+      defaultSearchPlan: json({ mode: "all_selected", optionIds: [] }),
       showCitations: true,
       showReasoningBlocks: false,
-      showToolActivity: true,
       userId: input.userId
     }
   });

@@ -20,6 +20,7 @@ const activeConfiguration = {
     vision: false
   },
   defaultParams: {},
+  modelClass: "answer",
   upstreamModelId: "vendor/answer"
 };
 

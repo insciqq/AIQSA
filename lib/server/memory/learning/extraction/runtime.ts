@@ -100,6 +100,8 @@ function providerRequest(
       blocks: [{ text: memoryFactExtractionPromptPayload(input), type: "text" }]
     },
     forceNonStreaming: true,
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: model.capabilities,
     modelId: model.upstreamModelId,
     parallelToolCalls: false,
@@ -116,7 +118,7 @@ function providerRequest(
       system: MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT
     },
     provider: snapshot.providerFamily,
-    searchStrategy: null,
+    searchPlan: { mode: "all_selected", options: [] },
     toolChoice: "auto",
     tools: [memoryFactExtractionTool]
   };

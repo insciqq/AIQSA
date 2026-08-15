@@ -1,20 +1,11 @@
 import { Prisma } from "@prisma/client";
 import {
   estimateApproxTokensFromProjectedParts,
-  type ApproxTokenProjectedPart,
-  type ContextTruncationSummary
+  type ApproxTokenProjectedPart
 } from "../../domain/contextBudget";
 import { safeExternalHref } from "../../domain/links";
-import { normalizeTokenUsage } from "../../domain/usage";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
-import {
-  mergeThreadToolActivity,
-  projectThreadToolActivity
-} from "../../domain/toolActivity";
-import {
-  projectClientSearchActivity,
-  projectHostedSearchActivity
-} from "../../domain/searchDisclosure";
+import { projectThreadSearchSources } from "../../domain/searchSources";
 import { decodeAssistantAvatarRecipe } from "../../contracts/assistants";
 import {
   ARCHIVED_CHAT_CURSOR_MAX_LENGTH,
@@ -28,11 +19,11 @@ import {
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
-  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
+  type MemoryActionFeedback
 } from "../../contracts/memory";
 import { prisma } from "../prisma";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
-import { persistedToolCallActivity } from "../runs/toolInspection";
 import type {
   ChatBranchGraphRecord,
   ChatDetailRecord,
@@ -50,11 +41,7 @@ import type {
 } from "./lifecycleHandlers";
 import { loadChatCreationDefaults } from "./chatCreationDefaults";
 import { defaultChatTitle } from "./titlePolicy";
-import {
-  loadMemoryRunEvidence,
-  type MemoryRunEvidenceProjection
-} from "../memory/receipts/projection";
-import { summarizeThreadRunEvidence } from "./runEvidenceSummary";
+import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import {
   applyMemoryScopedTargetOwnerLifecycle,
   applyMemorySourceMutations,
@@ -70,11 +57,6 @@ import {
 } from "../memory/suppressionKeyring";
 
 const assistantRunDetailSelect = {
-  _count: {
-    select: {
-      usageEvents: true
-    }
-  },
   assistantId: true,
   assistantRevision: {
     select: {
@@ -83,8 +65,6 @@ const assistantRunDetailSelect = {
       revisionNumber: true
     }
   },
-  cachedInputTokens: true,
-  cacheWriteInputTokens: true,
   events: {
     orderBy: {
       sequence: "asc"
@@ -97,46 +77,21 @@ const assistantRunDetailSelect = {
     }
   },
   id: true,
-  inputTokens: true,
   knowledgeRuns: {
     orderBy: { invocationOrdinal: "asc" },
     select: {
       invocationOrdinal: true,
-      outcome: true,
       results: true
     }
   },
-  normalizedRequest: true,
-  outputTokens: true,
-  reasoningTokens: true,
   searchRuns: {
     orderBy: {
       createdAt: "asc"
     },
     select: {
-      artifacts: true,
-      query: true,
-      status: true,
-      strategyId: true
+      artifacts: true
     }
-  },
-  status: true,
-  toolCalls: {
-    orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
-    select: {
-      arguments: true,
-      completedAt: true,
-      mcpRunBindingId: true,
-      ordinal: true,
-      providerCallId: true,
-      result: true,
-      roundIndex: true,
-      startedAt: true,
-      state: true,
-      toolName: true
-    }
-  },
-  totalTokens: true
+  }
 } satisfies Prisma.ModelRunSelect;
 
 const hydratedMessageSelect = {
@@ -211,7 +166,7 @@ type ArchivedChatSummaryRow = Prisma.ChatGetPayload<{
 }>;
 type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }>;
 type HydratedMessagePath = Readonly<{
-  memoryEvidenceByRun: ReadonlyMap<string, MemoryRunEvidenceProjection>;
+  memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>;
   messages: HydratedMessageRow[];
 }>;
 type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
@@ -219,31 +174,10 @@ type ArtifactSummaryRun = {
   events: { payload: unknown }[];
   knowledgeRuns?: {
     invocationOrdinal: number;
-    outcome: string;
     results: unknown;
   }[];
-  normalizedRequest?: unknown;
   searchRuns: {
     artifacts?: unknown;
-    modelId?: string | null;
-    provider?: string;
-    query?: string | null;
-    requestPreview?: unknown;
-    status: string;
-    strategyId: string;
-  }[];
-  status?: string;
-  toolCalls?: {
-    arguments: unknown;
-    completedAt: Date | string | null;
-    mcpRunBindingId?: string | null;
-    ordinal: number;
-    providerCallId: string;
-    result: unknown;
-    roundIndex: number;
-    startedAt: Date | string | null;
-    state: string;
-    toolName: string;
   }[];
 };
 
@@ -405,7 +339,7 @@ async function hydrateMessagePath(
   userId: string
 ): Promise<HydratedMessagePath> {
   if (messages.length === 0) {
-    return { memoryEvidenceByRun: new Map(), messages: [] };
+    return { memoryActionsByRun: new Map(), messages: [] };
   }
   const hydrated = await tx.message.findMany({
     select: hydratedMessageSelect,
@@ -422,7 +356,7 @@ async function hydrateMessagePath(
   const runIds = ordered.flatMap((message) =>
     message.assistantModelRuns[0]?.id ? [message.assistantModelRuns[0].id] : []);
   return {
-    memoryEvidenceByRun: await loadMemoryRunEvidence(tx, { runIds, userId }),
+    memoryActionsByRun: await loadMemoryRunActions(tx, { runIds, userId }),
     messages: ordered
   };
 }
@@ -566,14 +500,14 @@ function summarizeChatUsageStats(input: {
 
 function serializeHydratedMessage(
   message: HydratedMessageRow,
-  memoryEvidenceByRun: ReadonlyMap<string, MemoryRunEvidenceProjection>
+  memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0];
   const artifactSummary = modelRun
     ? summarizeMessageRunArtifacts(
         modelRun,
         message.content,
-        memoryEvidenceByRun.get(modelRun.id) ?? null
+        memoryActionsByRun.get(modelRun.id) ?? null
       )
     : null;
   return {
@@ -581,20 +515,6 @@ function serializeHydratedMessage(
     assistantIdentity: serializeAssistantIdentity(modelRun),
     content: message.content,
     createdAt: message.createdAt,
-    evidenceSummary: modelRun
-      ? summarizeThreadRunEvidence({
-          artifactSummary,
-          cachedInputTokens: modelRun.cachedInputTokens,
-          cacheWriteInputTokens: modelRun.cacheWriteInputTokens,
-          inputTokens: modelRun.inputTokens,
-          normalizedRequest: modelRun.normalizedRequest,
-          outputTokens: modelRun.outputTokens,
-          reasoningTokens: modelRun.reasoningTokens,
-          status: modelRun.status,
-          totalTokens: modelRun.totalTokens,
-          usageEventCount: modelRun._count.usageEvents
-        })
-      : null,
     errorMessage: message.errorMessage,
     id: message.id,
     modelId: message.modelId,
@@ -602,16 +522,6 @@ function serializeHydratedMessage(
     parentMessageId: message.parentMessageId,
     provider: message.provider,
     role: message.role,
-    runUsage: modelRun
-      ? {
-          totalTokens: normalizeTokenUsage({
-            inputTokens: modelRun.inputTokens,
-            outputTokens: modelRun.outputTokens,
-            reasoningTokens: 0,
-            totalTokens: modelRun.totalTokens
-          }).totalTokens
-        }
-      : null,
     status: message.status
   };
 }
@@ -637,7 +547,7 @@ function serializeChatDetail(input: {
     },
     messageCount: chat._count.messages,
     messages: input.messages.messages.map((message) =>
-      serializeHydratedMessage(message, input.messages.memoryEvidenceByRun)),
+      serializeHydratedMessage(message, input.messages.memoryActionsByRun)),
     pageInfo: {
       activeLeafMessageId: chat.activeLeafMessageId,
       beforeCursor: pageCursor({
@@ -801,50 +711,11 @@ function reasoningText(payload: unknown): string | null {
   return reasoningTextFromValue(inner);
 }
 
-function searchStrategyFromPayload(payload: unknown): string | null {
-  const inner = artifactInnerPayload(payload);
-  if (!isRecord(inner)) {
-    return null;
-  }
-
-  if (typeof inner.strategyId === "string") {
-    return inner.strategyId;
-  }
-
-  return inner.type === "web_search_call" ? "openai-native-web-search" : null;
-}
-
-type NormalizedSearchIdentity = Readonly<{
-  adapterKind: string | null;
-  displayName: string | null;
-  optionId: string;
-}>;
-
-function searchIdentitiesFromNormalizedRequest(value: unknown): NormalizedSearchIdentity[] {
-  if (!isRecord(value) || !isRecord(value.searchPlan) || !Array.isArray(value.searchPlan.options)) {
-    return [];
-  }
-
-  return value.searchPlan.options.flatMap((option) => {
-    if (!isRecord(option)) return [];
-    const optionId = optionalString(option.optionId);
-    if (!optionId) return [];
-    return [{
-      adapterKind: optionalString(option.adapterKind) ?? null,
-      displayName: optionalString(option.displayName) ?? null,
-      optionId
-    }];
-  });
-}
-
 function citationFromPayload(payload: unknown, fallbackIndex: number): ThreadCitation | null {
   const inner = artifactInnerPayload(payload);
   if (typeof inner === "string" && inner.trim()) {
     const url = safeExternalHref(inner);
-    if (!url) {
-      return null;
-    }
-
+    if (!url) return null;
     return {
       index: fallbackIndex,
       title: `Source ${fallbackIndex}`,
@@ -852,176 +723,100 @@ function citationFromPayload(payload: unknown, fallbackIndex: number): ThreadCit
     };
   }
 
-  if (!isRecord(inner)) {
-    return null;
-  }
-
+  if (!isRecord(inner)) return null;
   const url = safeExternalHref(optionalString(inner.url) ?? optionalString(inner.href));
-  if (!url) {
-    return null;
-  }
-
-  const index = typeof inner.index === "number" && Number.isFinite(inner.index) ? inner.index : fallbackIndex;
-
+  if (!url) return null;
+  const index = typeof inner.index === "number" && Number.isSafeInteger(inner.index) &&
+    inner.index >= 0
+    ? inner.index
+    : fallbackIndex;
+  const snippet = optionalString(inner.snippet);
+  const source = optionalString(inner.source);
   return {
     index,
-    snippet: optionalString(inner.snippet),
-    source: optionalString(inner.source),
+    ...(snippet ? { snippet } : {}),
+    ...(source ? { source } : {}),
     title: optionalString(inner.title) ?? `Source ${index}`,
     url
   };
 }
 
-function contextTruncationFromPayload(payload: unknown): ContextTruncationSummary | null {
-  const inner = artifactInnerPayload(payload);
-
-  if (!isRecord(inner) || typeof inner.droppedMessages !== "number" || inner.droppedMessages <= 0) {
-    return null;
-  }
-
-  return inner as ContextTruncationSummary;
-}
-
-function knowledgeOutcome(value: string): NonNullable<ThreadArtifactSummary["knowledgeOutcomes"]>[number]["outcome"] | null {
-  return value === "base_empty" || value === "base_indexing" || value === "complete" ||
-    value === "embedding_model_unavailable" || value === "zero_above_threshold"
-    ? value
-    : null;
-}
-
-function knowledgeCitation(value: unknown): NonNullable<ThreadArtifactSummary["knowledgeCitations"]>[number] | null {
+function knowledgeCitation(
+  value: unknown
+): NonNullable<ThreadArtifactSummary["knowledgeCitations"]>[number] | null {
   if (!isRecord(value)) return null;
   const baseName = optionalString(value.baseName);
   const fileName = optionalString(value.fileName);
   const handle = optionalString(value.handle);
-  const knowledgeBaseId = optionalString(value.knowledgeBaseId);
-  const page = typeof value.page === "number" && Number.isSafeInteger(value.page) && value.page >= 1
+  const page = typeof value.page === "number" && Number.isSafeInteger(value.page) &&
+    value.page >= 1
     ? value.page
     : null;
-  const documentVersionNumber = value.documentVersionNumber === undefined
-    ? null
-    : typeof value.documentVersionNumber === "number" &&
-        Number.isSafeInteger(value.documentVersionNumber) && value.documentVersionNumber >= 1
-      ? value.documentVersionNumber
-      : undefined;
   if (
-    !baseName || !fileName || !handle || !/^K[1-3]\.[1-8]$/u.test(handle) ||
-    !knowledgeBaseId || page === null || documentVersionNumber === undefined
-  ) return null;
+    !baseName ||
+    !fileName ||
+    !handle ||
+    !/^K[1-3]\.[1-8]$/u.test(handle) ||
+    page === null
+  ) {
+    return null;
+  }
   return {
     baseName,
-    documentVersionNumber,
     fileName,
     handle,
-    knowledgeBaseId,
     page
   };
+}
+
+function sourceValuesFromSearchRun(artifacts: unknown): unknown[] {
+  if (!isRecord(artifacts)) return [];
+  const values: unknown[] = [];
+  if (Array.isArray(artifacts.sources)) values.push(artifacts.sources);
+  return values;
+}
+
+function sourceValuesFromSearchPayload(payload: unknown): unknown[] {
+  const inner = artifactInnerPayload(payload);
+  if (!isRecord(inner)) return [];
+  const action = isRecord(inner.action) ? inner.action : null;
+  return Array.isArray(action?.sources) ? [action.sources] : [];
 }
 
 export function summarizeMessageRunArtifacts(
   run: ArtifactSummaryRun,
   answerContent?: unknown,
-  memoryEvidence: MemoryRunEvidenceProjection | null = null
+  memoryAction: MemoryActionFeedback | null = null
 ): ThreadArtifactSummary | null {
   const artifactPayloads = run.events.map((event) => event.payload);
-  const searchPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "search");
-  const searchArtifactCount = searchPayloads.length;
-  const normalizedSearchIdentities = searchIdentitiesFromNormalizedRequest(run.normalizedRequest);
-  const hostedSearchIdentities = normalizedSearchIdentities.filter(
-    (identity) => identity.adapterKind === "answer_provider_hosted"
+  const reasoningPayloads = artifactPayloads.filter(
+    (payload) => artifactType(payload) === "reasoning"
   );
-  const hostedSearchIdentity = searchArtifactCount > 0
-    ? hostedSearchIdentities.length === 1
-      ? hostedSearchIdentities[0]
-      : normalizedSearchIdentities.length === 1
-        ? normalizedSearchIdentities[0]
-        : null
-    : null;
-  const executedOptionIds = new Set([
-    ...run.searchRuns.map((searchRun) => searchRun.strategyId),
-    ...(hostedSearchIdentity ? [hostedSearchIdentity.optionId] : [])
-  ]);
-  const searchDisplayNames = normalizedSearchIdentities
-    .filter((identity) => executedOptionIds.has(identity.optionId) && identity.displayName)
-    .map((identity) => identity.displayName as string);
-  const searchDisplayName = [...new Set(searchDisplayNames)].join(" + ") || null;
-  const reasoningPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "reasoning");
-  const reasoningSnippets = reasoningPayloads
+  const reasoningTexts = reasoningPayloads
     .map(reasoningText)
     .filter((text): text is string => Boolean(text));
-  const reasoningCount = reasoningSnippets.length > 0 ? reasoningSnippets.length : reasoningPayloads.length;
-  const citationPayloads = artifactPayloads.filter((payload) => artifactType(payload) === "citation");
+  const citationPayloads = artifactPayloads.filter(
+    (payload) => artifactType(payload) === "citation"
+  );
   const citations = citationPayloads
     .map((payload, index) => citationFromPayload(payload, index + 1))
     .filter((citation): citation is ThreadCitation => Boolean(citation));
-  const citationCount = Math.max(citationPayloads.length, citations.length);
-  const contextTruncation =
-    artifactPayloads
-      .filter((payload) => artifactType(payload) === "context_truncated")
-      .map(contextTruncationFromPayload)
-      .filter((summary): summary is ContextTruncationSummary => Boolean(summary))
-      .at(-1) ?? null;
-  const eventToolCalls = projectThreadToolActivity(artifactPayloads, run.status);
-  const durableToolCalls = (run.toolCalls ?? []).flatMap((call) => {
-    const activity = persistedToolCallActivity({
-      call,
-      normalizedRequest: run.normalizedRequest,
-      runStatus: run.status ?? "in_progress"
-    });
-    return activity ? [activity] : [];
-  });
-  const toolCallsById = new Map(eventToolCalls.map((call) => [call.callId, call]));
-  for (const call of durableToolCalls) {
-    const eventCall = toolCallsById.get(call.callId);
-    toolCallsById.set(
-      call.callId,
-      eventCall ? mergeThreadToolActivity(eventCall, call) : call
-    );
-  }
-  const observedToolCalls = [...toolCallsById.values()].sort(
-    (left, right) => left.round - right.round || left.ordinal - right.ordinal
+  const searchPayloads = artifactPayloads.filter(
+    (payload) => artifactType(payload) === "search"
   );
-  const hostedSearchActivity = projectHostedSearchActivity({
-    displayName: hostedSearchIdentity?.displayName ?? searchDisplayName,
-    payloads: searchPayloads.map(artifactInnerPayload),
-    runStatus: run.status
-  });
-  const clientSearchActivity = projectClientSearchActivity({
-    fallbackDisplayName: searchDisplayName ?? "Search source",
-    searchRuns: run.searchRuns.map((searchRun) => {
-      const identity = normalizedSearchIdentities.find(
-        (candidate) => candidate.optionId === searchRun.strategyId
-      );
-      return identity?.displayName
-        ? {
-            ...searchRun,
-            artifacts: {
-              ...(typeof searchRun.artifacts === "object" && searchRun.artifacts !== null &&
-                !Array.isArray(searchRun.artifacts)
-                ? searchRun.artifacts
-                : {}),
-              displayName: identity.displayName
-            }
-          }
-        : searchRun;
-    }),
-    toolCalls: observedToolCalls
-  });
-  const searchActivity = [
-    ...(hostedSearchActivity ? [hostedSearchActivity] : []),
-    ...clientSearchActivity
-  ].slice(0, 12);
-  const toolCalls = observedToolCalls.filter((call) => call.capability === "mcp");
-  const searchCount = Math.max(searchArtifactCount, run.searchRuns.length, searchActivity.length);
+  const sources = projectThreadSearchSources([
+    ...run.searchRuns.flatMap((searchRun) =>
+      sourceValuesFromSearchRun(searchRun.artifacts)
+    ),
+    ...searchPayloads.flatMap(sourceValuesFromSearchPayload)
+  ]);
+
   const knowledgeRuns = (run.knowledgeRuns ?? [])
-    .map((receipt) => ({
-      invocationOrdinal: receipt.invocationOrdinal,
-      outcome: knowledgeOutcome(receipt.outcome),
-      results: Array.isArray(receipt.results) ? receipt.results : []
-    }))
-    .filter((receipt) =>
-      Number.isSafeInteger(receipt.invocationOrdinal) && receipt.invocationOrdinal >= 1 &&
-      receipt.invocationOrdinal <= 3 && receipt.outcome !== null)
+    .filter((knowledgeRun) =>
+      Number.isSafeInteger(knowledgeRun.invocationOrdinal) &&
+      knowledgeRun.invocationOrdinal >= 1 &&
+      knowledgeRun.invocationOrdinal <= 3
+    )
     .sort((left, right) => left.invocationOrdinal - right.invocationOrdinal)
     .slice(0, 3);
   const answerText = isRecord(answerContent)
@@ -1030,45 +825,32 @@ export function summarizeMessageRunArtifacts(
   const citedHandles = new Set(
     [...answerText.matchAll(/\[(K[1-3]\.[1-8])\]/gu)].map((match) => match[1]!)
   );
-  const knowledgeCitations = knowledgeRuns.flatMap((receipt) =>
-    receipt.results
+  const knowledgeCitations = knowledgeRuns.flatMap((knowledgeRun) =>
+    (Array.isArray(knowledgeRun.results) ? knowledgeRun.results : [])
       .map(knowledgeCitation)
       .filter((citation): citation is NonNullable<typeof citation> =>
-        citation !== null && citedHandles.has(citation.handle)))
-    .filter((citation, index, citations) =>
-      citations.findIndex((candidate) => candidate.handle === citation.handle) === index)
+        citation !== null && citedHandles.has(citation.handle))
+  )
+    .filter((citation, index, all) =>
+      all.findIndex((candidate) => candidate.handle === citation.handle) === index)
     .slice(0, 24);
 
-  if (searchCount === 0 && reasoningPayloads.length === 0 && citationCount === 0 &&
-    !contextTruncation && toolCalls.length === 0 && knowledgeRuns.length === 0 &&
-    !memoryEvidence?.action && !memoryEvidence?.receipt) {
+  if (
+    citations.length === 0 &&
+    sources.length === 0 &&
+    reasoningTexts.length === 0 &&
+    knowledgeCitations.length === 0 &&
+    !memoryAction
+  ) {
     return null;
   }
 
   return {
-    citationCount,
     citations,
-    contextTruncation,
     knowledgeCitations,
-    knowledgeInvocationCount: knowledgeRuns.length,
-    knowledgeOutcomes: knowledgeRuns.map((receipt) => ({
-      invocationOrdinal: receipt.invocationOrdinal,
-      outcome: receipt.outcome!
-    })),
-    ...(memoryEvidence?.action ? { memoryAction: memoryEvidence.action } : {}),
-    ...(memoryEvidence?.receipt ? { memoryReceipt: memoryEvidence.receipt } : {}),
-    reasoningCount,
-    reasoningText: reasoningSnippets,
-    searchActivity,
-    searchCount,
-    ...(searchDisplayName ? { searchDisplayName } : {}),
-    searchStrategy:
-      run.searchRuns[0]?.strategyId ??
-      hostedSearchIdentity?.optionId ??
-      artifactPayloads.map(searchStrategyFromPayload).find((strategy): strategy is string => Boolean(strategy)) ??
-      null,
-    toolCallCount: toolCalls.length,
-    toolCalls
+    ...(memoryAction ? { memoryAction } : {}),
+    reasoningText: reasoningTexts,
+    sources
   };
 }
 
@@ -1528,7 +1310,7 @@ export function createPrismaChatRepository(
           kind: "ok" as const,
           page: {
             messages: messages.messages.map((message) =>
-              serializeHydratedMessage(message, messages.memoryEvidenceByRun)),
+              serializeHydratedMessage(message, messages.memoryActionsByRun)),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,
               beforeCursor: pageCursor({
@@ -1649,7 +1431,7 @@ export function createPrismaChatRepository(
           kind: "ok" as const,
           page: {
             messages: messages.messages.map((message) =>
-              serializeHydratedMessage(message, messages.memoryEvidenceByRun)),
+              serializeHydratedMessage(message, messages.memoryActionsByRun)),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,
               beforeCursor: pageCursor({

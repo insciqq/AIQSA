@@ -71,10 +71,6 @@ export type OpenAIResponsesRequestBody = {
 
 export type OpenAIResponsesRequestOptions = Readonly<{
   maxAttachmentTextChars?: number;
-  /** @deprecated Use buildOpenAIResponsesRequestPreview for complete preview redaction. */
-  redactFiles?: boolean;
-  /** @deprecated Use buildOpenAIResponsesRequestPreview for complete preview redaction. */
-  redactImages?: boolean;
 }>;
 
 export type OpenAIResponsesRequestPreview = {
@@ -94,7 +90,7 @@ export type OpenAIResponsesRequestPreview = {
   }[];
 };
 
-type PrivateBuildOptions = Omit<OpenAIResponsesRequestOptions, "redactFiles" | "redactImages"> & {
+type PrivateBuildOptions = OpenAIResponsesRequestOptions & {
   preview: boolean;
   redactFiles: boolean;
   redactImages: boolean;
@@ -279,11 +275,9 @@ function usesGpt56PromptCacheOptions(modelId: string): boolean {
 }
 
 export function usesHostedOpenAIWebSearch(request: ProviderRunRequest): boolean {
-  return request.searchPlan
-    ? request.searchPlan.options.some((option) =>
-        option.adapterKind === "answer_provider_hosted" &&
-        option.protocol === "openai_responses_web_search")
-    : request.searchStrategy === "openai-native-web-search";
+  return request.searchPlan.options.some((option) =>
+    option.adapterKind === "answer_provider_hosted" &&
+    option.protocol === "openai_responses_web_search");
 }
 
 function buildOpenAIResponsesBody(
@@ -371,8 +365,8 @@ export function buildOpenAIResponsesRequest(
   return buildOpenAIResponsesBody(request, {
     ...options,
     preview: false,
-    redactFiles: options.redactFiles ?? false,
-    redactImages: options.redactImages ?? false
+    redactFiles: false,
+    redactImages: false
   });
 }
 

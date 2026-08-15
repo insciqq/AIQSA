@@ -976,22 +976,23 @@
 
 @media (hover: none), (pointer: coarse) {
   .v2-composer-controls > .v2-icon-button,
-  .v2-composer-run-action .v2-icon-button {
-    width: 2.5rem;
-    height: 2.5rem;
+  .v2-composer-run-action .v2-icon-button,
+  .v2-composer-layer-header .v2-icon-button {
+    width: 2.75rem;
+    height: 2.75rem;
   }
 
   .v2-composer-model-trigger,
   .v2-composer-indicator {
-    min-height: 2.5rem;
+    min-height: 2.75rem;
   }
 
   /* The 32px context gauge keeps its visual size; an invisible ring extends
-     the touch target to 40px (S3 §11). */
+     the touch target to 44px. */
   .v2-composer-context-trigger::after {
     content: "";
     position: absolute;
-    inset: -0.25rem;
+    inset: -0.375rem;
     border-radius: 50%;
   }
 }
@@ -1002,11 +1003,18 @@
     padding-left: 0.625rem;
   }
 
+  .v2-composer-controls {
+    flex-wrap: wrap;
+  }
+
   .v2-composer-model-trigger {
     max-width: 9.5rem;
   }
 
-  .v2-composer-indicators {
-    display: none;
+  .v2-composer-indicators:not(:empty) {
+    order: 1;
+    flex: 1 0 100%;
+    flex-wrap: wrap;
+    overflow: visible;
   }
 }

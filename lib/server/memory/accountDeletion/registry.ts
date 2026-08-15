@@ -29,6 +29,6 @@ export class AccountMemoryDeletionRegistry {
   }
 }
 
-/** Intentionally empty until the sole Phase 8 composition gate registers it. */
+/** Intentionally empty until the deletion composition registers its sole owner. */
 export const defaultAccountMemoryDeletionRegistry =
   new AccountMemoryDeletionRegistry();

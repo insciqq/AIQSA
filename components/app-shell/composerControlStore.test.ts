@@ -69,7 +69,6 @@ describe("composer control store", () => {
       selectedModelId: "gpt-5.6-sol",
       selectedProvider: "openai",
       selectedSearchOptionIds: ["perplexity-tool-search"],
-      selectedSearchStrategy: "perplexity-tool-search",
       streamMode: true,
       temperature: "0.4"
     });
@@ -201,7 +200,6 @@ describe("composer control store", () => {
       reasoningMode: "pro",
       selectedModelId: "gpt-5.6-sol",
       selectedProvider: "openai",
-      selectedSearchStrategy: "openai-native-web-search",
       streamMode: false,
       temperature: "0.7"
     });
@@ -211,41 +209,39 @@ describe("composer control store", () => {
   it("updates provider/model/search selection and visibility toggles", () => {
     useComposerControlStore.getState().setSelectedProvider("openrouter");
     useComposerControlStore.getState().setSelectedModelId("x-ai/grok");
-    useComposerControlStore.getState().setSelectedSearchStrategy("perplexity-tool-search");
+    useComposerControlStore.getState().setSelectedSearchPlan(
+      ["perplexity-tool-search"],
+      "all_selected"
+    );
     useComposerControlStore.getState().setReasoningMode("pro");
     useComposerControlStore.getState().setShowCitations((visible) => !visible);
     useComposerControlStore.getState().setShowReasoningBlocks((visible) => !visible);
-    useComposerControlStore.getState().setShowToolActivity((visible) => !visible);
 
     expect(useComposerControlStore.getState()).toMatchObject({
       selectedModelId: "x-ai/grok",
       selectedProvider: "openrouter",
       selectedSearchOptionIds: ["perplexity-tool-search"],
-      selectedSearchStrategy: "perplexity-tool-search",
       reasoningMode: "pro",
       showCitations: false,
       showReasoningBlocks: true,
-      showToolActivity: false
     });
   });
 
-  it("keeps the legacy singleton field synchronized with a multi-engine plan", () => {
+  it("stores a multi-engine plan and clears it atomically", () => {
     useComposerControlStore
       .getState()
       .setSelectedSearchPlan(["codex-search", "perplexity-search"], "model_choice");
 
     expect(useComposerControlStore.getState()).toMatchObject({
       searchPlanMode: "model_choice",
-      selectedSearchOptionIds: ["codex-search", "perplexity-search"],
-      selectedSearchStrategy: "codex-search"
+      selectedSearchOptionIds: ["codex-search", "perplexity-search"]
     });
 
-    useComposerControlStore.getState().setSelectedSearchStrategy("search-disabled");
+    useComposerControlStore.getState().setSelectedSearchPlan([], "all_selected");
 
     expect(useComposerControlStore.getState()).toMatchObject({
       searchPlanMode: "all_selected",
-      selectedSearchOptionIds: [],
-      selectedSearchStrategy: "search-disabled"
+      selectedSearchOptionIds: []
     });
   });
 });

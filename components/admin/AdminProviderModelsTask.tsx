@@ -251,7 +251,17 @@ export function AdminProviderModelsTask({
                     >
                       {model.enabled ? "Disable" : "Enable"}
                     </button>
-                    <details className="relative">
+                    <details
+                      className="relative"
+                      onToggle={(event) => {
+                        if (event.currentTarget.open) {
+                          event.currentTarget.lastElementChild?.scrollIntoView?.({
+                            block: "nearest",
+                            inline: "nearest"
+                          });
+                        }
+                      }}
+                    >
                       <summary
                         aria-label={`More actions for ${model.displayName} model`}
                         className={`${quietButton} cursor-pointer list-none`}

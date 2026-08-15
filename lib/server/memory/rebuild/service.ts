@@ -5,18 +5,10 @@ import type {
 import { decodeMemoryRebuildStatus } from "../../../contracts/memory";
 import { MemoryExecutionError } from "../execution";
 import type { MemoryItemEmbeddingPin } from "../embedding/contract";
-import type { MemoryMutationAuthorizationUse } from "../persistence/authorizations";
 import type {
   MemoryRebuildAdmissionResult,
   MemoryRebuildRepository
 } from "./repository";
-
-export type MemoryRebuildAuthorizationRepository = Readonly<{
-  resolveForUse(
-    userId: string,
-    input: MemoryMutationAuthorizationUse
-  ): Promise<Readonly<{ confirmedAt: Date; requestId: string }>>;
-}>;
 
 export type MemoryRebuildServiceErrorCode =
   | "memory_action_failed"
@@ -68,7 +60,6 @@ function executionFailure(error: unknown): never {
     if (
       error.code === "memory_execution_capability_unavailable" ||
       error.code === "memory_execution_policy_unavailable" ||
-      error.code === "memory_execution_qualification_required" ||
       error.code === "memory_execution_target_unavailable"
     ) {
       return failure("memory_embedding_unavailable");
@@ -78,7 +69,6 @@ function executionFailure(error: unknown): never {
 }
 
 export function createMemoryRebuildService(input: Readonly<{
-  authorizationRepository: MemoryRebuildAuthorizationRepository;
   kick?: () => void;
   probeEmbeddingPin: (userId: string) => Promise<MemoryItemEmbeddingPin>;
   repository: MemoryRebuildRepository;
@@ -98,9 +88,6 @@ export function createMemoryRebuildService(input: Readonly<{
     },
 
     async start(userId, rebuildInput) {
-      if (rebuildInput.operation === "REDREAM_EXISTING_CHATS") {
-        return failure("memory_contract_invalid");
-      }
       let pin: MemoryItemEmbeddingPin | null = null;
       if (rebuildInput.operation === "REEMBED") {
         try {
@@ -119,7 +106,6 @@ export function createMemoryRebuildService(input: Readonly<{
           embeddingDeploymentId: rebuildInput.embeddingDeploymentId ?? null,
           expectedMemoryRevision: rebuildInput.expectedMemoryRevision,
           expectedSettingsRevision: rebuildInput.expectedSettingsRevision,
-          mutationAuthorizationId: rebuildInput.mutationAuthorizationId ?? null,
           operation: rebuildInput.operation
         }
       });

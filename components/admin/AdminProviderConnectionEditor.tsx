@@ -97,10 +97,8 @@ export function AdminProviderConnectionEditor({
           configuration: {
             allowPrivateNetwork: form.allowPrivateNetwork,
             apiRoot: form.apiRoot,
-            responseTimeoutSeconds: Number(form.responseTimeoutSeconds),
-            ...(form.family === "openai_compatible"
-              ? { authenticationMode: form.authenticationMode }
-              : {})
+            authenticationMode: form.authenticationMode,
+            responseTimeoutSeconds: Number(form.responseTimeoutSeconds)
           },
           displayName: form.displayName,
           family: form.family,

@@ -100,7 +100,7 @@ function runInput(
       params: {},
       prompt: { developer: null, system: "Integration" },
       provider: "fake",
-      searchStrategy: null,
+      searchPlan: { mode: "all_selected", options: [] },
       toolMode: "auto"
     },
     provider: "fake",
@@ -268,7 +268,6 @@ integration("Knowledge hybrid retrieval repository", () => {
         activeVersion: 1,
         capabilities: configuration.capabilities,
         connectionId,
-        contextWindow: 32_768,
         defaultParams: {},
         displayName: "Retrieval embedding model",
         draftConfig: {},
@@ -590,15 +589,6 @@ integration("Knowledge hybrid retrieval repository", () => {
     });
     expect(receipt.candidateCount).toBe(evidence.candidateCount);
     expect(JSON.stringify(receipt.results)).toContain(fileNameSentinel);
-    const inspection = await runs.getRunForUser(runId, memberId);
-    expect(inspection?.knowledgeRuns).toEqual([
-      expect.objectContaining({
-        invocationOrdinal: 1,
-        modelRunToolCallId: firstToolCallId,
-        outcome: "complete",
-        results: expect.any(Array)
-      })
-    ]);
   });
 
   it("records a real high-threshold zero outcome and exposes ANN plus FTS indexes", async () => {

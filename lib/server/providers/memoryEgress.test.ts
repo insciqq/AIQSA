@@ -70,7 +70,6 @@ function request(): ProviderRunRequest {
         searchStrategyRowId: "search-row"
       }],
     },
-    searchStrategy: "openai-responses-web-search",
     toolChoice: "auto",
     toolMode: "auto",
     tools: [{

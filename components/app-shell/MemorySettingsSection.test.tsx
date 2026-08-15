@@ -49,7 +49,7 @@ describe("MemorySettingsSection", () => {
     vi.unstubAllGlobals();
   });
 
-  it("presents English over a retained RU preference and submits independent gates", async () => {
+  it("presents English and submits independent gates", async () => {
     let server = memorySettingsFixture({
       egress: {
         acceptedAt: null,
@@ -59,7 +59,7 @@ describe("MemorySettingsSection", () => {
         currentUtilityEgressFingerprint: "current-destination-fingerprint-00000001",
         reviewRequired: true
       }
-    }, "RU");
+    });
     const bodies: Record<string, unknown>[] = [];
     vi.stubGlobal("fetch", withHealth(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
@@ -77,7 +77,7 @@ describe("MemorySettingsSection", () => {
             settingsRevision: server.settings.settingsRevision + 1,
             useMemoryFacts: body.useMemoryFacts
           }
-        }, "RU");
+        });
       } else {
         server = memorySettingsFixture({
           capabilities: server.capabilities,
@@ -93,7 +93,7 @@ describe("MemorySettingsSection", () => {
             memoryConsentRevision: server.settings.memoryConsentRevision + 1,
             settingsRevision: server.settings.settingsRevision + 1
           }
-        }, "RU");
+        });
       }
       return json(server);
     }));
@@ -134,7 +134,6 @@ describe("MemorySettingsSection", () => {
         automaticLearning: false,
         explicitMemory: false,
         historyRecall: false,
-        russianQualified: false,
         temporaryChats: false
       },
       settings: {
@@ -161,7 +160,7 @@ describe("MemorySettingsSection", () => {
     expect(within(capabilities).getAllByText("Unavailable")).toHaveLength(3);
   });
 
-  it("shows passive lexical indexing progress in English over retained RU state", async () => {
+  it("shows passive lexical indexing progress in English", async () => {
     const server = memorySettingsFixture({
       historyIndexing: {
         completedChats: 2,
@@ -169,7 +168,7 @@ describe("MemorySettingsSection", () => {
         totalChats: 5
       },
       settings: { referenceChatHistory: true }
-    }, "RU");
+    });
     vi.stubGlobal("fetch", withHealth(async () => json(server)));
 
     render(<MemorySettingsSection {...sectionProps} />);

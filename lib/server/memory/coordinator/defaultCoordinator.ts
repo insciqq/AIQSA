@@ -1,6 +1,6 @@
 import type { MemoryDeletionOperation, MemoryJobKind } from "@prisma/client";
 import { prisma } from "../../prisma";
-import { createPrismaMemoryExplicitEmbeddingHandler } from "../embedding/handler";
+import { createPrismaMemoryItemEmbeddingHandler } from "../embedding/handler";
 import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
 import { ensureDefaultMemoryPurgeHandlerRegistered } from "../purge/defaultPurge";
 import { MemoryCoordinator } from "./coordinator";
@@ -11,9 +11,7 @@ import {
 import { createPrismaMemoryCoordinatorRepository } from "./prismaRepository";
 import { defaultMemoryCoordinatorRegistry } from "./registry";
 import {
-  createPrismaMemorySchedulerUsageSource,
-  MemoryScheduler,
-  type MemorySchedulerBudgetStatus
+  MemoryScheduler
 } from "./scheduler";
 import { createS3StorageAdapter } from "../../uploads/storage";
 import { createPrismaTemporaryChatDeletionHandler } from "../temporaryDeletion";
@@ -25,8 +23,7 @@ import { createPrismaMemoryFactExtractionHandler } from "../learning/extraction/
 import { createPrismaMemoryFactDecisionHandlers } from "../learning/consolidation/handler";
 import { reconcileMemoryFactCandidateJobs } from "../learning/consolidation/repository";
 import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
-import { ensureDefaultMemoryPhase8Composition } from "../phase8Composition";
-import { memorySha256 } from "../persistence/lexical";
+import { ensureDefaultMemoryDeletionComposition } from "../deletionComposition";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -47,12 +44,9 @@ export const DEFAULT_MEMORY_COORDINATOR_MANIFEST = Object.freeze({
   jobKinds: Object.freeze([
     "EMBED_ITEMS",
     "INDEX_HISTORY",
-    "EXTRACT_EPISODE",
     "EXTRACT_FACTS",
     "CONSOLIDATE_CANDIDATE",
     "VERIFY_CANDIDATE",
-    "GLOBAL_DREAM",
-    "RECALCULATE_WORKING_SET",
     "REBUILD_INDEX"
   ] satisfies readonly MemoryJobKind[])
 });
@@ -62,19 +56,13 @@ export const defaultMemoryCoordinatorRepository =
 
 type DefaultMemoryReconciliationWork = Readonly<{
   candidates: () => Promise<unknown>;
-  dream: () => Promise<unknown>;
   history: () => Promise<unknown>;
-  profile: () => Promise<unknown>;
 }>;
 
 const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   Object.freeze({
     candidates: () => reconcileMemoryFactCandidateJobs(prisma),
-    // Legacy handlers remain registered only so already-queued rows settle.
-    // New normal execution has one consolidator and no profile projection.
-    dream: async () => undefined,
-    history: () => reconcileMemoryHistoryBackfills(prisma),
-    profile: async () => undefined
+    history: () => reconcileMemoryHistoryBackfills(prisma)
   });
 
 export async function reconcileDefaultMemoryWork(
@@ -85,13 +73,11 @@ export async function reconcileDefaultMemoryWork(
   // tracing allocations without increasing useful owner-level throughput.
   await work.history();
   await work.candidates();
-  await work.dream();
-  await work.profile();
 }
 
 // Provider-backed work validates current destination, credential, transport,
 // schema, and vector-space compatibility through the shared execution boundary.
-const defaultExplicitEmbeddingHandler = createPrismaMemoryExplicitEmbeddingHandler(
+const defaultItemEmbeddingHandler = createPrismaMemoryItemEmbeddingHandler(
   defaultMemoryExecutionAuthority,
   prisma
 );
@@ -110,32 +96,6 @@ const defaultFactDecisionHandlers = createPrismaMemoryFactDecisionHandlers(
 );
 const defaultMemoryRebuildHandler = createPrismaMemoryRebuildHandler(prisma);
 
-function retiredLegacyJobHandler(
-  kind: "EXTRACT_EPISODE" | "GLOBAL_DREAM" | "RECALCULATE_WORKING_SET"
-): MemoryJobHandler {
-  return Object.freeze({
-    async execute(claim) {
-      return {
-        acceptedResultHash: memorySha256({
-          domain: "aiqsa.memory.retired-legacy-job",
-          jobId: claim.id,
-          kind,
-          version: 1
-        }),
-        stage: "legacy_component_retired"
-      };
-    },
-    kind,
-    async preflight() {
-      return { status: "READY" };
-    }
-  });
-}
-
-const defaultEpisodeExtractionHandler = retiredLegacyJobHandler("EXTRACT_EPISODE");
-const defaultGlobalDreamHandler = retiredLegacyJobHandler("GLOBAL_DREAM");
-const defaultWorkingSetProfileHandler = retiredLegacyJobHandler("RECALCULATE_WORKING_SET");
-
 function getDefaultMemoryCoordinatorRuntime(): Readonly<{
   policy: MemoryCoordinatorPolicy;
   scheduler: MemoryScheduler;
@@ -148,8 +108,7 @@ function getDefaultMemoryCoordinatorRuntime(): Readonly<{
   const runtime = Object.freeze({
     policy,
     scheduler: new MemoryScheduler({
-      policy,
-      usageSource: createPrismaMemorySchedulerUsageSource(prisma)
+      policy
     })
   });
   scope.__aiqsaMemoryCoordinatorRuntime = runtime;
@@ -180,32 +139,28 @@ function ensureJobHandlerRegistered(
   }
 }
 
-export function ensureDefaultMemoryPhase2HandlersRegistered(): void {
+export function ensureDefaultMemoryCoreHandlersRegistered(): void {
   ensureDefaultMemoryPurgeHandlerRegistered();
   ensureDeletionHandlerRegistered(
     defaultTemporaryChatDeletionHandler,
     "memory_default_temporary_deletion_handler_conflict"
   );
   ensureJobHandlerRegistered(
-    defaultExplicitEmbeddingHandler,
+    defaultItemEmbeddingHandler,
     "memory_default_embedding_handler_conflict"
   );
 }
 
 export function ensureDefaultMemoryHandlersRegistered(): void {
-  ensureDefaultMemoryPhase2HandlersRegistered();
+  ensureDefaultMemoryCoreHandlersRegistered();
   ensureDeletionHandlerRegistered(
     memoryHistoryClearDeletionHandler,
     "memory_default_history_clear_handler_conflict"
   );
-  ensureDefaultMemoryPhase8Composition(kickDefaultMemoryCoordinator);
+  ensureDefaultMemoryDeletionComposition(kickDefaultMemoryCoordinator);
   ensureJobHandlerRegistered(
     defaultHistoryIndexHandler,
     "memory_default_history_index_handler_conflict"
-  );
-  ensureJobHandlerRegistered(
-    defaultEpisodeExtractionHandler,
-    "memory_default_episode_handler_conflict"
   );
   ensureJobHandlerRegistered(
     defaultFactExtractionHandler,
@@ -218,14 +173,6 @@ export function ensureDefaultMemoryHandlersRegistered(): void {
   ensureJobHandlerRegistered(
     defaultFactDecisionHandlers.verification,
     "memory_default_fact_verification_handler_conflict"
-  );
-  ensureJobHandlerRegistered(
-    defaultGlobalDreamHandler,
-    "memory_default_global_dream_handler_conflict"
-  );
-  ensureJobHandlerRegistered(
-    defaultWorkingSetProfileHandler,
-    "memory_default_working_set_profile_handler_conflict"
   );
   ensureJobHandlerRegistered(
     defaultMemoryRebuildHandler,
@@ -243,12 +190,6 @@ function createDefaultMemoryCoordinator(): MemoryCoordinator {
     repository: defaultMemoryCoordinatorRepository,
     scheduler: runtime.scheduler
   });
-}
-
-export async function readDefaultMemorySchedulerStatus(
-  userId?: string
-): Promise<MemorySchedulerBudgetStatus> {
-  return getDefaultMemoryCoordinatorRuntime().scheduler.status(new Date(), userId);
 }
 
 export function getDefaultMemoryCoordinator(): MemoryCoordinator {

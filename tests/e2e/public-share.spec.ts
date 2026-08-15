@@ -90,7 +90,7 @@ test("contains a long sanitized public snapshot in the dark theme", async ({ bas
       {
         name: "aiqsa.theme",
         url: baseURL!,
-        value: "graphite"
+        value: "dark"
       }
     ]);
     const response = await page.goto(`/s/${token}`);
@@ -99,7 +99,7 @@ test("contains a long sanitized public snapshot in the dark theme", async ({ bas
     await expect(page).toHaveTitle("Shared conversation · AIQSA");
     expect(await page.title()).not.toContain(title);
     expect(await page.title()).not.toContain(token);
-    await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark");
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(title);
     await expect(page.getByText("Read-only snapshot", { exact: true })).toBeVisible();
@@ -134,7 +134,7 @@ test("contains a long sanitized public snapshot in the dark theme", async ({ bas
   }
 });
 
-test("re-projects legacy share JSON without exposing private Memory artifacts", async ({ baseURL, page }) => {
+test("re-projects stored share JSON without exposing private Memory artifacts", async ({ baseURL, page }) => {
   expect(baseURL).toBeTruthy();
   const owner = await prisma.user.findUnique({
     select: { id: true },
@@ -166,7 +166,7 @@ test("re-projects legacy share JSON without exposing private Memory artifacts", 
       memoryReceipt: privateValues[4],
       role: "assistant"
     }],
-    title: "Legacy Memory share",
+    title: "Sanitized Memory share",
     version: 1
   };
   const share = await prisma.sharedChatSnapshot.create({

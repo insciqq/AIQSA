@@ -21,7 +21,7 @@ const baseChats: ChatNavigationSummaryWire[] = [
     activeRun: false,
     folderId: "folder-research",
     id: "chat-evidence",
-    title: "Evidence review notes",
+    title: "Source review notes",
     updatedAt: "2026-08-12T15:00:00.000Z"
   },
   {

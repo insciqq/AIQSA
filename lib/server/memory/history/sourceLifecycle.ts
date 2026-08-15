@@ -56,50 +56,23 @@ async function invalidateVisibleHistory(
       userId: event.snapshot.userId
     }
   });
-  const episodes = await tx.memoryEpisode.findMany({
-    select: { id: true },
+  if (chunks.length === 0) return 0;
+
+  await tx.memorySearchEntry.deleteMany({
     where: {
-      chatId: event.snapshot.id,
+      recallChunkId: { in: chunks.map((chunk) => chunk.id) },
+      userId: event.snapshot.userId
+    }
+  });
+  await tx.memoryRecallChunk.updateMany({
+    data: { invalidatedAt: now, state: "INVALIDATED" },
+    where: {
+      id: { in: chunks.map((chunk) => chunk.id) },
       state: "ACTIVE",
       userId: event.snapshot.userId
     }
   });
-  if (chunks.length === 0 && episodes.length === 0) return 0;
-
-  await tx.memorySearchEntry.deleteMany({
-    where: {
-      OR: [
-        ...(chunks.length > 0
-          ? [{ recallChunkId: { in: chunks.map((chunk) => chunk.id) } }]
-          : []),
-        ...(episodes.length > 0
-          ? [{ episodeId: { in: episodes.map((episode) => episode.id) } }]
-          : [])
-      ],
-      userId: event.snapshot.userId
-    }
-  });
-  if (chunks.length > 0) {
-    await tx.memoryRecallChunk.updateMany({
-      data: { invalidatedAt: now, state: "INVALIDATED" },
-      where: {
-        id: { in: chunks.map((chunk) => chunk.id) },
-        state: "ACTIVE",
-        userId: event.snapshot.userId
-      }
-    });
-  }
-  if (episodes.length > 0) {
-    await tx.memoryEpisode.updateMany({
-      data: { invalidatedAt: now, state: "INVALIDATED" },
-      where: {
-        id: { in: episodes.map((episode) => episode.id) },
-        state: "ACTIVE",
-        userId: event.snapshot.userId
-      }
-    });
-  }
-  return chunks.length + episodes.length;
+  return chunks.length;
 }
 
 async function settleVisibleMutationCounter(
@@ -108,7 +81,7 @@ async function settleVisibleMutationCounter(
   event: MemoryRetainedSourceMutationEvent
 ): Promise<void> {
   if (!parentMutationAdvancedMemoryRevision(event)) {
-    await advanceMemoryMutation(tx, settings, "CHUNK_OR_EPISODE_VISIBILITY_CHANGE");
+    await advanceMemoryMutation(tx, settings, "CHUNK_VISIBILITY_CHANGE");
     return;
   }
   const activeIndex = await requireActiveMemoryIndex(tx, settings);
@@ -143,10 +116,6 @@ async function updateExistingCheckpoint(
       lastErrorCode: event.snapshot.memoryMode === "NORMAL"
         ? null
         : "memory_source_ineligible",
-      ...(event.previous.memoryBranchGeneration !==
-          event.snapshot.memoryBranchGeneration
-        ? { lastDreamedMessageId: null }
-        : {}),
       lastIndexedMessageId: null,
       lastSucceededAt: null,
       sourceContentHash: event.snapshot.sourceHash,

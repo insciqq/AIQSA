@@ -22,8 +22,8 @@ import {
 } from "./persistence/facts";
 import { memorySha256 } from "./persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "./persistence/scopes";
-import { MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS } from "./purge/contract";
-import { registerPhase2MemoryDeletionContributors } from "./purge/leaves";
+import { MEMORY_PURGE_REQUIRED_CONTRIBUTORS } from "./purge/contract";
+import { registerMemoryDeletionContributors } from "./purge/leaves";
 import { MemoryDeletionContributorRegistry } from "./purge/registry";
 import { MemorySuppressionKeyring } from "./suppressionKeyring";
 import { defaultMemorySourceMutationHooks } from "./sourceHooks";
@@ -34,12 +34,12 @@ const keyring = MemorySuppressionKeyring.parse(
   `current=scopes-v1,scopes-v1=${keyBytes.toString("base64")}`
 );
 
-function phase2Registry(): MemoryDeletionContributorRegistry {
+function purgeRegistry(): MemoryDeletionContributorRegistry {
   const registry = new MemoryDeletionContributorRegistry({
     operation: "FORGET_PURGE",
-    requirements: MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS
+    requirements: MEMORY_PURGE_REQUIRED_CONTRIBUTORS
   });
-  registerPhase2MemoryDeletionContributors(registry);
+  registerMemoryDeletionContributors(registry);
   return registry;
 }
 
@@ -198,7 +198,7 @@ function services() {
     authorizationRepository,
     mutationRepository: createPrismaMemoryLifecycleRepository(
       keyring,
-      phase2Registry(),
+      purgeRegistry(),
       prisma
     ),
     readRepository

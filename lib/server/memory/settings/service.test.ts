@@ -29,8 +29,6 @@ function settings(
     memoryConsentRevision: 2,
     memoryGeneration: 0,
     memoryRevision: 3,
-    memoryUiLocale: "RU",
-    preferredProfileLanguage: "AUTO",
     referenceChatHistory: true,
     sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
     settingsRevision: 4,
@@ -59,7 +57,7 @@ function executionTarget(input: Readonly<{
     destinationFingerprint: "b".repeat(64),
     executionTargetFingerprint: "c".repeat(64),
     policyRevision: 1,
-    qualificationFingerprints: {
+    compatibilityFingerprints: {
       configFingerprint: "d".repeat(64),
       deploymentFingerprint: "e".repeat(64),
       modelFingerprint: "f".repeat(64),
@@ -69,6 +67,7 @@ function executionTarget(input: Readonly<{
       connection: {
         allowPrivateNetwork: false,
         apiRoot: "https://provider.example.test/v1",
+        authenticationMode: "bearer",
         responseTimeoutMs: 30_000
       },
       connectionDisplayName: input.connection,
@@ -157,7 +156,6 @@ describe("Memory settings service", () => {
       explicitMemory: true,
       historyRecall: true,
       permanentChatDeletion: false,
-      russianQualified: true,
       temporaryChats: true
     });
   });
@@ -188,7 +186,6 @@ describe("Memory settings service", () => {
         explicitMemory: true,
         historyRecall: false,
         permanentChatDeletion: false,
-        russianQualified: true,
         temporaryChats: true
       },
       egressConsentMode: "PER_USER",
@@ -202,7 +199,6 @@ describe("Memory settings service", () => {
         explicitMemory: true,
         historyRecall: false,
         permanentChatDeletion: false,
-        russianQualified: true,
         temporaryChats: true
       },
       egress: {
@@ -232,8 +228,6 @@ describe("Memory settings service", () => {
         memoryConsentRevision: 2,
         memoryGeneration: 0,
         memoryRevision: 3,
-        memoryUiLocale: "RU",
-        preferredProfileLanguage: "AUTO",
         referenceChatHistory: true,
         sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
         settingsRevision: 4,
@@ -250,7 +244,6 @@ describe("Memory settings service", () => {
         explicitMemory: true,
         historyRecall: false,
         permanentChatDeletion: false,
-        russianQualified: true,
         temporaryChats: true
       },
       egressConsentMode: "PER_USER",

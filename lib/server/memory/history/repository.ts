@@ -820,7 +820,7 @@ async function applyPlan(
   const visibilityChanged = activeChunks.length > 0 || plan.chunks.length > 0;
   let activeIndex: MemoryActiveIndex | null = null;
   if (visibilityChanged) {
-    await advanceMemoryMutation(tx, settings, "CHUNK_OR_EPISODE_VISIBILITY_CHANGE");
+    await advanceMemoryMutation(tx, settings, "CHUNK_VISIBILITY_CHANGE");
     activeIndex = await requireActiveMemoryIndex(tx, settings);
     if (!activeIndex) {
       throw new MemoryCoordinatorError("memory_active_generation_invalid", false);
@@ -854,9 +854,6 @@ async function applyPlan(
       branchGeneration: plan.source.branchGeneration,
       chatId: plan.source.chatId,
       lastIndexedMessageId: plan.source.activeLeafMessageId,
-      lastDreamedMessageId: plan.chunks.length === 0
-        ? plan.source.activeLeafMessageId
-        : null,
       lastSucceededAt: now,
       sourceContentHash: plan.source.sourceHash,
       sourceRevision: plan.source.sourceRevision,
@@ -868,9 +865,6 @@ async function applyPlan(
       branchGeneration: plan.source.branchGeneration,
       lastErrorCode: null,
       lastIndexedMessageId: plan.source.activeLeafMessageId,
-      lastDreamedMessageId: plan.chunks.length === 0
-        ? plan.source.activeLeafMessageId
-        : null,
       lastSucceededAt: now,
       sourceContentHash: plan.source.sourceHash,
       sourceRevision: plan.source.sourceRevision,

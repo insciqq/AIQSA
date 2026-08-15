@@ -1,4 +1,3 @@
-import type { MemoryUiLocale } from "@/lib/contracts/memory";
 import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
 
 export const MEMORY_HEALTH_UI_COPY_KEYS = [
@@ -23,10 +22,8 @@ export const MEMORY_HEALTH_UI_COPY_KEYS = [
   "upToDateDescription",
   "learningDelayedTitle",
   "learningDelayedDescription",
-  "learningBudgetDescription",
   "learningAdminDescription",
   "learningUserDescription",
-  "learningUnavailableDescription",
   "learningCapabilityDescription",
   "indexingTitle",
   "indexingDescription",
@@ -76,12 +73,10 @@ const EN = {
   indexingTitle: "Memory is getting ready",
   lastChecked: "Last checked",
   learning: "Automatic learning",
-  learningCapabilityDescription: "Automatic learning is enabled as a preference, but this installation has not activated a compatible qualified capability. Explicit Memory actions still work.",
+  learningCapabilityDescription: "Automatic learning is enabled as a preference, but this installation has no compatible runtime capability. Explicit Memory actions still work.",
   learningAdminDescription: "Background learning is waiting for an administrator to review the current destinations. Chat remains available.",
-  learningBudgetDescription: "The daily background-work allowance has been reached. Learning resumes automatically after the reset.",
   learningDelayedDescription: "Background learning is delayed. Chat and explicit Memory actions remain available.",
   learningDelayedTitle: "Memory learning is paused",
-  learningUnavailableDescription: "Background scheduling status is temporarily unavailable. Chat and explicit Memory actions remain available.",
   learningUserDescription: "Background learning is waiting for destination review.",
   no: "No",
   openOperations: "Open Memory operations",
@@ -112,18 +107,14 @@ const EN = {
 } satisfies Copy;
 
 
-export function memoryHealthUiCopy(
-  _locale: MemoryUiLocale,
-  key: MemoryHealthUiCopyKey
-): string {
+export function memoryHealthUiCopy(key: MemoryHealthUiCopyKey): string {
   return EN[key];
 }
 
 export function memoryHealthStateCopy(
-  locale: MemoryUiLocale,
   health: UserMemoryHealth
 ): Readonly<{ description: string; title: string }> {
-  const copy = (key: MemoryHealthUiCopyKey) => memoryHealthUiCopy(locale, key);
+  const copy = (key: MemoryHealthUiCopyKey) => memoryHealthUiCopy(key);
   switch (health.state) {
     case "UP_TO_DATE":
       return { description: copy("upToDateDescription"), title: copy("upToDateTitle") };
@@ -131,15 +122,11 @@ export function memoryHealthStateCopy(
       return {
         description: health.learning.reason === "CAPABILITY_UNAVAILABLE"
           ? copy("learningCapabilityDescription")
-          : health.learning.reason === "BUDGET"
-          ? copy("learningBudgetDescription")
-          : health.learning.reason === "SCHEDULER_UNAVAILABLE"
-            ? copy("learningUnavailableDescription")
-            : health.egressReview === "ADMIN_REQUIRED"
-              ? copy("learningAdminDescription")
-              : health.egressReview === "USER_REQUIRED"
-                ? copy("learningUserDescription")
-                : copy("learningDelayedDescription"),
+          : health.egressReview === "ADMIN_REQUIRED"
+            ? copy("learningAdminDescription")
+            : health.egressReview === "USER_REQUIRED"
+              ? copy("learningUserDescription")
+              : copy("learningDelayedDescription"),
         title: copy("learningDelayedTitle")
       };
     case "INDEXING":

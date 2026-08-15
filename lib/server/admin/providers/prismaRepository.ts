@@ -149,12 +149,9 @@ function activeCheck(row: {
   };
 }
 
-function modelLegacyFields(configuration: ProviderModelConfiguration) {
+function modelColumns(configuration: ProviderModelConfiguration) {
   return {
     capabilities: json(configuration.capabilities),
-    ...(configuration.capabilities.contextWindow === undefined
-      ? {}
-      : { contextWindow: configuration.capabilities.contextWindow }),
     defaultParams: json(configuration.defaultParams),
     modelId: configuration.upstreamModelId,
     modelClass: configuration.modelClass,
@@ -882,9 +879,8 @@ export function createPrismaAdminProviderRepository(
       if (connection.family !== input.family) return "family_mismatch";
       await prisma.providerModel.create({
         data: {
-          ...modelLegacyFields(input.configuration),
+          ...modelColumns(input.configuration),
           connectionId: input.connectionId,
-          contextWindow: input.configuration.capabilities.contextWindow ?? 1,
           displayName: input.displayName,
           draftConfig: json(input.configuration),
           draftVersion: 1,
@@ -1505,7 +1501,7 @@ export function createPrismaAdminProviderRepository(
               activatedAt: input.now,
               activeConfig: json(model.configuration),
               activeVersion: model.draftVersion,
-              ...modelLegacyFields(model.configuration)
+              ...modelColumns(model.configuration)
             },
             where: { draftVersion: model.draftVersion, id: model.id }
           });

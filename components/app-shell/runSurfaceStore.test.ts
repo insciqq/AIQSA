@@ -1,31 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { PersistedRun, RunEventView } from "./types";
 import {
   emptyRunSurfaceSnapshot,
   resetRunSurfaceStoreForTest,
   selectRunSurface,
   useRunSurfaceStore
 } from "./runSurfaceStore";
-
-function run(id: string): PersistedRun {
-  return {
-    cachedInputTokens: 0,
-    cacheWriteInputTokens: 0,
-    errorPayload: null,
-    estimatedCostMicros: null,
-    events: [],
-    id,
-    inputTokens: 1,
-    modelId: "model-1",
-    outputTokens: 2,
-    provider: "fake",
-    reasoningTokens: 0,
-    searchRuns: [],
-    status: "complete",
-    toolCalls: [],
-    totalTokens: 3
-  };
-}
 
 function surface(chatId: string | null) {
   return selectRunSurface(useRunSurfaceStore.getState(), chatId);
@@ -48,51 +27,38 @@ describe("run surface store", () => {
     expect(blank).toBe(emptyRunSurfaceSnapshot);
   });
 
-  it("keeps appends and replacements isolated by chat", () => {
-    const chatBRun = run("run-b");
+  it("keeps transient event appends isolated by chat", () => {
     useRunSurfaceStore.getState().appendEvent("chat-a", {
       data: { message: "started" },
       type: "start"
     });
-    useRunSurfaceStore.getState().replaceSurface("chat-b", {
-      events: [{ data: { status: "complete" }, type: "done" }],
-      lastRun: chatBRun
+    useRunSurfaceStore.getState().appendEvent("chat-b", {
+      data: { status: "complete" },
+      type: "done"
     });
 
     expect(surface("chat-a")).toEqual({
-      events: [{ data: { message: "started" }, type: "start" }],
-      lastRun: null,
-      runsById: {}
+      events: [{ data: { message: "started" }, type: "start" }]
     });
     expect(surface("chat-b")).toEqual({
-      events: [{ data: { status: "complete" }, type: "done" }],
-      lastRun: chatBRun,
-      runsById: { "run-b": chatBRun }
+      events: [{ data: { status: "complete" }, type: "done" }]
     });
   });
 
-  it("compacts adjacent raw token frames on append and replace", () => {
-    const tokens: RunEventView[] = [
-      { data: { delta: "ab" }, type: "token" },
-      { data: { delta: "c" }, type: "token" }
-    ];
-
-    for (const event of tokens) {
-      useRunSurfaceStore.getState().appendEvent("chat-a", event);
-    }
-    useRunSurfaceStore.getState().replaceSurface("chat-b", {
-      events: tokens,
-      lastRun: null
+  it("compacts adjacent raw token frames while they are live", () => {
+    useRunSurfaceStore.getState().appendEvent("chat-a", {
+      data: { delta: "ab" },
+      type: "token"
+    });
+    useRunSurfaceStore.getState().appendEvent("chat-a", {
+      data: { delta: "c" },
+      type: "token"
     });
 
-    const compacted = [
-      {
-        data: { characterCount: 3, chunkCount: 2 },
-        type: "token"
-      }
-    ];
-    expect(surface("chat-a").events).toEqual(compacted);
-    expect(surface("chat-b").events).toEqual(compacted);
+    expect(surface("chat-a").events).toEqual([{
+      data: { characterCount: 3, chunkCount: 2 },
+      type: "token"
+    }]);
   });
 
   it("resets only chat A and removes only chat B", () => {
@@ -111,25 +77,5 @@ describe("run surface store", () => {
       emptyRunSurfaceSnapshot
     );
     expect(useRunSurfaceStore.getState().surfacesByChatId).not.toHaveProperty("chat-b");
-  });
-
-  it("caches exact runs without replacing the selected Details run", () => {
-    const selected = run("run-selected");
-    const historical = run("run-historical");
-    useRunSurfaceStore.getState().replaceSurface("chat-a", {
-      events: [{ data: { runId: selected.id }, type: "done" }],
-      lastRun: selected
-    });
-
-    useRunSurfaceStore.getState().cacheRun("chat-a", historical);
-
-    expect(surface("chat-a")).toEqual({
-      events: [{ data: { runId: selected.id }, type: "done" }],
-      lastRun: selected,
-      runsById: {
-        "run-historical": historical,
-        "run-selected": selected
-      }
-    });
   });
 });

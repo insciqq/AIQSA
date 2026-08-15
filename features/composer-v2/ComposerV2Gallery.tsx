@@ -72,10 +72,8 @@ export const composerGalleryConfig: ComposerConfig = {
       provider: "openai-work",
       searchPlan: { mode: "all_selected", optionIds: ["web-primary"] },
       searchPreferenceSource: "personal",
-      searchStrategyId: "web-primary",
       showCitations: true,
       showReasoningBlocks: false,
-      showToolActivity: true
     },
     models: [{
       capabilities: {
@@ -373,7 +371,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               id: "composer-question",
               role: "user"
             }, {
-              content: "Соберу отчёт в документальном формате. Выбранные возможности видны рядом с моделью, а подробности останутся в run evidence.",
+              content: "Соберу отчёт в документальном формате. Выбранные возможности видны рядом с моделью, а результат останется в обычном ответе.",
               id: "composer-answer",
               role: "assistant"
             }]}

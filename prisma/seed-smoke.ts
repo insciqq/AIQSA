@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { defaultProviderModels, defaultSearchStrategies } from "../lib/domain/catalog";
 import { providerConnectionTemplates } from "../lib/domain/providerTemplates";
+import { decodeSearchPlan } from "../lib/domain/search";
 import { verifyPassword } from "../lib/server/auth/password";
 import { LOCAL_OPERATOR_EMAIL, LOCAL_OPERATOR_PASSWORD } from "./local-seed-auth";
 import {
@@ -14,6 +15,11 @@ import {
 
 const prisma = new PrismaClient();
 const expectEmptyWorkspace = process.argv.includes("--expect-empty-workspace");
+
+function isDisabledSearchPlan(value: unknown): boolean {
+  const decoded = decodeSearchPlan(value);
+  return decoded.ok && decoded.plan.optionIds.length === 0;
+}
 
 async function main() {
   const user = await prisma.user.findUnique({
@@ -68,7 +74,10 @@ async function main() {
   );
   const [
     knowledgePolicy,
+    memoryEgressAdminPolicy,
     modelPolicy,
+    searchPolicy,
+    smtpControl,
     systemModelPolicy,
     providerConnections,
     providerModels,
@@ -76,7 +85,10 @@ async function main() {
     searchStrategies
   ] = await Promise.all([
     prisma.knowledgePolicy.findUnique({ where: { id: "installation" } }),
+    prisma.memoryEgressAdminPolicy.findUnique({ where: { id: "installation" } }),
     prisma.modelPolicy.findUnique({ where: { id: "installation" } }),
+    prisma.searchPolicy.findUnique({ where: { id: "installation" } }),
+    prisma.smtpControl.findUnique({ where: { id: "installation-smtp" } }),
     prisma.systemModelPolicy.findUnique({ where: { id: "installation" } }),
     prisma.providerConnection.findMany({
       where: {
@@ -111,8 +123,12 @@ async function main() {
     !knowledgePolicy ||
     knowledgePolicy.version < 1 ||
     knowledgePolicy.candidateLimit < knowledgePolicy.resultLimit ||
+    !memoryEgressAdminPolicy ||
     !modelPolicy ||
     modelPolicy.version < 1 ||
+    !searchPolicy ||
+    searchPolicy.version < 1 ||
+    !smtpControl ||
     !systemModelPolicy ||
     systemModelPolicy.version < 1 ||
     providerConnections.length !== providerConnectionTemplates.length ||
@@ -129,7 +145,7 @@ async function main() {
   }
   if (
     user.settings.defaultProviderModelId !== fakeModel.id ||
-    user.settings.defaultSearchStrategyId !== "search-disabled"
+    !isDisabledSearchPlan(user.settings.defaultSearchPlan)
   ) {
     throw new Error("Seed smoke found inconsistent stable Fake defaults");
   }
@@ -219,13 +235,12 @@ async function main() {
   }
 
   const seededUserIds = [user.id, ...LOCAL_ORDINARY_USERS.map((fixture) => fixture.id)];
-  const [memorySettings, checkpointCount, chunkCount, episodeCount] = await Promise.all([
+  const [memorySettings, checkpointCount, chunkCount] = await Promise.all([
     prisma.userMemorySettings.findMany({
       where: { userId: { in: seededUserIds } }
     }),
     prisma.chatMemoryCheckpoint.count({ where: { userId: { in: seededUserIds } } }),
-    prisma.memoryRecallChunk.count({ where: { userId: { in: seededUserIds } } }),
-    prisma.memoryEpisode.count({ where: { userId: { in: seededUserIds } } })
+    prisma.memoryRecallChunk.count({ where: { userId: { in: seededUserIds } } })
   ]);
   if (
     memorySettings.length !== seededUserIds.length ||
@@ -237,8 +252,7 @@ async function main() {
         settings.activeIndexGenerationId !== null
     ) ||
     checkpointCount !== 0 ||
-    chunkCount !== 0 ||
-    episodeCount !== 0
+    chunkCount !== 0
   ) {
     throw new Error("Seed smoke found unexpected default Memory state");
   }
@@ -268,7 +282,7 @@ async function main() {
     if (!ordinary || ordinary.email !== fixture.email || ordinary.role !== "user" ||
       ordinary.status !== "active" || !ordinary.settings ||
       ordinary.settings.defaultProviderModelId !== fakeModel.id ||
-      ordinary.settings.defaultSearchStrategyId !== "search-disabled" ||
+      !isDisabledSearchPlan(ordinary.settings.defaultSearchPlan) ||
       !ordinary.groups.some((membership) => membership.groupId === LOCAL_MCP_FIXTURE_GROUP.id) ||
       !identity || !await verifyPassword(fixture.password, identity.passwordHash)) {
       throw new Error(`Seed smoke found an invalid ordinary-user fixture: ${fixture.email}`);

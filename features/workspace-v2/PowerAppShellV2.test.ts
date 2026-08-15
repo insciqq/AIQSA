@@ -31,7 +31,7 @@ describe("PowerAppShellV2 shortcut targets", () => {
 
 describe("PowerAppShellV2 catalog loading", () => {
   it.each([
-    ["search", { selectedSearchStrategy: "perplexity-tool-search" }],
+    ["search", { selectedSearchOptionIds: ["perplexity-tool-search"] }],
     [
       "assistant",
       {

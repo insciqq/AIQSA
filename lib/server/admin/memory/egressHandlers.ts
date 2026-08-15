@@ -54,7 +54,7 @@ async function healthProjection(
     return await service.admin(adminUserId, { egressReviewRequired });
   } catch {
     console.error("memory_admin_health_read_failed");
-    return unavailableAdminMemoryHealth("EN");
+    return unavailableAdminMemoryHealth();
   }
 }
 

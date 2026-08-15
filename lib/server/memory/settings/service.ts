@@ -22,7 +22,6 @@ export const DEFAULT_MEMORY_SETTINGS_CAPABILITIES: MemorySettingsCapabilities =
     explicitMemory: true,
     historyRecall: true,
     permanentChatDeletion: false,
-    russianQualified: true,
     temporaryChats: true
   });
 
@@ -171,8 +170,6 @@ function responseProjection(
       memoryConsentRevision: settings.memoryConsentRevision,
       memoryGeneration: settings.memoryGeneration,
       memoryRevision: settings.memoryRevision,
-      memoryUiLocale: settings.memoryUiLocale,
-      preferredProfileLanguage: settings.preferredProfileLanguage,
       referenceChatHistory: settings.referenceChatHistory,
       sensitiveAutomaticPolicy: settings.sensitiveAutomaticPolicy,
       settingsRevision: settings.settingsRevision,

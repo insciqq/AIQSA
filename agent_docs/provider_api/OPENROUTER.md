@@ -29,7 +29,7 @@ Primary references:
 
 Externally constrained facts:
 
-- Chat Completions is OpenAI-compatible but accepts additional provider-routing and model-specific fields. Streaming uses SSE data chunks plus possible comment keepalives; current usage accounting places usage in the final streaming chunk without the deprecated include-usage knobs.
+- Chat Completions is OpenAI-compatible but accepts additional provider-routing and model-specific fields. Streaming uses SSE data chunks plus possible comment keepalives; AIQSA reads usage from the final streaming chunk and sends no include-usage knob.
 - Authenticated `GET /api/v1/models/user` filters model results through that OpenRouter account's provider preferences, privacy settings, and guardrails. A catalog observed with one API key is therefore not availability proof for another key.
 - Embedding models use the separate `GET /api/v1/embeddings/models` catalog and batched non-streaming `POST /api/v1/embeddings` endpoint. Answer-catalog membership is not embedding availability evidence.
 - A model result supplies request-facing id, canonical slug, modalities, context/pricing metadata, supported-parameter hints, and optional expiration evidence. Model-specific `GET /api/v1/models/:author/:slug/endpoints` supplies downstream endpoint/provider choices; these remote fields remain mutable and account-dependent.

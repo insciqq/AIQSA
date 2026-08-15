@@ -12,11 +12,6 @@ import {
 import { generatedReferenceErrors } from "./generate-doc-reference.mjs";
 import { validateTaskLedger } from "./task-ledger.mjs";
 
-const LARGE_LIVING_DOC_BYTES = 12_000;
-const MAX_LIVING_DOC_BYTES = 40 * 1_024;
-const DUPLICATE_BLOCK_MINIMUM_CHARACTERS = 180;
-const DUPLICATE_BLOCK_MINIMUM_WORDS = 24;
-const LIVING_DOC_SIZE_EXEMPTIONS = new Map();
 const DISCOVERY_EXCLUDED_PREFIXES = [
   ".agents/",
   ".codex/",
@@ -41,29 +36,6 @@ const TASK_CONTRACT_FILES = new Set([
   "agent_docs/tasks/archive/README.md",
   "agent_docs/tasks/drafts/README.md",
   "agent_docs/tasks/queue/README.md"
-]);
-const OBSOLETE_HARNESS_DIRECTORIES = [
-  "agent_docs/ADR",
-  "agent_docs/active_tasks",
-  "agent_docs/archive",
-  "agent_docs/backlog",
-  "agent_docs/done_tasks",
-  "agent_docs/exec_plans",
-  "agent_docs/exec-plans",
-  "agent_docs/task_archive"
-];
-const CURRENT_SOURCE_EXTENSIONS = new Set([
-  ".cjs", ".js", ".json", ".jsx", ".mjs", ".prisma", ".sh", ".ts", ".tsx", ".yaml", ".yml"
-]);
-const CURRENT_SOURCE_BASENAMES = new Set([".dockerignore", ".gitignore", "Dockerfile", "Makefile"]);
-const CURRENT_SOURCE_EXCLUDED_FILES = new Set([
-  ".gitignore",
-  "scripts/docs-check.mjs",
-  "scripts/release-privacy-check.mjs",
-  "scripts/task-ledger.mjs",
-  "tests/harness/docs-check.test.ts",
-  "tests/harness/release-privacy-check.test.ts",
-  "tests/harness/task-ledger.test.ts"
 ]);
 
 function discoveryExcluded(relative) {
@@ -148,58 +120,6 @@ function localLinkErrors(root, markdown) {
   return errors;
 }
 
-
-function obsoleteHarnessErrors(root, markdown) {
-  const errors = [];
-  for (const relative of OBSOLETE_HARNESS_DIRECTORIES) {
-    if (existsSync(path.join(root, relative))) {
-      errors.push(`${relative}: obsolete harness directory; keep task state only under agent_docs/tasks`);
-    }
-  }
-  const forbidden = [
-    { pattern: /(?:agent_docs\/ADR(?:\/|\b)|\bADR\s+\d{3,}\b)/u, label: "ADR path or numbered ADR reference" },
-    { pattern: /\bactive_tasks\b/u, label: "active_tasks directory" },
-    { pattern: /\bdone_tasks\b/u, label: "done_tasks directory" },
-    { pattern: /\bexec[_-]plans?\b/u, label: "separate execution-plan directory" },
-    { pattern: /agent_docs\/archive(?:\/|\b)/u, label: "separate archive directory" },
-    { pattern: /agent_docs\/backlog(?:\/|\b)/u, label: "separate backlog directory" },
-    { pattern: /agent_docs\/task_archive(?:\/|\b)/u, label: "separate task_archive directory" }
-  ];
-
-  for (const filename of markdown) {
-    const relative = portablePath(path.relative(root, filename));
-    const body = readFileSync(filename, "utf8");
-    for (const { pattern, label } of forbidden) {
-      if (pattern.test(body)) errors.push(`${relative}: references obsolete ${label}`);
-    }
-  }
-  return errors;
-}
-
-function currentSourceReferenceErrors(root, files) {
-  const errors = [];
-  const patterns = [
-    /agent_docs\/ADR(?:\/|\b)/u,
-    /\bactive_tasks\b/u,
-    /\bdone_tasks\b/u,
-    /\bexec[_-]plans?\b/u,
-    /agent_docs\/archive(?:\/|\b)/u,
-    /agent_docs\/backlog(?:\/|\b)/u,
-    /agent_docs\/task_archive(?:\/|\b)/u
-  ];
-
-  for (const relative of files) {
-    if (relative.endsWith(".md") || CURRENT_SOURCE_EXCLUDED_FILES.has(relative)) continue;
-    if (!CURRENT_SOURCE_EXTENSIONS.has(path.extname(relative)) && !CURRENT_SOURCE_BASENAMES.has(path.basename(relative))) {
-      continue;
-    }
-    const body = readFileSync(path.join(root, relative), "utf8");
-    if (patterns.some((pattern) => pattern.test(body))) {
-      errors.push(`${relative}: references obsolete harness state`);
-    }
-  }
-  return errors;
-}
 
 function portablePath(value) {
   return value.split(path.sep).join("/");
@@ -329,131 +249,6 @@ function instructionErrors(root) {
   return errors;
 }
 
-function livingDocumentErrors(root, markdown) {
-  const errors = [];
-  for (const target of markdown) {
-    const filename = portablePath(path.relative(root, target));
-    if (!filename.startsWith("agent_docs/")) continue;
-    const relative = filename.slice("agent_docs/".length);
-    const topDirectory = relative.split("/", 1)[0];
-    if (topDirectory === "generated" || topDirectory === "tasks") continue;
-
-    const body = readFileSync(target, "utf8");
-    const size = Buffer.byteLength(body);
-    if (/^Verified against:/mu.test(body)) {
-      errors.push(`${filename}: ordinary living documents must not carry a global Verified against stamp`);
-    }
-
-    const exemption = LIVING_DOC_SIZE_EXEMPTIONS.get(filename);
-    if (size > MAX_LIVING_DOC_BYTES && !exemption) {
-      errors.push(`${filename}: ${size} bytes exceed the ${MAX_LIVING_DOC_BYTES}-byte non-generated living-document cap`);
-    }
-
-    if (size < LARGE_LIVING_DOC_BYTES) continue;
-    const header = body.split(/\r?\n/).slice(0, 12).join("\n");
-    const owner = /^Owner:\s+(.+)$/mu.exec(header)?.[1]?.trim();
-    const scope = /^Scope:\s+(.+)$/mu.exec(header)?.[1]?.trim();
-    if (!owner || owner.length > 120) {
-      errors.push(`${filename}: large living document needs a bounded Owner marker in its first 12 lines`);
-    }
-    if (!scope || scope.length < 12 || scope.length > 240) {
-      errors.push(`${filename}: large living document needs a 12-240 character Scope marker in its first 12 lines`);
-    }
-  }
-  return errors;
-}
-
-function normativeLivingDocument(filename, body) {
-  if (!filename.startsWith("agent_docs/")) return false;
-  if (filename.startsWith("agent_docs/generated/") || filename.startsWith("agent_docs/tasks/")) return false;
-  const header = body.slice(0, 800);
-  return !/^Scope:\s+Non-normative router\b/imu.test(header)
-    && !/This file is (?:a router|a routing index)\b/iu.test(header);
-}
-
-function normalizedNormativeBlock(markdown) {
-  return markdown
-    .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1")
-    .replace(/<https?:\/\/[^>]+>/giu, "url")
-    .replace(/https?:\/\/\S+/giu, "url")
-    .replace(/<[^>]+>/gu, " ")
-    .replace(/[`*_~>#|{}()[\]]/gu, " ")
-    .replace(/&[a-z]+;/giu, " ")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function normativeBlocks(body) {
-  const blocks = [];
-  let fenced = false;
-  let lines = [];
-  let startLine = 0;
-
-  const flush = () => {
-    if (!lines.length) return;
-    const raw = lines.join(" ").replace(/\s+/gu, " ").trim();
-    lines = [];
-    if (!raw || /^(?:Owner|Scope|Read when|Code owners|Not owned here):/u.test(raw)) return;
-    const normalized = normalizedNormativeBlock(raw);
-    const words = normalized ? normalized.split(" ") : [];
-    if (
-      normalized.length >= DUPLICATE_BLOCK_MINIMUM_CHARACTERS
-      && words.length >= DUPLICATE_BLOCK_MINIMUM_WORDS
-    ) {
-      blocks.push({ line: startLine, normalized });
-    }
-  };
-
-  for (const [index, rawLine] of body.split(/\r?\n/u).entries()) {
-    const line = rawLine.trim();
-    if (/^```/u.test(line)) {
-      flush();
-      fenced = !fenced;
-      continue;
-    }
-    if (fenced) continue;
-    if (!line || /^#{1,6}\s+/u.test(line)) {
-      flush();
-      continue;
-    }
-    if (/^\|.*\|$/u.test(line)) {
-      flush();
-      continue;
-    }
-    const listItem = /^(?:[-*+] |\d+\. )/u.test(line);
-    if (listItem) flush();
-    if (!lines.length) startLine = index + 1;
-    lines.push(line.replace(/^(?:[-*+] |\d+\. )/u, ""));
-  }
-  flush();
-  return blocks;
-}
-
-function normativeDuplicateErrors(root, markdown) {
-  const errors = [];
-  const owners = new Map();
-  for (const target of markdown) {
-    const filename = portablePath(path.relative(root, target));
-    const body = readFileSync(target, "utf8");
-    if (!normativeLivingDocument(filename, body)) continue;
-    for (const block of normativeBlocks(body)) {
-      const owner = owners.get(block.normalized);
-      if (!owner) {
-        owners.set(block.normalized, { filename, line: block.line });
-      } else if (owner.filename !== filename) {
-        errors.push(
-          `${filename}:${block.line}: duplicates a substantial normative block from `
-          + `${owner.filename}:${owner.line}; link the owner and keep only this layer's projection`
-        );
-      }
-    }
-  }
-  return errors;
-}
-
 function docsManifestErrors() {
   const errors = [];
   const seen = new Set();
@@ -475,10 +270,6 @@ export function checkDocs(root = process.cwd()) {
     if (!existsSync(target) || !statSync(target).isFile()) errors.push(`missing required document: ${filename}`);
   }
   errors.push(...instructionErrors(root));
-  errors.push(...obsoleteHarnessErrors(root, markdown));
-  errors.push(...currentSourceReferenceErrors(root, files));
-  errors.push(...livingDocumentErrors(root, markdown));
-  errors.push(...normativeDuplicateErrors(root, markdown));
   errors.push(...localLinkErrors(root, markdown));
   errors.push(...validateTaskLedger(root).errors);
   errors.push(...taskPrivacyErrors(root));

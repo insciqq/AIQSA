@@ -11,10 +11,7 @@ export type McpOAuthPolicy = Readonly<{
   redirectUri: string;
   requestedScopes: readonly string[];
   resource: string;
-  /** Missing means an administrator explicitly reviewed `resource` (and keeps
-   * older encrypted policy envelopes backward compatible). Auto mode may bind
-   * only to a same-origin resource identifier returned by RFC 9728 discovery. */
-  resourceMode?: "auto_same_origin";
+  resourceMode: "auto_same_origin" | "explicit";
   serverId: string;
   serverUrl: string;
   userId: string;
@@ -51,7 +48,7 @@ export function bindMcpOAuthPolicyResource(
   if (!discoveredResource) return policy;
   const resource = canonicalResource(discoveredResource);
   if (!resource) return null;
-  if (policy.resourceMode !== "auto_same_origin") {
+  if (policy.resourceMode === "explicit") {
     return resource === canonicalResource(policy.resource) ? policy : null;
   }
   if (new URL(resource).origin !== new URL(policy.serverUrl).origin) return null;
@@ -93,7 +90,7 @@ export function buildMcpOAuthPolicy(input: Readonly<{
     redirectUri: new URL(input.redirectUri).toString(),
     requestedScopes: sortedUnique(input.draft.auth.scopes),
     resource: normalizedResource(input.draft),
-    ...(explicitResource ? {} : { resourceMode: "auto_same_origin" as const }),
+    resourceMode: explicitResource ? "explicit" : "auto_same_origin",
     serverId: input.serverId,
     serverUrl: new URL(input.draft.source.url).toString(),
     userId: input.userId,

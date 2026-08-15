@@ -5,7 +5,7 @@ import type { SearchPlanMode } from "@/lib/domain/search";
 import { create } from "zustand";
 
 type StateUpdate<T> = T | ((current: T) => T);
-type ControlDefaults = Required<Omit<SavedControlDraft, "searchStrategyId">>;
+type ControlDefaults = Required<SavedControlDraft>;
 
 export type ComposerModelSelection = {
   controlDefaults: ControlDefaults;
@@ -44,7 +44,6 @@ export type ComposerManualDraftBackup = {
   selectedKnowledgeBaseIds: string[];
   selectedProvider: string;
   selectedSearchOptionIds: string[];
-  selectedSearchStrategy: string;
   streamMode: boolean;
   temperature: string;
 };
@@ -63,10 +62,8 @@ export type ComposerControlSnapshot = {
   selectedProvider: string;
   selectedSearchOptionIds: string[];
   searchPlanMode: SearchPlanMode;
-  selectedSearchStrategy: string;
   showCitations: boolean;
   showReasoningBlocks: boolean;
-  showToolActivity: boolean;
   streamMode: boolean;
   temperature: string;
 };
@@ -104,10 +101,8 @@ export type ComposerControlStore = ComposerControlSnapshot & {
     mode: SearchPlanMode,
     origin?: ComposerControlChangeOrigin
   ): void;
-  setSelectedSearchStrategy(value: string): void;
   setShowCitations(update: StateUpdate<boolean>): void;
   setShowReasoningBlocks(update: StateUpdate<boolean>): void;
-  setShowToolActivity(update: StateUpdate<boolean>): void;
   setStreamMode(value: boolean): void;
   setTemperature(value: string): void;
 };
@@ -126,10 +121,8 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   selectedProvider: "openai",
   selectedSearchOptionIds: ["openai-native-web-search"],
   searchPlanMode: "all_selected",
-  selectedSearchStrategy: "openai-native-web-search",
   showCitations: true,
   showReasoningBlocks: false,
-  showToolActivity: true,
   streamMode: false,
   temperature: "1"
 };
@@ -150,7 +143,6 @@ function manualBackupFrom(state: ComposerControlSnapshot): ComposerManualDraftBa
     selectedKnowledgeBaseIds: [...state.selectedKnowledgeBaseIds],
     selectedProvider: state.selectedProvider,
     selectedSearchOptionIds: [...state.selectedSearchOptionIds],
-    selectedSearchStrategy: state.selectedSearchStrategy,
     streamMode: state.streamMode,
     temperature: state.temperature
   };
@@ -206,7 +198,6 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       selectedProvider: provider,
       selectedSearchOptionIds: [...searchOptionIds],
       searchPlanMode,
-      selectedSearchStrategy: searchOptionIds[0] ?? "search-disabled",
       streamMode: controlDefaults.streamMode,
       temperature: controlDefaults.temperature
     }));
@@ -259,7 +250,6 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
               selectedKnowledgeBaseIds: [...backup.selectedKnowledgeBaseIds],
               selectedProvider: backup.selectedProvider,
               selectedSearchOptionIds: [...backup.selectedSearchOptionIds],
-              selectedSearchStrategy: backup.selectedSearchStrategy,
               streamMode: backup.streamMode,
               temperature: backup.temperature
             }
@@ -302,16 +292,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
     set((state) => ({
       ...droppedAssistantIdentity(state, origin),
       searchPlanMode: mode,
-      selectedSearchOptionIds,
-      selectedSearchStrategy: selectedSearchOptionIds[0] ?? "search-disabled"
-    }));
-  },
-  setSelectedSearchStrategy(value) {
-    set((state) => ({
-      ...droppedAssistantIdentity(state, "user"),
-      searchPlanMode: "all_selected",
-      selectedSearchOptionIds: value === "search-disabled" ? [] : [value],
-      selectedSearchStrategy: value
+      selectedSearchOptionIds
     }));
   },
   setShowCitations(update) {
@@ -319,9 +300,6 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
   },
   setShowReasoningBlocks(update) {
     set((state) => ({ showReasoningBlocks: applyUpdate(state.showReasoningBlocks, update) }));
-  },
-  setShowToolActivity(update) {
-    set((state) => ({ showToolActivity: applyUpdate(state.showToolActivity, update) }));
   },
   setStreamMode(value) {
     set((state) => ({ ...droppedAssistantIdentity(state, "user"), streamMode: value }));

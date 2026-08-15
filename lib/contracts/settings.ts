@@ -3,18 +3,14 @@ import { decodeSearchPlan, type SearchPlan } from "./search";
 export type UserSettingsWire = {
   defaultControlValues: Record<string, unknown>;
   hasPersonalModelDefault: boolean;
-  defaultModelId: string;
   modelPreferenceSource: "none" | "organization" | "personal";
   organizationModelDefault: { modelId: string; provider: string } | null;
   personalModelDefault: { modelId: string; provider: string } | null;
-  defaultProvider: string;
-  defaultSearchStrategyId: string;
-  defaultSearchPlan?: SearchPlan;
-  organizationSearchPlan?: SearchPlan;
-  searchPreferenceSource?: "organization" | "personal";
+  defaultSearchPlan: SearchPlan;
+  organizationSearchPlan: SearchPlan;
+  searchPreferenceSource: "organization" | "personal";
   showCitations: boolean;
   showReasoningBlocks: boolean;
-  showToolActivity: boolean;
 };
 
 export type UpdateSettingsResponse = {
@@ -50,25 +46,21 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   }
 
   const settings = value.settings;
-  const defaultSearchPlan = settings.defaultSearchPlan === undefined
-    ? null
-    : decodeSearchPlan(settings.defaultSearchPlan, settings.defaultSearchStrategyId);
+  const defaultSearchPlan = decodeSearchPlan(settings.defaultSearchPlan);
   const organizationSearchPlan = decodeSearchPlan(settings.organizationSearchPlan);
   if (
     !isRecord(settings.defaultControlValues) ||
-    !isString(settings.defaultModelId) ||
     typeof settings.hasPersonalModelDefault !== "boolean" ||
     (settings.modelPreferenceSource !== "none" &&
       settings.modelPreferenceSource !== "organization" &&
       settings.modelPreferenceSource !== "personal") ||
     !modelDefaultSelection(settings.organizationModelDefault) ||
     !modelDefaultSelection(settings.personalModelDefault) ||
-    !isString(settings.defaultProvider) ||
-    !isNonEmptyString(settings.defaultSearchStrategyId) ||
     typeof settings.showCitations !== "boolean" ||
     typeof settings.showReasoningBlocks !== "boolean" ||
-    typeof settings.showToolActivity !== "boolean" ||
-    (settings.defaultSearchPlan !== undefined && !defaultSearchPlan?.ok) ||
+    settings.defaultSearchPlan === undefined ||
+    settings.organizationSearchPlan === undefined ||
+    !defaultSearchPlan.ok ||
     !organizationSearchPlan.ok ||
     (settings.searchPreferenceSource !== "organization" && settings.searchPreferenceSource !== "personal")
   ) {
@@ -79,20 +71,14 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
     settings: {
       defaultControlValues: { ...settings.defaultControlValues },
       hasPersonalModelDefault: settings.hasPersonalModelDefault,
-      defaultModelId: settings.defaultModelId,
       modelPreferenceSource: settings.modelPreferenceSource,
       organizationModelDefault: settings.organizationModelDefault,
       personalModelDefault: settings.personalModelDefault,
-      defaultProvider: settings.defaultProvider,
-      defaultSearchStrategyId: settings.defaultSearchStrategyId,
-      ...(defaultSearchPlan?.ok
-        ? { defaultSearchPlan: defaultSearchPlan.plan }
-        : {}),
+      defaultSearchPlan: defaultSearchPlan.plan,
       organizationSearchPlan: organizationSearchPlan.plan,
       searchPreferenceSource: settings.searchPreferenceSource,
       showCitations: settings.showCitations,
-      showReasoningBlocks: settings.showReasoningBlocks,
-      showToolActivity: settings.showToolActivity
+      showReasoningBlocks: settings.showReasoningBlocks
     }
   };
 }

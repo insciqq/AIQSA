@@ -64,6 +64,8 @@ function answerRequest(): ProviderRunRequest {
       }],
       mode: "branch_path"
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -80,7 +82,7 @@ function answerRequest(): ProviderRunRequest {
       system: "private system prompt"
     },
     provider: "answer-provider",
-    searchStrategy: null
+    searchPlan: { mode: "all_selected", options: [] }
   };
 }
 
@@ -206,31 +208,7 @@ describe("Search plan tool router", () => {
     expect(JSON.stringify(router.tools)).not.toContain(connectionId);
   });
 
-  it("accepts a pre-release persisted per-source tool name during recovery", async () => {
-    const onRequest = vi.fn();
-    const selected = option("legacy-source");
-    const second = option("second-source");
-    const router = createSearchPlanToolRouter({
-      acceptLegacyToolNames: true,
-      plan: { mode: "model_choice", options: [selected, second] },
-      runtimes: {
-        "legacy-source": runtime({ onRequest }),
-        "second-source": runtime()
-      }
-    })!;
-
-    await expect(router.execute(
-      call("search_1_legacy_source"),
-      answerRequest()
-    )).resolves.toMatchObject({ status: "complete" });
-    expect(router.accepts("search_1_legacy_source")).toBe(true);
-    expect(router.accepts("search_2_wrong_source")).toBe(false);
-    expect(router.accepts("search_1_wrong_source")).toBe(false);
-    expect(router.accepts("search_1wrong_source")).toBe(false);
-    expect(onRequest).toHaveBeenCalledOnce();
-  });
-
-  it("rejects undeclared legacy-shaped tool names during a new live run", async () => {
+  it("rejects undeclared noncanonical tool names", async () => {
     const selected = option("current-source");
     const router = createSearchPlanToolRouter({
       plan: { mode: "model_choice", options: [selected] },
@@ -277,14 +255,14 @@ describe("Search plan tool router", () => {
       expect(JSON.stringify(request)).not.toContain("private attachment text");
       expect(JSON.stringify(request)).not.toContain("private system prompt");
     }
-    const preview = result.rawPreview?.finalProviderResponsePreview as Record<string, unknown>;
+    const executions = searchExecutionsFromToolResult(result);
     expect((result.content[0] as { text: string }).text.match(/https:\/\/example\.com\/shared/gu))
       .toHaveLength(1);
-    expect(preview.searchExecutions).toEqual(expect.arrayContaining([
+    expect(executions).toEqual(expect.arrayContaining([
       expect.objectContaining({ findings: "Finding from model-first" }),
       expect.objectContaining({ findings: "Finding from model-second" })
     ]));
-    expect(searchExecutionsFromToolResult(result).map((execution) => execution.optionId)).toEqual([
+    expect(executions.map((execution) => execution.optionId)).toEqual([
       "first",
       "second"
     ]);
@@ -534,14 +512,10 @@ describe("Search plan tool router", () => {
     expect(result.status).toBe("error");
     expect(execution).toMatchObject({
       failure: { code: "search_findings_invalid" },
-      providerOperations: [expect.objectContaining({
-        id: "oversized-operation",
-        kind: "search",
-        status: "complete"
-      })],
       status: "error",
       usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 }
     });
+    expect(JSON.stringify(result.rawPreview)).not.toContain("oversized-operation");
     expect(snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes))
       .not.toBeNull();
   });
@@ -622,7 +596,7 @@ describe("Search plan tool router", () => {
     expect(executions.filter((execution) => execution.failure?.code === "search_result_too_large"))
       .not.toHaveLength(0);
     expect(executions.every((execution) => execution.usage.totalTokens === 5)).toBe(true);
-    expect(executions.some((execution) => execution.providerOperationsTruncated)).toBe(true);
+    expect(JSON.stringify(executions)).not.toMatch(/providerOperations|bounded query/u);
   });
 
   it("retains normalized incomplete evidence and usage without a raw provider response", async () => {
@@ -665,7 +639,6 @@ describe("Search plan tool router", () => {
         providerStatus: "incomplete",
         reason: "max_output_tokens"
       },
-      providerOperations: [expect.objectContaining({ kind: "search", status: "complete" })],
       status: "error",
       usage: {
         inputTokens: 11,
@@ -677,7 +650,7 @@ describe("Search plan tool router", () => {
     expect(JSON.stringify(result.rawPreview)).not.toContain("incomplete_details");
   });
 
-  it("retains the provider-reported Responses search operations without the raw payload", async () => {
+  it("does not retain provider operation traces or duplicate the query", async () => {
     const selected = option("sol", { displayName: "Web Search · Sol" });
     const router = createSearchPlanToolRouter({
       plan: { mode: "all_selected", options: [selected] },
@@ -707,19 +680,14 @@ describe("Search plan tool router", () => {
     expect(searchExecutionsFromToolResult(result)).toEqual([
       expect.objectContaining({
         displayName: "Web Search · Sol",
-        providerOperations: [{
-          id: "ws-1",
-          kind: "search",
-          ordinal: 0,
-          pattern: null,
-          queries: ["Moscow latest news", "Moscow news today"],
-          status: "complete",
-          url: null
-        }],
-        query: "latest news in Moscow"
+        optionId: "sol",
+        status: "complete"
       })
     ]);
-    expect(JSON.stringify(result.rawPreview)).not.toContain("artifactType");
+    const durable = JSON.stringify(result.rawPreview);
+    expect(durable).not.toContain("artifactType");
+    expect(durable).not.toContain("providerOperations");
+    expect(durable).not.toContain("latest news in Moscow");
   });
 
   it("returns an explicit tool error when every selected engine fails", async () => {
@@ -786,16 +754,12 @@ describe("Search plan tool router", () => {
     );
 
     expect(blocked).toMatchObject({
-      rawPreview: {
-        finalProviderResponsePreview: {
-          error: "search_invocation_limit_reached",
-          invocationCount: 2,
-          maxInvocations: 2
-        },
-        providerCall: false
-      },
+      rawPreview: { providerCall: false },
       status: "error"
     });
+    expect(blocked.content).toEqual([
+      expect.objectContaining({ text: expect.stringContaining("search_invocation_limit_reached") })
+    ]);
     expect(onFirstRequest).toHaveBeenCalledTimes(2);
     expect(onSecondRequest).toHaveBeenCalledTimes(2);
     expect(searchExecutionsFromToolResult(blocked)).toEqual([]);
@@ -921,11 +885,7 @@ describe("Search plan tool router", () => {
 
     expect(result.status).toBe("complete");
     expect(onOptions).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 2_000 }));
-    expect(searchExecutionsFromToolResult(result)[0]?.requestPreview).toMatchObject({
-      effectiveTimeoutMs: 2_000,
-      providerResponseTimeoutMs: 2_000,
-      searchTimeoutMs: 5_000
-    });
+    expect(JSON.stringify(searchExecutionsFromToolResult(result))).not.toContain("requestPreview");
   });
 
   it("propagates caller cancellation instead of converting it to an engine warning", async () => {

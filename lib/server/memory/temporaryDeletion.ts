@@ -193,7 +193,6 @@ async function settleOverdueRuns(
           message: "Temporary retention expired before this run settled."
         }),
         normalizedRequest: json(baseSnapshot?.normalizedRequest ?? {}),
-        providerRequestPreview: json(baseSnapshot?.providerRequestPreview ?? {}),
         status: "error"
       },
       where: { id: run.id }

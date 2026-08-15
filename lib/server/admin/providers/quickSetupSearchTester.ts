@@ -52,6 +52,8 @@ function request(
       mode: "branch_path"
     },
     forceNonStreaming: true,
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: model.capabilities,
     modelId: model.upstreamModelId,
     params: {
@@ -67,7 +69,23 @@ function request(
       system: null
     },
     provider,
-    searchStrategy: "openai-native-web-search"
+    searchPlan: {
+      mode: "all_selected",
+      options: [{
+        adapterKind: "answer_provider_hosted",
+        config: {},
+        credentialMode: "answer_provider",
+        displayName: "OpenAI Web Search",
+        executionModes: ["all_selected"],
+        modelId: null,
+        optionId: "openai-native-web-search",
+        protocol: "openai_responses_web_search",
+        provider,
+        providerModelId: null,
+        revisionId: "admin-quick-setup-probe",
+        searchStrategyRowId: "admin-quick-setup-probe"
+      }]
+    }
   };
 }
 

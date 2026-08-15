@@ -1,8 +1,4 @@
-import {
-  MEMORY_CONFIRMATION_COPY_VERSION,
-  type MemoryUiLocale
-} from "./memory";
-import { MEMORY_PRESENTATION_LOCALE } from "./memoryPresentation";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "./memory";
 
 export { MEMORY_CONFIRMATION_COPY_VERSION };
 
@@ -39,55 +35,46 @@ export const MEMORY_COPY_KEYS = [
   "bulkDelete.history.action",
   "bulkDelete.reusable.action",
   "bulkDelete.reusable.explanation",
-  "receipt.title",
-  "receipt.laterForgotten",
-  "receipt.sourceDeleted",
   "deletion.blockedAdmin"
 ] as const;
 
 export type MemoryCopyKey = (typeof MEMORY_COPY_KEYS)[number];
-export type MemoryCopyCatalog =
-  Readonly<Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryCopyKey, string>>>>;
+export type MemoryCopyCatalog = Readonly<Record<MemoryCopyKey, string>>;
 
 export const MEMORY_COPY: MemoryCopyCatalog = Object.freeze({
-  EN: Object.freeze({
-    "archive.action": "Archive",
-    "archive.explanation": "Moves this chat out of the active list. The retained chat remains eligible as a Memory source.",
-    "bulkDelete.explicit.action": "Delete all saved memories",
-    "bulkDelete.history.action": "Clear chat-history memory index",
-    "bulkDelete.learned.action": "Delete automatically learned memories",
-    "bulkDelete.reusable.action": "Delete all reusable memory data",
-    "bulkDelete.reusable.explanation": "Deletes reusable facts, history index, and profile data. It does not delete retained chats, rewrite old accepted runs, erase provider-retained requests, or rewrite operator backups.",
-    "consent.answerDestination": "Selected answer model: final bounded snippets may be sent with the accepted run.",
-    "consent.embeddingDestination": "Embedding destination: eligible bounded text may be sent only to the disclosed configured deployment.",
-    "consent.explanation": "Review the exact current Memory destinations. A material destination change pauses affected external Memory work until you accept it.",
-    "consent.rerankerDestination": "Remote reranker: bounded eligible candidates may be sent only when this destination is configured and accepted.",
-    "consent.reviewRequired": "Review required before external Memory processing can continue.",
-    "consent.systemDestination": "System Memory model: bounded eligible source text may be sent for qualified extraction or verification.",
-    "consent.title": "Review Memory data destinations",
-    "deletion.blockedAdmin": "Future Memory use is fenced, but physical deletion needs administrator attention and will keep retrying.",
-    "exclude.action": "Exclude this chat from memory",
-    "exclude.explanation": "Keeps the chat but immediately stops using it as a source for automatic recall and learning. Archive status does not change.",
-    "forget.action": "Forget",
-    "forget.explanation": "Stops future Memory use and suppresses relearning from the same unchanged evidence. Retained chat text and old accepted runs are not rewritten.",
-    "permanentDelete.action": "Delete permanently",
-    "permanentDelete.explanation": "Deletes this chat and its owned run data, revokes its shares, and reconciles Memory derivatives. Provider retention and operator backups are not rewritten.",
-    "receipt.laterForgotten": "Later forgotten",
-    "receipt.sourceDeleted": "Source deleted",
-    "receipt.title": "Memory",
-    "restore.action": "Restore",
-    "resume.action": "Resume using this chat as a memory source",
-    "resume.explanation": "Allows a controlled active-branch reindex. Prior Forget and bulk-clear barriers remain in force, and external work still requires accepted destinations.",
-    "settings.learnAutomatically.label": "Learn useful memories automatically",
-    "settings.manage.label": "Manage Memories",
-    "settings.referenceHistory.label": "Reference chat history",
-    "settings.savedWhileUseOff": "Saved; memory use is off.",
-    "settings.useFacts.label": "Use memory facts",
-    "temporary.explanation": "Temporary Chat reads and writes no personal Memory, cannot be converted to a retained chat, and cannot be shared.",
-    "temporary.externalRetention": "External providers and tools may retain data under their disclosed policies; operator backups are a separate domain.",
-    "temporary.label": "Temporary Chat",
-    "temporary.retention": "The complete chat aggregate is scheduled for durable deletion 24 hours after the last terminal run, or after creation or last local activity if no run settles."
-  })
+  "archive.action": "Archive",
+  "archive.explanation": "Moves this chat out of the active list. The retained chat remains eligible as a Memory source.",
+  "bulkDelete.explicit.action": "Delete all saved memories",
+  "bulkDelete.history.action": "Clear chat-history memory index",
+  "bulkDelete.learned.action": "Delete automatically learned memories",
+  "bulkDelete.reusable.action": "Delete all reusable memory data",
+  "bulkDelete.reusable.explanation": "Deletes reusable facts, the chat-history index, and other derived Memory data. It does not delete retained chats, rewrite old accepted runs, erase provider-retained requests, or rewrite operator backups.",
+  "consent.answerDestination": "Selected answer model: final bounded snippets may be sent with the accepted run.",
+  "consent.embeddingDestination": "Embedding destination: eligible bounded text may be sent only to the disclosed configured deployment.",
+  "consent.explanation": "Review the exact current Memory destinations. A material destination change pauses affected external Memory work until you accept it.",
+  "consent.rerankerDestination": "Remote reranker: bounded eligible candidates may be sent only when this destination is configured and accepted.",
+  "consent.reviewRequired": "Review required before external Memory processing can continue.",
+  "consent.systemDestination": "System Memory model: bounded eligible source text may be sent for compatible extraction or verification.",
+  "consent.title": "Review Memory data destinations",
+  "deletion.blockedAdmin": "Future Memory use is fenced, but physical deletion needs administrator attention and will keep retrying.",
+  "exclude.action": "Exclude this chat from memory",
+  "exclude.explanation": "Keeps the chat but immediately stops using it as a source for automatic recall and learning. Archive status does not change.",
+  "forget.action": "Forget",
+  "forget.explanation": "Stops future Memory use and suppresses relearning from the same unchanged evidence. Retained chat text and old accepted runs are not rewritten.",
+  "permanentDelete.action": "Delete permanently",
+  "permanentDelete.explanation": "Deletes this chat and its owned run data, revokes its shares, and reconciles Memory derivatives. Provider retention and operator backups are not rewritten.",
+  "restore.action": "Restore",
+  "resume.action": "Resume using this chat as a memory source",
+  "resume.explanation": "Allows a controlled active-branch reindex. Prior Forget and bulk-clear barriers remain in force, and external work still requires accepted destinations.",
+  "settings.learnAutomatically.label": "Learn useful memories automatically",
+  "settings.manage.label": "Manage Memories",
+  "settings.referenceHistory.label": "Reference chat history",
+  "settings.savedWhileUseOff": "Saved; memory use is off.",
+  "settings.useFacts.label": "Use memory facts",
+  "temporary.explanation": "Temporary Chat reads and writes no personal Memory, cannot be converted to a retained chat, and cannot be shared.",
+  "temporary.externalRetention": "External providers and tools may retain data under their disclosed policies; operator backups are a separate domain.",
+  "temporary.label": "Temporary Chat",
+  "temporary.retention": "The complete chat aggregate is scheduled for durable deletion 24 hours after the last terminal run, or after creation or last local activity if no run settles."
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -96,10 +83,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function memoryCopyCatalogIsComplete(value: unknown): value is MemoryCopyCatalog {
   if (!isRecord(value)) return false;
-  const entries = value[MEMORY_PRESENTATION_LOCALE];
-  if (!isRecord(entries) || Object.keys(entries).length !== MEMORY_COPY_KEYS.length) return false;
+  if (Object.keys(value).length !== MEMORY_COPY_KEYS.length) return false;
   return MEMORY_COPY_KEYS.every((key) => {
-    const copy = entries[key];
+    const copy = value[key];
     return typeof copy === "string" && copy.trim().length > 0 && !copy.includes("\u0000");
   });
 }
@@ -107,21 +93,20 @@ export function memoryCopyCatalogIsComplete(value: unknown): value is MemoryCopy
 export class MemoryCopyContractError extends Error {
   readonly code = "memory_copy_missing";
 
-  constructor(locale: string, key: string) {
-    super(`Memory copy is missing for ${locale}:${key}`);
+  constructor(key: string) {
+    super(`Memory copy is missing for ${key}`);
     this.name = "MemoryCopyContractError";
   }
 }
 
 export function resolveMemoryCopy(
-  locale: MemoryUiLocale,
   key: MemoryCopyKey,
   catalog: unknown = MEMORY_COPY
 ): string {
   if (!memoryCopyCatalogIsComplete(catalog)) {
-    throw new MemoryCopyContractError(locale, key);
+    throw new MemoryCopyContractError(key);
   }
-  const value = catalog[MEMORY_PRESENTATION_LOCALE][key];
-  if (!value) throw new MemoryCopyContractError(locale, key);
+  const value = catalog[key];
+  if (!value) throw new MemoryCopyContractError(key);
   return value;
 }

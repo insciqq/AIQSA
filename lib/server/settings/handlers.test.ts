@@ -43,14 +43,13 @@ function baseSettingsData(): SettingsHandlerData {
     searchStrategies: defaultSearchStrategies,
     settings: {
       defaultControlValues: {},
-      defaultModelId: "gpt-5.5",
-      defaultProviderConnectionId: "openai",
       defaultProviderModelId: "gpt-5.5",
-      defaultProvider: "openai",
-      defaultSearchStrategyId: "openai-native-web-search",
+      defaultSearchPlan: {
+        mode: "all_selected",
+        optionIds: ["openai-native-web-search"]
+      },
       showCitations: true,
       showReasoningBlocks: false,
-      showToolActivity: true,
     }
   };
 }
@@ -86,17 +85,17 @@ describe("settings handler", () => {
               backgroundMode: false,
               maxOutputTokens: "999999",
               reasoningEffort: "xhigh",
-              searchStrategyId: "openai-native-web-search",
               streamMode: true,
               temperature: "0.3"
             }
           },
-          defaultModelId: "gpt-5.5",
-          defaultProvider: "openai",
-          defaultSearchStrategyId: "openai-native-web-search",
+          defaultProviderModelId: "gpt-5.5",
+          defaultSearchPlan: {
+            mode: "all_selected",
+            optionIds: ["openai-native-web-search"]
+          },
           showCitations: false,
           showReasoningBlocks: true,
-          showToolActivity: false
         }),
         headers: {
           cookie: authCookie()
@@ -117,10 +116,12 @@ describe("settings handler", () => {
         }
       },
       defaultProviderModelId: "gpt-5.5",
-      defaultSearchStrategyId: "openai-native-web-search",
+      defaultSearchPlan: {
+        mode: "all_selected",
+        optionIds: ["openai-native-web-search"]
+      },
       showCitations: false,
       showReasoningBlocks: true,
-      showToolActivity: false
     });
     expect(
       (capturedUpdate as { defaultControlValues: Record<string, unknown> }).defaultControlValues
@@ -136,53 +137,29 @@ describe("settings handler", () => {
     const responseBody = (await response.json()) as { settings: UserSettingsRecord };
     expect(responseBody).toMatchObject({
       settings: {
-        defaultSearchStrategyId: "openai-native-web-search",
+        defaultSearchPlan: {
+          mode: "all_selected",
+          optionIds: ["openai-native-web-search"]
+        },
         showCitations: false,
         showReasoningBlocks: true,
-        showToolActivity: false
       }
     });
     expect(Object.keys(responseBody.settings)).toEqual([
       "defaultControlValues",
-      "defaultModelId",
-      "defaultProvider",
       "hasPersonalModelDefault",
       "modelPreferenceSource",
       "organizationModelDefault",
       "personalModelDefault",
-      "defaultSearchStrategyId",
       "defaultSearchPlan",
       "organizationSearchPlan",
       "searchPreferenceSource",
       "showCitations",
       "showReasoningBlocks",
-      "showToolActivity"
     ]);
   });
 
-  it("rejects a non-boolean tool activity preference", async () => {
-    const data = baseSettingsData();
-    const PATCH = createUpdateSettingsHandler({
-      resolveAuth: auth.resolveAuth,
-      loadSettingsData: async () => data,
-      updateSettings: async () => updated(data.settings)
-    });
-
-    const response = await PATCH(
-      new Request("http://app.local/api/me/settings", {
-        body: JSON.stringify({ showToolActivity: "yes" }),
-        headers: { cookie: authCookie() },
-        method: "PATCH"
-      })
-    );
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error: "show_tool_activity_boolean_required"
-    });
-  });
-
-  it("drops legacy per-model Search hints without dropping valid draft fields", async () => {
+  it("drops unsupported per-model draft fields without dropping valid fields", async () => {
     let capturedUpdate: unknown = null;
     const data = baseSettingsData();
     const PATCH = createUpdateSettingsHandler({
@@ -203,7 +180,7 @@ describe("settings handler", () => {
           defaultControlValues: {
             "openai:gpt-5.5": {
               reasoningEffort: "high",
-              searchStrategyId: "openai-native-web-search"
+              unsupportedField: "ignored"
             }
           }
         }),
@@ -225,7 +202,7 @@ describe("settings handler", () => {
     expect(
       (capturedUpdate as { defaultControlValues: Record<string, Record<string, unknown>> }).defaultControlValues[
         "openai:gpt-5.5"
-      ].searchStrategyId
+      ].unsupportedField
     ).toBeUndefined();
   });
 
@@ -270,6 +247,7 @@ describe("settings handler", () => {
 
   it("keeps a global Search preference even when the selected model cannot use it", async () => {
     const data = baseSettingsData();
+    data.entitlements.searchStrategies.add("perplexity-tool-search");
     const PATCH = createUpdateSettingsHandler({
       resolveAuth: auth.resolveAuth,
       loadSettingsData: async () => data,
@@ -279,9 +257,11 @@ describe("settings handler", () => {
     const response = await PATCH(
       new Request("http://app.local/api/me/settings", {
         body: JSON.stringify({
-          defaultModelId: "gpt-5.5",
-          defaultProvider: "openai",
-          defaultSearchStrategyId: "perplexity-tool-search"
+          defaultProviderModelId: "gpt-5.5",
+          defaultSearchPlan: {
+            mode: "all_selected",
+            optionIds: ["perplexity-tool-search"]
+          }
         }),
         headers: {
           cookie: authCookie()
@@ -307,7 +287,10 @@ describe("settings handler", () => {
     const response = await PATCH(
       new Request("http://app.local/api/me/settings", {
         body: JSON.stringify({
-          defaultSearchStrategyId: "openai-native-web-search"
+          defaultSearchPlan: {
+            mode: "all_selected",
+            optionIds: ["openai-native-web-search"]
+          }
         }),
         headers: {
           cookie: authCookie()
@@ -365,7 +348,6 @@ describe("settings handler", () => {
     const data = baseSettingsData();
     data.entitlements.modelKeys.add("openai:gpt-5.6-sol");
     data.modelPolicy = { defaultProviderModelId: "gpt-5.5" };
-    data.settings.defaultModelId = "gpt-5.6-sol";
     data.settings.defaultProviderModelId = "gpt-5.6-sol";
     let captured: UserSettingsUpdate | null = null;
     const PATCH = createUpdateSettingsHandler({
@@ -375,9 +357,6 @@ describe("settings handler", () => {
         captured = update;
         return updated({
           ...data.settings,
-          defaultModelId: "",
-          defaultProvider: "",
-          defaultProviderConnectionId: null,
           defaultProviderModelId: null
         });
       }
@@ -393,8 +372,6 @@ describe("settings handler", () => {
     expect(captured).toEqual({ defaultProviderModelId: null });
     await expect(response.json()).resolves.toMatchObject({
       settings: {
-        defaultModelId: "gpt-5.5",
-        defaultProvider: "openai",
         hasPersonalModelDefault: false,
         modelPreferenceSource: "organization",
         organizationModelDefault: { modelId: "gpt-5.5", provider: "openai" },
@@ -405,9 +382,6 @@ describe("settings handler", () => {
 
   it("keeps a legitimate empty default empty while updating an unrelated preference", async () => {
     const data = baseSettingsData();
-    data.settings.defaultModelId = "";
-    data.settings.defaultProvider = "";
-    data.settings.defaultProviderConnectionId = null;
     data.settings.defaultProviderModelId = null;
     const PATCH = createUpdateSettingsHandler({
       resolveAuth: auth.resolveAuth,
@@ -430,14 +404,15 @@ describe("settings handler", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       settings: {
-        defaultModelId: "",
-        defaultProvider: "",
+        hasPersonalModelDefault: false,
+        modelPreferenceSource: "none",
+        personalModelDefault: null,
         showCitations: false
       }
     });
   });
 
-  it("ignores the retired prompt default field instead of persisting it", async () => {
+  it("rejects an update containing only an unsupported field", async () => {
     let persisted = false;
     const data = baseSettingsData();
     const PATCH = createUpdateSettingsHandler({
@@ -452,7 +427,7 @@ describe("settings handler", () => {
     const response = await PATCH(
       new Request("http://app.local/api/me/settings", {
         body: JSON.stringify({
-          defaultPromptPresetId: "legacy-prompt"
+          unsupportedPreference: "ignored"
         }),
         headers: {
           cookie: authCookie()
@@ -479,8 +454,7 @@ describe("settings handler", () => {
     const response = await PATCH(
       new Request("http://app.local/api/me/settings", {
         body: JSON.stringify({
-          defaultModelId: "claude-opus-4-8",
-          defaultProvider: "anthropic"
+          defaultProviderModelId: "claude-opus-4-8"
         }),
         headers: {
           cookie: authCookie()
