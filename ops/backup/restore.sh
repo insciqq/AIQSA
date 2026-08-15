@@ -145,9 +145,11 @@ source_postgres_major=$((BACKUP_POSTGRES_VERSION_NUM / 10000))
 target_postgres_major=$((target_postgres_version / 10000))
 [[ "$source_postgres_major" -eq "$target_postgres_major" ]] || die "Backup and disposable PostgreSQL target major versions differ."
 
-if ! compose exec -T "$postgres_service" pg_restore --list >/dev/null 2>&1 <"$bundle/postgres.dump"; then
-  die "PostgreSQL archive is incompatible with the disposable target tools."
-fi
+archive_listing="$({
+  compose exec -T "$postgres_service" pg_restore --list <"$bundle/postgres.dump"
+} 2>/dev/null)" || die "PostgreSQL archive is incompatible with the disposable target tools."
+validate_current_schema_archive_listing "$archive_listing" ||
+  die "PostgreSQL archive does not contain the current schema; nothing was changed."
 
 target_relation_count="$(postgres_query "
   SELECT count(*)
@@ -230,28 +232,24 @@ if ! compose exec -T "$postgres_service" sh -ceu '
   die "PostgreSQL restore failed. The disposable target is incomplete and was left intact for diagnosis."
 fi
 
-restored_memory_relation="$(postgres_query "
-  SELECT to_regclass('public.\"MemorySuppression\"') IS NOT NULL;
-" 2>/dev/null)" || die "Restore completed but Memory suppression metadata could not be inspected."
-restored_memory_relation="${restored_memory_relation//[[:space:]]/}"
-[[ "$restored_memory_relation" == "t" || "$restored_memory_relation" == "f" ]] || die "Restore completed but Memory suppression metadata was invalid."
+restored_schema="$(postgres_query "$(current_schema_query)" 2>/dev/null)" ||
+  die "Restore completed but the database schema could not be verified."
+restored_schema="${restored_schema//[[:space:]]/}"
+[[ "$restored_schema" == "$AIQSA_BACKUP_SCHEMA" ]] ||
+  die "Restore completed but the database does not contain the current schema."
 
-restored_memory_key_ids=""
-if [[ "$restored_memory_relation" == "t" ]]; then
-  restored_memory_key_ids="$(postgres_query '
-    SELECT COALESCE(
-      string_agg(DISTINCT "fingerprintKeyVersion", '"'"','"'"' ORDER BY "fingerprintKeyVersion"),
-      '"'"''"'"'
-    )
-    FROM "MemorySuppression";
-  ' 2>/dev/null)" || die "Restore completed but Memory suppression key metadata could not be read."
-  restored_memory_key_ids="${restored_memory_key_ids//$'\r'/}"
-  restored_memory_key_ids="${restored_memory_key_ids//$'\n'/}"
-fi
+restored_memory_key_ids="$(postgres_query '
+  SELECT COALESCE(
+    string_agg(DISTINCT "fingerprintKeyVersion", '"'"','"'"' ORDER BY "fingerprintKeyVersion"),
+    '"'"''"'"'
+  )
+  FROM "MemorySuppression";
+' 2>/dev/null)" || die "Restore completed but Memory suppression key metadata could not be read."
+restored_memory_key_ids="${restored_memory_key_ids//$'\r'/}"
+restored_memory_key_ids="${restored_memory_key_ids//$'\n'/}"
 valid_memory_key_ids "$restored_memory_key_ids" || die "Restore completed with invalid Memory suppression key metadata."
-if [[ "$BACKUP_FORMAT" == "2" && "$restored_memory_key_ids" != "$BACKUP_MEMORY_SUPPRESSION_KEY_IDS" ]]; then
+[[ "$restored_memory_key_ids" == "$BACKUP_MEMORY_SUPPRESSION_KEY_IDS" ]] ||
   die "Restore completed but Memory suppression key metadata does not match the bundle manifest."
-fi
 if ! compose run --rm --no-deps --env HOME=/tmp --entrypoint npm "$tools_service" \
   run memory:suppression:preflight -- restore \
   "$restored_memory_key_ids" >/dev/null 2>&1; then

@@ -28,9 +28,10 @@ records, stops, and verifies `app` plus `memory-worker`, then atomically release
 claimed jobs to due `RETRYABLE_FAILED` and running deletions to due `RETRY_WAIT`
 with `memory_backup_fenced`, clearing their leases. Only then does it copy
 Postgres and the private bucket; cleanup restarts exactly the prior writers.
-The conditional fence supports older pre-Memory schemas. Format 2 stores sorted
-distinct non-secret suppression key IDs, never key material; format 1 remains
-verifiable.
+Before stopping a writer it requires the exact current migrated schema. Format
+2 is the sole accepted bundle format and records that schema identity plus
+sorted distinct non-secret suppression key IDs, never key material. Unknown,
+older, or incomplete format/schema combinations fail before target mutation.
 
 Restore accepts only an acknowledged empty `aiqsa-restore-*` project using the
 internal, no-port `ops/backup/docker-compose.restore.yml`; only Postgres and

@@ -542,12 +542,12 @@ honor accepted execution evidence and outstanding obligations.
 The supported backup helper records and stops both `app` and `memory-worker`,
 verifies both are quiescent, and atomically releases their claimed Memory jobs
 and deletion obligations to due retry states before database/object copying.
-Cleanup restarts exactly the roles that were previously running. Format-2
-bundles retain only sorted distinct non-secret `fingerprintKeyVersion` IDs;
-the dedicated keyring is recovered independently from protected secret storage
-and is never copied into PostgreSQL, object archives, manifests, or checksums.
-The conditional fence also permits a pre-migration backup of a database that
-does not yet contain Memory tables, and format-1 bundles remain verifiable.
+Cleanup restarts exactly the roles that were previously running. The helper
+accepts only the current format and exact migrated schema before stopping a
+writer. Bundles retain only sorted distinct non-secret `fingerprintKeyVersion`
+IDs; the dedicated keyring is recovered independently from protected secret
+storage and is never copied into PostgreSQL, object archives, manifests, or
+checksums.
 
 Restore uses an internal no-port empty project with only Postgres/MinIO live.
 Key IDs preflight before and after mutation; missing keys block automatic work.

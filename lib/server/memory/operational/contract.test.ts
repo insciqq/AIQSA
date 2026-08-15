@@ -68,11 +68,13 @@ describe("Memory operational contract", () => {
   });
 
   it("stops both writers, durably fences leases, and only then copies data", () => {
+    const schemaPreflight = createBackup.indexOf('source_schema="$({');
     const stop = createBackup.indexOf("compose stop app memory-worker");
     const fence = createBackup.indexOf("memory_backup_fenced");
     const dump = createBackup.indexOf("exec pg_dump");
 
-    expect(stop).toBeGreaterThan(0);
+    expect(schemaPreflight).toBeGreaterThan(0);
+    expect(stop).toBeGreaterThan(schemaPreflight);
     expect(fence).toBeGreaterThan(stop);
     expect(dump).toBeGreaterThan(fence);
     expect(createBackup).toContain("RETRYABLE_FAILED");
@@ -91,8 +93,17 @@ describe("Memory operational contract", () => {
     const manifest = createBackup.slice(manifestStart, manifestEnd);
 
     expect(backupCommon).toContain('AIQSA_BACKUP_FORMAT="2"');
-    expect(backupCommon).toContain('[[ "$format" == "1" || "$format" == "$AIQSA_BACKUP_FORMAT" ]]');
+    expect(backupCommon).toContain(
+      'AIQSA_BACKUP_SCHEMA="20260815000000_baseline"'
+    );
+    expect(backupCommon).toContain(
+      '[[ "$format" == "$AIQSA_BACKUP_FORMAT" ]]'
+    );
+    expect(backupCommon).not.toContain(
+      '"$format" == "1" || "$format" == "$AIQSA_BACKUP_FORMAT"'
+    );
     expect(backupCommon).toContain("valid_memory_key_ids");
+    expect(manifest).toContain("AIQSA_BACKUP_SCHEMA=$AIQSA_BACKUP_SCHEMA");
     expect(manifest).toContain("MEMORY_SUPPRESSION_KEY_IDS=$memory_key_ids");
     expect(manifest).not.toContain("AIQSA_MEMORY_FINGERPRINT_KEYRING");
     expect(manifest).not.toContain("AIQSA_ENCRYPTION_KEY");
@@ -102,6 +113,8 @@ describe("Memory operational contract", () => {
     expect(restoreBackup).toContain(
       "required Memory suppression keys are unavailable; automatic Memory resume is blocked"
     );
+    expect(restoreBackup).not.toContain('"$BACKUP_FORMAT"');
+    expect(reviewRestore).not.toContain("PRE_MEMORY");
   });
 
   it("quarantines restore, reconciles deletion-only, and emits a reviewed promotion receipt", () => {

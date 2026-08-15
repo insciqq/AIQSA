@@ -117,125 +117,112 @@ if ! compose run --rm --no-deps --env HOME=/tmp --entrypoint npm \
   die "Restore review blocked: required Memory suppression keys are unavailable."
 fi
 
-memory_schema_state="$(postgres_query "
-  SELECT concat(
-    CASE WHEN to_regclass('public.\"UserMemorySettings\"') IS NULL THEN '0' ELSE '1' END,
-    CASE WHEN to_regclass('public.\"MemorySuppression\"') IS NULL THEN '0' ELSE '1' END,
-    CASE WHEN to_regclass('public.\"MemorySourceBarrier\"') IS NULL THEN '0' ELSE '1' END,
-    CASE WHEN to_regclass('public.\"MemoryDeletionOutbox\"') IS NULL THEN '0' ELSE '1' END,
-    CASE WHEN to_regclass('public.\"MemoryJob\"') IS NULL THEN '0' ELSE '1' END,
-    CASE WHEN to_regclass('public.\"MemoryExecutionBinding\"') IS NULL THEN '0' ELSE '1' END
+restored_schema="$(postgres_query "$(current_schema_query)" 2>/dev/null)" ||
+  die "Restore review blocked: the database schema could not be inspected."
+restored_schema="${restored_schema//[[:space:]]/}"
+[[ "$restored_schema" == "$AIQSA_BACKUP_SCHEMA" ]] ||
+  die "Restore review blocked: the database does not contain the current schema."
+
+audit_schema="$AIQSA_BACKUP_SCHEMA"
+restored_key_ids="$(postgres_query '
+  SELECT COALESCE(
+    string_agg(DISTINCT "fingerprintKeyVersion", '"'"','"'"' ORDER BY "fingerprintKeyVersion"),
+    '"'"''"'"'
+  )
+  FROM "MemorySuppression";
+' 2>/dev/null)" ||
+  die "Restore review blocked: Memory suppression metadata could not be read."
+restored_key_ids="${restored_key_ids//$'\r'/}"
+restored_key_ids="${restored_key_ids//$'\n'/}"
+valid_memory_key_ids "$restored_key_ids" ||
+  die "Restore review blocked: Memory suppression metadata is invalid."
+[[ "$restored_key_ids" == "$RESTORE_REVIEW_MEMORY_KEY_IDS" ]] ||
+  die "Restore review blocked: Memory suppression metadata changed after restore."
+
+info "Reconciling deletion obligations without provider/job handlers..."
+reconciliation_output=""
+if ! reconciliation_output="$(compose run --rm --no-deps --env HOME=/tmp \
+  --entrypoint npm "$RESTORE_REVIEW_TOOLS_SERVICE" --silent run \
+  memory:restore:reconcile 2>&1)"; then
+  reconciliation_code="$(printf '%s\n' "$reconciliation_output" |
+    grep -Eo 'memory_[a-z0-9_]+' | tail -n 1 || true)"
+  [[ "$reconciliation_code" =~ ^memory_[a-z0-9_]+$ ]] ||
+    reconciliation_code="memory_restore_reconciliation_failed"
+  die "Restore review blocked: deletion reconciliation remains incomplete ($reconciliation_code)."
+fi
+
+audit_values="$(postgres_query "
+  SELECT concat_ws(',',
+    (SELECT count(*) FROM \"MemoryDeletionOutbox\"
+      WHERE \"state\" IN (
+        'PENDING'::\"MemoryDeletionState\",
+        'RUNNING'::\"MemoryDeletionState\",
+        'RETRY_WAIT'::\"MemoryDeletionState\",
+        'BLOCKED_REQUIRES_ADMIN'::\"MemoryDeletionState\"
+      )),
+    (SELECT count(*) FROM \"MemoryDeletionOutbox\"
+      WHERE \"operation\" = 'ACCOUNT_MEMORY_DELETE'::\"MemoryDeletionOperation\"),
+    (SELECT count(*) FROM \"MemoryDeletionOutbox\"
+      WHERE \"leaseToken\" IS NOT NULL OR \"leaseExpiresAt\" IS NOT NULL),
+    (SELECT count(*) FROM \"MemoryJob\"
+      WHERE \"state\" = 'CLAIMED'::\"MemoryJobState\"
+        OR \"leaseToken\" IS NOT NULL OR \"leaseExpiresAt\" IS NOT NULL),
+    (SELECT count(*)
+      FROM \"MemoryExecutionBinding\"
+      WHERE \"state\" IN (
+        'RUNNING'::\"MemoryExecutionState\",
+        'OUTCOME_UNKNOWN'::\"MemoryExecutionState\"
+      )),
+    (SELECT count(*)
+      FROM \"MemorySourceBarrier\" AS barrier
+      LEFT JOIN \"UserMemorySettings\" AS settings
+        ON settings.\"userId\" = barrier.\"userId\"
+      WHERE settings.\"userId\" IS NULL
+        OR barrier.\"memoryGeneration\" > settings.\"memoryGeneration\"),
+    (SELECT count(*)
+      FROM \"MemorySourceBarrier\" AS barrier
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM \"MemoryDeletionOutbox\" AS deletion
+        WHERE deletion.\"userId\" = barrier.\"userId\"
+          AND deletion.\"targetId\" = barrier.\"id\"
+          AND deletion.\"state\" <> 'CANCELLED'::\"MemoryDeletionState\"
+          AND (
+            (barrier.\"kind\" = 'AUTOMATIC_FACTS'::\"MemorySourceBarrierKind\"
+              AND deletion.\"operation\" = 'FORGET_PURGE'::\"MemoryDeletionOperation\"
+              AND deletion.\"targetType\" LIKE 'AUTOMATIC_SET@%')
+            OR (barrier.\"kind\" = 'ALL_REUSABLE'::\"MemorySourceBarrierKind\"
+              AND deletion.\"operation\" = 'FORGET_PURGE'::\"MemoryDeletionOperation\"
+              AND deletion.\"targetType\" LIKE 'ALL_REUSABLE@%')
+            OR (barrier.\"kind\" = 'HISTORY_INDEX'::\"MemorySourceBarrierKind\"
+              AND deletion.\"operation\" = 'BULK_CLEAR'::\"MemoryDeletionOperation\"
+              AND deletion.\"targetType\" LIKE 'HISTORY_INDEX@%')
+          )
+      )),
+    (SELECT count(*)
+      FROM \"MemoryDeletionOutbox\" AS deletion
+      WHERE deletion.\"state\" <> 'CANCELLED'::\"MemoryDeletionState\"
+        AND (
+          (deletion.\"targetType\" LIKE 'AUTOMATIC_SET@%' AND NOT EXISTS (
+            SELECT 1 FROM \"MemorySourceBarrier\" AS barrier
+            WHERE barrier.\"userId\" = deletion.\"userId\"
+              AND barrier.\"id\" = deletion.\"targetId\"
+              AND barrier.\"kind\" = 'AUTOMATIC_FACTS'::\"MemorySourceBarrierKind\"))
+          OR (deletion.\"targetType\" LIKE 'ALL_REUSABLE@%' AND NOT EXISTS (
+            SELECT 1 FROM \"MemorySourceBarrier\" AS barrier
+            WHERE barrier.\"userId\" = deletion.\"userId\"
+              AND barrier.\"id\" = deletion.\"targetId\"
+              AND barrier.\"kind\" = 'ALL_REUSABLE'::\"MemorySourceBarrierKind\"))
+          OR (deletion.\"targetType\" LIKE 'HISTORY_INDEX@%' AND NOT EXISTS (
+            SELECT 1 FROM \"MemorySourceBarrier\" AS barrier
+            WHERE barrier.\"userId\" = deletion.\"userId\"
+              AND barrier.\"id\" = deletion.\"targetId\"
+              AND barrier.\"kind\" = 'HISTORY_INDEX'::\"MemorySourceBarrierKind\"))
+        ))
   );
 " 2>/dev/null)" ||
-  die "Restore review blocked: Memory schema could not be inspected."
-memory_schema_state="${memory_schema_state//[[:space:]]/}"
-[[ "$memory_schema_state" == "000000" || "$memory_schema_state" == "111111" ]] ||
-  die "Restore review blocked: Memory schema is only partially present."
-
-audit_schema="PRE_MEMORY"
-audit_values="0,0,0,0,0,0,0,0"
-if [[ "$memory_schema_state" == "111111" ]]; then
-  audit_schema="MEMORY_V1"
-  restored_key_ids="$(postgres_query '
-    SELECT COALESCE(
-      string_agg(DISTINCT "fingerprintKeyVersion", '"'"','"'"' ORDER BY "fingerprintKeyVersion"),
-      '"'"''"'"'
-    )
-    FROM "MemorySuppression";
-  ' 2>/dev/null)" ||
-    die "Restore review blocked: Memory suppression metadata could not be read."
-  restored_key_ids="${restored_key_ids//$'\r'/}"
-  restored_key_ids="${restored_key_ids//$'\n'/}"
-  valid_memory_key_ids "$restored_key_ids" ||
-    die "Restore review blocked: Memory suppression metadata is invalid."
-  [[ "$restored_key_ids" == "$RESTORE_REVIEW_MEMORY_KEY_IDS" ]] ||
-    die "Restore review blocked: Memory suppression metadata changed after restore."
-
-  info "Reconciling deletion obligations without provider/job handlers..."
-  reconciliation_output=""
-  if ! reconciliation_output="$(compose run --rm --no-deps --env HOME=/tmp \
-    --entrypoint npm "$RESTORE_REVIEW_TOOLS_SERVICE" --silent run \
-    memory:restore:reconcile 2>&1)"; then
-    reconciliation_code="$(printf '%s\n' "$reconciliation_output" |
-      grep -Eo 'memory_[a-z0-9_]+' | tail -n 1 || true)"
-    [[ "$reconciliation_code" =~ ^memory_[a-z0-9_]+$ ]] ||
-      reconciliation_code="memory_restore_reconciliation_failed"
-    die "Restore review blocked: deletion reconciliation remains incomplete ($reconciliation_code)."
-  fi
-
-  audit_values="$(postgres_query "
-    SELECT concat_ws(',',
-      (SELECT count(*) FROM \"MemoryDeletionOutbox\"
-        WHERE \"state\" IN (
-          'PENDING'::\"MemoryDeletionState\",
-          'RUNNING'::\"MemoryDeletionState\",
-          'RETRY_WAIT'::\"MemoryDeletionState\",
-          'BLOCKED_REQUIRES_ADMIN'::\"MemoryDeletionState\"
-        )),
-      (SELECT count(*) FROM \"MemoryDeletionOutbox\"
-        WHERE \"operation\" = 'ACCOUNT_MEMORY_DELETE'::\"MemoryDeletionOperation\"),
-      (SELECT count(*) FROM \"MemoryDeletionOutbox\"
-        WHERE \"leaseToken\" IS NOT NULL OR \"leaseExpiresAt\" IS NOT NULL),
-      (SELECT count(*) FROM \"MemoryJob\"
-        WHERE \"state\" = 'CLAIMED'::\"MemoryJobState\"
-          OR \"leaseToken\" IS NOT NULL OR \"leaseExpiresAt\" IS NOT NULL),
-      (SELECT count(*)
-        FROM \"MemoryExecutionBinding\"
-        WHERE \"state\" IN (
-          'RUNNING'::\"MemoryExecutionState\",
-          'OUTCOME_UNKNOWN'::\"MemoryExecutionState\"
-        )),
-      (SELECT count(*)
-        FROM \"MemorySourceBarrier\" AS barrier
-        LEFT JOIN \"UserMemorySettings\" AS settings
-          ON settings.\"userId\" = barrier.\"userId\"
-        WHERE settings.\"userId\" IS NULL
-          OR barrier.\"memoryGeneration\" > settings.\"memoryGeneration\"),
-      (SELECT count(*)
-        FROM \"MemorySourceBarrier\" AS barrier
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM \"MemoryDeletionOutbox\" AS deletion
-          WHERE deletion.\"userId\" = barrier.\"userId\"
-            AND deletion.\"targetId\" = barrier.\"id\"
-            AND deletion.\"state\" <> 'CANCELLED'::\"MemoryDeletionState\"
-            AND (
-              (barrier.\"kind\" = 'AUTOMATIC_FACTS'::\"MemorySourceBarrierKind\"
-                AND deletion.\"operation\" = 'FORGET_PURGE'::\"MemoryDeletionOperation\"
-                AND deletion.\"targetType\" LIKE 'AUTOMATIC_SET@%')
-              OR (barrier.\"kind\" = 'ALL_REUSABLE'::\"MemorySourceBarrierKind\"
-                AND deletion.\"operation\" = 'FORGET_PURGE'::\"MemoryDeletionOperation\"
-                AND deletion.\"targetType\" LIKE 'ALL_REUSABLE@%')
-              OR (barrier.\"kind\" = 'HISTORY_INDEX'::\"MemorySourceBarrierKind\"
-                AND deletion.\"operation\" = 'BULK_CLEAR'::\"MemoryDeletionOperation\"
-                AND deletion.\"targetType\" LIKE 'HISTORY_INDEX@%')
-            )
-        )),
-      (SELECT count(*)
-        FROM \"MemoryDeletionOutbox\" AS deletion
-        WHERE deletion.\"state\" <> 'CANCELLED'::\"MemoryDeletionState\"
-          AND (
-            (deletion.\"targetType\" LIKE 'AUTOMATIC_SET@%' AND NOT EXISTS (
-              SELECT 1 FROM \"MemorySourceBarrier\" AS barrier
-              WHERE barrier.\"userId\" = deletion.\"userId\"
-                AND barrier.\"id\" = deletion.\"targetId\"
-                AND barrier.\"kind\" = 'AUTOMATIC_FACTS'::\"MemorySourceBarrierKind\"))
-            OR (deletion.\"targetType\" LIKE 'ALL_REUSABLE@%' AND NOT EXISTS (
-              SELECT 1 FROM \"MemorySourceBarrier\" AS barrier
-              WHERE barrier.\"userId\" = deletion.\"userId\"
-                AND barrier.\"id\" = deletion.\"targetId\"
-                AND barrier.\"kind\" = 'ALL_REUSABLE'::\"MemorySourceBarrierKind\"))
-            OR (deletion.\"targetType\" LIKE 'HISTORY_INDEX@%' AND NOT EXISTS (
-              SELECT 1 FROM \"MemorySourceBarrier\" AS barrier
-              WHERE barrier.\"userId\" = deletion.\"userId\"
-                AND barrier.\"id\" = deletion.\"targetId\"
-                AND barrier.\"kind\" = 'HISTORY_INDEX'::\"MemorySourceBarrierKind\"))
-          ))
-    );
-  " 2>/dev/null)" ||
-    die "Restore review blocked: deletion/barrier audit failed."
-  audit_values="${audit_values//[[:space:]]/}"
-fi
+  die "Restore review blocked: deletion/barrier audit failed."
+audit_values="${audit_values//[[:space:]]/}"
 
 [[ "$audit_values" =~ ^[0-9]+(,[0-9]+){7}$ ]] ||
   die "Restore review blocked: deletion/barrier audit returned invalid evidence."

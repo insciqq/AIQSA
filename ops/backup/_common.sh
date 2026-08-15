@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 AIQSA_BACKUP_FORMAT="2"
+AIQSA_BACKUP_SCHEMA="20260815000000_baseline"
 
 die() {
   printf 'Error: %s\n' "$1" >&2
@@ -83,6 +84,56 @@ valid_memory_key_ids() {
   done
 }
 
+current_schema_query() {
+  cat <<SQL
+SELECT CASE
+  WHEN (SELECT count(*) FROM "_prisma_migrations") = 1
+    AND EXISTS (
+      SELECT 1
+      FROM "_prisma_migrations"
+      WHERE migration_name = '$AIQSA_BACKUP_SCHEMA'
+        AND finished_at IS NOT NULL
+        AND rolled_back_at IS NULL
+    )
+    AND to_regclass('public."UserMemorySettings"') IS NOT NULL
+    AND to_regclass('public."MemorySuppression"') IS NOT NULL
+    AND to_regclass('public."MemorySourceBarrier"') IS NOT NULL
+    AND to_regclass('public."MemoryDeletionOutbox"') IS NOT NULL
+    AND to_regclass('public."MemoryJob"') IS NOT NULL
+    AND to_regclass('public."MemoryExecutionBinding"') IS NOT NULL
+  THEN '$AIQSA_BACKUP_SCHEMA'
+  ELSE 'incompatible'
+END;
+SQL
+}
+
+validate_current_schema_archive_listing() {
+  local listing="$1"
+  local required
+  local -a required_relations=(
+    _prisma_migrations
+    UserMemorySettings
+    MemorySuppression
+    MemorySourceBarrier
+    MemoryDeletionOutbox
+    MemoryJob
+    MemoryExecutionBinding
+  )
+
+  for required in "${required_relations[@]}"; do
+    awk -v required="$required" '
+      index($0, " TABLE public ") {
+        name = $(NF - 1)
+        gsub(/^"|"$/, "", name)
+        if (name == required) {
+          found = 1
+        }
+      }
+      END { exit found ? 0 : 1 }
+    ' <<<"$listing" || return 1
+  done
+}
+
 manifest_value() {
   local manifest="$1"
   local key="$2"
@@ -120,7 +171,7 @@ validate_checksum_manifest() {
 
 validate_bundle() {
   local bundle="$1"
-  local format created_at app_revision postgres_version dump_format archive_format memory_key_ids
+  local format schema created_at app_revision postgres_version dump_format archive_format memory_key_ids
 
   [[ -d "$bundle" && ! -L "$bundle" ]] || die "Backup bundle must be a real directory, not a symlink."
 
@@ -136,13 +187,15 @@ validate_bundle() {
   ) || die "Backup checksum verification failed."
 
   format="$(manifest_value "$bundle/manifest.env" AIQSA_BACKUP_FORMAT)" || die "Backup version manifest is invalid."
+  schema="$(manifest_value "$bundle/manifest.env" AIQSA_BACKUP_SCHEMA)" || die "Backup schema manifest is invalid."
   created_at="$(manifest_value "$bundle/manifest.env" CREATED_AT_UTC)" || die "Backup version manifest is invalid."
   app_revision="$(manifest_value "$bundle/manifest.env" APP_REVISION)" || die "Backup version manifest is invalid."
   postgres_version="$(manifest_value "$bundle/manifest.env" POSTGRES_SERVER_VERSION_NUM)" || die "Backup version manifest is invalid."
   dump_format="$(manifest_value "$bundle/manifest.env" POSTGRES_DUMP_FORMAT)" || die "Backup version manifest is invalid."
   archive_format="$(manifest_value "$bundle/manifest.env" OBJECT_ARCHIVE_FORMAT)" || die "Backup version manifest is invalid."
 
-  [[ "$format" == "1" || "$format" == "$AIQSA_BACKUP_FORMAT" ]] || die "Backup format is incompatible with this restore tool."
+  [[ "$format" == "$AIQSA_BACKUP_FORMAT" ]] || die "Backup format is incompatible with this restore tool."
+  [[ "$schema" == "$AIQSA_BACKUP_SCHEMA" ]] || die "Backup schema is incompatible with this restore tool."
   [[ "$created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || die "Backup timestamp is invalid."
   [[ "$app_revision" =~ ^([0-9a-f]{40}|unknown)$ ]] || die "Backup application revision is invalid."
   [[ "$postgres_version" =~ ^[0-9]{5,6}$ ]] || die "Backup PostgreSQL version is invalid."
@@ -151,13 +204,9 @@ validate_bundle() {
   [[ "$(LC_ALL=C head -c 5 "$bundle/postgres.dump")" == "PGDMP" ]] || die "Backup PostgreSQL dump header is invalid."
   tar -tf "$bundle/objects.tar" >/dev/null 2>&1 || die "Backup object archive is invalid."
 
-  memory_key_ids=""
-  if [[ "$format" == "2" ]]; then
-    memory_key_ids="$(manifest_value "$bundle/manifest.env" MEMORY_SUPPRESSION_KEY_IDS)" || die "Backup Memory key metadata is invalid."
-    valid_memory_key_ids "$memory_key_ids" || die "Backup Memory key metadata is invalid."
-  fi
+  memory_key_ids="$(manifest_value "$bundle/manifest.env" MEMORY_SUPPRESSION_KEY_IDS)" || die "Backup Memory key metadata is invalid."
+  valid_memory_key_ids "$memory_key_ids" || die "Backup Memory key metadata is invalid."
 
-  BACKUP_FORMAT="$format"
   BACKUP_CREATED_AT_UTC="$created_at"
   BACKUP_MEMORY_SUPPRESSION_KEY_IDS="$memory_key_ids"
   BACKUP_POSTGRES_VERSION_NUM="$postgres_version"
