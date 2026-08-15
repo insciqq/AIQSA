@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createPrismaRunRepository } from "./prismaRepository";
 
 describe("Prisma run repository search evidence", () => {
-  it("persists exact revision/query attribution once per invocation", async () => {
+  it("persists exact revision attribution once per invocation without retired receipt fields", async () => {
     const findUnique = vi.fn()
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ id: "search-run-1" });
@@ -11,14 +11,11 @@ describe("Prisma run repository search evidence", () => {
       searchRun: { create, findUnique }
     } as never);
     const input = {
-      artifacts: { invocationId: "call-1:option-a", sources: [] },
-      durationMs: 42,
+      artifacts: { sources: [] },
       invocationId: "call-1:option-a",
       modelId: "search-model",
       modelRunId: "run-1",
       provider: "compatible",
-      query: "bounded query",
-      requestPreview: { queryCharacters: 13 },
       searchRevisionId: "revision-1",
       status: "complete" as const,
       strategyId: "option-a"
@@ -37,11 +34,11 @@ describe("Prisma run repository search evidence", () => {
       }
     });
     expect(create).toHaveBeenCalledOnce();
-    expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({
-      durationMs: 42,
-      query: "bounded query",
-      searchRevisionId: "revision-1"
-    }) });
+    expect(create).toHaveBeenCalledWith({ data: input });
+    const persisted = create.mock.calls[0]?.[0].data;
+    expect(persisted).not.toHaveProperty("durationMs");
+    expect(persisted).not.toHaveProperty("query");
+    expect(persisted).not.toHaveProperty("requestPreview");
   });
 
   it("does not duplicate search evidence for the same durable provider call", async () => {
@@ -54,13 +51,12 @@ describe("Prisma run repository search evidence", () => {
     } as never);
     const input = {
       artifacts: {
-        events: [],
-        toolCall: { arguments: { keyword: "news" }, id: "provider-call-1", name: "search_via_perplexity" }
+        sources: [],
+        toolCall: { id: "provider-call-1" }
       },
       modelId: "perplexity-test",
       modelRunId: "run-1",
       provider: "openrouter",
-      requestPreview: {},
       status: "complete" as const,
       strategyId: "perplexity-tool-search"
     };

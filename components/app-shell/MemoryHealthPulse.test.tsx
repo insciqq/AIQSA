@@ -13,7 +13,6 @@ describe("MemoryHealthPulse", () => {
         error={false}
         health={memoryHealthFixture()}
         loading={false}
-        locale="EN"
         onOpenOperations={vi.fn()}
         onRetry={vi.fn()}
       />
@@ -25,7 +24,7 @@ describe("MemoryHealthPulse", () => {
     expect(screen.getByText("Technical capability evidence")).toBeVisible();
   });
 
-  it("keeps English presentation when a retained RU locale is supplied", () => {
+  it("renders blocked cleanup state and opens Memory operations", () => {
     const onOpenOperations = vi.fn();
     render(
       <MemoryHealthPulse
@@ -41,7 +40,6 @@ describe("MemoryHealthPulse", () => {
           temporary: { overdueCount: 1, state: "OVERDUE" }
         })}
         loading={false}
-        locale="RU"
         onOpenOperations={onOpenOperations}
         onRetry={vi.fn()}
       />
@@ -64,7 +62,6 @@ describe("MemoryHealthPulse", () => {
         error
         health={null}
         loading={false}
-        locale="EN"
         onOpenOperations={vi.fn()}
         onRetry={onRetry}
       />

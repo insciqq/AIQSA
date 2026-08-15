@@ -15,8 +15,6 @@ function renderActions(overrides: Partial<Parameters<typeof useShellUiActions>[0
       copyMessage: vi.fn(),
       deleteMessage: vi.fn(),
       regenerateMessage: vi.fn(),
-      setInspectorActiveTab: vi.fn(),
-      setInspectorMode: vi.fn(),
       ...overrides
     })
   );
@@ -25,20 +23,6 @@ function renderActions(overrides: Partial<Parameters<typeof useShellUiActions>[0
 describe("useShellUiActions", () => {
   afterEach(() => {
     resetComposerSessionStoreForTest();
-  });
-
-  it("opens the requested Details tab as an overlay", () => {
-    const setInspectorActiveTab = vi.fn();
-    const setInspectorMode = vi.fn();
-    const { result } = renderActions({
-      setInspectorActiveTab,
-      setInspectorMode
-    });
-
-    act(() => result.current.openDetails("events"));
-
-    expect(setInspectorActiveTab).toHaveBeenCalledWith("events");
-    expect(setInspectorMode).toHaveBeenCalledWith("overlay");
   });
 
   it("snapshots an unsent draft before entering message edit mode", () => {

@@ -10,11 +10,10 @@ import {
   type ResolvedMemoryUtilityPolicy
 } from "./policy";
 import {
-  qualifyMemoryExecution,
+  resolveMemoryExecutionCompatibility,
+  type CompatibleMemoryExecution,
   type MemoryExecutionVersions,
-  type MemoryQualificationAuthority,
-  type QualifiedMemoryExecution
-} from "./qualification";
+} from "./compatibility";
 import type { MemoryExecutionRole } from "./roles";
 import type { MemorySecretFreeExecutionSnapshot } from "./snapshot";
 import {
@@ -26,13 +25,12 @@ import { requireAdminAcceptedMemoryDestination } from "./adminConsent";
 export type MemoryExecutionAuthorityDependencies = Readonly<{
   egressConsentMode?: MemoryEgressConsentMode;
   now?: () => Date;
-  qualification?: MemoryQualificationAuthority;
   requireAdminAcceptedDestination?: typeof requireAdminAcceptedMemoryDestination;
 }>;
 
 export type CurrentMemoryExecutionAuthority = Readonly<{
   policy: ResolvedMemoryUtilityPolicy;
-  qualification: QualifiedMemoryExecution;
+  compatibility: CompatibleMemoryExecution;
   target: ResolvedMemoryExecutionTarget;
 }>;
 
@@ -72,38 +70,21 @@ export async function resolveCurrentMemoryExecutionAuthority(
   } else {
     requireAcceptedMemoryUtilityPolicy(settings, policy, consentMode);
   }
-  const qualification = qualifyMemoryExecution({
-    authority: input.dependencies.qualification,
-    now: input.now,
+  const compatibility = resolveMemoryExecutionCompatibility({
     role: input.role,
-    settings,
     target,
     versions: input.versions
   });
-  return { policy, qualification, target };
+  return { compatibility, policy, target };
 }
 
 function storedRequirementCompatible(
   snapshot: MemorySecretFreeExecutionSnapshot,
-  current: QualifiedMemoryExecution
+  current: CompatibleMemoryExecution
 ): boolean {
-  if (snapshot.version === 2) {
-    return snapshot.qualificationId === current.qualificationId &&
-      canonicalMemoryExecutionJson(snapshot.qualificationRequirement) ===
-        canonicalMemoryExecutionJson(current.requirement);
-  }
-  const stored = snapshot.qualificationRequirement;
-  const active = current.requirement;
-  return stored.configFingerprint === active.configFingerprint &&
-    stored.deploymentFingerprint === active.deploymentFingerprint &&
-    stored.modelFingerprint === active.modelFingerprint &&
-    stored.pipelineVersion === active.pipelineVersion &&
-    stored.policyVersion === active.policyVersion &&
-    stored.promptVersion === active.promptVersion &&
-    stored.providerFingerprint === active.providerFingerprint &&
-    stored.retrievalConfigFingerprint === active.retrievalConfigFingerprint &&
-    stored.role === active.role && stored.schemaVersion === active.schemaVersion &&
-    stored.vectorSpaceFingerprint === active.vectorSpaceFingerprint;
+  return snapshot.compatibilityId === current.compatibilityId &&
+    canonicalMemoryExecutionJson(snapshot.compatibilityRequirement) ===
+      canonicalMemoryExecutionJson(current.requirement);
 }
 
 export async function reauthorizeStoredMemoryExecution(
@@ -116,7 +97,7 @@ export async function reauthorizeStoredMemoryExecution(
     userId: string;
   }>
 ): Promise<CurrentMemoryExecutionAuthority> {
-  const requirement = input.snapshot.qualificationRequirement;
+  const requirement = input.snapshot.compatibilityRequirement;
   const current = await resolveCurrentMemoryExecutionAuthority(tx, settings, {
     dependencies: input.dependencies,
     now: input.now,
@@ -136,8 +117,8 @@ export async function reauthorizeStoredMemoryExecution(
     input.snapshot.destinationFingerprint !== current.target.destinationFingerprint ||
     input.snapshot.executionTargetFingerprint !== current.target.executionTargetFingerprint ||
     input.snapshot.requiresStrictStructuredOutput !==
-      current.qualification.requiresStrictStructuredOutput ||
-    !storedRequirementCompatible(input.snapshot, current.qualification)
+      current.compatibility.requiresStrictStructuredOutput ||
+    !storedRequirementCompatible(input.snapshot, current.compatibility)
   ) {
     return memoryExecutionFailure("memory_execution_policy_drift");
   }

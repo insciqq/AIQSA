@@ -28,7 +28,9 @@ function connection(id: string, displayName: string): AdminProviderConnection {
     draftChecks: [],
     draftConfig: {
       allowPrivateNetwork: false,
-      apiRoot: "https://openrouter.ai/api/v1"
+      apiRoot: "https://openrouter.ai/api/v1",
+      authenticationMode: "bearer",
+      responseTimeoutSeconds: 300
     },
     draftVersion: 1,
     enabled: false,
@@ -36,7 +38,8 @@ function connection(id: string, displayName: string): AdminProviderConnection {
     id,
     models: [],
     unassignedPolicy: "use_default",
-    updatedAt: "2026-07-24T00:00:00.000Z"
+    updatedAt: "2026-07-24T00:00:00.000Z",
+    userAssignments: []
   };
 }
 

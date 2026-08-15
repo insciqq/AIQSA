@@ -183,9 +183,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
         ...message.artifactSummary,
         citations: message.artifactSummary.citations ?? [],
         knowledgeCitations: message.artifactSummary.knowledgeCitations ?? [],
-        knowledgeInvocationCount: message.artifactSummary.knowledgeInvocationCount ?? 0,
-        knowledgeOutcomes: message.artifactSummary.knowledgeOutcomes ?? [],
-        searchActivity: message.artifactSummary.searchActivity ?? []
+        sources: message.artifactSummary.sources ?? []
       }
     : null;
 
@@ -204,7 +202,6 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     provider: message.provider ?? undefined,
     role: message.role === "assistant" ? "assistant" : "user",
     runId: message.modelRunId ?? null,
-    runUsage: message.runUsage,
     status: normalizeThreadStatus(message.status)
   };
 }

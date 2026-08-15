@@ -47,8 +47,8 @@ All administrator routes recheck an active administrator. Non-admin users receiv
 
 - `GET /api/admin/memory` returns a private/no-store, administrator-only,
   secret-free installation projection. Its health part uses only bounded
-  `none/some/many/unknown` queue, provider-execution, lag, scheduler,
-  deletion, and overdue-Temporary labels; it has no owner drilldown, exact
+  `none/some/many/unknown` queue, provider-execution, lag, deletion, and
+  overdue-Temporary labels; it has no owner drilldown, exact
   user activity, Memory/query/source text, or source identifiers. The same
   response retains consent mode, exact current/accepted aggregate fingerprints
   and policy versions, optimistic version, bounded acknowledgment actor/time,
@@ -56,12 +56,12 @@ All administrator routes recheck an active administrator. Non-admin users receiv
   system Memory model, embedding, and remote reranker. A health-read failure
   returns an explicit unavailable aggregate without hiding the independently
   readable destination policy.
-- `PATCH /api/admin/memory` accepts only `expectedVersion` and the observed `currentFingerprint`. It is available only in `ADMIN` mode, locks the singleton, recomputes current policy inside a serializable transaction, rejects stale or drifted observations, stores the canonical exact logical-role/destination set with audit metadata, increments the version, and kicks coordinator reconciliation after commit. It does not mutate provider configuration, grant access, select a model, or weaken per-call binding and qualification.
+- `PATCH /api/admin/memory` accepts only `expectedVersion` and the observed `currentFingerprint`. It is available only in `ADMIN` mode, locks the singleton, recomputes current policy inside a serializable transaction, rejects stale or drifted observations, stores the canonical exact logical-role/destination set with audit metadata, increments the version, and kicks coordinator reconciliation after commit. It does not mutate provider configuration, grant access, select a model, or weaken per-call binding and compatibility checks.
 - Runtime admission checks the exact role/destination needed by each external Memory call. A new or changed destination waits with the existing consent-required outcome; unchanged acknowledged destinations continue. The aggregate admin projection may remain `Review required` for additions or removals until explicitly acknowledged. `PER_USER` retains the user-owned acceptance path and makes the admin projection read-only.
 
 ### MCP
 
-- Installation MCP definitions, shared values, revisions, enablement, deletion, exact-name disabled-tool policy, and direct/group server grants are administrator-owned. The optional bounded `disabledToolNames` set lives in existing draft/revision JSON; missing or empty normalizes to the legacy shape, every other current/new name defaults enabled, and temporarily absent disabled names are retained. `/api/me/mcp` returns only enabled, non-deleted servers with an active revision and an effective grant; users may toggle only those servers, supply only declared personal fields, and see only the active revision's effective enabled tools/count.
+- Installation MCP definitions, shared values, revisions, enablement, deletion, exact-name disabled-tool policy, and direct/group server grants are administrator-owned. The optional bounded `disabledToolNames` set lives in draft/revision JSON; missing or empty means no names are disabled, every other valid name defaults enabled, and temporarily absent disabled names are retained. `/api/me/mcp` returns only enabled, non-deleted servers with an active revision and an effective grant; users may toggle only those servers, supply only declared personal fields, and see only the active revision's effective enabled tools/count.
 - Normal activation persists the definition and one durable activation job, returns `202`, and continues through a process-local leased coordinator. Stage/evidence/publication writes are fenced to the job, claim, draft hash, and shared-configuration version. A failed or superseded update never displaces the previous active revision.
 - Advanced validation resolves request-only secrets, performs SSRF-safe remote or ToolHive-backed local discovery, and persists only sanitized evidence plus the complete upstream inventory, including tools disabled by candidate policy. An inventory containing any exact known credential is rejected before policy filtering. Raw MCP/ToolHive output is discarded except for narrowly classified safe issue codes.
 - OAuth uses Authorization Code with S256 PKCE, same-origin browser handoff, allowlisted discovery/authorization origins, encrypted per-user or validation tokens, serialized refresh, and policy-fingerprint invalidation. Callback settlement must finish validation/activation or user enablement before reporting `connected`; callback outcomes expose no code, token, verifier, or raw provider response.

@@ -2,518 +2,181 @@ import { describe, expect, it } from "vitest";
 import { summarizeMessageRunArtifacts } from "./prismaRepository";
 
 describe("summarizeMessageRunArtifacts", () => {
-  it("projects cited Knowledge metadata and negative outcomes without passage text", () => {
-    const summary = summarizeMessageRunArtifacts({
-      events: [],
-      knowledgeRuns: [
-        {
-          invocationOrdinal: 1,
-          outcome: "complete",
-          results: [
-            {
-              baseName: "Policies",
-              documentVersionNumber: 3,
-              fileName: "handbook.pdf",
-              handle: "K1.1",
-              includedText: "private-passage-sentinel",
-              knowledgeBaseId: "base-policies",
-              page: 12
-            },
-            {
-              baseName: "Policies",
-              fileName: "unused.pdf",
-              handle: "K1.2",
-              includedText: "unused-private-passage",
-              knowledgeBaseId: "base-policies",
-              page: 4
-            }
-          ]
-        },
-        {
-          invocationOrdinal: 2,
-          outcome: "zero_above_threshold",
-          results: []
-        }
-      ],
-      searchRuns: []
-    }, {
-      blocks: [{ text: "The policy applies [K1.1].", type: "text" }]
-    });
-
-    expect(summary).toMatchObject({
-      knowledgeCitations: [{
-        baseName: "Policies",
-        documentVersionNumber: 3,
-        fileName: "handbook.pdf",
-        handle: "K1.1",
-        knowledgeBaseId: "base-policies",
-        page: 12
-      }],
-      knowledgeInvocationCount: 2,
-      knowledgeOutcomes: [
-        { invocationOrdinal: 1, outcome: "complete" },
-        { invocationOrdinal: 2, outcome: "zero_above_threshold" }
-      ],
-      toolCallCount: 0,
-      toolCalls: []
-    });
-    expect(JSON.stringify(summary)).not.toContain("private-passage-sentinel");
-    expect(JSON.stringify(summary)).not.toContain("unused.pdf");
-  });
-
-  it("uses native web search artifacts as safe direct Search facts when search runs are absent", () => {
+  it("projects only direct citations, Sources, and Reasoning", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [
+        {
+          payload: {
+            artifactType: "citation",
+            payload: {
+              routeId: "private-route",
+              title: "Citation",
+              url: "https://example.com/citation"
+            }
+          }
+        },
+        {
+          payload: {
+            artifactType: "reasoning",
+            payload: { summary: "Compared the direct sources." }
+          }
+        },
         {
           payload: {
             artifactType: "search",
             payload: {
               action: {
-                sources: [{ title: "Example", url: "https://example.com" }],
-                type: "search"
+                query: "private generated query",
+                sources: [{
+                  description: "Safe hosted snippet",
+                  title: "Hosted source",
+                  url: "https://example.com/hosted"
+                }]
               },
-              id: "ws_123",
-              status: "completed",
-              type: "web_search_call"
-            }
-          }
-        }
-      ],
-      searchRuns: []
-    });
-
-    expect(summary).toMatchObject({
-      searchCount: 1,
-      searchActivity: [{
-        displayName: "Search source",
-        providerOperations: [{
-          kind: "search",
-          status: "complete"
-        }],
-        sourceCount: 1,
-        sources: [{ title: "Example", url: "https://example.com" }],
-        status: "complete"
-      }],
-      searchStrategy: "openai-native-web-search"
-    });
-    expect(JSON.stringify(summary)).not.toContain("ws_123");
-  });
-
-  it.each([
-    ["cancelled", "cancelled"],
-    ["error", "error"]
-  ] as const)(
-    "settles reloaded running Search evidence when the run becomes %s",
-    (runStatus, expectedStatus) => {
-      const summary = summarizeMessageRunArtifacts({
-        events: [{
-          payload: {
-            artifactType: "search",
-            payload: {
-              action: { type: "search" },
-              id: "ws_unresolved",
-              status: "in_progress",
-              type: "web_search_call"
-            }
-          }
-        }],
-        searchRuns: [],
-        status: runStatus
-      });
-
-      expect(summary?.searchActivity).toEqual([
-        expect.objectContaining({ status: expectedStatus })
-      ]);
-    }
-  );
-
-  it("projects the immutable logical Search name from the normalized request", () => {
-    const summary = summarizeMessageRunArtifacts({
-      events: [{
-        payload: {
-          artifactType: "search",
-          payload: { status: "completed", type: "web_search_call" }
-        }
-      }],
-      normalizedRequest: {
-        searchPlan: {
-          mode: "model_choice",
-          options: [{
-            displayName: "Company Gateway Search",
-            optionId: "custom-web-search:connection-1"
-          }]
-        }
-      },
-      searchRuns: []
-    });
-
-    expect(summary).toMatchObject({
-      searchActivity: [{ displayName: "Company Gateway Search" }],
-      searchDisplayName: "Company Gateway Search",
-      searchStrategy: "custom-web-search:connection-1"
-    });
-  });
-
-  it("attributes a hosted artifact to its exact source when another client source was selected", () => {
-    const summary = summarizeMessageRunArtifacts({
-      events: [{
-        payload: {
-          artifactType: "search",
-          payload: { status: "completed", type: "web_search_call" }
-        }
-      }],
-      normalizedRequest: {
-        searchPlan: {
-          mode: "model_choice",
-          options: [
-            {
-              adapterKind: "answer_provider_hosted",
-              displayName: "Company Gateway Search",
-              optionId: "custom-web-search:connection-1"
-            },
-            {
-              adapterKind: "provider_model_client",
-              displayName: "Perplexity Search",
-              optionId: "perplexity-tool-search"
-            }
-          ]
-        }
-      },
-      searchRuns: []
-    });
-
-    expect(summary).toMatchObject({
-      searchActivity: [{ displayName: "Company Gateway Search" }],
-      searchDisplayName: "Company Gateway Search",
-      searchStrategy: "custom-web-search:connection-1"
-    });
-  });
-
-  it("extracts reasoning summary text from provider arrays and ignores empty arrays", () => {
-    const summary = summarizeMessageRunArtifacts({
-      events: [
-        {
-          payload: {
-            artifactType: "reasoning",
-            payload: {
-              reasoning: [{ text: "First summary", type: "summary_text" }]
+              id: "private-provider-call"
             }
           }
         },
         {
           payload: {
-            artifactType: "reasoning",
-            payload: {
-              summary: [{ text: "Second summary", type: "summary_text" }]
-            }
-          }
-        },
-        {
-          payload: {
-            artifactType: "reasoning",
-            payload: {
-              reasoning: []
-            }
-          }
-        }
-      ],
-      searchRuns: []
-    });
-
-    expect(summary).toMatchObject({
-      reasoningCount: 2,
-      reasoningText: ["First summary", "Second summary"]
-    });
-  });
-
-  it("uses the latest valid persisted context truncation artifact", () => {
-    const summary = summarizeMessageRunArtifacts({
-      events: [
-        {
-          payload: {
-            artifactType: "context_truncated",
-            payload: {
-              approxDroppedTokens: 84,
-              droppedMessages: 4
-            }
+            artifactType: "tool_result",
+            payload: { resultPreview: { secret: true } }
           }
         },
         {
           payload: {
             artifactType: "context_truncated",
-            payload: {
-              approxDroppedTokens: 144,
-              droppedMessages: 6
-            }
-          }
-        },
-        {
-          payload: {
-            artifactType: "context_truncated",
-            payload: {
-              approxDroppedTokens: 0,
-              droppedMessages: 0
-            }
+            payload: { approxDroppedTokens: 100, droppedMessages: 2 }
           }
         }
       ],
-      searchRuns: []
-    });
-
-    expect(summary).toMatchObject({
-      contextTruncation: {
-        approxDroppedTokens: 144,
-        droppedMessages: 6
-      }
-    });
-  });
-
-  it("projects durable MCP calls when artifact append was interrupted", () => {
-    const summary = summarizeMessageRunArtifacts({
-      events: [],
-      normalizedRequest: {
-        mcp: {
-          servers: [{
-            credentialSources: ["personal"],
-            externalAccountLabel: "Personal memory",
-            fingerprint: "a".repeat(64),
-            revisionId: "revision-1",
-            serverId: "server-1",
-            serverName: "Mem0"
-          }],
-          tools: [{
-            definitionHash: "b".repeat(64),
-            description: "Search memory",
-            inputSchema: { type: "object" },
-            name: "search",
-            namespacedName: "mcp_mem0_search_1234567890",
-            originalName: "search",
-            serverId: "server-1",
-            serverName: "Mem0"
-          }],
-          version: 1
-        }
-      },
-      searchRuns: [],
-      status: "complete",
-      toolCalls: [{
-        arguments: { apiKey: "sk-private-secret", query: "memory" },
-        completedAt: "2026-07-23T12:00:00.050Z",
-        mcpRunBindingId: "binding-1",
-        ordinal: 0,
-        providerCallId: "call-1",
-        result: {
-          callId: "call-1",
-          content: [{ text: "found", type: "text" }],
-          name: "mcp_mem0_search_1234567890",
-          status: "complete"
-        },
-        roundIndex: 1,
-        startedAt: "2026-07-23T12:00:00.000Z",
-        state: "complete",
-        toolName: "mcp_mem0_search_1234567890"
-      }]
-    });
-
-    expect(summary).toMatchObject({
-      toolCallCount: 1,
-      toolCalls: [{
-        argumentsPreview: { apiKey: "[redacted]", query: "memory" },
-        durationMs: 50,
-        serverName: "Mem0",
-        status: "complete",
-        toolName: "search"
-      }]
-    });
-    expect(JSON.stringify(summary)).not.toContain("private-secret");
-  });
-
-  it("projects durable Search evidence directly when the terminal artifact append was interrupted", () => {
-    const summary = summarizeMessageRunArtifacts({
-      events: [],
-      normalizedRequest: {},
       searchRuns: [{
         artifacts: {
-          displayName: "Web Search · Sol",
-          invocationId: "opaque-chat-invocation",
-          providerOperations: [{
-            id: "ws-1",
-            kind: "search",
-            ordinal: 0,
-            pattern: null,
-            queries: ["Moscow latest news"],
-            status: "complete",
-            url: null
-          }],
-          providerOperationsTruncated: false,
-          sources: [{ rank: 1, title: "Moscow news", url: "https://example.com/moscow" }]
-        },
-        modelId: "gpt-5.6-sol",
-        provider: "openai-compatible",
-        query: "latest news in Moscow",
-        requestPreview: { queryCharacters: 21 },
-        status: "complete",
-        strategyId: "web-search-sol"
-      }],
-      status: "complete",
-      toolCalls: [{
-        arguments: { query: "latest news in Moscow" },
-        completedAt: "2026-07-31T12:02:25.900Z",
-        ordinal: 0,
-        providerCallId: "search-call-1",
-        result: {
-          callId: "search-call-1",
-          content: [{ text: "Search completed", type: "text" }],
-          name: "search_selected_engines",
-          rawPreview: {
-            finalProviderResponsePreview: {
-              searchExecutions: [{
-                displayName: "Web Search · Sol",
-                durationMs: 145_800,
-                invocationId: "opaque-chat-invocation",
-                modelId: "gpt-5.6-sol",
-                optionId: "web-search-sol",
-                provider: "openai-compatible",
-                providerOperations: [{
-                  id: "ws-1",
-                  kind: "search",
-                  ordinal: 0,
-                  pattern: null,
-                  queries: ["Moscow latest news"],
-                  status: "complete",
-                  url: null
-                }],
-                providerOperationsTruncated: false,
-                query: "latest news in Moscow",
-                revisionId: "revision-1",
-                sources: [{ title: "Moscow news", url: "https://example.com/moscow" }],
-                status: "complete",
-                usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 }
-              }]
-            }
-          },
-          status: "complete"
-        },
-        roundIndex: 1,
-        startedAt: "2026-07-31T12:00:00.000Z",
-        state: "complete",
-        toolName: "search_selected_engines"
-      }, {
-        arguments: { query: "latest news in Moscow retry" },
-        completedAt: "2026-07-31T12:02:26.100Z",
-        ordinal: 1,
-        providerCallId: "search-call-2",
-        result: {
-          callId: "search-call-2",
-          content: [{ text: "Search failed: search_invocation_limit_reached", type: "text" }],
-          name: "search_selected_engines",
-          rawPreview: {
-            finalProviderResponsePreview: { error: "search_invocation_limit_reached" },
-            providerCall: false
-          },
-          status: "error"
-        },
-        roundIndex: 1,
-        startedAt: "2026-07-31T12:02:26.000Z",
-        state: "error",
-        toolName: "search_selected_engines"
+          providerOperations: [{ queries: ["private persisted query"] }],
+          sources: [{
+            rank: 4,
+            snippet: "Safe persisted snippet",
+            title: "Persisted source",
+            url: "https://example.com/persisted"
+          }]
+        }
       }]
     });
 
-    expect(summary).toMatchObject({
-      searchCount: 2,
-      searchActivity: [{
-          displayName: "Web Search · Sol",
-          providerOperations: [{
-            kind: "search",
-            queries: ["Moscow latest news"]
-          }],
-          query: "latest news in Moscow",
-          sourceCount: 1,
-          sources: [{ title: "Moscow news", url: "https://example.com/moscow" }]
-      }, {
-          failureReason: "This Search source reached its request limit for this answer.",
-          query: "latest news in Moscow retry",
-          status: "error"
+    expect(summary).toEqual({
+      citations: [{
+        index: 1,
+        title: "Citation",
+        url: "https://example.com/citation"
       }],
-      toolCallCount: 0,
-      toolCalls: []
+      knowledgeCitations: [],
+      reasoningText: ["Compared the direct sources."],
+      sources: [
+        {
+          rank: 1,
+          snippet: "Safe persisted snippet",
+          title: "Persisted source",
+          url: "https://example.com/persisted"
+        },
+        {
+          rank: 2,
+          snippet: "Safe hosted snippet",
+          title: "Hosted source",
+          url: "https://example.com/hosted"
+        }
+      ]
     });
-    expect(JSON.stringify(summary)).not.toContain("opaque-chat-invocation");
-    expect(JSON.stringify(summary)).not.toContain("gpt-5.6-sol");
-    expect(JSON.stringify(summary)).not.toContain("openai-compatible");
-    expect(JSON.stringify(summary)).not.toContain("revision-1");
+    expect(JSON.stringify(summary)).not.toMatch(
+      /private-route|private generated query|private-provider-call|private persisted query|tool_result|context_truncated/
+    );
   });
 
-  it("keeps every persisted Search attempt and a friendly failure reason after reload", () => {
+  it("projects only cited Knowledge document labels without retrieval metadata", () => {
     const summary = summarizeMessageRunArtifacts({
       events: [],
-      normalizedRequest: {
-        searchPlan: {
-          mode: "all_selected",
-          options: [
-            {
-              adapterKind: "provider_model_client",
-              displayName: "OpenAI Search",
-              optionId: "openai-search"
-            },
-            {
-              adapterKind: "provider_model_client",
-              displayName: "Company Search",
-              optionId: "company-search"
-            }
-          ]
-        }
-      },
-      searchRuns: [
-        {
-          artifacts: {
-            providerOperations: [],
-            providerOperationsTruncated: false,
-            sources: [{ rank: 1, title: "Evidence", url: "https://example.com/evidence" }]
+      knowledgeRuns: [{
+        invocationOrdinal: 1,
+        results: [
+          {
+            baseName: "Policies",
+            documentVersionNumber: 3,
+            fileName: "handbook.pdf",
+            handle: "K1.1",
+            includedText: "private-passage-sentinel",
+            knowledgeBaseId: "private-base-id",
+            page: 12
           },
-          query: "latest evidence",
-          status: "complete",
-          strategyId: "openai-search"
-        },
-        {
-          artifacts: {
-            failure: {
-              code: "openai_response_incomplete",
-              providerStatus: "incomplete",
-              reason: "max_output_tokens",
-              rawProviderMessage: "private provider detail"
-            },
-            providerOperations: [],
-            providerOperationsTruncated: false,
-            sources: []
-          },
-          query: "latest evidence",
-          status: "error",
-          strategyId: "company-search"
-        }
-      ],
-      status: "complete"
+          {
+            baseName: "Policies",
+            fileName: "unused.pdf",
+            handle: "K1.2",
+            includedText: "unused-private-passage",
+            knowledgeBaseId: "private-base-id",
+            page: 4
+          }
+        ]
+      }],
+      searchRuns: []
+    }, {
+      blocks: [{ text: "The policy applies [K1.1].", type: "text" }]
     });
 
-    expect(summary).toMatchObject({
-      searchActivity: [
-        {
-          displayName: "OpenAI Search",
-          query: "latest evidence",
-          sourceCount: 1,
-          status: "complete"
-        },
-        {
-          displayName: "Company Search",
-          failureReason: "Search reached its output limit before completing.",
-          query: "latest evidence",
-          sourceCount: 0,
-          status: "error"
-        }
-      ],
-      searchCount: 2
+    expect(summary).toEqual({
+      citations: [],
+      knowledgeCitations: [{
+        baseName: "Policies",
+        fileName: "handbook.pdf",
+        handle: "K1.1",
+        page: 12
+      }],
+      reasoningText: [],
+      sources: []
     });
-    expect(JSON.stringify(summary)).not.toMatch(/private provider|openai_response_incomplete|max_output_tokens|providerStatus/);
+    expect(JSON.stringify(summary)).not.toMatch(
+      /private-passage-sentinel|unused\.pdf|private-base-id|documentVersionNumber/
+    );
+  });
+
+  it("keeps only a committed Memory action", () => {
+    const action = { operation: "UPDATE" as const, status: "COMMITTED" as const };
+    const withAction = summarizeMessageRunArtifacts(
+      { events: [], searchRuns: [] },
+      undefined,
+      action
+    );
+    const withoutAction = summarizeMessageRunArtifacts(
+      { events: [], searchRuns: [] },
+      undefined,
+      null
+    );
+
+    expect(withAction).toEqual({
+      citations: [],
+      knowledgeCitations: [],
+      memoryAction: action,
+      reasoningText: [],
+      sources: []
+    });
+    expect(withoutAction).toBeNull();
+  });
+
+  it("returns no artifact for execution-only records", () => {
+    const run = {
+      events: [{
+        payload: {
+          artifactType: "tool_result",
+          payload: {
+            argumentsPreview: { private: true },
+            resultPreview: { private: true }
+          }
+        }
+      }],
+      normalizedRequest: { private: true },
+      searchRuns: [],
+      status: "complete",
+      toolCalls: [{ result: { private: true } }]
+    };
+
+    expect(summarizeMessageRunArtifacts(run)).toBeNull();
   });
 });

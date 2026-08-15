@@ -1,6 +1,6 @@
 "use client";
 
-import type { ChatSummary, FolderSummary, InspectorMode } from "@/components/app-shell/types";
+import type { ChatSummary, FolderSummary } from "@/components/app-shell/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const nonTextInputTypes = new Set([
@@ -76,10 +76,6 @@ function useConfirmationController<Target>(): ConfirmationController<Target> {
 }
 
 export type ShellOverlayControllerInput = Readonly<{
-  appearance: Readonly<{
-    changeMode(mode: InspectorMode): void;
-    mode: InspectorMode;
-  }>;
   blockers: Readonly<{
     projectSettingsOpen: boolean;
     settingsOpen: boolean;
@@ -87,11 +83,10 @@ export type ShellOverlayControllerInput = Readonly<{
 }>;
 
 export function useShellOverlayController({
-  appearance,
   blockers
 }: ShellOverlayControllerInput) {
-  const { changeMode: changeAppearanceMode, mode: appearanceMode } = appearance;
   const { projectSettingsOpen, settingsOpen } = blockers;
+  const [branchesOpen, setBranchesOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const chatConfirmation = useConfirmationController<ChatSummary>();
   const folderConfirmation = useConfirmationController<FolderSummary>();
@@ -99,6 +94,9 @@ export function useShellOverlayController({
 
   const closePalette = useCallback(() => setPaletteOpen(false), []);
   const showPalette = useCallback(() => setPaletteOpen(true), []);
+  const closeBranches = useCallback(() => setBranchesOpen(false), []);
+  const showBranches = useCallback(() => setBranchesOpen(true), []);
+  const toggleBranches = useCallback(() => setBranchesOpen((open) => !open), []);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -119,8 +117,8 @@ export function useShellOverlayController({
         }
 
         event.preventDefault();
-        if (appearanceMode === "overlay") {
-          changeAppearanceMode("closed");
+        if (branchesOpen) {
+          closeBranches();
           window.setTimeout(showPalette, 0);
           return;
         }
@@ -136,9 +134,9 @@ export function useShellOverlayController({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
-    appearanceMode,
+    branchesOpen,
     chatConfirmation.target,
-    changeAppearanceMode,
+    closeBranches,
     closePalette,
     folderConfirmation.target,
     messageConfirmation.target,
@@ -149,6 +147,12 @@ export function useShellOverlayController({
   ]);
 
   return {
+    branches: {
+      close: closeBranches,
+      open: branchesOpen,
+      show: showBranches,
+      toggle: toggleBranches
+    },
     confirmations: {
       chat: {
         cancel: chatConfirmation.cancel,

@@ -289,7 +289,6 @@ describe("chat route handlers", () => {
             parentMessageId: "user-message-1",
             provider: "openrouter",
             role: "assistant",
-            runUsage: { totalTokens: 19 },
             status: "error"
           }
         ],
@@ -345,7 +344,6 @@ describe("chat route handlers", () => {
             errorMessage: "No endpoints found for model.",
             id: "assistant-message-1",
             modelRunId: "run-1",
-            runUsage: { totalTokens: 19 },
             status: "error"
           }
         ]

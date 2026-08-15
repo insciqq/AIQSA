@@ -62,13 +62,6 @@ export type MemoryMutationAuthorizationSnapshot = Readonly<{
   targetFactId: string | null;
 }>;
 
-export type MemoryMutationToolAuthorizationClaim = Readonly<{
-  action: MemoryMutationAction;
-  authorizedPayloadHash?: string;
-  modelRunId: string;
-  persistedToolCallId: string;
-}>;
-
 export type MemoryMutationToolAuthorizationMint = Readonly<{
   action: MemoryMutationAction;
   authorizedPayloadHash: string;
@@ -409,60 +402,6 @@ export function createPrismaMemoryMutationAuthorizationRepository(
         sourceMessageId: run.userMessageId,
         targetFactId: input.targetFactId
       }, now);
-    },
-
-    async claimForTool(
-      userId: string,
-      input: MemoryMutationToolAuthorizationClaim,
-      now = new Date()
-    ): Promise<MemoryMutationAuthorizationSnapshot> {
-      if (
-        !bounded(input.modelRunId, 256) ||
-        !bounded(input.persistedToolCallId, 256) ||
-        (input.authorizedPayloadHash !== undefined &&
-          !bounded(input.authorizedPayloadHash, 128))
-      ) {
-        return memoryPersistenceFailure("memory_input_invalid");
-      }
-      return client.$transaction(async (tx) => {
-        const rows = await tx.memoryMutationAuthorization.findMany({
-          select: authorizationSelect,
-          take: 2,
-          where: {
-            action: input.action,
-            consumedAt: null,
-            expiresAt: { gt: now },
-            modelRunId: input.modelRunId,
-            userId,
-            ...(input.authorizedPayloadHash
-              ? { authorizedPayloadHash: input.authorizedPayloadHash }
-              : {})
-          }
-        });
-        const row = rows[0];
-        if (rows.length !== 1 || !row ||
-          (row.persistedToolCallId !== null &&
-            row.persistedToolCallId !== input.persistedToolCallId)) {
-          return memoryPersistenceFailure("memory_mutation_authorization_invalid");
-        }
-        if (row.persistedToolCallId === null) {
-          const claimed = await tx.memoryMutationAuthorization.updateMany({
-            data: { persistedToolCallId: input.persistedToolCallId },
-            where: {
-              consumedAt: null,
-              expiresAt: { gt: now },
-              id: row.id,
-              persistedToolCallId: null,
-              userId
-            }
-          });
-          if (claimed.count !== 1) {
-            return memoryPersistenceFailure("memory_mutation_authorization_invalid");
-          }
-          return { ...row, persistedToolCallId: input.persistedToolCallId };
-        }
-        return row;
-      });
     }
   });
 }

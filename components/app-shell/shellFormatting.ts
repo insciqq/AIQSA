@@ -1,6 +1,5 @@
-import { inspectorEventErrorMessage } from "@/components/app-shell/eventLog";
 import { isRecord } from "@/components/app-shell/shellValues";
-import type { CatalogModel, RunEventView } from "@/components/app-shell/types";
+import type { CatalogModel } from "@/components/app-shell/types";
 
 export function formatTokenCount(value: number): string {
   if (value >= 1_000_000) {
@@ -14,26 +13,6 @@ export function formatTokenCount(value: number): string {
   }
 
   return String(value);
-}
-
-export function eventLabel(event: RunEventView): string {
-  if (event.type === "error") {
-    return inspectorEventErrorMessage(event);
-  }
-
-  if (isRecord(event.data) && typeof event.data.delta === "string") {
-    return event.data.delta.trim() ? "answer text" : "token";
-  }
-
-  if (isRecord(event.data) && typeof event.data.status === "string") {
-    return event.data.status;
-  }
-
-  if (isRecord(event.data) && typeof event.data.artifactType === "string") {
-    return event.data.artifactType;
-  }
-
-  return "ok";
 }
 
 export function safeDownloadName(value: string): string {
@@ -274,7 +253,7 @@ export function searchStrategyDescription(strategyId: string): string {
     return "No Search";
   }
 
-  if (strategyId === "openai-native-web-search" || strategyId === "openai-provider-web-search") {
+  if (strategyId === "openai-native-web-search") {
     return "OpenAI Search";
   }
 

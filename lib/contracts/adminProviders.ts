@@ -27,9 +27,8 @@ export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS = 5;
 export type AdminProviderConnectionConfiguration = {
   allowPrivateNetwork: boolean;
   apiRoot: string;
-  authenticationMode?: "bearer" | "none";
-  /** Whole seconds. Older cached payloads may omit this and inherit 300. */
-  responseTimeoutSeconds?: number;
+  authenticationMode: "bearer" | "none";
+  responseTimeoutSeconds: number;
 };
 
 export type AdminProviderModelCapabilities = {
@@ -75,8 +74,7 @@ export type AdminProviderModelConfiguration = {
   capabilities: AdminProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   embedding?: AdminEmbeddingModelConfiguration;
-  /** Older cached provider payloads omit this and are answer deployments. */
-  modelClass?: AdminProviderModelClass;
+  modelClass: AdminProviderModelClass;
   openRouterRouting?: AdminOpenRouterRouting;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
   /** Whole seconds; omission means inherit the connection value. */
@@ -203,8 +201,7 @@ export type AdminProviderConnection = {
   models: AdminProviderModel[];
   unassignedPolicy: AdminProviderUnassignedPolicy;
   updatedAt: string;
-  /** Optional for backward-compatible decoding of older catalog snapshots. */
-  userAssignments?: AdminProviderUserCredentialAssignment[];
+  userAssignments: AdminProviderUserCredentialAssignment[];
 };
 
 /** Secret mutation requests are write-only. No response DTO contains this shape. */

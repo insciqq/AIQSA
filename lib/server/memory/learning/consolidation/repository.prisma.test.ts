@@ -131,7 +131,6 @@ async function createTurn(input: Readonly<{
         }
       },
       provider: "memory-consolidation-test-provider",
-      providerRequestPreview: {},
       status: "complete",
       userId: input.userId,
       userMessageId: userMessage.id

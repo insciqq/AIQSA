@@ -15,8 +15,7 @@ import {
 } from "@/components/app-shell/workspaceStore";
 import {
   MEMORY_QUERY_MAX_LENGTH,
-  type MemoryHistorySearchResponse,
-  type MemoryUiLocale
+  type MemoryHistorySearchResponse
 } from "@/lib/contracts/memory";
 import {
   Archive,
@@ -47,11 +46,11 @@ const quietButton =
 const primaryButton =
   `inline-flex min-h-touch items-center justify-center gap-2 rounded-control bg-proof px-4 text-sm font-semibold text-proof-contrast hover:bg-proof-hover disabled:cursor-not-allowed disabled:bg-control-surface disabled:text-ink-disabled sm:min-h-control ${coarsePointerTarget} ${focusRing}`;
 
-function t(locale: MemoryUiLocale, key: MemoryHistoryUiCopyKey): string {
-  return memoryHistoryUiCopy(locale, key);
+function t(key: MemoryHistoryUiCopyKey): string {
+  return memoryHistoryUiCopy(key);
 }
 
-function formattedDate(locale: MemoryUiLocale, value: string): string {
+function formattedDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en-US", {
@@ -60,48 +59,42 @@ function formattedDate(locale: MemoryUiLocale, value: string): string {
   }).format(date);
 }
 
-function indexingCopy(
-  locale: MemoryUiLocale,
-  indexing: MemoryHistorySearchResponse["indexing"]
-): string {
-  if (indexing.lexicalState === "DISABLED") return t(locale, "historyDisabled");
-  if (indexing.lexicalState === "UNAVAILABLE") return t(locale, "indexUnavailable");
-  if (indexing.vectorState === "READY") return t(locale, "vectorReady");
-  if (indexing.vectorState === "NOT_CONFIGURED") return t(locale, "vectorNotConfigured");
+function indexingCopy(indexing: MemoryHistorySearchResponse["indexing"]): string {
+  if (indexing.lexicalState === "DISABLED") return t("historyDisabled");
+  if (indexing.lexicalState === "UNAVAILABLE") return t("indexUnavailable");
+  if (indexing.vectorState === "READY") return t("vectorReady");
+  if (indexing.vectorState === "NOT_CONFIGURED") return t("vectorNotConfigured");
   switch (indexing.degradationCode) {
-    case "memory_vector_generation_stale": return t(locale, "vectorStale");
-    case "memory_vector_profile_unsupported": return t(locale, "vectorProfileUnsupported");
-    case "memory_vector_unavailable": return t(locale, "vectorUnavailable");
-    default: return t(locale, "lexicalReady");
+    case "memory_vector_generation_stale": return t("vectorStale");
+    case "memory_vector_profile_unsupported": return t("vectorProfileUnsupported");
+    case "memory_vector_unavailable": return t("vectorUnavailable");
+    default: return t("lexicalReady");
   }
 }
 
 function itemIndexingCopy(
-  locale: MemoryUiLocale,
   state: MemoryHistorySearchResponse["results"][number]["indexingState"]
 ): string {
   switch (state) {
-    case "HYBRID_READY": return t(locale, "itemHybrid");
-    case "VECTOR_PENDING": return t(locale, "itemVectorPending");
-    case "DEGRADED": return t(locale, "itemDegraded");
-    case "LEXICAL_READY": return t(locale, "itemLexical");
+    case "HYBRID_READY": return t("itemHybrid");
+    case "VECTOR_PENDING": return t("itemVectorPending");
+    case "DEGRADED": return t("itemDegraded");
+    case "LEXICAL_READY": return t("itemLexical");
   }
 }
 
-function errorCopy(locale: MemoryUiLocale, error: string | null): string {
-  if (error === "memory_history_query_invalid") return t(locale, "queryInvalid");
-  if (error === "memory_history_interval_invalid") return t(locale, "intervalInvalid");
-  return t(locale, "error");
+function errorCopy(error: string | null): string {
+  if (error === "memory_history_query_invalid") return t("queryInvalid");
+  if (error === "memory_history_interval_invalid") return t("intervalInvalid");
+  return t("error");
 }
 
 export function MemoryHistorySearch({
   accountId,
-  locale,
   onBack,
   onOpenSource
 }: {
   accountId: string;
-  locale: MemoryUiLocale;
   onBack(): void;
   onOpenSource(chatId: string): void;
 }) {
@@ -147,7 +140,7 @@ export function MemoryHistorySearch({
       <header className="border-b border-trace-subtle pb-4">
         <button className={`${quietButton} -ml-2`} onClick={back} type="button">
           <ArrowLeft className="size-4" aria-hidden="true" />
-          {t(locale, "back")}
+          {t("back")}
         </button>
         <div className="mt-2 flex items-start gap-3">
           <span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-control bg-control-selected text-proof">
@@ -155,10 +148,10 @@ export function MemoryHistorySearch({
           </span>
           <div className="min-w-0">
             <h2 ref={headingRef} className="text-lg font-semibold text-ink" tabIndex={-1}>
-              {t(locale, "title")}
+              {t("title")}
             </h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">
-              {t(locale, "intro")}
+              {t("intro")}
             </p>
           </div>
         </div>
@@ -166,7 +159,7 @@ export function MemoryHistorySearch({
 
       <form className="mt-5" onSubmit={submit}>
         <label className="text-sm font-semibold text-ink" htmlFor="memory-history-query">
-          {t(locale, "queryLabel")}
+          {t("queryLabel")}
         </label>
         <div className="mt-2 flex flex-col gap-2 sm:flex-row">
           <div className="relative min-w-0 flex-1">
@@ -176,7 +169,7 @@ export function MemoryHistorySearch({
               className={`${inputClass} pl-9 pr-9`}
               id="memory-history-query"
               maxLength={MEMORY_QUERY_MAX_LENGTH}
-              placeholder={t(locale, "queryPlaceholder")}
+              placeholder={t("queryPlaceholder")}
               value={draft.query}
               onChange={(event) => setQuery(event.target.value)}
             />
@@ -193,51 +186,51 @@ export function MemoryHistorySearch({
           </div>
           <button className={`${primaryButton} shrink-0`} disabled={loading} type="submit">
             <Search className="size-4" aria-hidden="true" />
-            {t(locale, "search")}
+            {t("search")}
           </button>
         </div>
 
         <details className="mt-3 border-y border-trace-subtle py-2">
           <summary className={`flex min-h-touch cursor-pointer list-none items-center gap-2 rounded-control px-2 text-sm font-semibold text-ink-secondary hover:bg-control-hover sm:min-h-control ${coarsePointerTarget} ${focusRing}`}>
             <SlidersHorizontal className="size-4 text-ink-muted" aria-hidden="true" />
-            {t(locale, "filters")}
+            {t("filters")}
           </summary>
           <div className="grid gap-4 px-2 pb-2 pt-4 sm:grid-cols-2">
             <label className="text-xs font-semibold text-ink-secondary">
               <span className="mb-1.5 flex items-center gap-2">
                 <MessageSquareText className="size-3.5 text-ink-muted" aria-hidden="true" />
-                {t(locale, "chat")}
+                {t("chat")}
               </span>
               <select className={inputClass} value={draft.chatId ?? ""} onChange={(event) => setChatId(event.target.value || null)}>
-                <option value="">{t(locale, "allChats")}</option>
+                <option value="">{t("allChats")}</option>
                 {eligibleChats.map((chat) => <option key={chat.id} value={chat.id}>{chat.title}</option>)}
               </select>
             </label>
             <label className="text-xs font-semibold text-ink-secondary">
               <span className="mb-1.5 flex items-center gap-2">
                 <Folder className="size-3.5 text-ink-muted" aria-hidden="true" />
-                {t(locale, "folder")}
+                {t("folder")}
               </span>
               <select className={inputClass} value={draft.folderId ?? ""} onChange={(event) => setFolderId(event.target.value || null)}>
-                <option value="">{t(locale, "allFolders")}</option>
+                <option value="">{t("allFolders")}</option>
                 {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
               </select>
             </label>
             <label className="text-xs font-semibold text-ink-secondary">
               <span className="mb-1.5 flex items-center gap-2">
                 <CalendarDays className="size-3.5 text-ink-muted" aria-hidden="true" />
-                {t(locale, "fromDate")}
+                {t("fromDate")}
               </span>
               <input className={inputClass} type="date" value={draft.fromDate} onChange={(event) => setFromDate(event.target.value)} />
             </label>
             <label className="text-xs font-semibold text-ink-secondary">
               <span className="mb-1.5 flex items-center gap-2">
                 <CalendarDays className="size-3.5 text-ink-muted" aria-hidden="true" />
-                {t(locale, "throughDate")}
+                {t("throughDate")}
               </span>
               <input className={inputClass} type="date" value={draft.throughDate} onChange={(event) => setThroughDate(event.target.value)} />
             </label>
-            <p className="text-xs leading-5 text-ink-muted sm:col-span-2">{t(locale, "dateHelp")}</p>
+            <p className="text-xs leading-5 text-ink-muted sm:col-span-2">{t("dateHelp")}</p>
           </div>
         </details>
       </form>
@@ -248,7 +241,7 @@ export function MemoryHistorySearch({
           role={indexingDegraded ? "status" : undefined}
         >
           {indexingDegraded ? <CircleAlert className="mt-0.5 size-4 shrink-0 text-caution" aria-hidden="true" /> : null}
-          <span>{indexingCopy(locale, indexing)}</span>
+          <span>{indexingCopy(indexing)}</span>
         </div>
       ) : null}
 
@@ -256,38 +249,38 @@ export function MemoryHistorySearch({
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-y border-trace-subtle py-3" role="status">
           <span className="flex items-center gap-2 text-sm text-ink-secondary">
             <LoaderCircle className="size-4 animate-spin text-proof motion-reduce:animate-none" aria-hidden="true" />
-            {results.length > 0 ? t(locale, "loadingMore") : t(locale, "loading")}
+            {results.length > 0 ? t("loadingMore") : t("loading")}
           </span>
           <button className={secondaryButton} type="button" onClick={cancelMemoryHistorySearch}>
             <X className="size-4" aria-hidden="true" />
-            {t(locale, "cancel")}
+            {t("cancel")}
           </button>
         </div>
       ) : loadState === "cancelled" ? (
         <p className="mt-5 border-y border-trace-subtle py-3 text-sm text-ink-secondary" role="status">
-          {t(locale, "cancelled")}
+          {t("cancelled")}
         </p>
       ) : loadState === "error" ? (
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-y border-critical/30 bg-critical/5 px-3 py-3" role="alert">
           <span className="flex items-start gap-2 text-sm text-critical">
             <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            {errorCopy(locale, error)}
+            {errorCopy(error)}
           </span>
           <button className={secondaryButton} type="button" onClick={() => void applyMemoryHistorySearch()}>
             <RotateCw className="size-4" aria-hidden="true" />
-            {t(locale, "retry")}
+            {t("retry")}
           </button>
         </div>
       ) : null}
 
       {loadState === "ready" && results.length === 0 ? (
         <p className="mt-6 border-y border-trace-subtle py-8 text-center text-sm text-ink-muted" role="status">
-          {t(locale, "empty")}
+          {t("empty")}
         </p>
       ) : null}
 
       {results.length > 0 ? (
-        <ol className="mt-5 divide-y divide-trace-subtle border-y border-trace-subtle" aria-label={t(locale, "sourceTrail")}>
+        <ol className="mt-5 divide-y divide-trace-subtle border-y border-trace-subtle" aria-label={t("sourceTrail")}>
           {results.map((result) => {
             const sourceKey = `${result.itemType}:${result.sourceChatId}:${result.occurredAt}:${result.sourceMessageIds.join(",")}`;
             return (
@@ -296,16 +289,16 @@ export function MemoryHistorySearch({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-muted">
                       <span className="font-semibold uppercase tracking-[0.08em] text-proof">
-                        {result.itemType === "EPISODE" ? t(locale, "episode") : t(locale, "excerpt")}
+                        {t("excerpt")}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <span>{itemIndexingCopy(locale, result.indexingState)}</span>
+                      <span>{itemIndexingCopy(result.indexingState)}</span>
                       {result.sourceState === "ARCHIVED" ? (
                         <>
                           <span aria-hidden="true">·</span>
                           <span className="inline-flex items-center gap-1 font-semibold text-ink-secondary">
                             <Archive className="size-3.5" aria-hidden="true" />
-                            {t(locale, "archived")}
+                            {t("archived")}
                           </span>
                         </>
                       ) : null}
@@ -324,12 +317,12 @@ export function MemoryHistorySearch({
                           <span className="break-words">{result.sourceFolderName}</span>
                         </span>
                       ) : null}
-                      <time dateTime={result.occurredAt}>{formattedDate(locale, result.occurredAt)}</time>
+                      <time dateTime={result.occurredAt}>{formattedDate(result.occurredAt)}</time>
                     </div>
                   </div>
                   <button className={`${secondaryButton} shrink-0 sm:self-center`} type="button" onClick={() => onOpenSource(result.sourceChatId)}>
                     {result.sourceState === "ARCHIVED" ? <Archive className="size-4" aria-hidden="true" /> : <MessageSquareText className="size-4" aria-hidden="true" />}
-                    {result.sourceState === "ARCHIVED" ? t(locale, "openArchived") : t(locale, "openChat")}
+                    {result.sourceState === "ARCHIVED" ? t("openArchived") : t("openChat")}
                   </button>
                 </div>
               </li>
@@ -342,7 +335,7 @@ export function MemoryHistorySearch({
         <div className="mt-4 flex justify-center">
           <button className={secondaryButton} disabled={loading} type="button" onClick={() => void loadMoreMemoryHistorySearch()}>
             {loading ? <LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <History className="size-4" aria-hidden="true" />}
-            {loading ? t(locale, "loadingMore") : t(locale, "loadMore")}
+            {loading ? t("loadingMore") : t("loadMore")}
           </button>
         </div>
       ) : null}

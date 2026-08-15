@@ -11,7 +11,9 @@ function input(
   return {
     connection: {
       allowPrivateNetwork: false,
-      apiRoot: "https://openrouter.ai/api/v1"
+      apiRoot: "https://openrouter.ai/api/v1",
+      authenticationMode: "bearer",
+      responseTimeoutMs: 300_000
     },
     connectionDisplayName: "OpenRouter",
     connectionId: "connection-1",
@@ -127,7 +129,9 @@ describe("admin provider draft tester", () => {
     expect(createDiscoveryClient).toHaveBeenCalledWith({
       connection: {
         allowPrivateNetwork: false,
-        apiRoot: "https://openrouter.ai/api/v1"
+        apiRoot: "https://openrouter.ai/api/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       secret: "secret"
     });
@@ -214,7 +218,9 @@ describe("admin provider draft tester", () => {
     const compatible = input({
       connection: {
         allowPrivateNetwork: false,
-        apiRoot: "https://compatible.example.test/v1"
+        apiRoot: "https://compatible.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       mode: "tiny_generation",
       model: {
@@ -260,7 +266,8 @@ describe("admin provider draft tester", () => {
       connection: {
         allowPrivateNetwork: true,
         apiRoot: "http://127.0.0.1:11434/v1",
-        authenticationMode: "none"
+        authenticationMode: "none",
+        responseTimeoutMs: 300_000
       },
       mode: "tiny_generation",
       model: {
@@ -342,7 +349,9 @@ describe("admin provider draft tester", () => {
     const responses = input({
       connection: {
         allowPrivateNetwork: false,
-        apiRoot: "https://responses.example.test/v1"
+        apiRoot: "https://responses.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       mode: "tiny_generation",
       model: {
@@ -394,7 +403,9 @@ describe("admin provider draft tester", () => {
     const anthropic = input({
       connection: {
         allowPrivateNetwork: false,
-        apiRoot: "https://api.anthropic.test/v1"
+        apiRoot: "https://api.anthropic.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       mode: "tiny_generation",
       model: {

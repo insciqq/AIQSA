@@ -6,13 +6,9 @@ export const MEMORY_STATEMENT_MAX_LENGTH = 2_000;
 export const MEMORY_QUERY_MAX_LENGTH = 500;
 export const MEMORY_CURSOR_MAX_LENGTH = 2_048;
 export const MEMORY_PAGE_SIZE_MAX = 20;
-export const MEMORY_RECEIPT_ITEM_TEXT_MAX_LENGTH = 4_000;
 export const MEMORY_SEARCH_SNIPPET_MAX_LENGTH = 1_000;
 export const MEMORY_FEEDBACK_COMMENT_MAX_LENGTH = 1_000;
 export const MEMORY_FORGET_UNDO_WINDOW_MS = 60_000;
-
-export const MEMORY_UI_LOCALES = ["RU", "EN"] as const;
-export type MemoryUiLocale = (typeof MEMORY_UI_LOCALES)[number];
 
 export const MEMORY_CHAT_MODES = ["NORMAL", "EXCLUDED", "TEMPORARY"] as const;
 export type MemoryChatMode = (typeof MEMORY_CHAT_MODES)[number];
@@ -156,14 +152,12 @@ export type MemoryBulkDeleteOperation = (typeof MEMORY_BULK_DELETE_OPERATIONS)[n
 
 export const MEMORY_REBUILD_OPERATIONS = [
   "REBUILD_SEARCH_INDEX",
-  "REEMBED",
-  "REDREAM_EXISTING_CHATS"
+  "REEMBED"
 ] as const;
 export type MemoryRebuildOperation = (typeof MEMORY_REBUILD_OPERATIONS)[number];
 
 export const MEMORY_CONFIRMABLE_BULK_OPERATIONS = [
-  ...MEMORY_BULK_DELETE_OPERATIONS,
-  "REDREAM_EXISTING_CHATS"
+  ...MEMORY_BULK_DELETE_OPERATIONS
 ] as const;
 
 export const MEMORY_REBUILD_STATES = [
@@ -212,30 +206,6 @@ export const MEMORY_HISTORY_DEGRADATION_CODES = [
 ] as const;
 export type MemoryHistoryDegradationCode =
   (typeof MEMORY_HISTORY_DEGRADATION_CODES)[number];
-
-export const MEMORY_RECEIPT_OUTCOMES = [
-  "USED",
-  "EMPTY",
-  "DISABLED",
-  "DEGRADED",
-  "FAILED_SAFE"
-] as const;
-export type MemoryReceiptOutcome = (typeof MEMORY_RECEIPT_OUTCOMES)[number];
-
-export const MEMORY_RECEIPT_ITEM_TYPES = [
-  "FACT_VERSION",
-  "EPISODE",
-  "RECALL_CHUNK",
-  "PROFILE"
-] as const;
-export type MemoryReceiptItemType = (typeof MEMORY_RECEIPT_ITEM_TYPES)[number];
-
-export const MEMORY_RECEIPT_LIFECYCLE_STATES = [
-  "CURRENT",
-  "LATER_FORGOTTEN",
-  "SOURCE_DELETED"
-] as const;
-export type MemoryReceiptLifecycleState = (typeof MEMORY_RECEIPT_LIFECYCLE_STATES)[number];
 
 export const MEMORY_ACTION_FEEDBACK_OPERATIONS = [
   "SAVE",
@@ -316,11 +286,6 @@ const isoTimestampSchema = z.string().max(64).refine((value) => {
 }, "invalid ISO timestamp");
 const nullableTimestampSchema = isoTimestampSchema.nullable();
 const categorySchema = z.string().trim().min(1).max(64).regex(/^[a-z][a-z0-9_-]*$/u);
-const preferredLanguageSchema = z.union([
-  z.literal("AUTO"),
-  z.string().trim().min(2).max(35).regex(/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/u)
-]);
-
 const memoryScopeSelectionSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("GLOBAL_USER") }),
   z.strictObject({ targetId: idSchema, type: z.literal("FOLDER") }),
@@ -348,8 +313,6 @@ const memorySettingsPatchSchema = z.strictObject({
   expectedMemoryRevision: safeInteger.optional(),
   expectedSettingsRevision: safeInteger,
   learnAutomatically: z.boolean().optional(),
-  memoryUiLocale: z.enum(MEMORY_UI_LOCALES).optional(),
-  preferredProfileLanguage: preferredLanguageSchema.optional(),
   referenceChatHistory: z.boolean().optional(),
   sensitiveAutomaticPolicy: z.literal("EXPLICIT_ONLY").optional(),
   useMemoryFacts: z.boolean().optional()
@@ -357,8 +320,6 @@ const memorySettingsPatchSchema = z.strictObject({
   const mutationKeys = [
     "embeddingDeploymentId",
     "learnAutomatically",
-    "memoryUiLocale",
-    "preferredProfileLanguage",
     "referenceChatHistory",
     "sensitiveAutomaticPolicy",
     "useMemoryFacts"
@@ -367,12 +328,8 @@ const memorySettingsPatchSchema = z.strictObject({
   if (changed.length === 0) {
     context.addIssue({ code: "custom", message: "empty settings patch" });
   }
-  const memoryVisible = changed.some((key) => key !== "memoryUiLocale");
-  if (memoryVisible && value.expectedMemoryRevision === undefined) {
+  if (changed.length > 0 && value.expectedMemoryRevision === undefined) {
     context.addIssue({ code: "custom", message: "memory-visible patch requires revision" });
-  }
-  if (!memoryVisible && value.expectedMemoryRevision !== undefined) {
-    context.addIssue({ code: "custom", message: "locale-only patch must not claim a memory revision" });
   }
 });
 
@@ -633,17 +590,10 @@ const memoryRebuildInputSchema = z.strictObject({
   embeddingDeploymentId: idSchema.nullable().optional(),
   expectedMemoryRevision: safeInteger,
   expectedSettingsRevision: safeInteger,
-  mutationAuthorizationId: idSchema.optional(),
   operation: z.enum(MEMORY_REBUILD_OPERATIONS)
 }).superRefine((value, context) => {
   if (value.operation === "REEMBED" && !value.embeddingDeploymentId) {
     context.addIssue({ code: "custom", message: "re-embedding requires a deployment" });
-  }
-  if (value.operation === "REDREAM_EXISTING_CHATS" && !value.mutationAuthorizationId) {
-    context.addIssue({ code: "custom", message: "redream requires explicit authorization" });
-  }
-  if (value.operation !== "REDREAM_EXISTING_CHATS" && value.mutationAuthorizationId) {
-    context.addIssue({ code: "custom", message: "authorization is valid only for redream" });
   }
   if (value.operation !== "REEMBED" && Object.hasOwn(value, "embeddingDeploymentId")) {
     context.addIssue({ code: "custom", message: "deployment is valid only for re-embedding" });
@@ -702,7 +652,6 @@ const memorySettingsResponseSchema = z.strictObject({
     explicitMemory: z.boolean(),
     historyRecall: z.boolean(),
     permanentChatDeletion: z.boolean(),
-    russianQualified: z.boolean(),
     temporaryChats: z.boolean()
   }),
   egress: z.strictObject({
@@ -732,8 +681,6 @@ const memorySettingsResponseSchema = z.strictObject({
     memoryConsentRevision: safeInteger,
     memoryGeneration: safeInteger,
     memoryRevision: safeInteger,
-    memoryUiLocale: z.enum(MEMORY_UI_LOCALES),
-    preferredProfileLanguage: preferredLanguageSchema,
     referenceChatHistory: z.boolean(),
     sensitiveAutomaticPolicy: z.literal("EXPLICIT_ONLY"),
     settingsRevision: safeInteger,
@@ -841,70 +788,6 @@ const memorySummarySchema = z.strictObject({
 });
 
 export type MemorySummary = z.infer<typeof memorySummarySchema>;
-
-export const MEMORY_PROFILE_VIEW_STATES = [
-  "DISABLED",
-  "EMPTY",
-  "PENDING",
-  "WAITING_FOR_EGRESS_CONSENT",
-  "READY",
-  "UNAVAILABLE"
-] as const;
-export type MemoryProfileViewState = (typeof MEMORY_PROFILE_VIEW_STATES)[number];
-
-const memoryProfileContributorSchema = z.strictObject({
-  displayText: safeText(500),
-  factId: idSchema,
-  factVersionId: idSchema,
-  ordinal: z.number().int().min(0).max(5),
-  pinned: z.boolean(),
-  sourceMode: z.enum(MEMORY_SOURCE_MODES),
-  temperatureClass: z.enum(["HOT", "WARM", "COLD"])
-});
-
-export type MemoryProfileContributor = z.infer<typeof memoryProfileContributorSchema>;
-
-const memoryProfileProjectionSchema = z.strictObject({
-  asOf: isoTimestampSchema,
-  contributors: z.array(memoryProfileContributorSchema).min(1).max(6),
-  createdAt: isoTimestampSchema,
-  id: idSchema,
-  languageCode: z.enum(["ru", "en"]),
-  memoryRevision: safeInteger,
-  redactionState: z.enum(["NOT_NEEDED", "REDACTED"]),
-  summary: safeText(4_000)
-}).superRefine((value, context) => {
-  const expected = value.contributors.map(({ displayText }) => displayText).join("\n");
-  if (expected !== value.summary) {
-    context.addIssue({ code: "custom", message: "profile summary is not contributor-exact" });
-  }
-  if (value.contributors.some((item, ordinal) => item.ordinal !== ordinal)) {
-    context.addIssue({ code: "custom", message: "profile contributor order is not contiguous" });
-  }
-});
-
-export type MemoryProfileProjection = z.infer<typeof memoryProfileProjectionSchema>;
-
-const memoryProfileResponseSchema = z.strictObject({
-  memoryRevision: safeInteger,
-  profile: memoryProfileProjectionSchema.nullable(),
-  state: z.enum(MEMORY_PROFILE_VIEW_STATES)
-}).superRefine((value, context) => {
-  if ((value.state === "READY") !== (value.profile !== null)) {
-    context.addIssue({ code: "custom", message: "profile readiness mismatch" });
-  }
-  if (value.profile && value.profile.memoryRevision > value.memoryRevision) {
-    context.addIssue({ code: "custom", message: "profile revision is from the future" });
-  }
-});
-
-export type MemoryProfileResponse = z.infer<typeof memoryProfileResponseSchema>;
-
-export function decodeMemoryProfileResponse(
-  value: unknown
-): MemoryContractDecodeResult<MemoryProfileResponse> {
-  return decode(memoryProfileResponseSchema, value);
-}
 
 const memoryListResponseSchema = z.strictObject({
   memories: z.array(memorySummarySchema).max(100),
@@ -1140,7 +1023,7 @@ const memoryEvidenceItemSchema = z.strictObject({
   sourceChatId: idSchema.nullable(),
   sourceMessageId: idSchema.nullable(),
   sourceRole: z.string().trim().min(1).max(32).nullable(),
-  sourceType: z.enum(["MESSAGE", "EXPLICIT_ACTION", "EPISODE"]),
+  sourceType: z.enum(["MESSAGE", "EXPLICIT_ACTION"]),
   stance: z.enum(["SUPPORTS", "CONTRADICTS"])
 }).superRefine((value, context) => {
   if (
@@ -1204,79 +1087,6 @@ export function decodeMemoryDeletionStatus(
   return decode(memoryDeletionStatusSchema, value);
 }
 
-const memoryReceiptItemSchema = z.strictObject({
-  factId: idSchema.nullable().optional(),
-  feedbackState: z.enum(["AVAILABLE", "RECORDED", "UNAVAILABLE"]).optional(),
-  includedText: safeText(MEMORY_RECEIPT_ITEM_TEXT_MAX_LENGTH),
-  itemType: z.enum(MEMORY_RECEIPT_ITEM_TYPES),
-  lifecycleState: z.enum(MEMORY_RECEIPT_LIFECYCLE_STATES),
-  ordinal: safeInteger,
-  scopeType: z.enum(MEMORY_SCOPE_TYPES).nullable(),
-  selectionReason: z.string().trim().min(1).max(128),
-  sourceChatId: idSchema.nullable(),
-  sourceMessageIds: z.array(idSchema).max(50),
-  sourceMode: z.enum(["EXPLICIT", "AUTOMATIC", "HISTORY", "PROFILE"]),
-  runItemId: idSchema.nullable().optional(),
-  runId: idSchema.nullable().optional(),
-  versionId: idSchema.nullable()
-}).superRefine((value, context) => {
-  if (value.lifecycleState === "SOURCE_DELETED" && value.sourceChatId !== null) {
-    context.addIssue({ code: "custom", message: "deleted source cannot retain a live link" });
-  }
-  if (value.itemType === "FACT_VERSION" && value.versionId === null) {
-    context.addIssue({ code: "custom", message: "fact receipt requires a frozen version id" });
-  }
-  if (value.itemType === "FACT_VERSION" && value.factId === null) {
-    context.addIssue({ code: "custom", message: "fact receipt cannot carry a null fact id" });
-  }
-  if (value.itemType !== "FACT_VERSION" && value.factId != null) {
-    context.addIssue({ code: "custom", message: "non-fact receipt cannot carry a fact id" });
-  }
-  if (value.feedbackState !== undefined && (value.runItemId == null || value.runId == null)) {
-    context.addIssue({ code: "custom", message: "feedback state requires run provenance" });
-  }
-});
-
-export type MemoryReceiptItem = z.infer<typeof memoryReceiptItemSchema>;
-
-const memoryReceiptSchema = z.strictObject({
-  degradationCode: z.string().trim().min(1).max(128).nullable(),
-  itemCount: safeInteger,
-  items: z.array(memoryReceiptItemSchema).max(50),
-  outcome: z.enum(MEMORY_RECEIPT_OUTCOMES),
-  summary: safeText(500)
-}).superRefine((value, context) => {
-  if (value.itemCount !== value.items.length) {
-    context.addIssue({ code: "custom", message: "receipt item count mismatch" });
-  }
-  if (!value.items.every((item, index) => item.ordinal === index)) {
-    context.addIssue({ code: "custom", message: "receipt ordinals must be contiguous and ordered" });
-  }
-  if (value.items.some((item) => new Set(item.sourceMessageIds).size !== item.sourceMessageIds.length)) {
-    context.addIssue({ code: "custom", message: "duplicate receipt source message" });
-  }
-  if ((value.outcome === "USED" || value.outcome === "DEGRADED") && value.items.length === 0) {
-    context.addIssue({ code: "custom", message: "visible receipt outcome requires items" });
-  }
-  if (value.outcome !== "USED" && value.outcome !== "DEGRADED" && value.items.length !== 0) {
-    context.addIssue({ code: "custom", message: "non-visible receipt outcome cannot carry items" });
-  }
-  if (value.outcome === "DEGRADED" && value.degradationCode === null) {
-    context.addIssue({ code: "custom", message: "degraded receipt requires a code" });
-  }
-  if (value.outcome !== "DEGRADED" && value.degradationCode !== null) {
-    context.addIssue({ code: "custom", message: "only degraded receipt carries a degradation code" });
-  }
-});
-
-export type MemoryReceipt = z.infer<typeof memoryReceiptSchema>;
-
-export function decodeMemoryReceipt(
-  value: unknown
-): MemoryContractDecodeResult<MemoryReceipt> {
-  return decode(memoryReceiptSchema, value);
-}
-
 const memoryActionFeedbackSchema = z.strictObject({
   deletionId: idSchema.optional(),
   expiresAt: isoTimestampSchema.optional(),
@@ -1318,7 +1128,7 @@ const memoryHistorySearchResponseSchema = z.strictObject({
   nextCursor: cursorSchema,
   results: z.array(z.strictObject({
     indexingState: z.enum(MEMORY_ITEM_INDEXING_STATES),
-    itemType: z.enum(["EPISODE", "RECALL_CHUNK"]),
+    itemType: z.literal("RECALL_CHUNK"),
     occurredAt: isoTimestampSchema,
     sourceChatId: idSchema,
     sourceChatTitle: safeText(200),

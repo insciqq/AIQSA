@@ -97,7 +97,7 @@ describe("document parser routing", () => {
   });
 
   it.each([
-    ["legacy.doc", "application/msword"],
+    ["sample.doc", "application/msword"],
     ["letter.rtf", "application/rtf"],
     ["book.epub", "application/epub+zip"],
     ["mail.eml", "message/rfc822"],

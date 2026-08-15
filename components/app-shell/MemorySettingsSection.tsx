@@ -22,10 +22,9 @@ import {
   type MemorySettingsMutation
 } from "@/components/app-shell/memorySettingsStore";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
-import type { MemorySettingsResponse, MemoryUiLocale } from "@/lib/contracts/memory";
+import type { MemorySettingsResponse } from "@/lib/contracts/memory";
 import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
-import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 import {
   ArrowRight,
   Check,
@@ -50,19 +49,19 @@ const primaryButton =
 
 type SettingsNotice = "consent" | "error" | "saved" | "stale" | null;
 
-function t(locale: MemoryUiLocale, key: Parameters<typeof memoryUiCopy>[1]): string {
-  return memoryUiCopy(locale, key);
+function t(key: Parameters<typeof memoryUiCopy>[0]): string {
+  return memoryUiCopy(key);
 }
 
-function SettingNotice({ locale, notice }: { locale: MemoryUiLocale; notice: SettingsNotice }) {
+function SettingNotice({ notice }: { notice: SettingsNotice }) {
   if (!notice) return <div className="sr-only" aria-live="polite" />;
   const text = notice === "saved"
-    ? t(locale, "settings.saved")
+    ? t("settings.saved")
     : notice === "consent"
-      ? t(locale, "settings.reviewComplete")
+      ? t("settings.reviewComplete")
       : notice === "stale"
-        ? t(locale, "settings.stale")
-        : t(locale, "settings.saveError");
+        ? t("settings.stale")
+        : t("settings.saveError");
   const error = notice === "error" || notice === "stale";
   return (
     <div
@@ -82,7 +81,6 @@ function GateRow({
   capability,
   description,
   label,
-  locale,
   name,
   onChange,
   progress,
@@ -92,7 +90,6 @@ function GateRow({
   capability: boolean;
   description: string;
   label: string;
-  locale: MemoryUiLocale;
   name: MemorySettingsMutation;
   onChange(next: boolean): void;
   progress?: string;
@@ -109,7 +106,7 @@ function GateRow({
           className={`mt-1 text-xs font-medium ${capability ? "text-positive" : "text-caution"}`}
           id={capabilityId}
         >
-          {capability ? t(locale, "settings.capabilityReady") : t(locale, "settings.capabilityUnavailable")}
+          {capability ? t("settings.capabilityReady") : t("settings.capabilityUnavailable")}
         </p>
         {progress ? (
           <p className="mt-1 text-xs font-medium text-proof" role="status">
@@ -127,7 +124,7 @@ function GateRow({
         disabled={busy !== null}
         onClick={() => onChange(!value)}
       >
-        {value ? t(locale, "common.on") : t(locale, "common.off")}
+        {value ? t("common.on") : t("common.off")}
       </button>
     </div>
   );
@@ -136,12 +133,10 @@ function GateRow({
 function DestinationRow({
   description,
   label,
-  locale,
   value
 }: {
   description: string;
   label: string;
-  locale: MemoryUiLocale;
   value: string | null;
 }) {
   return (
@@ -152,7 +147,7 @@ function DestinationRow({
       </div>
       <div className="min-w-0">
         <p className={`break-words text-sm ${value ? "text-ink-secondary" : "text-ink-muted"}`}>
-          {value ?? t(locale, "settings.destinationUnavailable")}
+          {value ?? t("settings.destinationUnavailable")}
         </p>
         <p className="mt-1 text-xs leading-5 text-ink-muted">{description}</p>
       </div>
@@ -169,8 +164,8 @@ function EvidenceRow({ label, children }: { label: string; children: ReactNode }
   );
 }
 
-function formatDate(locale: MemoryUiLocale, value: string | null): string {
-  if (!value) return t(locale, "settings.notAccepted");
+function formatDate(value: string | null): string {
+  if (!value) return t("settings.notAccepted");
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short"
@@ -178,11 +173,10 @@ function formatDate(locale: MemoryUiLocale, value: string | null): string {
 }
 
 function historyIndexingCopy(
-  locale: MemoryUiLocale,
   progress: MemorySettingsResponse["historyIndexing"]
 ): string | undefined {
   if (progress.state !== "INDEXING") return undefined;
-  return t(locale, "settings.historyIndexing")
+  return t("settings.historyIndexing")
     .replace("{completed}", String(progress.completedChats))
     .replace("{total}", String(progress.totalChats));
 }
@@ -193,7 +187,6 @@ function MemorySettings({
   healthError,
   healthLoading,
   healthOperationsEntryRef,
-  locale,
   onManage,
   onNotice,
   onOperations,
@@ -205,7 +198,6 @@ function MemorySettings({
   healthError: boolean;
   healthLoading: boolean;
   healthOperationsEntryRef: RefObject<HTMLButtonElement | null>;
-  locale: MemoryUiLocale;
   onManage(): void;
   onNotice(notice: SettingsNotice): void;
   onOperations(source: "health" | "section"): void;
@@ -249,9 +241,9 @@ function MemorySettings({
   };
 
   const capabilities = [
-    [t(locale, "settings.capabilityExplicit"), data.capabilities.explicitMemory],
-    [t(locale, "settings.capabilityHistory"), data.capabilities.historyRecall],
-    [t(locale, "settings.capabilityLearning"), data.capabilities.automaticLearning]
+    [t("settings.capabilityExplicit"), data.capabilities.explicitMemory],
+    [t("settings.capabilityHistory"), data.capabilities.historyRecall],
+    [t("settings.capabilityLearning"), data.capabilities.automaticLearning]
   ] as const;
 
   return (
@@ -259,8 +251,8 @@ function MemorySettings({
       <div className="flex items-start gap-3">
         <ListChecks className="mt-0.5 size-5 shrink-0 text-proof" aria-hidden="true" />
         <div>
-          <h3 className="text-base font-semibold text-ink" id="memory-heading">{t(locale, "settings.heading")}</h3>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">{t(locale, "settings.intro")}</p>
+          <h3 className="text-base font-semibold text-ink" id="memory-heading">{t("settings.heading")}</h3>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">{t("settings.intro")}</p>
         </div>
       </div>
 
@@ -269,14 +261,14 @@ function MemorySettings({
           <>
             <section className="mt-4 border-t border-trace-subtle pt-3" aria-labelledby="memory-capabilities-heading">
               <h5 className="text-xs font-semibold text-ink" id="memory-capabilities-heading">
-                {t(locale, "settings.capabilitiesHeading")}
+                {t("settings.capabilitiesHeading")}
               </h5>
               <ul className="mt-2 divide-y divide-trace-subtle">
                 {capabilities.map(([label, available]) => (
                   <li className="flex min-h-control items-center justify-between gap-3 py-2" key={label}>
                     <span className="text-xs text-ink-secondary">{label}</span>
                     <span className={`text-xs font-semibold ${available ? "text-positive" : "text-ink-muted"}`}>
-                      {available ? t(locale, "common.available") : t(locale, "common.unavailable")}
+                      {available ? t("common.available") : t("common.unavailable")}
                     </span>
                   </li>
                 ))}
@@ -285,22 +277,22 @@ function MemorySettings({
             {data.egress.consentMode === "PER_USER" ? (
               <section className="mt-4 border-t border-trace-subtle pt-3" aria-labelledby="memory-egress-evidence-heading">
                 <h5 className="text-xs font-semibold text-ink" id="memory-egress-evidence-heading">
-                  {t(locale, "settings.destinationsHeading")}
+                  {t("settings.destinationsHeading")}
                 </h5>
                 <dl className="mt-2 divide-y divide-trace-subtle">
-                  <EvidenceRow label={t(locale, "settings.currentFingerprint")}>
+                  <EvidenceRow label={t("settings.currentFingerprint")}>
                     <code className="break-all font-mono text-xs">{data.egress.currentUtilityEgressFingerprint}</code>
                   </EvidenceRow>
-                  <EvidenceRow label={t(locale, "settings.acceptedFingerprint")}>
+                  <EvidenceRow label={t("settings.acceptedFingerprint")}>
                     {data.egress.acceptedUtilityEgressFingerprint
                       ? <code className="break-all font-mono text-xs">{data.egress.acceptedUtilityEgressFingerprint}</code>
-                      : t(locale, "settings.notAccepted")}
+                      : t("settings.notAccepted")}
                   </EvidenceRow>
-                  <EvidenceRow label={t(locale, "settings.policyVersion")}>
+                  <EvidenceRow label={t("settings.policyVersion")}>
                     <code className="font-mono text-xs">{data.egress.currentUtilityPolicyVersion}</code>
                   </EvidenceRow>
-                  <EvidenceRow label={t(locale, "settings.acceptedAt")}>
-                    {formatDate(locale, data.egress.acceptedAt)}
+                  <EvidenceRow label={t("settings.acceptedAt")}>
+                    {formatDate(data.egress.acceptedAt)}
                   </EvidenceRow>
                 </dl>
               </section>
@@ -310,7 +302,6 @@ function MemorySettings({
         error={healthError}
         health={health}
         loading={healthLoading}
-        locale={locale}
         onOpenOperations={() => onOperations("health")}
         onRetry={onRefreshHealth}
         operationsButtonRef={healthOperationsEntryRef}
@@ -321,28 +312,27 @@ function MemorySettings({
           <ShieldCheck className="mt-0.5 size-4 shrink-0 text-proof" aria-hidden="true" />
           <div>
             <h4 className="text-sm font-semibold text-ink" id="memory-information-heading">
-              {t(locale, "settings.informationHeading")}
+              {t("settings.informationHeading")}
             </h4>
             <ul className="mt-2 grid gap-1.5 text-xs leading-5 text-ink-secondary">
-              <li>{t(locale, "settings.informationManage")}</li>
-              <li>{t(locale, "settings.informationTemporary")}</li>
-              <li>{t(locale, "settings.informationDestinations")}</li>
-              <li>{t(locale, "settings.informationRisk")}</li>
+              <li>{t("settings.informationManage")}</li>
+              <li>{t("settings.informationTemporary")}</li>
+              <li>{t("settings.informationDestinations")}</li>
+              <li>{t("settings.informationRisk")}</li>
             </ul>
           </div>
         </div>
       </section>
 
       <section className="mt-7" aria-labelledby="memory-policy-heading">
-        <h4 className="text-sm font-semibold text-ink" id="memory-policy-heading">{t(locale, "settings.policyHeading")}</h4>
-        <p className="mt-1 text-xs leading-5 text-ink-muted">{t(locale, "settings.policyDescription")}</p>
+        <h4 className="text-sm font-semibold text-ink" id="memory-policy-heading">{t("settings.policyHeading")}</h4>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">{t("settings.policyDescription")}</p>
         <div className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
           <GateRow
             busy={busy}
             capability={data.capabilities.explicitMemory}
-            description={t(locale, "settings.useFactsDescription")}
-            label={resolveMemoryCopy(locale, "settings.useFacts.label")}
-            locale={locale}
+            description={t("settings.useFactsDescription")}
+            label={resolveMemoryCopy("settings.useFacts.label")}
             name="useMemoryFacts"
             value={data.settings.useMemoryFacts}
             onChange={(value) => updateGate("useMemoryFacts", value)}
@@ -350,20 +340,18 @@ function MemorySettings({
           <GateRow
             busy={busy}
             capability={data.capabilities.historyRecall}
-            description={t(locale, "settings.referenceHistoryDescription")}
-            label={resolveMemoryCopy(locale, "settings.referenceHistory.label")}
-            locale={locale}
+            description={t("settings.referenceHistoryDescription")}
+            label={resolveMemoryCopy("settings.referenceHistory.label")}
             name="referenceChatHistory"
-            progress={historyIndexingCopy(locale, data.historyIndexing)}
+            progress={historyIndexingCopy(data.historyIndexing)}
             value={data.settings.referenceChatHistory}
             onChange={(value) => updateGate("referenceChatHistory", value)}
           />
           <GateRow
             busy={busy}
             capability={data.capabilities.automaticLearning}
-            description={t(locale, "settings.learnAutomaticallyDescription")}
-            label={resolveMemoryCopy(locale, "settings.learnAutomatically.label")}
-            locale={locale}
+            description={t("settings.learnAutomaticallyDescription")}
+            label={resolveMemoryCopy("settings.learnAutomatically.label")}
             name="learnAutomatically"
             value={data.settings.learnAutomatically}
             onChange={(value) => updateGate("learnAutomatically", value)}
@@ -374,9 +362,9 @@ function MemorySettings({
       <section className="mt-7" aria-labelledby="memory-destinations-heading">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h4 className="text-sm font-semibold text-ink" id="memory-destinations-heading">{t(locale, "settings.destinationsHeading")}</h4>
+            <h4 className="text-sm font-semibold text-ink" id="memory-destinations-heading">{t("settings.destinationsHeading")}</h4>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
-              {t(locale, data.egress.consentMode === "ADMIN"
+              {t(data.egress.consentMode === "ADMIN"
                 ? "settings.destinationsAdminManaged"
                 : "settings.destinationsDescription")}
             </p>
@@ -388,48 +376,44 @@ function MemorySettings({
             {data.egress.reviewRequired ? (
               <div className="mt-3 flex items-start gap-2 border-l-2 border-caution bg-caution/10 px-3 py-2 text-sm leading-5 text-ink-secondary" role="status">
                 <CircleAlert className="mt-0.5 size-4 shrink-0 text-caution" aria-hidden="true" />
-                {resolveMemoryCopy(locale, "consent.reviewRequired")}
+                {resolveMemoryCopy("consent.reviewRequired")}
               </div>
             ) : null}
             <div className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
               <DestinationRow
-                description={resolveMemoryCopy(locale, "consent.answerDestination")}
-                label={t(locale, "settings.answerDestination")}
-                locale={locale}
-                value={t(locale, "settings.selectedAtRun")}
+                description={resolveMemoryCopy("consent.answerDestination")}
+                label={t("settings.answerDestination")}
+                value={t("settings.selectedAtRun")}
               />
               <DestinationRow
-                description={resolveMemoryCopy(locale, "consent.systemDestination")}
-                label={t(locale, "settings.systemDestination")}
-                locale={locale}
+                description={resolveMemoryCopy("consent.systemDestination")}
+                label={t("settings.systemDestination")}
                 value={data.egress.systemModelDestination}
               />
               <DestinationRow
-                description={resolveMemoryCopy(locale, "consent.embeddingDestination")}
-                label={t(locale, "settings.embeddingDestination")}
-                locale={locale}
+                description={resolveMemoryCopy("consent.embeddingDestination")}
+                label={t("settings.embeddingDestination")}
                 value={data.egress.embeddingDestination}
               />
               <DestinationRow
-                description={resolveMemoryCopy(locale, "consent.rerankerDestination")}
-                label={t(locale, "settings.rerankerDestination")}
-                locale={locale}
+                description={resolveMemoryCopy("consent.rerankerDestination")}
+                label={t("settings.rerankerDestination")}
                 value={data.egress.remoteRerankerDestination}
               />
             </div>
             {!data.egress.reviewRequired ? (
               <button className={`${secondaryButton} mt-3`} onClick={() => setReviewOpen((open) => !open)} type="button" aria-expanded={reviewVisible}>
                 <ShieldCheck className="size-4" aria-hidden="true" />
-                {reviewVisible ? t(locale, "settings.cancelReview") : t(locale, "settings.reviewAction")}
+                {reviewVisible ? t("settings.cancelReview") : t("settings.reviewAction")}
               </button>
             ) : null}
             {reviewVisible ? (
               <div className="mt-3 border-l-2 border-proof bg-proof/5 px-3 py-3" aria-labelledby="memory-consent-title">
-                <h5 className="text-sm font-semibold text-ink" id="memory-consent-title">{resolveMemoryCopy(locale, "consent.title")}</h5>
-                <p className="mt-1 text-xs leading-5 text-ink-secondary">{resolveMemoryCopy(locale, "consent.explanation")}</p>
+                <h5 className="text-sm font-semibold text-ink" id="memory-consent-title">{resolveMemoryCopy("consent.title")}</h5>
+                <p className="mt-1 text-xs leading-5 text-ink-secondary">{resolveMemoryCopy("consent.explanation")}</p>
                 <button className={`${primaryButton} mt-3`} disabled={busy !== null} onClick={accept} type="button">
                   <Check className="size-4" aria-hidden="true" />
-                  {busy === "consent" ? t(locale, "manager.saving") : t(locale, "settings.acceptAction")}
+                  {busy === "consent" ? t("manager.saving") : t("settings.acceptAction")}
                 </button>
               </div>
             ) : null}
@@ -440,14 +424,14 @@ function MemorySettings({
       <section className="mt-7 border-y border-trace-subtle py-4" aria-labelledby="memory-manage-heading">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h4 className="text-sm font-semibold text-ink" id="memory-manage-heading">{resolveMemoryCopy(locale, "settings.manage.label")}</h4>
-            <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted">{t(locale, "settings.manageDescription")}</p>
+            <h4 className="text-sm font-semibold text-ink" id="memory-manage-heading">{resolveMemoryCopy("settings.manage.label")}</h4>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted">{t("settings.manageDescription")}</p>
             {!data.capabilities.explicitMemory ? (
-              <p className="mt-1 text-xs font-medium text-caution">{t(locale, "settings.manageUnavailable")}</p>
+              <p className="mt-1 text-xs font-medium text-caution">{t("settings.manageUnavailable")}</p>
             ) : null}
           </div>
           <button className={secondaryButton} disabled={!data.capabilities.explicitMemory || busy !== null} onClick={onManage} type="button">
-            {resolveMemoryCopy(locale, "settings.manage.label")}
+            {resolveMemoryCopy("settings.manage.label")}
             <ArrowRight className="size-4" aria-hidden="true" />
           </button>
         </div>
@@ -459,10 +443,10 @@ function MemorySettings({
             <DatabaseZap className="mt-0.5 size-5 shrink-0 text-proof" aria-hidden="true" />
             <div>
               <h4 className="text-sm font-semibold text-ink" id="memory-operations-heading">
-                {memoryOperationsUiCopy(locale, "entry")}
+                {memoryOperationsUiCopy("entry")}
               </h4>
               <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted">
-                {memoryOperationsUiCopy(locale, "entryDescription")}
+                {memoryOperationsUiCopy("entryDescription")}
               </p>
             </div>
           </div>
@@ -473,7 +457,7 @@ function MemorySettings({
             ref={operationsEntryRef}
             type="button"
           >
-            {memoryOperationsUiCopy(locale, "entry")}
+            {memoryOperationsUiCopy("entry")}
             <ArrowRight className="size-4" aria-hidden="true" />
           </button>
         </div>
@@ -559,7 +543,6 @@ export function MemorySettingsSection({
     }
   }, [operationsOpen]);
 
-  const locale = MEMORY_PRESENTATION_LOCALE;
   return (
     <section
       className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-6 sm:px-6"
@@ -570,7 +553,6 @@ export function MemorySettingsSection({
       {operationsOpen && data ? (
         <MemoryOperations
           data={data}
-          locale={locale}
           onBack={() => {
             returnToOperationsEntryRef.current = true;
             setOperationsOpen(false);
@@ -580,7 +562,6 @@ export function MemorySettingsSection({
       ) : managing && data ? (
         <ManageMemories
           accountId={accountId}
-          locale={locale}
           onBack={() => setManaging(false)}
           onBusyChange={setManagerBusy}
           onDirtyChange={setManagerDirty}
@@ -589,14 +570,13 @@ export function MemorySettingsSection({
         />
       ) : data ? (
         <>
-          <SettingNotice locale={locale} notice={notice} />
+          <SettingNotice notice={notice} />
           <MemorySettings
             data={data}
             health={health}
             healthError={healthError !== null}
             healthLoading={healthLoadState === "idle" || healthLoadState === "loading"}
             healthOperationsEntryRef={healthOperationsEntryRef}
-            locale={locale}
             onManage={() => setManaging(true)}
             onNotice={setNotice}
             onOperations={(source) => {

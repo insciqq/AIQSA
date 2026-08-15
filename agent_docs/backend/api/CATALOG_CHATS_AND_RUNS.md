@@ -8,18 +8,19 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
 
 ## Current-User Catalog And Settings
 
-- Authenticated private/no-store `GET /api/me/composer-config` is the one-request Reading Room bootstrap for rings 0–1. It accepts no caller configuration and aggregates only the already-authorized current-user answer catalog and attachment limits, runner-safe Assistant summaries, visible Knowledge-base summaries, and bounded MCP readiness summaries. Every source keeps its existing owner/entitlement filter; unknown or malformed fields fail closed in the client decoder, and ordinary error copy never exposes connection, deployment, base, server, credential, or hidden-entitlement identities. The projection is neither admission authority nor a new cache owner: send still revalidates every selected binding against current server state.
+- The Composer derives its presentation model from the current-user catalog plus the existing Assistant, Knowledge, and MCP stores. Those owner-specific private/no-store boundaries retain their own authorization and fail-closed decoders; there is no parallel aggregate Composer endpoint or cache authority. Send still revalidates every selected binding against current server state.
 - `/api/me/memory/settings` is a separate authenticated private/no-store
   settings boundary. GET projects the three independent gates—fact/history
-  reads default on and automatic learning defaults off—
-  persisted Memory locale, fail-closed phase capabilities, and bounded
-  current-versus-accepted utility destinations/fingerprints. PATCH accepts
-  exactly one strict ordinary settings-CAS shape or explicit current-copy
-  consent shape. Memory-visible changes require both settings and Memory
-  revisions; locale-only changes require only the settings revision. Embedding
-  selection and utility consent revalidate exact current authority inside the
-  locked mutation, and provider/consent unavailability never disables local
-  management capabilities. The production Phase 8 policy permits permanent
+  reads default on and automatic learning defaults off—plus the selected
+  embedding deployment, fail-closed capabilities, and bounded
+  current-versus-accepted utility destinations/fingerprints. Memory
+  presentation is fixed English and the route has no locale field. PATCH
+  accepts exactly one strict ordinary settings-CAS shape or explicit
+  current-copy consent shape; every accepted settings mutation requires both
+  settings and Memory revisions. Embedding selection and utility consent
+  revalidate exact current authority inside the locked mutation, and
+  provider/consent unavailability never disables local management
+  capabilities. The current deletion-admission policy permits permanent
   chat deletion, but the projection becomes true only after the sole shared
   composition owner proves the exact source-purge and account-cleanup leaves
   reachable. Before composition, after a conflict, or during policy rollback,
@@ -29,25 +30,15 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   learning, indexing/FTS-only, rebuild, durable-deletion, Temporary-retention,
   and destination-review status without Memory/query/source text or source
   identifiers. Counts are capped, physical cleanup is distinct from its
-  already-committed retrieval fence, and scheduler/provider unavailability is
+  already-committed retrieval fence, and coordinator/provider unavailability is
   feature-local. Owner identity comes only from the session; failures return a
   stable code and logs contain no underlying private detail.
-- `GET /api/me/memory/profile` is an authenticated private/no-store, no-query
-  summary boundary. It returns the current Memory revision and exactly one of
-  `DISABLED | EMPTY | PENDING | WAITING_FOR_EGRESS_CONSENT | READY |
-  UNAVAILABLE`. Only `READY` may carry a profile: at most six ordered RU or EN
-  contributor-exact lines with fact/version ids, source mode, pin, and
-  hot/warm/cold projection. The read revalidates current scope, generation,
-  fact pointer, search/safety/suppression snapshots, validity, and succeeded
-  usage-backed `MEMORY_PROFILE` authority; stale or uncertain profile text is
-  omitted rather than repaired or returned. Editing remains an explicit
-  fact-level operation through the existing Memory mutation family.
 - `/api/me/memory/mutation-authorizations` and `/api/me/memories` are the
   private explicit-Memory management family and accept only exact `GLOBAL_USER`
   statements and identifiers. Save grants bind the exact statement hash; Edit
   and Forget grants bind the owner fact/current version; `DELETE_EXPLICIT`,
-  `DELETE_LEARNED`, `CLEAR_HISTORY_INDEX`, and `REDREAM_EXISTING_CHATS` grants
-  bind the exact operation plus settings and Memory revisions. All bind current confirmation
+  `DELETE_LEARNED`, and `CLEAR_HISTORY_INDEX` grants bind the exact operation
+  plus settings and Memory revisions. All bind current confirmation
   copy and one caller nonce and are consumed atomically with the mutation.
   Exact matching receipt/job retries are idempotent, while
   expired, stale, altered, cross-operation, foreign, or natural-language
@@ -60,10 +51,10 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   retained-history boundary, not sidebar chat search. It accepts no URL query
   parameters and requires one strict JSON body with query, page size, optional
   opaque cursor, chat/folder filters, and half-open UTC bounds; responses are
-  private/no-store and return at most 20 bounded safe chunk/episode snippets.
+  private/no-store and return at most 20 bounded safe chunk snippets.
   Cursor identity binds the owner, normalized query, filters, page size,
   serving generation, gate, and Memory revision. Exact and
-  Russian/English/simple FTS remain available without vectors; a qualified
+  Russian/English/simple FTS remain available without vectors; a compatible
   optional vector lane can add candidates but cannot bypass the same live
   owner, source, branch/revision/checkpoint, safety, suppression, barrier, and
   gate rejoin. Missing or failed vector query work is an explicit degradation,
@@ -75,7 +66,7 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   admitted automatic set, cancels nonterminal learning work, and retains
   explicit facts, raw chats, and accepted run checkpoints; only genuinely later
   message evidence may be learned again. Clear-history installs its distinct
-  source cutoff, invalidates current chunks/episodes/search rows, and retains
+  source cutoff, invalidates current chunks/search rows, and retains
   chats, facts, and accepted run checkpoints. The route rejects
   `DELETE_ALL_REUSABLE` until its owner ships.
   Authenticated
@@ -86,10 +77,8 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   purge requirement audited empty, while admission already meant future
   retrieval was fenced.
 - `POST /api/me/memory/rebuild` starts exactly one owner-scoped
-  `REBUILD_SEARCH_INDEX`, `REEMBED`, or `REDREAM_EXISTING_CHATS` operation.
-  Re-embed requires the selected current qualified embedding deployment;
-  redream requires its exact single-use confirmation and replays to the same
-  durable job. Authenticated private/no-store
+  `REBUILD_SEARCH_INDEX` or `REEMBED` operation. Re-embed requires the selected
+  current compatible embedding deployment. Authenticated private/no-store
   `GET /api/me/memory/rebuild/:jobId` returns bounded progress, and
   `POST /api/me/memory/rebuild/:jobId/cancel` accepts no body. A shadow remains
   non-serving until full lexical/vector catch-up and one fenced pointer flip;
@@ -131,8 +120,8 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   rejected; Temporary remains the separately acknowledged first-run admission
   below. This keeps Normal, Memory-off, and Temporary blank draft identities
   separate without adding lifecycle data to the lightweight summary response.
-- Chat list/create/update/branch mutations return lightweight summaries with `messageCount` and `pinned`, not messages or usage. Server-side new-chat creation snapshots the caller's current effective personal-or-installation model default, or null when none is safely runnable; later default changes never retarget that chat. An ordinary detail read returns at most the newest 50 messages of the active branch in forward order, with an opaque older-page cursor plus the exact active-leaf/`updatedAt` snapshot fence. `messageCount` remains the full DAG count; usage and the approximate active-branch input-token context fact cover the full active branch. Authenticated `GET /api/chats/:chatId/messages?before=...` revalidates ownership, cursor boundary, leaf, and snapshot before returning the next forward-ordered page, with typed invalid-cursor and stale-snapshot failures. `GET /api/chats/:chatId/branches` separately returns the full compact parent graph with bounded plaintext previews; it never hydrates full message bodies or run artifacts. Detail/page reads hydrate message content, safe citations/generated outputs, and the latest assistant run id only when the client needs lifecycle reconciliation. They do not serialize a generic `evidenceSummary`, tool/file counters, request-derived attachment counts, usage-presence flags, Events, or inspection metadata. Archived chats stay hidden from ordinary chat reads and remain non-operational, but owner-private no-store Archived list, preview, bounded page, and source-resolution reads remain readable to their owner. Archive and explicit Restore use distinct expected-source-revision transitions, change no Memory counter, and never imply deletion or source exclusion; the legacy chat `DELETE` remains Archive-only. Owner-private no-store `GET /api/me/chats/:chatId/memory-mode` exposes the exact current archived, source-mode/revision, and Temporary policy/deadline state needed to reconcile lifecycle UI. `NORMAL <-> EXCLUDED` uses a separate PATCH on that current-user Memory route: Exclude fences source eligibility before success, while Resume requires current disclosure, suppression-key preflight, and a controlled active-branch reconciliation that preserves every Forget and account source cutoff. Admitted Temporary chats remain owner-readable only by exact private id while they exist; ordinary workspace/Archived lists, global content search, source resolution, archive/restore, branch-to-retained-chat cloning, sharing, and workspace update projection exclude them.
-- Permanent deletion never overloads the legacy Archive route. Owner-only
+- Chat list/create/update/branch mutations return lightweight summaries with `messageCount` and `pinned`, not messages or usage. Server-side new-chat creation snapshots the caller's current effective personal-or-installation model default, or null when none is safely runnable; later default changes never retarget that chat. An ordinary detail read returns at most the newest 50 messages of the active branch in forward order, with an opaque older-page cursor plus the exact active-leaf/`updatedAt` snapshot fence. `messageCount` remains the full DAG count; usage and the approximate active-branch input-token context fact cover the full active branch. Authenticated `GET /api/chats/:chatId/messages?before=...` revalidates ownership, cursor boundary, leaf, and snapshot before returning the next forward-ordered page, with typed invalid-cursor and stale-snapshot failures. `GET /api/chats/:chatId/branches` separately returns the full compact parent graph with bounded plaintext previews; it never hydrates full message bodies or run artifacts. Detail/page reads hydrate message content, safe citations/generated outputs, and the latest assistant run id only when the client needs lifecycle reconciliation. They do not serialize a generic `evidenceSummary`, tool/file counters, request-derived attachment counts, usage-presence flags, Events, or inspection metadata. Archived chats stay hidden from ordinary chat reads and remain non-operational, but owner-private no-store Archived list, preview, bounded page, and source-resolution reads remain readable to their owner. Archive and explicit Restore use distinct expected-source-revision transitions, change no Memory counter, and never imply deletion or source exclusion; chat `DELETE` remains Archive-only. Owner-private no-store `GET /api/me/chats/:chatId/memory-mode` exposes the exact current archived, source-mode/revision, and Temporary policy/deadline state needed to reconcile lifecycle UI. `NORMAL <-> EXCLUDED` uses a separate PATCH on that current-user Memory route: Exclude fences source eligibility before success, while Resume requires current disclosure, suppression-key preflight, and a controlled active-branch reconciliation that preserves every Forget and account source cutoff. Admitted Temporary chats remain owner-readable only by exact private id while they exist; ordinary workspace/Archived lists, global content search, source resolution, archive/restore, branch-to-retained-chat cloning, sharing, and workspace update projection exclude them.
+- Permanent deletion never overloads Archive. Owner-only
   `POST /api/chats/:chatId/delete-permanently/authorization` first mints a
   five-minute single-use authorization bound to the exact source revision,
   active leaf, caller nonce, and `alsoForgetOriginMemories` choice. The matching
@@ -144,7 +133,7 @@ Not owned here: Provider wire mapping, auth onboarding, administrator control pl
   Memory text. Cleanup retries through `BLOCKED_REQUIRES_ADMIN`; accepted runs
   in other chats retain their immutable source-bound records and show `Source deleted` without a
   stale source link. Provider-side and backup erasure are outside this route.
-  While the composed Phase 8 capability is unavailable, direct authorization
+  While the deletion composition is unavailable, direct authorization
   or admission fails before parsing/mutation and no permanent-delete action is
   projected. Disabling new admission does not hide status or abandon a deletion
   already accepted while the exact cleanup handler was reachable.

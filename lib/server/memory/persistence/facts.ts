@@ -8,8 +8,8 @@ import type {
 import { memoryDerivativePlaintextAllowed } from "../../../domain/memory/safety";
 import { prisma } from "../../prisma";
 import {
-  MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION,
-  memoryExplicitEmbeddingJobFingerprint
+  MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
+  memoryItemEmbeddingJobFingerprint
 } from "../embedding/contract";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
 import {
@@ -568,7 +568,7 @@ async function createSearchEntry(
   });
 }
 
-async function enqueueExplicitEmbedding(
+async function enqueueItemEmbedding(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
   input: MemoryFactMutationCommonInput,
@@ -586,23 +586,13 @@ async function enqueueExplicitEmbedding(
     return;
   }
   await enqueueMemoryJob(tx, settings, {
-    idempotencyFingerprint: memoryExplicitEmbeddingJobFingerprint(
+    idempotencyFingerprint: memoryItemEmbeddingJobFingerprint(
       searchEntry.id,
       input.idempotencyFingerprint
     ),
     kind: "EMBED_ITEMS",
-    pipelineVersion: MEMORY_EXPLICIT_EMBEDDING_PIPELINE_VERSION
+    pipelineVersion: MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION
   });
-}
-
-async function enqueueWorkingSetRefresh(
-  _tx: MemoryTransaction,
-  _settings: LockedMemorySettings,
-  _input: MemoryFactMutationCommonInput,
-  _factId: string
-): Promise<void> {
-  // Core Memory reads current evidence-backed fact versions directly. The
-  // former generated RU/EN profile is not an answer-critical projection.
 }
 
 function suppressionMatchInput(input: MemoryFactMutationCommonInput) {
@@ -926,8 +916,7 @@ export function createPrismaMemoryFactRepository(
           input.value,
           input.evidence
         );
-        await enqueueExplicitEmbedding(tx, settings, input, searchEntry);
-        await enqueueWorkingSetRefresh(tx, settings, input, fact.id);
+        await enqueueItemEmbedding(tx, settings, input, searchEntry);
 
         const result = {
           eventId,
@@ -1262,8 +1251,7 @@ export function createPrismaMemoryFactRepository(
           movedValue,
           input.evidence
         );
-        await enqueueExplicitEmbedding(tx, settings, movedInput, searchEntry);
-        await enqueueWorkingSetRefresh(tx, settings, movedInput, targetFactId);
+        await enqueueItemEmbedding(tx, settings, movedInput, searchEntry);
 
         const result = {
           eventId,
@@ -1428,8 +1416,7 @@ export function createPrismaMemoryFactRepository(
           input.value,
           input.evidence
         );
-        await enqueueExplicitEmbedding(tx, settings, input, searchEntry);
-        await enqueueWorkingSetRefresh(tx, settings, input, fact.id);
+        await enqueueItemEmbedding(tx, settings, input, searchEntry);
         const result = {
           eventId,
           factId: fact.id,
@@ -1563,8 +1550,7 @@ export function createPrismaMemoryFactRepository(
               userId
             }
           });
-          await enqueueExplicitEmbedding(tx, settings, input, searchEntry);
-          await enqueueWorkingSetRefresh(tx, settings, input, existing.id);
+          await enqueueItemEmbedding(tx, settings, input, searchEntry);
           const result = {
             eventId,
             factId: existing.id,
@@ -1651,8 +1637,7 @@ export function createPrismaMemoryFactRepository(
           input.value,
           input.evidence
         );
-        await enqueueExplicitEmbedding(tx, settings, input, searchEntry);
-        await enqueueWorkingSetRefresh(tx, settings, input, factId);
+        await enqueueItemEmbedding(tx, settings, input, searchEntry);
         const result = {
           eventId,
           factId,

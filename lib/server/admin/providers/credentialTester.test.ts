@@ -20,6 +20,8 @@ function input(
     connection: {
       allowPrivateNetwork: false,
       apiRoot: `https://${family}.example.test/v1/`,
+      authenticationMode: "bearer",
+      responseTimeoutMs: 300_000,
       ...connection
     },
     family,
@@ -181,7 +183,8 @@ describe("admin provider credential tester", () => {
       connection: {
         allowPrivateNetwork: true,
         apiRoot: "http://127.0.0.1:8080/v1",
-        authenticationMode: "none"
+        authenticationMode: "none",
+        responseTimeoutMs: 300_000
       },
       family: "openai_compatible",
       secret: null

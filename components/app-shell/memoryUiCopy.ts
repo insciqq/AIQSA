@@ -1,15 +1,8 @@
 import type {
   MemoryFactState,
   MemoryModality,
-  MemoryReceipt,
-  MemoryReceiptItem,
-  MemoryReceiptItemType,
-  MemoryReceiptLifecycleState,
-  MemoryScopeType,
-  MemorySensitivityClass,
-  MemoryUiLocale
+  MemorySensitivityClass
 } from "@/lib/contracts/memory";
-import { MEMORY_PRESENTATION_LOCALE } from "@/lib/contracts/memoryPresentation";
 
 export const MEMORY_UI_COPY_KEYS = [
   "settings.heading",
@@ -34,7 +27,6 @@ export const MEMORY_UI_COPY_KEYS = [
   "settings.capabilityExplicit",
   "settings.capabilityHistory",
   "settings.capabilityLearning",
-  "settings.capabilityRussian",
   "settings.destinationsHeading",
   "settings.destinationsDescription",
   "settings.destinationsAdminManaged",
@@ -111,7 +103,6 @@ export const MEMORY_UI_COPY_KEYS = [
   "manager.contradicts",
   "manager.evidenceMessage",
   "manager.evidenceAction",
-  "manager.evidenceEpisode",
   "manager.observed",
   "manager.whyRemembered",
   "manager.whyAutomatic",
@@ -184,18 +175,7 @@ export const MEMORY_UI_COPY_KEYS = [
   "manager.discardBody",
   "manager.keepEditing",
   "manager.discardDraft",
-  "receipt.label",
-  "receipt.usedOne",
-  "receipt.usedMany",
-  "receipt.degraded",
-  "receipt.outcome",
-  "receipt.exactText",
-  "receipt.type",
-  "receipt.source",
-  "receipt.sourceUnavailable",
-  "receipt.scope",
-  "receipt.version",
-  "receipt.selection",
+  "manager.sourceUnavailable",
   "action.saved",
   "action.updated",
   "action.forgotten",
@@ -237,14 +217,13 @@ const EN = {
   "settings.useFactsDescription": "Allow eligible saved and learned facts to be included in future answers.",
   "settings.referenceHistoryDescription": "Allow eligible retained chat history to be searched as Memory when this capability is available.",
   "settings.historyIndexing": "Indexing {completed} of {total} chats",
-  "settings.learnAutomaticallyDescription": "Allow qualified automatic learning from retained chats when this capability is available.",
+  "settings.learnAutomaticallyDescription": "Allow compatible automatic learning from retained chats when this capability is available.",
   "settings.capabilityReady": "Available now",
   "settings.capabilityUnavailable": "Preference is stored; this capability is not active in the current installation.",
   "settings.capabilitiesHeading": "Current capabilities",
   "settings.capabilityExplicit": "Explicit saved memories",
   "settings.capabilityHistory": "Chat-history recall",
   "settings.capabilityLearning": "Automatic learning",
-  "settings.capabilityRussian": "Russian qualification",
   "settings.destinationsHeading": "Memory data destinations",
   "settings.destinationsDescription": "Review the current destinations before any affected external Memory processing continues.",
   "settings.destinationsAdminManaged": "Destination trust and renewal are managed by an administrator. No action is required from you.",
@@ -321,7 +300,6 @@ const EN = {
   "manager.contradicts": "Contradicts",
   "manager.evidenceMessage": "Retained chat message",
   "manager.evidenceAction": "Explicit user action",
-  "manager.evidenceEpisode": "Qualified chat episode",
   "manager.observed": "Observed",
   "manager.whyRemembered": "Why this was remembered",
   "manager.whyAutomatic": "AIQSA learned this from eligible retained-chat evidence. You can inspect the bounded evidence and correct the result without exposing hidden model reasoning.",
@@ -394,18 +372,7 @@ const EN = {
   "manager.discardBody": "The exact statement and metadata in this unsaved draft will be lost.",
   "manager.keepEditing": "Keep editing",
   "manager.discardDraft": "Discard draft",
-  "receipt.label": "Memory",
-  "receipt.usedOne": "1 memory used",
-  "receipt.usedMany": "memories used",
-  "receipt.degraded": "retrieval degraded safely",
-  "receipt.outcome": "Outcome",
-  "receipt.exactText": "Exact included text",
-  "receipt.type": "Type",
-  "receipt.source": "Source",
-  "receipt.sourceUnavailable": "The source conversation is no longer available.",
-  "receipt.scope": "Scope",
-  "receipt.version": "Version",
-  "receipt.selection": "Selection",
+  "manager.sourceUnavailable": "The source conversation is no longer available.",
   "action.saved": "Memory saved.",
   "action.updated": "Memory updated.",
   "action.forgotten": "Forgotten.",
@@ -428,167 +395,50 @@ const EN = {
   "common.unavailable": "Unavailable"
 } satisfies MemoryUiCopyLocale;
 
+export const MEMORY_UI_COPY: MemoryUiCopyLocale = Object.freeze(EN);
 
-export const MEMORY_UI_COPY: Readonly<Record<typeof MEMORY_PRESENTATION_LOCALE, MemoryUiCopyLocale>> =
-  Object.freeze({ EN: Object.freeze(EN) });
-
-export function memoryUiCopy(locale: MemoryUiLocale, key: MemoryUiCopyKey): string {
-  const value = MEMORY_UI_COPY[MEMORY_PRESENTATION_LOCALE][key];
-  if (!value) throw new Error(`memory_ui_copy_missing:${locale}:${key}`);
+export function memoryUiCopy(key: MemoryUiCopyKey): string {
+  const value = MEMORY_UI_COPY[key];
+  if (!value) throw new Error(`memory_ui_copy_missing:${key}`);
   return value;
 }
 
-const FACT_STATE_LABELS: Readonly<Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryFactState, string>>>> = {
-  EN: {
-    ACTIVE: "Active",
-    CONFLICTED: "Conflicted",
-    EXPIRED: "Expired",
-    FORGOTTEN: "Forgotten",
-    ORPHANED: "Orphaned",
-    RETRACTED: "Retracted"
-  }
+const FACT_STATE_LABELS: Readonly<Record<MemoryFactState, string>> = {
+  ACTIVE: "Active",
+  CONFLICTED: "Conflicted",
+  EXPIRED: "Expired",
+  FORGOTTEN: "Forgotten",
+  ORPHANED: "Orphaned",
+  RETRACTED: "Retracted"
 };
 
-const MODALITY_LABELS: Readonly<Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryModality, string>>>> = {
-  EN: {
-    CONSIDERATION: "Consideration",
-    CONSTRAINT: "Constraint",
-    EVENT: "Event",
-    HABIT: "Habit",
-    INTENTION: "Intention",
-    PLAN: "Plan",
-    PREFERENCE: "Preference",
-    STATE: "State",
-    WORKFLOW: "Workflow"
-  }
+const MODALITY_LABELS: Readonly<Record<MemoryModality, string>> = {
+  CONSIDERATION: "Consideration",
+  CONSTRAINT: "Constraint",
+  EVENT: "Event",
+  HABIT: "Habit",
+  INTENTION: "Intention",
+  PLAN: "Plan",
+  PREFERENCE: "Preference",
+  STATE: "State",
+  WORKFLOW: "Workflow"
 };
 
-const SENSITIVITY_LABELS: Readonly<
-  Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemorySensitivityClass, string>>>
-> = {
-  EN: {
-    HIGHLY_SENSITIVE: "Highly sensitive",
-    NORMAL: "Normal",
-    SECRET: "Secret",
-    SENSITIVE: "Sensitive"
-  }
+const SENSITIVITY_LABELS: Readonly<Record<MemorySensitivityClass, string>> = {
+  HIGHLY_SENSITIVE: "Highly sensitive",
+  NORMAL: "Normal",
+  SECRET: "Secret",
+  SENSITIVE: "Sensitive"
 };
 
-export function memoryFactStateLabel(locale: MemoryUiLocale, value: MemoryFactState): string {
-  void locale;
-  return FACT_STATE_LABELS[MEMORY_PRESENTATION_LOCALE][value];
+export function memoryFactStateLabel(value: MemoryFactState): string {
+  return FACT_STATE_LABELS[value];
 }
 
-export function memoryModalityLabel(locale: MemoryUiLocale, value: MemoryModality): string {
-  void locale;
-  return MODALITY_LABELS[MEMORY_PRESENTATION_LOCALE][value];
+export function memoryModalityLabel(value: MemoryModality): string {
+  return MODALITY_LABELS[value];
 }
 
-export function memorySensitivityLabel(
-  locale: MemoryUiLocale,
-  value: MemorySensitivityClass
-): string {
-  void locale;
-  return SENSITIVITY_LABELS[MEMORY_PRESENTATION_LOCALE][value];
-}
-
-const RECEIPT_ITEM_TYPE_LABELS: Readonly<
-  Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryReceiptItemType, string>>>
-> = {
-  EN: {
-    EPISODE: "Previous-chat episode",
-    FACT_VERSION: "Saved fact version",
-    PROFILE: "Memory summary",
-    RECALL_CHUNK: "Previous-chat excerpt"
-  }
-};
-
-const RECEIPT_SOURCE_MODE_LABELS: Readonly<
-  Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryReceiptItem["sourceMode"], string>>>
-> = {
-  EN: {
-    AUTOMATIC: "Automatically learned evidence",
-    EXPLICIT: "Explicit user action",
-    HISTORY: "Retained chat history",
-    PROFILE: "Derived Memory summary"
-  }
-};
-
-const RECEIPT_SCOPE_LABELS: Readonly<
-  Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryScopeType, string>>>
-> = {
-  EN: {
-    ASSISTANT: "Assistant",
-    CHAT: "Chat",
-    FOLDER: "Folder",
-    GLOBAL_USER: "Your account"
-  }
-};
-
-const RECEIPT_LIFECYCLE_LABELS: Readonly<
-  Record<typeof MEMORY_PRESENTATION_LOCALE, Readonly<Record<MemoryReceiptLifecycleState, string>>>
-> = {
-  EN: {
-    CURRENT: "Current",
-    LATER_FORGOTTEN: "Later forgotten",
-    SOURCE_DELETED: "Source deleted"
-  }
-};
-
-export function memoryReceiptItemTypeLabel(
-  locale: MemoryUiLocale,
-  value: MemoryReceiptItemType
-): string {
-  void locale;
-  return RECEIPT_ITEM_TYPE_LABELS[MEMORY_PRESENTATION_LOCALE][value];
-}
-
-export function memoryReceiptSourceModeLabel(
-  locale: MemoryUiLocale,
-  value: MemoryReceiptItem["sourceMode"]
-): string {
-  void locale;
-  return RECEIPT_SOURCE_MODE_LABELS[MEMORY_PRESENTATION_LOCALE][value];
-}
-
-export function memoryReceiptScopeLabel(
-  locale: MemoryUiLocale,
-  value: MemoryScopeType
-): string {
-  void locale;
-  return RECEIPT_SCOPE_LABELS[MEMORY_PRESENTATION_LOCALE][value];
-}
-
-export function memoryReceiptLifecycleLabel(
-  locale: MemoryUiLocale,
-  value: MemoryReceiptLifecycleState
-): string {
-  void locale;
-  return RECEIPT_LIFECYCLE_LABELS[MEMORY_PRESENTATION_LOCALE][value];
-}
-
-/** Compact English evidence summary without exposing source identities. */
-export function memoryReceiptUsageLabel(
-  locale: MemoryUiLocale,
-  receipt: MemoryReceipt
-): string {
-  locale = MEMORY_PRESENTATION_LOCALE;
-  const reusableCount = receipt.items.filter((item) =>
-    item.itemType === "FACT_VERSION" || item.itemType === "PROFILE").length;
-  const historyItems = receipt.items.filter((item) =>
-    item.itemType === "EPISODE" || item.itemType === "RECALL_CHUNK");
-  const knownChats = new Set(historyItems.flatMap((item) =>
-    item.sourceChatId ? [item.sourceChatId] : []));
-  const historyCount = knownChats.size + historyItems.filter((item) =>
-    item.sourceChatId === null).length;
-
-  if (historyCount === 0) {
-    return reusableCount === 1
-      ? memoryUiCopy(locale, "receipt.usedOne")
-      : `${memoryUiCopy(locale, "receipt.usedMany")}: ${reusableCount}`;
-  }
-  const history = `${historyCount} previous ${historyCount === 1 ? "chat" : "chats"}`;
-  if (reusableCount === 0) return `${history} used`;
-  const reusable = `${reusableCount} ${reusableCount === 1 ? "memory" : "memories"}`;
-  return `${reusable} and ${history} used`;
+export function memorySensitivityLabel(value: MemorySensitivityClass): string {
+  return SENSITIVITY_LABELS[value];
 }

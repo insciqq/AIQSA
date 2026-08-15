@@ -6,9 +6,10 @@ import type {
   McpResolvedAddress
 } from "../mcp/safeFetch";
 import {
-  createProviderSafeFetch,
+  createProviderSafeFetch as createCurrentProviderSafeFetch,
   ProviderSafeFetchError
 } from "./providerSafeFetch";
+import type { ProviderConnectionConfiguration } from "./providerConfiguration";
 import { parseOpenAIResponsesSse } from "./openaiResponsesResponse";
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 import { createFetchOpenAIResponsesClient } from "./openaiResponsesTransport";
@@ -17,6 +18,24 @@ const PUBLIC_ADDRESS: McpResolvedAddress = {
   address: "93.184.216.34",
   family: 4
 };
+
+function createProviderSafeFetch(options: Readonly<{
+  configuration: Pick<ProviderConnectionConfiguration, "allowPrivateNetwork" | "apiRoot"> &
+    Partial<Pick<ProviderConnectionConfiguration, "authenticationMode" | "responseTimeoutMs">>;
+  dispatch?: (request: McpPinnedHttpRequest) => Promise<Response>;
+  lookupHostname?: (hostname: string) => Promise<readonly McpResolvedAddress[]>;
+}>): typeof fetch {
+  return createCurrentProviderSafeFetch({
+    ...options,
+    configuration: {
+      authenticationMode: options.configuration.apiRoot.startsWith("http:")
+        ? "none"
+        : "bearer",
+      responseTimeoutMs: 300_000,
+      ...options.configuration
+    }
+  });
+}
 
 async function expectCode(
   operation: Promise<unknown>,

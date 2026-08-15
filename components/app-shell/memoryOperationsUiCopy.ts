@@ -1,5 +1,3 @@
-import type { MemoryUiLocale } from "@/lib/contracts/memory";
-
 export const MEMORY_OPERATIONS_UI_COPY_KEYS = [
   "entry",
   "entryDescription",
@@ -12,8 +10,6 @@ export const MEMORY_OPERATIONS_UI_COPY_KEYS = [
   "rebuildDescription",
   "reembedLabel",
   "reembedDescription",
-  "redreamLabel",
-  "redreamDescription",
   "destructiveHeading",
   "destructiveDescription",
   "deletionDetails",
@@ -41,7 +37,6 @@ export const MEMORY_OPERATIONS_UI_COPY_KEYS = [
   "historyOff",
   "historyUnavailable",
   "embeddingUnavailable",
-  "learningUnavailable",
   "consentRequired",
   "lexicalOnly",
   "servedGeneration",
@@ -49,7 +44,6 @@ export const MEMORY_OPERATIONS_UI_COPY_KEYS = [
   "confirmationOperation",
   "confirmationRebuild",
   "confirmationReembed",
-  "confirmationRedream",
   "confirmationAll",
   "confirmationLearned",
   "confirmationClear",
@@ -110,7 +104,7 @@ type CopyLocale = Readonly<Record<MemoryOperationsUiCopyKey, string>>;
 
 const EN = {
   entry: "Memory operations",
-  entryDescription: "Rebuild indexes, reprocess eligible sources, or delete derived Memory data.",
+  entryDescription: "Rebuild indexes or delete derived Memory data.",
   title: "Memory operations",
   back: "Back to Memory settings",
   intro: "Maintain or delete derived Memory data without changing raw chats or pretending background work has already finished.",
@@ -119,15 +113,13 @@ const EN = {
   rebuildLabel: "Build or rebuild search index",
   rebuildDescription: "Recreate eligible lexical or hybrid search entries from the current safe source set and catch up before activation.",
   reembedLabel: "Re-embed history index",
-  reembedDescription: "Create a qualified hybrid shadow with the currently selected embedding deployment.",
-  redreamLabel: "Reprocess existing chats",
-  redreamDescription: "Explicitly run provider-backed episode extraction over eligible retained chats. Source and suppression barriers still apply.",
+  reembedDescription: "Create a compatible hybrid shadow with the currently selected embedding deployment.",
   destructiveHeading: "Destructive Memory actions",
   destructiveDescription: "Each action commits an immediate retrieval fence, then proves the physical purge asynchronously.",
   deletionDetails: "What is and is not deleted",
   allHeading: "Memory reset",
   allLabel: "Delete everything Memory remembers",
-  allDescription: "Turn off Memory and remove saved memories, learned details, Memory summaries, and the chat-history index.",
+  allDescription: "Turn off Memory and remove saved memories, learned details, and the chat-history index.",
   allFence: "Saved Memory, Reference chat history, and Learn automatically turn off immediately. Content created before the reset cannot be reused by Memory later.",
   allRetention: "Your raw chats remain. Text already included in accepted past answers or runs is not rewritten. Data retained by providers and operator backups outside live Memory is not deleted.",
   allFuture: "Physical deletion continues in the background. If you turn Memory back on later, only genuinely new messages created after this reset are eligible; old chats do not refill it.",
@@ -139,7 +131,7 @@ const EN = {
   learnedFuture: "Physical purge continues asynchronously. The source cutoff prevents old observed chat content, rebuilds, or delayed work from recreating the deleted set; genuinely new future evidence may be learned.",
   clearHeading: "Indexed chat history",
   clearLabel: "Clear chat-history memory index",
-  clearDescription: "Fence and purge rebuildable chat excerpts, episodes, and their search entries.",
+  clearDescription: "Fence and purge rebuildable chat excerpts and their search entries.",
   clearFence: "After admission, indexed pre-clear chat history is immediately ineligible for future Memory retrieval.",
   clearRetention: "Raw retained chats, saved and learned semantic facts, immutable accepted destination runs and receipts, provider-retained requests, and operator backups are not deleted or rewritten.",
   clearFuture: "Physical derivative purge continues asynchronously. The source cutoff prevents a rebuild from restoring pre-clear content; genuinely new future statements may be indexed.",
@@ -149,15 +141,13 @@ const EN = {
   historyOff: "Turn on Reference chat history before running this operation.",
   historyUnavailable: "History indexing is unavailable in this installation.",
   embeddingUnavailable: "Select an available embedding deployment before re-embedding.",
-  learningUnavailable: "Provider-backed Memory extraction is unavailable in this installation.",
   consentRequired: "Review the current Memory utility destinations before starting provider-backed work.",
   lexicalOnly: "No embedding deployment is selected. A normal rebuild remains lexical-only; semantic matching stays unavailable.",
   servedGeneration: "Failure or cancellation never activates the shadow generation and never implies that the current active index was replaced.",
   confirmationTitle: "Confirm Memory operation",
   confirmationOperation: "Operation",
   confirmationRebuild: "Build or rebuild the search index from currently eligible sources.",
-  confirmationReembed: "Re-embed eligible history with the current qualified deployment and accepted destination policy.",
-  confirmationRedream: "Send eligible retained source content to the configured system Memory destination for explicit reprocessing.",
+  confirmationReembed: "Re-embed eligible history with the current compatible deployment and accepted destination policy.",
   confirmationAll: "Turn off Memory now and delete everything it can reuse from the admitted pre-reset set.",
   confirmationLearned: "Commit the immediate retrieval fence and enqueue durable physical deletion of the admitted automatically learned set.",
   confirmationClear: "Commit the immediate retrieval fence and enqueue durable physical deletion of the admitted history-index derivatives.",
@@ -201,12 +191,12 @@ const EN = {
   stateFailed: "The shadow operation failed. The previous active generation remains authoritative.",
   stateStale: "The source or Memory revision changed. The stale shadow was not activated.",
   stateCancelled: "The shadow operation was cancelled. The previous active generation remains authoritative.",
-  cancelBoundary: "Cancel stops only the in-progress shadow/reprocessing job. It does not switch the active generation and cannot cancel a committed deletion fence.",
+  cancelBoundary: "Cancel stops only the in-progress shadow job. It does not switch the active generation and cannot cancel a committed deletion fence.",
   errorGeneric: "The operation did not complete. No success was assumed.",
   errorStale: "Memory changed before admission. Current settings were reloaded; review and confirm again.",
   errorConsent: "Review and accept the current Memory utility destinations before provider-backed work.",
   errorEmbedding: "The selected embedding deployment is unavailable or no longer matches current settings.",
-  errorInProgress: "Another Memory rebuild or reprocessing job is already active.",
+  errorInProgress: "Another Memory rebuild job is already active.",
   errorConfirmation: "The exact one-time confirmation expired or did not match. Review and confirm again.",
   errorReferenceMismatch: "The saved reference belongs to a different Memory operation and was not trusted.",
   errorNotFound: "This saved operation reference is no longer available. No private content was returned."
@@ -214,9 +204,6 @@ const EN = {
 
 
 
-export function memoryOperationsUiCopy(
-  _locale: MemoryUiLocale,
-  key: MemoryOperationsUiCopyKey
-): string {
+export function memoryOperationsUiCopy(key: MemoryOperationsUiCopyKey): string {
   return EN[key];
 }

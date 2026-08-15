@@ -1,23 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeSearchPlan,
-  legacySearchStrategyFromPlan,
   mergeSearchEvidence
 } from "./search";
 
 describe("search plans", () => {
-  it("normalizes Off and the legacy singleton request", () => {
-    expect(decodeSearchPlan(undefined, "search-disabled")).toEqual({
-      ok: true,
-      plan: { mode: "all_selected", optionIds: [] }
-    });
-    expect(decodeSearchPlan(undefined, "perplexity-tool-search")).toEqual({
-      ok: true,
-      plan: { mode: "all_selected", optionIds: ["perplexity-tool-search"] }
-    });
-    expect(decodeSearchPlan(undefined, " search-disabled ")).toEqual({
-      ok: true,
-      plan: { mode: "all_selected", optionIds: [] }
+  it("rejects an omitted plan instead of inventing Off", () => {
+    expect(decodeSearchPlan(undefined)).toEqual({
+      code: "search_plan_invalid",
+      ok: false
     });
   });
 
@@ -38,11 +29,6 @@ describe("search plans", () => {
       code: "search_plan_invalid",
       ok: false
     });
-  });
-
-  it("projects the first option for old inspection consumers", () => {
-    expect(legacySearchStrategyFromPlan({ mode: "all_selected", optionIds: [] })).toBe("search-disabled");
-    expect(legacySearchStrategyFromPlan({ mode: "model_choice", optionIds: ["one", "two"] })).toBe("one");
   });
 });
 

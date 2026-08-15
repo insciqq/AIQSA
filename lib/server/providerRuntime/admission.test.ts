@@ -84,6 +84,7 @@ function providerModel(
         toolCalling: spec.toolCalling
       }),
       defaultParams: {},
+      modelClass: "answer",
       ...(spec.adapterKind === "openrouter_chat_completions"
         ? { openRouterRouting: { mode: "automatic", providers: [] } }
         : {}),
@@ -96,7 +97,9 @@ function providerModel(
     connection: {
       activeConfig: {
         allowPrivateNetwork: false,
+        authenticationMode: "bearer",
         apiRoot: apiRoot(spec.family),
+        responseTimeoutMs: 300_000,
         ...(spec.connectionResponseTimeoutMs === undefined
           ? {}
           : { responseTimeoutMs: spec.connectionResponseTimeoutMs })
@@ -136,10 +139,15 @@ function physicalRoute(spec: RouteSpec) {
   const draft = {
     adapterKind: spec.adapterKind,
     credentialMode,
+    maxOutputTokens: 4_096,
     maxResults: 8,
+    maxSearchCallsPerAnswer: 2,
     protocol: spec.protocol,
     providerModelId,
     queryMaxCharacters: 500,
+    reasoningPolicy: spec.adapterKind === "provider_model_client"
+      ? "lowest_supported"
+      : "provider_default",
     timeoutMs: 15_000
   };
   return {
@@ -184,7 +192,6 @@ function admissionDb(input: Readonly<{
   directCredential?: boolean;
   fullAccess?: boolean;
   grantedSearchOptionIds?: readonly string[];
-  legacyAliasOptionId?: string;
   options: readonly OptionSpec[];
   technicalModels?: readonly ModelSpec[];
   unassignedPolicy?: "require_assignment" | "use_default";
@@ -257,20 +264,6 @@ function admissionDb(input: Readonly<{
     },
     providerModelCredentialCheck: { findFirst: vi.fn(async () => ({ id: "check-1" })) },
     searchOption: { findFirst: searchOptionFindFirst },
-    searchStrategy: {
-      findUnique: vi.fn(async () => {
-        const option = input.legacyAliasOptionId
-          ? options.get(input.legacyAliasOptionId)
-          : null;
-        return option ? {
-          searchOption: {
-            archivedAt: option.archivedAt,
-            enabled: option.enabled,
-            optionId: option.optionId
-          }
-        } : null;
-      })
-    },
     user: {
       findFirst: vi.fn(async () => ({ id: "user-1", role: input.userRole ?? "admin" }))
     },
@@ -544,7 +537,7 @@ describe("provider admission", () => {
     const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
       providerConnectionId: officialOpenAiModel.connectionId,
       providerModelId: officialOpenAiModel.id,
-      searchStrategyId: "search-disabled",
+      searchPlan: { mode: "all_selected", optionIds: [] },
       userId: "user-1"
     });
 
@@ -570,7 +563,7 @@ describe("provider admission", () => {
     const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
       providerConnectionId: answer.connectionId,
       providerModelId: answer.id,
-      searchStrategyId: "search-disabled",
+      searchPlan: { mode: "all_selected", optionIds: [] },
       userId: "user-1"
     });
 
@@ -595,7 +588,7 @@ describe("provider admission", () => {
     await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
       providerConnectionId: officialOpenAiModel.connectionId,
       providerModelId: officialOpenAiModel.id,
-      searchStrategyId: "search-disabled",
+      searchPlan: { mode: "all_selected", optionIds: [] },
       userId: "user-1"
     })).rejects.toMatchObject({ code: "credential_default_missing" });
     expect(accessGrantCount).not.toHaveBeenCalled();
@@ -610,7 +603,7 @@ describe("provider admission", () => {
     await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
       providerConnectionId: officialOpenAiModel.connectionId,
       providerModelId: officialOpenAiModel.id,
-      searchStrategyId: "search-disabled",
+      searchPlan: { mode: "all_selected", optionIds: [] },
       userId: "user-1"
     })).rejects.toMatchObject({ code: "model_not_available" });
     expect(db.providerCredential.findMany).not.toHaveBeenCalled();
@@ -628,7 +621,6 @@ describe("provider admission", () => {
       providerConnectionId: officialOpenAiModel.connectionId,
       providerModelId: officialOpenAiModel.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
     const search = expectSearch(plan);
@@ -667,7 +659,6 @@ describe("provider admission", () => {
       providerConnectionId: anthropic.connectionId,
       providerModelId: anthropic.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
     const search = expectSearch(plan);
@@ -705,7 +696,6 @@ describe("provider admission", () => {
       providerConnectionId: officialAnthropicModel.connectionId,
       providerModelId: officialAnthropicModel.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
 
@@ -748,7 +738,6 @@ describe("provider admission", () => {
         ? { requiresClientToolCoexistence: true }
         : {}),
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
 
@@ -796,12 +785,11 @@ describe("provider admission", () => {
       providerConnectionId: officialOpenAiModel.connectionId,
       providerModelId: officialOpenAiModel.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
 
-  it("keeps singleton same-connection Gemini Search hosted", async () => {
+  it("keeps single-source same-connection Gemini Search hosted", async () => {
     const option = geminiOption();
     const { db, providerModelFindUnique } = admissionDb({
       answer: geminiModel,
@@ -813,7 +801,6 @@ describe("provider admission", () => {
       providerConnectionId: geminiModel.connectionId,
       providerModelId: geminiModel.id,
       searchPlan: { mode: "all_selected", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
 
@@ -856,7 +843,6 @@ describe("provider admission", () => {
           ? { requiresClientToolCoexistence: true }
           : {}),
         searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-        searchStrategyId: option.optionId,
         userId: "user-1"
       });
       expect(expectSearch(plan)).toMatchObject({
@@ -883,7 +869,6 @@ describe("provider admission", () => {
         mode: "all_selected",
         optionIds: [google.optionId, openAi.optionId]
       },
-      searchStrategyId: google.optionId,
       userId: "user-1"
     });
     expect(plan.searches?.map((search) => search.configuration.adapterKind)).toEqual([
@@ -905,7 +890,6 @@ describe("provider admission", () => {
           mode: "model_choice",
           optionIds: [google.optionId, openAi.optionId]
         },
-        searchStrategyId: google.optionId,
         userId: "user-1"
       }
     );
@@ -928,7 +912,6 @@ describe("provider admission", () => {
           mode: "all_selected",
           optionIds: ["gemini-google-search", openAi.optionId]
         },
-        searchStrategyId: "gemini-google-search",
         userId: "user-1"
       }
     )).rejects.toMatchObject({ code: "search_strategy_not_available" });
@@ -976,7 +959,6 @@ describe("provider admission", () => {
       providerConnectionId: anthropic.connectionId,
       providerModelId: anthropic.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
 
@@ -1010,7 +992,6 @@ describe("provider admission", () => {
       providerConnectionId: anthropic.connectionId,
       providerModelId: anthropic.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
 
@@ -1048,7 +1029,6 @@ describe("provider admission", () => {
       providerConnectionId: anthropic.connectionId,
       providerModelId: anthropic.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
@@ -1073,7 +1053,6 @@ describe("provider admission", () => {
       providerConnectionId: officialOpenAiModel.connectionId,
       providerModelId: officialOpenAiModel.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
@@ -1105,7 +1084,6 @@ describe("provider admission", () => {
       providerConnectionId: anthropic.connectionId,
       providerModelId: anthropic.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
@@ -1135,7 +1113,6 @@ describe("provider admission", () => {
       providerConnectionId: customAnswer.connectionId,
       providerModelId: customAnswer.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
 
@@ -1172,7 +1149,6 @@ describe("provider admission", () => {
       providerConnectionId: officialOpenAiModel.connectionId,
       providerModelId: officialOpenAiModel.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
 
@@ -1210,7 +1186,6 @@ describe("provider admission", () => {
       providerConnectionId: "connection-anthropic",
       providerModelId: "model-opus",
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
@@ -1255,7 +1230,6 @@ describe("provider admission", () => {
       providerConnectionId: anthropic.connectionId,
       providerModelId: anthropic.id,
       searchPlan: { mode: "all_selected", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
 
@@ -1287,7 +1261,6 @@ describe("provider admission", () => {
       providerConnectionId: officialOpenAiModel.connectionId,
       providerModelId: officialOpenAiModel.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
@@ -1319,7 +1292,6 @@ describe("provider admission", () => {
       providerConnectionId: gemini.connectionId,
       providerModelId: gemini.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     });
 
@@ -1330,114 +1302,12 @@ describe("provider admission", () => {
     });
   });
 
-  it("canonicalizes the legacy OpenAI client id to the one logical option", async () => {
-    const option = openAiOption();
-    const { db, searchOptionFindFirst } = admissionDb({
-      answer: officialOpenAiModel,
-      legacyAliasOptionId: option.optionId,
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "model_choice", optionIds: ["openai-provider-web-search"] },
-      searchStrategyId: "openai-provider-web-search",
-      userId: "user-1"
-    });
-
-    expect(plan.requestedSearchPlan).toEqual({
-      mode: "model_choice",
-      optionIds: ["openai-native-web-search"]
-    });
-    expect(plan.requestedSearchStrategyId).toBe("openai-native-web-search");
-    expect(expectSearch(plan).optionId).toBe("openai-native-web-search");
-    expect(searchOptionFindFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ optionId: "openai-native-web-search" })
-    }));
-  });
-
-  it("resolves the legacy client id through its exact custom-owned route", async () => {
-    const customModel: ModelSpec = {
-      ...officialOpenAiModel,
-      adapterKind: "openai_responses_compatible",
-      connectionId: "connection-custom",
-      family: "openai_compatible",
-      id: "model-custom-answer"
-    };
-    const option = openAiOption({
-      clientConnectionModelId: customModel.id,
-      optionId: `custom-web-search:${customModel.connectionId}`,
-      sourceConnectionId: customModel.connectionId
-    });
-    const { db } = admissionDb({
-      answer: customModel,
-      legacyAliasOptionId: option.optionId,
-      options: [option]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: customModel.connectionId,
-      providerModelId: customModel.id,
-      searchPlan: { mode: "model_choice", optionIds: ["openai-provider-web-search"] },
-      searchStrategyId: "openai-provider-web-search",
-      userId: "user-1"
-    });
-
-    expect(plan.requestedSearchPlan?.optionIds).toEqual([option.optionId]);
-    expect(plan.requestedSearchStrategyId).toBe(option.optionId);
-    expect(expectSearch(plan)).toMatchObject({
-      optionId: option.optionId,
-      integrationId: `route-hosted:${option.optionId}`
-    });
-  });
-
-  it("fails closed when the legacy client id has no exact physical owner", async () => {
-    const option = openAiOption();
-    const { db } = admissionDb({
-      answer: officialOpenAiModel,
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "model_choice", optionIds: ["openai-provider-web-search"] },
-      searchStrategyId: "openai-provider-web-search",
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("rejects aliases that become duplicate logical options after canonicalization", async () => {
-    const option = openAiOption();
-    const { db } = admissionDb({
-      answer: officialOpenAiModel,
-      legacyAliasOptionId: option.optionId,
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: {
-        mode: "model_choice",
-        optionIds: ["openai-native-web-search", "openai-provider-web-search"]
-      },
-      searchStrategyId: "openai-native-web-search",
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("checks personal preference grants against canonical logical option ids", async () => {
+  it("checks personal preference grants against logical option ids", async () => {
     const option = openAiOption();
     const { accessGrantCount, db } = admissionDb({
       answer: officialOpenAiModel,
       fullAccess: false,
       grantedSearchOptionIds: ["openai-native-web-search"],
-      legacyAliasOptionId: option.optionId,
       options: [option],
       technicalModels: [officialOpenAiSearchModel]
     });
@@ -1448,10 +1318,9 @@ describe("provider admission", () => {
       searchPlan: { mode: "model_choice", optionIds: ["openai-native-web-search"] },
       searchPreferencePlan: {
         mode: "model_choice",
-        optionIds: ["openai-provider-web-search"]
+        optionIds: ["openai-native-web-search"]
       },
       searchPreferenceSource: "personal",
-      searchStrategyId: "openai-native-web-search",
       userId: "user-1"
     });
 
@@ -1483,7 +1352,6 @@ describe("provider admission", () => {
       searchPlan: { mode: "all_selected", optionIds: [] },
       searchPreferencePlan: { mode: "model_choice", optionIds: [unavailable.optionId] },
       searchPreferenceSource: "personal",
-      searchStrategyId: "search-disabled",
       userId: "user-1"
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
@@ -1514,7 +1382,6 @@ describe("provider admission", () => {
       searchPlan: { mode: "all_selected", optionIds: [] },
       searchPreferencePlan: { mode: "model_choice", optionIds: [unavailable.optionId] },
       searchPreferenceSource: "personal",
-      searchStrategyId: "search-disabled",
       userId: "user-1"
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
@@ -1560,7 +1427,6 @@ describe("provider admission", () => {
       providerConnectionId: anthropic.connectionId,
       providerModelId: anthropic.id,
       searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      searchStrategyId: option.optionId,
       userId: "user-1"
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
@@ -1581,7 +1447,6 @@ describe("provider admission", () => {
       providerConnectionId: officialOpenAiModel.connectionId,
       providerModelId: officialOpenAiModel.id,
       searchPlan: { mode: "model_choice", optionIds: ["openai-native-web-search"] },
-      searchStrategyId: "openai-native-web-search",
       userId: "user-1"
     })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });

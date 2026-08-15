@@ -1,0 +1,293 @@
+.v2-answer-outputs {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.875rem;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.v2-answer-identity {
+  width: fit-content;
+  padding: 0.1875rem 0;
+  color: var(--v2-color-text3);
+}
+
+.v2-answer-sources {
+  min-width: 0;
+  border-top: 1px solid var(--v2-color-border);
+}
+
+.v2-answer-sources > summary {
+  display: inline-flex;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.25rem;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+  cursor: pointer;
+  list-style: none;
+}
+
+.v2-answer-sources > summary::-webkit-details-marker {
+  display: none;
+}
+
+.v2-answer-sources > summary:hover {
+  color: var(--v2-color-text);
+  background: var(--v2-color-hover);
+}
+
+.v2-answer-sources > summary:focus-visible,
+.v2-answer-source-list a:focus-visible,
+.v2-citation-marker:focus-visible,
+.v2-tool-approval summary:focus-visible,
+.v2-memory-action-confirmation textarea:focus-visible {
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 2px;
+}
+
+.v2-answer-sources-body {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.25rem 0.25rem 0.875rem;
+}
+
+.v2-answer-source-list,
+.v2-answer-knowledge-sources {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v2-answer-source-list li,
+.v2-answer-knowledge-sources li {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  gap: 0.5rem;
+  padding: 0.4375rem 0;
+  border-bottom: 1px solid var(--v2-color-border);
+}
+
+.v2-answer-source-index {
+  color: var(--v2-color-accent);
+  font-family: var(--font-mono), monospace;
+}
+
+.v2-answer-source-list a,
+.v2-answer-knowledge-sources strong {
+  color: var(--v2-color-text);
+  font-weight: 500;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.v2-answer-source-list a:hover {
+  color: var(--v2-color-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.v2-answer-source-list small,
+.v2-answer-knowledge-sources small {
+  display: block;
+  margin-top: 0.125rem;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  overflow-wrap: anywhere;
+}
+
+.v2-gemini-suggestions {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0.75rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-surface);
+}
+
+.v2-gemini-suggestions-heading {
+  margin: 0 0 0.5rem;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.v2-gemini-suggestions-error,
+.v2-answer-output-error,
+.v2-memory-action-error {
+  color: var(--v2-color-danger);
+}
+
+.v2-gemini-suggestions-error {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.v2-gemini-suggestions-host {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.v2-memory-action-confirmation {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  gap: 0.5rem;
+  margin-top: 0.625rem;
+  padding: 0.75rem;
+  border-left: 2px solid var(--v2-color-ok);
+  border-radius: 0 var(--v2-radius-s) var(--v2-radius-s) 0;
+  color: var(--v2-color-text2);
+  background: color-mix(in srgb, var(--v2-color-ok) 6%, transparent);
+}
+
+.v2-memory-action-confirmation p,
+.v2-memory-action-confirmation blockquote {
+  margin: 0;
+}
+
+.v2-memory-action-confirmation blockquote {
+  margin-top: 0.375rem;
+  color: var(--v2-color-text);
+  overflow-wrap: anywhere;
+}
+
+.v2-memory-action-confirmation form {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.625rem;
+}
+
+.v2-memory-action-confirmation form label {
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+}
+
+.v2-memory-action-confirmation textarea {
+  min-height: 5rem;
+  resize: vertical;
+  padding: 0.625rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  background: var(--v2-color-surface);
+  font: inherit;
+}
+
+.v2-memory-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.v2-citation-marker {
+  margin: 0 0.0625rem;
+  padding: 0.0625rem 0.1875rem;
+  border: 0;
+  border-radius: 0.25rem;
+  color: var(--v2-color-accent);
+  background: transparent;
+  font: 0.75rem/1 var(--font-mono), monospace;
+  vertical-align: 0.08em;
+  cursor: pointer;
+}
+
+.v2-citation-marker:hover {
+  background: var(--v2-color-accent-dim);
+}
+
+.v2-tool-approval {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  padding: 0.875rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface);
+  font-size: 0.75rem;
+}
+
+.v2-tool-approval-heading {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.v2-tool-approval-heading > span {
+  display: grid;
+  min-width: 0;
+}
+
+.v2-tool-approval-heading small {
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+}
+
+.v2-tool-approval-heading strong {
+  color: var(--v2-color-text);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.v2-tool-approval > p {
+  margin: 0;
+}
+
+.v2-tool-approval pre {
+  max-height: 11rem;
+  margin: 0.375rem 0 0;
+  padding: 0.625rem;
+  overflow: auto;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-code-bg);
+  font: 0.6875rem/1.5 var(--font-mono), monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.v2-tool-approval details > small {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--v2-color-warn);
+}
+
+.v2-tool-approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+@media (max-width: 899px) {
+  .v2-answer-sources-body {
+    padding-left: 0;
+  }
+
+  .v2-tool-approval-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .v2-tool-approval-actions .v2-button {
+    width: 100%;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-citation-marker {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+  }
+}

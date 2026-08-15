@@ -88,10 +88,9 @@ type QuickChatDetailBody = {
 type QuickRunBody = {
   run: {
     id: string;
-    modelId: string;
-    provider: string;
     status: string;
   };
+  version: 1;
 };
 
 function json(value: unknown): Prisma.InputJsonValue {
@@ -221,7 +220,12 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
     userId: DEFAULT_BOOTSTRAP_USER_ID
   };
   const checkedAt = new Date();
-  const connectionConfig = { allowPrivateNetwork: true, apiRoot };
+  const connectionConfig = {
+    allowPrivateNetwork: true,
+    apiRoot,
+    authenticationMode: "bearer" as const,
+    responseTimeoutMs: 300_000
+  };
   const streamingDefaultParams = {
     ...candidate.configuration.defaultParams,
     background: false,
@@ -268,7 +272,6 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
         activeVersion: 1,
         capabilities: json(candidate.model.capabilities),
         connectionId: fixture.connectionId,
-        contextWindow: candidate.model.contextWindow,
         defaultParams: json(streamingDefaultParams),
         displayName: candidate.displayName,
         draftConfig: json(streamingModelConfiguration),
@@ -359,7 +362,6 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
             : {}),
           [`${fixture.connectionId}:${fixture.modelId}`]: {
             backgroundMode: false,
-            searchStrategyId: "search-disabled",
             streamMode: true
           }
         }),
@@ -527,7 +529,8 @@ const discoveredEndpoints: AdminOpenRouterDiscoveredEndpoint[] = [
 function connectionDraft(configuration: {
   allowPrivateNetwork: boolean;
   apiRoot: string;
-  responseTimeoutSeconds?: number;
+  authenticationMode: "bearer" | "none";
+  responseTimeoutSeconds: number;
 }, displayName: string): AdminProviderConnection {
   return {
     activatedAt: null,
@@ -547,7 +550,8 @@ function connectionDraft(configuration: {
     id: "provider-e2e",
     models: [],
     unassignedPolicy: "use_default",
-    updatedAt: now
+    updatedAt: now,
+    userAssignments: []
   };
 }
 
@@ -804,21 +808,21 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(section.getByLabel("API key")).toHaveCount(0);
   await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
   await expect(section.getByRole("heading", { name: "GPT-5.6 Sol" })).toBeVisible();
-  const readyReceipt = section.getByTestId("provider-quick-ready-receipt");
-  await expect(readyReceipt).toContainText("API key: saved and verified.");
-  await expect(readyReceipt).toContainText("Prepared model: GPT-5.6 Sol.");
-  await expect(readyReceipt).toContainText(
+  const readySummary = section.getByTestId("provider-quick-ready-summary");
+  await expect(readySummary).toContainText("API key: saved and verified.");
+  await expect(readySummary).toContainText("Prepared model: GPT-5.6 Sol.");
+  await expect(readySummary).toContainText(
     "Available models: GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol."
   );
-  await expect(readyReceipt).toContainText("Access: available to this administrator.");
-  await expect(readyReceipt).toContainText(
+  await expect(readySummary).toContainText("Access: available to this administrator.");
+  await expect(readySummary).toContainText(
     "Connection default credential: set to this verified key."
   );
-  await expect(readyReceipt).toContainText(
+  await expect(readySummary).toContainText(
     "Default models: unchanged. Choose one explicitly from the model picker or the Default model task."
   );
-  await expect(readyReceipt).not.toContainText("Default selection: updated.");
-  await expect(readyReceipt).not.toContainText("Run profiles filled");
+  await expect(readySummary).not.toContainText("Default selection: updated.");
+  await expect(readySummary).not.toContainText("Run profiles filled");
   await expect(section.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
   await expect(quickFeedback).toHaveText("OpenAI is ready to chat with GPT-5.6 Sol.");
   await expect(section.getByText("e2e-quick-write-only-key")).toHaveCount(0);
@@ -940,7 +944,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   expect(messageRequests[0]).toMatchObject({
     modelId: installedFixture.modelId,
     provider: installedFixture.connectionId,
-    searchStrategy: "search-disabled"
+    searchPlan: { mode: "all_selected", optionIds: [] }
   });
   expect(messageRequests[0]?.content).toEqual({
     blocks: [{ text: question, type: "text" }]
@@ -984,31 +988,17 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   expect(assistantMessage?.modelRunId).toBeTruthy();
   const runId = assistantMessage!.modelRunId!;
   trackedRunIds.push(runId);
-  await expect(prisma.modelRun.findUnique({
-    select: {
-      assistantMessage: {
-        select: { content: true, groundedAt: true }
-      },
-      finalProviderResponsePreview: true
-    },
-    where: { id: runId }
-  })).resolves.toMatchObject({
-    assistantMessage: {
-      content: { blocks: [{ text: quickAnswer, type: "text" }] },
-      groundedAt: null
-    },
-    finalProviderResponsePreview: { text: quickAnswer }
-  });
   expect(JSON.stringify(assistantMessage?.content)).toContain(quickAnswer);
 
   const runResponse = await page.request.get(`/api/model-runs/${runId}`);
   expect(runResponse.ok()).toBe(true);
   const runBody = await runResponse.json() as QuickRunBody;
-  expect(runBody.run).toMatchObject({
-    id: runId,
-    modelId: "gpt-5.6-sol",
-    provider: "openai",
-    status: "complete"
+  expect(runBody).toEqual({
+    run: {
+      id: runId,
+      status: "complete"
+    },
+    version: 1
   });
   await expect(prisma.providerRunBinding.findUnique({
     select: {
@@ -1186,7 +1176,7 @@ test("administrator discovers and configures a Custom compatible provider on wid
 
     await section.getByRole("button", { name: "Test & Save" }).click();
     await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
-    const ready = section.getByTestId("provider-custom-ready-receipt");
+    const ready = section.getByTestId("provider-custom-ready-summary");
     await expect(ready).toContainText("API key saved and verified.");
     await expect(ready).toContainText("assigned directly to this administrator");
     await expect(section.getByText(key)).toHaveCount(0);
@@ -1241,7 +1231,8 @@ test("administrator activates a Custom replacement and deletes its complete conf
   const connectionConfiguration = {
     allowPrivateNetwork: false,
     apiRoot: "https://lifecycle.fixture.invalid/v1",
-    authenticationMode: "bearer" as const
+    authenticationMode: "bearer" as const,
+    responseTimeoutSeconds: 300
   };
   const modelConfiguration: AdminProviderModelConfiguration = {
     adapterKind: "openai_responses_compatible",
@@ -1256,6 +1247,7 @@ test("administrator activates a Custom replacement and deletes its complete conf
       vision: false
     },
     defaultParams: { background: false, store: false, stream: true },
+    modelClass: "answer",
     upstreamModelId: "fixture/lifecycle-model"
   };
   let connection: AdminProviderConnection | null = {
@@ -1439,6 +1431,8 @@ test("administrator activates a Custom replacement and deletes its complete conf
     credentialId: "custom-lifecycle-credential"
   }]);
   await section.getByRole("tab", { name: "Credentials" }).click();
+  await page.getByTestId("admin-discard-unsaved-confirmation")
+    .getByRole("button", { name: "Confirm discard changes" }).click();
   await expect(section.getByText("Replacement pending", { exact: true })).toBeVisible();
   await section.getByRole("button", {
     name: "Activate replacement for Primary credential"
@@ -1457,7 +1451,7 @@ test("administrator activates a Custom replacement and deletes its complete conf
   await section.getByRole("button", { name: "Delete Lifecycle Custom connection" }).click();
   const confirmation = page.getByTestId("admin-confirm-delete-provider-connection");
   await expect(confirmation).toContainText(
-    "encrypted credentials, assignments, model grants, and personal, chat, or installation model defaults"
+    "encrypted credentials, assignments, model grants, personal, chat, or installation model defaults, and the system model role"
   );
   await confirmation.getByRole("button", { name: "Delete connection and configuration" }).click();
   await expect(section.getByText("No provider connections")).toBeVisible();
@@ -1505,7 +1499,8 @@ test("administrator completes the OpenRouter key, model, route, check, and activ
       const configuration = body.configuration as {
         allowPrivateNetwork: boolean;
         apiRoot: string;
-        responseTimeoutSeconds?: number;
+        authenticationMode: "bearer" | "none";
+        responseTimeoutSeconds: number;
       };
       connections = [connectionDraft(configuration, String(body.displayName))];
       await route.fulfill({ contentType: "application/json", json: { connections }, status: 201 });

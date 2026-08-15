@@ -10,7 +10,6 @@ import {
 } from "@/components/app-shell/attachmentLifecycle";
 import { shellFetch } from "@/components/app-shell/shellApi";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
-import { isRecord } from "@/components/app-shell/shellValues";
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import { latestResumableRunId } from "@/components/app-shell/threadPath";
 import type { ChatDetail, ChatSummary, Notice } from "@/components/app-shell/types";
@@ -20,15 +19,12 @@ import {
   RESUME_POLL_MAX_DELAY_MS
 } from "@/components/app-shell/powerAppShellData";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
-import {
-  selectRunSurface,
-  useRunSurfaceStore
-} from "@/components/app-shell/runSurfaceStore";
+import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { selectThreadSnapshot, useThreadStore } from "@/components/app-shell/threadStore";
 import {
   decodeCancelModelRunResponse,
-  decodeGetModelRunResponse,
-  type PersistedRun
+  decodeRunOutcomeResponse,
+  type RunOutcome
 } from "@/lib/contracts/runs";
 import { decodeUploadAttachmentResponse, decodeUploadErrorResponse } from "@/lib/contracts/uploads";
 import type { Dispatch, SetStateAction } from "react";
@@ -37,19 +33,19 @@ type MutableRef<T> = {
   current: T;
 };
 
-function isActivePersistedRunStatus(status: string): boolean {
+function isActiveRunStatus(status: string): boolean {
   return status === "streaming" || status === "queued" || status === "in_progress";
 }
 
 type RunFetchOutcome =
-  | { kind: "found"; run: PersistedRun }
+  | { kind: "found"; run: RunOutcome }
   | { kind: "not_found" }
   | { kind: "unknown" };
 
 function isTerminalRunFetchOutcome(outcome: RunFetchOutcome): boolean {
   return (
     outcome.kind === "not_found" ||
-    (outcome.kind === "found" && !isActivePersistedRunStatus(outcome.run.status))
+    (outcome.kind === "found" && !isActiveRunStatus(outcome.run.status))
   );
 }
 
@@ -312,14 +308,14 @@ export function useRunLifecycleActions({
     }
   }
 
-  async function requestPersistedRun(runId: string, chatId: string): Promise<RunFetchOutcome> {
+  async function requestRunOutcome(runId: string, chatId: string): Promise<RunFetchOutcome> {
     try {
       const response = await shellFetch(`/api/model-runs/${runId}`);
       if (!response.ok) {
         return response.status === 404 ? { kind: "not_found" } : { kind: "unknown" };
       }
 
-      const run = decodeGetModelRunResponse(await response.json());
+      const run = decodeRunOutcomeResponse(await response.json());
       if (!run || run.id !== runId) {
         throw new Error("run_malformed");
       }
@@ -337,52 +333,19 @@ export function useRunLifecycleActions({
   }
 
   async function fetchRunOutcome(runId: string, chatId: string): Promise<RunFetchOutcome> {
-    const surfaceAtRequest = selectRunSurface(useRunSurfaceStore.getState(), chatId);
-    const outcome = await requestPersistedRun(runId, chatId);
+    const outcome = await requestRunOutcome(runId, chatId);
     if (outcome.kind !== "found") return outcome;
     const { run } = outcome;
     const activeStream = useRunLifecycleStore.getState().activeStreams[chatId];
-    const currentSurface = selectRunSurface(useRunSurfaceStore.getState(), chatId);
-    const surfaceChanged =
-      (activeStream && activeStream.runId !== run.id) ||
-      (!activeStream &&
-        currentSurface !== surfaceAtRequest &&
-        currentSurface.lastRun?.id !== run.id);
-    if (surfaceChanged) {
-      return { kind: "found", run };
+    if (activeStream && (!activeStream.runId || activeStream.runId === run.id)) {
+      useRunLifecycleStore.getState().runIdReceived({ chatId, runId: run.id });
     }
-    useRunSurfaceStore.getState().cacheRun(chatId, run);
-
-    useRunLifecycleStore.getState().runIdReceived({ chatId, runId: run.id });
-    useRunSurfaceStore.getState().replaceSurface(chatId, {
-      events: run.events.map((event) => ({
-        data:
-          event.eventType === "usage" && isRecord(event.payload)
-            ? {
-                ...event.payload,
-                estimatedCostMicros: run.estimatedCostMicros
-              }
-            : event.payload,
-        type: event.eventType
-      })),
-      lastRun: run
-    });
-
     return { kind: "found", run };
   }
 
   async function fetchRun(runId: string, chatId: string) {
     const outcome = await fetchRunOutcome(runId, chatId);
     return outcome.kind === "found" ? outcome.run : null;
-  }
-
-  async function fetchRunReceipt(runId: string, chatId: string) {
-    const cached = selectRunSurface(useRunSurfaceStore.getState(), chatId).runsById[runId];
-    if (cached && !isActivePersistedRunStatus(cached.status)) return cached;
-    const outcome = await requestPersistedRun(runId, chatId);
-    if (outcome.kind !== "found") return null;
-    useRunSurfaceStore.getState().cacheRun(chatId, outcome.run);
-    return outcome.run;
   }
 
   function ownsResume(chatId: string, runId: string): boolean {
@@ -526,7 +489,7 @@ export function useRunLifecycleActions({
         } else if (
           result.kind === "not_cancelled" &&
           stillOwnsSource &&
-          !isActivePersistedRunStatus(result.run.status)
+          !isActiveRunStatus(result.run.status)
         ) {
           useRunLifecycleStore.getState().streamFinished({ chatId: sourceChatId });
         }
@@ -550,7 +513,6 @@ export function useRunLifecycleActions({
 
   return {
     fetchRun,
-    fetchRunReceipt,
     retryAttachment,
     resumeChatRun,
     stopCurrentRun,

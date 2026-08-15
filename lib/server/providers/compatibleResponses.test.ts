@@ -20,6 +20,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       ],
       mode: "branch_path"
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -39,7 +41,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     previousProviderResponseId: "must-not-be-used",
     prompt: { developer: null, system: null },
     provider: "custom",
-    searchStrategy: "search-disabled",
+    searchPlan: { mode: "all_selected", options: [] },
     ...overrides
   };
 }
@@ -126,8 +128,7 @@ describe("compatible Responses adapter", () => {
   it("serializes standard hosted web search while remaining stateless", () => {
     expect(buildCompatibleResponsesRequest(
       request({
-        searchPlan: { mode: "model_choice", options: [hostedSearchOption()] },
-        searchStrategy: "custom-web-search:connection-custom"
+        searchPlan: { mode: "model_choice", options: [hostedSearchOption()] }
       })
     )).toMatchObject({
       background: false,
@@ -254,8 +255,7 @@ describe("compatible Responses adapter", () => {
     const events = [];
     const stream = adapter.stream(request({
       params: { stream: true },
-      searchPlan: { mode: "model_choice", options: [hostedSearchOption()] },
-      searchStrategy: "custom-web-search:connection-custom"
+      searchPlan: { mode: "model_choice", options: [hostedSearchOption()] }
     }));
     let next = await stream.next();
     while (!next.done) {

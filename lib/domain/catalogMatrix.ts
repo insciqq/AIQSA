@@ -77,6 +77,35 @@ export function reconcileSearchPlanSelection(
   };
 }
 
+export function reconcileModelSearchPlan(
+  model: Pick<CatalogModel, "searchOptionCompatibility" | "searchStrategyIds"> | undefined,
+  selectedOptionIds: readonly string[],
+  mode: SearchPlanMode,
+  searchOptions: readonly CatalogSearchStrategy[]
+): SearchPlan {
+  if (!model) return { mode: "all_selected", optionIds: [] };
+  const concreteOptionIds = new Set(
+    searchOptions
+      .filter((option) => option.kind !== "none")
+      .map((option) => option.strategyId)
+  );
+  const availableOptionIds = new Set(
+    model.searchStrategyIds.filter((optionId) => concreteOptionIds.has(optionId))
+  );
+  const effectiveOptions = searchOptions.map((option) => ({
+    ...option,
+    executionModes:
+      model.searchOptionCompatibility?.[option.strategyId]?.executionModes ??
+      option.executionModes ??
+      []
+  }));
+  return reconcileSearchPlanSelection(
+    selectedOptionIds.filter((optionId) => availableOptionIds.has(optionId)),
+    mode,
+    effectiveOptions
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -201,23 +230,6 @@ export function resolveSearchRouteForModel(
 ): SearchStrategyRouteCatalogEntry | null {
   if (option.kind === "none") return null;
   return compatibleSearchRoutesForModel(model, option)[0] ?? null;
-}
-
-export function resolveSearchStrategyId(
-  model: Pick<CatalogModel, "searchStrategyIds"> | null | undefined,
-  preferredSearchStrategyId: string | null | undefined
-): string {
-  const strategyIds = model?.searchStrategyIds ?? [];
-
-  if (preferredSearchStrategyId && strategyIds.includes(preferredSearchStrategyId)) {
-    return preferredSearchStrategyId;
-  }
-
-  if (strategyIds.includes("search-disabled")) {
-    return "search-disabled";
-  }
-
-  return strategyIds[0] ?? "search-disabled";
 }
 
 export function buildCatalogModel(

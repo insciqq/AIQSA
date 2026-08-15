@@ -608,7 +608,7 @@ export function createKnowledgeLibraryActions() {
     store().patch({
       notice: {
         kind: "success",
-        text: "Publication revoked. Future runs lose access; accepted runs keep their evidence."
+        text: "Publication revoked. Future runs lose access; accepted runs keep their admitted revision."
       }
     });
   }

@@ -1,3 +1,5 @@
+import type { Catalog } from "../../../lib/contracts/catalog";
+
 export type MatrixModel = {
   capabilities: {
     background: boolean;
@@ -9,7 +11,7 @@ export type MatrixModel = {
     streaming: boolean;
     toolCalling: boolean;
   };
-  contextWindow: number;
+  contextWindow: number | null;
   defaultParams: Record<string, unknown>;
   displayName: string;
   modelId: string;
@@ -137,10 +139,8 @@ export const matrixCatalog = {
     provider: "openai",
     searchPlan: { mode: "all_selected", optionIds: [] },
     searchPreferenceSource: "personal",
-    searchStrategyId: "search-disabled",
     showCitations: true,
     showReasoningBlocks: false,
-    showToolActivity: true,
   },
   models: [
     matrixModel({
@@ -219,21 +219,16 @@ export const matrixCatalog = {
   ],
   searchStrategies: [
     {
-      config: {},
       description: "No Search tool",
       displayName: "No Search",
       kind: "none",
-      provider: "fake",
       strategyId: "search-disabled"
     },
     {
-      config: {},
       description: "Provider-neutral Perplexity search tool",
       displayName: "Perplexity tool",
       kind: "perplexity_tool_search",
-      modelId: "perplexity/sonar-pro-search",
-      provider: "openrouter",
       strategyId: "perplexity-tool-search"
     }
   ]
-};
+} satisfies Catalog;

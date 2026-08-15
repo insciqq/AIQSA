@@ -124,20 +124,20 @@ const deckV1: GeneratedArtifactVersion = {
   useInNextMessageAvailable: true
 };
 
-const legacyV1: GeneratedArtifactVersion = {
+const previewUnavailableV1: GeneratedArtifactVersion = {
   branchLabel: "Active branch",
   byteSize: 98_304,
   createdAtLabel: "Aug 13, 14:40",
   downloadAvailable: true,
   format: "xlsx",
-  id: "artifact-version-private-legacy-v1",
+  id: "artifact-version-private-preview-unavailable-v1",
   number: 1,
   parentVersionNumber: null,
   preview: {
     reason: "The renderer does not support displaying this file.",
     status: "failed"
   },
-  sourceMessageId: "message-private-legacy-v1",
+  sourceMessageId: "message-private-preview-unavailable-v1",
   sourceMessageLabel: "Answer “Проверил исходную книгу”",
   structuralSummary: "File ready",
   useInNextMessageAvailable: true
@@ -211,14 +211,14 @@ const cancelledArtifact: GeneratedArtifactProjection = {
 };
 
 const previewUnavailableArtifact: GeneratedArtifactProjection = {
-  boundVersionId: legacyV1.id,
+  boundVersionId: previewUnavailableV1.id,
   events: readyEvents,
   format: "xlsx",
-  id: "artifact-private-legacy",
-  logicalFileId: "logical-file-private-legacy",
-  name: "legacy.xlsx",
+  id: "artifact-private-preview-unavailable",
+  logicalFileId: "logical-file-private-preview-unavailable",
+  name: "unsupported-preview.xlsx",
   status: "ready",
-  versions: [legacyV1]
+  versions: [previewUnavailableV1]
 };
 
 export function artifactFixturesForState(

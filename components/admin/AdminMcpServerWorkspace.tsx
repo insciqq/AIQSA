@@ -416,10 +416,10 @@ function OverviewTask({ controller, onOpenTask, server }: Readonly<{
     <div className="grid gap-6">
       <div className="grid gap-4 sm:grid-cols-3">
         <Fact
-          detail={archived ? "Legacy record is retained as read-only evidence." : "Controls whether the active revision is offered to entitled users."}
+          detail={archived ? "Archived records are retained read-only." : "Controls whether the active revision is offered to entitled users."}
           label="Availability"
           tone={archived ? "text-critical" : "text-ink"}
-          value={archived ? "Legacy archived" : <AdminAvailabilityStatus enabled={server.enabled} />}
+          value={archived ? "Archived" : <AdminAvailabilityStatus enabled={server.enabled} />}
         />
         <Fact detail={publication.detail} label="Publication" tone={publication.tone} value={publication.label} />
         <Fact detail={oauth.detail} label="Validation identity" tone={oauth.tone} value={oauth.label} />
@@ -436,9 +436,9 @@ function OverviewTask({ controller, onOpenTask, server }: Readonly<{
         <h4 className="text-sm font-semibold text-ink">Next publication step</h4>
         <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">
           {archived
-            ? "This legacy archived record is read-only."
+            ? "This archived record is read-only."
             : activationInProgress
-              ? "Setup is running in the background. The stage receipt above updates automatically."
+              ? "Setup is running in the background. The status above updates automatically."
               : activationFailed
                 ? "Review the activation failure above, then retry the same activation or adjust the definition."
             : activationAvailable
@@ -762,7 +762,7 @@ function RuntimeTask({ controller, server }: Readonly<{
         <p className="mt-1 max-w-3xl text-xs leading-5 text-ink-muted">Enable or disable whether the active installation revision is offered to users who already have MCP access. Access assignments remain in Users and Access & groups.</p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           {archived ? (
-            <span className="font-mono text-xs font-medium text-critical">LEGACY ARCHIVED</span>
+            <span className="font-mono text-xs font-medium text-critical">ARCHIVED</span>
           ) : (
             <AdminAvailabilityStatus enabled={server.enabled} />
           )}
@@ -792,12 +792,12 @@ function DangerTask({ controller, server }: Readonly<{
 }>) {
   const [confirm, setConfirm] = useState(false);
   if (server.archivedAt) {
-    return <p className="text-sm text-ink-muted">Legacy archived records are read-only. No Archive, restore, or delete action is available here.</p>;
+    return <p className="text-sm text-ink-muted">Archived records are read-only. No restore or delete action is available here.</p>;
   }
   return (
     <section className="max-w-3xl border-l-2 border-critical bg-critical/10 px-4 py-4">
       <h4 className="text-sm font-semibold text-ink">Delete server</h4>
-      <p className="mt-1 text-xs leading-5 text-ink-secondary">Deletion is irreversible. {server.name} disappears from catalogs and new runs immediately; already accepted runs may finish and keep their recorded tool evidence.</p>
+      <p className="mt-1 text-xs leading-5 text-ink-secondary">Deletion is irreversible. {server.name} disappears from catalogs and new runs immediately; already accepted runs may finish and keep their private tool-call safety records.</p>
       {confirm ? (
         <div className="mt-4 grid gap-3 text-xs text-critical">
           <p>Delete {server.name}? This cannot be undone.</p>

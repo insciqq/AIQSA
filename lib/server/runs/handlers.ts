@@ -2,8 +2,8 @@ import { getAuthConfig, type AuthConfig } from "../auth/config";
 import type {
   CancelModelRunNotCancelableResponse,
   CancelModelRunSuccessResponse,
-  GetModelRunResponse,
-  ModelRunErrorResponse
+  ModelRunErrorResponse,
+  RunOutcomeResponse
 } from "../../contracts/runs";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
@@ -45,6 +45,7 @@ import {
   ProviderAdmissionConflictError
 } from "./runRepositoryContract";
 import type { RunRepository } from "./runRepositoryContract";
+import { serializeRunOutcome } from "./runOutcome";
 import { MemoryPreparingRunConflictError } from "./preparingRun";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import type {
@@ -104,12 +105,20 @@ function runPreparationFailureResponse(failure: RunPreparationFailure): Response
   );
 }
 
-function modelRunErrorJson(data: ModelRunErrorResponse, init?: ResponseInit): Response {
-  return Response.json(data, init);
+const PRIVATE_RUN_CACHE_CONTROL = "private, no-store, max-age=0";
+
+function privateModelRunJson(data: unknown, init?: ResponseInit): Response {
+  const headers = new Headers(init?.headers);
+  headers.set("cache-control", PRIVATE_RUN_CACHE_CONTROL);
+  return Response.json(data, { ...init, headers });
 }
 
-function modelRunJson(data: GetModelRunResponse, init?: ResponseInit): Response {
-  return Response.json(data, init);
+function modelRunErrorJson(data: ModelRunErrorResponse, init?: ResponseInit): Response {
+  return privateModelRunJson(data, init);
+}
+
+function modelRunJson(data: RunOutcomeResponse, init?: ResponseInit): Response {
+  return privateModelRunJson(data, init);
 }
 
 function recoveryDeps(
@@ -241,27 +250,22 @@ function applyPreparingMaterialization(
 async function acceptedRuntimeBinding(
   deps: RunHandlerDeps,
   runId: string,
-  hasProviderPlan: boolean,
   searchOptionIds: readonly string[] = []
 ): Promise<{
   adapter: ProviderAdapter;
-  searchAdapter?: ProviderSearchAdapter;
   searchRuntimes: Record<string, ProviderRuntimeBinding>;
   toolBridge?: ProviderToolBridge;
 } | null> {
-  if (!hasProviderPlan) return null;
   if (!deps.providerRuntime) {
     throw new Error("provider_runtime_not_configured");
   }
 
   const answer = await deps.providerRuntime.resolve(runId, "answer");
-  let searchAdapter: ProviderSearchAdapter | undefined;
   const searchRuntimes: Record<string, ProviderRuntimeBinding> = {};
   for (const optionId of searchOptionIds) {
     try {
       const runtime = await deps.providerRuntime.resolve(runId, "search", `search:${optionId}`);
       searchRuntimes[optionId] = runtime;
-      searchAdapter ??= runtime.searchAdapter;
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "provider_run_binding_not_found") {
         throw error;
@@ -271,7 +275,6 @@ async function acceptedRuntimeBinding(
 
   return {
     adapter: answer.adapter,
-    ...(searchAdapter ? { searchAdapter } : {}),
     searchRuntimes,
     ...(answer.toolBridge ? { toolBridge: answer.toolBridge } : {})
   };
@@ -411,9 +414,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           ? { knowledgeAdmissionPlan: preparedData.knowledgeAdmissionPlan }
           : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
-        ...(preparedData.providerAdmissionPlan
-          ? { providerAdmissionPlan: preparedData.providerAdmissionPlan }
-          : {}),
+        providerAdmissionPlan: preparedData.providerAdmissionPlan,
         modelId: preparedData.normalizedRequest.modelId,
         memoryMaterializer: createPreparingMemoryMaterializer(
           preparedData,
@@ -469,8 +470,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     const runtime = await acceptedRuntimeBinding(
       deps,
       created.runId,
-      Boolean(preparedData.providerAdmissionPlan),
-      preparedData.normalizedRequest.searchPlan?.options.map((option) => option.optionId) ?? []
+      preparedData.normalizedRequest.searchPlan.options.map((option) => option.optionId)
     );
     return createRunExecutionResponse({
       adapter: runtime?.adapter ?? preparation.adapter,
@@ -481,7 +481,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
-      searchAdapter: runtime?.searchAdapter ?? preparation.searchAdapter,
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
@@ -558,9 +557,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           ? { knowledgeAdmissionPlan: preparedData.knowledgeAdmissionPlan }
           : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
-        ...(preparedData.providerAdmissionPlan
-          ? { providerAdmissionPlan: preparedData.providerAdmissionPlan }
-          : {}),
+        providerAdmissionPlan: preparedData.providerAdmissionPlan,
         modelId: preparedData.normalizedRequest.modelId,
         memoryMaterializer: createPreparingMemoryMaterializer(
           preparedData,
@@ -614,8 +611,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     const runtime = await acceptedRuntimeBinding(
       deps,
       created.runId,
-      Boolean(preparedData.providerAdmissionPlan),
-      preparedData.normalizedRequest.searchPlan?.options.map((option) => option.optionId) ?? []
+      preparedData.normalizedRequest.searchPlan.options.map((option) => option.optionId)
     );
     return createRunExecutionResponse({
       adapter: runtime?.adapter ?? preparation.adapter,
@@ -626,7 +622,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
-      searchAdapter: runtime?.searchAdapter ?? preparation.searchAdapter,
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
@@ -677,14 +672,13 @@ export function createGetModelRunHandler(
         userId: auth.userId
       }).catch(() => undefined);
     }
-    const run = await deps.repository.getRunForUser(params.runId, auth.userId);
+    const run = await deps.repository.getRunOutcomeForUser(params.runId, auth.userId);
 
     if (!run) {
       return modelRunErrorJson({ error: "model_run_not_found" }, { status: 404 });
     }
 
-    const response = { run } satisfies GetModelRunResponse;
-    return modelRunJson(response);
+    return modelRunJson(serializeRunOutcome(run));
   };
 }
 
@@ -695,12 +689,12 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
   ): Promise<Response> {
     const config = deps.getConfig?.() ?? getAuthConfig();
     if (!config.configured) {
-      return Response.json({ error: "unauthorized" }, { status: 401 });
+      return privateModelRunJson({ error: "unauthorized" }, { status: 401 });
     }
 
     const auth = await deps.resolveAuth(request);
     if (!auth) {
-      return Response.json({ error: "unauthorized" }, { status: 401 });
+      return privateModelRunJson({ error: "unauthorized" }, { status: 401 });
     }
 
     const params = await context.params;
@@ -714,11 +708,11 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
     });
 
     if (cancellation.kind === "not_found") {
-      return Response.json({ error: "model_run_not_found" }, { status: 404 });
+      return privateModelRunJson({ error: "model_run_not_found" }, { status: 404 });
     }
 
     if (cancellation.kind === "current") {
-      return Response.json(
+      return privateModelRunJson(
         {
           error: "model_run_not_cancelable",
           run: {
@@ -733,7 +727,6 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
     const run = cancellation.run;
     activeRunControllerRegistry.abort(run.id);
 
-    let providerCancelPreview: Record<string, unknown> | undefined;
     if (run.providerResponseId) {
       try {
         const adapter = deps.providerRuntime
@@ -741,35 +734,15 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
           : deps.providers[run.provider];
         if (adapter?.cancel) {
           await adapter.cancel(run.providerResponseId);
-          providerCancelPreview = {
-            provider: run.provider,
-            status: "provider_cancel_succeeded"
-          };
         }
       } catch {
-        providerCancelPreview = {
-          error: "Provider cancellation failed",
-          provider: run.provider,
-          status: "provider_cancel_failed"
-        };
+        // Durable local cancellation already won; provider cancellation is best effort.
       }
     }
 
-    const previewPersisted = providerCancelPreview
-      ? await deps.repository
-          .updateCancelledRunProviderPreview({
-            providerCancelPreview,
-            runId: run.id,
-            userId: auth.userId
-          })
-          .catch(() => false)
-      : false;
-
-    return Response.json({
+    return privateModelRunJson({
       run: {
         id: run.id,
-        ...(previewPersisted ? { providerCancelPreview } : {}),
-        providerResponseId: run.providerResponseId,
         status: "cancelled"
       }
     } satisfies CancelModelRunSuccessResponse);

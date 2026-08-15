@@ -44,7 +44,7 @@ describe("shell storage", () => {
     expect(storedCollapsedFolderIds()).toEqual(new Set(["folder-1"]));
   });
 
-  it("carries the legacy Workspace rail key and values into wide-pane visibility", () => {
+  it("round-trips wide Workspace-pane visibility", () => {
     expect(storedWorkspaceRailHidden()).toBe(false);
 
     rememberWorkspaceRailHidden(true);

@@ -101,6 +101,8 @@ describe("custom provider setup handler", () => {
       connectionDisplayName: "Local lab",
       modelDisplayName: "Lab model",
       modelId: "vendor/model-1",
+      protocol: "responses",
+      responseTimeoutSeconds: 300,
       secret: "write-only-key"
     }));
 
@@ -139,7 +141,9 @@ describe("custom provider setup handler", () => {
       apiRoot: "http://127.0.0.1:11434/v1",
       authenticationMode: "none",
       confirmPaidRequest: true,
-      modelId: "local-model"
+      modelId: "local-model",
+      protocol: "responses",
+      responseTimeoutSeconds: 300
     }));
 
     expect(response.status).toBe(200);
@@ -157,6 +161,8 @@ describe("custom provider setup handler", () => {
       authenticationMode: "bearer",
       confirmPaidRequest: true,
       modelIds: ["vendor/model-a", "vendor/model-b"],
+      protocol: "responses",
+      responseTimeoutSeconds: 300,
       secret: "write-only-key"
     }));
 
@@ -245,6 +251,8 @@ describe("custom provider setup handler", () => {
       authenticationMode: "bearer",
       confirmPaidRequest: true,
       modelId: "model-1",
+      protocol: "responses",
+      responseTimeoutSeconds: 300,
       secret: "private-key"
     }));
     expect(response.status).toBe(422);

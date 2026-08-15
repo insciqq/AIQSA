@@ -5,8 +5,7 @@ import type {
   MemoryListResponse,
   MemoryRebuildStatus,
   MemorySettingsResponse,
-  MemorySummary,
-  MemoryUiLocale
+  MemorySummary
 } from "@/lib/contracts/memory";
 import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
 
@@ -37,7 +36,7 @@ export function memoryHealthFixture(
       state: "DISABLED",
       totalChats: 0
     },
-    learning: { reason: "USER_DISABLED", resumeAt: null, state: "DISABLED" },
+    learning: { reason: "USER_DISABLED", state: "DISABLED" },
     observedAt: "2026-08-12T10:00:00.000Z",
     rebuild: { state: "IDLE" },
     state: "UP_TO_DATE",
@@ -60,8 +59,7 @@ export function memorySettingsFixture(
     egress?: Partial<MemorySettingsResponse["egress"]>;
     historyIndexing?: Partial<MemorySettingsResponse["historyIndexing"]>;
     settings?: Partial<MemorySettingsResponse["settings"]>;
-  }> = {},
-  locale: MemoryUiLocale = "EN"
+  }> = {}
 ): MemorySettingsResponse {
   const base: MemorySettingsResponse = {
     capabilities: {
@@ -69,7 +67,6 @@ export function memorySettingsFixture(
       explicitMemory: true,
       historyRecall: true,
       permanentChatDeletion: false,
-      russianQualified: true,
       temporaryChats: true
     },
     egress: {
@@ -99,8 +96,6 @@ export function memorySettingsFixture(
       memoryConsentRevision: 4,
       memoryGeneration: 3,
       memoryRevision: 8,
-      memoryUiLocale: locale,
-      preferredProfileLanguage: "AUTO",
       referenceChatHistory: false,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
       settingsRevision: 12,

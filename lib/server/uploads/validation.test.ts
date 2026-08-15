@@ -32,13 +32,13 @@ const magicFixtures = [
   },
   {
     bytes: Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
-    fileName: "legacy.doc",
+    fileName: "sample.doc",
     kind: "document",
     mimeType: "application/msword"
   },
   {
     bytes: Buffer.from("{\\rtf1 document}"),
-    fileName: "legacy.rtf",
+    fileName: "sample.rtf",
     kind: "document",
     mimeType: "application/rtf"
   },
@@ -127,8 +127,8 @@ describe("upload validation", () => {
       { fileName: "notes.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
       { fileName: "rows.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
       { fileName: "slides.pptx", mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
-      { fileName: "legacy.doc", mimeType: "application/msword" },
-      { fileName: "legacy.rtf", mimeType: "text/rtf" },
+      { fileName: "sample.doc", mimeType: "application/msword" },
+      { fileName: "sample.rtf", mimeType: "text/rtf" },
       { fileName: "notes.odt", mimeType: "application/vnd.oasis.opendocument.text" }
     ]) {
       const result = validateUpload({

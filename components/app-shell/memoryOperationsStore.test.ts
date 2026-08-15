@@ -200,7 +200,7 @@ describe("Memory operations store", () => {
       path: "/api/me/memory/bulk-delete"
     });
     expect(useMemoryHistorySearchStore.getState().results).toHaveLength(1);
-    expect(JSON.parse(sessionStorage.getItem("aiqsa:memory:operations:v1:account-a") ?? "null"))
+    expect(JSON.parse(sessionStorage.getItem("aiqsa:memory:operations:v3:account-a") ?? "null"))
       .toEqual({
         allDeletionId: null,
         clearDeletionId: null,
@@ -327,7 +327,7 @@ describe("Memory operations store", () => {
       allStatus: deletion,
       confirmation: null
     });
-    expect(JSON.parse(sessionStorage.getItem("aiqsa:memory:operations:v1:account-a") ?? "null"))
+    expect(JSON.parse(sessionStorage.getItem("aiqsa:memory:operations:v3:account-a") ?? "null"))
       .toEqual({
         allDeletionId: "all-reusable-delete-1",
         clearDeletionId: null,
@@ -343,7 +343,7 @@ describe("Memory operations store", () => {
       operation: "DELETE_ALL_REUSABLE",
       state: "SUCCEEDED"
     });
-    expect(sessionStorage.getItem("aiqsa:memory:operations:v1:account-a")).toBeNull();
+    expect(sessionStorage.getItem("aiqsa:memory:operations:v3:account-a")).toBeNull();
   });
 
   it("preserves an exact confirmation after a stale CAS and never reports optimistic success", async () => {
@@ -396,7 +396,7 @@ describe("Memory operations store", () => {
     });
   });
 
-  it("starts exact re-embed without a broad grant, authorizes redream once, and cancels only the shadow", async () => {
+  it("starts exact re-embed without a broad grant and cancels only the shadow", async () => {
     const settings = memorySettingsFixture({ settings: { referenceChatHistory: true } });
     const reembed = memoryRebuildFixture({
       jobId: "reembed-1",
@@ -404,27 +404,15 @@ describe("Memory operations store", () => {
       state: "RUNNING",
       totalUnits: 8
     });
-    const redream = memoryRebuildFixture({
-      jobId: "redream-1",
-      operation: "REDREAM_EXISTING_CHATS"
-    });
     const calls: Array<{ body: Record<string, unknown> | null; method: string; path: string }> = [];
-    let rebuildStarts = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       const method = init?.method ?? "GET";
       const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
       calls.push({ body, method, path });
       if (path === "/api/me/memory/settings") return json(settings);
-      if (path === "/api/me/memory/mutation-authorizations") {
-        return json({
-          expiresAt: "2026-08-10T08:05:00.000Z",
-          mutationAuthorizationId: "redream-authorization-1"
-        }, 201);
-      }
       if (path === "/api/me/memory/rebuild") {
-        rebuildStarts += 1;
-        return json(rebuildStarts === 1 ? reembed : redream, 202);
+        return json(reembed, 202);
       }
       if (path === "/api/me/memory/rebuild/reembed-1/cancel") {
         return json({ ...reembed, state: "CANCELLED" });
@@ -454,21 +442,6 @@ describe("Memory operations store", () => {
       path: "/api/me/memory/rebuild/reembed-1/cancel"
     });
     expect(useMemoryOperationsStore.getState().rebuildStatus?.state).toBe("CANCELLED");
-
-    selectMemoryOperation("REDREAM_EXISTING_CHATS");
-    await confirmSelectedMemoryOperation();
-    expect(calls.filter((call) => call.path === "/api/me/memory/mutation-authorizations"))
-      .toHaveLength(1);
-    expect(calls.find((call) => call.path === "/api/me/memory/mutation-authorizations")?.body)
-      .toMatchObject({
-        action: "BULK_DELETE",
-        operation: "REDREAM_EXISTING_CHATS"
-      });
-    expect(calls.filter((call) => call.path === "/api/me/memory/rebuild").at(-1)?.body)
-      .toMatchObject({
-        mutationAuthorizationId: "redream-authorization-1",
-        operation: "REDREAM_EXISTING_CHATS"
-      });
   });
 
   it("discards a late operation response when the exact account changes", async () => {

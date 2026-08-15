@@ -55,9 +55,7 @@ type CurrentSnapshot = Readonly<{
 
 const SYSTEM_ROLES = new Set<MemoryExecutionRole>([
   "MEMORY_CONSOLIDATE",
-  "MEMORY_EPISODE_EXTRACT",
   "MEMORY_FACT_EXTRACT",
-  "MEMORY_PROFILE",
   "MEMORY_QUERY_EXPAND",
   "MEMORY_VERIFY"
 ]);

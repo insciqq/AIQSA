@@ -56,7 +56,6 @@ describe("ManageMemories", () => {
     render(
       <ManageMemories
         {...sourceProps}
-        locale="EN"
         onBack={onBack}
         onDirtyChange={onDirtyChange}
         useMemoryFacts
@@ -96,7 +95,7 @@ describe("ManageMemories", () => {
 
   it("keeps raw chats and accepted runs explicit in the exact bulk confirmation", () => {
     useMemoryManagerStore.setState({ listLoadState: "ready", screen: "list" });
-    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} onBack={vi.fn()} useMemoryFacts />);
 
     fireEvent.click(screen.getByRole("button", { name: "Delete all saved memories" }));
 
@@ -157,7 +156,7 @@ describe("ManageMemories", () => {
       }
       throw new Error(`unexpected request: ${path}`);
     }));
-    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} onBack={vi.fn()} useMemoryFacts />);
 
     fireEvent.click(screen.getByRole("button", { name: "Forget" }));
     expect(await screen.findByText("Forgotten.")).toBeVisible();
@@ -171,7 +170,7 @@ describe("ManageMemories", () => {
   it("renders blocked durable deletion without exposing memory text", async () => {
     const memory = memorySummaryFixture({ displayText: "private value must stay absent" });
     useMemoryManagerStore.setState({ listLoadState: "ready", memories: [memory] });
-    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} onBack={vi.fn()} useMemoryFacts />);
     act(() => {
       useMemoryManagerStore.setState({
         deletionLoadState: "ready",
@@ -192,7 +191,7 @@ describe("ManageMemories", () => {
 
   it("uses one local Settings scroll owner instead of nested list/detail scrollers", () => {
     useMemoryManagerStore.setState({ listLoadState: "ready" });
-    render(<ManageMemories {...sourceProps} locale="RU" onBack={vi.fn()} useMemoryFacts={false} />);
+    render(<ManageMemories {...sourceProps} onBack={vi.fn()} useMemoryFacts={false} />);
 
     const manager = screen.getByTestId("manage-memories");
     expect(manager.querySelectorAll(".overflow-y-auto")).toHaveLength(0);
@@ -201,7 +200,7 @@ describe("ManageMemories", () => {
 
   it("enters and returns from distinct history search with deterministic focus", async () => {
     useMemoryManagerStore.setState({ listLoadState: "ready" });
-    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} onBack={vi.fn()} useMemoryFacts />);
 
     const entry = screen.getByRole("button", { name: "Search chat history" });
     expect(entry).toHaveTextContent("Recover an earlier passage or decision");
@@ -269,7 +268,7 @@ describe("ManageMemories", () => {
       }
       throw new Error(`unexpected request: ${String(input)}`);
     }));
-    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} onBack={vi.fn()} useMemoryFacts />);
 
     fireEvent.click(screen.getByRole("button", { name: "New memory" }));
     const scope = screen.getByRole("combobox", { name: "Scope" });
@@ -335,7 +334,7 @@ describe("ManageMemories", () => {
       if (path === "/api/chats/archived") return json({ chats: [], nextCursor: null });
       throw new Error(`unexpected request: ${path}`);
     }));
-    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} onBack={vi.fn()} useMemoryFacts />);
 
     fireEvent.change(screen.getByLabelText("Private note (optional)"), {
       target: { value: "  Wrong inference  " }
@@ -411,7 +410,7 @@ describe("ManageMemories", () => {
       if (path === "/api/chats/archived") return json({ chats: [], nextCursor: null });
       throw new Error(`unexpected request: ${path}`);
     }));
-    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} onBack={vi.fn()} useMemoryFacts />);
 
     expect(screen.queryByRole("button", { name: "Move scope" })).not.toBeInTheDocument();
 
@@ -457,7 +456,7 @@ describe("ManageMemories", () => {
         ? json({ assistants: [], publishableGroups: [], viewer: { canPublishInstallation: false } })
         : json({ chats: [], nextCursor: null })
     ));
-    render(<ManageMemories {...sourceProps} locale="EN" onBack={vi.fn()} useMemoryFacts />);
+    render(<ManageMemories {...sourceProps} onBack={vi.fn()} useMemoryFacts />);
 
     expect(screen.getByText("Source or scope unavailable.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();

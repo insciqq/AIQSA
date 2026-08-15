@@ -46,7 +46,7 @@ Exact response decoders run before store mutation. Workspace summaries contain n
 Browser-local state includes:
 
 - auth drafts and the bounded tab-scoped text-only re-authentication handoff;
-- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, Memory/Assistant/Knowledge surface navigation and dirty resource drafts, browser-local persistent wide Workspace-pane visibility under the legacy `aiqsa.workspaceRail` key, and focus restoration;
+- open menus, popovers, drawers, dialogs, confirmations, palette query/selection, Memory/Assistant/Knowledge surface navigation and dirty resource drafts, browser-local persistent wide Workspace-pane visibility under `aiqsa.workspacePane`, and focus restoration;
 - keyed composer drafts, edit intent, staged attachments, async operation tokens, and local feedback;
 - foreground text buffering and controller ownership;
 - the current-chat compact Branches projection, folder collapse, local notices, and theme choice. There is no generic Details mode or Events tab.
@@ -113,16 +113,16 @@ private/no-store user-health pulse: activation clears a different account,
 aborts the prior request, generation-fences late settlement, preserves
 same-owner last-good data on refresh failure, and clears on unmount/logout.
 `memoryManagerStore` separately owns the explicit `GLOBAL_USER` list/search
-cursor, the account-fenced exact-contributor profile projection, selected
-detail/evidence, exact draft, stale-draft fence, mutation state, and opaque
+cursor, selected detail/evidence, exact draft, stale-draft fence, mutation
+state, and opaque
 durable-deletion reference/status. Its client controller mints a fresh
 exact-action authorization immediately before every create/edit/pin/Forget/delete
-request, refreshes profile/list projections after exact contributor mutations,
+request, refreshes the list projection after exact fact mutations,
 refreshes destructive settings/Memory CAS at confirmation, keeps search text
-in POST bodies, and cannot let background profile/detail/evidence or status
+in POST bodies, and cannot let background detail/evidence or status
 work replace a newer account or task. The Memory workspace remains the sole
 scroll and dirty-exit owner around these stores and renders fixed English UI
-over the retained compatibility locale without changing multilingual data.
+without changing multilingual source data.
 
 `memoryHistorySearchStore` separately owns the manual retained-history draft,
 exact applied request, opaque cursor, safe result projection, lexical/vector
@@ -143,7 +143,7 @@ authoritative server status can be restored after reload. Polls and late
 admission/status responses are fenced to the exact account generation. Clear
 admission and successful generation replacement invalidate only derived
 manual-history results. Global reusable deletion additionally invalidates
-saved-memory list/detail/profile projections at admission and audited success;
+saved-memory list/detail projections at admission and audited success;
 no path persists private query or source text.
 
 `permanentChatDeletionStore` separately owns the capability-gated retained-chat
@@ -169,7 +169,7 @@ General-shell and settings-destination notices are separate channels. Settings a
 
 ## PowerAppShellV2 Boundary
 
-`PowerAppShellV2` composes stores, hooks, refs, effects, controllers, and v2 view adapters. It does not own server data, branch logic, next-run state, or leaf drafts. There is no selectable classic renderer, parallel API client, or second state graph.
+`PowerAppShellV2` composes stores, hooks, refs, effects, controllers, and view adapters. It does not own server data, branch logic, next-run state, or leaf drafts. There is no selectable alternate renderer, parallel API client, or second state graph.
 
 Its root view contract has exactly seven keys:
 
@@ -221,7 +221,7 @@ references, or generated-file success on a real run.
   preserve the active chat, search, folders, drafts, and operation ownership.
   When hiding focused navigation, focus moves to the exact visible Open control
   and restores only while that fallback still owns focus.
-- A persisted chat with no provider/model default is valid. Blank startup and every ordinary New-chat transition re-resolve only the catalog's exact effective personal-or-installation default; when that projection is absent, the shell keeps model selection empty instead of substituting the first visible model. An active Assistant keeps its revision-owned selection across a blank transition. Existing-chat activation preserves its independent saved tuple and established non-persisting visible fallback when that tuple is absent or unavailable. Legacy paired empty-string defaults remain readable during compatibility; half-populated pairs fail closed.
+- A persisted chat with no provider/model default is valid. Blank startup and every ordinary New-chat transition re-resolve only the catalog's exact effective personal-or-installation default; when that projection is absent, the shell keeps model selection empty instead of substituting the first visible model. An active Assistant keeps its revision-owned selection across a blank transition. Existing-chat activation preserves its independent saved tuple and established non-persisting visible fallback when that tuple is absent or unavailable. The wire represents an absent tuple as paired nulls; empty strings and half-populated pairs fail closed.
 - Any Chat `401` creates one sticky session-expiry transition. Concurrent failures navigate once, store only the active text draft in tab-scoped owner-bound state, and restore it after the same account reauthenticates only into an untouched matching destination. The handoff expires after 30 minutes and never includes attachments.
 - Sign-out failure remains visibly attributable to Account and retryable. Answer completion may use the local audio/favicon alert; hidden-tab signaling stops when the user returns.
 
@@ -229,8 +229,7 @@ references, or generated-file success on a real run.
 
 Theme preference is local and exposes only System, Light, and Dark. A
 recognized LocalStorage value wins after hydration and repairs the same-site
-cookie; the one-time compatibility normalizer maps the six shipped legacy ids
-to Dark or Light and maps unknown/absent state to System. Cookie-backed
+cookie; unknown or absent state resolves to System. Cookie-backed
 normalized state owns first paint. Runtime changes set `data-theme` and the
 effective `data-color-scheme` together, including operating-system changes
 while System is selected. Theme never becomes user/account/conversation data.
@@ -242,7 +241,7 @@ Dialog focus is session-scoped: entry, Tab containment, Escape ownership, nested
 - Prefer clear visible labels and stable `data-testid` anchors only for critical behavior.
 - Keep every state understandable with nonessential motion disabled and deterministic fake data/providers.
 - Test store/action owners directly for source-key capture, race settlement, malformed payload rejection, and cache isolation.
-- Use focused browser behavior and affected desktop/mobile states for material interaction or visual changes. The guarded v2 fixture is the bounded exception: its named dark/light state matrix and responsive baselines are maintained under `tests/e2e/ui-baseline/` as routed by `TESTING.md`.
+- Use focused browser behavior and affected desktop/mobile states for material interaction or visual changes. Browser tests assert observable state, focus, containment, geometry, overflow, breakpoint composition, and theme behavior; they do not own screenshot or pixel baselines.
 - Select proportional checks through `TESTING.md`.
 
 ## Change Rules

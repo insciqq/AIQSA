@@ -38,7 +38,9 @@ const connection: AdminProviderConnection = {
   draftChecks: [],
   draftConfig: {
     allowPrivateNetwork: false,
-    apiRoot: "https://openrouter.example.test/api/v1"
+    apiRoot: "https://openrouter.example.test/api/v1",
+    authenticationMode: "bearer",
+    responseTimeoutSeconds: 300
   },
   draftVersion: 1,
   enabled: false,
@@ -62,6 +64,7 @@ const connection: AdminProviderConnection = {
         vision: false
       },
       defaultParams: {},
+      modelClass: "answer",
       openRouterRouting: { mode: "automatic", providers: [] },
       upstreamModelId: "vendor/model"
     },
@@ -71,7 +74,8 @@ const connection: AdminProviderConnection = {
     updatedAt: "2026-07-23T00:00:00.000Z"
   }],
   unassignedPolicy: "use_default",
-  updatedAt: "2026-07-23T00:00:00.000Z"
+  updatedAt: "2026-07-23T00:00:00.000Z",
+  userAssignments: []
 };
 
 function auth(role = "admin", status = "active"): AuthenticatedSession {

@@ -31,7 +31,9 @@ function candidate(): ProviderDraftTestCandidate {
     connection: {
       configuration: {
         allowPrivateNetwork: false,
-        apiRoot: "https://provider.example.test/v1"
+        apiRoot: "https://provider.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       displayName: "Provider",
       draftVersion: 2,
@@ -54,6 +56,7 @@ function candidate(): ProviderDraftTestCandidate {
     model: {
       configuration: {
         adapterKind: "openai_responses_compatible",
+        answerSelectable: true,
         capabilities: {
           nativePdfInput: false,
           nativeSearch: false,
@@ -62,6 +65,7 @@ function candidate(): ProviderDraftTestCandidate {
           vision: false
         },
         defaultParams: {},
+        modelClass: "answer",
         upstreamModelId: "vendor/model"
       },
       displayName: "Model",
@@ -96,7 +100,9 @@ function activeCandidate(): ProviderActiveRefreshCandidate {
     connection: {
       configuration: {
         allowPrivateNetwork: false,
-        apiRoot: "https://provider.example.test/v1"
+        apiRoot: "https://provider.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       displayName: "Provider",
       family: "openai_compatible",
@@ -163,7 +169,9 @@ describe("Prisma admin provider repository", () => {
           displayName: "Compatible",
           draftConfig: {
             allowPrivateNetwork: false,
-            apiRoot: "https://provider.example.test/v1"
+            apiRoot: "https://provider.example.test/v1",
+            authenticationMode: "bearer",
+            responseTimeoutMs: 300_000
           },
           draftVersion: 1,
           enabled: false,
@@ -536,7 +544,9 @@ describe("Prisma admin provider repository", () => {
       connection: {
         configuration: {
           allowPrivateNetwork: false,
-          apiRoot: "https://provider.example.test/v1"
+          apiRoot: "https://provider.example.test/v1",
+          authenticationMode: "bearer",
+          responseTimeoutMs: 300_000
         },
         draftVersion: 2,
         enable: true,

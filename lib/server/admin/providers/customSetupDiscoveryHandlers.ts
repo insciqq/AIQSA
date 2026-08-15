@@ -91,9 +91,7 @@ export function createAdminProviderCustomDiscoveryHandler(
     const rawSecret = body.secret === undefined
       ? undefined
       : boundedText(body.secret, 16_384) ?? null;
-    const responseTimeoutSeconds = body.responseTimeoutSeconds === undefined
-      ? undefined
-      : Number.isSafeInteger(body.responseTimeoutSeconds) &&
+    const responseTimeoutSeconds = Number.isSafeInteger(body.responseTimeoutSeconds) &&
           Number(body.responseTimeoutSeconds) >= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS &&
           Number(body.responseTimeoutSeconds) <= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS
         ? Number(body.responseTimeoutSeconds)
@@ -115,9 +113,7 @@ export function createAdminProviderCustomDiscoveryHandler(
         allowPrivateNetwork: body.allowPrivateNetwork,
         apiRoot,
         authenticationMode: mode,
-        ...(responseTimeoutSeconds === undefined
-          ? {}
-          : { responseTimeoutMs: responseTimeoutSeconds * 1_000 })
+        responseTimeoutMs: responseTimeoutSeconds * 1_000
       });
       const secret = rawSecret === undefined
         ? null

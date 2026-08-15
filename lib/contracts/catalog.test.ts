@@ -20,11 +20,10 @@ function validResponse(): CatalogResponse {
           provider: "connection-test"
         },
         provider: "connection-test",
-        searchStrategyId: "search-disabled",
+        searchPlan: { mode: "all_selected", optionIds: [] },
         searchPreferenceSource: "personal",
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true,
       },
       models: [
         {
@@ -101,6 +100,18 @@ describe("catalog wire contract", () => {
         }
       ]
     });
+  });
+
+  it("represents an unknown context window as null", () => {
+    const response = validResponse();
+    response.catalog.models[0]!.contextWindow = null;
+
+    expect(decodeCatalogResponse(response)?.models[0]?.contextWindow).toBeNull();
+    for (const invalid of [0, -1, 1.5]) {
+      const candidate = validResponse();
+      candidate.catalog.models[0]!.contextWindow = invalid;
+      expect(decodeCatalogResponse(candidate)).toBeNull();
+    }
   });
 
   it("resolves duplicate connection names without changing provider/model bindings", () => {
@@ -352,15 +363,6 @@ describe("catalog wire contract", () => {
       catalog: { models: { capabilities: Record<string, unknown> }[] };
     };
     delete response.catalog.models[0].capabilities.toolCalling;
-
-    expect(decodeCatalogResponse(response)).toBeNull();
-  });
-
-  it("requires the persisted tool activity default", () => {
-    const response = validResponse() as unknown as {
-      catalog: { defaults: Record<string, unknown> };
-    };
-    delete response.catalog.defaults.showToolActivity;
 
     expect(decodeCatalogResponse(response)).toBeNull();
   });

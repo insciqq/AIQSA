@@ -2,7 +2,7 @@ import type { ComposerSessionKey } from "@/components/app-shell/composerSessionS
 
 const AIQSA_ACTIVE_CHAT_STORAGE_KEY = "aiqsa.activeChatId";
 const AIQSA_COLLAPSED_FOLDERS_STORAGE_KEY = "aiqsa.collapsedFolderIds";
-export const AIQSA_WORKSPACE_RAIL_STORAGE_KEY = "aiqsa.workspaceRail";
+export const AIQSA_WORKSPACE_RAIL_STORAGE_KEY = "aiqsa.workspacePane";
 export const AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY = "aiqsa.sessionExpiredDraft.v1";
 const SESSION_EXPIRED_DRAFT_MAX_AGE_MS = 30 * 60 * 1000;
 

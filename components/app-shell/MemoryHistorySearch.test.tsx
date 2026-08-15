@@ -24,7 +24,7 @@ const response: MemoryHistorySearchResponse = {
   nextCursor: null,
   results: [{
     indexingState: "LEXICAL_READY",
-    itemType: "EPISODE",
+    itemType: "RECALL_CHUNK",
     occurredAt: "2026-08-09T08:00:00.000Z",
     sourceChatId: "chat-archived",
     sourceChatTitle: "Решения по архитектуре",
@@ -81,7 +81,6 @@ describe("MemoryHistorySearch", () => {
     render(
       <MemoryHistorySearch
         accountId="account-a"
-        locale="RU"
         onBack={vi.fn()}
         onOpenSource={vi.fn()}
       />
@@ -119,7 +118,6 @@ describe("MemoryHistorySearch", () => {
     render(
       <MemoryHistorySearch
         accountId="account-a"
-        locale="EN"
         onBack={vi.fn()}
         onOpenSource={onOpenSource}
       />
@@ -145,7 +143,6 @@ describe("MemoryHistorySearch", () => {
   it("drops visible private results when the account owner changes", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(response)));
     const props = {
-      locale: "EN" as const,
       onBack: vi.fn(),
       onOpenSource: vi.fn()
     };

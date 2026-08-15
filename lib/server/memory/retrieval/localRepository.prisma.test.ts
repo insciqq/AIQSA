@@ -25,7 +25,6 @@ const ownerIds: string[] = [];
 type RetrievalFixture = Readonly<{
   currentChatId: string;
   enFactVersionId: string;
-  episodeId: string;
   excludedChunkId: string;
   foreignFactVersionId: string;
   generationId: string;
@@ -135,7 +134,6 @@ async function createCheckpoint(input: Readonly<{
       activeLeafMessageId: input.messageId,
       branchGeneration: 0,
       chatId: input.chatId,
-      lastDreamedMessageId: input.messageId,
       lastIndexedMessageId: input.messageId,
       lastSucceededAt: fixtureNow,
       sourceContentHash: input.sourceHash,
@@ -406,103 +404,6 @@ async function createChunk(input: Readonly<{
   return chunk.id;
 }
 
-async function createEpisode(input: Readonly<{
-  chatId: string;
-  generationId: string;
-  messageId: string;
-  safeSummary: string;
-  sourceHash: string;
-  suppressionSnapshot: string;
-  userId: string;
-}>): Promise<string> {
-  const job = await prisma.memoryJob.create({
-    data: {
-      activeLeafMessageId: input.messageId,
-      branchGeneration: 0,
-      chatId: input.chatId,
-      completedAt: fixtureNow,
-      idempotencyFingerprint: memorySha256({ episode: input.safeSummary, job: true }),
-      kind: "EXTRACT_EPISODE",
-      memoryGenerationSnapshot: 0,
-      memoryRevisionSnapshot: 0,
-      pipelineVersion: "memory-episode-test-v1",
-      sourceHash: input.sourceHash,
-      sourceRevision: 1,
-      state: "SUCCEEDED",
-      userId: input.userId
-    }
-  });
-  const binding = await prisma.memoryExecutionBinding.create({
-    data: {
-      acceptedOutputHash: memorySha256(input.safeSummary),
-      completedAt: fixtureNow,
-      createdAt: new Date(fixtureNow.getTime() - 60_000),
-      destinationFingerprint: "d".repeat(64),
-      inputHash: memorySha256({ sourceHash: input.sourceHash }),
-      logicalRole: "MEMORY_EPISODE_EXTRACT",
-      memoryJobId: job.id,
-      ordinal: 0,
-      ownerType: "JOB",
-      pipelineVersion: "memory-episode-test-v1",
-      policyVersion: "memory-episode-test-policy-v1",
-      promptVersion: "memory-episode-test-prompt-v1",
-      providerId: "memory-retrieval-test-provider",
-      recoverableUntil: fixtureNow,
-      relationsDetachedAt: fixtureNow,
-      schemaVersion: "memory-episode-test-schema-v1",
-      secretFreeExecutionSnapshot: {},
-      state: "SUCCEEDED",
-      userId: input.userId
-    }
-  });
-  const episode = await prisma.memoryEpisode.create({
-    data: {
-      branchGeneration: 0,
-      chatId: input.chatId,
-      createdByExecutionId: binding.id,
-      extractorRole: "SYSTEM_MEMORY",
-      languageCode: "ru",
-      normalizedSafeSearchText: normalizeMemorySearchText(input.safeSummary),
-      occurredFrom: new Date("2026-07-15T09:00:00.000Z"),
-      occurredTo: new Date("2026-07-15T09:05:00.000Z"),
-      pipelineVersion: "memory-episode-test-v1",
-      redactionState: "NOT_NEEDED",
-      safeSummary: input.safeSummary,
-      safetyClass: "NORMAL",
-      sourceHash: input.sourceHash,
-      sourceProjectionVersion: "memory-history-source-projection-v1",
-      sourceRevisionAtCreation: 1,
-      state: "ACTIVE",
-      userId: input.userId
-    }
-  });
-  await prisma.memoryEpisodeMessage.create({
-    data: {
-      chatId: input.chatId,
-      episodeId: episode.id,
-      messageId: input.messageId,
-      ordinal: 0,
-      userId: input.userId
-    }
-  });
-  await prisma.memorySearchEntry.create({
-    data: {
-      embeddingState: "NOT_APPLICABLE",
-      episodeId: episode.id,
-      indexGenerationId: input.generationId,
-      itemType: "EPISODE",
-      languageCode: "ru",
-      safeContentHash: memorySha256(input.safeSummary),
-      safeSearchText: normalizeMemorySearchText(input.safeSummary),
-      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(input.safeSummary),
-      safetyIdentitySnapshot: memorySha256({ safety: "NORMAL" }),
-      sourceIdentitySnapshot: memorySha256({ episodeId: episode.id }),
-      suppressionIdentitySnapshot: input.suppressionSnapshot,
-      userId: input.userId
-    }
-  });
-  return episode.id;
-}
 
 function percentile95(values: readonly number[]): number {
   const ordered = [...values].sort((left, right) => left - right);
@@ -552,15 +453,6 @@ describe("local Memory retrieval on PostgreSQL", () => {
       generationId,
       messageId: source.messageId,
       safeText: safeChunkText,
-      suppressionSnapshot,
-      userId
-    });
-    const episodeId = await createEpisode({
-      chatId: source.chatId,
-      generationId,
-      messageId: source.messageId,
-      safeSummary: "Обсуждение миграции PostgreSQL в июле.",
-      sourceHash,
       suppressionSnapshot,
       userId
     });
@@ -658,7 +550,6 @@ describe("local Memory retrieval on PostgreSQL", () => {
     fixture = {
       currentChatId: current.chatId,
       enFactVersionId,
-      episodeId,
       excludedChunkId,
       foreignFactVersionId,
       generationId,
@@ -738,7 +629,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(pack.text).toContain("Neovim");
   });
 
-  it("retrieves only safe chunks and leaves legacy episodes non-serving", async () => {
+  it("retrieves only safe chunks", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const query = "Когда мы обсуждали миграцию PostgreSQL в предыдущем чате?";
     const plan = planMemoryRetrieval({ currentUserText: query, now: fixtureNow });
@@ -752,14 +643,12 @@ describe("local Memory retrieval on PostgreSQL", () => {
     const candidateIds = result.laneResults.flatMap((lane) =>
       lane.candidates.map((candidate) => candidate.itemId));
     expect(candidateIds).toContain(fixture.validChunkId);
-    expect(candidateIds).not.toContain(fixture.episodeId);
     expect(candidateIds).not.toContain(fixture.staleChunkId);
     expect(candidateIds).not.toContain(fixture.excludedChunkId);
     expect(candidateIds).not.toContain(fixture.secretChunkId);
 
     const ranked = fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow);
     const expanded = await repository.expand(result.snapshot, plan, ranked);
-    expect(expanded.some((item) => item.itemType === "EPISODE")).toBe(false);
     expect(expanded).toContainEqual(expect.objectContaining({
       itemId: fixture.validChunkId,
       projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
@@ -902,7 +791,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(evidence.maximumCandidateCount).toBeLessThanOrEqual(evidence.candidateHardCap);
     expect(JSON.stringify(evidence)).not.toContain(fixture.userId);
     expect(JSON.stringify(evidence)).not.toContain(fixture.safeChunkText);
-    console.info("memory_phase5_local_retrieval_qualification", evidence);
+    console.info("memory_local_retrieval_qualification", evidence);
   });
 
   it("applies a durable ALL suppression before ranking", async () => {

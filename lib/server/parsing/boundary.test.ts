@@ -123,7 +123,7 @@ describe("document parser boundary", () => {
       );
       return new Response(JSON.stringify([{
         "Content-Type": "application/msword",
-        "X-TIKA:content": "<html><body><p>legacy fixture</p></body></html>"
+        "X-TIKA:content": "<html><body><p>binary document fixture</p></body></html>"
       }]), {
         headers: { "content-type": "application/json" }
       });
@@ -134,10 +134,10 @@ describe("document parser boundary", () => {
     });
 
     await expect(boundary.parse({
-      bytes: Buffer.from("legacy"),
+      bytes: Buffer.from("binary-doc"),
       fileName: 'SYNTHETIC_PRIVATE"; filename="leak.DOC',
       mimeType: "application/msword"
-    })).resolves.toMatchObject({ engine: "tika", text: "legacy fixture" });
+    })).resolves.toMatchObject({ engine: "tika", text: "binary document fixture" });
   });
 
   it("falls back from a rejected Docling parse to Tika", async () => {
@@ -211,7 +211,7 @@ describe("document parser boundary", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("passes accepted input above the legacy cap when the upload cap is raised", async () => {
+  it("passes accepted input above the default cap when the upload cap is raised", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => new Response(
       JSON.stringify(doclingEnvelope),
       { headers: { "content-type": "application/json" } }

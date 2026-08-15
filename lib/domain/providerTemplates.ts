@@ -36,7 +36,12 @@ export function providerModelTemplateId(templateKey: string): string | undefined
 
 export const providerConnectionTemplates = Object.freeze([
   Object.freeze({
-    config: Object.freeze({ allowPrivateNetwork: true, apiRoot: "http://127.0.0.1" }),
+    config: Object.freeze({
+      allowPrivateNetwork: true,
+      apiRoot: "http://127.0.0.1",
+      authenticationMode: "none" as const,
+      responseTimeoutMs: 300_000
+    }),
     displayName: "Fake QSA",
     enabled: false,
     family: "fake",
@@ -44,7 +49,12 @@ export const providerConnectionTemplates = Object.freeze([
     templateKey: "fake"
   }),
   Object.freeze({
-    config: Object.freeze({ allowPrivateNetwork: false, apiRoot: "https://api.openai.com/v1" }),
+    config: Object.freeze({
+      allowPrivateNetwork: false,
+      apiRoot: "https://api.openai.com/v1",
+      authenticationMode: "bearer" as const,
+      responseTimeoutMs: 300_000
+    }),
     displayName: "OpenAI",
     enabled: false,
     family: "openai",
@@ -52,7 +62,12 @@ export const providerConnectionTemplates = Object.freeze([
     templateKey: "openai"
   }),
   Object.freeze({
-    config: Object.freeze({ allowPrivateNetwork: false, apiRoot: "https://api.anthropic.com/v1" }),
+    config: Object.freeze({
+      allowPrivateNetwork: false,
+      apiRoot: "https://api.anthropic.com/v1",
+      authenticationMode: "bearer" as const,
+      responseTimeoutMs: 300_000
+    }),
     displayName: "Anthropic",
     enabled: false,
     family: "anthropic",
@@ -62,7 +77,9 @@ export const providerConnectionTemplates = Object.freeze([
   Object.freeze({
     config: Object.freeze({
       allowPrivateNetwork: false,
-      apiRoot: "https://generativelanguage.googleapis.com/v1"
+      apiRoot: "https://generativelanguage.googleapis.com/v1",
+      authenticationMode: "bearer" as const,
+      responseTimeoutMs: 300_000
     }),
     displayName: "Gemini",
     enabled: false,
@@ -71,7 +88,12 @@ export const providerConnectionTemplates = Object.freeze([
     templateKey: "gemini"
   }),
   Object.freeze({
-    config: Object.freeze({ allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" }),
+    config: Object.freeze({
+      allowPrivateNetwork: false,
+      apiRoot: "https://openrouter.ai/api/v1",
+      authenticationMode: "bearer" as const,
+      responseTimeoutMs: 300_000
+    }),
     displayName: "OpenRouter",
     enabled: false,
     family: "openrouter",

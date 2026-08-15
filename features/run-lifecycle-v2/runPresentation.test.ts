@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { RunEventView } from "@/lib/contracts/runs";
 import {
   presentRunLifecycleV2,
-  type RunLifecycleEvidenceV2,
+  type RunLifecycleStateV2,
   type RunLifecycleStatusV2
 } from "./runPresentation";
 
-function evidence(overrides: Partial<RunLifecycleEvidenceV2> = {}): RunLifecycleEvidenceV2 {
+function state(overrides: Partial<RunLifecycleStateV2> = {}): RunLifecycleStateV2 {
   return {
     content: "",
     events: [],
@@ -23,8 +23,8 @@ function summary(payload: Record<string, unknown>): RunEventView {
 }
 
 describe("run lifecycle v2 presentation", () => {
-  it("stays silent without explicit lifecycle evidence", () => {
-    expect(presentRunLifecycleV2(evidence({ content: "A finished-looking sentence." }))).toEqual({
+  it("stays silent without explicit lifecycle state", () => {
+    expect(presentRunLifecycleV2(state({ content: "A finished-looking sentence." }))).toEqual({
       kind: "idle",
       runId: null
     });
@@ -36,7 +36,7 @@ describe("run lifecycle v2 presentation", () => {
     ["in_progress", "provider", "Running at the provider…"],
     ["streaming", "provider", "Running at the provider…"]
   ] as const)("maps explicit %s status to its truthful activity", (status, kind, label) => {
-    expect(presentRunLifecycleV2(evidence({ status: status as RunLifecycleStatusV2 }))).toMatchObject({
+    expect(presentRunLifecycleV2(state({ status: status as RunLifecycleStatusV2 }))).toMatchObject({
       activity: { kind, label },
       kind: "activity"
     });
@@ -47,8 +47,8 @@ describe("run lifecycle v2 presentation", () => {
     [summary({ stage: "compute", status: "running" }), "compute", "Computing…"],
     [summary({ stage: "preview", status: "running" }), "preview", "Rendering preview…"],
     [summary({ stage: "model", status: "waiting" }), "provider", "Running at the provider…"]
-  ] as const)("uses normalized artifact evidence", (event, kind, label) => {
-    expect(presentRunLifecycleV2(evidence({ events: [event] }))).toMatchObject({
+  ] as const)("uses normalized lifecycle artifacts", (event, kind, label) => {
+    expect(presentRunLifecycleV2(state({ events: [event] }))).toMatchObject({
       activity: { kind, label },
       kind: "activity"
     });
@@ -70,14 +70,14 @@ describe("run lifecycle v2 presentation", () => {
       type: "artifact"
     } satisfies RunEventView;
 
-    expect(presentRunLifecycleV2(evidence({ events: [requested] }))).toMatchObject({
+    expect(presentRunLifecycleV2(state({ events: [requested] }))).toMatchObject({
       activity: {
         kind: "tool",
         label: "Tool: create_workbook…",
         toolName: "create_workbook"
       }
     });
-    expect(presentRunLifecycleV2(evidence({ events: [unsafe] }))).toMatchObject({
+    expect(presentRunLifecycleV2(state({ events: [unsafe] }))).toMatchObject({
       activity: { kind: "tool", label: "Running tools…" }
     });
   });
@@ -86,15 +86,15 @@ describe("run lifecycle v2 presentation", () => {
     const token = { data: { delta: "partial" }, type: "token" } satisfies RunEventView;
     const tool = summary({ stage: "tools", status: "running", toolName: "lookup" });
 
-    expect(presentRunLifecycleV2(evidence({ events: [tool, token] })).kind).toBe("streaming");
-    expect(presentRunLifecycleV2(evidence({ events: [token, tool] }))).toMatchObject({
+    expect(presentRunLifecycleV2(state({ events: [tool, token] })).kind).toBe("streaming");
+    expect(presentRunLifecycleV2(state({ events: [token, tool] }))).toMatchObject({
       activity: { kind: "tool", label: "Tool: lookup…" },
       kind: "activity"
     });
   });
 
   it("keeps ambiguous EOF distinct until terminal server truth arrives", () => {
-    const partial = evidence({
+    const partial = state({
       connectionLost: true,
       content: "Partial answer",
       events: [{ data: { delta: "Partial answer" }, type: "token" }],
@@ -115,18 +115,18 @@ describe("run lifecycle v2 presentation", () => {
   });
 
   it("requires an authoritative terminal transition for complete or cancelled", () => {
-    expect(presentRunLifecycleV2(evidence({
+    expect(presentRunLifecycleV2(state({
       authoritativeMessageStatus: "complete",
       content: "Persisted answer"
     })).kind).toBe("complete");
-    expect(presentRunLifecycleV2(evidence({
+    expect(presentRunLifecycleV2(state({
       events: [{ data: { status: "cancelled" }, type: "done" }]
     })).kind).toBe("cancelled");
-    expect(presentRunLifecycleV2(evidence({ content: "Looks complete" })).kind).toBe("idle");
+    expect(presentRunLifecycleV2(state({ content: "Looks complete" })).kind).toBe("idle");
   });
 
   it("distinguishes retryable partial failure from terminal parameter failure", () => {
-    expect(presentRunLifecycleV2(evidence({
+    expect(presentRunLifecycleV2(state({
       content: "Partial answer",
       events: [{
         data: {
@@ -145,7 +145,7 @@ describe("run lifecycle v2 presentation", () => {
       kind: "recoverable_error"
     });
 
-    expect(presentRunLifecycleV2(evidence({
+    expect(presentRunLifecycleV2(state({
       failure: {
         code: "context_budget_exceeded",
         message: "Контекст выбранной модели слишком мал.",
@@ -158,8 +158,8 @@ describe("run lifecycle v2 presentation", () => {
     });
   });
 
-  it("bounds malformed error evidence and supplies factual fallback copy", () => {
-    expect(presentRunLifecycleV2(evidence({
+  it("bounds malformed error state and supplies factual fallback copy", () => {
+    expect(presentRunLifecycleV2(state({
       events: [{
         data: { code: "<unsafe>", message: "   " },
         type: "error"

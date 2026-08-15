@@ -76,7 +76,7 @@ function StatusPill({ server }: Readonly<{ server: AdminMcpServer }>) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-pill border border-critical/25 bg-critical/10 px-2 py-0.5 text-metadata font-medium text-critical">
         <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
-        Legacy
+        Archived
       </span>
     );
   }

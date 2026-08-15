@@ -183,6 +183,8 @@ function providerRequest(
     chatId: "memory-retrieval",
     content: { blocks: [{ text: JSON.stringify(payload), type: "text" }] },
     forceNonStreaming: true,
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: model.capabilities,
     modelId: model.upstreamModelId,
     parallelToolCalls: false,
@@ -196,7 +198,7 @@ function providerRequest(
     },
     prompt: { developer: null, system: utilitySystemPrompt },
     provider: snapshot.providerFamily,
-    searchStrategy: null,
+    searchPlan: { mode: "all_selected", options: [] },
     toolChoice: MEMORY_RUN_UTILITY_TOOL_CHOICE,
     tools: [tool]
   };

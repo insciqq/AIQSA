@@ -4,7 +4,6 @@ import {
   memoryActiveSuppressionPredicate,
   memoryAutomaticFactEvidencePredicate,
   memoryChunkSourceSafetyPredicate,
-  memoryEpisodeSourceSafetyPredicate,
   memoryFactScopePredicate
 } from "../memory/retrieval/localRepository";
 import { normalizeMemorySearchTextYo } from "../memory/persistence/lexical";
@@ -27,14 +26,13 @@ export type PreparingMemoryItemAuthority = Readonly<{
 }>;
 
 export type ResolvedPreparingMemoryItem = Readonly<{
-  episodeId: string | null;
   exactItemId: string;
   exactSafeText: string;
   factVersionId: string | null;
   featureSnapshot: Readonly<Record<string, unknown>>;
   finalScore: number;
   itemStateAtAdmission: string;
-  itemType: "EPISODE" | "FACT_VERSION" | "RECALL_CHUNK";
+  itemType: "FACT_VERSION" | "RECALL_CHUNK";
   laneRanks: Readonly<Record<string, unknown>>;
   projectionKind: MemorySafeProjectionKind;
   recallChunkId: string | null;
@@ -124,18 +122,15 @@ function itemProjection(input: MemoryPreparingItemInput): Readonly<{
   supportingItemId: string | null;
 }> {
   const feature = record(input.featureSnapshot);
-  const inferredKind: MemorySafeProjectionKind = input.itemType === "EPISODE"
-    ? "EPISODE_SAFE_SUMMARY"
-    : input.itemType === "RECALL_CHUNK"
-      ? "RECALL_CHUNK_SAFE_PROJECTED_TEXT"
-      : "FACT_DISPLAY_TEXT";
+  const inferredKind: MemorySafeProjectionKind = input.itemType === "RECALL_CHUNK"
+    ? "RECALL_CHUNK_SAFE_PROJECTED_TEXT"
+    : "FACT_DISPLAY_TEXT";
   const kind = input.projectionKind ?? feature?.projectionKind ?? inferredKind;
   const supportingItemId = input.supportingItemId !== undefined
     ? input.supportingItemId
     : feature?.supportingItemId;
   if (
     kind !== "FACT_DISPLAY_TEXT" &&
-    kind !== "EPISODE_SAFE_SUMMARY" &&
     kind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT"
   ) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
@@ -395,7 +390,6 @@ async function resolveFact(
   };
   return {
     ...commonResolved(input, projection.kind),
-    episodeId: null,
     exactItemId: input.factVersionId,
     factVersionId: input.factVersionId,
     itemStateAtAdmission: row.versionState,
@@ -540,7 +534,6 @@ async function resolveChunk(
   return {
     ...commonResolved(input, projection.kind),
     ...snapshots,
-    episodeId: null,
     exactItemId: input.recallChunkId,
     factVersionId: null,
     itemStateAtAdmission: row.state,
@@ -551,178 +544,6 @@ async function resolveChunk(
     sourceContentHashSnapshot: row.contentHash,
     sourceMessageIdsSnapshot: sourceMessageIds,
     sourceRevisionSnapshot: row.sourceRevision
-  };
-}
-
-async function episodeMessageIds(
-  tx: PreparingItemTransaction,
-  userId: string,
-  episodeId: string
-): Promise<string[]> {
-  const rows = await tx.memoryEpisodeMessage.findMany({
-    orderBy: { ordinal: "asc" },
-    select: { messageId: true },
-    take: 51,
-    where: { episodeId, userId }
-  });
-  if (rows.length === 0 || rows.length > 50) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
-  }
-  return rows.map(({ messageId }) => messageId);
-}
-
-async function resolveEpisodeRow(
-  tx: PreparingItemTransaction,
-  authority: PreparingMemoryItemAuthority,
-  querySnapshot: string | null,
-  episodeId: string
-): Promise<HistoryAuthorityRow | null> {
-  if (!authority.indexGenerationId) return null;
-  const normalizedQueryYo = querySnapshot ? normalizeMemorySearchTextYo(querySnapshot) : "";
-  const [row] = await tx.$queryRaw<HistoryAuthorityRow[]>(Prisma.sql`
-    SELECT
-      episode."branchGeneration", episode."chatId", episode."sourceHash" AS "contentHash",
-      episode."languageCode", episode."redactionState"::text AS "redactionState",
-      episode."safeSummary" AS "safeText", episode."safetyClass"::text AS "safetyClass",
-      episode."sourceAssistantId", episode."sourceFolderId",
-      episode."sourceRevisionAtCreation" AS "sourceRevision",
-      episode."state"::text AS "state"
-    FROM "MemoryEpisode" AS episode
-    INNER JOIN "MemorySearchEntry" AS entry
-      ON entry."userId" = episode."userId"
-      AND entry."indexGenerationId" = ${authority.indexGenerationId}
-      AND entry."itemType" = 'EPISODE'::"MemorySearchItemType"
-      AND entry."episodeId" = episode."id"
-    INNER JOIN "UserMemorySettings" AS settings
-      ON settings."userId" = entry."userId"
-      AND settings."referenceChatHistory" = TRUE
-      AND settings."activeIndexGenerationId" = entry."indexGenerationId"
-    INNER JOIN "MemoryIndexGeneration" AS generation
-      ON generation."userId" = settings."userId"
-      AND generation."id" = settings."activeIndexGenerationId"
-      AND generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
-    INNER JOIN "Chat" AS source_chat
-      ON source_chat."userId" = episode."userId" AND source_chat."id" = episode."chatId"
-    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
-      ON checkpoint."userId" = episode."userId" AND checkpoint."chatId" = episode."chatId"
-    WHERE episode."userId" = ${authority.userId}
-      AND episode."id" = ${episodeId}
-      AND episode."state" = 'ACTIVE'::"MemoryHistoryItemState"
-      AND episode."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
-      AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND source_chat."memoryBranchGeneration" = episode."branchGeneration"
-      AND source_chat."memorySourceRevision" = episode."sourceRevisionAtCreation"
-      AND checkpoint."branchGeneration" = episode."branchGeneration"
-      AND checkpoint."sourceRevision" = episode."sourceRevisionAtCreation"
-      AND checkpoint."sourceContentHash" = episode."sourceHash"
-      AND checkpoint."activeLeafMessageId" = source_chat."activeLeafMessageId"
-      AND checkpoint."lastDreamedMessageId" = source_chat."activeLeafMessageId"
-      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
-      AND ${memoryEpisodeSourceSafetyPredicate()}
-      AND (
-        episode."safetyClass" = 'NORMAL'::"MemoryDerivedSafetyClass"
-        OR (
-          episode."safetyClass" = 'SENSITIVE'::"MemoryDerivedSafetyClass"
-          AND ${normalizedQueryYo} <> ''
-          AND entry."safeSearchTextYoNormalized" = ${normalizedQueryYo}
-        )
-      )
-    FOR SHARE OF episode, entry, settings, generation, source_chat, checkpoint
-  `);
-  return row ?? null;
-}
-
-async function sourceMessagesOverlap(
-  tx: PreparingItemTransaction,
-  userId: string,
-  episodeId: string,
-  chunkId: string
-): Promise<boolean> {
-  const rows = await tx.$queryRaw<Array<{ matched: boolean }>>(Prisma.sql`
-    SELECT EXISTS (
-      SELECT 1
-      FROM "MemoryEpisodeMessage" AS episode_message
-      INNER JOIN "MemoryRecallChunkMessage" AS chunk_message
-        ON chunk_message."userId" = episode_message."userId"
-        AND chunk_message."chatId" = episode_message."chatId"
-        AND chunk_message."messageId" = episode_message."messageId"
-      WHERE episode_message."userId" = ${userId}
-        AND episode_message."episodeId" = ${episodeId}
-        AND chunk_message."chunkId" = ${chunkId}
-    ) AS "matched"
-  `);
-  return rows[0]?.matched === true;
-}
-
-async function resolveEpisode(
-  tx: PreparingItemTransaction,
-  authority: PreparingMemoryItemAuthority,
-  querySnapshot: string | null,
-  input: MemoryPreparingItemInput & Readonly<{ episodeId: string }>
-): Promise<ResolvedPreparingMemoryItem> {
-  const projection = itemProjection(input);
-  const episode = await resolveEpisodeRow(tx, authority, querySnapshot, input.episodeId);
-  if (!episode) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
-  }
-  let projectionRow = episode;
-  let sourceMessageIds = await episodeMessageIds(tx, authority.userId, input.episodeId);
-  if (projection.kind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT") {
-    if (!projection.supportingItemId) {
-      throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
-    }
-    const chunk = await resolveChunkRow(
-      tx,
-      authority,
-      querySnapshot,
-      projection.supportingItemId
-    );
-    if (
-      !chunk || chunk.chatId !== episode.chatId ||
-      chunk.branchGeneration !== episode.branchGeneration ||
-      chunk.sourceRevision !== episode.sourceRevision ||
-      !await sourceMessagesOverlap(
-        tx,
-        authority.userId,
-        input.episodeId,
-        projection.supportingItemId
-      )
-    ) {
-      throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
-    }
-    projectionRow = chunk;
-    sourceMessageIds = await chunkMessageIds(
-      tx,
-      authority.userId,
-      projection.supportingItemId
-    );
-  } else if (projection.kind !== "EPISODE_SAFE_SUMMARY" ||
-    projection.supportingItemId !== null) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_invalid", false);
-  }
-  if (!exactTextContainsProjection(input.exactSafeText, projectionRow.safeText)) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
-  }
-  const snapshots = historySnapshots(
-    projectionRow,
-    projection.kind,
-    sourceMessageIds,
-    projection.supportingItemId
-  );
-  return {
-    ...commonResolved(input, projection.kind),
-    ...snapshots,
-    episodeId: input.episodeId,
-    exactItemId: input.episodeId,
-    factVersionId: null,
-    itemStateAtAdmission: episode.state,
-    itemType: "EPISODE",
-    recallChunkId: null,
-    sourceBranchGenerationSnapshot: episode.branchGeneration,
-    sourceChatIdSnapshot: episode.chatId,
-    sourceContentHashSnapshot: episode.contentHash,
-    sourceMessageIdsSnapshot: sourceMessageIds,
-    sourceRevisionSnapshot: episode.sourceRevision
   };
 }
 
@@ -740,14 +561,6 @@ export async function resolvePreparingMemoryItem(
     return resolveFact(tx, authority, querySnapshot, {
       ...input,
       factVersionId: target.factVersionId
-    });
-  }
-  if (target.itemType === "EPISODE" && target.episodeId) {
-    return resolveEpisode(tx, authority, querySnapshot, {
-      ...input,
-      episodeId: target.episodeId,
-      exactItemId: target.exactItemId,
-      itemType: "EPISODE"
     });
   }
   if (target.itemType === "RECALL_CHUNK" && target.recallChunkId) {

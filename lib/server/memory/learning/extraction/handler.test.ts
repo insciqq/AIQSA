@@ -174,11 +174,11 @@ function context() {
   };
 }
 
-describe("Memory qualified fact extraction handler", () => {
-  it("parks missing consent or qualification before provider I/O", async () => {
+describe("Memory fact extraction handler", () => {
+  it("parks missing consent or runtime capability before provider I/O", async () => {
     for (const code of [
       "memory_execution_egress_consent_required",
-      "memory_execution_qualification_required",
+      "memory_execution_capability_unavailable",
       "memory_execution_target_unavailable"
     ] as const) {
       const fixture = dependencies({

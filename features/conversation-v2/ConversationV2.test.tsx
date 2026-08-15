@@ -124,6 +124,31 @@ describe("Conversation v2", () => {
     expect(long.querySelector("[data-bubble-clamped='true']")).not.toBeNull();
   });
 
+  it("expands only the current long question for the reading anchor", () => {
+    const longQuestion = Array.from({ length: 20 }, (_, index) => `Line ${index + 1}`).join("\n");
+    const { rerender } = render(
+      <ConversationTurnV2
+        anchorId="current-question"
+        content={longQuestion}
+        expandForReadingAnchor
+        role="user"
+      />
+    );
+
+    const question = screen.getByRole("article", { name: "Question" });
+    expect(question.querySelector("[data-bubble-clamped]")).toBeNull();
+    expect(within(question).getByRole("button", { name: "Collapse" })).toBeVisible();
+
+    rerender(
+      <ConversationTurnV2
+        anchorId="current-question"
+        content={longQuestion}
+        role="user"
+      />
+    );
+    expect(question.querySelector("[data-bubble-clamped='true']")).not.toBeNull();
+  });
+
   it("keeps answer-bound presentation beside the exact message", () => {
     render(
       <ConversationV2

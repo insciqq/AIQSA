@@ -21,6 +21,7 @@ import {
   effectiveProviderResponseTimeoutMs,
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration,
+  type ProviderConnectionConfiguration,
   type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 import type { ProviderCredentialSource } from "../../providers/providerCredentialSource";
@@ -288,15 +289,18 @@ export function createAdminProviderService(input: Readonly<{
   }
 
   async function testCredentialCatalog(value: {
-    connection: AdminProviderConnectionConfiguration;
+    connection: AdminProviderConnectionConfiguration | ProviderConnectionConfiguration;
     family: string;
     modelClasses?: readonly ProviderModelConfiguration["modelClass"][];
     secret: ProviderCredentialSource | null;
     signal?: AbortSignal;
   }): Promise<AdminProviderCredentialTestOutcome> {
     try {
+      const connection = "responseTimeoutSeconds" in value.connection
+        ? normalizeAdminProviderConnectionConfiguration(value.connection)
+        : normalizeProviderConnectionConfiguration(value.connection);
       return await input.credentialTester.test({
-        connection: normalizeAdminProviderConnectionConfiguration(value.connection),
+        connection,
         family: realProviderFamily(value.family),
         ...(value.modelClasses ? { modelClasses: value.modelClasses } : {}),
         secret: value.secret,
@@ -390,7 +394,7 @@ export function createAdminProviderService(input: Readonly<{
       const configuration = normalizeProviderConnectionConfiguration(
         candidate.connection.configuration
       );
-      const authenticationMode = configuration.authenticationMode ?? "bearer";
+      const authenticationMode = configuration.authenticationMode;
       if ((authenticationMode === "none") !== (candidate.credential.source === null)) {
         throw new AdminProviderServiceError("provider_credential_not_found");
       }

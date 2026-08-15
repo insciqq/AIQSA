@@ -36,4 +36,4 @@ Current adapter behavior:
 
 When UI parameters select `reasoning.effort=none`, AIQSA sends that explicit OpenAI reasoning object. GPT-5.6 `reasoning.mode` is independent and remains serialized when present even with effort `none`. Run validation rejects `max` or `pro` for a model whose catalog controls do not advertise that value. Treat OpenAI `status: incomplete` as a provider failure.
 
-The current direct OpenAI default model does not expose or accept `reasoning.effort=minimal` in AIQSA because the 2026-06-06 low-token smoke rejected that value. Saved legacy direct-OpenAI control drafts containing `minimal` are migrated to `low`.
+The direct OpenAI default model does not expose or accept `reasoning.effort=minimal` because the low-token provider smoke rejected that value; its current effort options begin at `low`.

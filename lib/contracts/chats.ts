@@ -8,27 +8,18 @@ import {
   type AssistantAvatarRecipe
 } from "./assistants";
 import {
-  decodeThreadSearchProviderOperation,
   decodeThreadSearchSource,
-  decodeThreadToolActivity,
-  threadSearchProviderOperationTraceWithinLimit,
-  type ThreadSearchExecution,
-  type ThreadSearchProviderOperation,
-  type ThreadSearchSource,
-  type ThreadToolActivity,
-  type ThreadToolActivityStatus
-} from "./toolActivity";
+  type ThreadSearchSource
+} from "./searchSources";
 import { decodeKnowledgePlan, type KnowledgePlan } from "./knowledge";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   MEMORY_DELETION_STATES,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
   decodeMemoryActionFeedback,
-  decodeMemoryReceipt,
   type MemoryActionFeedback,
   type MemoryChatMode,
-  type MemoryDeletionState,
-  type MemoryReceipt
+  type MemoryDeletionState
 } from "./memory";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
@@ -58,41 +49,20 @@ export function boundedChatBranchPreview(value: string): string {
 }
 
 export type {
-  ThreadSearchExecution,
-  ThreadSearchProviderOperation,
-  ThreadSearchSource,
-  ThreadToolActivity,
-  ThreadToolActivityStatus
+  ThreadSearchSource
 };
 
 export type ThreadMessage = {
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
   content: unknown;
-  evidenceSummary?: ThreadRunEvidenceSummary | null;
   id: string;
   modelId?: string;
   parentMessageId: string | null;
   provider?: string;
   role: "assistant" | "user";
   runId?: string | null;
-  runUsage?: ThreadRunUsage | null;
   status: "cancelled" | "complete" | "error" | "streaming";
-};
-
-export type ThreadRunUsage = {
-  totalTokens: number;
-};
-
-/**
- * Content-free terminal facts for the quiet evidence row. Detailed receipts
- * stay behind the answer-bound disclosures and Run details.
- */
-export type ThreadRunEvidenceSummary = {
-  fileCount: number;
-  hasUsage: boolean;
-  sourceCount: number;
-  toolCallCount: number;
 };
 
 /**
@@ -106,34 +76,18 @@ export type ThreadAssistantIdentity = {
 };
 
 export type ThreadArtifactSummary = {
-  citationCount: number;
   citations: ThreadCitation[];
-  contextTruncation?: {
-    approxDroppedTokens: number;
-    droppedMessages: number;
-  } | null;
   groundingDisplay?: ThreadGroundingDisplay | null;
   knowledgeCitations?: ThreadKnowledgeCitation[];
-  knowledgeInvocationCount?: number;
-  knowledgeOutcomes?: ThreadKnowledgeOutcome[];
   memoryAction?: MemoryActionFeedback;
-  memoryReceipt?: MemoryReceipt;
-  reasoningCount: number;
   reasoningText: string[];
-  searchActivity?: ThreadSearchActivity[];
-  searchCount: number;
-  searchDisplayName?: string | null;
-  searchStrategy: string | null;
-  toolCallCount: number;
-  toolCalls: ThreadToolActivity[];
+  sources: ThreadSearchSource[];
 };
 
 export type ThreadKnowledgeCitation = {
   baseName: string;
-  documentVersionNumber: number | null;
   fileName: string;
   handle: string;
-  knowledgeBaseId: string;
   page: number;
 };
 
@@ -147,31 +101,8 @@ export type ThreadKnowledgeOutcome = {
     | "zero_above_threshold";
 };
 
-export type ThreadSearchActivityStatus =
-  | "cancelled"
-  | "complete"
-  | "error"
-  | "partial"
-  | "running"
-  | "unknown";
-
-export type ThreadSearchOperation = Omit<ThreadSearchProviderOperation, "id">;
-
-export type ThreadSearchActivity = {
-  displayName: string;
-  failureReason?: string | null;
-  providerOperations: ThreadSearchOperation[] | null;
-  providerOperationsTruncated: boolean;
-  query: string | null;
-  sourceCount: number | null;
-  sources: ThreadSearchSource[];
-  status: ThreadSearchActivityStatus;
-};
-
 export type ThreadGroundingDisplay = {
-  callCount: number;
   provider: "gemini";
-  queryCount: number;
   suggestionsHtml: string;
 };
 
@@ -235,7 +166,6 @@ export type ChatMessageWire = {
   assistantIdentity?: ThreadAssistantIdentity | null;
   content: unknown;
   createdAt: string;
-  evidenceSummary?: ThreadRunEvidenceSummary | null;
   errorMessage: string | null;
   id: string;
   modelId: string | null;
@@ -243,7 +173,6 @@ export type ChatMessageWire = {
   parentMessageId: string | null;
   provider: string | null;
   role: string;
-  runUsage?: ThreadRunUsage | null;
   status: string;
 };
 
@@ -658,53 +587,6 @@ function decodeMessagePage(
   return { messages, pageInfo };
 }
 
-function decodeThreadRunUsage(value: unknown): ThreadRunUsage | null | undefined {
-  if (value === undefined || value === null) {
-    return value;
-  }
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  const totalTokens = nonNegativeInteger(value.totalTokens);
-  return totalTokens === null ? undefined : { totalTokens };
-}
-
-function decodeThreadRunEvidenceSummary(
-  value: unknown
-): ThreadRunEvidenceSummary | null | undefined {
-  if (value === undefined || value === null) {
-    return value;
-  }
-  if (!isRecord(value) || !hasExactKeys(value, [
-    "fileCount",
-    "hasUsage",
-    "sourceCount",
-    "toolCallCount"
-  ])) {
-    return undefined;
-  }
-
-  const fileCount = nonNegativeInteger(value.fileCount);
-  const sourceCount = nonNegativeInteger(value.sourceCount);
-  const toolCallCount = nonNegativeInteger(value.toolCallCount);
-  if (
-    fileCount === null || !Number.isSafeInteger(fileCount) ||
-    sourceCount === null || !Number.isSafeInteger(sourceCount) ||
-    toolCallCount === null || !Number.isSafeInteger(toolCallCount) ||
-    typeof value.hasUsage !== "boolean"
-  ) {
-    return undefined;
-  }
-
-  return {
-    fileCount,
-    hasUsage: value.hasUsage,
-    sourceCount,
-    toolCallCount
-  };
-}
-
 function validOptionalString(record: Record<string, unknown>, key: string): boolean {
   return !(key in record) || typeof record[key] === "string";
 }
@@ -736,184 +618,71 @@ function decodeThreadCitation(value: unknown): ThreadCitation | null {
   };
 }
 
-function decodeThreadSearchActivityStatus(value: unknown): ThreadSearchActivityStatus | null {
-  return value === "cancelled" ||
-    value === "complete" ||
-    value === "error" ||
-    value === "partial" ||
-    value === "running" ||
-    value === "unknown"
-    ? value
-    : null;
-}
-
-function decodeThreadSearchOperation(value: unknown): ThreadSearchOperation | null {
-  if (!isRecord(value)) return null;
-  const decoded = decodeThreadSearchProviderOperation({ ...value, id: null });
-  if (!decoded) return null;
-  const { id: _id, ...operation } = decoded;
-  return operation;
-}
-
-function decodeThreadSearchActivity(value: unknown): ThreadSearchActivity | null {
-  if (!isRecord(value)) return null;
-  const displayName = boundedRequiredString(value.displayName, 256);
-  let failureReason: string | null | undefined;
-  if (value.failureReason === undefined || value.failureReason === null) {
-    failureReason = value.failureReason;
-  } else {
-    failureReason = boundedRequiredString(value.failureReason, 256) ?? undefined;
-  }
-  const query = value.query === null ? null : boundedRequiredString(value.query, 2_000);
-  const sourceCount = value.sourceCount === null ? null : nonNegativeInteger(value.sourceCount);
-  const status = decodeThreadSearchActivityStatus(value.status);
+function decodeThreadGroundingDisplay(
+  value: unknown
+): ThreadGroundingDisplay | null {
   if (
-    !displayName ||
-    (value.failureReason !== undefined && failureReason === undefined) ||
-    (query === null && value.query !== null) ||
-    (sourceCount === null && value.sourceCount !== null) ||
-    (sourceCount !== null && sourceCount > 100) ||
-    !status ||
-    (typeof failureReason === "string" && status !== "error" && status !== "partial") ||
-    typeof value.providerOperationsTruncated !== "boolean" ||
+    !isRecord(value) ||
+    value.provider !== "gemini" ||
+    typeof value.suggestionsHtml !== "string" ||
+    value.suggestionsHtml.length === 0 ||
+    new TextEncoder().encode(value.suggestionsHtml).byteLength > 256 * 1_024
+  ) {
+    return null;
+  }
+  return {
+    provider: "gemini",
+    suggestionsHtml: value.suggestionsHtml
+  };
+}
+
+function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | null {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.citations) ||
+    value.citations.length > 100 ||
+    !Array.isArray(value.reasoningText) ||
+    value.reasoningText.length > 100 ||
+    value.reasoningText.some((text) => typeof text !== "string") ||
     !Array.isArray(value.sources) ||
     value.sources.length > 20
   ) {
     return null;
   }
 
+  const citations = value.citations.map(decodeThreadCitation);
   const sources = value.sources.map(decodeThreadSearchSource);
   if (
-    sources.some((source) => source === null) ||
-    (sourceCount !== null && sources.length > sourceCount)
+    citations.some((citation) => citation === null) ||
+    sources.some((source) => source === null)
   ) {
     return null;
   }
 
-  let providerOperations: ThreadSearchOperation[] | null;
-  if (value.providerOperations === null) {
-    providerOperations = null;
-  } else if (Array.isArray(value.providerOperations) && value.providerOperations.length <= 32) {
-    const decodedOperations = value.providerOperations.map(decodeThreadSearchOperation);
-    if (decodedOperations.some((operation) => operation === null)) return null;
-    providerOperations = decodedOperations.filter(
-      (operation): operation is ThreadSearchOperation => operation !== null
-    );
-    if (!threadSearchProviderOperationTraceWithinLimit(providerOperations)) return null;
+  let groundingDisplay: ThreadGroundingDisplay | null | undefined;
+  if (value.groundingDisplay === undefined || value.groundingDisplay === null) {
+    groundingDisplay = value.groundingDisplay;
   } else {
-    return null;
+    groundingDisplay = decodeThreadGroundingDisplay(value.groundingDisplay);
+    if (!groundingDisplay) return null;
   }
 
-  return {
-    displayName,
-    ...(failureReason !== undefined ? { failureReason } : {}),
-    providerOperations,
-    providerOperationsTruncated: value.providerOperationsTruncated,
-    query,
-    sourceCount,
-    sources: sources.filter((source): source is ThreadSearchSource => source !== null),
-    status
-  };
-}
-
-function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  const citationCount = nonNegativeInteger(value.citationCount);
-  const reasoningCount = nonNegativeInteger(value.reasoningCount);
-  const searchCount = nonNegativeInteger(value.searchCount);
-  const toolCallCount = nonNegativeInteger(value.toolCallCount);
-  const hasKnowledgeProjection = value.knowledgeInvocationCount !== undefined ||
-    value.knowledgeCitations !== undefined || value.knowledgeOutcomes !== undefined;
-  const hasCompleteKnowledgeProjection = !hasKnowledgeProjection || (
-    value.knowledgeInvocationCount !== undefined &&
-    value.knowledgeCitations !== undefined &&
-    value.knowledgeOutcomes !== undefined
-  );
-  const knowledgeInvocationCount = value.knowledgeInvocationCount === undefined
-    ? 0
-    : nonNegativeInteger(value.knowledgeInvocationCount);
-  const searchDisplayName = value.searchDisplayName === undefined
-    ? undefined
-    : nullableString(value.searchDisplayName);
-  const searchStrategy = nullableId(value.searchStrategy);
-  if (
-    citationCount === null ||
-    reasoningCount === null ||
-    searchCount === null ||
-    toolCallCount === null || !hasCompleteKnowledgeProjection ||
-    knowledgeInvocationCount === null || knowledgeInvocationCount > 3 ||
-    (value.searchDisplayName !== undefined && searchDisplayName === undefined) ||
-    searchStrategy === undefined ||
-    !Array.isArray(value.citations) ||
-    !Array.isArray(value.reasoningText) ||
-    !Array.isArray(value.toolCalls) ||
-    value.reasoningText.some((text) => typeof text !== "string")
-  ) {
-    return null;
-  }
-
-  const citations = value.citations.map(decodeThreadCitation);
-  if (citations.some((citation) => citation === null)) {
-    return null;
-  }
-
-  const toolCalls = value.toolCalls.map(decodeThreadToolActivity);
-  if (toolCalls.some((toolCall) => toolCall === null) || toolCalls.length !== toolCallCount) {
-    return null;
-  }
-
-  const knowledgeCitationsInput = value.knowledgeCitations ?? [];
-  const knowledgeOutcomesInput = value.knowledgeOutcomes ?? [];
-  if (
-    !Array.isArray(knowledgeCitationsInput) || knowledgeCitationsInput.length > 24 ||
-    !Array.isArray(knowledgeOutcomesInput) || knowledgeOutcomesInput.length > 3
-  ) return null;
-  const knowledgeCitations = knowledgeCitationsInput.map(decodeThreadKnowledgeCitation);
-  const knowledgeOutcomes = knowledgeOutcomesInput.map(decodeThreadKnowledgeOutcome);
-  if (
-    knowledgeCitations.some((citation) => citation === null) ||
-    knowledgeOutcomes.some((outcome) => outcome === null) ||
-    knowledgeOutcomes.length !== knowledgeInvocationCount ||
-    knowledgeOutcomes.some((outcome, index) => outcome?.invocationOrdinal !== index + 1)
-  ) return null;
-  const decodedKnowledgeCitations = knowledgeCitations.filter(
-    (citation): citation is ThreadKnowledgeCitation => citation !== null
-  );
-  if (
-    new Set(decodedKnowledgeCitations.map((citation) => citation.handle)).size !==
-      decodedKnowledgeCitations.length ||
-    decodedKnowledgeCitations.some((citation) => Number(citation.handle[1]) > knowledgeInvocationCount)
-  ) return null;
-
-  let contextTruncation: ThreadArtifactSummary["contextTruncation"];
-  if (value.contextTruncation === null || value.contextTruncation === undefined) {
-    contextTruncation = value.contextTruncation;
-  } else if (isRecord(value.contextTruncation)) {
-    const approxDroppedTokens = nonNegativeInteger(value.contextTruncation.approxDroppedTokens);
-    const droppedMessages = nonNegativeInteger(value.contextTruncation.droppedMessages);
-    if (approxDroppedTokens === null || droppedMessages === null) {
+  let knowledgeCitations: ThreadKnowledgeCitation[] | undefined;
+  if (value.knowledgeCitations !== undefined) {
+    if (!Array.isArray(value.knowledgeCitations) || value.knowledgeCitations.length > 24) {
       return null;
     }
-    contextTruncation = { approxDroppedTokens, droppedMessages };
-  } else {
-    return null;
-  }
-
-  let searchActivity: ThreadSearchActivity[] | undefined;
-  if (value.searchActivity !== undefined) {
-    if (!Array.isArray(value.searchActivity) || value.searchActivity.length > 12) {
-      return null;
-    }
-    const decodedSearchActivity = value.searchActivity.map(decodeThreadSearchActivity);
-    if (decodedSearchActivity.some((activity) => activity === null)) {
-      return null;
-    }
-    searchActivity = decodedSearchActivity.filter(
-      (activity): activity is ThreadSearchActivity => activity !== null
+    const decoded = value.knowledgeCitations.map(decodeThreadKnowledgeCitation);
+    if (decoded.some((citation) => citation === null)) return null;
+    knowledgeCitations = decoded.filter(
+      (citation): citation is ThreadKnowledgeCitation => citation !== null
     );
+    if (
+      new Set(knowledgeCitations.map((citation) => citation.handle)).size !==
+      knowledgeCitations.length
+    ) {
+      return null;
+    }
   }
 
   let memoryAction: MemoryActionFeedback | undefined;
@@ -922,34 +691,18 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     if (!decoded.ok) return null;
     memoryAction = decoded.value;
   }
-  let memoryReceipt: MemoryReceipt | undefined;
-  if (value.memoryReceipt !== undefined) {
-    const decoded = decodeMemoryReceipt(value.memoryReceipt);
-    if (!decoded.ok) return null;
-    memoryReceipt = decoded.value;
-  }
 
   return {
-    citationCount,
-    citations: citations.filter((citation): citation is ThreadCitation => citation !== null),
-    ...(contextTruncation !== undefined ? { contextTruncation } : {}),
-    ...(hasKnowledgeProjection ? {
-      knowledgeCitations: decodedKnowledgeCitations,
-      knowledgeInvocationCount,
-      knowledgeOutcomes: knowledgeOutcomes.filter(
-        (outcome): outcome is ThreadKnowledgeOutcome => outcome !== null
-      )
-    } : {}),
+    citations: citations.filter(
+      (citation): citation is ThreadCitation => citation !== null
+    ),
+    ...(groundingDisplay !== undefined ? { groundingDisplay } : {}),
+    ...(knowledgeCitations !== undefined ? { knowledgeCitations } : {}),
     ...(memoryAction ? { memoryAction } : {}),
-    ...(memoryReceipt ? { memoryReceipt } : {}),
-    reasoningCount,
     reasoningText: value.reasoningText as string[],
-    ...(searchActivity !== undefined ? { searchActivity } : {}),
-    searchCount,
-    ...(searchDisplayName !== undefined ? { searchDisplayName } : {}),
-    searchStrategy,
-    toolCallCount,
-    toolCalls: toolCalls.filter((toolCall): toolCall is ThreadToolActivity => toolCall !== null)
+    sources: sources.filter(
+      (source): source is ThreadSearchSource => source !== null
+    )
   };
 }
 
@@ -958,37 +711,23 @@ function decodeThreadKnowledgeCitation(value: unknown): ThreadKnowledgeCitation 
   const baseName = requiredString(value.baseName);
   const fileName = requiredString(value.fileName);
   const handle = requiredString(value.handle);
-  const knowledgeBaseId = requiredString(value.knowledgeBaseId);
   const page = nonNegativeInteger(value.page);
-  const documentVersionNumber = value.documentVersionNumber === null
-    ? null
-    : nonNegativeInteger(value.documentVersionNumber);
   if (
-    !baseName || !fileName || !handle || !/^K[1-3]\.[1-8]$/u.test(handle) ||
-    !knowledgeBaseId || page === null || page < 1 ||
-    (documentVersionNumber !== null && documentVersionNumber < 1)
-  ) return null;
+    !baseName ||
+    !fileName ||
+    !handle ||
+    !/^K[1-3]\.[1-8]$/u.test(handle) ||
+    page === null ||
+    page < 1
+  ) {
+    return null;
+  }
   return {
     baseName,
-    documentVersionNumber,
     fileName,
     handle,
-    knowledgeBaseId,
     page
   };
-}
-
-function decodeThreadKnowledgeOutcome(value: unknown): ThreadKnowledgeOutcome | null {
-  if (!isRecord(value)) return null;
-  const invocationOrdinal = nonNegativeInteger(value.invocationOrdinal);
-  const outcome = value.outcome === "base_empty" || value.outcome === "base_indexing" ||
-    value.outcome === "complete" || value.outcome === "embedding_model_unavailable" ||
-    value.outcome === "zero_above_threshold"
-    ? value.outcome
-    : null;
-  return invocationOrdinal !== null && invocationOrdinal >= 1 && invocationOrdinal <= 3 && outcome
-    ? { invocationOrdinal, outcome }
-    : null;
 }
 
 function decodeThreadAssistantIdentity(value: unknown): ThreadAssistantIdentity | null {
@@ -1025,8 +764,6 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   const modelRunId = nullableString(value.modelRunId);
   const parentMessageId = nullableId(value.parentMessageId);
   const provider = nullableString(value.provider);
-  const evidenceSummary = decodeThreadRunEvidenceSummary(value.evidenceSummary);
-  const runUsage = decodeThreadRunUsage(value.runUsage);
   const role = value.role === "assistant" || value.role === "user" ? value.role : null;
   const status =
     value.status === "queued" ||
@@ -1062,27 +799,17 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     modelRunId === undefined ||
     parentMessageId === undefined ||
     provider === undefined ||
-    ("evidenceSummary" in value && evidenceSummary === undefined) ||
-    ("runUsage" in value && runUsage === undefined) ||
     !role ||
     !status ||
     !("content" in value)
   ) {
     return null;
   }
-  if (
-    evidenceSummary !== undefined && evidenceSummary !== null &&
-    (role !== "assistant" || status === "queued" || status === "streaming")
-  ) {
-    return null;
-  }
-
   return {
     artifactSummary,
     ...(assistantIdentity !== undefined ? { assistantIdentity } : {}),
     content: value.content,
     createdAt,
-    ...(evidenceSummary !== undefined ? { evidenceSummary } : {}),
     errorMessage,
     id,
     modelId,
@@ -1090,7 +817,6 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     parentMessageId,
     provider,
     role,
-    ...(runUsage !== undefined ? { runUsage } : {}),
     status
   };
 }
@@ -1099,10 +825,7 @@ function decodeChatDefaultSelection(
   modelValue: unknown,
   providerValue: unknown
 ): Pick<WorkspaceChatSummaryWire, "defaultModelId" | "defaultProvider"> | null {
-  if (
-    (modelValue === null && providerValue === null) ||
-    (modelValue === "" && providerValue === "")
-  ) {
+  if (modelValue === null && providerValue === null) {
     return {
       defaultModelId: null,
       defaultProvider: null

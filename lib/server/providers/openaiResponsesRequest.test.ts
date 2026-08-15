@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { perplexityWebSearchTool } from "../tools/perplexitySearch";
+import { currentSearchToolFixture } from "../tools/testFixtures";
 import {
   buildOpenAIResponsesRequest,
   buildOpenAIResponsesRequestPreview,
@@ -19,6 +19,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     content: {
       blocks: [{ text: "Find one concise fact.", type: "text" }]
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: true,
@@ -39,7 +41,13 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       system: "You are precise."
     },
     provider: "openai",
-    searchStrategy: "openai-native-web-search",
+    searchPlan: {
+      mode: "model_choice",
+      options: [searchOption({
+        optionId: "openai-native-web-search",
+        provider: "openai"
+      })]
+    },
     ...overrides
   };
 }
@@ -84,9 +92,9 @@ function latestInputMessage(body: ReturnType<typeof buildOpenAIResponsesRequest>
 describe("OpenAI Responses request builder", () => {
   it("serializes required custom-tool choice", () => {
     const body = buildOpenAIResponsesRequest(request({
-      searchStrategy: null,
+      searchPlan: { mode: "all_selected", options: [] },
       toolChoice: "required",
-      tools: [perplexityWebSearchTool]
+      tools: [currentSearchToolFixture]
     }));
 
     expect(body.tool_choice).toBe("required");
@@ -165,7 +173,7 @@ describe("OpenAI Responses request builder", () => {
           stream: true,
           temperature: 0
         },
-        searchStrategy: "search-disabled"
+        searchPlan: { mode: "all_selected", options: [] }
       })
     );
 
@@ -193,8 +201,7 @@ describe("OpenAI Responses request builder", () => {
       searchPlan: {
         mode: "model_choice",
         options: [searchOption()]
-      },
-      searchStrategy: "custom-web-search:connection-custom"
+      }
     }));
     expect(customHosted).toMatchObject({
       include: ["web_search_call.action.sources"],
@@ -213,8 +220,7 @@ describe("OpenAI Responses request builder", () => {
           providerModelId: "technical-search-model",
           searchStrategyRowId: "route-client"
         })]
-      },
-      searchStrategy: "openai-native-web-search"
+      }
     }));
     expect(typedClientOnly).not.toHaveProperty("include");
     expect(typedClientOnly).not.toHaveProperty("tools");
@@ -239,12 +245,12 @@ describe("OpenAI Responses request builder", () => {
           })
         ]
       },
-      tools: [perplexityWebSearchTool]
+      tools: [currentSearchToolFixture]
     }));
 
     expect(body.tools?.[0]).toEqual({ type: "web_search" });
     expect(body.tools?.[1]).toMatchObject({
-      name: "search_via_perplexity",
+      name: "search_engine_1",
       type: "function"
     });
   });
@@ -260,7 +266,7 @@ describe("OpenAI Responses request builder", () => {
           summary: "auto"
         }
       },
-      searchStrategy: "search-disabled"
+      searchPlan: { mode: "all_selected", options: [] }
     });
     const body = buildOpenAIResponsesRequest(runRequest);
 
@@ -293,7 +299,7 @@ describe("OpenAI Responses request builder", () => {
           store: false,
           stream: true
         },
-        searchStrategy: "search-disabled"
+        searchPlan: { mode: "all_selected", options: [] }
       })
     );
 
@@ -311,7 +317,7 @@ describe("OpenAI Responses request builder", () => {
     const functionCall = {
       arguments: "{\"keyword\":\"latest Anthropic model\"}",
       call_id: "call-search-1",
-      name: "search_via_perplexity",
+      name: "search_engine_1",
       status: "completed",
       type: "function_call"
     };
@@ -330,9 +336,9 @@ describe("OpenAI Responses request builder", () => {
           stream: true
         },
         providerToolMessages: [[functionCall, "ignored"], functionOutput, "ignored", [[functionCall]]],
-        searchStrategy: "perplexity-tool-search",
+        searchPlan: { mode: "all_selected", options: [] },
         toolChoice: "none",
-        tools: [perplexityWebSearchTool]
+        tools: [currentSearchToolFixture]
       })
     );
 
@@ -344,9 +350,9 @@ describe("OpenAI Responses request builder", () => {
       tool_choice: "none",
       tools: [
         {
-          description: "Search for current or source-backed information from the internet using Perplexity.",
-          name: "search_via_perplexity",
-          parameters: perplexityWebSearchTool.inputSchema,
+          description: "Search one user-selected web source with a concise query.",
+          name: "search_engine_1",
+          parameters: currentSearchToolFixture.inputSchema,
           strict: true,
           type: "function"
         }
@@ -360,14 +366,14 @@ describe("OpenAI Responses request builder", () => {
     const body = buildOpenAIResponsesRequest(
       request({
         parallelToolCalls: true,
-        tools: [perplexityWebSearchTool]
+        tools: [currentSearchToolFixture]
       })
     );
 
     expect(body.parallel_tool_calls).toBe(true);
     expect(body.tools).toEqual([
       { type: "web_search" },
-      expect.objectContaining({ name: "search_via_perplexity", type: "function" })
+      expect.objectContaining({ name: "search_engine_1", type: "function" })
     ]);
   });
 
@@ -381,7 +387,7 @@ describe("OpenAI Responses request builder", () => {
       request({
         previousProviderResponseId: "resp-background-1",
         providerToolMessages: [functionOutput],
-        tools: [perplexityWebSearchTool]
+        tools: [currentSearchToolFixture]
       })
     );
 
@@ -449,7 +455,7 @@ describe("OpenAI Responses request builder", () => {
     const runRequest = request({
       attachmentIds: [image.id],
       attachments: [image],
-      searchStrategy: "search-disabled"
+      searchPlan: { mode: "all_selected", options: [] }
     });
     const actualJson = JSON.stringify(buildOpenAIResponsesRequest(runRequest));
     const preview = buildOpenAIResponsesRequestPreview(runRequest);
@@ -515,7 +521,7 @@ describe("OpenAI Responses request builder", () => {
     expect(previewJson).not.toContain("JVBERi0xLjQK");
   });
 
-  it("preserves legacy asymmetric request-builder redaction flags", () => {
+  it("keeps transport attachments complete and previews unconditionally safe", () => {
     const base = request();
     const image = attachment({
       dataUrl: "data:image/png;base64,PRIVATE_IMAGE",
@@ -539,25 +545,13 @@ describe("OpenAI Responses request builder", () => {
         nativePdfInput: true
       }
     });
-    const filesRedacted = JSON.stringify(buildOpenAIResponsesRequest(runRequest, { redactFiles: true }));
-    const imagesRedacted = JSON.stringify(buildOpenAIResponsesRequest(runRequest, { redactImages: true }));
-    const bothRedacted = JSON.stringify(
-      buildOpenAIResponsesRequest(runRequest, { redactFiles: true, redactImages: true })
-    );
-    const forcedSafePreview = JSON.stringify(
-      buildOpenAIResponsesRequestPreview(runRequest, { redactFiles: false, redactImages: false })
-    );
+    const actual = JSON.stringify(buildOpenAIResponsesRequest(runRequest));
+    const safePreview = JSON.stringify(buildOpenAIResponsesRequestPreview(runRequest));
 
-    expect(filesRedacted).toContain("data:image/png;base64,PRIVATE_IMAGE");
-    expect(filesRedacted).toContain("[base64 PDF data omitted]");
-    expect(filesRedacted).not.toContain("PRIVATE_PDF");
-    expect(imagesRedacted).toContain("data:application/pdf;base64,PRIVATE_PDF");
-    expect(imagesRedacted).toContain("[image data url omitted]");
-    expect(imagesRedacted).not.toContain("PRIVATE_IMAGE");
-    expect(bothRedacted).not.toContain("PRIVATE_IMAGE");
-    expect(bothRedacted).not.toContain("PRIVATE_PDF");
-    expect(forcedSafePreview).not.toContain("PRIVATE_IMAGE");
-    expect(forcedSafePreview).not.toContain("PRIVATE_PDF");
+    expect(actual).toContain("PRIVATE_IMAGE");
+    expect(actual).toContain("PRIVATE_PDF");
+    expect(safePreview).not.toContain("PRIVATE_IMAGE");
+    expect(safePreview).not.toContain("PRIVATE_PDF");
   });
 
   it("uses bounded extracted text for document and non-native PDF attachments", () => {
@@ -656,7 +650,7 @@ describe("OpenAI Responses request builder", () => {
       attachments: [document, pdf, image],
       modelCapabilities: { ...base.modelCapabilities, nativePdfInput: true },
       providerToolMessages,
-      searchStrategy: "search-disabled"
+      searchPlan: { mode: "all_selected", options: [] }
     });
     const actualJson = JSON.stringify(buildOpenAIResponsesRequest(runRequest));
     const preview = buildOpenAIResponsesRequestPreview(runRequest);
@@ -716,7 +710,7 @@ describe("OpenAI Responses request builder", () => {
         content: {
           blocks: [{ attachmentId: "attachment-1", type: "file" }]
         },
-        searchStrategy: "search-disabled"
+        searchPlan: { mode: "all_selected", options: [] }
       })
     );
 

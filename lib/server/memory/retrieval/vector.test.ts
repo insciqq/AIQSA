@@ -35,7 +35,7 @@ function input(overrides: Partial<MemoryVectorSearchInput> = {}): MemoryVectorSe
       sourceChatIds: null,
       sourceFolderId: null
     },
-    itemTypes: ["RECALL_CHUNK", "EPISODE"],
+    itemTypes: ["RECALL_CHUNK"],
     limit: 2,
     minimumScore: 0.4,
     profile,
@@ -45,12 +45,12 @@ function input(overrides: Partial<MemoryVectorSearchInput> = {}): MemoryVectorSe
   };
 }
 
-function hit(entryId: string, itemType: "EPISODE" | "RECALL_CHUNK"): MemoryVectorHit {
+function hit(entryId: string): MemoryVectorHit {
   return {
     distance: entryId.endsWith("1") ? 0.1 : 0.2,
     entryId,
     itemId: `item-${entryId}`,
-    itemType,
+    itemType: "RECALL_CHUNK",
     score: entryId.endsWith("1") ? 0.9 : 0.8
   };
 }
@@ -61,20 +61,17 @@ describe("Memory vector lane orchestration", () => {
     const executor: MemoryVectorLaneExecutor = {
       async candidateScan(_input, itemType, strategy, limit) {
         scans.push([itemType, strategy, limit]);
-        if (itemType === "RECALL_CHUNK") return [{ entryId: "chunk-1" }, { entryId: "chunk-2" }];
         return strategy === "HNSW"
-          ? [{ entryId: "episode-filtered-1" }]
-          : [{ entryId: "episode-1" }, { entryId: "episode-2" }];
+          ? [{ entryId: "chunk-filtered-1" }]
+          : [{ entryId: "chunk-1" }, { entryId: "chunk-2" }];
       },
-      async eligibleCount(_input, itemType) {
-        return itemType === "RECALL_CHUNK"
-          ? MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS
-          : MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1;
+      async eligibleCount() {
+        return MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1;
       },
-      async rejoin(_input, itemType, candidateIds) {
+      async rejoin(_input, _itemType, candidateIds) {
         return candidateIds
           .filter((id) => !id.includes("filtered"))
-          .map((id) => hit(id, itemType as "EPISODE" | "RECALL_CHUNK"));
+          .map((id) => hit(id));
       },
       async resolveActiveProfile() {
         return { profile, status: "READY" };
@@ -84,27 +81,23 @@ describe("Memory vector lane orchestration", () => {
     const result = await searchMemoryVectorLanes(executor, input());
 
     expect(result).toMatchObject({
-      lanes: [
-        { exactFallbackUsed: false, strategy: "EXACT" },
-        { exactFallbackUsed: true, strategy: "HNSW" }
-      ],
+      lanes: [{ exactFallbackUsed: true, strategy: "HNSW" }],
       status: "READY"
     });
     expect(scans).toEqual([
-      ["RECALL_CHUNK", "EXACT", 2],
       [
-        "EPISODE",
+        "RECALL_CHUNK",
         "HNSW",
         Math.min(
           2 * MEMORY_HNSW_OVERFETCH_MULTIPLIER,
           MEMORY_HNSW_MAX_CANDIDATES_PER_LANE
         )
       ],
-      ["EPISODE", "EXACT", 2]
+      ["RECALL_CHUNK", "EXACT", 2]
     ]);
     expect(result.hits.map((value) => value.entryId)).toEqual([
       "chunk-1",
-      "episode-1"
+      "chunk-2"
     ]);
   });
 

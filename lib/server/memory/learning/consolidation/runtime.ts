@@ -155,6 +155,8 @@ function providerRequest(
       }]
     },
     forceNonStreaming: true,
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: model.capabilities,
     modelId: model.upstreamModelId,
     parallelToolCalls: false,
@@ -173,7 +175,7 @@ function providerRequest(
         : MEMORY_FACT_VERIFICATION_SYSTEM_PROMPT
     },
     provider: snapshot.providerFamily,
-    searchStrategy: null,
+    searchPlan: { mode: "all_selected", options: [] },
     toolChoice: memoryFactDecisionToolChoice(request.kind),
     tools: [request.kind === "CONSOLIDATE"
       ? memoryFactConsolidationTool

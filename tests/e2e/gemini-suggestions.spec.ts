@@ -71,8 +71,8 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
     ...groundingData,
     suggestionsHtml: String.raw`<style>body::before{content:"${cssCanary}"}.cover{pos\69 tion:fixed;inset:0;z-index:2147483647;width:100vw;height:100vh}</style><a href="https://google.com/search?q=unsafe">Unsafe overlay</a>`
   });
+  await suggestionStream.emit(page, "done", { runId, status: "complete" });
 
-  await page.getByRole("button", { name: /^Search,/u }).click();
   const region = page.getByRole("complementary", { name: "Google Search suggestions" });
   await expect(region.getByRole("alert")).toContainText("could not be displayed safely");
   const host = page.getByTestId("gemini-search-suggestions-host");
@@ -206,6 +206,5 @@ test("contains Gemini suggestions and rejects direct provider CSS before it can 
   });
   expect(focusRing).toEqual({ offset: "-2px", style: "solid", width: "2px" });
 
-  await suggestionStream.emit(page, "done", { runId, status: "complete" });
   await suggestionStream.close(page);
 });

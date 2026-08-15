@@ -11,7 +11,6 @@ export default defineConfig({
   forbidOnly: true,
   testDir: "./tests/e2e",
   outputDir,
-  snapshotPathTemplate: "{testDir}/ui-baseline/{arg}{ext}",
   timeout: 30_000,
   expect: {
     timeout: 5_000

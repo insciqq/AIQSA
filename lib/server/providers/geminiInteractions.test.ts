@@ -10,6 +10,8 @@ function request(stream: boolean): ProviderRunRequest {
     attachments: [],
     chatId: "chat-1",
     content: { blocks: [{ text: "hello", type: "text" }] },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: true,
@@ -22,7 +24,7 @@ function request(stream: boolean): ProviderRunRequest {
     params: { maxTokens: 32, stream },
     prompt: { developer: null, system: null },
     provider: "gemini",
-    searchStrategy: "search-disabled"
+    searchPlan: { mode: "all_selected", options: [] }
   };
 }
 
@@ -108,7 +110,6 @@ describe("Gemini Interactions adapter", () => {
           searchStrategyRowId: "gemini-search-client-route"
         }]
       },
-      searchStrategy: "gemini-google-search"
     };
 
     const result = await collect(

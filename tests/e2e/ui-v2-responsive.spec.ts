@@ -81,33 +81,11 @@ for (const theme of ["dark", "light"] as const) {
       await expectInsideViewport(page, "[data-testid='composer-v2']");
       await expectNoPageOverflow(page);
       expect(pageErrors).toEqual([]);
-      await expect(page).toHaveScreenshot(`responsive-${viewport.name}-${theme}.png`, {
-        animations: "disabled",
-        caret: "hide",
-        fullPage: true
-      });
     });
   }
 }
 
-test("v2 drawers become full-screen below 900px and stay temporary above it", async ({ page }) => {
-  for (const viewport of [
-    { height: 390, width: 844 },
-    { height: 768, width: 899 },
-    { height: 768, width: 900 },
-    { height: 800, width: 1281 }
-  ]) {
-    await page.setViewportSize(viewport);
-    await page.goto("/ui-v2-fixture?fixture=run-details&state=complete");
-    const runDetails = page.getByRole("dialog", { name: /Run details/ });
-    await expect(runDetails).toBeVisible();
-    const runBox = await runDetails.boundingBox();
-    expect(runBox).not.toBeNull();
-    if (viewport.width < 900) expect(runBox!.width).toBe(viewport.width);
-    else expect(runBox!.width).toBeLessThanOrEqual(441);
-    await expectNoPageOverflow(page);
-  }
-
+test("v2 Branches and output previews become full-screen below 900px", async ({ page }) => {
   await page.setViewportSize({ height: 390, width: 844 });
   for (const destination of [
     "/ui-v2-fixture?fixture=branches&state=drawer",
@@ -200,10 +178,6 @@ for (const theme of ["dark", "light"] as const) {
     await expectInsideViewport(page, "[role='menu'][aria-label='Capabilities']");
     await expectInsideViewport(page, "[data-testid='composer-v2']");
     await expectNoPageOverflow(page);
-    await expect(page).toHaveScreenshot(`responsive-enlarged-text-${theme}-mobile.png`, {
-      animations: "disabled",
-      caret: "hide"
-    });
   });
 }
 

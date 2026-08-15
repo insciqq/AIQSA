@@ -199,7 +199,7 @@ describe("Tika normalization", () => {
       "Content-Type": "application/msword",
       "X-TIKA:content": `
         <html><body>
-          <div class="page"><h1>Legacy guide</h1><p>First page</p></div>
+          <div class="page"><h1>Sample guide</h1><p>First page</p></div>
           <div class="page"><h2>Details</h2><p>Second page</p>
             <table><tr><th>Key</th><th>Value</th></tr><tr><td>a</td><td>1</td></tr></table>
           </div>
@@ -208,11 +208,11 @@ describe("Tika normalization", () => {
 
     expect(parsed.pageCount).toBe(2);
     expect(parsed.blocks).toEqual([
-      { headingPath: ["Legacy guide"], index: 0, isTable: false, page: 1, text: "Legacy guide" },
-      { headingPath: ["Legacy guide"], index: 1, isTable: false, page: 1, text: "First page" },
-      { headingPath: ["Legacy guide", "Details"], index: 2, isTable: false, page: 2, text: "Details" },
-      { headingPath: ["Legacy guide", "Details"], index: 3, isTable: false, page: 2, text: "Second page" },
-      { headingPath: ["Legacy guide", "Details"], index: 4, isTable: true, page: 2, text: "Key\tValue\na\t1" }
+      { headingPath: ["Sample guide"], index: 0, isTable: false, page: 1, text: "Sample guide" },
+      { headingPath: ["Sample guide"], index: 1, isTable: false, page: 1, text: "First page" },
+      { headingPath: ["Sample guide", "Details"], index: 2, isTable: false, page: 2, text: "Details" },
+      { headingPath: ["Sample guide", "Details"], index: 3, isTable: false, page: 2, text: "Second page" },
+      { headingPath: ["Sample guide", "Details"], index: 4, isTable: true, page: 2, text: "Key\tValue\na\t1" }
     ]);
   });
 

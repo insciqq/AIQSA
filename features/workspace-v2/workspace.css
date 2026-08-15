@@ -386,10 +386,6 @@
   animation: v2-toast-enter 200ms ease both;
 }
 
-.v2-live-evidence {
-  margin-top: 0.375rem;
-}
-
 .v2-live-reasoning {
   border-top: 1px solid var(--v2-color-border);
   padding: 0.625rem 0;
@@ -405,19 +401,6 @@
 .v2-live-reasoning-body {
   padding-top: 0.5rem;
   color: var(--v2-color-text2);
-}
-
-.v2-live-context-note,
-.v2-live-memory-action {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.375rem;
-  margin: 0;
-  padding: 0.625rem 0;
-  border-top: 1px solid var(--v2-color-border);
-  color: var(--v2-color-text2);
-  font-size: 0.75rem;
-  line-height: 1.45;
 }
 
 .v2-run-setup-scrim {
@@ -632,6 +615,28 @@
 
   .v2-live-workspace .v2-conversation-document {
     width: min(var(--v2-measure), calc(100% - 1.25rem));
+  }
+}
+
+@media (min-width: 42.01rem) and (max-height: 32rem) {
+  .v2-live-workspace .v2-conversation-orientation {
+    place-content: start center;
+    gap: 1rem;
+    padding-top: max(4.5rem, calc(env(safe-area-inset-top) + 4.5rem));
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  .v2-live-welcome {
+    width: min(42rem, 100%);
+  }
+
+  .v2-live-assistant-starters {
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .v2-live-assistant-starters button {
+    height: 100%;
   }
 }
 

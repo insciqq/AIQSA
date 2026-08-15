@@ -21,8 +21,7 @@ import {
   type ChatDetailWire as ApiChatDetail
 } from "@/lib/contracts/chats";
 import {
-  reconcileSearchPlanSelection,
-  resolveSearchStrategyId
+  reconcileSearchPlanSelection
 } from "@/lib/domain/catalogMatrix";
 import {
   decodeSearchPlan,
@@ -39,7 +38,6 @@ type SavedControlDraft = {
   maxOutputTokens?: string;
   reasoningEffort?: string;
   reasoningMode?: string;
-  searchStrategyId?: string;
   streamMode?: boolean;
   temperature?: string;
 };
@@ -87,44 +85,17 @@ function savedControlDraft(value: unknown): SavedControlDraft {
     ...(typeof value.maxOutputTokens === "string" ? { maxOutputTokens: value.maxOutputTokens } : {}),
     ...(typeof value.reasoningEffort === "string" ? { reasoningEffort: value.reasoningEffort } : {}),
     ...(typeof value.reasoningMode === "string" ? { reasoningMode: value.reasoningMode } : {}),
-    ...(typeof value.searchStrategyId === "string" ? { searchStrategyId: value.searchStrategyId } : {}),
     ...(typeof value.streamMode === "boolean" ? { streamMode: value.streamMode } : {}),
     ...(typeof value.temperature === "string" ? { temperature: value.temperature } : {})
   };
 }
 
-function resolveModelSearchStrategy(
-  model:
-    | (Pick<CatalogModel, "searchStrategyIds"> & Partial<Pick<CatalogModel, "modelId" | "provider">>)
-    | null
-    | undefined,
-  controlValues?: Record<string, unknown>,
-  fallbackSearchStrategyId?: string | null
-): string {
-  if (!model) {
-    return resolveSearchStrategyId(model, fallbackSearchStrategyId);
-  }
-
-  const saved =
-    typeof model.provider === "string" && typeof model.modelId === "string"
-      ? savedControlDraft(controlValues?.[modelControlKey({ modelId: model.modelId, provider: model.provider })])
-      : {};
-
-  const preferred =
-    saved.searchStrategyId && model.searchStrategyIds.includes(saved.searchStrategyId)
-      ? saved.searchStrategyId
-      : fallbackSearchStrategyId;
-
-  return resolveSearchStrategyId(model, preferred);
-}
-
 function resolveModelSearchPlan(
   model: Pick<CatalogModel, "searchStrategyIds"> | null | undefined,
   preferredPlan: unknown,
-  fallbackSearchStrategyId?: string | null,
   strategies?: readonly CatalogSearchStrategy[]
 ): SearchPlan {
-  const decoded = decodeSearchPlan(preferredPlan, fallbackSearchStrategyId);
+  const decoded = decodeSearchPlan(preferredPlan);
   if (!decoded.ok || !model) return { mode: "all_selected", optionIds: [] };
   const available = new Set(model.searchStrategyIds);
   const optionIds = decoded.plan.optionIds.filter((optionId) =>
@@ -136,10 +107,9 @@ function resolveModelSearchPlan(
 
 function resolvePreferredSearchPlan(
   preferredPlan: unknown,
-  fallbackSearchStrategyId?: string | null,
   strategies: readonly CatalogSearchStrategy[] = []
 ): SearchPlan {
-  const decoded = decodeSearchPlan(preferredPlan, fallbackSearchStrategyId);
+  const decoded = decodeSearchPlan(preferredPlan);
   if (!decoded.ok) return { mode: "all_selected", optionIds: [] };
   return reconcileSearchPlanSelection(decoded.plan.optionIds, decoded.plan.mode, strategies);
 }
@@ -147,7 +117,7 @@ function resolvePreferredSearchPlan(
 function resolveModelControlDefaults(
   model: CatalogModel,
   controlValues?: Record<string, unknown>
-): Required<Omit<SavedControlDraft, "searchStrategyId">> {
+): Required<SavedControlDraft> {
   const controls = defaultParameterControls(model);
   const saved = savedControlDraft(controlValues?.[modelControlKey(model)]);
   const reasoningEffort = coerceReasoningEffort(
@@ -207,7 +177,6 @@ export {
   resolveModelControlDefaults,
   resolveModelSearchPlan,
   resolvePreferredSearchPlan,
-  resolveModelSearchStrategy,
   savedControlDraft
 };
 

@@ -4,21 +4,10 @@ import type { ProviderModelCapabilities } from "./types";
 type ProviderModelCapabilityResolution = Readonly<{
   adapterKind: CatalogAdapterKind;
   capabilities: ProviderModelCapabilities;
-  legacyContextWindow?: number | null;
   providerFamily: string;
   upstreamModelId: string;
 }>;
 
-function usableLegacyContextWindow(value: number | null | undefined): number | undefined {
-  return typeof value === "number" && Number.isInteger(value) && value > 1
-    ? value
-    : undefined;
-}
-
-/**
- * Resolves context metadata without ever exposing the provider-control-plane
- * compatibility sentinel (`1`) as a real model limit.
- */
 export function resolveProviderModelCapabilities(
   input: ProviderModelCapabilityResolution
 ): ProviderModelCapabilities {
@@ -28,10 +17,10 @@ export function resolveProviderModelCapabilities(
       model.providerFamily === input.providerFamily &&
       model.upstreamModelId === input.upstreamModelId
   );
-  const contextWindow =
-    input.capabilities.contextWindow ??
-    usableLegacyContextWindow(input.legacyContextWindow) ??
-    template?.contextWindow;
+  const templateContextWindow = typeof template?.contextWindow === "number"
+    ? template.contextWindow
+    : undefined;
+  const contextWindow = input.capabilities.contextWindow ?? templateContextWindow;
 
   return {
     ...input.capabilities,

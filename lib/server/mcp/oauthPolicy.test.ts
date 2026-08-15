@@ -65,7 +65,7 @@ describe("MCP OAuth policy", () => {
     draft.auth.protectedResource = "https://mcp.example.test/mcp";
     const policy = policyFor(draft);
 
-    expect(policy.resourceMode).toBeUndefined();
+    expect(policy.resourceMode).toBe("explicit");
     expect(bindMcpOAuthPolicyResource(policy, "https://mcp.example.test/mcp")).toEqual(policy);
     expect(bindMcpOAuthPolicyResource(policy, "https://mcp.example.test/")).toBeNull();
   });

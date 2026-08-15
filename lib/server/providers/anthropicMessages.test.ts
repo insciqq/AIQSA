@@ -32,6 +32,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     content: {
       blocks: [{ text: "Answer briefly.", type: "text" }]
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -57,7 +59,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       system: "You are Claude in AIQSA."
     },
     provider: "anthropic",
-    searchStrategy: "search-disabled",
+    searchPlan: { mode: "all_selected", options: [] },
     ...overrides
   };
 }
@@ -87,7 +89,6 @@ function hostedSearchRequest(
         searchStrategyRowId: "anthropic-search-route"
       }]
     },
-    searchStrategy: "anthropic-web-search",
     ...overrides
   });
 }

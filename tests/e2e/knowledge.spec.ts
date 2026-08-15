@@ -246,9 +246,9 @@ test.beforeEach(async ({ page }) => {
 
 test("manages a Knowledge base and stays contained at every contract viewport", async ({ page }) => {
   await runAccountMenuAction(page, "Knowledge");
-  const library = page.getByTestId("knowledge-library");
+  const library = page.getByTestId("library-v2");
   await expect(library).toBeVisible();
-  await expect(page).toHaveTitle("Knowledge · AIQSA");
+  await expect(page).toHaveTitle("Library · AIQSA");
 
   for (const viewport of [
     { height: 844, width: 384 },
@@ -265,52 +265,55 @@ test("manages a Knowledge base and stays contained at every contract viewport", 
 
   await page.setViewportSize({ height: 844, width: 384 });
   await library.getByRole("button", { name: "New base" }).click();
-  await expect(library.getByTestId("knowledge-egress-disclosure")).toContainText(
+  const knowledge = page.getByTestId("knowledge-library");
+  await expect(knowledge).toBeVisible();
+  await expect(knowledge.getByTestId("knowledge-egress-disclosure")).toContainText(
     "E2E embedding connection / E2E embedding model"
   );
-  await library.getByLabel("Name").fill("E2E runbooks");
-  await library.getByLabel("Description").fill("Operational references");
-  await library.getByRole("button", { name: "Create base" }).click();
-  await expect(library.getByRole("heading", { level: 1, name: "E2E runbooks" })).toBeVisible();
-  await expect(library.getByTestId("knowledge-revision-spine")).toBeVisible();
+  await knowledge.getByLabel("Name").fill("E2E runbooks");
+  await knowledge.getByLabel("Description").fill("Operational references");
+  await knowledge.getByRole("button", { name: "Create base" }).click();
+  await expect(knowledge.getByRole("heading", { level: 1, name: "E2E runbooks" })).toBeVisible();
+  await expect(knowledge.getByTestId("knowledge-revision-spine")).toBeVisible();
 
-  await library.locator('input[type="file"][multiple]').setInputFiles([
+  await knowledge.locator('input[type="file"][multiple]').setInputFiles([
     { buffer: Buffer.from("# Handbook"), mimeType: "text/markdown", name: "handbook.md" },
     { buffer: Buffer.from("Incident notes"), mimeType: "text/plain", name: "incident.txt" }
   ]);
-  await expect(library.getByText("handbook.md", { exact: true })).toBeVisible();
-  await expect(library.getByText("incident.txt", { exact: true })).toBeVisible();
-  await expect(library.getByText("Code: embedding_failed")).toBeVisible();
-  await library.getByRole("button", { name: "Retry" }).click();
+  await expect(knowledge.getByText("handbook.md", { exact: true })).toBeVisible();
+  await expect(knowledge.getByText("incident.txt", { exact: true })).toBeVisible();
+  await expect(knowledge.getByText("Code: embedding_failed")).toBeVisible();
+  await knowledge.getByRole("button", { name: "Retry" }).click();
   await expect(
-    library.getByTestId("knowledge-document-document-1").getByText("2 chunks ready").first()
+    knowledge.getByTestId("knowledge-document-document-1").getByText("2 chunks ready").first()
   ).toBeVisible();
   await expect(
-    library.getByTestId("knowledge-document-document-2").getByText("2 chunks ready").first()
+    knowledge.getByTestId("knowledge-document-document-2").getByText("2 chunks ready").first()
   ).toBeVisible();
-  await library.getByRole("searchbox", { name: "Search documents by filename" }).fill("incident");
-  await expect(library.getByText("incident.txt", { exact: true })).toBeVisible();
-  await expect(library.getByText("handbook.md", { exact: true })).toHaveCount(0);
-  await library.getByRole("searchbox", { name: "Search documents by filename" }).fill("");
-  await expect(library.getByText("handbook.md", { exact: true })).toBeVisible();
+  await knowledge.getByRole("searchbox", { name: "Search documents by filename" }).fill("incident");
+  await expect(knowledge.getByText("incident.txt", { exact: true })).toBeVisible();
+  await expect(knowledge.getByText("handbook.md", { exact: true })).toHaveCount(0);
+  await knowledge.getByRole("searchbox", { name: "Search documents by filename" }).fill("");
+  await expect(knowledge.getByText("handbook.md", { exact: true })).toBeVisible();
 
-  await library.getByRole("button", { name: "Start reindex" }).click();
-  await expect(library.getByText("Building shadow index")).toBeVisible();
-  await expect(library.getByText("0 completed · 0 failed · 2 total · target revision 2")).toBeVisible();
+  await knowledge.getByRole("button", { name: "Start reindex" }).click();
+  await expect(knowledge.getByText("Building shadow index")).toBeVisible();
+  await expect(knowledge.getByText("0 completed · 0 failed · 2 total · target revision 2")).toBeVisible();
 
-  await library.getByRole("button", { name: "Publish" }).click();
-  await expect(library.getByRole("list", { name: "Current Knowledge publications" })).toContainText("Research");
-  await expect(library.getByTestId("knowledge-publication-disclosure")).toContainText(
-    "runs accepted earlier keep their frozen evidence"
+  await knowledge.getByRole("button", { name: "Publish" }).click();
+  await expect(knowledge.getByRole("list", { name: "Current Knowledge publications" })).toContainText("Research");
+  await expect(knowledge.getByTestId("knowledge-publication-disclosure")).toContainText(
+    "runs accepted earlier keep their admitted revision"
   );
 
-  await library.getByRole("button", { name: "Archive" }).click();
-  await expect(library.getByRole("button", { name: "Restore" })).toBeVisible();
-  await library.getByRole("button", { name: "Restore" }).click();
-  await expect(library.getByRole("button", { name: "Archive" })).toBeVisible();
+  await knowledge.getByRole("button", { name: "Archive" }).click();
+  await expect(knowledge.getByRole("button", { name: "Restore" })).toBeVisible();
+  await knowledge.getByRole("button", { name: "Restore" }).click();
+  await expect(knowledge.getByRole("button", { name: "Archive" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
-  await library.getByRole("button", { name: "Back to Knowledge" }).click();
+  await knowledge.getByRole("button", { name: "Back to Knowledge" }).click();
+  await expect(knowledge).toHaveCount(0);
   await library.getByRole("button", { name: "Back to chat" }).click();
   await expect(page).toHaveTitle("New chat · AIQSA");
   for (const viewport of [
@@ -320,19 +323,20 @@ test("manages a Knowledge base and stays contained at every contract viewport", 
     { height: 800, width: 1280 }
   ]) {
     await page.setViewportSize(viewport);
-    const picker = page.locator("#composer-inline-knowledge");
-    await expect(picker).toBeVisible();
-    await expectWithinViewport(page, picker);
-    await picker.click();
-    const dialog = page.getByTestId("composer-inline-knowledge-options");
-    await expect(dialog).toBeVisible();
-    await expectWithinViewport(page, dialog);
+    const capabilitiesTrigger = page.getByRole("button", { name: "Capabilities" });
+    await capabilitiesTrigger.scrollIntoViewIfNeeded();
+    await expectWithinViewport(page, capabilitiesTrigger);
+    await capabilitiesTrigger.click();
+    const capabilities = page.getByRole("menu", { name: "Capabilities" });
+    await expectWithinViewport(page, capabilities);
     await expectNoHorizontalOverflow(page);
     if (viewport.width === 384) {
-      await dialog.getByRole("button", { name: /E2E runbooks/ }).click();
-      await expect(picker).toHaveAccessibleName(/E2E runbooks.*Next-run plan/);
+      await capabilities.getByRole("menuitemcheckbox", { name: /E2E runbooks/ }).click();
+      await expect(page.getByRole("button", { name: "Turn off Knowledge" }))
+        .toContainText("Knowledge: E2E runbooks");
+    } else {
+      await capabilities.getByRole("button", { name: "Close" }).click();
     }
-    await page.keyboard.press("Escape");
-    await expect(dialog).toHaveCount(0);
+    await expect(capabilities).toHaveCount(0);
   }
 });

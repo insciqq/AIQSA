@@ -258,11 +258,6 @@ export function AdminMemorySection({ active }: Readonly<{ active: boolean }>) {
                 state={adminMemoryStateCopy(locale, "deletion", health.deletion.state)}
                 tone={health.deletion.state === "ATTENTION_REQUIRED" ? "critical" : health.deletion.state === "CLEAR" ? "positive" : "normal"}
               />
-              <StatusLine
-                label={copy.scheduler}
-                state={adminMemoryStateCopy(locale, "scheduler", health.scheduler.state)}
-                tone={health.scheduler.state === "UNAVAILABLE" ? "critical" : health.scheduler.state === "DEFERRED" ? "warning" : "positive"}
-              />
             </dl>
 
             <details className="mt-5 border-y border-trace-subtle py-2">

@@ -18,13 +18,11 @@ import type {
 import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "../auth/fullAccessGroup";
 import {
   decodeSearchPlan,
-  OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
-  SEARCH_DISABLED_STRATEGY_ID,
   type SearchPlan
 } from "../../domain/search";
 import {
   compatibleTechnicalAdapter,
-  legacySearchKind,
+  searchStrategyKind,
   normalizeSearchDraft,
   searchExecutionModes
 } from "../search/configuration";
@@ -71,13 +69,10 @@ export type ProviderAdmissionPlan = Readonly<{
   answer: ProviderAdmissionRole;
   fingerprint: string;
   requiresClientToolCoexistence?: true;
-  requestedSearchStrategyId: string;
-  requestedSearchPlan?: SearchPlan;
+  requestedSearchPlan: SearchPlan;
   requestedSearchPreferencePlan?: SearchPlan | null;
   requestedSearchPreferenceSource?: "organization" | "personal";
-  search?: ProviderAdmissionRole;
-  searchConfiguration?: RunSearchStrategyConfiguration;
-  searches?: readonly Readonly<{
+  searches: readonly Readonly<{
     bindingKey: string | null;
     configuration: RunSearchStrategyConfiguration;
     integrationId: string;
@@ -172,8 +167,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function withResolvedModelCapabilities(
-  snapshot: ProviderExecutionSnapshot,
-  legacyContextWindow: number | null | undefined
+  snapshot: ProviderExecutionSnapshot
 ): ProviderExecutionSnapshot {
   if (
     snapshot.model.adapterKind !== "fake" &&
@@ -188,7 +182,6 @@ function withResolvedModelCapabilities(
       capabilities: resolveProviderModelCapabilities({
         adapterKind: snapshot.model.adapterKind as CatalogAdapterKind,
         capabilities: snapshot.model.capabilities,
-        legacyContextWindow,
         providerFamily: snapshot.providerFamily,
         upstreamModelId: snapshot.model.upstreamModelId
       })
@@ -321,8 +314,7 @@ async function loadRole(
         providerFamily: model.connection.family,
         providerModelId: model.id,
         version: 1
-      }),
-      model.contextWindow
+      })
     );
     const fakeModel = snapshot.model;
     if (fakeModel.adapterKind !== "fake") throw new ProviderAdmissionError("model_not_available");
@@ -434,7 +426,7 @@ async function loadRole(
     version: 1
   });
   const snapshot = input.modelClass === "answer"
-    ? withResolvedModelCapabilities(normalizedSnapshot, model.contextWindow)
+    ? withResolvedModelCapabilities(normalizedSnapshot)
     : normalizedSnapshot;
   const resolvedModel = snapshot.model;
   const authority = {
@@ -604,46 +596,6 @@ export async function loadInstallationAnswerProviderRole(
   }
 }
 
-async function canonicalSearchOptionId(
-  db: AdmissionPrisma,
-  optionId: string
-): Promise<string | null> {
-  if (optionId !== OPENAI_PROVIDER_SEARCH_STRATEGY_ID) {
-    return optionId;
-  }
-
-  const legacyRoute = await db.searchStrategy.findUnique({
-    select: {
-      searchOption: {
-        select: {
-          archivedAt: true,
-          enabled: true,
-          optionId: true
-        }
-      }
-    },
-    where: { strategyId: OPENAI_PROVIDER_SEARCH_STRATEGY_ID }
-  });
-  const option = legacyRoute?.searchOption;
-  return option?.enabled && option.archivedAt === null ? option.optionId : null;
-}
-
-async function canonicalSearchPlan(
-  db: AdmissionPrisma,
-  plan: SearchPlan
-): Promise<SearchPlan | null> {
-  const optionIds = await Promise.all(
-    plan.optionIds.map((optionId) => canonicalSearchOptionId(db, optionId))
-  );
-  if (optionIds.some((optionId) => optionId === null)) return null;
-  const resolvedOptionIds = optionIds.filter((optionId): optionId is string => optionId !== null);
-  if (new Set(resolvedOptionIds).size !== resolvedOptionIds.length) return null;
-  return {
-    mode: plan.mode,
-    optionIds: resolvedOptionIds
-  };
-}
-
 type LoadedSearchOption = Readonly<{
   archivedAt: Date | null;
   displayName: string;
@@ -687,9 +639,7 @@ type ResolvedSearchRouteCandidate = Readonly<{
 
 function supportedSearchOption(option: LoadedSearchOption): boolean {
   if (!option.enabled || option.archivedAt !== null) return false;
-  if (option.kind === "none") {
-    return option.optionId === SEARCH_DISABLED_STRATEGY_ID && option.sourceConnectionId === null;
-  }
+  if (option.kind === "none") return false;
   return (
     option.kind === "web_search" ||
     option.kind === "gemini_google_search" ||
@@ -723,7 +673,7 @@ function normalizeActiveSearchRoute(
     strategy.adapterKind !== draft.adapterKind ||
     strategy.credentialMode !== draft.credentialMode ||
     strategy.providerModelId !== draft.providerModelId ||
-    strategy.kind !== legacySearchKind(draft.protocol, draft.adapterKind)
+    strategy.kind !== searchStrategyKind(draft.protocol, draft.adapterKind)
   ) {
     return null;
   }
@@ -957,10 +907,9 @@ export async function loadProviderAdmissionPlan(
     providerConnectionId: string;
     providerModelId: string;
     requiresClientToolCoexistence?: boolean;
-    searchPlan?: SearchPlan;
+    searchPlan: SearchPlan;
     searchPreferencePlan?: SearchPlan | null;
     searchPreferenceSource?: "organization" | "personal";
-    searchStrategyId: string;
     userId: string;
   }
 ): Promise<ProviderAdmissionPlan> {
@@ -1028,10 +977,7 @@ export async function loadProviderAdmissionPlan(
     if (!input.searchPreferencePlan) {
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
-    requestedSearchPreferencePlan = await canonicalSearchPlan(db, input.searchPreferencePlan);
-    if (!requestedSearchPreferencePlan) {
-      throw new ProviderAdmissionError("search_strategy_not_available");
-    }
+    requestedSearchPreferencePlan = input.searchPreferencePlan;
     const preferenceOptions: LoadedSearchOption[] = [];
     for (const optionId of requestedSearchPreferencePlan.optionIds) {
       const option = await loadOption(optionId);
@@ -1096,22 +1042,15 @@ export async function loadProviderAdmissionPlan(
     requireEntitlement: true
   });
 
-  const decodedPlan = decodeSearchPlan(input.searchPlan, input.searchStrategyId);
+  const decodedPlan = decodeSearchPlan(input.searchPlan);
   if (!decodedPlan.ok) throw new ProviderAdmissionError("search_strategy_not_available");
-  const requestedSearchPlan = await canonicalSearchPlan(db, decodedPlan.plan);
-  if (!requestedSearchPlan) {
-    throw new ProviderAdmissionError("search_strategy_not_available");
-  }
+  const requestedSearchPlan = decodedPlan.plan;
   const optionIds = requestedSearchPlan.optionIds;
   const searches: NonNullable<ProviderAdmissionPlan["searches"]>[number][] = [];
   const routeCandidates: ResolvedSearchRouteCandidate[][] = [];
   let routeLoadError: ProviderAdmissionError | undefined;
 
-  // The old singleton wire shape historically validates the explicit Off row.
-  // New empty plans do not pretend that Off is an installed engine.
-  const strategyIds = input.searchPlan === undefined && optionIds.length === 0
-    ? [SEARCH_DISABLED_STRATEGY_ID]
-    : [...optionIds];
+  const strategyIds = [...optionIds];
 
   for (const [ordinal, optionId] of strategyIds.entries()) {
     const option = await loadOption(optionId);
@@ -1183,28 +1122,15 @@ export async function loadProviderAdmissionPlan(
     });
   }
 
-  const legacySearch = searches.length === 1 ? searches[0] : undefined;
-  const search = legacySearch?.role;
-  const technicalSearchConfiguration = legacySearch?.configuration;
-
-  const requestedSearchStrategyId = await canonicalSearchOptionId(db, input.searchStrategyId);
-  if (!requestedSearchStrategyId) {
-    throw new ProviderAdmissionError("search_strategy_not_available");
-  }
   const withoutFingerprint = {
     answer,
     ...(input.requiresClientToolCoexistence ? { requiresClientToolCoexistence: true as const } : {}),
-    requestedSearchStrategyId,
     requestedSearchPlan,
     ...(input.searchPreferenceSource
       ? {
           requestedSearchPreferencePlan: requestedSearchPreferencePlan ?? null,
           requestedSearchPreferenceSource: input.searchPreferenceSource
         }
-      : {}),
-    ...(search ? { search } : {}),
-    ...(technicalSearchConfiguration
-      ? { searchConfiguration: technicalSearchConfiguration }
       : {}),
     searches,
     selection: {

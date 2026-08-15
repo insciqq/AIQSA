@@ -904,7 +904,6 @@ integration("Prisma MCP repository", () => {
           mcpServers: [{ id: deletedServerId, name: "Delete lifecycle MCP" }]
         },
         provider: "fake",
-        providerRequestPreview: {},
         status: "in_progress",
         userId,
         userMessageId: userMessage.id

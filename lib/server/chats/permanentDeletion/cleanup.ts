@@ -31,7 +31,6 @@ type CleanupSnapshot = Readonly<{
 type AggregateIds = Readonly<{
   candidateIds: readonly string[];
   chunkIds: readonly string[];
-  episodeIds: readonly string[];
   executionBindingIds: readonly string[];
   jobIds: readonly string[];
   originFactIds: readonly string[];
@@ -180,7 +179,7 @@ async function aggregateIds(
   tx: Prisma.TransactionClient,
   claim: MemoryDeletionClaim
 ): Promise<AggregateIds> {
-  const [runs, jobs, chunks, episodes, candidates, originFacts] = await Promise.all([
+  const [runs, jobs, chunks, candidates, originFacts] = await Promise.all([
     tx.modelRun.findMany({
       select: { id: true },
       where: { chatId: claim.targetId, userId: claim.userId }
@@ -190,10 +189,6 @@ async function aggregateIds(
       where: { chatId: claim.targetId, userId: claim.userId }
     }),
     tx.memoryRecallChunk.findMany({
-      select: { id: true },
-      where: { chatId: claim.targetId, userId: claim.userId }
-    }),
-    tx.memoryEpisode.findMany({
       select: { id: true },
       where: { chatId: claim.targetId, userId: claim.userId }
     }),
@@ -250,7 +245,6 @@ async function aggregateIds(
   return {
     candidateIds: candidates.map(({ id }) => id),
     chunkIds: chunks.map(({ id }) => id),
-    episodeIds: episodes.map(({ id }) => id),
     executionBindingIds: executionBindings.map(({ id }) => id),
     jobIds,
     originFactIds: originFacts.map(({ factId }) => factId),
@@ -262,16 +256,13 @@ async function aggregateIds(
 async function settleDestinationAttemptItems(
   tx: Prisma.TransactionClient,
   claim: MemoryDeletionClaim,
-  ids: Pick<AggregateIds, "chunkIds" | "episodeIds">
+  ids: Pick<AggregateIds, "chunkIds">
 ): Promise<void> {
   const predicates: Prisma.Sql[] = [
     Prisma.sql`item."sourceChatIdSnapshot" = ${claim.targetId}`
   ];
   if (ids.chunkIds.length > 0) {
     predicates.push(Prisma.sql`item."recallChunkId" IN (${Prisma.join(ids.chunkIds)})`);
-  }
-  if (ids.episodeIds.length > 0) {
-    predicates.push(Prisma.sql`item."episodeId" IN (${Prisma.join(ids.episodeIds)})`);
   }
   await tx.$executeRaw(Prisma.sql`
     WITH deleted AS (
@@ -365,8 +356,6 @@ async function auditCleanup(
         FROM "ChatMemoryCheckpoint" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'chunks', COUNT(*)::integer
         FROM "MemoryRecallChunk" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
-      UNION ALL SELECT 'episodes', COUNT(*)::integer
-        FROM "MemoryEpisode" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'candidates', COUNT(*)::integer
         FROM "MemoryCandidate" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'evidence', COUNT(*)::integer
@@ -394,7 +383,7 @@ async function auditCleanup(
   const feedbackResidual = await inspectMemoryFeedbackPermanentChat(
     tx,
     claim.userId,
-    { chatId: claim.targetId, chunkIds: [], episodeIds: [], runIds: [] }
+    { chatId: claim.targetId, chunkIds: [], runIds: [] }
   );
   const inventoryResidual = rows.reduce((sum, row) => sum + row.residual, 0);
   if (inventoryResidual + feedbackResidual > 0) {
@@ -490,36 +479,20 @@ async function applyAggregateDeletion(
   await purgeMemoryFeedbackPermanentChat(tx, claim.userId, {
     chatId: claim.targetId,
     chunkIds: ids.chunkIds,
-    episodeIds: ids.episodeIds,
     runIds: ids.runIds
   });
   await settleDestinationAttemptItems(tx, claim, ids);
 
-  if (ids.chunkIds.length + ids.episodeIds.length > 0) {
+  if (ids.chunkIds.length > 0) {
     await tx.memorySearchEntry.deleteMany({
       where: {
-        OR: [
-          ...(ids.chunkIds.length > 0
-            ? [{ recallChunkId: { in: [...ids.chunkIds] } }]
-            : []),
-          ...(ids.episodeIds.length > 0
-            ? [{ episodeId: { in: [...ids.episodeIds] } }]
-            : [])
-        ],
+        recallChunkId: { in: [...ids.chunkIds] },
         userId: claim.userId
       }
     });
   }
   await tx.memoryEvidence.deleteMany({
-    where: {
-      OR: [
-        { chatId: claim.targetId },
-        ...(ids.episodeIds.length > 0
-          ? [{ episodeId: { in: [...ids.episodeIds] } }]
-          : [])
-      ],
-      userId: claim.userId
-    }
+    where: { chatId: claim.targetId, userId: claim.userId }
   });
   await tx.memorySuppression.deleteMany({
     where: { sourceChatId: claim.targetId, userId: claim.userId }
@@ -530,14 +503,6 @@ async function applyAggregateDeletion(
     });
     await tx.memoryCandidate.deleteMany({
       where: { id: { in: [...ids.candidateIds] }, userId: claim.userId }
-    });
-  }
-  if (ids.episodeIds.length > 0) {
-    await tx.memoryEpisodeMessage.deleteMany({
-      where: { episodeId: { in: [...ids.episodeIds] }, userId: claim.userId }
-    });
-    await tx.memoryEpisode.deleteMany({
-      where: { id: { in: [...ids.episodeIds] }, userId: claim.userId }
     });
   }
   if (ids.chunkIds.length > 0) {

@@ -18,7 +18,8 @@ function plan(
       configuration: {
         allowPrivateNetwork: false,
         apiRoot: "https://llm.example.test/v1",
-        authenticationMode: "bearer"
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       displayName: "Custom provider",
       id: "connection-1"
@@ -299,7 +300,8 @@ describe("Prisma custom provider setup repository", () => {
         configuration: {
           allowPrivateNetwork: true,
           apiRoot: "http://127.0.0.1:11434/v1",
-          authenticationMode: "none"
+          authenticationMode: "none",
+          responseTimeoutMs: 300_000
         }
       },
       credential: {

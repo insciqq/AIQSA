@@ -1,5 +1,4 @@
 import type { Prisma } from "@prisma/client";
-import type { MemoryQualificationRequirement } from "../../../evaluation/memory/qualification";
 import {
   loadEmbeddingProviderRole,
   ProviderAdmissionError,
@@ -39,19 +38,20 @@ type SafeTargetAuthority = Readonly<{
   providerModelId: string;
 }>;
 
+export type MemoryExecutionTargetFingerprints = Readonly<{
+  configFingerprint: string;
+  deploymentFingerprint: string;
+  modelFingerprint: string;
+  providerFingerprint: string;
+}>;
+
 export type ResolvedMemoryExecutionTarget = Readonly<{
   authority: SafeTargetAuthority;
   credentialSource: "default" | "group" | "user";
   destinationFingerprint: string;
   executionTargetFingerprint: string;
   policyRevision: number | null;
-  qualificationFingerprints: Pick<
-    MemoryQualificationRequirement,
-    "configFingerprint" |
-    "deploymentFingerprint" |
-    "modelFingerprint" |
-    "providerFingerprint"
-  >;
+  compatibilityFingerprints: MemoryExecutionTargetFingerprints;
   snapshot: ProviderExecutionSnapshot;
 }>;
 
@@ -184,7 +184,7 @@ function targetFor(
       snapshot: executionSnapshot
     }),
     policyRevision,
-    qualificationFingerprints: {
+    compatibilityFingerprints: {
       configFingerprint: memoryExecutionSha256({
         connection: snapshot.connection,
         connectionVersion: authority.connectionVersion,

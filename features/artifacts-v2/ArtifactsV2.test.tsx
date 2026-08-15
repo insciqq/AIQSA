@@ -80,7 +80,7 @@ describe("Artifacts v2", () => {
     expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     expect(onDownload).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "legacy.xlsx" }),
+      expect.objectContaining({ name: "unsupported-preview.xlsx" }),
       expect.objectContaining({ downloadAvailable: true })
     );
   });

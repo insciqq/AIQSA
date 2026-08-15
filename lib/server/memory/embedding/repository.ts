@@ -2,7 +2,6 @@ import {
   Prisma,
   type MemoryEmbeddingState,
   type MemoryExecutionState,
-  type MemorySearchItemType,
   type PrismaClient
 } from "@prisma/client";
 import { prisma } from "../../prisma";
@@ -32,11 +31,10 @@ type BaseTargetRow = Readonly<{
   embeddingProviderModelId: string | null;
   embeddingState: MemoryEmbeddingState;
   entryId: string;
-  episodeId: string | null;
   factVersionId: string | null;
   generationId: string;
   indexMode: "HYBRID" | "LEXICAL_ONLY";
-  itemType: MemorySearchItemType;
+  itemType: "FACT_VERSION" | "RECALL_CHUNK";
   recallChunkId: string | null;
   referenceChatHistory: boolean;
   safeContentHash: string;
@@ -72,10 +70,6 @@ export type MemoryItemEmbeddingSettlement =
   | "READY"
   | "STALE"
   | "UNCHANGED";
-
-/** Compatibility aliases retained for the shipped explicit Memory API. */
-export type MemoryExplicitEmbeddingBinding = MemoryItemEmbeddingBinding;
-export type MemoryExplicitEmbeddingSettlement = MemoryItemEmbeddingSettlement;
 
 const sha256 = /^[a-f0-9]{64}$/u;
 
@@ -117,7 +111,6 @@ async function loadBaseTarget(
       entry."userId",
       entry."itemType"::text AS "itemType",
       entry."factVersionId",
-      entry."episodeId",
       entry."recallChunkId",
       entry."safeSearchText",
       entry."safeContentHash",
@@ -149,6 +142,10 @@ async function loadBaseTarget(
       AND generation."indexMode" = 'HYBRID'::"MemoryIndexMode"
     WHERE entry."userId" = ${userId}
       AND entry."id" = ${entryId}
+      AND entry."itemType" IN (
+        'FACT_VERSION'::"MemorySearchItemType",
+        'RECALL_CHUNK'::"MemorySearchItemType"
+      )
       AND (
         (
           generation."state" = 'ACTIVE'::"MemoryIndexGenerationState"
@@ -178,7 +175,7 @@ async function loadFactTarget(
   store: TargetQueryStore,
   row: BaseTargetRow
 ): Promise<MemoryItemEmbeddingTarget | null> {
-  if (!row.factVersionId || row.episodeId || row.recallChunkId) return null;
+  if (!row.factVersionId || row.recallChunkId) return null;
   const rows = await store.$queryRaw<FactTargetRow[]>(Prisma.sql`
     SELECT
       fact."id" AS "factId",
@@ -233,7 +230,7 @@ async function loadRecallChunkTarget(
   store: TargetQueryStore,
   row: BaseTargetRow
 ): Promise<MemoryItemEmbeddingTarget | null> {
-  if (!row.referenceChatHistory || !row.recallChunkId || row.factVersionId || row.episodeId) {
+  if (!row.referenceChatHistory || !row.recallChunkId || row.factVersionId) {
     return null;
   }
   const rows = await store.$queryRaw<HistoryTargetRow[]>(Prisma.sql`
@@ -308,91 +305,6 @@ async function loadRecallChunkTarget(
   };
 }
 
-async function loadEpisodeTarget(
-  store: TargetQueryStore,
-  row: BaseTargetRow
-): Promise<MemoryItemEmbeddingTarget | null> {
-  if (!row.referenceChatHistory || !row.episodeId || row.factVersionId || row.recallChunkId) {
-    return null;
-  }
-  const rows = await store.$queryRaw<HistoryTargetRow[]>(Prisma.sql`
-    SELECT
-      episode."id" AS "itemId",
-      episode."safeSummary" AS "safeText",
-      episode."sourceHash" AS "sourceContentHash"
-    FROM "MemoryEpisode" AS episode
-    INNER JOIN "Chat" AS chat
-      ON chat."userId" = episode."userId"
-      AND chat."id" = episode."chatId"
-      AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-      AND chat."memoryBranchGeneration" = episode."branchGeneration"
-      AND chat."memorySourceRevision" = episode."sourceRevisionAtCreation"
-    INNER JOIN "ChatMemoryCheckpoint" AS checkpoint
-      ON checkpoint."userId" = episode."userId"
-      AND checkpoint."chatId" = episode."chatId"
-      AND checkpoint."branchGeneration" = episode."branchGeneration"
-      AND checkpoint."sourceRevision" = episode."sourceRevisionAtCreation"
-      AND checkpoint."sourceContentHash" = episode."sourceHash"
-      AND checkpoint."activeLeafMessageId" = chat."activeLeafMessageId"
-      AND checkpoint."lastDreamedMessageId" = chat."activeLeafMessageId"
-      AND checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
-    WHERE episode."userId" = ${row.userId}
-      AND episode."id" = ${row.episodeId}
-      AND episode."state" = 'ACTIVE'::"MemoryHistoryItemState"
-      AND episode."safetyClass" IN (
-        'NORMAL'::"MemoryDerivedSafetyClass",
-        'SENSITIVE'::"MemoryDerivedSafetyClass"
-      )
-      AND episode."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
-      AND NOT EXISTS (
-        SELECT 1 FROM "MemorySuppression" AS suppression
-        LEFT JOIN "MemoryEpisodeMessage" AS source_message
-          ON source_message."userId" = episode."userId"
-          AND source_message."episodeId" = episode."id"
-          AND suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-          AND suppression."sourceChatId" = source_message."chatId"
-          AND suppression."sourceMessageId" = source_message."messageId"
-        WHERE suppression."userId" = episode."userId"
-          AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
-          AND (
-            suppression."scope" = 'ALL'::"MemorySuppressionScope"
-            OR (
-              suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
-              AND suppression."sourceEpisodeId" = episode."id"
-            )
-            OR (
-              source_message."messageId" IS NOT NULL
-              AND (
-                suppression."sourceBranchGeneration" IS NULL
-                OR suppression."sourceBranchGeneration" = episode."branchGeneration"
-              )
-            )
-          )
-      )
-    LIMIT 1
-  `);
-  const current = rows[0];
-  if (!current) return null;
-  const safeSearchText = normalizeMemorySearchText(current.safeText);
-  const safeContentHash = memorySha256(current.safeText);
-  if (
-    safeSearchText !== row.safeSearchText ||
-    safeContentHash !== row.safeContentHash
-  ) return null;
-  return {
-    embeddingState: row.embeddingState,
-    entryId: row.entryId,
-    episodeId: current.itemId,
-    generation: generationFrom(row),
-    itemId: current.itemId,
-    itemType: "EPISODE",
-    safeContentHash,
-    safeSearchText,
-    selectedEmbeddingProviderModelId: row.selectedEmbeddingProviderModelId,
-    userId: row.userId
-  };
-}
-
 async function loadCurrentTarget(
   store: TargetQueryStore,
   userId: string,
@@ -402,7 +314,6 @@ async function loadCurrentTarget(
   if (!row) return null;
   switch (row.itemType) {
     case "FACT_VERSION": return loadFactTarget(store, row);
-    case "EPISODE": return loadEpisodeTarget(store, row);
     case "RECALL_CHUNK": return loadRecallChunkTarget(store, row);
   }
 }
@@ -446,11 +357,6 @@ function exactTargetPredicate(target: MemoryItemEmbeddingTarget): Prisma.Sql {
       return Prisma.sql`
         "itemType" = 'FACT_VERSION'::"MemorySearchItemType"
         AND "factVersionId" = ${target.factVersionId}
-      `;
-    case "EPISODE":
-      return Prisma.sql`
-        "itemType" = 'EPISODE'::"MemorySearchItemType"
-        AND "episodeId" = ${target.episodeId}
       `;
     case "RECALL_CHUNK":
       return Prisma.sql`
@@ -606,10 +512,6 @@ export function createPrismaMemoryItemEmbeddingRepository(
   });
 }
 
-export const createPrismaMemoryExplicitEmbeddingRepository =
-  createPrismaMemoryItemEmbeddingRepository;
-
 export type MemoryItemEmbeddingRepository = ReturnType<
   typeof createPrismaMemoryItemEmbeddingRepository
 >;
-export type MemoryExplicitEmbeddingRepository = MemoryItemEmbeddingRepository;

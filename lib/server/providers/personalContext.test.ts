@@ -25,6 +25,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       }],
       mode: "branch_path"
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -45,7 +47,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     },
     prompt: { developer: "Developer", system: "System" },
     provider: "openai",
-    searchStrategy: "search-disabled",
+    searchPlan: { mode: "all_selected", options: [] },
     ...overrides
   };
 }
@@ -65,12 +67,28 @@ describe("provider-neutral personal context", () => {
     expect(buildAnthropicMessagesRequest(request({ provider: "anthropic" })).system).toBe(expected);
     expect(buildGeminiInteractionsRequest(request({ provider: "gemini" })).system_instruction)
       .toBe(expected);
-    expect(() => assertPersonalContextEgressSafe(request({ searchStrategy: null }))).not.toThrow();
+    expect(() => assertPersonalContextEgressSafe(request())).not.toThrow();
   });
 
   it("coexists with hosted Search, Knowledge, and admin-connected tools", () => {
     expect(() => assertPersonalContextEgressSafe(request({
-      searchStrategy: "openai-native-web-search"
+      searchPlan: {
+        mode: "model_choice",
+        options: [{
+          adapterKind: "answer_provider_hosted",
+          config: {},
+          credentialMode: "answer_provider",
+          displayName: "OpenAI Web Search",
+          executionModes: ["model_choice"],
+          modelId: null,
+          optionId: "openai-native-web-search",
+          protocol: "openai_responses_web_search",
+          provider: "openai",
+          providerModelId: null,
+          revisionId: "test-openai-search",
+          searchStrategyRowId: "test-openai-search"
+        }]
+      }
     }))).not.toThrow();
     expect(() => assertPersonalContextEgressSafe(request({
       knowledgePlan: { baseIds: ["base-1"] }

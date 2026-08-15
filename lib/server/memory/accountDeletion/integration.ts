@@ -66,7 +66,6 @@ async function fenceAndAdmit(
       acceptedUtilityPolicyVersion: null,
       activeIndexGenerationId: null,
       embeddingProviderModelId: null,
-      lastGlobalDreamAt: null,
       learnAutomatically: false,
       memoryConsentRevision: { increment: 1 },
       memoryGeneration: nextGeneration,

@@ -6,7 +6,6 @@ import type { ProviderModelCatalogEntry, SearchStrategyCatalogEntry } from "../.
 import {
   buildCatalogModel,
   reconcileSearchPlanSelection,
-  resolveSearchStrategyId,
   toCatalogSearchStrategy
 } from "../../domain/catalogMatrix";
 import {
@@ -18,15 +17,10 @@ import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 
 export type CatalogSettingsRecord = {
   defaultControlValues: unknown;
-  defaultModelId: string;
-  defaultProviderConnectionId?: string | null;
-  defaultProviderModelId?: string | null;
-  defaultProvider: string;
-  defaultSearchStrategyId: string;
-  defaultSearchPlan?: unknown;
+  defaultProviderModelId: string | null;
+  defaultSearchPlan: unknown;
   showCitations: boolean;
   showReasoningBlocks: boolean;
-  showToolActivity: boolean;
 };
 
 export type CatalogData = {
@@ -86,11 +80,7 @@ export function resolveCurrentUserCatalogSelection(
   const models = input.models
     .filter((model) => canAccessModel(input.entitlements, model.provider, model.modelId))
     .map((model) => buildCatalogModel(model, entitledStrategies));
-  // Undefined is the legacy test/pre-column shape. SQL NULL is the durable
-  // meaning "inherit the installation policy".
-  const personalModelId = input.settings.defaultProviderModelId === undefined
-    ? input.settings.defaultModelId || null
-    : input.settings.defaultProviderModelId;
+  const personalModelId = input.settings.defaultProviderModelId;
   const personalModel = personalModelId
     ? models.find((model) => model.modelId === personalModelId) ?? null
     : null;
@@ -126,7 +116,7 @@ export function resolveCurrentUserCatalogSelection(
 
 export function resolveSearchPreference(input: Readonly<{
   organizationPlan: unknown;
-  settings: Pick<CatalogSettingsRecord, "defaultSearchPlan" | "defaultSearchStrategyId">;
+  settings: Pick<CatalogSettingsRecord, "defaultSearchPlan">;
   strategies: SearchStrategyCatalogEntry[];
 }>): ResolvedSearchPreference {
   const decodedOrganization = decodeSearchPlan(input.organizationPlan);
@@ -135,14 +125,9 @@ export function resolveSearchPreference(input: Readonly<{
     decodedOrganization.ok ? decodedOrganization.plan.mode : "all_selected",
     input.strategies
   );
-  // Undefined is retained as the legacy pre-column shape. Only SQL NULL has
-  // the durable ADR 0046 meaning "inherit the installation recommendation".
   const personal = input.settings.defaultSearchPlan !== null;
   const decodedPreferred = personal
-    ? decodeSearchPlan(
-        input.settings.defaultSearchPlan,
-        input.settings.defaultSearchStrategyId
-      )
+    ? decodeSearchPlan(input.settings.defaultSearchPlan)
     : { ok: true as const, plan: organizationPlan };
   return {
     organizationPlan,
@@ -193,16 +178,11 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       organizationModelDefault,
       personalModelDefault,
       provider: defaultModel?.provider ?? "",
-      searchStrategyId: resolveSearchStrategyId(
-        defaultModel,
-        input.settings.defaultSearchStrategyId
-      ),
       organizationSearchPlan: searchPreference.organizationPlan,
       searchPlan: searchPreference.preferredPlan,
       searchPreferenceSource: searchPreference.source,
       showCitations: input.settings.showCitations,
-      showReasoningBlocks: input.settings.showReasoningBlocks,
-      showToolActivity: input.settings.showToolActivity
+      showReasoningBlocks: input.settings.showReasoningBlocks
     },
     models,
     providers,

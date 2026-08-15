@@ -1,4 +1,3 @@
-import { UiV2Gallery } from "@/features/ui-v2-gallery/UiV2Gallery";
 import {
   ConversationV2Gallery,
   type ConversationGalleryState
@@ -13,16 +12,15 @@ import {
   type ComposerGalleryState
 } from "@/features/composer-v2/ComposerV2Gallery";
 import {
-  EvidenceV2Gallery,
-  type EvidenceGalleryState
-} from "@/features/evidence-v2/EvidenceV2Gallery";
+  AnswerOutputsV2Gallery,
+  type AnswerOutputsGalleryState
+} from "@/features/answer-outputs-v2/AnswerOutputsV2Gallery";
 import {
   BranchesV2Gallery,
   type BranchesGalleryState
 } from "@/features/branches-v2/BranchesV2Gallery";
 import { generatedArtifactsFeatureMode } from "@/lib/server/featureFlags/generatedArtifacts";
 import type { ArtifactsFixtureState } from "@/features/artifacts-v2/fixtures";
-import type { RunDetailsFixtureState } from "@/features/run-details-v2/fixtures";
 import type { LibraryGalleryStateV2 } from "@/features/library-v2/LibraryV2Gallery";
 import type { SettingsGalleryStateV2 } from "@/features/settings-v2/SettingsV2Gallery";
 import { isTestAuthEnabled } from "@/lib/server/auth/config";
@@ -82,11 +80,11 @@ export default async function UiV2FixturePage({
     ].includes(query.state ?? "") ? (query.state as ComposerGalleryState) : "default";
     return <ComposerV2Gallery state={state} />;
   }
-  if (query.fixture === "evidence") {
-    const state = ["approval", "complete", "empty", "partial"].includes(query.state ?? "")
-      ? (query.state as EvidenceGalleryState)
+  if (query.fixture === "answer-outputs") {
+    const state = ["approval", "complete", "empty", "reasoning"].includes(query.state ?? "")
+      ? (query.state as AnswerOutputsGalleryState)
       : "complete";
-    return <EvidenceV2Gallery state={state} />;
+    return <AnswerOutputsV2Gallery state={state} />;
   }
   if (query.fixture === "branches") {
     const state = ["default", "drawer", "edit", "error", "linear", "loading", "streaming"].includes(
@@ -112,21 +110,6 @@ export default async function UiV2FixturePage({
     );
     return <ArtifactsV2Gallery state={state} />;
   }
-  if (query.fixture === "run-details") {
-    const state = [
-      "closed",
-      "complete",
-      "empty",
-      "error",
-      "loading",
-      "memory",
-      "redacted"
-    ].includes(query.state ?? "") ? (query.state as RunDetailsFixtureState) : "closed";
-    const { RunDetailsV2Gallery } = await import(
-      "@/features/run-details-v2/RunDetailsV2Gallery"
-    );
-    return <RunDetailsV2Gallery state={state} />;
-  }
   if (query.fixture === "library") {
     const state = [
       "assistants",
@@ -146,9 +129,5 @@ export default async function UiV2FixturePage({
     const { SettingsV2Gallery } = await import("@/features/settings-v2/SettingsV2Gallery");
     return <SettingsV2Gallery state={state} />;
   }
-  if (query.fixture === "secondary" && query.state === "public-share") {
-    const { SecondaryV2Fixture } = await import("./SecondaryV2Fixture");
-    return <SecondaryV2Fixture />;
-  }
-  return <UiV2Gallery />;
+  notFound();
 }

@@ -135,7 +135,6 @@ integration("Knowledge Base Prisma repository", () => {
           activeVersion: 1,
           capabilities: embeddingActiveConfig(dimension).capabilities,
           connectionId,
-          contextWindow: 32768,
           defaultParams: {},
           displayName: `Embedding ${dimension}`,
           draftConfig: {},

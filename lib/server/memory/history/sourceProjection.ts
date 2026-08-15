@@ -141,7 +141,7 @@ export type MemorySafeSourceSnapshot = Readonly<{
   mode: MemoryHistorySourceMode;
   projectionVersion: typeof MEMORY_HISTORY_SOURCE_PROJECTION_VERSION;
   provenanceGraph: readonly MemoryHistoryProvenanceNode[];
-  recallEpisodeProjection: Readonly<{
+  recallChunkProjection: Readonly<{
     projectionHash: string;
     turnGroups: readonly MemoryHistoryRecallTurnGroup[];
   }>;
@@ -371,7 +371,7 @@ function emptySnapshot(
     mode: input.mode,
     projectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
     provenanceGraph: [],
-    recallEpisodeProjection: {
+    recallChunkProjection: {
       projectionHash: emptyProjectionHash,
       turnGroups: []
     },
@@ -673,7 +673,7 @@ export function buildMemorySafeSourceSnapshot(
     mode: input.mode,
     projectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
     provenanceGraph,
-    recallEpisodeProjection: {
+    recallChunkProjection: {
       projectionHash: recallProjectionHash,
       turnGroups
     },

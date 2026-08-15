@@ -3,10 +3,6 @@ import { getVisibleMessagePath, type BranchMessage } from "./branching";
 export type ShareSnapshotMessageInput = BranchMessage & {
   content: unknown;
   groundedAt?: Date | string | null;
-  /** Private run inspection fields are accepted only so the sanitizer can explicitly ignore them. */
-  knowledgeEvidence?: unknown;
-  /** Memory bindings, receipts, executions, and sources are never public. */
-  memoryEvidence?: unknown;
 };
 
 export class GroundedContentNotShareableError extends Error {
@@ -80,8 +76,8 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Re-projects stored/legacy JSON through the public schema. This deliberately
- * ignores every extra field rather than trusting a historical cast.
+ * Re-projects stored JSON through the public schema. This deliberately ignores
+ * every extra field rather than trusting a broad persistence cast.
  */
 export function projectPublicShareSnapshot(value: unknown): PublicShareSnapshot | null {
   const candidate = record(value);

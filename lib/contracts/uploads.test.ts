@@ -285,7 +285,7 @@ describe("upload wire decoders", () => {
     });
     expect(decodeUploadErrorResponse({ error: "storage_failed", message: "private" })).toBeNull();
     expect(
-      decodeUploadErrorResponse({ error: "pdf_too_complex", message: "Legacy internal error." })
+      decodeUploadErrorResponse({ error: "pdf_too_complex", message: "Private internal error." })
     ).toBeNull();
     expect(decodeUploadErrorResponse({ error: "file_too_large", limit: -1 })).toBeNull();
     expect(

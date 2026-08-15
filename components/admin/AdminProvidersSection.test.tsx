@@ -45,7 +45,9 @@ const connection: AdminProviderConnection = {
   draftChecks: [],
   draftConfig: {
     allowPrivateNetwork: false,
-    apiRoot: "https://openrouter.ai/api/v1"
+    apiRoot: "https://openrouter.ai/api/v1",
+    authenticationMode: "bearer",
+    responseTimeoutSeconds: 300
   },
   draftVersion: 1,
   enabled: false,
@@ -53,7 +55,8 @@ const connection: AdminProviderConnection = {
   id: "connection-1",
   models: [],
   unassignedPolicy: "use_default",
-  updatedAt: "2026-07-23T00:00:00.000Z"
+  updatedAt: "2026-07-23T00:00:00.000Z",
+  userAssignments: []
 };
 
 function providerModel(
@@ -70,6 +73,7 @@ function providerModel(
       vision: false
     },
     defaultParams: {},
+    modelClass: "answer" as const,
     openRouterRouting: { mode: "automatic" as const, providers: [] as [] },
     upstreamModelId: "vendor/model"
   };
@@ -749,7 +753,10 @@ describe("AdminProvidersSection", () => {
     expect(view.actions.updateConnection).toHaveBeenCalledWith(
       connection.id,
       expect.objectContaining({
-        configuration: expect.objectContaining({ responseTimeoutSeconds: 500 }),
+        configuration: expect.objectContaining({
+          authenticationMode: "bearer",
+          responseTimeoutSeconds: 500
+        }),
         displayName: "Edited OpenRouter",
         expectedDraftVersion: 1,
         unassignedPolicy: "use_default"
@@ -790,7 +797,8 @@ describe("AdminProvidersSection", () => {
       draftConfig: {
         allowPrivateNetwork: true,
         apiRoot: "http://127.0.0.1:11434/v1",
-        authenticationMode: "none"
+        authenticationMode: "none",
+        responseTimeoutSeconds: 300
       },
       family: "openai_compatible"
     };
@@ -1062,7 +1070,8 @@ describe("AdminProvidersSection", () => {
       draftConfig: {
         allowPrivateNetwork: false,
         apiRoot: "https://compatible.example.test/v1",
-        authenticationMode: "bearer"
+        authenticationMode: "bearer",
+        responseTimeoutSeconds: 300
       },
       family: "openai_compatible",
       id: "connection-custom"
@@ -1458,6 +1467,7 @@ describe("AdminProvidersSection", () => {
           vision: false
         },
         defaultParams: {},
+        modelClass: "answer" as const,
         openRouterRouting: { mode: "automatic" as const, providers: [] as [] },
         upstreamModelId: "vendor/model"
       },
@@ -1476,6 +1486,7 @@ describe("AdminProvidersSection", () => {
           vision: false
         },
         defaultParams: {},
+        modelClass: "answer" as const,
         openRouterRouting: { mode: "automatic" as const, providers: [] as [] },
         upstreamModelId: "vendor/model"
       },

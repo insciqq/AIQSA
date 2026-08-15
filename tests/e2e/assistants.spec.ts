@@ -107,6 +107,7 @@ async function createAssistantViaApi(
       category: null,
       description: "",
       developerPrompt: null,
+      knowledgeBaseIds: [],
       mcpServerIds: [],
       name: input.name,
       providerModelId: input.providerModelId,
@@ -189,16 +190,6 @@ async function selectAssistantFromPicker(page: Page, assistantId: string): Promi
   await picker.getByTestId(`assistant-picker-row-${assistantId}`).click();
   await expect(picker).toHaveCount(0);
   await expect(page.getByTestId("composer-v2-assistant-lock")).toBeVisible();
-}
-
-async function showLatestRunDetails(page: Page): Promise<Locator> {
-  const answer = page.locator('article[data-role="assistant"]').last();
-  const opener = answer.getByRole("button", { name: /^Run details/u });
-  await expect(opener).toBeVisible({ timeout: 20_000 });
-  await opener.click();
-  const details = page.getByRole("dialog", { name: /Run details/ });
-  await expect(details).toBeVisible();
-  return details;
 }
 
 test.beforeEach(async ({ page }) => {
@@ -310,10 +301,8 @@ test("uses an assistant from the Library and completes an identified run", async
       .getByTestId("answer-assistant-identity");
     await expect(identity).toBeVisible();
     await expect(identity).toContainText(name);
-
-    const details = await showLatestRunDetails(page);
-    await expect(details).toContainText(name);
-    await expect(details).toContainText("revision 1");
+    await expect(identity).toContainText("revision 1");
+    await expect(page.getByRole("button", { name: /^Run details/u })).toHaveCount(0);
   } finally {
     await deleteChat(page, chatId);
     await archiveAssistantById(page, assistant.id);
@@ -397,9 +386,7 @@ test("keeps accepted answers on their historical revision after a revise", async
     const identity = answer.getByTestId("answer-assistant-identity");
     await expect(identity).toContainText(name);
     await expect(identity).not.toContainText(revisedName);
-    const details = await showLatestRunDetails(page);
-    await expect(details).toContainText(name);
-    await expect(details).toContainText("revision 1");
+    await expect(identity).toContainText("revision 1");
   } finally {
     await deleteChat(page, chatId);
     await archiveAssistantById(page, assistant.id);

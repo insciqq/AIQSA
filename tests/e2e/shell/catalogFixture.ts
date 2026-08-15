@@ -1,4 +1,5 @@
 import type { Page, Route } from "@playwright/test";
+import type { UserSettingsWire } from "../../../lib/contracts/settings";
 import { matrixCatalog } from "./catalog";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -64,19 +65,20 @@ export async function installMatrixCatalogFixture(
   const fixtureWorkspace = normalizeFixtureWorkspace(
     workspace ?? { chats: [], contentMatches: [], folders: [] }
   );
-  const settings = {
+  const settings: UserSettingsWire = {
     defaultControlValues: structuredClone(fixtureCatalog.defaults.controlValues),
-    defaultModelId: fixtureCatalog.defaults.modelId,
+    hasPersonalModelDefault: fixtureCatalog.defaults.hasPersonalModelDefault,
+    modelPreferenceSource: fixtureCatalog.defaults.modelPreferenceSource,
+    organizationModelDefault: structuredClone(fixtureCatalog.defaults.organizationModelDefault),
+    personalModelDefault: structuredClone(fixtureCatalog.defaults.personalModelDefault),
     defaultSearchPlan: structuredClone(fixtureCatalog.defaults.searchPlan),
-    defaultProvider: fixtureCatalog.defaults.provider,
-    defaultSearchStrategyId: fixtureCatalog.defaults.searchStrategyId,
     organizationSearchPlan: structuredClone(fixtureCatalog.defaults.organizationSearchPlan),
     searchPreferenceSource: fixtureCatalog.defaults.searchPreferenceSource,
     showCitations: fixtureCatalog.defaults.showCitations,
-    showReasoningBlocks: fixtureCatalog.defaults.showReasoningBlocks,
-    showToolActivity: fixtureCatalog.defaults.showToolActivity
+    showReasoningBlocks: fixtureCatalog.defaults.showReasoningBlocks
   };
   await page.route("**/api/me/catalog", async (route) => {
+    const effectiveModelDefault = settings.personalModelDefault ?? settings.organizationModelDefault;
     await route.fulfill({
       contentType: "application/json",
       json: {
@@ -85,15 +87,17 @@ export async function installMatrixCatalogFixture(
           defaults: {
             ...fixtureCatalog.defaults,
             controlValues: settings.defaultControlValues,
-            modelId: settings.defaultModelId,
+            hasPersonalModelDefault: settings.hasPersonalModelDefault,
+            modelId: effectiveModelDefault?.modelId ?? "",
+            modelPreferenceSource: settings.modelPreferenceSource,
             organizationSearchPlan: settings.organizationSearchPlan,
-            provider: settings.defaultProvider,
+            organizationModelDefault: settings.organizationModelDefault,
+            personalModelDefault: settings.personalModelDefault,
+            provider: effectiveModelDefault?.provider ?? "",
             searchPlan: settings.defaultSearchPlan,
             searchPreferenceSource: settings.searchPreferenceSource,
-            searchStrategyId: settings.defaultSearchStrategyId,
             showCitations: settings.showCitations,
-            showReasoningBlocks: settings.showReasoningBlocks,
-            showToolActivity: settings.showToolActivity
+            showReasoningBlocks: settings.showReasoningBlocks
           }
         }
       }
@@ -134,11 +138,21 @@ export async function installMatrixCatalogFixture(
 
     options.onSettingsPatch?.();
     const body = JSON.parse(route.request().postData() ?? "{}") as Record<string, unknown>;
-    if (typeof body.defaultModelId === "string") {
-      settings.defaultModelId = body.defaultModelId;
-    }
-    if (typeof body.defaultProvider === "string") {
-      settings.defaultProvider = body.defaultProvider;
+    if (Object.prototype.hasOwnProperty.call(body, "defaultProviderModelId")) {
+      if (body.defaultProviderModelId === null) {
+        settings.personalModelDefault = null;
+        settings.hasPersonalModelDefault = false;
+        settings.modelPreferenceSource = settings.organizationModelDefault ? "organization" : "none";
+      } else if (typeof body.defaultProviderModelId === "string") {
+        const model = fixtureCatalog.models.find(
+          (candidate) => candidate.modelId === body.defaultProviderModelId
+        );
+        if (model) {
+          settings.personalModelDefault = { modelId: model.modelId, provider: model.provider };
+          settings.hasPersonalModelDefault = true;
+          settings.modelPreferenceSource = "personal";
+        }
+      }
     }
     if (Object.prototype.hasOwnProperty.call(body, "defaultSearchPlan")) {
       if (body.defaultSearchPlan === null) {
@@ -148,18 +162,12 @@ export async function installMatrixCatalogFixture(
         settings.defaultSearchPlan = body.defaultSearchPlan as typeof settings.defaultSearchPlan;
         settings.searchPreferenceSource = "personal";
       }
-      settings.defaultSearchStrategyId = settings.defaultSearchPlan?.optionIds[0] ?? "search-disabled";
-    } else if (typeof body.defaultSearchStrategyId === "string") {
-      settings.defaultSearchStrategyId = body.defaultSearchStrategyId;
     }
     if (typeof body.showCitations === "boolean") {
       settings.showCitations = body.showCitations;
     }
     if (typeof body.showReasoningBlocks === "boolean") {
       settings.showReasoningBlocks = body.showReasoningBlocks;
-    }
-    if (typeof body.showToolActivity === "boolean") {
-      settings.showToolActivity = body.showToolActivity;
     }
     if (body.defaultControlValues && typeof body.defaultControlValues === "object") {
       settings.defaultControlValues = {

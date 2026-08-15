@@ -9,7 +9,7 @@ Not owned here: Visual recipes, workspace navigation, next-run selectors, answer
 ## Composer
 
 - Enter sends.
-- Enter does not send while an IME composition is active. One client-safe guard recognizes native/React composing state, `Process`, and legacy keyCode 229 across the composer, command palette, shared pickers, and inline chat/folder create/rename handlers; composed Enter/Escape never commits or cancels partial text.
+- Enter does not send while an IME composition is active. One client-safe guard recognizes native/React composing state, `Process`, and the browser keyCode 229 fallback across the composer, command palette, shared pickers, and inline chat/folder create/rename handlers; composed Enter/Escape never commits or cancels partial text.
 - Shift+Enter inserts newline.
 - The visible `Send` action keeps the stable label `Send`. It is disabled while streaming, while a blank workspace is creating its first persisted chat, or while empty with no staged attachments. In edit-branch mode, attachments alone are not sendable: edited text is required, and `Cancel edit` remains available in the branch strip.
 - Composer input stays disabled until catalog and workspace/chat-detail bootstrap complete and whenever the current user has no entitled model. Loading, no-model, creation, and actionable disabled reasons render as status text in the composer frame.

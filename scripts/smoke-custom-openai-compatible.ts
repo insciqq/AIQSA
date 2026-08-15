@@ -120,6 +120,8 @@ function smokeRequest(provider: string, streamUsage = false): ProviderRunRequest
     content: {
       blocks: [{ text: "Return the deterministic fixture marker.", type: "text" }]
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -141,7 +143,7 @@ function smokeRequest(provider: string, streamUsage = false): ProviderRunRequest
       system: "This request targets a local deterministic smoke fixture."
     },
     provider,
-    searchStrategy: "search-disabled"
+    searchPlan: { mode: "all_selected", options: [] }
   };
 }
 

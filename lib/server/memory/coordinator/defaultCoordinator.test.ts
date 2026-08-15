@@ -22,9 +22,7 @@ describe("default Memory coordinator composition", () => {
 
     await reconcileDefaultMemoryWork({
       candidates: step("candidates"),
-      dream: step("dream"),
-      history: step("history"),
-      profile: step("profile")
+      history: step("history")
     });
 
     expect(maximumActive).toBe(1);
@@ -32,11 +30,7 @@ describe("default Memory coordinator composition", () => {
       "history:start",
       "history:end",
       "candidates:start",
-      "candidates:end",
-      "dream:start",
-      "dream:end",
-      "profile:start",
-      "profile:end"
+      "candidates:end"
     ]);
   });
 

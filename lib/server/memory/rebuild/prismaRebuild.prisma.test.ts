@@ -44,10 +44,10 @@ import {
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
-  MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS,
+  MEMORY_PURGE_REQUIRED_CONTRIBUTORS,
   memoryPurgeTargetType
 } from "../purge/contract";
-import { registerPhase2MemoryDeletionContributors } from "../purge/leaves";
+import { registerMemoryDeletionContributors } from "../purge/leaves";
 import { MemoryDeletionContributorRegistry } from "../purge/registry";
 import { memoryFeedbackIdempotencyFingerprint } from "../review/feedbackRepository";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
@@ -89,9 +89,9 @@ const embeddingConfiguration = {
 function deletionRegistry(): MemoryDeletionContributorRegistry {
   const registry = new MemoryDeletionContributorRegistry({
     operation: "FORGET_PURGE",
-    requirements: MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS
+    requirements: MEMORY_PURGE_REQUIRED_CONTRIBUTORS
   });
-  registerPhase2MemoryDeletionContributors(registry);
+  registerMemoryDeletionContributors(registry);
   return registry;
 }
 
@@ -135,6 +135,7 @@ async function configureEmbeddingProvider(
   const connectionConfiguration = {
     allowPrivateNetwork: false,
     apiRoot: "https://memory-rebuild-provider.example.test/v1",
+    authenticationMode: "bearer",
     responseTimeoutMs: 30_000
   };
   await prisma.providerConnection.create({
@@ -188,7 +189,6 @@ async function configureEmbeddingProvider(
       activatedAt: now,
       capabilities: embeddingConfiguration.capabilities,
       connectionId,
-      contextWindow: 32_768,
       defaultParams: {},
       displayName: "Memory rebuild embedding model",
       draftConfig: embeddingConfiguration,
@@ -288,7 +288,7 @@ async function configureEmbeddingProvider(
     },
     modelId,
     pin: {
-      configurationFingerprint: target.qualificationFingerprints.configFingerprint,
+      configurationFingerprint: target.compatibilityFingerprints.configFingerprint,
       connectionId,
       dimension: EMBEDDING_DIMENSION,
       providerModelId: modelId,
@@ -338,45 +338,6 @@ async function saveExplicit(
   });
 }
 
-async function admitRedream(
-  userId: string,
-  nonce: string,
-  input: Readonly<{
-    authorizationRepository: ReturnType<typeof services>["authorizationRepository"];
-    explicit: ReturnType<typeof services>["explicit"];
-    repository: ReturnType<typeof createPrismaMemoryRebuildRepository>;
-  }>
-) {
-  const settings = await prisma.userMemorySettings.findUniqueOrThrow({
-    where: { userId }
-  });
-  const authorization = await input.explicit.mintAuthorization(userId, {
-    action: "BULK_DELETE",
-    confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-    expectedMemoryRevision: settings.memoryRevision,
-    expectedSettingsRevision: settings.settingsRevision,
-    operation: "REDREAM_EXISTING_CHATS",
-    requestNonce: nonce
-  });
-  const use = {
-    action: "BULK_DELETE" as const,
-    authorizationId: authorization.mutationAuthorizationId,
-    authorizedPayloadHash: memoryTargetAuthorizationPayloadHash({
-      action: "BULK_DELETE",
-      expectedMemoryRevision: settings.memoryRevision,
-      expectedSettingsRevision: settings.settingsRevision,
-      operation: "REDREAM_EXISTING_CHATS"
-    })
-  };
-  const resolved = await input.authorizationRepository.resolveForUse(userId, use);
-  return input.repository.admit(userId, {
-    authorization: { ...use, requestId: resolved.requestId },
-    expectedMemoryRevision: settings.memoryRevision,
-    expectedSettingsRevision: settings.settingsRevision,
-    operation: "REDREAM_EXISTING_CHATS",
-    requestIdentity: { nonce }
-  });
-}
 
 async function claimRebuildJob(jobId: string, now: Date): Promise<MemoryJobClaim> {
   const claimToken = randomUUID();
@@ -541,7 +502,6 @@ async function createHistoryDerivative(input: Readonly<{
   activeIndexGenerationId: string;
   chatId?: string;
   createdAt: Date;
-  includeEpisode: boolean;
   label: string;
   parentMessageId?: string | null;
   sourceRevision: number;
@@ -593,7 +553,6 @@ async function createHistoryDerivative(input: Readonly<{
       activeLeafMessageId: assistantMessage.id,
       branchGeneration: 0,
       chatId: chat.id,
-      lastDreamedMessageId: input.includeEpisode ? assistantMessage.id : null,
       lastIndexedMessageId: assistantMessage.id,
       lastSucceededAt: assistantAt,
       sourceContentHash: sourceHash,
@@ -604,7 +563,6 @@ async function createHistoryDerivative(input: Readonly<{
     update: {
       activeLeafMessageId: assistantMessage.id,
       branchGeneration: 0,
-      lastDreamedMessageId: input.includeEpisode ? assistantMessage.id : null,
       lastErrorCode: null,
       lastIndexedMessageId: assistantMessage.id,
       lastSucceededAt: assistantAt,
@@ -668,115 +626,16 @@ async function createHistoryDerivative(input: Readonly<{
     }
   });
 
-  let episodeId: string | null = null;
-  if (input.includeEpisode) {
-    const job = await prisma.memoryJob.create({
-      data: {
-        activeLeafMessageId: assistantMessage.id,
-        branchGeneration: 0,
-        chatId: chat.id,
-        idempotencyFingerprint: `clear-episode:${memorySha256({
-          chatId: chat.id,
-          sourceRevision: input.sourceRevision
-        })}`,
-        kind: "EXTRACT_EPISODE",
-        memoryGenerationSnapshot: 0,
-        memoryRevisionSnapshot: 0,
-        pipelineVersion: "memory-clear-fixture-v1",
-        sourceHash,
-        sourceRevision: input.sourceRevision,
-        userId: input.userId
-      }
-    });
-    const bindingId = randomUUID();
-    await prisma.memoryExecutionBinding.create({
-      data: {
-        acceptedOutputHash: memorySha256({ output: input.label }),
-        completedAt: assistantAt,
-        createdAt: input.createdAt,
-        destinationFingerprint: memorySha256({ destination: "fixture" }),
-        id: bindingId,
-        inputHash: memorySha256({ input: input.label }),
-        logicalRole: "MEMORY_EPISODE_EXTRACT",
-        memoryJobId: job.id,
-        ordinal: 0,
-        ownerType: "JOB",
-        pipelineVersion: "memory-clear-fixture-v1",
-        policyVersion: "memory-clear-fixture-v1",
-        promptVersion: "memory-clear-fixture-v1",
-        providerId: "memory-clear-fixture",
-        recoverableUntil: assistantAt,
-        relationsDetachedAt: assistantAt,
-        schemaVersion: "memory-clear-fixture-v1",
-        secretFreeExecutionSnapshot: {},
-        state: "SUCCEEDED",
-        userId: input.userId
-      }
-    });
-    episodeId = memorySha256({ episode: input.label, sourceHash });
-    await prisma.memoryEpisode.create({
-      data: {
-        branchGeneration: 0,
-        chatId: chat.id,
-        createdAt: assistantAt,
-        createdByExecutionId: bindingId,
-        entities: [],
-        extractorRole: "MEMORY_EPISODE_EXTRACT",
-        id: episodeId,
-        keywords: [input.label],
-        languageCode: "en",
-        normalizedSafeSearchText: normalizeMemorySearchText(text),
-        occurredFrom: input.createdAt,
-        occurredTo: assistantAt,
-        pipelineVersion: "memory-clear-fixture-v1",
-        redactionReasonCodes: [],
-        redactionState: "NOT_NEEDED",
-        safeSummary: text,
-        safetyClass: "NORMAL",
-        sourceHash,
-        sourceProjectionVersion: "memory-clear-fixture-v1",
-        sourceRevisionAtCreation: input.sourceRevision,
-        userId: input.userId
-      }
-    });
-    await prisma.memoryEpisodeMessage.create({
-      data: {
-        chatId: chat.id,
-        episodeId,
-        messageId: userMessage.id,
-        ordinal: 0,
-        userId: input.userId
-      }
-    });
-    await prisma.memorySearchEntry.create({
-      data: {
-        embeddingState: "NOT_APPLICABLE",
-        episodeId,
-        indexGenerationId: input.activeIndexGenerationId,
-        itemType: "EPISODE",
-        languageCode: "en",
-        safeContentHash: memorySha256(text),
-        safeSearchText: normalizeMemorySearchText(text),
-        safeSearchTextYoNormalized: normalizeMemorySearchTextYo(text),
-        safetyIdentitySnapshot: memorySha256({ safety: "NORMAL" }),
-        sourceIdentitySnapshot: memorySha256({ episodeId, sourceHash }),
-        suppressionIdentitySnapshot: memorySha256({ suppressions: [] }),
-        userId: input.userId
-      }
-    });
-  }
   return {
     assistantMessageId: assistantMessage.id,
     chatId: chat.id,
     chunkId,
-    episodeId,
     userMessageId: userMessage.id
   };
 }
 
 type FeedbackFixtureTarget =
   | Readonly<{ factId: string; kind: "FACT_VERSION"; versionId: string }>
-  | Readonly<{ episodeId: string; kind: "EPISODE" }>
   | Readonly<{ chunkId: string; kind: "RECALL_CHUNK" }>;
 
 async function createFeedbackFixture(input: Readonly<{
@@ -819,7 +678,6 @@ async function createFeedbackFixture(input: Readonly<{
       data: {
         comment: input.comment,
         createdAt,
-        episodeId: input.target.kind === "EPISODE" ? input.target.episodeId : null,
         feedbackType,
         id: feedbackId,
         idempotencyFingerprint: memoryFeedbackIdempotencyFingerprint(
@@ -869,7 +727,6 @@ async function createHistoryReceiptDerivatives(input: Readonly<{
       modelId: "memory-history-receipt-model",
       normalizedRequest: {},
       provider: "memory-history-receipt-provider",
-      providerRequestPreview: {},
       status: "complete",
       userId: input.userId,
       userMessageId: input.sourceMessageId
@@ -1187,7 +1044,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         factVersionId === forgotten.memory.currentVersionId)).toBe(false);
       const evidence = Object.freeze({
         activationCount: 1,
-        evidenceVersion: "memory-phase8-rebuild-latency-v1",
+        evidenceVersion: "memory-rebuild-latency-v1",
         maximumRebuildLatencyMs: 15 * 60_000,
         rebuildLatencyMs: Number((performance.now() - rebuildStartedAt).toFixed(2)),
         resurrectionCount: 0,
@@ -1195,7 +1052,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       });
       expect(evidence.rebuildLatencyMs).toBeLessThan(evidence.maximumRebuildLatencyMs);
       expect(JSON.stringify(evidence)).not.toContain(userId);
-      console.info("memory_phase8_rebuild_latency", evidence);
+      console.info("memory_rebuild_latency", evidence);
     } finally {
       await cleanupOwner(userId);
     }
@@ -1382,7 +1239,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       const history = await createHistoryDerivative({
         activeIndexGenerationId: initial.activeIndexGenerationId,
         createdAt: new Date("2026-08-10T08:45:00.000Z"),
-        includeEpisode: false,
         label: "hybrid-suppression",
         sourceRevision: 1,
         userId
@@ -1563,128 +1419,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
     }
   });
 
-  it("rejects the retired redream operation without creating episode work", async () => {
-    const userId = await createOwner("redream-retired");
-    const deps = services();
-    const repository = createPrismaMemoryRebuildRepository(prisma);
-    try {
-      await expect(admitRedream(userId, "redream-retired", {
-        authorizationRepository: deps.authorizationRepository,
-        explicit: deps.explicit,
-        repository
-      })).rejects.toThrow("memory_contract_invalid");
-      await expect(prisma.memoryJob.count({
-        where: { kind: "EXTRACT_EPISODE", userId }
-      })).resolves.toBe(0);
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it.skip("legacy redream child cancellation remains historical-only", async () => {
-    const userId = await createOwner("redream-cancel");
-    const deps = services();
-    const repository = createPrismaMemoryRebuildRepository(prisma);
-    try {
-      await saveExplicit(
-        deps.explicit,
-        userId,
-        "Keep one semantic fact while redreaming history.",
-        "redream-cancel-fact"
-      );
-      const before = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      });
-      if (!before.activeIndexGenerationId) throw new Error("active_generation_missing");
-      const history = await createHistoryDerivative({
-        activeIndexGenerationId: before.activeIndexGenerationId,
-        createdAt: new Date("2026-08-10T09:00:00.000Z"),
-        includeEpisode: true,
-        label: "redream-cancel",
-        sourceRevision: 1,
-        userId
-      });
-      const admitted = await admitRedream(userId, "redream-cancel", {
-        authorizationRepository: deps.authorizationRepository,
-        explicit: deps.explicit,
-        repository
-      });
-      if (admitted.kind !== "ok") throw new Error(admitted.kind);
-      const [admittedSettings, consumedAuthorization] = await Promise.all([
-        prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }),
-        prisma.memoryMutationAuthorization.findFirstOrThrow({
-          orderBy: { createdAt: "desc" },
-          where: { action: "BULK_DELETE", consumedAt: { not: null }, userId }
-        })
-      ]);
-      await expect(repository.admit(userId, {
-        authorization: {
-          action: "BULK_DELETE",
-          authorizationId: consumedAuthorization.id,
-          authorizedPayloadHash: consumedAuthorization.authorizedPayloadHash,
-          requestId: consumedAuthorization.requestId
-        },
-        expectedMemoryRevision: admittedSettings.memoryRevision,
-        expectedSettingsRevision: admittedSettings.settingsRevision,
-        operation: "REDREAM_EXISTING_CHATS",
-        requestIdentity: { nonce: "redream-cancel" }
-      })).resolves.toEqual(admitted);
-      const parent = await prisma.memoryJob.findUniqueOrThrow({
-        where: { id: admitted.jobId }
-      });
-      const identity = parseMemoryRebuildJobFingerprint(parent.idempotencyFingerprint);
-      if (!identity || identity.type !== "REDREAM") throw new Error("redream_missing");
-
-      await processRebuildJob(admitted.jobId, repository);
-      const child = await prisma.memoryJob.findFirstOrThrow({
-        where: {
-          idempotencyFingerprint: {
-            startsWith: `memory-episode-redream-v1:${identity.batchId}:`
-          },
-          kind: "EXTRACT_EPISODE",
-          userId
-        }
-      });
-      expect(child).toMatchObject({
-        activeLeafMessageId: history.assistantMessageId,
-        chatId: history.chatId,
-        sourceRevision: 1,
-        state: "QUEUED"
-      });
-      expect(child.idempotencyFingerprint.startsWith("extract-episode:"))
-        .toBe(false);
-      await expect(repository.status(userId, admitted.jobId)).resolves.toMatchObject({
-        completedUnits: 0,
-        state: "RUNNING",
-        totalUnits: 1
-      });
-      const whileRedreaming = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      });
-      await expect(repository.admit(userId, {
-        expectedMemoryRevision: whileRedreaming.memoryRevision,
-        expectedSettingsRevision: whileRedreaming.settingsRevision,
-        operation: "REBUILD_SEARCH_INDEX",
-        requestIdentity: { nonce: "blocked-by-redream" }
-      })).resolves.toEqual({ kind: "in_progress" });
-      await expect(repository.cancel(userId, admitted.jobId)).resolves.toMatchObject({
-        state: "CANCELLED"
-      });
-      await expect(prisma.memoryJob.findUniqueOrThrow({
-        where: { id: child.id }
-      })).resolves.toMatchObject({ state: "CANCELLED" });
-      await expect(prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      })).resolves.toMatchObject({
-        activeIndexGenerationId: before.activeIndexGenerationId,
-        memoryGeneration: before.memoryGeneration,
-        memoryRevision: before.memoryRevision
-      });
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
   it("physically purges an excluded source while retaining its accepted execution evidence", async () => {
     const userId = await createOwner("source-purge");
     const deps = services();
@@ -1703,12 +1437,10 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       const history = await createHistoryDerivative({
         activeIndexGenerationId: initial.activeIndexGenerationId,
         createdAt: new Date("2026-08-10T09:15:00.000Z"),
-        includeEpisode: true,
         label: "source-purge",
         sourceRevision: 1,
         userId
       });
-      if (!history.episodeId) throw new Error("episode_fixture_missing");
       const receiptDerivatives = await createHistoryReceiptDerivatives({
         activeIndexGenerationId: initial.activeIndexGenerationId,
         assistantMessageId: history.assistantMessageId,
@@ -1733,24 +1465,21 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       });
       await expect(prisma.memorySearchEntry.count({
         where: {
-          OR: [{ recallChunkId: history.chunkId }, { episodeId: history.episodeId }],
+          recallChunkId: history.chunkId,
           userId
         }
       })).resolves.toBe(0);
       await expect(prisma.memoryRecallChunk.findUniqueOrThrow({
         where: { id: history.chunkId }
       })).resolves.toMatchObject({ state: "INVALIDATED" });
-      await expect(prisma.memoryEpisode.findUniqueOrThrow({
-        where: { id: history.episodeId }
-      })).resolves.toMatchObject({ state: "INVALIDATED" });
       const deletion = await prisma.memoryDeletionOutbox.findFirstOrThrow({
         where: { operation: "SOURCE_PURGE", targetId: history.chatId, userId }
       });
-      const episodeFeedbackId = await createFeedbackFixture({
-        comment: "Purge this excluded-source episode feedback.",
+      const chunkFeedbackId = await createFeedbackFixture({
+        comment: "Purge this excluded-source chunk feedback.",
         sourceBranchGeneration: 0,
         sourceChatId: history.chatId,
-        target: { episodeId: history.episodeId, kind: "EPISODE" },
+        target: { chunkId: history.chunkId, kind: "RECALL_CHUNK" },
         userId
       });
       const factSourceFeedbackId = await createFeedbackFixture({
@@ -1805,13 +1534,10 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         await expect(prisma.memoryRecallChunk.count({
           where: { id: history.chunkId, userId }
         })).resolves.toBe(0);
-        await expect(prisma.memoryEpisode.count({
-          where: { id: history.episodeId, userId }
-        })).resolves.toBe(0);
         await expect(prisma.memoryFeedback.findMany({
           where: {
             id: {
-              in: [episodeFeedbackId, factSourceFeedbackId, factSourceRetractionId]
+              in: [chunkFeedbackId, factSourceFeedbackId, factSourceRetractionId]
             },
             userId
           }
@@ -1819,9 +1545,10 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
           expect.objectContaining({
             comment: null,
             contentPurgedAt: expect.any(Date),
-            id: episodeFeedbackId,
+            id: chunkFeedbackId,
             memoryEventId: null,
             purgeReason: "source_invalidated",
+            recallChunkId: null,
             sourceChatIdSnapshot: null
           }),
           expect.objectContaining({
@@ -1847,12 +1574,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         ]));
         await expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(receiptDerivatives);
       }
-      await expect(prisma.memoryExecutionBinding.findFirstOrThrow({
-        where: { logicalRole: "MEMORY_EPISODE_EXTRACT", userId }
-      })).resolves.toMatchObject({
-        acceptedOutputHash: expect.any(String),
-        state: "SUCCEEDED"
-      });
       await expect(prisma.message.count({
         where: { chatId: history.chatId }
       })).resolves.toBe(2);
@@ -1884,7 +1605,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
     }
   });
 
-  it("replays old suppression purge leaves without rebuild or redream resurrection", async () => {
+  it("replays suppression purge without rebuild resurrection", async () => {
     const userId = await createOwner("suppression-replay");
     const deps = services();
     const repository = createPrismaMemoryRebuildRepository(prisma);
@@ -1903,12 +1624,10 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       const history = await createHistoryDerivative({
         activeIndexGenerationId: initial.activeIndexGenerationId,
         createdAt: new Date("2026-08-10T09:30:00.000Z"),
-        includeEpisode: true,
         label: "suppression-replay",
         sourceRevision: 1,
         userId
       });
-      if (!history.episodeId) throw new Error("episode_fixture_missing");
       const receiptDerivatives = await createHistoryReceiptDerivatives({
         activeIndexGenerationId: initial.activeIndexGenerationId,
         assistantMessageId: history.assistantMessageId,
@@ -1923,10 +1642,10 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
           explicitOverrideAllowed: true,
           fingerprintKeyVersion: "rebuild-v1",
           normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
-          scope: "SOURCE_EPISODE",
+          scope: "SOURCE_MESSAGE",
           sourceBranchGeneration: 0,
           sourceChatId: history.chatId,
-          sourceEpisodeId: history.episodeId,
+          sourceMessageId: history.userMessageId,
           userId
         }
       });
@@ -1940,10 +1659,10 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         }
       });
       const delayedFeedbackId = await createFeedbackFixture({
-        comment: "Late feedback attached to the suppressed episode.",
+        comment: "Late feedback attached to the suppressed chunk.",
         sourceBranchGeneration: 0,
         sourceChatId: history.chatId,
-        target: { episodeId: history.episodeId, kind: "EPISODE" },
+        target: { chunkId: history.chunkId, kind: "RECALL_CHUNK" },
         userId
       });
 
@@ -1968,14 +1687,8 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         await expect(createPrismaMemoryCoordinatorRepository(prisma)
           .commitDeletionSuccess({ apply: execution.apply, claim, now }))
           .resolves.toBe(true);
-        await expect(prisma.memoryEpisode.count({
-          where: { id: history.episodeId, userId }
-        })).resolves.toBe(0);
         await expect(prisma.memoryRecallChunk.count({
           where: { id: history.chunkId, userId }
-        })).resolves.toBe(0);
-        await expect(prisma.memorySuppression.count({
-          where: { scope: "SOURCE_EPISODE", userId }
         })).resolves.toBe(0);
         await expect(prisma.memorySuppression.count({
           where: {
@@ -1989,8 +1702,8 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         })).resolves.toMatchObject({
           comment: null,
           contentPurgedAt: expect.any(Date),
-          episodeId: null,
-          purgeReason: "suppressed_source"
+          purgeReason: "suppressed_source",
+          recallChunkId: null
         });
         await expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(receiptDerivatives);
       }
@@ -2017,19 +1730,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         factVersionId: fact.memory.currentVersionId,
         itemType: "FACT_VERSION"
       });
-
-      await expect(admitRedream(userId, "suppression-redream", {
-        authorizationRepository: deps.authorizationRepository,
-        explicit: deps.explicit,
-        repository
-      })).rejects.toThrow("memory_contract_invalid");
-      await expect(prisma.memoryJob.count({
-        where: {
-          idempotencyFingerprint: { startsWith: "memory-episode-redream-v1:" },
-          kind: "EXTRACT_EPISODE",
-          userId
-        }
-      })).resolves.toBe(0);
       await expect(prisma.message.count({
         where: { chatId: history.chatId }
       })).resolves.toBe(2);
@@ -2057,13 +1757,10 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       const old = await createHistoryDerivative({
         activeIndexGenerationId: initialSettings.activeIndexGenerationId,
         createdAt: new Date("2026-08-10T08:00:00.000Z"),
-        includeEpisode: true,
         label: "old",
         sourceRevision: 1,
         userId
       });
-      if (!old.episodeId) throw new Error("episode_fixture_missing");
-      const oldEpisodeId = old.episodeId;
       const receiptDerivatives = await createHistoryReceiptDerivatives({
         activeIndexGenerationId: initialSettings.activeIndexGenerationId,
         assistantMessageId: old.assistantMessageId,
@@ -2097,17 +1794,13 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       });
       await expect(prisma.memorySearchEntry.count({
         where: {
-          OR: [{ recallChunkId: old.chunkId }, { episodeId: oldEpisodeId }],
+          recallChunkId: old.chunkId,
           userId
         }
       })).resolves.toBe(0);
       await expect(prisma.memoryRecallChunk.findUniqueOrThrow({
         where: { id: old.chunkId }
       })).resolves.toMatchObject({ state: "INVALIDATED" });
-      await expect(prisma.memoryEpisode.findUniqueOrThrow({
-        where: { id: oldEpisodeId }
-      })).resolves.toMatchObject({ state: "INVALIDATED" });
-
       const barrier = await prisma.memorySourceBarrier.findFirstOrThrow({
         where: { kind: "HISTORY_INDEX", userId }
       });
@@ -2115,7 +1808,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         activeIndexGenerationId: initialSettings.activeIndexGenerationId,
         chatId: old.chatId,
         createdAt: new Date(barrier.sourceCreatedAtCutoff.getTime() + 1_000),
-        includeEpisode: false,
         label: "fresh",
         parentMessageId: old.assistantMessageId,
         sourceRevision: 2,
@@ -2128,14 +1820,6 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         sourceBranchGeneration: 0,
         sourceChatId: old.chatId,
         target: { chunkId: old.chunkId, kind: "RECALL_CHUNK" },
-        userId
-      });
-      const oldEpisodeFeedbackId = await createFeedbackFixture({
-        comment: "Created after admission but attached to the pre-cutoff episode.",
-        createdAt: postAdmissionAt,
-        sourceBranchGeneration: 0,
-        sourceChatId: old.chatId,
-        target: { episodeId: oldEpisodeId, kind: "EPISODE" },
         userId
       });
       const freshFeedbackId = await createFeedbackFixture({
@@ -2174,33 +1858,21 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         await expect(prisma.memoryRecallChunk.count({
           where: { id: old.chunkId, userId }
         })).resolves.toBe(0);
-        await expect(prisma.memoryEpisode.count({
-          where: { id: oldEpisodeId, userId }
-        })).resolves.toBe(0);
         await expect(prisma.memoryRecallChunk.count({
           where: { id: fresh.chunkId, state: "ACTIVE", userId }
         })).resolves.toBe(1);
         await expect(prisma.memorySearchEntry.count({
           where: { recallChunkId: fresh.chunkId, userId }
         })).resolves.toBe(1);
-        await expect(prisma.memoryFeedback.findMany({
-          where: { id: { in: [oldChunkFeedbackId, oldEpisodeFeedbackId] }, userId }
-        })).resolves.toEqual(expect.arrayContaining([
-          expect.objectContaining({
-            comment: null,
-            contentPurgedAt: expect.any(Date),
-            id: oldChunkFeedbackId,
-            purgeReason: "history_clear",
-            recallChunkId: null
-          }),
-          expect.objectContaining({
-            comment: null,
-            contentPurgedAt: expect.any(Date),
-            episodeId: null,
-            id: oldEpisodeFeedbackId,
-            purgeReason: "history_clear"
-          })
-        ]));
+        await expect(prisma.memoryFeedback.findUniqueOrThrow({
+          where: { id: oldChunkFeedbackId }
+        })).resolves.toMatchObject({
+          comment: null,
+          contentPurgedAt: expect.any(Date),
+          id: oldChunkFeedbackId,
+          purgeReason: "history_clear",
+          recallChunkId: null
+        });
         await expect(prisma.memoryFeedback.findUniqueOrThrow({
           where: { id: freshFeedbackId }
         })).resolves.toMatchObject({

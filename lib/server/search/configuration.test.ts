@@ -2,28 +2,23 @@ import { describe, expect, it } from "vitest";
 import {
   builtInSearchDraft,
   compatibleTechnicalAdapter,
-  legacyProvider,
-  legacySearchKind,
+  searchStrategyKind,
   normalizeSearchDraft,
   searchDraftHash,
   searchExecutionModes
 } from "./configuration";
 
-const legacyClientDraft = {
+const clientDraft = {
   adapterKind: "provider_model_client",
   credentialMode: "provider_model",
+  maxOutputTokens: 8_192,
   maxResults: 8,
+  maxSearchCallsPerAnswer: 3,
   protocol: "openai_responses_web_search",
   providerModelId: "technical-model",
   queryMaxCharacters: 500,
+  reasoningPolicy: "provider_default",
   timeoutMs: 15_000
-} as const;
-
-const clientDraft = {
-  ...legacyClientDraft,
-  maxOutputTokens: 8_192,
-  maxSearchCallsPerAnswer: 3,
-  reasoningPolicy: "provider_default"
 } as const;
 
 describe("Search adapter configuration", () => {
@@ -33,13 +28,20 @@ describe("Search adapter configuration", () => {
     expect(searchExecutionModes(clientDraft.adapterKind)).toEqual(["all_selected", "model_choice"]);
   });
 
-  it("synthesizes conservative execution defaults for existing revisions", () => {
-    expect(normalizeSearchDraft(legacyClientDraft)).toEqual({
-      ...legacyClientDraft,
-      maxOutputTokens: 4_096,
-      maxSearchCallsPerAnswer: 2,
-      reasoningPolicy: "lowest_supported"
-    });
+  it("requires every current execution field", () => {
+    for (const key of [
+      "maxOutputTokens",
+      "maxResults",
+      "maxSearchCallsPerAnswer",
+      "providerModelId",
+      "queryMaxCharacters",
+      "reasoningPolicy",
+      "timeoutMs"
+    ] as const) {
+      const incomplete = { ...clientDraft } as Record<string, unknown>;
+      delete incomplete[key];
+      expect(() => normalizeSearchDraft(incomplete)).toThrow("search_configuration_invalid");
+    }
   });
 
   it("rejects arbitrary protocols, mismatched credential modes, and unsafe bounds", () => {
@@ -95,13 +97,12 @@ describe("Search adapter configuration", () => {
 
     expect(normalizeSearchDraft(hosted)).toEqual(hosted);
     expect(normalizeSearchDraft(client)).toEqual(client);
-    expect(legacySearchKind(hosted.protocol, hosted.adapterKind)).toBe(
+    expect(searchStrategyKind(hosted.protocol, hosted.adapterKind)).toBe(
       "anthropic_native_web_search"
     );
-    expect(legacySearchKind(client.protocol, client.adapterKind)).toBe(
+    expect(searchStrategyKind(client.protocol, client.adapterKind)).toBe(
       "provider_model_web_search"
     );
-    expect(legacyProvider(hosted.protocol)).toBe("anthropic");
     expect(compatibleTechnicalAdapter(hosted.protocol, "anthropic_messages")).toBe(true);
     expect(compatibleTechnicalAdapter(hosted.protocol, "openai_responses_native")).toBe(false);
     expect(builtInSearchDraft({

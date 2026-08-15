@@ -17,7 +17,7 @@ const targetClaim = {
   recoveredLease: false,
   resumedFromBlocked: false,
   targetId: "fact-1",
-  targetType: "MEMORY_FACT@memory-p2-purge-v1",
+  targetType: "MEMORY_FACT@memory-purge-v1",
   userId: "user-1"
 };
 
@@ -73,10 +73,10 @@ describe("Memory deletion contributor registry", () => {
     await expect(result.apply?.(tx, targetClaim)).resolves.toBeUndefined();
     await expect(contributors.inspect(tx, {
       kind: "MEMORY_FACT",
-      manifestVersion: "memory-p2-purge-v1",
+      manifestVersion: "memory-purge-v1",
       operation: "FORGET_PURGE",
       targetId: "fact-1",
-      targetType: "MEMORY_FACT@memory-p2-purge-v1",
+      targetType: "MEMORY_FACT@memory-purge-v1",
       userId: "user-1"
     })).resolves.toEqual({
       complete: true,

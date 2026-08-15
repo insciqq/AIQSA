@@ -2,13 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProviderRunRequest } from "../../providers/types";
 import { memorySha256 } from "../persistence/lexical";
 import { createMemoryActionExecutor } from "./toolExecutor";
-import { memoryActionToolForPlan } from "./tools";
 
 const request: ProviderRunRequest = {
   attachmentIds: [],
   attachments: [],
   chatId: "chat-1",
   content: { blocks: [{ text: "Remember that I like tea", type: "text" }] },
+  knowledgePlan: { baseIds: [] },
+  toolMode: "auto",
   modelCapabilities: {
     nativePdfInput: false,
     nativeSearch: false,
@@ -21,7 +22,7 @@ const request: ProviderRunRequest = {
   params: {},
   prompt: { developer: null, system: "System" },
   provider: "fake",
-  searchStrategy: "search-disabled"
+  searchPlan: { mode: "all_selected", options: [] }
 };
 
 function authorization(overrides: Record<string, unknown> = {}) {
@@ -49,27 +50,11 @@ function authorization(overrides: Record<string, unknown> = {}) {
 }
 
 describe("first-party Memory tool executor", () => {
-  it("requires the exact query when exposing a queried list tool", () => {
-    expect(memoryActionToolForPlan({
-      kind: "LIST",
-      query: "preferred editor",
-      version: "memory-action-plan-v1"
-    }).inputSchema).toMatchObject({ required: ["query"] });
-    expect(memoryActionToolForPlan({
-      kind: "LIST",
-      query: null,
-      version: "memory-action-plan-v1"
-    }).inputSchema).toMatchObject({
-      properties: { query: { type: ["string", "null"] } },
-      required: ["query"]
-    });
-  });
-
   it("mints hidden authority from the exact current USER turn for a model-driven save", async () => {
     const mintForTool = vi.fn(async () => authorization());
     const create = vi.fn(async () => ({ memory: { id: "fact-1" } } as never));
     const executor = createMemoryActionExecutor({
-      authorizationRepository: { claimForTool: vi.fn(), mintForTool },
+      authorizationRepository: { mintForTool },
       explicitService: {
         create,
         evidence: vi.fn(),
@@ -88,7 +73,7 @@ describe("first-party Memory tool executor", () => {
       },
       reviewService: { feedback: vi.fn() }
     });
-    const result = await executor.execute(null, {
+    const result = await executor.execute({
       arguments: {
         scope: { target_id: null, type: "GLOBAL_USER" },
         source_text: "Remember that I like tea",
@@ -125,69 +110,11 @@ describe("first-party Memory tool executor", () => {
     });
   });
 
-  it("commits a bounded model paraphrase through the current-turn authorization", async () => {
-    const claimForTool = vi.fn(async () => authorization());
-    const create = vi.fn(async () => ({ memory: { id: "fact-1" } } as never));
-    const executor = createMemoryActionExecutor({
-      authorizationRepository: { claimForTool },
-      explicitService: {
-        create,
-        evidence: vi.fn(),
-        get: vi.fn(),
-        list: vi.fn(),
-        mintAuthorization: vi.fn(),
-        resolveConflict: vi.fn(),
-        search: vi.fn(),
-        undoForget: vi.fn(),
-        update: vi.fn()
-      },
-      lifecycleService: {
-        deleteExplicit: vi.fn(),
-        forget: vi.fn(),
-        status: vi.fn()
-      },
-      reviewService: { feedback: vi.fn() }
-    });
-    const result = await executor.execute({
-      kind: "SAVE",
-      sourceEnd: 24,
-      sourceStart: 14,
-      statement: "I like tea",
-      version: "memory-action-plan-v1"
-    }, {
-      arguments: { statement: "The user likes tea." },
-      id: "provider-call-1",
-      name: "save_memory"
-    }, {
-      persistedToolCallId: "persisted-call-1",
-      request,
-      runId: "run-1",
-      userId: "user-1"
-    });
-
-    expect(result).toMatchObject({ status: "complete" });
-    expect(claimForTool).toHaveBeenCalledWith("user-1", expect.objectContaining({
-      action: "SAVE",
-      modelRunId: "run-1",
-      persistedToolCallId: "persisted-call-1"
-    }));
-    expect(create).toHaveBeenCalledWith("user-1", {
-      mutationAuthorizationId: "authorization-1",
-      scope: { type: "GLOBAL_USER" },
-      statement: "The user likes tea."
-    }, {
-      authorizedPayloadHash: memorySha256("I like tea"),
-      modelRunId: "run-1",
-      persistedToolCallId: "persisted-call-1",
-      userId: "user-1"
-    });
-  });
-
   it("lists authoritative first-party data without minting mutation authority", async () => {
     const list = vi.fn(async () => ({ memories: [], nextCursor: null }));
-    const claimForTool = vi.fn();
+    const mintForTool = vi.fn();
     const executor = createMemoryActionExecutor({
-      authorizationRepository: { claimForTool },
+      authorizationRepository: { mintForTool },
       explicitService: {
         create: vi.fn(),
         evidence: vi.fn(),
@@ -206,7 +133,7 @@ describe("first-party Memory tool executor", () => {
       },
       reviewService: { feedback: vi.fn() }
     });
-    const result = await executor.execute(null, {
+    const result = await executor.execute({
       arguments: { query: null },
       id: "provider-list-1",
       name: "list_memories"
@@ -226,7 +153,7 @@ describe("first-party Memory tool executor", () => {
       scope: { type: "GLOBAL_USER" },
       state: "ACTIVE"
     });
-    expect(claimForTool).not.toHaveBeenCalled();
+    expect(mintForTool).not.toHaveBeenCalled();
   });
 
   it("binds update and Forget to the exact authorized target version", async () => {
@@ -246,7 +173,7 @@ describe("first-party Memory tool executor", () => {
     const update = vi.fn(async () => ({ memory: { id: "fact-1" } } as never));
     const forget = vi.fn(async () => ({ memory: { id: "fact-1" } } as never));
     const executor = createMemoryActionExecutor({
-      authorizationRepository: { claimForTool: vi.fn(), mintForTool },
+      authorizationRepository: { mintForTool },
       explicitService: {
         create: vi.fn(),
         evidence: vi.fn(),
@@ -266,7 +193,7 @@ describe("first-party Memory tool executor", () => {
       reviewService: { feedback: vi.fn() }
     });
 
-    const updated = await executor.execute(null, {
+    const updated = await executor.execute({
       arguments: {
         expected_version_id: "version-1",
         source_text: updateSource,
@@ -281,7 +208,7 @@ describe("first-party Memory tool executor", () => {
       runId: "run-1",
       userId: "user-1"
     });
-    const forgotten = await executor.execute(null, {
+    const forgotten = await executor.execute({
       arguments: {
         expected_version_id: "version-2",
         source_text: forgetSource,
@@ -333,7 +260,7 @@ describe("first-party Memory tool executor", () => {
     }));
     const update = vi.fn();
     const executor = createMemoryActionExecutor({
-      authorizationRepository: { claimForTool: vi.fn(), mintForTool },
+      authorizationRepository: { mintForTool },
       explicitService: {
         create: vi.fn(),
         evidence: vi.fn(),
@@ -353,7 +280,7 @@ describe("first-party Memory tool executor", () => {
       reviewService: { feedback }
     });
 
-    const result = await executor.execute(null, {
+    const result = await executor.execute({
       arguments: {
         expected_version_id: "automatic-version-1",
         source_text: source,

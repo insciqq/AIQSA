@@ -28,20 +28,20 @@ type ChatDetailBody = {
 
 type RunBody = {
   run: {
-    events: {
-      eventType: string;
-    }[];
     id: string;
     status: string;
-    totalTokens: number;
   };
+  version: 1;
 };
 
 const testTitlePrefix = "E2E unmocked";
 
 async function signIn(page: Page) {
   await page.addInitScript(() => {
+    const clearedKey = "aiqsa.e2e.activeChatCleared";
+    if (window.sessionStorage.getItem(clearedKey) === "1") return;
     window.localStorage.removeItem("aiqsa.activeChatId");
+    window.sessionStorage.setItem(clearedKey, "1");
   });
   await page.goto("/");
   await expect(page).toHaveURL(/\/login/);
@@ -78,7 +78,7 @@ async function workspaceChats(page: Page): Promise<WorkspaceBody["chats"]> {
 async function prepareFakeBlankChat(page: Page) {
   await page
     .getByRole("complementary", { name: "Chat navigation" })
-    .getByRole("button", { name: "New chat" })
+    .getByRole("button", { name: "New chat", exact: true })
     .click();
   await expect(page.getByTestId("conversation-empty")).toBeVisible();
   await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
@@ -122,17 +122,8 @@ async function latestRunForChat(page: Page, chatId: string): Promise<RunBody["ru
     return null;
   }
 
-  return ((await runResponse.json()) as RunBody).run;
-}
-
-async function showLatestRunDetails(page: Page) {
-  const answer = page.locator('article[data-role="assistant"]').last();
-  const opener = answer.getByRole("button", { name: /^Run details/u });
-  await expect(opener).toBeVisible({ timeout: 20_000 });
-  await opener.click();
-  const details = page.getByRole("dialog", { name: /Run details/ });
-  await expect(details).toBeVisible();
-  return details;
+  const body = (await runResponse.json()) as RunBody;
+  return body.version === 1 ? body.run : null;
 }
 
 test.beforeEach(async ({ page }) => {
@@ -146,7 +137,7 @@ test.afterEach(async ({ page }) => {
   await cleanupUnmockedChats(page);
 });
 
-test("runs a fake-provider chat through real routes, Prisma, SSE, and Details", async ({ page }) => {
+test("runs a fake-provider chat through real routes, Prisma, SSE, and answer outputs", async ({ page }) => {
   const titlePrefix = `${testTitlePrefix} happy path ${Date.now()}`;
   const prompt = titlePrefix;
   let chatId: string | null = null;
@@ -163,19 +154,20 @@ test("runs a fake-provider chat through real routes, Prisma, SSE, and Details", 
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, {
       timeout: 20_000
     });
-    const details = await showLatestRunDetails(page);
-    await expect(details.getByRole("region", { name: "Run outcome" })).toContainText("Complete");
-    await expect(details.getByRole("region", { name: "Model & setup" })).toContainText("Fake QSA");
-    await expect(details.getByRole("region", { name: "Usage · provider evidence" })).toBeVisible();
-    await expect(details.getByTestId("run-details-timeline")).toContainText("Answer text");
-    await expect(details).not.toContainText(/fake-qsa|search-disabled|fake-provider/);
+    const answer = page.locator('article[data-role="assistant"]').last();
+    await expect(answer).toContainText(`Fake answer: ${prompt}`);
+    await expect(answer.getByRole("button", { name: /^Run details/u })).toHaveCount(0);
+    await expect(answer).not.toContainText(/fake-qsa|search-disabled|fake-provider/);
 
     const run = await latestRunForChat(page, chatId);
     expect(run?.status).toBe("complete");
-    expect(run?.totalTokens).toBeGreaterThan(0);
-    expect(run?.events.map((event) => event.eventType)).toEqual(
-      expect.arrayContaining(["artifact", "token", "usage", "done"])
-    );
+    expect(Object.keys(run ?? {}).sort()).toEqual(["id", "status"]);
+
+    await page.reload();
+    await expect(page.getByTestId("app-shell")).toBeVisible();
+    const reloadedAnswer = page.locator('article[data-role="assistant"]').last();
+    await expect(reloadedAnswer).toContainText(`Fake answer: ${prompt}`);
+    await expect(reloadedAnswer.getByRole("button", { name: /^Run details/u })).toHaveCount(0);
   } finally {
     if (chatId) {
       await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);
@@ -212,14 +204,15 @@ test("streams a new answer on the branch created by editing an answered question
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, {
       timeout: 20_000
     });
-    await expect((await showLatestRunDetails(page)).getByRole("region", { name: "Run outcome" }))
-      .toContainText("Complete");
-    await page.getByRole("button", { name: "Close run details" }).click();
-
     const run = await latestRunForChat(page, chatId);
     expect(run?.status).toBe("complete");
-    expect(run?.events.map((event) => event.eventType)).toEqual(
-      expect.arrayContaining(["token", "usage", "done"])
+    expect(Object.keys(run ?? {}).sort()).toEqual(["id", "status"]);
+
+    await page.reload();
+    await expect(page.getByTestId("app-shell")).toBeVisible();
+    await expect(page.getByTestId("conversation-thread")).toContainText(
+      `Fake answer: ${editedPrompt}`,
+      { timeout: 10_000 }
     );
 
     // Branches opens from the single header "⋯" menu.
@@ -258,8 +251,7 @@ test("cancels an in-flight fake-provider stream without leaving the shell stuck"
 
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 10_000 });
     await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
-    await expect((await showLatestRunDetails(page)).getByRole("region", { name: "Run outcome" }))
-      .toContainText("Stopped");
+    await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Stopped");
 
     await expect
       .poll(async () => (chatId ? (await latestRunForChat(page, chatId))?.status ?? null : null), {

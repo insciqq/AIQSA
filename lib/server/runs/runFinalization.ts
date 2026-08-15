@@ -1,13 +1,9 @@
-import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
+import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { estimateCostMicros, normalizeTokenUsage, type ModelTokenPricing } from "../../domain/usage";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
+import type { RunOutputArtifactEvent } from "./runOutputEvents";
 
-type RunEventRepository = Pick<RunRepository, "appendRunEvent" | "nextRunEventSequence">;
 type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing">;
-
-export type RunEventSequence = {
-  value: number;
-};
 
 export type RunCompletionFinalizationResult =
   | Readonly<{
@@ -20,41 +16,6 @@ export type RunCompletionFinalizationResult =
 
 function hasUsablePricing(pricing: ModelTokenPricing | null): pricing is ModelTokenPricing {
   return Boolean(pricing && (pricing.inputTokenPriceMicros > 0 || pricing.outputTokenPriceMicros > 0));
-}
-
-export async function appendRunEventWithRetry(
-  repository: RunEventRepository,
-  runId: string,
-  sequence: RunEventSequence,
-  event: ModelRunSseEvent
-): Promise<void> {
-  const maxAttempts = 5;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    try {
-      await repository.appendRunEvent(runId, sequence.value, event);
-      sequence.value += 1;
-      return;
-    } catch (error) {
-      const nextSequence = await repository.nextRunEventSequence(runId);
-      if (nextSequence === sequence.value || attempt === maxAttempts - 1) {
-        throw error;
-      }
-
-      sequence.value = nextSequence;
-    }
-  }
-}
-
-export async function appendStoredRunEvents(input: Readonly<{
-  events: readonly ModelRunSseEvent[];
-  repository: RunEventRepository;
-  runId: string;
-  sequence: RunEventSequence;
-}>): Promise<void> {
-  for (const event of input.events) {
-    await appendRunEventWithRetry(input.repository, input.runId, input.sequence, event);
-  }
 }
 
 export async function usageWithEstimatedCost(
@@ -96,10 +57,9 @@ export async function usageAttributionsWithEstimatedCost(
 }
 
 export async function finalizeRunCompletion(input: Readonly<{
-  eventsBeforeTerminal?: readonly ModelRunSseEvent[];
+  outputEvents?: readonly RunOutputArtifactEvent[];
   repository: RunCompletionRepository;
   result: Readonly<{
-    finalProviderResponsePreview: Record<string, unknown>;
     finalText: string;
     providerResponseId?: string;
     usage: ModelRunUsage;
@@ -138,13 +98,12 @@ export async function finalizeRunCompletion(input: Readonly<{
     assistantMessageId: input.run.assistantMessageId,
     chatId: input.run.chatId,
     estimatedCostMicros: usage.estimatedCostMicros ?? null,
-    finalProviderResponsePreview: input.result.finalProviderResponsePreview,
     finalText: input.result.finalText,
     modelId: input.run.modelId,
     provider: input.run.provider,
     providerResponseId: input.result.providerResponseId,
     runId: input.run.runId,
-    ...(input.eventsBeforeTerminal ? { eventsBeforeTerminal: [...input.eventsBeforeTerminal] } : {}),
+    ...(input.outputEvents ? { outputEvents: [...input.outputEvents] } : {}),
     usage,
     usageAttributions,
     userId: input.run.userId

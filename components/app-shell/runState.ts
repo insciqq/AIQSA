@@ -161,7 +161,7 @@ export function pipelineStage(runState: PipelineRunState): PipelineSnapshot {
     return idlePipeline;
   }
 
-  // Evidence wins over the picker flag: search artifacts mean the stage ran,
+  // Observed events win over the picker flag: search artifacts mean the stage ran,
   // an explicit skip artifact means the backend declined it for this run.
   const searchParticipates = sawSearch || (runState.searchEnabled && !sawSearchSkip);
 

@@ -110,15 +110,8 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
   return {
     ...(updatesPersonalModel
       ? patch.personalModelDefault
-        ? {
-            defaultModelId: patch.personalModelDefault.modelId,
-            defaultProvider: patch.personalModelDefault.provider
-          }
+        ? { defaultProviderModelId: patch.personalModelDefault.modelId }
         : { defaultProviderModelId: null }
-      : {}),
-    ...(Object.prototype.hasOwnProperty.call(patch, "searchStrategyId") &&
-      !Object.prototype.hasOwnProperty.call(patch, "searchPlan")
-      ? { defaultSearchStrategyId: patch.searchStrategyId }
       : {}),
     ...(Object.prototype.hasOwnProperty.call(patch, "searchPlan")
       ? { defaultSearchPlan: patch.searchPlan }
@@ -128,9 +121,6 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
       : {}),
     ...(Object.prototype.hasOwnProperty.call(patch, "showReasoningBlocks")
       ? { showReasoningBlocks: patch.showReasoningBlocks }
-      : {}),
-    ...(Object.prototype.hasOwnProperty.call(patch, "showToolActivity")
-      ? { showToolActivity: patch.showToolActivity }
       : {}),
     ...(patch.controlValues ? { defaultControlValues: patch.controlValues } : {})
   };
@@ -167,38 +157,24 @@ function reconciledPatch(
   const patch: SettingsDefaultsPatch = {};
 
   if (Object.prototype.hasOwnProperty.call(sent, "personalModelDefault")) {
-    patch.modelId = settings.defaultModelId;
-    patch.provider = settings.defaultProvider;
+    const effectiveModel = settings.personalModelDefault ?? settings.organizationModelDefault;
+    patch.modelId = effectiveModel?.modelId ?? "";
+    patch.provider = effectiveModel?.provider ?? "";
     patch.hasPersonalModelDefault = settings.hasPersonalModelDefault;
     patch.modelPreferenceSource = settings.modelPreferenceSource;
     patch.organizationModelDefault = settings.organizationModelDefault;
     patch.personalModelDefault = settings.personalModelDefault;
   }
-  if (Object.prototype.hasOwnProperty.call(sent, "searchStrategyId")) {
-    patch.searchStrategyId = settings.defaultSearchStrategyId;
-  }
   if (Object.prototype.hasOwnProperty.call(sent, "searchPlan")) {
-    patch.searchPlan = settings.defaultSearchPlan ?? {
-      mode: "all_selected",
-      optionIds: settings.defaultSearchStrategyId === "search-disabled"
-        ? []
-        : [settings.defaultSearchStrategyId]
-    };
-    if (settings.organizationSearchPlan) {
-      patch.organizationSearchPlan = settings.organizationSearchPlan;
-    }
-    if (settings.searchPreferenceSource) {
-      patch.searchPreferenceSource = settings.searchPreferenceSource;
-    }
+    patch.searchPlan = settings.defaultSearchPlan;
+    patch.organizationSearchPlan = settings.organizationSearchPlan;
+    patch.searchPreferenceSource = settings.searchPreferenceSource;
   }
   if (Object.prototype.hasOwnProperty.call(sent, "showCitations")) {
     patch.showCitations = settings.showCitations;
   }
   if (Object.prototype.hasOwnProperty.call(sent, "showReasoningBlocks")) {
     patch.showReasoningBlocks = settings.showReasoningBlocks;
-  }
-  if (Object.prototype.hasOwnProperty.call(sent, "showToolActivity")) {
-    patch.showToolActivity = settings.showToolActivity;
   }
   if (sent.controlValues) {
     patch.controlValues = Object.fromEntries(

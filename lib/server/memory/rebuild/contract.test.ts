@@ -1,10 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  MEMORY_REDREAM_BATCH_PIPELINE_VERSION,
   MEMORY_SHADOW_REBUILD_PIPELINE_VERSION,
   memoryRebuildJobClaimIsValid,
-  memoryRedreamBatchJobFingerprint,
   memoryShadowRebuildJobFingerprint,
   parseMemoryRebuildJobFingerprint
 } from "./contract";
@@ -53,21 +51,12 @@ describe("Memory rebuild job contract", () => {
     }
   });
 
-  it("round-trips redream batches and rejects pipeline or source ambiguity", () => {
-    const batchId = randomUUID();
-    const fingerprint = memoryRedreamBatchJobFingerprint({
-      batchId,
-      requestIdentity: { authorizationId: "authorization-1" }
+  it("rejects pipeline and source ambiguity", () => {
+    const fingerprint = memoryShadowRebuildJobFingerprint({
+      generationId: randomUUID(),
+      operation: "REBUILD_SEARCH_INDEX",
+      requestIdentity: { expectedMemoryRevision: 7 }
     });
-    expect(parseMemoryRebuildJobFingerprint(fingerprint)).toMatchObject({
-      batchId,
-      operation: "REDREAM_EXISTING_CHATS",
-      type: "REDREAM"
-    });
-    expect(memoryRebuildJobClaimIsValid(descriptor({
-      fingerprint,
-      pipelineVersion: MEMORY_REDREAM_BATCH_PIPELINE_VERSION
-    }))).toBe(true);
     expect(memoryRebuildJobClaimIsValid({
       ...descriptor({ fingerprint, pipelineVersion: MEMORY_SHADOW_REBUILD_PIPELINE_VERSION }),
       chatId: "chat-1"

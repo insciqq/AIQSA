@@ -4,8 +4,7 @@ import type { MemoryItemEmbeddingPin } from "../embedding/contract";
 import type { MemoryRebuildRepository } from "./repository";
 import {
   createMemoryRebuildService,
-  MemoryRebuildServiceError,
-  type MemoryRebuildAuthorizationRepository
+  MemoryRebuildServiceError
 } from "./service";
 
 const status: MemoryRebuildStatus = {
@@ -40,22 +39,12 @@ function repository(
   };
 }
 
-function authorizations(): MemoryRebuildAuthorizationRepository {
-  return {
-    resolveForUse: vi.fn(async () => ({
-      confirmedAt: new Date("2026-08-10T12:00:00.000Z"),
-      requestId: "request-1"
-    }))
-  };
-}
-
 describe("Memory rebuild service", () => {
   it("admits a local rebuild without probing provider authority", async () => {
     const rebuildRepository = repository();
     const probeEmbeddingPin = vi.fn(async () => pin);
     const kick = vi.fn();
     const service = createMemoryRebuildService({
-      authorizationRepository: authorizations(),
       kick,
       probeEmbeddingPin,
       repository: rebuildRepository
@@ -82,7 +71,6 @@ describe("Memory rebuild service", () => {
       }))
     });
     const service = createMemoryRebuildService({
-      authorizationRepository: authorizations(),
       probeEmbeddingPin: vi.fn(async () => pin),
       repository: rebuildRepository
     });
@@ -103,33 +91,8 @@ describe("Memory rebuild service", () => {
     );
   });
 
-  it("rejects retired redream before resolving mutation authority", async () => {
-    const authorizationRepository = authorizations();
-    const rebuildRepository = repository({
-      status: vi.fn(async () => ({
-        ...status,
-        operation: "REDREAM_EXISTING_CHATS" as const
-      }))
-    });
-    const service = createMemoryRebuildService({
-      authorizationRepository,
-      probeEmbeddingPin: vi.fn(async () => pin),
-      repository: rebuildRepository
-    });
-
-    await expect(service.start("user-1", {
-      expectedMemoryRevision: 7,
-      expectedSettingsRevision: 3,
-      mutationAuthorizationId: "authorization-1",
-      operation: "REDREAM_EXISTING_CHATS"
-    })).rejects.toMatchObject({ code: "memory_contract_invalid" });
-    expect(authorizationRepository.resolveForUse).not.toHaveBeenCalled();
-    expect(rebuildRepository.admit).not.toHaveBeenCalled();
-  });
-
   it("maps admission conflicts and hides foreign job status", async () => {
     const service = createMemoryRebuildService({
-      authorizationRepository: authorizations(),
       probeEmbeddingPin: vi.fn(async () => pin),
       repository: repository({
         admit: vi.fn(async () => ({ kind: "memory_revision_conflict" as const })),

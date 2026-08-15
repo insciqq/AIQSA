@@ -47,11 +47,9 @@ export type AdminProviderCustomSetupRequest = Readonly<{
   modelId?: string;
   /** Explicit ids selected from discovery, in default-preference order. */
   modelIds?: string[];
-  /** Defaults to Chat Completions for backward compatibility. */
-  protocol?: AdminProviderCustomProtocol;
+  protocol: AdminProviderCustomProtocol;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
-  /** Defaults to 300 for backward-compatible callers. */
-  responseTimeoutSeconds?: number;
+  responseTimeoutSeconds: number;
   secret?: string;
 }>;
 
@@ -59,8 +57,7 @@ export type AdminProviderCustomDiscoveryRequest = Readonly<{
   allowPrivateNetwork: boolean;
   apiRoot: string;
   authenticationMode: AdminProviderCustomAuthenticationMode;
-  /** Defaults to 300 for backward-compatible callers. */
-  responseTimeoutSeconds?: number;
+  responseTimeoutSeconds: number;
   secret?: string;
 }>;
 

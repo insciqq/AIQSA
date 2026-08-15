@@ -12,6 +12,8 @@ function request(): ProviderRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "question", type: "text" }] },
     context: { messages: [], mode: "branch_path" },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -24,7 +26,7 @@ function request(): ProviderRunRequest {
     params: { background: true, stream: true },
     prompt: { developer: null, system: null },
     provider: "openai",
-    searchStrategy: null
+    searchPlan: { mode: "all_selected", options: [] }
   };
 }
 

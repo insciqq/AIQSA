@@ -17,7 +17,7 @@ Not owned here: Storage threat controls, auth onboarding, chats/runs, or fronten
 - Temporary chats cannot create or list a public share. A bearer snapshot still
   linked to a Temporary chat is unavailable even if a stale/corrupt row exists,
   and aggregate expiry deletes every such row before deleting the chat. A
-  legacy retained snapshot whose source relation is already null preserves its
+  detached retained snapshot whose source relation is null preserves its
   existing immutable-share behavior.
 - Temporary expiry owns its attachment rows and private object payloads. It
   rechecks the exact attachment manifest and all Attachment/Knowledge

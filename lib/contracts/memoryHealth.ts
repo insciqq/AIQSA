@@ -45,11 +45,8 @@ export const userMemoryHealthSchema = z.strictObject({
       "NONE",
       "USER_DISABLED",
       "CAPABILITY_UNAVAILABLE",
-      "BUDGET",
-      "EGRESS_REVIEW",
-      "SCHEDULER_UNAVAILABLE"
+      "EGRESS_REVIEW"
     ]),
-    resumeAt: timestamp.nullable(),
     state: z.enum(["DISABLED", "READY", "DELAYED"])
   }),
   observedAt: timestamp,
@@ -87,13 +84,6 @@ export const userMemoryHealthSchema = z.strictObject({
   if (value.learning.state === "DELAYED" && value.learning.reason === "USER_DISABLED") {
     context.addIssue({ code: "custom", message: "user-disabled learning is not delayed" });
   }
-  if (value.learning.state !== "DELAYED" && value.learning.resumeAt !== null) {
-    context.addIssue({ code: "custom", message: "only delayed learning has a resume time" });
-  }
-  if ((value.learning.reason === "BUDGET") !== (value.learning.resumeAt !== null)) {
-    context.addIssue({ code: "custom", message: "only a budget delay has a resume time" });
-  }
-
   const expectedState = value.deletion.state === "BLOCKED_REQUIRES_ADMIN"
     ? "BLOCKED_REQUIRES_ADMIN"
     : value.temporary.state === "OVERDUE"
@@ -161,11 +151,6 @@ export const adminMemoryHealthSchema = z.strictObject({
     state: z.enum(["CLEAR", "WORKING", "DELAYED", "BLOCKED", "UNKNOWN"]),
     waitingForReview: countBand
   }),
-  requestLocale: z.enum(["EN", "RU"]),
-  scheduler: z.strictObject({
-    resetAt: timestamp,
-    state: z.enum(["READY", "DEFERRED", "UNAVAILABLE"])
-  }),
   temporary: z.strictObject({
     overdue: countBand,
     state: z.enum(["CLEAR", "OVERDUE", "UNKNOWN"])
@@ -174,10 +159,7 @@ export const adminMemoryHealthSchema = z.strictObject({
 
 export type AdminMemoryHealth = z.infer<typeof adminMemoryHealthSchema>;
 
-export function unavailableAdminMemoryHealth(
-  requestLocale: "EN" | "RU",
-  observedAt = new Date()
-): AdminMemoryHealth {
+export function unavailableAdminMemoryHealth(observedAt = new Date()): AdminMemoryHealth {
   const unknown = "UNKNOWN" as const;
   const fallback = {
     deletion: { active: unknown, blocked: unknown, state: unknown },
@@ -196,8 +178,6 @@ export function unavailableAdminMemoryHealth(
       state: unknown,
       waitingForReview: unknown
     },
-    requestLocale,
-    scheduler: { resetAt: observedAt.toISOString(), state: "UNAVAILABLE" as const },
     temporary: { overdue: unknown, state: unknown }
   };
   return adminMemoryHealthSchema.parse(fallback);

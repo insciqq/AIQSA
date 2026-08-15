@@ -18,7 +18,9 @@ export default defineConfig({
       "components/**/*.test.{ts,tsx}",
       "features/**/*.test.{ts,tsx}",
       "lib/**/*.test.{ts,tsx}",
-      "tests/harness/**/*.test.ts"
+      "ops/**/*.test.{ts,tsx}",
+      "prisma/**/*.test.{ts,tsx}",
+      "scripts/**/*.test.{ts,tsx}"
     ],
     // Avoid oversubscribing the subprocess-heavy harness and ESLint fixtures on
     // high-core hosts while preserving Vitest's strict per-test timeout.

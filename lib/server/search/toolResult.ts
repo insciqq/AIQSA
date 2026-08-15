@@ -1,7 +1,3 @@
-import {
-  decodeThreadSearchProviderOperation,
-  type ThreadSearchProviderOperation
-} from "../../contracts/toolActivity";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { mergeSearchEvidence } from "../../domain/search";
 import type { ToolExecutionResult } from "../tools/types";
@@ -11,19 +7,18 @@ import {
   normalizeSearchSources,
   type SearchSource
 } from "./evidence";
-import type { ProviderSearchUsage } from "./providerOperations";
 
-export const SEARCH_TOOL_RESULT_VERSION = 1;
-const LEGACY_MAX_SEARCH_FINDINGS_CHARACTERS = 262_144;
+export const SEARCH_TOOL_RESULT_VERSION = 2;
 
-const persistedContentMarker = Object.freeze({
-  type: "json" as const,
-  value: Object.freeze({ aiqsaType: "search_result", version: SEARCH_TOOL_RESULT_VERSION })
-});
+function persistedContentMarker(version: number) {
+  return {
+    type: "json" as const,
+    value: { aiqsaType: "search_result", version }
+  };
+}
 
 export type SearchExecutionEvidence = Readonly<{
   displayName: string;
-  durationMs: number;
   failure?: Readonly<{
     code: string;
     providerStatus?: string;
@@ -34,11 +29,6 @@ export type SearchExecutionEvidence = Readonly<{
   modelId: string | null;
   optionId: string;
   provider: string;
-  providerOperations?: readonly ThreadSearchProviderOperation[];
-  providerOperationsTruncated: boolean;
-  providerUsage?: ProviderSearchUsage;
-  query: string;
-  requestPreview: Readonly<Record<string, unknown>>;
   revisionId: string;
   sources: readonly SearchSource[];
   status: "complete" | "error";
@@ -83,15 +73,6 @@ function decodedUsage(value: unknown): ModelRunUsage | undefined {
   };
 }
 
-function decodedProviderUsage(value: unknown): ProviderSearchUsage | undefined {
-  if (!isRecord(value) || Object.keys(value).length !== 1) return undefined;
-  const requests = value.webSearchRequests;
-  return typeof requests === "number" && Number.isSafeInteger(requests) &&
-    requests >= 0 && requests <= 100
-    ? { webSearchRequests: requests }
-    : undefined;
-}
-
 function normalizedFailureCode(value: unknown): string {
   return typeof value === "string" && /^[a-z][a-z0-9_]{0,127}$/u.test(value)
     ? value
@@ -105,16 +86,8 @@ function boundedFailureField(value: unknown, maximum: number): string | undefine
     : undefined;
 }
 
-function decodedFindings(value: unknown, legacy: boolean): string | undefined {
+function decodedFindings(value: unknown): string | undefined {
   if (value === undefined) return undefined;
-  if (legacy) {
-    if (typeof value !== "string") return undefined;
-    const normalized = value.trim();
-    return normalized && normalized.length <= LEGACY_MAX_SEARCH_FINDINGS_CHARACTERS &&
-      !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(normalized)
-      ? normalized
-      : undefined;
-  }
   try {
     return normalizeSearchFindings(value);
   } catch {
@@ -135,9 +108,10 @@ function decodedFailure(value: unknown): SearchFailureEvidence | undefined {
 }
 
 function previewExecutions(result: ToolExecutionResult): unknown[] | null {
-  const preview = result.rawPreview?.finalProviderResponsePreview;
-  return isRecord(preview) && Array.isArray(preview.searchExecutions)
-    ? preview.searchExecutions
+  const rawPreview = result.rawPreview;
+  return rawPreview?.searchResultVersion === SEARCH_TOOL_RESULT_VERSION &&
+    Array.isArray(rawPreview.searchExecutions)
+    ? rawPreview.searchExecutions
     : null;
 }
 
@@ -151,80 +125,68 @@ export function searchExecutionsFromToolResult(
   const values = previewExecutions(result);
   if (!values || values.length > 3) return [];
   const version = result.rawPreview?.searchResultVersion;
-  const legacy = version === undefined;
-  if (!legacy && version !== SEARCH_TOOL_RESULT_VERSION) return [];
+  if (version !== SEARCH_TOOL_RESULT_VERSION) return [];
   return values.flatMap((value): SearchExecutionEvidence[] => {
     if (!isRecord(value)) return [];
     const usage = decodedUsage(value.usage);
     if (!(
-      typeof value.durationMs === "number" && Number.isFinite(value.durationMs) && value.durationMs >= 0 &&
       typeof value.invocationId === "string" &&
       (value.modelId === null || typeof value.modelId === "string") &&
       typeof value.optionId === "string" &&
       typeof value.provider === "string" &&
-      (value.providerOperationsTruncated === undefined ||
-        typeof value.providerOperationsTruncated === "boolean") &&
-      typeof value.query === "string" &&
       typeof value.revisionId === "string" &&
       Array.isArray(value.sources) &&
       (value.findings === undefined || (
         typeof value.findings === "string" &&
-        value.findings.length <= (legacy
-          ? LEGACY_MAX_SEARCH_FINDINGS_CHARACTERS
-          : MAX_SEARCH_FINDINGS_CHARACTERS)
+        value.findings.length <= MAX_SEARCH_FINDINGS_CHARACTERS
       )) &&
       (value.status === "complete" || value.status === "error") &&
-      isRecord(value.requestPreview) &&
       usage !== undefined
     )) return [];
+    const allowedKeys = new Set([
+      "displayName",
+      "failure",
+      "findings",
+      "invocationId",
+      "modelId",
+      "optionId",
+      "provider",
+      "revisionId",
+      "sources",
+      "status",
+      "usage",
+      "warning"
+    ]);
+    if (Object.keys(value).some((key) => !allowedKeys.has(key))) return [];
     const failure = value.failure === undefined ? undefined : decodedFailure(value.failure);
     if (value.failure !== undefined && !failure) return [];
-    const providerUsage = value.providerUsage === undefined
-      ? undefined
-      : decodedProviderUsage(value.providerUsage);
-    if (value.providerUsage !== undefined && !providerUsage) return [];
-    const findings = decodedFindings(value.findings, legacy);
+    const findings = decodedFindings(value.findings);
     if (value.findings !== undefined && !findings) return [];
     const warning = value.warning === undefined
       ? undefined
       : boundedFailureField(value.warning, 512);
     if (value.warning !== undefined && !warning) return [];
-    let providerOperations: ThreadSearchProviderOperation[] | undefined;
-    if (value.providerOperations !== undefined) {
-      if (!Array.isArray(value.providerOperations) || value.providerOperations.length > 32) return [];
-      providerOperations = value.providerOperations.flatMap((operation) => {
-        const decoded = decodeThreadSearchProviderOperation(operation);
-        return decoded ? [decoded] : [];
-      });
-      if (providerOperations.length !== value.providerOperations.length) return [];
-    }
     const sourceValues = value.sources as unknown[];
     const sources = normalizeSearchSources(sourceValues, 20);
     if (sources.length !== sourceValues.length) return [];
-    if (!legacy && value.status === "complete" && (!findings || sources.length === 0 || failure)) {
+    if (value.status === "complete" && (!findings || sources.length === 0 || failure)) {
       return [];
     }
-    if (!legacy && value.status === "error" && !failure) return [];
+    if (value.status === "error" && !failure) return [];
     return [{
       displayName: typeof value.displayName === "string" && value.displayName.trim()
         ? value.displayName.trim().slice(0, 256)
         : "Search source",
-      durationMs: value.durationMs,
       invocationId: value.invocationId,
       modelId: value.modelId,
       optionId: value.optionId,
       provider: value.provider,
-      providerOperationsTruncated: value.providerOperationsTruncated === true,
-      query: value.query,
-      requestPreview: value.requestPreview,
       revisionId: value.revisionId,
       sources,
       status: value.status,
       usage,
       ...(failure ? { failure } : {}),
       ...(findings ? { findings } : {}),
-      ...(providerOperations ? { providerOperations } : {}),
-      ...(providerUsage ? { providerUsage } : {}),
       ...(warning ? { warning } : {})
     }];
   });
@@ -267,10 +229,10 @@ export function searchToolResultContent(
   return [{ text: searchToolResultText(executions), type: "text" }];
 }
 
-function markerContent(result: ToolExecutionResult): boolean {
+function markerContent(result: ToolExecutionResult, version: number): boolean {
   const [entry] = result.content;
   return result.content.length === 1 && entry?.type === "json" && isRecord(entry.value) &&
-    entry.value.aiqsaType === "search_result" && entry.value.version === SEARCH_TOOL_RESULT_VERSION &&
+    entry.value.aiqsaType === "search_result" && entry.value.version === version &&
     Object.keys(entry.value).length === 2;
 }
 
@@ -286,20 +248,23 @@ function canonicalExecutions(result: ToolExecutionResult): SearchExecutionEviden
 }
 
 /** Replace derived provider-facing text with a versioned marker before durable
- * JSON serialization. Findings and sources remain once in searchExecutions and
- * are deterministically rehydrated when the checkpoint is read. */
+ * JSON serialization. Findings and sources remain once in the purpose-built
+ * Search checkpoint and are deterministically rehydrated when read. */
 export function compactSearchToolExecutionResult(
   result: ToolExecutionResult
 ): ToolExecutionResult | null {
   const version = result.rawPreview?.searchResultVersion;
   if (version === undefined) return result;
-  if (version !== SEARCH_TOOL_RESULT_VERSION || markerContent(result)) return null;
+  if (
+    version !== SEARCH_TOOL_RESULT_VERSION ||
+    markerContent(result, version)
+  ) return null;
   const executions = canonicalExecutions(result);
   if (!executions || result.content.length !== 1 || result.content[0]?.type !== "text" ||
     result.content[0].text !== searchToolResultText(executions)) {
     return null;
   }
-  return { ...result, content: [persistedContentMarker] };
+  return { ...result, content: [persistedContentMarker(version)] };
 }
 
 export function rehydratePersistedSearchToolExecutionResult(
@@ -307,7 +272,10 @@ export function rehydratePersistedSearchToolExecutionResult(
 ): ToolExecutionResult | null {
   const version = result.rawPreview?.searchResultVersion;
   if (version === undefined) return result;
-  if (version !== SEARCH_TOOL_RESULT_VERSION || !markerContent(result)) return null;
+  if (
+    version !== SEARCH_TOOL_RESULT_VERSION ||
+    !markerContent(result, version)
+  ) return null;
   const executions = canonicalExecutions(result);
   return executions ? { ...result, content: searchToolResultContent(executions) } : null;
 }

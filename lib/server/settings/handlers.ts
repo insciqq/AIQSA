@@ -5,7 +5,7 @@ import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../http/requestBody";
-import { decodeSearchPlan, legacySearchStrategyFromPlan, type SearchPlan } from "../../domain/search";
+import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
 import {
   resolveCurrentUserCatalogSelection,
@@ -23,11 +23,9 @@ export type SettingsHandlerData = CatalogSelectionData & {
 export type UserSettingsUpdate = Partial<{
   defaultControlValues: Record<string, unknown>;
   defaultProviderModelId: string | null;
-  defaultSearchStrategyId: string;
   defaultSearchPlan: SearchPlan | null;
   showCitations: boolean;
   showReasoningBlocks: boolean;
-  showToolActivity: boolean;
 }>;
 
 export type SettingsValidationModel = Pick<
@@ -168,49 +166,32 @@ function buildSettingsUpdate(
     return { error: "settings_update_required" };
   }
 
+  const supportedKeys = new Set([
+    "defaultControlValues",
+    "defaultProviderModelId",
+    "defaultSearchPlan",
+    "showCitations",
+    "showReasoningBlocks"
+  ]);
+  if (Object.keys(body).some((key) => !supportedKeys.has(key))) {
+    return { error: "settings_update_required" };
+  }
+
   const { models } = resolveCurrentUserCatalogSelection(data);
   const update: UserSettingsUpdate = {};
 
   if ("defaultProviderModelId" in body) {
-    if (body.defaultProviderModelId !== null || "defaultProvider" in body ||
-      "defaultModelId" in body) {
+    if (body.defaultProviderModelId === null) {
+      update.defaultProviderModelId = null;
+    } else if (typeof body.defaultProviderModelId === "string") {
+      const modelId = body.defaultProviderModelId.trim();
+      const model = models.find((candidate) => candidate.modelId === modelId);
+      if (!model) {
+        return { error: "default_model_unavailable" };
+      }
+      update.defaultProviderModelId = model.modelId;
+    } else {
       return { error: "default_model_required" };
-    }
-    update.defaultProviderModelId = null;
-  }
-
-  if ("defaultProvider" in body || "defaultModelId" in body) {
-    if (typeof body.defaultProvider !== "string" || typeof body.defaultModelId !== "string") {
-      return { error: "default_model_required" };
-    }
-
-    const provider = body.defaultProvider.trim();
-    const modelId = body.defaultModelId.trim();
-    const model = models.find((candidate) => candidate.provider === provider && candidate.modelId === modelId);
-    if (!model) {
-      return { error: "default_model_unavailable" };
-    }
-
-    update.defaultProviderModelId = model.modelId;
-  }
-
-  if ("defaultSearchStrategyId" in body) {
-    if (typeof body.defaultSearchStrategyId !== "string") {
-      return { error: "default_search_unavailable" };
-    }
-
-    const strategyId = body.defaultSearchStrategyId.trim();
-    if (strategyId !== "search-disabled" &&
-      !data.searchStrategies.some((strategy) => strategy.strategyId === strategyId)) {
-      return { error: "default_search_unavailable" };
-    }
-
-    update.defaultSearchStrategyId = strategyId;
-    if (!("defaultSearchPlan" in body)) {
-      update.defaultSearchPlan = {
-        mode: "all_selected",
-        optionIds: strategyId === "search-disabled" ? [] : [strategyId]
-      };
     }
   }
 
@@ -229,7 +210,6 @@ function buildSettingsUpdate(
         return { error: "default_search_unavailable" };
       }
       update.defaultSearchPlan = decoded.plan;
-      update.defaultSearchStrategyId = legacySearchStrategyFromPlan(decoded.plan);
     }
   }
 
@@ -247,14 +227,6 @@ function buildSettingsUpdate(
     }
 
     update.showReasoningBlocks = body.showReasoningBlocks;
-  }
-
-  if ("showToolActivity" in body) {
-    if (typeof body.showToolActivity !== "boolean") {
-      return { error: "show_tool_activity_boolean_required" };
-    }
-
-    update.showToolActivity = body.showToolActivity;
   }
 
   if ("defaultControlValues" in body) {
@@ -278,19 +250,15 @@ function serializeSettings(
   });
   return {
     defaultControlValues: isRecord(settings.defaultControlValues) ? settings.defaultControlValues : {},
-    defaultModelId: selection.defaultModel?.modelId ?? "",
-    defaultProvider: selection.defaultModel?.provider ?? "",
     hasPersonalModelDefault: selection.hasPersonalModelDefault,
     modelPreferenceSource: selection.modelPreferenceSource,
     organizationModelDefault: selection.organizationModelDefault,
     personalModelDefault: selection.personalModelDefault,
-    defaultSearchStrategyId: settings.defaultSearchStrategyId,
     defaultSearchPlan: searchPreference.preferredPlan,
     organizationSearchPlan: searchPreference.organizationPlan,
     searchPreferenceSource: searchPreference.source,
     showCitations: settings.showCitations,
-    showReasoningBlocks: settings.showReasoningBlocks,
-    showToolActivity: settings.showToolActivity
+    showReasoningBlocks: settings.showReasoningBlocks
   };
 }
 

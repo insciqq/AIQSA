@@ -20,6 +20,8 @@ function requestWithMessages(messages: ProviderConversationMessage[]): ProviderR
       messages,
       mode: "branch_path"
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -34,7 +36,7 @@ function requestWithMessages(messages: ProviderConversationMessage[]): ProviderR
       system: null
     },
     provider: "fake",
-    searchStrategy: "search-disabled"
+    searchPlan: { mode: "all_selected", options: [] }
   };
 }
 

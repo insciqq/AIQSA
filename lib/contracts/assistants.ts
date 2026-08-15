@@ -355,7 +355,7 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
     return { code: "assistant_mcp_servers_invalid", ok: false };
   }
 
-  const knowledgeBaseIds = value.knowledgeBaseIds ?? [];
+  const knowledgeBaseIds = value.knowledgeBaseIds;
   const normalizedKnowledgeBaseIds = Array.isArray(knowledgeBaseIds)
     ? knowledgeBaseIds.map((id) => typeof id === "string" ? id.trim() : id)
     : knowledgeBaseIds;
@@ -642,7 +642,7 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
   const category = decodeCategory(value.category);
   const runControls = decodeAssistantRunControls(value.runControls);
   const searchPlan = decodeSearchPlan(value.searchPlan);
-  const knowledgeBaseIds = value.knowledgeBaseIds ?? [];
+  const knowledgeBaseIds = value.knowledgeBaseIds;
   if (
     !stringOrNull(value.authorDisplayName) ||
     !avatar ||

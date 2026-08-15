@@ -23,7 +23,7 @@ function jobClaim(input: Partial<MemoryJobClaim> = {}): MemoryJobClaim {
     claimToken: "job-claim-token",
     id: "job-1",
     idempotencyFingerprint: "job-idempotency-1",
-    kind: "RECALCULATE_WORKING_SET",
+    kind: "EMBED_ITEMS",
     leaseExpiresAt: new Date(NOW.getTime() + 100),
     memoryGenerationSnapshot: 0,
     memoryRevisionSnapshot: 0,
@@ -73,7 +73,6 @@ function repository(
     claimJob: vi.fn(async () => null),
     commitDeletionSuccess: vi.fn(async () => true),
     commitJobSuccess: vi.fn(async () => true),
-    deferJob: vi.fn(async () => true),
     heartbeatDeletion: vi.fn(async () => true),
     heartbeatJob: vi.fn(async () => true),
     listWaitingJobs: vi.fn(async () => []),
@@ -154,7 +153,7 @@ describe("Memory coordinator", () => {
     }
   });
 
-  it("discovers bounded durable work after servicing the existing shared budget", async () => {
+  it("discovers bounded durable work after servicing existing claims", async () => {
     const callOrder: string[] = [];
     const reconcileWork = vi.fn(async () => {
       callOrder.push("reconcile");
@@ -170,7 +169,7 @@ describe("Memory coordinator", () => {
     const registry = new MemoryCoordinatorRegistry();
     registry.registerJob({
       execute: vi.fn(),
-      kind: "RECALCULATE_WORKING_SET",
+      kind: "EMBED_ITEMS",
       preflight: async () => ({ status: "READY" })
     });
     registry.registerDeletion({
@@ -351,55 +350,6 @@ describe("Memory coordinator", () => {
       errorCode: "memory_purge_incomplete",
       nextAttemptAt: new Date(NOW.getTime() + 15 * 60_000)
     }));
-  });
-
-  it("defers exhausted background work without entering its handler", async () => {
-    const claim = jobClaim({ kind: "GLOBAL_DREAM" });
-    const claimJob = vi.fn()
-      .mockResolvedValueOnce(claim)
-      .mockResolvedValue(null);
-    const deferJob = vi.fn(async () => true);
-    const coordinatorRepository = repository({ claimJob, deferJob });
-    const registry = new MemoryCoordinatorRegistry();
-    const execute = vi.fn();
-    const preflight = vi.fn(async () => ({ status: "READY" as const }));
-    registry.registerJob({ execute, kind: claim.kind, preflight });
-    const policy = resolveMemoryCoordinatorPolicy({
-      backgroundInstallDailyCallLimit: 1,
-      backgroundUserDailyCallLimit: 1,
-      heartbeatMs: 10,
-      intervalMs: 10_000,
-      leaseMs: 100,
-      maxDeletionParallel: 1,
-      maxJobParallel: 1
-    });
-    const service = new MemoryCoordinator({
-      now: () => new Date(NOW),
-      policy,
-      registry,
-      repository: coordinatorRepository,
-      scheduler: new MemoryScheduler({
-        policy,
-        usageSource: {
-          readDailyBackgroundUsage: async () => ({
-            installation: { calls: 1, costMicros: 0 },
-            users: new Map([[claim.userId, { calls: 1, costMicros: 0 }]])
-          })
-        }
-      })
-    });
-
-    await service.reconcileNow();
-    service.stop();
-
-    expect(preflight).not.toHaveBeenCalled();
-    expect(execute).not.toHaveBeenCalled();
-    expect(deferJob).toHaveBeenCalledWith({
-      claim,
-      errorCode: "memory_scheduler_budget_deferred",
-      nextAttemptAt: new Date("2026-08-11T00:00:00.000Z"),
-      now: NOW
-    });
   });
 
   it("bounds claims per worker pass even while the queue stays non-empty", async () => {

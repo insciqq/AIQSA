@@ -146,7 +146,9 @@ function binding(embed: EmbeddingRuntimeBinding["adapter"]["embed"]): EmbeddingR
     executionSnapshot: {
       connection: {
         allowPrivateNetwork: false,
-        apiRoot: "https://api.openai.com/v1"
+        apiRoot: "https://api.openai.com/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       connectionDisplayName: "OpenAI",
       connectionId: "connection-1",
@@ -386,7 +388,7 @@ describe("Knowledge ingestion processor", () => {
     }));
   });
 
-  it("reindexes from fenced source chunks when the legacy normalized object is rejected", async () => {
+  it("reindexes from fenced source chunks when the stored normalized object is rejected", async () => {
     const storage = createMemoryStorageAdapter();
     const invalid = Buffer.from('{"schemaVersion":0,"blocks":[]}');
     await storage.putObject({
@@ -394,7 +396,7 @@ describe("Knowledge ingestion processor", () => {
       contentType: "application/json",
       storageKey: "normalized.json"
     });
-    const recovered = [{ headingPath: ["Legacy"], index: 0, page: 2, text: "settled source passage" }];
+    const recovered = [{ headingPath: ["Recovered"], index: 0, page: 2, text: "settled source passage" }];
     const embed = vi.fn<EmbeddingRuntimeBinding["adapter"]["embed"]>(async (request) => ({
       model: "embed-v1",
       requestId: "request-reindex",

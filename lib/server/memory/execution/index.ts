@@ -31,11 +31,11 @@ export function createPrismaMemoryExecutionService(
 export * from "./admission";
 export * from "./adminConsent";
 export * from "./authority";
+export * from "./compatibility";
 export * from "./consentMode";
 export * from "./errors";
 export * from "./lifecycle";
 export * from "./owner";
 export * from "./policy";
-export * from "./qualification";
 export * from "./roles";
 export * from "./snapshot";

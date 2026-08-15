@@ -1,14 +1,14 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { Catalog, ChatSummary, InspectorMode } from "./types";
+import type { Catalog, ChatSummary } from "./types";
 import { useCommandPaletteActions } from "./useCommandPaletteActions";
 
 function renderActions(
-  mode: InspectorMode,
+  branchesOpen: boolean,
   workspaceReady = true,
   surface: "assistants" | "knowledge" | "memory" | "settings" | null = null
 ) {
-  const setInspectorMode = vi.fn();
+  const toggleBranches = vi.fn();
   const closePalette = vi.fn();
   const openKnowledge = vi.fn();
   const openLibrary = vi.fn();
@@ -20,12 +20,11 @@ function renderActions(
       activateBlankWorkspace: vi.fn(),
       activeChatId: null,
       assistantLibraryOpen: surface === "assistants",
+      branchesOpen,
       catalog: null,
       chatGroups: [],
       chats: [],
-      changeInspectorMode: setInspectorMode,
       closePalette,
-      inspectorMode: mode,
       knowledgeOpen: surface === "knowledge",
       memoryOpen: surface === "memory",
       openKnowledge,
@@ -37,33 +36,47 @@ function renderActions(
       selectSearchStrategy: vi.fn(),
       selectedModelId: "test-model",
       selectedProvider: "test-provider",
-      selectedSearchStrategy: "search-disabled",
+      selectedSearchOptionIds: [],
       settingsOpen: surface === "settings",
+      toggleBranches,
       workspaceReady
     })
   );
 
-  return { closePalette, openKnowledge, openLibrary, openMemory, openSettings, result, setInspectorMode };
+  return { closePalette, openKnowledge, openLibrary, openMemory, openSettings, result, toggleBranches };
 }
 
 describe("useCommandPaletteActions", () => {
-  it("closes the palette before opening Details as an overlay", async () => {
-    const { closePalette, result, setInspectorMode } = renderActions("closed");
-    const detailsCommand = result.current.commandItems.find((item) => item.id === "action:toggle-inspector");
+  it("closes the palette before opening standalone Branches", async () => {
+    const { closePalette, result, toggleBranches } = renderActions(false);
+    const branchesCommand = result.current.commandItems.find(
+      (item) => item.id === "action:toggle-branches"
+    );
 
-    expect(detailsCommand?.label).toBe("Open details");
+    expect(branchesCommand).toMatchObject({
+      current: false,
+      label: "Open Branches",
+      subtitle: "Conversation history"
+    });
+    expect(renderActions(true).result.current.commandItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          current: true,
+          id: "action:toggle-branches",
+          label: "Close Branches"
+        })
+      ])
+    );
     expect(result.current.commandItems.some((item) => item.id.includes("compact"))).toBe(false);
-    act(() => result.current.runCommand(detailsCommand!));
+    act(() => result.current.runCommand(branchesCommand!));
 
     expect(closePalette).toHaveBeenCalledOnce();
-    expect(setInspectorMode).not.toHaveBeenCalled();
-    await waitFor(() => expect(setInspectorMode).toHaveBeenCalledOnce());
-    const update = setInspectorMode.mock.calls[0]?.[0] as (mode: InspectorMode) => InspectorMode;
-    expect(update("closed")).toBe("overlay");
+    expect(toggleBranches).not.toHaveBeenCalled();
+    await waitFor(() => expect(toggleBranches).toHaveBeenCalledOnce());
   });
 
   it("closes the palette before opening Settings on the next task", async () => {
-    const { closePalette, openSettings, result } = renderActions("closed");
+    const { closePalette, openSettings, result } = renderActions(false);
     const settingsCommand = result.current.commandItems.find((item) => item.id === "action:open-settings");
 
     act(() => result.current.runCommand(settingsCommand!));
@@ -74,10 +87,10 @@ describe("useCommandPaletteActions", () => {
   });
 
   it("omits New chat until workspace hydration succeeds", () => {
-    expect(renderActions("closed", false).result.current.commandItems).not.toEqual(
+    expect(renderActions(false, false).result.current.commandItems).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ id: "action:new-chat" })])
     );
-    expect(renderActions("closed").result.current.commandItems).toEqual(
+    expect(renderActions(false).result.current.commandItems).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: "action:new-chat" })])
     );
   });
@@ -88,7 +101,7 @@ describe("useCommandPaletteActions", () => {
     ["memory", "action:open-memory"],
     ["settings", "action:open-settings"]
   ] as const)("marks only the active %s workspace destination current", (surface, currentId) => {
-    const current = renderActions("closed", true, surface).result.current.commandItems
+    const current = renderActions(false, true, surface).result.current.commandItems
       .filter((item) => item.current && item.id.startsWith("action:open-"))
       .map((item) => item.id);
     expect(current).toEqual([currentId]);
@@ -113,12 +126,19 @@ describe("useCommandPaletteActions", () => {
         modelId: "gpt-5.5",
         modelPreferenceSource: "personal",
         organizationModelDefault: null,
+        organizationSearchPlan: {
+          mode: "all_selected",
+          optionIds: ["openai-native-web-search"]
+        },
         personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
         provider: "openai",
-        searchStrategyId: "openai-native-web-search",
+        searchPlan: {
+          mode: "all_selected",
+          optionIds: ["openai-native-web-search"]
+        },
+        searchPreferenceSource: "personal",
         showCitations: true,
         showReasoningBlocks: false,
-        showToolActivity: true,
       },
       models: [
         {
@@ -169,12 +189,11 @@ describe("useCommandPaletteActions", () => {
         activateBlankWorkspace: vi.fn(),
         activeChatId: chat.id,
         assistantLibraryOpen: false,
+        branchesOpen: false,
         catalog,
         chatGroups: [{ chats: [chat], depth: 0, folder: null, name: "No folder" }],
         chats: [chat],
-        changeInspectorMode: vi.fn(),
         closePalette,
-        inspectorMode: "closed",
         knowledgeOpen: false,
         memoryOpen: false,
         openKnowledge,
@@ -186,8 +205,9 @@ describe("useCommandPaletteActions", () => {
         selectSearchStrategy,
         selectedModelId: "gpt-5.5",
         selectedProvider: "openai",
-        selectedSearchStrategy: "openai-native-web-search",
+        selectedSearchOptionIds: ["openai-native-web-search"],
         settingsOpen: false,
+        toggleBranches: vi.fn(),
         workspaceReady: true
       })
     );

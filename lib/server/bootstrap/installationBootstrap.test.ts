@@ -331,7 +331,7 @@ describe("installation bootstrap", () => {
       data: expect.objectContaining({
         defaultFolderId: null,
         defaultProviderModelId: null,
-        defaultSearchStrategyId: "search-disabled",
+        defaultSearchPlan: { mode: "all_selected", optionIds: [] },
         userId: USER_ID
       })
     });

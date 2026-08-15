@@ -71,9 +71,6 @@ export type MemoryRunRetrievalService = Readonly<{
 }>;
 
 export type MemoryRunRetrievalOptions = Readonly<{
-  /** Legacy construction options are accepted but no longer gate relevance. */
-  enableQueryExpansion?: boolean;
-  enableRemoteRerank?: boolean;
   utilities?: MemoryRunUtilityService;
   vectorRepository?: Pick<MemoryVectorRepository, "resolveActiveProfile">;
 }>;
@@ -469,8 +466,7 @@ export function createMemoryRunRetrievalService(
 
 export function createPrismaMemoryRunRetrievalService(
   client: PrismaClient = prisma,
-  options: Pick<MemoryRunRetrievalOptions, "enableQueryExpansion" | "enableRemoteRerank"> &
-    Readonly<{ authority?: MemoryExecutionAuthorityDependencies }> = {}
+  options: Readonly<{ authority?: MemoryExecutionAuthorityDependencies }> = {}
 ): MemoryRunRetrievalService {
   const authority = options.authority ?? defaultMemoryExecutionAuthority;
   return createMemoryRunRetrievalService(

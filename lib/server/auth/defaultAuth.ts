@@ -16,9 +16,9 @@ import { prisma } from "../prisma";
 import { kickDefaultMcpRuntime } from "../mcp/defaultRuntime";
 import { emailDispatcher } from "../email/defaultEmail";
 import { kickDefaultMemoryCoordinator } from "../memory/coordinator/defaultCoordinator";
-import { tryEnsureDefaultMemoryPhase8Composition } from "../memory/phase8Composition";
+import { tryEnsureDefaultMemoryDeletionComposition } from "../memory/deletionComposition";
 
-tryEnsureDefaultMemoryPhase8Composition(kickDefaultMemoryCoordinator);
+tryEnsureDefaultMemoryDeletionComposition(kickDefaultMemoryCoordinator);
 
 export const authMailer = createDispatcherAuthMailer(emailDispatcher);
 export const adminRepository = createPrismaAdminRepository(prisma);

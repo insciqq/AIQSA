@@ -31,6 +31,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       ],
       mode: "branch_path"
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -55,7 +57,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       system: "Be concise."
     },
     provider: "custom-connection-1",
-    searchStrategy: null,
+    searchPlan: { mode: "all_selected", options: [] },
     toolChoice: "auto",
     tools: [
       {

@@ -17,13 +17,8 @@ describe("Memory coordinator policy", () => {
     );
   });
 
-  it("loads bounded scheduler controls without accepting unknown values", () => {
+  it("loads bounded coordinator controls without accepting unknown values", () => {
     expect(loadMemoryCoordinatorPolicy({
-      AIQSA_MEMORY_BACKGROUND_BUDGET_REFRESH_MS: "120000",
-      AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_CALLS: "200",
-      AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_COST_MICROS: "900000",
-      AIQSA_MEMORY_BACKGROUND_USER_DAILY_CALLS: "20",
-      AIQSA_MEMORY_BACKGROUND_USER_DAILY_COST_MICROS: "90000",
       AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: "30000",
       AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS: "20",
       AIQSA_MEMORY_DELETION_PARALLELISM: "2",
@@ -31,11 +26,6 @@ describe("Memory coordinator policy", () => {
       AIQSA_MEMORY_JOB_PARALLELISM: "4",
       AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "2"
     })).toMatchObject({
-      backgroundBudgetRefreshMs: 120_000,
-      backgroundInstallDailyCallLimit: 200,
-      backgroundInstallDailyCostMicrosLimit: 900_000,
-      backgroundUserDailyCallLimit: 20,
-      backgroundUserDailyCostMicrosLimit: 90_000,
       intervalMs: 30_000,
       maxDeletionClaimsPerWorkerPass: 20,
       maxDeletionParallel: 2,
@@ -53,21 +43,10 @@ describe("Memory coordinator policy", () => {
     {
       AIQSA_MEMORY_JOB_PARALLELISM: "2",
       AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: "3"
-    },
-    {
-      AIQSA_MEMORY_BACKGROUND_INSTALL_DAILY_CALLS: "10",
-      AIQSA_MEMORY_BACKGROUND_USER_DAILY_CALLS: "11"
     }
   ])("fails closed for an invalid environment policy", (env) => {
     expect(() => loadMemoryCoordinatorPolicy(env)).toThrow(
       "memory_coordinator_policy_environment_invalid"
     );
-  });
-
-  it("rejects a user budget wider than the installation budget", () => {
-    expect(() => resolveMemoryCoordinatorPolicy({
-      backgroundInstallDailyCostMicrosLimit: 10,
-      backgroundUserDailyCostMicrosLimit: 11
-    })).toThrow("memory_coordinator_policy_invalid");
   });
 });

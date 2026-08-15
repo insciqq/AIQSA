@@ -3,11 +3,19 @@ import {
   DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS,
   effectiveProviderResponseTimeoutMs,
   normalizeProviderConnectionConfiguration,
-  normalizeProviderModelConfiguration,
+  normalizeProviderModelConfiguration as normalizeProviderModelConfigurationBase,
   providerAuthenticationMode,
   providerRequestEndpoint,
   ProviderConfigurationError
 } from "./providerConfiguration";
+
+function normalizeProviderModelConfiguration(value: Record<string, unknown>) {
+  return normalizeProviderModelConfigurationBase({
+    answerSelectable: true,
+    modelClass: "answer",
+    ...value
+  });
+}
 
 const capabilities = {
   nativePdfInput: false,
@@ -33,12 +41,15 @@ describe("provider connection configuration", () => {
   it("canonicalizes an HTTPS API root and derives reviewed terminal paths", () => {
     const configuration = normalizeProviderConnectionConfiguration({
       allowPrivateNetwork: false,
-      apiRoot: "https://api.example.test/v1///"
+      apiRoot: "https://api.example.test/v1///",
+      authenticationMode: "bearer",
+      responseTimeoutMs: DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS
     });
 
     expect(configuration).toEqual({
       allowPrivateNetwork: false,
       apiRoot: "https://api.example.test/v1",
+      authenticationMode: "bearer",
       responseTimeoutMs: DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS
     });
     expect(providerRequestEndpoint(configuration, "openai_responses_compatible"))
@@ -55,58 +66,72 @@ describe("provider connection configuration", () => {
     expect(
       normalizeProviderConnectionConfiguration({
         allowPrivateNetwork: true,
-        apiRoot: "http://127.0.0.1:11434/v1"
+        apiRoot: "http://127.0.0.1:11434/v1",
+        authenticationMode: "none",
+        responseTimeoutMs: 300_000
       })
     ).toMatchObject({ apiRoot: "http://127.0.0.1:11434/v1" });
 
     expectCode(
       () => normalizeProviderConnectionConfiguration({
         allowPrivateNetwork: false,
-        apiRoot: "http://127.0.0.1:11434/v1"
+        apiRoot: "http://127.0.0.1:11434/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       }),
       "provider_api_root_invalid"
     );
   });
 
-  it("defaults legacy connections to bearer and preserves explicit authentication", () => {
-    const legacy = normalizeProviderConnectionConfiguration({
-      allowPrivateNetwork: false,
-      apiRoot: "https://api.example.test/v1"
-    });
+  it("requires and preserves explicit authentication", () => {
     const bearer = normalizeProviderConnectionConfiguration({
       allowPrivateNetwork: false,
       apiRoot: "https://api.example.test/v1",
-      authenticationMode: "bearer"
+      authenticationMode: "bearer",
+      responseTimeoutMs: 300_000
     });
     const none = normalizeProviderConnectionConfiguration({
       allowPrivateNetwork: true,
       apiRoot: "http://127.0.0.1:11434/v1",
-      authenticationMode: "none"
+      authenticationMode: "none",
+      responseTimeoutMs: 300_000
     });
 
-    expect(legacy.authenticationMode).toBeUndefined();
-    expect(providerAuthenticationMode(legacy)).toBe("bearer");
+    expectCode(
+      () => normalizeProviderConnectionConfiguration({
+        allowPrivateNetwork: false,
+        apiRoot: "https://api.example.test/v1",
+        responseTimeoutMs: 300_000
+      }),
+      "provider_authentication_mode_invalid"
+    );
+    expect(providerAuthenticationMode(bearer)).toBe("bearer");
     expect(bearer.authenticationMode).toBe("bearer");
     expect(none.authenticationMode).toBe("none");
   });
 
-  it("defaults legacy response deadlines and accepts the inclusive configured range", () => {
-    const legacy = normalizeProviderConnectionConfiguration({
-      allowPrivateNetwork: false,
-      apiRoot: "https://api.example.test/v1"
-    });
+  it("requires response deadlines and accepts the inclusive configured range", () => {
     const configured = normalizeProviderConnectionConfiguration({
       allowPrivateNetwork: false,
       apiRoot: "https://api.example.test/v1",
+      authenticationMode: "bearer",
       responseTimeoutMs: 500_000
     });
 
-    expect(legacy.responseTimeoutMs).toBe(300_000);
+    expectCode(
+      () => normalizeProviderConnectionConfiguration({
+        allowPrivateNetwork: false,
+        apiRoot: "https://api.example.test/v1",
+        authenticationMode: "bearer"
+      }),
+      "provider_response_timeout_invalid"
+    );
     expect(configured.responseTimeoutMs).toBe(500_000);
     for (const responseTimeoutMs of [5_000, 900_000]) {
       expect(normalizeProviderConnectionConfiguration({
         allowPrivateNetwork: false,
         apiRoot: "https://api.example.test/v1",
+        authenticationMode: "bearer",
         responseTimeoutMs
       }).responseTimeoutMs).toBe(responseTimeoutMs);
     }
@@ -119,6 +144,7 @@ describe("provider connection configuration", () => {
         () => normalizeProviderConnectionConfiguration({
           allowPrivateNetwork: false,
           apiRoot: "https://api.example.test/v1",
+          authenticationMode: "bearer",
           responseTimeoutMs
         }),
         "provider_response_timeout_invalid"
@@ -127,9 +153,9 @@ describe("provider connection configuration", () => {
   );
 
   it.each([
-    { allowPrivateNetwork: false, apiRoot: "https://api.example.test/v1", authenticationMode: "none" },
-    { allowPrivateNetwork: true, apiRoot: "https://api.example.test/v1", authenticationMode: "none" },
-    { allowPrivateNetwork: true, apiRoot: "http://127.0.0.1:11434/v1", authenticationMode: "basic" }
+    { allowPrivateNetwork: false, apiRoot: "https://api.example.test/v1", authenticationMode: "none", responseTimeoutMs: 300_000 },
+    { allowPrivateNetwork: true, apiRoot: "https://api.example.test/v1", authenticationMode: "none", responseTimeoutMs: 300_000 },
+    { allowPrivateNetwork: true, apiRoot: "http://127.0.0.1:11434/v1", authenticationMode: "basic", responseTimeoutMs: 300_000 }
   ])("rejects an unsafe or unknown authentication contract", (configuration) => {
     expectCode(
       () => normalizeProviderConnectionConfiguration(configuration),
@@ -144,7 +170,12 @@ describe("provider connection configuration", () => {
     "https://api.example.test/v1#fragment"
   ])("rejects unsafe API root %s", (apiRoot) => {
     expectCode(
-      () => normalizeProviderConnectionConfiguration({ allowPrivateNetwork: false, apiRoot }),
+      () => normalizeProviderConnectionConfiguration({
+        allowPrivateNetwork: false,
+        apiRoot,
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
+      }),
       "provider_api_root_invalid"
     );
   });
@@ -155,6 +186,7 @@ describe("provider model configuration", () => {
     const connection = normalizeProviderConnectionConfiguration({
       allowPrivateNetwork: false,
       apiRoot: "https://api.example.test/v1",
+      authenticationMode: "bearer",
       responseTimeoutMs: 500_000
     });
     const inherited = normalizeProviderModelConfiguration({
@@ -193,12 +225,12 @@ describe("provider model configuration", () => {
     }
   );
 
-  it("keeps legacy models answer-selectable and preserves an explicit technical-only role", () => {
-    const legacy = normalizeProviderModelConfiguration({
+  it("preserves current answer-selectable and technical-only roles", () => {
+    const answer = normalizeProviderModelConfiguration({
       adapterKind: "openai_responses_compatible",
       capabilities,
       defaultParams: {},
-      upstreamModelId: "legacy-answer-model"
+      upstreamModelId: "answer-model"
     });
     const technical = normalizeProviderModelConfiguration({
       adapterKind: "openai_responses_compatible",
@@ -208,7 +240,7 @@ describe("provider model configuration", () => {
       upstreamModelId: "search-runtime"
     });
 
-    expect(legacy.answerSelectable).toBe(true);
+    expect(answer.answerSelectable).toBe(true);
     expect(technical.answerSelectable).toBe(false);
     expectCode(
       () => normalizeProviderModelConfiguration({

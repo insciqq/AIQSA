@@ -35,7 +35,6 @@ async function scrub(
     SET
       "memoryFactId" = NULL,
       "memoryFactVersionId" = NULL,
-      "episodeId" = NULL,
       "recallChunkId" = NULL,
       "modelRunId" = NULL,
       "modelRunMemoryItemId" = NULL,
@@ -91,7 +90,6 @@ export async function purgeMemoryFeedbackHistoryClear(
   userId: string,
   targetIds: Readonly<{
     chunkIds: readonly string[];
-    episodeIds: readonly string[];
   }>,
   reason: "all_reusable_delete" | "history_clear" | "suppressed_source" = "history_clear"
 ): Promise<void> {
@@ -110,7 +108,6 @@ export async function inspectMemoryFeedbackHistoryClear(
   userId: string,
   targetIds: Readonly<{
     chunkIds: readonly string[];
-    episodeIds: readonly string[];
   }>
 ): Promise<number> {
   const predicate = historyTargetPredicate(targetIds);
@@ -120,15 +117,8 @@ export async function inspectMemoryFeedbackHistoryClear(
 
 function historyTargetPredicate(targetIds: Readonly<{
   chunkIds: readonly string[];
-  episodeIds: readonly string[];
 }>): Prisma.Sql | null {
   const predicates: Prisma.Sql[] = [];
-  if (targetIds.episodeIds.length > 0) {
-    predicates.push(Prisma.sql`
-      feedback."targetKind" = 'EPISODE'::"MemoryFeedbackTargetKind"
-      AND feedback."episodeId" IN (${Prisma.join(targetIds.episodeIds)})
-    `);
-  }
   if (targetIds.chunkIds.length > 0) {
     predicates.push(Prisma.sql`
       feedback."targetKind" = 'RECALL_CHUNK'::"MemoryFeedbackTargetKind"
@@ -160,7 +150,6 @@ export async function purgeMemoryFeedbackInvalidSource(
   chatId: string,
   targetIds: Readonly<{
     chunkIds: readonly string[];
-    episodeIds: readonly string[];
   }>
 ): Promise<void> {
   const targetPredicate = historyTargetPredicate(targetIds);
@@ -180,7 +169,6 @@ export async function inspectMemoryFeedbackInvalidSource(
   chatId: string,
   targetIds: Readonly<{
     chunkIds: readonly string[];
-    episodeIds: readonly string[];
   }>
 ): Promise<number> {
   const targetPredicate = historyTargetPredicate(targetIds);
@@ -193,7 +181,6 @@ export async function inspectMemoryFeedbackInvalidSource(
 function permanentChatPredicate(input: Readonly<{
   chatId: string;
   chunkIds: readonly string[];
-  episodeIds: readonly string[];
   runIds: readonly string[];
 }>): Prisma.Sql {
   const predicates: Prisma.Sql[] = [
@@ -213,7 +200,6 @@ export async function purgeMemoryFeedbackPermanentChat(
   input: Readonly<{
     chatId: string;
     chunkIds: readonly string[];
-    episodeIds: readonly string[];
     runIds: readonly string[];
   }>
 ): Promise<void> {
@@ -231,7 +217,6 @@ export async function inspectMemoryFeedbackPermanentChat(
   input: Readonly<{
     chatId: string;
     chunkIds: readonly string[];
-    episodeIds: readonly string[];
     runIds: readonly string[];
   }>
 ): Promise<number> {

@@ -22,6 +22,8 @@ function request(
     authenticationMode: "bearer",
     confirmPaidRequest: true,
     modelId: "vendor/model-1",
+    protocol: "chat_completions",
+    responseTimeoutSeconds: 300,
     secret: "exact-secret",
     ...overrides
   };

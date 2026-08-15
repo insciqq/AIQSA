@@ -125,10 +125,8 @@ function mixedSearchCatalog(
       provider: mixedSearchModel.provider,
       searchPlan: retainedPlan,
       searchPreferenceSource,
-      searchStrategyId: hostedSearchOptionId,
       showCitations: true,
       showReasoningBlocks: false,
-      showToolActivity: true
     },
     models: [mixedSearchModel],
     providers: [
@@ -230,6 +228,7 @@ function useMessageRunActionsForTest(input: {
   ) => Promise<ChatSummary | null>;
   draft?: string;
   editingMessageId?: string | null;
+  fetchRun?: (runId: string, chatId: string) => Promise<unknown>;
   model?: CatalogModel;
   openMemorySettings?: () => void;
   pendingChatFolderId?: string | null;
@@ -273,11 +272,10 @@ function useMessageRunActionsForTest(input: {
     selectedProvider: "openai",
     selectedSearchOptionIds: [],
     searchPlanMode: "all_selected",
-    selectedSearchStrategy: "search-disabled"
   });
 
   const activeStreamAbortRef = { current: new Map<string, AbortController>() };
-  const fetchRun = vi.fn(async () => null);
+  const fetchRun = vi.fn(input.fetchRun ?? (async () => null));
   const notifyAnswerReady = vi.fn(async () => undefined);
   const primeAnswerSound = vi.fn(async () => undefined);
   const refreshActiveChat = vi.fn(input.refreshActiveChat ?? (async () => null));
@@ -296,7 +294,6 @@ function useMessageRunActionsForTest(input: {
         backgroundMode: true,
         maxOutputTokens: "128000",
         reasoningEffort: "medium",
-        searchStrategyId: "search-disabled",
         streamMode: false,
         temperature: "1"
       })),
@@ -377,7 +374,7 @@ describe("message run actions", () => {
       openMemorySettings
     });
     useMemorySettingsStore.setState({
-      data: memorySettingsFixture({}, "EN"),
+      data: memorySettingsFixture(),
       error: null,
       loadState: "ready"
     });
@@ -631,7 +628,6 @@ describe("message run actions", () => {
       controlDefaults: {
         maxOutputTokens: "128000",
         reasoningEffort: "medium",
-        searchStrategyId: "search-disabled",
         temperature: "1"
       },
       expectedActiveLeafId: null
@@ -781,7 +777,6 @@ describe("message run actions", () => {
       useComposerControlStore.setState({
         selectedSearchOptionIds: [hostedSearchOptionId, clientSearchOptionId],
         searchPlanMode: "all_selected",
-        selectedSearchStrategy: hostedSearchOptionId
       });
 
       await actions.submitComposer();
@@ -799,8 +794,7 @@ describe("message run actions", () => {
           mode: "all_selected",
           optionIds: [hostedSearchOptionId, clientSearchOptionId]
         },
-        searchPreferenceSource,
-        searchStrategy: hostedSearchOptionId
+        searchPreferenceSource
       });
     }
   );
@@ -809,28 +803,24 @@ describe("message run actions", () => {
     {
       expectedMode: "all_selected" as const,
       expectedOptionIds: [clientSearchOptionId],
-      expectedSearchStrategy: clientSearchOptionId,
       label: "keeps a client-only plan",
       selectedOptionIds: [clientSearchOptionId]
     },
     {
       expectedMode: "all_selected" as const,
       expectedOptionIds: [hostedSearchOptionId],
-      expectedSearchStrategy: hostedSearchOptionId,
       label: "keeps a hosted-only plan",
       selectedOptionIds: [hostedSearchOptionId]
     },
     {
       expectedMode: "model_choice" as const,
       expectedOptionIds: [hostedSearchOptionId, clientSearchOptionId],
-      expectedSearchStrategy: hostedSearchOptionId,
       label: "keeps and reconciles a mixed plan",
       selectedOptionIds: [hostedSearchOptionId, clientSearchOptionId]
     }
   ])("$label for a send with attachments", async ({
     expectedMode,
     expectedOptionIds,
-    expectedSearchStrategy,
     selectedOptionIds
   }) => {
     const fetchMock = vi.fn(async (..._args: unknown[]) =>
@@ -844,7 +834,6 @@ describe("message run actions", () => {
     useComposerControlStore.setState({
       selectedSearchOptionIds: selectedOptionIds,
       searchPlanMode: "all_selected",
-      selectedSearchStrategy: selectedOptionIds[0] ?? "search-disabled"
     });
 
     await actions.submitComposer();
@@ -859,8 +848,7 @@ describe("message run actions", () => {
         mode: "all_selected",
         optionIds: selectedOptionIds
       },
-      searchPreferenceSource: "personal",
-      searchStrategy: expectedSearchStrategy
+      searchPreferenceSource: "personal"
     });
   });
 
@@ -889,7 +877,6 @@ describe("message run actions", () => {
     useComposerControlStore.setState({
       selectedSearchOptionIds: [clientSearchOptionId],
       searchPlanMode: "all_selected",
-      selectedSearchStrategy: clientSearchOptionId
     });
 
     const submit = actions.submitComposer();
@@ -917,8 +904,7 @@ describe("message run actions", () => {
       searchPreferencePlan: {
         mode: "all_selected",
         optionIds: [clientSearchOptionId]
-      },
-      searchStrategy: clientSearchOptionId
+      }
     });
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       attachments: [newerSearchAttachment],
@@ -957,7 +943,6 @@ describe("message run actions", () => {
     useComposerControlStore.setState({
       selectedSearchOptionIds: [clientSearchOptionId],
       searchPlanMode: "all_selected",
-      selectedSearchStrategy: clientSearchOptionId
     });
 
     const submit = actions.submitComposer();
@@ -982,8 +967,7 @@ describe("message run actions", () => {
       searchPreferencePlan: {
         mode: "all_selected",
         optionIds: [clientSearchOptionId]
-      },
-      searchStrategy: clientSearchOptionId
+      }
     });
     expect(actions.session(composerSessionKey(createdChat.id))).toMatchObject({
       attachments: [newerSearchAttachment],
@@ -1321,7 +1305,6 @@ describe("message run actions", () => {
       selectedModelId: "later-model",
       selectedProvider: "later-provider",
       selectedSearchOptionIds: ["later-search"],
-      selectedSearchStrategy: "later-search"
     });
 
     resolveCreateChat(createdChat);
@@ -1334,7 +1317,7 @@ describe("message run actions", () => {
     expect(JSON.parse(String(requestInit.body))).toMatchObject({
       modelId: "gpt-5.5",
       provider: "openai",
-      searchStrategy: "search-disabled"
+      searchPlan: { mode: "all_selected", optionIds: [] }
     });
   });
 
@@ -1650,7 +1633,6 @@ describe("message run actions", () => {
         optionIds: [hostedSearchOptionId, clientSearchOptionId]
       },
       searchPreferenceSource: "personal",
-      searchStrategy: hostedSearchOptionId,
       timeZone: expect.any(String),
       tools: "none"
     });
@@ -1866,7 +1848,7 @@ describe("message run actions", () => {
     expect(JSON.parse(String(regenerateInit.body))).toMatchObject({
       modelId: "gpt-5.5",
       provider: "openai",
-      searchStrategy: "search-disabled"
+      searchPlan: { mode: "all_selected", optionIds: [] }
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
       activeLeafId: "assistant-edit-persisted",
@@ -1900,7 +1882,6 @@ describe("message run actions", () => {
     useComposerControlStore.setState({
       selectedSearchOptionIds: [clientSearchOptionId],
       searchPlanMode: "all_selected",
-      selectedSearchStrategy: clientSearchOptionId
     });
 
     await actions.submitComposer();
@@ -1914,8 +1895,7 @@ describe("message run actions", () => {
       searchPreferencePlan: {
         mode: "all_selected",
         optionIds: [clientSearchOptionId]
-      },
-      searchStrategy: clientSearchOptionId
+      }
     });
   });
 
@@ -2119,6 +2099,46 @@ describe("message run actions", () => {
     expect(JSON.parse(String(retryInit.body))).toMatchObject({
       expectedActiveLeafId: "assistant-canonical"
     });
+  });
+
+  it("refreshes a known interrupted run outcome before reconciling its chat", async () => {
+    const order: string[] = [];
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      fetchRun: async (runId, chatId) => {
+        order.push(`outcome:${chatId}:${runId}`);
+        return { id: runId, status: "complete" };
+      },
+      refreshActiveChat: async (chatId) => {
+        order.push(`chat:${chatId}`);
+        return {
+          ...chat(),
+          contextStats: { approximateActiveBranchInputTokens: 0 },
+          messages: [],
+          pageInfo: {
+            activeLeafMessageId: null,
+            beforeCursor: null,
+            hasOlder: false,
+            snapshotUpdatedAt: chat().updatedAt
+          },
+          usageStats: null
+        };
+      }
+    });
+    useRunLifecycleStore.getState().streamAmbiguous({
+      assistantMessageId: "assistant-interrupted",
+      chatId: "chat-a",
+      runId: "run-interrupted"
+    });
+
+    await expect(actions.refreshInterruptedRun("chat-a")).resolves.toBe(true);
+
+    expect(order).toEqual([
+      "outcome:chat-a:run-interrupted",
+      "chat:chat-a"
+    ]);
+    expect(actions.fetchRun).toHaveBeenCalledWith("run-interrupted", "chat-a");
+    expect(useRunLifecycleStore.getState().ambiguousFailures).toEqual({});
   });
 
   it("refreshes an ambiguous send only on user request and only in its source chat", async () => {
@@ -2451,9 +2471,7 @@ describe("message run actions", () => {
       messages: []
     });
     expect(actions.surface(createdChat.id)).toEqual({
-      events: [],
-      lastRun: null,
-      runsById: {}
+      events: []
     });
     expect(actions.session(composerSessionKey(createdChat.id))).toMatchObject({
       draft: "Question that should survive",
@@ -2497,7 +2515,6 @@ describe("message run actions", () => {
         backgroundMode: true,
         maxOutputTokens: "128000",
         reasoningEffort: "medium",
-        searchStrategyId: "search-disabled",
         streamMode: false,
         temperature: "1"
       },
@@ -2508,7 +2525,11 @@ describe("message run actions", () => {
         mode: "all_selected",
         optionIds: []
       },
-      searchStrategy: "search-disabled",
+      searchPreferencePlan: {
+        mode: "all_selected",
+        optionIds: []
+      },
+      searchPreferenceSource: "personal",
       timeZone: expect.any(String)
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
@@ -2584,7 +2605,6 @@ describe("message run actions", () => {
       useComposerControlStore.setState({
         selectedSearchOptionIds: [clientSearchOptionId],
         searchPlanMode: "model_choice",
-        selectedSearchStrategy: clientSearchOptionId
       });
       prepareRegenerationThread({
         blocks: [
@@ -2608,8 +2628,7 @@ describe("message run actions", () => {
         searchPreferencePlan: {
           mode: "model_choice",
           optionIds: [clientSearchOptionId]
-        },
-        searchStrategy: clientSearchOptionId
+        }
       });
     }
   );
@@ -2625,7 +2644,6 @@ describe("message run actions", () => {
     useComposerControlStore.setState({
       selectedSearchOptionIds: [clientSearchOptionId],
       searchPlanMode: "all_selected",
-      selectedSearchStrategy: clientSearchOptionId
     });
     prepareRegenerationThread("Original question", {
       blocks: [
@@ -2644,8 +2662,7 @@ describe("message run actions", () => {
       searchPlan: {
         mode: "all_selected",
         optionIds: [clientSearchOptionId]
-      },
-      searchStrategy: clientSearchOptionId
+      }
     });
   });
 

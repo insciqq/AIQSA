@@ -1,10 +1,5 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import type {
-  MemoryCapabilityQualification,
-  MemoryQualificationRequirement
-} from "../../../evaluation/memory/qualification";
-import { canonicalMemoryQualificationPayload } from "../../../evaluation/memory/qualification";
 import { createAdminMemoryEgressService } from "../../admin/memory/egressService";
 import { prisma } from "../../prisma";
 import { createFakeEmbeddingAdapter } from "../../providers/embeddings";
@@ -13,14 +8,10 @@ import { createPrismaMemoryExecutionService } from ".";
 import { MemoryExecutionError } from "./errors";
 import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-  memoryVectorSpaceFingerprint,
-  resolveCurrentMemoryUtilityPolicy,
-  type ResolvedMemoryExecutionTarget
+  resolveCurrentMemoryUtilityPolicy
 } from "./policy";
 
 const INITIAL_NOW = new Date("2026-08-10T12:00:00.000Z");
-const HMAC_KEY = Buffer.from("memory-execution-qualification-test-key", "utf8");
-const CORPUS_HASH = "c".repeat(64);
 const VERSIONS = {
   pipelineVersion: "memory-execution-test-v1",
   policyVersion: "memory-policy-test-v1",
@@ -50,34 +41,6 @@ const embeddingConfiguration = {
   modelClass: "embedding",
   upstreamModelId: "memory-test-embedding"
 } as const;
-
-function signQualification(
-  requirement: MemoryQualificationRequirement,
-  qualificationId = "memory-execution-qualification-v1"
-): MemoryCapabilityQualification {
-  const unsigned: MemoryCapabilityQualification = {
-    approval: {
-      approvalId: "memory-execution-approval-v1",
-      approved: true,
-      approvedAt: "2026-08-10T00:00:00.000Z",
-      approvedBy: "memory-test-operator",
-      expiresAt: "2026-09-10T00:00:00.000Z",
-      signature: "pending"
-    },
-    evidenceDigest: "e".repeat(64),
-    key: requirement,
-    qualificationId
-  };
-  return {
-    ...unsigned,
-    approval: {
-      ...unsigned.approval,
-      signature: createHmac("sha256", HMAC_KEY)
-        .update(canonicalMemoryQualificationPayload(unsigned), "utf8")
-        .digest("hex")
-    }
-  };
-}
 
 function completeUsage(inputTokens: number): {
   cachedInputTokens: number;
@@ -119,6 +82,7 @@ async function createEmbeddingFixture() {
   const connectionConfiguration = {
     allowPrivateNetwork: false,
     apiRoot: "https://memory-provider.example.test/v1",
+    authenticationMode: "bearer",
     responseTimeoutMs: 30_000
   };
 
@@ -181,7 +145,6 @@ async function createEmbeddingFixture() {
       activatedAt: INITIAL_NOW,
       capabilities: embeddingConfiguration.capabilities,
       connectionId,
-      contextWindow: 32_768,
       defaultParams: {},
       displayName: "Memory test embedding",
       draftConfig: embeddingConfiguration,
@@ -268,22 +231,6 @@ describe("Prisma Memory execution", () => {
       });
       const target = initialPolicy.targets.get("MEMORY_DOCUMENT_EMBED");
       expect(target).toBeDefined();
-      const requirement: MemoryQualificationRequirement = {
-        ...target!.qualificationFingerprints,
-        corpusHash: CORPUS_HASH,
-        corpusVersion: "memory-test-corpus-v1",
-        language: "RU",
-        pipelineVersion: VERSIONS.pipelineVersion,
-        policyVersion: VERSIONS.policyVersion,
-        promptVersion: VERSIONS.promptVersion,
-        retrievalConfigFingerprint: VERSIONS.retrievalConfigFingerprint,
-        role: "MEMORY_DOCUMENT_EMBED",
-        schemaVersion: VERSIONS.schemaVersion,
-        scorerVersion: "memory-test-scorer-v1",
-        suiteVersion: "memory-test-suite-v1",
-        vectorSpaceFingerprint: memoryVectorSpaceFingerprint(target!)
-      };
-      const qualification = signQualification(requirement);
       await prisma.userMemorySettings.update({
         data: {
           acceptedUtilityEgressAt: INITIAL_NOW,
@@ -294,16 +241,7 @@ describe("Prisma Memory execution", () => {
       });
       const service = createPrismaMemoryExecutionService({
         egressConsentMode: "PER_USER",
-        now: () => new Date(clock),
-        qualification: {
-          corpusHash: CORPUS_HASH,
-          corpusVersion: "memory-test-corpus-v1",
-          registry: [qualification],
-          scorerVersion: "memory-test-scorer-v1",
-          suiteVersion: "memory-test-suite-v1",
-          verifySignature: (payload, signature) =>
-            createHmac("sha256", HMAC_KEY).update(payload, "utf8").digest("hex") === signature
-        }
+        now: () => new Date(clock)
       }, prisma);
       const job = await createPrismaMemoryJobRepository(prisma).enqueue(fixture.userId, {
         idempotencyFingerprint: `memory-execution-job-${randomUUID()}`,
@@ -512,16 +450,6 @@ describe("Prisma Memory execution", () => {
 
   it("parks ADMIN work on destination drift and resumes after exact administrator acknowledgment", async () => {
     const fixture = await createEmbeddingFixture();
-    const qualifications: MemoryCapabilityQualification[] = [];
-    const authority = {
-      corpusHash: CORPUS_HASH,
-      corpusVersion: "memory-test-corpus-v1",
-      registry: qualifications,
-      scorerVersion: "memory-test-scorer-v1",
-      suiteVersion: "memory-test-suite-v1",
-      verifySignature: (payload: string, signature: string) =>
-        createHmac("sha256", HMAC_KEY).update(payload, "utf8").digest("hex") === signature
-    };
     let coordinatorKicks = 0;
     const adminPolicy = createAdminMemoryEgressService(prisma, {
       consentMode: "ADMIN",
@@ -530,27 +458,6 @@ describe("Prisma Memory execution", () => {
       }
     });
 
-    const qualify = (target: ResolvedMemoryExecutionTarget) => {
-      const requirement: MemoryQualificationRequirement = {
-        ...target.qualificationFingerprints,
-        corpusHash: CORPUS_HASH,
-        corpusVersion: "memory-test-corpus-v1",
-        language: "RU",
-        pipelineVersion: VERSIONS.pipelineVersion,
-        policyVersion: VERSIONS.policyVersion,
-        promptVersion: VERSIONS.promptVersion,
-        retrievalConfigFingerprint: VERSIONS.retrievalConfigFingerprint,
-        role: "MEMORY_DOCUMENT_EMBED",
-        schemaVersion: VERSIONS.schemaVersion,
-        scorerVersion: "memory-test-scorer-v1",
-        suiteVersion: "memory-test-suite-v1",
-        vectorSpaceFingerprint: memoryVectorSpaceFingerprint(target)
-      };
-      qualifications.push(signQualification(
-        requirement,
-        `memory-execution-admin-qualification-${qualifications.length + 1}`
-      ));
-    };
     const accept = async () => {
       const observed = await adminPolicy.get();
       expect(observed.reviewRequired).toBe(true);
@@ -581,11 +488,9 @@ describe("Prisma Memory execution", () => {
         where: { id: "installation" }
       });
       const initialTarget = await currentTarget();
-      qualify(initialTarget);
       const service = createPrismaMemoryExecutionService({
         egressConsentMode: "ADMIN",
-        now: () => INITIAL_NOW,
-        qualification: authority
+        now: () => INITIAL_NOW
       }, prisma);
       const job = await createPrismaMemoryJobRepository(prisma).enqueue(fixture.userId, {
         idempotencyFingerprint: `memory-admin-consent-job-${randomUUID()}`,
@@ -609,6 +514,7 @@ describe("Prisma Memory execution", () => {
       const changedConfiguration = {
         allowPrivateNetwork: false,
         apiRoot: "https://memory-provider-rotated.example.test/v1",
+        authenticationMode: "bearer",
         responseTimeoutMs: 30_000
       };
       await prisma.providerConnection.update({
@@ -633,7 +539,6 @@ describe("Prisma Memory execution", () => {
       });
       const driftedTarget = await currentTarget();
       expect(driftedTarget.destinationFingerprint).not.toBe(initialTarget.destinationFingerprint);
-      qualify(driftedTarget);
 
       await expect(bind(1)).rejects.toMatchObject({
         code: "memory_execution_egress_consent_required"

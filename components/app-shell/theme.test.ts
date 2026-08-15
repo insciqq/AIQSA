@@ -31,15 +31,11 @@ describe("theme preferences", () => {
   });
 
   it.each([
-    ["aiqsa", "dark"],
-    ["graphite", "dark"],
-    ["verdant", "dark"],
-    ["classic-dark", "dark"],
-    ["neutral", "light"],
-    ["paper", "light"],
     ["dark", "dark"],
     ["light", "light"],
     ["system", "system"],
+    ["removed-theme", "system"],
+    ["unknown-theme", "system"],
     ["unknown", "system"],
     [undefined, "system"]
   ] as const)("normalizes %s to %s", (value, expected) => {
@@ -53,18 +49,18 @@ describe("theme preferences", () => {
     expect(resolveThemeColorScheme("light", true)).toBe("light");
   });
 
-  it("migrates a valid legacy local preference and repairs first-paint storage", () => {
-    window.localStorage.setItem(AIQSA_THEME_STORAGE_KEY, "classic-dark");
+  it("repairs an unsupported local preference to System", () => {
+    window.localStorage.setItem(AIQSA_THEME_STORAGE_KEY, "removed-theme");
     document.documentElement.dataset.theme = "light";
     document.documentElement.dataset.colorScheme = "light";
 
-    expect(storedThemeId()).toBe("dark");
-    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("dark");
-    expect(document.cookie).toContain(`${AIQSA_THEME_COOKIE_NAME}=dark`);
+    expect(storedThemeId()).toBe("system");
+    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("system");
+    expect(document.cookie).toContain(`${AIQSA_THEME_COOKIE_NAME}=system`);
   });
 
-  it("uses the normalized server value when local state is absent", () => {
-    document.documentElement.dataset.theme = "paper";
+  it("uses a current server value when local state is absent", () => {
+    document.documentElement.dataset.theme = "light";
     document.documentElement.dataset.colorScheme = "light";
 
     expect(storedThemeId()).toBe("light");
@@ -81,10 +77,10 @@ describe("theme preferences", () => {
   });
 
   it("stores and applies an explicit selection", () => {
-    expect(applyAndRememberThemeId("neutral")).toBe("light");
-    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("light");
-    expect(document.documentElement.dataset.theme).toBe("light");
-    expect(document.documentElement.dataset.colorScheme).toBe("light");
+    expect(applyAndRememberThemeId("dark")).toBe("dark");
+    expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.colorScheme).toBe("dark");
   });
 
   it("applies System using the live media preference without persisting", () => {

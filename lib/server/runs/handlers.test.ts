@@ -3,27 +3,25 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { getAuthConfig } from "../auth/config";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { createTestAuth } from "../auth/testRequestAuth";
+import {
+  ProviderAdmissionError,
+  type ProviderAdmissionPlan
+} from "../providerRuntime/admission";
 import { createFakeProviderAdapter } from "../providers/fakeProvider";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
-import { createOpenAIResponsesAdapter, type OpenAIResponsesClient } from "../providers/openaiResponses";
-import {
-  createFakeOpenRouterPerplexitySearchAdapter,
-  createOpenRouterChatAdapter,
-  type OpenRouterChatClient
-} from "../providers/openRouterChat";
 import type {
   ProviderAdapter,
   ProviderConversationMessage,
   ProviderModelCapabilities,
-  ProviderRunRefreshResult,
-  ProviderSearchAdapter
+  ProviderRunRefreshResult
 } from "../providers/types";
 import { activeRunControllerRegistry, activeRunControllersForTest } from "./runExecution";
 import {
   createCancelModelRunHandler,
-  createGetModelRunHandler,
-  createRegenerateModelRunHandler,
-  createSendMessageHandler
+  createGetModelRunHandler as createProductionGetModelRunHandler,
+  createRegenerateModelRunHandler as createProductionRegenerateModelRunHandler,
+  createSendMessageHandler as createProductionSendMessageHandler,
+  type RunHandlerDeps
 } from "./handlers";
 import { reconcileStaleRuns, resetBootOrphanSweepForTest } from "./runRecovery";
 import {
@@ -48,8 +46,7 @@ const config = getAuthConfig({
 const auth = createTestAuth({ user: { id: config.bootstrapUserId } });
 const authDeps = {
   getConfig: () => config,
-  resolveAuth: auth.resolveAuth,
-  searchProviders: {} as Record<string, ProviderSearchAdapter>
+  resolveAuth: auth.resolveAuth
 };
 
 const entitledFakeModel: ResolvedEntitlements = {
@@ -57,6 +54,187 @@ const entitledFakeModel: ResolvedEntitlements = {
   providerKeys: new Set(),
   searchStrategies: new Set()
 };
+
+const repositoryHarnesses = new WeakMap<
+  RunRepository,
+  Readonly<{
+    entitlements: ResolvedEntitlements;
+    modelCapabilities: ProviderModelCapabilities;
+  }>
+>();
+
+function currentAdmissionPlan(
+  input: Parameters<NonNullable<RunHandlerDeps["providerAdmission"]>["load"]>[0],
+  modelCapabilities: ProviderModelCapabilities
+): ProviderAdmissionPlan {
+  const adapterKind = input.providerConnectionId === "openrouter"
+    ? "openrouter_chat_completions" as const
+    : input.providerConnectionId === "fake"
+      ? "fake" as const
+      : "openai_responses_native" as const;
+  const fake = adapterKind === "fake";
+  const defaultParams = {};
+  const openRouterRouting = adapterKind === "openrouter_chat_completions"
+    ? { mode: "automatic" as const, providers: [] as [] }
+    : undefined;
+
+  return {
+    answer: {
+      credentialSource: "default",
+      modelConfiguration: {
+        adapterKind,
+        capabilities: modelCapabilities,
+        defaultParams,
+        ...(openRouterRouting ? { openRouterRouting } : {})
+      },
+      snapshot: {
+        connection: {
+          allowPrivateNetwork: fake,
+          apiRoot: fake ? "http://127.0.0.1" : "https://api.example.test/v1",
+          authenticationMode: fake ? "none" : "bearer",
+          responseTimeoutMs: 300_000
+        },
+        connectionDisplayName: input.providerConnectionId,
+        connectionId: input.providerConnectionId,
+        credentialId: fake ? null : `credential:${input.providerConnectionId}`,
+        credentialVersionId: fake
+          ? null
+          : `credential-version:${input.providerConnectionId}`,
+        model: fake
+          ? {
+              adapterKind: "fake",
+              capabilities: modelCapabilities,
+              defaultParams,
+              upstreamModelId: input.providerModelId
+            }
+          : {
+              adapterKind,
+              answerSelectable: true,
+              capabilities: modelCapabilities,
+              defaultParams,
+              modelClass: "answer",
+              ...(openRouterRouting ? { openRouterRouting } : {}),
+              upstreamModelId: input.providerModelId
+            },
+        modelDisplayName: input.providerModelId,
+        providerFamily: input.providerConnectionId,
+        providerModelId: input.providerModelId,
+        version: 1
+      }
+    },
+    fingerprint: "f".repeat(64),
+    requestedSearchPlan: input.searchPlan,
+    ...(input.searchPreferenceSource
+      ? {
+          requestedSearchPreferencePlan: input.searchPreferencePlan,
+          requestedSearchPreferenceSource: input.searchPreferenceSource
+        }
+      : {}),
+    searches: [],
+    selection: {
+      providerConnectionId: input.providerConnectionId,
+      providerModelId: input.providerModelId
+    },
+    userId: input.userId
+  };
+}
+
+function withTestRuntime(deps: RunHandlerDeps): RunHandlerDeps {
+  const harness = repositoryHarnesses.get(deps.repository);
+  return {
+    ...deps,
+    allowFakeProvider: deps.allowFakeProvider ?? true,
+    providerAdmission: deps.providerAdmission ?? {
+      async load(input) {
+        if (!harness) {
+          if (!deps.providers[input.providerConnectionId]) {
+            throw new ProviderAdmissionError("model_not_available");
+          }
+          if (input.searchPlan.optionIds.length > 0) {
+            throw new ProviderAdmissionError("search_strategy_not_available");
+          }
+          return currentAdmissionPlan(input, {
+            nativePdfInput: false,
+            nativeSearch: false,
+            pdf: true,
+            reasoning: true,
+            streaming: true,
+            toolCalling: true,
+            vision: true
+          });
+        }
+        const modelKey = `${input.providerConnectionId}:${input.providerModelId}`;
+        if (
+          !harness.entitlements.providerKeys.has(input.providerConnectionId) &&
+          !harness.entitlements.modelKeys.has(modelKey)
+        ) {
+          throw new ProviderAdmissionError("model_not_available");
+        }
+        if (input.searchPlan.optionIds.length > 0) {
+          throw new ProviderAdmissionError("search_strategy_not_available");
+        }
+        return currentAdmissionPlan(input, harness.modelCapabilities);
+      }
+    },
+    providerRuntime: deps.providerRuntime ?? {
+      async resolve(runId, role) {
+        if (role === "search") throw new Error("provider_run_binding_not_found");
+        const run = await deps.repository.getRunControlForUser(runId, config.bootstrapUserId);
+        const adapter = run
+          ? deps.providers[run.provider]
+          : Object.values(deps.providers)[0];
+        if (!adapter) throw new Error("provider_run_binding_not_found");
+        return { adapter, responseTimeoutMs: 300_000 };
+      }
+    }
+  };
+}
+
+async function withCurrentSearchPlan(request: Request): Promise<Request> {
+  const declaredLength = Number(request.headers.get("content-length") ?? "0");
+  if (!request.body || !Number.isSafeInteger(declaredLength) || declaredLength > 1024 * 1024) {
+    return request;
+  }
+  try {
+    const body = await request.clone().json() as Record<string, unknown>;
+    if (
+      !body ||
+      typeof body !== "object" ||
+      "searchPlan" in body ||
+      typeof body.assistantId === "string"
+    ) {
+      return request;
+    }
+    const headers = new Headers(request.headers);
+    headers.delete("content-length");
+    headers.set("content-type", "application/json");
+    return new Request(request, {
+      body: JSON.stringify({
+        ...body,
+        searchPlan: { mode: "all_selected", optionIds: [] }
+      }),
+      headers
+    });
+  } catch {
+    return request;
+  }
+}
+
+function createSendMessageHandler(deps: RunHandlerDeps) {
+  const handler = createProductionSendMessageHandler(withTestRuntime(deps));
+  return async (...args: Parameters<typeof handler>) =>
+    handler(await withCurrentSearchPlan(args[0]), args[1]);
+}
+
+function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
+  const handler = createProductionRegenerateModelRunHandler(withTestRuntime(deps));
+  return async (...args: Parameters<typeof handler>) =>
+    handler(await withCurrentSearchPlan(args[0]), args[1]);
+}
+
+function createGetModelRunHandler(deps: RunHandlerDeps) {
+  return createProductionGetModelRunHandler(withTestRuntime(deps));
+}
 
 function authCookie() {
   return auth.cookie;
@@ -133,7 +311,6 @@ function createMemoryRepository(
     created: Parameters<RunRepository["createRun"]>[0] | null;
     events: { event: ModelRunSseEvent; sequence: number }[];
     failed: { error: { code: string; message: string }; runId: string } | null;
-    providerCancelPreview: Record<string, unknown> | null;
     providerResponseId: string | null;
     recoverySettled: boolean;
     recentActiveRun: (ReturnType<typeof activeRunRecord> & { updatedAt: Date }) | null;
@@ -141,7 +318,6 @@ function createMemoryRepository(
     searchRuns: Parameters<RunRepository["createSearchRun"]>[0][];
     staleActiveRuns: (ReturnType<typeof activeRunRecord> & { updatedAt: Date })[];
     toolCalls: PersistedToolLoopCall[];
-    updatedProviderRequestPreview: Record<string, unknown> | null;
   } = {
     assistantText: "",
     assistantTextWrites: 0,
@@ -151,15 +327,13 @@ function createMemoryRepository(
     created: null,
     events: [],
     failed: null,
-    providerCancelPreview: null,
     providerResponseId: null,
     recoverySettled: false,
     recentActiveRun: null,
     regenerated: null,
     searchRuns: [],
     staleActiveRuns: [],
-    toolCalls: [],
-    updatedProviderRequestPreview: null
+    toolCalls: []
   };
   const repository: RunRepository = {
     admitPreparingRun: async () => {
@@ -174,7 +348,8 @@ function createMemoryRepository(
       state.assistantText = text;
       state.assistantTextWrites += 1;
     },
-    appendRunEvent: async (_runId, sequence, event) => {
+    appendRunOutputEvent: async (_runId, event) => {
+      const sequence = state.events.reduce((max, entry) => Math.max(max, entry.sequence), -1) + 1;
       state.events.push({ event, sequence });
     },
     beginPreparingRunAttempt: async () => false,
@@ -269,14 +444,7 @@ function createMemoryRepository(
       state.completed = input;
       state.providerResponseId = input.providerResponseId ?? null;
       let sequence = state.events.reduce((max, entry) => Math.max(max, entry.sequence), -1) + 1;
-      for (const event of [
-        ...(input.eventsBeforeTerminal ?? []),
-        { data: input.usage, type: "usage" as const },
-        {
-          data: { runId: input.runId, status: "complete" as const },
-          type: "done" as const
-        }
-      ]) {
+      for (const event of input.outputEvents ?? []) {
         state.events.push({ event, sequence });
         sequence += 1;
       }
@@ -326,8 +494,6 @@ function createMemoryRepository(
     failRun: async (runId, _assistantMessageId, error, options) => {
       state.failed = { error, runId };
       state.recoverySettled = options?.recoveryTerminal === true;
-      const sequence = state.events.reduce((max, entry) => Math.max(max, entry.sequence), -1) + 1;
-      state.events.push({ event: { data: error, type: "error" }, sequence });
       return true;
     },
     findOwnedChat: async (chatId, userId) =>
@@ -403,58 +569,18 @@ function createMemoryRepository(
                   : "streaming"
           }
         : null,
-    getRunForUser: async (runId, userId) =>
+    getRunOutcomeForUser: async (runId, userId) =>
       runId === "run-1" && userId === config.bootstrapUserId
-        ? (() => {
-            const usage = state.completed?.usage;
-            const inputTokens = usage?.inputTokens ?? 0;
-            const outputTokens = usage?.outputTokens ?? 0;
-
-            return {
-              cachedInputTokens: usage?.cachedInputTokens ?? 0,
-              cacheWriteInputTokens: usage?.cacheWriteInputTokens ?? 0,
-              errorPayload: state.cancelled
-                ? {
-                    ...state.cancelled,
-                    ...(state.providerCancelPreview
-                      ? { providerCancelPreview: state.providerCancelPreview }
-                      : {})
-                  }
+        ? {
+            id: runId,
+            status: state.cancelled
+              ? "cancelled"
+              : state.completed
+                ? "complete"
                 : state.failed
-                  ? {
-                      ...state.failed.error,
-                      ...(state.recoverySettled ? { recoveryTerminal: true } : {})
-                    }
-                  : null,
-              events: state.events.map(({ event, sequence }) => ({
-                eventType: event.type,
-                payload: event.data,
-                sequence
-              })),
-              estimatedCostMicros: state.completed?.estimatedCostMicros ?? null,
-              finalProviderResponsePreview: state.completed?.finalProviderResponsePreview ?? null,
-              id: runId,
-              inputTokens,
-              modelId: state.created?.modelId ?? "fake-qsa",
-              normalizedRequest: state.created?.normalizedRequest ?? null,
-              outputTokens,
-              provider: state.created?.provider ?? "fake",
-              providerRequestPreview:
-                state.updatedProviderRequestPreview ?? state.created?.providerRequestPreview ?? null,
-              reasoningTokens: usage?.reasoningTokens ?? 0,
-              searchRuns: state.searchRuns,
-              status: state.cancelled
-                ? "cancelled"
-                : state.completed
-                  ? "complete"
-                  : state.failed
-                    ? "error"
-                    : "streaming",
-              toolCalls: [],
-              totalTokens: usage?.totalTokens ?? inputTokens + outputTokens,
-              usage: state.completed?.usage ?? null
-            };
-          })()
+                  ? "error"
+                  : "streaming"
+          }
         : null,
     getChatUpdateForRun: async ({ assistantMessageId, chatId, userId, userMessageId }) =>
       userId === config.bootstrapUserId && state.completed
@@ -507,30 +633,6 @@ function createMemoryRepository(
         : null,
     recoverPreparingRun: async () => "not_preparing",
     isSearchStrategyEnabled: async () => true,
-    loadSearchStrategyConfiguration: async (searchStrategyId) => ({
-      config: {
-        executor: {
-          modelId: "perplexity/sonar-pro-search",
-          provider: "openrouter"
-        },
-        params: {
-          maxOutputTokens: 1024,
-          temperature: 0
-        },
-        routeProvider: {
-          allowFallbacks: true,
-          dataCollection: "deny",
-          order: ["perplexity"],
-          requireParameters: false,
-          sort: "throughput",
-          zdr: false
-        }
-      },
-      kind: "perplexity_tool_search",
-      modelId: "perplexity/sonar-pro-search",
-      provider: "openrouter",
-      strategyId: searchStrategyId
-    }),
     loadConversationContext: async () => conversationContext,
     loadConversationContextForExpectedLeaf: async (_chatId, _userId, expectedActiveLeafMessageId) =>
       expectedActiveLeafMessageId === (conversationContext.at(-1)?.id ?? null)
@@ -559,16 +661,10 @@ function createMemoryRepository(
         storageKey: `storage/${id}`
       })),
     loadEntitlements: async () => entitlements,
-    loadModelConfiguration: async () => ({
-      capabilities: modelCapabilities,
-      defaultParams: {}
-    }),
     loadModelPricing: async () => modelPricing,
     loadRunUsageAttributions: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
     markAssistantMessageGroundedLiveOnly: async () => true,
-    nextRunEventSequence: async () =>
-      state.events.reduce((max, event) => Math.max(max, event.sequence), -1) + 1,
     persistToolLoopCallBatch: async (input) => {
       const existing = state.toolCalls.filter((call) => call.roundIndex === input.roundIndex);
       if (existing.length > 0) return { calls: existing, kind: "reused" };
@@ -613,10 +709,7 @@ function createMemoryRepository(
       state.providerResponseId = input.providerResponseId ?? state.providerResponseId;
       state.recoverySettled = true;
       let sequence = state.events.reduce((max, event) => Math.max(max, event.sequence), -1) + 1;
-      for (const event of [
-        ...input.events,
-        { data: input.error, type: "error" as const }
-      ]) {
+      for (const event of input.outputEvents) {
         state.events.push({ event, sequence });
         sequence += 1;
       }
@@ -641,23 +734,10 @@ function createMemoryRepository(
     updateRunProviderResponseId: async (_runId, providerResponseId) => {
       state.providerResponseId = providerResponseId;
       return "published";
-    },
-    updateRunProviderRequestPreview: async (_runId, providerRequestPreview) => {
-      state.updatedProviderRequestPreview = providerRequestPreview;
-    },
-    updateCancelledRunProviderPreview: async (input) => {
-      if (
-        input.runId !== "run-1" ||
-        input.userId !== config.bootstrapUserId ||
-        !state.cancelled
-      ) {
-        return false;
-      }
-
-      state.providerCancelPreview = input.providerCancelPreview;
-      return true;
     }
   };
+
+  repositoryHarnesses.set(repository, { entitlements, modelCapabilities });
 
   return { repository, state };
 }
@@ -687,12 +767,10 @@ function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
     chatId: "chat-1",
     content: { blocks: [] },
     defaults: {
-      controlDefaults: {
-        searchStrategyId: "search-disabled"
-      },
+      controlDefaults: {},
       modelId: "gpt-5.5",
       provider: "openai",
-      searchStrategy: "search-disabled",
+      searchPlan: { mode: "all_selected", optionIds: [] },
       userId: config.bootstrapUserId
     },
     expectedActiveLeafId: null,
@@ -701,6 +779,8 @@ function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
       attachmentIds: [],
       chatId: "chat-1",
       content: { blocks: [] },
+      knowledgePlan: { baseIds: [] },
+      toolMode: "auto",
       modelCapabilities: {
         nativePdfInput: false,
         nativeSearch: true,
@@ -715,221 +795,12 @@ function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
         system: null
       },
       provider: "openai",
-      searchStrategy: "search-disabled"
+      searchPlan: { mode: "all_selected", options: [] }
     },
     provider: "openai",
     providerRequestPreview: {},
     userId: config.bootstrapUserId
   };
-}
-
-function createOpenRouterToolHarness(
-  responses: Record<string, unknown>[],
-  searchStrategies: Set<string> = new Set(["perplexity-tool-search"]),
-  searchAdapter = createFakeOpenRouterPerplexitySearchAdapter(),
-  modelCapabilities: ProviderModelCapabilities = {
-    nativePdfInput: false,
-    nativeSearch: false,
-    parallelToolCalls: false,
-    pdf: true,
-    reasoning: true,
-    streaming: true,
-    toolCalling: true,
-    vision: true
-  }
-) {
-  const bodies: Record<string, unknown>[] = [];
-  const client: OpenRouterChatClient = {
-    createChatCompletion: async (body) => {
-      bodies.push(body);
-      const next = responses.shift();
-      if (!next) {
-        throw new Error("unexpected_openrouter_request");
-      }
-
-      return next;
-    }
-  };
-  const { repository, state } = createMemoryRepository(
-    {
-      modelKeys: new Set(["openrouter:anthropic/claude-opus-4.8"]),
-      providerKeys: new Set(),
-      searchStrategies
-    },
-    [
-      {
-        content: {
-          blocks: [{ text: "Какая последняя модель Anthropic?", type: "text" }]
-        },
-        id: "previous-user-message",
-        role: "user"
-      }
-    ],
-    {
-      inputTokenPriceMicros: 2,
-      outputTokenPriceMicros: 8
-    },
-    modelCapabilities
-  );
-  const POST = createSendMessageHandler({
-    ...authDeps,
-    providers: {
-      openrouter: createOpenRouterChatAdapter({ client })
-    },
-    repository,
-    searchProviders: {
-      openrouter: searchAdapter
-    }
-  });
-
-  return { bodies, POST, state };
-}
-
-async function sendOpenRouterToolMessage(
-  POST: ReturnType<typeof createSendMessageHandler>,
-  text: string,
-  searchStrategy = "perplexity-tool-search"
-): Promise<Response> {
-  return POST(
-    new Request("http://app.local/api/chats/chat-1/messages", {
-      body: JSON.stringify({
-        modelId: "anthropic/claude-opus-4.8",
-        params: {
-          maxTokens: 128,
-          provider: {
-            only: ["Anthropic"],
-            order: ["anthropic"]
-          },
-          stream: true
-        },
-        provider: "openrouter",
-        searchStrategy,
-        text
-      }),
-      headers: {
-        cookie: authCookie()
-      },
-      method: "POST"
-    }),
-    {
-      params: {
-        chatId: "chat-1"
-      }
-    }
-  );
-}
-
-function createOpenAIToolHarness(responses: Record<string, unknown>[]) {
-  const bodies: Record<string, unknown>[] = [];
-  const nextResponse = () => {
-    const next = responses.shift();
-    if (!next) {
-      throw new Error("unexpected_openai_request");
-    }
-    return next;
-  };
-  const client: OpenAIResponsesClient = {
-    cancel: async () => ({}),
-    create: async (body) => {
-      bodies.push(body);
-      return nextResponse();
-    },
-    retrieve: async () => ({}),
-    stream: async (body) => {
-      bodies.push(body);
-      const response = nextResponse();
-      const id = typeof response.id === "string" ? response.id : "response-test";
-      return new Response([
-        `event: response.created\ndata: ${JSON.stringify({
-          response: { id, status: "in_progress" },
-          type: "response.created"
-        })}\n\n`,
-        `event: response.completed\ndata: ${JSON.stringify({
-          response,
-          type: "response.completed"
-        })}\n\n`
-      ].join(""), {
-        headers: { "content-type": "text/event-stream" }
-      });
-    }
-  };
-  const { repository, state } = createMemoryRepository(
-    {
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set(["perplexity-tool-search"])
-    },
-    [
-      {
-        content: {
-          blocks: [{ text: "Какая последняя модель Anthropic?", type: "text" }]
-        },
-        id: "previous-user-message",
-        role: "user"
-      }
-    ],
-    {
-      inputTokenPriceMicros: 2,
-      outputTokenPriceMicros: 8
-    },
-    {
-      backgroundStreaming: true,
-      nativePdfInput: false,
-      nativeBackground: true,
-      nativeSearch: true,
-      parallelToolCalls: false,
-      pdf: true,
-      reasoning: true,
-      streaming: true,
-      toolCalling: true,
-      vision: true
-    }
-  );
-  const POST = createSendMessageHandler({
-    ...authDeps,
-    providers: {
-      openai: createOpenAIResponsesAdapter({ client, pollIntervalMs: 0 })
-    },
-    repository,
-    searchProviders: {
-      openrouter: createFakeOpenRouterPerplexitySearchAdapter()
-    }
-  });
-
-  return { bodies, POST, state };
-}
-
-async function sendOpenAIToolMessage(
-  POST: ReturnType<typeof createSendMessageHandler>,
-  text: string
-): Promise<Response> {
-  return POST(
-    new Request("http://app.local/api/chats/chat-1/messages", {
-      body: JSON.stringify({
-        modelId: "gpt-5.5",
-        params: {
-          background: true,
-          maxOutputTokens: 128,
-          reasoning: {
-            effort: "medium"
-          },
-          stream: true
-        },
-        provider: "openai",
-        searchStrategy: "perplexity-tool-search",
-        text
-      }),
-      headers: {
-        cookie: authCookie()
-      },
-      method: "POST"
-    }),
-    {
-      params: {
-        chatId: "chat-1"
-      }
-    }
-  );
 }
 
 describe("model run route handlers", () => {
@@ -1070,7 +941,7 @@ describe("model run route handlers", () => {
           },
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie()
@@ -1108,7 +979,7 @@ describe("model run route handlers", () => {
           },
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie()
@@ -1155,7 +1026,7 @@ describe("model run route handlers", () => {
           },
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie()
@@ -1215,7 +1086,7 @@ describe("model run route handlers", () => {
           },
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: { cookie: authCookie() },
         method: "POST"
@@ -1240,21 +1111,6 @@ describe("model run route handlers", () => {
       providerKeys: new Set(["openai"]),
       searchStrategies: new Set()
     });
-    repository.loadModelConfiguration = async (provider, modelId) =>
-      provider === "openai" && modelId === "gpt-5.5"
-        ? {
-            capabilities: {
-              contextWindow: 400000,
-              nativePdfInput: false,
-              nativeSearch: true,
-              pdf: true,
-              reasoning: true,
-              streaming: true,
-              vision: true
-            },
-            defaultParams: {}
-          }
-        : null;
     const provider: ProviderAdapter = {
       buildRequestPreview: vi.fn(() => ({
         provider: "openai"
@@ -1284,6 +1140,7 @@ describe("model run route handlers", () => {
         body: JSON.stringify({
           modelId: "gpt-5.5",
           provider: "openai",
+          searchPlan: { mode: "all_selected", optionIds: [] },
           text: "Allowed catalog model"
         }),
         headers: {
@@ -1301,7 +1158,6 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(200);
     await response.text();
     expect(state.created?.modelId).toBe("gpt-5.5");
-    expect(provider.buildRequestPreview).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -1314,7 +1170,6 @@ describe("model run route handlers", () => {
       providerKeys,
       searchStrategies: new Set()
     });
-    repository.loadModelConfiguration = async () => null;
     const provider: ProviderAdapter = {
       buildRequestPreview: vi.fn(() => ({
         provider: "openai"
@@ -1325,6 +1180,11 @@ describe("model run route handlers", () => {
     };
     const POST = createSendMessageHandler({
       ...authDeps,
+      providerAdmission: {
+        async load() {
+          throw new ProviderAdmissionError("model_not_available");
+        }
+      },
       providers: {
         openai: provider
       },
@@ -1335,6 +1195,7 @@ describe("model run route handlers", () => {
         body: JSON.stringify({
           modelId,
           provider: "openai",
+          searchPlan: { mode: "all_selected", optionIds: [] },
           text: "Do not dispatch"
         }),
         headers: {
@@ -1374,7 +1235,7 @@ describe("model run route handlers", () => {
           },
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie()
@@ -1439,7 +1300,8 @@ describe("model run route handlers", () => {
           attachments: runRequest.attachments
         };
       },
-      async *stream() {
+      async *stream(runRequest) {
+        providerAttachments = runRequest.attachments;
         return {
           finalProviderResponsePreview: {
             text: "ok"
@@ -1471,7 +1333,7 @@ describe("model run route handlers", () => {
           },
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie()
@@ -1549,7 +1411,7 @@ describe("model run route handlers", () => {
           },
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie()
@@ -1614,7 +1476,8 @@ describe("model run route handlers", () => {
           }))
         };
       },
-      async *stream() {
+      async *stream(runRequest) {
+        providerAttachments = runRequest.attachments;
         return {
           finalProviderResponsePreview: {
             text: "ok"
@@ -1655,7 +1518,7 @@ describe("model run route handlers", () => {
           },
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie()
@@ -1703,7 +1566,7 @@ describe("model run route handlers", () => {
             temperature: 0
           },
           provider: "fake",
-          searchStrategy: "search-disabled",
+          searchPlan: { mode: "all_selected", optionIds: [] },
           timeZone: "Europe/Berlin"
         }),
         headers: {
@@ -1771,7 +1634,7 @@ describe("model run route handlers", () => {
         system: expect.stringContaining("You are a helpful AI assistant. Today is ")
       },
       provider: "fake",
-      searchStrategy: "search-disabled"
+      searchPlan: { mode: "all_selected", options: [] }
     });
     expect(state.created?.normalizedRequest.prompt.system).toContain(
       "Project memory:\nProject prefers short bullet answers."
@@ -1783,17 +1646,7 @@ describe("model run route handlers", () => {
     expect(state.completed?.estimatedCostMicros).toBe(
       state.completed!.usage.inputTokens * 2 + state.completed!.usage.outputTokens * 8
     );
-    expect(state.events.find(({ event }) => event.type === "usage")?.event.data).toMatchObject({
-      estimatedCostMicros: state.completed?.estimatedCostMicros
-    });
-    expect(state.events.map(({ event }) => event.type)).toEqual([
-      "run_start",
-      "message_start",
-      "artifact",
-      "token",
-      "usage",
-      "done"
-    ]);
+    expect(state.events).toEqual([]);
   });
 
   it("passes accepted run defaults from the accepted send", async () => {
@@ -1814,7 +1667,7 @@ describe("model run route handlers", () => {
           controlDefaults: {
             maxOutputTokens: "999999",
             reasoningEffort: "high",
-            searchStrategyId: "search-disabled",
+
             streamMode: true,
             temperature: "0.4"
           },
@@ -1827,7 +1680,7 @@ describe("model run route handlers", () => {
             temperature: 0.4
           },
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie()
@@ -1855,7 +1708,6 @@ describe("model run route handlers", () => {
         mode: "all_selected",
         optionIds: []
       },
-      searchStrategy: "search-disabled",
       userId: config.bootstrapUserId
     });
     expect(state.created?.assistant).toBeUndefined();
@@ -1879,7 +1731,7 @@ describe("model run route handlers", () => {
             system: "Custom system prompt"
           },
           provider: "fake",
-          searchStrategy: "search-disabled",
+          searchPlan: { mode: "all_selected", optionIds: [] },
           text: "Custom prompt run"
         }),
         headers: {
@@ -2012,7 +1864,10 @@ describe("model run route handlers", () => {
       }),
       async *stream(runRequest) {
         expect(runRequest.params.stream).toBe(true);
-        expect(runRequest.searchStrategy).toBe("openai-native-web-search");
+        expect(runRequest.searchPlan).toMatchObject({
+          mode: "model_choice",
+          options: [{ optionId: "openai-native-web-search" }]
+        });
         yield {
           data: {
             artifactType: "summary",
@@ -2067,6 +1922,44 @@ describe("model run route handlers", () => {
     };
     const POST = createSendMessageHandler({
       ...authDeps,
+      providerAdmission: {
+        async load(input) {
+          const plan = currentAdmissionPlan(input, {
+            nativePdfInput: false,
+            nativeSearch: true,
+            pdf: true,
+            reasoning: true,
+            streaming: true,
+            vision: true
+          });
+          const optionId = "openai-native-web-search";
+          return {
+            ...plan,
+            searches: [{
+              bindingKey: null,
+              configuration: {
+                adapterKind: "answer_provider_hosted",
+                config: { maxResults: 8, queryMaxCharacters: 500, timeoutMs: 15_000 },
+                credentialMode: "answer_provider",
+                displayName: "OpenAI Web Search",
+                executionModes: ["model_choice"],
+                kind: "openai_native_web_search",
+                modelId: null,
+                protocol: "openai_responses_web_search",
+                provider: "openai",
+                providerModelId: null,
+                revisionId: "revision-hosted",
+                searchStrategyRowId: "integration-hosted",
+                strategyId: optionId
+              },
+              integrationId: "integration-hosted",
+              optionId,
+              ordinal: 0,
+              revisionId: "revision-hosted"
+            }]
+          };
+        }
+      },
       providers: {
         openai: openaiAdapter
       },
@@ -2084,7 +1977,7 @@ describe("model run route handlers", () => {
             stream: true
           },
           provider: "openai",
-          searchStrategy: "openai-native-web-search",
+          searchPlan: { mode: "model_choice", optionIds: ["openai-native-web-search"] },
           text: "Stream with search"
         }),
         headers: {
@@ -2122,15 +2015,7 @@ describe("model run route handlers", () => {
         reasoningTokens: 0
       }
     });
-    expect(state.events.map(({ event }) => event.type)).toEqual([
-      "run_start",
-      "message_start",
-      "artifact",
-      "artifact",
-      "token",
-      "usage",
-      "done"
-    ]);
+    expect(state.events).toEqual([]);
   });
 
   it.each([
@@ -2251,9 +2136,7 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(200);
     await response.text();
     expect(state.completed?.estimatedCostMicros).toBeNull();
-    expect(state.events.find(({ event }) => event.type === "usage")?.event.data).toMatchObject({
-      estimatedCostMicros: null
-    });
+    expect(state.events).toEqual([]);
   });
 
   it("trims oldest branch context for tiny context windows and emits a truncation artifact", async () => {
@@ -2315,7 +2198,7 @@ describe("model run route handlers", () => {
     );
 
     expect(response.status).toBe(200);
-    await response.text();
+    const liveEvents = parseSse(await response.text());
     expect(state.created?.normalizedRequest.context?.messages.map((message) => message.id)).toEqual([
       "recent-user",
       "recent-assistant",
@@ -2325,14 +2208,15 @@ describe("model run route handlers", () => {
       droppedMessages: 2,
       keptMessages: 3
     });
-    const truncationEvent = state.events.find(
-      ({ event }) => event.type === "artifact" && event.data.artifactType === "context_truncated"
-    )?.event;
+    const truncationEvent = liveEvents.find(
+      (event) => event.type === "artifact" &&
+        (event.data as { artifactType?: string }).artifactType === "context_truncated"
+    );
 
     expect(truncationEvent?.type).toBe("artifact");
-    expect(truncationEvent?.type === "artifact" ? truncationEvent.data.payload : null).toMatchObject({
-      droppedMessages: 2
-    });
+    expect((truncationEvent?.data as { payload?: unknown } | undefined)?.payload)
+      .toMatchObject({ droppedMessages: 2 });
+    expect(state.events).toEqual([]);
   });
 
   it("fails before run creation when irreducible context exceeds the budget", async () => {
@@ -2401,7 +2285,7 @@ describe("model run route handlers", () => {
     expect(buildRequestPreview).not.toHaveBeenCalled();
   });
 
-  it("persists streamed tokens in batches while keeping live SSE token granularity", async () => {
+  it("checkpoints streamed text in batches while keeping live SSE token granularity", async () => {
     const { repository, state } = createMemoryRepository();
     const tokenCount = 65;
     const batchedProvider: ProviderAdapter = {
@@ -2468,10 +2352,7 @@ describe("model run route handlers", () => {
     const persistedTokenEvents = state.events.filter(({ event }) => event.type === "token");
 
     expect(liveEvents.filter((event) => event.type === "token")).toHaveLength(tokenCount);
-    expect(persistedTokenEvents).toHaveLength(Math.ceil(tokenCount / 32));
-    expect(
-      persistedTokenEvents.map(({ event }) => ("delta" in event.data ? event.data.delta : "")).join("")
-    ).toBe("x".repeat(tokenCount));
+    expect(persistedTokenEvents).toEqual([]);
     expect(state.assistantText).toBe("x".repeat(tokenCount));
     expect(state.events.map(({ sequence }) => sequence)).toEqual(state.events.map((_event, index) => index));
   });
@@ -2527,7 +2408,7 @@ describe("model run route handlers", () => {
 
     expect(liveEvents.filter((event) => event.type === "token")).toHaveLength(2);
     expect(state.assistantText).toBe("partial answer");
-    expect(state.events.filter(({ event }) => event.type === "token")).toHaveLength(1);
+    expect(state.events).toEqual([]);
     expect(state.failed).toMatchObject({
       error: {
         code: "provider_stream_failed",
@@ -2608,14 +2489,12 @@ describe("model run route handlers", () => {
     );
 
     expect(getResponse.status).toBe(200);
-    await expect(getResponse.json()).resolves.toMatchObject({
+    await expect(getResponse.json()).resolves.toEqual({
       run: {
-        errorPayload: {
-          code: "provider_stream_too_large",
-          recoveryTerminal: true
-        },
+        id: "run-1",
         status: "error"
-      }
+      },
+      version: 1
     });
     expect(refresh).not.toHaveBeenCalled();
     expect(state.assistantTextWrites).toBe(1);
@@ -2801,7 +2680,7 @@ describe("model run route handlers", () => {
           },
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie()
@@ -2819,590 +2698,6 @@ describe("model run route handlers", () => {
     const eventTypes = parseSse(await response.text()).map((event) => event.type);
     expect(eventTypes).not.toContain("chat_update");
     expect(eventTypes.slice(-2)).toEqual(["usage", "done"]);
-  });
-
-  it("lets OpenRouter answer models complete without running Perplexity when no tool is called", async () => {
-    const { bodies, POST, state } = createOpenRouterToolHarness([
-      {
-        choices: [
-          {
-            finish_reason: "stop",
-            message: {
-              content: "Direct OpenRouter answer",
-              role: "assistant"
-            }
-          }
-        ],
-        id: "or-no-tool-1",
-        model: "anthropic/claude-opus-4.8",
-        object: "chat.completion",
-        usage: {
-          completion_tokens: 4,
-          prompt_tokens: 12
-        }
-      }
-    ]);
-    const response = await sendOpenRouterToolMessage(POST, "Ответь без поиска.");
-
-    expect(response.status).toBe(200);
-    await response.text();
-
-    expect(bodies).toHaveLength(1);
-    expect(bodies[0]).toMatchObject({
-      parallel_tool_calls: false,
-      provider: {
-        only: ["Anthropic"]
-      },
-      stream: true,
-      tool_choice: "auto"
-    });
-    expect(state.searchRuns).toHaveLength(0);
-    expect(state.completed?.finalText).toBe("Direct OpenRouter answer");
-  });
-
-  it("lets OpenAI answer models complete without running Perplexity when no function tool is called", async () => {
-    const { bodies, POST, state } = createOpenAIToolHarness([
-      {
-        id: "resp-no-tool-1",
-        output: [
-          {
-            content: [
-              {
-                text: "Direct OpenAI answer",
-                type: "output_text"
-              }
-            ],
-            role: "assistant",
-            type: "message"
-          }
-        ],
-        status: "completed",
-        usage: {
-          input_tokens: 12,
-          output_tokens: 4
-        }
-      }
-    ]);
-    const response = await sendOpenAIToolMessage(POST, "Ответь без поиска.");
-
-    expect(response.status).toBe(200);
-    await response.text();
-
-    expect(bodies).toHaveLength(1);
-    expect(bodies[0]).toMatchObject({
-      background: true,
-      parallel_tool_calls: false,
-      stream: true,
-      tool_choice: "auto"
-    });
-    expect((bodies[0].tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
-      "search_via_perplexity",
-      "save_memory",
-      "list_memories",
-      "update_memory",
-      "forget_memory",
-      "mark_memory_incorrect",
-      "search_memory"
-    ]);
-    expect(JSON.stringify(bodies[0])).not.toContain("web_search");
-    expect(state.searchRuns).toHaveLength(0);
-    expect(state.completed?.finalText).toBe("Direct OpenAI answer");
-  });
-
-  it("executes Perplexity when OpenRouter emits a search_via_perplexity tool call", async () => {
-    const { bodies, POST, state } = createOpenRouterToolHarness([
-      {
-        choices: [
-          {
-            finish_reason: "tool_calls",
-            message: {
-              content: null,
-              role: "assistant",
-              tool_calls: [
-                {
-                  function: {
-                    arguments: "{\"query\":\"latest Anthropic model\"}",
-                    name: "search_via_perplexity"
-                  },
-                  id: "call-search-1",
-                  type: "function"
-                }
-              ]
-            }
-          }
-        ],
-        id: "or-tool-1",
-        model: "anthropic/claude-opus-4.8",
-        object: "chat.completion",
-        usage: {
-          completion_tokens: 1,
-          prompt_tokens: 20
-        }
-      },
-      {
-        choices: [
-          {
-            finish_reason: "stop",
-            message: {
-              content: "Anthropic latest model answer with search context.",
-              role: "assistant"
-            }
-          }
-        ],
-        id: "or-tool-final",
-        model: "anthropic/claude-opus-4.8",
-        object: "chat.completion",
-        usage: {
-          completion_tokens: 9,
-          prompt_tokens: 36
-        }
-      }
-    ]);
-    const response = await sendOpenRouterToolMessage(POST, "какая последняя модель антропика");
-
-    expect(response.status).toBe(200);
-    const events = parseSse(await response.text());
-
-    expect(bodies).toHaveLength(2);
-    expect(JSON.stringify(bodies[0])).not.toContain("Search findings from");
-    expect(bodies[0]).toMatchObject({
-      stream: true,
-      tool_choice: "auto"
-    });
-    expect((bodies[0].tools as Array<{ function: { name: string } }>).map((tool) =>
-      tool.function.name)).toEqual([
-      "search_via_perplexity",
-      "save_memory",
-      "list_memories",
-      "update_memory",
-      "forget_memory",
-      "mark_memory_incorrect",
-      "search_memory"
-    ]);
-    expect(JSON.stringify(bodies[0].messages)).toContain("Какая последняя модель Anthropic?");
-    expect(JSON.stringify(bodies[1].messages)).toContain("tool_call_id");
-    expect(JSON.stringify(bodies[1].messages)).toContain("Fake Perplexity search findings");
-    expect(state.searchRuns).toHaveLength(1);
-    expect(state.searchRuns[0]).toMatchObject({
-      modelId: "perplexity/sonar-pro-search",
-      provider: "openrouter",
-      status: "complete",
-      strategyId: "perplexity-tool-search"
-    });
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          artifactType: "tool_call",
-          payload: expect.objectContaining({
-            name: "search_via_perplexity"
-          })
-        }),
-        type: "artifact"
-      })
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          artifactType: "search"
-        }),
-        type: "artifact"
-      })
-    );
-    expect(state.completed?.finalText).toBe("Anthropic latest model answer with search context.");
-  });
-
-  it("allows the maximum tool searches plus a final synthesis and sums usage", async () => {
-    const toolCallResponse = (id: string, query: string, promptTokens: number) => ({
-      choices: [
-        {
-          finish_reason: "tool_calls",
-          message: {
-            content: null,
-            role: "assistant",
-            tool_calls: [
-              {
-                function: {
-                  arguments: JSON.stringify({ query }),
-                  name: "search_via_perplexity"
-                },
-                id,
-                type: "function"
-              }
-            ]
-          }
-        }
-      ],
-      id: `or-${id}`,
-      model: "anthropic/claude-opus-4.8",
-      object: "chat.completion",
-      usage: {
-        completion_tokens: 1,
-        prompt_tokens: promptTokens
-      }
-    });
-    const { bodies, POST, state } = createOpenRouterToolHarness([
-      toolCallResponse("call-search-1", "first", 20),
-      toolCallResponse("call-search-2", "second", 30),
-      toolCallResponse("call-search-3", "third", 40),
-      {
-        choices: [
-          {
-            finish_reason: "stop",
-            message: {
-              content: "Final answer after three searches.",
-              role: "assistant"
-            }
-          }
-        ],
-        id: "or-tool-final",
-        model: "anthropic/claude-opus-4.8",
-        object: "chat.completion",
-        usage: {
-          completion_tokens: 5,
-          prompt_tokens: 50
-        }
-      }
-    ]);
-
-    const response = await sendOpenRouterToolMessage(POST, "search three times");
-
-    expect(response.status).toBe(200);
-    await response.text();
-    expect(bodies).toHaveLength(4);
-    expect(bodies[3]).toMatchObject({
-      tool_choice: "none"
-    });
-    expect(state.searchRuns).toHaveLength(3);
-
-    const searchUsage = state.searchRuns
-      .map((run) => (run.artifacts as { usage?: { totalTokens?: number } }).usage?.totalTokens ?? 0)
-      .reduce((total, value) => total + value, 0);
-    expect(state.completed?.usage.totalTokens).toBe(20 + 1 + 30 + 1 + 40 + 1 + 50 + 5 + searchUsage);
-    expect(state.completed?.finalText).toBe("Final answer after three searches.");
-  });
-
-  it("persists failed tool searches and lets the model synthesize from the error result", async () => {
-    const failingSearchAdapter: ProviderSearchAdapter = {
-      buildRequestPreview: () => ({
-        provider: "openrouter",
-        stage: "tool_search"
-      }),
-      async search() {
-        throw new Error("perplexity timeout");
-      }
-    };
-    const { bodies, POST, state } = createOpenRouterToolHarness(
-      [
-        {
-          choices: [
-            {
-              finish_reason: "tool_calls",
-              message: {
-                content: null,
-                role: "assistant",
-                tool_calls: [
-                  {
-                    function: {
-                      arguments: "{\"query\":\"latest Anthropic model\"}",
-                      name: "search_via_perplexity"
-                    },
-                    id: "call-search-1",
-                    type: "function"
-                  }
-                ]
-              }
-            }
-          ],
-          id: "or-tool-1",
-          model: "anthropic/claude-opus-4.8",
-          object: "chat.completion",
-          usage: {
-            completion_tokens: 1,
-            prompt_tokens: 20
-          }
-        },
-        {
-          choices: [
-            {
-              finish_reason: "stop",
-              message: {
-                content: "Answer without live search.",
-                role: "assistant"
-              }
-            }
-          ],
-          id: "or-tool-final",
-          model: "anthropic/claude-opus-4.8",
-          object: "chat.completion",
-          usage: {
-            completion_tokens: 4,
-            prompt_tokens: 25
-          }
-        }
-      ],
-      new Set(["perplexity-tool-search"]),
-      failingSearchAdapter
-    );
-
-    const response = await sendOpenRouterToolMessage(POST, "search but tolerate failure");
-
-    expect(response.status).toBe(200);
-    const events = parseSse(await response.text());
-
-    expect(bodies).toHaveLength(2);
-    expect(JSON.stringify(bodies[1].messages)).toContain("Search failed: perplexity timeout");
-    expect(state.searchRuns).toHaveLength(1);
-    expect(state.searchRuns[0]).toMatchObject({
-      status: "error"
-    });
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          artifactType: "tool_result",
-          payload: expect.objectContaining({
-            message: "perplexity timeout",
-            status: "error"
-          })
-        }),
-        type: "artifact"
-      })
-    );
-    expect(state.completed?.finalText).toBe("Answer without live search.");
-  });
-
-  it("fails as context_too_large when a tool result exceeds the next answer-model budget", async () => {
-    const oversizedSearchAdapter: ProviderSearchAdapter = {
-      buildRequestPreview: () => ({
-        provider: "openrouter",
-        stage: "tool_search"
-      }),
-      async search() {
-        return {
-          artifacts: [],
-          finalProviderResponsePreview: {
-            provider: "openrouter"
-          },
-          findings: "very large search result ".repeat(1000),
-          requestPreview: {
-            provider: "openrouter"
-          },
-          sources: [{
-            rank: 1,
-            title: "Large result source",
-            url: "https://example.com/large-result"
-          }],
-          usage: {
-            inputTokens: 5,
-            outputTokens: 5,
-            reasoningTokens: 0,
-            totalTokens: 10
-          }
-        };
-      }
-    };
-    const { bodies, POST, state } = createOpenRouterToolHarness(
-      [
-        {
-          choices: [
-            {
-              finish_reason: "tool_calls",
-              message: {
-                content: null,
-                role: "assistant",
-                tool_calls: [
-                  {
-                    function: {
-                      arguments: "{\"query\":\"latest Anthropic model\"}",
-                      name: "search_via_perplexity"
-                    },
-                    id: "call-search-1",
-                    type: "function"
-                  }
-                ]
-              }
-            }
-          ],
-          id: "or-tool-1",
-          model: "anthropic/claude-opus-4.8",
-          object: "chat.completion",
-          usage: {
-            completion_tokens: 1,
-            prompt_tokens: 20
-          }
-        }
-      ],
-      new Set(["perplexity-tool-search"]),
-      oversizedSearchAdapter,
-      {
-        contextWindow: 800,
-        nativePdfInput: false,
-        nativeSearch: false,
-        pdf: true,
-        reasoning: true,
-        streaming: true,
-        vision: true
-      }
-    );
-
-    const response = await sendOpenRouterToolMessage(POST, "search with a huge result");
-
-    expect(response.status).toBe(200);
-    const events = parseSse(await response.text());
-
-    expect(bodies).toHaveLength(1);
-    expect(state.searchRuns).toHaveLength(1);
-    expect(state.searchRuns[0]).toMatchObject({
-      status: "complete"
-    });
-    expect(state.completed).toBeNull();
-    expect(state.failed?.error.code).toBe("context_too_large");
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          code: "context_too_large"
-        }),
-        type: "error"
-      })
-    );
-  });
-
-  it("executes Perplexity when OpenAI emits a search_via_perplexity function call", async () => {
-    const { bodies, POST, state } = createOpenAIToolHarness([
-      {
-        id: "resp-tool-1",
-        output: [
-          {
-            id: "rs-1",
-            summary: [],
-            type: "reasoning"
-          },
-          {
-            arguments: "{\"query\":\"latest Anthropic model\"}",
-            call_id: "call-search-1",
-            id: "fc-1",
-            name: "search_via_perplexity",
-            status: "completed",
-            type: "function_call"
-          }
-        ],
-        status: "completed",
-        usage: {
-          input_tokens: 20,
-          output_tokens: 2
-        }
-      },
-      {
-        id: "resp-tool-final",
-        output: [
-          {
-            content: [
-              {
-                text: "OpenAI synthesized answer with Perplexity search context.",
-                type: "output_text"
-              }
-            ],
-            role: "assistant",
-            type: "message"
-          }
-        ],
-        status: "completed",
-        usage: {
-          input_tokens: 40,
-          output_tokens: 8
-        }
-      }
-    ]);
-    const response = await sendOpenAIToolMessage(POST, "у тебя же поиск есть");
-
-    expect(response.status).toBe(200);
-    const events = parseSse(await response.text());
-
-    expect(bodies).toHaveLength(2);
-    expect(JSON.stringify(bodies[0])).not.toContain("Search findings from");
-    expect(JSON.stringify(bodies[0].input)).toContain("Какая последняя модель Anthropic?");
-    expect(bodies[0]).toMatchObject({
-      background: true,
-      stream: true,
-      tool_choice: "auto"
-    });
-    expect((bodies[0].tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual([
-      "search_via_perplexity",
-      "save_memory",
-      "list_memories",
-      "update_memory",
-      "forget_memory",
-      "mark_memory_incorrect",
-      "search_memory"
-    ]);
-    expect(JSON.stringify(bodies[1].input)).toContain("function_call_output");
-    expect(JSON.stringify(bodies[1].input)).toContain("Fake Perplexity search findings");
-    expect(state.searchRuns).toHaveLength(1);
-    expect(state.searchRuns[0]).toMatchObject({
-      modelId: "perplexity/sonar-pro-search",
-      provider: "openrouter",
-      status: "complete",
-      strategyId: "perplexity-tool-search"
-    });
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          artifactType: "tool_call",
-          payload: expect.objectContaining({
-            name: "search_via_perplexity"
-          })
-        }),
-        type: "artifact"
-      })
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          artifactType: "search"
-        }),
-        type: "artifact"
-      })
-    );
-    expect(state.completed?.finalText).toBe("OpenAI synthesized answer with Perplexity search context.");
-  });
-
-  it("rejects unsupported search/model combinations before creating a run", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["fake:fake-qsa"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set(["openai-native-web-search"])
-    });
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: createFakeProviderAdapter()
-      },
-      repository
-    });
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "fake-qsa",
-          provider: "fake",
-          searchStrategy: "openai-native-web-search",
-          text: "Search with an unsupported route"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error: "search_strategy_not_supported_by_model"
-    });
-    expect(state.created).toBeNull();
   });
 
   it("rejects unavailable models before creating a run", async () => {
@@ -3444,46 +2739,7 @@ describe("model run route handlers", () => {
     expect(state.created).toBeNull();
   });
 
-  it("rejects unconfigured real providers before creating a run", async () => {
-    const { repository, state } = createMemoryRepository({
-      modelKeys: new Set(["openai:gpt-5.5"]),
-      providerKeys: new Set(),
-      searchStrategies: new Set(["search-disabled"])
-    });
-    const POST = createSendMessageHandler({
-      ...authDeps,
-      providers: {
-        fake: createFakeProviderAdapter()
-      },
-      repository
-    });
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "gpt-5.5",
-          provider: "openai",
-          text: "Hello"
-        }),
-        headers: {
-          cookie: authCookie()
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error: "provider_not_available"
-    });
-    expect(state.created).toBeNull();
-  });
-
-  it("returns persisted model run artifacts for the current user", async () => {
+  it("serializes an owner-private run outcome from an explicit recursive allowlist", async () => {
     const { repository } = createMemoryRepository();
     const POST = createSendMessageHandler({
       ...authDeps,
@@ -3513,6 +2769,33 @@ describe("model run route handlers", () => {
       )
     ).text();
 
+    const getRunOutcomeForUser = repository.getRunOutcomeForUser;
+    repository.getRunOutcomeForUser = async (runId, userId) => {
+      const outcome = await getRunOutcomeForUser(runId, userId);
+      return outcome
+        ? Object.assign(outcome, {
+            chatId: "forbidden-chat-sentinel",
+            events: [{ payload: { secret: "forbidden-event-sentinel" } }],
+            finalProviderResponsePreview: {
+              text: "forbidden-response-preview-sentinel"
+            },
+            inspection: { acceptedAt: "forbidden-inspection-sentinel" },
+            knowledgeRuns: [{ query: "forbidden-knowledge-query-sentinel" }],
+            memoryReceipt: { includedText: "forbidden-memory-sentinel" },
+            normalizedRequest: {
+              content: "forbidden-normalized-request-sentinel"
+            },
+            providerRequestPreview: {
+              prompt: "forbidden-provider-request-sentinel"
+            },
+            providerResponseId: "forbidden-provider-response-id-sentinel",
+            searchRuns: [{ query: "forbidden-search-query-sentinel" }],
+            toolCalls: [{ arguments: "forbidden-tool-arguments-sentinel" }],
+            totalTokens: 123
+          })
+        : null;
+    };
+
     const GET = createGetModelRunHandler({
       ...authDeps,
       providers: {
@@ -3534,28 +2817,20 @@ describe("model run route handlers", () => {
     );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    await expect(response.json()).resolves.toEqual({
       run: {
-        finalProviderResponsePreview: {
-          provider: "fake",
-          text: "Fake answer: Inspect this run"
-        },
-        normalizedRequest: {
-          content: {
-            blocks: [{ text: "Inspect this run", type: "text" }]
-          },
-          modelId: "fake-qsa",
-          provider: "fake"
-        },
+        id: "run-1",
         status: "complete"
-      }
+      },
+      version: 1
     });
   });
 
   it("scopes model-run reads to the authenticated user and maps a missing run to 404", async () => {
     const { repository } = createMemoryRepository();
-    const getRunForUser = vi.fn<RunRepository["getRunForUser"]>(async () => null);
-    repository.getRunForUser = getRunForUser;
+    const getRunOutcomeForUser = vi.fn<RunRepository["getRunOutcomeForUser"]>(async () => null);
+    repository.getRunOutcomeForUser = getRunOutcomeForUser;
     const GET = createGetModelRunHandler({
       ...authDeps,
       providers: {},
@@ -3575,46 +2850,12 @@ describe("model run route handlers", () => {
       }
     );
 
-    expect(getRunForUser).toHaveBeenCalledWith("missing-run", config.bootstrapUserId);
+    expect(getRunOutcomeForUser).toHaveBeenCalledWith("missing-run", config.bootstrapUserId);
     expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
     await expect(response.json()).resolves.toEqual({
       error: "model_run_not_found"
     });
-  });
-
-  it("leaves a Perplexity and MCP checkpoint untouched when GET lacks search adapters", async () => {
-    const { repository, state } = createMemoryRepository();
-    const created = openAiCreatedRun();
-    state.created = {
-      ...created,
-      normalizedRequest: {
-        ...created.normalizedRequest,
-        mcp: { servers: [], tools: [], version: 1 },
-        searchStrategy: "perplexity-tool-search"
-      }
-    };
-    state.providerResponseId = "response-tool-round";
-    const loadCheckpoint = vi.fn(async () => {
-      throw new Error("partial GET dependencies must not own recovery");
-    });
-    repository.loadCheckpointedToolLoopRun = loadCheckpoint;
-    const GET = createGetModelRunHandler({
-      ...authDeps,
-      providers: {},
-      repository,
-      searchProviders: undefined
-    });
-
-    const response = await GET(
-      new Request("http://app.local/api/model-runs/run-1", {
-        headers: { cookie: authCookie() }
-      }),
-      { params: { runId: "run-1" } }
-    );
-
-    expect(response.status).toBe(200);
-    expect(loadCheckpoint).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toMatchObject({ run: { status: "streaming" } });
   });
 
   it("uses the handler's effective attachment limits during GET-assisted recovery", async () => {
@@ -3714,7 +2955,7 @@ describe("model run route handlers", () => {
           controlDefaults: {
             maxOutputTokens: "4096",
             reasoningEffort: "medium",
-            searchStrategyId: "search-disabled",
+
             temperature: "0.6"
           },
           modelId: "fake-qsa",
@@ -3723,7 +2964,7 @@ describe("model run route handlers", () => {
             temperature: 0.6
           },
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie(),
@@ -3785,7 +3026,6 @@ describe("model run route handlers", () => {
         mode: "all_selected",
         optionIds: []
       },
-      searchStrategy: "search-disabled",
       userId: config.bootstrapUserId
     });
     expect(state.completed?.finalText).toBe("Fake answer: Original question\nContext memory: Earlier context");
@@ -3807,7 +3047,7 @@ describe("model run route handlers", () => {
           modelId: "fake-qsa",
           params: {},
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie(),
@@ -3919,12 +3159,12 @@ describe("model run route handlers", () => {
         body: JSON.stringify({
           controlDefaults: {
             reasoningEffort: "high",
-            searchStrategyId: "search-disabled",
+
             temperature: "0.2"
           },
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie(),
@@ -3969,7 +3209,7 @@ describe("model run route handlers", () => {
           modelId: "fake-qsa",
           params: paramsBody,
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie(),
@@ -4014,7 +3254,7 @@ describe("model run route handlers", () => {
             }
           },
           provider: "openai",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie(),
@@ -4051,7 +3291,7 @@ describe("model run route handlers", () => {
         body: JSON.stringify({
           modelId: "fake-qsa",
           provider: "fake",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie(),
@@ -4084,12 +3324,10 @@ describe("model run route handlers", () => {
       content: { blocks: [] },
       expectedActiveLeafId: null,
       defaults: {
-        controlDefaults: {
-          searchStrategyId: "search-disabled"
-        },
+        controlDefaults: {},
         modelId: "gpt-5.5",
         provider: "openai",
-        searchStrategy: "search-disabled",
+        searchPlan: { mode: "all_selected", optionIds: [] },
         userId: config.bootstrapUserId
       },
       modelId: "gpt-5.5",
@@ -4097,6 +3335,8 @@ describe("model run route handlers", () => {
         attachmentIds: [],
         chatId: "chat-1",
         content: { blocks: [] },
+        knowledgePlan: { baseIds: [] },
+        toolMode: "auto",
         modelCapabilities: {
           nativePdfInput: false,
           nativeSearch: true,
@@ -4111,7 +3351,7 @@ describe("model run route handlers", () => {
           system: null
         },
         provider: "openai",
-        searchStrategy: "search-disabled"
+        searchPlan: { mode: "all_selected", options: [] }
       },
       provider: "openai",
       providerRequestPreview: {},
@@ -4203,15 +3443,13 @@ describe("model run route handlers", () => {
         reasoningTokens: 1
       }
     });
-    expect(state.events.map(({ event }) => event.type)).toEqual(["artifact", "token", "usage", "done"]);
-    await expect(response.json()).resolves.toMatchObject({
+    expect(state.events).toEqual([]);
+    await expect(response.json()).resolves.toEqual({
       run: {
-        finalProviderResponsePreview: {
-          provider: "openai",
-          text: "Recovered answer"
-        },
+        id: "run-1",
         status: "complete"
-      }
+      },
+      version: 1
     });
   });
 
@@ -4403,7 +3641,7 @@ describe("model run route handlers", () => {
     expect(state.completed).toBeNull();
   });
 
-  it("returns a stale run instead of failing when refresh event appends collide", async () => {
+  it("completes a refreshed run without relying on chronological event appends", async () => {
     const { repository, state } = createMemoryRepository({
       modelKeys: new Set(["openai:gpt-5.5"]),
       providerKeys: new Set(),
@@ -4411,10 +3649,6 @@ describe("model run route handlers", () => {
     });
     state.created = openAiCreatedRun();
     state.providerResponseId = "resp-refresh-append-race";
-    repository.appendRunEvent = async () => {
-      throw new Error("sequence collision");
-    };
-
     const GET = createGetModelRunHandler({
       ...authDeps,
       providers: {
@@ -4493,12 +3727,10 @@ describe("model run route handlers", () => {
       content: { blocks: [] },
       expectedActiveLeafId: null,
       defaults: {
-        controlDefaults: {
-          searchStrategyId: "search-disabled"
-        },
+        controlDefaults: {},
         modelId: "gpt-5.5",
         provider: "openai",
-        searchStrategy: "search-disabled",
+        searchPlan: { mode: "all_selected", optionIds: [] },
         userId: config.bootstrapUserId
       },
       modelId: "gpt-5.5",
@@ -4506,6 +3738,8 @@ describe("model run route handlers", () => {
         attachmentIds: [],
         chatId: "chat-1",
         content: { blocks: [] },
+        knowledgePlan: { baseIds: [] },
+        toolMode: "auto",
         modelCapabilities: {
           nativePdfInput: false,
           nativeSearch: true,
@@ -4520,7 +3754,7 @@ describe("model run route handlers", () => {
           system: null
         },
         provider: "openai",
-        searchStrategy: "search-disabled"
+        searchPlan: { mode: "all_selected", options: [] }
       },
       provider: "openai",
       providerRequestPreview: {},
@@ -4610,14 +3844,13 @@ describe("model run route handlers", () => {
       finalText: "Recovered after retry",
       providerResponseId: "resp-recover-after-503"
     });
-    expect(state.events.map(({ event }) => event.type)).toEqual(["artifact", "token", "usage", "done"]);
-    await expect(response.json()).resolves.toMatchObject({
+    expect(state.events).toEqual([]);
+    await expect(response.json()).resolves.toEqual({
       run: {
-        finalProviderResponsePreview: {
-          text: "Recovered after retry"
-        },
+        id: "run-1",
         status: "complete"
-      }
+      },
+      version: 1
     });
   });
 
@@ -4688,20 +3921,15 @@ describe("model run route handlers", () => {
     }
 
     expect(refresh).toHaveBeenCalledOnce();
-    expect(state.events.map(({ event }) => event.type)).toEqual([
-      "artifact",
-      "error"
-    ]);
+    expect(state.events).toEqual([]);
     for (const response of responses) {
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
+      await expect(response.json()).resolves.toEqual({
         run: {
-          errorPayload: {
-            code: "provider_terminal_error",
-            recoveryTerminal: true
-          },
+          id: "run-1",
           status: "error"
-        }
+        },
+        version: 1
       });
     }
   });
@@ -4911,13 +4139,13 @@ describe("model run route handlers", () => {
         body: JSON.stringify({
           controlDefaults: {
             reasoningEffort: "high",
-            searchStrategyId: "search-disabled",
+
             temperature: "0.2"
           },
           modelId: "fake-qsa",
           provider: "fake",
           text: "Rejected send defaults",
-          searchStrategy: "search-disabled"
+          searchPlan: { mode: "all_selected", optionIds: [] }
         }),
         headers: {
           cookie: authCookie()
@@ -5198,18 +4426,7 @@ describe("model run route handlers", () => {
       },
       runId: "run-orphan"
     });
-    expect(state.events).toEqual([
-      {
-        event: {
-          data: {
-            code: "run_orphaned",
-            message: "Run stopped reporting progress and was marked failed."
-          },
-          type: "error"
-        },
-        sequence: 0
-      }
-    ]);
+    expect(state.events).toEqual([]);
   });
 
   it("skips stale active runs that still have a local foreground controller", async () => {
@@ -5363,7 +4580,7 @@ describe("model run route handlers", () => {
       providerResponseId: "resp-stale-complete",
       runId: "run-1"
     });
-    expect(state.events.map(({ event }) => event.type)).toEqual(["token", "usage", "done"]);
+    expect(state.events).toEqual([]);
   });
 
   it("keeps refreshable stale provider runs active when provider status is not terminal", async () => {
@@ -5435,16 +4652,7 @@ describe("model run route handlers", () => {
 
     expect(state.failed).toBeNull();
     expect(state.completed).toBeNull();
-    expect(state.events).toHaveLength(1);
-    expect(state.events[0]?.event).toMatchObject({
-      data: {
-        artifactType: "summary",
-        payload: {
-          status: "in_progress"
-        }
-      },
-      type: "artifact"
-    });
+    expect(state.events).toEqual([]);
   });
 
   it("cancels active runs without provider-native cancellation or a provider response id", async () => {
@@ -5454,12 +4662,10 @@ describe("model run route handlers", () => {
       content: { blocks: [] },
       expectedActiveLeafId: null,
       defaults: {
-        controlDefaults: {
-          searchStrategyId: "search-disabled"
-        },
+        controlDefaults: {},
         modelId: "fake-qsa",
         provider: "fake",
-        searchStrategy: "search-disabled",
+        searchPlan: { mode: "all_selected", optionIds: [] },
         userId: config.bootstrapUserId
       },
       modelId: "fake-qsa",
@@ -5467,6 +4673,8 @@ describe("model run route handlers", () => {
         attachmentIds: [],
         chatId: "chat-1",
         content: { blocks: [] },
+        knowledgePlan: { baseIds: [] },
+        toolMode: "auto",
         modelCapabilities: {
           nativePdfInput: false,
           nativeSearch: true,
@@ -5481,7 +4689,7 @@ describe("model run route handlers", () => {
           system: null
         },
         provider: "fake",
-        searchStrategy: "search-disabled"
+        searchPlan: { mode: "all_selected", options: [] }
       },
       provider: "fake",
       providerRequestPreview: {},
@@ -5510,10 +4718,10 @@ describe("model run route handlers", () => {
     );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    await expect(response.json()).resolves.toEqual({
       run: {
         id: "run-1",
-        providerResponseId: null,
         status: "cancelled"
       }
     });
@@ -5641,11 +4849,7 @@ describe("model run route handlers", () => {
     expect(state.cancelled).toMatchObject({
       code: "model_run_cancelled"
     });
-    expect(
-      state.events
-        .filter(({ event }) => event.type === "token")
-        .map(({ event }) => ("delta" in event.data ? event.data.delta : ""))
-    ).toEqual(["before "]);
+    expect(state.events).toEqual([]);
   });
 
   it("cancels an owned streaming provider run through the provider adapter", async () => {
@@ -5662,11 +4866,6 @@ describe("model run route handlers", () => {
     repository.cancelRun = async (input) => {
       order.push("durable-cancel");
       return cancelRun(input);
-    };
-    const updateCancelledRunProviderPreview = repository.updateCancelledRunProviderPreview;
-    repository.updateCancelledRunProviderPreview = async (input) => {
-      order.push("persist-provider-preview");
-      return updateCancelledRunProviderPreview(input);
     };
     const POST = createCancelModelRunHandler({
       ...authDeps,
@@ -5714,25 +4913,20 @@ describe("model run route handlers", () => {
 
     expect(response.status).toBe(200);
     const responseBody = await response.json();
-    expect(responseBody).toMatchObject({
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(responseBody).toEqual({
       run: {
         id: "run-1",
-        providerCancelPreview: {
-          provider: "openai",
-          status: "provider_cancel_succeeded"
-        },
         status: "cancelled"
       }
     });
     expect(JSON.stringify(responseBody)).not.toContain("secret raw cancel response");
-    expect(order).toEqual(["durable-cancel", "provider-cancel", "persist-provider-preview"]);
+    expect(JSON.stringify(responseBody)).not.toContain("provider_cancel_succeeded");
+    expect(JSON.stringify(responseBody)).not.toContain("resp-1");
+    expect(order).toEqual(["durable-cancel", "provider-cancel"]);
     expect(cancelledIds).toEqual(["resp-1"]);
     expect(state.cancelled).toMatchObject({
       code: "model_run_cancelled"
-    });
-    expect(state.providerCancelPreview).toEqual({
-      provider: "openai",
-      status: "provider_cancel_succeeded"
     });
   });
 
@@ -5789,23 +4983,23 @@ describe("model run route handlers", () => {
       expect(activeRunControllerRegistry.has("run-1")).toBe(true);
       expect(providerCancel).not.toHaveBeenCalled();
       expect(state.cancelled).toBeNull();
-      expect(state.providerCancelPreview).toBeNull();
     } finally {
       activeRunControllersForTest().delete("run-1");
     }
   });
 
-  it("stores a sanitized provider-cancel failure after durable cancellation wins", async () => {
+  it("does not persist or expose a provider-cancel failure after durable cancellation wins", async () => {
     const { repository, state } = createMemoryRepository();
     state.providerResponseId = "provider-response-1";
+    const providerCancel = vi.fn(async () => {
+      throw new Error("secret provider response body");
+    });
     const POST = createCancelModelRunHandler({
       ...authDeps,
       providers: {
         fake: {
           buildRequestPreview: () => ({}),
-          cancel: async () => {
-            throw new Error("secret provider response body");
-          },
+          cancel: providerCancel,
           async *stream() {
             return {
               finalProviderResponsePreview: {},
@@ -5827,12 +5021,10 @@ describe("model run route handlers", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(state.providerCancelPreview).toEqual({
-      error: "Provider cancellation failed",
-      provider: "fake",
-      status: "provider_cancel_failed"
-    });
-    expect(JSON.stringify(await response.json())).not.toContain("secret provider response body");
+    expect(providerCancel).toHaveBeenCalledWith("provider-response-1");
+    const body = await response.json();
+    expect(body).toEqual({ run: { id: "run-1", status: "cancelled" } });
+    expect(JSON.stringify(body)).not.toContain("secret provider response body");
   });
 
   it("passes the exact prepared MCP bindings to both send and regeneration acceptance", async () => {
@@ -5900,7 +5092,7 @@ describe("model run route handlers", () => {
         body: JSON.stringify({
           modelId: "anthropic/claude-opus-4.8",
           provider: "openrouter",
-          searchStrategy: "search-disabled",
+          searchPlan: { mode: "all_selected", optionIds: [] },
           text: "Use MCP"
         }),
         headers: { cookie: authCookie() },
@@ -5913,7 +5105,7 @@ describe("model run route handlers", () => {
 
     const regenerateResponse = await regenerate(
       new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
-        body: JSON.stringify({ searchStrategy: "search-disabled" }),
+        body: JSON.stringify({ searchPlan: { mode: "all_selected", optionIds: [] } }),
         headers: { cookie: authCookie() },
         method: "POST"
       }),
@@ -5946,7 +5138,10 @@ describe("model run route handlers", () => {
 
     const sendResponse = await send(
       new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({ searchStrategy: "search-disabled", text: "Race" }),
+        body: JSON.stringify({
+          searchPlan: { mode: "all_selected", optionIds: [] },
+          text: "Race"
+        }),
         headers: { cookie: authCookie() },
         method: "POST"
       }),
@@ -5954,7 +5149,7 @@ describe("model run route handlers", () => {
     );
     const regenerateResponse = await regenerate(
       new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
-        body: JSON.stringify({ searchStrategy: "search-disabled" }),
+        body: JSON.stringify({ searchPlan: { mode: "all_selected", optionIds: [] } }),
         headers: { cookie: authCookie() },
         method: "POST"
       }),
@@ -5988,7 +5183,10 @@ describe("model run route handlers", () => {
 
     const sendResponse = await send(
       new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({ searchStrategy: "search-disabled", text: "Race" }),
+        body: JSON.stringify({
+          searchPlan: { mode: "all_selected", optionIds: [] },
+          text: "Race"
+        }),
         headers: { cookie: authCookie() },
         method: "POST"
       }),
@@ -5996,7 +5194,7 @@ describe("model run route handlers", () => {
     );
     const regenerateResponse = await regenerate(
       new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
-        body: JSON.stringify({ searchStrategy: "search-disabled" }),
+        body: JSON.stringify({ searchPlan: { mode: "all_selected", optionIds: [] } }),
         headers: { cookie: authCookie() },
         method: "POST"
       }),

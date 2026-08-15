@@ -104,13 +104,10 @@ function catalogData(): CatalogData {
     ],
     settings: {
       defaultControlValues: {},
-      defaultModelId: "model-1",
-      defaultProvider: "connection-1",
-      defaultSearchStrategyId: "search-disabled",
       defaultSearchPlan: null,
+      defaultProviderModelId: "model-1",
       showCitations: true,
       showReasoningBlocks: false,
-      showToolActivity: true
     }
   };
 }
@@ -374,6 +371,7 @@ describe("assistant create handler", () => {
           category: null,
           description: "",
           developerPrompt: null,
+          knowledgeBaseIds: [],
           mcpServerIds: overrides.mcpServerIds ?? [],
           name: "Reviewer",
           providerModelId: "model-1",
@@ -429,6 +427,7 @@ describe("assistant update handler", () => {
             category: null,
             description: "",
             developerPrompt: null,
+            knowledgeBaseIds: [],
             mcpServerIds: [],
             name: "Reviewer",
             providerModelId: "not-in-catalog",
@@ -476,6 +475,7 @@ describe("assistant update handler", () => {
             category: null,
             description: "",
             developerPrompt: null,
+            knowledgeBaseIds: [],
             mcpServerIds: [],
             name: "Reviewer",
             providerModelId: "model-1",
@@ -511,6 +511,7 @@ describe("assistant update handler", () => {
             category: null,
             description: "",
             developerPrompt: null,
+            knowledgeBaseIds: [],
             mcpServerIds: overrides.mcpServerIds,
             name: "Reviewer",
             providerModelId: "model-1",
@@ -562,6 +563,7 @@ describe("assistant update handler", () => {
             category: null,
             description: "",
             developerPrompt: null,
+            knowledgeBaseIds: [],
             mcpServerIds: [],
             name: "Reviewer",
             providerModelId: "model-1",

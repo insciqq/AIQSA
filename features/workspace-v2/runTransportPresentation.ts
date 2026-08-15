@@ -1,5 +1,5 @@
 import type {
-  RunLifecycleEvidenceV2,
+  RunLifecycleStateV2,
   RunLifecycleStatusV2
 } from "@/features/run-lifecycle-v2/runPresentation";
 
@@ -33,22 +33,22 @@ export function transportLostForMessageV2(
 }
 
 /**
- * Builds the status slice of `RunLifecycleEvidenceV2` for one answer.
+ * Builds the transport-status slice of `RunLifecycleStateV2` for one answer.
  *
  * While a genuine transport loss is recorded for this answer, the locally
- * written post-loss message status is not server evidence: the unknown outcome
+ * written post-loss message status is not server truth: the unknown outcome
  * must not masquerade as error or complete (addendum §4.2), so the slice
  * suppresses it and reports `connectionLost` until the user-owned refresh
  * reconciles with durable server state. Every other path passes the existing
- * persisted-run/message evidence through unchanged.
+ * persisted run and message state through unchanged.
  */
-export function runTransportEvidenceV2(input: Readonly<{
+export function runTransportStateV2(input: Readonly<{
   activeChatStreaming: boolean;
   interruptedRun: InterruptedRunV2 | null;
   message: TransportMessageV2;
   persistedRunStatus: RunLifecycleStatusV2 | null;
 }>): Pick<
-  RunLifecycleEvidenceV2,
+  RunLifecycleStateV2,
   "authoritativeMessageStatus" | "connectionLost" | "status"
 > {
   if (transportLostForMessageV2(input.interruptedRun, input.message)) {

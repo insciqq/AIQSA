@@ -349,19 +349,21 @@ function parseTokenEnvelope(
     mcpOAuthTokenEnvelopeContext(connectionId, tokenGeneration)
   );
   const record = jsonRecord(decoded);
+  const policy = jsonRecord(record?.policy);
   const parsedTokens = OAuthTokensSchema.safeParse(record?.tokens);
   if (
     record?.version !== 1 ||
     typeof record.issuedAt !== "string" ||
     !Number.isFinite(Date.parse(record.issuedAt)) ||
-    !jsonRecord(record.policy) ||
+    !policy ||
+    (policy.resourceMode !== "explicit" && policy.resourceMode !== "auto_same_origin") ||
     !parsedTokens.success
   ) {
     throw new Error("mcp_oauth_tokens_invalid");
   }
   return {
     issuedAt: record.issuedAt,
-    policy: record.policy as McpOAuthPolicy,
+    policy: policy as McpOAuthPolicy,
     tokens: parsedTokens.data,
     version: 1
   };

@@ -45,6 +45,7 @@ describe("custom provider model discovery handler", () => {
       allowPrivateNetwork: false,
       apiRoot: "https://llm.example.test/v1",
       authenticationMode: "bearer",
+      responseTimeoutSeconds: 300,
       secret: "write-only-key"
     }));
 
@@ -82,6 +83,7 @@ describe("custom provider model discovery handler", () => {
       allowPrivateNetwork: false,
       apiRoot: "https://llm.example.test/v1",
       authenticationMode: "bearer",
+      responseTimeoutSeconds: 300,
       secret: "write-only-key"
     }));
     expect(response.status).toBe(422);

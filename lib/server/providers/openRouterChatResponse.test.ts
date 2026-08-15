@@ -111,7 +111,7 @@ describe("OpenRouter Chat response normalization", () => {
     });
   });
 
-  it("prefers legacy token fields and falls back to normalized zero usage", () => {
+  it("prefers prompt/completion token fields and falls back to normalized zero usage", () => {
     expect(
       extractOpenRouterUsage({
         usage: {
@@ -174,7 +174,7 @@ describe("OpenRouter Chat response normalization", () => {
               {
                 function: {
                   arguments: "{\"keyword\":\"latest model\"}",
-                  name: "search_via_perplexity"
+                  name: "search_engine_1"
                 },
                 id: "call-1"
               }
@@ -239,7 +239,7 @@ describe("OpenRouter Chat response normalization", () => {
         expect.objectContaining({
           arguments: { keyword: "latest model" },
           id: "call-1",
-          name: "search_via_perplexity"
+          name: "search_engine_1"
         })
       ]
     });
@@ -407,7 +407,7 @@ describe("OpenRouter Chat response normalization", () => {
           {
             message: {
               content: null,
-              tool_calls: [{ function: { name: "search_via_perplexity" } }]
+              tool_calls: [{ function: { name: "search_engine_1" } }]
             }
           }
         ]
@@ -903,7 +903,7 @@ describe("OpenRouter Chat response normalization", () => {
     });
   });
 
-  it("uses the response header id and legacy sparse zero usage when the stream ends without JSON", async () => {
+  it("uses the response header id and sparse zero usage when the stream ends without JSON", async () => {
     const normalized = await collect(
       streamOpenRouterSseResponse(
         sseResponse(["data: [DONE]\n\n"], { "x-generation-id": "header-only-id" }),

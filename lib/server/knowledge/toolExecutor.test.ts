@@ -5,7 +5,11 @@ import {
   type KnowledgeEmbeddingRuntimeResolver,
   type KnowledgeRetrievalStore
 } from "./toolExecutor";
-import type { KnowledgeAcceptedBinding, KnowledgeHybridPassage } from "./retrievalTypes";
+import {
+  KNOWLEDGE_RESULT_VERSION,
+  type KnowledgeAcceptedBinding,
+  type KnowledgeHybridPassage
+} from "./retrievalTypes";
 import {
   decodeKnowledgeRetrievalEvidence,
   knowledgeEvidenceFromToolResult,
@@ -46,7 +50,9 @@ const configuration = {
 const snapshot = {
   connection: {
     allowPrivateNetwork: false,
-    apiRoot: "https://embedding.example.test/v1"
+    apiRoot: "https://embedding.example.test/v1",
+    authenticationMode: "bearer",
+    responseTimeoutMs: 300_000
   },
   connectionDisplayName: "Embedding endpoint",
   connectionId: "connection-private-sentinel",
@@ -212,9 +218,15 @@ describe("Knowledge retrieval tool executor", () => {
       provider: "openai_compatible",
       usage: { inputTokens: 7, outputTokens: 0, reasoningTokens: 0, totalTokens: 7 }
     }]);
+    expect(result.rawPreview).toEqual({
+      knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION,
+      knowledgeRetrieval: evidence,
+      providerCall: true
+    });
 
     const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
     expect(stored).not.toBeNull();
+    expect(JSON.stringify(stored)).not.toMatch(/requestPreview|finalProviderResponsePreview/u);
     const rehydrated = parsePersistedToolExecutionResult(
       { id: "provider-call-1", name: "retrieve_knowledge" },
       stored
@@ -322,9 +334,7 @@ describe("Knowledge retrieval tool executor", () => {
     const value = harness({ invocationOrdinal: 4 });
     const result = await execute(value);
     expect(result).toMatchObject({ status: "error" });
-    expect(result.rawPreview?.finalProviderResponsePreview).toEqual({
-      error: "knowledge_invocation_limit_reached"
-    });
+    expect(result.rawPreview).toEqual({ providerCall: false });
     expect(value.store.loadBindings).not.toHaveBeenCalled();
     expect(value.embeddingRuntime.resolve).not.toHaveBeenCalled();
     expect(value.receipts).toHaveLength(0);

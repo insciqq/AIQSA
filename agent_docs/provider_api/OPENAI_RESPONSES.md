@@ -31,7 +31,7 @@ Externally constrained facts:
 - OpenAI recommends Responses for new projects while Chat Completions remains supported. They have different input/output, streaming, tool, structured-output, and state contracts; OpenAI compatibility alone does not establish which endpoint a third-party service implements.
 - Background Responses use `background: true`, are retrieved/cancelled by response id, and require stored provider state. This stored/background path is not Zero Data Retention compatible. OpenAI documents polling storage on roughly a ten-minute horizon.
 - Background creation may also stream. Responses SSE and terminal payloads can expose output deltas, web-search lifecycle/source data, usage, and the response id.
-- Reasoning controls live under `reasoning`; `max_output_tokens` includes visible output and reasoning tokens. Reasoning summaries use `reasoning.summary`; older `generate_summary` is deprecated.
+- Reasoning controls live under `reasoning`; `max_output_tokens` includes visible output and reasoning tokens. AIQSA sends reasoning-summary controls through `reasoning.summary` only.
 - GPT-5.6 has the concrete `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` model ids. Each documents a 1,050,000-token context window and 128,000 maximum output tokens.
 - GPT-5.5 likewise documents a 1,050,000-token context window and 128,000 maximum output tokens; `1m` is only shorthand, while catalog and UI limits retain the exact value.
 - GPT-5.6 supports efforts `none`, `low`, `medium`, `high`, `xhigh`, and `max`. Its independent `reasoning.mode` is `standard` by default or `pro`; Pro is not a separate model slug and trades additional latency, tokens, and cost for more work.

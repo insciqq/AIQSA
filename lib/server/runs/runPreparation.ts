@@ -13,18 +13,12 @@ import {
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import {
   invalidRunParamsError,
-  validateRunParams,
-  validateSearchRunParams
+  validateRunParams
 } from "../../domain/runParams";
 import {
-  canonicalizeMaxOutputTokenParams,
-  normalizeOpenRouterParams
+  canonicalizeMaxOutputTokenParams
 } from "../../domain/providerParams";
-import { validateRunAccess } from "../auth/entitlements";
-import {
-  decodeSearchPlan,
-  legacySearchStrategyFromPlan
-} from "../../domain/search";
+import { decodeSearchPlan } from "../../domain/search";
 import {
   ProviderAdmissionError,
   type ProviderAdmissionPlan
@@ -36,9 +30,7 @@ import type {
   ProviderAttachment,
   ProviderConversationMessage,
   ProviderModelCapabilities,
-  ProviderRunRequest,
-  ProviderSearchAdapter,
-  ProviderSearchPolicy
+  ProviderRunRequest
 } from "../providers/types";
 import type { StorageAdapter } from "../uploads/storage";
 import {
@@ -51,9 +43,7 @@ import {
 } from "../knowledge/runAdmission";
 import type { McpRunPlanBinding, McpRunPlanResult } from "../mcp/runPlan";
 import { mcpRunTools } from "../mcp/toolExecutor";
-import { providerToolBridges } from "../tools/bridges";
 import type { ProviderToolBridge } from "../tools/types";
-import { perplexityWebSearchTool } from "../tools/perplexitySearch";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { knowledgeRetrievalTool } from "../knowledge/toolExecutor";
 import { memoryActionTools } from "../memory/actions/tools";
@@ -73,27 +63,16 @@ import {
 import type {
   AcceptedRunDefaults,
   RunModelConfiguration,
-  RunRepository,
-  RunSearchStrategyConfiguration
+  RunRepository
 } from "./runRepositoryContract";
 
 const visibleAnswerContract =
-  "Visible answer contract: answer the user directly in the chat message. Do not include debug sections such as Question, Search, Provider Parameters, Request Preview, Artifacts, Usage, or Errors. Provider/search/request/usage/error details are displayed by AIQSA Details summaries or model-run APIs. Include citations naturally only when they help the answer.";
-const perplexityToolSearchStrategyId = "perplexity-tool-search";
-const geminiGoogleSearchStrategyId = "gemini-google-search";
+  "Visible answer contract: answer the user directly in the chat message. Do not include debug sections such as Question, Search, Provider Parameters, Request Preview, Artifacts, Usage, or Errors, and do not expose provider, retrieval, tool, request, usage, or event internals. Include citations naturally only when they help the answer.";
 const currentSendMessageId = "current-user-message";
 const pdfTextUnavailableMessage =
   "No extractable text was found. Choose a model with native PDF support or remove this file.";
 const zeroEmittedPdfTextUnavailableMessage =
   "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file.";
-
-function legacyAdapterKind(provider: string): CatalogAdapterKind {
-  if (provider === "anthropic") return "anthropic_messages";
-  if (provider === "gemini") return "gemini_interactions_native";
-  if (provider === "openrouter") return "openrouter_chat_completions";
-  if (provider === "fake") return "fake";
-  return "openai_responses_native";
-}
 
 function parameterDialect(adapterKind: CatalogAdapterKind, providerFamily: string): string {
   if (providerFamily === "gemini") return "gemini";
@@ -108,10 +87,6 @@ type RunPreparationRepository = Pick<
   | "loadAttachments"
   | "loadConversationContextForExpectedLeaf"
   | "loadConversationContextForLeaf"
-  | "loadEntitlements"
-  | "loadModelConfiguration"
-  | "loadSearchStrategyConfiguration"
-  | "isSearchStrategyEnabled"
 >;
 
 export type RunPreparationDeps = Readonly<{
@@ -133,15 +108,13 @@ export type RunPreparationDeps = Readonly<{
       providerConnectionId: string;
       providerModelId: string;
       requiresClientToolCoexistence?: boolean;
-      searchPlan?: import("../../domain/search").SearchPlan;
+      searchPlan: import("../../domain/search").SearchPlan;
       searchPreferencePlan?: import("../../domain/search").SearchPlan | null;
       searchPreferenceSource?: "organization" | "personal";
-      searchStrategyId: string;
       userId: string;
     }): Promise<ProviderAdmissionPlan>;
   }>;
   repository: RunPreparationRepository;
-  searchProviders?: Readonly<Record<string, ProviderSearchAdapter>>;
   storage?: Pick<StorageAdapter, "getObject">;
 }>;
 
@@ -221,7 +194,7 @@ export type MaterializedPreparedRunData = {
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
   normalizedRequest: NormalizedRunRequest;
-  providerAdmissionPlan?: ProviderAdmissionPlan;
+  providerAdmissionPlan: ProviderAdmissionPlan;
   providerRequest: ProviderRunRequest;
   providerRequestPreview: Record<string, unknown>;
   sourceKind: RunPreparationInput["source"]["kind"];
@@ -244,7 +217,6 @@ export type RunPreparationResult =
       adapter: ProviderAdapter;
       ok: true;
       prepared: PreparedRun;
-      searchAdapter: ProviderSearchAdapter | undefined;
       toolBridge: ProviderToolBridge | undefined;
     }>;
 
@@ -450,13 +422,9 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
       ? { mcpBindings: mutablePreparedData<McpRunPlanBinding[]>(prepared.mcpBindings) }
       : {}),
     normalizedRequest: mutablePreparedData<NormalizedRunRequest>(prepared.normalizedRequest),
-    ...(prepared.providerAdmissionPlan
-      ? {
-          providerAdmissionPlan: mutablePreparedData<ProviderAdmissionPlan>(
-            prepared.providerAdmissionPlan
-          )
-        }
-      : {}),
+    providerAdmissionPlan: mutablePreparedData<ProviderAdmissionPlan>(
+      prepared.providerAdmissionPlan
+    ),
     providerRequest: mutablePreparedData<ProviderRunRequest>(prepared.providerRequest),
     providerRequestPreview: mutablePreparedData<Record<string, unknown>>(prepared.providerRequestPreview),
     sourceKind: prepared.sourceKind
@@ -534,91 +502,6 @@ function mergeModelParams(
   return canonicalizeMaxOutputTokenParams(merged);
 }
 
-function buildPerplexitySearchPolicy(
-  strategy: RunSearchStrategyConfiguration,
-  modelConfiguration: RunModelConfiguration
-): ProviderSearchPolicy | null {
-  if (
-    strategy.strategyId !== perplexityToolSearchStrategyId ||
-    strategy.kind !== "perplexity_tool_search" ||
-    strategy.provider !== "openrouter" ||
-    !strategy.modelId?.trim()
-  ) {
-    return null;
-  }
-
-  const executor = isRecord(strategy.config.executor) ? strategy.config.executor : null;
-  const routeProvider = isRecord(strategy.config.routeProvider)
-    ? strategy.config.routeProvider
-    : null;
-  if (
-    !executor ||
-    executor.provider !== "openrouter" ||
-    executor.modelId !== strategy.modelId ||
-    !routeProvider
-  ) {
-    return null;
-  }
-
-  const controls = parameterControlsForModel({
-    defaultParams: modelConfiguration.defaultParams,
-    modelCapabilities: modelConfiguration.capabilities,
-    modelId: strategy.modelId,
-    provider: "openrouter"
-  });
-  const routeValidation = validateRunParams({
-    controls,
-    params: { provider: routeProvider },
-    provider: "openrouter"
-  });
-  const configuredControls = validateSearchRunParams(strategy.config.params, {
-    maxOutputTokens: controls.maxOutputTokens,
-    temperature: controls.temperature
-  });
-  if (!routeValidation.ok || !configuredControls.ok) {
-    return null;
-  }
-
-  const configuredParams = configuredControls.params ?? {};
-  const defaultMaxOutputTokens =
-    typeof configuredParams.maxOutputTokens === "number"
-      ? configuredParams.maxOutputTokens
-      : Math.min(1024, controls.maxOutputTokens.maxValue);
-  const defaultTemperature =
-    typeof configuredParams.temperature === "number"
-      ? configuredParams.temperature
-      : controls.temperature.supported &&
-          controls.temperature.minValue <= 0 &&
-          controls.temperature.maxValue >= 0
-        ? 0
-        : controls.temperature.defaultValue;
-  const modelDefaults = normalizeOpenRouterParams(modelConfiguration.defaultParams);
-  const providerPolicy = normalizeOpenRouterParams({ provider: routeProvider }).provider;
-
-  return {
-    controls: {
-      maxOutputTokens: { ...controls.maxOutputTokens },
-      temperature: { ...controls.temperature }
-    },
-    defaultParams: {
-      maxOutputTokens: defaultMaxOutputTokens,
-      provider: providerPolicy,
-      reasoning: {
-        ...modelDefaults.reasoning,
-        enabled: false,
-        exclude: true
-      },
-      stream: false,
-      ...(controls.temperature.supported
-        ? { temperature: defaultTemperature }
-        : {})
-    },
-    modelId: strategy.modelId,
-    provider: "openrouter",
-    strategyId: perplexityToolSearchStrategyId
-  };
-}
-
 function numberFromDraft(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -685,8 +568,8 @@ function runControlDefaultsFromBody(
 /**
  * Ordinary no-Assistant runs receive the code-owned standard-chat baseline
  * resolved from the server clock and a validated client time-zone hint. The
- * browser cannot replace the baseline or supply rendered date/time text; a
- * legacy client-sent `prompt` object has no authority and is ignored.
+ * browser cannot replace the baseline or supply rendered date/time text;
+ * client-sent prompt fields have no authority.
  */
 function standardChatPrompt(body: Readonly<Record<string, unknown>> | null): NormalizedRunRequest["prompt"] {
   const baseline = resolveStandardChatBaseline({ timeZone: body?.timeZone });
@@ -726,7 +609,6 @@ const assistantGovernedBodyKeys = [
   "searchPlan",
   "searchPreferencePlan",
   "searchPreferenceSource",
-  "searchStrategy",
   "tools"
 ] as const;
 
@@ -749,7 +631,7 @@ function resolvedOrdinaryKnowledgePlan(
   ) {
     return decodeKnowledgePlan(chat.folderDefaultKnowledgePlan);
   }
-  return decodeKnowledgePlan(undefined);
+  return decodeKnowledgePlan({ baseIds: [] });
 }
 
 function promptWithProjectMemory(
@@ -844,43 +726,6 @@ function validatePdfTextAvailability(
     : null;
 }
 
-function validateSearchStrategyForModel(
-  adapterKind: CatalogAdapterKind,
-  _modelId: string,
-  searchStrategy: string | null,
-  capabilities: ProviderModelCapabilities
-): { code: string; status: 400 } | null {
-  if (!searchStrategy || searchStrategy === "search-disabled") {
-    return null;
-  }
-
-  if (searchStrategy === "openai-native-web-search") {
-    return (adapterKind === "openai_responses_native" ||
-      adapterKind === "openai_responses_compatible") && capabilities.nativeSearch
-      ? null
-      : { code: "search_strategy_not_supported_by_model", status: 400 };
-  }
-
-  if (searchStrategy === geminiGoogleSearchStrategyId) {
-    return adapterKind === "gemini_interactions_native" && capabilities.nativeSearch
-      ? null
-      : { code: "search_strategy_not_supported_by_model", status: 400 };
-  }
-
-  if (searchStrategy === perplexityToolSearchStrategyId) {
-    return (
-      adapterKind === "openai_responses_native" ||
-      adapterKind === "openai_responses_compatible" ||
-      adapterKind === "openai_chat_completions_compatible" ||
-      adapterKind === "openrouter_chat_completions"
-    )
-      ? null
-      : { code: "search_strategy_not_supported_by_model", status: 400 };
-  }
-
-  return { code: "search_strategy_unknown", status: 400 };
-}
-
 function validateMcpCapabilities(input: Readonly<{
   bridge?: ProviderToolBridge;
   capabilities: ProviderModelCapabilities;
@@ -973,7 +818,10 @@ export async function prepareRun(
 
   const decodedSearchPlan = assistantRun
     ? null
-    : decodeSearchPlan(body?.searchPlan, body?.searchStrategy);
+    : decodeSearchPlan(body?.searchPlan);
+  if (!assistantRun && body?.searchPlan === undefined) {
+    return failure("search_plan_invalid", 400);
+  }
   if (decodedSearchPlan && !decodedSearchPlan.ok) {
     return failure(decodedSearchPlan.code, 400);
   }
@@ -1011,77 +859,45 @@ export async function prepareRun(
       : input.source.kind === "send"
         ? chat.defaultModelId
         : input.source.source.assistantMessage?.modelId ?? chat.defaultModelId;
-  let requestedSearchStrategy = legacySearchStrategyFromPlan(requestedSearchPlan);
-  let admissionPlan: ProviderAdmissionPlan | undefined;
+  const providerAdmission = deps.providerAdmission;
+  if (!providerAdmission) {
+    return failure("provider_not_available", 503);
+  }
+  let admissionPlan: ProviderAdmissionPlan;
   let executionProvider = selectedProvider;
   let executionModelId = selectedModelId;
-  let modelConfiguration: RunModelConfiguration | null;
-  let previewRuntime: Readonly<{
-    adapter: ProviderAdapter;
-    toolBridge?: ProviderToolBridge;
-  }> | undefined;
-
-  if (deps.providerAdmission) {
-    try {
-      admissionPlan = await deps.providerAdmission.load({
-        providerConnectionId: selectedProvider,
-        providerModelId: selectedModelId,
-        searchPlan: requestedSearchPlan,
-        ...(requestedSearchPreference
-          ? {
-              searchPreferencePlan: requestedSearchPreference.plan,
-              searchPreferenceSource: requestedSearchPreference.source
-            }
-          : {}),
-        searchStrategyId: requestedSearchStrategy,
-        userId: input.userId
-      });
-    } catch (error) {
-      if (error instanceof ProviderAdmissionError) {
-        return failure(
-          error.code,
-          error.code === "credential_assignment_ambiguous" ? 409 : 403
-        );
-      }
-      throw error;
+  let modelConfiguration: RunModelConfiguration;
+  try {
+    admissionPlan = await providerAdmission.load({
+      providerConnectionId: selectedProvider,
+      providerModelId: selectedModelId,
+      searchPlan: requestedSearchPlan,
+      ...(requestedSearchPreference
+        ? {
+            searchPreferencePlan: requestedSearchPreference.plan,
+            searchPreferenceSource: requestedSearchPreference.source
+          }
+        : {}),
+      userId: input.userId
+    });
+  } catch (error) {
+    if (error instanceof ProviderAdmissionError) {
+      return failure(
+        error.code,
+        error.code === "credential_assignment_ambiguous" ? 409 : 403
+      );
     }
-    modelConfiguration = admissionPlan.answer.modelConfiguration;
-    requestedSearchPlan = admissionPlan.requestedSearchPlan ?? requestedSearchPlan;
-    requestedSearchStrategy = admissionPlan.requestedSearchStrategyId;
-    if (requestedSearchPreference) {
-      requestedSearchPreference = {
-        plan: admissionPlan.requestedSearchPreferencePlan !== undefined
-          ? admissionPlan.requestedSearchPreferencePlan
-          : requestedSearchPreference.plan,
-        source: requestedSearchPreference.source
-      };
-    }
-  } else {
-    const selectedAdapter = deps.providers[selectedProvider];
-    if (!selectedAdapter) {
-      return failure("provider_not_available", 400);
-    }
-    const legacyToolBridge = providerToolBridges[
-      selectedProvider as keyof typeof providerToolBridges
-    ];
-    previewRuntime = {
-      adapter: selectedAdapter,
-      ...(legacyToolBridge ? { toolBridge: legacyToolBridge } : {})
+    throw error;
+  }
+  modelConfiguration = admissionPlan.answer.modelConfiguration;
+  requestedSearchPlan = admissionPlan.requestedSearchPlan;
+  if (requestedSearchPreference) {
+    requestedSearchPreference = {
+      plan: admissionPlan.requestedSearchPreferencePlan !== undefined
+        ? admissionPlan.requestedSearchPreferencePlan
+        : requestedSearchPreference.plan,
+      source: requestedSearchPreference.source
     };
-    const entitlements = await deps.repository.loadEntitlements(input.userId);
-    for (const searchStrategy of requestedSearchPlan.optionIds.length
-      ? requestedSearchPlan.optionIds
-      : ["search-disabled"]) {
-      const access = validateRunAccess(entitlements, {
-        modelId: selectedModelId,
-        provider: selectedProvider,
-        searchStrategy
-      });
-      if (!access.ok) {
-        return failure(access.code, 403);
-      }
-    }
-    modelConfiguration = null;
   }
 
   const content =
@@ -1100,16 +916,6 @@ export async function prepareRun(
   }
   if (input.source.kind === "send" && !hasTextContent(content) && attachmentIds.length === 0) {
     return failure("content_required", 400);
-  }
-
-  if (!admissionPlan) {
-    modelConfiguration = await deps.repository.loadModelConfiguration(
-      selectedProvider,
-      selectedModelId
-    );
-  }
-  if (!modelConfiguration) {
-    return failure("model_not_available", 403);
   }
 
   const assistantMcpUnavailable = Boolean(
@@ -1142,14 +948,12 @@ export async function prepareRun(
   const requiresClientToolCoexistence = admittedKnowledgeToolsEnabled ||
     mcpToolsEnabled || memoryActionToolsRequested || memoryHistoryToolsRequested;
   if (
-    admissionPlan &&
-    deps.providerAdmission &&
     requiresClientToolCoexistence &&
-    admissionPlan.searches?.some((candidate) =>
+    admissionPlan.searches.some((candidate) =>
       candidate.configuration.adapterKind === "answer_provider_hosted")
   ) {
     try {
-      admissionPlan = await deps.providerAdmission.load({
+      admissionPlan = await providerAdmission.load({
         providerConnectionId: selectedProvider,
         providerModelId: selectedModelId,
         requiresClientToolCoexistence: true,
@@ -1160,7 +964,6 @@ export async function prepareRun(
               searchPreferenceSource: requestedSearchPreference.source
             }
           : {}),
-        searchStrategyId: requestedSearchStrategy,
         userId: input.userId
       });
     } catch (error) {
@@ -1172,8 +975,7 @@ export async function prepareRun(
       }
       throw error;
     }
-    requestedSearchPlan = admissionPlan.requestedSearchPlan ?? requestedSearchPlan;
-    requestedSearchStrategy = admissionPlan.requestedSearchStrategyId;
+    requestedSearchPlan = admissionPlan.requestedSearchPlan;
     if (requestedSearchPreference) {
       requestedSearchPreference = {
         plan: admissionPlan.requestedSearchPreferencePlan !== undefined
@@ -1188,22 +990,17 @@ export async function prepareRun(
   // The first plan may only establish that hosted Search conflicts with the
   // admitted client tools. Derive every runtime field once, from the final
   // plan whose exact answer binding will be persisted and revalidated.
-  if (admissionPlan) {
-    const answerPreview = createProviderPreviewRuntimeBinding(
-      admissionPlan.answer.snapshot,
-      deps.allowFakeProvider === true
-    );
-    previewRuntime = {
-      adapter: answerPreview.adapter,
-      ...(answerPreview.toolBridge ? { toolBridge: answerPreview.toolBridge } : {})
-    };
-    executionProvider = admissionPlan.answer.snapshot.providerFamily;
-    executionModelId = admissionPlan.answer.snapshot.model.upstreamModelId;
-    modelConfiguration = admissionPlan.answer.modelConfiguration;
-  }
-  if (!previewRuntime) {
-    return failure("provider_not_available", 400);
-  }
+  const answerPreview = createProviderPreviewRuntimeBinding(
+    admissionPlan.answer.snapshot,
+    deps.allowFakeProvider === true
+  );
+  const previewRuntime = {
+    adapter: answerPreview.adapter,
+    ...(answerPreview.toolBridge ? { toolBridge: answerPreview.toolBridge } : {})
+  };
+  executionProvider = admissionPlan.answer.snapshot.providerFamily;
+  executionModelId = admissionPlan.answer.snapshot.model.upstreamModelId;
+  modelConfiguration = admissionPlan.answer.modelConfiguration;
 
   const { adapter, toolBridge } = previewRuntime;
   const { capabilities: modelCapabilities, defaultParams } = modelConfiguration;
@@ -1220,21 +1017,8 @@ export async function prepareRun(
     body?.tools !== "none" &&
     modelCapabilities.toolCalling === true &&
     Boolean(knowledgeAdmissionPlan);
-  const executionAdapterKind =
-    modelConfiguration.adapterKind ?? legacyAdapterKind(executionProvider);
+  const executionAdapterKind = modelConfiguration.adapterKind;
   const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
-
-  if (!admissionPlan) {
-    const enabled = await Promise.all(
-      (requestedSearchPlan.optionIds.length
-        ? requestedSearchPlan.optionIds
-        : ["search-disabled"]
-      ).map((strategyId) => deps.repository.isSearchStrategyEnabled(strategyId))
-    );
-    if (enabled.some((value) => !value)) {
-      return failure("search_strategy_not_available", 403);
-    }
-  }
 
   const normalizedPrompt = assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body);
   const prompt = promptWithProjectMemory(
@@ -1277,47 +1061,6 @@ export async function prepareRun(
       executionAdapterKind === "openai_responses_native" ||
       Boolean(modelConfiguration.reasoningRequestMapping?.modePath)
   });
-  if (
-    requestedSearchStrategy === perplexityToolSearchStrategyId &&
-    !admissionPlan &&
-    !deps.searchProviders?.openrouter
-  ) {
-    return failure("search_provider_not_available", 400);
-  }
-  // Provider-admitted plans use the provider-neutral Search router, including
-  // the migrated Perplexity option. Keep the singleton policy path only for
-  // installations still using the legacy repository admission boundary.
-  const legacyPerplexitySearch = !admissionPlan &&
-    requestedSearchStrategy === perplexityToolSearchStrategyId;
-  let searchPolicy: ProviderSearchPolicy | undefined;
-  if (legacyPerplexitySearch) {
-    const strategyConfiguration =
-      await deps.repository.loadSearchStrategyConfiguration(requestedSearchStrategy);
-    if (
-      !strategyConfiguration ||
-      strategyConfiguration.provider !== "openrouter" ||
-      !strategyConfiguration.modelId
-    ) {
-      return failure("search_strategy_not_available", 403);
-    }
-
-    const searchModelConfiguration = await deps.repository.loadModelConfiguration(
-      strategyConfiguration.provider,
-      strategyConfiguration.modelId
-    );
-    if (!searchModelConfiguration) {
-      return failure("search_strategy_not_available", 403);
-    }
-
-    searchPolicy =
-      buildPerplexitySearchPolicy(
-        strategyConfiguration,
-        searchModelConfiguration
-      ) ?? undefined;
-    if (!searchPolicy) {
-      return failure("search_strategy_not_available", 403);
-    }
-  }
   let paramsBody: Record<string, unknown>;
   if (assistantRun) {
     const materialized = materializeAssistantRunParams({
@@ -1338,34 +1081,12 @@ export async function prepareRun(
   const paramValidation = validateRunParams({
     controls: parameterControls,
     params: paramsBody,
-    provider: parameterProvider,
-    ...(searchPolicy?.provider === "openrouter"
-      ? { searchControls: searchPolicy.controls }
-      : {})
+    provider: parameterProvider
   });
   if (!paramValidation.ok) {
     return failure(invalidRunParamsError, 400);
   }
   const runParams = mergeModelParams(parameterProvider, defaultParams, paramValidation.params);
-  const searchStrategy = requestedSearchStrategy;
-  const searchAdapter =
-    legacyPerplexitySearch && searchStrategy === perplexityToolSearchStrategyId
-      ? deps.searchProviders?.openrouter
-      : undefined;
-
-  const searchCompatibility = admissionPlan ? null : validateSearchStrategyForModel(
-    executionAdapterKind,
-    executionModelId,
-    searchStrategy,
-    modelCapabilities
-  );
-  if (searchCompatibility) {
-    return failure(searchCompatibility.code, searchCompatibility.status);
-  }
-
-  if (legacyPerplexitySearch && !searchAdapter) {
-    return failure("search_provider_not_available", 400);
-  }
 
   if (assistantMcpUnavailable) {
     return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
@@ -1442,37 +1163,29 @@ export async function prepareRun(
     params: runParams,
     prompt,
     provider: executionProvider,
-    ...(searchPolicy ? { searchPolicy } : {}),
-    ...(admissionPlan?.searches
-      ? {
-          searchPlan: {
-            mode: requestedSearchPlan.mode,
-            options: admissionPlan.searches.map((candidate) => ({
-              adapterKind: candidate.configuration.adapterKind!,
-              config: candidate.configuration.config,
-              credentialMode: candidate.configuration.credentialMode!,
-              displayName: candidate.configuration.displayName ?? "Search source",
-              executionModes: candidate.configuration.executionModes ?? [],
-              modelId: candidate.configuration.modelId,
-              optionId: candidate.optionId,
-              protocol: candidate.configuration.protocol!,
-              provider: candidate.configuration.provider,
-              providerModelId: candidate.configuration.providerModelId ?? null,
-              revisionId: candidate.revisionId,
-              searchStrategyRowId: candidate.integrationId
-            }))
-          }
-        }
-      : {}),
-    searchStrategy,
+    searchPlan: {
+      mode: requestedSearchPlan.mode,
+      options: admissionPlan.searches.map((candidate) => ({
+        adapterKind: candidate.configuration.adapterKind,
+        config: candidate.configuration.config,
+        credentialMode: candidate.configuration.credentialMode,
+        displayName: candidate.configuration.displayName,
+        executionModes: candidate.configuration.executionModes,
+        modelId: candidate.configuration.modelId,
+        optionId: candidate.optionId,
+        protocol: candidate.configuration.protocol,
+        provider: candidate.configuration.provider,
+        providerModelId: candidate.configuration.providerModelId,
+        revisionId: candidate.revisionId,
+        searchStrategyRowId: candidate.integrationId
+      }))
+    },
     toolMode: body?.tools === "none" ? "none" : "auto"
   };
-  const plannedSearchTools = unbudgetedNormalizedRequest.searchPlan
-    ? createSearchPlanToolRouter({
-        plan: unbudgetedNormalizedRequest.searchPlan,
-        runtimes: {}
-      })?.tools ?? []
-    : [];
+  const plannedSearchTools = createSearchPlanToolRouter({
+    plan: unbudgetedNormalizedRequest.searchPlan,
+    runtimes: {}
+  })?.tools ?? [];
   const clientTools = unbudgetedNormalizedRequest.toolMode === "none"
     ? []
     : [
@@ -1481,11 +1194,7 @@ export async function prepareRun(
             ? [knowledgeRetrievalTool]
             : []
         ),
-        ...(plannedSearchTools.length
-          ? plannedSearchTools
-          : searchStrategy === perplexityToolSearchStrategyId
-            ? [perplexityWebSearchTool]
-            : []),
+        ...plannedSearchTools,
         ...(memoryActionToolsEnabled ? memoryActionTools : []),
         ...(memoryHistoryToolsEnabled ? [memoryHistorySearchTool] : []),
         ...mcpRunTools(unbudgetedNormalizedRequest.mcp)
@@ -1520,9 +1229,8 @@ export async function prepareRun(
         controlDefaults: runControlDefaultsFromBody(body, parameterControls),
         modelId: selectedModelId,
         provider: selectedProvider,
-        searchStrategy: requestedSearchStrategy,
         searchPlan: requestedSearchPlan,
-        ...(requestedSearchPreference && deps.providerAdmission
+        ...(requestedSearchPreference
           ? { searchPreferencePlan: requestedSearchPreference.plan }
           : {}),
         userId: input.userId
@@ -1546,7 +1254,7 @@ export async function prepareRun(
     ...(knowledgeAdmissionPlan ? { knowledgeAdmissionPlan } : {}),
     ...(mcpPlan?.ok ? { mcpBindings: [...mcpPlan.bindings] } : {}),
     normalizedRequest,
-    ...(admissionPlan ? { providerAdmissionPlan: admissionPlan } : {}),
+    providerAdmissionPlan: admissionPlan,
     providerRequest,
     providerRequestPreview,
     sourceKind: input.source.kind
@@ -1556,7 +1264,6 @@ export async function prepareRun(
     adapter,
     ok: true,
     prepared,
-    searchAdapter,
     toolBridge
   });
 }

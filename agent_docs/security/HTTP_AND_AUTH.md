@@ -52,7 +52,7 @@ overwrite a committed administrator decision. [Auth and onboarding](../backend/a
 owns the exact token, identity, session, and response transitions that realize
 those threat properties.
 
-Revoked sessions are retained audit state, not an untyped status flag. A database constraint pairs every `revokedAt` with a non-blank reason, and the `admin_revoke_user`/`admin_revoke_all` reasons additionally require the acting user's foreign key. That actor relation uses restricted deletion so later account cleanup cannot erase attribution; authored revocations therefore count as retained app history for the stale-user deletion guard. Logout and password reset retain their explicit system/user-action reasons without an admin actor. The request-auth session store exposes only exact-token revocation; user-wide revocation remains inside the password-reset and authenticated admin repositories. The attribution migration labels already-unattributed historical admin rows with a `system_legacy_unattributed_*` reason rather than inventing an actor.
+Revoked sessions are retained audit state, not an untyped status flag. A database constraint pairs every `revokedAt` with a non-blank reason, and the `admin_revoke_user`/`admin_revoke_all` reasons additionally require the acting user's foreign key. That actor relation uses restricted deletion so later account cleanup cannot erase attribution; authored revocations therefore count as retained app history for the stale-user deletion guard. Logout and password reset retain their explicit system/user-action reasons without an admin actor. The request-auth session store exposes only exact-token revocation; user-wide revocation remains inside the password-reset and authenticated admin repositories.
 
 Cryptographic purposes stay separated. Quick Setup state fences use a
 domain-separated HMAC subkey derived from the session secret and never the
@@ -61,7 +61,7 @@ versioned AES-256-GCM envelopes for provider credentials, SMTP passwords, MCP
 values, and OAuth tokens; secret API fields remain write-only. It is never
 session or flow-signing material. Memory suppression fingerprints use a third,
 independent named HMAC-SHA-256 keyring: key values never enter PostgreSQL,
-exports, ordinary backups, or diagnostics, and missing historical versions
+exports, ordinary backups, or diagnostics, and missing referenced versions
 fail closed instead of weakening a no-resurrection barrier.
 [Environment variables](../ENV_VARIABLES.md) owns both key formats, generation,
 rotation, backup, and recovery configuration.

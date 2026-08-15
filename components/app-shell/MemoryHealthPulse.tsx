@@ -2,7 +2,6 @@ import {
   memoryHealthStateCopy,
   memoryHealthUiCopy
 } from "@/components/app-shell/memoryHealthUiCopy";
-import type { MemoryUiLocale } from "@/lib/contracts/memory";
 import type { UserMemoryHealth } from "@/lib/contracts/memoryHealth";
 import {
   Check,
@@ -20,7 +19,7 @@ const focusRing =
 const actionButton =
   `inline-flex min-h-touch items-center justify-center gap-2 rounded-control border border-trace-subtle bg-control-surface px-3 text-sm font-semibold text-ink-secondary hover:bg-control-hover hover:text-ink ${focusRing}`;
 
-function formatDate(locale: MemoryUiLocale, value: string): string {
+function formatDate(value: string): string {
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short"
@@ -46,7 +45,6 @@ function stateTone(state: UserMemoryHealth["state"]): Readonly<{
 }
 
 function operationalValue(
-  locale: MemoryUiLocale,
   state: "BLOCKED" | "CLEAR" | "DELAYED" | "DISABLED" | "FAILED" |
     "FTS_ONLY" | "IN_PROGRESS" | "OVERDUE" | "READY"
 ): string {
@@ -61,13 +59,12 @@ function operationalValue(
     OVERDUE: "stateOverdue",
     READY: "stateReady"
   } as const;
-  return memoryHealthUiCopy(locale, key[state]);
+  return memoryHealthUiCopy(key[state]);
 }
 
 export function MemoryHealthPulse({
   error,
   health,
-  locale,
   loading,
   advancedContent,
   onOpenOperations,
@@ -77,14 +74,13 @@ export function MemoryHealthPulse({
   error: boolean;
   health: UserMemoryHealth | null;
   loading: boolean;
-  locale: MemoryUiLocale;
   advancedContent?: ReactNode;
   onOpenOperations(): void;
   onRetry(): void;
   operationsButtonRef?: RefObject<HTMLButtonElement | null>;
 }>) {
-  const copy = (key: Parameters<typeof memoryHealthUiCopy>[1]) =>
-    memoryHealthUiCopy(locale, key);
+  const copy = (key: Parameters<typeof memoryHealthUiCopy>[0]) =>
+    memoryHealthUiCopy(key);
 
   if (!health && loading) {
     return (
@@ -114,7 +110,7 @@ export function MemoryHealthPulse({
 
   const tone = stateTone(health.state);
   const StatusIcon = tone.Icon;
-  const stateCopy = memoryHealthStateCopy(locale, health);
+  const stateCopy = memoryHealthStateCopy(health);
   const critical = health.state === "BLOCKED_REQUIRES_ADMIN" ||
     health.state === "TEMPORARY_OVERDUE";
   const indexingProgress = health.state === "INDEXING" &&
@@ -177,13 +173,13 @@ export function MemoryHealthPulse({
         </summary>
         <p className="pb-2 text-xs leading-5 text-ink-muted">{copy("advancedDescription")}</p>
         <dl className="divide-y divide-trace-subtle text-xs">
-          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("learning")}</dt><dd className="font-medium text-ink-secondary">{operationalValue(locale, learningState)}</dd></div>
-          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("indexing")}</dt><dd className="font-medium text-ink-secondary">{operationalValue(locale, indexingState)}</dd></div>
-          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("rebuild")}</dt><dd className="font-medium text-ink-secondary">{operationalValue(locale, rebuildState)}</dd></div>
-          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("cleanup")}</dt><dd className="font-medium text-ink-secondary">{operationalValue(locale, deletionState)}</dd></div>
-          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("temporaryCleanup")}</dt><dd className="font-medium text-ink-secondary">{operationalValue(locale, health.temporary.state === "OVERDUE" ? "OVERDUE" : "CLEAR")}</dd></div>
+          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("learning")}</dt><dd className="font-medium text-ink-secondary">{operationalValue(learningState)}</dd></div>
+          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("indexing")}</dt><dd className="font-medium text-ink-secondary">{operationalValue(indexingState)}</dd></div>
+          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("rebuild")}</dt><dd className="font-medium text-ink-secondary">{operationalValue(rebuildState)}</dd></div>
+          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("cleanup")}</dt><dd className="font-medium text-ink-secondary">{operationalValue(deletionState)}</dd></div>
+          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("temporaryCleanup")}</dt><dd className="font-medium text-ink-secondary">{operationalValue(health.temporary.state === "OVERDUE" ? "OVERDUE" : "CLEAR")}</dd></div>
           <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("egress")}</dt><dd className="font-medium text-ink-secondary">{health.egressReview === "ADMIN_REQUIRED" ? copy("stateAdminReview") : health.egressReview === "USER_REQUIRED" ? copy("stateUserReview") : copy("stateReady")}</dd></div>
-          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("lastChecked")}</dt><dd className="font-medium text-ink-secondary">{formatDate(locale, health.observedAt)}</dd></div>
+          <div className="flex items-center justify-between gap-4 py-2"><dt className="text-ink-muted">{copy("lastChecked")}</dt><dd className="font-medium text-ink-secondary">{formatDate(health.observedAt)}</dd></div>
         </dl>
         {advancedContent}
         {error ? (

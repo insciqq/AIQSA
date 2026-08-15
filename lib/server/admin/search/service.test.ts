@@ -63,6 +63,7 @@ function providerModel(input: Readonly<{
         vision: false
       },
       defaultParams: {},
+      modelClass: "answer",
       ...(adapterKind === "openrouter_chat_completions"
         ? { openRouterRouting: { mode: "automatic", providers: [] } }
         : {}),
@@ -78,6 +79,7 @@ function providerModel(input: Readonly<{
       activeConfig: {
         allowPrivateNetwork: false,
         apiRoot: "https://provider.example.test/v1",
+        authenticationMode: "bearer",
         responseTimeoutMs: 500_000
       },
       activeVersion: 1,
@@ -363,7 +365,7 @@ describe("admin Search service", () => {
     });
   });
 
-  it("keeps optional diagnostics separate from compatibility publication", async () => {
+  it("keeps optional diagnostics separate from configuration publication", async () => {
     const editable = child(draft, {
       draftTestEvidence: null,
       enabled: false,
@@ -960,7 +962,7 @@ describe("admin Search service", () => {
     });
   });
 
-  it("keeps the activate endpoint as a network-free compatibility publication", async () => {
+  it("keeps the activate endpoint as a network-free configuration publication", async () => {
     const revisionCreate = vi.fn()
       .mockResolvedValueOnce({ id: "revision-2" })
       .mockResolvedValueOnce({ id: "revision-hosted-1" });

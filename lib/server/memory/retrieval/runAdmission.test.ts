@@ -47,10 +47,11 @@ function request(text: string): NormalizedRunRequest {
   return {
     attachmentIds: [], chatId: "chat-current", content,
     context: { messages: [{ content, id: "current", role: "user" }], mode: "branch_path" },
+    knowledgePlan: { baseIds: [] },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false,
       reasoning: false, toolCalling: true, vision: false },
     modelId: "model-1", params: {}, prompt: { developer: null, system: null },
-    provider: "provider-1", searchStrategy: null, toolMode: "auto"
+    provider: "provider-1", searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"
   };
 }
 

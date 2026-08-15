@@ -6,9 +6,10 @@ import {
   textFromThreadContent
 } from "./threadContent";
 
-describe("thread artifact summaries", () => {
-  it("projects live Gemini grounding without turning provider markup into a durable artifact", () => {
-    const suggestionsHtml = '<div><a href="https://www.google.com/search?q=aiqsa">AIQSA</a></div>';
+describe("thread answer outputs", () => {
+  it("projects live Gemini citations and required suggestions without run counters", () => {
+    const suggestionsHtml =
+      '<div><a href="https://www.google.com/search?q=aiqsa">AIQSA</a></div>';
     const summary = summarizeThreadArtifacts([{
       data: {
         citations: [{ title: "Source", url: "https://example.com/source" }],
@@ -19,306 +20,78 @@ describe("thread artifact summaries", () => {
       type: "grounding_display"
     }]);
 
-    expect(summary).toMatchObject({
-      citationCount: 1,
-      groundingDisplay: {
-        callCount: 1,
-        provider: "gemini",
-        queryCount: 2,
-        suggestionsHtml
-      },
-      searchActivity: [{
-        displayName: "Google Search",
-        providerOperations: null,
-        query: null,
-        sourceCount: 1,
-        status: "complete"
+    expect(summary).toEqual({
+      citations: [{
+        index: 1,
+        title: "Source",
+        url: "https://example.com/source"
       }],
-      searchCount: 1,
-      searchStrategy: "gemini-google-search"
-    });
-  });
-
-  it("keeps a provider-proven search call visible when Gemini omits query metadata", () => {
-    const suggestionsHtml = '<a href="https://google.com/search?q=aiqsa">Search</a>';
-    expect(summarizeThreadArtifacts([{
-      data: {
-        citations: [],
+      groundingDisplay: {
         provider: "gemini",
-        runSearch: { callCount: 1, queryCount: 0 },
         suggestionsHtml
       },
-      type: "grounding_display"
-    }])?.groundingDisplay).toEqual({
-      callCount: 1,
-      provider: "gemini",
-      queryCount: 0,
-      suggestionsHtml
+      reasoningText: [],
+      sources: [{
+        rank: 1,
+        title: "Source",
+        url: "https://example.com/source"
+      }]
     });
+    expect(summary?.groundingDisplay).not.toHaveProperty("callCount");
+    expect(summary?.groundingDisplay).not.toHaveProperty("queryCount");
   });
 
-  it("projects native web search artifacts into safe direct facts", () => {
-    const summary = summarizeThreadArtifacts([
-      {
+  it("keeps only normalized Sources from live Search data", () => {
+    const summary = summarizeThreadArtifacts([{
         data: {
           artifactType: "search",
           payload: {
             action: {
-              sources: [{ title: "Example", url: "https://example.com" }],
+              query: "private live query",
+              sources: [{
+                snippet: "Live result",
+                title: "Live source",
+                url: "https://example.com/live"
+              }],
               type: "search"
             },
-            id: "ws_123",
+            id: "private-call-id",
             status: "completed",
             type: "web_search_call"
           }
         },
         type: "artifact"
-      }
-    ]);
+      }]);
 
-    expect(summary).toMatchObject({
-      searchCount: 1,
-      searchActivity: [{
-        displayName: "Search source",
-        providerOperations: [{
-          kind: "search",
-          queries: [],
-          status: "complete"
-        }],
-        sourceCount: 1,
-        sources: [{ title: "Example", url: "https://example.com" }],
-        status: "complete"
-      }],
-      searchStrategy: "openai-native-web-search"
-    });
-    expect(JSON.stringify(summary)).not.toContain("ws_123");
-  });
-
-  it.each([
-    ["cancelled", "cancelled"],
-    ["error", "error"]
-  ] as const)(
-    "settles live running Search evidence when the run becomes %s",
-    (runStatus, expectedStatus) => {
-      const summary = summarizeThreadArtifacts(
-        [{
-          data: {
-            artifactType: "search",
-            payload: {
-              action: { type: "search" },
-              id: "ws_unresolved",
-              status: "in_progress",
-              type: "web_search_call"
-            }
-          },
-          type: "artifact"
-        }],
-        undefined,
-        [],
-        runStatus
-      );
-
-      expect(summary?.searchActivity).toEqual([
-        expect.objectContaining({ status: expectedStatus })
-      ]);
-    }
-  );
-
-  it("uses the pinned custom hosted Search identity during the live run", () => {
-    const summary = summarizeThreadArtifacts([{
-      data: {
-        artifactType: "search",
-        payload: {
-          id: "ws_custom",
-          status: "completed",
-          type: "web_search_call"
-        },
-        searchDisplayName: "Company Gateway Search",
-        searchStrategy: "custom-web-search:connection-1"
-      },
-      type: "artifact"
-    }]);
-
-    expect(summary).toMatchObject({
-      searchCount: 1,
-      searchActivity: [{
-        displayName: "Company Gateway Search",
-        providerOperations: [{ status: "complete" }],
-        status: "complete"
-      }],
-      searchDisplayName: "Company Gateway Search",
-      searchStrategy: "custom-web-search:connection-1"
-    });
-    expect(JSON.stringify(summary?.searchActivity)).not.toContain("ws_custom");
-  });
-
-  it("keeps a hosted Search observation visible when a historical artifact has no call shape", () => {
-    const summary = summarizeThreadArtifacts([{
-      data: {
-        artifactType: "search",
-        payload: {
-          status: "complete",
-          strategyId: "perplexity-tool-search"
-        },
-        searchDisplayName: "Perplexity Search"
-      },
-      type: "artifact"
-    }]);
-
-    expect(summary).toMatchObject({
-      searchActivity: [],
-      searchCount: 1,
-      searchDisplayName: "Perplexity Search",
-      searchStrategy: "perplexity-tool-search"
-    });
-  });
-
-  it("prefers safe persisted Search-run facts over live call previews", () => {
-    const summary = summarizeThreadArtifacts(
-      [
-        {
-          data: {
-            artifactType: "search",
-            payload: {
-              status: "completed",
-              strategyId: "perplexity-tool-search"
-            }
-          },
-          type: "artifact"
-        }
-      ],
-      [
-        {
-          artifacts: {
-            displayName: "Perplexity Search",
-            providerOperations: [],
-            providerOperationsTruncated: false,
-            sources: [{ rank: 1, title: "Source", url: "https://example.com/source" }]
-          },
-          modelId: "perplexity/sonar",
-          provider: "openrouter",
-          query: "q",
-          requestPreview: { query: "q" },
-          status: "complete",
-          strategyId: "perplexity-tool-search"
-        }
-      ]
-    );
-
-    expect(summary?.searchActivity).toEqual([
-      {
-        displayName: "Perplexity Search",
-        providerOperations: [],
-        providerOperationsTruncated: false,
-        query: "q",
-        sourceCount: 1,
-        sources: [{ rank: 1, title: "Source", url: "https://example.com/source" }],
-        status: "complete",
-      }
-    ]);
-    expect(JSON.stringify(summary)).not.toContain("perplexity/sonar");
-    expect(JSON.stringify(summary)).not.toContain("openrouter");
-  });
-
-  it("keeps a locally rejected Search attempt when another attempt has a persisted run", () => {
-    const searchExecution = {
-      displayName: "OpenAI Search",
-      durationMs: 15,
-      modelId: "search-model",
-      optionId: "openai-search",
-      provider: "openai",
-      providerOperations: null,
-      providerOperationsTruncated: false,
-      query: "first query",
-      sourceCount: 0,
-      sources: [],
-      status: "complete",
-      warning: null
-    };
-    const toolCall = (callId: string, ordinal: number, query: string) => ({
-      data: {
-        artifactType: "tool_call",
-        payload: {
-          argumentsPreview: { query },
-          callId,
-          ordinal,
-          round: 1,
-          snapshot: {
-            capability: "web_search",
-            credentialSources: [],
-            toolName: "search_selected_engines"
-          },
-          status: "requested"
-        }
-      },
-      type: "artifact" as const
-    });
-    const summary = summarizeThreadArtifacts(
-      [
-        toolCall("call-1", 0, "first query"),
-        {
-          data: {
-            artifactType: "tool_result",
-            payload: {
-              callId: "call-1",
-              ordinal: 0,
-              resultPreview: {},
-              round: 1,
-              searchExecutions: [searchExecution],
-              status: "complete"
-            }
-          },
-          type: "artifact"
-        },
-        toolCall("call-2", 1, "second query"),
-        {
-          data: {
-            artifactType: "tool_result",
-            payload: {
-              callId: "call-2",
-              message: "search_invocation_limit_reached",
-              ordinal: 1,
-              resultPreview: {},
-              round: 1,
-              status: "error"
-            }
-          },
-          type: "artifact"
-        }
-      ],
-      [{
-        artifacts: {
-          displayName: "OpenAI Search",
-          invocationId: "call-1:openai-search",
-          sources: []
-        },
-        query: "first query",
-        status: "complete",
-        strategyId: "openai-search"
+    expect(summary).toEqual({
+      citations: [],
+      groundingDisplay: null,
+      reasoningText: [],
+      sources: [{
+        rank: 1,
+        snippet: "Live result",
+        title: "Live source",
+        url: "https://example.com/live"
       }]
-    );
-
-    expect(summary).toMatchObject({
-      searchActivity: [
-        { query: "first query", status: "complete" },
-        {
-          failureReason: "This Search source reached its request limit for this answer.",
-          query: "second query",
-          status: "error"
-        }
-      ],
-      searchCount: 2
     });
+    expect(JSON.stringify(summary)).not.toMatch(
+      /private live query|private-call-id/
+    );
   });
 
-  it("extracts reasoning summary text from provider arrays and ignores empty arrays", () => {
+  it("projects safe citations and Reasoning while dropping unsafe links", () => {
     const summary = summarizeThreadArtifacts([
       {
         data: {
-          artifactType: "reasoning",
-          payload: {
-            reasoning: [{ text: "First summary", type: "summary_text" }]
-          }
+          artifactType: "citation",
+          payload: { title: "Unsafe", url: "javascript:alert(1)" }
+        },
+        type: "artifact"
+      },
+      {
+        data: {
+          artifactType: "citation",
+          payload: { title: "Safe", url: "https://example.com/source" }
         },
         type: "artifact"
       },
@@ -326,172 +99,46 @@ describe("thread artifact summaries", () => {
         data: {
           artifactType: "reasoning",
           payload: {
-            summary: [{ text: "Second summary", type: "summary_text" }]
-          }
-        },
-        type: "artifact"
-      },
-      {
-        data: {
-          artifactType: "reasoning",
-          payload: {
-            reasoning: []
+            reasoning: [{ text: "Checked the direct sources.", type: "summary_text" }]
           }
         },
         type: "artifact"
       }
     ]);
 
-    expect(summary).toMatchObject({
-      reasoningCount: 2,
-      reasoningText: ["First summary", "Second summary"]
-    });
-  });
-
-  it("surfaces the latest valid context truncation artifact as a thread hint", () => {
-    expect(
-      summarizeThreadArtifacts([
-        {
-          data: {
-            artifactType: "context_truncated",
-            payload: {
-              approxDroppedTokens: 84,
-              droppedMessages: 4
-            }
-          },
-          type: "artifact"
-        },
-        {
-          data: {
-            artifactType: "context_truncated",
-            payload: {
-              approxDroppedTokens: 144,
-              droppedMessages: 6
-            }
-          },
-          type: "artifact"
-        },
-        {
-          data: {
-            artifactType: "context_truncated",
-            payload: {
-              approxDroppedTokens: 0,
-              droppedMessages: 0
-            }
-          },
-          type: "artifact"
-        }
-      ])
-    ).toMatchObject({
-      contextTruncation: {
-        approxDroppedTokens: 144,
-        droppedMessages: 6
-      }
-    });
-  });
-
-  it("drops unsafe citation URLs while retaining the observed citation count", () => {
-    expect(
-      summarizeThreadArtifacts([
-        {
-          data: {
-            artifactType: "citation",
-            payload: {
-              title: "Unsafe",
-              url: "javascript:alert(1)"
-            }
-          },
-          type: "artifact"
-        },
-        {
-          data: {
-            artifactType: "citation",
-            payload: {
-              title: "Safe",
-              url: "https://example.com/source"
-            }
-          },
-          type: "artifact"
-        }
-      ])
-    ).toMatchObject({
-      citationCount: 2,
-      citations: [
-        {
-          index: 2,
-          title: "Safe",
-          url: "https://example.com/source"
-        }
-      ]
-    });
-  });
-
-  it("correlates live parallel tool artifacts and keeps terminal live evidence", () => {
-    const toolCall = {
-      data: {
-        artifactType: "tool_call",
-        payload: {
-          argumentsPreview: { query: "memory" },
-          callId: "call-1",
-          ordinal: 0,
-          round: 1,
-          snapshot: {
-            capability: "mcp",
-            credentialSources: ["personal"],
-            serverName: "Mem0",
-            toolName: "search"
-          },
-          status: "requested"
-        }
-      },
-      type: "artifact"
-    };
-    const summary = summarizeThreadArtifacts(
-      [
-        toolCall,
-        {
-          data: {
-            artifactType: "tool_result",
-            payload: {
-              callId: "call-1",
-              durationMs: 90,
-              ordinal: 0,
-              resultPreview: { content: [{ text: "found", type: "text" }] },
-              round: 1,
-              status: "complete"
-            }
-          },
-          type: "artifact"
-        }
-      ],
-      [],
-      [{
-        argumentsPreview: { query: "memory" },
-        callId: "call-1",
-        capability: "mcp",
-        credentialSources: ["personal"],
-        durationMs: null,
-        errorMessage: null,
-        externalAccountLabel: null,
-        ordinal: 0,
-        resultPreview: null,
-        round: 1,
-        serverName: "Mem0",
-        status: "running",
-        toolName: "search"
+    expect(summary).toEqual({
+      citations: [{
+        index: 2,
+        title: "Safe",
+        url: "https://example.com/source"
       }],
-      "streaming"
-    );
-
-    expect(summary).toMatchObject({
-      toolCallCount: 1,
-      toolCalls: [{
-        callId: "call-1",
-        durationMs: 90,
-        resultPreview: { content: [{ text: "found", type: "text" }] },
-        status: "complete"
-      }]
+      groundingDisplay: null,
+      reasoningText: ["Checked the direct sources."],
+      sources: []
     });
+  });
+
+  it("does not turn context or settled tool artifacts into answer output", () => {
+    expect(summarizeThreadArtifacts([
+      {
+        data: {
+          artifactType: "context_truncated",
+          payload: { approxDroppedTokens: 84, droppedMessages: 4 }
+        },
+        type: "artifact"
+      },
+      {
+        data: {
+          artifactType: "tool_result",
+          payload: {
+            callId: "private-call",
+            resultPreview: { private: true },
+            status: "complete"
+          }
+        },
+        type: "artifact"
+      }
+    ])).toBeNull();
   });
 });
 

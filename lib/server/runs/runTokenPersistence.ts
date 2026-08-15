@@ -1,17 +1,9 @@
-import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { RunRepository } from "./runRepositoryContract";
-import {
-  appendRunEventWithRetry,
-  type RunEventSequence
-} from "./runFinalization";
 
 const tokenPersistenceFlushIntervalMs = 400;
 const tokenPersistenceMaxTokens = 32;
 
-type TokenPersistenceRepository = Pick<
-  RunRepository,
-  "appendAssistantText" | "appendRunEvent" | "nextRunEventSequence"
->;
+type TokenPersistenceRepository = Pick<RunRepository, "appendAssistantText">;
 
 export function createRunTokenPersistenceBuffer(input: Readonly<{
   allowErroredAssistant?: boolean;
@@ -19,7 +11,6 @@ export function createRunTokenPersistenceBuffer(input: Readonly<{
   initialText?: string;
   repository: TokenPersistenceRepository;
   runId: string;
-  sequence: RunEventSequence;
 }>) {
   let assistantText = input.initialText ?? "";
   let pendingDelta = "";
@@ -47,7 +38,6 @@ export function createRunTokenPersistenceBuffer(input: Readonly<{
       return;
     }
 
-    const delta = pendingDelta;
     const text = assistantText;
     pendingDelta = "";
     pendingTokenCount = 0;
@@ -55,15 +45,11 @@ export function createRunTokenPersistenceBuffer(input: Readonly<{
     await input.repository.appendAssistantText(
       input.assistantMessageId,
       text,
-      input.allowErroredAssistant ? { allowErrored: true } : undefined
+      {
+        ...(input.allowErroredAssistant ? { allowErrored: true } : {}),
+        runId: input.runId
+      }
     );
-    const event: ModelRunSseEvent = {
-      data: {
-        delta
-      },
-      type: "token"
-    };
-    await appendRunEventWithRetry(input.repository, input.runId, input.sequence, event);
   }
 
   function flush(): Promise<void> {

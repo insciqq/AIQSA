@@ -29,7 +29,7 @@ import { lowestSupportedOpenAIResponsesSearchEffort } from "../../providers/open
 import {
   SearchConfigurationError,
   compatibleTechnicalAdapter,
-  legacySearchKind,
+  searchStrategyKind,
   normalizeSearchDraft,
   searchDraftHash
 } from "../../search/configuration";
@@ -53,7 +53,6 @@ export type AdminSearchTester = Readonly<{
 }>;
 
 export type AdminSearchServiceErrorCode =
-  | "search_activation_evidence_missing"
   | "search_configuration_invalid"
   | "search_configuration_unavailable"
   | "search_default_unavailable"
@@ -595,7 +594,7 @@ export function createAdminSearchService(input: Readonly<{
         credentialMode: draft.credentialMode,
         draft: json(draft),
         enabled: true,
-        kind: legacySearchKind(draft.protocol, draft.adapterKind),
+        kind: searchStrategyKind(draft.protocol, draft.adapterKind),
         modelId: draft.adapterKind === "provider_model_client"
           ? technical.configuration.upstreamModelId
           : null,
@@ -855,7 +854,7 @@ export function createAdminSearchService(input: Readonly<{
             draft: json(routeDraft),
             enabled,
             id: route.id,
-            kind: legacySearchKind(routeDraft.protocol, routeDraft.adapterKind),
+            kind: searchStrategyKind(routeDraft.protocol, routeDraft.adapterKind),
             modelId: client ? technical.configuration.upstreamModelId : null,
             provider: technical.model.connection.family,
             providerModelId: client ? routeDraft.providerModelId : null,
@@ -988,7 +987,7 @@ export function createAdminSearchService(input: Readonly<{
           draft: json(draft),
           enabled: true,
           id: strategyRowId,
-          kind: legacySearchKind(draft.protocol, draft.adapterKind),
+          kind: searchStrategyKind(draft.protocol, draft.adapterKind),
           modelId: technical.configuration.upstreamModelId,
           provider: technical.model.connection.family,
           providerModelId: draft.providerModelId,
@@ -1128,9 +1127,9 @@ export function createAdminSearchService(input: Readonly<{
         where: { id: args.id }
       }) as SearchOptionRow | null;
       if (!option) throw new AdminSearchServiceError("search_integration_not_found");
-      // Compatibility endpoint: activation is now a network-free publication
-      // of the saved configuration. It never depends on a prior live check or
-      // on the credential version used by one administrator.
+      // Activation publishes the saved configuration without a network call.
+      // It never depends on a prior live check or on the credential version
+      // used by one administrator.
       await publishLogicalOption(tx, option);
     });
   }

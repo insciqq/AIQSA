@@ -121,7 +121,6 @@ async function createHistoryFixture(
       activeLeafMessageId: leaf.id,
       branchGeneration: 0,
       chatId: chat.id,
-      lastDreamedMessageId: leaf.id,
       lastIndexedMessageId: leaf.id,
       lastSucceededAt: now,
       sourceContentHash: "a".repeat(64),
@@ -309,7 +308,6 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
         activatedAt: now,
         capabilities: embeddingConfiguration.capabilities,
         connectionId,
-        contextWindow: 32_768,
         defaultParams: {},
         displayName: "Memory vector fixture model",
         draftConfig: embeddingConfiguration,
@@ -580,7 +578,7 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
       annExactFallbackUsed: annLane.exactFallbackUsed,
       annP95LatencyMs: Math.round(percentile95(annLatenciesMs) * 100) / 100,
       crossTenantLeakageCount,
-      evidenceVersion: "memory-phase4-vector-qualification-v1",
+      evidenceVersion: "memory-vector-qualification-v1",
       exactEligibleRows: 32,
       exactP95LatencyMs: Math.round(percentile95(exactLatenciesMs) * 100) / 100,
       exactPlanBounded: !exactPlanJson.includes(
@@ -605,7 +603,7 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
       recallAt5: 1,
       sanitizedAggregatesOnly: true
     });
-    console.info("memory_phase4_vector_qualification", evidence);
+    console.info("memory_vector_qualification", evidence);
     expect(evidence.annP95LatencyMs).toBeLessThan(150);
     expect(evidence.exactP95LatencyMs).toBeLessThan(150);
     expect(JSON.stringify(evidence)).not.toContain(suffix);

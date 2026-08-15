@@ -25,7 +25,7 @@ import {
 import { resolveProviderModelCapabilities } from "@/lib/server/providers/providerModelCapabilities";
 import {
   compatibleTechnicalAdapter,
-  legacySearchKind,
+  searchStrategyKind,
   normalizeSearchDraft,
   searchExecutionModes
 } from "@/lib/server/search/configuration";
@@ -49,13 +49,10 @@ type CatalogPrismaClient = Pick<
 
 type UserSettingsRow = {
   defaultControlValues: unknown;
-  defaultProviderModel: { connectionId: string } | null;
   defaultProviderModelId: string | null;
-  defaultSearchStrategyId: string;
   defaultSearchPlan: unknown;
   showCitations: boolean;
   showReasoningBlocks: boolean;
-  showToolActivity: boolean;
 };
 
 type CatalogMembershipRow = {
@@ -375,7 +372,6 @@ export function providerModelToCatalogEntry(
   const resolvedCapabilities = resolveProviderModelCapabilities({
     adapterKind: configuration.adapterKind as CatalogAdapterKind,
     capabilities: configuration.capabilities,
-    legacyContextWindow: model.contextWindow,
     providerFamily: model.connection.family,
     upstreamModelId: configuration.upstreamModelId
   });
@@ -395,7 +391,7 @@ export function providerModelToCatalogEntry(
   return {
     adapterKind: configuration.adapterKind as CatalogAdapterKind,
     capabilities,
-    contextWindow: resolvedCapabilities.contextWindow ?? 0,
+    contextWindow: resolvedCapabilities.contextWindow ?? null,
     defaultParams: configuration.defaultParams,
     displayName: model.displayName,
     inputTokenPriceMicros: model.inputTokenPriceMicros,
@@ -458,7 +454,7 @@ export function searchStrategyToCatalogRoute(
     revision.credentialMode !== draft.credentialMode ||
     revision.providerModelId !== draft.providerModelId ||
     strategy.providerModelId !== draft.providerModelId ||
-    strategy.kind !== legacySearchKind(draft.protocol, draft.adapterKind)
+    strategy.kind !== searchStrategyKind(draft.protocol, draft.adapterKind)
   ) {
     return null;
   }
@@ -603,12 +599,12 @@ export function createPrismaCatalogDataLoader({
           }
         },
         settings: {
-          include: {
-            defaultProviderModel: {
-              select: {
-                connectionId: true
-              }
-            }
+          select: {
+            defaultControlValues: true,
+            defaultProviderModelId: true,
+            defaultSearchPlan: true,
+            showCitations: true,
+            showReasoningBlocks: true
           }
         }
       },
@@ -709,15 +705,10 @@ export function createPrismaCatalogDataLoader({
       searchStrategies: exposedSearchOptions,
       settings: {
         defaultControlValues: user.settings.defaultControlValues,
-        defaultModelId: user.settings.defaultProviderModelId ?? "",
-        defaultProvider: user.settings.defaultProviderModel?.connectionId ?? "",
-        defaultProviderConnectionId: user.settings.defaultProviderModel?.connectionId ?? null,
         defaultProviderModelId: user.settings.defaultProviderModelId,
-        defaultSearchStrategyId: user.settings.defaultSearchStrategyId,
         defaultSearchPlan: user.settings.defaultSearchPlan,
         showCitations: user.settings.showCitations,
-        showReasoningBlocks: user.settings.showReasoningBlocks,
-        showToolActivity: user.settings.showToolActivity
+        showReasoningBlocks: user.settings.showReasoningBlocks
       }
     };
   };

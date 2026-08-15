@@ -236,7 +236,7 @@ export function KnowledgeLibrary({
           title="Remove document from this base?"
           tone="warning"
         >
-          This closes the document’s current visibility. Historical version identity and evidence from accepted runs are retained.
+          This closes the document’s current visibility. Historical version identity and accepted-run bindings are retained.
         </ConfirmationDialog>
       ) : null}
     </>
@@ -417,7 +417,7 @@ function ListTask({
                 <BookOpen className="mx-auto size-7 text-ink-muted" aria-hidden="true" />
                 <p className="mt-3 text-sm font-semibold text-ink">No Knowledge bases yet</p>
                 <p className="mx-auto mt-1 max-w-md text-xs leading-5 text-ink-muted">
-                  Create a private base, then add documents and let indexing build its retrieval evidence.
+                  Create a private base, then add documents and let indexing build its retrieval index.
                 </p>
                 <button className={`${surfaceButton} mt-4`} onClick={list.onNewBase} type="button">
                   <Plus className="size-4" aria-hidden="true" />
@@ -794,7 +794,7 @@ function BaseSettings({ busy, detail }: { busy: boolean; detail: KnowledgeDetail
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h2 className="text-base font-semibold text-ink" id="knowledge-settings-title">Base settings</h2>
-          <p className="mt-1 text-xs leading-5 text-ink-muted">Identity changes do not rewrite indexed content or accepted evidence.</p>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">Identity changes do not rewrite indexed content or accepted bindings.</p>
         </div>
         {base.archived ? <span className="rounded-pill bg-control-surface px-2 py-1 text-metadata font-medium text-ink-secondary">Archived</span> : null}
       </div>
@@ -978,7 +978,7 @@ function DocumentsSection({
           <p className="mt-1 text-xs leading-5 text-ink-muted">
             {detail.documentQuery
               ? "Try another filename. Search is case-insensitive and does not inspect document contents."
-              : "This base is valid and returns honest empty retrieval evidence."}
+              : "This base is valid and returns an honest empty retrieval result."}
           </p>
         </div>
       ) : (
@@ -1261,7 +1261,7 @@ function PublicationSection({ busy, detail }: { busy: boolean; detail: Knowledge
     <section aria-labelledby="knowledge-publication-title" className="border-t border-trace-subtle py-6">
       <h2 className="text-base font-semibold text-ink" id="knowledge-publication-title">Publication</h2>
       <p className="mt-1 border-l-2 border-proof/45 pl-3 text-xs leading-5 text-ink-secondary" data-testid="knowledge-publication-disclosure">
-        Publishing grants the selected audience live access to this base’s current and future content. Revoking stops future run admission; runs accepted earlier keep their frozen evidence.
+        Publishing grants the selected audience live access to this base’s current and future content. Revoking stops future run admission; runs accepted earlier keep their admitted revision.
       </p>
       {publications.length > 0 ? (
         <ul className="mt-4 divide-y divide-trace-subtle border-y border-trace-subtle" aria-label="Current Knowledge publications">

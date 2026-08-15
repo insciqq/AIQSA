@@ -33,6 +33,7 @@ function fixturePolicy(): McpOAuthPolicy {
     redirectUri: REDIRECT_URI,
     requestedScopes: ["mcp.read", "mcp.write"],
     resource: SERVER_URL,
+    resourceMode: "explicit",
     serverId: "server-1",
     serverUrl: SERVER_URL,
     userId: "user-1"

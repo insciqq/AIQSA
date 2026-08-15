@@ -2,12 +2,11 @@ import type {
   ChatContextStats,
   ChatUsageStats,
   ThreadArtifactSummary,
-  ThreadAssistantIdentity,
-  ThreadRunUsage
+  ThreadAssistantIdentity
 } from "../../contracts/chats";
 import type { CatalogAdapterKind } from "../../domain/catalog";
-import type { ModelRunResponseProjection, ModelRunStatus } from "../../contracts/runs";
-import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
+import type { ModelRunStatus } from "../../contracts/runs";
+import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelTokenPricing } from "../../domain/usage";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
@@ -39,6 +38,7 @@ import type {
   ProviderRunRequest
 } from "../providers/types";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
+import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 import type {
   MemoryPreparingAttemptResult,
@@ -51,25 +51,25 @@ export type RunAttachmentRecord = ProviderAttachment & {
 };
 
 export type RunModelConfiguration = {
-  adapterKind?: CatalogAdapterKind;
+  adapterKind: CatalogAdapterKind;
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
 };
 
 export type RunSearchStrategyConfiguration = {
-  adapterKind?: SearchAdapterKind;
+  adapterKind: SearchAdapterKind;
   config: Record<string, unknown>;
-  credentialMode?: SearchCredentialMode;
-  displayName?: string;
-  executionModes?: SearchPlanMode[];
+  credentialMode: SearchCredentialMode;
+  displayName: string;
+  executionModes: SearchPlanMode[];
   kind: string;
   modelId: string | null;
-  protocol?: SearchProtocol;
+  protocol: SearchProtocol;
   provider: string;
-  providerModelId?: string | null;
-  revisionId?: string;
-  searchStrategyRowId?: string;
+  providerModelId: string | null;
+  revisionId: string;
+  searchStrategyRowId: string;
   strategyId: string;
 };
 
@@ -87,6 +87,8 @@ export type RunControlRecord = {
 export type DurableRunControlRecord = Omit<RunControlRecord, "status"> & {
   status: ModelRunStatus;
 };
+
+export type RunOutcomeRecord = Pick<DurableRunControlRecord, "id" | "status">;
 
 export type StaleRunControlRecord = RunControlRecord & {
   updatedAt: Date | string;
@@ -123,7 +125,6 @@ export type RunChatUpdateRecord = {
     parentMessageId: string | null;
     provider: string | null;
     role: string;
-    runUsage?: ThreadRunUsage | null;
     status: string;
   }[];
 };
@@ -187,8 +188,7 @@ export type AcceptedRunDefaults = {
   controlDefaults: Record<string, boolean | string>;
   modelId: string;
   provider: string;
-  searchStrategy: string | null;
-  searchPlan?: SearchPlan;
+  searchPlan: SearchPlan;
   searchPreferencePlan?: SearchPlan | null;
   userId: string;
 };
@@ -247,10 +247,8 @@ export type CreateRegenerationRunInput = {
   modelId: string;
   memoryMaterializer?: PreparingRunMemoryMaterializer;
   normalizedRequest: NormalizedRunRequest;
-  /** The assistant being replaced. Omission is accepted only by the legacy
-   * compatibility wrapper, which resolves the currently active sibling. */
   /** Null means a newly committed user branch with no Assistant child yet. */
-  preSendAssistantMessageId?: string | null;
+  preSendAssistantMessageId: string | null;
   providerAdmissionPlan?: ProviderAdmissionPlan;
   provider: string;
   providerRequestPreview: Record<string, unknown>;
@@ -320,9 +318,9 @@ export type RunRepository = {
   appendAssistantText(
     assistantMessageId: string,
     text: string,
-    options?: Readonly<{ allowErrored?: boolean }>
+    options: Readonly<{ allowErrored?: boolean; runId: string }>
   ): Promise<void>;
-  appendRunEvent(runId: string, sequence: number, event: ModelRunSseEvent): Promise<void>;
+  appendRunOutputEvent(runId: string, event: RunOutputArtifactEvent): Promise<void>;
   beginToolLoopProviderRound(input: {
     providerContinuation: ToolLoopJsonValue | null;
     providerCursor?: number | string | null;
@@ -358,13 +356,12 @@ export type RunRepository = {
     assistantMessageId: string;
     chatId: string;
     estimatedCostMicros: number | null;
-    finalProviderResponsePreview: Record<string, unknown>;
     finalText: string;
     modelId: string;
     provider: string;
     providerResponseId?: string;
     runId: string;
-    eventsBeforeTerminal?: ModelRunSseEvent[];
+    outputEvents?: RunOutputArtifactEvent[];
     usage: ModelRunUsage;
     usageAttributions?: RunUsageAttribution[];
     userId: string;
@@ -373,13 +370,10 @@ export type RunRepository = {
   createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {
     artifacts: unknown;
-    durationMs?: number;
     invocationId?: string;
     modelId: string | null;
     modelRunId: string;
     provider: string;
-    query?: string;
-    requestPreview: Record<string, unknown>;
     searchRevisionId?: string;
     status: "complete" | "error";
     strategyId: string;
@@ -449,7 +443,7 @@ export type RunRepository = {
     leafMessageId: string
   ): Promise<ProviderConversationMessage[]>;
   getRunControlForUser(runId: string, userId: string): Promise<RunControlRecord | null>;
-  getRunForUser(runId: string, userId: string): Promise<ModelRunResponseProjection | null>;
+  getRunOutcomeForUser(runId: string, userId: string): Promise<RunOutcomeRecord | null>;
   getChatUpdateForRun(input: {
     assistantMessageId: string;
     chatId: string;
@@ -457,12 +451,8 @@ export type RunRepository = {
     userMessageId: string;
   }): Promise<RunChatUpdateRecord | null>;
   isSearchStrategyEnabled(searchStrategyId: string): Promise<boolean>;
-  loadSearchStrategyConfiguration(
-    searchStrategyId: string
-  ): Promise<RunSearchStrategyConfiguration | null>;
   loadAttachments(userId: string, attachmentIds: string[]): Promise<RunAttachmentRecord[]>;
   loadEntitlements(userId: string): Promise<ResolvedEntitlements>;
-  loadModelConfiguration(provider: string, modelId: string): Promise<RunModelConfiguration | null>;
   loadModelPricing(provider: string, modelId: string): Promise<ModelTokenPricing | null>;
   loadRunUsageAttributions(input: {
     runId: string;
@@ -480,7 +470,6 @@ export type RunRepository = {
     runId: string;
     strategy: string;
   }): Promise<boolean>;
-  nextRunEventSequence(runId: string): Promise<number>;
   persistToolLoopCallBatch(input: PersistToolLoopCallBatchInput): Promise<PersistToolLoopCallBatchResult>;
   recordRunUsageEvents(input: {
     answerRoundUsage?: PersistedAnswerRoundUsage;
@@ -515,7 +504,7 @@ export type RunRepository = {
   }>): Promise<boolean>;
   settleRecoveredRunError(input: {
     error: { code: string; message: string };
-    events: ModelRunSseEvent[];
+    outputEvents: RunOutputArtifactEvent[];
     providerResponseId?: string;
     runId: string;
     usageAttributions: RunUsageAttribution[];
@@ -528,24 +517,13 @@ export type RunRepository = {
     state: "complete" | "error";
     userId: string;
   }): Promise<SettleToolLoopCallResult>;
-  /**
-   * A true result atomically persists `message_reset` at `sequence`; only then
-   * may the caller advance its existing in-memory sequence owner.
-   */
   resetToolLoopAssistantDraft(input: {
     roundIndex: number;
     runId: string;
-    sequence: number;
     userId: string;
   }): Promise<boolean>;
   updateRunProviderResponseId(
     runId: string,
     providerResponseId: string
   ): Promise<ProviderResponseIdPublication>;
-  updateRunProviderRequestPreview(runId: string, providerRequestPreview: Record<string, unknown>): Promise<void>;
-  updateCancelledRunProviderPreview(input: {
-    providerCancelPreview: Record<string, unknown>;
-    runId: string;
-    userId: string;
-  }): Promise<boolean>;
 };

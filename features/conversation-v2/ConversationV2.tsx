@@ -59,6 +59,7 @@ type ConversationTurnV2Props = Readonly<{
   className?: string;
   content: string;
   emptyText?: string;
+  expandForReadingAnchor?: boolean;
   hideEmptyContent?: boolean;
   role: "assistant" | "user";
   streaming?: boolean;
@@ -97,12 +98,15 @@ export function ConversationTurnV2({
   className = "",
   content,
   emptyText = "This message has no text.",
+  expandForReadingAnchor = false,
   hideEmptyContent = false,
   role,
   streaming = false
 }: ConversationTurnV2Props) {
   const [controlsOpen, setControlsOpen] = useState(false);
-  const [bubbleExpanded, setBubbleExpanded] = useState(false);
+  const [bubbleExpansion, setBubbleExpansion] = useState<
+    "automatic" | "collapsed" | "expanded"
+  >("automatic");
   const [moreOpen, setMoreOpen] = useState(false);
   const [morePosition, setMorePosition] = useState<{
     left: number;
@@ -120,6 +124,8 @@ export function ConversationTurnV2({
   const hasMoreMenu = Boolean(actions?.onDelete || actions?.onBranchFromHere);
   const label = ariaLabel ?? (isUser ? "Question" : "Answer");
   const bubbleClampCandidate = isUser && shouldClampUserBubbleV2(content);
+  const bubbleExpanded = bubbleExpansion === "expanded" ||
+    (bubbleExpansion === "automatic" && expandForReadingAnchor);
   const bubbleClamped = bubbleClampCandidate && !bubbleExpanded;
 
   useEffect(() => {
@@ -252,7 +258,7 @@ export function ConversationTurnV2({
             className="v2-bubble-expander v2-focusable"
             type="button"
             aria-expanded={bubbleExpanded}
-            onClick={() => setBubbleExpanded((expanded) => !expanded)}
+            onClick={() => setBubbleExpansion(bubbleClamped ? "expanded" : "collapsed")}
           >
             {bubbleExpanded ? "Collapse" : "Show full message"}
           </button>

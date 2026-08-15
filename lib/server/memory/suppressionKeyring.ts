@@ -22,7 +22,6 @@ const FINGERPRINT_PURPOSES = new Set<MemorySuppressionFingerprintPurpose>([
 export const MEMORY_SUPPRESSION_GUARDED_OPERATIONS = [
   "automatic_extraction",
   "resume",
-  "redream",
   "rebuild"
 ] as const;
 

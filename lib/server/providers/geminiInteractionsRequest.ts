@@ -379,11 +379,9 @@ function maxOutputTokens(params: Record<string, unknown>): number {
 }
 
 function usesHostedGoogleSearch(request: ProviderRunRequest): boolean {
-  return request.searchPlan
-    ? request.searchPlan.options.some((option) =>
-        option.adapterKind === "answer_provider_hosted" &&
-        option.protocol === "gemini_google_search")
-    : request.searchStrategy === "gemini-google-search";
+  return request.searchPlan.options.some((option) =>
+    option.adapterKind === "answer_provider_hosted" &&
+    option.protocol === "gemini_google_search");
 }
 
 function buildGeminiInteractionsBody(

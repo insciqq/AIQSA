@@ -35,8 +35,6 @@ export type OpenAICompatibleChatRequestBody = Record<string, unknown> & {
 export type OpenAICompatibleChatRequestOptions = Readonly<{
   maxAttachmentTextChars?: number;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
-  /** @deprecated Use buildOpenAICompatibleChatRequestPreview for redaction. */
-  redactImages?: boolean;
 }>;
 
 export type OpenAICompatibleChatRequestPreview = {
@@ -252,7 +250,7 @@ export function buildOpenAICompatibleChatRequest(
   return buildBody(request, {
     ...options,
     preview: false,
-    redactImages: options.redactImages ?? false
+    redactImages: false
   });
 }
 

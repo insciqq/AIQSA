@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { providerSearchOperationsFromArtifacts } from "../search/providerOperations";
 import { validateSearchToolArguments } from "../search/query";
 import {
   buildOpenAIResponsesSearchRequest,
@@ -394,83 +393,6 @@ describe("OpenAI Responses query-only Search adapter", () => {
     expect(JSON.stringify(error)).not.toContain("must-not-leak");
     expect(error).not.toHaveProperty("response");
   });
-
-  it("keeps an honest truncation marker when incomplete operation evidence exceeds the limit", async () => {
-    const adapter = createOpenAIResponsesSearchAdapter({
-      client: client(async () => ({
-        output: Array.from({ length: 33 }, (_, index) => ({
-          action: { query: `bounded query ${index}`, type: "search" },
-          id: `ws-${index}`,
-          status: "completed",
-          type: "web_search_call"
-        })),
-        status: "incomplete",
-        usage: {}
-      })),
-      provider: "openai"
-    });
-
-    const error = await adapter.search(searchRequest()).then(
-      () => null,
-      (value: unknown) => value
-    );
-    expect(isProviderSearchExecutionError(error)).toBe(true);
-    if (!isProviderSearchExecutionError(error)) throw new Error("expected typed Search error");
-
-    expect(providerSearchOperationsFromArtifacts(error.artifacts)).toMatchObject({
-      operations: expect.arrayContaining([
-        expect.objectContaining({ queries: ["bounded query 0"] }),
-        expect.objectContaining({ queries: ["bounded query 31"] })
-      ]),
-      truncated: true
-    });
-    expect(providerSearchOperationsFromArtifacts(error.artifacts).operations).toHaveLength(32);
-  });
-
-  it.each(["completed", "incomplete"] as const)(
-    "retains only credential-free HTTP operation URLs before %s artifact persistence",
-    async (status) => {
-      const adapter = createOpenAIResponsesSearchAdapter({
-        client: client(async () => ({
-          output: [
-            "https://example.com/source",
-            "https://user:PRIVATE_PASSWORD@example.com/private",
-            "mailto:PRIVATE_MAIL@example.com"
-          ].map((url, index) => ({
-            action: { type: "open_page", url },
-            id: `ws-url-${index}`,
-            status: "completed",
-            type: "web_search_call"
-          })),
-          status,
-          usage: {}
-        })),
-        provider: "openai"
-      });
-
-      const outcome = await adapter.search(searchRequest()).then(
-        (result) => ({ artifacts: result.artifacts, error: null }),
-        (error: unknown) => ({
-          artifacts: isProviderSearchExecutionError(error) ? error.artifacts : [],
-          error
-        })
-      );
-      expect(isProviderSearchExecutionError(outcome.error)).toBe(true);
-      if (status === "completed" && isProviderSearchExecutionError(outcome.error)) {
-        expect(outcome.error.code).toBe("openai_search_findings_invalid");
-      }
-
-      const operations = providerSearchOperationsFromArtifacts(outcome.artifacts);
-      expect(operations.operations.map((operation) => operation.url)).toEqual([
-        "https://example.com/source",
-        null,
-        null
-      ]);
-      expect(JSON.stringify(outcome.artifacts)).not.toMatch(
-        /PRIVATE_PASSWORD|PRIVATE_MAIL|mailto:/u
-      );
-    }
-  );
 
   it("omits unknown incomplete reasons and maps compatible reasoning without answer params", async () => {
     const create = vi.fn<OpenAIResponsesClient["create"]>(async () => ({

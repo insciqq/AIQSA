@@ -230,7 +230,7 @@ export function decodeMemoryFactVerification(
 }
 
 /**
- * Produces a bounded, content-free diagnostic for live qualification evidence.
+ * Produces a bounded, content-free runtime diagnostic.
  * Runtime decoding deliberately retains one public failure code so model output
  * details never become durable execution errors or logs.
  */

@@ -341,10 +341,10 @@ describe("AdminProvidersExperience", () => {
       .toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
-    const receipt = await screen.findByTestId("provider-custom-ready-receipt");
-    expect(receipt).toHaveTextContent("API key saved and verified");
-    expect(receipt).toHaveTextContent("assigned directly to this administrator");
-    expect(receipt).toHaveTextContent(
+    const summary = await screen.findByTestId("provider-custom-ready-summary");
+    expect(summary).toHaveTextContent("API key saved and verified");
+    expect(summary).toHaveTextContent("assigned directly to this administrator");
+    expect(summary).toHaveTextContent(
       "Custom · llm.example.test Search: ready for supported models."
     );
     expect(screen.getByRole("link", { name: "Manage Search" }))
@@ -428,18 +428,18 @@ describe("AdminProvidersExperience", () => {
     expect(screen.queryByDisplayValue("browser-only-key")).not.toBeInTheDocument();
     expect(screen.getByText("GPT-5.6 Terra")).toBeInTheDocument();
     expect(screen.getByText("This provider is configured and available in chat. Personal and installation default models remain unchanged.")).toBeInTheDocument();
-    const receipt = screen.getByTestId("provider-quick-ready-receipt");
-    expect(receipt).toHaveTextContent("API key: saved and verified.");
-    expect(receipt).toHaveTextContent("Prepared model: GPT-5.6 Terra.");
-    expect(receipt).toHaveTextContent(
+    const summary = screen.getByTestId("provider-quick-ready-summary");
+    expect(summary).toHaveTextContent("API key: saved and verified.");
+    expect(summary).toHaveTextContent("Prepared model: GPT-5.6 Terra.");
+    expect(summary).toHaveTextContent(
       "Available models: GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol."
     );
-    expect(receipt).toHaveTextContent("Access: available to this administrator.");
-    expect(receipt).toHaveTextContent(
+    expect(summary).toHaveTextContent("Access: available to this administrator.");
+    expect(summary).toHaveTextContent(
       "Connection default credential: set to this verified key."
     );
     expect(screen.getByText(/Default models: unchanged\./)).toBeInTheDocument();
-    expect(receipt).not.toHaveTextContent("Run profiles");
+    expect(summary).not.toHaveTextContent("Run profiles");
     const feedback = screen.getByTestId("provider-quick-feedback");
     expect(feedback).toHaveAttribute("role", "status");
     expect(feedback).toHaveAttribute("aria-live", "polite");
@@ -490,7 +490,7 @@ describe("AdminProvidersExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test & Save" }));
 
     expect(await screen.findByText("Ready to chat")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-quick-ready-receipt")).toHaveTextContent(
+    expect(screen.getByTestId("provider-quick-ready-summary")).toHaveTextContent(
       `OpenAI Search: ${detail}.`
     );
     expect(screen.getByText(message)).toBeInTheDocument();
@@ -600,9 +600,9 @@ describe("AdminProvidersExperience", () => {
       });
       await finalCheck.promise;
     });
-    const receipt = await screen.findByTestId("provider-quick-ready-receipt");
-    expect(receipt).toHaveTextContent("Prepared model: GPT-5.6 Sol.");
-    expect(receipt).not.toHaveTextContent("Run profiles");
+    const summary = await screen.findByTestId("provider-quick-ready-summary");
+    expect(summary).toHaveTextContent("Prepared model: GPT-5.6 Sol.");
+    expect(summary).not.toHaveTextContent("Run profiles");
   });
 
   it("keeps replacement blank and the Ready fact visible after a retryable failure", async () => {

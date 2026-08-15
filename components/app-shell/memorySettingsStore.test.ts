@@ -4,7 +4,6 @@ import {
   refreshMemorySettings,
   resetMemorySettingsStoreForTest,
   updateMemoryGate,
-  updateMemoryLocale,
   useMemorySettingsStore
 } from "./memorySettingsStore";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
@@ -68,26 +67,6 @@ describe("Memory settings store", () => {
     expect(observed).toEqual(states);
     expect(new Set(observed.map((state) => state.join(""))).size).toBe(8);
     expect(patchBodies).toHaveLength(7);
-  });
-
-  it("persists locale without claiming a Memory revision", async () => {
-    const initial = memorySettingsFixture({}, "RU");
-    let body: Record<string, unknown> | null = null;
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      body = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify(memorySettingsFixture({
-        settings: { ...initial.settings, memoryUiLocale: "EN", settingsRevision: 13 }
-      }, "EN")), {
-        headers: { "content-type": "application/json" },
-        status: 200
-      });
-    }));
-    useMemorySettingsStore.setState({ data: initial, error: null, loadState: "ready" });
-
-    await updateMemoryLocale("EN");
-
-    expect(body).toEqual({ expectedSettingsRevision: 12, memoryUiLocale: "EN" });
-    expect(useMemorySettingsStore.getState().data?.settings.memoryUiLocale).toBe("EN");
   });
 
   it("binds destination acceptance to the exact current policy and revisions", async () => {

@@ -95,15 +95,8 @@ describeIntegration("Prisma Memory health repository", () => {
           }
         });
         await tx.userMemorySettings.update({
-          data: {
-            activeIndexGenerationId: generationA,
-            memoryUiLocale: "RU"
-          },
+          data: { activeIndexGenerationId: generationA },
           where: { userId: ownerA }
-        });
-        await tx.userMemorySettings.update({
-          data: { memoryUiLocale: "EN" },
-          where: { userId: ownerB }
         });
       });
       await prisma.memoryJob.createMany({
@@ -124,7 +117,7 @@ describeIntegration("Prisma Memory health repository", () => {
             createdAt: new Date("2026-08-12T09:55:00.000Z"),
             id: jobB,
             idempotencyFingerprint: `health-b-${suffix}`,
-            kind: "GLOBAL_DREAM",
+            kind: "REBUILD_INDEX",
             memoryGenerationSnapshot: 0,
             memoryRevisionSnapshot: 0,
             pipelineVersion: "health-v1",
@@ -196,11 +189,10 @@ describeIntegration("Prisma Memory health repository", () => {
       expect(aggregate.activeDeletionCount - baseline.activeDeletionCount).toBe(2);
       expect(aggregate.blockedDeletionCount - baseline.blockedDeletionCount).toBe(1);
       expect(aggregate.overdueTemporaryCount - baseline.overdueTemporaryCount).toBe(1);
-      expect(aggregate.requestLocale).toBe("RU");
       const evidence = Object.freeze({
         adminOverdueTemporaryDelta: aggregate.overdueTemporaryCount -
           baseline.overdueTemporaryCount,
-        evidenceVersion: "memory-phase8-temporary-overdue-health-v1",
+        evidenceVersion: "memory-temporary-overdue-health-v1",
         ownerOverdueTemporaryCount: ownerHealth.overdueTemporaryCount,
         sanitizedAggregatesOnly: true,
         visibilityLeakageCount: 0
@@ -213,7 +205,7 @@ describeIntegration("Prisma Memory health repository", () => {
       });
       expect(JSON.stringify(evidence)).not.toContain(ownerA);
       expect(JSON.stringify(evidence)).not.toContain(ownerB);
-      console.info("memory_phase8_temporary_overdue_health", evidence);
+      console.info("memory_temporary_overdue_health", evidence);
     } finally {
       await cleanupHealthFixtures();
     }

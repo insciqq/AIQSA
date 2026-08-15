@@ -9,13 +9,12 @@ import {
 } from "./toolLoopPersistence";
 import {
   SEARCH_TOOL_RESULT_VERSION,
-  searchExecutionsFromToolResult,
   searchToolResultContent,
   type SearchExecutionEvidence
 } from "../search/toolResult";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
 
-const call = { id: "call-1", name: "search_via_perplexity" };
+const call = { id: "call-1", name: "search_engine_1" };
 
 describe("persisted tool execution result codec", () => {
   it("round-trips bounded search evidence and usage", () => {
@@ -64,16 +63,11 @@ describe("persisted tool execution result codec", () => {
     const findings = "canonical grounded findings ".repeat(200).trim();
     const execution: SearchExecutionEvidence = {
       displayName: "Primary Search",
-      durationMs: 25,
       findings,
       invocationId: "call-1:source-1",
       modelId: "search-model",
       optionId: "source-1",
       provider: "openai",
-      providerOperationsTruncated: false,
-      providerUsage: { webSearchRequests: 2 },
-      query: "current facts",
-      requestPreview: { queryCharacters: 13 },
       revisionId: "revision-1",
       sources: [{ rank: 1, title: "Source", url: "https://example.com/source" }],
       status: "complete",
@@ -84,8 +78,7 @@ describe("persisted tool execution result codec", () => {
       content: searchToolResultContent([execution]),
       name: call.name,
       rawPreview: {
-        finalProviderResponsePreview: { searchExecutions: [execution] },
-        requestPreview: {},
+        searchExecutions: [execution],
         searchResultVersion: SEARCH_TOOL_RESULT_VERSION
       },
       status: "complete" as const,
@@ -111,13 +104,10 @@ describe("persisted tool execution result codec", () => {
       }],
       name: call.name,
       rawPreview: {
-        finalProviderResponsePreview: {
-          searchExecutions: [{
-            ...execution,
-            usage: { ...execution.usage, inputTokens: "not-a-number" }
-          }]
-        },
-        requestPreview: {},
+        searchExecutions: [{
+          ...execution,
+          usage: { ...execution.usage, inputTokens: "not-a-number" }
+        }],
         searchResultVersion: SEARCH_TOOL_RESULT_VERSION
       },
       status: "complete",
@@ -125,7 +115,7 @@ describe("persisted tool execution result codec", () => {
     }, toolLoopPersistenceLimits.resultBytes);
     if (!malformedUsage) throw new Error("expected malformed usage fixture snapshot");
     expect(parsePersistedToolExecutionResult(call, malformedUsage)).toBeNull();
-    const malformedProviderUsage = snapshotToolLoopJson({
+    const presentationTrace = snapshotToolLoopJson({
       callId: call.id,
       content: [{
         type: "json",
@@ -133,22 +123,16 @@ describe("persisted tool execution result codec", () => {
       }],
       name: call.name,
       rawPreview: {
-        finalProviderResponsePreview: {
-          searchExecutions: [{
-            ...execution,
-            providerUsage: { webSearchRequests: 101 }
-          }]
-        },
-        requestPreview: {},
+        searchExecutions: [{ ...execution, requestPreview: {} }],
         searchResultVersion: SEARCH_TOOL_RESULT_VERSION
       },
       status: "complete",
       usage: execution.usage
     }, toolLoopPersistenceLimits.resultBytes);
-    if (!malformedProviderUsage) {
-      throw new Error("expected malformed provider usage fixture snapshot");
+    if (!presentationTrace) {
+      throw new Error("expected presentation trace fixture snapshot");
     }
-    expect(parsePersistedToolExecutionResult(call, malformedProviderUsage)).toBeNull();
+    expect(parsePersistedToolExecutionResult(call, presentationTrace)).toBeNull();
   });
 
   it("enforces the complete serialized result boundary one byte below, at, and above", () => {
@@ -184,7 +168,7 @@ describe("persisted tool execution result codec", () => {
       content: [{ text: "unrelated text", type: "text" }],
       name: call.name,
       rawPreview: {
-        finalProviderResponsePreview: { searchExecutions: [] },
+        searchExecutions: [],
         searchResultVersion: SEARCH_TOOL_RESULT_VERSION
       },
       status: "complete"
@@ -194,44 +178,11 @@ describe("persisted tool execution result codec", () => {
       content: [{ type: "json", value: { aiqsaType: "search_result", version: 1 } }],
       name: call.name,
       rawPreview: {
-        finalProviderResponsePreview: { searchExecutions: [] },
+        searchExecutions: [],
         searchResultVersion: SEARCH_TOOL_RESULT_VERSION
       },
       status: "complete"
     })).toBeNull();
-  });
-
-  it("keeps an unversioned pre-canonical Search execution within the old result bound readable", () => {
-    const findings = "l".repeat(60 * 1_024);
-    const execution: SearchExecutionEvidence = {
-      displayName: "Legacy Search",
-      durationMs: 10,
-      findings,
-      invocationId: "legacy-call:source-1",
-      modelId: "legacy-search-model",
-      optionId: "legacy-source",
-      provider: "openrouter",
-      providerOperationsTruncated: false,
-      query: "legacy query",
-      requestPreview: {},
-      revisionId: "legacy-revision",
-      sources: [],
-      status: "complete",
-      usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0, totalTokens: 5 }
-    };
-    const snapshot = snapshotToolLoopJson({
-      callId: call.id,
-      content: [{ text: findings, type: "text" }],
-      name: call.name,
-      rawPreview: { finalProviderResponsePreview: { searchExecutions: [execution] } },
-      status: "complete",
-      usage: execution.usage
-    }, toolLoopPersistenceLimits.resultBytes);
-    if (!snapshot) throw new Error("expected legacy Search snapshot");
-
-    const parsed = parsePersistedToolExecutionResult(call, snapshot);
-    if (!parsed) throw new Error("expected readable legacy Search result");
-    expect(searchExecutionsFromToolResult(parsed)).toEqual([execution]);
   });
 
   it("does not confuse marker-shaped MCP structured output with a Search checkpoint", () => {

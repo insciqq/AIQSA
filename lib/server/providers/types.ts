@@ -12,7 +12,6 @@ import type {
   ValidatedSearchQuery
 } from "../../domain/search";
 import type { KnowledgePlan } from "../../contracts/knowledge";
-import type { MemoryActionPlan } from "../memory/actions/intent";
 
 export type NormalizedSearchPlanOption = Readonly<{
   adapterKind: SearchAdapterKind;
@@ -82,10 +81,8 @@ export type NormalizedRunRequest = {
       truncation?: ContextTruncationSummary;
     };
   };
-  knowledgePlan?: KnowledgePlan;
-  /** Legacy v1 recovery only. New runs never derive a semantic action plan. */
-  memoryActionPlan?: MemoryActionPlan;
-  /** Model-driven v2 tools. Mutation authority is minted at execution from the
+  knowledgePlan: KnowledgePlan;
+  /** Model-driven tools. Mutation authority is minted at execution from the
    * exact accepted USER message and exact owned target/version. */
   memoryActionTools?: Readonly<{ version: "model-driven-v2" }>;
   /** Bounded first-party private-history tool. Its results remain untrusted
@@ -122,11 +119,9 @@ export type NormalizedRunRequest = {
     system: string | null;
   };
   provider: string;
-  searchPolicy?: ProviderSearchPolicy;
-  searchPlan?: NormalizedSearchPlan;
-  searchStrategy: string | null;
+  searchPlan: NormalizedSearchPlan;
   /** Durable operator/client suppression for all client-side run tools. */
-  toolMode?: "auto" | "none";
+  toolMode: "auto" | "none";
 };
 
 export type ProviderSearchReasoningPolicy =

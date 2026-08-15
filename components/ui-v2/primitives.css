@@ -289,12 +289,12 @@
   .v2-button,
   .v2-icon-button,
   .v2-menu-item {
-    min-height: 2.5rem;
+    min-height: 2.75rem;
   }
 
   .v2-icon-button {
-    width: 2.5rem;
-    height: 2.5rem;
+    width: 2.75rem;
+    height: 2.75rem;
   }
 }
 

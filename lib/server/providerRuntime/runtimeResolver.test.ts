@@ -15,13 +15,19 @@ function binding(): StoredProviderRunBinding {
     credentialId: "credential-1",
     credentialVersionId: "version-1",
     executionSnapshot: {
-      connection: { allowPrivateNetwork: false, apiRoot: "https://api.example.test/v1" },
+      connection: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://api.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
+      },
       connectionDisplayName: "Connection",
       connectionId: "connection-1",
       credentialId: "credential-1",
       credentialVersionId: "version-1",
       model: {
         adapterKind: "openai_responses_compatible",
+        answerSelectable: true,
         capabilities: {
           nativePdfInput: false,
           nativeSearch: false,
@@ -30,6 +36,7 @@ function binding(): StoredProviderRunBinding {
           vision: false
         },
         defaultParams: {},
+        modelClass: "answer",
         upstreamModelId: "model-1"
       },
       modelDisplayName: "Model",
@@ -52,7 +59,8 @@ function noAuthBinding(): StoredProviderRunBinding {
       connection: {
         allowPrivateNetwork: true,
         apiRoot: "http://127.0.0.1:11434/v1",
-        authenticationMode: "none"
+        authenticationMode: "none",
+        responseTimeoutMs: 300_000
       },
       model: {
         ...model,
@@ -94,6 +102,8 @@ function request(): ProviderRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "Hello", type: "text" }] },
     forceNonStreaming: true,
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -105,7 +115,7 @@ function request(): ProviderRunRequest {
     params: { stream: false },
     prompt: { developer: null, system: null },
     provider: "openai_compatible",
-    searchStrategy: null
+    searchPlan: { mode: "all_selected", options: [] }
   };
 }
 

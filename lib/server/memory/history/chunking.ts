@@ -351,7 +351,7 @@ function validateSnapshot(snapshot: MemorySafeSourceSnapshot): void {
     snapshot.branchGeneration < 0 ||
     !Number.isSafeInteger(snapshot.sourceRevision) ||
     snapshot.sourceRevision < 0 ||
-    snapshot.recallEpisodeProjection.turnGroups.some((group, ordinal) =>
+    snapshot.recallChunkProjection.turnGroups.some((group, ordinal) =>
       group.ordinal !== ordinal)
   ) {
     fail("memory_history_safe_snapshot_invalid");
@@ -439,7 +439,7 @@ export function chunkMemoryRecallProjection(
   if (snapshot.mode !== "NORMAL") return [];
   const resolvedOptions = optionsWithDefaults(options);
   const safeGroups = admittedGroups(
-    snapshot.recallEpisodeProjection.turnGroups.filter(groupIsSafe),
+    snapshot.recallChunkProjection.turnGroups.filter(groupIsSafe),
     admission
   );
   const planned = planChunks(safeGroups, resolvedOptions).filter((chunk) => {

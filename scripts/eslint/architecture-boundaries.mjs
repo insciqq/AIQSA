@@ -37,13 +37,7 @@ const messages = {
   providerConsumer: "Provider adapters must not import app or component modules.",
   providerPrisma: "Provider adapters must not import Prisma.",
   providerRun: "Provider adapters must not import run orchestration, handlers, or repositories.",
-  appShellAdmin: "The app shell must not depend on the admin feature.",
-  legacyV2:
-    "Legacy presentation must not import the isolated v2 presentation.",
-  v2Consumer:
-    "V2 presentation may import only v2 UI/features, shared contracts/domain code, and reviewed headless owners.",
-  memoryReference:
-    "Production modules must not import development-only Memory reference adapters or Hindsight packages."
+  appShellAdmin: "The app shell must not depend on the admin feature."
 };
 
 const toPosixPath = (value) => value.split(path.sep).join("/");
@@ -73,47 +67,6 @@ const repositoryTarget = (specifier, importerFilename) => {
 
 const targets = (target, prefix) =>
   target === prefix || target?.startsWith(`${prefix}/`) === true;
-
-const isV2Target = (target) =>
-  targets(target, "components/ui-v2") ||
-  /^features\/[^/]+-v2(?:\/|$)/u.test(target ?? "");
-
-const reviewedV2OwnerSurfaces = new Set([
-  "components/app-shell/ArchivedChatsDialog",
-  "components/app-shell/ConfirmationDialog",
-  "components/app-shell/McpSettingsSection",
-  "components/app-shell/MemoryWorkspace",
-  "components/app-shell/PermanentChatDeletionSurface",
-  "components/app-shell/ProjectSettingsDialog",
-  "components/app-shell/ShareDialog",
-  "components/app-shell/ShellNotice",
-  "components/assistants/AssistantLibrary",
-  "components/command-palette/CommandPalette",
-  "components/knowledge/KnowledgeLibrary"
-]);
-
-const isReviewedV2HeadlessTarget = (target) => {
-  if (!target) return true;
-  if (
-    isV2Target(target) ||
-    targets(target, "lib/contracts") ||
-    targets(target, "lib/domain") ||
-    target === "components/keyboard" ||
-    reviewedV2OwnerSurfaces.has(target ?? "") ||
-    targets(target, "styles/tokens-v2.css")
-  ) {
-    return true;
-  }
-  if (targets(target, "components/app-shell")) {
-    const basename = target.split("/").at(-1)?.replace(/\.[^.]+$/u, "") ?? "";
-    return /^[a-z]/u.test(basename);
-  }
-  return [
-    "components/chat/MarkdownMessage",
-    "components/chat/codeHighlighting",
-    "components/chat/mathRendering"
-  ].some((prefix) => targets(target, prefix));
-};
 
 const importsPackage = (specifier, packageName) =>
   specifier === packageName || specifier.startsWith(`${packageName}/`);
@@ -352,134 +305,9 @@ const architectureBoundariesRule = {
   }
 };
 
-const isMemoryReferenceDependency = (specifier, importerFilename) => {
-  const normalizedSpecifier = specifier.toLowerCase();
-  if (normalizedSpecifier.split("/").some((segment) => segment.includes("hindsight"))) {
-    return true;
-  }
-  const target = repositoryTarget(specifier, importerFilename);
-  return targets(target, "tests/harness/memory-reference");
-};
-
-const noMemoryReferenceRule = {
-  meta: {
-    type: "problem",
-    docs: {
-      description: "Keep development-only Memory references out of production modules"
-    },
-    schema: [],
-    messages: {
-      reference: "'{{specifier}}' import crosses an architecture boundary. {{reason}}"
-    }
-  },
-  create(context) {
-    const importerFilename = context.physicalFilename ?? context.filename;
-    const checkSource = (sourceNode) => {
-      const specifier = staticString(sourceNode);
-      if (specifier !== null && isMemoryReferenceDependency(specifier, importerFilename)) {
-        context.report({
-          node: sourceNode,
-          messageId: "reference",
-          data: { reason: messages.memoryReference, specifier }
-        });
-      }
-    };
-    return {
-      ImportDeclaration: (node) => checkSource(node.source),
-      ExportNamedDeclaration: (node) => checkSource(node.source),
-      ExportAllDeclaration: (node) => checkSource(node.source),
-      ImportExpression: (node) => checkSource(node.source),
-      TSImportType: (node) => checkSource(node.source),
-      TSImportEqualsDeclaration: (node) => {
-        if (node.moduleReference.type === "TSExternalModuleReference") {
-          checkSource(node.moduleReference.expression);
-        }
-      },
-      CallExpression: (node) => {
-        if (node.callee.type === "Identifier" && node.callee.name === "require") {
-          checkSource(node.arguments[0]);
-        }
-      }
-    };
-  }
-};
-
-const v2PresentationBoundariesRule = {
-  meta: {
-    type: "problem",
-    docs: {
-      description: "Keep the replacement presentation isolated from legacy visual code"
-    },
-    schema: [],
-    messages: {
-      boundary: "'{{specifier}}' import crosses a v2 presentation boundary. {{reason}}",
-      unverifiableDynamic:
-        "{{kind}} uses a non-literal dependency specifier, so its v2 presentation boundary cannot be verified. Use a string literal."
-    }
-  },
-  create(context) {
-    const importerFilename = context.physicalFilename ?? context.filename;
-    const importerRelative = toPosixPath(path.relative(repositoryRoot, importerFilename));
-    const importerIsV2 = isV2Target(importerRelative);
-    const importerIsLegacyComponent =
-      targets(importerRelative, "components") &&
-      !targets(importerRelative, "components/ui-v2") &&
-      !importerIsV2;
-
-    const checkSource = (sourceNode, reportNode = sourceNode, kind = null) => {
-      const specifier = staticString(sourceNode);
-      if (specifier === null) {
-        if (importerIsV2 && kind) {
-          context.report({
-            node: reportNode,
-            messageId: "unverifiableDynamic",
-            data: { kind }
-          });
-        }
-        return;
-      }
-
-      const target = repositoryTarget(specifier, importerFilename);
-      const reason =
-        importerIsV2 && !isReviewedV2HeadlessTarget(target)
-          ? messages.v2Consumer
-          : importerIsLegacyComponent && isV2Target(target)
-            ? messages.legacyV2
-            : null;
-      if (reason) {
-        context.report({
-          node: sourceNode,
-          messageId: "boundary",
-          data: { reason, specifier }
-        });
-      }
-    };
-
-    return {
-      ImportDeclaration: (node) => checkSource(node.source),
-      ExportNamedDeclaration: (node) => checkSource(node.source),
-      ExportAllDeclaration: (node) => checkSource(node.source),
-      ImportExpression: (node) => checkSource(node.source, node, "import()"),
-      TSImportType: (node) => checkSource(node.source),
-      TSImportEqualsDeclaration: (node) => {
-        if (node.moduleReference.type === "TSExternalModuleReference") {
-          checkSource(node.moduleReference.expression);
-        }
-      },
-      CallExpression: (node) => {
-        if (node.callee.type === "Identifier" && node.callee.name === "require") {
-          checkSource(node.arguments[0], node, "require()");
-        }
-      }
-    };
-  }
-};
-
 const architectureBoundariesPlugin = {
   rules: {
-    "architecture-boundaries": architectureBoundariesRule,
-    "no-memory-reference": noMemoryReferenceRule,
-    "v2-presentation-boundaries": v2PresentationBoundariesRule
+    "architecture-boundaries": architectureBoundariesRule
   }
 };
 

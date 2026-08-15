@@ -27,8 +27,6 @@ export type LockedMemorySettings = {
   memoryConsentRevision: number;
   memoryGeneration: number;
   memoryRevision: number;
-  memoryUiLocale: "EN" | "RU";
-  preferredProfileLanguage: string;
   referenceChatHistory: boolean;
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY";
   settingsRevision: number;
@@ -81,8 +79,6 @@ export async function lockMemorySettings(
       settings."activeIndexGenerationId",
       settings."embeddingProviderModelId",
       settings."sensitiveAutomaticPolicy",
-      settings."memoryUiLocale",
-      settings."preferredProfileLanguage",
       settings."memoryConsentRevision",
       settings."settingsRevision",
       settings."acceptedUtilityEgressFingerprint",

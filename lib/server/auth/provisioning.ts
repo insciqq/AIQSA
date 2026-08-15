@@ -43,10 +43,9 @@ export async function provisionActiveUser(
       defaultControlValues: json({}),
       defaultFolderId: null,
       defaultProviderModelId: null,
-      defaultSearchStrategyId: "search-disabled",
+      defaultSearchPlan: json({ mode: "all_selected", optionIds: [] }),
       showCitations: true,
       showReasoningBlocks: false,
-      showToolActivity: true,
       userId: input.userId
     },
     update: {},

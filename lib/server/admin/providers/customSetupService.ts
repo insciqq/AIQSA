@@ -112,13 +112,15 @@ function modelConfiguration(
   request: AdminProviderCustomSetupRequest,
   upstreamModelId: string
 ): ProviderModelConfiguration {
-  const protocol = request.protocol ?? "chat_completions";
+  const protocol = request.protocol;
   const configuration = normalizeProviderModelConfiguration({
     adapterKind: protocol === "responses"
       ? "openai_responses_compatible"
       : "openai_chat_completions_compatible",
+    answerSelectable: true,
     capabilities: request.capabilities ?? ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
     defaultParams: request.defaultParams ?? {},
+    modelClass: "answer",
     ...(request.reasoningRequestMapping
       ? { reasoningRequestMapping: request.reasoningRequestMapping }
       : {}),

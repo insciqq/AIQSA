@@ -69,6 +69,7 @@ function isModel(value: unknown): boolean {
     typeof value.enabled === "boolean" && typeof value.draftVersion === "number" &&
     record(value.draftConfig) && typeof value.draftConfig.adapterKind === "string" &&
     typeof value.draftConfig.answerSelectable === "boolean" &&
+    (value.draftConfig.modelClass === "answer" || value.draftConfig.modelClass === "embedding") &&
     optionalResponseTimeoutSeconds(value.draftConfig.responseTimeoutSeconds) &&
     typeof value.draftConfig.upstreamModelId === "string";
 }
@@ -77,12 +78,13 @@ function isConnection(value: unknown): value is AdminProviderConnection {
   return record(value) && typeof value.id === "string" && typeof value.displayName === "string" &&
     typeof value.family === "string" && typeof value.enabled === "boolean" &&
     typeof value.draftVersion === "number" && record(value.draftConfig) &&
+    (value.draftConfig.authenticationMode === "bearer" ||
+      value.draftConfig.authenticationMode === "none") &&
     optionalResponseTimeoutSeconds(value.draftConfig.responseTimeoutSeconds) &&
     Array.isArray(value.credentials) && value.credentials.every(isCredential) &&
     Array.isArray(value.models) && value.models.every(isModel) &&
     Array.isArray(value.assignments) && Array.isArray(value.draftChecks) &&
-    Array.isArray(value.activeChecks) &&
-    (value.userAssignments === undefined || Array.isArray(value.userAssignments));
+    Array.isArray(value.activeChecks) && Array.isArray(value.userAssignments);
 }
 
 function isDiscoveredModel(value: unknown): value is AdminOpenRouterDiscoveredModel {

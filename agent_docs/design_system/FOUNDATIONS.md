@@ -8,13 +8,12 @@ Not owned here: Chat-specific composition, Control Center composition, functiona
 
 The bounded visual-system family routed by `DESIGN_SYSTEM.md` is binding for the current Chat workspace and Control Center. Owners routed by `FRONTEND.md` define behavior, state, responsive access, and control ownership. This file owns product character, semantic tokens, typography, foundational geometry, spacing, and depth; its sibling visual leaves own feature composition, shared interaction states, motion, content presentation, and visual review gates.
 
-The replacement presentation consumes the `color.*`, `radius.*`,
+The presentation consumes the `color.*`, `radius.*`,
 `shadow.*`, and `motion.*` variables from `styles/tokens-v2.css`
-directly. That file is the sole active palette-value boundary. The previous
-theme variables and six legacy theme selectors no longer exist. A bounded set
-of established Tailwind utility names remains for secondary Auth, Share, and
+directly. That file is the sole palette-value boundary. A bounded set of
+established Tailwind utility names remains for secondary Auth, Share, and
 Control Center leaves, but each utility resolves directly to a `--v2-*` token
-through `color-mix()`; it is not a second palette or compatibility theme layer.
+through `color-mix()`; it is not a second palette.
 
 ## Product Character
 
@@ -90,14 +89,12 @@ The dark values and both palettes' alpha borders/interactions are executable
 in the sole token file and locked by the theme contract test. Muted text is
 not a substitute for tiny type.
 
-### Theme compatibility
+### Theme selection
 
 The product exposes exactly `system`, `light`, and `dark`. System selects
 one of the two palettes with `prefers-color-scheme`; it is not a third
-palette. The browser-local migration is idempotent:
-`aiqsa | graphite | verdant | classic-dark -> dark`,
-`neutral | paper -> light`, and unknown or absent values become `system`.
-The normalized cookie owns server first paint while LocalStorage keeps its
+palette. Unknown or absent browser values become `system`. The normalized
+cookie owns server first paint while LocalStorage keeps its
 existing post-hydration precedence. Runtime application synchronizes
 `data-theme` with the currently effective `data-color-scheme` for code and
 native-control parity.

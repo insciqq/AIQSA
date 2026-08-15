@@ -12,8 +12,8 @@ Gemini is a first-class provider family over the stable native root `https://gen
 
 `gemini_interactions_native` is the only adapter accepted for the Gemini family. `geminiInteractionsRequest.ts` builds `store: false` AIQSA-owned history, native user/model content and attachments, `generation_config`, hosted/function tools, and always-redacted previews. `geminiInteractionsTransport.ts` owns the native endpoint/key header and bounded response reads. `geminiInteractionsResponse.ts` owns native JSON/SSE terminal proof, steps, usage, function calls, and grounding normalization; `geminiInteractionsGrounding.ts` owns the strict Search-Suggestions markup parser. None of these modules calls or retries through the generic compatible transport.
 
-Gemini consumes the shared historical marker projection from [runs and
-streaming](../RUNS_AND_STREAMING.md). A current attachment-only turn whose
+Gemini consumes the shared prior-turn marker projection from [runs and
+streaming](../RUNS_AND_STREAMING.md). An attachment-only turn whose
 native/extracted payload produces no content also uses that projection instead
 of emitting an empty native text part.
 

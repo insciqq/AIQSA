@@ -19,7 +19,7 @@ import {
   storedMemoryExecutionOwner,
   type MemoryExecutionOwner
 } from "./owner";
-import type { MemoryExecutionVersions } from "./qualification";
+import type { MemoryExecutionVersions } from "./compatibility";
 import { isMemoryExecutionRole, type MemoryExecutionRole } from "./roles";
 import {
   createMemoryExecutionSnapshot,
@@ -154,10 +154,10 @@ export function assertMemoryExecutionBindingLineage(
     binding.providerModelId !== provider.providerModelId ||
     binding.credentialId !== provider.credentialId ||
     binding.credentialVersionId !== provider.credentialVersionId ||
-    binding.policyVersion !== snapshot.qualificationRequirement.policyVersion ||
-    binding.promptVersion !== snapshot.qualificationRequirement.promptVersion ||
-    binding.schemaVersion !== snapshot.qualificationRequirement.schemaVersion ||
-    binding.pipelineVersion !== snapshot.qualificationRequirement.pipelineVersion ||
+    binding.policyVersion !== snapshot.compatibilityRequirement.policyVersion ||
+    binding.promptVersion !== snapshot.compatibilityRequirement.promptVersion ||
+    binding.schemaVersion !== snapshot.compatibilityRequirement.schemaVersion ||
+    binding.pipelineVersion !== snapshot.compatibilityRequirement.pipelineVersion ||
     binding.relationsDetachedAt !== null
   ) {
     return memoryExecutionFailure("memory_execution_snapshot_invalid");
@@ -223,10 +223,10 @@ export function createPrismaMemoryExecutionAdmission(
         });
         const snapshot = createMemoryExecutionSnapshot({
           acceptedUtilityEgressFingerprint: authority.policy.fingerprint,
-          qualificationId: authority.qualification.qualificationId,
-          qualificationRequirement: authority.qualification.requirement,
+          compatibilityId: authority.compatibility.compatibilityId,
+          compatibilityRequirement: authority.compatibility.requirement,
           requiresStrictStructuredOutput:
-            authority.qualification.requiresStrictStructuredOutput,
+            authority.compatibility.requiresStrictStructuredOutput,
           role: input.role,
           target: authority.target,
           utilityPolicyVersion: authority.policy.policyVersion

@@ -153,9 +153,7 @@ export function createAdminProviderCustomSetupHandler(
       return errorJson("provider_configuration_invalid", 400);
     }
     const mode = authenticationMode(body.authenticationMode);
-    const selectedProtocol = body.protocol === undefined
-      ? "chat_completions" as const
-      : protocol(body.protocol);
+    const selectedProtocol = protocol(body.protocol);
     const apiRoot = boundedText(body.apiRoot, 2_048);
     const modelId = body.modelId === undefined
       ? undefined
@@ -183,9 +181,7 @@ export function createAdminProviderCustomSetupHandler(
     const secret = body.secret === undefined
       ? undefined
       : boundedText(body.secret, 16_384) ?? null;
-    const responseTimeoutSeconds = body.responseTimeoutSeconds === undefined
-      ? undefined
-      : Number.isSafeInteger(body.responseTimeoutSeconds) &&
+    const responseTimeoutSeconds = Number.isSafeInteger(body.responseTimeoutSeconds) &&
           Number(body.responseTimeoutSeconds) >= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS &&
           Number(body.responseTimeoutSeconds) <= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS
         ? Number(body.responseTimeoutSeconds)
@@ -235,7 +231,7 @@ export function createAdminProviderCustomSetupHandler(
             reasoningRequestMapping:
               body.reasoningRequestMapping as AdminProviderReasoningRequestMapping
           }),
-      ...(responseTimeoutSeconds === undefined ? {} : { responseTimeoutSeconds }),
+      responseTimeoutSeconds,
       ...(secret === undefined ? {} : { secret })
     };
     return safely(async () => Response.json(await deps.service.setup({

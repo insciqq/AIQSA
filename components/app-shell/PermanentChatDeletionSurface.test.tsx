@@ -42,7 +42,7 @@ describe("PermanentChatDeletionSurface", () => {
       location: "WORKSPACE",
       title: "Research notes"
     });
-    render(<PermanentChatDeletionSurface locale="EN" />);
+    render(<PermanentChatDeletionSurface />);
 
     const dialog = screen.getByRole("dialog", { name: "Delete this chat permanently?" });
     expect(within(dialog).getByText("Research notes", { exact: false })).toBeVisible();
@@ -78,7 +78,7 @@ describe("PermanentChatDeletionSurface", () => {
       statusLoadState: "ready",
       statusOpen: true
     });
-    render(<PermanentChatDeletionSurface locale="EN" />);
+    render(<PermanentChatDeletionSurface />);
 
     const dialog = screen.getByRole("dialog", { name: "Permanent deletion" });
     expect(within(dialog).getByText(/administrator attention/i)).toBeVisible();
@@ -105,7 +105,7 @@ describe("PermanentChatDeletionSurface", () => {
       statusLoadState: "ready",
       statusOpen: false
     });
-    render(<PermanentChatDeletionSurface locale="RU" />);
+    render(<PermanentChatDeletionSurface />);
 
     expect(screen.getByRole("status")).toHaveTextContent("Chat deleted · cleanup is finishing");
     fireEvent.click(screen.getByRole("button", { name: "View progress" }));

@@ -12,6 +12,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     attachments: [],
     chatId: "chat-1",
     content: { blocks: [{ text: "Hello", type: "text" }] },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -23,7 +25,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     params: { maxOutputTokens: 32, stream: false },
     prompt: { developer: null, system: null },
     provider: "custom-connection-1",
-    searchStrategy: null,
+    searchPlan: { mode: "all_selected", options: [] },
     ...overrides
   };
 }

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CatalogModel } from "./types";
 import {
-  eventLabel,
   exportFileBaseName,
   formatTokenCount,
   humanizeErrorCode,
@@ -156,18 +155,6 @@ describe("shell labels", () => {
       "Web search"
     ]);
     expect(modelDifferentiatingCapabilityLabels(model, [model])).toEqual([]);
-  });
-
-  it("formats event state without exposing raw payloads", () => {
-    expect(eventLabel({ data: { delta: "answer" }, type: "token" })).toBe(
-      "answer text"
-    );
-    expect(eventLabel({ data: { status: "queued" }, type: "summary" })).toBe(
-      "queued"
-    );
-    expect(
-      eventLabel({ data: { artifactType: "citation" }, type: "artifact" })
-    ).toBe("citation");
   });
 
   it("formats search strategies and safe ASCII download names", () => {

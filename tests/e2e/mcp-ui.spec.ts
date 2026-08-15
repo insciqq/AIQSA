@@ -3,6 +3,8 @@ import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken as signIn } from "./support/localAuth";
 
+test.use({ hasTouch: true });
+
 type FakeMcpServer = {
   accountLabel: string | null;
   description: string;
@@ -18,7 +20,7 @@ type FakeMcpServer = {
   tools: Array<{ description: string | null; name: string }>;
 };
 
-test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer summary coherent", async ({ page }) => {
+test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer capabilities coherent", async ({ page }) => {
   await installMatrixCatalogFixture(page);
   let servers: FakeMcpServer[] = [
     {
@@ -126,18 +128,23 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
   });
 
   await signIn(page);
-  const summary = page.getByTestId("composer-mcp-summary");
-  await expect(summary).toContainText("Tools");
-  await expect(summary.locator('[data-resource-availability="disabled"]')).toHaveText("Disabled");
-  await expect(summary).toHaveAttribute("title", "Tools. Disabled");
+  const capabilitiesTrigger = page.getByRole("button", { name: "Capabilities" });
   await page.setViewportSize({ height: 844, width: 390 });
-  await expectTouchSafe(summary);
+  await expectTouchSafe(capabilitiesTrigger);
   await expectNoHorizontalOverflow(page);
   await page.setViewportSize({ height: 900, width: 1440 });
-  await summary.click();
+  await capabilitiesTrigger.click();
+  let capabilities = page.getByRole("menu", { name: "Capabilities" });
+  const mem0Capability = capabilities.getByRole("menuitemcheckbox", { name: /^Mem0/u });
+  const todoistCapability = capabilities.getByRole("menuitemcheckbox", { name: /^Todoist/u });
+  await expect(mem0Capability).toBeDisabled();
+  await expect(mem0Capability).toHaveAttribute("aria-checked", "false");
+  await expect(mem0Capability).toContainText("off");
+  await expect(todoistCapability).toBeDisabled();
+  await capabilities.getByRole("menuitem", { name: /Set up MCP/u }).click();
 
-  let settings = page.getByTestId("settings-dialog");
-  await expect(settings.getByRole("heading", { name: "MCP & tools" })).toBeVisible();
+  let settings = page.getByTestId("settings-v2");
+  await expect(settings.getByRole("heading", { level: 2, name: "MCP & tools" })).toBeVisible();
   await expect(settings.locator('[data-resource-availability="disabled"]')).toHaveCount(3);
   await settings.getByRole("button", { name: "Complete setup for Mem0" }).click();
   await expect(settings.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
@@ -152,21 +159,30 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
   await settings.getByRole("button", { name: "Enable Mem0" }).click();
   await settings.getByRole("button", { name: "Enable Todoist" }).click();
   await expect(settings.getByText("Activating", { exact: true })).toBeVisible();
-  await expect(summary).toHaveAttribute("title", /1 activating/u);
-  await expect(summary).not.toHaveAttribute("title", /needs setup/u);
 
   await settings.getByRole("button", { name: "Close settings" }).click();
-  await expect(summary.getByText("Activating", { exact: true })).toBeVisible();
-  await summary.click();
-  settings = page.getByTestId("settings-dialog");
+  const mcpIndicator = page.getByRole("button", { name: "Open MCP settings" });
+  await expect(mcpIndicator).toContainText(/MCP: [12]\/2/u);
+  await expect.poll(() => mcpIndicator.textContent()).toContain("MCP: 2/2");
+  await mcpIndicator.click();
+  settings = page.getByTestId("settings-v2");
   await expect(settings.getByText("Ready", { exact: true })).toHaveCount(2);
   await expect(settings.locator('[data-resource-availability="enabled"]')).toHaveCount(2);
   await expect(settings.locator('[data-resource-availability="disabled"]')).toHaveCount(1);
   expect(patchBodies).toContainEqual({ id: "mem0", value: { values: { api_key: "personal-mem0-token" } } });
 
   await settings.getByRole("button", { name: "Close settings" }).click();
-  await expect(summary.locator('[data-resource-availability="enabled"]')).toHaveText("Enabled");
-  await expect(summary).toHaveAttribute("title", "Tools. 2/2 ready · 2 tools");
+  await capabilitiesTrigger.click();
+  capabilities = page.getByRole("menu", { name: "Capabilities" });
+  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Mem0/u }))
+    .toHaveAttribute("aria-checked", "true");
+  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Mem0/u }))
+    .toContainText("1 tool");
+  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Todoist/u }))
+    .toHaveAttribute("aria-checked", "true");
+  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Notion/u }))
+    .toHaveAttribute("aria-checked", "false");
+  await capabilities.getByRole("button", { name: "Close" }).click();
 
   servers = servers.map((server) => server.id === "notion"
     ? {
@@ -179,7 +195,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
       }
     : server);
   await page.goto("/?settings=mcp&oauth=connected&server=notion");
-  settings = page.getByTestId("settings-dialog");
+  settings = page.getByTestId("settings-v2");
   await expect(settings.getByText("External account connected and MCP enabled.")).toBeVisible();
   await expect(settings.getByText("Team workspace")).toBeVisible();
   await expect(page).not.toHaveURL(/oauth=|settings=mcp|server=notion/u);
@@ -192,5 +208,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer s
   await page.setViewportSize({ height: 390, width: 844 });
   await expectWithinViewport(page, settings);
   await expectNoHorizontalOverflow(page);
-  await expect(settings.getByRole("button", { name: "Refresh status" })).toBeInViewport();
+  const refreshStatus = settings.getByRole("button", { name: "Refresh status" });
+  await refreshStatus.scrollIntoViewIfNeeded();
+  await expect(refreshStatus).toBeInViewport();
 });

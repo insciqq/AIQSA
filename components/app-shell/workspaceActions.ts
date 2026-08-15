@@ -516,7 +516,6 @@ export function useWorkspaceActions({
     setSelectedModelId(model?.modelId ?? chat.defaultModelId, "system");
     const searchPlan = resolvePreferredSearchPlan(
       catalogOverride?.defaults.searchPlan,
-      catalogOverride?.defaults.searchStrategyId,
       catalogOverride?.searchStrategies
     );
     setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode, "system");

@@ -31,7 +31,6 @@ import {
 import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservability";
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
 import { providerToolBridges } from "../tools/bridges";
-import { createPerplexitySearchToolExecutor, perplexityWebSearchTool } from "../tools/perplexitySearch";
 import {
   createSearchPlanToolRouter,
   searchExecutionPreviewCount,
@@ -41,8 +40,7 @@ import {
 import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
 import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import { defaultMemoryActionExecutor } from "../memory/actions/defaultAction";
-import { decodeMemoryActionPlan, type MemoryActionPlan } from "../memory/actions/intent";
-import { memoryActionToolForPlan, memoryActionTools } from "../memory/actions/tools";
+import { memoryActionTools } from "../memory/actions/tools";
 import type { MemoryActionExecutor } from "../memory/actions/toolExecutor";
 import { defaultMemoryHistoryToolExecutor } from "../memory/history/search/defaultTool";
 import type { MemoryHistoryToolExecutor } from "../memory/history/search/toolExecutor";
@@ -60,8 +58,6 @@ import {
 } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
 import {
-  appendRunEventWithRetry,
-  appendStoredRunEvents,
   finalizeRunCompletion,
   usageAttributionsWithEstimatedCost
 } from "./runFinalization";
@@ -103,13 +99,11 @@ import {
   type PersistedToolLoopCall,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
-import {
-  persistedToolDurationMs,
-  toolCallInspectionArtifact,
-  toolLoopPhaseArtifact,
-  toolResultInspectionArtifact
-} from "./toolInspection";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
+import {
+  projectRunOutputArtifactEvent,
+  runOutputArtifactEvents
+} from "./runOutputEvents";
 
 export const activeRunStaleMs = 10 * 60 * 1000;
 
@@ -126,7 +120,7 @@ export type RunRecoveryRepository = Pick<
   RunRepository,
   | "advanceToolLoopCallBatch"
   | "appendAssistantText"
-  | "appendRunEvent"
+  | "appendRunOutputEvent"
   | "claimToolLoopCall"
   | "completeRun"
   | "createSearchRun"
@@ -139,7 +133,6 @@ export type RunRecoveryRepository = Pick<
   | "loadModelPricing"
   | "loadRunUsageAttributions"
   | "markAssistantMessageGroundedLiveOnly"
-  | "nextRunEventSequence"
   | "persistToolLoopCallBatch"
   | "recordRunUsageEvents"
   | "recoverPreparingRun"
@@ -147,7 +140,6 @@ export type RunRecoveryRepository = Pick<
   | "settleRecoveredRunError"
   | "settleToolLoopCall"
   | "sweepBootOrphanedRuns"
-  | "updateRunProviderRequestPreview"
   | "updateRunProviderResponseId"
 > & Partial<Pick<RunRepository, "isSearchStrategyEnabled" | "loadEntitlements">>;
 
@@ -167,7 +159,7 @@ export type RunRecoveryDeps = Readonly<{
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeAdmission?: Readonly<{
     load(input: {
-      knowledgePlan: NonNullable<ProviderRunRequest["knowledgePlan"]>;
+      knowledgePlan: ProviderRunRequest["knowledgePlan"];
       userId: string;
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
@@ -201,17 +193,6 @@ async function resolveAnswerRuntime(
   return adapter
     ? { adapter, responseTimeoutMs: DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS }
     : null;
-}
-
-async function resolveSearchRuntime(
-  deps: RunRecoveryDeps,
-  runId: string,
-  provider: string
-): Promise<ProviderSearchAdapter | undefined> {
-  if (deps.providerRuntime) {
-    return (await deps.providerRuntime.resolve(runId, "search")).searchAdapter;
-  }
-  return deps.searchProviders?.[provider];
 }
 
 async function resolvePlanSearchRuntime(
@@ -361,43 +342,6 @@ function providerResponseIdFromEvent(event: ModelRunSseEvent): string | null {
   return typeof responseId === "string" && responseId.trim() ? responseId : null;
 }
 
-function recordFromPreview(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {};
-}
-
-async function persistRecoveredSearchRun(input: Readonly<{
-  call: ModelToolCall;
-  modelRunId: string;
-  repository: RunRecoveryRepository;
-  result: ToolExecutionResult;
-  searchModelId: string;
-  strategyId: string;
-}>): Promise<void> {
-  const preview = input.result.rawPreview ?? {};
-  if (preview.providerCall === false) return;
-  await input.repository.createSearchRun({
-    artifacts: {
-      events: input.result.artifacts?.map((artifact) => artifact.data) ?? [],
-      finalProviderResponsePreview: recordFromPreview(preview.finalProviderResponsePreview),
-      providerResponseId: typeof preview.providerResponseId === "string"
-        ? preview.providerResponseId
-        : undefined,
-      toolCall: {
-        arguments: input.call.arguments,
-        id: input.call.id,
-        name: input.call.name
-      },
-      usage: input.result.usage
-    },
-    modelId: input.searchModelId,
-    modelRunId: input.modelRunId,
-    provider: "openrouter",
-    requestPreview: recordFromPreview(preview.requestPreview),
-    status: input.result.status === "complete" ? "complete" : "error",
-    strategyId: input.strategyId
-  });
-}
-
 async function persistRecoveredPlanSearchExecution(input: Readonly<{
   execution: SearchExecutionEvidence;
   modelRunId: string;
@@ -405,26 +349,12 @@ async function persistRecoveredPlanSearchExecution(input: Readonly<{
 }>): Promise<void> {
   await input.repository.createSearchRun({
     artifacts: {
-      displayName: input.execution.displayName,
-      ...(input.execution.failure ? { failure: input.execution.failure } : {}),
-      ...(input.execution.findings ? { findings: input.execution.findings } : {}),
-      invocationId: input.execution.invocationId,
-      ...(input.execution.providerOperations
-        ? { providerOperations: input.execution.providerOperations }
-        : {}),
-      providerOperationsTruncated: input.execution.providerOperationsTruncated,
-      ...(input.execution.providerUsage ? { providerUsage: input.execution.providerUsage } : {}),
-      sources: input.execution.sources,
-      usage: input.execution.usage,
-      ...(input.execution.warning ? { warning: input.execution.warning } : {})
+      sources: input.execution.sources
     },
-    durationMs: input.execution.durationMs,
     invocationId: input.execution.invocationId,
     modelId: input.execution.modelId,
     modelRunId: input.modelRunId,
     provider: input.execution.provider,
-    query: input.execution.query,
-    requestPreview: { ...input.execution.requestPreview },
     searchRevisionId: input.execution.revisionId,
     status: input.execution.status,
     strategyId: input.execution.optionId
@@ -551,7 +481,7 @@ async function settleToolLoopRecoveryError(
   ).catch(() => groupedAttributions);
   await deps.repository.settleRecoveredRunError({
     error,
-    events: [...events],
+    outputEvents: runOutputArtifactEvents(events),
     ...(providerResponseId ? { providerResponseId } : {}),
     runId: run.id,
     usageAttributions: attributed,
@@ -567,24 +497,17 @@ type RecoverySearchExecutor = Readonly<{
     runId: string,
     signal: AbortSignal
   ): Promise<ToolExecutionResult>;
-  legacy: null | Readonly<{
-    modelId: string;
-    strategyId: string;
-  }>;
   tools: readonly RunTool[];
 }>;
 
 type RecoveryToolContext = Readonly<{
   deps: RunRecoveryDeps;
-  durations: Map<string, number>;
   persistedUsageRecordedAt: number | null;
   providerRequest: ProviderRunRequest;
   run: CheckpointedToolLoopRun;
   runtime(): RunRecoveryMcpRuntime;
   knowledgeExecutor: KnowledgeToolExecutor | null;
   memoryActionExecutor: MemoryActionExecutor | null;
-  memoryActionPlan: MemoryActionPlan | null;
-  modelDrivenMemoryActions: boolean;
   memoryHistoryToolExecutor: MemoryHistoryToolExecutor | null;
   searchExecutor: RecoverySearchExecutor | null;
   usageAttributions: RunUsageAttribution[];
@@ -599,10 +522,7 @@ function isRecoveredKnowledgeCall(context: RecoveryToolContext, name: string): b
 }
 
 function isRecoveredMemoryCall(context: RecoveryToolContext, name: string): boolean {
-  return context.memoryActionExecutor?.accepts(
-    context.modelDrivenMemoryActions ? null : context.memoryActionPlan,
-    name
-  ) === true;
+  return context.memoryActionExecutor?.accepts(name) === true;
 }
 
 function isRecoveredMemoryHistoryCall(
@@ -619,16 +539,19 @@ async function currentRecoverySearchDispatchAllowed(
     !context.deps.repository.isSearchStrategyEnabled) {
     return process.env.NODE_ENV !== "production";
   }
-  const strategy = context.run.normalizedRequest.searchStrategy ?? "search-disabled";
+  const isSearchStrategyEnabled = context.deps.repository.isSearchStrategyEnabled;
+  const optionIds = context.run.normalizedRequest.searchPlan.options.map((option) => option.optionId);
   const [entitlements, enabled] = await Promise.all([
     context.deps.repository.loadEntitlements(context.run.userId),
-    context.deps.repository.isSearchStrategyEnabled(strategy)
+    Promise.all(optionIds.map((optionId) =>
+      isSearchStrategyEnabled(optionId)))
   ]);
-  return enabled && validateRunAccess(entitlements, {
-    modelId: context.run.modelId,
-    provider: context.run.provider,
-    searchStrategy: strategy
-  }).ok;
+  return optionIds.every((optionId, index) => enabled[index] === true &&
+    validateRunAccess(entitlements, {
+      modelId: context.run.modelId,
+      provider: context.run.provider,
+      searchStrategy: optionId
+    }).ok);
 }
 
 async function currentRecoveryKnowledgeDispatchAllowed(
@@ -636,7 +559,7 @@ async function currentRecoveryKnowledgeDispatchAllowed(
 ): Promise<boolean> {
   if (!context.deps.knowledgeAdmission) return process.env.NODE_ENV !== "production";
   try {
-    const expected = context.run.normalizedRequest.knowledgePlan?.baseIds ?? [];
+    const expected = context.run.normalizedRequest.knowledgePlan.baseIds;
     const current = await context.deps.knowledgeAdmission.load({
       knowledgePlan: { baseIds: expected },
       userId: context.run.userId
@@ -692,31 +615,10 @@ function settledSearchUsageNeedsRecovery(
 }
 
 async function recordRecoveredSearchResult(input: Readonly<{
-  call: ModelToolCall;
   context: RecoveryToolContext;
   includeUsage: boolean;
   result: ToolExecutionResult;
 }>): Promise<void> {
-  const legacy = input.context.searchExecutor?.legacy;
-  if (legacy) {
-    if (input.includeUsage && input.result.usage) {
-      input.context.usageAttributions.push({
-        modelId: legacy.modelId,
-        provider: "openrouter",
-        usage: input.result.usage
-      });
-    }
-    await persistRecoveredSearchRun({
-      call: input.call,
-      modelRunId: input.context.run.id,
-      repository: input.context.deps.repository,
-      result: input.result,
-      searchModelId: legacy.modelId,
-      strategyId: legacy.strategyId
-    });
-    return;
-  }
-
   const executions = searchExecutionsFromToolResult(input.result);
   const previewCount = searchExecutionPreviewCount(input.result);
   if (previewCount !== null && executions.length !== previewCount) {
@@ -746,7 +648,6 @@ async function executePersistedToolCall(
   context: RecoveryToolContext,
   signal: AbortSignal
 ): Promise<ToolLoopSettledCall<ToolExecutionResult>> {
-  const startedAt = Date.now();
   const call = modelToolCall(persisted);
   const claim = await context.deps.repository.claimToolLoopCall({
     callId: persisted.id,
@@ -767,8 +668,6 @@ async function executePersistedToolCall(
     );
   }
   if (claim.kind === "settled") {
-    const persistedDuration = persistedToolDurationMs(claim.call);
-    if (persistedDuration !== undefined) context.durations.set(call.id, persistedDuration);
     const result = parsePersistedToolExecutionResult(call, claim.call.result);
     if (!result) {
       throw new ToolLoopRecoveryError(
@@ -778,7 +677,6 @@ async function executePersistedToolCall(
     }
     if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       await recordRecoveredSearchResult({
-        call,
         context,
         includeUsage: settledSearchUsageNeedsRecovery(
           claim.call,
@@ -820,8 +718,8 @@ async function executePersistedToolCall(
       }
       const route = resolveMcpRunTool(context.run.normalizedRequest.mcp, call.name);
       const destinationSnapshot = isRecoveredKnowledgeCall(context, call.name)
-        ? {
-            baseIds: context.run.normalizedRequest.knowledgePlan?.baseIds ?? [],
+          ? {
+            baseIds: context.run.normalizedRequest.knowledgePlan.baseIds,
             kind: "knowledge",
             toolName: call.name,
             version: 1
@@ -829,8 +727,7 @@ async function executePersistedToolCall(
         : isRecoveredSearchCall(context, call.name)
           ? {
               kind: "search",
-              provider: context.run.normalizedRequest.searchPolicy?.provider ?? null,
-              strategy: context.run.normalizedRequest.searchStrategy,
+              optionIds: context.run.normalizedRequest.searchPlan.options.map((option) => option.optionId),
               toolName: call.name,
               version: 1
             }
@@ -901,7 +798,6 @@ async function executePersistedToolCall(
       }
     } else if (isRecoveredMemoryCall(context, call.name)) {
       result = await context.memoryActionExecutor!.execute(
-        context.modelDrivenMemoryActions ? null : context.memoryActionPlan,
         call,
         {
           persistedToolCallId: claim.call.id,
@@ -924,7 +820,7 @@ async function executePersistedToolCall(
         context.run.id,
         signal
       );
-      await recordRecoveredSearchResult({ call, context, includeUsage: true, result });
+      await recordRecoveredSearchResult({ context, includeUsage: true, result });
     } else {
       const route = resolveMcpRunTool(context.run.normalizedRequest.mcp, call.name);
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
@@ -988,10 +884,6 @@ async function executePersistedToolCall(
       "A recovered tool result could not be durably settled."
     );
   }
-  if (!context.durations.has(call.id)) {
-    context.durations.set(call.id, Date.now() - startedAt);
-  }
-
   return {
     call,
     ordinal: persisted.ordinal,
@@ -1054,10 +946,7 @@ async function recoverCheckpointedToolLoop(
   if (signal.aborted || run.status === "cancelled" || !run.assistantMessageId) return;
 
   const usageAttributions: RunUsageAttribution[] = [];
-  let answerRoundUsage = run.checkpoint.version === 2
-    ? [...run.checkpoint.answerRoundUsage]
-    : [];
-  const legacyPersistedUsageKeys = new Set<string>();
+  let answerRoundUsage = [...run.checkpoint.answerRoundUsage];
   let usageEvidenceTrusted = true;
   let currentProviderResponseId = run.providerResponseId;
   let tokenBuffer: ReturnType<typeof createRunTokenPersistenceBuffer> | null = null;
@@ -1115,11 +1004,6 @@ async function recoverCheckpointedToolLoop(
       );
     }
     usageAttributions.push(...nonAnswerAttributions);
-    if (run.checkpoint.version === 1) {
-      for (const attribution of persistedUsage) {
-        legacyPersistedUsageKeys.add(`${attribution.provider}\u0000${attribution.modelId}`);
-      }
-    }
     if (!adapter || !bridge?.supportsToolCalling({ modelId: run.modelId, provider: run.provider })) {
       throw new ToolLoopRecoveryError(
         "tool_calling_not_supported",
@@ -1148,35 +1032,11 @@ async function recoverCheckpointedToolLoop(
       attachments
     };
     const clientToolsEnabled = run.normalizedRequest.toolMode !== "none";
-    const memoryActionPlan = run.normalizedRequest.memoryActionPlan === undefined
-      ? null
-      : decodeMemoryActionPlan(run.normalizedRequest.memoryActionPlan);
-    if (run.normalizedRequest.memoryActionPlan !== undefined && !memoryActionPlan) {
-      throw new ToolLoopRecoveryError(
-        "memory_action_plan_invalid",
-        "The saved Memory action plan is invalid."
-      );
-    }
-    const modelDrivenMemoryActions =
+    const memoryActionsRequested =
       run.normalizedRequest.memoryActionTools?.version === "model-driven-v2";
-    const searchEnabled = clientToolsEnabled && !run.normalizedRequest.searchPlan &&
-      run.normalizedRequest.searchStrategy === "perplexity-tool-search";
-    const searchPolicy = run.normalizedRequest.searchPolicy;
-    const searchAdapter = searchPolicy
-      ? await resolveSearchRuntime(deps, run.id, searchPolicy.provider)
-      : undefined;
-    if (searchEnabled && (!searchPolicy || !searchAdapter)) {
-      throw new ToolLoopRecoveryError(
-        "search_policy_not_available",
-        "The saved search tool policy is no longer available."
-      );
-    }
-    const legacySearchExecutor = searchEnabled
-      ? createPerplexitySearchToolExecutor({ searchAdapter: searchAdapter!, searchPolicy: searchPolicy! })
-      : null;
     const planRuntimes: Record<string, ProviderRuntimeBinding> = {};
     for (const option of clientToolsEnabled
-      ? run.normalizedRequest.searchPlan?.options ?? []
+      ? run.normalizedRequest.searchPlan.options
       : []) {
       if (option.adapterKind !== "provider_model_client") continue;
       const optionRuntime = await resolvePlanSearchRuntime(deps, run.id, option);
@@ -1188,9 +1048,8 @@ async function recoverCheckpointedToolLoop(
       }
       planRuntimes[option.optionId] = optionRuntime;
     }
-    const candidatePlanSearchRouter = clientToolsEnabled && run.normalizedRequest.searchPlan
+    const candidatePlanSearchRouter = clientToolsEnabled
       ? createSearchPlanToolRouter({
-          acceptLegacyToolNames: true,
           plan: run.normalizedRequest.searchPlan,
           runtimes: planRuntimes
         })
@@ -1212,9 +1071,8 @@ async function recoverCheckpointedToolLoop(
         }
       }
     }
-    const planSearchRouter = clientToolsEnabled && run.normalizedRequest.searchPlan
+    const planSearchRouter = clientToolsEnabled
       ? createSearchPlanToolRouter({
-          acceptLegacyToolNames: true,
           initialInvocationCounts: settledSearchInvocationCounts,
           plan: run.normalizedRequest.searchPlan,
           runtimes: planRuntimes
@@ -1225,28 +1083,12 @@ async function recoverCheckpointedToolLoop(
           accepts: (name) => planSearchRouter.accepts(name),
           execute: (call, request, _runId, executionSignal) =>
             planSearchRouter.execute(call, request, { signal: executionSignal }),
-          legacy: null,
           tools: planSearchRouter.tools
         }
-      : legacySearchExecutor
-        ? {
-            accepts: (name) => name === legacySearchExecutor.tool.name,
-            execute: (call, request, recoveredRunId, executionSignal) =>
-              legacySearchExecutor.execute(
-                call,
-                { request, runId: recoveredRunId },
-                { signal: executionSignal }
-              ),
-            legacy: {
-              modelId: searchPolicy!.modelId,
-              strategyId: searchPolicy!.strategyId
-            },
-            tools: [perplexityWebSearchTool]
-          }
-        : null;
+      : null;
     const knowledgeEnabled = clientToolsEnabled &&
       run.normalizedRequest.modelCapabilities.toolCalling === true &&
-      (run.normalizedRequest.knowledgePlan?.baseIds.length ?? 0) > 0;
+      run.normalizedRequest.knowledgePlan.baseIds.length > 0;
     if (knowledgeEnabled && !deps.knowledgeExecutor) {
       throw new ToolLoopRecoveryError(
         "knowledge_policy_not_available",
@@ -1254,7 +1096,7 @@ async function recoverCheckpointedToolLoop(
       );
     }
     const knowledgeExecutor = knowledgeEnabled ? deps.knowledgeExecutor ?? null : null;
-    const memoryActionEnabled = (memoryActionPlan !== null || modelDrivenMemoryActions) &&
+    const memoryActionEnabled = memoryActionsRequested &&
       clientToolsEnabled &&
       run.normalizedRequest.modelCapabilities.toolCalling === true;
     const memoryActionExecutor = memoryActionEnabled
@@ -1270,11 +1112,7 @@ async function recoverCheckpointedToolLoop(
     const tools: RunTool[] = [
       ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
       ...(searchExecutor?.tools ?? []),
-      ...(memoryActionExecutor
-        ? modelDrivenMemoryActions
-          ? memoryActionTools
-          : memoryActionPlan ? [memoryActionToolForPlan(memoryActionPlan)] : []
-        : []),
+      ...(memoryActionExecutor ? memoryActionTools : []),
       ...(memoryHistoryToolExecutor ? [memoryHistoryToolExecutor.tool] : []),
       ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : [])
     ];
@@ -1297,19 +1135,14 @@ async function recoverCheckpointedToolLoop(
       );
     }
     assertPersonalContextEgressSafe(providerRequest);
-    const hasMcpTools = tools.some((tool) => tool.capability === "mcp");
-
     let runtime = deps.mcpRuntime;
     const context: RecoveryToolContext = {
       deps,
-      durations: new Map(),
       persistedUsageRecordedAt,
       providerRequest,
       run,
       knowledgeExecutor,
       memoryActionExecutor,
-      memoryActionPlan,
-      modelDrivenMemoryActions,
       memoryHistoryToolExecutor,
       runtime() {
         runtime ??= getDefaultMcpRuntimeCoordinator();
@@ -1318,14 +1151,12 @@ async function recoverCheckpointedToolLoop(
       searchExecutor,
       usageAttributions
     };
-    const sequence = { value: await deps.repository.nextRunEventSequence(run.id) };
     tokenBuffer = createRunTokenPersistenceBuffer({
       allowErroredAssistant: true,
       assistantMessageId: run.assistantMessageId,
       initialText: run.assistantText ?? "",
       repository: deps.repository,
-      runId: run.id,
-      sequence
+      runId: run.id
     });
 
     async function* streamRecoveredProviderRequest(
@@ -1350,8 +1181,7 @@ async function recoverCheckpointedToolLoop(
           destinationSnapshot: {
             modelId: request.modelId,
             provider: request.provider,
-            searchOptionIds: request.searchPlan?.options.map((option) => option.optionId) ?? [],
-            searchStrategy: request.searchStrategy,
+            searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
             version: 1
           },
           errorCode: "memory_egress_search_revoked",
@@ -1372,8 +1202,7 @@ async function recoverCheckpointedToolLoop(
             destinationSnapshot: {
               modelId: request.modelId,
               provider: request.provider,
-              searchOptionIds: request.searchPlan?.options.map((option) => option.optionId) ?? [],
-              searchStrategy: request.searchStrategy,
+              searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
               version: 1
             },
             mode: "PROVIDER_REQUEST",
@@ -1496,7 +1325,8 @@ async function recoverCheckpointedToolLoop(
             groundedAt: new Date(),
             provider: run.normalizedRequest.provider,
             runId: run.id,
-            strategy: run.normalizedRequest.searchStrategy ?? "provider-grounding"
+            strategy: run.normalizedRequest.searchPlan.options.find((option) =>
+              option.adapterKind === "answer_provider_hosted")?.optionId ?? "provider-grounding"
           });
         }
         throw new ToolLoopRecoveryError(
@@ -1506,12 +1336,14 @@ async function recoverCheckpointedToolLoop(
       }
       await tokenBuffer!.flush();
       await publishProviderResponseId(providerResponseIdFromEvent(effectiveEvent) ?? undefined);
-      await appendRunEventWithRetry(deps.repository, run.id, sequence, effectiveEvent);
+      const outputEvent = projectRunOutputArtifactEvent(effectiveEvent);
+      if (outputEvent) {
+        await deps.repository.appendRunOutputEvent(run.id, outputEvent);
+      }
     }
 
     async function appendToolResults(
-      results: readonly ToolLoopSettledCall<ToolExecutionResult>[],
-      round: number
+      results: readonly ToolLoopSettledCall<ToolExecutionResult>[]
     ): Promise<void> {
       for (const settled of results) {
         const call = {
@@ -1523,15 +1355,6 @@ async function recoverCheckpointedToolLoop(
           ? settled.result.value
           : toolExecutionErrorResult(call, settled.result.error.message);
         for (const artifact of result.artifacts ?? []) await appendEvent(artifact);
-        await appendEvent(toolResultInspectionArtifact({
-          call,
-          durationMs: context.durations.get(call.id) ??
-            persistedToolDurationMs(persistedCalls.get(call.id)),
-          mcp: run.normalizedRequest.mcp,
-          ordinal: settled.ordinal,
-          result,
-          round
-        }));
       }
     }
 
@@ -1549,10 +1372,7 @@ async function recoverCheckpointedToolLoop(
           const route = resolveMcpRunTool(run.normalizedRequest.mcp, call.name);
           if (!route && searchExecutor?.accepts(call.name) !== true &&
             knowledgeExecutor?.accepts(call.name) !== true &&
-            memoryActionExecutor?.accepts(
-              modelDrivenMemoryActions ? null : memoryActionPlan,
-              call.name
-            ) !== true &&
+            memoryActionExecutor?.accepts(call.name) !== true &&
             memoryHistoryToolExecutor?.accepts(call.name) !== true) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
@@ -1588,23 +1408,6 @@ async function recoverCheckpointedToolLoop(
         );
       }
       for (const call of persisted.calls) persistedCalls.set(call.providerCallId, call);
-      if (persisted.kind === "persisted") {
-        if (hasMcpTools) {
-          await appendEvent(toolLoopPhaseArtifact({
-            count: persisted.calls.length,
-            phase: "tools",
-            round
-          }));
-        }
-        for (const call of persisted.calls) {
-          await appendEvent(toolCallInspectionArtifact({
-            call: modelToolCall(call),
-            mcp: run.normalizedRequest.mcp,
-            ordinal: call.ordinal,
-            round
-          }));
-        }
-      }
       return persisted.calls;
     }
 
@@ -1623,12 +1426,6 @@ async function recoverCheckpointedToolLoop(
           "provider_resume_not_supported",
           "The provider cannot resume the saved model round."
         );
-      }
-      if (hasMcpTools) {
-        await appendEvent(toolLoopPhaseArtifact({
-          phase: "model",
-          round: run.checkpoint.roundIndex
-        }));
       }
       const refreshed = await adapter.refresh(currentProviderResponseId).catch((error: unknown) => {
         throw new ToolLoopRecoveryError(
@@ -1672,19 +1469,16 @@ async function recoverCheckpointedToolLoop(
         );
         return;
       }
-      const providerUsageKey = `${run.provider}\u0000${run.modelId}`;
-      if (run.checkpoint.version === 2 || !legacyPersistedUsageKeys.has(providerUsageKey)) {
-        await recordAnswerRoundUsage(
-          refreshed.result.usage,
-          run,
-          "terminal",
-          run.checkpoint.roundIndex
-        );
-      }
+      await recordAnswerRoundUsage(
+        refreshed.result.usage,
+        run,
+        "terminal",
+        run.checkpoint.roundIndex
+      );
       if ((refreshed.result.toolCalls?.length ?? 0) === 0) {
         const groupedAttributions = groupedUsageAttributions(allUsageAttributions());
         const completion = await finalizeRunCompletion({
-          eventsBeforeTerminal: refreshed.events,
+          outputEvents: runOutputArtifactEvents(refreshed.events),
           repository: deps.repository,
           result: {
             ...refreshed.result,
@@ -1729,10 +1523,9 @@ async function recoverCheckpointedToolLoop(
         );
       }
       const usageResponseId = currentProviderResponseId ?? continuation.providerResponseId;
-      const providerUsageKey = `${run.provider}\u0000${run.modelId}`;
       const currentAnswerEvidence = answerRoundUsage.find((entry) =>
         entry.roundIndex === run.checkpoint.roundIndex);
-      if (run.checkpoint.version === 2 && currentAnswerEvidence?.completeness !== "terminal") {
+      if (currentAnswerEvidence?.completeness !== "terminal") {
         if (!usageResponseId || !adapter.refresh) {
           throw new ToolLoopRecoveryError(
             "tool_loop_usage_evidence_invalid",
@@ -1752,17 +1545,6 @@ async function recoverCheckpointedToolLoop(
           "terminal",
           run.checkpoint.roundIndex
         );
-      } else if (run.checkpoint.version === 1 && usageResponseId && adapter.refresh &&
-        !legacyPersistedUsageKeys.has(providerUsageKey)) {
-        const currentRound = await adapter.refresh(usageResponseId).catch(() => null);
-        if (currentRound?.terminal && currentRound.result) {
-          await recordAnswerRoundUsage(
-            currentRound.result.usage,
-            run,
-            "terminal",
-            run.checkpoint.roundIndex
-          );
-        }
       }
     }
 
@@ -1770,7 +1552,6 @@ async function recoverCheckpointedToolLoop(
     const reset = await deps.repository.resetToolLoopAssistantDraft({
       roundIndex: run.checkpoint.roundIndex,
       runId: run.id,
-      sequence: sequence.value,
       userId: run.userId
     });
     if (!reset) {
@@ -1779,18 +1560,10 @@ async function recoverCheckpointedToolLoop(
         "The recovered assistant draft could not be reset."
       );
     }
-    sequence.value += 1;
     tokenBuffer.resetLocal();
 
-    if (hasMcpTools && run.checkpoint.phase !== "provider_running") {
-      await appendEvent(toolLoopPhaseArtifact({
-        count: currentCalls.length,
-        phase: "tools",
-        round: run.checkpoint.roundIndex
-      }));
-    }
     const previousToolResults = await executePersistedToolBatch(currentCalls, context, signal);
-    await appendToolResults(previousToolResults, run.checkpoint.roundIndex);
+    await appendToolResults(previousToolResults);
     await persistCumulativeUsage();
     const advanced = await deps.repository.advanceToolLoopCallBatch({
       roundIndex: run.checkpoint.roundIndex,
@@ -1823,15 +1596,7 @@ async function recoverCheckpointedToolLoop(
         }
         currentProviderResponseId = null;
       },
-      beforeProviderRound: async ({ request, round }) => {
-        await deps.repository.updateRunProviderRequestPreview(
-          run.id,
-          adapter.buildRequestPreview(request)
-        );
-        if (hasMcpTools) {
-          await appendEvent(toolLoopPhaseArtifact({ phase: "model", round }));
-        }
-      },
+      beforeProviderRound: async () => undefined,
       bridge,
       budgets: {
         maxConcurrency: 4,
@@ -1890,7 +1655,6 @@ async function recoverCheckpointedToolLoop(
         const didReset = await deps.repository.resetToolLoopAssistantDraft({
           roundIndex: signal.round,
           runId: run.id,
-          sequence: sequence.value,
           userId: run.userId
         });
         if (!didReset) {
@@ -1899,11 +1663,10 @@ async function recoverCheckpointedToolLoop(
             "The recovered assistant draft could not be reset."
           );
         }
-        sequence.value += 1;
         tokenBuffer!.resetLocal();
       },
-      onToolBatchSettled: async ({ results, round }) => {
-        await appendToolResults(results, round);
+      onToolBatchSettled: async ({ results }) => {
+        await appendToolResults(results);
         await persistCumulativeUsage();
       },
       onUsage: async (usage, request, usageContext) => {
@@ -1965,14 +1728,6 @@ async function recoverCheckpointedToolLoop(
         outcome.failure.streamSafetyReport?.message ??
           (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
         outcome.failure.streamSafetyReport
-      );
-    }
-    if (memoryActionPlan && memoryActionExecutor &&
-      ![...persistedCalls.values()].some((call) =>
-        memoryActionExecutor?.accepts(memoryActionPlan, call.toolName) === true)) {
-      throw new ToolLoopRecoveryError(
-        "memory_action_required",
-        "The requested Memory operation was not executed."
       );
     }
     await tokenBuffer.flush();
@@ -2148,13 +1903,9 @@ async function refreshProviderRunOnceRegistered(
   }
 
   if (!refreshed.terminal) {
-    const sequence = { value: await deps.repository.nextRunEventSequence(runId) };
-    await appendStoredRunEvents({
-      events: refreshed.events,
-      repository: deps.repository,
-      runId,
-      sequence
-    });
+    for (const event of runOutputArtifactEvents(refreshed.events)) {
+      await deps.repository.appendRunOutputEvent(runId, event);
+    }
     return;
   }
 
@@ -2175,7 +1926,7 @@ async function refreshProviderRunOnceRegistered(
     );
     await deps.repository.settleRecoveredRunError({
       error: payload,
-      events: [...refreshed.events],
+      outputEvents: runOutputArtifactEvents(refreshed.events),
       ...(refreshedProviderResponseId
         ? { providerResponseId: refreshedProviderResponseId }
         : {}),
@@ -2188,7 +1939,7 @@ async function refreshProviderRunOnceRegistered(
 
   if (refreshed.result && latestBeforeFinalize.assistantMessageId) {
     const completion = await finalizeRunCompletion({
-      eventsBeforeTerminal: refreshed.events,
+      outputEvents: runOutputArtifactEvents(refreshed.events),
       repository: deps.repository,
       result: {
         ...refreshed.result,
@@ -2221,7 +1972,7 @@ async function refreshProviderRunOnceRegistered(
   );
   await deps.repository.settleRecoveredRunError({
     error: payload,
-    events: [...refreshed.events],
+    outputEvents: runOutputArtifactEvents(refreshed.events),
     ...(refreshedProviderResponseId
       ? { providerResponseId: refreshedProviderResponseId }
       : {}),

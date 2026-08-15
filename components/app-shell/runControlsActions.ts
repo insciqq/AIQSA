@@ -566,12 +566,10 @@ export function useRunControlsActions({
       mode,
       currentCatalogFromStore()?.searchStrategies ?? []
     );
-    const nextSearchStrategy = plan.optionIds[0] ?? "search-disabled";
     useComposerControlStore.getState().setSelectedSearchPlan(plan.optionIds, plan.mode);
     void persistUserDefaults({
       searchPlan: plan,
-      searchPreferenceSource: "personal",
-      searchStrategyId: nextSearchStrategy
+      searchPreferenceSource: "personal"
     });
   }
 
@@ -582,12 +580,10 @@ export function useRunControlsActions({
       mode: "all_selected" as const,
       optionIds: []
     };
-    const nextSearchStrategy = plan.optionIds[0] ?? "search-disabled";
     useComposerControlStore.getState().setSelectedSearchPlan(plan.optionIds, plan.mode);
     updateLocalCatalogDefaults({
       searchPlan: plan,
-      searchPreferenceSource: "organization",
-      searchStrategyId: nextSearchStrategy
+      searchPreferenceSource: "organization"
     });
     void settingsMutationCoordinator.enqueue({ searchPlan: null });
   }
@@ -694,16 +690,6 @@ export function useRunControlsActions({
     });
   }
 
-  function toggleToolActivityVisibility() {
-    useComposerControlStore.getState().setShowToolActivity((visible) => {
-      const next = !visible;
-      void persistUserDefaults({
-        showToolActivity: next
-      });
-      return next;
-    });
-  }
-
   return {
     applyAssistantToComposer,
     applyModelControlDefaults,
@@ -724,7 +710,6 @@ export function useRunControlsActions({
     selectSearchStrategy,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
-    toggleToolActivityVisibility,
     useOrganizationModelDefault,
     useOrganizationSearchDefault
   };

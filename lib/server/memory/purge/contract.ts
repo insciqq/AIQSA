@@ -1,15 +1,14 @@
 import type { MemoryDeletionOperation } from "@prisma/client";
 
-export const MEMORY_PHASE2_PURGE_MANIFEST_VERSION = "memory-p7-purge-v3";
+export const MEMORY_PURGE_MANIFEST_VERSION = "memory-purge-v1";
 export const MEMORY_DELETE_EXPLICIT_TARGET_ID = "all-explicit";
 
-export const MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS = Object.freeze([
+export const MEMORY_PURGE_REQUIRED_CONTRIBUTORS = Object.freeze([
   Object.freeze({ id: "unaccepted-attempts", version: "v1" }),
   Object.freeze({ id: "history-derivatives", version: "v1" }),
   Object.freeze({ id: "candidate-derivatives", version: "v1" }),
   Object.freeze({ id: "feedback-records", version: "v1" }),
   Object.freeze({ id: "fact-search", version: "v1" }),
-  Object.freeze({ id: "profile-projections", version: "v1" }),
   Object.freeze({ id: "fact-version-content", version: "v1" }),
   Object.freeze({ id: "all-reusable-ledger", version: "v1" }),
   Object.freeze({ id: "fact-evidence", version: "v1" }),
@@ -37,7 +36,7 @@ const factIdPattern = /^\S{1,256}$/u;
 
 export function memoryPurgeTargetType(
   kind: MemoryPurgeTargetKind,
-  manifestVersion = MEMORY_PHASE2_PURGE_MANIFEST_VERSION
+  manifestVersion = MEMORY_PURGE_MANIFEST_VERSION
 ): string {
   if (!manifestVersionPattern.test(manifestVersion)) {
     throw new Error("memory_purge_manifest_version_invalid");

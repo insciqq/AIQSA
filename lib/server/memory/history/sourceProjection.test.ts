@@ -134,14 +134,14 @@ describe("Memory safe source snapshot", () => {
 
     expect(first).toEqual(second);
     expect(first.activePathMessageIds).toEqual([user.id, assistant.id]);
-    expect(first.recallEpisodeProjection.turnGroups).toHaveLength(1);
-    expect(first.recallEpisodeProjection.turnGroups[0]?.messages.map((message) =>
+    expect(first.recallChunkProjection.turnGroups).toHaveLength(1);
+    expect(first.recallChunkProjection.turnGroups[0]?.messages.map((message) =>
       message.role)).toEqual(["user", "assistant"]);
     expect(first.factEvidenceProjection.messages.map((message) => message.id))
       .toEqual([user.id]);
-    expect(first.recallEpisodeProjection.turnGroups[0]?.messages[0].safeText)
+    expect(first.recallChunkProjection.turnGroups[0]?.messages[0].safeText)
       .toContain("не люблю кофе");
-    expect(first.recallEpisodeProjection.turnGroups[0]?.messages[1].safeText)
+    expect(first.recallChunkProjection.turnGroups[0]?.messages[1].safeText)
       .toContain("10 августа 2026 года");
     expect(JSON.stringify(first)).not.toContain("This sibling");
     expect(first.snapshotHash).toMatch(/^[a-f0-9]{64}$/u);
@@ -160,7 +160,7 @@ describe("Memory safe source snapshot", () => {
     });
 
     const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
-    const group = snapshot.recallEpisodeProjection.turnGroups[0];
+    const group = snapshot.recallChunkProjection.turnGroups[0];
 
     expect(group?.languageCode).toBe("und");
     expect(group?.messages.map((message) => message.safeText)).toEqual([
@@ -185,7 +185,7 @@ describe("Memory safe source snapshot", () => {
     const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
     const serialized = JSON.stringify(snapshot);
 
-    expect(snapshot.recallEpisodeProjection.turnGroups).toHaveLength(1);
+    expect(snapshot.recallChunkProjection.turnGroups).toHaveLength(1);
     expect(snapshot.factEvidenceProjection.messages.map((message) => message.id))
       .toEqual([user.id]);
     expect(snapshot.provenanceGraph).toEqual([
@@ -227,7 +227,7 @@ describe("Memory safe source snapshot", () => {
 
     const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
 
-    expect(snapshot.recallEpisodeProjection.turnGroups).toEqual([]);
+    expect(snapshot.recallChunkProjection.turnGroups).toEqual([]);
     expect(snapshot.factEvidenceProjection.messages.map((message) => message.safeText))
       .toEqual(["Мой прямой комментарий безопасен."]);
     expect(snapshot.provenanceGraph[0]?.reasonCodes).toContain("ATTACHMENT_BLOCK_OMITTED");
@@ -262,7 +262,7 @@ describe("Memory safe source snapshot", () => {
 
       const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
 
-      expect(snapshot.recallEpisodeProjection.turnGroups).toEqual([]);
+      expect(snapshot.recallChunkProjection.turnGroups).toEqual([]);
       expect(snapshot.factEvidenceProjection.messages.map((message) => message.id))
         .toEqual([user.id]);
       expect(snapshot.provenanceGraph[1]).toMatchObject({
@@ -306,7 +306,7 @@ describe("Memory safe source snapshot", () => {
       const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([message]));
 
       expect(snapshot.factEvidenceProjection.messages).toEqual([]);
-      expect(snapshot.recallEpisodeProjection.turnGroups).toEqual([]);
+      expect(snapshot.recallChunkProjection.turnGroups).toEqual([]);
       expect(snapshot.provenanceGraph[0]).toMatchObject({
         eligibleForFactEvidence: false,
         eligibleForRecall: false,
@@ -331,8 +331,8 @@ describe("Memory safe source snapshot", () => {
 
     const snapshot = buildMemorySafeSourceSnapshot(snapshotInput([user, assistant]));
 
-    expect(snapshot.recallEpisodeProjection.turnGroups).toHaveLength(1);
-    expect(snapshot.recallEpisodeProjection.turnGroups[0]).toMatchObject({
+    expect(snapshot.recallChunkProjection.turnGroups).toHaveLength(1);
+    expect(snapshot.recallChunkProjection.turnGroups[0]).toMatchObject({
       redactionReasonCodes: ["CONTACT_EMAIL_REDACTED"],
       redactionState: "REDACTED",
       safetyClass: "SENSITIVE"
@@ -390,7 +390,7 @@ describe("Memory safe source snapshot", () => {
       expect(snapshot.activePathMessageIds).toEqual([]);
       expect(snapshot.provenanceGraph).toEqual([]);
       expect(snapshot.factEvidenceProjection.messages).toEqual([]);
-      expect(snapshot.recallEpisodeProjection.turnGroups).toEqual([]);
+      expect(snapshot.recallChunkProjection.turnGroups).toEqual([]);
       expect(JSON.stringify(snapshot)).not.toContain("raw source");
     }
   });

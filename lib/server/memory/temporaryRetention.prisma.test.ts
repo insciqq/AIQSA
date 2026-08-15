@@ -23,6 +23,7 @@ function request(chatId: string, text: string): NormalizedRunRequest {
       messages: [{ content, id: `context-${randomUUID()}`, role: "user" }],
       mode: "branch_path"
     },
+    knowledgePlan: { baseIds: [] },
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -35,7 +36,7 @@ function request(chatId: string, text: string): NormalizedRunRequest {
     params: {},
     prompt: { developer: null, system: null },
     provider: providerTemplateIds.fakeConnection,
-    searchStrategy: "search-disabled",
+    searchPlan: { mode: "all_selected", options: [] },
     toolMode: "auto"
   };
 }
@@ -302,7 +303,6 @@ describe("Temporary chat retention", () => {
           artifacts: {},
           modelRunId: second.runId,
           provider: "fake-search",
-          requestPreview: {},
           status: "complete",
           strategyId: "temporary-test"
         }
@@ -417,7 +417,9 @@ describe("Temporary chat retention", () => {
       });
       await expect(prisma.modelRun.findUniqueOrThrow({
         where: { id: second.runId }
-      })).resolves.toMatchObject({ status: "error" });
+      })).resolves.toMatchObject({
+        status: "error"
+      });
       await expect(prisma.memoryRetrievalAttempt.findUniqueOrThrow({
         where: { id: second.attemptId }
       })).resolves.toMatchObject({

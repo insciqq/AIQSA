@@ -36,7 +36,7 @@ describe("SOURCE_PURGE composition", () => {
       signal: new AbortController().signal
     };
     await handler.execute(claim(PERMANENT_CHAT_DELETION_TARGET_TYPE), context);
-    await handler.execute(claim("HISTORY_SOURCE@memory-p4-history-source-v1"), context);
+    await handler.execute(claim("HISTORY_SOURCE@memory-history-source-v1"), context);
     expect(permanentExecute).toHaveBeenCalledOnce();
     expect(historyExecute).toHaveBeenCalledOnce();
   });

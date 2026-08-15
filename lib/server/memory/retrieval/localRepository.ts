@@ -295,7 +295,6 @@ async function historySuppressionIdentity(
         scope: true,
         sourceBranchGeneration: true,
         sourceChatId: true,
-        sourceEpisodeId: true,
         sourceMessageId: true
       },
       where: { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }], userId }
@@ -508,46 +507,6 @@ export function memoryChunkSourceSafetyPredicate(): Prisma.Sql {
             AND barrier_message."id" = barrier_chunk_message."messageId"
           WHERE barrier_chunk_message."userId" = chunk."userId"
             AND barrier_chunk_message."chunkId" = chunk."id"
-            AND barrier_message."createdAt" <= history_barrier."sourceCreatedAtCutoff"
-        ))
-    )
-  `;
-}
-
-// Recovery of already accepted legacy runs may still revalidate an episode.
-// New retrieval never schedules, expands, or freezes this item type.
-export function memoryEpisodeSourceSafetyPredicate(): Prisma.Sql {
-  return Prisma.sql`
-    NOT EXISTS (
-      SELECT 1 FROM "MemorySuppression" AS history_suppression
-      WHERE history_suppression."userId" = episode."userId"
-        AND (history_suppression."expiresAt" IS NULL
-          OR history_suppression."expiresAt" > CURRENT_TIMESTAMP)
-        AND (history_suppression."scope" = 'ALL'::"MemorySuppressionScope"
-          OR (history_suppression."scope" = 'SOURCE_EPISODE'::"MemorySuppressionScope"
-            AND history_suppression."sourceEpisodeId" = episode."id")
-          OR (history_suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-            AND history_suppression."sourceChatId" = episode."chatId"
-            AND (history_suppression."sourceBranchGeneration" IS NULL
-              OR history_suppression."sourceBranchGeneration" = episode."branchGeneration")
-            AND EXISTS (SELECT 1 FROM "MemoryEpisodeMessage" AS suppressed_episode_message
-              WHERE suppressed_episode_message."userId" = episode."userId"
-                AND suppressed_episode_message."episodeId" = episode."id"
-                AND suppressed_episode_message."messageId" = history_suppression."sourceMessageId")))
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM "MemorySourceBarrier" AS history_barrier
-      WHERE history_barrier."userId" = episode."userId"
-        AND history_barrier."kind" IN (
-          'HISTORY_INDEX'::"MemorySourceBarrierKind", 'ALL_REUSABLE'::"MemorySourceBarrierKind"
-        )
-        AND (episode."createdAt" <= history_barrier."createdAt" OR EXISTS (
-          SELECT 1 FROM "MemoryEpisodeMessage" AS barrier_episode_message
-          INNER JOIN "Message" AS barrier_message
-            ON barrier_message."chatId" = barrier_episode_message."chatId"
-            AND barrier_message."id" = barrier_episode_message."messageId"
-          WHERE barrier_episode_message."userId" = episode."userId"
-            AND barrier_episode_message."episodeId" = episode."id"
             AND barrier_message."createdAt" <= history_barrier."sourceCreatedAtCutoff"
         ))
     )

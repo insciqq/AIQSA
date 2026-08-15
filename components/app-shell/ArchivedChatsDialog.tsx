@@ -11,7 +11,6 @@ import {
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
-import type { MemoryUiLocale } from "@/lib/contracts/memory";
 import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
 import {
   openPermanentChatDeletion,
@@ -25,7 +24,7 @@ const focusRing =
 const button =
   `inline-flex min-h-touch items-center justify-center gap-2 rounded-control border border-trace-subtle bg-control-surface px-3 text-sm font-semibold text-ink-secondary hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control ${focusRing}`;
 
-function formatDate(locale: MemoryUiLocale, value: string): string {
+function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? ""
@@ -36,10 +35,8 @@ function formatDate(locale: MemoryUiLocale, value: string): string {
 }
 
 export function ArchivedChatsDialog({
-  locale,
   onRestored
 }: {
-  locale: MemoryUiLocale;
   onRestored(chatId: string): Promise<void> | void;
 }) {
   const detail = useArchivedChatsStore((state) => state.detail);
@@ -79,7 +76,6 @@ export function ArchivedChatsDialog({
   return (
     <div
       className="fixed inset-0 z-[90] flex items-end justify-center bg-scrim/70 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] sm:items-center sm:p-3"
-      data-ui-presentation="v2-tokens"
       data-testid="archived-chats-dialog"
       role="presentation"
       onMouseDown={closeArchivedChats}
@@ -123,10 +119,10 @@ export function ArchivedChatsDialog({
         {detail ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="border-b border-trace-subtle px-4 py-3 text-sm text-ink-secondary">
-              <p>{resolveMemoryCopy(locale, "archive.explanation")}</p>
+              <p>{resolveMemoryCopy("archive.explanation")}</p>
               <p className="mt-1 text-xs text-ink-muted">
                 {detail.memoryMode === "EXCLUDED"
-                  ? `${resolveMemoryCopy(locale, "exclude.explanation")} The separate Exclude state takes precedence until Resume.`
+                  ? `${resolveMemoryCopy("exclude.explanation")} The separate Exclude state takes precedence until Resume.`
                   : "This owner preview is read-only."}
               </p>
             </div>
@@ -179,7 +175,7 @@ export function ArchivedChatsDialog({
               ) : null}
               <button className={button} disabled={restoring} type="button" onClick={() => void restore().catch(() => undefined)}>
                 {restoring ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <Undo2 className="size-4" aria-hidden="true" />}
-                {resolveMemoryCopy(locale, "restore.action")}
+                {resolveMemoryCopy("restore.action")}
               </button>
             </footer>
           </div>
@@ -263,7 +259,7 @@ export function ArchivedChatsDialog({
                     >
                       <span className="block truncate text-sm font-semibold text-ink">{chat.title}</span>
                       <span className="mt-1 block text-xs text-ink-muted">
-                        {formatDate(locale, chat.updatedAt)} · {chat.messageCount} {chat.messageCount === 1 ? "message" : "messages"}
+                        {formatDate(chat.updatedAt)} · {chat.messageCount} {chat.messageCount === 1 ? "message" : "messages"}
                         {chat.memoryMode === "EXCLUDED"
                           ? " · Excluded from Memory sources"
                           : ""}

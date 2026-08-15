@@ -17,8 +17,7 @@ import {
 import type {
   MemoryDeletionStatus,
   MemoryRebuildStatus,
-  MemorySettingsResponse,
-  MemoryUiLocale
+  MemorySettingsResponse
 } from "@/lib/contracts/memory";
 import {
   ArrowLeft,
@@ -48,11 +47,11 @@ const primaryButton =
 const destructiveButton =
   `inline-flex min-h-touch items-center justify-center gap-2 rounded-control border border-critical/50 bg-critical/10 px-4 text-sm font-semibold text-critical hover:bg-critical/15 disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-control ${coarsePointerTarget} ${focusRing}`;
 
-function t(locale: MemoryUiLocale, key: MemoryOperationsUiCopyKey): string {
-  return memoryOperationsUiCopy(locale, key);
+function t(key: MemoryOperationsUiCopyKey): string {
+  return memoryOperationsUiCopy(key);
 }
 
-function formatDate(locale: MemoryUiLocale, value: string | null): string {
+function formatDate(value: string | null): string {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
@@ -62,52 +61,50 @@ function formatDate(locale: MemoryUiLocale, value: string | null): string {
   }).format(date);
 }
 
-function operationLabel(locale: MemoryUiLocale, operation: MemoryOperationsAction): string {
+function operationLabel(operation: MemoryOperationsAction): string {
   switch (operation) {
-    case "REBUILD_SEARCH_INDEX": return t(locale, "rebuildLabel");
-    case "REEMBED": return t(locale, "reembedLabel");
-    case "REDREAM_EXISTING_CHATS": return t(locale, "redreamLabel");
-    case "DELETE_ALL_REUSABLE": return t(locale, "allLabel");
-    case "DELETE_LEARNED": return t(locale, "learnedLabel");
-    case "CLEAR_HISTORY_INDEX": return t(locale, "clearLabel");
+    case "REBUILD_SEARCH_INDEX": return t("rebuildLabel");
+    case "REEMBED": return t("reembedLabel");
+    case "DELETE_ALL_REUSABLE": return t("allLabel");
+    case "DELETE_LEARNED": return t("learnedLabel");
+    case "CLEAR_HISTORY_INDEX": return t("clearLabel");
   }
 }
 
-function confirmationText(locale: MemoryUiLocale, operation: MemoryOperationsAction): string {
+function confirmationText(operation: MemoryOperationsAction): string {
   switch (operation) {
-    case "REBUILD_SEARCH_INDEX": return t(locale, "confirmationRebuild");
-    case "REEMBED": return t(locale, "confirmationReembed");
-    case "REDREAM_EXISTING_CHATS": return t(locale, "confirmationRedream");
-    case "DELETE_ALL_REUSABLE": return t(locale, "confirmationAll");
-    case "DELETE_LEARNED": return t(locale, "confirmationLearned");
-    case "CLEAR_HISTORY_INDEX": return t(locale, "confirmationClear");
+    case "REBUILD_SEARCH_INDEX": return t("confirmationRebuild");
+    case "REEMBED": return t("confirmationReembed");
+    case "DELETE_ALL_REUSABLE": return t("confirmationAll");
+    case "DELETE_LEARNED": return t("confirmationLearned");
+    case "CLEAR_HISTORY_INDEX": return t("confirmationClear");
   }
 }
 
-function errorText(locale: MemoryUiLocale, code: string | null): string {
+function errorText(code: string | null): string {
   switch (code) {
-    case "memory_version_stale": return t(locale, "errorStale");
-    case "memory_egress_consent_required": return t(locale, "errorConsent");
-    case "memory_embedding_unavailable": return t(locale, "errorEmbedding");
-    case "memory_rebuild_in_progress": return t(locale, "errorInProgress");
-    case "memory_intent_confirmation_required": return t(locale, "errorConfirmation");
-    case "memory_deletion_reference_mismatch": return t(locale, "errorReferenceMismatch");
-    case "memory_rebuild_not_found": return t(locale, "errorNotFound");
-    default: return t(locale, "errorGeneric");
+    case "memory_version_stale": return t("errorStale");
+    case "memory_egress_consent_required": return t("errorConsent");
+    case "memory_embedding_unavailable": return t("errorEmbedding");
+    case "memory_rebuild_in_progress": return t("errorInProgress");
+    case "memory_intent_confirmation_required": return t("errorConfirmation");
+    case "memory_deletion_reference_mismatch": return t("errorReferenceMismatch");
+    case "memory_rebuild_not_found": return t("errorNotFound");
+    default: return t("errorGeneric");
   }
 }
 
-function rebuildStateText(locale: MemoryUiLocale, status: MemoryRebuildStatus): string {
+function rebuildStateText(status: MemoryRebuildStatus): string {
   switch (status.state) {
-    case "QUEUED": return t(locale, "stateQueued");
-    case "RUNNING": return t(locale, "stateRebuildRunning");
-    case "WAITING_FOR_EGRESS_CONSENT": return t(locale, "stateWaitingConsent");
-    case "CATCHING_UP": return t(locale, "stateCatchingUp");
-    case "READY": return t(locale, "stateReady");
-    case "SUCCEEDED": return t(locale, "stateRebuildSucceeded");
-    case "FAILED": return t(locale, "stateFailed");
-    case "STALE": return t(locale, "stateStale");
-    case "CANCELLED": return t(locale, "stateCancelled");
+    case "QUEUED": return t("stateQueued");
+    case "RUNNING": return t("stateRebuildRunning");
+    case "WAITING_FOR_EGRESS_CONSENT": return t("stateWaitingConsent");
+    case "CATCHING_UP": return t("stateCatchingUp");
+    case "READY": return t("stateReady");
+    case "SUCCEEDED": return t("stateRebuildSucceeded");
+    case "FAILED": return t("stateFailed");
+    case "STALE": return t("stateStale");
+    case "CANCELLED": return t("stateCancelled");
   }
 }
 
@@ -115,21 +112,20 @@ type DeletionKind = "all" | "clear" | "learned";
 
 function deletionStateText(
   kind: DeletionKind,
-  locale: MemoryUiLocale,
   status: MemoryDeletionStatus
 ): string {
   switch (status.state) {
-    case "PENDING": return t(locale, kind === "all" ? "stateAllPending" : "statePending");
-    case "RUNNING": return t(locale, kind === "all"
+    case "PENDING": return t(kind === "all" ? "stateAllPending" : "statePending");
+    case "RUNNING": return t(kind === "all"
       ? "stateAllRunning"
       : kind === "learned" ? "stateLearnedRunning" : "stateClearRunning");
-    case "RETRY_WAIT": return t(locale, kind === "all"
+    case "RETRY_WAIT": return t(kind === "all"
       ? "stateAllRetry"
       : kind === "learned" ? "stateLearnedRetry" : "stateRetry");
-    case "BLOCKED_REQUIRES_ADMIN": return t(locale, kind === "all"
+    case "BLOCKED_REQUIRES_ADMIN": return t(kind === "all"
       ? "stateAllBlocked"
       : kind === "learned" ? "stateLearnedBlocked" : "stateBlocked");
-    case "SUCCEEDED": return t(locale, kind === "all"
+    case "SUCCEEDED": return t(kind === "all"
       ? "stateAllSucceeded"
       : kind === "learned" ? "stateLearnedSucceeded" : "stateClearSucceeded");
     case "CANCELLED": return "Deletion cancelled.";
@@ -164,37 +160,35 @@ function Progress({
 }
 
 function StatusMetadata({
-  locale,
   reference,
   updatedAt,
   auditAt
 }: {
   auditAt?: string | null;
-  locale: MemoryUiLocale;
   reference: string;
   updatedAt: string;
 }) {
   return (
     <dl className="mt-3 divide-y divide-trace-subtle text-xs">
       <div className="grid gap-1 py-2 sm:grid-cols-[9rem_minmax(0,1fr)]">
-        <dt className="font-medium text-ink-muted">{t(locale, "reference")}</dt>
+        <dt className="font-medium text-ink-muted">{t("reference")}</dt>
         <dd><code className="break-all font-mono text-ink-secondary">{reference}</code></dd>
       </div>
       <div className="grid gap-1 py-2 sm:grid-cols-[9rem_minmax(0,1fr)]">
-        <dt className="font-medium text-ink-muted">{t(locale, "updated")}</dt>
-        <dd className="text-ink-secondary">{formatDate(locale, updatedAt)}</dd>
+        <dt className="font-medium text-ink-muted">{t("updated")}</dt>
+        <dd className="text-ink-secondary">{formatDate(updatedAt)}</dd>
       </div>
       {auditAt !== undefined ? (
         <div className="grid gap-1 py-2 sm:grid-cols-[9rem_minmax(0,1fr)]">
-          <dt className="font-medium text-ink-muted">{t(locale, "lastAudit")}</dt>
-          <dd className="text-ink-secondary">{formatDate(locale, auditAt)}</dd>
+          <dt className="font-medium text-ink-muted">{t("lastAudit")}</dt>
+          <dd className="text-ink-secondary">{formatDate(auditAt)}</dd>
         </div>
       ) : null}
     </dl>
   );
 }
 
-function RebuildStatus({ locale }: { locale: MemoryUiLocale }) {
+function RebuildStatus() {
   const busy = useMemoryOperationsStore((state) => state.busy);
   const error = useMemoryOperationsStore((state) => state.rebuildError);
   const loadState = useMemoryOperationsStore((state) => state.rebuildLoadState);
@@ -208,20 +202,20 @@ function RebuildStatus({ locale }: { locale: MemoryUiLocale }) {
         <RefreshCw className="mt-0.5 size-4 shrink-0 text-proof" aria-hidden="true" />
         <div className="min-w-0 flex-1" aria-live="polite" aria-busy={loadState === "loading"}>
           <h4 className="text-sm font-semibold text-ink" id="memory-rebuild-status-heading">
-            {t(locale, "rebuildStatusHeading")}
+            {t("rebuildStatusHeading")}
           </h4>
           <p className="mt-1 text-xs font-semibold text-ink-secondary">
-            {operationLabel(locale, status.operation)}
+            {operationLabel(status.operation)}
           </p>
           <p className={`mt-2 text-sm leading-6 ${failed ? "text-critical" : "text-ink-secondary"}`}>
-            {rebuildStateText(locale, status)}
+            {rebuildStateText(status)}
           </p>
           {failed && status.errorCode ? (
-            <p className="mt-2 text-sm text-critical" role="alert">{errorText(locale, status.errorCode)}</p>
+            <p className="mt-2 text-sm text-critical" role="alert">{errorText(status.errorCode)}</p>
           ) : null}
-          <Progress completed={status.completedUnits} label={t(locale, "progress")} total={status.totalUnits} />
-          <StatusMetadata locale={locale} reference={status.jobId} updatedAt={status.updatedAt} />
-          {error ? <p className="mt-3 text-sm text-critical" role="alert">{errorText(locale, error)}</p> : null}
+          <Progress completed={status.completedUnits} label={t("progress")} total={status.totalUnits} />
+          <StatusMetadata reference={status.jobId} updatedAt={status.updatedAt} />
+          {error ? <p className="mt-3 text-sm text-critical" role="alert">{errorText(error)}</p> : null}
           <div className="mt-3 flex flex-wrap gap-2">
             {!terminal ? (
               <>
@@ -232,7 +226,7 @@ function RebuildStatus({ locale }: { locale: MemoryUiLocale }) {
                   onClick={() => void refreshMemoryRebuildStatus().catch(() => undefined)}
                 >
                   <RotateCw className="size-4" aria-hidden="true" />
-                  {t(locale, "refresh")}
+                  {t("refresh")}
                 </button>
                 <button
                   className={secondaryButton}
@@ -243,25 +237,24 @@ function RebuildStatus({ locale }: { locale: MemoryUiLocale }) {
                   {busy === "cancelling"
                     ? <LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                     : <X className="size-4" aria-hidden="true" />}
-                  {busy === "cancelling" ? t(locale, "cancelling") : t(locale, "cancelJob")}
+                  {busy === "cancelling" ? t("cancelling") : t("cancelJob")}
                 </button>
               </>
             ) : (
               <button className={secondaryButton} type="button" onClick={() => dismissMemoryOperationStatus("rebuild")}>
-                {t(locale, "dismiss")}
+                {t("dismiss")}
               </button>
             )}
           </div>
-          <p className="mt-3 text-xs leading-5 text-ink-muted">{t(locale, "cancelBoundary")}</p>
+          <p className="mt-3 text-xs leading-5 text-ink-muted">{t("cancelBoundary")}</p>
         </div>
       </div>
     </section>
   );
 }
 
-function DeletionStatus({ kind, locale }: {
+function DeletionStatus({ kind }: {
   kind: DeletionKind;
-  locale: MemoryUiLocale;
 }) {
   const error = useMemoryOperationsStore((state) =>
     kind === "all"
@@ -289,21 +282,20 @@ function DeletionStatus({ kind, locale }: {
         <Eraser className={`mt-0.5 size-4 shrink-0 ${blocked ? "text-critical" : succeeded ? "text-positive" : "text-caution"}`} aria-hidden="true" />
         <div className="min-w-0 flex-1" aria-live="polite" aria-busy={loadState === "loading"}>
           <h4 className="text-sm font-semibold text-ink" id={headingId}>
-            {t(locale, kind === "all"
+            {t(kind === "all"
               ? "allStatusHeading"
               : kind === "learned" ? "learnedStatusHeading" : "clearStatusHeading")}
           </h4>
           <p className={`mt-2 text-sm leading-6 ${blocked ? "text-critical" : "text-ink-secondary"}`}>
-            {deletionStateText(kind, locale, status)}
+            {deletionStateText(kind, status)}
           </p>
-          <Progress completed={status.completedUnits} label={t(locale, "progress")} total={status.totalUnits} />
+          <Progress completed={status.completedUnits} label={t("progress")} total={status.totalUnits} />
           <StatusMetadata
             auditAt={status.lastAuditAt}
-            locale={locale}
             reference={status.deletionId}
             updatedAt={status.updatedAt}
           />
-          {error ? <p className="mt-3 text-sm text-critical" role="alert">{errorText(locale, error)}</p> : null}
+          {error ? <p className="mt-3 text-sm text-critical" role="alert">{errorText(error)}</p> : null}
           <div className="mt-3 flex flex-wrap gap-2">
             {!terminal ? (
               <button
@@ -317,11 +309,11 @@ function DeletionStatus({ kind, locale }: {
                     : refreshMemoryClearStatus()).catch(() => undefined)}
               >
                 <RotateCw className="size-4" aria-hidden="true" />
-                {t(locale, "refresh")}
+                {t("refresh")}
               </button>
             ) : (
               <button className={secondaryButton} type="button" onClick={() => dismissMemoryOperationStatus(kind)}>
-                {t(locale, "dismiss")}
+                {t("dismiss")}
               </button>
             )}
           </div>
@@ -332,11 +324,9 @@ function DeletionStatus({ kind, locale }: {
 }
 
 function UnresolvedStatus({
-  kind,
-  locale
+  kind
 }: {
   kind: DeletionKind | "rebuild";
-  locale: MemoryUiLocale;
 }) {
   const error = useMemoryOperationsStore((state) =>
     kind === "all"
@@ -367,13 +357,13 @@ function UnresolvedStatus({
         <div className="min-w-0 flex-1">
           <h4 className="text-sm font-semibold text-ink">
             {kind === "all"
-              ? t(locale, "allStatusHeading")
+              ? t("allStatusHeading")
               : kind === "clear"
-              ? t(locale, "clearStatusHeading")
-              : t(locale, kind === "learned" ? "learnedStatusHeading" : "rebuildStatusHeading")}
+              ? t("clearStatusHeading")
+              : t(kind === "learned" ? "learnedStatusHeading" : "rebuildStatusHeading")}
           </h4>
           <p className="mt-2 text-sm leading-6 text-critical" role="alert">
-            {errorText(locale, error)}
+            {errorText(error)}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <button
@@ -391,14 +381,14 @@ function UnresolvedStatus({
               {loadState === "loading"
                 ? <LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 : <RotateCw className="size-4" aria-hidden="true" />}
-              {t(locale, "refresh")}
+              {t("refresh")}
             </button>
             <button
               className={secondaryButton}
               type="button"
               onClick={() => dismissMemoryOperationStatus(kind)}
             >
-              {t(locale, "dismissReference")}
+              {t("dismissReference")}
             </button>
           </div>
         </div>
@@ -421,14 +411,7 @@ function operationUnavailableReason(
   if (operation === "REEMBED" && !data.settings.embeddingDeployment) {
     return "embeddingUnavailable";
   }
-  if (
-    operation === "REDREAM_EXISTING_CHATS" &&
-    (!data.capabilities.automaticLearning || !data.egress.systemModelDestination)
-  ) return "learningUnavailable";
-  if (
-    (operation === "REEMBED" || operation === "REDREAM_EXISTING_CHATS") &&
-    data.egress.reviewRequired
-  ) return "consentRequired";
+  if (operation === "REEMBED" && data.egress.reviewRequired) return "consentRequired";
   return null;
 }
 
@@ -437,14 +420,12 @@ function OperationRow({
   description,
   icon,
   label,
-  locale,
   operation
 }: {
   data: MemorySettingsResponse;
   description: string;
   icon: ReactNode;
   label: string;
-  locale: MemoryUiLocale;
   operation: MaintenanceOperation;
 }) {
   const busy = useMemoryOperationsStore((state) => state.busy);
@@ -463,7 +444,7 @@ function OperationRow({
             <p className="text-sm font-semibold text-ink">{label}</p>
             <p className="mt-1 text-xs leading-5 text-ink-muted">{description}</p>
             <p className={`mt-1 text-xs font-semibold ${unavailable ? "text-caution" : "text-positive"}`}>
-              {unavailable ? `${t(locale, "unavailable")}: ${t(locale, unavailable)}` : t(locale, "available")}
+              {unavailable ? `${t("unavailable")}: ${t(unavailable)}` : t("available")}
             </p>
           </div>
         </div>
@@ -473,7 +454,7 @@ function OperationRow({
           type="button"
           onClick={() => selectMemoryOperation(operation)}
         >
-          {t(locale, "runAction")}
+          {t("runAction")}
         </button>
       </div>
     </li>
@@ -486,7 +467,6 @@ function DestructiveRow({
   heading,
   icon,
   label,
-  locale,
   operation,
   retention
 }: {
@@ -495,7 +475,6 @@ function DestructiveRow({
   heading: string;
   icon: ReactNode;
   label: string;
-  locale: MemoryUiLocale;
   operation: "CLEAR_HISTORY_INDEX" | "DELETE_ALL_REUSABLE" | "DELETE_LEARNED";
   retention: string;
 }) {
@@ -513,7 +492,7 @@ function DestructiveRow({
             <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-secondary">{description}</p>
             <details className="mt-2 max-w-2xl border-y border-trace-subtle py-1">
               <summary className={`min-h-control cursor-pointer py-2 text-xs font-semibold text-ink-secondary ${focusRing}`}>
-                {t(locale, "deletionDetails")}
+                {t("deletionDetails")}
               </summary>
               <p className="pb-2 text-xs leading-5 text-ink-muted">{retention}</p>
             </details>
@@ -526,15 +505,14 @@ function DestructiveRow({
           onClick={() => selectMemoryOperation(operation)}
         >
           <ShieldAlert className="size-4" aria-hidden="true" />
-          {t(locale, "runAction")}
+          {t("runAction")}
         </button>
       </div>
     </li>
   );
 }
 
-function Confirmation({ locale, operation }: {
-  locale: MemoryUiLocale;
+function Confirmation({ operation }: {
   operation: MemoryOperationsAction;
 }) {
   const busy = useMemoryOperationsStore((state) => state.busy);
@@ -577,28 +555,28 @@ function Confirmation({ locale, operation }: {
             ref={headingRef}
             tabIndex={-1}
           >
-            {t(locale, "confirmationTitle")}
+            {t("confirmationTitle")}
           </h3>
           <p className="mt-2 text-xs font-semibold uppercase tracking-[0.08em] text-ink-muted">
-            {t(locale, "confirmationOperation")}
+            {t("confirmationOperation")}
           </p>
-          <p className="mt-1 text-sm font-semibold text-ink">{operationLabel(locale, operation)}</p>
-          <p className="mt-2 text-sm leading-6 text-ink-secondary">{confirmationText(locale, operation)}</p>
+          <p className="mt-1 text-sm font-semibold text-ink">{operationLabel(operation)}</p>
+          <p className="mt-2 text-sm leading-6 text-ink-secondary">{confirmationText(operation)}</p>
           {destructive ? (
             <details className="mt-3 border-y border-trace-subtle py-1">
               <summary className={`min-h-control cursor-pointer py-2 text-xs font-semibold text-ink-secondary ${focusRing}`}>
-                {t(locale, "deletionDetails")}
+                {t("deletionDetails")}
               </summary>
               <div className="space-y-2 pb-3 text-xs leading-5 text-ink-secondary">
-                <p>{t(locale, deletionCopy.fence)}</p>
-                <p>{t(locale, deletionCopy.retention)}</p>
-                <p>{t(locale, deletionCopy.future)}</p>
+                <p>{t(deletionCopy.fence)}</p>
+                <p>{t(deletionCopy.retention)}</p>
+                <p>{t(deletionCopy.future)}</p>
               </div>
             </details>
           ) : (
-            <p className="mt-3 text-xs leading-5 text-ink-muted">{t(locale, "servedGeneration")}</p>
+            <p className="mt-3 text-xs leading-5 text-ink-muted">{t("servedGeneration")}</p>
           )}
-          {error ? <p className="mt-3 text-sm text-critical" role="alert">{errorText(locale, error)}</p> : null}
+          {error ? <p className="mt-3 text-sm text-critical" role="alert">{errorText(error)}</p> : null}
           <div className="mt-4 flex flex-wrap gap-2">
             <button
               className={secondaryButton}
@@ -606,7 +584,7 @@ function Confirmation({ locale, operation }: {
               type="button"
               onClick={() => selectMemoryOperation(null)}
             >
-              {t(locale, "confirmationCancel")}
+              {t("confirmationCancel")}
             </button>
             <button
               className={destructive ? destructiveButton : primaryButton}
@@ -619,7 +597,7 @@ function Confirmation({ locale, operation }: {
                 : destructive
                   ? <Eraser className="size-4" aria-hidden="true" />
                   : <Check className="size-4" aria-hidden="true" />}
-              {busy === "admitting" ? t(locale, "admitting") : t(locale, "confirmationCommit")}
+              {busy === "admitting" ? t("admitting") : t("confirmationCommit")}
             </button>
           </div>
         </div>
@@ -630,11 +608,9 @@ function Confirmation({ locale, operation }: {
 
 export function MemoryOperations({
   data,
-  locale,
   onBack
 }: {
   data: MemorySettingsResponse;
-  locale: MemoryUiLocale;
   onBack(): void;
 }) {
   const confirmation = useMemoryOperationsStore((state) => state.confirmation);
@@ -705,7 +681,7 @@ export function MemoryOperations({
       <header className="border-b border-trace-subtle pb-4">
         <button className={`${quietButton} -ml-2`} onClick={back} type="button">
           <ArrowLeft className="size-4" aria-hidden="true" />
-          {t(locale, "back")}
+          {t("back")}
         </button>
         <div className="mt-2 flex items-start gap-3">
           <span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-control bg-control-selected text-proof">
@@ -713,107 +689,102 @@ export function MemoryOperations({
           </span>
           <div className="min-w-0">
             <h2 ref={headingRef} className="text-lg font-semibold text-ink" tabIndex={-1}>
-              {t(locale, "title")}
+              {t("title")}
             </h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">
-              {t(locale, "intro")}
+              {t("intro")}
             </p>
           </div>
         </div>
       </header>
 
-      {confirmation ? <Confirmation locale={locale} operation={confirmation} /> : null}
+      {confirmation ? <Confirmation operation={confirmation} /> : null}
 
       {(allStatus || clearStatus || learnedStatus || rebuildStatus ||
         allError || clearError || learnedError || rebuildError) ? (
         <div className="mt-6" aria-labelledby="memory-operation-status-heading">
           <h3 className="text-xs font-semibold uppercase tracking-[0.08em] text-ink-muted" id="memory-operation-status-heading">
-            {t(locale, "statusHeading")}
+            {t("statusHeading")}
           </h3>
           <div className="mt-2 space-y-4">
-            <RebuildStatus locale={locale} />
-            <DeletionStatus kind="all" locale={locale} />
-            <DeletionStatus kind="learned" locale={locale} />
-            <DeletionStatus kind="clear" locale={locale} />
-            <UnresolvedStatus kind="rebuild" locale={locale} />
-            <UnresolvedStatus kind="all" locale={locale} />
-            <UnresolvedStatus kind="learned" locale={locale} />
-            <UnresolvedStatus kind="clear" locale={locale} />
+            <RebuildStatus />
+            <DeletionStatus kind="all" />
+            <DeletionStatus kind="learned" />
+            <DeletionStatus kind="clear" />
+            <UnresolvedStatus kind="rebuild" />
+            <UnresolvedStatus kind="all" />
+            <UnresolvedStatus kind="learned" />
+            <UnresolvedStatus kind="clear" />
           </div>
         </div>
       ) : null}
 
       <section className="mt-7" aria-labelledby="memory-maintenance-heading">
         <h3 className="text-sm font-semibold text-ink" id="memory-maintenance-heading">
-          {t(locale, "maintenanceHeading")}
+          {t("maintenanceHeading")}
         </h3>
         <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted">
-          {t(locale, "maintenanceDescription")}
+          {t("maintenanceDescription")}
         </p>
         {!data.settings.embeddingDeployment ? (
           <div className="mt-3 flex items-start gap-2 border-l-2 border-caution bg-caution/10 px-3 py-2 text-xs leading-5 text-ink-secondary" role="status">
             <CircleAlert className="mt-0.5 size-4 shrink-0 text-caution" aria-hidden="true" />
-            <span>{t(locale, "lexicalOnly")}</span>
+            <span>{t("lexicalOnly")}</span>
           </div>
         ) : null}
         <ul className="mt-3 divide-y divide-trace-subtle border-y border-trace-subtle">
           <OperationRow
             data={data}
-            description={t(locale, "rebuildDescription")}
+            description={t("rebuildDescription")}
             icon={<RefreshCw className="size-4" aria-hidden="true" />}
-            label={t(locale, "rebuildLabel")}
-            locale={locale}
+            label={t("rebuildLabel")}
             operation="REBUILD_SEARCH_INDEX"
           />
           <OperationRow
             data={data}
-            description={t(locale, "reembedDescription")}
+            description={t("reembedDescription")}
             icon={<DatabaseZap className="size-4" aria-hidden="true" />}
-            label={t(locale, "reembedLabel")}
-            locale={locale}
+            label={t("reembedLabel")}
             operation="REEMBED"
           />
         </ul>
-        <p className="mt-3 text-xs leading-5 text-ink-muted">{t(locale, "servedGeneration")}</p>
+        <p className="mt-3 text-xs leading-5 text-ink-muted">{t("servedGeneration")}</p>
       </section>
 
       <section className="mt-7" aria-labelledby="memory-destructive-heading">
         <h3 className="text-sm font-semibold text-ink" id="memory-destructive-heading">
-          {t(locale, "destructiveHeading")}
+          {t("destructiveHeading")}
         </h3>
         <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-muted">
-          {t(locale, "destructiveDescription")}
+          {t("destructiveDescription")}
         </p>
         <ul className="mt-3 divide-y divide-critical/20 border-y border-critical/25">
           <DestructiveRow
             active={Boolean(allActive || learnedActive || clearActive)}
-            description={t(locale, "allDescription")}
-            heading={t(locale, "allHeading")}
+            description={t("allDescription")}
+            heading={t("allHeading")}
             icon={<Eraser className="size-4" aria-hidden="true" />}
-            label={t(locale, "allLabel")}
-            locale={locale}
+            label={t("allLabel")}
             operation="DELETE_ALL_REUSABLE"
-            retention={t(locale, "allRetention")}
+            retention={t("allRetention")}
           />
           <DestructiveRow
             active={Boolean(learnedActive || allActive)}
-            description={t(locale, "learnedDescription")}
-            heading={t(locale, "learnedHeading")}
+            description={t("learnedDescription")}
+            heading={t("learnedHeading")}
             icon={<Fingerprint className="size-4" aria-hidden="true" />}
-            label={t(locale, "learnedLabel")}
-            locale={locale}
+            label={t("learnedLabel")}
             operation="DELETE_LEARNED"
-            retention={t(locale, "learnedRetention")}
+            retention={t("learnedRetention")}
           />
           <DestructiveRow
             active={Boolean(clearActive || allActive)}
-            description={t(locale, "clearDescription")}
-            heading={t(locale, "clearHeading")}
+            description={t("clearDescription")}
+            heading={t("clearHeading")}
             icon={<DatabaseZap className="size-4" aria-hidden="true" />}
-            label={t(locale, "clearLabel")}
-            locale={locale}
+            label={t("clearLabel")}
             operation="CLEAR_HISTORY_INDEX"
-            retention={t(locale, "clearRetention")}
+            retention={t("clearRetention")}
           />
         </ul>
       </section>

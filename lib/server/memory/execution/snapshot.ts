@@ -1,4 +1,3 @@
-import type { MemoryQualificationRequirement } from "../../../evaluation/memory/qualification";
 import {
   normalizeProviderExecutionSnapshot,
   type ProviderExecutionSnapshot
@@ -6,7 +5,7 @@ import {
 import { canonicalMemoryExecutionJson } from "./canonical";
 import { memoryExecutionFailure } from "./errors";
 import type { ResolvedMemoryExecutionTarget } from "./policy";
-import type { MemoryExecutionCompatibilityRequirement } from "./qualification";
+import type { MemoryExecutionCompatibilityRequirement } from "./compatibility";
 import { isMemoryExecutionRole, type MemoryExecutionRole } from "./roles";
 
 const MAX_EXECUTION_SNAPSHOT_BYTES = 128 * 1024;
@@ -21,24 +20,15 @@ type SnapshotBase = Readonly<{
   logicalRole: MemoryExecutionRole;
   policyRevision: number | null;
   providerExecutionSnapshot: ProviderExecutionSnapshot;
-  qualificationId: string;
+  compatibilityId: string;
   requiresStrictStructuredOutput: boolean;
   utilityPolicyVersion: string;
 }>;
 
-export type LegacyMemoryExecutionSnapshot = SnapshotBase & Readonly<{
-  qualificationRequirement: MemoryQualificationRequirement;
-  version: 1;
-}>;
-
-export type CompatibleMemoryExecutionSnapshot = SnapshotBase & Readonly<{
-  qualificationRequirement: MemoryExecutionCompatibilityRequirement;
+export type MemorySecretFreeExecutionSnapshot = SnapshotBase & Readonly<{
+  compatibilityRequirement: MemoryExecutionCompatibilityRequirement;
   version: 2;
 }>;
-
-export type MemorySecretFreeExecutionSnapshot =
-  | LegacyMemoryExecutionSnapshot
-  | CompatibleMemoryExecutionSnapshot;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -83,22 +73,6 @@ function validCommonRequirement(
   ].every((entry) => typeof entry === "string" && safeToken.test(entry));
 }
 
-function validLegacyRequirement(
-  value: Record<string, unknown>,
-  logicalRole: MemoryExecutionRole
-): boolean {
-  return exactKeys(value, [
-    "configFingerprint", "corpusHash", "corpusVersion", "deploymentFingerprint",
-    "language", "modelFingerprint", "pipelineVersion", "policyVersion", "promptVersion",
-    "providerFingerprint", "retrievalConfigFingerprint", "role", "schemaVersion",
-    "scorerVersion", "suiteVersion", "vectorSpaceFingerprint"
-  ]) && validCommonRequirement(value, logicalRole) &&
-    (value.language === "RU" || value.language === "EN") &&
-    typeof value.corpusHash === "string" && sha256.test(value.corpusHash) &&
-    [value.corpusVersion, value.scorerVersion, value.suiteVersion]
-      .every((entry) => typeof entry === "string" && safeToken.test(entry));
-}
-
 function validCompatibilityRequirement(
   value: Record<string, unknown>,
   logicalRole: MemoryExecutionRole
@@ -112,24 +86,15 @@ function validCompatibilityRequirement(
     validCommonRequirement(value, logicalRole);
 }
 
-function isCompatibilityRequirement(
-  value: MemoryQualificationRequirement | MemoryExecutionCompatibilityRequirement
-): value is MemoryExecutionCompatibilityRequirement {
-  return "compatibilityVersion" in value;
-}
-
 export function createMemoryExecutionSnapshot(input: Readonly<{
   acceptedUtilityEgressFingerprint: string;
-  qualificationId: string;
-  qualificationRequirement:
-    | MemoryQualificationRequirement
-    | MemoryExecutionCompatibilityRequirement;
+  compatibilityId: string;
+  compatibilityRequirement: MemoryExecutionCompatibilityRequirement;
   requiresStrictStructuredOutput: boolean;
   role: MemoryExecutionRole;
   target: ResolvedMemoryExecutionTarget;
   utilityPolicyVersion: string;
 }>): MemorySecretFreeExecutionSnapshot {
-  const version = isCompatibilityRequirement(input.qualificationRequirement) ? 2 : 1;
   const snapshot = {
     acceptedUtilityEgressFingerprint: input.acceptedUtilityEgressFingerprint,
     credentialSource: input.target.credentialSource,
@@ -138,11 +103,11 @@ export function createMemoryExecutionSnapshot(input: Readonly<{
     logicalRole: input.role,
     policyRevision: input.target.policyRevision,
     providerExecutionSnapshot: input.target.snapshot,
-    qualificationId: input.qualificationId,
-    qualificationRequirement: input.qualificationRequirement,
+    compatibilityId: input.compatibilityId,
+    compatibilityRequirement: input.compatibilityRequirement,
     requiresStrictStructuredOutput: input.requiresStrictStructuredOutput,
     utilityPolicyVersion: input.utilityPolicyVersion,
-    version
+    version: 2 as const
   } as MemorySecretFreeExecutionSnapshot;
   if (!validSnapshotSize(snapshot)) {
     return memoryExecutionFailure("memory_execution_snapshot_invalid");
@@ -152,7 +117,7 @@ export function createMemoryExecutionSnapshot(input: Readonly<{
 
 export function parseMemoryExecutionSnapshot(value: unknown): MemorySecretFreeExecutionSnapshot {
   if (
-    !isRecord(value) || (value.version !== 1 && value.version !== 2) ||
+    !isRecord(value) || value.version !== 2 ||
     !validSnapshotSize(value) ||
     typeof value.acceptedUtilityEgressFingerprint !== "string" ||
     !sha256.test(value.acceptedUtilityEgressFingerprint) ||
@@ -166,18 +131,16 @@ export function parseMemoryExecutionSnapshot(value: unknown): MemorySecretFreeEx
     (value.policyRevision !== null &&
       (!Number.isSafeInteger(value.policyRevision) || Number(value.policyRevision) < 1)) ||
     typeof value.requiresStrictStructuredOutput !== "boolean" ||
-    typeof value.qualificationId !== "string" || !safeToken.test(value.qualificationId) ||
+    typeof value.compatibilityId !== "string" || !safeToken.test(value.compatibilityId) ||
     typeof value.utilityPolicyVersion !== "string" || !safeToken.test(value.utilityPolicyVersion) ||
-    !isRecord(value.qualificationRequirement) ||
-    (value.version === 1
-      ? !validLegacyRequirement(value.qualificationRequirement, value.logicalRole)
-      : !validCompatibilityRequirement(value.qualificationRequirement, value.logicalRole))
+    !isRecord(value.compatibilityRequirement) ||
+    !validCompatibilityRequirement(value.compatibilityRequirement, value.logicalRole)
   ) return memoryExecutionFailure("memory_execution_snapshot_invalid");
 
   let providerExecutionSnapshot: ProviderExecutionSnapshot;
   try {
     providerExecutionSnapshot = normalizeProviderExecutionSnapshot(value.providerExecutionSnapshot);
-    canonicalMemoryExecutionJson(value.qualificationRequirement);
+    canonicalMemoryExecutionJson(value.compatibilityRequirement);
   } catch {
     return memoryExecutionFailure("memory_execution_snapshot_invalid");
   }
@@ -189,21 +152,11 @@ export function parseMemoryExecutionSnapshot(value: unknown): MemorySecretFreeEx
     logicalRole: value.logicalRole,
     policyRevision: value.policyRevision as number | null,
     providerExecutionSnapshot,
-    qualificationId: value.qualificationId,
+    compatibilityId: value.compatibilityId,
+    compatibilityRequirement:
+      value.compatibilityRequirement as unknown as MemoryExecutionCompatibilityRequirement,
     requiresStrictStructuredOutput: value.requiresStrictStructuredOutput,
     utilityPolicyVersion: value.utilityPolicyVersion
   } as const;
-  return value.version === 1
-    ? Object.freeze({
-        ...base,
-        qualificationRequirement:
-          value.qualificationRequirement as unknown as MemoryQualificationRequirement,
-        version: 1 as const
-      })
-    : Object.freeze({
-        ...base,
-        qualificationRequirement:
-          value.qualificationRequirement as unknown as MemoryExecutionCompatibilityRequirement,
-        version: 2 as const
-      });
+  return Object.freeze({ ...base, version: 2 as const });
 }

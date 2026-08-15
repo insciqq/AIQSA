@@ -8,17 +8,14 @@ import type { ComposerAssistantSelection } from "@/components/app-shell/composer
 import type { KnowledgeBaseSummary } from "@/lib/contracts/knowledge";
 import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import type { ThemeId } from "@/components/app-shell/theme";
-import type { InspectorTabId } from "@/components/app-shell/inspectorContracts";
 import type {
   Catalog,
   CatalogModel,
   ChatSummary,
   ChatUsageStats,
   FolderSummary,
-  InspectorMode,
   ModelParameterControls,
   Notice,
-  PersistedRun,
   RunEventView,
   ThreadArtifactSummary,
   ThreadMessage
@@ -32,7 +29,7 @@ export const powerAppShellViewFeatureKeys = [
   "workspace",
   "thread",
   "composer",
-  "details",
+  "branches",
   "settings",
   "overlays"
 ] as const;
@@ -125,6 +122,7 @@ export type ShellThreadView = {
   currentRunId: string | null;
   editingMessageId: string | null;
   editingMessagePending: boolean;
+  events: RunEventView[];
   handleBranchFromMessage(messageId: string): void;
   handleCopyMessage(message: ThreadMessage): void;
   handleDeleteMessage(messageId: string): void;
@@ -138,12 +136,9 @@ export type ShellThreadView = {
    * is healthy. Presentation renders it as the honest connection-lost state.
    */
   interruptedRun: Readonly<{ assistantMessageId: string; runId: string | null }> | null;
-  loadRunReceipt(runId: string): Promise<PersistedRun | null>;
   loadEarlierMessages(): Promise<void> | void;
   loadingOlderMessages: boolean;
   jumpToLatest(): void;
-  lastRun: PersistedRun | null;
-  persistedRunsById: Readonly<Record<string, PersistedRun>>;
   liveArtifactSummary: ThreadArtifactSummary | null;
   olderMessagesError: string | null;
   openMemorySourceChat(chatId: string): void;
@@ -216,7 +211,6 @@ export type ShellComposerView = {
     explanation: string;
     externalRetention: string;
     label: string;
-    locale: "RU" | "EN";
     mode: "NORMAL" | "TEMPORARY";
     retention: string;
     retentionDeadline: string | null;
@@ -237,7 +231,6 @@ export type ShellComposerView = {
   selectedSearchOptionIds: string[];
   showCitations: boolean;
   showReasoningBlocks: boolean;
-  showToolActivity: boolean;
   stopCurrentRun(): Promise<void> | void;
   streamMode: boolean;
   submitComposer(): Promise<void> | void;
@@ -245,24 +238,21 @@ export type ShellComposerView = {
   toggleCitationsVisibility(): void;
   toggleNotificationSound(): void;
   toggleReasoningBlockVisibility(): void;
-  toggleToolActivityVisibility(): void;
   useOrganizationSearchDefault(): void;
   useOrganizationModelDefault?(): void;
   uploadFiles(files: FileList | readonly File[]): Promise<void> | void;
   uploading: boolean;
 };
 
-export type ShellDetailsView = {
-  activeTab: InspectorTabId;
-  branchError: string | null;
-  branchLoading: boolean;
-  branchGraph: ChatBranchGraphWire | null;
-  changeMode(mode: InspectorMode): void;
+export type ShellBranchesView = {
+  close(): void;
   checkoutBranch(messageId: string): void;
-  events: RunEventView[];
-  mode: InspectorMode;
-  open(tab?: InspectorTabId): void;
-  retryBranches(): void;
+  error: string | null;
+  graph: ChatBranchGraphWire | null;
+  loading: boolean;
+  open: boolean;
+  retry(): void;
+  show(): void;
 };
 
 export type ShellSettingsView = {
@@ -315,8 +305,8 @@ export type ShellOverlaysView = {
 };
 
 export type PowerAppShellV2Props = {
+  branches: ShellBranchesView;
   composer: ShellComposerView;
-  details: ShellDetailsView;
   overlays: ShellOverlaysView;
   session: ShellSessionView;
   settings: ShellSettingsView;

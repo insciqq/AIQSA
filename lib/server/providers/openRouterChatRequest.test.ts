@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { perplexityWebSearchTool } from "../tools/perplexitySearch";
+import { currentSearchToolFixture } from "../tools/testFixtures";
 import { validateSearchToolArguments } from "../search/query";
 import type {
   ProviderRunRequest,
@@ -21,6 +21,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     content: {
       blocks: [{ text: "Find one concise fact.", type: "text" }]
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: false,
       nativeSearch: false,
@@ -52,7 +54,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       system: "You are precise."
     },
     provider: "openrouter",
-    searchStrategy: "perplexity-tool-search",
+    searchPlan: { mode: "all_selected", options: [] },
     ...overrides
   };
 }
@@ -111,7 +113,7 @@ describe("OpenRouter request builders", () => {
   it("serializes required tool choice", () => {
     expect(buildOpenRouterChatRequest(request({
       toolChoice: "required",
-      tools: [perplexityWebSearchTool]
+      tools: [currentSearchToolFixture]
     })).tool_choice).toBe("required");
   });
 
@@ -135,7 +137,7 @@ describe("OpenRouter request builders", () => {
       ],
       metadata: {
         app: "aiqsa",
-        search_strategy: "perplexity-tool-search",
+        search_strategy: "search-disabled",
         stage: "answer"
       },
       model: "anthropic/claude-opus-4.8",
@@ -189,7 +191,7 @@ describe("OpenRouter request builders", () => {
               {
                 function: {
                   arguments: "{\"keyword\":\"current fact\"}",
-                  name: "search_via_perplexity"
+                  name: "search_engine_1"
                 },
                 id: "call-1",
                 type: "function"
@@ -198,14 +200,14 @@ describe("OpenRouter request builders", () => {
           },
           {
             content: "Search findings",
-            name: "search_via_perplexity",
+            name: "search_engine_1",
             role: "tool",
             tool_call_id: "call-1"
           }
         ],
         parallelToolCalls: true,
         toolChoice: "none",
-        tools: [perplexityWebSearchTool]
+        tools: [currentSearchToolFixture]
       })
     );
 
@@ -225,7 +227,7 @@ describe("OpenRouter request builders", () => {
           {
             function: {
               arguments: "{\"keyword\":\"current fact\"}",
-              name: "search_via_perplexity"
+              name: "search_engine_1"
             },
             id: "call-1",
             type: "function"
@@ -234,7 +236,7 @@ describe("OpenRouter request builders", () => {
       },
       {
         content: "Search findings",
-        name: "search_via_perplexity",
+        name: "search_engine_1",
         role: "tool",
         tool_call_id: "call-1"
       }
@@ -246,8 +248,8 @@ describe("OpenRouter request builders", () => {
       tools: [
         {
           function: {
-            name: "search_via_perplexity",
-            parameters: perplexityWebSearchTool.inputSchema
+            name: "search_engine_1",
+            parameters: currentSearchToolFixture.inputSchema
           },
           type: "function"
         }
@@ -267,7 +269,7 @@ describe("OpenRouter request builders", () => {
             {
               function: {
                 arguments: "{\"secret\":\"OPENROUTER_ARGUMENT_CANARY\"}",
-                name: "search_via_perplexity",
+                name: "search_engine_1",
                 opaque_function_field: "OPENROUTER_FUNCTION_FIELD_CANARY"
               },
               id: "call-1",
@@ -278,7 +280,7 @@ describe("OpenRouter request builders", () => {
         },
         {
           content: "OPENROUTER_TOOL_OUTPUT_CANARY",
-          name: "search_via_perplexity",
+          name: "search_engine_1",
           opaque_tool_field: "OPENROUTER_TOOL_FIELD_CANARY",
           role: "tool",
           tool_call_id: "call-1"
@@ -307,7 +309,7 @@ describe("OpenRouter request builders", () => {
         role: "assistant",
         tool_calls: [
           {
-            function: { name: "search_via_perplexity" },
+            function: { name: "search_engine_1" },
             id: "call-1",
             type: "function"
           }
@@ -370,7 +372,7 @@ describe("OpenRouter request builders", () => {
     expect(gemini).not.toHaveProperty("verbosity");
   });
 
-  it("preserves legacy asymmetric redaction and makes previews unconditionally safe", () => {
+  it("keeps transport attachments complete and previews unconditionally safe", () => {
     const base = request();
     const runRequest = request({
       attachmentIds: ["PDF_ID_CANARY", "IMAGE_ID_CANARY", "DOCUMENT_ID_CANARY"],
@@ -414,12 +416,8 @@ describe("OpenRouter request builders", () => {
       }
     });
     const actual = JSON.stringify(buildOpenRouterChatRequest(runRequest, { maxAttachmentTextChars: 5 }));
-    const filesRedacted = JSON.stringify(buildOpenRouterChatRequest(runRequest, { redactFiles: true }));
-    const imagesRedacted = JSON.stringify(buildOpenRouterChatRequest(runRequest, { redactImages: true }));
     const preview = buildOpenRouterChatRequestPreview(runRequest, {
-      maxAttachmentTextChars: 5,
-      redactFiles: false,
-      redactImages: false
+      maxAttachmentTextChars: 5
     });
     const previewJson = JSON.stringify(preview);
 
@@ -427,10 +425,6 @@ describe("OpenRouter request builders", () => {
     expect(actual).toContain("PRIVATE_IMAGE_BYTES");
     expect(actual).toContain("DOCUM\\n[truncated 15 chars]");
     expect(actual).not.toContain("PDF fallback must not be sent");
-    expect(filesRedacted).not.toContain("PRIVATE_PDF_BYTES");
-    expect(filesRedacted).toContain("PRIVATE_IMAGE_BYTES");
-    expect(imagesRedacted).toContain("PRIVATE_PDF_BYTES");
-    expect(imagesRedacted).not.toContain("PRIVATE_IMAGE_BYTES");
     expect(previewJson).not.toContain("PRIVATE_PDF_BYTES");
     expect(previewJson).not.toContain("PRIVATE_IMAGE_BYTES");
     for (const canary of [

@@ -7,15 +7,8 @@ import {
   type PrismaClient
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
-import {
-  groundedLiveOnlyMessageContent,
-  groundedLiveOnlyProviderPreview
-} from "../../domain/grounding";
-import {
-  isGroundingDisplaySseEvent,
-  textFromContentBlocks,
-  type ModelRunSseEvent
-} from "../../domain/modelRunEvents";
+import { groundedLiveOnlyMessageContent } from "../../domain/grounding";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import {
   loadChatBranchSnapshotStats,
@@ -54,15 +47,6 @@ import {
   type RunAttachmentRecord,
   type RunRepository
 } from "./runRepositoryContract";
-import { decodeMemoryActionPlan } from "../memory/actions/intent";
-import {
-  MemoryRunActionAuthorizationError,
-  authorizeRunMemoryAction
-} from "../memory/actions/runAuthorization";
-import {
-  ExplicitRunMemoryManagementError,
-  retrieveExplicitRunMemory
-} from "../memory/retrieval/explicitRun";
 import {
   createPrismaMemoryRunRetrievalService,
   type MemoryRunRetrievalService
@@ -87,11 +71,7 @@ import {
   type AssistantAvatarRecipe
 } from "../../contracts/assistants";
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
-import { decodeKnowledgeRunProjection } from "../../contracts/runs";
-import { projectKnowledgeInspectionEvents } from "./knowledgeInspectionEvents";
-import { projectModelRunInspection } from "./inspectionProjection";
-import { projectMemoryInspectionEvents } from "./memoryInspectionEvents";
-import { loadMemoryRunEvidence } from "../memory/receipts/projection";
+import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import {
   applyMemorySourceMutations,
   lockMemorySourceChat,
@@ -116,7 +96,6 @@ import {
   sameKnowledgeRunAdmissionPlan,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
-import { persistedToolCallActivity } from "./toolInspection";
 import {
   isToolLoopJsonValue,
   parseToolLoopCheckpoint,
@@ -140,7 +119,6 @@ import {
   decodeMemoryPreparingSettingsSnapshot,
   dormantMemoryAttemptResult,
   memoryPreparingHash,
-  memoryPreparingHasAuthoritativeEmptyList,
   memoryPreparingSettingsSnapshot,
   memoryPreparingTextHash,
   sameMemoryPreparingSettings,
@@ -154,9 +132,37 @@ import {
   samePreparingMemoryItemSnapshot,
   type ResolvedPreparingMemoryItem
 } from "./preparingMemoryItems";
+import {
+  isRunOutputArtifactEvent,
+  type RunOutputArtifactEvent
+} from "./runOutputEvents";
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
+}
+
+async function appendRunOutputEvents(
+  tx: Prisma.TransactionClient,
+  runId: string,
+  events: readonly RunOutputArtifactEvent[]
+): Promise<void> {
+  if (events.length === 0) return;
+  if (events.some((event) => !isRunOutputArtifactEvent(event))) {
+    throw new Error("run_output_event_invalid");
+  }
+  const latest = await tx.modelRunEvent.aggregate({
+    _max: { sequence: true },
+    where: { modelRunId: runId }
+  });
+  const firstSequence = (latest._max.sequence ?? -1) + 1;
+  await tx.modelRunEvent.createMany({
+    data: events.map((event, offset) => ({
+      eventType: event.type,
+      modelRunId: runId,
+      payload: json(event.data),
+      sequence: firstSequence + offset
+    }))
+  });
 }
 
 function unique(values: string[]): string[] {
@@ -253,25 +259,6 @@ function sameCheckpoint(left: ToolLoopCheckpoint, right: ToolLoopCheckpoint): bo
     canonicalJson(right as unknown as ToolLoopJsonValue);
 }
 
-function numberValue(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
-}
-
-function defaultMaxOutputTokens(defaultParams: unknown): number | undefined {
-  if (!isRecord(defaultParams)) {
-    return undefined;
-  }
-
-  return (
-    numberValue(defaultParams.maxOutputTokens) ??
-    numberValue(defaultParams.maxTokens) ??
-    numberValue(defaultParams.max_output_tokens) ??
-    numberValue(defaultParams.max_tokens) ??
-    numberValue(defaultParams.max_completion_tokens) ??
-    undefined
-  );
-}
-
 function modelControlKey(input: { modelId: string; provider: string }): string {
   return `${input.provider}:${input.modelId}`;
 }
@@ -316,7 +303,6 @@ async function persistAcceptedRunDefaults(
     defaults,
     "searchPreferencePlan"
   );
-  const preferredSearchStrategyId = defaults.searchPreferencePlan?.optionIds[0] ?? "search-disabled";
   const result = await applySettingsUpdateInTransaction(
     tx,
     userId,
@@ -326,10 +312,7 @@ async function persistAcceptedRunDefaults(
       },
       ...(updatesSearchPreference
         ? {
-            defaultSearchPlan: defaults.searchPreferencePlan ?? null,
-            ...(defaults.searchPreferencePlan
-              ? { defaultSearchStrategyId: preferredSearchStrategyId }
-              : {})
+            defaultSearchPlan: defaults.searchPreferencePlan ?? null
           }
         : {})
     },
@@ -662,16 +645,13 @@ async function insertAcceptedProviderRunBindings(
       ...(input.plan.requiresClientToolCoexistence
         ? { requiresClientToolCoexistence: true }
         : {}),
-      ...(input.plan.requestedSearchPlan
-        ? { searchPlan: input.plan.requestedSearchPlan }
-        : {}),
+      searchPlan: input.plan.requestedSearchPlan,
       ...(input.plan.requestedSearchPreferenceSource
         ? {
             searchPreferencePlan: input.plan.requestedSearchPreferencePlan,
             searchPreferenceSource: input.plan.requestedSearchPreferenceSource
           }
         : {}),
-      searchStrategyId: input.plan.requestedSearchStrategyId,
       userId: input.userId
     });
   } catch (error) {
@@ -690,7 +670,7 @@ async function insertAcceptedProviderRunBindings(
     value: ProviderAdmissionRole;
   }> = [
     { bindingKey: "answer", role: "answer", value: current.answer },
-    ...(current.searches ?? []).flatMap((search) =>
+    ...current.searches.flatMap((search) =>
       search.role && search.bindingKey
         ? [{ bindingKey: search.bindingKey, role: "search" as const, value: search.role }]
         : [])
@@ -711,10 +691,10 @@ async function insertAcceptedProviderRunBindings(
       role
     }))
   });
-  if ((current.searches?.length ?? 0) > 0) {
+  if (current.searches.length > 0) {
     await tx.searchRunBinding.createMany({
-      data: current.searches!.map((search) => ({
-        mode: current.requestedSearchPlan?.mode ?? "all_selected",
+      data: current.searches.map((search) => ({
+        mode: current.requestedSearchPlan.mode,
         modelRunId: input.runId,
         optionId: search.optionId,
         ordinal: search.ordinal,
@@ -937,8 +917,6 @@ const TEMPORARY_PREPARING_SETTINGS: PreparingSettingsRow = Object.freeze({
   memoryConsentRevision: 0,
   memoryGeneration: 0,
   memoryRevision: 0,
-  memoryUiLocale: "RU",
-  preferredProfileLanguage: "AUTO",
   referenceChatHistory: false,
   schemaVersion: 1,
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
@@ -956,7 +934,6 @@ type LockedPreparingRun = Readonly<{
   modelId: string;
   normalizedRequest: Prisma.JsonValue | null;
   provider: string;
-  providerRequestPreview: Prisma.JsonValue | null;
   status: ModelRunStatus;
   userId: string;
   userMessageId: string;
@@ -980,8 +957,6 @@ async function loadPreparingSettings(
       memoryConsentRevision: true,
       memoryGeneration: true,
       memoryRevision: true,
-      memoryUiLocale: true,
-      preferredProfileLanguage: true,
       referenceChatHistory: true,
       sensitiveAutomaticPolicy: true,
       settingsRevision: true,
@@ -1007,7 +982,7 @@ async function lockPreparingRun(
   const [run] = await tx.$queryRaw<LockedPreparingRun[]>(Prisma.sql`
     SELECT
       "assistantId", "assistantMessageId", "assistantRevisionId", "chatId", "id",
-      "modelId", "normalizedRequest", "provider", "providerRequestPreview",
+      "modelId", "normalizedRequest", "provider",
       "status", "userId", "userMessageId"
     FROM "ModelRun"
     WHERE "id" = ${runId} AND "userId" = ${userId}
@@ -1054,31 +1029,10 @@ async function lockPreparingAttempt(
   return attempt ?? null;
 }
 
-function baseRequestUsesNonToolMemoryList(
-  baseSnapshot: NonNullable<ReturnType<typeof decodeMemoryPreparingBaseSnapshot>>
-): boolean {
-  const request = baseSnapshot.normalizedRequest;
-  const plan = decodeMemoryActionPlan(request.memoryActionPlan);
-  return plan?.kind === "LIST" && !(
-    request.toolMode !== "none" && request.modelCapabilities.toolCalling === true
-  );
-}
-
-function preparingAttemptIsAuthoritativeEmptyList(
-  attempt: Pick<LockedPreparingAttempt, "budgetSnapshot" | "outcome">,
-  baseSnapshot: NonNullable<ReturnType<typeof decodeMemoryPreparingBaseSnapshot>>
-): boolean {
-  return attempt.outcome === "EMPTY" &&
-    memoryPreparingHasAuthoritativeEmptyList(attempt.budgetSnapshot) &&
-    baseRequestUsesNonToolMemoryList(baseSnapshot);
-}
-
 function preparingAttemptCarriesProviderContext(
-  attempt: Pick<LockedPreparingAttempt, "budgetSnapshot" | "outcome">,
-  baseSnapshot: NonNullable<ReturnType<typeof decodeMemoryPreparingBaseSnapshot>>
+  attempt: Pick<LockedPreparingAttempt, "outcome">
 ): boolean {
-  return attempt.outcome === "USED" || attempt.outcome === "DEGRADED" ||
-    preparingAttemptIsAuthoritativeEmptyList(attempt, baseSnapshot);
+  return attempt.outcome === "USED" || attempt.outcome === "DEGRADED";
 }
 
 async function createPreparingAttempt(
@@ -1395,7 +1349,7 @@ async function admitPreparingRunWithClient(
         const userLeafWithoutAssistant = input.preSendAssistantMessageId === null;
         const preSendSourceMessageId = userLeafWithoutAssistant
           ? input.userMessageId
-          : input.preSendAssistantMessageId ?? lockedChat.activeLeafMessageId;
+          : input.preSendAssistantMessageId;
         if (!preSendSourceMessageId ||
           lockedChat.activeLeafMessageId !== preSendSourceMessageId) {
           throw new ActiveLeafConflictError();
@@ -1784,14 +1738,6 @@ async function completePreparingRunAttemptWithClient(
       attempt.expiresAt <= now) {
       return false;
     }
-    if (memoryPreparingHasAuthoritativeEmptyList(input.result.budgetSnapshot)) {
-      const baseSnapshot = decodeMemoryPreparingBaseSnapshot(
-        attempt.boundedPrivateBaseRequestSnapshot
-      );
-      if (!baseSnapshot || !baseRequestUsesNonToolMemoryList(baseSnapshot)) {
-        throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
-      }
-    }
     const executionEvidence = await loadPreparingAttemptExecutionEvidence(tx, attempt);
     assertAttemptUtilityDeclaration(input.result.budgetSnapshot, executionEvidence);
     if ((input.result.items?.length ?? 0) > 0) {
@@ -1813,7 +1759,6 @@ async function completePreparingRunAttemptWithClient(
     if (authoritativeItems.length > 0) {
       await tx.memoryRetrievalAttemptItem.createMany({
         data: authoritativeItems.map((item, ordinal) => ({
-          episodeId: item.episodeId,
           exactItemId: item.exactItemId,
           exactSafeText: item.exactSafeText,
           factVersionId: item.factVersionId,
@@ -1881,16 +1826,13 @@ async function assertCurrentProviderAdmission(
       ...(input.plan.requiresClientToolCoexistence
         ? { requiresClientToolCoexistence: true }
         : {}),
-      ...(input.plan.requestedSearchPlan
-        ? { searchPlan: input.plan.requestedSearchPlan }
-        : {}),
+      searchPlan: input.plan.requestedSearchPlan,
       ...(input.plan.requestedSearchPreferenceSource
         ? {
             searchPreferencePlan: input.plan.requestedSearchPreferencePlan,
             searchPreferenceSource: input.plan.requestedSearchPreferenceSource
           }
         : {}),
-      searchStrategyId: input.plan.requestedSearchStrategyId,
       userId: input.userId
     });
   } catch (error) {
@@ -2019,7 +1961,6 @@ async function loadAndValidatePreparingAttemptItems(
 ): Promise<PreparingAttemptItemRow[]> {
   const items = await tx.memoryRetrievalAttemptItem.findMany({
     select: {
-      episodeId: true,
       exactItemId: true,
       exactSafeText: true,
       factVersionId: true,
@@ -2077,24 +2018,14 @@ async function loadAndValidatePreparingAttemptItems(
     if (
       item.itemType === "FACT_VERSION" &&
       item.factVersionId !== null &&
-      item.episodeId === null &&
       item.recallChunkId === null &&
       item.exactItemId === item.factVersionId
     ) {
       candidate = { ...common, factVersionId: item.factVersionId, itemType: "FACT_VERSION" };
     } else if (
-      item.itemType === "EPISODE" &&
-      item.episodeId !== null &&
-      item.factVersionId === null &&
-      item.recallChunkId === null &&
-      item.exactItemId === item.episodeId
-    ) {
-      candidate = { ...common, episodeId: item.episodeId, itemType: "EPISODE" };
-    } else if (
       item.itemType === "RECALL_CHUNK" &&
       item.recallChunkId !== null &&
       item.factVersionId === null &&
-      item.episodeId === null &&
       item.exactItemId === item.recallChunkId
     ) {
       candidate = { ...common, itemType: "RECALL_CHUNK", recallChunkId: item.recallChunkId };
@@ -2112,7 +2043,6 @@ async function loadAndValidatePreparingAttemptItems(
       !samePreparingMemoryItemSnapshot(item, resolved) ||
       item.exactItemId !== resolved.exactItemId ||
       item.factVersionId !== resolved.factVersionId ||
-      item.episodeId !== resolved.episodeId ||
       item.recallChunkId !== resolved.recallChunkId ||
       item.sourceChatIdSnapshot !== resolved.sourceChatIdSnapshot ||
       item.sourceBranchGenerationSnapshot !== resolved.sourceBranchGenerationSnapshot ||
@@ -2124,85 +2054,6 @@ async function loadAndValidatePreparingAttemptItems(
     validatedItems.push({ ...resolved, ordinal: item.ordinal });
   }
   return validatedItems;
-}
-
-async function assertCurrentMemoryActionAuthorization(
-  tx: Prisma.TransactionClient,
-  input: Readonly<{
-    attempt: LockedPreparingAttempt;
-    baseRequest: NonNullable<ReturnType<typeof decodeMemoryPreparingBaseSnapshot>>;
-    now: Date;
-    runId: string;
-    userId: string;
-  }>
-): Promise<void> {
-  const value = input.baseRequest.normalizedRequest.memoryActionPlan;
-  if (value === undefined) return;
-  const plan = decodeMemoryActionPlan(value);
-  if (!plan) {
-    throw new MemoryPreparingRunConflictError("memory_action_plan_invalid", false);
-  }
-  if (plan.kind === "LIST") return;
-  const action = plan.kind === "SAVE" ? "SAVE" : plan.kind === "UPDATE" ? "EDIT" : "FORGET";
-  const authorizations = await tx.memoryMutationAuthorization.findMany({
-    select: {
-      consumedAt: true,
-      exactSourceEnd: true,
-      exactSourceStart: true,
-      expectedTargetVersionId: true,
-      expiresAt: true,
-      persistedToolCallId: true,
-      sourceChatId: true,
-      sourceMessageId: true,
-      targetFactId: true
-    },
-    take: 2,
-    where: {
-      action,
-      modelRunId: input.runId,
-      userId: input.userId
-    }
-  });
-  const authorization = authorizations[0];
-  const sourceText = textFromContentBlocks(input.baseRequest.normalizedRequest.content);
-  const expectedSpan = plan.kind === "SAVE" ? plan.statement : plan.targetQuery;
-  const span = authorization?.exactSourceStart !== null &&
-    authorization?.exactSourceStart !== undefined &&
-    authorization.exactSourceEnd !== null
-    ? sourceText.slice(authorization.exactSourceStart, authorization.exactSourceEnd)
-    : null;
-  if (
-    authorizations.length !== 1 ||
-    !authorization ||
-    authorization.consumedAt !== null ||
-    authorization.expiresAt <= input.now ||
-    authorization.persistedToolCallId !== null ||
-    authorization.sourceChatId !== input.attempt.chatId ||
-    authorization.sourceMessageId !== input.attempt.admittedUserMessageId ||
-    authorization.exactSourceStart !== plan.sourceStart ||
-    authorization.exactSourceEnd !== plan.sourceEnd ||
-    span !== expectedSpan
-  ) {
-    throw new MemoryPreparingRunConflictError(
-      "memory_intent_confirmation_required",
-      false
-    );
-  }
-  if (action === "SAVE") {
-    if (authorization.targetFactId !== null ||
-      authorization.expectedTargetVersionId !== null) {
-      throw new MemoryPreparingRunConflictError("memory_action_authorization_invalid", false);
-    }
-    return;
-  }
-  const target = await tx.memoryFact.findFirst({
-    select: { currentVersionId: true, state: true },
-    where: { id: authorization.targetFactId ?? "", userId: input.userId }
-  });
-  if (!target || target.state !== "ACTIVE" ||
-    target.currentVersionId !== authorization.expectedTargetVersionId) {
-    throw new MemoryPreparingRunConflictError("memory_version_stale", false);
-  }
 }
 
 function validateFinalPreparingRequest(
@@ -2221,10 +2072,7 @@ function validateFinalPreparingRequest(
   ) {
     throw new MemoryPreparingRunConflictError("memory_final_request_invalid", false);
   }
-  const contextBearingOutcome = preparingAttemptCarriesProviderContext(
-    attempt,
-    baseSnapshot
-  );
+  const contextBearingOutcome = preparingAttemptCarriesProviderContext(attempt);
   if (!contextBearingOutcome) {
     if (
       input.normalizedRequest.personalContext !== undefined ||
@@ -2410,14 +2258,6 @@ async function finalizePreparingRunWithClient(
       }
     }
 
-    await assertCurrentMemoryActionAuthorization(tx, {
-      attempt,
-      baseRequest: baseSnapshot,
-      now,
-      runId: run.id,
-      userId: input.userId
-    });
-
     if (input.assistant) {
       await assertAssistantRunProvenance(tx, {
         assistantId: input.assistant.assistantId,
@@ -2459,24 +2299,15 @@ async function finalizePreparingRunWithClient(
       attemptId: attempt.id,
       userId: input.userId
     });
-    const authoritativeEmptyList = preparingAttemptIsAuthoritativeEmptyList(
-      attempt,
-      baseSnapshot
-    );
-    if (memoryPreparingHasAuthoritativeEmptyList(attempt.budgetSnapshot) &&
-      !authoritativeEmptyList) {
-      throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
-    }
     const visibleOutcome = attempt.outcome === "USED" || attempt.outcome === "DEGRADED";
-    const contextBearingOutcome = visibleOutcome || authoritativeEmptyList;
-    const usedContextIsValid = contextBearingOutcome &&
-      (visibleOutcome ? items.length > 0 : items.length === 0) &&
+    const usedContextIsValid = visibleOutcome &&
+      items.length > 0 &&
       attempt.preparedContextText !== null &&
       attempt.preparedContextHash === memoryPreparingTextHash(attempt.preparedContextText) &&
       attempt.preparedContextTokenCount !== null &&
       Number.isSafeInteger(attempt.preparedContextTokenCount) &&
       attempt.preparedContextTokenCount >= 0;
-    const emptyContextIsValid = !contextBearingOutcome &&
+    const emptyContextIsValid = !visibleOutcome &&
       items.length === 0 &&
       attempt.preparedContextText === null &&
       attempt.preparedContextHash === null &&
@@ -2507,7 +2338,7 @@ async function finalizePreparingRunWithClient(
           memoryPreparingSettingsSnapshot(TEMPORARY_PREPARING_SETTINGS),
           { requireUtilityEgressMatch: false }
         ) ||
-        baseSnapshot.normalizedRequest.memoryActionPlan !== undefined ||
+        baseSnapshot.normalizedRequest.memoryActionTools !== undefined ||
         input.normalizedRequest.personalContext !== undefined ||
         attempt.utilityEgressMode !== "LOCAL_ONLY" ||
         attempt.acceptedUtilityEgressFingerprint !== null ||
@@ -2547,7 +2378,6 @@ async function finalizePreparingRunWithClient(
       await tx.modelRun.update({
         data: {
           normalizedRequest: json(input.normalizedRequest),
-          providerRequestPreview: json(input.providerRequestPreview),
           status: "streaming"
         },
         where: { id: run.id }
@@ -2559,9 +2389,7 @@ async function finalizePreparingRunWithClient(
       throw new MemoryPreparingRunConflictError("memory_owner_unavailable", false);
     }
     const currentSnapshot = memoryPreparingSettingsSnapshot(currentSettings);
-    const exactRevisionRequired =
-      decodeMemoryActionPlan(baseSnapshot.normalizedRequest.memoryActionPlan)?.kind === "LIST" ||
-      (attempt.outcome === "EMPTY" && items.length === 0);
+    const exactRevisionRequired = attempt.outcome === "EMPTY" && items.length === 0;
     if (
       currentSettings.memoryGeneration !== attempt.memoryGenerationSnapshot ||
       currentSettings.activeIndexGenerationId !== attempt.indexGenerationIdSnapshot ||
@@ -2569,7 +2397,7 @@ async function finalizePreparingRunWithClient(
         requireUtilityEgressMatch: attempt.utilityEgressMode === "CONSENTED_EXTERNAL"
       }) ||
       currentSettings.memoryRevision < attempt.retrievalRevisionSnapshot ||
-      ((exactRevisionRequired || authoritativeEmptyList) &&
+      (exactRevisionRequired &&
         currentSettings.memoryRevision !== attempt.retrievalRevisionSnapshot)
     ) {
       throw new MemoryPreparingRunConflictError("memory_admission_settings_changed", true);
@@ -2609,7 +2437,6 @@ async function finalizePreparingRunWithClient(
       await tx.modelRunMemoryItem.createMany({
         data: items.map((item) => ({
           bindingId: binding.id,
-          episodeId: item.episodeId,
           exactItemId: item.exactItemId,
           factVersionId: item.factVersionId,
           featureSnapshot: json(item.featureSnapshot),
@@ -2642,7 +2469,6 @@ async function finalizePreparingRunWithClient(
     await tx.modelRun.update({
       data: {
         normalizedRequest: json(input.normalizedRequest),
-        providerRequestPreview: json(input.providerRequestPreview),
         status: "streaming"
       },
       where: { id: run.id }
@@ -2909,7 +2735,6 @@ async function settlePreparingRunInTransaction(
     attempt.boundedPrivateBaseRequestSnapshot
   );
   const normalizedRequest = baseSnapshot?.normalizedRequest ?? {};
-  const providerRequestPreview = baseSnapshot?.providerRequestPreview ?? {};
   const now = input.now ?? new Date();
   const errorCode = /^[a-z][a-z0-9_]{0,63}$/u.test(input.errorCode)
     ? input.errorCode
@@ -2933,7 +2758,6 @@ async function settlePreparingRunInTransaction(
     data: {
       errorPayload: json({ code: errorCode, message: input.message }),
       normalizedRequest: json(normalizedRequest),
-      providerRequestPreview: json(providerRequestPreview),
       status: cancelled ? "cancelled" : "error"
     },
     where: { id: run.id }
@@ -3028,29 +2852,12 @@ async function createDormantPreparingRun(
     settingsSnapshot: created.settingsSnapshot
   };
   try {
-    const actionPlanValue = admission.normalizedRequest.memoryActionPlan;
-    const actionPlan = actionPlanValue === undefined
-      ? undefined
-      : decodeMemoryActionPlan(actionPlanValue);
-    if (actionPlanValue !== undefined && !actionPlan) {
-      throw new MemoryPreparingRunConflictError("memory_action_plan_invalid", false);
-    }
-    if (created.chatMemoryMode === "TEMPORARY" && actionPlan) {
+    if (created.chatMemoryMode === "TEMPORARY" &&
+      admission.normalizedRequest.memoryActionTools !== undefined) {
       throw new MemoryPreparingRunConflictError(
         "memory_temporary_chat_forbidden",
         false
       );
-    }
-    if (actionPlan) {
-      await authorizeRunMemoryAction(prismaClient, {
-        admissionKind: admission.admissionKind,
-        chatId: admission.chatId,
-        modelRunId: created.runId,
-        normalizedRequest: admission.normalizedRequest,
-        plan: actionPlan,
-        sourceMessageId: created.userMessageId,
-        userId: admission.userId
-      });
     }
 
     for (let attemptOrdinal = 0; attemptOrdinal < 2; attemptOrdinal += 1) {
@@ -3067,16 +2874,7 @@ async function createDormantPreparingRun(
         let attemptResult = created.chatMemoryMode === "TEMPORARY"
           ? dormantMemoryAttemptResult(currentSettings.settingsSnapshot)
           : admission.memoryMaterializer
-          ? actionPlan
-            ? await retrieveExplicitRunMemory(prismaClient, {
-                actionPlan,
-                ...(admission.assistant
-                  ? { assistantId: admission.assistant.assistantId }
-                  : {}),
-                settings: currentSettings.settingsSnapshot,
-                userId: admission.userId
-              })
-            : await memoryRetrieval.retrieve({
+          ? await memoryRetrieval.retrieve({
                 attemptId: currentAttemptId,
                 chatId: admission.chatId,
                 expected: {
@@ -3106,9 +2904,6 @@ async function createDormantPreparingRun(
             text: attemptResult.preparedContext.text
           }) ?? undefined;
           if (!materializedRequest) {
-            if (actionPlan) {
-              throw new ExplicitRunMemoryManagementError("memory_action_failed");
-            }
             attemptResult = {
               budgetSnapshot: {
                 ...attemptResult.budgetSnapshot,
@@ -3139,9 +2934,7 @@ async function createDormantPreparingRun(
             : {}),
           ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
           normalizedRequest: materializedRequest?.normalizedRequest ?? admission.normalizedRequest,
-          ...(admission.providerAdmissionPlan
-            ? { providerAdmissionPlan: admission.providerAdmissionPlan }
-            : {}),
+          providerAdmissionPlan: admission.providerAdmissionPlan,
           providerRequestPreview:
             materializedRequest?.providerRequestPreview ?? admission.providerRequestPreview,
           runId: created.runId,
@@ -3181,9 +2974,7 @@ async function createDormantPreparingRun(
   } catch (error) {
     await settlePreparingRunFailureWithClient(prismaClient, {
       attemptId: currentAttemptId,
-      errorCode: error instanceof MemoryPreparingRunConflictError ||
-        error instanceof ExplicitRunMemoryManagementError ||
-        error instanceof MemoryRunActionAuthorizationError
+      errorCode: error instanceof MemoryPreparingRunConflictError
         ? error.code
         : "memory_preparing_failed",
       message: "Memory preparation failed before provider dispatch.",
@@ -3191,10 +2982,6 @@ async function createDormantPreparingRun(
       state: "FAILED",
       userId: admission.userId
     }, memorySourceHooks).catch(() => false);
-    if (error instanceof ExplicitRunMemoryManagementError ||
-      error instanceof MemoryRunActionAuthorizationError) {
-      throw new MemoryPreparingRunConflictError(error.code, false);
-    }
     throw error;
   }
 }
@@ -3329,7 +3116,7 @@ export function createPrismaRunRepository(
           return "incomplete" as const;
         }
         const next = toolLoopCheckpoint({
-          answerRoundUsage: checkpoint.version === 2 ? checkpoint.answerRoundUsage : [],
+          answerRoundUsage: checkpoint.answerRoundUsage,
           phase: "provider_running",
           providerContinuation: checkpoint.providerContinuation,
           providerCursor: checkpoint.providerCursor,
@@ -3347,18 +3134,28 @@ export function createPrismaRunRepository(
       });
     },
     appendAssistantText: async (assistantMessageId, text, options) => {
-      await prismaClient.message.updateMany({
-        data: {
-          content: json(textMessageContent(text)),
-          ...(options?.allowErrored ? {} : { status: "streaming" as const })
-        },
-        where: {
-          groundedAt: null,
-          id: assistantMessageId,
-          status: options?.allowErrored
-            ? { in: ["streaming", "error"] }
-            : "streaming"
-        }
+      await prismaClient.$transaction(async (tx) => {
+        const updated = await tx.message.updateMany({
+          data: {
+            content: json(textMessageContent(text)),
+            ...(options.allowErrored ? {} : { status: "streaming" as const })
+          },
+          where: {
+            groundedAt: null,
+            id: assistantMessageId,
+            status: options.allowErrored
+              ? { in: ["streaming", "error"] }
+              : "streaming"
+          }
+        });
+        if (updated.count === 0) return;
+        await tx.modelRun.updateMany({
+          data: { updatedAt: new Date() },
+          where: {
+            assistantMessageId,
+            id: options.runId
+          }
+        });
       });
     },
     beginToolLoopProviderRound: async (input) => {
@@ -3481,19 +3278,14 @@ export function createPrismaRunRepository(
       }
       return { call: persistedToolLoopCall(call), kind: "claimed" as const };
     }),
-    appendRunEvent: async (runId, sequence, event) => {
-      if (isGroundingDisplaySseEvent(event)) {
-        throw new Error("grounding_display_event_is_transient");
-      }
+    appendRunOutputEvent: async (runId, event) => {
+      if (!isRunOutputArtifactEvent(event)) throw new Error("run_output_event_invalid");
       await prismaClient.$transaction(async (tx) => {
-        await tx.modelRunEvent.create({
-          data: {
-            eventType: event.type,
-            modelRunId: runId,
-            payload: json(event.data),
-            sequence
-          }
-        });
+        const [run] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE
+        `);
+        if (!run) throw new Error("model_run_not_found");
+        await appendRunOutputEvents(tx, runId, [event]);
         await tx.modelRun.update({
           data: {
             updatedAt: new Date()
@@ -3771,9 +3563,6 @@ export function createPrismaRunRepository(
             cacheWriteInputTokens: usage.cacheWriteInputTokens,
             errorPayload: Prisma.JsonNull,
             estimatedCostMicros: input.estimatedCostMicros ?? 0,
-            finalProviderResponsePreview: json(
-              groundedLiveOnly ? groundedLiveOnlyProviderPreview() : input.finalProviderResponsePreview
-            ),
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
             providerResponseId: input.providerResponseId ?? existingRun?.providerResponseId ?? null,
@@ -3854,37 +3643,9 @@ export function createPrismaRunRepository(
             id: input.chatId
           }
         });
-        const latestEvent = await tx.modelRunEvent.aggregate({
-          _max: {
-            sequence: true
-          },
-          where: {
-            modelRunId: input.runId
-          }
-        });
-        const firstTerminalSequence = (latestEvent._max.sequence ?? -1) + 1;
-        const terminalEvents: ModelRunSseEvent[] = [
-          ...(groundedLiveOnly ? [] : input.eventsBeforeTerminal ?? []),
-          {
-            data: usage,
-            type: "usage"
-          },
-          {
-            data: {
-              runId: input.runId,
-              status: "complete"
-            },
-            type: "done"
-          }
-        ];
-        await tx.modelRunEvent.createMany({
-          data: terminalEvents.map((event, offset) => ({
-            eventType: event.type,
-            modelRunId: input.runId,
-            payload: json(event.data),
-            sequence: firstTerminalSequence + offset
-          }))
-        });
+        if (!groundedLiveOnly) {
+          await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
+        }
         return true;
       });
     },
@@ -3947,13 +3708,10 @@ export function createPrismaRunRepository(
       await prismaClient.searchRun.create({
         data: {
           artifacts: json(input.artifacts),
-          durationMs: input.durationMs,
           invocationId: input.invocationId,
           modelId: input.modelId,
           modelRunId: input.modelRunId,
           provider: input.provider,
-          query: input.query,
-          requestPreview: json(input.requestPreview),
           searchRevisionId: input.searchRevisionId,
           status: input.status,
           strategyId: input.strategyId
@@ -3995,9 +3753,6 @@ export function createPrismaRunRepository(
                     ? recoveredRunErrorPayload(durableError)
                     : durableError
                 ),
-                ...(groundedLiveOnly
-                  ? { finalProviderResponsePreview: json(groundedLiveOnlyProviderPreview()) }
-                  : {}),
                 status: "error"
               },
               where: {
@@ -4023,10 +3778,7 @@ export function createPrismaRunRepository(
 
         if (groundedLiveOnly) {
           await tx.modelRunEvent.deleteMany({
-            where: {
-              eventType: { in: ["artifact", "token"] },
-              modelRunId: runId
-            }
+            where: { modelRunId: runId }
           });
         }
 
@@ -4058,22 +3810,6 @@ export function createPrismaRunRepository(
             userId: lockedRun.userId
           }, memorySourceHooks);
         }
-        const latestEvent = await tx.modelRunEvent.aggregate({
-          _max: {
-            sequence: true
-          },
-          where: {
-            modelRunId: runId
-          }
-        });
-        await tx.modelRunEvent.create({
-          data: {
-            eventType: "error",
-            modelRunId: runId,
-            payload: json(durableError),
-            sequence: (latestEvent._max.sequence ?? -1) + 1
-          }
-        });
         return true;
       });
     },
@@ -4335,34 +4071,11 @@ export function createPrismaRunRepository(
           }
         : null;
     },
-    getRunForUser: async (runId, userId) => {
+    getRunOutcomeForUser: async (runId, userId) => {
       const run = await prismaClient.modelRun.findFirst({
-        include: {
-          assistantRevision: {
-            select: {
-              name: true,
-              revisionNumber: true
-            }
-          },
-          events: {
-            orderBy: {
-              sequence: "asc"
-            }
-          },
-          knowledgeRunBindings: {
-            orderBy: { ordinal: "asc" }
-          },
-          knowledgeRuns: {
-            orderBy: { invocationOrdinal: "asc" }
-          },
-          searchRuns: {
-            orderBy: {
-              createdAt: "asc"
-            }
-          },
-          toolCalls: {
-            orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }]
-          }
+        select: {
+          id: true,
+          status: true
         },
         where: {
           id: runId,
@@ -4370,129 +4083,12 @@ export function createPrismaRunRepository(
         }
       });
 
-      if (!run) {
-        return null;
-      }
-      const publicRunStatus = acceptedRunStatus(run.status);
-      const memoryEvidence = (await loadMemoryRunEvidence(prismaClient, {
-        runIds: [run.id],
-        userId
-      })).get(run.id) ?? null;
-
-      const knowledgeRuns = run.knowledgeRuns.map((receipt) => {
-        const projection = decodeKnowledgeRunProjection({
-          baseEvidence: Array.isArray(receipt.baseEvidence) ? receipt.baseEvidence : [],
-          candidateCount: receipt.candidateCount,
-          candidateLimit: receipt.candidateLimit,
-          createdAt: receipt.createdAt.toISOString(),
-          durationMs: receipt.durationMs,
-          embeddingUsage: Array.isArray(receipt.embeddingUsage) ? receipt.embeddingUsage : [],
-          failureCode: receipt.failureCode,
-          fusion: receipt.fusion,
-          id: receipt.id,
-          invocationOrdinal: receipt.invocationOrdinal,
-          modelRunToolCallId: receipt.modelRunToolCallId,
-          outcome: receipt.outcome,
-          postRerankOrder: receipt.postRerankOrder,
-          preRerankOrder: receipt.preRerankOrder,
-          providerText: receipt.providerText,
-          query: receipt.query,
-          rerankerBinding: receipt.rerankerBinding,
-          resultLimit: receipt.resultLimit,
-          results: Array.isArray(receipt.results) ? receipt.results : [],
-          threshold: receipt.threshold
-        });
-        if (!projection) throw new Error("knowledge_run_receipt_invalid");
-        return projection;
-      });
-      const knowledgeEvents = projectKnowledgeInspectionEvents({
-        events: run.events.map((event) => ({
-          createdAt: event.createdAt.toISOString(),
-          eventType: event.eventType,
-          payload: event.payload,
-          sequence: event.sequence
-        })),
-        knowledgeRuns,
-        toolCalls: run.toolCalls
-      });
-      const events = projectMemoryInspectionEvents({
-        events: knowledgeEvents,
-        inspection: memoryEvidence?.inspection ?? null,
-        receipt: memoryEvidence?.receipt ?? null
-      });
-
-      return {
-        assistant: run.assistantId && run.assistantRevision
-          ? {
-              assistantId: run.assistantId,
-              name: run.assistantRevision.name,
-              revisionNumber: run.assistantRevision.revisionNumber
-            }
-          : null,
-        assistantMessageId: run.assistantMessageId,
-        chatId: run.chatId,
-        createdAt: run.createdAt.toISOString(),
-        errorPayload: run.errorPayload,
-        estimatedCostMicros: run.estimatedCostMicros > 0 ? run.estimatedCostMicros : null,
-        events,
-        finalProviderResponsePreview: run.finalProviderResponsePreview,
-        id: run.id,
-        cachedInputTokens: run.cachedInputTokens,
-        cacheWriteInputTokens: run.cacheWriteInputTokens,
-        inputTokens: run.inputTokens,
-        inspection: projectModelRunInspection({
-          acceptedAt: run.createdAt,
-          answerMessageId: run.assistantMessageId,
-          normalizedRequest: run.normalizedRequest
-        }),
-        knowledgeBindings: run.knowledgeRunBindings.map((binding) => ({
-          baseContentRevision: binding.baseContentRevision,
-          embeddingConnectionId: binding.embeddingConnectionId,
-          embeddingCredentialSource: binding.embeddingCredentialSource,
-          embeddingProviderModelId: binding.embeddingProviderModelId,
-          indexedContentRevision: binding.indexedContentRevision,
-          indexGenerationId: binding.indexGenerationId,
-          knowledgeBaseId: binding.knowledgeBaseId,
-          ordinal: binding.ordinal,
-          targetDimension: binding.targetDimension,
-          vectorSpaceFingerprint: binding.vectorSpaceFingerprint.trim()
-        })),
-        knowledgePlan: knowledgePlanFromNormalizedRequest(run.normalizedRequest),
-        knowledgeRuns,
-        ...(memoryEvidence?.action ? { memoryAction: memoryEvidence.action } : {}),
-        ...(memoryEvidence?.receipt ? { memoryReceipt: memoryEvidence.receipt } : {}),
-        modelId: run.modelId,
-        normalizedRequest: run.normalizedRequest,
-        outputTokens: run.outputTokens,
-        provider: run.provider,
-        providerRequestPreview: run.providerRequestPreview,
-        providerResponseId: run.providerResponseId,
-        reasoningTokens: run.reasoningTokens,
-        totalTokens: run.totalTokens,
-        searchRuns: run.searchRuns.map((searchRun) => ({
-          artifacts: searchRun.artifacts,
-          createdAt: searchRun.createdAt.toISOString(),
-          id: searchRun.id,
-          modelId: searchRun.modelId,
-          provider: searchRun.provider,
-          query: searchRun.query,
-          requestPreview: searchRun.requestPreview,
-          status: searchRun.status,
-          strategyId: searchRun.strategyId,
-          updatedAt: searchRun.updatedAt.toISOString()
-        })),
-        status: publicRunStatus,
-        toolCalls: run.toolCalls.flatMap((call) => {
-          const activity = persistedToolCallActivity({
-            call,
-            normalizedRequest: run.normalizedRequest,
-            runStatus: publicRunStatus
-          });
-          return activity ? [activity] : [];
-        }),
-        updatedAt: run.updatedAt.toISOString(),
-        userMessageId: run.userMessageId
-      };
+      return run
+        ? {
+            id: run.id,
+            status: acceptedRunStatus(run.status)
+          }
+        : null;
     },
     getChatUpdateForRun: async ({ assistantMessageId, chatId, userId, userMessageId }) => {
       return prismaClient.$transaction(async (tx) => {
@@ -4542,7 +4138,6 @@ export function createPrismaRunRepository(
                     }
                   },
                   id: true,
-                  inputTokens: true,
                   knowledgeRuns: {
                     orderBy: { invocationOrdinal: "asc" },
                     select: {
@@ -4551,39 +4146,14 @@ export function createPrismaRunRepository(
                       results: true
                     }
                   },
-                  normalizedRequest: true,
-                  outputTokens: true,
                   searchRuns: {
                     orderBy: {
                       createdAt: "asc"
                     },
                     select: {
-                      artifacts: true,
-                      modelId: true,
-                      provider: true,
-                      query: true,
-                      requestPreview: true,
-                      status: true,
-                      strategyId: true
+                      artifacts: true
                     }
                   },
-                  status: true,
-                  toolCalls: {
-                    orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
-                    select: {
-                      arguments: true,
-                      completedAt: true,
-                      mcpRunBindingId: true,
-                      ordinal: true,
-                      providerCallId: true,
-                      result: true,
-                      roundIndex: true,
-                      startedAt: true,
-                      state: true,
-                      toolName: true
-                    }
-                  },
-                  totalTokens: true
                 },
                 take: 1
               }
@@ -4615,12 +4185,12 @@ export function createPrismaRunRepository(
 
         const runIds = chat.messages.flatMap((message) =>
           message.assistantModelRuns[0]?.id ? [message.assistantModelRuns[0].id] : []);
-        const [{ contextStats, usageStats }, memoryEvidenceByRun] = await Promise.all([
+        const [{ contextStats, usageStats }, memoryActionsByRun] = await Promise.all([
           loadChatBranchSnapshotStats(tx, {
             activeLeafMessageId: chat.activeLeafMessageId,
             chatId
           }),
-          loadMemoryRunEvidence(tx, { runIds, userId })
+          loadMemoryRunActions(tx, { runIds, userId })
         ]);
 
         return {
@@ -4647,7 +4217,7 @@ export function createPrismaRunRepository(
                 ? summarizeMessageRunArtifacts(
                     modelRun,
                     message.content,
-                    memoryEvidenceByRun.get(modelRun.id) ?? null
+                    memoryActionsByRun.get(modelRun.id) ?? null
                   )
                 : null,
               assistantIdentity: serializeRunAssistantIdentity(modelRun),
@@ -4660,63 +4230,30 @@ export function createPrismaRunRepository(
               parentMessageId: message.parentMessageId,
               provider: message.provider,
               role: message.role,
-              runUsage: modelRun
-                ? {
-                    totalTokens: normalizeTokenUsage({
-                      inputTokens: modelRun.inputTokens,
-                      outputTokens: modelRun.outputTokens,
-                      reasoningTokens: 0,
-                      totalTokens: modelRun.totalTokens
-                    }).totalTokens
-                  }
-                : null,
               status: message.status
             };
           })
         };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
-    isSearchStrategyEnabled: async (searchStrategyId) => {
-      const strategy = await prismaClient.searchStrategy.findFirst({
-        select: {
-          strategyId: true
-        },
+    isSearchStrategyEnabled: async (searchOptionId) => {
+      const option = await prismaClient.searchOption.findFirst({
+        select: { id: true },
         where: {
+          archivedAt: null,
           enabled: true,
-          strategyId: searchStrategyId
+          optionId: searchOptionId,
+          strategies: {
+            some: {
+              activeRevisionId: { not: null },
+              archivedAt: null,
+              enabled: true
+            }
+          }
         }
       });
 
-      return Boolean(strategy);
-    },
-    loadSearchStrategyConfiguration: async (searchStrategyId) => {
-      const strategy = await prismaClient.searchStrategy.findFirst({
-        select: {
-          config: true,
-          kind: true,
-          modelId: true,
-          provider: true,
-          strategyId: true
-        },
-        where: {
-          enabled: true,
-          strategyId: searchStrategyId
-        }
-      });
-
-      if (!strategy) {
-        return null;
-      }
-
-      return {
-        config: isRecord(strategy.config)
-          ? { ...(strategy.config as Record<string, unknown>) }
-          : {},
-        kind: strategy.kind,
-        modelId: strategy.modelId,
-        provider: strategy.provider,
-        strategyId: strategy.strategyId
-      };
+      return Boolean(option);
     },
     loadConversationContext: async (chatId, userId) => {
       const context = await loadConversationPath(chatId, userId, { kind: "active" });
@@ -4769,64 +4306,6 @@ export function createPrismaRunRepository(
       );
     },
     loadEntitlements: (userId) => loadEntitlementsForUser(userId),
-    loadModelConfiguration: async (provider, modelId) => {
-      const model = await prismaClient.providerModel.findFirst({
-        select: {
-          capabilities: true,
-          contextWindow: true,
-          defaultParams: true,
-          supportsNativeSearch: true,
-          supportsPdf: true,
-          supportsReasoning: true,
-          supportsVision: true
-        },
-        where: {
-          enabled: true,
-          modelId,
-          modelClass: "answer",
-          provider
-        }
-      });
-
-      if (!model) {
-        return null;
-      }
-      const defaultCapabilities =
-        typeof model.capabilities === "object" && model.capabilities !== null && !Array.isArray(model.capabilities)
-          ? (model.capabilities as Record<string, unknown>)
-          : {};
-
-      return {
-        capabilities: {
-          backgroundStreaming:
-            typeof defaultCapabilities.backgroundStreaming === "boolean"
-              ? defaultCapabilities.backgroundStreaming
-              : false,
-          contextWindow: model.contextWindow,
-          defaultMaxOutputTokens: defaultMaxOutputTokens(model.defaultParams),
-          nativeBackground:
-            typeof defaultCapabilities.nativeBackground === "boolean"
-              ? defaultCapabilities.nativeBackground
-              : false,
-          nativePdfInput:
-            typeof defaultCapabilities.nativePdfInput === "boolean" ? defaultCapabilities.nativePdfInput : false,
-          nativeSearch: model.supportsNativeSearch,
-          parallelToolCalls:
-            typeof defaultCapabilities.parallelToolCalls === "boolean"
-              ? defaultCapabilities.parallelToolCalls
-              : false,
-          pdf: model.supportsPdf,
-          reasoning: model.supportsReasoning,
-          streaming: typeof defaultCapabilities.streaming === "boolean" ? defaultCapabilities.streaming : false,
-          toolCalling:
-            typeof defaultCapabilities.toolCalling === "boolean" ? defaultCapabilities.toolCalling : false,
-          vision: model.supportsVision
-        },
-        defaultParams: isRecord(model.defaultParams)
-          ? { ...(model.defaultParams as Record<string, unknown>) }
-          : {}
-      };
-    },
     loadModelPricing: async (provider, modelId) => {
       const models = await prismaClient.providerModel.findMany({
         select: {
@@ -4955,7 +4434,7 @@ export function createPrismaRunRepository(
         const current = parseToolLoopCheckpoint(run.toolLoopState);
         if (!current) return { kind: "conflict" as const };
         const pendingCheckpoint = toolLoopCheckpoint({
-          answerRoundUsage: current.version === 2 ? current.answerRoundUsage : [],
+          answerRoundUsage: current.answerRoundUsage,
           phase: "tools_pending",
           providerContinuation: input.providerContinuation,
           providerCursor: input.providerCursor,
@@ -5116,8 +4595,7 @@ export function createPrismaRunRepository(
     },
     resetToolLoopAssistantDraft: async (input) => {
       if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 0 ||
-        input.roundIndex > toolLoopPersistenceLimits.roundIndex ||
-        !Number.isInteger(input.sequence) || input.sequence < 0) return false;
+        input.roundIndex > toolLoopPersistenceLimits.roundIndex) return false;
       return prismaClient.$transaction(async (tx) => {
         const run = await lockToolLoopRun(tx, input);
         if (!run || !activeToolLoopRun(run) || !run.assistantMessageId) return false;
@@ -5138,14 +4616,6 @@ export function createPrismaRunRepository(
           }
         });
         if (reset.count !== 1) return false;
-        await tx.modelRunEvent.create({
-          data: {
-            eventType: "message_reset",
-            modelRunId: input.runId,
-            payload: json({ round: input.roundIndex }),
-            sequence: input.sequence
-          }
-        });
         await tx.modelRun.update({
           data: { updatedAt: new Date() },
           where: { id: input.runId }
@@ -5270,30 +4740,7 @@ export function createPrismaRunRepository(
           });
         }
 
-        const latestEvent = await tx.modelRunEvent.aggregate({
-          _max: {
-            sequence: true
-          },
-          where: {
-            modelRunId: input.runId
-          }
-        });
-        const firstSequence = (latestEvent._max.sequence ?? -1) + 1;
-        const events: ModelRunSseEvent[] = [
-          ...input.events,
-          {
-            data: input.error,
-            type: "error"
-          }
-        ];
-        await tx.modelRunEvent.createMany({
-          data: events.map((event, offset) => ({
-            eventType: event.type,
-            modelRunId: input.runId,
-            payload: json(event.data),
-            sequence: firstSequence + offset
-          }))
-        });
+        await appendRunOutputEvents(tx, input.runId, input.outputEvents);
 
         return true;
       });
@@ -5358,31 +4805,14 @@ export function createPrismaRunRepository(
         if (updated.count !== 1) return false;
 
         await tx.modelRunEvent.deleteMany({
-          where: {
-            eventType: { in: ["artifact", "token"] },
-            modelRunId: input.runId
-          }
+          where: { modelRunId: input.runId }
         });
         await tx.modelRun.update({
-          data: {
-            finalProviderResponsePreview: json(groundedLiveOnlyProviderPreview())
-          },
+          data: { updatedAt: new Date() },
           where: { id: input.runId }
         });
         return true;
       });
-    },
-    nextRunEventSequence: async (runId) => {
-      const aggregate = await prismaClient.modelRunEvent.aggregate({
-        _max: {
-          sequence: true
-        },
-        where: {
-          modelRunId: runId
-        }
-      });
-
-      return (aggregate._max.sequence ?? -1) + 1;
     },
     updateRunProviderResponseId: async (runId, providerResponseId) => {
       return prismaClient.$transaction(async (tx) => {
@@ -5397,31 +4827,6 @@ export function createPrismaRunRepository(
         });
         return "published" as const;
       });
-    },
-    updateRunProviderRequestPreview: async (runId, providerRequestPreview) => {
-      await prismaClient.modelRun.update({
-        data: {
-          providerRequestPreview: json(providerRequestPreview)
-        },
-        where: {
-          id: runId
-        }
-      });
-    },
-    updateCancelledRunProviderPreview: async (input) => {
-      const preview = JSON.stringify(input.providerCancelPreview);
-      const updated = await prismaClient.$executeRaw`
-        UPDATE "ModelRun"
-        SET
-          "errorPayload" = COALESCE("errorPayload", '{}'::jsonb) ||
-            jsonb_build_object('providerCancelPreview', ${preview}::jsonb),
-          "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "id" = ${input.runId}
-          AND "userId" = ${input.userId}
-          AND "status" = 'cancelled'::"ModelRunStatus"
-      `;
-
-      return updated === 1;
     }
   };
 }

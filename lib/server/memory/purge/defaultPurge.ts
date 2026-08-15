@@ -1,8 +1,8 @@
 import { defaultMemoryCoordinatorRegistry } from "../coordinator/registry";
 import {
-  MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS
+  MEMORY_PURGE_REQUIRED_CONTRIBUTORS
 } from "./contract";
-import { registerPhase2MemoryDeletionContributors } from "./leaves";
+import { registerMemoryDeletionContributors } from "./leaves";
 import { reconcileCompletedMemoryDeletionAudits } from "./reconciliation";
 import { MemoryDeletionContributorRegistry } from "./registry";
 import { reconcileCompletedMemoryHistorySourceDeletionAudits } from "../history/purge";
@@ -10,10 +10,10 @@ import { reconcileCompletedMemoryHistorySourceDeletionAudits } from "../history/
 export const defaultMemoryDeletionContributorRegistry =
   new MemoryDeletionContributorRegistry({
     operation: "FORGET_PURGE",
-    requirements: MEMORY_PHASE2_PURGE_REQUIRED_CONTRIBUTORS
+    requirements: MEMORY_PURGE_REQUIRED_CONTRIBUTORS
   });
 
-registerPhase2MemoryDeletionContributors(defaultMemoryDeletionContributorRegistry);
+registerMemoryDeletionContributors(defaultMemoryDeletionContributorRegistry);
 
 const defaultForgetPurgeHandler = defaultMemoryDeletionContributorRegistry.handler();
 

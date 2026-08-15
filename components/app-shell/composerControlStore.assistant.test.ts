@@ -85,7 +85,6 @@ describe("composer assistant strict identity", () => {
       () => useComposerControlStore.getState().setSelectedKnowledgePlan(["knowledge-base-2"]),
       () => useComposerControlStore.getState().setSelectedModelId("other"),
       () => useComposerControlStore.getState().setSelectedSearchPlan([], "all_selected"),
-      () => useComposerControlStore.getState().setSelectedSearchStrategy("search-disabled"),
       () => useComposerControlStore.getState().setStreamMode(false),
       () => useComposerControlStore.getState().setTemperature("1.5")
     ];
@@ -102,7 +101,6 @@ describe("composer assistant strict identity", () => {
     applySelection();
     useComposerControlStore.getState().setShowCitations(false);
     useComposerControlStore.getState().setShowReasoningBlocks(true);
-    useComposerControlStore.getState().setShowToolActivity(false);
     expect(useComposerControlStore.getState().selectedAssistant?.id).toBe("assistant-1");
   });
 

@@ -50,18 +50,18 @@ describe("adminSections", () => {
     expect(providers?.description).not.toMatch(/profiles/i);
   });
 
-  it("defaults to Providers and resolves legacy group destinations to Access", () => {
+  it("defaults unknown destinations to Providers", () => {
     expect(parseAdminSection("")).toBe("providers");
     expect(parseAdminSection("?section=invites")).toBe("invites");
-    expect(parseAdminSection("?section=groups")).toBe("access");
-    expect(parseAdminSection("?section=model-access")).toBe("access");
+    expect(parseAdminSection("?section=removed-section")).toBe("providers");
+    expect(parseAdminSection("?section=unknown-section")).toBe("providers");
     expect(parseAdminSection("?section=unknown")).toBe("providers");
 
-    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?mode=compact&section=groups#current")).toBe(
-      "/admin?mode=compact&section=access#current"
+    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?mode=compact&section=removed-section#current")).toBe(
+      "/admin?mode=compact#current"
     );
-    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=model-access")).toBe(
-      "/admin?section=access"
+    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=unknown-section")).toBe(
+      "/admin"
     );
     expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=unknown#current")).toBe(
       "/admin#current"

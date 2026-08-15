@@ -67,12 +67,6 @@ export type MemoryCoordinatorRepository = Readonly<{
     now: Date;
     stage: string | null;
   }): Promise<boolean>;
-  deferJob(input: {
-    claim: MemoryJobClaim;
-    errorCode: string;
-    nextAttemptAt: Date;
-    now: Date;
-  }): Promise<boolean>;
   heartbeatDeletion(input: {
     claim: MemoryDeletionClaim;
     leaseExpiresAt: Date;
@@ -447,28 +441,6 @@ export function createPrismaMemoryCoordinatorRepository(
         }
       });
       return updated.count === 1;
-    },
-
-    async deferJob(input) {
-      if (!isMemoryCoordinatorErrorCode(input.errorCode)) return false;
-      const updated = await client.$executeRaw(Prisma.sql`
-        UPDATE "MemoryJob"
-        SET
-          "attemptCount" = GREATEST("attemptCount" - 1, 0),
-          "errorCode" = ${input.errorCode},
-          "errorMessage" = NULL,
-          "leaseExpiresAt" = NULL,
-          "leaseToken" = NULL,
-          "nextAttemptAt" = ${input.nextAttemptAt},
-          "state" = 'RETRYABLE_FAILED'::"MemoryJobState",
-          "updatedAt" = ${input.now}
-        WHERE "id" = ${input.claim.id}
-          AND "userId" = ${input.claim.userId}
-          AND "state" = 'CLAIMED'::"MemoryJobState"
-          AND "leaseToken" = ${input.claim.claimToken}
-          AND "leaseExpiresAt" > ${input.now}
-      `);
-      return updated === 1;
     },
 
     async terminalJob(input) {

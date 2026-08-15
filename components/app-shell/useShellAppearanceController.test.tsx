@@ -24,25 +24,16 @@ afterEach(() => {
 });
 
 describe("shell appearance controller", () => {
-  it("owns one transient Branch drawer and applies a stored theme", () => {
-    window.localStorage.setItem(AIQSA_THEME_STORAGE_KEY, "neutral");
+  it("applies and remembers the selected theme", () => {
+    window.localStorage.setItem(AIQSA_THEME_STORAGE_KEY, "light");
     installMatchMedia();
     const { result } = renderHook(() => useShellAppearanceController());
 
     expect(result.current.theme.id).toBe("light");
-    expect(result.current.details).toEqual(expect.objectContaining({
-      activeTab: "branch",
-      mode: "closed"
-    }));
     act(() => {
-      result.current.details.changeActiveTab("events");
-      result.current.details.changeMode("overlay");
       result.current.theme.change("dark");
     });
-    expect(result.current.details).toEqual(expect.objectContaining({
-      activeTab: "events",
-      mode: "overlay"
-    }));
+    expect(Object.keys(result.current)).toEqual(["theme"]);
     expect(result.current.theme.id).toBe("dark");
     expect(window.localStorage.getItem(AIQSA_THEME_STORAGE_KEY)).toBe("dark");
     expect(document.cookie).toContain(`${AIQSA_THEME_COOKIE_NAME}=dark`);

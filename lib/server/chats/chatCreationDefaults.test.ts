@@ -26,6 +26,7 @@ function availableProviderModel(id: string): CatalogProviderModelRow {
       answerSelectable: true,
       capabilities,
       defaultParams: { maxOutputTokens: 2_048 },
+      modelClass: "answer",
       upstreamModelId: `upstream:${id}`
     },
     activeCredentialChecks: [{
@@ -43,7 +44,9 @@ function availableProviderModel(id: string): CatalogProviderModelRow {
     connection: {
       activeConfig: {
         allowPrivateNetwork: false,
-        apiRoot: "https://api.example.test/v1"
+        apiRoot: "https://api.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
       },
       activeVersion: 5,
       activatedAt: NOW,
@@ -73,9 +76,9 @@ function availableProviderModel(id: string): CatalogProviderModelRow {
     id,
     inputTokenPriceMicros: 0,
     modelClass: "answer",
-    modelId: `legacy:${id}`,
+    modelId: `unavailable:${id}`,
     outputTokenPriceMicros: 0,
-    provider: "legacy",
+    provider: "unavailable",
     supportsNativeSearch: false,
     supportsPdf: false,
     supportsReasoning: false,

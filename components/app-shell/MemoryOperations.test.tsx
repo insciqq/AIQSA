@@ -31,12 +31,12 @@ describe("MemoryOperations", () => {
     vi.unstubAllGlobals();
   });
 
-  it("keeps English controls over retained RU data and exposes exact capability reasons", async () => {
+  it("keeps English controls and exposes exact capability reasons", async () => {
     const data = memorySettingsFixture({
       capabilities: { automaticLearning: false, historyRecall: false },
       settings: { embeddingDeployment: null, referenceChatHistory: true }
-    }, "RU");
-    render(<MemoryOperations data={data} locale="RU" onBack={vi.fn()} />);
+    });
+    render(<MemoryOperations data={data} onBack={vi.fn()} />);
 
     const heading = screen.getByRole("heading", { name: "Memory operations" });
     await waitFor(() => expect(heading).toHaveFocus());
@@ -56,7 +56,7 @@ describe("MemoryOperations", () => {
   });
 
   it("distinguishes learned-memory deletion from retained chats and indexed history", async () => {
-    render(<MemoryOperations data={memorySettingsFixture()} locale="EN" onBack={vi.fn()} />);
+    render(<MemoryOperations data={memorySettingsFixture()} onBack={vi.fn()} />);
 
     const actionButtons = screen.getAllByRole("button", { name: "Review action" });
     fireEvent.click(actionButtons.at(-2)!);
@@ -71,7 +71,7 @@ describe("MemoryOperations", () => {
   });
 
   it("presents a calm all-Memory reset with exact retention details on demand", async () => {
-    render(<MemoryOperations data={memorySettingsFixture()} locale="EN" onBack={vi.fn()} />);
+    render(<MemoryOperations data={memorySettingsFixture()} onBack={vi.fn()} />);
 
     const label = screen.getByText("Delete everything Memory remembers");
     fireEvent.click(within(label.closest("li")!).getByRole("button", { name: "Review action" }));
@@ -96,7 +96,7 @@ describe("MemoryOperations", () => {
         state: "BLOCKED_REQUIRES_ADMIN"
       })
     });
-    render(<MemoryOperations data={memorySettingsFixture()} locale="EN" onBack={vi.fn()} />);
+    render(<MemoryOperations data={memorySettingsFixture()} onBack={vi.fn()} />);
 
     expect(screen.getByText(/administrator attention is required/u)).toBeVisible();
     expect(screen.getByRole("button", { name: "Check status" })).toBeVisible();
@@ -119,7 +119,6 @@ describe("MemoryOperations", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<MemoryOperations
       data={memorySettingsFixture({ settings: { referenceChatHistory: true } })}
-      locale="EN"
       onBack={vi.fn()}
     />);
 
@@ -138,7 +137,7 @@ describe("MemoryOperations", () => {
       clearLoadState: "error",
       clearStatus: null
     });
-    render(<MemoryOperations data={memorySettingsFixture()} locale="EN" onBack={vi.fn()} />);
+    render(<MemoryOperations data={memorySettingsFixture()} onBack={vi.fn()} />);
 
     expect(screen.getByText(/saved operation reference is no longer available/u)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Dismiss saved reference" }));

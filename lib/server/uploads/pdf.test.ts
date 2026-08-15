@@ -98,7 +98,9 @@ describe("PDF extraction", () => {
   });
 
   it("extracts a real PDF in the isolated worker", async () => {
-    const result = await extractPdfTextChunks(createTinyPdf("Hello AIQSA PDF"), 20);
+    const result = await extractPdfTextChunks(createTinyPdf("Hello AIQSA PDF"), {
+      config: { chunkMaxChars: 20 }
+    });
 
     expect(result).toMatchObject({
       extractedCharacterCount: 15,
@@ -390,7 +392,7 @@ describe("PDF extraction", () => {
     await expect(extraction).rejects.toEqual(new PdfExtractionError(code));
   });
 
-  it("does not reinterpret the ambiguous legacy pdf_too_complex message as a page limit", async () => {
+  it("does not reinterpret the ambiguous pdf_too_complex message as a page limit", async () => {
     await expect(
       extractPdfTextChunks(Buffer.from("pdf"), {
         getDocumentProxy: async () => {

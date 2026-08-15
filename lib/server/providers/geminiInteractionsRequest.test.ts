@@ -33,6 +33,8 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       ],
       mode: "branch_path"
     },
+    knowledgePlan: { baseIds: [] },
+    toolMode: "auto",
     modelCapabilities: {
       nativePdfInput: true,
       nativeSearch: true,
@@ -53,7 +55,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
       system: "Be precise."
     },
     provider: "gemini",
-    searchStrategy: "search-disabled",
+    searchPlan: { mode: "all_selected", options: [] },
     ...overrides
   };
 }
@@ -255,9 +257,9 @@ describe("Gemini Interactions request builder", () => {
                   type: "file"
                 },
                 {
-                  attachmentId: "HISTORY_LEGACY_ID_CANARY",
-                  privateValue: "HISTORY_LEGACY_PRIVATE_CANARY",
-                  type: "legacy"
+                  attachmentId: "HISTORY_UNKNOWN_ID_CANARY",
+                  privateValue: "HISTORY_UNKNOWN_PRIVATE_CANARY",
+                  type: "unknown"
                 }
               ]
             },
@@ -304,8 +306,8 @@ describe("Gemini Interactions request builder", () => {
       "HISTORY_FILE_ID_CANARY",
       "HISTORY_EXTRACTED_TEXT_CANARY",
       "HISTORY_STORAGE_KEY_CANARY",
-      "HISTORY_LEGACY_ID_CANARY",
-      "HISTORY_LEGACY_PRIVATE_CANARY"
+      "HISTORY_UNKNOWN_ID_CANARY",
+      "HISTORY_UNKNOWN_PRIVATE_CANARY"
     ]) {
       expect(bodyJson).not.toContain(canary);
       expect(previewJson).not.toContain(canary);
@@ -321,11 +323,11 @@ describe("Gemini Interactions request builder", () => {
     const currentContent = {
       blocks: [
         { attachmentId: "document-1", fileName: "blank.txt", type: "file" },
-        { attachmentId: "legacy-1", type: "legacy" }
+        { attachmentId: "unknown-1", type: "unknown" }
       ]
     };
     const runRequest = request({
-      attachmentIds: ["document-1", "legacy-1"],
+      attachmentIds: ["document-1", "unknown-1"],
       attachments: [
         {
           byteSize: 3,
@@ -340,9 +342,9 @@ describe("Gemini Interactions request builder", () => {
         {
           byteSize: 0,
           extractedText: null,
-          fileName: "legacy.bin",
-          id: "legacy-1",
-          kind: "legacy",
+          fileName: "unknown.bin",
+          id: "unknown-1",
+          kind: "unknown",
           metadata: {},
           mimeType: "application/octet-stream",
           status: "ready"
@@ -371,20 +373,17 @@ describe("Gemini Interactions request builder", () => {
 
   it("enables only native Google Search and rejects mixed hosted/client tools", () => {
     const body = buildGeminiInteractionsRequest(request({
-      searchPlan: { mode: "model_choice", options: [hostedGoogleSearch()] },
-      searchStrategy: "organization-google-search"
+      searchPlan: { mode: "model_choice", options: [hostedGoogleSearch()] }
     }));
     expect(body.tools).toEqual([{ type: "google_search" }]);
 
     expect(() => buildGeminiInteractionsRequest(request({
       searchPlan: { mode: "model_choice", options: [hostedGoogleSearch()] },
-      searchStrategy: "organization-google-search",
       tools: [tool]
     }))).toThrow("gemini_interactions_tool_combination_unsupported");
 
     expect(buildGeminiInteractionsRequest(request({
-      searchPlan: { mode: "all_selected", options: [] },
-      searchStrategy: "gemini-google-search"
+      searchPlan: { mode: "all_selected", options: [] }
     }))).not.toHaveProperty("tools");
   });
 

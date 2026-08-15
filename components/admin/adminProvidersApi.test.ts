@@ -25,17 +25,48 @@ const safeConnection = {
   defaultCredentialId: null,
   displayName: "OpenRouter",
   draftChecks: [],
-  draftConfig: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1" },
+  draftConfig: {
+    allowPrivateNetwork: false,
+    apiRoot: "https://openrouter.ai/api/v1",
+    authenticationMode: "bearer",
+    responseTimeoutSeconds: 300
+  },
   draftVersion: 1,
   enabled: false,
   family: "openrouter",
   id: "connection-1",
   models: [],
   unassignedPolicy: "use_default",
-  updatedAt: "2026-07-23T00:00:00.000Z"
+  updatedAt: "2026-07-23T00:00:00.000Z",
+  userAssignments: []
 };
 
 describe("admin provider browser API", () => {
+  it("accepts a model that inherits its response timeout from the connection", async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      connections: [{
+        ...safeConnection,
+        models: [{
+          displayName: "Inherited timeout model",
+          draftConfig: {
+            adapterKind: "openai_responses_compatible",
+            answerSelectable: true,
+            modelClass: "answer",
+            upstreamModelId: "fixture/inherited-timeout"
+          },
+          draftVersion: 1,
+          enabled: true,
+          id: "model-inherited-timeout"
+        }]
+      }]
+    }));
+
+    await expect(getAdminProviderConnections(fetcher)).resolves.toMatchObject({
+      data: [{ models: [{ id: "model-inherited-timeout" }] }],
+      ok: true
+    });
+  });
+
   it("names an assistant-revision deletion blocker in readable administrator feedback", () => {
     expect(adminProviderErrorMessage({
       blockers: [{ count: 1, kind: "assistant_revisions" }],

@@ -110,7 +110,6 @@ async function createProviderFixture(now: Date): Promise<ProviderFixture> {
       activatedAt: now,
       capabilities: embeddingConfiguration.capabilities,
       connectionId: fixture.connectionId,
-      contextWindow: 32_768,
       defaultParams: {},
       displayName: "Account Memory embedding",
       draftConfig: embeddingConfiguration,
@@ -146,8 +145,6 @@ async function cleanupOwner(userId: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET CONSTRAINTS ALL DEFERRED`;
     await purgeMemoryFeedbackAccount(tx, userId);
-    await tx.memoryProfileProjectionFact.deleteMany({ where: { userId } });
-    await tx.memoryProfileProjection.deleteMany({ where: { userId } });
     await tx.usageEvent.deleteMany({ where: { userId } });
     await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await tx.user.deleteMany({ where: { id: userId } });
@@ -332,7 +329,7 @@ async function populateReusableMemory(
         completedAt: input.now,
         id: jobId,
         idempotencyFingerprint: memorySha256({ jobId, userId }),
-        kind: "RECALCULATE_WORKING_SET",
+        kind: "EMBED_ITEMS",
         memoryGenerationSnapshot: 0,
         memoryRevisionSnapshot: 0,
         pipelineVersion: "account-memory-test-v1",
@@ -352,7 +349,7 @@ async function populateReusableMemory(
         errorCode: state === "OUTCOME_UNKNOWN" ? "provider_outcome_unknown" : null,
         id: bindingId,
         inputHash: executionInputHash,
-        logicalRole: "MEMORY_PROFILE",
+        logicalRole: "MEMORY_EMBEDDING",
         memoryJobId: jobId,
         ordinal: 0,
         ownerType: "JOB",
@@ -379,45 +376,6 @@ async function populateReusableMemory(
         userId
       }
     });
-    if (state === "SUCCEEDED") {
-      const profile = await tx.memoryProfileProjection.create({
-        data: {
-          asOf: startedAt,
-          createdAt: input.now,
-          createdByExecutionId: bindingId,
-          inputHash: executionInputHash,
-          languageCode: "ru",
-          memoryGeneration: 0,
-          memoryRevision: 0,
-          outputHash: executionOutputHash,
-          projectionVersion: "account-memory-test-v1",
-          redactionState: "NOT_NEEDED",
-          safeContentHash: "3".repeat(64),
-          safetyClass: "NORMAL",
-          safetyIdentitySnapshot: "4".repeat(64),
-          scopeId,
-          sourceIdentitySnapshot: "5".repeat(64),
-          state: "ACTIVE",
-          summary: statement,
-          suppressionIdentitySnapshot: "6".repeat(64),
-          updatedAt: input.now,
-          userId
-        }
-      });
-      await tx.memoryProfileProjectionFact.create({
-        data: {
-          factId,
-          factVersionContentHash: memorySha256(statement),
-          factVersionId: versionId,
-          ordinal: 0,
-          projectionId: profile.id,
-          safetyIdentitySnapshot: "a".repeat(64),
-          sourceIdentitySnapshot: "b".repeat(64),
-          suppressionIdentitySnapshot: "c".repeat(64),
-          userId
-        }
-      });
-    }
   });
 
   const feedback = createPrismaMemoryFeedbackRepository(prisma);
@@ -630,7 +588,6 @@ describe("Prisma account Memory deletion", () => {
       expect(succeeded.state).toBe("SUCCEEDED");
       expect(await prisma.memoryFact.count({ where: { userId } })).toBe(0);
       expect(await prisma.memoryFeedback.count({ where: { userId } })).toBe(0);
-      expect(await prisma.memoryProfileProjection.count({ where: { userId } })).toBe(0);
       expect(await prisma.memorySearchEntry.count({ where: { userId } })).toBe(0);
       expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
         where: { id: fixture.bindingId }
@@ -644,7 +601,7 @@ describe("Prisma account Memory deletion", () => {
       });
       const evidence = Object.freeze({
         cleanupLatencyMs: Number((performance.now() - cleanupStartedAt).toFixed(2)),
-        evidenceVersion: "memory-phase8-account-cleanup-v1",
+        evidenceVersion: "memory-account-cleanup-v1",
         maximumCleanupLatencyMs: 15 * 60_000,
         providerEvidenceDetached: true,
         sanitizedAggregatesOnly: true
@@ -652,7 +609,7 @@ describe("Prisma account Memory deletion", () => {
       expect(evidence.cleanupLatencyMs).toBeLessThan(evidence.maximumCleanupLatencyMs);
       expect(JSON.stringify(evidence)).not.toContain(userId);
       expect(JSON.stringify(evidence)).not.toContain(provider.connectionId);
-      console.info("memory_phase8_account_cleanup", evidence);
+      console.info("memory_account_cleanup", evidence);
 
       const replayClaim = await claimFor(admitted.id);
       const replay = await handler.execute(replayClaim, {

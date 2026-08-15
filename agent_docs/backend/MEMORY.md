@@ -16,8 +16,8 @@ PostgreSQL authority:
 Core uses pinned and explicit/user-corrected facts plus automatic facts carrying
 the extractor's discrete `coreEligible` and `coreSalience` fields. Ordering is
 authority, salience, recency, and stable identity. It does not use query text,
-provider I/O, profile summaries, category rules, confidence decimals, or
-temperature scores. Its code-owned limits are 12 facts and 512 approximate
+provider I/O, category rules, confidence decimals, or continuous scores. Its
+code-owned limits are 12 facts and 512 approximate
 tokens; the complete personal-context pack is capped at 12 items and 2,500
 approximate tokens.
 
@@ -35,9 +35,7 @@ chunks. Its typed input accepts a natural-language query and optional exact
 source-kind, owner-validated scope, and absolute time filters. It is available
 whenever the corresponding Memory gates are enabled, has no language or intent
 router, is limited to two calls per answer run, and owns a private replay-safe
-receipt bound to the exact persisted tool call. Extractive legacy `EPISODE` rows
-remain decodable only for historical evidence and are never newly enqueued,
-indexed, retrieved, packed, or returned by the tool.
+receipt bound to the exact persisted tool call.
 
 The answer model receives all five typed Memory action tools—`save_memory`,
 `list_memories`, `update_memory`, `forget_memory`, and
@@ -67,18 +65,13 @@ exact targets. The server enforces evidence, ownership/currentness, temporal
 ordering, suppression, and explicit-over-automatic authority. New logical facts
 receive an opaque server-owned `canonicalKey`; target operations retain the
 target key. Keys and exact hashes are compatibility/deduplication identifiers,
-not semantic identity. The old category-word verifier, Global Dream semantic
-reconciliation, profile generation, and temperature working set are absent from
-the normal path. Historical jobs for retired kinds settle deterministically
-without provider I/O or new semantic data.
+not semantic identity. Only facts, candidates, recall chunks, and their current
+search projections participate in Memory execution and recovery.
 
-Runtime admission validates actual compatibility and authority only: provider
+Runtime admission derives compatibility and authority from the current provider
 entitlement, protocol and strict-tool support, configured credential, embedding
 dimension/vector-space identity, accepted administrator destination, and
-bounded execution. Signed quality registries, per-installation benchmark
-qualification, corpus signatures, and language allowlists are not runtime
-authority. Offline evaluation may still document tested or recommended model
-combinations without blocking a compatible administrator-selected model.
+bounded execution.
 
 Every normal send and regeneration retains the two-phase run boundary. Phase A
 commits the exact DAG, ordinary dependency evidence, private `PREPARING` run,
@@ -108,8 +101,8 @@ PostgreSQL remains the durable truth and coordination boundary. Lexical rows are
 synchronous; compatible vectors are asynchronous and vector spaces never mix.
 Every external Memory call has an immutable accepted execution binding and one
 usage outcome. Administrator-owned egress acceptance is the default; changed
-destinations pause only affected work until renewed. Hindsight and other public
-memory engines remain design/evaluation references, never runtime dependencies.
+destinations pause only affected work until renewed. AIQSA Memory has no
+external memory-engine runtime dependency.
 
 ## Product Vocabulary And Independent Controls
 
@@ -134,12 +127,11 @@ shows progress and vectors enrich asynchronously. Terminal failures retry only
 after an off/on cycle.
 
 Eligible terminal sources independently enqueue `EXTRACT_FACTS` only while
-learning is on; history is not a prerequisite. The retired redream/episode path
-does not enqueue new semantic work.
+learning is on; history is not a prerequisite. History indexing creates only
+safe recall chunks and search rows.
 
-`memoryUiLocale` remains a wire/schema compatibility field; it does not classify
-content, gate execution, select prompts, or change fixed-English presentation.
-Source storage and retrieval accept arbitrary non-empty normalized Unicode.
+Memory presentation is fixed English. Source storage and retrieval accept
+arbitrary non-empty normalized Unicode.
 
 These lifecycle actions are not aliases:
 
@@ -156,7 +148,7 @@ These lifecycle actions are not aliases:
   or old accepted runs.
 - Hard-delete chat separately authorizes the exact revision, leaf, and optional
   origin-memory choice. Admission fences recall, learning, and sharing before
-  resumable aggregate cleanup. Legacy chat `DELETE` remains Archive-only.
+  resumable aggregate cleanup. The chat `DELETE` route remains Archive-only.
 - Expire closes reliable temporal validity; Retract removes automatic truth
   whose evidence is no longer admissible. Neither is user Forget.
 - Clear history index removes rebuildable chunks/search rows while
@@ -233,8 +225,8 @@ Four counters have separate jobs:
   index change. Additive drift may omit new items from an admitted run only
   after every already-selected item is revalidated.
 
-`settingsRevision` owns settings CAS. A compatibility-locale-only write
-advances it without changing Memory counters or fixed-English presentation.
+`settingsRevision` owns settings CAS. Memory presentation is fixed English and
+has no persisted locale setting.
 
 The authoritative mutation matrix is:
 
@@ -255,7 +247,6 @@ The authoritative mutation matrix is:
 | Folder move / Assistant access or archive change | – | + for chat move | – | + | current target and access |
 | Delete Folder, Assistant, or Chat scope target | – | + where source changes | + | + | target and affected items |
 | Change read/learning/safety/egress setting | – | – | – | + | settings, fingerprints, selected items |
-| Change only compatibility Memory UI locale | – | – | – | – | settings-revision compare-and-set |
 | Shadow-row, catch-up, or physical-purge progress | – | – | – | – | job/outbox fence |
 | Activate/reset an index generation | – | – | + | + | exact revision, config, barriers |
 
@@ -266,9 +257,8 @@ drift; it rechecks its exact source/fact/version preconditions.
 
 ## Fact And Operational State
 
-Candidate, decision, logical-fact, and fact-version states are separate. Legacy
-verification states remain decodable for queued/history compatibility but are
-not emitted by the normal learning path:
+Candidate, decision, logical-fact, and fact-version states are separate and
+advance through their own explicit transitions:
 
 - candidate: `PENDING`, `DEFERRED`, `PROMOTED`, `REJECTED`, `STALE`;
 - decision: `PENDING_VERIFICATION`, `APPLIED`, `REJECTED`, `STALE`;
@@ -539,7 +529,7 @@ API or web-readiness dependency. Tenant-fair skip-locked queues use leases,
 bounded retry, and idempotency. Policy admits at most two jobs, one per user,
 plus an independent deletion worker; safety weighting bounds every tier.
 Invalid policy/keys or database preflight blocks claims feature-locally.
-Phase 8 enables hard-delete admission only after exact composition; conflict
+Hard-delete admission opens only after exact composition; conflict
 fails closed and rollback retains accepted obligations. Durable status stays owner-readable through its bounded operational status projection. [Testing](../TESTING.md) owns the measured gate.
 
 No asynchronous embedding, indexing, Temporary promise, or purge promise may
@@ -594,8 +584,8 @@ checksummed promotion receipt; neither helper performs cutover.
   tests, and a bounded real-provider smoke when current credentials are
   available.
 
-`memory-ga-rollout-manifest-v1` now records default-on fact/history/learning,
-the three-tier retrieval contract, model-driven actions, and
-composition-gated hard deletion. Legacy capability fields and retired job enums
-remain compatibility-only. Rollback stops future work, keeps data, skips silent
-backfill, and finishes accepted deletions. Publishing is separate.
+Fact use, retained-chat recall, and automatic learning are current defaults.
+The three-tier retrieval contract, model-driven actions, and composition-gated
+hard deletion are the only supported Memory capability set. Disabling future
+work keeps retained data and finishes accepted deletion obligations; publishing
+is a separate release action.

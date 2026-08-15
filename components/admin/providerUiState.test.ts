@@ -49,6 +49,7 @@ function model(overrides: Partial<AdminProviderModel> = {}): AdminProviderModel 
       vision: false
     },
     defaultParams: {},
+    modelClass: "answer" as const,
     openRouterRouting: { mode: "automatic" as const, providers: [] as [] },
     upstreamModelId: "vendor/model"
   };
@@ -75,7 +76,9 @@ function connection(
   const activeModel = model();
   const configuration = {
     allowPrivateNetwork: false,
-    apiRoot: "https://openrouter.ai/api/v1"
+    apiRoot: "https://openrouter.ai/api/v1",
+    authenticationMode: "bearer" as const,
+    responseTimeoutSeconds: 300
   };
   return {
     activatedAt: timestamp,
@@ -107,6 +110,7 @@ function connection(
     models: [activeModel],
     unassignedPolicy: "use_default",
     updatedAt: timestamp,
+    userAssignments: [],
     ...overrides
   };
 }
