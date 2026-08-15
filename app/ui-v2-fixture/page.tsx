@@ -1,5 +1,4 @@
 import { isTestAuthEnabled } from "@/lib/server/auth/config";
-import { generatedArtifactsFeatureMode } from "@/lib/server/featureFlags/generatedArtifacts";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
@@ -75,16 +74,6 @@ async function renderFixture(query: UiV2FixtureQuery) {
     );
     const { BranchesV2Gallery } = await import("./_fixtures/BranchesV2Gallery");
     return <BranchesV2Gallery state={state} />;
-  }
-  if (query.fixture === "artifacts") {
-    if (generatedArtifactsFeatureMode(process.env) !== "fixtures") notFound();
-    const state = fixtureState(
-      query.state,
-      ["cancelled", "default", "drawer", "failed", "generating", "preview-unavailable", "stack"] as const,
-      "default"
-    );
-    const { ArtifactsV2Gallery } = await import("./_fixtures/ArtifactsV2Gallery");
-    return <ArtifactsV2Gallery state={state} />;
   }
   if (query.fixture === "library") {
     const state = fixtureState(

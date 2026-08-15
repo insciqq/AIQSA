@@ -83,6 +83,7 @@ function createBootstrapTransaction(input: {
     searchStrategyUpdate: record("searchStrategy.update", { id: "strategy-id" }),
     searchStrategyUpsert: record("searchStrategy.upsert", { activeRevisionId: null, id: "strategy-id" }),
     systemModelPolicyUpsert: record("systemModelPolicy.upsert", { id: "installation" }),
+    userMemorySettingsUpsert: record("userMemorySettings.upsert", {}),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
     userGroupUpsert: record("userGroup.upsert", {}),
@@ -146,6 +147,9 @@ function createBootstrapTransaction(input: {
     userGroup: {
       upsert: spies.userGroupUpsert
     },
+    userMemorySettings: {
+      upsert: spies.userMemorySettingsUpsert
+    },
     userSettings: {
       create: spies.userSettingsCreate
     }
@@ -190,6 +194,7 @@ function allFoundationMutationSpies(fixture: BootstrapTransactionFixture) {
     fixture.spies.mcpGrantUpsert,
     fixture.spies.folderCreate,
     fixture.spies.userSettingsCreate,
+    fixture.spies.userMemorySettingsUpsert,
     fixture.spies.accessGrantCreateMany
   ];
 }
@@ -269,7 +274,7 @@ describe("installation bootstrap", () => {
       })
     ).resolves.toEqual({
       catalogModelCount: 1,
-      catalogSearchStrategyCount: bootstrapSearchStrategies.length,
+      catalogSearchOptionCount: bootstrapSearchStrategies.length,
       status: "created"
     });
 
@@ -413,6 +418,7 @@ describe("installation bootstrap", () => {
     }
 
     expect(fixture.spies.accessGrantCreateMany).not.toHaveBeenCalled();
+    expect(fixture.spies.userMemorySettingsUpsert).not.toHaveBeenCalled();
   });
 
   it("fails a fresh database without a password before catalog or foundation mutation", async () => {
@@ -534,6 +540,11 @@ describe("installation bootstrap", () => {
     }
     expect(fixture.spies.groupCreate).toHaveBeenCalledOnce();
     expect(fixture.spies.userGroupUpsert).toHaveBeenCalledOnce();
+    expect(fixture.spies.userMemorySettingsUpsert).toHaveBeenCalledWith({
+      create: { userId: USER_ID },
+      update: {},
+      where: { userId: USER_ID }
+    });
     for (const mutation of [
       fixture.spies.userCreate,
       fixture.spies.authIdentityCreate,

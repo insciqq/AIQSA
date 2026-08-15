@@ -85,18 +85,13 @@ for (const theme of ["dark", "light"] as const) {
   }
 }
 
-test("v2 Branches and output previews become full-screen below 900px", async ({ page }) => {
+test("v2 Branches become full-screen below 900px", async ({ page }) => {
   await page.setViewportSize({ height: 390, width: 844 });
-  for (const destination of [
-    "/ui-v2-fixture?fixture=branches&state=drawer",
-    "/ui-v2-fixture?fixture=artifacts&state=drawer"
-  ]) {
-    await page.goto(destination);
-    const drawer = page.getByRole("dialog");
-    await expect(drawer).toBeVisible();
-    expect((await drawer.boundingBox())?.width).toBe(844);
-    await expectNoPageOverflow(page);
-  }
+  await page.goto("/ui-v2-fixture?fixture=branches&state=drawer");
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toBeVisible();
+  expect((await drawer.boundingBox())?.width).toBe(844);
+  await expectNoPageOverflow(page);
 });
 
 test("v2 sidebar transfers focus across desktop, compact, and mobile composition", async ({ page }) => {

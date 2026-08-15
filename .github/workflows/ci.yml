@@ -3,6 +3,8 @@ name: Hermetic checks
 on:
   pull_request:
   push:
+    branches:
+      - main
 
 permissions: {}
 

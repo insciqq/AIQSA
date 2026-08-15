@@ -11,7 +11,6 @@ import {
   NESTED_CLAUDE_INSTRUCTIONS,
   REQUIRED_DOCS
 } from "./docs-manifest.mjs";
-import { generatedReferenceErrors } from "./generate-doc-reference.mjs";
 
 const DISCOVERY_EXCLUDED_PREFIXES = [
   ".agents/",
@@ -193,7 +192,6 @@ export function checkDocs(root = process.cwd()) {
   errors.push(...documentationBudgetErrors(root, files));
   errors.push(...instructionBudgetErrors(root));
   errors.push(...localLinkErrors(root, files));
-  errors.push(...generatedReferenceErrors(root));
   return errors;
 }
 

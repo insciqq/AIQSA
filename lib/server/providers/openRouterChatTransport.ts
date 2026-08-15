@@ -1,10 +1,7 @@
 import {
   createFetchOpenAIChatCompletionClient,
-  type OpenAICompatibleChatClient,
-  type OpenAICompatibleChatClientRequestOptions
+  type OpenAICompatibleChatClient
 } from "./openaiCompatibleChatTransport";
-
-export type OpenRouterChatClientRequestOptions = OpenAICompatibleChatClientRequestOptions;
 
 export type OpenRouterChatClient = Omit<
   OpenAICompatibleChatClient,

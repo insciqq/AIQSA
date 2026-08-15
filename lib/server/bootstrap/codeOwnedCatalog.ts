@@ -31,7 +31,7 @@ type SynchronizeCodeOwnedCatalogOptions = Readonly<{
 export type CodeOwnedCatalogSynchronization = Readonly<{
   modelCount: number;
   providerModelIds: ReadonlyMap<string, string>;
-  searchStrategyCount: number;
+  searchOptionCount: number;
 }>;
 
 const builtInSearchOptions = Object.freeze({
@@ -396,7 +396,7 @@ export async function synchronizeCodeOwnedCatalog(
   const now = options.now ?? new Date();
   const connectionIds = await synchronizeConnections(client, options, now);
   const providerModelIds = await synchronizeModels(client, options, now, connectionIds);
-  const searchStrategyCount = await synchronizeSearch(
+  const searchOptionCount = await synchronizeSearch(
     client,
     options,
     now,
@@ -406,6 +406,6 @@ export async function synchronizeCodeOwnedCatalog(
   return {
     modelCount: providerModelIds.size,
     providerModelIds,
-    searchStrategyCount
+    searchOptionCount
   };
 }

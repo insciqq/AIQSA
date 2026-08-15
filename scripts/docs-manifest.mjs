@@ -33,7 +33,7 @@ export const HANDWRITTEN_AGENT_DOCS = Object.freeze([
 
 export const AGENT_DOC_BUDGETS = Object.freeze({
   files: 20,
-  nonEmptyLines: 1_500,
+  nonEmptyLines: 750,
   nonEmptyLinesPerFile: 150
 });
 
@@ -45,6 +45,5 @@ export const REQUIRED_DOCS = Object.freeze([
   ...NESTED_AGENT_INSTRUCTIONS,
   ...NESTED_CLAUDE_INSTRUCTIONS,
   ...COLOCATED_MARKDOWN,
-  ...HANDWRITTEN_AGENT_DOCS,
-  "agent_docs/generated/API_AND_SCHEMA.md"
+  ...HANDWRITTEN_AGENT_DOCS
 ]);

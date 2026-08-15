@@ -22,7 +22,7 @@ import { visibleAnswerText } from "./visibleAnswer";
 
 export type OpenAIChatCompletionsRecord = Readonly<Record<string, unknown>>;
 
-export type OpenAIChatCompletionsContext = Readonly<{
+type OpenAIChatCompletionsContext = Readonly<{
   modelId: string;
   provider?: string;
 }>;
@@ -31,15 +31,15 @@ export function isOpenAIChatRecord(value: unknown): value is Record<string, unkn
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function openAIChatString(value: unknown): string | undefined {
+function openAIChatString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-export function openAIChatNumber(value: unknown): number {
+function openAIChatNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-export function openAIChatValueAtPath(
+function openAIChatValueAtPath(
   value: unknown,
   path: readonly string[]
 ): unknown {
@@ -85,7 +85,7 @@ function rawToolCalls(message: Record<string, unknown> | null): unknown[] {
   return message && Array.isArray(message.tool_calls) ? message.tool_calls : [];
 }
 
-export function isOpenAIChatToolCall(value: unknown): boolean {
+function isOpenAIChatToolCall(value: unknown): boolean {
   if (
     !isOpenAIChatRecord(value) ||
     typeof value.id !== "string" ||
@@ -222,7 +222,7 @@ export function openAIChatResponseId(
   return openAIChatString(response.id);
 }
 
-export function openAIChatSummaryEvent(input: Readonly<{
+function openAIChatSummaryEvent(input: Readonly<{
   id: string | undefined;
   model: unknown;
   provider: string;
