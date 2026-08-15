@@ -1,5 +1,7 @@
 import { expect, test, type Route } from "@playwright/test";
 import {
+  memoryDetailFixture,
+  memoryEvidenceFixture,
   memorySettingsFixture,
   memorySummaryFixture
 } from "../support/memoryFixtures";
@@ -7,6 +9,7 @@ import type {
   MemoryActionFeedback
 } from "../../lib/contracts/memory";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
+import { runAccountMenuAction } from "./shell/page";
 import { signInWithLocalToken } from "./support/localAuth";
 
 const timestamp = "2026-08-10T10:00:00.000Z";
@@ -336,4 +339,125 @@ test("offers Manage Memories for an ambiguous target without claiming success", 
   const memory = page.getByRole("tabpanel", { name: "Memory" });
   await expect(memory.getByRole("heading", { level: 2, name: "Memory" })).toBeVisible();
   await expect(memory.getByRole("button", { name: "Manage memories" })).toBeVisible();
+});
+
+test("searches, edits, and forgets one exact saved memory", async ({ page }) => {
+  const chat = {
+    activeLeafMessageId: null,
+    createdAt: timestamp,
+    defaultModelId: "gpt-5.5",
+    defaultProvider: "openai",
+    folderId: null,
+    id: "chat-memory-manager",
+    messageCount: 0,
+    messages: [],
+    pinned: false,
+    title: "Saved Memory manager",
+    updatedAt: timestamp,
+    usageStats: null
+  };
+  let current = memorySummaryFixture({
+    id: "memory-fact-manager",
+    displayText: "I prefer concise architecture reviews."
+  });
+  let forgotten = false;
+  let authorizationOrdinal = 0;
+  let listRequests = 0;
+  let searchBody: Record<string, unknown> | null = null;
+
+  await page.addInitScript(() =>
+    window.localStorage.setItem("aiqsa.activeChatId", "chat-memory-manager")
+  );
+  await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
+  await page.route("**/api/me/memory/settings", async (route: Route) => {
+    await route.fulfill({ json: memorySettingsFixture() });
+  });
+  await page.route("**/api/me/memories*", async (route: Route) => {
+    listRequests += 1;
+    await route.fulfill({ json: { memories: forgotten ? [] : [current], nextCursor: null } });
+  });
+  await page.route("**/api/me/memories/search", async (route: Route) => {
+    searchBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ json: { memories: forgotten ? [] : [current], nextCursor: null } });
+  });
+  await page.route("**/api/me/memory/mutation-authorizations", async (route: Route) => {
+    authorizationOrdinal += 1;
+    await route.fulfill({
+      json: {
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        mutationAuthorizationId: `manager-authorization-${authorizationOrdinal}`
+      },
+      status: 201
+    });
+  });
+  await page.route("**/api/me/memories/memory-fact-manager", async (route: Route) => {
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      current = memorySummaryFixture({
+        ...current,
+        currentVersionId: "memory-version-2",
+        displayText: String(body.statement),
+        updatedAt: "2026-08-10T10:01:00.000Z"
+      });
+      await route.fulfill({ json: { memory: current } });
+      return;
+    }
+    await route.fulfill({ json: memoryDetailFixture(current) });
+  });
+  await page.route("**/api/me/memories/memory-fact-manager/evidence*", async (route: Route) => {
+    await route.fulfill({ json: memoryEvidenceFixture() });
+  });
+  await page.route("**/api/me/memories/memory-fact-manager/forget", async (route: Route) => {
+    forgotten = true;
+    await route.fulfill({
+      json: {
+        memory: memorySummaryFixture({
+          ...current,
+          currentVersionId: null,
+          displayText: null,
+          factState: "FORGOTTEN",
+          versionState: "FORGOTTEN"
+        }),
+        undo: {
+          deletionId: "manager-forget-deletion",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          versionId: current.currentVersionId
+        }
+      }
+    });
+  });
+  await signInWithLocalToken(page);
+
+  await runAccountMenuAction(page, "Memory");
+  const memory = page.getByRole("tabpanel", { name: "Memory" });
+  await memory.getByRole("button", { name: "Manage memories" }).click();
+  const memoryWorkspace = page.getByRole("dialog", { name: "Memory" });
+  await memoryWorkspace.getByRole("button", { name: "Manage memories" }).click();
+  const manager = page.getByTestId("manage-memories");
+  await expect.poll(() => listRequests).toBe(1);
+  await expect(manager.getByTestId("memory-list-pane")
+    .getByText(current.displayText!, { exact: true })).toBeVisible();
+
+  await manager.getByRole("search").getByLabel("Search saved memories").fill("architecture");
+  await manager.getByRole("search").getByRole("button", { name: "Search", exact: true }).click();
+  await expect.poll(() => searchBody).toMatchObject({
+    pageSize: 20,
+    query: "architecture",
+    state: "ACTIVE"
+  });
+  expect(searchBody).not.toBeNull();
+
+  await manager.getByRole("button", { name: current.displayText! }).click();
+  await expect(manager.getByRole("heading", { name: "Memory detail" })).toBeVisible();
+  await manager.getByRole("button", { name: "Edit", exact: true }).click();
+  const statement = manager.getByLabel("Exact statement");
+  await statement.fill("I prefer concise architecture reviews with evidence.");
+  await manager.getByRole("button", { name: "Save changes" }).click();
+  await expect(manager.getByText("Saved memory committed.", { exact: true })).toBeVisible();
+  await expect(manager.getByTestId("memory-detail-pane")
+    .getByText(current.displayText!, { exact: true })).toBeVisible();
+
+  await manager.getByRole("button", { name: "Forget", exact: true }).click();
+  await expect(manager.getByText("Forgotten.", { exact: true })).toBeVisible();
+  await expect(manager.getByText("No saved memories match this search.", { exact: true })).toBeVisible();
 });

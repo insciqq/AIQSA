@@ -3,12 +3,38 @@
 set -Eeuo pipefail
 
 AIQSA_BACKUP_FORMAT="2"
-AIQSA_BACKUP_SCHEMA="20260815000000_baseline"
 
 die() {
   printf 'Error: %s\n' "$1" >&2
   exit 1
 }
+
+backup_migration_inventory() {
+  local common_directory repository_root migrations_root migration
+
+  common_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+  repository_root="$(cd -- "$common_directory/../.." && pwd -P)"
+  migrations_root="$repository_root/prisma/migrations"
+  [[ -d "$migrations_root" ]] || die "Committed migration directory is unavailable."
+
+  mapfile -t AIQSA_BACKUP_MIGRATIONS < <(
+    find "$migrations_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' |
+      LC_ALL=C sort
+  )
+  ((${#AIQSA_BACKUP_MIGRATIONS[@]} > 0)) || die "Committed migration history is empty."
+  for migration in "${AIQSA_BACKUP_MIGRATIONS[@]}"; do
+    [[ "$migration" =~ ^[0-9]{14}_[A-Za-z0-9][A-Za-z0-9_-]*$ ]] ||
+      die "Committed migration name is invalid."
+    [[ -f "$migrations_root/$migration/migration.sql" ]] ||
+      die "Committed migration is incomplete."
+  done
+
+  AIQSA_BACKUP_SCHEMA="${AIQSA_BACKUP_MIGRATIONS[${#AIQSA_BACKUP_MIGRATIONS[@]} - 1]}"
+}
+
+declare -a AIQSA_BACKUP_MIGRATIONS=()
+AIQSA_BACKUP_SCHEMA=""
+backup_migration_inventory
 
 info() {
   printf '%s\n' "$1" >&2
@@ -85,16 +111,24 @@ valid_memory_key_ids() {
 }
 
 current_schema_query() {
+  local expected_migrations="" migration
+
+  for migration in "${AIQSA_BACKUP_MIGRATIONS[@]}"; do
+    expected_migrations+="'$migration',"
+  done
+  expected_migrations="${expected_migrations%,}"
+
   cat <<SQL
 SELECT CASE
-  WHEN (SELECT count(*) FROM "_prisma_migrations") = 1
-    AND EXISTS (
-      SELECT 1
+  WHEN (SELECT count(*) FROM "_prisma_migrations") = ${#AIQSA_BACKUP_MIGRATIONS[@]}
+    AND ARRAY(
+      SELECT migration_name::text
       FROM "_prisma_migrations"
-      WHERE migration_name = '$AIQSA_BACKUP_SCHEMA'
-        AND finished_at IS NOT NULL
+      WHERE finished_at IS NOT NULL
         AND rolled_back_at IS NULL
+      ORDER BY started_at, id
     )
+      = ARRAY[$expected_migrations]::text[]
     AND to_regclass('public."UserMemorySettings"') IS NOT NULL
     AND to_regclass('public."MemorySuppression"') IS NOT NULL
     AND to_regclass('public."MemorySourceBarrier"') IS NOT NULL
