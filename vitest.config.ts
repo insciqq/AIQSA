@@ -1,30 +1,17 @@
 import { defineConfig } from "vitest/config";
-import { fileURLToPath } from "node:url";
+import {
+  vitestBaseExcludes,
+  vitestHermeticTests,
+  vitestResolveConfig,
+  vitestSharedTestConfig,
+  vitestStatefulTests
+} from "./scripts/vitest-project-config";
 
 export default defineConfig({
-  resolve: {
-    alias: {
-      "@": fileURLToPath(new URL(".", import.meta.url))
-    }
-  },
+  resolve: vitestResolveConfig,
   test: {
-    allowOnly: false,
-    css: true,
-    environment: "jsdom",
-    exclude: ["node_modules/**", ".next/**", "tests/e2e/**"],
-    globals: true,
-    include: [
-      "app/**/*.test.{ts,tsx}",
-      "components/**/*.test.{ts,tsx}",
-      "features/**/*.test.{ts,tsx}",
-      "lib/**/*.test.{ts,tsx}",
-      "ops/**/*.test.{ts,tsx}",
-      "prisma/**/*.test.{ts,tsx}",
-      "scripts/**/*.test.{ts,tsx}"
-    ],
-    // Avoid oversubscribing the subprocess-heavy harness and ESLint fixtures on
-    // high-core hosts while preserving Vitest's strict per-test timeout.
-    maxWorkers: "33%",
-    setupFiles: "./vitest.setup.ts"
+    ...vitestSharedTestConfig,
+    exclude: [...vitestBaseExcludes, ...vitestStatefulTests],
+    include: vitestHermeticTests
   }
 });

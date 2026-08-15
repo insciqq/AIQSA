@@ -33,12 +33,19 @@ npm ci
 npm run check:hermetic
 ```
 
-`check:hermetic` generates the Prisma client without connecting to a database, runs documentation/reference drift checks, ESLint, TypeScript, and every deterministic Vitest/Testing Library case through `vitest.hermetic.config.ts`. Files named `*.prisma.test.*` and `*.integration.test.*` stay outside this lane; direct-database tests must use one of those suffixes. The lane requires no Docker, `DATABASE_URL`, provider key, or external service.
+`check:hermetic` generates the Prisma client without connecting to a database,
+runs documentation/reference drift checks, ESLint, TypeScript, and every
+deterministic Vitest/Testing Library case through the default
+`vitest.config.ts`. Files named `*.prisma.test.*` and
+`*.integration.test.*` stay outside this lane; direct-database tests must use
+one of those suffixes. The lane requires no Docker, `DATABASE_URL`, provider
+key, or external service. The ordinary PR/push workflow runs only `npm ci` and
+this authoritative command, with no secrets, database, or Docker service.
 
 Keep iteration narrower when possible:
 
 ```bash
-npx vitest run --config vitest.hermetic.config.ts <test-files>
+npm test -- <test-files>
 npx eslint <changed-paths>
 npx tsc --noEmit
 ```
@@ -65,9 +72,12 @@ heap and one Vitest worker, and never runs the toolchain inside the warmed
 Next/Turbopack dev process. Its unique container name also rejects a concurrent second check. Dev
 Compose caps other app containers with `AIQSA_APP_MEMORY_LIMIT` (3 GiB by
 default) and `AIQSA_APP_CPU_LIMIT` (four CPUs by default).
-Deterministic and direct-database files therefore run sequentially in this
-safety lane; the stateful project also retains its no-file-parallelism rule
-because cases share the disposable schema.
+The bounded container command uses one worker for the complete matrix; direct
+invocations of `npm run test:full` keep the hermetic project on normal Vitest
+workers while the stateful project always uses one worker and no file
+parallelism because its cases share the disposable schema. The full entrypoint
+also refuses any target except the exact acknowledged test-mode database URL
+from `docker-compose.dev.yml`.
 A small documentation, pure-domain, component-unit, or deterministic adapter
 change does not require Compose merely because it changes application code.
 
@@ -171,7 +181,7 @@ review feedback/conflict resolution, rebuild/recovery, and destructive replay:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app \
-  npx vitest run --config vitest.full.config.ts \
+  npm run test:full -- \
   lib/server/memory/coordinator/defaultCoordinator.test.ts \
   lib/server/memory/history/sourceProjection.test.ts \
   lib/server/memory/history/chunking.test.ts \
@@ -192,7 +202,7 @@ Owner-isolated and aggregate-only Memory health persistence:
 ```bash
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_MEMORY_HEALTH_INTEGRATION_TEST=1 app \
-  npx vitest run --config vitest.full.config.ts \
+  npm run test:full -- \
   lib/server/memory/health/prismaRepository.integration.test.ts
 ```
 
@@ -210,7 +220,7 @@ docker compose -f docker-compose.dev.yml run --rm -T --no-deps \
   -e AIQSA_MEMORY_HEALTH_INTEGRATION_TEST=1 \
   -e AIQSA_MEMORY_OPERATIONAL_INTEGRATION_TEST=1 app sh -c '
     npx prisma generate >/dev/null &&
-    npx vitest run --config vitest.full.config.ts --maxWorkers=1 \
+    npm run test:full -- --maxWorkers=1 \
       lib/server/memory/deletionComposition.test.ts \
       lib/server/memory/capabilityPolicy.test.ts \
       lib/server/memory/coordinator/policy.test.ts \
@@ -280,7 +290,7 @@ Authentication admission concurrency/restart:
 ```bash
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_AUTH_RATE_LIMIT_INTEGRATION_TEST=1 app \
-  npx vitest run lib/server/auth/prismaRateLimit.integration.test.ts
+  npm run test:full -- lib/server/auth/prismaRateLimit.integration.test.ts
 ```
 
 Provider Quick Setup repository integration:
@@ -288,7 +298,7 @@ Provider Quick Setup repository integration:
 ```bash
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_PROVIDER_QUICK_SETUP_INTEGRATION_TEST=1 app \
-  npx vitest run lib/server/admin/providers/quickSetupPrismaRepository.integration.test.ts
+  npm run test:full -- lib/server/admin/providers/quickSetupPrismaRepository.integration.test.ts
 ```
 
 Assistant repository and run-acceptance authorization:
@@ -296,10 +306,10 @@ Assistant repository and run-acceptance authorization:
 ```bash
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_ASSISTANTS_INTEGRATION_TEST=1 app \
-  npx vitest run lib/server/assistants/prismaRepository.integration.test.ts
+  npm run test:full -- lib/server/assistants/prismaRepository.integration.test.ts
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_ASSISTANT_RUN_AUTHORIZATION_INTEGRATION_TEST=1 app \
-  npx vitest run lib/server/runs/assistantProvenancePrismaRepository.integration.test.ts
+  npm run test:full -- lib/server/runs/assistantProvenancePrismaRepository.integration.test.ts
 ```
 
 Knowledge run admission, immutable binding persistence, and rollback after
@@ -308,7 +318,7 @@ access loss:
 ```bash
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_KNOWLEDGE_RUN_INTEGRATION_TEST=1 app \
-  npx vitest run lib/server/runs/knowledgeRunBindingsPrismaRepository.integration.test.ts
+  npm run test:full -- lib/server/runs/knowledgeRunBindingsPrismaRepository.integration.test.ts
 ```
 
 Knowledge retrieval execution, immutable revision/generation filtering,
@@ -317,22 +327,22 @@ private receipts, negative outcomes, and EXPLAIN-backed HNSW/GIN paths:
 ```bash
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_KNOWLEDGE_RETRIEVAL_INTEGRATION_TEST=1 app \
-  npx vitest run lib/server/knowledge/prismaRetrievalRepository.integration.test.ts
+  npm run test:full -- lib/server/knowledge/prismaRetrievalRepository.integration.test.ts
 ```
 
 MCP protocol, database, and ToolHive boundaries:
 
 ```bash
 docker compose -f docker-compose.dev.yml exec -T app \
-  npx vitest run lib/server/mcp/oauthService.test.ts
+  npm test -- lib/server/mcp/oauthService.test.ts
 docker compose -f docker-compose.dev.yml exec -T app \
-  npx vitest run lib/server/mcp/remoteRuntime.integration.test.ts
+  npm run test:full -- lib/server/mcp/remoteRuntime.integration.test.ts
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_MCP_INTEGRATION_TEST=1 app \
-  npx vitest run lib/server/mcp/prismaRepository.integration.test.ts
+  npm run test:full -- lib/server/mcp/prismaRepository.integration.test.ts
 docker compose -f docker-compose.dev.yml exec -T \
   -e AIQSA_TOOLHIVE_INTEGRATION_TEST=1 app \
-  npx vitest run lib/server/mcp/toolhive.integration.test.ts
+  npm run test:full -- lib/server/mcp/toolhive.integration.test.ts
 ```
 
 The ToolHive case controls sibling Docker resources and may pull only its reviewed digest-pinned fixture. Live package-registry materialization, hosted consent, or brokered SaaS evidence remains separately authorized and sanitized; local metadata discovery alone is not end-to-end proof.
