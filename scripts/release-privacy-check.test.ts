@@ -30,8 +30,6 @@ function fixture() {
     "/agent_docs/tasks/queue/*.md\n!/agent_docs/tasks/queue/README.md\n" +
       "/agent_docs/tasks/archive/*\n!/agent_docs/tasks/archive/README.md\n" +
       "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n" +
-      "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n" +
-      "/agent_docs/task_archive/*\n/agent_docs/backlog/**\n" +
       "/agent_docs/PRD/**\n"
   );
   writeFileSync(

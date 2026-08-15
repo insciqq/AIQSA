@@ -19,9 +19,7 @@ function fixture() {
     path.join(root, ".gitignore"),
     "/agent_docs/tasks/queue/*.md\n!/agent_docs/tasks/queue/README.md\n" +
       "/agent_docs/tasks/archive/*\n!/agent_docs/tasks/archive/README.md\n" +
-      "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n" +
-      "/agent_docs/tasks/*.md\n!/agent_docs/tasks/README.md\n" +
-      "/agent_docs/task_archive/*\n/agent_docs/backlog/**\n"
+      "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n"
   );
   const initialized = spawnSync("git", ["init", "-q"], { cwd: root, encoding: "utf8" });
   if (initialized.status !== 0) throw new Error(initialized.stderr);
@@ -106,6 +104,7 @@ afterEach(() => {
 describe("local task ledger command", () => {
   it("creates ignored local tasks and fails closed without the ignore guard", () => {
     const root = fixture();
+    expect(run(root, "check").stdout).toContain("Task ledger is valid");
     const created = run(root, "new", "next-task", "--summary", "Next slice");
 
     expect(created.status).toBe(0);
@@ -125,6 +124,25 @@ describe("local task ledger command", () => {
     const unsafe = run(unsafeRoot, "new", "unsafe-task", "--summary", "Must stay local");
     expect(unsafe.status).toBe(1);
     expect(unsafe.stderr).toContain("must be ignored before local task creation");
+  });
+
+  it("promotes and starts only dependency-free ready work", () => {
+    const root = fixture();
+    const foundation = "20260801120000001-foundation";
+    const dependent = "20260801120000002-dependent";
+    task(root, foundation, "backlog");
+    task(root, dependent, "backlog", { dependencies: foundation });
+
+    const blocked = run(root, "promote", dependent);
+    expect(blocked.status).toBe(1);
+    expect(blocked.stderr).toContain(`open dependencies: ${foundation}`);
+
+    expect(run(root, "promote", foundation).status).toBe(0);
+    expect(run(root, "start", foundation).status).toBe(0);
+    expect(readFileSync(
+      path.join(root, "agent_docs/tasks/queue", `${foundation}.md`),
+      "utf8"
+    )).toContain("Status: in_progress");
   });
 
   it("parks and restores dependent work only in dependency order", () => {
@@ -150,6 +168,8 @@ describe("local task ledger command", () => {
     const root = fixture();
     const foundation = "20260801120000001-foundation";
     const followup = "20260801120000002-follow-up";
+    const prior = "20260701120000001-prior";
+    archivedTask(root, prior);
     task(root, foundation, "in_progress");
     task(root, followup, "backlog", { dependencies: foundation });
 
@@ -166,35 +186,26 @@ describe("local task ledger command", () => {
       path.join(root, "agent_docs/tasks/queue", `${followup}.md`),
       "utf8"
     )).toContain("Depends on: none");
+    expect(existsSync(path.join(root, "agent_docs/tasks/archive", `${prior}.md`))).toBe(true);
   });
 
-  it("never prunes prior completion evidence", () => {
+  it("fails explicit validation for malformed tasks and unresolved dependencies", () => {
     const root = fixture();
-    for (let index = 0; index < 12; index += 1) {
-      archivedTask(root, `20260701120000${String(index).padStart(3, "0")}-archived-${index}`);
-    }
-    const before = readdirSync(path.join(root, "agent_docs/tasks/archive")).sort();
-    const current = "20260801120000001-current";
-    task(root, current, "in_progress");
+    const malformed = path.join(root, "agent_docs/tasks/queue/not-a-task.md");
+    writeFileSync(malformed, "malformed\n");
+    const malformedResult = run(root, "check");
+    expect(malformedResult.status).toBe(1);
+    expect(malformedResult.stderr).toContain("task filenames must be");
+    rmSync(malformed);
 
-    expect(run(root, "complete", current).status).toBe(0);
-    expect(readdirSync(path.join(root, "agent_docs/tasks/archive")).sort())
-      .toEqual([...before, `${current}.md`].sort());
-  });
-
-  it("rejects unresolved dependency graphs", () => {
-    const root = fixture();
     task(root, "20260801120000001-first", "backlog", {
       dependencies: "20260801120000002-second"
     });
-    task(root, "20260801120000002-second", "backlog", {
-      dependencies: "20260801120000001-first"
-    });
 
-    const result = run(root, "list");
+    const result = run(root, "check");
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("task dependency cycle");
+    expect(result.stderr).toContain("does not resolve to exactly one open task");
   });
 
   it("requires finished work and positive verification before completion", () => {

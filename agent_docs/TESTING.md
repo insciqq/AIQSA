@@ -8,6 +8,7 @@ Scope: Test-level selection, canonical commands, disposable boundaries, evidence
 Use the cheapest deterministic check that proves the increment, then run the completion lane proportional to the changed boundary. Documentation-only work runs `npm run docs:check`; generated-reference work also runs `npm run docs:generated:check`. Pure code normally completes through the hermetic lane. Add database, browser, image, dependency, deployment, or provider evidence only when the change crosses that boundary.
 
 `scripts/docs-manifest.mjs` owns the small mandatory document set and budgets. The docs checker verifies required owners, handwritten-document budgets/orphans, internal links, and generated freshness; it does not encode implementation prose or task-ledger state.
+Task-ledger changes run `npm run task:check` explicitly plus focused ledger/privacy tests; this remains independent of documentation validation.
 
 ## Core Lanes
 
