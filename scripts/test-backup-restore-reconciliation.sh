@@ -62,6 +62,49 @@ target_sql() {
   ' sh "$sql"
 }
 
+restore_bundle() {
+  local keyring="$1"
+  local bundle_path="$2"
+
+  COMPOSE_FILE="$TARGET_COMPOSE" \
+  COMPOSE_PROJECT_NAME="$target_project" \
+  AIQSA_IMAGE="${AIQSA_TEST_TOOLS_IMAGE:-aiqsa-dev-app:latest}" \
+  AIQSA_MEMORY_FINGERPRINT_KEYRING="$keyring" \
+  AIQSA_REPOSITORY_ROOT="$REPOSITORY_ROOT" \
+  AIQSA_RESTORE_BUCKET="aiqsa-restore" \
+  AIQSA_RESTORE_DISPOSABLE_TARGET=YES \
+  AIQSA_RESTORE_MINIO_SERVICE=minio-restore \
+  AIQSA_RESTORE_POSTGRES_PASSWORD="aiqsa-restore-postgres" \
+  AIQSA_RESTORE_POSTGRES_SERVICE=postgres-restore \
+  AIQSA_RESTORE_REVIEW_DIRECTORY="$test_root/review" \
+  AIQSA_RESTORE_S3_SECRET_ACCESS_KEY="aiqsa-restore-object-secret" \
+  AIQSA_RESTORE_TOOLS_SERVICE=restore-tools \
+    ops/backup/restore.sh "$bundle_path"
+}
+
+make_bundle_variant() {
+  local source_bundle="$1"
+  local target_bundle="$2"
+  local key="$3"
+  local value="$4"
+
+  cp -R -- "$source_bundle" "$target_bundle"
+  awk -F= -v key="$key" -v value="$value" '
+    $1 == key {
+      count += 1
+      print key "=" value
+      next
+    }
+    { print }
+    END { if (count != 1) exit 1 }
+  ' "$target_bundle/manifest.env" >"$target_bundle/manifest.env.next"
+  mv -- "$target_bundle/manifest.env.next" "$target_bundle/manifest.env"
+  (
+    cd "$target_bundle"
+    sha256sum manifest.env postgres.dump objects.tar >SHA256SUMS
+  )
+}
+
 cleanup() {
   local status=$?
   trap - EXIT
@@ -130,22 +173,42 @@ bundle="$(find "$test_root/backups" -mindepth 1 -maxdepth 1 -type d -name 'aiqsa
 [[ -n "$bundle" ]]
 ops/backup/restore.sh --verify-only "$bundle" >/dev/null
 
+legacy_format_bundle="$test_root/legacy-format-bundle"
+legacy_schema_bundle="$test_root/legacy-schema-bundle"
+make_bundle_variant "$bundle" "$legacy_format_bundle" AIQSA_BACKUP_FORMAT 1
+make_bundle_variant "$bundle" "$legacy_schema_bundle" AIQSA_BACKUP_SCHEMA pre-memory
+
 target_compose "$WRONG_KEYRING" up -d --wait postgres-restore minio-restore
+test_stage="legacy-format-rejection"
+if restore_bundle "$KEYRING" "$legacy_format_bundle" \
+  >"$test_root/legacy-format.log" 2>&1; then
+  printf '%s\n' "Expected legacy-format restore rejection." >&2
+  exit 1
+fi
+grep -Fq "Backup format is incompatible" "$test_root/legacy-format.log"
+
+test_stage="legacy-schema-rejection"
+if restore_bundle "$KEYRING" "$legacy_schema_bundle" \
+  >"$test_root/legacy-schema.log" 2>&1; then
+  printf '%s\n' "Expected legacy-schema restore rejection." >&2
+  exit 1
+fi
+grep -Fq "Backup schema is incompatible" "$test_root/legacy-schema.log"
+
+test_stage="legacy-rejection-no-mutation-audit"
+target_relation_count="$(target_sql "
+  SELECT count(*)
+  FROM pg_class AS relation
+  JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+  WHERE namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+    AND namespace.nspname NOT LIKE 'pg_toast%'
+    AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f');
+")"
+target_relation_count="${target_relation_count//[[:space:]]/}"
+[[ "$target_relation_count" -eq 0 ]]
+
 test_stage="missing-key-rejection"
-if COMPOSE_FILE="$TARGET_COMPOSE" \
-  COMPOSE_PROJECT_NAME="$target_project" \
-  AIQSA_IMAGE="${AIQSA_TEST_TOOLS_IMAGE:-aiqsa-dev-app:latest}" \
-  AIQSA_MEMORY_FINGERPRINT_KEYRING="$WRONG_KEYRING" \
-  AIQSA_REPOSITORY_ROOT="$REPOSITORY_ROOT" \
-  AIQSA_RESTORE_BUCKET="aiqsa-restore" \
-  AIQSA_RESTORE_DISPOSABLE_TARGET=YES \
-  AIQSA_RESTORE_MINIO_SERVICE=minio-restore \
-  AIQSA_RESTORE_POSTGRES_PASSWORD="aiqsa-restore-postgres" \
-  AIQSA_RESTORE_POSTGRES_SERVICE=postgres-restore \
-  AIQSA_RESTORE_REVIEW_DIRECTORY="$test_root/review" \
-  AIQSA_RESTORE_S3_SECRET_ACCESS_KEY="aiqsa-restore-object-secret" \
-  AIQSA_RESTORE_TOOLS_SERVICE=restore-tools \
-    ops/backup/restore.sh "$bundle" >"$test_root/missing-key.log" 2>&1; then
+if restore_bundle "$WRONG_KEYRING" "$bundle" >"$test_root/missing-key.log" 2>&1; then
   printf '%s\n' "Expected missing-key restore rejection." >&2
   exit 1
 fi
@@ -165,20 +228,7 @@ target_relation_count="$(target_sql "
 target_relation_count="${target_relation_count//[[:space:]]/}"
 [[ "$target_relation_count" -eq 0 ]]
 
-COMPOSE_FILE="$TARGET_COMPOSE" \
-COMPOSE_PROJECT_NAME="$target_project" \
-AIQSA_IMAGE="${AIQSA_TEST_TOOLS_IMAGE:-aiqsa-dev-app:latest}" \
-AIQSA_MEMORY_FINGERPRINT_KEYRING="$KEYRING" \
-AIQSA_REPOSITORY_ROOT="$REPOSITORY_ROOT" \
-AIQSA_RESTORE_BUCKET="aiqsa-restore" \
-AIQSA_RESTORE_DISPOSABLE_TARGET=YES \
-AIQSA_RESTORE_MINIO_SERVICE=minio-restore \
-AIQSA_RESTORE_POSTGRES_PASSWORD="aiqsa-restore-postgres" \
-AIQSA_RESTORE_POSTGRES_SERVICE=postgres-restore \
-AIQSA_RESTORE_REVIEW_DIRECTORY="$test_root/review" \
-AIQSA_RESTORE_S3_SECRET_ACCESS_KEY="aiqsa-restore-object-secret" \
-AIQSA_RESTORE_TOOLS_SERVICE=restore-tools \
-  ops/backup/restore.sh "$bundle" >/dev/null
+restore_bundle "$KEYRING" "$bundle" >/dev/null
 
 test_stage="restored-data-audit"
 restored_user_count="$(target_sql 'SELECT count(*) FROM "User";')"
@@ -248,4 +298,24 @@ grep -Fxq "DELETION_JOURNAL_STATUS=NOT_REQUIRED" "$test_root/review/promotion.en
 
 running_services="$(target_compose "$KEYRING" ps --services --status running | LC_ALL=C sort)"
 [[ "$running_services" == $'minio-restore\npostgres-restore' ]]
+
+test_stage="missing-memory-source-rejection"
+source_sql 'DROP TABLE "MemorySuppression";' >/dev/null
+if COMPOSE_FILE="$SOURCE_COMPOSE" \
+  COMPOSE_PROJECT_NAME="$source_project" \
+  AIQSA_MEMORY_FINGERPRINT_KEYRING="$KEYRING" \
+  AIQSA_REPOSITORY_ROOT="$REPOSITORY_ROOT" \
+    ops/backup/create.sh "$test_root/rejected-backups" \
+    >"$test_root/missing-memory.log" 2>&1; then
+  printf '%s\n' "Expected missing-Memory source rejection." >&2
+  exit 1
+fi
+grep -Fq "does not have the current backup schema" "$test_root/missing-memory.log"
+source_compose ps --services --status running app | grep -Fxq app
+source_compose ps --services --status running memory-worker | grep -Fxq memory-worker
+if find "$test_root/rejected-backups" -mindepth 1 -print -quit | grep -q .; then
+  printf '%s\n' "Missing-Memory rejection published an unexpected bundle." >&2
+  exit 1
+fi
+
 printf '%s\n' "Backup/restore reconciliation test passed."

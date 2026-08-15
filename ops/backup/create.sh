@@ -63,6 +63,21 @@ if ! compose run --rm --no-deps --entrypoint /bin/sh minio-init -ceu '
   die "This backup helper supports only the bundled MinIO endpoint; no service was stopped."
 fi
 
+source_schema="$({
+  compose exec -T postgres sh -ceu '
+    : "${POSTGRES_DB:?}"
+    : "${POSTGRES_USER:?}"
+    : "${POSTGRES_PASSWORD:?}"
+    export PGPASSWORD="$POSTGRES_PASSWORD"
+    exec psql -X --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+      --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --command="$1"
+  ' sh "$(current_schema_query)"
+} 2>/dev/null)" ||
+  die "Source database does not have the current backup schema; no service was stopped."
+source_schema="${source_schema//[[:space:]]/}"
+[[ "$source_schema" == "$AIQSA_BACKUP_SCHEMA" ]] ||
+  die "Source database does not have the current backup schema; no service was stopped."
+
 created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 bundle_name="aiqsa-backup-$(date -u +%Y%m%dT%H%M%SZ)"
 bundle="$destination/$bundle_name"
@@ -133,44 +148,34 @@ if ! compose exec -T postgres sh -ceu '
   export PGPASSWORD="$POSTGRES_PASSWORD"
   exec psql -X --no-psqlrc --set ON_ERROR_STOP=1 --quiet \
     --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" <<'"'"'SQL'"'"'
-DO $memory_backup$
-BEGIN
-  IF to_regclass('"'"'public."MemoryJob"'"'"') IS NOT NULL THEN
-    EXECUTE $sql$
-      UPDATE "MemoryJob"
-      SET
-        "state" = '"'"'RETRYABLE_FAILED'"'"'::"MemoryJobState",
-        "leaseToken" = NULL,
-        "leaseExpiresAt" = NULL,
-        "nextAttemptAt" = CURRENT_TIMESTAMP,
-        "errorCode" = '"'"'memory_backup_fenced'"'"',
-        "errorMessage" = NULL,
-        "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "state" = '"'"'CLAIMED'"'"'::"MemoryJobState"
-    $sql$;
-  END IF;
-  IF to_regclass('"'"'public."MemoryDeletionOutbox"'"'"') IS NOT NULL THEN
-    EXECUTE $sql$
-      UPDATE "MemoryDeletionOutbox"
-      SET
-        "state" = '"'"'RETRY_WAIT'"'"'::"MemoryDeletionState",
-        "leaseToken" = NULL,
-        "leaseExpiresAt" = NULL,
-        "nextAttemptAt" = CURRENT_TIMESTAMP,
-        "lastAuditAt" = CURRENT_TIMESTAMP,
-        "errorCode" = '"'"'memory_backup_fenced'"'"',
-        "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "state" = '"'"'RUNNING'"'"'::"MemoryDeletionState"
-    $sql$;
-  END IF;
-END
-$memory_backup$;
+BEGIN;
+UPDATE "MemoryJob"
+SET
+  "state" = '"'"'RETRYABLE_FAILED'"'"'::"MemoryJobState",
+  "leaseToken" = NULL,
+  "leaseExpiresAt" = NULL,
+  "nextAttemptAt" = CURRENT_TIMESTAMP,
+  "errorCode" = '"'"'memory_backup_fenced'"'"',
+  "errorMessage" = NULL,
+  "updatedAt" = CURRENT_TIMESTAMP
+WHERE "state" = '"'"'CLAIMED'"'"'::"MemoryJobState";
+UPDATE "MemoryDeletionOutbox"
+SET
+  "state" = '"'"'RETRY_WAIT'"'"'::"MemoryDeletionState",
+  "leaseToken" = NULL,
+  "leaseExpiresAt" = NULL,
+  "nextAttemptAt" = CURRENT_TIMESTAMP,
+  "lastAuditAt" = CURRENT_TIMESTAMP,
+  "errorCode" = '"'"'memory_backup_fenced'"'"',
+  "updatedAt" = CURRENT_TIMESTAMP
+WHERE "state" = '"'"'RUNNING'"'"'::"MemoryDeletionState";
+COMMIT;
 SQL
 ' >/dev/null 2>&1; then
   die "Durable Memory lease fencing failed; backup was not started."
 fi
 
-memory_suppression_relation="$({
+memory_key_ids="$({
   compose exec -T postgres sh -ceu '
     : "${POSTGRES_DB:?}"
     : "${POSTGRES_USER:?}"
@@ -178,28 +183,11 @@ memory_suppression_relation="$({
     export PGPASSWORD="$POSTGRES_PASSWORD"
     exec psql -X --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
       --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
-      --command="SELECT to_regclass('"'"'public.\"MemorySuppression\"'"'"') IS NOT NULL"
+      --command='"'"'SELECT COALESCE(string_agg(DISTINCT "fingerprintKeyVersion", '"'"'"'"'"','"'"'"'"'"' ORDER BY "fingerprintKeyVersion"), '"'"'"'"'"''"'"'"'"'"') FROM "MemorySuppression"'"'"'
   '
-} 2>/dev/null)" || die "Could not inspect Memory suppression metadata."
-memory_suppression_relation="${memory_suppression_relation//[[:space:]]/}"
-[[ "$memory_suppression_relation" == "t" || "$memory_suppression_relation" == "f" ]] || die "PostgreSQL returned invalid Memory suppression metadata."
-
-memory_key_ids=""
-if [[ "$memory_suppression_relation" == "t" ]]; then
-  memory_key_ids="$({
-    compose exec -T postgres sh -ceu '
-      : "${POSTGRES_DB:?}"
-      : "${POSTGRES_USER:?}"
-      : "${POSTGRES_PASSWORD:?}"
-      export PGPASSWORD="$POSTGRES_PASSWORD"
-      exec psql -X --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
-        --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
-        --command='"'"'SELECT COALESCE(string_agg(DISTINCT "fingerprintKeyVersion", '"'"'"'"'"','"'"'"'"'"' ORDER BY "fingerprintKeyVersion"), '"'"'"'"'"''"'"'"'"'"') FROM "MemorySuppression"'"'"'
-    '
-  } 2>/dev/null)" || die "Could not read Memory suppression key metadata."
-  memory_key_ids="${memory_key_ids//$'\r'/}"
-  memory_key_ids="${memory_key_ids//$'\n'/}"
-fi
+} 2>/dev/null)" || die "Could not read Memory suppression key metadata."
+memory_key_ids="${memory_key_ids//$'\r'/}"
+memory_key_ids="${memory_key_ids//$'\n'/}"
 valid_memory_key_ids "$memory_key_ids" || die "PostgreSQL returned invalid Memory suppression key metadata."
 
 info "Creating PostgreSQL dump..."
@@ -273,6 +261,7 @@ fi
 
 cat >"$partial/manifest.env" <<MANIFEST
 AIQSA_BACKUP_FORMAT=$AIQSA_BACKUP_FORMAT
+AIQSA_BACKUP_SCHEMA=$AIQSA_BACKUP_SCHEMA
 CREATED_AT_UTC=$created_at
 APP_REVISION=$app_revision
 POSTGRES_SERVER_VERSION_NUM=$postgres_version
