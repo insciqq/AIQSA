@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  rmdirSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const BASELINE = "20260815000000_baseline";
+const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
+const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_PASSWORD = "aiqsa-dev-password";
 const POSTGRES_SERVICE = "postgres";
@@ -138,6 +151,10 @@ function app(
   );
 }
 
+function sha256(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function committedMigrations(): string[] {
   const migrations = readdirSync(migrationsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
@@ -145,6 +162,11 @@ function committedMigrations(): string[] {
     .sort();
   assert.ok(migrations.length > 0, "committed migration history is empty");
   assert.equal(migrations[0], BASELINE, "the clean baseline must remain the first migration");
+  assert.equal(
+    sha256(readFileSync(join(migrationsRoot, BASELINE, "migration.sql"))),
+    BASELINE_SHA256,
+    "the frozen pre-production baseline changed; add an append-only migration instead",
+  );
   for (const migration of migrations) {
     assert.match(
       migration,
@@ -184,6 +206,28 @@ function assertDeployedMigrations(database: string, expected: readonly string[])
     String(expected.length),
     "clean install recorded failed, rolled-back, or unexpected migrations",
   );
+}
+
+function schemaCatalogDigest(database: string): string {
+  assertDisposableDatabase(database);
+  const dump = postgres(
+    [
+      "pg_dump",
+      "--schema-only",
+      "--no-owner",
+      "--no-privileges",
+      "--username",
+      POSTGRES_USER,
+      "--dbname",
+      database,
+    ],
+    `dump schema catalog for ${database}`,
+  );
+  const normalized = dump
+    .split("\n")
+    .filter((line) => !/^\\(?:un)?restrict\s/u.test(line))
+    .join("\n");
+  return sha256(normalized);
 }
 
 function deployAndVerify(database: string, migrations: readonly string[]): void {
@@ -291,6 +335,54 @@ function runBootstrapProof(database: string): void {
   );
 }
 
+function runAppendOnlyMigrationProbe(
+  database: string,
+  committed: readonly string[],
+): void {
+  const probeParent = join(repositoryRoot, ".aiqsa");
+  const parentExisted = existsSync(probeParent);
+  mkdirSync(probeParent, { recursive: true, mode: 0o700 });
+  const probeRoot = mkdtempSync(join(probeParent, "migration-contract-"));
+  const probeSchema = join(probeRoot, "schema.prisma");
+  const probeMigrations = join(probeRoot, "migrations");
+  const probeMigration = join(probeMigrations, APPEND_ONLY_PROBE);
+
+  try {
+    cpSync(join(repositoryRoot, "prisma/schema.prisma"), probeSchema);
+    cpSync(migrationsRoot, probeMigrations, { recursive: true });
+    mkdirSync(probeMigration);
+    writeFileSync(
+      join(probeMigration, "migration.sql"),
+      'CREATE TABLE "__AIQSAAppendOnlyMigrationProbe" ("id" integer PRIMARY KEY);\n',
+      { mode: 0o600 },
+    );
+    const containerSchema = `/app/${probeSchema.slice(repositoryRoot.length + 1)}`;
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", containerSchema]);
+    assertDeployedMigrations(database, [...committed, APPEND_ONLY_PROBE]);
+    assert.match(
+      app(database, ["npx", "prisma", "migrate", "status", "--schema", containerSchema]),
+      /Database schema is up to date!/u,
+    );
+    assert.equal(
+      psqlScalar(
+        database,
+        `SELECT to_regclass('public."__AIQSAAppendOnlyMigrationProbe"') IS NOT NULL;`,
+      ),
+      "t",
+      "synthetic append-only migration did not apply its probe relation",
+    );
+  } finally {
+    rmSync(probeRoot, { recursive: true, force: true });
+    if (!parentExisted) {
+      try {
+        rmdirSync(probeParent);
+      } catch {
+        // Preserve concurrently created operator-local state.
+      }
+    }
+  }
+}
+
 function main(mode: Mode, databases: readonly string[]): void {
   const migrations = committedMigrations();
 
@@ -303,6 +395,12 @@ function main(mode: Mode, databases: readonly string[]): void {
   for (const database of databases) {
     deployAndVerify(database, migrations);
   }
+  const catalogDigests = databases.map(schemaCatalogDigest);
+  assert.equal(
+    new Set(catalogDigests).size,
+    1,
+    "independent clean installs produced different schema catalogs",
+  );
 
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
@@ -311,10 +409,11 @@ function main(mode: Mode, databases: readonly string[]): void {
     runSeedProof(databases[0]!);
     runBootstrapProof(databases[1]!);
     runIntegrityProof(databases[1]!);
+    runAppendOnlyMigrationProbe(databases[1]!, migrations);
   }
 
   process.stdout.write(
-    `AIQSA migration ${mode} ok: ordered deploy, idempotence, seed/integrity, and fresh/adopted bootstrap verified across ${databases.length} disposable database(s).\n`,
+    `AIQSA migration ${mode} ok: baseline_sha256=${BASELINE_SHA256} catalog_sha256=${catalogDigests[0]} ordered deploy, idempotence, seed/integrity, fresh/adopted bootstrap${mode === "full" ? ", and synthetic append-only migration" : ""} verified across ${databases.length} disposable database(s).\n`,
   );
 }
 
