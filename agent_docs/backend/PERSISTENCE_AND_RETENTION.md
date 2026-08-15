@@ -244,14 +244,17 @@ Minimize run data in order: remove inspector UI/projectors; add an explicit allo
 
 The unpublished development history was replaced by
 `20260815000000_baseline`, which remains the first immutable installation
-anchor in the ordered migration set. Future schema changes land as append-only
-Prisma migrations with any required PostgreSQL-only DDL audited in the same
-migration. The baseline cannot be regenerated from `schema.prisma` alone
-because its custom PostgreSQL DDL is part of the contract. No upgrade path from
-older development schemas is supported. The one-shot installation tools
-service uses `prisma migrate deploy`; never use `prisma db push` for
-persistent data volumes. `TESTING.md` routes the ordinary and full disposable
-migration contracts.
+anchor in the ordered migration set. Its frozen SHA-256 is
+`71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33`; the
+single migration contract verifies that checksum before database mutation and
+proves a synthetic next append-only migration in its full two-database mode.
+Future schema changes land as append-only Prisma migrations with any required
+PostgreSQL-only DDL audited in the same migration. The baseline cannot be
+regenerated from `schema.prisma` alone because its custom PostgreSQL DDL is part
+of the contract. No upgrade path from older development schemas is supported.
+The one-shot installation tools service uses `prisma migrate deploy`; never use
+`prisma db push` for persistent data volumes. `TESTING.md` routes the ordinary
+and full disposable migration contracts.
 
 `prisma/bootstrap.ts` is the installation fresh-install/adoption entry point. Under one serializable transaction and advisory lock it first distinguishes an empty schema from an already-adopted initial-admin password identity by normalized email. Every other nonempty target fails before catalog or user mutation. Fresh bootstrap requires an explicit valid email and password, defaults the display name when omitted, and generates a user UUID when none is supplied. It creates only the active admin, verified password identity, immutable built-in `Full access` group with owner membership and current MCP grants, default settings with no default folder, fact/history-on and learning-off `UserMemorySettings`, nullable installation model-policy foundation, code-owned provider/Search scaffolding, and the disabled fake test deployment; it creates no Memory content/work, prompt row, run-profile slot, real provider-model deployment, folder, or demo chat. An explicit user UUID is enforced when supplied. An adopted rerun may repair missing default Memory settings or model-policy foundation and restore the built-in group/membership/current MCP grants, but never overwrites either settings row, the policy target, or creates newly added answer-model deployments; adding a new template therefore has no migration/backfill effect on an existing installation. It may refresh metadata for already-owned catalog rows while preserving catalog enablement and every operator-owned password/user-profile/role/status/settings/folder/prompt/grant value. The plaintext initial password is unnecessary after first adoption. The default Gemini Quick Setup candidate set includes Gemini 3.6 Flash, 3.5 Flash, 3.5 Flash-Lite, and 3.1 Pro Preview; those deployments are created and granted only when that setup runs against a provider catalog that exposes them, never by an upgrade migration or adopted-bootstrap backfill.
 
