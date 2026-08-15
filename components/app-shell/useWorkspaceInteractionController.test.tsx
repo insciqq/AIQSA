@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import type { ChatSummary, FolderSummary } from "./types";
+import type { WorkspaceChatSummary, FolderSummary } from "./types";
 import {
   useWorkspaceInteractionController,
   type WorkspaceInteractionController
@@ -14,7 +14,7 @@ type RootSetterKey<T extends object> = {
     : never;
 }[keyof T];
 
-const chat: ChatSummary = {
+const chat: WorkspaceChatSummary = {
   activeLeafMessageId: null,
   createdAt: "2026-07-13T00:00:00.000Z",
   defaultModelId: "fake-qsa",

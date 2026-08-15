@@ -1,10 +1,10 @@
-import type { ChatSummary } from "@/components/app-shell/types";
+import type { WorkspaceChatSummary } from "@/components/app-shell/types";
 import type { ChatSourceResolutionResponseWire } from "@/lib/contracts/chats";
 
 export type MemorySourceNavigationDeps = Readonly<{
-  activateChat(chat: ChatSummary): Promise<unknown> | unknown;
+  activateChat(chat: WorkspaceChatSummary): Promise<unknown> | unknown;
   closeResolvedOverlay?(): void;
-  findActiveChat(chatId: string): ChatSummary | null;
+  findActiveChat(chatId: string): WorkspaceChatSummary | null;
   openArchivedPreview(chatId: string): Promise<unknown> | unknown;
   refreshWorkspace(chatId: string): Promise<unknown> | unknown;
   resolveSource(chatId: string): Promise<ChatSourceResolutionResponseWire>;

@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { Catalog, ChatSummary } from "./types";
+import type { Catalog, WorkspaceChatSummary } from "./types";
 import { useCommandPaletteActions } from "./useCommandPaletteActions";
 
 function renderActions(
@@ -108,7 +108,7 @@ describe("useCommandPaletteActions", () => {
   });
 
   it("builds and dispatches every searchable category with readable non-id subtitles", async () => {
-    const chat: ChatSummary = {
+    const chat: WorkspaceChatSummary = {
       activeLeafMessageId: null,
       createdAt: "2026-07-11T00:00:00.000Z",
       defaultModelId: "gpt-5.5",

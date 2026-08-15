@@ -354,7 +354,7 @@ export function createMemoryItemEmbeddingHandler(
         result = await runtime.adapter.embed({
           mode: "document",
           signal: context.signal,
-          texts: [target.safeSearchText]
+          texts: [target.normalizedSearchText]
         });
       } catch (error) {
         if (context.signal.aborted) throw error;

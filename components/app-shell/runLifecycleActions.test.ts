@@ -16,7 +16,7 @@ import {
   useRunSurfaceStore
 } from "./runSurfaceStore";
 import { resetThreadStoreForTest, useThreadStore } from "./threadStore";
-import type { ChatSummary, Notice, ThreadMessage } from "./types";
+import type { WorkspaceChatSummary, Notice, ThreadMessage } from "./types";
 
 function message(overrides: Partial<ThreadMessage>): ThreadMessage {
   return {
@@ -32,7 +32,7 @@ function message(overrides: Partial<ThreadMessage>): ThreadMessage {
   };
 }
 
-function streamingChat(): ChatSummary {
+function streamingChat(): WorkspaceChatSummary {
   return {
     activeLeafMessageId: "assistant-1",
     createdAt: "2026-06-10T00:00:00.000Z",

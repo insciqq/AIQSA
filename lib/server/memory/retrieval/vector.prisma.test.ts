@@ -216,7 +216,7 @@ async function insertReadyChunks(
   await prisma.$executeRaw(Prisma.sql`
     INSERT INTO "MemorySearchEntry" (
       "id", "userId", "indexGenerationId", "itemType", "recallChunkId",
-      "safeSearchText", "safeSearchTextYoNormalized", "safeContentHash",
+      "normalizedSearchText", "safeContentHash",
       "languageCode", "safetyIdentitySnapshot", "sourceIdentitySnapshot",
       "suppressionIdentitySnapshot", "embedding", "embeddingDimension",
       "embeddingState"
@@ -227,7 +227,6 @@ async function insertReadyChunks(
       ${fixture.generationId},
       'RECALL_CHUNK'::"MemorySearchItemType",
       ${prefix} || '-chunk-' || n,
-      'safe vector fixture ' || n,
       'safe vector fixture ' || n,
       repeat(md5(${prefix} || '-chunk-' || n), 2),
       'en',
@@ -385,7 +384,7 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
     await prisma.$executeRaw(Prisma.sql`
       INSERT INTO "MemorySearchEntry" (
         "id", "userId", "indexGenerationId", "itemType", "recallChunkId",
-        "safeSearchText", "safeSearchTextYoNormalized", "safeContentHash",
+        "normalizedSearchText", "safeContentHash",
         "languageCode", "safetyIdentitySnapshot", "sourceIdentitySnapshot",
         "suppressionIdentitySnapshot", "embedding", "embeddingDimension",
         "embeddingState"
@@ -396,7 +395,6 @@ describe("Memory vector retrieval on PostgreSQL 16.14 and pgvector 0.8.5", () =>
         ${incompatible.id},
         'RECALL_CHUNK'::"MemorySearchItemType",
         ${`memory-vector-ann-${suffix}`} || '-chunk-' || n,
-        'safe vector fixture ' || n,
         'safe vector fixture ' || n,
         repeat(md5(${`memory-vector-ann-${suffix}`} || '-chunk-' || n), 2),
         'en',

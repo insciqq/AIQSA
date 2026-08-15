@@ -12,7 +12,7 @@ import type {
   CatalogSearchStrategy,
   ChatContextStats,
   ChatUsageStats,
-  ChatSummary,
+  WorkspaceChatSummary,
   CatalogModel,
   FolderSummary,
   ThreadMessage
@@ -30,7 +30,7 @@ type PowerAppShellViewModelInput = {
   activeThreadUsageStats: ChatUsageStats | null;
   attachments: ComposerAttachment[];
   catalog: Catalog | null;
-  chats: ChatSummary[];
+  chats: WorkspaceChatSummary[];
   draft: string;
   folders: FolderSummary[];
   maxOutputTokens: string;

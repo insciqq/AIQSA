@@ -2,7 +2,7 @@
 
 import { responseErrorMessage, errorMessage } from "@/components/app-shell/shellFormatting";
 import { shellFetch } from "@/components/app-shell/shellApi";
-import type { ChatSummary } from "@/components/app-shell/types";
+import type { WorkspaceChatSummary } from "@/components/app-shell/types";
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -10,7 +10,7 @@ import { useDialogFocus } from "./useDialogFocus";
 
 export type ShareDialogTarget = {
   activeLeafMessageId: string | null;
-  chat: ChatSummary;
+  chat: WorkspaceChatSummary;
 };
 
 type ShareLink = {

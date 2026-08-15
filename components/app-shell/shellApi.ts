@@ -2,7 +2,7 @@ import { isRecord } from "@/components/app-shell/shellValues";
 import { textFromPersistedContent } from "@/components/app-shell/threadContent";
 import type {
   ChatDetail,
-  ChatSummary,
+  WorkspaceChatSummary,
   RunEventView,
   ThreadMessage
 } from "@/components/app-shell/types";
@@ -206,7 +206,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
   };
 }
 
-export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): ChatSummary {
+export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceChatSummary {
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
     createdAt: chat.createdAt,

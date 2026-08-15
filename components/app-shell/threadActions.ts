@@ -9,7 +9,7 @@ import {
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type {
   ChatDetail,
-  ChatSummary,
+  WorkspaceChatSummary,
   Notice,
   ThreadMessage
 } from "@/components/app-shell/types";
@@ -22,10 +22,10 @@ import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { decodeChatSummaryResponse } from "@/lib/contracts/chats";
 
 type ThreadActionsInput = {
-  activeChat: ChatSummary | null;
+  activeChat: WorkspaceChatSummary | null;
   activeChatId: string | null;
   activeChatTitle: string;
-  activateChat(chat: ChatSummary): void;
+  activateChat(chat: WorkspaceChatSummary): void;
   confirmDeleteMessage(messageId: string): Promise<boolean>;
   loadCompleteActiveBranch(chatId: string): Promise<ThreadMessage[]>;
   openShareDialog(target: ShareDialogTarget): void;
@@ -423,7 +423,7 @@ export function createThreadActions({
     }
   }
 
-  function shareChat(chat: ChatSummary) {
+  function shareChat(chat: WorkspaceChatSummary) {
     if (chat.memoryMode === "TEMPORARY" || chat.pendingInitialMemoryMode === "TEMPORARY") {
       setNotice({
         kind: "error",

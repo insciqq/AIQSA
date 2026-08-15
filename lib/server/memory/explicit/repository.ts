@@ -13,8 +13,7 @@ import { prisma } from "../../prisma";
 import { memoryPersistenceFailure } from "../persistence/errors";
 import {
   memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "../persistence/lexical";
 import { memoryPurgeTargetType } from "../purge/contract";
 
@@ -913,12 +912,11 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
     ): Promise<MemoryListResponse> {
       const pageSize = input.pageSize ?? DEFAULT_PAGE_SIZE;
       const normalizedQuery = normalizeMemorySearchText(input.query);
-      const normalizedYoQuery = normalizeMemorySearchTextYo(input.query);
-      if (!normalizedQuery || !normalizedYoQuery) {
+      if (!normalizedQuery) {
         return memoryPersistenceFailure("memory_input_invalid");
       }
       const filterHash = memorySha256({
-        query: normalizedYoQuery,
+        query: normalizedQuery,
         scope: input.scope ?? null,
         sourceMode: input.sourceMode ?? null,
         state: input.state ?? null,
@@ -939,8 +937,6 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
           Prisma.sql`(
             version."normalizedSearchText" = ${normalizedQuery}
             OR strpos(version."normalizedSearchText", ${normalizedQuery}) > 0
-            OR translate(version."normalizedSearchText", 'ё', 'е') = ${normalizedYoQuery}
-            OR strpos(translate(version."normalizedSearchText", 'ё', 'е'), ${normalizedYoQuery}) > 0
           )`
         ];
         if (requestedState === "ORPHANED") {
@@ -1017,9 +1013,9 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
           )
         )`,
         Prisma.sql`(
-          search."safeSearchTextYoNormalized" = ${normalizedYoQuery}
-          OR strpos(search."safeSearchTextYoNormalized", ${normalizedYoQuery}) > 0
-          OR search."searchVectorSimple" @@ plainto_tsquery('simple', ${normalizedYoQuery})
+          search."normalizedSearchText" = ${normalizedQuery}
+          OR strpos(search."normalizedSearchText", ${normalizedQuery}) > 0
+          OR search."searchVectorSimple" @@ plainto_tsquery('simple', ${normalizedQuery})
         )`
       ];
       if (input.scope) conditions.push(scopeFilter(input.scope));
@@ -1053,7 +1049,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
           AND search."factVersionId" = version."id"
         WHERE ${Prisma.join(conditions, " AND ")}
         ORDER BY
-          (search."safeSearchTextYoNormalized" = ${normalizedYoQuery}) DESC,
+          (search."normalizedSearchText" = ${normalizedQuery}) DESC,
           ts_rank_cd(search."searchVectorSimple", plainto_tsquery('simple', ${normalizedQuery})) DESC,
           fact."updatedAt" DESC,
           fact."id" DESC

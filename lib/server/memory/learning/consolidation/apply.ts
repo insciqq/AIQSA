@@ -8,8 +8,7 @@ import {
 import { enqueueMemoryJob } from "../../persistence/jobs";
 import {
   memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "../../persistence/lexical";
 import { ensureActiveMemoryScope } from "../../persistence/scopes";
 import {
@@ -217,7 +216,7 @@ async function createSearchEntry(
   candidate: MemoryFactCandidateSnapshot,
   retrievable: boolean
 ) {
-  const safeSearchText = normalizeMemorySearchText(candidate.displayText);
+  const normalizedSearchText = normalizeMemorySearchText(candidate.displayText);
   return tx.memorySearchEntry.create({
     data: {
       embeddingState: retrievable && index.indexMode === "HYBRID"
@@ -231,8 +230,7 @@ async function createSearchEntry(
         displayText: candidate.displayText,
         structuredValue: candidate.proposedValue
       }),
-      safeSearchText,
-      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(candidate.displayText),
+      normalizedSearchText,
       safetyIdentitySnapshot: memorySha256({
         safetyClass: candidate.sensitivity,
         secretTaintedSourceWindow: false
@@ -250,7 +248,7 @@ async function createSearchEntry(
       suppressionIdentitySnapshot: memorySha256({
         canonicalKey: candidate.canonicalKey,
         category: candidate.category,
-        normalizedValue: safeSearchText
+        normalizedValue: normalizedSearchText
       }),
       userId
     },

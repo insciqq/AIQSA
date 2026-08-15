@@ -8,8 +8,7 @@ import type {
 import { prisma } from "../../../prisma";
 import {
   memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "../../persistence/lexical";
 
 const HISTORY_SEARCH_OFFSET_MAX = 1_000;
@@ -56,7 +55,6 @@ export type PreparedMemoryHistorySearch = Readonly<{
   from: Date | null;
   input: MemoryHistorySearchInput;
   normalizedQuery: string;
-  normalizedYoQuery: string;
   offset: number;
   snapshot: MemoryHistorySearchSnapshot;
   to: Date | null;
@@ -352,10 +350,8 @@ function searchSql(
     WITH eligible AS (
       SELECT
         entry."id" AS "entryId",
-        entry."safeSearchTextYoNormalized",
+        entry."normalizedSearchText",
         entry."searchVectorSimple",
-        entry."searchVectorRussian",
-        entry."searchVectorEnglish",
         entry."embeddingState"::text AS "embeddingState",
         'RECALL_CHUNK'::text AS "itemType",
         LEFT(chunk."safeProjectedText", 1000) AS "safeSnippet",
@@ -477,12 +473,12 @@ function searchSql(
       eligible."sourceState"
     FROM eligible
     WHERE (
-      eligible."safeSearchTextYoNormalized" = ${prepared.normalizedYoQuery}
-      OR eligible."searchVectorSimple" @@ plainto_tsquery('simple', ${prepared.normalizedYoQuery})
+      eligible."normalizedSearchText" = ${prepared.normalizedQuery}
+      OR eligible."searchVectorSimple" @@ plainto_tsquery('simple', ${prepared.normalizedQuery})
       OR ${vectorPredicate}
     )
     ORDER BY
-      (eligible."safeSearchTextYoNormalized" = ${prepared.normalizedYoQuery}) DESC,
+      (eligible."normalizedSearchText" = ${prepared.normalizedQuery}) DESC,
       (
         ts_rank_cd(eligible."searchVectorSimple", plainto_tsquery('simple', ${prepared.normalizedQuery}))
           + COALESCE(${vectorScore}, 0)
@@ -504,8 +500,7 @@ export function createPrismaMemoryHistorySearchRepository(
     ): Promise<PreparedMemoryHistorySearch> {
       if (!validOpaqueId(userId)) return fail("memory_contract_invalid");
       const normalizedQuery = normalizeMemorySearchText(input.query);
-      const normalizedYoQuery = normalizeMemorySearchTextYo(input.query);
-      if (!normalizedQuery || !normalizedYoQuery) return fail("memory_contract_invalid");
+      if (!normalizedQuery) return fail("memory_contract_invalid");
       const snapshot = await loadSnapshot(client, userId);
       const chatIds = [...input.chatIds].sort();
       const filterHash = memorySha256({
@@ -517,7 +512,7 @@ export function createPrismaMemoryHistorySearchRepository(
         lexicalState: snapshot.lexicalState,
         memoryRevision: snapshot.memoryRevision,
         pageSize: input.pageSize,
-        query: normalizedYoQuery,
+        query: normalizedQuery,
         referenceChatHistory: snapshot.referenceChatHistory,
         to: input.to,
         userId
@@ -533,7 +528,6 @@ export function createPrismaMemoryHistorySearchRepository(
         from: input.from ? new Date(input.from) : null,
         input,
         normalizedQuery,
-        normalizedYoQuery,
         offset: cursor?.offset ?? 0,
         snapshot,
         to: input.to ? new Date(input.to) : null,

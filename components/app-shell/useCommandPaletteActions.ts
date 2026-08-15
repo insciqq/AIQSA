@@ -8,7 +8,7 @@ import type {
   CatalogModel,
   CatalogSearchStrategy,
   ChatGroup,
-  ChatSummary
+  WorkspaceChatSummary
 } from "@/components/app-shell/types";
 import { useMemo } from "react";
 
@@ -33,7 +33,7 @@ function searchCommandSubtitle(strategy: CatalogSearchStrategy): string {
 }
 
 type CommandPaletteActionsInput = {
-  activateChat(chat: ChatSummary): void;
+  activateChat(chat: WorkspaceChatSummary): void;
   activateBlankWorkspace(
     folderId?: string | null,
     memoryMode?: "EXCLUDED" | "NORMAL" | "TEMPORARY"
@@ -43,7 +43,7 @@ type CommandPaletteActionsInput = {
   branchesOpen: boolean;
   catalog: Catalog | null;
   chatGroups: ChatGroup[];
-  chats: ChatSummary[];
+  chats: WorkspaceChatSummary[];
   closePalette(): void;
   knowledgeOpen: boolean;
   memoryOpen: boolean;

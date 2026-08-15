@@ -38,8 +38,7 @@ import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
@@ -617,8 +616,7 @@ async function createHistoryDerivative(input: Readonly<{
       languageCode: "en",
       recallChunkId: chunkId,
       safeContentHash: contentHash,
-      safeSearchText: normalizeMemorySearchText(text),
-      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(text),
+      normalizedSearchText: normalizeMemorySearchText(text),
       safetyIdentitySnapshot: memorySha256({ safety: "NORMAL" }),
       sourceIdentitySnapshot: memorySha256({ chunkId, sourceHash }),
       suppressionIdentitySnapshot: memorySha256({ suppressions: [] }),

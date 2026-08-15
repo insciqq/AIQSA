@@ -409,8 +409,10 @@ preventing stranded query/result/tool-argument text.
 ## Retrieval And Index Integrity
 
 Visible facts and chunks synchronously receive one language-agnostic Unicode
-exact/simple-FTS projection; compatible vectors are asynchronous. Rebuildable
-entries never become truth. A non-empty bounded raw query always enters local
+exact/simple-FTS projection. Its canonical NFKC, case-folded, whitespace-bounded
+text maps Russian `ё` to `е` on both writes and queries, so one stored field and
+one generated `simple` vector serve either spelling; compatible vectors are
+asynchronous. Rebuildable entries never become truth. A non-empty bounded raw query always enters local
 candidate generation even when tokenization produces no terms. Recognizable
 secret/binary-like shapes suppress external query embedding and relevance I/O,
 not owner-local exact/simple/recency retrieval; only the query hash is persisted

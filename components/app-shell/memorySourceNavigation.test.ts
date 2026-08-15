@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { navigateMemorySource } from "./memorySourceNavigation";
-import type { ChatSummary } from "./types";
+import type { WorkspaceChatSummary } from "./types";
 
-const chat: ChatSummary = {
+const chat: WorkspaceChatSummary = {
   activeLeafMessageId: null,
   createdAt: "2026-08-10T08:00:00.000Z",
   defaultModelId: "model",

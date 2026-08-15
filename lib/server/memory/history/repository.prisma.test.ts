@@ -697,7 +697,7 @@ describe("Memory lexical history index persistence", () => {
         FROM "MemorySearchEntry" AS entry
         WHERE entry."userId" = ${userId}
           AND entry."indexGenerationId" = ${generation.id}
-          AND entry."searchVectorRussian" @@ plainto_tsquery('russian', 'кофе')
+          AND entry."searchVectorSimple" @@ plainto_tsquery('simple', 'кофе')
       `);
       expect(lexical).toEqual([{ id: entries[0]!.id }]);
 
@@ -786,7 +786,7 @@ describe("Memory lexical history index persistence", () => {
         folderId: null,
         from: null,
         pageSize: 20,
-        query: "сине-зелёное развёртывание",
+        query: "СИНЕ-ЗЕЛЕНОЕ РАЗВЕРТЫВАНИЕ",
         to: null
       });
       const response = await historySearch.search(prepared, null);

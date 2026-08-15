@@ -1,6 +1,6 @@
 "use client";
 
-import type { ChatSummary, FolderSummary } from "@/components/app-shell/types";
+import type { WorkspaceChatSummary, FolderSummary } from "@/components/app-shell/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const nonTextInputTypes = new Set([
@@ -88,7 +88,7 @@ export function useShellOverlayController({
   const { projectSettingsOpen, settingsOpen } = blockers;
   const [branchesOpen, setBranchesOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const chatConfirmation = useConfirmationController<ChatSummary>();
+  const chatConfirmation = useConfirmationController<WorkspaceChatSummary>();
   const folderConfirmation = useConfirmationController<FolderSummary>();
   const messageConfirmation = useConfirmationController<string>();
 

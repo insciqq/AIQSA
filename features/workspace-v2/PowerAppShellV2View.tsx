@@ -38,7 +38,7 @@ import type {
 } from "@/components/app-shell/powerAppShellV2Contracts";
 import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
 import type {
-  ChatSummary,
+  WorkspaceChatSummary,
   ThreadMessage
 } from "@/components/app-shell/types";
 import {
@@ -129,7 +129,7 @@ function messageText(message: ThreadMessage): string {
   return textFromThreadContent(message.content);
 }
 
-function currentWorkspaceChat(chatId: string): ChatSummary | null {
+function currentWorkspaceChat(chatId: string): WorkspaceChatSummary | null {
   return useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId) ?? null;
 }
 
@@ -1311,7 +1311,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const currentNewChatMode: NewChatMode = composer.memory.mode === "TEMPORARY"
     ? "TEMPORARY"
     : activeChatSummary?.memoryMode === "EXCLUDED" ? "EXCLUDED" : "NORMAL";
-  const withActiveChat = (action: (chat: ChatSummary) => void) => () => {
+  const withActiveChat = (action: (chat: WorkspaceChatSummary) => void) => () => {
     const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
     if (full) action(full);
     else void workspace.pane.actions.retry();

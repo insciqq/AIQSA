@@ -11,7 +11,7 @@ import {
   useComposerControlStore
 } from "./composerControlStore";
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
-import type { ChatSummary, FolderSummary, Notice } from "./types";
+import type { WorkspaceChatSummary, FolderSummary, Notice } from "./types";
 import type { WorkspaceFolderMutationPort } from "./useWorkspaceInteractionController";
 
 function folder(input: Partial<FolderSummary> & { id: string; name: string }): FolderSummary {
@@ -23,7 +23,7 @@ function folder(input: Partial<FolderSummary> & { id: string; name: string }): F
   };
 }
 
-function chat(input: Partial<ChatSummary> & { id: string; title: string }): ChatSummary {
+function chat(input: Partial<WorkspaceChatSummary> & { id: string; title: string }): WorkspaceChatSummary {
   return {
     activeLeafMessageId: null,
     createdAt: "2026-06-10T00:00:00.000Z",

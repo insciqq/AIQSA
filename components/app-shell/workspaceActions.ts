@@ -19,7 +19,7 @@ import type {
   Catalog,
   CatalogModel,
   ChatDetail,
-  ChatSummary,
+  WorkspaceChatSummary,
   FolderSummary,
   Notice,
   RunEventView,
@@ -103,7 +103,7 @@ type WorkspaceActionsInput = {
   chatHasPendingThreadMutation?(chatId: string): boolean;
   chatMutation: WorkspaceChatMutationPort;
   loadingChatDetailIdRef: MutableRef<string | null>;
-  resumeChatRun(chat: ChatSummary): void;
+  resumeChatRun(chat: WorkspaceChatSummary): void;
   setNotice(notice: Notice): void;
   setSelectedModelId(value: string, origin?: "assistant" | "system" | "user"): void;
   setSelectedKnowledgePlan(
@@ -136,7 +136,7 @@ export function useWorkspaceActions({
   setSelectedSearchPlan,
   workspaceRefreshPromiseRef
 }: WorkspaceActionsInput) {
-  function summaryFromDetail(detail: ChatDetail): ChatSummary {
+  function summaryFromDetail(detail: ChatDetail): WorkspaceChatSummary {
     return {
       activeLeafMessageId: detail.activeLeafMessageId,
       createdAt: detail.createdAt,
@@ -152,7 +152,7 @@ export function useWorkspaceActions({
     };
   }
 
-  function detailFromOwners(summary: ChatSummary, thread: ThreadSnapshot): ChatDetail {
+  function detailFromOwners(summary: WorkspaceChatSummary, thread: ThreadSnapshot): ChatDetail {
     const history = threadHistoryState(thread);
     return {
       ...summary,
@@ -168,7 +168,7 @@ export function useWorkspaceActions({
     };
   }
 
-  function mergeChatIntoList(chat: ChatSummary) {
+  function mergeChatIntoList(chat: WorkspaceChatSummary) {
     const currentChat = useWorkspaceStore.getState().chats.find(
       (candidate) => candidate.id === chat.id
     );
@@ -192,7 +192,7 @@ export function useWorkspaceActions({
     }
   }
 
-  function markCachedSummaryRevision(chat: ChatSummary) {
+  function markCachedSummaryRevision(chat: WorkspaceChatSummary) {
     if (useThreadStore.getState().threadsByChatId[chat.id]) {
       useThreadStore.getState().mergeMessages(chat.id, [], {
         sourceUpdatedAt: chat.updatedAt
@@ -203,7 +203,7 @@ export function useWorkspaceActions({
   function cacheChatDetail(
     detail: ChatDetail,
     requestContext?: {
-      summary?: ChatSummary;
+      summary?: WorkspaceChatSummary;
       thread?: ThreadSnapshot;
     }
   ): ChatDetail {
@@ -506,7 +506,7 @@ export function useWorkspaceActions({
     return removedChatIds;
   }
 
-  function applyChatDefaults(chat: ChatSummary, catalogOverride: Catalog | null | undefined = useWorkspaceStore.getState().catalog) {
+  function applyChatDefaults(chat: WorkspaceChatSummary, catalogOverride: Catalog | null | undefined = useWorkspaceStore.getState().catalog) {
     const model = fallbackCatalogModel(catalogOverride, {
       modelId: chat.defaultModelId,
       provider: chat.defaultProvider
@@ -549,7 +549,7 @@ export function useWorkspaceActions({
     return true;
   }
 
-  function applyActiveChat(chat: ChatSummary, options: ActivateChatOptions = {}) {
+  function applyActiveChat(chat: WorkspaceChatSummary, options: ActivateChatOptions = {}) {
     activeChatIdRef.current = chat.id;
     useWorkspaceStore.getState().setPendingChatFolderId(null);
     rememberActiveChatId(chat.id);
@@ -565,7 +565,7 @@ export function useWorkspaceActions({
     }
   }
 
-  async function activateChat(chat: ChatSummary, options: ActivateChatOptions = {}) {
+  async function activateChat(chat: WorkspaceChatSummary, options: ActivateChatOptions = {}) {
     let cachedThread = useThreadStore.getState().threadsByChatId[chat.id];
     if (!cachedThread && chat.messageCount === 0) {
       cachedThread = {
@@ -755,7 +755,7 @@ export function useWorkspaceActions({
         const nextChats = body.chats.map(chatSummaryFromApi);
         const targetActiveChatId = nextActiveChatId ?? storedActiveChatId();
         let recoveredTemporaryDetail: ChatDetail | null = null;
-        let recoveredTemporarySummary: ChatSummary | null = null;
+        let recoveredTemporarySummary: WorkspaceChatSummary | null = null;
         if (targetActiveChatId && !nextChats.some((chat) => chat.id === targetActiveChatId)) {
           try {
             const memoryState = await loadChatMemoryState(targetActiveChatId);
@@ -893,7 +893,7 @@ export function useWorkspaceActions({
       if (!apiChat) {
         throw new Error("chat_create_malformed");
       }
-      const summary: ChatSummary = {
+      const summary: WorkspaceChatSummary = {
         ...chatSummaryFromApi(apiChat),
         ...(initialMemoryMode === "EXCLUDED"
           ? { memoryMode: "EXCLUDED" as const, memorySourceRevision: 0 }
@@ -961,7 +961,7 @@ export function useWorkspaceActions({
     }
   }
 
-  async function deleteChat(chat: ChatSummary) {
+  async function deleteChat(chat: WorkspaceChatSummary) {
     if (chatHasActiveStream(chat.id)) {
       setNotice({
         kind: "error",
@@ -994,7 +994,7 @@ export function useWorkspaceActions({
                   chat.id,
                   archived.chat.sourceRevision
                 );
-                const restoredChat: ChatSummary = {
+                const restoredChat: WorkspaceChatSummary = {
                   ...chat,
                   memoryMode: restored.chat.memoryMode,
                   memorySourceRevision: restored.chat.sourceRevision,
@@ -1034,7 +1034,7 @@ export function useWorkspaceActions({
     }
   }
 
-  async function renameChat(chat: ChatSummary) {
+  async function renameChat(chat: WorkspaceChatSummary) {
     const title = chatMutation.editingTitle.trim();
     if (!title) {
       return;
@@ -1073,7 +1073,7 @@ export function useWorkspaceActions({
     }
   }
 
-  async function exportChat(chat: ChatSummary, format: ChatExportFormat = "markdown") {
+  async function exportChat(chat: WorkspaceChatSummary, format: ChatExportFormat = "markdown") {
     setNotice({ kind: "success", text: "Preparing the complete chat export…" });
     try {
       const visible = await loadCompleteActiveBranch(chat.id);
@@ -1121,7 +1121,7 @@ export function useWorkspaceActions({
     }
   }
 
-  async function toggleChatFavorite(chat: ChatSummary) {
+  async function toggleChatFavorite(chat: WorkspaceChatSummary) {
     try {
       const response = await shellFetch(`/api/chats/${chat.id}`, {
         body: JSON.stringify({ pinned: !chat.pinned }),

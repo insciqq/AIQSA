@@ -18,7 +18,7 @@ import {
 import { resetThreadStoreForTest, selectThreadSnapshot, useThreadStore } from "./threadStore";
 import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
-import type { Catalog, CatalogModel, ChatDetail, ChatSummary } from "./types";
+import type { Catalog, CatalogModel, ChatDetail, WorkspaceChatSummary } from "./types";
 import type { SavedControlDraft } from "./powerAppShellData";
 import { memorySettingsFixture } from "./memoryTestFixtures";
 import {
@@ -156,7 +156,7 @@ function mixedSearchCatalog(
   };
 }
 
-function chat(): ChatSummary {
+function chat(): WorkspaceChatSummary {
   return {
     activeLeafMessageId: null,
     createdAt: "2026-06-10T00:00:00.000Z",
@@ -215,7 +215,7 @@ function prepareRegenerationThread(
 }
 
 function useMessageRunActionsForTest(input: {
-  activeChat?: ChatSummary | null;
+  activeChat?: WorkspaceChatSummary | null;
   activeChatId?: string | null;
   activeChatStreaming?: boolean;
   attachments: ComposerAttachment[];
@@ -225,7 +225,7 @@ function useMessageRunActionsForTest(input: {
   createChat?: (
     folderId?: string | null,
     sourceSessionKey?: ComposerSessionKey
-  ) => Promise<ChatSummary | null>;
+  ) => Promise<WorkspaceChatSummary | null>;
   draft?: string;
   editingMessageId?: string | null;
   fetchRun?: (runId: string, chatId: string) => Promise<unknown>;
@@ -915,7 +915,7 @@ describe("message run actions", () => {
 
   it("does not apply newer live attachments to a send token captured before deferred chat creation", async () => {
     let markCreateStarted!: () => void;
-    let resolveCreate!: (chat: ChatSummary) => void;
+    let resolveCreate!: (chat: WorkspaceChatSummary) => void;
     const createStarted = new Promise<void>((resolve) => {
       markCreateStarted = resolve;
     });
@@ -925,7 +925,7 @@ describe("message run actions", () => {
     };
     const createChat = vi.fn(() => {
       markCreateStarted();
-      return new Promise<ChatSummary>((resolve) => {
+      return new Promise<WorkspaceChatSummary>((resolve) => {
         resolveCreate = resolve;
       });
     });
@@ -1277,10 +1277,10 @@ describe("message run actions", () => {
       id: "chat-new",
       title: "New Chat"
     };
-    let resolveCreateChat!: (chat: ChatSummary) => void;
+    let resolveCreateChat!: (chat: WorkspaceChatSummary) => void;
     const createChat = vi.fn(
       () =>
-        new Promise<ChatSummary>((resolve) => {
+        new Promise<WorkspaceChatSummary>((resolve) => {
           resolveCreateChat = resolve;
         })
     );

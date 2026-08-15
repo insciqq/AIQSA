@@ -17,8 +17,7 @@ import type {
 } from "../coordinator/types";
 import {
   memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "../persistence/lexical";
 import { enqueueMemoryJob } from "../persistence/jobs";
 import {
@@ -86,8 +85,7 @@ type CurrentChunkRow = Readonly<{
 type ExpectedSearchEntry = Readonly<{
   languageCode: string;
   safeContentHash: string;
-  safeSearchText: string;
-  safeSearchTextYoNormalized: string;
+  normalizedSearchText: string;
   safetyIdentitySnapshot: string;
   sourceIdentitySnapshot: string;
   suppressionIdentitySnapshot: string;
@@ -489,8 +487,7 @@ function expectedSearchEntry(
   return {
     languageCode: chunk.languageCode,
     safeContentHash: chunk.contentHash,
-    safeSearchText: normalizeMemorySearchText(chunk.safeProjectedText),
-    safeSearchTextYoNormalized: normalizeMemorySearchTextYo(chunk.safeProjectedText),
+    normalizedSearchText: normalizeMemorySearchText(chunk.safeProjectedText),
     safetyIdentitySnapshot: memorySha256({
       policyVersion: chunk.sourceProjectionVersion,
       redactionReasonCodes: chunk.redactionReasonCodes,
@@ -630,8 +627,7 @@ async function planAlreadyApplied(
       embeddingStateMatchesIndex(activeIndex.indexMode, entry!.embeddingState) &&
       entry!.languageCode === expected.languageCode &&
       entry!.safeContentHash === expected.safeContentHash &&
-      entry!.safeSearchText === expected.safeSearchText &&
-      entry!.safeSearchTextYoNormalized === expected.safeSearchTextYoNormalized &&
+      entry!.normalizedSearchText === expected.normalizedSearchText &&
       entry!.safetyIdentitySnapshot === expected.safetyIdentitySnapshot &&
       entry!.sourceIdentitySnapshot === expected.sourceIdentitySnapshot &&
       entry!.suppressionIdentitySnapshot === expected.suppressionIdentitySnapshot;
@@ -722,8 +718,7 @@ async function persistChunk(
       languageCode: expected.languageCode,
       recallChunkId: chunk.id,
       safeContentHash: expected.safeContentHash,
-      safeSearchText: expected.safeSearchText,
-      safeSearchTextYoNormalized: expected.safeSearchTextYoNormalized,
+      normalizedSearchText: expected.normalizedSearchText,
       safetyIdentitySnapshot: expected.safetyIdentitySnapshot,
       sourceIdentitySnapshot: expected.sourceIdentitySnapshot,
       suppressionIdentitySnapshot: expected.suppressionIdentitySnapshot,

@@ -34,8 +34,7 @@ import {
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
   memorySha256,
-  normalizeMemorySearchText,
-  normalizeMemorySearchTextYo
+  normalizeMemorySearchText
 } from "../persistence/lexical";
 import {
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
@@ -66,8 +65,7 @@ type SearchIdentity = Readonly<{
   itemType: CurrentSearchItemType;
   languageCode: string;
   safeContentHash: string;
-  safeSearchText: string;
-  safeSearchTextYoNormalized: string;
+  normalizedSearchText: string;
   safetyIdentitySnapshot: string;
   sourceIdentitySnapshot: string;
   suppressionIdentitySnapshot: string;
@@ -184,8 +182,7 @@ function sameIdentity(left: ExistingEntry, right: SearchIdentity): boolean {
     left.itemType === right.itemType &&
     left.languageCode === right.languageCode &&
     left.safeContentHash === right.safeContentHash &&
-    left.safeSearchText === right.safeSearchText &&
-    left.safeSearchTextYoNormalized === right.safeSearchTextYoNormalized &&
+    left.normalizedSearchText === right.normalizedSearchText &&
     left.safetyIdentitySnapshot === right.safetyIdentitySnapshot &&
     left.sourceIdentitySnapshot === right.sourceIdentitySnapshot &&
     left.suppressionIdentitySnapshot === right.suppressionIdentitySnapshot;
@@ -274,8 +271,8 @@ async function eligibleFacts(
     where: { factVersionId: { in: rows.map(({ versionId }) => versionId) }, userId: settings.userId }
   }) as readonly FactEvidenceRow[];
   return rows.flatMap((row) => {
-    const safeSearchText = normalizeMemorySearchText(row.displayText);
-    if (!safeSearchText) return [];
+    const normalizedSearchText = normalizeMemorySearchText(row.displayText);
+    if (!normalizedSearchText) return [];
     const sources = evidence
       .filter(({ factVersionId }) => factVersionId === row.versionId)
       .map((item) => ({
@@ -292,8 +289,7 @@ async function eligibleFacts(
         displayText: row.displayText,
         structuredValue: row.structuredValue
       }),
-      safeSearchText,
-      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(row.displayText),
+      normalizedSearchText,
       safetyIdentitySnapshot: memorySha256({
         sensitivityClass: row.sensitivityClass,
         sources
@@ -307,7 +303,7 @@ async function eligibleFacts(
       suppressionIdentitySnapshot: memorySha256({
         canonicalKey: row.canonicalKey,
         category: row.category,
-        normalizedValue: safeSearchText
+        normalizedValue: normalizedSearchText
       })
     }];
   });
@@ -391,8 +387,7 @@ async function eligibleChunks(
       itemType: "RECALL_CHUNK" as const,
       languageCode: row.languageCode,
       safeContentHash: row.contentHash,
-      safeSearchText: normalizeMemorySearchText(row.safeProjectedText),
-      safeSearchTextYoNormalized: normalizeMemorySearchTextYo(row.safeProjectedText),
+      normalizedSearchText: normalizeMemorySearchText(row.safeProjectedText),
       safetyIdentitySnapshot: memorySha256({
         policyVersion: row.sourceProjectionVersion,
         redactionReasonCodes: row.redactionReasonCodes,
@@ -410,7 +405,7 @@ async function eligibleChunks(
       }),
       suppressionIdentitySnapshot
     };
-  }).filter(({ safeSearchText }) => safeSearchText.length > 0);
+  }).filter(({ normalizedSearchText }) => normalizedSearchText.length > 0);
 }
 
 async function enumerateEligibleItems(
@@ -442,8 +437,7 @@ async function existingGenerationEntries(
       languageCode: true,
       recallChunkId: true,
       safeContentHash: true,
-      safeSearchText: true,
-      safeSearchTextYoNormalized: true,
+      normalizedSearchText: true,
       safetyIdentitySnapshot: true,
       sourceIdentitySnapshot: true,
       suppressionIdentitySnapshot: true
@@ -470,8 +464,7 @@ function targetData(item: SearchIdentity, userId: string, generationId: string) 
     itemType: item.itemType,
     languageCode: item.languageCode,
     safeContentHash: item.safeContentHash,
-    safeSearchText: item.safeSearchText,
-    safeSearchTextYoNormalized: item.safeSearchTextYoNormalized,
+    normalizedSearchText: item.normalizedSearchText,
     safetyIdentitySnapshot: item.safetyIdentitySnapshot,
     sourceIdentitySnapshot: item.sourceIdentitySnapshot,
     suppressionIdentitySnapshot: item.suppressionIdentitySnapshot,
