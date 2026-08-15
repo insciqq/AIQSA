@@ -17,7 +17,7 @@ import {
   AnswerOutputsV2,
   ToolApprovalCardV2,
   type ToolApprovalStatusV2
-} from "./AnswerOutputsV2";
+} from "@/features/answer-outputs-v2/AnswerOutputsV2";
 
 export type AnswerOutputsGalleryState = "approval" | "complete" | "empty" | "reasoning";
 

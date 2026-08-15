@@ -45,7 +45,6 @@ export type KnowledgeSummaryV2 = Readonly<{
 
 export type FileSummaryV2 = Readonly<{
   id: string;
-  kind: "generated" | "upload";
   meta: string;
   name: string;
   private: boolean;

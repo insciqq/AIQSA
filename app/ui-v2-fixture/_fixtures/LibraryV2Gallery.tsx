@@ -8,8 +8,11 @@ import {
   KnowledgePanelV2,
   LibraryV2,
   MemoryPanelV2
-} from "./LibraryV2";
-import type { LibraryNavigationIntentV2, LibraryTabIdV2 } from "./contracts";
+} from "@/features/library-v2/LibraryV2";
+import type {
+  LibraryNavigationIntentV2,
+  LibraryTabIdV2
+} from "@/features/library-v2/contracts";
 
 export type LibraryGalleryStateV2 =
   | "assistants"
@@ -80,16 +83,7 @@ const bases = [
 
 const files = [
   {
-    id: "brief",
-    kind: "generated" as const,
-    meta: "v3 · 24 pages · 618 kB",
-    name: "quarterly_brief.docx",
-    private: true,
-    status: "ready" as const
-  },
-  {
     id: "sales",
-    kind: "upload" as const,
     meta: "From chat “Quarterly product brief” · 214 kB",
     name: "sales_q3.csv",
     private: true,
@@ -97,7 +91,6 @@ const files = [
   },
   {
     id: "scan",
-    kind: "upload" as const,
     meta: "OCR and text extraction",
     name: "contract_scan.pdf",
     private: true,
@@ -150,7 +143,7 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
             label: "Assistants"
           },
           { content: <KnowledgePanelV2 bases={bases} />, id: "knowledge", label: "Knowledge" },
-          { content: <FilesPanelV2 files={files} generatedFilesEnabled />, id: "files", label: "Files" },
+          { content: <FilesPanelV2 files={files} />, id: "files", label: "Files" },
           {
             content: (
               <MemoryPanelV2

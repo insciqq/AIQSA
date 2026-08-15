@@ -9,7 +9,7 @@ import {
   ReadingRoomShellV2
 } from "@/features/navigation-v2/NavigationV2";
 import { useRef, useState } from "react";
-import { ComposerV2, type ComposerV2Layer } from "./ComposerV2";
+import { ComposerV2, type ComposerV2Layer } from "@/features/composer-v2/ComposerV2";
 import type { ComposerAttachmentItemV2 } from "@/features/attachments-v2/attachmentPresentation";
 
 export type ComposerGalleryState =

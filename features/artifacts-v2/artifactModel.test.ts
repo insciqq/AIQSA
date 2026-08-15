@@ -5,7 +5,7 @@ import {
   artifactVersionLabel,
   boundArtifactVersion
 } from "./artifactModel";
-import { readyReportArtifact } from "./fixtures";
+import { readyReportArtifact } from "@/app/ui-v2-fixture/_fixtures/artifactFixtures";
 
 describe("artifact v2 presentation model", () => {
   it("formats only safe display metadata", () => {

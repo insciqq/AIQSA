@@ -73,6 +73,11 @@ export function proxyWithEnv(
   env: Record<string, string | undefined>
 ) {
   const { pathname } = request.nextUrl;
+  const fixturePath = pathname === "/ui-v2-fixture" || pathname.startsWith("/ui-v2-fixture/");
+
+  if (fixturePath && !isTestAuthAllowedEnv(env)) {
+    return secured(new NextResponse(null, { status: 404 }));
+  }
 
   if (
     isProtectedMutationPath(request.method, pathname) &&

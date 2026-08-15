@@ -17,7 +17,6 @@ import "../features/composer-v2/composer.css";
 import "../features/attachments-v2/attachments.css";
 import "../features/answer-outputs-v2/answer-outputs.css";
 import "../features/branches-v2/branches.css";
-import "../features/artifacts-v2/artifacts.css";
 import "../features/library-v2/library.css";
 import "../features/settings-v2/settings.css";
 import "../features/workspace-v2/workspace.css";

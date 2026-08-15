@@ -10,7 +10,7 @@ import { useState } from "react";
 import {
   ConversationV2,
   type ConversationMessageV2
-} from "./ConversationV2";
+} from "@/features/conversation-v2/ConversationV2";
 
 export type ConversationGalleryState =
   | "basic"

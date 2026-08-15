@@ -34,7 +34,7 @@ describe("public share proxy policy", () => {
       AIQSA_TEST_MODE: "",
       NODE_ENV: "development",
       PLAYWRIGHT_TEST_AUTH: ""
-    }).status).toBe(307);
+    }).status).toBe(404);
     expect(proxyWithEnv(new NextRequest(fixtureUrl), {
       AIQSA_TEST_MODE: "1",
       NODE_ENV: "development",
@@ -44,6 +44,11 @@ describe("public share proxy policy", () => {
       AIQSA_TEST_MODE: "1",
       NODE_ENV: "production",
       PLAYWRIGHT_TEST_AUTH: "1"
-    }).status).toBe(307);
+    }).status).toBe(404);
+    expect(proxyWithEnv(new NextRequest(`${fixtureUrl}/nested`), {
+      AIQSA_TEST_MODE: "",
+      NODE_ENV: "development",
+      PLAYWRIGHT_TEST_AUTH: ""
+    }).status).toBe(404);
   });
 });

@@ -3,7 +3,10 @@
 import { UiV2Button } from "@/components/ui-v2";
 import { applyThemeId, type ThemeId } from "@/components/app-shell/theme";
 import { useState } from "react";
-import { McpSettingsSummaryV2, SettingsV2 } from "./SettingsV2";
+import {
+  McpSettingsSummaryV2,
+  SettingsV2
+} from "@/features/settings-v2/SettingsV2";
 
 export type SettingsGalleryStateV2 = "appearance" | "dirty" | "mcp";
 

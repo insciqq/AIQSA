@@ -11,12 +11,12 @@ import {
   RunAnswerV2,
   RunComposerActionV2,
   RunLifecycleAnnouncerV2
-} from "./RunLifecycleV2";
+} from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import {
   presentRunLifecycleV2,
   type RunLifecycleStateV2,
   type RunLifecycleStatusV2
-} from "./runPresentation";
+} from "@/features/run-lifecycle-v2/runPresentation";
 
 const chats: ChatNavigationSummaryWire[] = [
   {
