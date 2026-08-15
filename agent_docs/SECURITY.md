@@ -1,16 +1,57 @@
 # SECURITY
 
 Owner: Security and privacy maintainers
-Scope: Non-normative router to bounded security and privacy contract owners.
+Scope: Threat, secret, identity, network, untrusted-input, dependency, and deployment trust boundaries.
 
-This file is a routing index, not a security contract owner. Read the mandatory cross-cutting invariants first, then only the affected security leaf.
+## HTTP, Identity, And Secrets
 
-| Read when | Contract owner |
+Private routes authenticate and reauthorize ownership/entitlement at the operation. Browser mutations require the shared same-origin/Sec-Fetch boundary and bounded bodies. Sessions are opaque HttpOnly `SameSite=Lax` tokens whose hashes are stored; secure cookies and HSTS follow the trusted application base URL. Security headers deny framing/sniffing and constrain referrers/content. Public shares additionally use dynamic no-store/noindex/no-referrer responses on every outcome.
+
+Password, OAuth, access request, invite, verification, reset, and bootstrap flows preserve generic enumeration-safe outcomes and transactional one-winner proofs. Password hashing and dummy verification stay server-owned. OAuth uses code flow, provider-bound state, PKCE, trusted callback origins, and provider-specific identity validation; provider tokens/codes/verifiers/raw responses are neither persisted nor logged. A provider subject, not a mutable email, owns later login.
+
+Auth rate limits are shared PostgreSQL fixed windows keyed by domain-separated installation-secret HMACs. Proxy headers are ignored unless explicit trust is configured. Otherwise the launcher authenticates the immediate socket peer; with proxy trust, the exact complete forwarded chain is required. Network ranges do not prove identity, direct HTTP gives no confidentiality, and multi-replica auth admission is unsupported.
+
+Use separate cryptographic purposes: session/flow signing, AES-256-GCM envelopes under `AIQSA_ENCRYPTION_KEY`, and the versioned Memory suppression fingerprint keyring. Secret API fields are write-only. Missing historical Memory keys fail closed. `prepare-secrets.sh` creates a new protected file only; it is not rotation and never reads an existing `.env`. Back up encryption and Memory keys separately from data.
+
+Application/access logs are structured and content-free. Never log prompts, answers, generated queries, attachment names/content, custom endpoints, provider/MCP bodies, tool arguments/results, Memory text, credentials, OAuth/session material, or token-bearing URLs. One narrow residual remains: exceptional operator-controlled Nginx error diagnostics may contain a public-share path/token; treat them as capability-bearing secrets, restrict/shorten retention, redact before support, and revoke a leaked share. This grants no broader logging exception.
+
+## Untrusted Files, Providers, And Content
+
+Authenticate before consuming uploads. Bound the complete multipart envelope, concurrency, parsing time/memory/output, file count/source/encoded bytes, and remote response before parsing. Derive accepted kind from extension, MIME, and content evidence; reject SVG. Parser/storage diagnostics, filenames, keys, bytes, checksums, extracted text, and private object locations never enter public errors.
+
+Originals remain private. Optional Docling/Tika siblings are internal stateless processors without data credentials or host ports; an external parser endpoint becomes an operator-owned trust boundary. Knowledge indexing may send only bounded normalized text to the base's exact disclosed embedding destination after live entitlement checks. Public snapshots replace file blocks with neutral omission text.
+
+Provider catalogs and every JSON/SSE/body/URL are untrusted. Catalog discovery is intersected with code-owned candidates and never grants capability. Provider and Search transports enforce deadlines and pre-parse bounds; safe normalized findings/citations are the only browser/durable Search evidence. Compatible endpoint validation is an SSRF boundary, including DNS pinning and redirects. Gemini Suggestions pass closed server and browser structural allowlists and remain live-only.
+
+Markdown stays React text except two narrow local reviewed sinks: Shiki output for bounded completed code fences and KaTeX output with trust disabled, hostile link/resource/HTML commands rejected, bounded source/macro work, and strict fallback to escaped text. Their real-library hostile-input tests own this exception.
+
+## MCP And Runtime Trust
+
+Only administrators configure/grant MCP, but installation is a trust decision, not proof of safety. Activation validates the complete sanitized inventory, secrets included, then publishes one immutable revision/effective subset; no per-call approval is implied and newly discovered enabled names can be state-changing. Dispatch rechecks the exact accepted name and generation before I/O.
+
+Remote Streamable HTTP uses the exactly pinned official SDK through SSRF-safe fetch and administrator-owned OAuth/static-header policy. URLs contain no credentials/query/fragment. Cross-origin authorization resources/servers require explicit review; discovery cannot broaden origin trust. OAuth tokens remain resource/client/scope bound, encrypted, absent from callback output/logs, and are drained on lost authority or policy change. Remote envelopes are bounded before SDK parsing and overflow destroys the transport without retaining partial data.
+
+Local npm/PyPI/digest-pinned OCI MCPs run in ToolHive sibling containers with normal outbound network and only explicitly supplied values. The ToolHive controller alone mounts the Docker socket, but the app can reach its unauthenticated private API; app compromise is therefore transitively root-equivalent host compromise. Current trusted single-host operation accepts no steady-state per-user workload quota/resource controller. Reassess before untrusted users, arbitrary self-service installation, isolation guarantees, or measured contention.
+
+ToolHive environment values are plaintext in controller/Docker state even when AIQSA storage encrypts them. Workload output and Docker diagnostics are sensitive. Cleanup selects only exact installation-owned opaque generations, defaults to list-only, and requires explicit `--execute`; run it before encryption-key loss/replacement because ownership markers derive from that key.
+
+## Deployment And Dependencies
+
+The persistent Compose installation binds the app to loopback by default; Postgres, object storage, parsers, and controllers have no host ports. Trusted LAN/VPN direct HTTP is supported with explicit peer admission and a confidentiality warning. Internet/TLS exposure keeps the app loopback-bound behind the supplied SSE/upload-aware proxy. Liveness is dependency-free; readiness fails closed for security contradictions and required data services while feature-local Memory/parser failures stay local.
+
+The release image is digest-pinned and non-root. Migration/bootstrap, app, Memory worker, and maintenance roles have distinct commands/configuration. Backups quiesce all writers before copying. Restore runs only in the isolated no-port topology described by [Persistence](PERSISTENCE.md).
+
+Deterministic test auth and the public demo credential are valid only when every explicit non-production/test switch is present inside the disposable topology. They never authorize persistent-installation testing. Routine fake-provider tests cannot become external calls.
+
+For dependency changes, inspect manifest/lockfile, registry sources, and lifecycle scripts; use `npm ci`, then the operator-approved `npm run security:deps`. Never apply forced/breaking automated remediation implicitly. These deliberate pins/overrides retain their rationale:
+
+| Dependency | Reviewed boundary |
 | --- | --- |
-| HTTP headers, origins, cookies, proxy trust, passwords, sessions, OAuth, auth admission, recovery, or enumeration resistance | [HTTP and auth](security/HTTP_AND_AUTH.md) |
-| Local test auth, Compose exposure, deployment ports, dependency installation, lifecycle scripts, or audits | [Deployment and dependencies](security/DEPLOYMENT_AND_DEPENDENCIES.md) |
-| MCP OAuth, source trust, local workloads, ToolHive lifecycle, runtime cleanup, grants, tokens, or tool evidence | [MCP runtime trust](security/MCP_RUNTIME.md) |
-| Uploads, attachments, Knowledge ingestion/embedding egress, object storage, extraction, provider discovery, catalogs, or provider-controlled input | [Uploads and provider trust](security/UPLOADS_AND_PROVIDER_TRUST.md) |
-| Native Memory safety projection, private evidence/logging, utility egress, suppression, lifecycle, or deletion | [Memory](backend/MEMORY.md), [persistence and retention](backend/PERSISTENCE_AND_RETENTION.md), and [testing](TESTING.md) |
+| `@modelcontextprotocol/sdk` | Exact pin and sole MCP protocol/OAuth implementation; its resolved Hono server line must remain beyond the reviewed advisory floor even though AIQSA does not expose that static server. |
+| `sharp` | Audited newer line used only by repository-owned OCR fixture generation; it intentionally crosses Next's optional range and must be revisited before any user-controlled/runtime image path. |
+| `nanoid` | Patched compatible build-only transitive line avoids the zero-size generator denial-of-service; AIQSA does not call the affected generator APIs. |
+| `postcss` | Audited override intentionally crosses Next's exact older dependency and processes repository CSS only; revisit before runtime/user CSS or once maintained Next carries a safe version. |
 
-Non-negotiable safety boundaries remain in [critical invariants](CRITICAL_INVARIANTS.md). Observable authentication and upload/share transitions are routed through [backend API and auth](backend/API_AND_AUTH.md), persistence rules through [persistence and retention](backend/PERSISTENCE_AND_RETENTION.md), and verification permissions through [testing](TESTING.md).
+Keep each only while its focused hostile-input/build/hermetic contract passes, and re-evaluate when upstream constraints become safe or its input surface expands.
+
+Repository task/PRD state and `.aiqsa/` runtime data are excluded from public Git and Docker context. Publication uses an inspected tree and the privacy gate; ref rewrites, force pushes, or tags require explicit operator authority.

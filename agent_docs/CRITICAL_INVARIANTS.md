@@ -3,7 +3,7 @@
 Owner: Safety and durable product semantics
 Scope: Cross-cutting rules whose violation can cause data loss, security/privacy exposure, incompatible persisted state, destructive verification, or a key run semantic change.
 
-This is the mandatory short safety read. Scoped contracts retain the same normative force and are routed below; product direction belongs in `PRODUCT_PRINCIPLES.md`, current implementation details in the bounded backend/frontend owners, and visual geometry in the owners routed by `DESIGN_SYSTEM.md`.
+This is the mandatory short safety read. Scoped contracts retain the same normative force and are indexed by `INDEX.md`; product direction belongs in `PRODUCT_PRINCIPLES.md`, current implementation details in their bounded owner, and UI behavior/geometry in `FRONTEND.md`.
 
 ## Data And Product Semantics
 
@@ -35,6 +35,6 @@ This is the mandatory short safety read. Scoped contracts retain the same normat
 
 ## Scoped Contract Routing
 
-- Exact provider transport selection, credential resolution, compatible no-auth, answer eligibility, client Search disclosure, and Gemini grounding behavior are routed through [provider adapters](backend/PROVIDER_ADAPTERS.md), [provider API notes](PROVIDER_API_NOTES.md), [the run pipeline](RUN_PIPELINE.md), and [security](SECURITY.md).
-- Authentication admission and proxy identity are routed through [API and auth](backend/API_AND_AUTH.md) and [security](SECURITY.md); built-in `full_access` lifecycle and entitlement persistence live in [persistence and retention](backend/PERSISTENCE_AND_RETENTION.md).
-- Theme persistence and client/server presentation-state ownership live in [frontend implementation state](frontend/IMPLEMENTATION_STATE.md).
+- Provider transport, credential resolution, compatible no-auth, answer eligibility, client Search, and Gemini grounding are owned by [Providers](PROVIDERS.md), [Run contracts](RUN_CONTRACTS.md), and [Security](SECURITY.md).
+- Authentication/proxy threats are owned by [Security](SECURITY.md), observable API boundaries by [Backend](BACKEND.md), and built-in access/persistence lifecycle by [Persistence](PERSISTENCE.md).
+- Theme persistence and client/server presentation-state ownership live in [Frontend](FRONTEND.md).

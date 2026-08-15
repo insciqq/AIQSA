@@ -26,21 +26,17 @@ There is no human-review status or acceptance gate. Complete work after automate
 
 ## Reading Map
 
-Do not preload the whole harness. Start with `agent_docs/CRITICAL_INVARIANTS.md` for rules every change must preserve. Read `agent_docs/PRODUCT_PRINCIPLES.md` only when product direction or prioritization is part of the scope.
+Do not preload the whole harness. Start with `agent_docs/CRITICAL_INVARIANTS.md`, then use `agent_docs/INDEX.md` to select only the owner crossed by the change. Read `agent_docs/PRODUCT_PRINCIPLES.md` only when product direction or prioritization is part of the scope.
 
 Then read only what the scope requires:
 
 - Before changing a scoped directory, read the nearest `AGENTS.md`; Claude-compatible scopes import it through the adjacent `CLAUDE.md`.
 - Read `agent_docs/AUTONOMOUS_WORKFLOW.md` only for broad selection, queued/task-state work, dependencies, parallel waves, or multi-session work. For queued work, also read `agent_docs/tasks/README.md` and the selected task from `agent_docs/tasks/queue/`. Named same-session work does not require the full workflow.
 - When the operator left a product or implementation choice open, read `agent_docs/DECISION_DEFAULTS.md`.
-- Before topology, module-boundary, data-boundary, or deployment-shape work, read `agent_docs/ARCHITECTURE.md`.
-- Read `agent_docs/RUN_PIPELINE.md` before run admission, Search, Knowledge retrieval, tool-loop, provider execution, recovery, output, usage, or retention work.
-- Read `agent_docs/FRONTEND.md` before UI behavior, state, accessibility, or shell work; it routes to bounded frontend owners.
-- Read `agent_docs/DESIGN_SYSTEM.md` additionally before visual composition, theme, geometry, density, or motion work.
-- Read `agent_docs/BACKEND.md` before route, persistence, auth, upload, run, or server-side behavior work; it routes to bounded backend owners.
-- Read `agent_docs/PROVIDER_API_NOTES.md` before provider work.
-- Read `agent_docs/ENV_VARIABLES.md` before environment or configuration work.
-- Read `agent_docs/SECURITY.md` before dependency or security work.
+- Read `agent_docs/ARCHITECTURE.md` for topology or module/data/deployment boundaries; `agent_docs/BACKEND.md` for routes, auth, uploads, and server composition; and `agent_docs/PERSISTENCE.md` for schema, migration, retention, backup, restore, or deletion work.
+- Read `agent_docs/RUN_CONTRACTS.md` for run admission, context, Search, Knowledge, tools, streaming, recovery, output, usage, or sharing; `agent_docs/PROVIDERS.md` for provider/Search/embedding transport; and `agent_docs/MEMORY.md` for personal Memory.
+- Read `agent_docs/FRONTEND.md` for UI behavior, state, accessibility, shell, visual composition, theme, geometry, density, or motion.
+- Read `agent_docs/ENV_VARIABLES.md` before environment/configuration work and `agent_docs/SECURITY.md` before dependency, trust, secret, auth, network, or security work.
 - Before changing behavior or tests, read the verification map, applicable lane, and test-authoring rules in `agent_docs/TESTING.md`; consult its boundary-specific verification requirements and opt-in commands only when the scope crosses that boundary.
 
 ## Contract Authority

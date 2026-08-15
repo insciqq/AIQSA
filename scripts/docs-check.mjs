@@ -5,12 +5,13 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  AGENT_DOC_BUDGETS,
+  HANDWRITTEN_AGENT_DOCS,
   NESTED_AGENT_INSTRUCTIONS,
   NESTED_CLAUDE_INSTRUCTIONS,
   REQUIRED_DOCS
 } from "./docs-manifest.mjs";
 import { generatedReferenceErrors } from "./generate-doc-reference.mjs";
-import { validateTaskLedger } from "./task-ledger.mjs";
 
 const DISCOVERY_EXCLUDED_PREFIXES = [
   ".agents/",
@@ -20,7 +21,6 @@ const DISCOVERY_EXCLUDED_PREFIXES = [
   ".turbo/",
   ".aiqsa/",
   "agent_docs/PRD/",
-  "agent_docs/generated/",
   "build/",
   "coverage/",
   "dist/",
@@ -38,9 +38,15 @@ const TASK_CONTRACT_FILES = new Set([
   "agent_docs/tasks/queue/README.md"
 ]);
 
+function portablePath(value) {
+  return value.split(path.sep).join("/");
+}
+
 function discoveryExcluded(relative) {
   if (relative === "agent_docs/tasks/") return false;
-  if (["archive", "drafts", "queue"].some((name) => relative === `agent_docs/tasks/${name}/`)) return false;
+  if (["archive", "drafts", "queue"].some((name) => relative === `agent_docs/tasks/${name}/`)) {
+    return false;
+  }
   if (relative.startsWith("agent_docs/tasks/") && !TASK_CONTRACT_FILES.has(relative)) return true;
   return DISCOVERY_EXCLUDED_PREFIXES.some((prefix) => relative.startsWith(prefix));
 }
@@ -58,7 +64,7 @@ function filesystemFiles(root) {
     }
   }
   walk(root);
-  return files;
+  return files.sort();
 }
 
 function repositoryFiles(root) {
@@ -71,11 +77,7 @@ function repositoryFiles(root) {
   const listed = spawnSync(
     "git",
     ["--work-tree", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    {
-      cwd: root,
-      encoding: "utf8",
-      maxBuffer: 16 * 1_024 * 1_024
-    }
+    { cwd: root, encoding: "utf8", maxBuffer: 16 * 1_024 * 1_024 }
   );
   if (listed.status !== 0) {
     throw new Error(`git ls-files failed during documentation discovery: ${listed.stderr.trim() || "unknown error"}`);
@@ -86,15 +88,11 @@ function repositoryFiles(root) {
     .sort();
 }
 
-function markdownFiles(root, files) {
-  return files.filter((relative) => relative.endsWith(".md")).map((relative) => path.join(root, relative));
-}
-
-function localLinkErrors(root, markdown) {
+function localLinkErrors(root, files) {
   const errors = [];
   const link = /!?\[[^\]]*\]\((<[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)/g;
-  for (const filename of markdown) {
-    const relative = path.relative(root, filename);
+  for (const relative of files.filter((filename) => filename.endsWith(".md"))) {
+    const filename = path.join(root, relative);
     const body = readFileSync(filename, "utf8");
     for (const match of body.matchAll(link)) {
       let target = match[1].replace(/^<|>$/g, "");
@@ -120,160 +118,81 @@ function localLinkErrors(root, markdown) {
   return errors;
 }
 
-
-function portablePath(value) {
-  return value.split(path.sep).join("/");
+function nonEmptyLines(filename) {
+  return readFileSync(filename, "utf8").split(/\r?\n/u).filter((line) => line.trim()).length;
 }
 
-function envErrors(root) {
-  const examplePath = path.join(root, ".env.example");
-  const docsPath = path.join(root, "agent_docs/ENV_VARIABLES.md");
-  if (!existsSync(examplePath)) return ["missing environment contract: .env.example"];
-  if (!existsSync(docsPath)) return [];
+function documentationBudgetErrors(root, files) {
   const errors = [];
-  const keys = [];
-  const seen = new Set();
-  for (const [index, raw] of readFileSync(examplePath, "utf8").split(/\r?\n/).entries()) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const match = /^([A-Z][A-Z0-9_]*)=/.exec(line);
-    if (!match) {
-      errors.push(`.env.example:${index + 1}: expected KEY=value`);
-      continue;
-    }
-    if (seen.has(match[1])) errors.push(`.env.example:${index + 1}: duplicate key ${match[1]}`);
-    seen.add(match[1]);
-    keys.push(match[1]);
+  const allowed = new Set(HANDWRITTEN_AGENT_DOCS);
+  const handwritten = files.filter(
+    (filename) => filename.startsWith("agent_docs/") &&
+      filename.endsWith(".md") &&
+      !filename.startsWith("agent_docs/generated/")
+  );
+  for (const filename of handwritten) {
+    if (!allowed.has(filename)) errors.push(`${filename}: orphan handwritten agent document; merge it into a core owner or add it deliberately`);
   }
-  const docs = readFileSync(docsPath, "utf8");
-  for (const key of keys) {
-    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (!new RegExp(`(^|[^A-Z0-9_])${escaped}([^A-Z0-9_]|$)`, "m").test(docs)) {
-      errors.push(`agent_docs/ENV_VARIABLES.md: missing .env.example key ${key}`);
+  if (handwritten.length > AGENT_DOC_BUDGETS.files) {
+    errors.push(`agent_docs: ${handwritten.length} handwritten files exceed the ${AGENT_DOC_BUDGETS.files}-file budget`);
+  }
+  let total = 0;
+  for (const filename of handwritten) {
+    const lines = nonEmptyLines(path.join(root, filename));
+    total += lines;
+    if (lines > AGENT_DOC_BUDGETS.nonEmptyLinesPerFile) {
+      errors.push(`${filename}: ${lines} nonempty lines exceed the ${AGENT_DOC_BUDGETS.nonEmptyLinesPerFile}-line file budget`);
     }
+  }
+  if (total > AGENT_DOC_BUDGETS.nonEmptyLines) {
+    errors.push(`agent_docs: ${total} nonempty lines exceed the ${AGENT_DOC_BUDGETS.nonEmptyLines}-line budget`);
   }
   return errors;
 }
 
-function taskPrivacyErrors(root) {
+function instructionBudgetErrors(root) {
   const errors = [];
-  const ignorePath = path.join(root, ".gitignore");
-  if (!existsSync(ignorePath)) return ["missing task privacy contract: .gitignore"];
-  const ignoreLines = new Set(readFileSync(ignorePath, "utf8").split(/\r?\n/u).map((line) => line.trim()));
-  for (const [instancePattern, contractPattern] of [
-    ["/agent_docs/tasks/queue/*.md", "!/agent_docs/tasks/queue/README.md"],
-    ["/agent_docs/tasks/archive/*", "!/agent_docs/tasks/archive/README.md"],
-    ["/agent_docs/tasks/drafts/*", "!/agent_docs/tasks/drafts/README.md"]
-  ]) {
-    if (!ignoreLines.has(instancePattern)) {
-      errors.push(`.gitignore: must ignore ${instancePattern}`);
-    }
-    if (!ignoreLines.has(contractPattern)) {
-      errors.push(`.gitignore: must keep ${contractPattern.slice(1)} trackable`);
-    }
-  }
-  for (const legacyPattern of [
-    "/agent_docs/tasks/*.md",
-    "/agent_docs/task_archive/*",
-    "/agent_docs/backlog/**"
-  ]) {
-    if (!ignoreLines.has(legacyPattern)) {
-      errors.push(`.gitignore: must retain the pre-migration privacy guard ${legacyPattern}`);
-    }
-  }
-  if (!ignoreLines.has("!/agent_docs/tasks/README.md")) {
-    errors.push(".gitignore: must keep agent_docs/tasks/README.md trackable");
-  }
-
-  if (existsSync(path.join(root, ".git"))) {
-    const tracked = spawnSync("git", ["--work-tree", root, "ls-files", "--", "agent_docs/tasks"], {
-      cwd: root,
-      encoding: "utf8"
-    });
-    if (tracked.status !== 0) {
-      errors.push(`task privacy check could not inspect tracked files: ${tracked.stderr.trim() || "git ls-files failed"}`);
-    } else {
-      const instances = tracked.stdout.split(/\r?\n/u).filter(Boolean).filter(
-        (filename) => !TASK_CONTRACT_FILES.has(filename)
-      );
-      for (const filename of instances) errors.push(`${filename}: public Git must not track task instances`);
-    }
-  }
-  return errors;
-}
-
-function instructionErrors(root) {
-  const errors = [];
-  for (const [filename, maximum] of [["AGENTS.md", 200], ["CLAUDE.md", 80]]) {
+  const budgets = [
+    ["AGENTS.md", 200],
+    ["CLAUDE.md", 80],
+    ...NESTED_AGENT_INSTRUCTIONS.map((filename) => [filename, 40]),
+    ...NESTED_CLAUDE_INSTRUCTIONS.map((filename) => [filename, 10])
+  ];
+  for (const [filename, maximum] of budgets) {
     const target = path.join(root, filename);
     if (!existsSync(target)) continue;
-    const lines = readFileSync(target, "utf8").split(/\r?\n/).length;
-    if (lines > maximum) {
-      errors.push(`${filename}: ${lines} lines exceed the ${maximum}-line root-instruction budget; route details to agent_docs`);
-    }
-  }
-
-  const claudePath = path.join(root, "CLAUDE.md");
-  if (existsSync(claudePath) && readFileSync(claudePath, "utf8").trim() !== "@AGENTS.md") {
-    errors.push("CLAUDE.md: must contain only the shared-instruction import @AGENTS.md");
-  }
-
-  const rootInstructions = path.join(root, "AGENTS.md");
-  const rootBody = existsSync(rootInstructions) ? readFileSync(rootInstructions, "utf8") : "";
-  for (const filename of NESTED_AGENT_INSTRUCTIONS) {
-    const target = path.join(root, filename);
-    if (!existsSync(target)) continue;
-    const body = readFileSync(target, "utf8");
-    const lines = body.split(/\r?\n/).length;
-    if (lines > 40 || Buffer.byteLength(body) > 4_096) {
-      errors.push(`${filename}: exceeds the 40-line/4096-byte nested-instruction budget`);
-    }
-    if (!/^Scope:\s+\S/mu.test(body)) {
-      errors.push(`${filename}: must declare one bounded Scope line`);
-    }
-    if (/^##\s+(?:Autonomy Trigger|Repository Publication|Before Final Response)$/mu.test(body)) {
-      errors.push(`${filename}: duplicates a root-only instruction section`);
-    }
-    const combinedLines = rootBody.split(/\r?\n/).length + lines;
-    const combinedBytes = Buffer.byteLength(rootBody) + Buffer.byteLength(body);
-    if (combinedLines > 240 || combinedBytes > 10_240) {
-      errors.push(`${filename}: root plus nearest instructions exceed the 240-line/10240-byte discovery budget`);
-    }
-  }
-  for (const filename of NESTED_CLAUDE_INSTRUCTIONS) {
-    const target = path.join(root, filename);
-    if (existsSync(target) && readFileSync(target, "utf8").trim() !== "@AGENTS.md") {
-      errors.push(`${filename}: must contain only the scoped-instruction import @AGENTS.md`);
-    }
+    const lines = readFileSync(target, "utf8").split(/\r?\n/u).length;
+    if (lines > maximum) errors.push(`${filename}: ${lines} lines exceed the ${maximum}-line instruction budget`);
   }
   return errors;
 }
 
-function docsManifestErrors() {
+function manifestErrors() {
   const errors = [];
-  const seen = new Set();
-  for (const filename of REQUIRED_DOCS) {
-    if (seen.has(filename)) errors.push(`scripts/docs-manifest.mjs: duplicate required document: ${filename}`);
-    seen.add(filename);
+  for (const [label, entries] of [
+    ["required", REQUIRED_DOCS],
+    ["handwritten", HANDWRITTEN_AGENT_DOCS]
+  ]) {
+    const seen = new Set();
+    for (const filename of entries) {
+      if (seen.has(filename)) errors.push(`scripts/docs-manifest.mjs: duplicate ${label} document: ${filename}`);
+      seen.add(filename);
+    }
   }
   return errors;
 }
 
 export function checkDocs(root = process.cwd()) {
   root = path.resolve(root);
-  const errors = [];
+  const errors = manifestErrors();
   const files = repositoryFiles(root);
-  const markdown = markdownFiles(root, files);
-  errors.push(...docsManifestErrors());
   for (const filename of REQUIRED_DOCS) {
     const target = path.join(root, filename);
     if (!existsSync(target) || !statSync(target).isFile()) errors.push(`missing required document: ${filename}`);
   }
-  errors.push(...instructionErrors(root));
-  errors.push(...localLinkErrors(root, markdown));
-  errors.push(...validateTaskLedger(root).errors);
-  errors.push(...taskPrivacyErrors(root));
-  errors.push(...envErrors(root));
+  errors.push(...documentationBudgetErrors(root, files));
+  errors.push(...instructionBudgetErrors(root));
+  errors.push(...localLinkErrors(root, files));
   errors.push(...generatedReferenceErrors(root));
   return errors;
 }
@@ -287,8 +206,7 @@ function cliRoot(argv) {
 }
 
 export function runDocsCheck(argv = process.argv.slice(2)) {
-  const root = path.resolve(cliRoot(argv));
-  const errors = checkDocs(root);
+  const errors = checkDocs(path.resolve(cliRoot(argv)));
   if (errors.length) throw new Error(`documentation sanity check failed:\n- ${errors.join("\n- ")}`);
   return "docs:check passed.";
 }

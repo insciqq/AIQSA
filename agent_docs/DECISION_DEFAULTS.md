@@ -8,7 +8,7 @@ Use these defaults only when the operator has not decided the point. They route 
 - Keep the Next.js/Postgres/Prisma/S3 modular monolith. Add a runtime, service, or library only after a measured existing boundary blocks the work.
 - Preserve the full reachable capability inventory in the bounded owners routed by `FRONTEND.md`. Prefer direct functionality and removal of duplicate editors or diagnostic surfaces over hiding a capability.
 - Keep conversation/composer primary, workspace navigation secondary, and Branches on demand. Concrete Model and Search are direct composer actions, Assistants stay opt-in through the quick picker and the Assistants surface, and advanced next-run controls remain in the bounded setup surface. A completed answer may show Sources and generated outputs when present; there is no generic evidence row, Run details drawer, Events tab, or post-hoc request/tool/retrieval inspector.
-- Resolve failure, loading, notice, shortcut safety, and responsive behavior through `FRONTEND.md`; resolve appearance through `DESIGN_SYSTEM.md`. Do not restate those contracts in a task. Dedicated accessibility conformance requires a separately approved task; preserve the current responsive, keyboard-safe, touch, overflow, and focus behavior meanwhile.
+- Resolve frontend behavior and appearance through `FRONTEND.md`. Do not restate that contract in a task. Dedicated accessibility conformance requires a separately approved task; preserve current responsive, keyboard-safe, touch, overflow, and focus behavior meanwhile.
 - Keep backend user ownership, entitlement validation, server-owned branch context, guarded run finalization, private attachments, sanitized snapshot boundaries, and durable recovery without duplicate external side effects.
 - Keep internal run records only when an executable consumer requires them for execution, recovery, safety, retention, or aggregate accounting. Do not expose repository return values directly to the browser, and do not retain a hidden/admin inspector as the final state.
 - Add abstractions only when they remove demonstrated duplication or give one authoritative owner to behavior; prefer narrow contracts and selectors over broad controller or repository interfaces.
@@ -16,11 +16,11 @@ Use these defaults only when the operator has not decided the point. They route 
 
 ## Provider Defaults
 
-- OpenAI Responses is the default provider path; current defaults and execution behavior are routed by `BACKEND.md`.
+- OpenAI Responses is the default provider path; current execution behavior and mutable upstream facts belong to `PROVIDERS.md`.
 - Anthropic uses Messages; first-class Gemini uses only Google's native stateless Interactions v1 adapter with no compatible fallback; OpenRouter uses Chat Completions and backs the Perplexity tool executor. A simple Custom endpoint fixes the wire protocol to generic Chat Completions; other compatible protocol choices remain Advanced.
 - The browser selects an entitled concrete model; providers are grouping and routing metadata, not standalone model choices.
 - Routine automation uses fake providers. Real provider calls follow the permission and cost limits in `CRITICAL_INVARIANTS.md`.
-- External mutable facts come from the bounded owners routed by `PROVIDER_API_NOTES.md`; configuration names and defaults come from `ENV_VARIABLES.md`.
+- Reverify mutable upstream facts through the primary references in `PROVIDERS.md`; configuration inventory and defaults come from `.env.example`, Compose, and focused parsers as described by `ENV_VARIABLES.md`.
 
 ## Verification Defaults
 
