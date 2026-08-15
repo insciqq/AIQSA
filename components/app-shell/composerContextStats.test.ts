@@ -1,18 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  composerContextGauge,
-  composerContextGaugeTitle,
-  formatComposerContextStats
-} from "./composerContextStats";
+import { composerContextGauge, composerContextGaugeTitle } from "./composerContextStats";
 
 describe("composer context statistics", () => {
-  it("formats the estimate separately from the safe and total budgets", () => {
-    expect(formatComposerContextStats({
-      approximateInputTokens: 121_900,
-      safeInputBudgetTokens: 232_000,
-      totalContextTokens: 400_000
-    })).toBe("Approx. input: ~122k / 232k safe input · 400k total context");
-  });
 
   it("uses warning and critical tones at the safe-input boundary", () => {
     expect(composerContextGauge({

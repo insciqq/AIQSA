@@ -117,7 +117,7 @@ export async function acceptCurrentMemoryDestinations(): Promise<MemorySettingsR
   }));
 }
 
-export function resetMemorySettingsStoreForTest(): void {
+export function deactivateMemorySettings(): void {
   loadPromise = null;
   useMemorySettingsStore.setState(initialState, true);
 }

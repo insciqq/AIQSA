@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
-import { createMemoryStorageAdapter, createS3StorageAdapter } from "../uploads/storage";
+import { createS3StorageAdapter } from "../uploads/storage";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import {
   createPrismaRetentionRepository,
   pruneRetention

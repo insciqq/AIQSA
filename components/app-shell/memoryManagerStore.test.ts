@@ -1,31 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  beginCreateMemory,
-  beginDeleteExplicitMemories,
-  beginMoveMemory,
-  confirmDeleteExplicitMemories,
-  forgetCurrentMemory,
-  moveMemoryScope,
-  refreshMemoryDeletionStatus,
-  resetMemoryManagerStoreForTest,
-  resolveMemoryConflictChoice,
-  saveMemoryChanges,
-  saveNewMemory,
-  submitMemoryFeedback,
-  undoLastMemoryFeedback,
-  useMemoryManagerStore
-} from "./memoryManagerStore";
-import {
-  resetMemorySettingsStoreForTest,
-  useMemorySettingsStore
-} from "./memorySettingsStore";
+import { beginCreateMemory, beginDeleteExplicitMemories, beginMoveMemory, confirmDeleteExplicitMemories, forgetCurrentMemory, moveMemoryScope, refreshMemoryDeletionStatus, resolveMemoryConflictChoice, saveMemoryChanges, saveNewMemory, submitMemoryFeedback, undoLastMemoryFeedback, useMemoryManagerStore } from "./memoryManagerStore";
+import { useMemorySettingsStore } from "./memorySettingsStore";
 import {
   memoryDeletionFixture,
   memoryDetailFixture,
   memoryEvidenceFixture,
   memorySettingsFixture,
   memorySummaryFixture
-} from "./memoryTestFixtures";
+} from "@/tests/support/memoryFixtures";
+import { resetMemoryManagerStoreForTest, resetMemorySettingsStoreForTest } from "@/tests/support/appShellStores";
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {

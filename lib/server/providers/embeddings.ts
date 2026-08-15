@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   ProviderResponseTooLargeError,
   isProviderDeadlineExceededError,
@@ -335,57 +334,6 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
       } finally {
         timeout.clear();
       }
-    }
-  };
-}
-
-function fakeVector(text: string, dimension: number, seed: string): number[] {
-  const vector: number[] = [];
-  for (let counter = 0; vector.length < dimension; counter += 1) {
-    const digest = createHash("sha256")
-      .update(seed, "utf8")
-      .update("\u0000", "utf8")
-      .update(text, "utf8")
-      .update("\u0000", "utf8")
-      .update(String(counter), "utf8")
-      .digest();
-    for (let offset = 0; offset + 4 <= digest.length && vector.length < dimension; offset += 4) {
-      vector.push(digest.readInt32BE(offset) / 0x8000_0000);
-    }
-  }
-  return vector;
-}
-
-export function createFakeEmbeddingAdapter(input: Readonly<{
-  configuration: EmbeddingModelConfiguration;
-  seed?: string;
-}>): EmbeddingAdapter {
-  const configuration = input.configuration;
-  if (
-    !Number.isSafeInteger(configuration.nativeDimension) ||
-    !Number.isSafeInteger(configuration.targetDimension) ||
-    configuration.targetDimension < 1 ||
-    configuration.targetDimension > configuration.nativeDimension ||
-    !configuration.supportsMrl && configuration.targetDimension !== configuration.nativeDimension
-  ) {
-    throw new EmbeddingAdapterError("embedding_input_invalid");
-  }
-  return {
-    async embed(request) {
-      const prepared = requestInputs(request.texts, request.mode, configuration);
-      const inputTokens = prepared.reduce(
-        (total, text) => total + Math.ceil(Buffer.byteLength(text, "utf8") / 4),
-        0
-      );
-      return {
-        model: "fake-embedding",
-        requestId: null,
-        usage: { inputTokens, totalTokens: inputTokens },
-        vectors: prepared.map((text) => normalizeVector(
-          fakeVector(text, configuration.nativeDimension, input.seed ?? "aiqsa"),
-          configuration.targetDimension
-        ))
-      };
     }
   };
 }

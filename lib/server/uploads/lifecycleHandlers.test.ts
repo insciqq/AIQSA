@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "../auth/config";
-import { createTestAuth } from "../auth/testRequestAuth";
+import { createTestAuth } from "@/tests/support/auth";
 import {
   createAttachmentRetryHandler,
   createAttachmentStatusHandler,

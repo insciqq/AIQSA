@@ -46,7 +46,3 @@ export const adminGroupRecordInclude = {
     }
   }
 } satisfies Prisma.GroupInclude;
-
-export type AdminGroupRecordRow = Prisma.GroupGetPayload<{
-  include: typeof adminGroupRecordInclude;
-}>;

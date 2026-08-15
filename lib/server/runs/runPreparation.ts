@@ -183,8 +183,6 @@ export type DeepReadonly<Value> = Value extends Primitive
 
 type PreparedRunDefaultsData = AcceptedRunDefaults;
 
-export type PreparedRunDefaults = DeepReadonly<PreparedRunDefaultsData>;
-
 export type MaterializedPreparedRunData = {
   assistant?: { assistantId: string; revisionId: string };
   contextTruncation: ContextTruncationSummary | null;

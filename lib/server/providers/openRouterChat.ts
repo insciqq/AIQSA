@@ -1,13 +1,11 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
-  createFakeOpenRouterPerplexitySearchAdapter as createFakeOpenRouterPerplexitySearchAdapterBoundary,
   createOpenRouterPerplexitySearchAdapter as createOpenRouterPerplexitySearchAdapterBoundary
 } from "./openRouterPerplexitySearch";
 import {
   buildOpenRouterChatRequest,
   buildOpenRouterChatRequestPreview,
-  buildOpenRouterPerplexitySearchRequest,
-  buildOpenRouterPerplexitySearchRequestPreview
+  buildOpenRouterPerplexitySearchRequest
 } from "./openRouterChatRequest";
 import {
   streamOpenRouterJsonResponse,
@@ -72,8 +70,4 @@ export function createOpenRouterPerplexitySearchAdapter(
   options: OpenRouterAdapterOptions
 ): ProviderSearchAdapter {
   return createOpenRouterPerplexitySearchAdapterBoundary({ client: options.client });
-}
-
-export function createFakeOpenRouterPerplexitySearchAdapter(): ProviderSearchAdapter {
-  return createFakeOpenRouterPerplexitySearchAdapterBoundary();
 }

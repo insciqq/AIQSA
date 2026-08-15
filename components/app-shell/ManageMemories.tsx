@@ -56,7 +56,6 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
-  Clock3,
   FileClock,
   FolderInput,
   History,
@@ -770,9 +769,7 @@ function MemoryFeedbackHistory() {
   );
 }
 
-function ConflictReview({ memory }: {
-  memory: MemorySummary;
-}) {
+function ConflictReview() {
   const mutationState = useMemoryManagerStore((state) => state.mutationState);
   const versions = useMemoryManagerStore((state) => state.versions)
     .filter(({ state }) => state === "CONFLICTING");
@@ -1024,7 +1021,7 @@ function MemoryDetail() {
         {memory.displayText ?? t("manager.notSet")}
       </p>
       {memory.factState === "CONFLICTED" ? (
-        <ConflictReview key={memory.id} memory={memory} />
+        <ConflictReview key={memory.id} />
       ) : null}
       <section className="mt-5" aria-labelledby="memory-why-heading">
         <h4 className="text-sm font-semibold text-ink" id="memory-why-heading">

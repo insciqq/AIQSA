@@ -1,4 +1,3 @@
-import type { ErrorResponse, SessionErrorCode } from "./http";
 import {
   decodeSearchPlan,
   MAX_SEARCH_PLAN_OPTIONS,
@@ -496,34 +495,6 @@ export type AssistantRevisionsResponse = { revisions: AssistantRevisionHistoryEn
 export type AssistantRevisionResponse = { revision: AssistantRevisionContent };
 export type AssistantPublicationResponse = { publication: AssistantPublicationView };
 
-export type AssistantErrorCode =
-  | SessionErrorCode
-  | "assistant_archived"
-  | "assistant_avatar_invalid"
-  | "assistant_category_invalid"
-  | "assistant_description_invalid"
-  | "assistant_developer_prompt_invalid"
-  | "assistant_draft_invalid"
-  | "assistant_knowledge_bases_invalid"
-  | "assistant_mcp_servers_invalid"
-  | "assistant_model_invalid"
-  | "assistant_model_not_available"
-  | "assistant_name_invalid"
-  | "assistant_not_available"
-  | "assistant_publication_invalid"
-  | "assistant_revision_not_found"
-  | "assistant_run_controls_invalid"
-  | "assistant_search_plan_invalid"
-  | "assistant_search_option_not_available"
-  | "assistant_starter_prompts_invalid"
-  | "assistant_system_prompt_invalid"
-  | "assistant_tools_not_available"
-  | "assistant_version_conflict"
-  | "forbidden"
-  | "json_required";
-
-export type AssistantErrorResponse = ErrorResponse<AssistantErrorCode>;
-
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
@@ -808,10 +779,4 @@ export function decodeAssistantRevisionResponse(value: unknown): AssistantRevisi
   if (!isRecord(value)) return null;
   const revision = decodeAssistantRevisionContent(value.revision);
   return revision ? { revision } : null;
-}
-
-export function decodeAssistantPublicationResponse(value: unknown): AssistantPublicationResponse | null {
-  if (!isRecord(value)) return null;
-  const publication = decodePublicationView(value.publication);
-  return publication ? { publication } : null;
 }

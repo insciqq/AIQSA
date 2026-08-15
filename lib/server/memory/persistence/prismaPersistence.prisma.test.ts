@@ -10,17 +10,19 @@ import {
 } from "../execution/policy";
 import { createMemorySettingsService } from "../settings/service";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
-import { createPrismaMemoryDeletionRepository } from "./deletion";
 import { MemoryPersistenceError } from "./errors";
 import {
   createPrismaMemoryFactRepository,
   type MemoryFactSaveInput,
   type MemoryFactValueInput
 } from "./facts";
-import { createPrismaMemoryJobRepository } from "./jobs";
 import { createPrismaMemoryScopeRepository } from "./scopes";
 import { createPrismaMemorySettingsRepository } from "./settings";
-import { createPrismaMemorySuppressionRepository } from "./suppressions";
+import {
+  createPrismaMemoryDeletionRepository,
+  createPrismaMemoryJobRepository,
+  createPrismaMemorySuppressionRepository
+} from "@/tests/support/memoryPersistence";
 import {
   consumeMemoryMutationAuthorization,
   createPrismaMemoryMutationAuthorizationRepository,

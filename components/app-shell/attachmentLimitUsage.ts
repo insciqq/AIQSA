@@ -205,12 +205,6 @@ export function withAttachmentLimitFeedbackMessage(
   return retained ? `${retained} ${message}` : message;
 }
 
-export function isAttachmentLimitFeedbackMessage(
-  value: string | null
-): boolean {
-  return Boolean(value && withoutAttachmentLimitFeedbackMessage(value) !== value);
-}
-
 export function calculateAttachmentLimitUsage(
   attachments: readonly ComposerAttachment[],
   model: CatalogModel | undefined,

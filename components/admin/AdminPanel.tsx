@@ -56,7 +56,7 @@ import { useAdminUsersController, type AdminUsersController } from "@/components
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import { Link2, Plus } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useRef, type MouseEvent } from "react";
 
 type AdminPanelProps = Readonly<{
   adminEmail: string;

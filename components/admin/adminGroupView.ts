@@ -13,10 +13,6 @@ export type AdminGrantTarget = Readonly<{
   searchStrategy?: string | null;
 }>;
 
-export function activeGroups(groups: readonly AdminGroup[]): AdminGroup[] {
-  return groups.filter((group) => !group.archivedAt);
-}
-
 export function filterAdminGroups(
   groups: readonly AdminGroup[],
   catalog: AdminCatalog,

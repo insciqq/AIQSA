@@ -586,14 +586,3 @@ export function dismissMemoryOperationStatus(
     rebuildStatus: null
   });
 }
-
-export function resetMemoryOperationsStoreForTest(): void {
-  abortStatusRequests();
-  if (typeof window !== "undefined") {
-    for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
-      const key = window.sessionStorage.key(index);
-      if (key?.startsWith(STORAGE_PREFIX)) window.sessionStorage.removeItem(key);
-    }
-  }
-  useMemoryOperationsStore.setState(initialState);
-}

@@ -27,7 +27,6 @@ import {
 import { validateSearchToolArguments } from "./query";
 import {
   SEARCH_TOOL_RESULT_VERSION,
-  searchExecutionsFromToolResult,
   searchToolResultContent,
   type SearchExecutionEvidence
 } from "./toolResult";

@@ -1,10 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getAuthConfig, resetAuthConfigWarningsForTests, TEST_AUTH_TOKEN } from "./config";
+import { getAuthConfig, TEST_AUTH_TOKEN } from "./config";
 import { hashToken } from "./token";
 
 describe("auth config", () => {
   afterEach(() => {
-    resetAuthConfigWarningsForTests();
     vi.restoreAllMocks();
   });
 
@@ -218,7 +217,9 @@ describe("auth config", () => {
     });
   });
 
-  it("warns once when the known dev bootstrap token is configured outside test mode and enabled", () => {
+  it("warns once when the known dev bootstrap token is configured outside test mode and enabled", async () => {
+    vi.resetModules();
+    const freshConfig = await import("./config");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const env = {
       AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256: hashToken(TEST_AUTH_TOKEN),
@@ -226,8 +227,8 @@ describe("auth config", () => {
       AIQSA_AUTH_SESSION_SECRET: "secret"
     };
 
-    getAuthConfig(env);
-    getAuthConfig(env);
+    freshConfig.getAuthConfig(env);
+    freshConfig.getAuthConfig(env);
 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain("known development bootstrap token");

@@ -18,8 +18,6 @@ import {
   seedMemoryHistoryBackfill
 } from "../history/backfill";
 import { memoryPersistenceFailure } from "./errors";
-import { enqueueMemoryJob } from "./jobs";
-import { memorySha256 } from "./lexical";
 import {
   advanceMemoryMutation,
   type LockedMemorySettings,

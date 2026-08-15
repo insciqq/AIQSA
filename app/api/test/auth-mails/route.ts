@@ -1,4 +1,3 @@
-import { clearTestAuthEmails, listTestAuthEmails } from "@/lib/server/auth/testMailer";
 import { isTestAuthEnabled } from "@/lib/server/auth/config";
 
 export const runtime = "nodejs";
@@ -8,9 +7,11 @@ function unavailable(): Response {
 }
 
 type TestAuthMailHandlerDeps = Readonly<{
-  clear(): void;
   enabled(): boolean;
-  list(): ReturnType<typeof listTestAuthEmails>;
+  load(): Promise<Readonly<{
+    clear(): void;
+    list(): readonly Readonly<{ subject: string; text: string; to: string }>[];
+  }>>;
 }>;
 
 export function createTestAuthMailHandlers(deps: TestAuthMailHandlerDeps) {
@@ -20,7 +21,8 @@ export function createTestAuthMailHandlers(deps: TestAuthMailHandlerDeps) {
         return unavailable();
       }
 
-      deps.clear();
+      const sink = await deps.load();
+      sink.clear();
       return Response.json({ ok: true });
     },
     async GET(): Promise<Response> {
@@ -28,17 +30,25 @@ export function createTestAuthMailHandlers(deps: TestAuthMailHandlerDeps) {
         return unavailable();
       }
 
+      const sink = await deps.load();
       return Response.json({
-        emails: deps.list()
+        emails: sink.list()
       });
     }
   };
 }
 
 const handlers = createTestAuthMailHandlers({
-  clear: clearTestAuthEmails,
   enabled: () => isTestAuthEnabled(),
-  list: listTestAuthEmails
+  async load() {
+    const { clearTestAuthEmails, listTestAuthEmails } = await import(
+      "@/lib/server/auth/testMailer"
+    );
+    return {
+      clear: clearTestAuthEmails,
+      list: listTestAuthEmails
+    };
+  }
 });
 
 export const DELETE = handlers.DELETE;

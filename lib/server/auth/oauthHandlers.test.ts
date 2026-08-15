@@ -10,7 +10,7 @@ import {
 import type { OAuthIdentityRepository } from "./oauthRepository";
 import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import { readCookie, SESSION_COOKIE_NAME } from "./session";
-import { createMemoryAuthSessionStore, createTestUser } from "./testRequestAuth";
+import { createMemoryAuthSessionStore, createTestUser } from "@/tests/support/auth";
 
 const config = getAuthConfig({
   AIQSA_APP_BASE_URL: "https://aiqsa.example",

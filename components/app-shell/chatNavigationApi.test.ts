@@ -4,7 +4,6 @@ import {
   listChatNavigation,
   searchChatNavigation
 } from "./chatNavigationApi";
-import { resetSessionExpiredSignalForTest } from "./shellApi";
 
 const page = {
   chats: [{
@@ -20,7 +19,6 @@ const page = {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  resetSessionExpiredSignalForTest();
 });
 
 describe("chat navigation API", () => {

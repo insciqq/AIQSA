@@ -211,14 +211,6 @@ export function adminInviteDeletionInfo(invite: AdminInviteDeletionSource, now: 
   };
 }
 
-export function adminUserOwnedDataCount(user: AdminUserOwnedDataSource): number {
-  return adminOwnedAppDataCount({
-    ...user._count,
-    memory: 0,
-    settings: user.settings ? 1 : 0
-  });
-}
-
 export function adminUserOwnedDataCountWithMemory(
   user: AdminUserOwnedDataSource,
   memory: number

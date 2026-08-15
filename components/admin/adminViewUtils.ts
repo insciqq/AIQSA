@@ -48,13 +48,6 @@ function catalogModel(
   return runtimeMatches.length === 1 ? runtimeMatches[0] : undefined;
 }
 
-export function modelDisplayName(
-  catalog: Pick<AdminCatalog, "models">,
-  model: { modelId: string; provider: string }
-): string {
-  return catalogModel(catalog, model)?.displayName ?? "Unavailable model";
-}
-
 export function providerModelDisplayName(
   catalog: Pick<AdminCatalog, "models" | "providers">,
   model: { modelId: string; provider: string }

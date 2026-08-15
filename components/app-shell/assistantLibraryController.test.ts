@@ -5,9 +5,9 @@ import type {
 } from "@/lib/contracts/assistants";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantEditorDraftState } from "@/components/assistants/libraryViewContracts";
+import { resetAssistantLibraryStoreForTest } from "@/tests/support/appShellStores";
 import {
   initialAssistantLibrarySnapshot,
-  resetAssistantLibraryStoreForTest,
   useAssistantLibraryStore
 } from "./assistantLibraryStore";
 import {

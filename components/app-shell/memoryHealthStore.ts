@@ -52,8 +52,11 @@ export async function activateMemoryHealthAccount(
   return refreshMemoryHealth();
 }
 
-export function deactivateMemoryHealthAccount(accountId: string): void {
-  if (useMemoryHealthStore.getState().accountId !== accountId) return;
+export function deactivateMemoryHealthAccount(accountId?: string): void {
+  if (
+    accountId !== undefined &&
+    useMemoryHealthStore.getState().accountId !== accountId
+  ) return;
   generation += 1;
   controller?.abort();
   controller = null;
@@ -106,12 +109,4 @@ export async function refreshMemoryHealth(): Promise<UserMemoryHealth> {
     }
   });
   return loadPromise;
-}
-
-export function resetMemoryHealthStoreForTest(): void {
-  generation += 1;
-  controller?.abort();
-  controller = null;
-  loadPromise = null;
-  useMemoryHealthStore.setState(initialState, true);
 }

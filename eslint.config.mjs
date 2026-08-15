@@ -22,6 +22,13 @@ const eslintConfig = [
     }
   },
   {
+    files: [architectureModules],
+    ignores: ["**/*.test.*", "**/*.spec.*", "tests/**"],
+    rules: {
+      "aiqsa-architecture/test-support-boundary": "error"
+    }
+  },
+  {
     files: [`app/${architectureModules}`, `components/${architectureModules}`],
     rules: {
       "aiqsa-architecture/ui-typography": "error"

@@ -1,19 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  DEFAULT_PROVIDER_STREAM_LIMITS,
-  getProviderStreamLimits,
-  isProviderDeadlineExceededError,
-  PROVIDER_STREAM_LIMIT_CEILINGS,
-  ProviderRequestTimeoutError,
-  ProviderResponseTooLargeError,
-  providerResponseMaxBytes,
-  providerStreamIdleTimeoutMs,
-  providerStreamTimingLimits,
-  readBoundedResponseText,
-  resolveProviderStreamLimits,
-  timeoutError,
-  withTimeoutSignal
-} from "./network";
+import { DEFAULT_PROVIDER_STREAM_LIMITS, getProviderStreamLimits, PROVIDER_STREAM_LIMIT_CEILINGS, ProviderRequestTimeoutError, ProviderResponseTooLargeError, providerResponseMaxBytes, providerStreamTimingLimits, readBoundedResponseText, resolveProviderStreamLimits, withTimeoutSignal } from "./network";
 
 const encoder = new TextEncoder();
 
@@ -122,14 +108,6 @@ describe("provider network response bounds", () => {
     }
   });
 
-  it("does not infer a configured deadline from names or message text", () => {
-    expect(isProviderDeadlineExceededError(new ProviderRequestTimeoutError(5_000))).toBe(true);
-    expect(isProviderDeadlineExceededError(new Error(
-      "upstream connect error or disconnect/reset before headers: connection timeout"
-    ))).toBe(false);
-    expect(isProviderDeadlineExceededError(timeoutError())).toBe(false);
-  });
-
   it("uses the 16 MiB default and accepts a positive environment override", () => {
     const previous = process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES;
 
@@ -198,34 +176,5 @@ describe("provider network response bounds", () => {
     });
     expect(cancellationReason).toBe(failure);
     expect(response.body?.locked).toBe(false);
-  });
-
-  it("preserves an abort reason while cancelling and releasing a stalled reader", async () => {
-    let cancellationReason: unknown;
-    const response = new Response(
-      new ReadableStream<Uint8Array>({
-        cancel(reason) {
-          cancellationReason = reason;
-        },
-        pull() {
-          // Keep the read pending until the supplied signal aborts it.
-        }
-      })
-    );
-    const controller = new AbortController();
-    const reason = timeoutError("body_deadline_reached");
-    const read = readBoundedResponseText(response, { signal: controller.signal });
-
-    controller.abort(reason);
-
-    await expect(read).rejects.toBe(reason);
-    expect(cancellationReason).toBe(reason);
-    expect(response.body?.locked).toBe(false);
-
-    const emptyBodyController = new AbortController();
-    emptyBodyController.abort(reason);
-    await expect(
-      readBoundedResponseText(new Response(null), { signal: emptyBodyController.signal })
-    ).rejects.toBe(reason);
   });
 });

@@ -278,13 +278,6 @@ export function parseMemoryFactConsolidationJob(
   return { candidateId: match[1]! };
 }
 
-export function memoryFactVerificationJobFingerprint(decisionId: string): string {
-  if (!sha256Pattern.test(decisionId)) {
-    throw new Error("memory_fact_verification_identity_invalid");
-  }
-  return `${MEMORY_FACT_VERIFICATION_JOB_PREFIX}${decisionId}`;
-}
-
 export function parseMemoryFactVerificationJob(
   job: MemoryJobDescriptor
 ): Readonly<{ decisionId: string }> | null {

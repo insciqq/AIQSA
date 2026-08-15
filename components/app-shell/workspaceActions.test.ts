@@ -1,21 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  composerSessionKey,
   resetComposerSessionStoreForTest,
+  resetRunSurfaceStoreForTest,
+  resetThreadStoreForTest,
+  resetWorkspaceStoreForTest
+} from "@/tests/support/appShellStores";
+import {
+  composerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
   useComposerSessionStore,
   type ComposerSessionKey
 } from "./composerSessionStore";
-import { resetRunSurfaceStoreForTest, useRunSurfaceStore } from "./runSurfaceStore";
+import { useRunSurfaceStore } from "./runSurfaceStore";
 import { chatExportMarkdown, useWorkspaceActions } from "./workspaceActions";
 import {
-  resetThreadStoreForTest,
   useThreadStore,
   type ThreadHistoryState
 } from "./threadStore";
 import {
-  resetWorkspaceStoreForTest,
   useWorkspaceStore,
   workspaceNavigationChats
 } from "./workspaceStore";

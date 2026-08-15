@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  resetComposerControlStoreForTest,
+  resetComposerSessionStoreForTest,
+  resetWorkspaceStoreForTest
+} from "@/tests/support/appShellStores";
 import { createFolderActions } from "./folderActions";
 import {
   composerSessionKey,
-  resetComposerSessionStoreForTest,
   selectComposerSession,
   useComposerSessionStore
 } from "./composerSessionStore";
-import {
-  resetComposerControlStoreForTest,
-  useComposerControlStore
-} from "./composerControlStore";
-import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
+import { useComposerControlStore } from "./composerControlStore";
+import { useWorkspaceStore } from "./workspaceStore";
 import type { WorkspaceChatSummary, FolderSummary, Notice } from "./types";
 import type { WorkspaceFolderMutationPort } from "./useWorkspaceInteractionController";
 

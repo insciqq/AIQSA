@@ -1,12 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  defaultGeminiInteractionsParams,
-  defaultOpenRouterParams,
-  defaultOpenAIResponsesParams,
-  normalizeOpenAIResponsesParams,
-  normalizeOpenRouterParams,
-  providerParameterSchemas
-} from "./providerParams";
+import { defaultOpenRouterParams, defaultOpenAIResponsesParams, normalizeOpenAIResponsesParams, normalizeOpenRouterParams } from "./providerParams";
 
 describe("provider parameter defaults", () => {
   it("keeps OpenAI Responses defaults aligned with the project contract", () => {
@@ -30,19 +23,6 @@ describe("provider parameter defaults", () => {
     expect(normalizeOpenRouterParams({}).stream).toBe(true);
     expect(normalizeOpenRouterParams({ stream: false }).stream).toBe(false);
     expect(normalizeOpenRouterParams({ temperature: 0 }).temperature).toBe(0);
-  });
-
-  it("keeps native Gemini Interactions defaults bounded and free of sampling controls", () => {
-    expect(defaultGeminiInteractionsParams()).toEqual({
-      maxTokens: 65536,
-      reasoning: { effort: "medium" },
-      stream: true
-    });
-    expect(providerParameterSchemas.gemini.fields.map(({ name }) => name)).toEqual([
-      "maxTokens",
-      "stream",
-      "reasoning.effort"
-    ]);
   });
 
   it("normalizes partial OpenAI reasoning params without dropping defaults", () => {
@@ -78,22 +58,6 @@ describe("provider parameter defaults", () => {
       expect(normalizeOpenAIResponsesParams({ [alias]: 2048 }).maxOutputTokens).toBe(2048);
       expect(normalizeOpenRouterParams({ [alias]: 2048 }).maxTokens).toBe(2048);
     }
-  });
-
-  it("exposes schemas for the supported built-in provider families", () => {
-    for (const provider of ["anthropic", "fake", "gemini", "openai", "openrouter"] as const) {
-      expect(providerParameterSchemas[provider]).toBeDefined();
-    }
-  });
-
-  it("exposes GPT-5.6 max effort and reasoning mode without adding OpenRouter-only minimal effort", () => {
-    const openAiEffort = providerParameterSchemas.openai.fields.find((field) => field.name === "reasoning.effort");
-    const openAiMode = providerParameterSchemas.openai.fields.find((field) => field.name === "reasoning.mode");
-    const openRouterEffort = providerParameterSchemas.openrouter.fields.find((field) => field.name === "reasoning.effort");
-
-    expect(openAiEffort?.allowedValues).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
-    expect(openAiMode?.allowedValues).toEqual(["standard", "pro"]);
-    expect(openRouterEffort?.allowedValues).toContain("minimal");
   });
 
   it("normalizes OpenRouter route-provider and token params from UI-shaped keys", () => {

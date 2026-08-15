@@ -1,5 +1,4 @@
 import {
-  MEMORY_UI_COPY,
   MEMORY_UI_COPY_KEYS,
   memoryFactStateLabel,
   memoryModalityLabel,

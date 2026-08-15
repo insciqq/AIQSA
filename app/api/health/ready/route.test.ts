@@ -24,7 +24,7 @@ vi.mock("@/lib/server/health/readiness", async (importOriginal) => {
   };
 });
 
-import { GET, resetReadinessReportingForTests } from "./route";
+import { GET } from "./route";
 
 type Launcher = {
   createCurrentPeerStamp(peerAddress: string): string | null;
@@ -81,7 +81,6 @@ function directReadinessRequest(): Request {
 }
 
 beforeEach(() => {
-  resetReadinessReportingForTests();
   mocks.checkS3Readiness.mockResolvedValue(undefined);
   mocks.queryRaw.mockResolvedValue([{ result: 1 }]);
 });

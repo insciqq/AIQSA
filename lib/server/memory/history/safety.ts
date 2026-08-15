@@ -1,6 +1,5 @@
 import { memoryExplicitStatementContainsSecret } from "../explicit/safety";
 
-export const MEMORY_HISTORY_SAFETY_POLICY_VERSION = "memory-history-safety-v1";
 export const MEMORY_HISTORY_REDACTION_MARKER = "⟦…⟧";
 
 export const MEMORY_DERIVED_SAFETY_CLASSES = [

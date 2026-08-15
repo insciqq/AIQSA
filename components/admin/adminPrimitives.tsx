@@ -4,7 +4,6 @@ import type { AdminDeletionInfo, AdminGroup, AdminMembership } from "@/lib/contr
 import {
   AvailabilityStatus,
   availabilityRowClass,
-  availabilityStatusClass,
   enableActionTone
 } from "@/components/resource-lifecycle/AvailabilityStatus";
 import { ArrowLeft, type LucideIcon } from "lucide-react";
@@ -22,7 +21,6 @@ export const inputClass =
   `min-h-control w-full rounded-control border border-control-boundary bg-answer-paper px-3 text-sm text-ink ${focusRing} ${touchTarget} placeholder:text-ink-muted aria-[invalid=true]:border-critical disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled`;
 const fieldLabelClass = "text-xs font-medium text-ink-secondary";
 
-export const adminAvailabilityStatusClass = availabilityStatusClass;
 export const adminAvailabilityRowClass = availabilityRowClass;
 export const AdminAvailabilityStatus = AvailabilityStatus;
 

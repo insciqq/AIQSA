@@ -1,6 +1,5 @@
 import { mergeThreadMessages as mergeThreadMessageList } from "@/components/app-shell/runState";
 import {
-  branchTreeHasForks,
   effectiveActiveLeafId,
   visibleMessagePath
 } from "@/components/app-shell/threadPath";
@@ -145,10 +144,6 @@ export function selectThreadRenderActiveLeafId(state: ThreadSnapshot): string | 
 
 export function selectThreadVisibleMessages(state: ThreadSnapshot): ThreadMessage[] {
   return visibleMessagePath(state.messages, state.activeLeafId);
-}
-
-export function selectThreadHasForks(state: ThreadSnapshot): boolean {
-  return branchTreeHasForks(state.messages);
 }
 
 export const useThreadStore = create<ThreadStore>((set) => ({
@@ -328,10 +323,3 @@ export const useThreadStore = create<ThreadStore>((set) => ({
     });
   }
 }));
-
-export function resetThreadStoreForTest() {
-  useThreadStore.setState({
-    threadRecency: [],
-    threadsByChatId: {}
-  });
-}

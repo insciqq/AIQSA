@@ -11,16 +11,6 @@ export const DEFAULT_DELETION_JOB_LEASE_MINUTES = 15;
 
 export const TERMINAL_MODEL_RUN_STATUSES = ["cancelled", "complete", "error"] as const;
 
-export type ModelRunEventPruneCandidate = {
-  createdAt: Date;
-  modelRunStatus: string;
-};
-
-export type AttachmentPruneCandidate = {
-  createdAt: Date;
-  messageId: string | null;
-};
-
 export type AttachmentDeletionClaim = {
   claimToken: string;
   id: string;
@@ -207,17 +197,6 @@ function staleKnowledgePayloadWhere(cutoff: Date): Prisma.KnowledgeDocumentVersi
     payloadPurgedAt: null,
     visibleFromRevision: null
   };
-}
-
-export function shouldPruneModelRunEvent(candidate: ModelRunEventPruneCandidate, cutoff: Date): boolean {
-  return (
-    candidate.createdAt < cutoff &&
-    TERMINAL_MODEL_RUN_STATUSES.includes(candidate.modelRunStatus as (typeof TERMINAL_MODEL_RUN_STATUSES)[number])
-  );
-}
-
-export function shouldPruneOrphanedAttachment(candidate: AttachmentPruneCandidate, cutoff: Date): boolean {
-  return candidate.messageId === null && candidate.createdAt < cutoff;
 }
 
 export function createPrismaRetentionRepository(prisma: PrismaClient): RetentionRepository {

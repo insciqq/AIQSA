@@ -80,33 +80,6 @@ function assertWithinLimit(actualBytes: number, maxBytes: number | undefined): v
   }
 }
 
-export function createMemoryStorageAdapter(): StorageAdapter & { objects: Map<string, StoredObjectInput> } {
-  const objects = new Map<string, StoredObjectInput>();
-
-  return {
-    objects,
-    async deleteObject(storageKey) {
-      objects.delete(storageKey);
-    },
-    async getObject(storageKey, options) {
-      const maxBytes = normalizedMaxBytes(options?.maxBytes);
-      throwIfAborted(options?.signal);
-      const object = objects.get(storageKey);
-
-      if (!object) {
-        throw new Error("stored_object_not_found");
-      }
-
-      assertWithinLimit(object.body.byteLength, maxBytes);
-      throwIfAborted(options?.signal);
-      return object;
-    },
-    async putObject(input) {
-      objects.set(input.storageKey, input);
-    }
-  };
-}
-
 export function createFileSystemStorageAdapter(root: string): StorageAdapter {
   return {
     async deleteObject(storageKey) {

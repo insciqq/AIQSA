@@ -93,7 +93,3 @@ export const useAssistantLibraryStore = create<AssistantLibraryStore>((set) => (
     set((state) => (state.history ? { history: { ...state.history, ...update } } : {}));
   }
 }));
-
-export function resetAssistantLibraryStoreForTest() {
-  useAssistantLibraryStore.setState({ ...initialAssistantLibrarySnapshot });
-}

@@ -34,9 +34,6 @@ type MemoryCoordinatorStartupGlobal = typeof globalThis & {
 };
 
 const noMissingKeys = Object.freeze([]) as readonly string[];
-const notStarted: Readonly<{ status: "not_started" }> = Object.freeze({
-  status: "not_started"
-});
 
 export async function listRequiredMemorySuppressionKeyIds(
   client: PrismaClient = prisma
@@ -79,11 +76,6 @@ export async function startMemoryCoordinatorFeatureLocally(input: Readonly<{
       status: "blocked"
     });
   }
-}
-
-export function getMemoryCoordinatorRuntimeStatus(): MemoryCoordinatorRuntimeStatus {
-  const scope = globalThis as MemoryCoordinatorStartupGlobal;
-  return scope.__aiqsaMemoryCoordinatorStartupStatus ?? notStarted;
 }
 
 export function startDefaultMemoryCoordinatorFeatureLocally(): Promise<MemoryCoordinatorStartupResult> {

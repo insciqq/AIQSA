@@ -1,14 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { memorySettingsFixture } from "./memoryTestFixtures";
-import { resetMemorySettingsStoreForTest, useMemorySettingsStore } from "./memorySettingsStore";
+import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import { useMemorySettingsStore } from "./memorySettingsStore";
 import { PermanentChatDeletionSurface } from "./PermanentChatDeletionSurface";
-import {
-  activatePermanentChatDeletionAccount,
-  openPermanentChatDeletion,
-  resetPermanentChatDeletionStoreForTest,
-  usePermanentChatDeletionStore
-} from "./permanentChatDeletionStore";
+import { activatePermanentChatDeletionAccount, openPermanentChatDeletion, usePermanentChatDeletionStore } from "./permanentChatDeletionStore";
+import { resetMemorySettingsStoreForTest, resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
 
 const now = "2026-08-12T10:00:00.000Z";
 

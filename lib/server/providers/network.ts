@@ -159,26 +159,6 @@ export function providerTimeoutMs(): number {
   return DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS;
 }
 
-export function providerStreamIdleTimeoutMs(): number {
-  return getProviderStreamLimits().idleTimeoutMs;
-}
-
-export function providerStreamMaxEventBytes(): number {
-  return getProviderStreamLimits().maxEventBytes;
-}
-
-export function providerStreamMaxBytes(): number {
-  return getProviderStreamLimits().maxBytes;
-}
-
-export function providerStreamMaxDurationMs(): number {
-  return getProviderStreamLimits().maxDurationMs;
-}
-
-export function providerStreamMaxOutputChars(): number {
-  return getProviderStreamLimits().maxOutputChars;
-}
-
 export function providerResponseMaxBytes(): number {
   return positiveIntegerEnv("AIQSA_PROVIDER_RESPONSE_MAX_BYTES", defaultProviderResponseMaxBytes);
 }
@@ -193,12 +173,6 @@ export class ProviderRequestTimeoutError extends Error {
     this.name = "ProviderRequestTimeoutError";
     this.timeoutMs = timeoutMs;
   }
-}
-
-export function timeoutError(message = "Provider request timed out"): Error {
-  const error = new Error(message);
-  error.name = "TimeoutError";
-  return error;
 }
 
 export function isProviderDeadlineExceededError(

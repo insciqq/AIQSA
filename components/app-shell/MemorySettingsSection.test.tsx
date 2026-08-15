@@ -1,15 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemorySettingsSection } from "./MemorySettingsSection";
-import {
-  resetMemorySettingsStoreForTest,
-  useMemorySettingsStore
-} from "./memorySettingsStore";
-import { resetMemoryHealthStoreForTest } from "./memoryHealthStore";
-import { resetMemoryManagerStoreForTest } from "./memoryManagerStore";
-import { resetMemoryOperationsStoreForTest } from "./memoryOperationsStore";
-import { memoryHealthFixture, memorySettingsFixture } from "./memoryTestFixtures";
+import { memoryHealthFixture, memorySettingsFixture } from "@/tests/support/memoryFixtures";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
+import { resetMemoryHealthStoreForTest, resetMemoryManagerStoreForTest, resetMemoryOperationsStoreForTest, resetMemorySettingsStoreForTest } from "@/tests/support/appShellStores";
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {

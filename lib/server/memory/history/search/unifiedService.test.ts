@@ -94,7 +94,7 @@ function repository(
     expansion: MemoryExpandedCandidate;
   }>[]
 ) {
-  const retrieve = vi.fn(async (input: { plan: MemoryRetrievalPlan; vector?: unknown }) => ({
+  const retrieve = vi.fn(async (_input: { plan: MemoryRetrievalPlan; vector?: unknown }) => ({
     core: [],
     laneResults: entries.map(({ candidate: item }) => ({
       candidates: [item],

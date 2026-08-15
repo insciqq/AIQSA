@@ -26,7 +26,6 @@ import { parseMcpLocalResolvedArtifact } from "./localArtifact";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import type {
   McpRuntimeCoordinatorRepository,
-  McpRuntimeInventoryTool,
   McpRuntimeLaunch
 } from "./runtimeCoordinator";
 

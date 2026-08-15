@@ -1,30 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resetComposerControlStoreForTest, useComposerControlStore } from "./composerControlStore";
+import { resetComposerControlStoreForTest, resetComposerSessionStoreForTest, resetMemorySettingsStoreForTest, resetRunLifecycleStoreForTest, resetRunSurfaceStoreForTest, resetThreadStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
+import { useComposerControlStore } from "./composerControlStore";
 import {
   composerSessionKey,
-  resetComposerSessionStoreForTest,
   selectComposerSession,
   useComposerSessionStore,
   type ComposerSessionKey
 } from "./composerSessionStore";
 import type { ConsumeMessageRunStream } from "./messageRunLifecycle";
 import { useMessageRunActions } from "./messageRunActions";
-import { resetRunLifecycleStoreForTest, useRunLifecycleStore } from "./runLifecycleStore";
+import { useRunLifecycleStore } from "./runLifecycleStore";
 import {
-  resetRunSurfaceStoreForTest,
   selectRunSurface,
   useRunSurfaceStore
 } from "./runSurfaceStore";
-import { resetThreadStoreForTest, selectThreadSnapshot, useThreadStore } from "./threadStore";
-import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
+import { selectThreadSnapshot, useThreadStore } from "./threadStore";
+import { useWorkspaceStore } from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { Catalog, CatalogModel, ChatDetail, WorkspaceChatSummary } from "./types";
 import type { SavedControlDraft } from "./powerAppShellData";
-import { memorySettingsFixture } from "./memoryTestFixtures";
-import {
-  resetMemorySettingsStoreForTest,
-  useMemorySettingsStore
-} from "./memorySettingsStore";
+import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import { useMemorySettingsStore } from "./memorySettingsStore";
 
 const hostedSearchOptionId = "hosted-openai-search";
 const clientSearchOptionId = "client-openai-search";

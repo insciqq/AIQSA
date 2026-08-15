@@ -4,12 +4,11 @@ import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { createPrismaShareRepository } from "../../shares/prismaRepository";
-import { createMemoryStorageAdapter } from "../../uploads/storage";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import { MemoryCoordinator } from "../../memory/coordinator/coordinator";
 import { createPrismaMemoryCoordinatorRepository } from
   "../../memory/coordinator/prismaRepository";
 import { MemoryCoordinatorRegistry } from "../../memory/coordinator/registry";
-import { createPrismaExplicitMemoryRepository } from "../../memory/explicit/repository";
 import {
   createPrismaMemoryMutationAuthorizationRepository,
   memoryMutationNonceHash

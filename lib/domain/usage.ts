@@ -26,10 +26,6 @@ function tokenCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
-export function tokenUsageTotal(usage: TokenUsage): number {
-  return tokenCount(usage.totalTokens) || tokenCount(usage.inputTokens) + tokenCount(usage.outputTokens);
-}
-
 export function normalizeTokenUsage(usage: TokenUsage): NormalizedTokenUsage {
   const inputTokens = tokenCount(usage.inputTokens);
   const outputTokens = tokenCount(usage.outputTokens);

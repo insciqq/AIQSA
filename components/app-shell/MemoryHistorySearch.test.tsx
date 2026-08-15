@@ -1,11 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetMemoryHistorySearchStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { MemoryHistorySearch } from "./MemoryHistorySearch";
-import {
-  resetMemoryHistorySearchStoreForTest,
-  useMemoryHistorySearchStore
-} from "./memoryHistorySearchStore";
-import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
+import { useMemoryHistorySearchStore } from "./memoryHistorySearchStore";
+import { useWorkspaceStore } from "./workspaceStore";
 import type { MemoryHistorySearchResponse } from "@/lib/contracts/memory";
 
 function json(value: unknown): Response {

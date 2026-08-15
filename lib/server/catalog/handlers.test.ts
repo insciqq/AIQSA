@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { decodeCatalogResponse, type CatalogResponse } from "../../contracts/catalog";
 import { defaultProviderModels, defaultSearchStrategies } from "../../domain/catalog";
 import { getAuthConfig } from "../auth/config";
-import { createTestAuth } from "../auth/testRequestAuth";
+import { createTestAuth } from "@/tests/support/auth";
 import { buildCurrentUserCatalog, createCatalogHandler } from "./handlers";
 
 const config = getAuthConfig({

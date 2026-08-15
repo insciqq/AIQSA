@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { resetComposerControlStoreForTest } from "@/tests/support/appShellStores";
 import {
-  resetComposerControlStoreForTest,
   useComposerControlStore,
   type ComposerAssistantSelection
 } from "@/components/app-shell/composerControlStore";

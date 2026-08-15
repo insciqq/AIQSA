@@ -1,12 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  loadEarlierArchivedMessages,
-  openArchivedChatPreview,
-  openArchivedChats,
-  resetArchivedChatsStoreForTest,
-  restoreArchivedChat,
-  useArchivedChatsStore
-} from "./archivedChatsStore";
+import { loadEarlierArchivedMessages, openArchivedChatPreview, openArchivedChats, restoreArchivedChat, useArchivedChatsStore } from "./archivedChatsStore";
+import { resetArchivedChatsStoreForTest } from "@/tests/support/appShellStores";
 
 const updatedAt = "2026-08-10T08:00:00.000Z";
 

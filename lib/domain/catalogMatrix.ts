@@ -6,25 +6,12 @@ import type {
 import type { SearchPlan, SearchPlanMode } from "./search";
 import type {
   CatalogWireModel,
-  CatalogWireModelCapabilities,
-  CatalogWireSearchStrategy,
-  OpenRouterRoutePreferences
+  CatalogWireSearchStrategy
 } from "../contracts/catalog";
 
-export type CatalogModelCapabilities = CatalogWireModelCapabilities;
 export type CatalogModel = CatalogWireModel;
 export type CatalogSearchStrategy = CatalogWireSearchStrategy;
 export type { OpenRouterRoutePreferences } from "../contracts/catalog";
-
-const defaultOpenRouterRoutePreferences: OpenRouterRoutePreferences = {
-  allowFallbacks: true,
-  dataCollection: "deny",
-  order: [],
-  only: [],
-  requireParameters: false,
-  sort: "throughput",
-  zdr: false
-};
 
 type SearchCombinationOption = {
   executionModes?: readonly SearchPlanMode[];
@@ -104,45 +91,6 @@ export function reconcileModelSearchPlan(
     mode,
     effectiveOptions
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function normalizeOpenRouterRoutePreferences(input: unknown): OpenRouterRoutePreferences {
-  if (!isRecord(input)) {
-    return defaultOpenRouterRoutePreferences;
-  }
-
-  const provider = isRecord(input.provider) ? input.provider : input;
-  const sort = provider.sort;
-  const dataCollection = provider.dataCollection;
-  const order = provider.order;
-  const only = provider.only;
-
-  return {
-    allowFallbacks:
-      typeof provider.allowFallbacks === "boolean"
-        ? provider.allowFallbacks
-        : typeof provider.allow_fallbacks === "boolean"
-          ? provider.allow_fallbacks
-          : defaultOpenRouterRoutePreferences.allowFallbacks,
-    dataCollection:
-      dataCollection === "allow" || dataCollection === "deny"
-        ? dataCollection
-        : defaultOpenRouterRoutePreferences.dataCollection,
-    order: Array.isArray(order) ? order.filter((item): item is string => typeof item === "string") : [],
-    only: Array.isArray(only) ? only.filter((item): item is string => typeof item === "string") : [],
-    requireParameters:
-      typeof provider.requireParameters === "boolean"
-        ? provider.requireParameters
-        : typeof provider.require_parameters === "boolean"
-          ? provider.require_parameters
-          : defaultOpenRouterRoutePreferences.requireParameters,
-    sort: sort === "latency" || sort === "price" || sort === "throughput" ? sort : defaultOpenRouterRoutePreferences.sort,
-    zdr: typeof provider.zdr === "boolean" ? provider.zdr : defaultOpenRouterRoutePreferences.zdr
-  };
 }
 
 export function availableSearchStrategiesForModel(

@@ -283,11 +283,3 @@ export function workspaceNavigationChats(chats: readonly WorkspaceChatSummary[])
     (chat) => chat.memoryMode !== "TEMPORARY" && chat.pendingInitialMemoryMode !== "TEMPORARY"
   );
 }
-
-export function resetWorkspaceStoreForTest() {
-  useWorkspaceStore.setState({
-    ...initialWorkspaceSnapshot,
-    chats: [],
-    folders: []
-  });
-}

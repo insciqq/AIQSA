@@ -1,20 +1,9 @@
-import type { ContentBlock } from "./content";
-
 export type MessageRole = "assistant" | "system" | "tool" | "user";
 
 export type BranchMessage = {
   id: string;
   parentMessageId: string | null;
   role: MessageRole;
-};
-
-export type BranchDraft = {
-  parentMessageId: string | null;
-  role: MessageRole;
-  content: {
-    blocks: ContentBlock[];
-  };
-  branchSourceMessageId: string;
 };
 
 export function getVisibleMessagePath<TMessage extends BranchMessage>(
@@ -46,37 +35,4 @@ export function getVisibleMessagePath<TMessage extends BranchMessage>(
   }
 
   return path.reverse();
-}
-
-export function buildEditedUserBranch(
-  original: BranchMessage,
-  blocks: ContentBlock[]
-): BranchDraft {
-  if (original.role !== "user") {
-    throw new Error("Only user messages can be edited into a user branch");
-  }
-
-  return {
-    branchSourceMessageId: original.id,
-    content: {
-      blocks
-    },
-    parentMessageId: original.parentMessageId,
-    role: "user"
-  };
-}
-
-export function buildAssistantRegenerationBranch(original: BranchMessage): BranchDraft {
-  if (original.role !== "assistant") {
-    throw new Error("Only assistant messages can be regenerated into an assistant branch");
-  }
-
-  return {
-    branchSourceMessageId: original.id,
-    content: {
-      blocks: []
-    },
-    parentMessageId: original.parentMessageId,
-    role: "assistant"
-  };
 }

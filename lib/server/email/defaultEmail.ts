@@ -1,9 +1,9 @@
 import { isTestAuthEnabled } from "../auth/config";
-import { createTestEmailCapture } from "../auth/testMailer";
 import { prisma } from "../prisma";
 import {
   createCapturedSmtpTransport,
-  createEmailDispatcher
+  createEmailDispatcher,
+  type EmailTestCapture
 } from "./dispatcher";
 import { createPrismaEmailRepository } from "./repository";
 import { createAdminEmailService } from "./service";
@@ -11,7 +11,14 @@ import { createSmtpTransport } from "./smtpTransport";
 
 export const emailRepository = createPrismaEmailRepository({ prisma });
 export const smtpTransport = createSmtpTransport();
-const testCapture = isTestAuthEnabled(process.env) ? createTestEmailCapture() : undefined;
+const testCapture: EmailTestCapture | undefined = isTestAuthEnabled(process.env)
+  ? {
+      async capture(message) {
+        const { captureTestAuthEmail } = await import("../auth/testMailer");
+        captureTestAuthEmail(message);
+      }
+    }
+  : undefined;
 const adminSmtpTransport = testCapture
   ? createCapturedSmtpTransport(testCapture)
   : smtpTransport;

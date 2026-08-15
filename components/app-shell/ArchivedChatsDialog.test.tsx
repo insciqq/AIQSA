@@ -1,17 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArchivedChatsDialog } from "./ArchivedChatsDialog";
-import {
-  resetArchivedChatsStoreForTest,
-  useArchivedChatsStore
-} from "./archivedChatsStore";
-import { memorySettingsFixture } from "./memoryTestFixtures";
-import { resetMemorySettingsStoreForTest, useMemorySettingsStore } from "./memorySettingsStore";
-import {
-  activatePermanentChatDeletionAccount,
-  resetPermanentChatDeletionStoreForTest,
-  usePermanentChatDeletionStore
-} from "./permanentChatDeletionStore";
+import { useArchivedChatsStore } from "./archivedChatsStore";
+import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import { useMemorySettingsStore } from "./memorySettingsStore";
+import { activatePermanentChatDeletionAccount, usePermanentChatDeletionStore } from "./permanentChatDeletionStore";
+import { resetArchivedChatsStoreForTest, resetMemorySettingsStoreForTest, resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
 
 const updatedAt = "2026-08-10T08:00:00.000Z";
 const summary = {

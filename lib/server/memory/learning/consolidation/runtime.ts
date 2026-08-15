@@ -55,14 +55,6 @@ export type MemoryFactDecisionProviderRequest =
   | Readonly<{ input: MemoryFactVerificationInput; kind: "VERIFY" }>;
 
 export type MemoryFactDecisionProviderResult = Readonly<{
-  outputKind:
-    | "message_without_text"
-    | "no_output_items"
-    | "other_nontext"
-    | "reasoning_only"
-    | "text_and_tool_calls"
-    | "text_only"
-    | "tool_calls_only";
   providerResponseId: string | null;
   toolCalls: readonly ModelToolCall[] | undefined;
   usage: ModelRunUsage;
@@ -99,28 +91,6 @@ function boundedProviderResponseId(value: string | undefined): string | null {
     /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,255}$/u.test(value)
     ? value
     : null;
-}
-
-export function memoryFactDecisionOutputKind(
-  result: Pick<
-    ProviderRunResult,
-    "finalProviderResponsePreview" | "finalText" | "toolCalls"
-  >
-): MemoryFactDecisionProviderResult["outputKind"] {
-  const hasText = result.finalText.trim().length > 0;
-  const hasToolCalls = (result.toolCalls?.length ?? 0) > 0;
-  if (hasText) return hasToolCalls ? "text_and_tool_calls" : "text_only";
-  if (hasToolCalls) return "tool_calls_only";
-
-  const previewOutput = result.finalProviderResponsePreview.output;
-  if (!Array.isArray(previewOutput) || previewOutput.length === 0) {
-    return "no_output_items";
-  }
-  const itemTypes = previewOutput.map((item) =>
-    isRecord(item) && typeof item.type === "string" ? item.type : null);
-  if (itemTypes.every((type) => type === "reasoning")) return "reasoning_only";
-  if (itemTypes.some((type) => type === "message")) return "message_without_text";
-  return "other_nontext";
 }
 
 export function memoryFactDecisionToolChoice(
@@ -299,7 +269,6 @@ export function createAcceptedMemoryFactDecisionProvider(
         runtime.adapter.stream(providerRequest(snapshot, request), { signal })
       );
       return {
-        outputKind: memoryFactDecisionOutputKind(result),
         providerResponseId: boundedProviderResponseId(result.providerResponseId),
         toolCalls: result.toolCalls,
         usage: result.usage

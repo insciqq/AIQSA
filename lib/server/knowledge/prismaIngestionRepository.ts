@@ -124,7 +124,7 @@ function uniqueConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
-async function serializable<T>(client: PrismaClient, operation: () => Promise<T>): Promise<T> {
+async function serializable<T>(operation: () => Promise<T>): Promise<T> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       return await operation();
@@ -1061,7 +1061,7 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
 
     async createVersion(input: KnowledgeVersionCreateInput): Promise<KnowledgeVersionCreateResult> {
       try {
-        return await serializable(client, () => client.$transaction(async (tx) => {
+        return await serializable(() => client.$transaction(async (tx) => {
           const base = await lockOwnedBase(tx, input.userId, input.knowledgeBaseId);
           if (!base || base.archivedAt || !base.activeIndexGenerationId) {
             return { kind: "not_found" } as const;
@@ -1291,7 +1291,7 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
       now: Date;
       userId: string;
     }>): Promise<KnowledgeDocumentMutationResult> {
-      return serializable(client, () => client.$transaction(async (tx) => {
+      return serializable(() => client.$transaction(async (tx) => {
         const base = await lockOwnedBase(tx, input.userId, input.knowledgeBaseId);
         if (!base || base.archivedAt || !base.activeIndexGenerationId) {
           return { kind: "not_found" } as const;
@@ -1688,7 +1688,7 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
       versionId: string;
     }>): Promise<KnowledgeDocumentMutationResult> {
       try {
-        return await serializable(client, () => client.$transaction(async (tx) => {
+        return await serializable(() => client.$transaction(async (tx) => {
           const base = await lockOwnedBase(tx, input.userId, input.knowledgeBaseId);
           if (!base || base.archivedAt || !base.activeIndexGenerationId) {
             return { kind: "not_found" } as const;
@@ -1878,7 +1878,7 @@ export function createPrismaKnowledgeIngestionRepository(client: PrismaClient = 
       userId: string;
     }>): Promise<KnowledgeReindexStartResult> {
       try {
-        return await serializable(client, () => client.$transaction(async (tx) => {
+        return await serializable(() => client.$transaction(async (tx) => {
           const base = await lockOwnedBase(tx, input.userId, input.knowledgeBaseId);
           if (!base || base.archivedAt || !base.activeIndexGenerationId) {
             return { kind: "not_found" } as const;

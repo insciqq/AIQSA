@@ -1,6 +1,5 @@
 import type {
-  AdminProviderCustomAuthenticationMode,
-  AdminProviderCustomSetupReadyResult
+  AdminProviderCustomAuthenticationMode
 } from "../../../contracts/adminProviderCustomSetup";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import type {
@@ -83,17 +82,3 @@ export type AdminProviderCustomSetupRepository = Readonly<{
     plan: AdminProviderCustomSetupCommitPlan
   ): Promise<AdminProviderCustomSetupCommitResult>;
 }>;
-
-export type AdminProviderCustomSetupSafeResult = Pick<
-  AdminProviderCustomSetupReadyResult,
-  | "authenticationMode"
-  | "checkedAt"
-  | "connectionDisplayName"
-  | "connectionId"
-  | "defaultChanged"
-  | "modelDisplayName"
-  | "models"
-  | "outcome"
-  | "providerModelId"
-  | "search"
->;

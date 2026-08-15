@@ -1,12 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import {
-  loadInstallationAnswerProviderRole,
-  loadProviderAdmissionPlan,
-  loadUnentitledAnswerProviderRole,
-  ProviderAdmissionError,
-  type ProviderAdmissionPlan
-} from "./admission";
+import { loadInstallationAnswerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
 
 const capabilities = (input: Readonly<{
   nativeSearch?: boolean;
@@ -476,54 +470,6 @@ describe("provider admission", () => {
     await expect(loadInstallationAnswerProviderRole(
       technical.db as unknown as Prisma.TransactionClient,
       { providerModelId: officialOpenAiModel.id }
-    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
-  });
-
-  it("resolves an unentitled answer role only through an active administrator", async () => {
-    const { accessGrantCount, db } = admissionDb({
-      answer: officialOpenAiModel,
-      fullAccess: false,
-      options: [off]
-    });
-
-    await expect(loadUnentitledAnswerProviderRole(
-      db as unknown as Prisma.TransactionClient,
-      { providerModelId: officialOpenAiModel.id, userId: "admin-1" }
-    )).resolves.toMatchObject({
-      credentialSource: "user",
-      snapshot: { providerModelId: officialOpenAiModel.id }
-    });
-    expect(accessGrantCount).not.toHaveBeenCalled();
-
-    const ordinary = admissionDb({
-      answer: officialOpenAiModel,
-      options: [off],
-      userRole: "user"
-    });
-    await expect(loadUnentitledAnswerProviderRole(
-      ordinary.db as unknown as Prisma.TransactionClient,
-      { providerModelId: officialOpenAiModel.id, userId: "user-1" }
-    )).rejects.toEqual(new ProviderAdmissionError("user_not_available"));
-  });
-
-  it("rejects disabled and technical-only system-role targets", async () => {
-    const disabled = admissionDb({
-      answer: officialOpenAiModel,
-      options: [off],
-      unavailableModelIds: [officialOpenAiModel.id]
-    });
-    await expect(loadUnentitledAnswerProviderRole(
-      disabled.db as unknown as Prisma.TransactionClient,
-      { providerModelId: officialOpenAiModel.id, userId: "admin-1" }
-    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
-
-    const technical = admissionDb({
-      answer: { ...officialOpenAiModel, answerSelectable: false },
-      options: [off]
-    });
-    await expect(loadUnentitledAnswerProviderRole(
-      technical.db as unknown as Prisma.TransactionClient,
-      { providerModelId: officialOpenAiModel.id, userId: "admin-1" }
     )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
   });
 

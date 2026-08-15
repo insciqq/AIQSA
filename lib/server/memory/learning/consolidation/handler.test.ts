@@ -1,20 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { MemoryJobClaim } from "../../coordinator/types";
-import {
-  memoryFactConsolidationInputHash,
-  memoryFactConsolidationJobFingerprint,
-  memoryFactRelatedSnapshotHash,
-  memoryFactVerificationInputHash,
-  memoryFactVerificationJobFingerprint,
-  MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION,
-  MEMORY_FACT_VERIFICATION_PIPELINE_VERSION,
-  type MemoryFactCandidateSnapshot,
-  type MemoryFactConsolidationInput,
-  type MemoryFactDecisionSnapshot,
-  type MemoryFactVerificationInput,
-  type MemoryRelatedFactSnapshot
-} from "./contract";
+import { memoryFactConsolidationInputHash, memoryFactConsolidationJobFingerprint, memoryFactRelatedSnapshotHash, memoryFactVerificationInputHash, MEMORY_FACT_CONSOLIDATION_PIPELINE_VERSION, MEMORY_FACT_VERIFICATION_JOB_PREFIX, MEMORY_FACT_VERIFICATION_PIPELINE_VERSION, type MemoryFactCandidateSnapshot, type MemoryFactConsolidationInput, type MemoryFactDecisionSnapshot, type MemoryFactVerificationInput, type MemoryRelatedFactSnapshot } from "./contract";
 import {
   createMemoryFactConsolidationHandler,
   createMemoryFactVerificationHandler,
@@ -114,9 +101,9 @@ function claim(kind: "CONSOLIDATE_CANDIDATE" | "VERIFY_CANDIDATE"): MemoryJobCla
           sourceHash,
           sourceRevision: 3
         })
-      : memoryFactVerificationJobFingerprint(
+      : `${MEMORY_FACT_VERIFICATION_JOB_PREFIX}${
           (input as MemoryFactVerificationInput).decision.id
-        ),
+        }`,
     kind,
     leaseExpiresAt: new Date("2026-08-11T12:05:00.000Z"),
     memoryGenerationSnapshot: 0,
@@ -134,7 +121,6 @@ function claim(kind: "CONSOLIDATE_CANDIDATE" | "VERIFY_CANDIDATE"): MemoryJobCla
 
 function providerOutput(kind: "CONSOLIDATE" | "VERIFY") {
   return {
-    outputKind: "tool_calls_only" as const,
     providerResponseId: "response-1",
     toolCalls: kind === "CONSOLIDATE"
       ? [{

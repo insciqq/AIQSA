@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentSearchToolFixture } from "../tools/testFixtures";
+import { currentSearchToolFixture } from "@/tests/support/tools";
 import {
   buildOpenAIResponsesRequest,
   buildOpenAIResponsesRequestPreview,

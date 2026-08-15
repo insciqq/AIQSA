@@ -1,4 +1,3 @@
-import type { MemoryDeletionOperation, MemoryJobKind } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryItemEmbeddingHandler } from "../embedding/handler";
 import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
@@ -32,24 +31,6 @@ type MemoryCoordinatorGlobal = typeof globalThis & {
     scheduler: MemoryScheduler;
   }>;
 };
-
-export const DEFAULT_MEMORY_COORDINATOR_MANIFEST = Object.freeze({
-  deletionOperations: Object.freeze([
-    "FORGET_PURGE",
-    "TEMPORARY_DELETE",
-    "BULK_CLEAR",
-    "SOURCE_PURGE",
-    "ACCOUNT_MEMORY_DELETE"
-  ] satisfies readonly MemoryDeletionOperation[]),
-  jobKinds: Object.freeze([
-    "EMBED_ITEMS",
-    "INDEX_HISTORY",
-    "EXTRACT_FACTS",
-    "CONSOLIDATE_CANDIDATE",
-    "VERIFY_CANDIDATE",
-    "REBUILD_INDEX"
-  ] satisfies readonly MemoryJobKind[])
-});
 
 export const defaultMemoryCoordinatorRepository =
   createPrismaMemoryCoordinatorRepository(prisma);

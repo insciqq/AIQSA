@@ -1,5 +1,4 @@
 import { createSessionClearCookie, createSessionToken } from "./session";
-import { validateRunAccess, type ResolvedEntitlements } from "./entitlements";
 import type { AuthMailer } from "./mailer";
 import {
   hashPassword as hashPasswordDefault,
@@ -24,13 +23,11 @@ import {
 import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
 import {
-  getLoginRateLimitKey,
   resolveLoginRateLimitIdentity,
   type LoginRateLimitIdentity
 } from "./clientIdentity";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import {
-  AUTH_RESPONSE_FLOOR_MS,
   waitForAuthResponseFloor
 } from "./responseFloor";
 
@@ -62,12 +59,6 @@ export type AuthHandlerDeps = {
 
 export type MeHandlerDeps = {
   findUserWithGroups(userId: string): Promise<SafeUserWithGroups | null>;
-  resolveAuth: RequestAuthResolver;
-};
-
-export type MessageAccessHandlerDeps = {
-  findOwnedChat(chatId: string, userId: string): Promise<{ id: string } | null>;
-  loadEntitlements(userId: string): Promise<ResolvedEntitlements>;
   resolveAuth: RequestAuthResolver;
 };
 
@@ -106,7 +97,6 @@ const defaultLoginRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultResetRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultResetCompleteRateLimiter = createFixedWindowLoginRateLimiter();
 export const PASSWORD_RESET_MAX_AGE_SECONDS = 60 * 60;
-export const PASSWORD_RESET_RESPONSE_FLOOR_MS = AUTH_RESPONSE_FLOOR_MS;
 const DUMMY_PASSWORD_HASH =
   "aiqsa-scrypt-v1$N=16384,r=8,p=1$AAAAAAAAAAAAAAAAAAAAAA$rmM9JCGyQbwbUPgnezPVMCI7l8Gg0Gv7nvxL4hxR8ngyb8E3JmLHq607G0T-uTPPDSb_c-X3RWDvsVF8ZusM3Q";
 
@@ -682,55 +672,5 @@ export function createMeHandler(deps: MeHandlerDeps) {
     }
 
     return json({ user });
-  };
-}
-
-export function createMessageAccessValidationHandler(deps: MessageAccessHandlerDeps) {
-  return async function POST(
-    request: Request,
-    context: { params: Promise<{ chatId: string }> | { chatId: string } }
-  ): Promise<Response> {
-    const auth = await deps.resolveAuth(request);
-    if (!auth) {
-      return unauthorized();
-    }
-
-    const params = await context.params;
-    const chat = await deps.findOwnedChat(params.chatId, auth.userId);
-
-    if (!chat) {
-      return json({ error: "chat_not_found" }, { status: 404 });
-    }
-
-    const body = await readJson(request);
-    const bodyError = requestBodyErrorResponse(body);
-    if (bodyError) return bodyError;
-    const provider = typeof body === "object" && body && "provider" in body ? body.provider : undefined;
-    const modelId = typeof body === "object" && body && "modelId" in body ? body.modelId : undefined;
-    const searchStrategy =
-      typeof body === "object" && body && "searchStrategy" in body ? body.searchStrategy : undefined;
-
-    if (typeof provider !== "string" || typeof modelId !== "string") {
-      return json({ error: "provider_model_required" }, { status: 400 });
-    }
-
-    const entitlements = await deps.loadEntitlements(auth.userId);
-    const access = validateRunAccess(entitlements, {
-      modelId,
-      provider,
-      searchStrategy: typeof searchStrategy === "string" ? searchStrategy : null
-    });
-
-    if (!access.ok) {
-      return json({ error: access.code }, { status: 403 });
-    }
-
-    return json({
-      chatId: chat.id,
-      modelId,
-      ok: true,
-      provider,
-      searchStrategy: typeof searchStrategy === "string" ? searchStrategy : null
-    });
   };
 }

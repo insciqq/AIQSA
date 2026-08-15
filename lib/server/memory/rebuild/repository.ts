@@ -13,7 +13,6 @@ import type {
 } from "../../../contracts/memory";
 import { prisma } from "../../prisma";
 import type { MemoryJobClaim } from "../coordinator/types";
-import { MemoryCoordinatorError } from "../coordinator/errors";
 import {
   MEMORY_ITEM_EMBEDDING_PIPELINE_VERSION,
   memoryItemEmbeddingJobFingerprint,
@@ -476,8 +475,7 @@ async function applyFullSetDiff(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
   generation: GenerationConfiguration,
-  items: readonly SearchIdentity[],
-  now: Date
+  items: readonly SearchIdentity[]
 ): Promise<Readonly<{
   complete: boolean;
   failed: boolean;
@@ -769,7 +767,7 @@ async function applyShadowCatchUp(
   }
   const revision = settings.memoryRevision;
   const items = await enumerateEligibleItems(tx, settings, now);
-  const diff = await applyFullSetDiff(tx, settings, target, items, now);
+  const diff = await applyFullSetDiff(tx, settings, target, items);
   const reread = await tx.userMemorySettings.findUnique({
     select: { memoryRevision: true },
     where: { userId: claim.userId }

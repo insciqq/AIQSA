@@ -19,18 +19,6 @@ export type MemoryEgressConsentMode = (typeof MEMORY_EGRESS_CONSENT_MODES)[numbe
 export const MEMORY_SCOPE_TYPES = ["GLOBAL_USER", "FOLDER", "ASSISTANT", "CHAT"] as const;
 export type MemoryScopeType = (typeof MEMORY_SCOPE_TYPES)[number];
 
-export const MEMORY_SCOPE_STATES = ["ACTIVE", "ORPHANED", "RETRACTED"] as const;
-export type MemoryScopeState = (typeof MEMORY_SCOPE_STATES)[number];
-
-export const MEMORY_CANDIDATE_STATES = [
-  "PENDING",
-  "DEFERRED",
-  "PROMOTED",
-  "REJECTED",
-  "STALE"
-] as const;
-export type MemoryCandidateState = (typeof MEMORY_CANDIDATE_STATES)[number];
-
 export const MEMORY_FACT_STATES = [
   "ACTIVE",
   "CONFLICTED",
@@ -87,51 +75,6 @@ export const MEMORY_SENSITIVITY_CLASSES = [
 ] as const;
 export type MemorySensitivityClass = (typeof MEMORY_SENSITIVITY_CLASSES)[number];
 
-export const MEMORY_JOB_STATES = [
-  "QUEUED",
-  "CLAIMED",
-  "WAITING_FOR_EGRESS_CONSENT",
-  "SUCCEEDED",
-  "RETRYABLE_FAILED",
-  "TERMINAL_FAILED",
-  "STALE",
-  "CANCELLED"
-] as const;
-export type MemoryJobState = (typeof MEMORY_JOB_STATES)[number];
-
-export const MEMORY_RETRIEVAL_ATTEMPT_STATES = [
-  "PENDING",
-  "EXECUTING",
-  "READY",
-  "CONSUMED",
-  "STALE",
-  "FAILED",
-  "CANCELLED",
-  "EXPIRED"
-] as const;
-export type MemoryRetrievalAttemptState = (typeof MEMORY_RETRIEVAL_ATTEMPT_STATES)[number];
-
-export const MEMORY_EXECUTION_STATES = [
-  "PENDING",
-  "RUNNING",
-  "SUCCEEDED",
-  "FAILED",
-  "CANCELLED",
-  "OUTCOME_UNKNOWN"
-] as const;
-export type MemoryExecutionState = (typeof MEMORY_EXECUTION_STATES)[number];
-
-export const MEMORY_INDEX_GENERATION_STATES = [
-  "BUILDING",
-  "CATCHING_UP",
-  "READY",
-  "ACTIVE",
-  "SUPERSEDED",
-  "FAILED",
-  "CANCELLED"
-] as const;
-export type MemoryIndexGenerationState = (typeof MEMORY_INDEX_GENERATION_STATES)[number];
-
 export const MEMORY_DELETION_STATES = [
   "PENDING",
   "RUNNING",
@@ -171,8 +114,6 @@ export const MEMORY_REBUILD_STATES = [
   "STALE",
   "CANCELLED"
 ] as const;
-export type MemoryRebuildState = (typeof MEMORY_REBUILD_STATES)[number];
-
 export const MEMORY_ITEM_INDEXING_STATES = [
   "LEXICAL_READY",
   "VECTOR_PENDING",
@@ -186,18 +127,12 @@ export const MEMORY_HISTORY_LEXICAL_STATES = [
   "DISABLED",
   "UNAVAILABLE"
 ] as const;
-export type MemoryHistoryLexicalState =
-  (typeof MEMORY_HISTORY_LEXICAL_STATES)[number];
-
 export const MEMORY_HISTORY_VECTOR_STATES = [
   "READY",
   "DISABLED",
   "NOT_CONFIGURED",
   "DEGRADED"
 ] as const;
-export type MemoryHistoryVectorState =
-  (typeof MEMORY_HISTORY_VECTOR_STATES)[number];
-
 export const MEMORY_HISTORY_DEGRADATION_CODES = [
   "memory_index_unavailable",
   "memory_vector_generation_stale",
@@ -213,9 +148,6 @@ export const MEMORY_ACTION_FEEDBACK_OPERATIONS = [
   "FORGET",
   "MARK_INCORRECT"
 ] as const;
-export type MemoryActionFeedbackOperation =
-  (typeof MEMORY_ACTION_FEEDBACK_OPERATIONS)[number];
-
 export const MEMORY_ERROR_CODES = [
   "memory_contract_invalid",
   "memory_not_enabled",
@@ -245,8 +177,6 @@ export const MEMORY_ERROR_CODES = [
   "memory_egress_admin_owned",
   "memory_purge_blocked_requires_admin"
 ] as const;
-export type MemoryErrorCode = (typeof MEMORY_ERROR_CODES)[number];
-
 export type MemoryContractDecodeResult<T> =
   | Readonly<{ ok: true; value: T }>
   | Readonly<{ code: "memory_contract_invalid"; ok: false }>;
@@ -261,10 +191,6 @@ const cursorSchema = z.string().min(1).max(MEMORY_CURSOR_MAX_LENGTH).refine(
   (value) => !/[\u0000-\u001f\u007f]/u.test(value),
   "invalid opaque cursor"
 ).nullable();
-const hashSchema = z.string().trim().min(16).max(512).refine(
-  (value) => !/[\u0000-\u0020\u007f]/u.test(value),
-  "invalid hash"
-);
 const utilityEgressFingerprintSchema = z.string().trim().min(16).max(128).refine(
   (value) => !/[\u0000-\u0020\u007f]/u.test(value),
   "invalid utility egress fingerprint"
@@ -335,12 +261,6 @@ const memorySettingsPatchSchema = z.strictObject({
 
 export type MemorySettingsPatch = z.infer<typeof memorySettingsPatchSchema>;
 
-export function decodeMemorySettingsPatch(
-  value: unknown
-): MemoryContractDecodeResult<MemorySettingsPatch> {
-  return decode(memorySettingsPatchSchema, value);
-}
-
 const memoryConsentInputSchema = z.strictObject({
   confirmationCopyVersion: z.literal(MEMORY_CONFIRMATION_COPY_VERSION),
   currentUtilityEgressFingerprint: utilityEgressFingerprintSchema,
@@ -351,12 +271,6 @@ const memoryConsentInputSchema = z.strictObject({
 });
 
 export type MemoryConsentInput = z.infer<typeof memoryConsentInputSchema>;
-
-export function decodeMemoryConsentInput(
-  value: unknown
-): MemoryContractDecodeResult<MemoryConsentInput> {
-  return decode(memoryConsentInputSchema, value);
-}
 
 export type MemorySettingsMutation =
   | Readonly<{ kind: "accept_utility_egress"; value: MemoryConsentInput }>

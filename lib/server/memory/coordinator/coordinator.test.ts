@@ -1,10 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { MemoryCoordinator } from "./coordinator";
 import { MemoryCoordinatorError } from "./errors";
-import { resolveMemoryCoordinatorPolicy } from "./policy";
 import type { MemoryCoordinatorRepository } from "./prismaRepository";
 import { MemoryCoordinatorRegistry } from "./registry";
-import { MemoryScheduler } from "./scheduler";
 import type {
   MemoryDeletionClaim,
   MemoryJobClaim,

@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  pruneRetention,
-  shouldPruneModelRunEvent,
-  shouldPruneOrphanedAttachment,
-  type AttachmentDeletionClaim,
-  type RetentionRepository
-} from "./prune";
+import { pruneRetention, type AttachmentDeletionClaim, type RetentionRepository } from "./prune";
 
 function fakeRepository(input: {
   authFlowTokenIds?: string[];
@@ -96,53 +90,6 @@ function fakeRepository(input: {
 }
 
 describe("retention prune rules", () => {
-  it("selects only old events attached to terminal runs", () => {
-    const cutoff = new Date("2026-06-01T00:00:00.000Z");
-
-    expect(
-      shouldPruneModelRunEvent(
-        { createdAt: new Date("2026-05-31T23:59:59.000Z"), modelRunStatus: "complete" },
-        cutoff
-      )
-    ).toBe(true);
-    expect(
-      shouldPruneModelRunEvent(
-        { createdAt: new Date("2026-05-01T00:00:00.000Z"), modelRunStatus: "error" },
-        cutoff
-      )
-    ).toBe(true);
-    expect(
-      shouldPruneModelRunEvent(
-        { createdAt: new Date("2026-05-01T00:00:00.000Z"), modelRunStatus: "cancelled" },
-        cutoff
-      )
-    ).toBe(true);
-    expect(
-      shouldPruneModelRunEvent(
-        { createdAt: new Date("2026-05-01T00:00:00.000Z"), modelRunStatus: "streaming" },
-        cutoff
-      )
-    ).toBe(false);
-    expect(shouldPruneModelRunEvent({ createdAt: cutoff, modelRunStatus: "complete" }, cutoff)).toBe(false);
-  });
-
-  it("selects only old detached attachments", () => {
-    const cutoff = new Date("2026-06-01T00:00:00.000Z");
-
-    expect(
-      shouldPruneOrphanedAttachment(
-        { createdAt: new Date("2026-05-31T00:00:00.000Z"), messageId: null },
-        cutoff
-      )
-    ).toBe(true);
-    expect(
-      shouldPruneOrphanedAttachment(
-        { createdAt: new Date("2026-05-31T00:00:00.000Z"), messageId: "message-1" },
-        cutoff
-      )
-    ).toBe(false);
-    expect(shouldPruneOrphanedAttachment({ createdAt: cutoff, messageId: null }, cutoff)).toBe(false);
-  });
 
   it("keeps dry-run read-only across every retention category", async () => {
     const state = fakeRepository({

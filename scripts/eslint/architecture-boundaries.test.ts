@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const repositoryRoot = process.cwd();
 const eslint = new ESLint({ cwd: repositoryRoot });
 const boundaryRuleId = "aiqsa-architecture/architecture-boundaries";
+const testSupportRuleId = "aiqsa-architecture/test-support-boundary";
 const typographyRuleId = "aiqsa-architecture/ui-typography";
 
 const boundaryCases = [
@@ -72,6 +73,29 @@ describe("repository lint policies", () => {
         ruleId: boundaryRuleId
       })
     ]);
+  });
+
+  it("keeps test support out of production dependency graphs", async () => {
+    const specifier = "@/tests/support/auth";
+    const [productionResult] = await eslint.lintText(
+      `import ${JSON.stringify(specifier)};`,
+      { filePath: path.join(repositoryRoot, "lib/server/auth/productionConsumer.ts") }
+    );
+    const [testResult] = await eslint.lintText(
+      `import ${JSON.stringify(specifier)};`,
+      { filePath: path.join(repositoryRoot, "lib/server/auth/consumer.test.ts") }
+    );
+
+    expect(
+      productionResult.messages.filter(({ ruleId }) => ruleId === testSupportRuleId)
+    ).toEqual([
+      expect.objectContaining({
+        message:
+          `Production code must not import '${specifier}' from the tests/support boundary.`,
+        ruleId: testSupportRuleId
+      })
+    ]);
+    expect(testResult.messages.filter(({ ruleId }) => ruleId === testSupportRuleId)).toEqual([]);
   });
 
   it("rejects unreadable typography utilities", async () => {

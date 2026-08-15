@@ -98,22 +98,6 @@ export function SourcesV2({ artifact }: Readonly<{ artifact: ThreadArtifactSumma
   );
 }
 
-export function CitationMarkerV2({ index, onActivate }: Readonly<{
-  index: number;
-  onActivate(index: number): void;
-}>) {
-  return (
-    <button
-      aria-label={`Open source ${index}`}
-      className="v2-citation-marker"
-      onClick={() => onActivate(index)}
-      type="button"
-    >
-      [{index}]
-    </button>
-  );
-}
-
 export function ReasoningV2({ texts }: Readonly<{ texts: readonly string[] }>) {
   const content = texts.map((text) => text.trim()).filter(Boolean).join("\n\n");
   if (!content) return null;

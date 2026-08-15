@@ -213,12 +213,3 @@ export const useRunLifecycleStore = create<RunLifecycleStore>((set, get) => ({
     get().dispatch({ ...input, type: "TOKENS_APPLIED" });
   }
 }));
-
-export function resetRunLifecycleStoreForTest() {
-  useRunLifecycleStore.setState({
-    ...initialRunLifecycleSnapshot,
-    activeStreams: {},
-    ambiguousFailures: {},
-    cancelledRunIds: new Set<string>()
-  });
-}

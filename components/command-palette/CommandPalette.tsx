@@ -2,7 +2,7 @@
 
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import { isImeCompositionEvent } from "@/components/keyboard";
-import { Boxes, Check, Command, FileText, MessageSquare, Search, X } from "lucide-react";
+import { Boxes, Check, Command, MessageSquare, Search, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   filterCommandItems,

@@ -1,14 +1,6 @@
 import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
-import {
-  loadMemorySuppressionKeyring,
-  MEMORY_SUPPRESSION_GUARDED_OPERATIONS,
-  MemorySuppressionKeyringError,
-  parseMemorySuppressionKeyring,
-  preflightMemorySuppressionKeys,
-  preflightMemorySuppressionRestore,
-  type MemorySuppressionFingerprintInput
-} from "./suppressionKeyring";
+import { loadMemorySuppressionKeyring, MEMORY_SUPPRESSION_GUARDED_OPERATIONS, MemorySuppressionKeyringError, parseMemorySuppressionKeyring, preflightMemorySuppressionKeys, type MemorySuppressionFingerprintInput } from "./suppressionKeyring";
 
 function encodedKey(offset: number): string {
   return Buffer.from(Array.from({ length: 32 }, (_, index) => (index + offset) % 256)).toString(
@@ -172,13 +164,6 @@ describe("Memory suppression key preflight", () => {
     AIQSA_MEMORY_FINGERPRINT_KEYRING: `current=v2,v1=${KEY_V1},v2=${KEY_V2}`
   });
 
-  it("accepts deduplicated required key IDs for restore", () => {
-    expect(preflightMemorySuppressionRestore(configured, ["v2", "v1", "v1"])).toEqual({
-      operation: "restore",
-      status: "ready"
-    });
-  });
-
   it("blocks every protected automatic operation when a historical key is missing", () => {
     for (const operation of MEMORY_SUPPRESSION_GUARDED_OPERATIONS) {
       expect(preflightMemorySuppressionKeys(configured, ["v1", "v0", "v0"], operation)).toEqual({
@@ -188,25 +173,5 @@ describe("Memory suppression key preflight", () => {
         status: "blocked"
       });
     }
-  });
-
-  it("blocks restore for invalid configuration or invalid restored key metadata", () => {
-    expect(
-      preflightMemorySuppressionRestore(
-        { code: "memory_suppression_keyring_invalid", status: "blocked" },
-        ["v1"]
-      )
-    ).toEqual({
-      code: "memory_suppression_keyring_invalid",
-      missingKeyIds: [],
-      operation: "restore",
-      status: "blocked"
-    });
-    expect(preflightMemorySuppressionRestore(configured, ["INVALID"])).toEqual({
-      code: "memory_suppression_required_key_ids_invalid",
-      missingKeyIds: [],
-      operation: "restore",
-      status: "blocked"
-    });
   });
 });

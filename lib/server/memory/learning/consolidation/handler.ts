@@ -4,7 +4,6 @@ import { prisma } from "../../../prisma";
 import { MemoryCoordinatorError } from "../../coordinator/errors";
 import type {
   MemoryJobDescriptor,
-  MemoryJobExecutionResult,
   MemoryJobHandler
 } from "../../coordinator/types";
 import {

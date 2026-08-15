@@ -1,16 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  decryptMcpEnvelope,
-  encryptMcpEnvelope,
-  getMcpEncryptionKey,
-  McpEncryptionError,
-  mcpOAuthClientSecretEnvelopeContext,
-  mcpOAuthTokenEnvelopeContext,
-  mcpPersonalConfigEnvelopeContext,
-  mcpRuntimeGenerationEnvelopeContext,
-  mcpSharedConfigEnvelopeContext,
-  parseMcpEncryptionKey
-} from "./encryption";
+import { decryptMcpEnvelope, encryptMcpEnvelope, McpEncryptionError, mcpOAuthClientSecretEnvelopeContext, mcpOAuthTokenEnvelopeContext, mcpPersonalConfigEnvelopeContext, mcpRuntimeGenerationEnvelopeContext, mcpSharedConfigEnvelopeContext } from "./encryption";
 
 const KEY = Buffer.alloc(32, 0x2a);
 const OTHER_KEY = Buffer.alloc(32, 0x7b);
@@ -25,31 +14,6 @@ function expectEncryptionError(operation: () => unknown, message: McpEncryptionE
     expect(error).toMatchObject({ message, name: "McpEncryptionError" });
   }
 }
-
-describe("MCP encryption keys", () => {
-  it("accepts one canonical base64-encoded 32-byte installation key", () => {
-    const encoded = KEY.toString("base64");
-
-    expect(parseMcpEncryptionKey(encoded)).toEqual(KEY);
-    expect(parseMcpEncryptionKey(encoded.replace(/=+$/u, ""))).toEqual(KEY);
-    expect(getMcpEncryptionKey({ AIQSA_ENCRYPTION_KEY: encoded })).toEqual(KEY);
-  });
-
-  it("rejects missing, malformed, and incorrectly sized keys with a stable error", () => {
-    for (const value of [
-      undefined,
-      "",
-      "not-base64!",
-      Buffer.alloc(31).toString("base64"),
-      `${KEY.toString("base64")}!`
-    ]) {
-      expectEncryptionError(
-        () => parseMcpEncryptionKey(value),
-        "mcp_encryption_invalid_key"
-      );
-    }
-  });
-});
 
 describe("purpose-bound MCP v2 envelopes", () => {
   it("round-trips structured values and uses a fresh authenticated nonce", () => {

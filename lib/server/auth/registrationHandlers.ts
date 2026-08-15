@@ -19,7 +19,6 @@ import {
 import { hashToken } from "./token";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import {
-  AUTH_RESPONSE_FLOOR_MS,
   waitForAuthResponseFloor
 } from "./responseFloor";
 
@@ -53,7 +52,6 @@ const defaultRegistrationRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultInviteAcceptanceRateLimiter = createFixedWindowLoginRateLimiter();
 const defaultVerificationRateLimiter = createFixedWindowLoginRateLimiter();
 export const EMAIL_VERIFICATION_MAX_AGE_SECONDS = 24 * 60 * 60;
-export const REGISTRATION_RESPONSE_FLOOR_MS = AUTH_RESPONSE_FLOOR_MS;
 
 function json(data: unknown, init?: ResponseInit): Response {
   return Response.json(data, init);

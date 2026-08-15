@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createDispatcherAuthMailer,
-  createMemoryAuthMailer,
-  createNoopAuthMailer,
   deliverAuthEmail
 } from "./mailer";
+import {
+  createMemoryAuthMailer,
+  createNoopAuthMailer
+} from "@/tests/support/authMailers";
 
 const email = {
   subject: "Verify your AIQSA email",

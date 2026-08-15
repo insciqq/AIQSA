@@ -2,7 +2,6 @@ import {
   decryptSecretEnvelope,
   encryptSecretEnvelope,
   getSecretEncryptionKey,
-  parseSecretEncryptionKey,
   SecretEnvelopeError,
   type SecretEnvelopeContext
 } from "@/lib/server/secrets/envelope";
@@ -81,14 +80,6 @@ export function mcpRuntimeGenerationEnvelopeContext(
     purpose: "mcp_runtime_generation_config",
     valueId: `fingerprint:${fingerprint}`
   };
-}
-
-export function parseMcpEncryptionKey(value: string | undefined): Buffer {
-  try {
-    return parseSecretEncryptionKey(value);
-  } catch (error) {
-    return mapSecretError(error);
-  }
 }
 
 export function getMcpEncryptionKey(

@@ -125,7 +125,7 @@ function store(input: StoreOptions = {}) {
 describe("embedding runtime admission", () => {
   it("applies Full access, current availability, and immutable credential resolution", async () => {
     const prisma = store();
-    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => new Response(JSON.stringify({
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       data: [{ embedding: Array.from({ length: 4_096 }, () => 1), index: 0 }],
       model: "qwen/qwen3-embedding-8b",
       usage: { prompt_tokens: 4, total_tokens: 4 }
@@ -223,7 +223,7 @@ describe("embedding runtime admission", () => {
       prisma.user.findFirst,
       prisma.userGroup.findMany
     ]) delegate.mockClear();
-    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => new Response(JSON.stringify({
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       data: [{ embedding: Array.from({ length: 4_096 }, () => 1), index: 0 }],
       model: "qwen/qwen3-embedding-8b",
       usage: { prompt_tokens: 5, total_tokens: 5 }

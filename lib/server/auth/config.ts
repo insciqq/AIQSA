@@ -149,10 +149,6 @@ function shouldWarnForDevBootstrapToken(
 
 let warnedDevBootstrapToken = false;
 
-export function resetAuthConfigWarningsForTests(): void {
-  warnedDevBootstrapToken = false;
-}
-
 export function getAuthConfig(env: Record<string, string | undefined> = process.env): AuthConfig {
   const testAuthEnabled = isTestAuthEnabled(env);
   const bootstrapLoginEnabled = (optionalBoolean(env.AIQSA_BOOTSTRAP_LOGIN_ENABLED) ?? false) || testAuthEnabled;

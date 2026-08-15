@@ -145,7 +145,3 @@ export function decodeKnowledgeNormalizedDocument(
   assertWithinLimits(document, config);
   return document;
 }
-
-export function knowledgeObjectChecksum(body: Buffer): string {
-  return checksum(body);
-}

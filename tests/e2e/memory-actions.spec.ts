@@ -2,7 +2,7 @@ import { expect, test, type Route } from "@playwright/test";
 import {
   memorySettingsFixture,
   memorySummaryFixture
-} from "../../components/app-shell/memoryTestFixtures";
+} from "../support/memoryFixtures";
 import type {
   MemoryActionFeedback
 } from "../../lib/contracts/memory";

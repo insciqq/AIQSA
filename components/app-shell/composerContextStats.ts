@@ -13,14 +13,6 @@ export type ComposerContextGauge = Readonly<{
   tone: "critical" | "neutral" | "proof" | "warning";
 }>;
 
-export function formatComposerContextStats(stats: ComposerContextStats): string {
-  const approximate = `Approx. input: ~${formatTokenCount(stats.approximateInputTokens)}`;
-  if (stats.safeInputBudgetTokens === null || stats.totalContextTokens === null) {
-    return approximate;
-  }
-  return `${approximate} / ${formatTokenCount(stats.safeInputBudgetTokens)} safe input · ${formatTokenCount(stats.totalContextTokens)} total context`;
-}
-
 /**
  * Human hover label for the composer context gauge. The gauge digit alone is
  * cryptic, so hover/focus reveals the unit ("~8% of context"); when no safe

@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  composerSessionKey,
   resetComposerSessionStoreForTest,
+  resetRunLifecycleStoreForTest,
+  resetRunSurfaceStoreForTest,
+  resetThreadStoreForTest
+} from "@/tests/support/appShellStores";
+import {
+  composerSessionKey,
   selectComposerSession,
   useComposerSessionStore
 } from "./composerSessionStore";
@@ -9,13 +14,12 @@ import {
   abortActiveStreamControllers,
   useRunLifecycleActions
 } from "./runLifecycleActions";
-import { resetRunLifecycleStoreForTest, useRunLifecycleStore } from "./runLifecycleStore";
+import { useRunLifecycleStore } from "./runLifecycleStore";
 import {
-  resetRunSurfaceStoreForTest,
   selectRunSurface,
   useRunSurfaceStore
 } from "./runSurfaceStore";
-import { resetThreadStoreForTest, useThreadStore } from "./threadStore";
+import { useThreadStore } from "./threadStore";
 import type { WorkspaceChatSummary, Notice, ThreadMessage } from "./types";
 
 function message(overrides: Partial<ThreadMessage>): ThreadMessage {

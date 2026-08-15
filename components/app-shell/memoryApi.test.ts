@@ -7,7 +7,6 @@ import {
   loadMemoryHealth,
   loadMemorySettings,
   loadMemoryRebuildStatus,
-  MemoryApiError,
   memoryStatementHash,
   searchMemories,
   startMemoryBulkDeletion,
@@ -22,7 +21,7 @@ import {
   memoryRebuildFixture,
   memorySettingsFixture,
   memorySummaryFixture
-} from "./memoryTestFixtures";
+} from "@/tests/support/memoryFixtures";
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {

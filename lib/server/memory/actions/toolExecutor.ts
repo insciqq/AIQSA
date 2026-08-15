@@ -293,11 +293,3 @@ export function createMemoryActionExecutor(input: Readonly<{
     }
   });
 }
-
-export const memoryActionToolNames = Object.freeze([
-  MEMORY_SAVE_TOOL_NAME,
-  MEMORY_LIST_TOOL_NAME,
-  MEMORY_UPDATE_TOOL_NAME,
-  MEMORY_FORGET_TOOL_NAME,
-  MEMORY_MARK_INCORRECT_TOOL_NAME
-]);

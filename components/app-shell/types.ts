@@ -43,11 +43,6 @@ export type ChatGroup = {
   name: string;
 };
 
-export type ChatContentMatch = {
-  chatId: string;
-  snippet: string | null;
-};
-
 export type NoticeAction = {
   disabled?: boolean;
   label: string;

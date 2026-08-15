@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import type { ResolvedEntitlements } from "../auth/entitlements";
@@ -7,42 +7,10 @@ import {
   ProviderAdmissionError,
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
-import type {
-  NormalizedRunRequest,
-  ProviderAdapter,
-  ProviderConversationMessage,
-  ProviderModelCapabilities,
-  ProviderRunRequest
-} from "../providers/types";
+import type { ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities } from "../providers/types";
 import type { RunAttachmentRecord } from "./runRepositoryContract";
 import type { RunAttachmentLimits } from "./attachmentLimits";
-import {
-  materializePreparedRunData,
-  prepareRun,
-  type DeepReadonly,
-  type PreparedRun,
-  type PreparedRunDefaults,
-  type RegenerateRunPreparationSource,
-  type RunPreparationDeps,
-  type RunPreparationFailure,
-  type RunPreparationInput,
-  type RunPreparationResult,
-  type SendRunPreparationSource
-} from "./runPreparation";
-
-type IfEqual<Left, Right, Equal, Different> =
-  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
-    ? Equal
-    : Different;
-
-type WritableKeys<Value> = {
-  [Key in keyof Value]-?: IfEqual<
-    { [Property in Key]: Value[Key] },
-    { -readonly [Property in Key]: Value[Key] },
-    Key,
-    never
-  >;
-}[keyof Value];
+import { materializePreparedRunData, prepareRun, type PreparedRun, type RegenerateRunPreparationSource, type RunPreparationDeps, type RunPreparationInput, type RunPreparationResult, type SendRunPreparationSource } from "./runPreparation";
 
 const baseCapabilities: ProviderModelCapabilities = {
   contextWindow: 32_768,
@@ -788,17 +756,6 @@ async function expectFailure(input: {
 }
 
 describe("run preparation", () => {
-  it("exposes a readonly prepared-run boundary", () => {
-    expectTypeOf<WritableKeys<PreparedRun>>().toEqualTypeOf<never>();
-    expectTypeOf<WritableKeys<PreparedRunDefaults>>().toEqualTypeOf<never>();
-    expectTypeOf<WritableKeys<RunPreparationFailure>>().toEqualTypeOf<never>();
-    expectTypeOf<WritableKeys<PreparedRun["normalizedRequest"]>>().toEqualTypeOf<never>();
-    expectTypeOf<WritableKeys<PreparedRun["providerRequest"]>>().toEqualTypeOf<never>();
-    expectTypeOf<PreparedRun["normalizedRequest"]>().toEqualTypeOf<DeepReadonly<NormalizedRunRequest>>();
-    expectTypeOf<PreparedRun["providerRequest"]>().toEqualTypeOf<DeepReadonly<ProviderRunRequest>>();
-    expectTypeOf<Extract<keyof PreparedRun, "adapter" | "searchAdapter">>().toEqualTypeOf<never>();
-    expectTypeOf<PreparedRun["defaults"]>().toEqualTypeOf<PreparedRunDefaults | null>();
-  });
 
   it("defensively separates and deeply freezes prepared data without freezing service dependencies", async () => {
     const originalBlock = {

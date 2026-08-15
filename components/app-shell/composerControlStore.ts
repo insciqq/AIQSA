@@ -308,7 +308,3 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
     set((state) => ({ ...droppedAssistantIdentity(state, "user"), temperature: value }));
   }
 }));
-
-export function resetComposerControlStoreForTest() {
-  useComposerControlStore.setState(initialComposerControlSnapshot);
-}

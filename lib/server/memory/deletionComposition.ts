@@ -167,11 +167,6 @@ const defaultComposition = createMemoryDeletionComposition({
 export const defaultPermanentChatDeletionCapability =
   defaultComposition.permanentChatDeletionCapability;
 
-export function readDefaultMemoryDeletionCompositionStatus():
-MemoryDeletionCompositionStatus {
-  return defaultComposition.status();
-}
-
 export function ensureDefaultMemoryDeletionComposition(
   kick: () => void
 ): MemoryDeletionCompositionStatus {

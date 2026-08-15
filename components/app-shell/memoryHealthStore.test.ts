@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { memoryHealthFixture } from "./memoryTestFixtures";
-import {
-  activateMemoryHealthAccount,
-  deactivateMemoryHealthAccount,
-  resetMemoryHealthStoreForTest,
-  useMemoryHealthStore
-} from "./memoryHealthStore";
+import { memoryHealthFixture } from "@/tests/support/memoryFixtures";
+import { activateMemoryHealthAccount, deactivateMemoryHealthAccount, useMemoryHealthStore } from "./memoryHealthStore";
+import { resetMemoryHealthStoreForTest } from "@/tests/support/appShellStores";
 
 function json(health: unknown): Response {
   return Response.json({ health });

@@ -61,12 +61,3 @@ export async function renderMathExpression(source: string, displayMode: boolean)
     return cacheResult(key, null);
   }
 }
-
-export function clearMathRenderingCacheForTest(): void {
-  renderedMathCache.clear();
-  katexPromise = null;
-}
-
-export function mathRenderingCacheSizeForTest(): number {
-  return renderedMathCache.size;
-}

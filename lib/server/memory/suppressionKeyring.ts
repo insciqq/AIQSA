@@ -366,10 +366,3 @@ export function preflightMemorySuppressionKeys(
 
   return Object.freeze({ operation, status: "ready" });
 }
-
-export function preflightMemorySuppressionRestore(
-  configuration: MemorySuppressionKeyringConfiguration,
-  requiredKeyIds: readonly string[]
-): MemorySuppressionKeyPreflight {
-  return preflightMemorySuppressionKeys(configuration, requiredKeyIds, "restore");
-}

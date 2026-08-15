@@ -1,13 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  acceptCurrentMemoryDestinations,
-  refreshMemorySettings,
-  resetMemorySettingsStoreForTest,
-  updateMemoryGate,
-  useMemorySettingsStore
-} from "./memorySettingsStore";
+import { acceptCurrentMemoryDestinations, refreshMemorySettings, updateMemoryGate, useMemorySettingsStore } from "./memorySettingsStore";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
-import { memorySettingsFixture } from "./memoryTestFixtures";
+import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import { resetMemorySettingsStoreForTest } from "@/tests/support/appShellStores";
 
 describe("Memory settings store", () => {
   beforeEach(() => resetMemorySettingsStoreForTest());

@@ -5,13 +5,13 @@ import type {
   KnowledgeIngestionStatusResponse
 } from "@/lib/contracts/knowledge";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resetKnowledgeLibraryStoreForTest } from "@/tests/support/appShellStores";
 import {
   buildKnowledgeLibraryView,
   createKnowledgeLibraryActions
 } from "./knowledgeLibraryController";
 import {
   initialKnowledgeLibrarySnapshot,
-  resetKnowledgeLibraryStoreForTest,
   useKnowledgeLibraryStore
 } from "./knowledgeLibraryStore";
 

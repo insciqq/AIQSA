@@ -1,14 +1,15 @@
 import { act, renderHook } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   resetRunSurfaceStoreForTest,
-  selectRunSurface,
-  useRunSurfaceStore
-} from "./runSurfaceStore";
-import { resetThreadStoreForTest, selectThreadSnapshot, useThreadStore } from "./threadStore";
+  resetThreadStoreForTest,
+  resetWorkspaceStoreForTest
+} from "@/tests/support/appShellStores";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { selectRunSurface, useRunSurfaceStore } from "./runSurfaceStore";
+import { selectThreadSnapshot, useThreadStore } from "./threadStore";
 import type { WorkspaceChatSummary } from "./types";
 import { useRunStreaming } from "./useRunStreaming";
-import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
+import { useWorkspaceStore } from "./workspaceStore";
 
 function chat(id: string, title: string): WorkspaceChatSummary {
   return {

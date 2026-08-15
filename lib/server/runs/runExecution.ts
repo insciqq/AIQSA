@@ -154,10 +154,6 @@ export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.f
   }
 });
 
-export function activeRunControllersForTest(): Map<string, AbortController> {
-  return activeRunControllers;
-}
-
 export type RunExecutionRepository = Pick<
   RunRepository,
   | "advanceToolLoopCallBatch"
@@ -884,7 +880,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               throw new RunPipelineError("tool_loop_checkpoint_conflict", "Tool batch could not advance");
             }
           },
-          onToolBatchSettled: async ({ results, round }) => {
+          onToolBatchSettled: async ({ results }) => {
             for (const settled of results) {
               const call = modelToolCall(settled.call);
               const result = settled.result.status === "complete"
@@ -929,7 +925,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
             await persistReportedUsageForIncompleteRun();
           },
-          beforeProviderRound: async ({ continuation, request: roundRequest, round }) => {
+          beforeProviderRound: async ({ continuation, round }) => {
             if (round === 1) {
               const started = await input.repository.beginToolLoopProviderRound({
                 providerContinuation: toolLoopJson(

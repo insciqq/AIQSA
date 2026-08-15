@@ -157,7 +157,7 @@ export function consumeMcpOAuthReturn(url: URL): McpOAuthOutcome | null {
   return outcome;
 }
 
-export function resetMcpSettingsStoreForTest(): void {
+export function deactivateMcpSettings(): void {
   loadPromise = null;
   readinessPollInFlight = false;
   stopMcpReadinessPolling();

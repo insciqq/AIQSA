@@ -79,9 +79,3 @@ export function memoryRebuildJobClaimIsValid(
     job.sourceRevision === null &&
     job.sourceHash === null;
 }
-
-export function memoryRebuildOperationFromJob(
-  job: Pick<MemoryJobDescriptor, "idempotencyFingerprint">
-): MemoryRebuildOperation | null {
-  return parseMemoryRebuildJobFingerprint(job.idempotencyFingerprint)?.operation ?? null;
-}

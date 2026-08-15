@@ -12,7 +12,6 @@ import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import {
   ActiveMessageMutationConflictError,
   type BranchChatRecord,
-  type BranchMessageRecord,
   type MessageBranchRepository
 } from "./handlers";
 

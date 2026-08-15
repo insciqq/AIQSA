@@ -120,7 +120,7 @@ function harness(input: Readonly<{
   policy?: { candidateLimit: number; resultLimit: number; scoreThreshold: number };
   runtimeFailure?: Error;
 }> = {}) {
-  const embed = vi.fn(async (request: { mode: "document" | "query"; texts: readonly string[] }) => ({
+  const embed = vi.fn(async (_request: { mode: "document" | "query"; texts: readonly string[] }) => ({
     model: "embedding-v1",
     requestId: "embedding-request-1",
     usage: { inputTokens: 7, totalTokens: 7 },

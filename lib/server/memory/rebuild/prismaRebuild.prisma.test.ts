@@ -30,8 +30,7 @@ import { applyMemoryHistorySourceMutation } from "../history/sourceLifecycle";
 import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
 import { createMemoryLifecycleService } from "../lifecycle/service";
 import {
-  createPrismaMemoryMutationAuthorizationRepository,
-  memoryTargetAuthorizationPayloadHash
+  createPrismaMemoryMutationAuthorizationRepository
 } from "../persistence/authorizations";
 import { createPrismaMemoryFactRepository } from "../persistence/facts";
 import {

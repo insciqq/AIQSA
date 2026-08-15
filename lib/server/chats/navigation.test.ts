@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { getAuthConfig } from "../auth/config";
-import { createTestAuth } from "../auth/testRequestAuth";
+import { createTestAuth } from "@/tests/support/auth";
 import {
   createListChatNavigationHandler,
   createSearchChatNavigationHandler,

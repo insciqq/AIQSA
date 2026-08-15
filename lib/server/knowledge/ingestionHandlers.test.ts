@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { KnowledgeIngestionStatusResponse } from "../../contracts/knowledge";
 import type { AuthenticatedSession } from "../auth/requestAuth";
 import { createUploadPermitGate } from "../http/uploadPermitGate";
-import { createMemoryStorageAdapter } from "../uploads/storage";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import {
   createArchiveKnowledgeDocumentHandler,
   createListKnowledgeDocumentsHandler,

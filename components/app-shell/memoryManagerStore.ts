@@ -971,7 +971,7 @@ export function invalidateMemoryManagerData(_accountId: string): void {
   });
 }
 
-export function resetMemoryManagerStoreForTest(): void {
+export function deactivateMemoryManager(): void {
   listRequestGeneration += 1;
   detailRequestGeneration += 1;
   evidenceRequestGeneration += 1;

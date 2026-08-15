@@ -255,7 +255,7 @@ describe("SMTP TLS, authentication, and pinning", () => {
     const secure = new FakeSmtpSocket();
     installDeliveryScript(secure);
     const connector = unusedConnector();
-    connector.connectTls = vi.fn((input: SmtpTlsConnectionInput) => {
+    connector.connectTls = vi.fn((_input: SmtpTlsConnectionInput) => {
       connected(secure, true);
       return secure;
     });

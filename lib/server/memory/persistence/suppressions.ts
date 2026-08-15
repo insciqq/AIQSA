@@ -1,5 +1,4 @@
-import type { MemorySuppression, PrismaClient } from "@prisma/client";
-import { prisma } from "../../prisma";
+import type { MemorySuppression } from "@prisma/client";
 import type { MemorySuppressionKeyring } from "../suppressionKeyring";
 import { memoryPersistenceFailure } from "./errors";
 import {
@@ -9,8 +8,7 @@ import {
 import {
   advanceMemoryMutation,
   type LockedMemorySettings,
-  type MemoryTransaction,
-  withLockedMemoryTransaction
+  type MemoryTransaction
 } from "./transaction";
 
 type MemorySuppressionCommonInput = Readonly<{
@@ -387,25 +385,4 @@ export async function createMemorySuppressionInTransaction(
     select: { deletionGeneration: true, id: true }
   });
   return { ...created, created: true };
-}
-
-export function createPrismaMemorySuppressionRepository(
-  keyring: MemorySuppressionKeyring,
-  client: PrismaClient = prisma
-) {
-  return Object.freeze({
-    async create(
-      userId: string,
-      input: MemorySuppressionCreateInput
-    ): Promise<MemorySuppressionCreateResult> {
-      validateCreateInput(input);
-      return withLockedMemoryTransaction(client, userId, (tx, settings) =>
-        createMemorySuppressionInTransaction(tx, settings, keyring, input));
-    },
-
-    async matching(userId: string, input: MemorySuppressionMatchInput): Promise<MemorySuppression[]> {
-      return withLockedMemoryTransaction(client, userId, (tx) =>
-        findMatchingMemorySuppressions(tx, keyring, userId, input));
-    }
-  });
 }
