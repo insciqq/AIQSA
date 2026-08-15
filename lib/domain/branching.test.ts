@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildAssistantRegenerationBranch,
-  buildEditedUserBranch,
-  getVisibleMessagePath,
-  type BranchMessage
-} from "./branching";
+import { getVisibleMessagePath, type BranchMessage } from "./branching";
 
 const messages: BranchMessage[] = [
   { id: "u1", parentMessageId: null, role: "user" },
@@ -23,27 +18,5 @@ describe("branch helpers", () => {
       "u2b",
       "a2b"
     ]);
-  });
-
-  it("creates user edits as siblings under the same parent", () => {
-    expect(buildEditedUserBranch(messages[2], [{ type: "text", text: "edited" }])).toEqual({
-      branchSourceMessageId: "u2",
-      content: {
-        blocks: [{ type: "text", text: "edited" }]
-      },
-      parentMessageId: "a1",
-      role: "user"
-    });
-  });
-
-  it("creates assistant regenerations as empty siblings under the same parent", () => {
-    expect(buildAssistantRegenerationBranch(messages[3])).toEqual({
-      branchSourceMessageId: "a2",
-      content: {
-        blocks: []
-      },
-      parentMessageId: "u2",
-      role: "assistant"
-    });
   });
 });

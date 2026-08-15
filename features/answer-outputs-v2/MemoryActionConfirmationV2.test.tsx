@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { memorySummaryFixture } from "@/components/app-shell/memoryTestFixtures";
+import { memorySummaryFixture } from "@/tests/support/memoryFixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryActionConfirmationV2 } from "./MemoryActionConfirmationV2";
 

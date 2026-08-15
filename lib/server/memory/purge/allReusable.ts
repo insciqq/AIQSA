@@ -464,9 +464,3 @@ export const allReusableIndexesContributor: MemoryDeletionContributor = Object.f
   },
   version: "v1"
 });
-
-export const allReusableDeletionContributors = Object.freeze([
-  allReusableLedgerContributor,
-  allReusableWorkContributor,
-  allReusableIndexesContributor
-]);

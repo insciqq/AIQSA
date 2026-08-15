@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpSettingsSection } from "./McpSettingsSection";
-import { isMcpOAuthAuthorizing, resetMcpSettingsStoreForTest } from "./mcpSettingsStore";
+import { isMcpOAuthAuthorizing } from "./mcpSettingsStore";
 import { MCP_RUN_PLAN_LIMITS, type UserMcpServer } from "@/lib/contracts/mcp";
+import { resetMcpSettingsStoreForTest } from "@/tests/support/appShellStores";
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), {

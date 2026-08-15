@@ -857,7 +857,7 @@ describe("AdminPanel", () => {
     );
     reviewers.archivedAt = "2026-07-12T00:00:00.000Z";
     let dashboardRequests = 0;
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 
       if (url === "/api/admin") {

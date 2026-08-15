@@ -216,15 +216,3 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
 export function memoryCounterEffectFor(mutation: MemoryCounterMutation): MemoryCounterEffect {
   return MEMORY_COUNTER_EFFECTS[mutation];
 }
-
-export function memoryCounterEffectMatches(
-  mutation: MemoryCounterMutation,
-  actual: MemoryCounterEffect
-): boolean {
-  const expected = MEMORY_COUNTER_EFFECTS[mutation];
-  return expected.branchGeneration === actual.branchGeneration &&
-    expected.sourceRevision === actual.sourceRevision &&
-    expected.memoryGeneration === actual.memoryGeneration &&
-    expected.memoryRevision === actual.memoryRevision &&
-    expected.check === actual.check;
-}

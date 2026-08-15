@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resetComposerControlStoreForTest } from "./composerControlStore";
+import {
+  resetComposerControlStoreForTest,
+  resetThreadStoreForTest,
+  resetWorkspaceStoreForTest
+} from "@/tests/support/appShellStores";
 import {
   createThreadActions,
   type BranchCheckoutSettlement
 } from "./threadActions";
 import type { ShareDialogTarget } from "./ShareDialog";
-import { resetThreadStoreForTest, selectThreadSnapshot, useThreadStore } from "./threadStore";
-import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
+import { selectThreadSnapshot, useThreadStore } from "./threadStore";
+import { useWorkspaceStore } from "./workspaceStore";
 import type { ChatDetail, WorkspaceChatSummary, Notice, ThreadMessage } from "./types";
 
 function chatSummary(overrides: Partial<WorkspaceChatSummary> = {}): WorkspaceChatSummary {

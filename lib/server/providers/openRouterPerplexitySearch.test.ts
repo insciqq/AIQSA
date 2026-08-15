@@ -3,9 +3,9 @@ import { validateSearchToolArguments } from "../search/query";
 import { isProviderSearchExecutionError, type ProviderSearchRequest } from "./types";
 import type { OpenRouterChatClient } from "./openRouterChatTransport";
 import {
-  createFakeOpenRouterPerplexitySearchAdapter,
   createOpenRouterPerplexitySearchAdapter
 } from "./openRouterPerplexitySearch";
+import { createFakeOpenRouterPerplexitySearchAdapter } from "@/tests/support/openRouter";
 
 function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): ProviderSearchRequest {
   const validated = validateSearchToolArguments({ query: "Find one concise fact." });

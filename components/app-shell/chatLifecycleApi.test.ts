@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
-import { memorySettingsFixture } from "./memoryTestFixtures";
+import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
 import {
   ChatLifecycleApiError,
   loadChatMemoryState,

@@ -67,14 +67,6 @@ async function cleanupUnmockedChats(page: Page) {
   }
 }
 
-async function workspaceChats(page: Page): Promise<WorkspaceBody["chats"]> {
-  const response = await page.request.get("/api/chats");
-  expect(response.ok()).toBe(true);
-  const body = (await response.json()) as WorkspaceBody;
-
-  return body.chats;
-}
-
 async function prepareFakeBlankChat(page: Page) {
   await page
     .getByRole("complementary", { name: "Chat navigation" })

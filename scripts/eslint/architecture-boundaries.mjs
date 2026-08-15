@@ -316,6 +316,53 @@ const uiTypographyRule = {
   }
 };
 
+const testSupportBoundaryRule = {
+  meta: {
+    type: "problem",
+    docs: {
+      description: "Keep test-support modules out of production dependency graphs"
+    },
+    schema: [],
+    messages: {
+      productionImport:
+        "Production code must not import '{{specifier}}' from the tests/support boundary."
+    }
+  },
+  create(context) {
+    const importerFilename = context.physicalFilename ?? context.filename;
+    const checkSource = (sourceNode) => {
+      const specifier = staticString(sourceNode);
+      if (specifier === null) return;
+      const target = repositoryTarget(specifier, importerFilename);
+      if (targets(target, "tests/support")) {
+        context.report({
+          node: sourceNode,
+          messageId: "productionImport",
+          data: { specifier }
+        });
+      }
+    };
+
+    return {
+      ImportDeclaration: (node) => checkSource(node.source),
+      ExportNamedDeclaration: (node) => checkSource(node.source),
+      ExportAllDeclaration: (node) => checkSource(node.source),
+      ImportExpression: (node) => checkSource(node.source),
+      TSImportType: (node) => checkSource(node.source),
+      TSImportEqualsDeclaration: (node) => {
+        if (node.moduleReference.type === "TSExternalModuleReference") {
+          checkSource(node.moduleReference.expression);
+        }
+      },
+      CallExpression: (node) => {
+        if (node.callee.type === "Identifier" && node.callee.name === "require") {
+          checkSource(node.arguments[0]);
+        }
+      }
+    };
+  }
+};
+
 const architectureBoundariesRule = {
   meta: {
     type: "problem",
@@ -398,6 +445,7 @@ const architectureBoundariesRule = {
 const architectureBoundariesPlugin = {
   rules: {
     "architecture-boundaries": architectureBoundariesRule,
+    "test-support-boundary": testSupportBoundaryRule,
     "ui-typography": uiTypographyRule
   }
 };

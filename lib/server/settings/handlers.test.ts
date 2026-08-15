@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultProviderModels, defaultSearchStrategies } from "../../domain/catalog";
 import { getAuthConfig } from "../auth/config";
-import { createTestAuth } from "../auth/testRequestAuth";
+import { createTestAuth } from "@/tests/support/auth";
 import {
   createUpdateSettingsHandler,
   type SettingsHandlerData,

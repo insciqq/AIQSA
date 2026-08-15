@@ -1,4 +1,4 @@
-import type { RunTool } from "./types";
+import type { RunTool } from "@/lib/server/tools/types";
 
 export const currentSearchToolFixture: RunTool = Object.freeze({
   capability: "web_search",

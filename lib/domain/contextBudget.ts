@@ -139,12 +139,6 @@ function approximateTokenUnitsFromCodePointCounts(
   return { occurrences, units };
 }
 
-export function estimateApproxTokensFromCodePointCounts(
-  counts: readonly ApproxTokenCodePointCount[]
-): number {
-  return Math.ceil(approximateTokenUnitsFromCodePointCounts(counts).units);
-}
-
 export function estimateApproxTokensFromProjectedParts(
   parts: readonly ApproxTokenProjectedPart[]
 ): number {

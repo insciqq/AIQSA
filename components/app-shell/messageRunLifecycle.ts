@@ -155,7 +155,6 @@ function finishStream(input: {
 }
 
 export async function executeMessageRunLifecycle({
-  activeChatIdRef,
   activeStreamAbortRef,
   chatId,
   consumeRunStream,

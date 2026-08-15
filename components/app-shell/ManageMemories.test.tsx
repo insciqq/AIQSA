@@ -1,17 +1,15 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetMemoryManagerStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { ManageMemories } from "./ManageMemories";
-import {
-  resetMemoryManagerStoreForTest,
-  useMemoryManagerStore
-} from "./memoryManagerStore";
+import { useMemoryManagerStore } from "./memoryManagerStore";
 import {
   memoryDeletionFixture,
   memoryDetailFixture,
   memoryEvidenceFixture,
   memorySummaryFixture
-} from "./memoryTestFixtures";
-import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
+} from "@/tests/support/memoryFixtures";
+import { useWorkspaceStore } from "./workspaceStore";
 
 const sourceProps = {
   accountId: "account-test",

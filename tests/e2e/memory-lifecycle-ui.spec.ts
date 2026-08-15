@@ -1,5 +1,5 @@
 import { expect, test, type Route } from "@playwright/test";
-import { memorySettingsFixture } from "../../components/app-shell/memoryTestFixtures";
+import { memorySettingsFixture } from "../support/memoryFixtures";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../lib/contracts/memory";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { signInWithLocalToken } from "./support/localAuth";

@@ -16,10 +16,3 @@ export class MemoryCoordinatorError extends Error {
     this.code = this.message;
   }
 }
-
-export function memoryCoordinatorError(
-  code: string,
-  retryable = true
-): MemoryCoordinatorError {
-  return new MemoryCoordinatorError(code, retryable);
-}

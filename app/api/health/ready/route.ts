@@ -24,10 +24,6 @@ function reportReady(): void {
   lastReportedFailure = "";
 }
 
-export function resetReadinessReportingForTests(): void {
-  lastReportedFailure = "";
-}
-
 function unavailable() {
   return Response.json(
     { status: "not_ready" },

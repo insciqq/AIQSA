@@ -1,13 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  adminProviderName,
-  serializeAdminEntitlements,
-  serializeAdminGrant,
-  serializeAdminGroup,
-  serializeAdminInvite,
-  serializeAdminLastSession,
-  serializeAdminRule
-} from "./adminRepositorySerializers";
+import { serializeAdminEntitlements, serializeAdminGrant, serializeAdminGroup, serializeAdminInvite, serializeAdminLastSession, serializeAdminRule } from "./adminRepositorySerializers";
 
 function stableGrant(input: {
   enabled: boolean;
@@ -373,15 +365,5 @@ describe("admin repository serializers", () => {
         }
       ])
     ).toBe("2026-07-12T13:00:00.000Z");
-  });
-
-  it("maps known provider labels and preserves unknown provider ids", () => {
-    expect([
-      adminProviderName("anthropic"),
-      adminProviderName("fake"),
-      adminProviderName("openai"),
-      adminProviderName("openrouter"),
-      adminProviderName("private-provider")
-    ]).toEqual(["Anthropic", "Fake", "OpenAI", "OpenRouter", "private-provider"]);
   });
 });

@@ -9,10 +9,6 @@ type GeminiTransientStep = Record<string, unknown> & {
   [transientGeminiFields]?: GeminiTransientFields;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -69,14 +65,4 @@ export function geminiInteractionStepForWire(
     ...(transient.result !== undefined ? { result: transient.result } : {}),
     ...(transient.signature !== undefined ? { signature: transient.signature } : {})
   };
-}
-
-export function geminiInteractionTransientFields(
-  value: Record<string, unknown>
-): GeminiTransientFields {
-  return (value as GeminiTransientStep)[transientGeminiFields] ?? {};
-}
-
-export function isGeminiInteractionRecord(value: unknown): value is Record<string, unknown> {
-  return isRecord(value);
 }

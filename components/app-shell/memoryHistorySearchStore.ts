@@ -288,8 +288,3 @@ export function invalidateMemoryHistorySearchResults(accountId?: string): void {
     results: []
   });
 }
-
-export function resetMemoryHistorySearchStoreForTest(): void {
-  abortActiveRequest();
-  useMemoryHistorySearchStore.setState(accountState(null));
-}

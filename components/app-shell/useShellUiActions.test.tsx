@@ -1,8 +1,8 @@
 import { act, renderHook } from "@testing-library/react";
+import { resetComposerSessionStoreForTest } from "@/tests/support/appShellStores";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   composerSessionKey,
-  resetComposerSessionStoreForTest,
   selectActiveComposerSession,
   useComposerSessionStore
 } from "./composerSessionStore";

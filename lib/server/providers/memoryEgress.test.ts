@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import type { ProviderRunRequest } from "./types";
-import {
-  memoryEgressDestinationFingerprint,
-  memoryEgressDestinations,
-  memoryEgressRequestEvidence,
-  requestHasHostedSearchCapability,
-  requestHasServerExternalTools
-} from "./memoryEgress";
+import { memoryEgressRequestEvidence, requestHasHostedSearchCapability, requestHasServerExternalTools } from "./memoryEgress";
 
 function request(): ProviderRunRequest {
   return {
@@ -87,20 +81,6 @@ describe("Memory egress evidence", () => {
     expect(value.personalContext).toBeDefined();
     expect(requestHasHostedSearchCapability(value)).toBe(true);
     expect(requestHasServerExternalTools(value)).toBe(true);
-  });
-
-  it("projects bounded destination metadata with stable fingerprints", () => {
-    const destinations = memoryEgressDestinations(request());
-    expect(destinations.map((destination) => destination.kind).sort()).toEqual([
-      "knowledge",
-      "mcp",
-      "search"
-    ]);
-    for (const destination of destinations) {
-      expect(memoryEgressDestinationFingerprint(destination)).toMatch(/^[a-f0-9]{64}$/u);
-      expect(memoryEgressDestinationFingerprint(destination))
-        .toBe(memoryEgressDestinationFingerprint(destination));
-    }
   });
 
   it("produces hash-only exact-request evidence for ordinary mixed context", () => {

@@ -42,6 +42,9 @@ export function subscribeToSessionExpired(listener: SessionExpiredListener): () 
 
   return () => {
     sessionExpiredListeners.delete(listener);
+    if (sessionExpiredListeners.size === 0) {
+      sessionExpiredSignaled = false;
+    }
   };
 }
 
@@ -65,11 +68,6 @@ export function sessionExpiredLoginHref(destination: string): string {
     reason: CLIENT_SESSION_EXPIRED_CODE
   });
   return `/login?${query.toString()}`;
-}
-
-export function resetSessionExpiredSignalForTest(): void {
-  sessionExpiredListeners.clear();
-  sessionExpiredSignaled = false;
 }
 
 export function parseSseBlock(block: string): RunEventView | null {

@@ -2090,10 +2090,6 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         messageId: unacceptedAttempt.messageId,
         userId
       });
-      const candidate = await prisma.memoryCandidate.findUniqueOrThrow({
-        select: { createdByExecutionId: true },
-        where: { id: candidateId }
-      });
       const settings = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });

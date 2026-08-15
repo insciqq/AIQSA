@@ -10,12 +10,10 @@ import type {
   AdminProviderDeleteBlocker,
   AdminProviderDeleteResult,
   AdminProviderDraftCheck,
-  AdminProviderFamily,
   AdminProviderTestEvidence
 } from "../../../contracts/adminProviders";
 import {
   normalizeProviderConnectionConfiguration,
-  normalizeProviderModelConfiguration,
   type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 import {

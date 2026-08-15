@@ -77,8 +77,3 @@ export function clearChatNavigationSearch(): void {
   searchGeneration += 1;
   useWorkspaceStore.getState().setNavigationSearchQuery("");
 }
-
-export function resetChatNavigationActionsForTest(): void {
-  listGeneration = 0;
-  searchGeneration = 0;
-}

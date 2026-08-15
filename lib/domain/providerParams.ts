@@ -47,18 +47,6 @@ export function canonicalizeMaxOutputTokenParams(
   return canonicalParams;
 }
 
-export type ProviderParameterField = {
-  name: string;
-  type: "boolean" | "integer" | "number" | "string" | "enum";
-  defaultValue: boolean | number | string;
-  allowedValues?: string[];
-};
-
-export type ProviderParameterSchema = {
-  provider: ProviderId;
-  fields: ProviderParameterField[];
-};
-
 export type OpenAIResponsesParams = {
   background: boolean;
   stream: boolean;
@@ -120,122 +108,6 @@ export type OpenRouterParams = {
   stream: boolean;
   temperature?: number;
   verbosity?: AnthropicEffort;
-};
-
-// This is the provider-wide field vocabulary; per-model options and support are
-// authoritative only in ModelParameterControls from the entitled catalog.
-export const providerParameterSchemas: Record<ProviderId, ProviderParameterSchema> = {
-  anthropic: {
-    provider: "anthropic",
-    fields: [
-      { name: "maxTokens", type: "integer", defaultValue: 128000 },
-      { name: "temperature", type: "number", defaultValue: 1 },
-      { name: "thinking.enabled", type: "boolean", defaultValue: false },
-      {
-        name: "thinking.type",
-        type: "enum",
-        defaultValue: "adaptive",
-        allowedValues: ["adaptive", "enabled"]
-      },
-      { name: "thinking.budgetTokens", type: "integer", defaultValue: 0 },
-      {
-        name: "outputConfig.effort",
-        type: "enum",
-        defaultValue: "high",
-        allowedValues: ["low", "medium", "high", "xhigh", "max"]
-      }
-    ]
-  },
-  fake: {
-    provider: "fake",
-    fields: [
-      { name: "deterministic", type: "boolean", defaultValue: true },
-      { name: "latencyMs", type: "integer", defaultValue: 0 },
-      { name: "responseStyle", type: "enum", defaultValue: "inspectable", allowedValues: ["concise", "inspectable"] }
-    ]
-  },
-  gemini: {
-    provider: "gemini",
-    fields: [
-      { name: "maxTokens", type: "integer", defaultValue: 65536 },
-      { name: "stream", type: "boolean", defaultValue: true },
-      {
-        name: "reasoning.effort",
-        type: "enum",
-        defaultValue: "medium",
-        allowedValues: ["minimal", "low", "medium", "high"]
-      }
-    ]
-  },
-  openai: {
-    provider: "openai",
-    fields: [
-      { name: "background", type: "boolean", defaultValue: true },
-      { name: "stream", type: "boolean", defaultValue: false },
-      { name: "store", type: "boolean", defaultValue: true },
-      {
-        name: "reasoning.effort",
-        type: "enum",
-        defaultValue: "medium",
-        allowedValues: ["none", "low", "medium", "high", "xhigh", "max"]
-      },
-      {
-        name: "reasoning.mode",
-        type: "enum",
-        defaultValue: "standard",
-        allowedValues: ["standard", "pro"]
-      },
-      {
-        name: "reasoning.summary",
-        type: "enum",
-        defaultValue: "auto",
-        allowedValues: ["auto", "concise", "detailed", "none"]
-      },
-      { name: "maxOutputTokens", type: "integer", defaultValue: 128000 },
-      { name: "temperature", type: "number", defaultValue: 1 },
-      { name: "manualContextReplay", type: "boolean", defaultValue: true }
-    ]
-  },
-  openrouter: {
-    provider: "openrouter",
-    fields: [
-      { name: "maxTokens", type: "integer", defaultValue: 128000 },
-      { name: "temperature", type: "number", defaultValue: 1 },
-      { name: "stream", type: "boolean", defaultValue: true },
-      { name: "reasoning.enabled", type: "boolean", defaultValue: false },
-      {
-        name: "reasoning.effort",
-        type: "enum",
-        defaultValue: "medium",
-        allowedValues: ["none", "minimal", "low", "medium", "high", "xhigh"]
-      },
-      { name: "reasoning.exclude", type: "boolean", defaultValue: false },
-      { name: "reasoning.maxTokens", type: "integer", defaultValue: 0 },
-      { name: "provider.allowFallbacks", type: "boolean", defaultValue: true },
-      { name: "provider.requireParameters", type: "boolean", defaultValue: false },
-      { name: "provider.order", type: "string", defaultValue: "" },
-      { name: "provider.only", type: "string", defaultValue: "" },
-      {
-        name: "verbosity",
-        type: "enum",
-        defaultValue: "high",
-        allowedValues: ["low", "medium", "high", "xhigh", "max"]
-      },
-      {
-        name: "provider.dataCollection",
-        type: "enum",
-        defaultValue: "deny",
-        allowedValues: ["allow", "deny"]
-      },
-      {
-        name: "provider.sort",
-        type: "enum",
-        defaultValue: "throughput",
-        allowedValues: ["latency", "price", "throughput"]
-      },
-      { name: "provider.zdr", type: "boolean", defaultValue: false }
-    ]
-  }
 };
 
 export function defaultOpenAIResponsesParams(): OpenAIResponsesParams {
@@ -332,10 +204,6 @@ function stringArrayValue(value: unknown): string[] {
 }
 
 function openRouterEffort(value: unknown, fallback: OpenRouterParams["reasoning"]["effort"]) {
-  return stringValue(value, fallback);
-}
-
-function anthropicEffort(value: unknown, fallback: AnthropicEffort): AnthropicEffort {
   return stringValue(value, fallback);
 }
 

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { memoryHealthFixture } from "./memoryTestFixtures";
+import { memoryHealthFixture } from "@/tests/support/memoryFixtures";
 import { MemoryHealthPulse } from "./MemoryHealthPulse";
 
 afterEach(cleanup);

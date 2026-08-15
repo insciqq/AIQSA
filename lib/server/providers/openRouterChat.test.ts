@@ -1,18 +1,18 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { describe, expect, it, vi } from "vitest";
-import { currentSearchToolFixture } from "../tools/testFixtures";
+import { currentSearchToolFixture } from "@/tests/support/tools";
 import { validateSearchToolArguments } from "../search/query";
 import * as openRouterFacade from "./openRouterChat";
 import {
   buildOpenRouterChatRequest,
   buildOpenRouterPerplexitySearchRequest,
   createFetchOpenRouterChatClient,
-  createFakeOpenRouterPerplexitySearchAdapter,
   createOpenRouterChatAdapter,
   createOpenRouterPerplexitySearchAdapter,
   type OpenRouterAdapterOptions,
   type OpenRouterChatClient
 } from "./openRouterChat";
+import { createFakeOpenRouterPerplexitySearchAdapter } from "@/tests/support/openRouter";
 import type {
   ProviderRunRequest,
   ProviderRunResult,
@@ -177,7 +177,6 @@ describe("OpenRouter Chat facade", () => {
       buildOpenRouterChatRequest,
       buildOpenRouterPerplexitySearchRequest,
       createFetchOpenRouterChatClient,
-      createFakeOpenRouterPerplexitySearchAdapter,
       createOpenRouterChatAdapter,
       createOpenRouterPerplexitySearchAdapter
     ]) {
@@ -185,6 +184,7 @@ describe("OpenRouter Chat facade", () => {
     }
     expect(openRouterFacade).not.toHaveProperty("buildOpenRouterChatRequestPreview");
     expect(openRouterFacade).not.toHaveProperty("buildOpenRouterPerplexitySearchRequestPreview");
+    expect(openRouterFacade).not.toHaveProperty("createFakeOpenRouterPerplexitySearchAdapter");
     expect(options.client).toBe(client);
   });
 

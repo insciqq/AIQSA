@@ -2,10 +2,10 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "../auth/config";
-import { createTestAuth } from "../auth/testRequestAuth";
+import { createTestAuth } from "@/tests/support/auth";
 import { createUploadPermitGate } from "../http/uploadPermitGate";
 import { createUploadHandler, type CreatedAttachment } from "./handlers";
-import { createMemoryStorageAdapter } from "./storage";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
 
 const oneByOnePng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",

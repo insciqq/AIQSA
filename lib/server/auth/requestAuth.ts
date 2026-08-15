@@ -206,7 +206,3 @@ export async function revokeRequestSession(input: {
     tokenHash: hashToken(token)
   });
 }
-
-export async function deleteExpiredSessions(input: { now?: Date; sessions: AuthSessionStore }): Promise<number> {
-  return (await input.sessions.deleteExpiredSessions?.(input.now ?? new Date())) ?? 0;
-}

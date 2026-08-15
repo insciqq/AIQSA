@@ -1,3 +1,4 @@
+// Shared deterministic fixtures for unit, component, and end-to-end tests.
 import type {
   MemoryDeletionStatus,
   MemoryDetailResponse,

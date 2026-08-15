@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { resetThreadStoreForTest } from "@/tests/support/appShellStores";
 import {
-  resetThreadStoreForTest,
   selectThreadRenderActiveLeafId,
   selectThreadSnapshot,
   selectThreadVisibleMessages,

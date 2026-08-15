@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DocumentParserError, type ParsedDocument } from "../parsing";
 import type { EmbeddingRuntimeBinding } from "../providerRuntime/embeddingRuntime";
 import type { ProviderModelConfiguration } from "../providers/providerConfiguration";
-import { createMemoryStorageAdapter } from "../uploads/storage";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import {
   createKnowledgeIngestionProcessor,
   type KnowledgeIngestionProcessorRepository

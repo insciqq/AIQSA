@@ -380,9 +380,3 @@ export function dismissCompletedPermanentChatDeletion(): void {
     statusOpen: false
   });
 }
-
-export function resetPermanentChatDeletionStoreForTest(): void {
-  abortActiveRequest();
-  reconcileAdmission = null;
-  usePermanentChatDeletionStore.setState(initialState, true);
-}

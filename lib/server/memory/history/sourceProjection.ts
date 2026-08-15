@@ -37,13 +37,6 @@ export type MemoryHistorySourceOrigin =
 export type MemoryHistoryTaintSource =
   (typeof MEMORY_HISTORY_TAINT_SOURCES)[number];
 export type MemoryHistorySourceMode = "EXCLUDED" | "NORMAL" | "TEMPORARY";
-export type MemoryHistorySourceRole =
-  | "assistant"
-  | "developer"
-  | "system"
-  | "tool"
-  | "user";
-
 export type MemoryHistoryMessageProvenanceInput = Readonly<{
   assistantId: string | null;
   complete: boolean;

@@ -31,9 +31,6 @@ export const CHAT_NAVIGATION_CURSOR_MAX_LENGTH = 2_048;
 export const CHAT_NAVIGATION_DEFAULT_PAGE_SIZE = 30;
 export const CHAT_NAVIGATION_MAX_PAGE_SIZE = 50;
 export const CHAT_NAVIGATION_QUERY_MAX_LENGTH = 120;
-export const CHAT_PERMANENT_DELETE_CONTRACT_VERSION =
-  "chat-permanent-delete-v1" as const;
-
 export function boundedChatBranchPreview(value: string): string {
   if (value.length <= CHAT_BRANCH_PREVIEW_MAX_LENGTH) return value;
   let end = CHAT_BRANCH_PREVIEW_MAX_LENGTH;

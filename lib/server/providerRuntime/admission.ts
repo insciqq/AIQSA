@@ -10,7 +10,6 @@ import {
 } from "../providers/providerConfiguration";
 import { resolveProviderModelCapabilities } from "../providers/providerModelCapabilities";
 import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } from "../providers/runtimeFactory";
-import type { ProviderModelCapabilities } from "../providers/types";
 import type {
   RunModelConfiguration,
   RunSearchStrategyConfiguration
@@ -528,42 +527,6 @@ export async function loadEmbeddingProviderRole(
     modelId: input.providerModelId,
     requireEntitlement: true
   });
-}
-
-/** Resolve an answer-capable deployment through an active administrator's
- * normal credential precedence without requiring a user entitlement. This
- * remains available for explicitly actor-scoped administrative work. */
-export async function loadUnentitledAnswerProviderRole(
-  db: AdmissionPrisma,
-  input: { providerModelId: string; userId: string }
-): Promise<ProviderAdmissionRole> {
-  const authority = await activeUserAuthority(db, input.userId, { requireAdmin: true });
-  const model = await db.providerModel.findUnique({
-    select: { connectionId: true },
-    where: { id: input.providerModelId }
-  });
-  if (!model) throw new ProviderAdmissionError("model_not_available");
-  try {
-    return await loadRole(db, {
-      connectionId: model.connectionId,
-      credentialAuthority: {
-        fullAccess: authority.fullAccess,
-        groupIds: authority.groupIds,
-        kind: "user",
-        userId: input.userId
-      },
-      modelClass: "answer",
-      modelId: input.providerModelId,
-      requireAnswerSelectable: true,
-      requireEntitlement: false
-    });
-  } catch (error) {
-    if (error instanceof ProviderConfigurationError ||
-      error instanceof Error && error.message === "provider_execution_snapshot_invalid") {
-      throw new ProviderAdmissionError("model_not_available");
-    }
-    throw error;
-  }
 }
 
 /** Resolve installation-owned internal answer work through the connection's

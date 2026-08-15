@@ -19,12 +19,12 @@ vi.mock("@aws-sdk/client-s3", async (importOriginal) => {
 
 import {
   createFileSystemStorageAdapter,
-  createMemoryStorageAdapter,
   createS3StorageAdapter,
   isStoredObjectTooLargeError,
   StoredObjectTooLargeError,
   type StoredObjectInput
 } from "./storage";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
 
 const s3Env = {
   S3_ACCESS_KEY_ID: "test-access-key",

@@ -9,8 +9,8 @@ import type {
   AdminInviteRecord
 } from "@/lib/contracts/admin";
 import type { AdminRepository } from "./adminRepositoryContract";
-import { createMemoryAuthMailer, createNoopAuthMailer } from "./mailer";
-import { createTestAuth } from "./testRequestAuth";
+import { createMemoryAuthMailer, createNoopAuthMailer } from "@/tests/support/authMailers";
+import { createTestAuth } from "@/tests/support/auth";
 import { hashToken } from "./token";
 
 const admin = createTestAuth();

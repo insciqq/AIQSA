@@ -109,7 +109,6 @@ function htmlFallback(record: AttachmentProcessingRecord, bytes: Buffer, maxChar
 }
 
 async function processPdfFallback(
-  record: AttachmentProcessingRecord,
   bytes: Buffer,
   signal: AbortSignal | undefined
 ): Promise<AttachmentProcessingResult> {
@@ -188,7 +187,7 @@ async function parseDocument(
       (error.code === "parser_unavailable" || error.code === "parser_timeout")
     ) {
       if (record.kind === "pdf") {
-        return processPdfFallback(record, bytes, signal);
+        return processPdfFallback(bytes, signal);
       }
       const fallback = htmlFallback(record, bytes, maxChars);
       if (fallback) return fallback;

@@ -1,12 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  CODE_HIGHLIGHT_CACHE_LIMIT,
-  clearCodeHighlightingCacheForTest,
-  codeHighlightingCacheSizeForTest,
-  highlightCodeBlock
-} from "./codeHighlighting";
-import { clearMathRenderingCacheForTest, renderMathExpression } from "./mathRendering";
+import { CODE_HIGHLIGHT_CACHE_LIMIT, highlightCodeBlock } from "./codeHighlighting";
+import { renderMathExpression } from "./mathRendering";
 import { MarkdownMessage } from "./MarkdownMessage";
 
 const shikiMock = vi.hoisted(() => {
@@ -58,8 +53,6 @@ vi.mock("shiki/langs/diff.mjs", () => ({ default: [] }));
 
 describe("MarkdownMessage", () => {
   afterEach(() => {
-    clearCodeHighlightingCacheForTest();
-    clearMathRenderingCacheForTest();
     shikiMock.codeToHtml.mockClear();
     shikiMock.createHighlighterCore.mockClear();
     vi.restoreAllMocks();
@@ -423,23 +416,6 @@ describe("MarkdownMessage", () => {
     );
 
     await waitFor(() => expect(container.querySelectorAll(".shiki")).toHaveLength(2));
-    expect(shikiMock.codeToHtml).toHaveBeenCalledTimes(1);
-  });
-
-  it("bounds the highlighted result cache and evicts least recently used entries", async () => {
-    for (let index = 0; index < CODE_HIGHLIGHT_CACHE_LIMIT; index += 1) {
-      await highlightCodeBlock(`const value${index} = ${index};`, "js");
-    }
-    await highlightCodeBlock("const value0 = 0;", "js");
-    await highlightCodeBlock(`const value${CODE_HIGHLIGHT_CACHE_LIMIT} = ${CODE_HIGHLIGHT_CACHE_LIMIT};`, "js");
-
-    expect(codeHighlightingCacheSizeForTest()).toBe(CODE_HIGHLIGHT_CACHE_LIMIT);
-
-    shikiMock.codeToHtml.mockClear();
-    await highlightCodeBlock("const value1 = 1;", "js");
-    expect(shikiMock.codeToHtml).toHaveBeenCalledTimes(1);
-
-    await highlightCodeBlock("const value0 = 0;", "js");
     expect(shikiMock.codeToHtml).toHaveBeenCalledTimes(1);
   });
 

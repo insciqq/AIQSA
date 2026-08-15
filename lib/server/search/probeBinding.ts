@@ -41,25 +41,6 @@ export function searchProbeBinding(value: unknown): SearchProbeBinding | null {
     : null;
 }
 
-export function sameSearchProbeBinding(
-  left: SearchProbeBinding,
-  right: SearchProbeBinding
-): boolean {
-  return left.connectionId === right.connectionId &&
-    left.connectionVersion === right.connectionVersion &&
-    left.credentialId === right.credentialId &&
-    left.credentialVersionId === right.credentialVersionId &&
-    left.modelVersion === right.modelVersion &&
-    left.providerModelId === right.providerModelId;
-}
-
-export function withSearchProbeBinding(
-  evidence: Record<string, unknown>,
-  binding: SearchProbeBinding
-): Record<string, unknown> {
-  return { ...evidence, probeBinding: binding };
-}
-
 export function searchValidationFingerprint(value: unknown): string {
   const binding = searchProbeBinding(value);
   const identity = binding

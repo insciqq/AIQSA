@@ -192,12 +192,3 @@ export function highlightCodeBlock(code: string, language: string): Promise<Code
   highlightCache.set(cacheKey, highlighted);
   return highlighted;
 }
-
-export function clearCodeHighlightingCacheForTest() {
-  highlightCache.clear();
-  highlighterPromise = null;
-}
-
-export function codeHighlightingCacheSizeForTest(): number {
-  return highlightCache.size;
-}

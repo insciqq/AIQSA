@@ -30,6 +30,7 @@ import {
   deactivateMemoryHistorySearchAccount
 } from "@/components/app-shell/memoryHistorySearchStore";
 import {
+  deactivateMemorySettings,
   refreshMemorySettings,
   useMemorySettingsStore
 } from "@/components/app-shell/memorySettingsStore";
@@ -56,7 +57,12 @@ import {
 } from "@/components/app-shell/knowledgeLibraryController";
 import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
-import { consumeMcpOAuthReturn, refreshMcpSettings } from "@/components/app-shell/mcpSettingsStore";
+import {
+  consumeMcpOAuthReturn,
+  deactivateMcpSettings,
+  refreshMcpSettings
+} from "@/components/app-shell/mcpSettingsStore";
+import { deactivateMemoryManager } from "@/components/app-shell/memoryManagerStore";
 import { useRunControlsActions } from "@/components/app-shell/runControlsActions";
 import {
   abortActiveStreamControllers,
@@ -98,6 +104,7 @@ import { useWorkspaceInteractionController } from "@/components/app-shell/useWor
 import { useWorkspaceActions } from "@/components/app-shell/workspaceActions";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import {
+  deactivateArchivedChats,
   openArchivedChats,
   openArchivedChatPreview,
   removePermanentlyDeletedArchivedChat,
@@ -212,12 +219,10 @@ export function PowerAppShellV2({
   const folders = useWorkspaceStore((state) => state.folders);
   const chats = useWorkspaceStore((state) => state.chats);
   const workspaceLoading = useWorkspaceStore((state) => state.workspaceLoading);
-  const workspaceError = useWorkspaceStore((state) => state.workspaceError);
   const workspaceReady = useWorkspaceStore((state) => state.workspaceReady);
   const activeChatId = useWorkspaceStore((state) => state.activeChatId);
   const pendingChatFolderId = useWorkspaceStore((state) => state.pendingChatFolderId);
   const memorySettings = useMemorySettingsStore((state) => state.data);
-  const creatingChat = useWorkspaceStore((state) => state.creatingChat);
   const archivedChatsOpen = useArchivedChatsStore((state) => state.open);
   const activeChatDetailLoading = useWorkspaceStore((state) => state.activeChatDetailLoading);
   const activeChatDetailError = useWorkspaceStore((state) => state.activeChatDetailError);
@@ -228,11 +233,16 @@ export function PowerAppShellV2({
     activateMemoryHistorySearchAccount(accountId);
     return () => deactivateMemoryHistorySearchAccount(accountId);
   }, [accountId]);
+  useEffect(() => () => {
+    deactivateArchivedChats();
+    deactivateMcpSettings();
+    deactivateMemoryManager();
+    deactivateMemorySettings();
+  }, [accountId]);
   const activeThread = useThreadStore((state) => selectThreadSnapshot(state, activeChatId));
   const [branchGraph, setBranchGraph] = useState<BranchGraphState | null>(null);
   const branchGraphRequestRef = useRef(0);
   const activeRunSurface = useRunSurfaceStore((state) => selectRunSurface(state, activeChatId));
-  const messages = activeThread.messages;
   const activeThreadHistory = threadHistoryState(activeThread);
   const renderActiveLeafId = useMemo(
     () => selectThreadRenderActiveLeafId(activeThread),
@@ -265,7 +275,6 @@ export function PowerAppShellV2({
   const editingMessageId = composerSession.editingMessageId;
   const editingMessagePending = Boolean(composerSession.pendingEdit);
   const maxOutputTokens = useComposerControlStore((state) => state.maxOutputTokens);
-  const knowledgePlanSource = useComposerControlStore((state) => state.knowledgePlanSource);
   const reasoningEffort = useComposerControlStore((state) => state.reasoningEffort);
   const reasoningMode = useComposerControlStore((state) => state.reasoningMode);
   const selectedAssistant = useComposerControlStore((state) => state.selectedAssistant);
@@ -280,7 +289,6 @@ export function PowerAppShellV2({
   const streamMode = useComposerControlStore((state) => state.streamMode);
   const temperature = useComposerControlStore((state) => state.temperature);
   const applyControlDefaults = useComposerControlStore((state) => state.applyControlDefaults);
-  const setAttachments = useComposerSessionStore((state) => state.setAttachments);
   const setDraft = useComposerSessionStore((state) => state.setDraft);
   const setSelectedModelId = useComposerControlStore((state) => state.setSelectedModelId);
   const setSelectedKnowledgePlan = useComposerControlStore((state) => state.setSelectedKnowledgePlan);
@@ -324,10 +332,6 @@ export function PowerAppShellV2({
     activeChatId ? state.ambiguousFailures[activeChatId] ?? null : null
   );
   const activeRunChatIdsKey = useRunLifecycleStore((state) => Object.keys(state.activeStreams).sort().join("\u0000"));
-  const activeRunChatIds = useMemo(
-    () => new Set(activeRunChatIdsKey ? activeRunChatIdsKey.split("\u0000") : []),
-    [activeRunChatIdsKey]
-  );
   const currentRunId = activeChatStream?.runId ?? null;
   const { notificationSoundEnabled, notifyAnswerReady, primeAnswerSound, toggleNotificationSound } =
     useAnswerNotification();
@@ -593,7 +597,6 @@ export function PowerAppShellV2({
     refreshActiveChat,
     refreshWorkspace,
     renameChat,
-    setChatKnowledgeDefault,
     toggleChatFavorite,
     updateChatFolder
   } = useWorkspaceActions({

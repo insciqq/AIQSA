@@ -515,7 +515,7 @@ describe("provider runtime factory", () => {
   });
 
   it("injects a deferred Gemini credential only as x-goog-api-key", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async (_request, init) => new Response(JSON.stringify({
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       id: "interaction-1",
       model: "gemini-3.6-flash",
       status: "completed",

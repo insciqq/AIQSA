@@ -1,17 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY,
-  AIQSA_WORKSPACE_RAIL_STORAGE_KEY,
-  clearSessionExpiredDraft,
-  rememberActiveChatId,
-  rememberCollapsedFolderIds,
-  rememberSessionExpiredDraft,
-  rememberWorkspaceRailHidden,
-  storedActiveChatId,
-  storedCollapsedFolderIds,
-  storedSessionExpiredDraft,
-  storedWorkspaceRailHidden
-} from "./shellStorage";
+import { AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY, clearSessionExpiredDraft, rememberActiveChatId, rememberSessionExpiredDraft, storedActiveChatId, storedSessionExpiredDraft } from "./shellStorage";
 
 describe("shell storage", () => {
   afterEach(() => {
@@ -28,35 +16,6 @@ describe("shell storage", () => {
 
     rememberActiveChatId(null);
     expect(storedActiveChatId()).toBeNull();
-  });
-
-  it("round-trips collapsed folder ids and rejects malformed storage", () => {
-    rememberCollapsedFolderIds(new Set(["folder-2", "folder-1"]));
-    expect(storedCollapsedFolderIds()).toEqual(new Set(["folder-2", "folder-1"]));
-
-    window.localStorage.setItem("aiqsa.collapsedFolderIds", "not-json");
-    expect(storedCollapsedFolderIds()).toEqual(new Set());
-
-    window.localStorage.setItem(
-      "aiqsa.collapsedFolderIds",
-      JSON.stringify(["folder-1", 2, null])
-    );
-    expect(storedCollapsedFolderIds()).toEqual(new Set(["folder-1"]));
-  });
-
-  it("round-trips wide Workspace-pane visibility", () => {
-    expect(storedWorkspaceRailHidden()).toBe(false);
-
-    rememberWorkspaceRailHidden(true);
-    expect(window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY)).toBe("hidden");
-    expect(storedWorkspaceRailHidden()).toBe(true);
-
-    rememberWorkspaceRailHidden(false);
-    expect(window.localStorage.getItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY)).toBe("visible");
-    expect(storedWorkspaceRailHidden()).toBe(false);
-
-    window.localStorage.setItem(AIQSA_WORKSPACE_RAIL_STORAGE_KEY, "invalid");
-    expect(storedWorkspaceRailHidden()).toBe(false);
   });
 });
 

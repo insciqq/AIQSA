@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createAdminMemoryEgressService } from "../../admin/memory/egressService";
 import { prisma } from "../../prisma";
-import { createFakeEmbeddingAdapter } from "../../providers/embeddings";
-import { createPrismaMemoryJobRepository } from "../persistence/jobs";
+import { createFakeEmbeddingAdapter } from "@/tests/support/embeddings";
+import { createPrismaMemoryJobRepository } from "@/tests/support/memoryPersistence";
 import { createPrismaMemoryExecutionService } from ".";
 import { MemoryExecutionError } from "./errors";
 import {

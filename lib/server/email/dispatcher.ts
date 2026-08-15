@@ -24,26 +24,6 @@ export type EmailTestCapture = {
   capture(message: SmtpProductMessage): Promise<void> | void;
 };
 
-export type MemoryEmailCapture = EmailTestCapture & {
-  readonly messages: readonly SmtpProductMessage[];
-  clear(): void;
-};
-
-export function createMemoryEmailCapture(): MemoryEmailCapture {
-  const messages: SmtpProductMessage[] = [];
-  return {
-    capture(message) {
-      messages.push(structuredClone(message));
-    },
-    clear() {
-      messages.length = 0;
-    },
-    get messages() {
-      return messages;
-    }
-  };
-}
-
 export function createCapturedSmtpTransport(capture: EmailTestCapture): SmtpTransport {
   return {
     async send(input) {

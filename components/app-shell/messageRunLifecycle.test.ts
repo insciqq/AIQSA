@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { executeMessageRunLifecycle } from "./messageRunLifecycle";
-import { resetRunLifecycleStoreForTest, useRunLifecycleStore } from "./runLifecycleStore";
 import {
+  resetRunLifecycleStoreForTest,
   resetRunSurfaceStoreForTest,
+  resetThreadStoreForTest
+} from "@/tests/support/appShellStores";
+import { executeMessageRunLifecycle } from "./messageRunLifecycle";
+import { useRunLifecycleStore } from "./runLifecycleStore";
+import {
   selectRunSurface,
   useRunSurfaceStore
 } from "./runSurfaceStore";
-import { resetThreadStoreForTest, selectThreadSnapshot, useThreadStore } from "./threadStore";
+import { selectThreadSnapshot, useThreadStore } from "./threadStore";
 
 function prepareThread(chatId = "chat-1", assistantMessageId = "assistant-optimistic") {
   useThreadStore.getState().replaceThread(chatId, {

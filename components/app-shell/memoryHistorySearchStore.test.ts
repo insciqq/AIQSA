@@ -1,14 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  activateMemoryHistorySearchAccount,
-  applyMemoryHistorySearch,
-  cancelMemoryHistorySearch,
-  loadMoreMemoryHistorySearch,
-  memoryHistoryInputFromDraft,
-  resetMemoryHistorySearchStoreForTest,
-  useMemoryHistorySearchStore
-} from "./memoryHistorySearchStore";
+import { activateMemoryHistorySearchAccount, applyMemoryHistorySearch, cancelMemoryHistorySearch, loadMoreMemoryHistorySearch, memoryHistoryInputFromDraft, useMemoryHistorySearchStore } from "./memoryHistorySearchStore";
 import type { MemoryHistorySearchResponse } from "@/lib/contracts/memory";
+import { resetMemoryHistorySearchStoreForTest } from "@/tests/support/appShellStores";
 
 function response(
   sourceChatId: string,

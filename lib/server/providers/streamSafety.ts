@@ -300,10 +300,6 @@ export function providerStreamSafetyReport(value: unknown): ProviderStreamSafety
   return isSafetyReport(value) ? value : null;
 }
 
-export function isProviderStreamSafetyError(value: unknown): value is ProviderStreamSafetyError {
-  return value instanceof ProviderStreamSafetyError;
-}
-
 export function attachProviderStreamSafetySnapshot<T extends object>(
   value: T,
   snapshot: ProviderStreamSafetySnapshot

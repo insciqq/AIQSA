@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  createFakeEmbeddingAdapter,
   createOpenAICompatibleEmbeddingAdapter,
   EmbeddingAdapterError,
   MAX_EMBEDDING_BATCH_INPUTS
 } from "./embeddings";
+import { createFakeEmbeddingAdapter } from "@/tests/support/embeddings";
 import {
   normalizeProviderModelConfiguration,
   ProviderConfigurationError,

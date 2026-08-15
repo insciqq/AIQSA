@@ -76,7 +76,7 @@ describe("ShareDialog", () => {
       configurable: true,
       value: { writeText }
     });
-    const fetchMock = vi.fn((url: string | URL | Request, init?: RequestInit) =>
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) =>
       init?.method === "POST"
         ? Promise.resolve(Response.json({
             share: {

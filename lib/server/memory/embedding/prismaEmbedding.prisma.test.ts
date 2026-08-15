@@ -41,7 +41,7 @@ import {
 } from "./contract";
 import { createPrismaMemoryItemEmbeddingHandler } from "./handler";
 import { createPrismaMemoryItemEmbeddingRepository } from "./repository";
-import { createPrismaMemoryJobRepository } from "../persistence/jobs";
+import { createPrismaMemoryJobRepository } from "@/tests/support/memoryPersistence";
 
 const INITIAL_NOW = new Date("2026-08-10T12:00:00.000Z");
 const DIMENSION = 1_024;

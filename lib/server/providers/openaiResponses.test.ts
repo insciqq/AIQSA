@@ -4,7 +4,7 @@ import {
   createOpenAIResponsesAdapter,
   type OpenAIResponsesClient
 } from "./openaiResponses";
-import { currentSearchToolFixture } from "../tools/testFixtures";
+import { currentSearchToolFixture } from "@/tests/support/tools";
 import type { ProviderRunRequest } from "./types";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 

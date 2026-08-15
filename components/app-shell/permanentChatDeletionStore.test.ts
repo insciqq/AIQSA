@@ -1,15 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { memorySettingsFixture } from "./memoryTestFixtures";
-import { resetMemorySettingsStoreForTest, useMemorySettingsStore } from "./memorySettingsStore";
-import {
-  activatePermanentChatDeletionAccount,
-  confirmPermanentChatDeletion,
-  deactivatePermanentChatDeletionAccount,
-  openPermanentChatDeletion,
-  resetPermanentChatDeletionStoreForTest,
-  setPermanentChatDeletionOriginForget,
-  usePermanentChatDeletionStore
-} from "./permanentChatDeletionStore";
+import { memorySettingsFixture } from "@/tests/support/memoryFixtures";
+import { useMemorySettingsStore } from "./memorySettingsStore";
+import { activatePermanentChatDeletionAccount, confirmPermanentChatDeletion, deactivatePermanentChatDeletionAccount, openPermanentChatDeletion, setPermanentChatDeletionOriginForget, usePermanentChatDeletionStore } from "./permanentChatDeletionStore";
+import { resetMemorySettingsStoreForTest, resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
 
 const now = "2026-08-12T10:00:00.000Z";
 

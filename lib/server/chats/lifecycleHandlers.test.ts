@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 import { getAuthConfig } from "../auth/config";
-import { createTestAuth } from "../auth/testRequestAuth";
+import { createTestAuth } from "@/tests/support/auth";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import {
   createArchiveChatExplicitHandler,

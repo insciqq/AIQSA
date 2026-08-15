@@ -4,15 +4,7 @@ import {
   defaultSearchStrategies,
   fallbackParameterControls
 } from "./catalog";
-import {
-  availableSearchStrategiesForModel,
-  buildCatalogModel,
-  isSearchCombinationCompatible,
-  normalizeOpenRouterRoutePreferences,
-  reconcileSearchPlanSelection,
-  resolveSearchRouteForModel,
-  toCatalogSearchStrategy
-} from "./catalogMatrix";
+import { availableSearchStrategiesForModel, buildCatalogModel, isSearchCombinationCompatible, reconcileSearchPlanSelection, resolveSearchRouteForModel, toCatalogSearchStrategy } from "./catalogMatrix";
 
 describe("catalog capability matrix", () => {
   it("enforces bounded Search combination policy without provider-id branches", () => {
@@ -475,29 +467,5 @@ describe("catalog capability matrix", () => {
       supported: true
     });
     expect(buildCatalogModel(flash!, defaultSearchStrategies).capabilities.background).toBe(false);
-  });
-
-  it("normalizes OpenRouter route-provider preferences", () => {
-    expect(
-      normalizeOpenRouterRoutePreferences({
-        provider: {
-          allow_fallbacks: false,
-          dataCollection: "deny",
-          order: ["Anthropic"],
-          only: ["Anthropic"],
-          require_parameters: true,
-          sort: "latency",
-          zdr: true
-        }
-      })
-    ).toEqual({
-      allowFallbacks: false,
-      dataCollection: "deny",
-      order: ["Anthropic"],
-      only: ["Anthropic"],
-      requireParameters: true,
-      sort: "latency",
-      zdr: true
-    });
   });
 });

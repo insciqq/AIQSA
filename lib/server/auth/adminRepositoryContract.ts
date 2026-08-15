@@ -2,7 +2,6 @@ import type {
   AdminAccessRuleKind,
   AdminAccessRuleRecord,
   AdminDashboard as AdminDashboardWire,
-  AdminDashboardNavigation,
   AdminDeletionInfo,
   AdminGroup as AdminGroupWire,
   AdminInviteRecord as AdminInviteWire,

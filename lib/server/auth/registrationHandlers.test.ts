@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAuthConfig } from "./config";
-import { createMemoryAuthMailer } from "./mailer";
+import { createMemoryAuthMailer } from "@/tests/support/authMailers";
 import { verifyPassword } from "./password";
 import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import {

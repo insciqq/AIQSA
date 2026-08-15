@@ -54,7 +54,7 @@ function isAdminActionName(value: string): value is AdminActionName {
   return adminActionNameSet.has(value);
 }
 
-function unhandledAdminAction(action: never): Response {
+function unhandledAdminAction(_action: never): Response {
   return actionJson({ error: "action_unknown" }, { status: 400 });
 }
 

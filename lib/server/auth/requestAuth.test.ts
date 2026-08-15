@@ -1,14 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { hashToken } from "./token";
-import {
-  createAuthSession,
-  createRequestAuthResolver,
-  deleteExpiredSessions,
-  resolveAuthToken,
-  revokeRequestSession
-} from "./requestAuth";
+import { createAuthSession, createRequestAuthResolver, resolveAuthToken, revokeRequestSession } from "./requestAuth";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "./config";
-import { createMemoryAuthSessionStore, createTestUser } from "./testRequestAuth";
+import { createMemoryAuthSessionStore, createTestUser } from "@/tests/support/auth";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: TEST_AUTH_TOKEN,
@@ -99,36 +93,5 @@ describe("DB-backed request auth", () => {
       })
     ).resolves.toBeNull();
     await expect(resolveAuthToken(revoked.token, { sessions: revokedSessions })).resolves.toBeNull();
-  });
-
-  it("revokes the current session and can delete expired rows", async () => {
-    const sessions = createMemoryAuthSessionStore();
-    const current = await createAuthSession({
-      now: new Date("2026-06-01T00:00:00.000Z"),
-      secureCookie: false,
-      sessions,
-      userId: config.bootstrapUserId
-    });
-    const other = await createAuthSession({
-      now: new Date("2026-06-01T00:00:00.000Z"),
-      secureCookie: false,
-      sessions,
-      userId: config.bootstrapUserId
-    });
-
-    await expect(
-      revokeRequestSession({
-        request: new Request("http://app.local/api/auth/logout", {
-          headers: {
-            cookie: current.cookie
-          }
-        }),
-        revokedReason: "logout",
-        sessions
-      })
-    ).resolves.toBe(1);
-    await expect(deleteExpiredSessions({ now: new Date("2026-06-20T00:00:00.000Z"), sessions })).resolves.toBe(2);
-    expect(sessions.records.size).toBe(0);
-    expect(other.sessionId).toBe("session-2");
   });
 });

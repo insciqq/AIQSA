@@ -1,10 +1,8 @@
-import type { MemoryJobKind, MemoryJobState, PrismaClient } from "@prisma/client";
-import { prisma } from "../../prisma";
+import type { MemoryJobKind, MemoryJobState } from "@prisma/client";
 import { memoryPersistenceFailure } from "./errors";
 import {
   type LockedMemorySettings,
-  type MemoryTransaction,
-  withLockedMemoryTransaction
+  type MemoryTransaction
 } from "./transaction";
 
 export type MemoryJobEnqueueInput = Readonly<{
@@ -128,13 +126,4 @@ export async function enqueueMemoryJob(
     }
   });
   return { ...created, created: true };
-}
-
-export function createPrismaMemoryJobRepository(client: PrismaClient = prisma) {
-  return Object.freeze({
-    async enqueue(userId: string, input: MemoryJobEnqueueInput): Promise<MemoryJobEnqueueResult> {
-      return withLockedMemoryTransaction(client, userId, (tx, settings) =>
-        enqueueMemoryJob(tx, settings, input));
-    }
-  });
 }

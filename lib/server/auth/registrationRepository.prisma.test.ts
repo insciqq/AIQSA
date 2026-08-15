@@ -168,7 +168,7 @@ describe("Prisma-backed registration repository", () => {
   });
 
   it("activates an exact approved email and provisions defaults and grants", async () => {
-    await withRegistrationData(async ({ domain, email, groupId, now, repository }) => {
+    await withRegistrationData(async ({ email, groupId, now, repository }) => {
       await prisma.authAccessRule.create({
         data: {
           defaultGroups: {

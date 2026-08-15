@@ -204,11 +204,6 @@ export type AdminProviderConnection = {
   userAssignments: AdminProviderUserCredentialAssignment[];
 };
 
-/** Secret mutation requests are write-only. No response DTO contains this shape. */
-export type AdminProviderSecretWrite = {
-  secret: string;
-};
-
 export type AdminProviderDeleteBlocker = {
   count: number;
   kind:

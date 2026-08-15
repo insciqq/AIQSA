@@ -50,23 +50,6 @@ export function textConversationForRequest(request: ProviderRunRequest): TextCon
     .map(({ hasAttachmentContent: _hasAttachmentContent, ...message }) => message);
 }
 
-export function mergeAdjacentTextMessages(messages: TextConversationMessage[]): TextConversationMessage[] {
-  const merged: TextConversationMessage[] = [];
-
-  for (const message of messages) {
-    const previous = merged.at(-1);
-    if (previous?.role === message.role) {
-      previous.content = `${previous.content}\n\n${message.content}`;
-      previous.id = `${previous.id},${message.id}`;
-      continue;
-    }
-
-    merged.push({ ...message });
-  }
-
-  return merged;
-}
-
 export function conversationPreview(request: ProviderRunRequest) {
   return textConversationForRequest(request).map((message) => ({
     id: message.id,

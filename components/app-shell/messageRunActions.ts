@@ -32,8 +32,7 @@ import type {
   ThreadMessage
 } from "@/components/app-shell/types";
 import {
-  refreshMemorySettings,
-  useMemorySettingsStore
+  refreshMemorySettings
 } from "@/components/app-shell/memorySettingsStore";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";

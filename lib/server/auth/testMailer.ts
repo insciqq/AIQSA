@@ -1,5 +1,5 @@
-import type { AuthEmail, AuthMailer } from "./mailer";
-import type { EmailTestCapture } from "../email/dispatcher";
+import type { AuthEmail } from "./mailer";
+import type { SmtpProductMessage } from "../email/definitions";
 
 const globalForTestMail = globalThis as unknown as {
   aiqsaTestAuthEmails?: AuthEmail[];
@@ -10,24 +10,12 @@ function testEmails(): AuthEmail[] {
   return globalForTestMail.aiqsaTestAuthEmails;
 }
 
-export function createTestAuthMailer(): AuthMailer {
-  return {
-    async send(email) {
-      testEmails().push(email);
-    }
-  };
-}
-
-export function createTestEmailCapture(): EmailTestCapture {
-  return {
-    capture(message) {
-      testEmails().push({
-        subject: message.subject,
-        text: message.text,
-        to: message.to
-      });
-    }
-  };
+export function captureTestAuthEmail(message: SmtpProductMessage): void {
+  testEmails().push({
+    subject: message.subject,
+    text: message.text,
+    to: message.to
+  });
 }
 
 export function clearTestAuthEmails(): void {

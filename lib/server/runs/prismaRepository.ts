@@ -86,8 +86,7 @@ import {
 } from "../memory/temporaryRetention";
 import {
   decodeMemoryInitialChatMode,
-  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
-  type MemoryInitialChatMode
+  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
 } from "../../contracts/memory";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
 import {
@@ -97,7 +96,6 @@ import {
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
 import {
-  isToolLoopJsonValue,
   parseToolLoopCheckpoint,
   snapshotToolLoopJson,
   toolLoopCheckpoint,
@@ -171,13 +169,6 @@ function unique(values: string[]): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function knowledgePlanFromNormalizedRequest(value: unknown): KnowledgePlan {
-  const candidate = isRecord(value) ? value.knowledgePlan : undefined;
-  const decoded = decodeKnowledgePlan(candidate);
-  if (!decoded.ok) throw new Error("knowledge_plan_integrity_invalid");
-  return decoded.plan;
 }
 
 function knowledgeDefaultFromJson(value: unknown): KnowledgePlan | null {

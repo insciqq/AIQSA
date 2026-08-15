@@ -7,7 +7,7 @@ import { prisma } from "../prisma";
 import type { NormalizedRunRequest } from "../providers/types";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { createPrismaShareRepository } from "../shares/prismaRepository";
-import { createMemoryStorageAdapter } from "../uploads/storage";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import { MemoryCoordinator } from "./coordinator/coordinator";
 import { createPrismaMemoryCoordinatorRepository } from "./coordinator/prismaRepository";
 import { MemoryCoordinatorRegistry } from "./coordinator/registry";

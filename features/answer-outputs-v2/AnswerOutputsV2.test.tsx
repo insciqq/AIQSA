@@ -1,11 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ThreadArtifactSummary } from "@/lib/contracts/chats";
-import { describe, expect, it, vi } from "vitest";
-import {
-  AnswerOutputsV2,
-  CitationMarkerV2,
-  ToolApprovalCardV2
-} from "./AnswerOutputsV2";
+import { describe, expect, it } from "vitest";
+import { AnswerOutputsV2 } from "./AnswerOutputsV2";
 
 const artifact: ThreadArtifactSummary = {
   citations: [{
@@ -61,32 +57,5 @@ describe("answer outputs v2", () => {
       <AnswerOutputsV2 artifact={null} showReasoning={false} />
     );
     expect(container).toBeEmptyDOMElement();
-  });
-
-  it("keeps citation activation and pre-execution approval explicit", () => {
-    const onActivate = vi.fn();
-    const onAllow = vi.fn();
-    const onReject = vi.fn();
-    render(
-      <>
-        <CitationMarkerV2 index={2} onActivate={onActivate} />
-        <ToolApprovalCardV2
-          onAllow={onAllow}
-          onReject={onReject}
-          redactedArgumentsPreview={{ payload: "x".repeat(10_000) }}
-          serverName="Archive"
-          status="pending"
-          toolName="lookup"
-        />
-      </>
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Open source 2" }));
-    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
-    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
-    expect(onActivate).toHaveBeenCalledWith(2);
-    expect(onAllow).toHaveBeenCalledOnce();
-    expect(onReject).toHaveBeenCalledOnce();
-    expect(document.querySelector(".v2-tool-approval pre")?.textContent?.length)
-      .toBeLessThanOrEqual(4_098);
   });
 });

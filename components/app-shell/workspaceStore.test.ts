@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { resetWorkspaceStoreForTest, useWorkspaceStore } from "./workspaceStore";
+import { resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
+import { useWorkspaceStore } from "./workspaceStore";
 import type { WorkspaceChatSummary, FolderSummary } from "./types";
 
 function chat(input: Partial<WorkspaceChatSummary> & { id: string; title: string }): WorkspaceChatSummary {

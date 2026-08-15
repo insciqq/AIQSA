@@ -27,25 +27,6 @@ export type AuthMailDelivery =
   | { kind: "failed"; error: Error }
   | { kind: "unavailable" };
 
-export function createNoopAuthMailer(): AuthMailer {
-  return {
-    async send() {
-      return { kind: "unavailable" };
-    }
-  };
-}
-
-export function createMemoryAuthMailer(): AuthMailer & { sent: AuthEmail[] } {
-  const sent: AuthEmail[] = [];
-
-  return {
-    sent,
-    async send(email) {
-      sent.push(structuredClone(email));
-    }
-  };
-}
-
 export function createDispatcherAuthMailer(dispatcher: EmailDispatcher): AuthMailer {
   return {
     async send(email, kind) {

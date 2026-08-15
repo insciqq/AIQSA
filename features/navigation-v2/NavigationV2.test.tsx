@@ -1,13 +1,11 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
+import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import {
   resetRunLifecycleStoreForTest,
-  useRunLifecycleStore
-} from "@/components/app-shell/runLifecycleStore";
-import {
-  resetWorkspaceStoreForTest,
-  useWorkspaceStore
-} from "@/components/app-shell/workspaceStore";
+  resetWorkspaceStoreForTest
+} from "@/tests/support/appShellStores";
 import type { ChatNavigationSummaryWire } from "@/lib/contracts/chats";
 import {
   flattenFolderTree,

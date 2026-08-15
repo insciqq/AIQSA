@@ -1,8 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import {
-  KNOWLEDGE_CANDIDATE_LIMIT,
-  KNOWLEDGE_RESULT_LIMIT,
-  KNOWLEDGE_SCORE_THRESHOLD
+  KNOWLEDGE_RESULT_LIMIT
 } from "./retrievalTypes";
 
 export const KNOWLEDGE_RETRIEVAL_BOUNDS = Object.freeze({
@@ -16,12 +14,6 @@ export type KnowledgeRetrievalPolicy = Readonly<{
   resultLimit: number;
   scoreThreshold: number;
 }>;
-
-export const DEFAULT_KNOWLEDGE_RETRIEVAL_POLICY: KnowledgeRetrievalPolicy = Object.freeze({
-  candidateLimit: KNOWLEDGE_CANDIDATE_LIMIT,
-  resultLimit: KNOWLEDGE_RESULT_LIMIT,
-  scoreThreshold: KNOWLEDGE_SCORE_THRESHOLD
-});
 
 export function isKnowledgeRetrievalPolicy(
   value: KnowledgeRetrievalPolicy

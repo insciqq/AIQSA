@@ -228,7 +228,7 @@ export async function restoreArchivedChat(): Promise<string | null> {
   }
 }
 
-export function resetArchivedChatsStoreForTest(): void {
+export function deactivateArchivedChats(): void {
   listGeneration += 1;
   detailGeneration += 1;
   useArchivedChatsStore.setState(initialState, true);

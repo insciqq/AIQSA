@@ -27,7 +27,6 @@ import {
   type ProviderSearchResult
 } from "./types";
 
-export const OPENAI_RESPONSES_SEARCH_DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
 export const OPENAI_RESPONSES_SEARCH_MIN_OUTPUT_TOKENS = 1_024;
 export const OPENAI_RESPONSES_SEARCH_MAX_OUTPUT_TOKENS = 32_768;
 

@@ -60,7 +60,7 @@ vi.mock("../auth/config", () => ({
 }));
 
 vi.mock("../auth/testMailer", () => ({
-  createTestEmailCapture: () => ({ capture: mocks.capture })
+  captureTestAuthEmail: mocks.capture
 }));
 
 vi.mock("../prisma", () => ({ prisma: {} }));

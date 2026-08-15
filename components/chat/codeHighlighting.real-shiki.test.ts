@@ -1,11 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { clearCodeHighlightingCacheForTest, highlightCodeBlock } from "./codeHighlighting";
+import { describe, expect, it } from "vitest";
+import { highlightCodeBlock } from "./codeHighlighting";
 
 describe("real Shiki HTML trust boundary", () => {
-  afterEach(() => {
-    clearCodeHighlightingCacheForTest();
-  });
-
   it("keeps hostile fenced-code source inert when the generated HTML is injected", async () => {
     const hostileSource = [
       '</code></pre><img src=x onerror="globalThis.__aiqsaHostile = true">',

@@ -20,7 +20,6 @@ import type {
   CatalogModel,
   ChatDetail,
   WorkspaceChatSummary,
-  FolderSummary,
   Notice,
   RunEventView,
   ThreadMessage

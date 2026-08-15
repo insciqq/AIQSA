@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  createEmailDispatcher,
-  createMemoryEmailCapture
+  createEmailDispatcher
 } from "./dispatcher";
+import { createMemoryEmailCapture } from "@/tests/support/email";
 import type { SmtpCompleteConfiguration } from "./definitions";
 import type { EmailRepository } from "./repository";
 import { SmtpAttemptGate } from "./service";

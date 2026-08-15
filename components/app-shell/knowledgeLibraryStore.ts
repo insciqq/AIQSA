@@ -83,7 +83,3 @@ export const useKnowledgeLibraryStore = create<KnowledgeLibraryStore>((set) => (
     set((state) => (state.detail ? { detail: { ...state.detail, ...update } } : {}));
   }
 }));
-
-export function resetKnowledgeLibraryStoreForTest() {
-  useKnowledgeLibraryStore.setState({ ...initialKnowledgeLibrarySnapshot });
-}

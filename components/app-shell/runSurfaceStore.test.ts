@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { resetRunSurfaceStoreForTest } from "@/tests/support/appShellStores";
 import {
   emptyRunSurfaceSnapshot,
-  resetRunSurfaceStoreForTest,
   selectRunSurface,
   useRunSurfaceStore
 } from "./runSurfaceStore";

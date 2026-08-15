@@ -1,29 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  activateMemoryOperationsAccount,
-  cancelActiveMemoryRebuild,
-  confirmSelectedMemoryOperation,
-  deactivateMemoryOperationsAccount,
-  resetMemoryOperationsStoreForTest,
-  selectMemoryOperation,
-  useMemoryOperationsStore
-} from "./memoryOperationsStore";
-import {
-  resetMemoryHistorySearchStoreForTest,
-  useMemoryHistorySearchStore
-} from "./memoryHistorySearchStore";
-import {
-  resetMemoryManagerStoreForTest,
-  useMemoryManagerStore
-} from "./memoryManagerStore";
-import { resetMemorySettingsStoreForTest } from "./memorySettingsStore";
+import { activateMemoryOperationsAccount, cancelActiveMemoryRebuild, confirmSelectedMemoryOperation, deactivateMemoryOperationsAccount, selectMemoryOperation, useMemoryOperationsStore } from "./memoryOperationsStore";
+import { useMemoryHistorySearchStore } from "./memoryHistorySearchStore";
+import { useMemoryManagerStore } from "./memoryManagerStore";
 import {
   memoryDeletionFixture,
   memoryRebuildFixture,
   memorySettingsFixture,
   memorySummaryFixture
-} from "./memoryTestFixtures";
+} from "@/tests/support/memoryFixtures";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memory";
+import { resetMemoryHistorySearchStoreForTest, resetMemoryManagerStoreForTest, resetMemoryOperationsStoreForTest, resetMemorySettingsStoreForTest } from "@/tests/support/appShellStores";
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {

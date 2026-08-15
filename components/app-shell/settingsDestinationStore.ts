@@ -40,7 +40,3 @@ export const useSettingsDestinationStore = create<SettingsDestinationStore>((set
     set({ memoryOpen: false, settingsOpen: true, settingsSection: "appearance" });
   }
 }));
-
-export function resetSettingsDestinationStoreForTest() {
-  useSettingsDestinationStore.setState({ ...initialSettingsDestinationSnapshot });
-}

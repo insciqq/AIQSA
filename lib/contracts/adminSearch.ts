@@ -100,10 +100,6 @@ export type AdminSearchPolicy = {
   version: number;
 };
 
-export type AdminSearchCatalogResponse = {
-  search: AdminSearchCatalog;
-};
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

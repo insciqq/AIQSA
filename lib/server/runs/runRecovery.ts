@@ -17,7 +17,6 @@ import type {
   ProviderAdapter,
   ProviderRunRefreshResult,
   ProviderRunRequest,
-  ProviderRunResult,
   ProviderSearchAdapter
 } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
@@ -230,11 +229,6 @@ globalForRunRecovery.__aiqsaRunBootSweepState = processBootSweepState;
 const runRefreshPromises =
   globalForRunRecovery.__aiqsaRunRefreshPromises ?? new Map<string, Promise<void>>();
 globalForRunRecovery.__aiqsaRunRefreshPromises = runRefreshPromises;
-
-export function resetBootOrphanSweepForTest(bootedAt = new Date()): void {
-  processBootSweepState.bootedAt = bootedAt;
-  processBootSweepState.promise = undefined;
-}
 
 function isActiveRunStatus(status: string): boolean {
   return status === "streaming" || status === "queued" || status === "in_progress";

@@ -25,14 +25,6 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-function isString(value: unknown): value is string {
-  return typeof value === "string";
-}
-
-function isNullableString(value: unknown): value is string | null {
-  return value === null || isNonEmptyString(value);
-}
-
 function modelDefaultSelection(
   value: unknown
 ): value is { modelId: string; provider: string } | null {

@@ -15,15 +15,6 @@ export function formatTokenCount(value: number): string {
   return String(value);
 }
 
-export function safeDownloadName(value: string): string {
-  const normalized = value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return normalized || "aiqsa-chat";
-}
-
 /**
  * Deterministic export base name: a unicode-aware slug of the chat title plus
  * the ISO date, e.g. `release-checklist-032-2026-08-13`. The extension is
@@ -229,41 +220,4 @@ export function modelCapabilityLabel(model: CatalogModel): string {
 
 export function modelCapabilityDescription(model: CatalogModel): string {
   return modelCapabilityLabels(model).join(" · ");
-}
-
-export function modelDifferentiatingCapabilityLabels(
-  model: CatalogModel,
-  providerModels: readonly CatalogModel[]
-): string[] {
-  if (providerModels.length < 2) {
-    return [];
-  }
-
-  const supportedLabels = modelCapabilityDefinitions
-    .filter((definition) => definition.supported(model))
-    .map((definition) => definition.label);
-
-  return supportedLabels.filter((label) =>
-    providerModels.some((candidate) => !modelCapabilityLabels(candidate).includes(label))
-  );
-}
-
-export function searchStrategyDescription(strategyId: string): string {
-  if (strategyId === "search-disabled") {
-    return "No Search";
-  }
-
-  if (strategyId === "openai-native-web-search") {
-    return "OpenAI Search";
-  }
-
-  if (strategyId === "perplexity-tool-search") {
-    return "Perplexity Search";
-  }
-
-  if (strategyId === "gemini-google-search") {
-    return "Google Search";
-  }
-
-  return "Search";
 }

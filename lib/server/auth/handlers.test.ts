@@ -2,18 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "./config";
 import { DIRECT_PEER_HEADER } from "./clientIdentity";
-import {
-  createLogoutHandler,
-  createMeHandler,
-  createMessageAccessValidationHandler,
-  createPasswordLoginHandler,
-  createPasswordResetCompleteHandler,
-  createPasswordResetRequestHandler,
-  createTokenLoginHandler,
-  getLoginRateLimitKey,
-  type SafeUserWithGroups
-} from "./handlers";
-import { createMemoryAuthMailer } from "./mailer";
+import { createLogoutHandler, createMeHandler, createPasswordLoginHandler, createPasswordResetCompleteHandler, createPasswordResetRequestHandler, createTokenLoginHandler, getLoginRateLimitKey, type SafeUserWithGroups } from "./handlers";
+import { createMemoryAuthMailer } from "@/tests/support/authMailers";
 import { hashPassword, verifyPassword } from "./password";
 import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import { createAuthSession } from "./requestAuth";
@@ -24,7 +14,7 @@ import {
   createMemoryPasswordAuthRepository,
   createTestAuth,
   createTestPasswordIdentity
-} from "./testRequestAuth";
+} from "@/tests/support/auth";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: TEST_AUTH_TOKEN,
@@ -1035,41 +1025,6 @@ describe("auth route handlers", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       user
-    });
-  });
-
-  it("rejects unavailable model access in the backend message route", async () => {
-    const auth = createTestAuth({ user });
-    const POST = createMessageAccessValidationHandler({
-      findOwnedChat: async () => ({ id: "chat-1" }),
-      loadEntitlements: async () => ({
-        modelKeys: new Set(["openai:gpt-5.5"]),
-        providerKeys: new Set(),
-        searchStrategies: new Set(["openai-native-web-search"])
-      }),
-      resolveAuth: auth.resolveAuth
-    });
-    const response = await POST(
-      new Request("http://app.local/api/chats/chat-1/messages", {
-        body: JSON.stringify({
-          modelId: "claude-opus-4-8",
-          provider: "anthropic"
-        }),
-        headers: {
-          cookie: auth.cookie
-        },
-        method: "POST"
-      }),
-      {
-        params: {
-          chatId: "chat-1"
-        }
-      }
-    );
-
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toEqual({
-      error: "model_not_available"
     });
   });
 });

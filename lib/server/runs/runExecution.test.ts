@@ -5,7 +5,6 @@ import {
   GROUNDED_LIVE_ONLY_PLACEHOLDER
 } from "../../domain/grounding";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
-import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
@@ -26,11 +25,11 @@ import type {
 } from "../providers/types";
 import {
   activeRunControllerRegistry,
-  activeRunControllersForTest,
   createRunExecutionResponse,
   type RunExecutionInput,
   type RunExecutionRepository
 } from "./runExecution";
+import { activeRunControllersForTest } from "@/tests/support/runExecution";
 import type { MaterializedPreparedRunData } from "./runPreparation";
 import type { RunChatUpdateRecord, RunRepository } from "./runRepositoryContract";
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";

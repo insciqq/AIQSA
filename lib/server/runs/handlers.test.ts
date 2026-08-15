@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { getAuthConfig } from "../auth/config";
 import type { ResolvedEntitlements } from "../auth/entitlements";
-import { createTestAuth } from "../auth/testRequestAuth";
+import { createTestAuth } from "@/tests/support/auth";
 import {
   ProviderAdmissionError,
   type ProviderAdmissionPlan
@@ -15,7 +15,11 @@ import type {
   ProviderModelCapabilities,
   ProviderRunRefreshResult
 } from "../providers/types";
-import { activeRunControllerRegistry, activeRunControllersForTest } from "./runExecution";
+import { activeRunControllerRegistry } from "./runExecution";
+import {
+  activeRunControllersForTest,
+  resetBootOrphanSweepForTest
+} from "@/tests/support/runExecution";
 import {
   createCancelModelRunHandler,
   createGetModelRunHandler as createProductionGetModelRunHandler,
@@ -23,7 +27,7 @@ import {
   createSendMessageHandler as createProductionSendMessageHandler,
   type RunHandlerDeps
 } from "./handlers";
-import { reconcileStaleRuns, resetBootOrphanSweepForTest } from "./runRecovery";
+import { reconcileStaleRuns } from "./runRecovery";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,

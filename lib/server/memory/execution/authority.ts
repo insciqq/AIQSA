@@ -124,5 +124,3 @@ export async function reauthorizeStoredMemoryExecution(
   }
   return current;
 }
-
-export type MemoryExecutionTransaction = Prisma.TransactionClient;

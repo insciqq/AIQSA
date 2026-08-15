@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  resetComposerControlStoreForTest,
+  resetComposerSessionStoreForTest
+} from "@/tests/support/appShellStores";
 import { reconcileCurrentComposerAttachments } from "./attachmentReconciliation";
-import { resetComposerControlStoreForTest, useComposerControlStore } from "./composerControlStore";
+import { useComposerControlStore } from "./composerControlStore";
 import {
   composerSessionKey,
-  resetComposerSessionStoreForTest,
   selectComposerSession,
   useComposerSessionStore
 } from "./composerSessionStore";

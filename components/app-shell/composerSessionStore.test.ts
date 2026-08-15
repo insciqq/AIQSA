@@ -1,4 +1,5 @@
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
+import { resetComposerSessionStoreForTest } from "@/tests/support/appShellStores";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   chatIdFromComposerSessionKey,
@@ -6,7 +7,6 @@ import {
   composerSessionModeFromKey,
   emptyComposerSessionSnapshot,
   folderIdFromComposerSessionKey,
-  resetComposerSessionStoreForTest,
   selectActiveComposerSession,
   selectComposerSession,
   useComposerSessionStore

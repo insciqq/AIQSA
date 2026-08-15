@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { defaultProviderModels } from "../../../domain/catalog";
 import {
   ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
   ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID,
@@ -9,10 +8,7 @@ import {
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID
 } from "../../../domain/search";
-import {
-  providerModelTemplateId,
-  type ProviderModelTemplateKey
-} from "../../../domain/providerTemplates";
+import type { ProviderModelTemplateKey } from "../../../domain/providerTemplates";
 import {
   filterAvailableProviderModels,
   filterExposedProviderModels,
@@ -28,10 +24,7 @@ import {
 import {
   searchValidationFingerprint
 } from "../../search/probeBinding";
-import {
-  adminProviderQuickSetupPolicy,
-  providerModelConfigurationFromCatalogEntry
-} from "./quickSetupPolicy";
+import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import type {
   AdminProviderQuickSetupActor,
   AdminProviderQuickSetupClearPlan,
@@ -201,24 +194,6 @@ function canonicalModelConfig(value: unknown, expected: ProviderModelConfigurati
   } catch {
     return false;
   }
-}
-
-function codeOwnedModel(templateKey: string, provider: string) {
-  const id = providerModelTemplateId(templateKey);
-  if (!id) return null;
-  const [templateProvider, ...modelParts] = templateKey.split(":");
-  if (templateProvider !== provider) return null;
-  const upstreamModelId = modelParts.join(":");
-  const model = defaultProviderModels.find(
-    (candidate) => candidate.provider === provider && candidate.modelId === upstreamModelId
-  );
-  if (!model || model.adapterKind === "fake") return null;
-  return {
-    configuration: providerModelConfigurationFromCatalogEntry(model),
-    id,
-    model,
-    templateKey: templateKey as ProviderModelTemplateKey
-  };
 }
 
 function modelColumns(configuration: ProviderModelConfiguration) {

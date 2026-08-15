@@ -1,4 +1,8 @@
-import { createSessionSetCookie, readCookie, SESSION_COOKIE_NAME } from "./session";
+import {
+  createSessionSetCookie,
+  readCookie,
+  SESSION_COOKIE_NAME
+} from "@/lib/server/auth/session";
 import type {
   AuthenticatedSession,
   AuthenticatedUser,
@@ -6,12 +10,12 @@ import type {
   AuthSessionStore,
   CreateAuthSessionInput,
   RequestAuthResolver
-} from "./requestAuth";
+} from "@/lib/server/auth/requestAuth";
 import type {
   PasswordAuthRepository,
   PasswordIdentityRecord,
   PasswordResetTokenInput
-} from "./passwordRepository";
+} from "@/lib/server/auth/passwordRepository";
 
 const defaultExpiresAt = new Date("2099-01-01T00:00:00.000Z");
 

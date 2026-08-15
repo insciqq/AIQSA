@@ -665,7 +665,3 @@ export function selectActiveComposerSession(
 ): ComposerSessionSnapshot {
   return selectComposerSession(state, state.activeSessionKey);
 }
-
-export function resetComposerSessionStoreForTest() {
-  useComposerSessionStore.setState(initialSessionState());
-}

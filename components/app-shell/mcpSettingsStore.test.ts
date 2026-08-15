@@ -1,12 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  isMcpOAuthAuthorizing,
-  markMcpOAuthAuthorizing,
-  consumeMcpOAuthReturn,
-  refreshMcpSettings,
-  resetMcpSettingsStoreForTest,
-  useMcpSettingsStore
-} from "./mcpSettingsStore";
+import { isMcpOAuthAuthorizing, markMcpOAuthAuthorizing, consumeMcpOAuthReturn, refreshMcpSettings, useMcpSettingsStore } from "./mcpSettingsStore";
+import { resetMcpSettingsStoreForTest } from "@/tests/support/appShellStores";
 
 const server = {
   accountLabel: null,

@@ -2,13 +2,7 @@ import type { CatalogModel } from "@/components/app-shell/types";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { CatalogAttachmentLimits } from "@/lib/contracts/catalog";
 import { describe, expect, it } from "vitest";
-import {
-  attachmentCountSelectionLimitMessage,
-  calculateAttachmentLimitUsage,
-  isAttachmentLimitFeedbackMessage,
-  withAttachmentLimitFeedbackMessage,
-  withoutAttachmentLimitFeedbackMessage
-} from "./attachmentLimitUsage";
+import { calculateAttachmentLimitUsage } from "./attachmentLimitUsage";
 
 const limits: CatalogAttachmentLimits = {
   maxCount: 5,
@@ -170,43 +164,6 @@ describe("attachment limit usage", () => {
       summary: "1 file",
       totalSourceBytes: 0
     });
-  });
-
-  it("describes a rejected picker batch with current, attempted, and maximum counts", () => {
-    const countMessage = attachmentCountSelectionLimitMessage({
-      attemptedCount: 21,
-      currentCount: 18,
-      maxCount: 20
-    });
-    expect(
-      countMessage
-    ).toBe(
-      "This selection would raise the attachment count from 18 to 21; the limit is 20."
-    );
-    expect(
-      isAttachmentLimitFeedbackMessage(
-        "This selection would raise the attachment count from 18 to 21; the limit is 20."
-      )
-    ).toBe(true);
-    expect(
-      isAttachmentLimitFeedbackMessage(
-        "This run contains 24 attachments; the limit is 20."
-      )
-    ).toBe(true);
-    expect(isAttachmentLimitFeedbackMessage("Upload failed.")).toBe(false);
-
-    const combined = withAttachmentLimitFeedbackMessage(
-      "The selected model does not support this attachment: blocked.pdf",
-      countMessage
-    );
-    expect(combined).toBe(
-      "The selected model does not support this attachment: blocked.pdf This selection would raise the attachment count from 18 to 21; the limit is 20."
-    );
-    expect(isAttachmentLimitFeedbackMessage(combined)).toBe(true);
-    expect(withoutAttachmentLimitFeedbackMessage(combined)).toBe(
-      "The selected model does not support this attachment: blocked.pdf"
-    );
-    expect(withoutAttachmentLimitFeedbackMessage(countMessage)).toBeNull();
   });
 
   it("uses conservative shared defaults while catalog or model data is unavailable", () => {

@@ -6,7 +6,6 @@ import {
   isSseParseError,
   messageIdsFromEvent,
   parseSseBlock,
-  resetSessionExpiredSignalForTest,
   runIdFromEvent,
   sessionExpiredLoginHref,
   shellFetch,
@@ -15,8 +14,14 @@ import {
   tokenDeltaFromEvent
 } from "./shellApi";
 
+const sessionListenerCleanups: Array<() => void> = [];
+
+function subscribe(listener: Parameters<typeof subscribeToSessionExpired>[0]): void {
+  sessionListenerCleanups.push(subscribeToSessionExpired(listener));
+}
+
 afterEach(() => {
-  resetSessionExpiredSignalForTest();
+  for (const cleanup of sessionListenerCleanups.splice(0)) cleanup();
   vi.restoreAllMocks();
 });
 
@@ -26,7 +31,7 @@ describe("shell HTTP session handling", () => {
       Response.json({ error: "unauthorized" }, { status: 401 })
     );
     const firstListener = vi.fn();
-    subscribeToSessionExpired(firstListener);
+    subscribe(firstListener);
 
     const [first, second] = await Promise.all([
       shellFetch("/api/chats"),
@@ -39,7 +44,7 @@ describe("shell HTTP session handling", () => {
     expect(firstListener).toHaveBeenCalledWith("session_expired");
 
     const lateListener = vi.fn();
-    subscribeToSessionExpired(lateListener);
+    subscribe(lateListener);
     expect(lateListener).toHaveBeenCalledOnce();
     expect(lateListener).toHaveBeenCalledWith("session_expired");
   });
@@ -49,7 +54,7 @@ describe("shell HTTP session handling", () => {
       .mockResolvedValueOnce(Response.json({ error: "forbidden" }, { status: 403 }))
       .mockResolvedValueOnce(Response.json({ error: "failed" }, { status: 500 }));
     const listener = vi.fn();
-    subscribeToSessionExpired(listener);
+    subscribe(listener);
 
     await shellFetch("/api/admin");
     await shellFetch("/api/chats");

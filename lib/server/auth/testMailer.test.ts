@@ -1,7 +1,6 @@
 import {
+  captureTestAuthEmail,
   clearTestAuthEmails,
-  createTestEmailCapture,
-  createTestAuthMailer,
   listTestAuthEmails
 } from "./testMailer";
 
@@ -16,19 +15,8 @@ describe("test auth mailer", () => {
     clearTestAuthEmails();
   });
 
-  it("stores messages in one local process buffer and clears them", async () => {
-    const mailer = createTestAuthMailer();
-
-    await mailer.send(email);
-    await mailer.send({ ...email, to: "other@example.com" });
-
-    expect(listTestAuthEmails()).toEqual([email, { ...email, to: "other@example.com" }]);
-    clearTestAuthEmails();
-    expect(listTestAuthEmails()).toEqual([]);
-  });
-
   it("adapts the runtime dispatcher capture without exposing its internal message kind", async () => {
-    await createTestEmailCapture().capture({
+    captureTestAuthEmail({
       ...email,
       kind: "password_reset"
     });

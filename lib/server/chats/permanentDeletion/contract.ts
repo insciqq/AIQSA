@@ -2,7 +2,6 @@ import type {
   ChatPermanentDeleteAuthorizationRequestWire,
   ChatPermanentDeleteRequestWire
 } from "../../../contracts/chats";
-import type { MemoryDeletionClaim } from "../../memory/coordinator/types";
 import { memorySha256 } from "../../memory/persistence/lexical";
 
 export const PERMANENT_CHAT_DELETION_MANIFEST_VERSION =
@@ -29,25 +28,4 @@ export function permanentChatDeletionPayloadHash(
     targetType: PERMANENT_CHAT_DELETION_TARGET_TYPE,
     version: "v1"
   });
-}
-
-export type PermanentChatDeletionClaim = MemoryDeletionClaim & Readonly<{
-  admissionAuthorizationId: string;
-  admittedChatSourceRevision: number;
-  alsoForgetOriginMemories: boolean;
-  targetType: typeof PERMANENT_CHAT_DELETION_TARGET_TYPE;
-}>;
-
-export function parsePermanentChatDeletionClaim(
-  claim: MemoryDeletionClaim
-): PermanentChatDeletionClaim | null {
-  return claim.operation === "SOURCE_PURGE" &&
-    claim.targetType === PERMANENT_CHAT_DELETION_TARGET_TYPE &&
-    typeof claim.admissionAuthorizationId === "string" &&
-    claim.admissionAuthorizationId.length > 0 &&
-    Number.isSafeInteger(claim.admittedChatSourceRevision) &&
-    claim.admittedChatSourceRevision! >= 0 &&
-    typeof claim.alsoForgetOriginMemories === "boolean"
-    ? claim as PermanentChatDeletionClaim
-    : null;
 }

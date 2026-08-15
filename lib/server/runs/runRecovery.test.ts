@@ -58,12 +58,12 @@ import {
   reconcileInstallationRuns,
   reconcileStaleRuns,
   refreshProviderRunIfNeeded,
-  resetBootOrphanSweepForTest,
   sweepBootOrphanedRunsOnce,
   type RunRecoveryDeps,
   type RunRecoveryRegistry,
   type RunRecoveryRepository
 } from "./runRecovery";
+import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
 
 const userId = "user-1";
 const runId = "run-1";

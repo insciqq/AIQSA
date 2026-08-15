@@ -1,17 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CatalogModel } from "./types";
-import {
-  exportFileBaseName,
-  formatTokenCount,
-  humanizeErrorCode,
-  modelCapabilityDescription,
-  modelCapabilityLabel,
-  modelCapabilityLabels,
-  modelDifferentiatingCapabilityLabels,
-  responseErrorMessage,
-  safeDownloadName,
-  searchStrategyDescription
-} from "./shellFormatting";
+import { exportFileBaseName, formatTokenCount, humanizeErrorCode, modelCapabilityDescription, modelCapabilityLabel, modelCapabilityLabels, responseErrorMessage } from "./shellFormatting";
 
 describe("shell error formatting", () => {
   it("turns known code families into readable messages while keeping the raw code", () => {
@@ -134,43 +123,6 @@ describe("shell labels", () => {
       "Web search",
       "Streaming"
     ]);
-  });
-
-  it("derives provider-local differences from the complete comparison group", () => {
-    const commonOnly: CatalogModel = {
-      ...model,
-      capabilities: {
-        ...model.capabilities,
-        documentInputMode: "none",
-        imageInput: false,
-        nativeWebSearch: false
-      },
-      displayName: "Common capabilities",
-      modelId: "common"
-    };
-
-    expect(modelDifferentiatingCapabilityLabels(model, [model, commonOnly])).toEqual([
-      "Images",
-      "PDF and documents",
-      "Web search"
-    ]);
-    expect(modelDifferentiatingCapabilityLabels(model, [model])).toEqual([]);
-  });
-
-  it("formats search strategies and safe ASCII download names", () => {
-    expect(searchStrategyDescription("openai-native-web-search")).toBe(
-      "OpenAI Search"
-    );
-    expect(searchStrategyDescription("perplexity-tool-search")).toBe(
-      "Perplexity Search"
-    );
-    expect(searchStrategyDescription("gemini-google-search")).toBe("Google Search");
-    expect(searchStrategyDescription("custom-web-search:connection-1")).toBe("Search");
-    expect(searchStrategyDescription("search-disabled")).toBe("No Search");
-    expect(safeDownloadName("Architecture / Notes 2026")).toBe(
-      "architecture-notes-2026"
-    );
-    expect(safeDownloadName("Исследование")).toBe("aiqsa-chat");
   });
 
   it("builds deterministic export base names from the title slug and ISO date", () => {

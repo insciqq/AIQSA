@@ -44,11 +44,6 @@ export function resolveThemeId(value: unknown): ThemeId {
   return isThemeId(value) ? value : DEFAULT_THEME_ID;
 }
 
-export function resolveThemeOption(value: unknown): ThemeOption {
-  const themeId = resolveThemeId(value);
-  return AIQSA_THEMES.find((theme) => theme.id === themeId) ?? AIQSA_THEMES[0]!;
-}
-
 function browserPrefersDark(): boolean {
   return typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&

@@ -63,9 +63,3 @@ export const useRunSurfaceStore = create<RunSurfaceStore>((set) => ({
     }));
   }
 }));
-
-export function resetRunSurfaceStoreForTest() {
-  useRunSurfaceStore.setState({
-    surfacesByChatId: {}
-  });
-}
