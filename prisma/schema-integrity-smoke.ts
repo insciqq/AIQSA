@@ -4,75 +4,6 @@ import { providerTemplateIds } from "../lib/domain/providerTemplates";
 
 const prisma = new PrismaClient();
 
-const expectedConstraintNames = [
-  "AccessGrant_subject_check",
-  "AccessGrant_target_check",
-  "AuthRateLimitBucket_attemptCount_check",
-  "AuthSession_revocation_attribution_check",
-  "AuthSession_revokedByUserId_fkey",
-  "AttachmentProcessingJob_attachment_owner_fkey",
-  "ChatMemoryCheckpoint_shape_check",
-  "Chat_id_activeLeafMessageId_fkey",
-  "Chat_memory_state_check",
-  "DocumentProcessingFairnessCursor_pipeline_check",
-  "KnowledgeBase_activeIndexGeneration_fkey",
-  "KnowledgeBasePublication_scope_group_check",
-  "KnowledgeChunk_dimension_check",
-  "KnowledgeDocument_currentVersion_fkey",
-  "KnowledgeDocumentVersion_ingestGeneration_fkey",
-  "KnowledgeDocumentVersion_knowledgeBase_owner_fkey",
-  "KnowledgeDocumentVersion_ingest_progress_check",
-  "KnowledgeDocumentVersion_normalized_object_check",
-  "KnowledgeDocumentVersion_storage_key_check",
-  "KnowledgeDocumentVersion_visibility_check",
-  "KnowledgeGenerationDocument_error_check",
-  "KnowledgeGenerationDocument_generation_fkey",
-  "KnowledgeGenerationDocument_knowledgeBase_owner_fkey",
-  "KnowledgeGenerationDocument_progress_check",
-  "KnowledgeGenerationDocument_state_check",
-  "KnowledgeGenerationDocument_version_fkey",
-  "KnowledgeIndexGeneration_dimension_check",
-  "KnowledgeIndexGeneration_reindex_source_check",
-  "KnowledgePolicy_candidate_limit_check",
-  "KnowledgePolicy_result_limit_check",
-  "KnowledgePolicy_score_threshold_check",
-  "KnowledgePolicy_singleton_check",
-  "KnowledgePolicy_version_check",
-  "Message_chatId_parentMessageId_fkey",
-  "MemoryCandidateDecision_candidate_fkey",
-  "MemoryCandidateDecision_consolidation_execution_fkey",
-  "MemoryCandidateDecision_consolidation_job_fkey",
-  "MemoryCandidateDecision_shape_check",
-  "MemoryCandidateDecision_target_fact_fkey",
-  "MemoryCandidateDecision_target_version_fkey",
-  "MemoryCandidateDecision_verification_execution_fkey",
-  "MemoryCandidateDecision_verification_job_fkey",
-  "MemoryDeletionOutbox_user_fkey",
-  "MemoryCandidateMessage_candidate_fkey",
-  "MemoryCandidate_shape_check",
-  "MemoryExecutionBinding_shape_check",
-  "MemoryFact_current_version_fkey",
-  "MemoryFactVersion_created_event_fkey",
-  "MemoryRecallChunk_shape_check",
-  "MemoryRetrievalAttempt_shape_check",
-  "MemoryScope_target_shape_check",
-  "MemorySearchEntry_shape_check",
-  "ModelPolicy_defaultProviderModelId_fkey",
-  "ModelPolicy_singleton_check",
-  "ModelPolicy_version_check",
-  "SearchOption_archive_check",
-  "SearchOption_kind_check",
-  "SearchOption_source_check",
-  "SearchOption_sourceConnectionId_fkey",
-  "SearchStrategy_searchOptionId_fkey",
-  "SystemModelPolicy_providerModelId_fkey",
-  "SystemModelPolicy_reasoningEffort_check",
-  "SystemModelPolicy_reasoning_target_check",
-  "SystemModelPolicy_singleton_check",
-  "SystemModelPolicy_version_check",
-  "UsageEvent_knowledge_shape_check"
-] as const;
-
 class ExpectedRollback extends Error {}
 
 function json(value: unknown): Prisma.InputJsonValue {
@@ -188,6 +119,29 @@ async function createModelRunFixture(tx: Prisma.TransactionClient) {
     }
   });
   return { chat: chats[0], run, user, userMessage };
+}
+
+function memoryIndexGenerationData(
+  userId: string,
+  generation: number,
+  state: "ACTIVE" | "FAILED" | "READY"
+): Prisma.MemoryIndexGenerationUncheckedCreateInput {
+  const readyAt = new Date();
+  return {
+    activatedAt: state === "ACTIVE" ? readyAt : null,
+    chunkingVersion: "memory-chunking-v1",
+    generation,
+    id: randomUUID(),
+    indexMode: "LEXICAL_ONLY",
+    indexedThroughMemoryRevision: 0,
+    languageProfile: "simple",
+    normalizationVersion: "memory-normalization-v1",
+    readyAt,
+    retrievalPipelineVersion: "memory-retrieval-v1",
+    state,
+    targetMemoryRevision: 0,
+    userId
+  };
 }
 
 type QueryClient = Pick<Prisma.TransactionClient, "$queryRaw">;
@@ -341,21 +295,25 @@ async function assertConstraintCatalog(): Promise<void> {
   await assertSemanticIndexSignatureCoverage();
   await assertNoSemanticDuplicateIndexes(prisma, "public");
 
-  const constraints = await prisma.$queryRaw<Array<{ conname: string; convalidated: boolean }>>(
-    Prisma.sql`
-    SELECT conname, convalidated
-    FROM pg_constraint
-    WHERE conname IN (${Prisma.join(
-      expectedConstraintNames.map((name) => Prisma.sql`${name}`)
-    )})
-    ORDER BY conname
-  `
-  );
-  const actual = new Map(constraints.map((constraint) => [constraint.conname, constraint.convalidated]));
-  for (const name of expectedConstraintNames) {
-    if (actual.get(name) !== true) {
-      throw new Error(`Expected validated database constraint ${name}.`);
-    }
+  const unvalidatedConstraints = await prisma.$queryRaw<
+    Array<{ constraintName: string; tableName: string }>
+  >`
+    SELECT
+      constraint_catalog.conname AS "constraintName",
+      table_relation.relname AS "tableName"
+    FROM pg_constraint AS constraint_catalog
+    INNER JOIN pg_class AS table_relation
+      ON table_relation.oid = constraint_catalog.conrelid
+    INNER JOIN pg_namespace AS namespace
+      ON namespace.oid = constraint_catalog.connamespace
+    WHERE namespace.nspname = current_schema()
+      AND NOT constraint_catalog.convalidated
+    ORDER BY table_relation.relname, constraint_catalog.conname
+  `;
+  if (unvalidatedConstraints.length > 0) {
+    throw new Error(
+      `Unvalidated database constraints found: ${JSON.stringify(unvalidatedConstraints)}`
+    );
   }
   const destinationIndexes = await prisma.$queryRaw<Array<{ indexdef: string }>>`
     SELECT indexdef
@@ -460,6 +418,89 @@ async function assertConstraintCatalog(): Promise<void> {
   `;
   if (memoryOperationOutcomes.map(({ label }) => label).join(",") !== "APPLIED,REJECTED") {
     throw new Error("MemoryOperationOutcome contains an unsupported compatibility value.");
+  }
+}
+
+async function assertMemoryActiveGenerationGuard(): Promise<void> {
+  await expectDatabaseRejection(
+    "unselected active Memory generation",
+    "ACTIVE Memory generation must be selected by owner settings",
+    async (tx) => {
+      const { user } = await createUserAndChats(tx, 0);
+      await tx.memoryIndexGeneration.create({
+        data: memoryIndexGenerationData(user.id, 1, "ACTIVE")
+      });
+    }
+  );
+
+  await expectDatabaseRejection(
+    "Memory settings pointer to a non-active generation",
+    "Memory settings must point to the one same-owner ACTIVE generation",
+    async (tx) => {
+      const { user } = await createUserAndChats(tx, 0);
+      const generation = await tx.memoryIndexGeneration.create({
+        data: memoryIndexGenerationData(user.id, 1, "READY")
+      });
+      await tx.userMemorySettings.update({
+        data: { activeIndexGenerationId: generation.id },
+        where: { userId: user.id }
+      });
+    }
+  );
+
+  const fixture = await prisma.$transaction(async (tx) => {
+    const { user } = await createUserAndChats(tx, 0);
+    const generations = await Promise.all([
+      tx.memoryIndexGeneration.create({
+        data: memoryIndexGenerationData(user.id, 1, "READY")
+      }),
+      tx.memoryIndexGeneration.create({
+        data: memoryIndexGenerationData(user.id, 2, "FAILED")
+      })
+    ]);
+    return { generations, user };
+  });
+
+  try {
+    const outcomes = await Promise.allSettled(
+      fixture.generations.map((generation) =>
+        prisma.$transaction(async (tx) => {
+          await tx.memoryIndexGeneration.update({
+            data: { activatedAt: new Date(), state: "ACTIVE" },
+            where: { id: generation.id }
+          });
+          await tx.userMemorySettings.update({
+            data: { activeIndexGenerationId: generation.id },
+            where: { userId: fixture.user.id }
+          });
+        })
+      )
+    );
+    if (
+      outcomes.filter((outcome) => outcome.status === "fulfilled").length !== 1 ||
+      outcomes.filter((outcome) => outcome.status === "rejected").length !== 1
+    ) {
+      throw new Error(
+        `Concurrent Memory generation activation did not produce exactly one winner: ${JSON.stringify(
+          outcomes.map((outcome) => outcome.status)
+        )}`
+      );
+    }
+
+    const [settings, activeGenerations] = await Promise.all([
+      prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: fixture.user.id } }),
+      prisma.memoryIndexGeneration.findMany({
+        where: { state: "ACTIVE", userId: fixture.user.id }
+      })
+    ]);
+    if (
+      activeGenerations.length !== 1 ||
+      settings.activeIndexGenerationId !== activeGenerations[0]?.id
+    ) {
+      throw new Error("Concurrent Memory generation activation left an invalid active pointer.");
+    }
+  } finally {
+    await prisma.user.delete({ where: { id: fixture.user.id } });
   }
 }
 
@@ -811,13 +852,14 @@ async function assertStatusEnums(): Promise<void> {
 
 async function main() {
   await assertConstraintCatalog();
+  await assertMemoryActiveGenerationGuard();
   await assertSearchOptionSources();
   await assertSameChatRelations();
   await assertMemoryCandidateSourceAuthority();
   await assertGrantShapes();
   await assertStatusEnums();
   console.log(
-    "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraints, tenant-safe pointers, direct-USER Memory candidates and fact decisions, Knowledge ingestion/indexes, six grant shapes, and lifecycle enums."
+    "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraint validation, concurrent Memory generation activation, tenant-safe pointers, direct-USER Memory candidates and fact decisions, Knowledge ingestion/indexes, six grant shapes, and lifecycle enums."
   );
 }
 

@@ -17,6 +17,8 @@ Persist run or tool data only for execution, recovery, duplicate-side-effect pre
 
 `20260815000000_baseline` is the immutable first migration anchor; its reviewed custom PostgreSQL DDL is part of the contract and cannot be reconstructed from Prisma alone. Future changes are append-only migrations. Persistent installations use `prisma migrate deploy`, never `prisma db push`.
 
+Custom checks own row shape and bounded values; triggers own deferred cross-row, tenant/source, history, deletion, and concurrent-writer invariants that Prisma relations or repository validation cannot express alone. Keep them at the database boundary while raw SQL workers and destructive handlers exist, and simplify them only through behavior-proven append-only migrations.
+
 Bootstrap runs under a serializable transaction and advisory lock. It accepts only an empty schema or the exact adopted administrator identity, refuses other nonempty targets before mutation, and creates minimal installation foundations without demo content or real provider deployments. Adopted reruns may repair missing code-owned foundations but preserve operator identities, credentials, settings, grants, policy choices, and content.
 
 One active `preparing | queued | streaming | in_progress` run per chat is enforced in PostgreSQL. Run admission commits the message graph, exact ordinary bindings, private preparation state, and Memory attempt together; dispatch becomes possible only after the second guarded commit freezes the recovery request. Terminal writers, tool results, external Memory executions, queue claims, and deletion work use status/version/lease guards so one transition wins.
