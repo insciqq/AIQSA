@@ -3,7 +3,7 @@
 Owner: Safety and durable product semantics
 Scope: Cross-cutting rules whose violation can cause data loss, security/privacy exposure, incompatible persisted state, destructive verification, or a key run semantic change.
 
-This is the mandatory short safety read. Scoped contracts retain the same normative force and are indexed by `INDEX.md`; product direction belongs in `PRODUCT_PRINCIPLES.md`, current implementation details in their bounded owner, and UI behavior/geometry in `FRONTEND.md`.
+This is the mandatory short safety read. Scoped documents retain normative force only for their non-derivable product, safety, and operations constraints and are indexed by `INDEX.md`. Exact current implementation comes from code, schemas, migrations, and tests; product direction belongs in `PRODUCT_PRINCIPLES.md`, and durable UI semantics in `FRONTEND.md`.
 
 ## Data And Product Semantics
 

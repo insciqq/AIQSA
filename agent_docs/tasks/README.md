@@ -38,9 +38,9 @@ Draft files are not listed, selected, content-validated, or accepted as dependen
 
 `node scripts/task-ledger.mjs new` is the sole executable scaffold source. Each task has the metadata fields `Status`, `Depends on`, `Blocked by`, and `Durable rationale`, followed by `Goal`, `Context`, `Scope`, `Out Of Scope`, `Acceptance Criteria`, `Plan`, `Progress`, `Decisions`, and `Verification`. Replace every scaffold placeholder before promotion; use exact task stems in `Depends on` and `none` when no open dependency remains.
 
-Keep current behavior in the owning living document rather than copying it into tasks. Link the relevant owners and describe only the delta. For complex work, make `Plan`, `Progress`, and `Decisions` detailed enough that a fresh agent can continue from the task and current checkout alone.
+Discover current behavior from the checkout's code, schemas, migrations, and tests. In tasks, link the relevant executable owners and durable constraints, then describe only the intended delta; do not create an implementation mirror in `agent_docs`. For complex work, make `Plan`, `Progress`, and `Decisions` detailed enough that a fresh agent can continue from the task and current checkout alone.
 
-Task-local decisions remain inspectable in the local completion archive, but they are not durable or recoverable from public Git history. Any rationale that future work still needs must be incorporated into the owning current contract and attested through `Durable rationale` before completion.
+Task-local decisions remain inspectable in the local completion archive, but they are not durable or recoverable from public Git history. Any non-derivable rule or rationale that future work still needs must be incorporated into the appropriate `agent_docs` boundary and attested through `Durable rationale` before completion.
 
 ## Commands
 

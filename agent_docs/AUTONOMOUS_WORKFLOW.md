@@ -6,7 +6,7 @@ This is the operating loop for broad autonomous selection, queued/task-state wor
 
 The operator's latest request is primary. A concrete same-session change may run directly. Create a task when work must survive the current session or belongs in the autonomous queue. For broad implementation permission, queued work, dependencies, or parallel execution:
 
-1. Inspect Git state and the relevant code and living documents.
+1. Inspect Git state, the relevant executable artifacts, and only the durable constraints routed by `INDEX.md`.
 2. Enumerate `agent_docs/tasks/queue/*.md` in natural filename order and reconcile every existing `in_progress` task before claiming more work. Never enumerate or select `agent_docs/tasks/drafts/`.
 3. Select `ready` tasks with no open dependencies. For sequential work, prefer the first one; for a parallel wave, select up to five tasks whose expected write sets and stateful checks do not overlap.
 4. Never implement `backlog` or `blocked` tasks without the required transition or missing input.
@@ -38,7 +38,7 @@ Five workers are a ceiling, not a target. Prefer a smaller wave when tasks share
 4. Add the cheapest deterministic test that would fail for the regression.
 5. Update `Progress` after meaningful checkpoints and record only task-local choices in `Decisions`.
 6. Run focused checks while iterating. Near completion, run the proportional hermetic or container-parity lane from `TESTING.md`; run E2E, runtime image builds, migrations, security audits, or provider smokes only when the task crosses those boundaries.
-7. Update the owning living document only when the change modifies a durable product contract, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, or verification policy. Put durable rationale beside the current rule.
+7. Do not mirror implementation state into Markdown. Update `agent_docs` only when the change modifies a non-derivable product rule, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, verification policy, or durable rationale.
 8. Record exact passed checks and unavailable checks with reasons in `Verification`, and settle `Durable rationale` as `none` or `moved to <agent_docs owner>`.
 9. Complete the verified task directly. If the only required evidence is unavailable, block it instead.
 
@@ -61,7 +61,7 @@ Before completion, perform the root [Before Final Response](../AGENTS.md#before-
 
 ## Done Standard
 
-Work is complete only when the requested outcome is implemented, relevant automated checks pass, required living documents are current, final task-owned inspection is clean, and the app remains runnable or clearly verifiable. A task with unavailable-only required verification is blocked, not complete. Prefer one commit per completed queued task with subject `<task-id>: outcome in one line`.
+Work is complete only when the requested outcome is implemented, relevant automated checks pass, any affected durable documentation boundary is updated, final task-owned inspection is clean, and the app remains runnable or clearly verifiable. Implementation-only changes require no Markdown synchronization. A task with unavailable-only required verification is blocked, not complete. Prefer one commit per completed queued task with subject `<task-id>: outcome in one line`.
 
 ## Operator Report
 

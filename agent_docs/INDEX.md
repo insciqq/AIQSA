@@ -3,7 +3,7 @@
 Owner: Repository maintainers
 Scope: Reading map for durable product, engineering, and operator contracts.
 
-Start with [critical invariants](CRITICAL_INVARIANTS.md). Read only the owner crossed by the requested change; source, schemas, migrations, and tests remain authoritative for exact implementation shape.
+Start with [critical invariants](CRITICAL_INVARIANTS.md). Read only the durable boundary crossed by the requested change. Code, schemas, migrations, and tests are the sole source for exact current implementation.
 
 | Change concerns | Read |
 | --- | --- |
@@ -24,8 +24,10 @@ Start with [critical invariants](CRITICAL_INVARIANTS.md). Read only the owner cr
 
 ## Authority And Maintenance
 
-The operator request defines scope. Critical invariants constrain it. Executable behavior plus the relevant owner above define current behavior; resolve drift in both. Product principles and defaults decide only points left open.
+The operator request defines intent and scope. Critical invariants constrain it. Executable artifacts define what is currently implemented. The other documents above preserve only navigation, non-derivable product semantics, safety/operations boundaries, and rationale; they do not share ownership of implementation state. Product principles and defaults decide only points left open.
 
-Give every durable proposition one owner. Link across boundaries instead of copying mechanics. Keep rationale only when it prevents a likely unsafe or semantically incompatible future change. Do not add route, schema, enum, test-file, store, constant, status, or limit inventories that source already answers.
+If implementation violates a durable rule, change the executable artifacts unless the operator authorized a rule change. If prose has become a stale implementation mirror, delete that prose and link to source instead of updating both sides.
+
+Give every durable non-executable proposition one document owner. Link across boundaries instead of copying mechanics. Keep rationale only when it prevents a likely unsafe or semantically incompatible future change. Do not add route, schema, enum, test-file, store, constant, status, adapter, flow, or limit inventories that source already answers. Routine implementation changes require no Markdown update.
 
 Private PRDs and task instances are local working state, not mandatory reading or public documentation. Completed task evidence never substitutes for a current contract.
