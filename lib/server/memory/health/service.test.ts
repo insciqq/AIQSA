@@ -92,11 +92,9 @@ function service(input: Readonly<{
 }> = {}) {
   return createMemoryHealthService({
     now: () => new Date("2026-08-12T10:00:00.000Z"),
+    readAdmin: vi.fn().mockResolvedValue({ ...adminSnapshot, ...input.admin }),
     readSettings: vi.fn().mockResolvedValue(input.settings ?? settings()),
-    repository: {
-      readAdmin: vi.fn().mockResolvedValue({ ...adminSnapshot, ...input.admin }),
-      readUser: vi.fn().mockResolvedValue({ ...userSnapshot, ...input.user })
-    }
+    readUser: vi.fn().mockResolvedValue({ ...userSnapshot, ...input.user })
   });
 }
 

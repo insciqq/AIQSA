@@ -10,7 +10,7 @@ Not owned here: Upstream OpenRouter facts, shared admission, or provider-neutral
 
 OpenRouter is implemented as an OpenAI-compatible Chat Completions answer provider plus the typed Perplexity Search protocol used by query-only client Search integrations.
 
-`openRouterChat.ts` is the stable facade used by runtime construction, tests, and the standalone smoke script. `openRouterChatRequest.ts` owns answer/search bodies and always-redacted previews; `openRouterChatResponse.ts` owns JSON/SSE errors, text, usage, reasoning, citations, tool calls, and normalized results; `openRouterChatTransport.ts` owns the authenticated fetch endpoint, timeout composition, object parsing, and sanitized HTTP errors; `openRouterPerplexitySearch.ts` owns real/fake search-adapter result assembly. Provider-neutral tool definition/execution remains in `lib/server/tools/`, outside these wire modules.
+`openRouterChat.ts` is the stable facade used by runtime construction, tests, and the standalone smoke script. `openRouterChatRequest.ts` owns answer/search bodies and always-redacted previews. `openRouterChatResponse.ts` is the OpenRouter profile over the shared OpenAI-compatible Chat Completions response core and owns OpenRouter error envelopes, reasoning, citations, generation metadata, and normalized result extras. `openRouterChatTransport.ts` supplies the authenticated OpenRouter endpoint, headers, and public error names to the shared fetch core. `openRouterPerplexitySearch.ts` owns real/fake search-adapter result assembly. Provider-neutral tool definition/execution remains in `lib/server/tools/`, outside these wire modules.
 
 Current behavior:
 

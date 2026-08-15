@@ -15,7 +15,6 @@ import { ACCOUNT_MEMORY_DELETION_TARGET_TYPE } from "./contract";
 import { createPrismaAccountMemoryDeletionHandler } from "./handler";
 import { createAccountMemoryDeletionHook } from "./integration";
 import { countAccountMemoryOwnedData } from "./inventory";
-import { AccountMemoryDeletionRegistry } from "./registry";
 
 type ProviderFixture = Readonly<{
   connectionId: string;
@@ -446,7 +445,6 @@ describe("Prisma account Memory deletion", () => {
 
   it("keeps the stale-user path zero-mutation before composition", async () => {
     const userId = await createOwner("disabled");
-    const registry = new AccountMemoryDeletionRegistry();
     try {
       await prisma.memoryScope.create({
         data: { scopeType: "GLOBAL_USER", userId }
@@ -454,9 +452,7 @@ describe("Prisma account Memory deletion", () => {
       const before = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });
-      await expect(createPrismaAdminRepository(prisma, {
-        accountMemoryDeletionRegistry: registry
-      }).deleteStaleUser({
+      await expect(createPrismaAdminRepository(prisma).deleteStaleUser({
         actingAdminUserId: `admin-${randomUUID()}`,
         userId
       })).resolves.toBe("user_has_owned_data");
@@ -472,12 +468,11 @@ describe("Prisma account Memory deletion", () => {
 
   it("keeps a composed but rolled-back account gate zero-mutation", async () => {
     const userId = await createOwner("disabled");
-    const registry = new AccountMemoryDeletionRegistry();
     const kick = vi.fn();
-    registry.register(createAccountMemoryDeletionHook({
+    const hook = createAccountMemoryDeletionHook({
       admissionEnabled: () => false,
       kick
-    }));
+    });
     try {
       await prisma.memoryScope.create({
         data: { scopeType: "GLOBAL_USER", userId }
@@ -486,7 +481,7 @@ describe("Prisma account Memory deletion", () => {
         where: { userId }
       });
       await expect(createPrismaAdminRepository(prisma, {
-        accountMemoryDeletionRegistry: registry
+        accountMemoryDeletionHook: () => hook
       }).deleteStaleUser({
         actingAdminUserId: `admin-${randomUUID()}`,
         userId
@@ -503,12 +498,11 @@ describe("Prisma account Memory deletion", () => {
 
   it("does not admit Memory cleanup through an unrelated global owned-data blocker", async () => {
     const userId = await createOwner("disabled");
-    const registry = new AccountMemoryDeletionRegistry();
     const advance = vi.fn(async () => ({
       admitted: true,
       readyForUserDeletion: false
     }));
-    registry.register({ advance, kick: vi.fn() });
+    const hook = { advance, kick: vi.fn() };
     try {
       await prisma.memoryScope.create({
         data: { scopeType: "GLOBAL_USER", userId }
@@ -518,7 +512,7 @@ describe("Prisma account Memory deletion", () => {
         where: { userId }
       });
       await expect(createPrismaAdminRepository(prisma, {
-        accountMemoryDeletionRegistry: registry
+        accountMemoryDeletionHook: () => hook
       }).deleteStaleUser({
         actingAdminUserId: `admin-${randomUUID()}`,
         userId
@@ -537,19 +531,18 @@ describe("Prisma account Memory deletion", () => {
     let clock = new Date(Date.now() - 60_000);
     const provider = await createProviderFixture(clock);
     const userId = await createOwner();
-    const accountRegistry = new AccountMemoryDeletionRegistry();
     const coordinatorRegistry = new MemoryCoordinatorRegistry();
     const handler = createPrismaAccountMemoryDeletionHandler();
     coordinatorRegistry.registerDeletion(handler);
     const coordinator = coordinatorFor(coordinatorRegistry, () => new Date(clock));
     const kick = vi.fn();
     let admissionEnabled = true;
-    accountRegistry.register(createAccountMemoryDeletionHook({
+    const hook = createAccountMemoryDeletionHook({
       admissionEnabled: () => admissionEnabled,
       kick
-    }));
+    });
     const admin = createPrismaAdminRepository(prisma, {
-      accountMemoryDeletionRegistry: accountRegistry
+      accountMemoryDeletionHook: () => hook
     });
     try {
       const fixture = await populateReusableMemory(userId, provider, { now: clock });
@@ -639,13 +632,12 @@ describe("Prisma account Memory deletion", () => {
     let clock = new Date(Date.now() - 60_000);
     const provider = await createProviderFixture(clock);
     const userId = await createOwner();
-    const accountRegistry = new AccountMemoryDeletionRegistry();
     const coordinatorRegistry = new MemoryCoordinatorRegistry();
     coordinatorRegistry.registerDeletion(createPrismaAccountMemoryDeletionHandler());
     const coordinator = coordinatorFor(coordinatorRegistry, () => new Date(clock));
-    accountRegistry.register(createAccountMemoryDeletionHook({ kick: () => undefined }));
+    const hook = createAccountMemoryDeletionHook({ kick: () => undefined });
     const admin = createPrismaAdminRepository(prisma, {
-      accountMemoryDeletionRegistry: accountRegistry
+      accountMemoryDeletionHook: () => hook
     });
     try {
       const fixture = await populateReusableMemory(userId, provider, {

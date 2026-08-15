@@ -2,18 +2,12 @@ import type { MemoryDeletionHandler } from "./coordinator/types";
 import type { MemoryCoordinatorRegistry } from "./coordinator/registry";
 import { defaultMemoryCoordinatorRegistry } from "./coordinator/registry";
 import {
-  createAccountMemoryDeletionHook
+  createAccountMemoryDeletionHook,
+  type AccountMemoryDeletionHook
 } from "./accountDeletion/integration";
 import {
   createPrismaAccountMemoryDeletionHandler
 } from "./accountDeletion/handler";
-import type {
-  AccountMemoryDeletionHook,
-  AccountMemoryDeletionRegistry
-} from "./accountDeletion/registry";
-import {
-  defaultAccountMemoryDeletionRegistry
-} from "./accountDeletion/registry";
 import { MEMORY_DELETION_ADMISSION_POLICY } from "./capabilityPolicy";
 import { memoryHistorySourceDeletionHandler } from "./history/purge";
 import {
@@ -49,7 +43,6 @@ type AccountHookFactory = (input: Readonly<{
 
 export function createMemoryDeletionComposition(input: Readonly<{
   accountDeletionHandler: MemoryDeletionHandler;
-  accountRegistry: AccountMemoryDeletionRegistry;
   coordinatorRegistry: MemoryCoordinatorRegistry;
   createAccountHook?: AccountHookFactory;
   kick: () => void;
@@ -63,13 +56,13 @@ export function createMemoryDeletionComposition(input: Readonly<{
     throw new Error("memory_deletion_composition_source_handler_operation_invalid");
   }
 
+  let accountHookReachable = false;
   let accountHook!: AccountMemoryDeletionHook;
   const status = (): MemoryDeletionCompositionStatus => {
     const accountHandlerReachable = input.coordinatorRegistry
       .deletionHandler("ACCOUNT_MEMORY_DELETE") === input.accountDeletionHandler;
     const sourcePurgeHandlerReachable = input.coordinatorRegistry
       .deletionHandler("SOURCE_PURGE") === input.sourcePurgeHandler;
-    const accountHookReachable = input.accountRegistry.current() === accountHook;
     const composed = accountHandlerReachable && sourcePurgeHandlerReachable &&
       accountHookReachable;
     return Object.freeze({
@@ -98,15 +91,11 @@ export function createMemoryDeletionComposition(input: Readonly<{
     const existingSource = input.coordinatorRegistry.deletionHandler("SOURCE_PURGE");
     const existingAccount = input.coordinatorRegistry
       .deletionHandler("ACCOUNT_MEMORY_DELETE");
-    const existingHook = input.accountRegistry.current();
     if (existingSource && existingSource !== input.sourcePurgeHandler) {
       throw new Error("memory_deletion_composition_source_handler_conflict");
     }
     if (existingAccount && existingAccount !== input.accountDeletionHandler) {
       throw new Error("memory_deletion_composition_account_handler_conflict");
-    }
-    if (existingHook && existingHook !== accountHook) {
-      throw new Error("memory_deletion_composition_account_hook_conflict");
     }
 
     const rollback: Array<() => void> = [];
@@ -121,19 +110,21 @@ export function createMemoryDeletionComposition(input: Readonly<{
           input.accountDeletionHandler
         ));
       }
-      if (!existingHook) rollback.push(input.accountRegistry.register(accountHook));
+      accountHookReachable = true;
       const current = status();
       if (!current.composed) {
         throw new Error("memory_deletion_composition_unreachable");
       }
       return current;
     } catch (error) {
+      accountHookReachable = false;
       for (const unregister of rollback.reverse()) unregister();
       throw error;
     }
   };
 
   return Object.freeze({
+    accountDeletionHook: () => status().composed ? accountHook : null,
     ensure,
     permanentChatDeletionCapability,
     status
@@ -152,7 +143,6 @@ let defaultCompositionFailureLogged = false;
 
 const defaultComposition = createMemoryDeletionComposition({
   accountDeletionHandler: defaultAccountDeletionHandler,
-  accountRegistry: defaultAccountMemoryDeletionRegistry,
   coordinatorRegistry: defaultMemoryCoordinatorRegistry,
   kick: () => {
     if (!defaultKick) {
@@ -166,6 +156,10 @@ const defaultComposition = createMemoryDeletionComposition({
 
 export const defaultPermanentChatDeletionCapability =
   defaultComposition.permanentChatDeletionCapability;
+
+export function getDefaultAccountMemoryDeletionHook(): AccountMemoryDeletionHook | null {
+  return defaultComposition.accountDeletionHook();
+}
 
 export function ensureDefaultMemoryDeletionComposition(
   kick: () => void

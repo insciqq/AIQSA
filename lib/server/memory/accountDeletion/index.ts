@@ -13,10 +13,8 @@ export {
   countAccountMemoryOwnedData,
   loadAccountMemoryOwnedCounts
 } from "./inventory";
-export { createAccountMemoryDeletionHook } from "./integration";
 export {
-  AccountMemoryDeletionRegistry,
-  defaultAccountMemoryDeletionRegistry,
+  createAccountMemoryDeletionHook,
   type AccountMemoryDeletionAdvance,
   type AccountMemoryDeletionHook
-} from "./registry";
+} from "./integration";

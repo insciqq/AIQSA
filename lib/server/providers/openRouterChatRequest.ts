@@ -21,6 +21,7 @@ import type {
   ProviderSearchRequest
 } from "./types";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
+import { isOpenAIChatRecord as isRecord } from "./openaiChatCompletions";
 
 export type OpenRouterMessage = {
   content?: null | string | Record<string, unknown>[];
@@ -88,10 +89,6 @@ type PrivateBuildOptions = OpenRouterChatRequestOptions & {
   redactFiles: boolean;
   redactImages: boolean;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function combineInstructions(request: ProviderRunRequest): string | undefined {
   return providerInstructionsWithPersonalContext(request);

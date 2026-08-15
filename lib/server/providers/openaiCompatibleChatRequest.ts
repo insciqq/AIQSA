@@ -9,6 +9,7 @@ import {
   type ProviderReasoningRequestMapping
 } from "../../contracts/providerReasoningRequestMapping";
 import { applyProviderReasoningRequestMapping } from "./reasoningRequestMapping";
+import { isOpenAIChatRecord as isRecord } from "./openaiChatCompletions";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
 
 export type OpenAICompatibleChatMessage = {
@@ -56,10 +57,6 @@ type PrivateBuildOptions = OpenAICompatibleChatRequestOptions & {
   preview: boolean;
   redactImages: boolean;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function combineInstructions(request: ProviderRunRequest): string | undefined {
   return providerInstructionsWithPersonalContext(request);

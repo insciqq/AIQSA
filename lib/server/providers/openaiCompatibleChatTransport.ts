@@ -4,6 +4,7 @@ import {
   readBoundedResponseText,
   withTimeoutSignal
 } from "./network";
+import { isOpenAIChatRecord } from "./openaiChatCompletions";
 
 export type OpenAICompatibleChatClientRequestOptions = {
   signal?: AbortSignal;
@@ -20,10 +21,6 @@ export type OpenAICompatibleChatClient = {
     options?: OpenAICompatibleChatClientRequestOptions
   ): Promise<Response>;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function requiredBearerToken(value: string | null | undefined): string {
   if (typeof value !== "string") {
@@ -68,24 +65,29 @@ export function deriveOpenAICompatibleChatEndpoint(apiRoot: string): string {
 
 async function parseJsonResponse(
   response: Response,
-  signal: AbortSignal
+  signal: AbortSignal,
+  errors: Readonly<{ invalidJson: string; notObject: string }>
 ): Promise<Record<string, unknown>> {
   const text = await readBoundedResponseText(response, { signal });
   let parsed: unknown;
   try {
     parsed = text ? (JSON.parse(text) as unknown) : {};
   } catch {
-    throw new Error("openai_compatible_chat_response_invalid_json");
+    throw new Error(errors.invalidJson);
   }
 
-  if (!isRecord(parsed)) {
-    throw new Error("openai_compatible_chat_response_not_object");
+  if (!isOpenAIChatRecord(parsed)) {
+    throw new Error(errors.notObject);
   }
 
   return parsed;
 }
 
-async function throwHttpError(response: Response, signal: AbortSignal): Promise<never> {
+async function throwHttpError(
+  response: Response,
+  signal: AbortSignal,
+  providerName: string
+): Promise<never> {
   try {
     await readBoundedResponseText(response, { signal });
   } catch (error) {
@@ -94,7 +96,87 @@ async function throwHttpError(response: Response, signal: AbortSignal): Promise<
     }
   }
 
-  throw new Error(providerHttpErrorMessage("OpenAI-compatible", response.status));
+  throw new Error(providerHttpErrorMessage(providerName, response.status));
+}
+
+export function createFetchOpenAIChatCompletionClient(input: Readonly<{
+  bodyMissingError: string;
+  defaultTimeoutMs?: number;
+  endpoint: string;
+  fetchFn?: typeof fetch;
+  headers: Readonly<Record<string, string>>;
+  invalidJsonError: string;
+  notObjectError: string;
+  providerName: string;
+  redirect?: RequestRedirect;
+}>): OpenAICompatibleChatClient {
+  const fetchFn = input.fetchFn ?? fetch;
+
+  async function post(
+    body: Record<string, unknown>,
+    options?: OpenAICompatibleChatClientRequestOptions
+  ) {
+    const timeout = withTimeoutSignal(
+      options?.signal,
+      options?.timeoutMs ?? input.defaultTimeoutMs
+    );
+    try {
+      const response = await fetchFn(input.endpoint, {
+        body: JSON.stringify(body),
+        headers: input.headers,
+        method: "POST",
+        ...(input.redirect ? { redirect: input.redirect } : {}),
+        signal: timeout.signal
+      });
+      return { response, timeout };
+    } catch (error) {
+      timeout.clear();
+      throw error;
+    }
+  }
+
+  return {
+    async createChatCompletion(body, options) {
+      const exchange = await post(body, options);
+
+      try {
+        if (!exchange.response.ok) {
+          return await throwHttpError(
+            exchange.response,
+            exchange.timeout.signal,
+            input.providerName
+          );
+        }
+
+        return await parseJsonResponse(exchange.response, exchange.timeout.signal, {
+          invalidJson: input.invalidJsonError,
+          notObject: input.notObjectError
+        });
+      } finally {
+        exchange.timeout.clear();
+      }
+    },
+    async streamChatCompletion(body, options) {
+      const exchange = await post(body, options);
+
+      try {
+        if (!exchange.response.ok) {
+          return await throwHttpError(
+            exchange.response,
+            exchange.timeout.signal,
+            input.providerName
+          );
+        }
+        if (!exchange.response.body) {
+          throw new Error(input.bodyMissingError);
+        }
+
+        return exchange.response;
+      } finally {
+        exchange.timeout.clear();
+      }
+    }
+  };
 }
 
 export function createFetchOpenAICompatibleChatClient(input: {
@@ -119,62 +201,18 @@ export function createFetchOpenAICompatibleChatClient(input: {
   ) {
     throw new Error("openai_compatible_chat_authentication_invalid");
   }
-  const fetchFn = input.fetchFn ?? fetch;
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (bearerToken) headers.authorization = `Bearer ${bearerToken}`;
 
-  async function post(
-    body: Record<string, unknown>,
-    options?: OpenAICompatibleChatClientRequestOptions
-  ) {
-    const timeout = withTimeoutSignal(
-      options?.signal,
-      options?.timeoutMs ?? input.defaultTimeoutMs
-    );
-    try {
-      const response = await fetchFn(endpoint, {
-        body: JSON.stringify(body),
-        headers,
-        method: "POST",
-        redirect: "error",
-        signal: timeout.signal
-      });
-      return { response, timeout };
-    } catch (error) {
-      timeout.clear();
-      throw error;
-    }
-  }
-
-  return {
-    async createChatCompletion(body, options) {
-      const exchange = await post(body, options);
-
-      try {
-        if (!exchange.response.ok) {
-          return await throwHttpError(exchange.response, exchange.timeout.signal);
-        }
-
-        return await parseJsonResponse(exchange.response, exchange.timeout.signal);
-      } finally {
-        exchange.timeout.clear();
-      }
-    },
-    async streamChatCompletion(body, options) {
-      const exchange = await post(body, options);
-
-      try {
-        if (!exchange.response.ok) {
-          return await throwHttpError(exchange.response, exchange.timeout.signal);
-        }
-        if (!exchange.response.body) {
-          throw new Error("openai_compatible_chat_stream_body_missing");
-        }
-
-        return exchange.response;
-      } finally {
-        exchange.timeout.clear();
-      }
-    }
-  };
+  return createFetchOpenAIChatCompletionClient({
+    bodyMissingError: "openai_compatible_chat_stream_body_missing",
+    defaultTimeoutMs: input.defaultTimeoutMs,
+    endpoint,
+    fetchFn: input.fetchFn,
+    headers,
+    invalidJsonError: "openai_compatible_chat_response_invalid_json",
+    notObjectError: "openai_compatible_chat_response_not_object",
+    providerName: "OpenAI-compatible",
+    redirect: "error"
+  });
 }

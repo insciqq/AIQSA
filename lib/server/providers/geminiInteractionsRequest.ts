@@ -11,7 +11,11 @@ import {
   conversationPreview,
   textConversationForRequest
 } from "./context";
-import { geminiInteractionStepForWire } from "./geminiInteractionsProtocol";
+import {
+  geminiInteractionStepForWire,
+  isBoundedGeminiInteractionString as boundedString,
+  isGeminiInteractionRecord as isRecord
+} from "./geminiInteractionsProtocol";
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
 
@@ -71,19 +75,6 @@ export type GeminiInteractionsRequestPreview = {
 type BuildOptions = GeminiInteractionsRequestOptions & {
   preview: boolean;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function boundedString(value: unknown, maxLength: number): value is string {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= maxLength &&
-    !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)
-  );
-}
 
 function combineSystemInstruction(request: ProviderRunRequest): string | undefined {
   return providerInstructionsWithPersonalContext(request);

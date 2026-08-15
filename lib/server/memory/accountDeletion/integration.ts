@@ -2,10 +2,19 @@ import { Prisma } from "@prisma/client";
 import { MemoryCoordinatorError } from "../coordinator/errors";
 import { ACCOUNT_MEMORY_DELETION_TARGET_TYPE } from "./contract";
 import { inspectAccountMemoryDeletionResiduals } from "./handler";
-import type {
-  AccountMemoryDeletionAdvance,
-  AccountMemoryDeletionHook
-} from "./registry";
+
+export type AccountMemoryDeletionAdvance = Readonly<{
+  admitted: boolean;
+  readyForUserDeletion: boolean;
+}>;
+
+export type AccountMemoryDeletionHook = Readonly<{
+  advance: (
+    tx: Prisma.TransactionClient,
+    input: Readonly<{ now: Date; userId: string }>
+  ) => Promise<AccountMemoryDeletionAdvance>;
+  kick: () => void;
+}>;
 
 type AccountDeletionRow = Readonly<{
   id: string;
