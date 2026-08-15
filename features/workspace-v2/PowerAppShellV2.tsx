@@ -8,14 +8,12 @@ import {
 } from "@/components/app-shell/attachmentLimitUsage";
 import { reconcileCurrentComposerAttachments } from "@/components/app-shell/attachmentReconciliation";
 import {
-  useComposerControlStore,
-  type ComposerControlSnapshot
+  useComposerControlStore
 } from "@/components/app-shell/composerControlStore";
 import {
   chatIdFromComposerSessionKey,
   composerSessionKey,
   composerSessionModeFromKey,
-  folderIdFromComposerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
   useComposerSessionStore,
@@ -74,16 +72,14 @@ import {
   useRunSurfaceStore
 } from "@/components/app-shell/runSurfaceStore";
 import {
-  normalizeThreadStatus,
   sessionExpiredLoginHref,
   shellFetch,
   subscribeToSessionExpired
 } from "@/components/app-shell/shellApi";
-import { errorMessage, responseErrorMessage } from "@/components/app-shell/shellFormatting";
+import { errorMessage } from "@/components/app-shell/shellFormatting";
 import {
   clearSessionExpiredDraft,
-  rememberSessionExpiredDraft,
-  storedSessionExpiredDraft
+  rememberSessionExpiredDraft
 } from "@/components/app-shell/shellStorage";
 import type { SettingsMutationCoordinator } from "@/components/app-shell/settingsMutationCoordinator";
 import {
@@ -129,81 +125,23 @@ import {
   useThreadStore
 } from "@/components/app-shell/threadStore";
 import type {
-  Catalog,
   CatalogModel,
   ChatDetail,
   WorkspaceChatSummary,
-  Notice,
-  ThreadMessage
+  Notice
 } from "@/components/app-shell/types";
-import { decodeCatalogResponse } from "@/lib/contracts/catalog";
-import {
-  decodeChatBranchesResponse,
-  type ChatBranchGraphWire
-} from "@/lib/contracts/chats";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  resolveModelControlDefaults,
-  resolvePreferredSearchPlan,
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
+import { useBranchGraphController } from "./useBranchGraphController";
+import { useWorkspaceBootstrapController } from "./useWorkspaceBootstrapController";
 
-export function workspaceDefaultControlsFingerprint(state: ComposerControlSnapshot): string {
-  return JSON.stringify({
-    backgroundMode: state.backgroundMode,
-    maxOutputTokens: state.maxOutputTokens,
-    knowledgePlanSource: state.knowledgePlanSource,
-    reasoningEffort: state.reasoningEffort,
-    reasoningMode: state.reasoningMode,
-    selectedAssistantId: state.selectedAssistant?.id ?? null,
-    selectedKnowledgeBaseIds: state.selectedKnowledgeBaseIds,
-    selectedModelId: state.selectedModelId,
-    selectedProvider: state.selectedProvider,
-    selectedSearchOptionIds: state.selectedSearchOptionIds,
-    searchPlanMode: state.searchPlanMode,
-    streamMode: state.streamMode,
-    temperature: state.temperature
-  });
-}
-
-type BranchGraphState = {
-  activeLeafId: string | null;
-  chatId: string;
-  error: string | null;
-  graph: ChatBranchGraphWire | null;
-  loading: boolean;
-  messages: ThreadMessage[] | null;
-  snapshotUpdatedAt: string | null;
-};
-
-export function runCatalogLoadDeduped<T>({
-  getLoadedCatalog,
-  load,
-  requestRef
-}: {
-  getLoadedCatalog(): T | null;
-  load(): Promise<T | null>;
-  requestRef: { current: Promise<T | null> | null };
-}): Promise<T | null> {
-  const loadedCatalog = getLoadedCatalog();
-  if (loadedCatalog) {
-    return Promise.resolve(loadedCatalog);
-  }
-  if (requestRef.current) {
-    return requestRef.current;
-  }
-
-  const request = load();
-  requestRef.current = request;
-  const clear = () => {
-    if (requestRef.current === request) {
-      requestRef.current = null;
-    }
-  };
-  void request.then(clear, clear);
-  return request;
-}
+export {
+  runCatalogLoadDeduped,
+  workspaceDefaultControlsFingerprint
+} from "./useWorkspaceBootstrapController";
 
 export function PowerAppShellV2({
   accountId,
@@ -240,8 +178,6 @@ export function PowerAppShellV2({
     deactivateMemorySettings();
   }, [accountId]);
   const activeThread = useThreadStore((state) => selectThreadSnapshot(state, activeChatId));
-  const [branchGraph, setBranchGraph] = useState<BranchGraphState | null>(null);
-  const branchGraphRequestRef = useRef(0);
   const activeRunSurface = useRunSurfaceStore((state) => selectRunSurface(state, activeChatId));
   const activeThreadHistory = threadHistoryState(activeThread);
   const renderActiveLeafId = useMemo(
@@ -357,8 +293,6 @@ export function PowerAppShellV2({
   const pendingControlDefaultsRef = useRef<{ draft: SavedControlDraft; model: CatalogModel } | null>(null);
   const pendingControlDefaultsTimerRef = useRef<number | null>(null);
   const settingsMutationCoordinatorRef = useRef<SettingsMutationCoordinator | null>(null);
-  const catalogLoadPromiseRef = useRef<Promise<Catalog | null> | null>(null);
-  const shellMountedRef = useRef(true);
   const workspaceRefreshPromiseRef = useRef<Promise<ChatDetail | null> | null>(null);
   const sessionExpiredHandledRef = useRef(false);
 
@@ -432,6 +366,12 @@ export function PowerAppShellV2({
     selectedModelId,
     selectedProvider,
     visibleMessages
+  });
+  const { branchGraph, loadBranchGraph } = useBranchGraphController({
+    activeChatId,
+    activeChatStreaming,
+    branchDrawerOpen: shellOverlays.branches.open,
+    chats
   });
 
   const composerTemporary = activeChat
@@ -653,94 +593,6 @@ export function PowerAppShellV2({
     await loadEarlierMessagesPage(sourceChatId);
   });
 
-  const loadBranchGraph = useEventCallback(async () => {
-    const chatId = activeChatId;
-    if (!chatId) return;
-    const requestGeneration = ++branchGraphRequestRef.current;
-    setBranchGraph({
-      activeLeafId: null,
-      chatId,
-      error: null,
-      graph: null,
-      loading: true,
-      messages: null,
-      snapshotUpdatedAt: null
-    });
-    try {
-      const response = await shellFetch(`/api/chats/${chatId}/branches`);
-      if (!response.ok) {
-        throw new Error(
-          await responseErrorMessage(response, `chat_branches_failed_${response.status}`)
-        );
-      }
-      const decoded = decodeChatBranchesResponse(await response.json());
-      if (!decoded) throw new Error("chat_branches_malformed");
-      if (
-        branchGraphRequestRef.current !== requestGeneration ||
-        useWorkspaceStore.getState().activeChatId !== chatId
-      ) return;
-      setBranchGraph({
-        activeLeafId: decoded.branchGraph.activeLeafMessageId,
-        chatId,
-        error: null,
-        graph: decoded.branchGraph,
-        loading: false,
-        messages: decoded.branchGraph.nodes.map((node) => ({
-          content: node.preview,
-          id: node.id,
-          parentMessageId: node.parentMessageId,
-          role: node.role,
-          status: normalizeThreadStatus(node.status)
-        })),
-        snapshotUpdatedAt: decoded.branchGraph.snapshotUpdatedAt
-      });
-    } catch (error) {
-      if (
-        branchGraphRequestRef.current === requestGeneration &&
-        useWorkspaceStore.getState().activeChatId === chatId
-      ) {
-        setBranchGraph({
-          activeLeafId: null,
-          chatId,
-          error: errorMessage(error),
-          graph: null,
-          loading: false,
-          messages: null,
-          snapshotUpdatedAt: null
-        });
-      }
-    }
-  });
-
-  useEffect(() => {
-    if (!activeChatId) return;
-    const summary = chats.find((chat) => chat.id === activeChatId);
-    if (!summary) return;
-    const branchDrawerOpen = shellOverlays.branches.open;
-    // Beyond the explicit Branch drawer, the per-message ‹N/M› version pager
-    // needs the compact branch graph for any saved chat with committed
-    // messages, so the graph stays current per (chat, updatedAt) revision.
-    // A live stream defers background refresh until settlement bumps
-    // `updatedAt`.
-    if (!branchDrawerOpen && (summary.messageCount === 0 || activeChatStreaming)) {
-      return;
-    }
-    const current = branchGraph?.chatId === activeChatId ? branchGraph : null;
-    if (current?.loading || current?.error || (
-      current?.messages &&
-      current.snapshotUpdatedAt === summary.updatedAt
-    )) {
-      return;
-    }
-    void loadBranchGraph();
-  }, [
-    activeChatId,
-    activeChatStreaming,
-    branchGraph,
-    chats,
-    loadBranchGraph,
-    shellOverlays.branches.open
-  ]);
 
   const retryActiveChatDetail = useEventCallback(() => {
     const chat = chats.find((candidate) => candidate.id === activeChatId);
@@ -749,88 +601,24 @@ export function PowerAppShellV2({
     }
   });
 
-  const loadCatalog = useEventCallback((): Promise<Catalog | null> => {
-    return runCatalogLoadDeduped({
-      getLoadedCatalog: () => useWorkspaceStore.getState().catalog,
-      load: async () => {
-        setCatalogError(null);
-        try {
-          const response = await shellFetch("/api/me/catalog");
-          if (!response.ok) {
-            throw new Error("catalog_unavailable");
-          }
-
-          const nextCatalog = decodeCatalogResponse(await response.json());
-          if (!nextCatalog) {
-            throw new Error("catalog_malformed");
-          }
-
-          if (!shellMountedRef.current) {
-            return null;
-          }
-
-          const defaultModel =
-            nextCatalog.models.find(
-              (model) =>
-                model.provider === nextCatalog.defaults.provider && model.modelId === nextCatalog.defaults.modelId
-            );
-          setCatalog(nextCatalog);
-          setCatalogError(null);
-          setSelectedProvider(defaultModel?.provider ?? "", "system");
-          setSelectedModelId(defaultModel?.modelId ?? "", "system");
-          const defaultSearchPlan = resolvePreferredSearchPlan(
-            nextCatalog.defaults.searchPlan,
-            nextCatalog.searchStrategies
-          );
-          setSelectedSearchPlan(defaultSearchPlan.optionIds, defaultSearchPlan.mode, "system");
-          setShowCitations(nextCatalog.defaults.showCitations);
-          setShowReasoningBlocks(nextCatalog.defaults.showReasoningBlocks);
-          if (defaultModel) {
-            const defaults = resolveModelControlDefaults(defaultModel, nextCatalog.defaults.controlValues);
-            applyControlDefaults(defaults);
-          }
-          return nextCatalog;
-        } catch (error) {
-          if (shellMountedRef.current) {
-            setCatalogError(errorMessage(error));
-          }
-          return null;
-        }
-      },
-      requestRef: catalogLoadPromiseRef
-    });
-  });
-  const refreshWorkspaceEvent = useEventCallback(refreshWorkspace);
-  const activateBlankWorkspaceEvent = useEventCallback(activateBlankWorkspace);
-  const retryWorkspace = useEventCallback(() =>
-    refreshWorkspaceEvent(useWorkspaceStore.getState().activeChatId, {
-      catalogOverride: useWorkspaceStore.getState().catalog
-    })
-  );
-  const retryCatalog = useEventCallback(async () => {
-    if (useWorkspaceStore.getState().catalog) {
-      return;
-    }
-
-    const loadedCatalog = await loadCatalog();
-    if (!loadedCatalog || !shellMountedRef.current) {
-      return;
-    }
-
-    const activeChatIdBeforeRefresh = useWorkspaceStore.getState().activeChatId;
-    const controlsBeforeRefresh = workspaceDefaultControlsFingerprint(useComposerControlStore.getState());
-    const pendingWorkspaceRefresh = workspaceRefreshPromiseRef.current;
-    await refreshWorkspaceEvent(activeChatIdBeforeRefresh, {
-      catalogOverride: loadedCatalog
-    });
-    if (
-      pendingWorkspaceRefresh &&
-      shellMountedRef.current &&
-      useWorkspaceStore.getState().activeChatId === activeChatIdBeforeRefresh &&
-      workspaceDefaultControlsFingerprint(useComposerControlStore.getState()) === controlsBeforeRefresh
-    ) {
-      reapplyActiveChatDefaults(loadedCatalog);
-    }
+  const {
+    activateBlankWorkspaceEvent,
+    retryCatalog,
+    retryWorkspace
+  } = useWorkspaceBootstrapController({
+    accountEmail,
+    activateBlankWorkspace,
+    applyControlDefaults,
+    reapplyActiveChatDefaults,
+    refreshWorkspace,
+    setCatalog,
+    setCatalogError,
+    setSelectedModelId,
+    setSelectedProvider,
+    setSelectedSearchPlan,
+    setShowCitations,
+    setShowReasoningBlocks,
+    workspaceRefreshPromiseRef
   });
 
   const knowledgeLibraryActions = useMemo(() => createKnowledgeLibraryActions(), []);
@@ -886,63 +674,6 @@ export function PowerAppShellV2({
     void knowledgeLibraryActions.refreshList();
   }, [knowledgeLibraryActions]);
 
-  useEffect(() => {
-    shellMountedRef.current = true;
-
-    async function bootstrap() {
-      const recoveredDraft = storedSessionExpiredDraft();
-      const ownedRecoveredDraft = recoveredDraft?.accountEmail === accountEmail
-        ? recoveredDraft
-        : null;
-      if (recoveredDraft && !ownedRecoveredDraft) {
-        clearSessionExpiredDraft();
-      }
-      const recoveredChatId = ownedRecoveredDraft
-        ? chatIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey)
-        : null;
-      const loadedCatalog = await loadCatalog();
-      if (shellMountedRef.current) {
-        await refreshWorkspaceEvent(
-          recoveredChatId ?? useWorkspaceStore.getState().activeChatId,
-          {
-            catalogOverride: loadedCatalog
-          }
-        );
-      }
-      if (!shellMountedRef.current || !ownedRecoveredDraft) {
-        return;
-      }
-
-      const recoveredFolderId = folderIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey);
-      if (recoveredFolderId) {
-        if (!useWorkspaceStore.getState().folders.some((folder) => folder.id === recoveredFolderId)) {
-          clearSessionExpiredDraft();
-          return;
-        }
-        activateBlankWorkspaceEvent(recoveredFolderId);
-      } else if (!recoveredChatId) {
-        activateBlankWorkspaceEvent();
-      } else if (!useWorkspaceStore.getState().chats.some((chat) => chat.id === recoveredChatId)) {
-        clearSessionExpiredDraft();
-        return;
-      }
-
-      const composerState = useComposerSessionStore.getState();
-      const target = selectComposerSession(composerState, ownedRecoveredDraft.sessionKey);
-      if (!target.draft && !target.pendingSend && !target.pendingEdit) {
-        composerState.updateSession(ownedRecoveredDraft.sessionKey, {
-          draft: ownedRecoveredDraft.draft
-        });
-      }
-      clearSessionExpiredDraft();
-    }
-
-    void bootstrap();
-
-    return () => {
-      shellMountedRef.current = false;
-    };
-  }, [accountEmail, activateBlankWorkspaceEvent, loadCatalog, refreshWorkspaceEvent]);
 
   const { commandItems, runCommand } = useCommandPaletteActions({
     activateChat,
