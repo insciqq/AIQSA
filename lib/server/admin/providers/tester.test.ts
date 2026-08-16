@@ -61,6 +61,23 @@ function discovery(overrides: Partial<OpenRouterDiscoveryClient> = {}): OpenRout
   };
 }
 
+function structuredChatResponse() {
+  return new Response(JSON.stringify({
+    choices: [{
+      finish_reason: "stop",
+      message: {
+        content: JSON.stringify({
+          count: 2,
+          label: "AIQSA",
+          ready: true,
+          tool_ids: ["alpha", "beta"]
+        }),
+        role: "assistant"
+      }
+    }]
+  }), { headers: { "content-type": "application/json" }, status: 200 });
+}
+
 describe("admin provider draft tester", () => {
   it("checks embedding deployments against the OpenRouter embedding catalog", async () => {
     const listModels = vi.fn<OpenRouterDiscoveryClient["listModels"]>(async () => []);
@@ -181,7 +198,8 @@ describe("admin provider draft tester", () => {
             tag: "anthropic"
           }];
         }
-      })
+      }),
+      createFetch: () => async () => structuredChatResponse()
     });
     const selected = input({
       model: {
@@ -198,9 +216,35 @@ describe("admin provider draft tester", () => {
         detail: "ok",
         method: "openrouter_account_catalog",
         selectedProviders: ["Anthropic"],
+        structuredOutput: {
+          adapterKind: "openrouter_chat_completions",
+          probeVersion: 2,
+          upstreamModelId: "vendor/model",
+          verified: true
+        },
         upstreamModelId: "vendor/model"
       },
       status: "available"
+    });
+  });
+
+  it("rejects an OpenRouter backend that ignores strict response_format", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{
+        finish_reason: "stop",
+        message: { content: "ordinary free-form reply", role: "assistant" }
+      }]
+    }), { headers: { "content-type": "application/json" }, status: 200 }));
+    const providerTester = createAdminProviderDraftTester({
+      createDiscoveryClient: () => discovery(),
+      createFetch: () => fetchFn
+    });
+
+    await expect(providerTester.test(input())).rejects.toThrow("structured_output_invalid");
+    const [, request] = fetchFn.mock.calls[0] ?? [];
+    expect(JSON.parse(String(request?.body))).toMatchObject({
+      provider: { require_parameters: true },
+      response_format: { json_schema: { strict: true }, type: "json_schema" }
     });
   });
 
@@ -293,13 +337,7 @@ describe("admin provider draft tester", () => {
   });
 
   it("gives an OpenRouter reasoning diagnostic the standard output budget", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
-      choices: [{ finish_reason: "stop", message: { content: "private output", role: "assistant" } }],
-      usage: { completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 }
-    }), {
-      headers: { "content-type": "application/json" },
-      status: 200
-    }));
+    const fetchFn = vi.fn<typeof fetch>(async () => structuredChatResponse());
     const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
     const openRouter = input({
       mode: "tiny_generation",
@@ -326,8 +364,9 @@ describe("admin provider draft tester", () => {
     });
     const [, request] = fetchFn.mock.calls[0] ?? [];
     expect(JSON.parse(String(request?.body))).toMatchObject({
-      max_completion_tokens: 1_000,
-      reasoning: { effort: "medium", enabled: true },
+      max_completion_tokens: 128,
+      provider: { require_parameters: true },
+      response_format: { json_schema: { strict: true }, type: "json_schema" },
       stream: false
     });
   });
@@ -338,7 +377,18 @@ describe("admin provider draft tester", () => {
   ] as const)("uses the standard diagnostic output budget for %s", async (adapterKind, providerFamily) => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       id: "response-1",
-      output: [{ content: [{ text: "private output", type: "output_text" }], type: "message" }],
+      output: [{
+        content: [{
+          text: JSON.stringify({
+            count: 2,
+            label: "AIQSA",
+            ready: true,
+            tool_ids: ["alpha", "beta"]
+          }),
+          type: "output_text"
+        }],
+        type: "message"
+      }],
       status: "completed",
       usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 }
     }), {
@@ -373,10 +423,10 @@ describe("admin provider draft tester", () => {
     expect(endpoint).toBe("https://responses.example.test/v1/responses");
     expect(JSON.parse(String(request?.body))).toMatchObject({
       background: false,
-      max_output_tokens: 1_000,
-      reasoning: { effort: "none" },
+      max_output_tokens: 128,
       store: false,
-      stream: false
+      stream: false,
+      text: { format: { strict: true, type: "json_schema" } }
     });
   });
 

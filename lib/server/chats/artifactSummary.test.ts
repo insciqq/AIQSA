@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { summarizeMessageRunArtifacts } from "./prismaRepository";
+import {
+  summarizeMessageRunArtifacts,
+  summarizeMessageRunToolActivity
+} from "./prismaRepository";
 
 describe("summarizeMessageRunArtifacts", () => {
   it("projects only direct citations, Sources, and Reasoning", () => {
@@ -178,5 +181,91 @@ describe("summarizeMessageRunArtifacts", () => {
     };
 
     expect(summarizeMessageRunArtifacts(run)).toBeNull();
+  });
+});
+
+describe("summarizeMessageRunToolActivity", () => {
+  it("projects ordered safe labels, status, duration, and an exhausted round warning", () => {
+    const activity = summarizeMessageRunToolActivity({
+      errorPayload: null,
+      normalizedRequest: {
+        mcp: {
+          tools: [{
+            namespacedName: "mcp_aws_search_123",
+            originalName: "search_documentation",
+            serverName: "AWS Documentation"
+          }]
+        },
+        toolBudgets: { maxToolCalls: 20, maxToolRounds: 1 }
+      },
+      status: "complete",
+      toolCalls: [
+        {
+          completedAt: new Date("2026-08-17T00:00:00.120Z"),
+          ordinal: 0,
+          roundIndex: 1,
+          startedAt: new Date("2026-08-17T00:00:00.000Z"),
+          state: "complete",
+          toolName: "find_tools"
+        },
+        {
+          completedAt: new Date("2026-08-17T00:00:00.500Z"),
+          ordinal: 1,
+          roundIndex: 1,
+          startedAt: new Date("2026-08-17T00:00:00.200Z"),
+          state: "error",
+          toolName: "mcp_aws_search_123"
+        }
+      ]
+    });
+
+    expect(activity).toEqual({
+      calls: [
+        {
+          durationMs: 120,
+          round: 1,
+          serverName: "Auto tools",
+          status: "complete",
+          toolName: "find_tools"
+        },
+        {
+          durationMs: 300,
+          round: 1,
+          serverName: "AWS Documentation",
+          status: "error",
+          toolName: "search_documentation"
+        }
+      ],
+      warning: { kind: "rounds", limit: 1 }
+    });
+    expect(JSON.stringify(activity)).not.toMatch(/arguments|result|namespacedName|mcp_aws/iu);
+  });
+
+  it("retains a call-limit warning when the rejected batch was not persisted", () => {
+    expect(summarizeMessageRunToolActivity({
+      errorPayload: { code: "tool_call_limit_exceeded" },
+      normalizedRequest: { toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } },
+      status: "error",
+      toolCalls: []
+    })).toEqual({
+      calls: [],
+      warning: { kind: "calls", limit: 20 }
+    });
+  });
+
+  it("never falls back to an internal MCP namespace", () => {
+    expect(summarizeMessageRunToolActivity({
+      errorPayload: null,
+      normalizedRequest: {},
+      status: "complete",
+      toolCalls: [{
+        completedAt: null,
+        ordinal: 0,
+        roundIndex: 1,
+        startedAt: null,
+        state: "running",
+        toolName: "mcp_private_internal_tool_0123456789"
+      }]
+    })?.calls[0]?.toolName).toBe("MCP tool");
   });
 });

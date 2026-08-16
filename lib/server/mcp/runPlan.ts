@@ -2,14 +2,16 @@ import { hashCanonicalMcpValue } from "./definitions";
 import {
   MCP_RUN_PLAN_LIMITS,
   type McpCredentialSource,
-  type McpReadiness
+  type McpReadiness,
+  type McpToolArgumentInventoryEntry,
+  type McpToolInventoryEntry
 } from "@/lib/contracts/mcp";
 import type { McpRuntimeInventoryTool } from "./runtimeCoordinator";
 
 const INVENTORY_FRESH_MS = 5 * 60_000;
 
 export type McpRunPlanRecord = {
-  catalogTools?: { description: string | null; name: string; title?: string }[];
+  catalogTools?: McpToolInventoryEntry[];
   credentialSources: McpCredentialSource[];
   enabled: boolean;
   errorCode: string | null;
@@ -23,6 +25,7 @@ export type McpRunPlanRecord = {
   revisionId: string;
   serverId: string;
   serverDescription?: string;
+  serverInstructions?: string;
   serverName: string;
 };
 
@@ -40,6 +43,7 @@ export type McpRunPlanTool = McpRuntimeInventoryTool & {
 };
 
 export type McpCapabilityCatalogTool = {
+  arguments?: McpToolArgumentInventoryEntry[];
   description: string | null;
   namespacedName: string;
   originalName: string;
@@ -48,6 +52,7 @@ export type McpCapabilityCatalogTool = {
 
 export type McpCapabilityCatalogServer = {
   description: string;
+  instructions?: string;
   namespace: string;
   revisionId: string;
   serverId: string;
@@ -63,16 +68,16 @@ export type McpCapabilityCatalog = {
 
 export type McpDiscoveryEpoch = {
   epoch: number;
-  query: string;
+  goal: string;
+  modelRunToolCallId: string;
   roundIndex: number;
-  toolNames: string[];
+  toolIds: string[];
 };
 
 export type McpDiscoveryState = {
   catalog: McpCapabilityCatalog;
   epochs: McpDiscoveryEpoch[];
-  maxActiveTools: number;
-  version: 1;
+  version: 2;
 };
 
 export type McpRunPlanSnapshot = {
@@ -162,11 +167,13 @@ export function buildMcpCapabilityCatalog(
     servers: records
       .map((record) => ({
         description: record.serverDescription ?? "",
+        instructions: record.serverInstructions ?? "",
         namespace: record.namespace,
         revisionId: record.revisionId,
         serverId: record.serverId,
         serverName: record.serverName,
         tools: (record.catalogTools ?? []).map((tool) => ({
+          arguments: tool.arguments ?? [],
           description: tool.description,
           namespacedName: namespacedMcpToolName(record.namespace, tool.name),
           originalName: tool.name,

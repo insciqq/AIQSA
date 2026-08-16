@@ -118,6 +118,11 @@ describe("provider runtime factory", () => {
 
     expect(runtime.adapter).toBeDefined();
     expect(Boolean(runtime.searchAdapter)).toBe(adapterKind === "openrouter_chat_completions");
+    expect(Boolean(runtime.structuredOutputAdapter)).toBe([
+      "openai_responses_native",
+      "openai_responses_compatible",
+      "openrouter_chat_completions"
+    ].includes(adapterKind));
     expect(runtime.toolBridge?.supportsToolCalling({
       modelId: "upstream/model",
       provider: runtime.toolBridge.provider

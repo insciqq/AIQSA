@@ -31,12 +31,13 @@ import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import {
   MCP_FIND_TOOLS_NAME,
-  mcpCatalogToolsByNames,
-  mcpFindToolsArguments,
-  mcpFindToolsExecutionResult,
-  mcpFindToolsTool,
-  rankMcpCatalogTools
+  mcpFindToolsTool
 } from "../mcp/discovery";
+import {
+  executeDurableMcpDiscovery,
+  McpAutoDiscoveryUnavailableError
+} from "../mcp/durableDiscovery";
+import type { McpSemanticRouter } from "../mcp/router";
 import {
   mcpRunTools,
   mcpToolExecutionResult,
@@ -109,8 +110,7 @@ import { liveToolCallStatus, liveToolLoopStatus } from "./liveToolStatus";
 import { projectRunOutputArtifactEvent } from "./runOutputEvents";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
 import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
-
-const maxToolRounds = 3;
+import { toolRunBudgetsForRequest } from "./toolBudgets";
 
 const globalForRuns = globalThis as unknown as {
   __aiqsaActiveRunControllers?: Map<string, AbortController>;
@@ -219,6 +219,7 @@ export type RunExecutionInput = Readonly<{
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
     ): Promise<import("../mcp/runPlan").McpRunPlanResult>;
+    router?: McpSemanticRouter;
   }>;
   mcpRuntime?: Readonly<{
     callTool(input: {
@@ -299,7 +300,8 @@ function serializeChatUpdate(
       parentMessageId: message.parentMessageId,
       provider: message.provider,
       role: message.role,
-      status: message.status
+      status: message.status,
+      toolActivity: message.toolActivity ?? null
     }))
   } satisfies ChatUpdateDataWire;
 }
@@ -490,6 +492,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
   const abortController = new AbortController();
   const runId = input.created.runId;
   const normalizedRequest = input.prepared.normalizedRequest;
+  const toolBudgets = toolRunBudgetsForRequest(normalizedRequest);
   const memoryActionsRequested =
     normalizedRequest.memoryActionTools?.version === "model-driven-v2";
   const clientToolsEnabled = normalizedRequest.toolMode !== "none";
@@ -860,6 +863,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         let activeMcpSnapshot = normalizedRequest.mcp;
         let activeMcpDiscovery = normalizedRequest.mcpDiscovery;
         const materializeMcpTools = input.mcp?.materialize;
+        const mcpRouter = input.mcp?.router;
         const appendMcpDiscoveryEpoch = input.repository.appendMcpDiscoveryEpoch;
         if (activeMcpDiscovery && (!materializeMcpTools || !appendMcpDiscoveryEpoch)) {
           throw new RunPipelineError(
@@ -991,8 +995,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           bridge: toolBridge,
           budgets: {
             maxConcurrency: 4,
-            maxToolCalls: 16,
-            maxToolRounds
+            ...toolBudgets
           },
           executeTool: async (call, context) => {
               const persisted = persistedCalls.get(call.id);
@@ -1048,6 +1051,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               }
 
               let result: ToolExecutionResult;
+              let fatalToolError: Readonly<{
+                code: string;
+                fatal: true;
+                message: string;
+              }> | null = null;
               let externalReceipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
               try {
                 if (hasInvalidProviderToolArguments(call.arguments)) {
@@ -1135,77 +1143,42 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 if (isMcpDiscoveryCall(call.name)) {
                   result = await serializeMcpDiscovery(async () => {
                     const discovery = activeMcpDiscovery;
-                    const parsed = mcpFindToolsArguments(call.arguments);
-                    if (!discovery || !parsed || !materializeMcpTools ||
-                      !appendMcpDiscoveryEpoch) {
+                    if (!discovery || !materializeMcpTools || !appendMcpDiscoveryEpoch) {
                       throw new Error("mcp_discovery_arguments_invalid");
                     }
-                    const activeNames = new Set(
-                      (activeMcpSnapshot?.tools ?? []).map((tool) => tool.namespacedName)
-                    );
-                    const replay = discovery.epochs.find((epoch) =>
-                      epoch.roundIndex === context.round && epoch.query === parsed.query);
-                    if (replay) {
-                      const replayTools = mcpCatalogToolsByNames(
-                        discovery.catalog,
-                        replay.toolNames
-                      ).filter((tool) => activeNames.has(tool.namespacedName));
-                      if (replayTools.length !== replay.toolNames.length) {
-                        throw new Error("mcp_discovery_checkpoint_conflict");
-                      }
-                      return mcpFindToolsExecutionResult(call, replayTools);
-                    }
-                    const remaining = Math.max(
-                      0,
-                      discovery.maxActiveTools - activeNames.size
-                    );
-                    const ranked = remaining === 0
-                      ? []
-                      : rankMcpCatalogTools({
-                          activeToolNames: activeNames,
-                          catalog: discovery.catalog,
-                          limit: Math.min(parsed.limit, remaining),
-                          query: parsed.query
-                        });
-                    if (ranked.length === 0) {
-                      return mcpFindToolsExecutionResult(call, []);
-                    }
-                    const plan = await materializeMcpTools(
-                      input.userId,
-                      ranked.map((tool) => ({
-                        namespacedName: tool.namespacedName,
-                        revisionId: tool.revisionId,
-                        serverId: tool.serverId
-                      }))
-                    );
-                    if (!plan.ok) throw new Error(plan.code);
-                    const appended = await appendMcpDiscoveryEpoch({
-                      bindings: plan.bindings,
-                      query: parsed.query,
+                    const executed = await executeDurableMcpDiscovery({
+                      activeDiscovery: discovery,
+                      ...(activeMcpSnapshot ? { activeSnapshot: activeMcpSnapshot } : {}),
+                      appendEpoch: appendMcpDiscoveryEpoch,
+                      call,
+                      materialize: materializeMcpTools,
+                      modelRunToolCallId: claim.call.id,
+                      onUsage(attribution) {
+                        rememberReportedUsage(
+                          attribution.provider,
+                          attribution.modelId,
+                          attribution.usage
+                        );
+                      },
+                      request,
                       roundIndex: context.round,
+                      router: mcpRouter,
                       runId,
-                      snapshot: plan.snapshot,
+                      signal: context.signal,
                       userId: input.userId
                     });
-                    if (!appended) throw new Error("mcp_discovery_checkpoint_conflict");
-                    activeMcpSnapshot = appended.snapshot;
-                    activeMcpDiscovery = appended.discovery;
-                    normalizedRequest.mcp = appended.snapshot;
-                    normalizedRequest.mcpDiscovery = appended.discovery;
+                    activeMcpSnapshot = executed.snapshot;
+                    activeMcpDiscovery = executed.discovery;
+                    normalizedRequest.mcp = executed.snapshot;
+                    normalizedRequest.mcpDiscovery = executed.discovery;
                     const knownToolNames = new Set(tools.map((tool) => tool.name));
-                    for (const tool of mcpRunTools(appended.snapshot)) {
+                    for (const tool of mcpRunTools(executed.snapshot)) {
                       if (!knownToolNames.has(tool.name)) {
                         tools.push(tool);
                         knownToolNames.add(tool.name);
                       }
                     }
-                    const loadedNames = new Set(
-                      appended.snapshot.tools.map((tool) => tool.namespacedName)
-                    );
-                    return mcpFindToolsExecutionResult(
-                      call,
-                      ranked.filter((tool) => loadedNames.has(tool.namespacedName))
-                    );
+                    return executed.toolResult;
                   });
                 } else if (isKnowledgeCall(call.name)) {
                   result = await knowledgeExecutor!.execute(call, {
@@ -1274,13 +1247,22 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   ).catch(() => undefined);
                 }
                 if (signal.aborted || isAbortError(error)) throw error;
-                result = toolExecutionErrorResult(
-                  call,
-                  error,
-                  isKnowledgeCall(call.name)
-                    ? "Knowledge"
-                    : isSearchCall(call.name) ? "Search" : "Tool"
-                );
+                if (error instanceof McpAutoDiscoveryUnavailableError) {
+                  fatalToolError = {
+                    code: error.code,
+                    fatal: true,
+                    message: error.message
+                  };
+                  result = toolExecutionErrorResult(call, error);
+                } else {
+                  result = toolExecutionErrorResult(
+                    call,
+                    error,
+                    isKnowledgeCall(call.name)
+                      ? "Knowledge"
+                      : isSearchCall(call.name) ? "Search" : "Tool"
+                  );
+                }
               }
               const storedResult = snapshotToolExecutionResult(
                 result,
@@ -1308,6 +1290,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   },
                   status: "error"
                 };
+              }
+              if (fatalToolError) {
+                return { error: fatalToolError, status: "error" };
               }
               return { status: "complete", value: result };
           },
@@ -1389,12 +1374,28 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               );
             }
             for (const call of calls) {
+              const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
+              const builtInServer = call.name === "find_tools"
+                ? "Auto tools"
+                : call.name === "retrieve_knowledge"
+                  ? "Knowledge"
+                  : call.name.includes("memory")
+                    ? "Memory"
+                    : call.name.startsWith("search_engine_")
+                      ? "Web search"
+                      : undefined;
               await emit(
                 controller,
                 encoder,
                 input.repository,
                 runId,
-                liveToolCallStatus(modelToolCall(call))
+                liveToolCallStatus(modelToolCall(call), {
+                  round,
+                  ...(route ? {
+                    serverName: route.tool.serverName,
+                    toolName: route.originalName
+                  } : builtInServer ? { serverName: builtInServer } : {})
+                })
               );
             }
           },

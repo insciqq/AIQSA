@@ -101,6 +101,25 @@ describe("MCP safe fetch URL and address policy", () => {
 });
 
 describe("MCP safe fetch request and redirect behavior", () => {
+  it("honors cancellation while DNS resolution is still pending", async () => {
+    const controller = new AbortController();
+    let finishLookup!: (records: readonly McpResolvedAddress[]) => void;
+    const lookupHostname = vi.fn(() => new Promise<readonly McpResolvedAddress[]>((resolve) => {
+      finishLookup = resolve;
+    }));
+    const dispatch = vi.fn(async () => new Response("unexpected"));
+    const reason = new Error("provider_request_timed_out");
+    const operation = mcpSafeFetch("https://mcp.example.test/rpc", {
+      signal: controller.signal
+    }, { dispatch, lookupHostname });
+
+    await vi.waitFor(() => expect(lookupHostname).toHaveBeenCalledOnce());
+    controller.abort(reason);
+    await expect(operation).rejects.toBe(reason);
+    finishLookup([PUBLIC_IPV4]);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("pins DNS and preserves method, headers, body, and abort propagation", async () => {
     let captured: McpPinnedHttpRequest | null = null;
     const controller = new AbortController();

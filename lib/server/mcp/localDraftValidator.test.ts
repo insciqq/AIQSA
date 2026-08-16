@@ -47,9 +47,30 @@ function session(): McpRuntimeSession {
     listTools: vi.fn(async () => [{
       definitionHash: "b".repeat(64),
       description: "Runs the example operation",
-      inputSchema: { type: "object" },
-      name: "example.run"
-    }])
+      inputSchema: {
+        properties: {
+          project: {
+            description: "Project identifier",
+            type: ["string", "null"]
+          }
+        },
+        type: "object"
+      },
+      name: "example.run",
+      title: "Run example"
+    }]),
+    serverEvidence: () => ({
+      capabilities: {
+        completions: false,
+        logging: false,
+        prompts: null,
+        resources: null,
+        tasks: false,
+        tools: { listChanged: false }
+      },
+      implementation: { name: "example", version: "1.0.0" },
+      instructions: "Choose a project before running an operation."
+    })
   };
 }
 
@@ -135,6 +156,9 @@ describe("local MCP draft validation", () => {
     expect(outcome).toMatchObject({
       evidence: {
         materializer: "npx",
+        server: {
+          instructions: "Choose a project before running an operation."
+        },
         toolCount: 1,
         transport: "stdio"
       },
@@ -150,7 +174,16 @@ describe("local MCP draft validation", () => {
         sourceKind: "npm",
         toolhiveVersion: "v0.40.1"
       },
-      toolInventory: [{ description: "Runs the example operation", name: "example.run" }]
+      toolInventory: [{
+        arguments: [{
+          description: "Project identifier",
+          name: "project",
+          types: ["null", "string"]
+        }],
+        description: "Runs the example operation",
+        name: "example.run",
+        title: "Run example"
+      }]
     });
     expect(JSON.stringify(outcome)).not.toContain("super-secret");
     expect(active.close).toHaveBeenCalledTimes(1);

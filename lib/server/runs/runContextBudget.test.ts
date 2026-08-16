@@ -120,6 +120,126 @@ describe("provider request context budget", () => {
     expect(budgeted).toMatchObject({ error: { code: "context_too_large" }, ok: false });
   });
 
+  it("drops older turns while keeping the full Skill context directly before current user text", () => {
+    const skillText = "s".repeat(120);
+    const budgeted = applyProviderRequestContextBudget({
+      request: request({
+        content: { blocks: [{ text: "q".repeat(40), type: "text" }] },
+        context: {
+          messages: [
+            {
+              content: { blocks: [{ text: "h".repeat(240), type: "text" }] },
+              id: "history-user",
+              role: "user"
+            },
+            {
+              content: { blocks: [{ text: skillText, type: "text" }] },
+              id: "skill-context:current",
+              purpose: "skill_context",
+              role: "user"
+            },
+            {
+              content: { blocks: [{ text: "q".repeat(40), type: "text" }] },
+              id: "current",
+              role: "user"
+            }
+          ],
+          mode: "branch_path"
+        }
+      })
+    });
+
+    expect(budgeted.ok).toBe(true);
+    if (!budgeted.ok) throw new Error("unexpected budget rejection");
+    expect(budgeted.request.context?.messages.map(({ id }) => id)).toEqual([
+      "skill-context:current",
+      "current"
+    ]);
+    expect(budgeted.request.context?.messages[0]?.content).toEqual({
+      blocks: [{ text: skillText, type: "text" }]
+    });
+    expect(budgeted.contextTruncation).toMatchObject({ droppedMessages: 1, keptMessages: 2 });
+  });
+
+  it("rejects an irreducibly oversized Skill context without truncating it", () => {
+    const skillText = "s".repeat(400);
+    const budgeted = applyProviderRequestContextBudget({
+      request: request({
+        context: {
+          messages: [
+            {
+              content: { blocks: [{ text: skillText, type: "text" }] },
+              id: "skill-context:current",
+              purpose: "skill_context",
+              role: "user"
+            },
+            {
+              content: { blocks: [{ text: "question", type: "text" }] },
+              id: "current",
+              role: "user"
+            }
+          ],
+          mode: "branch_path"
+        }
+      })
+    });
+
+    expect(budgeted).toMatchObject({
+      error: {
+        code: "context_too_large",
+        message: expect.stringContaining("Remove a Skill")
+      },
+      ok: false
+    });
+    expect(skillText).toHaveLength(400);
+  });
+
+  it("truncates attachment text before considering the Skill context reducible", () => {
+    const skillText = "s".repeat(240);
+    const attachment = {
+      byteSize: 10_000,
+      extractedText: "a".repeat(2_000),
+      fileName: "notes.txt",
+      id: "attachment-1",
+      kind: "document",
+      metadata: {},
+      mimeType: "text/plain",
+      status: "ready"
+    };
+    const budgeted = applyProviderRequestContextBudget({
+      request: request({
+        attachmentIds: [attachment.id],
+        attachments: [attachment],
+        context: {
+          messages: [
+            {
+              content: { blocks: [{ text: skillText, type: "text" }] },
+              id: "skill-context:current",
+              purpose: "skill_context",
+              role: "user"
+            },
+            {
+              content: { blocks: [{ text: "question", type: "text" }] },
+              id: "current",
+              role: "user"
+            }
+          ],
+          mode: "branch_path"
+        },
+        modelCapabilities: { ...request().modelCapabilities, contextWindow: 200 }
+      })
+    });
+
+    expect(budgeted.ok).toBe(true);
+    if (!budgeted.ok) throw new Error("unexpected budget rejection");
+    expect(budgeted.request.attachments[0]?.extractedText).toContain(
+      "[truncated for model context]"
+    );
+    expect(budgeted.request.context?.messages[0]?.content).toEqual({
+      blocks: [{ text: skillText, type: "text" }]
+    });
+  });
+
   it("derives attachment text length from the selected model context window", () => {
     const attachment = {
       byteSize: 100_000,

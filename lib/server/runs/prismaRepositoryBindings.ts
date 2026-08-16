@@ -307,6 +307,7 @@ export async function insertAcceptedSkillRunBindings(
       INNER JOIN "SkillDefinition" AS definition
         ON definition."id" = revision."skillId"
        AND definition."archivedAt" IS NULL
+       AND definition."deletedAt" IS NULL
       WHERE run."id" = ${input.runId}
         AND run."userId" = ${input.userId}
         AND runner."status" = 'active'
@@ -316,7 +317,6 @@ export async function insertAcceptedSkillRunBindings(
             SELECT 1
             FROM "SkillPublication" AS publication
             WHERE publication."skillId" = definition."id"
-              AND publication."revisionId" = revision."id"
               AND (
                 publication."scope" = 'installation'
                 OR (
@@ -352,6 +352,7 @@ async function assertSkillRunProvenance(
        AND revision."id" = ${input.revisionId}
       WHERE definition."id" = ${input.skillId}
         AND definition."archivedAt" IS NULL
+        AND definition."deletedAt" IS NULL
       FOR SHARE OF definition
     `;
     const definition = definitions[0];
@@ -362,7 +363,6 @@ async function assertSkillRunProvenance(
       SELECT publication."id"
       FROM "SkillPublication" AS publication
       WHERE publication."skillId" = ${input.skillId}
-        AND publication."revisionId" = ${input.revisionId}
         AND publication."scope" = 'installation'
       ORDER BY publication."id"
       FOR SHARE OF publication
@@ -379,7 +379,6 @@ async function assertSkillRunProvenance(
         ON member_group."id" = membership."groupId"
        AND member_group."archivedAt" IS NULL
       WHERE publication."skillId" = ${input.skillId}
-        AND publication."revisionId" = ${input.revisionId}
         AND publication."scope" = 'group'
       ORDER BY publication."id"
       FOR SHARE OF publication, membership, member_group
@@ -424,6 +423,7 @@ export async function assertCurrentSkillRunBindings(
       INNER JOIN "SkillDefinition" AS definition
         ON definition."id" = run_skill."skillId"
        AND definition."archivedAt" IS NULL
+       AND definition."deletedAt" IS NULL
       WHERE run_skill."modelRunId" = ${input.runId}
         AND run_skill."skillId" = ${binding.skillId}
         AND run_skill."revisionId" = ${binding.revisionId}
@@ -433,7 +433,6 @@ export async function assertCurrentSkillRunBindings(
             SELECT 1
             FROM "SkillPublication" AS publication
             WHERE publication."skillId" = run_skill."skillId"
-              AND publication."revisionId" = run_skill."revisionId"
               AND (
                 publication."scope" = 'installation'
                 OR (

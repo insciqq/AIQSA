@@ -18,6 +18,11 @@ import {
   type ProviderExecutionSnapshot
 } from "../../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../../providers/types";
+import {
+  supportsStructuredOutputAdapter,
+  type ProviderStructuredOutputAdapter
+} from "../../providers/structuredOutput";
+import { structuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 
 export type AdminProviderDraftTestMode = "account_catalog" | "tiny_generation";
 
@@ -103,14 +108,81 @@ function tinyGenerationRequest(input: AdminProviderDraftTesterInput): ProviderRu
   };
 }
 
+const structuredOutputProbeSchema = Object.freeze({
+  additionalProperties: false,
+  properties: {
+    count: { type: "integer" },
+    label: { minLength: 1, type: "string" },
+    ready: { type: "boolean" },
+    tool_ids: {
+      items: { enum: ["alpha", "beta"], type: "string" },
+      maxItems: 2,
+      type: "array",
+      uniqueItems: true
+    }
+  },
+  required: ["ready", "count", "label", "tool_ids"],
+  type: "object"
+});
+
+function validStructuredOutputProbe(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value).sort();
+  return keys.length === 4 && keys[0] === "count" && keys[1] === "label" &&
+    keys[2] === "ready" && keys[3] === "tool_ids" &&
+    typeof value.ready === "boolean" &&
+    Number.isInteger(value.count) && typeof value.label === "string" &&
+    value.label.trim().length > 0 && Array.isArray(value.tool_ids) &&
+    value.tool_ids.length === 2 && value.tool_ids[0] === "alpha" &&
+    value.tool_ids[1] === "beta";
+}
+
+function providerRuntime(
+  input: AdminProviderDraftTesterInput,
+  options: TesterOptions
+) {
+  const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
+    configuration: input.connection
+  });
+  return createProviderRuntimeBinding({
+    options: { allowFake: false, fetchFn },
+    secret: input.secret,
+    snapshot: executionSnapshot(input)
+  });
+}
+
+async function runStructuredOutputProbe(
+  input: AdminProviderDraftTesterInput,
+  options: TesterOptions
+) {
+  const adapter: ProviderStructuredOutputAdapter | undefined =
+    providerRuntime(input, options).structuredOutputAdapter;
+  if (!adapter) throw new Error("structured_output_adapter_unsupported");
+  const output = await adapter.execute({
+    maxOutputTokens: 128,
+    name: "aiqsa_structured_output_probe",
+    schema: structuredOutputProbeSchema,
+    systemPrompt: "Return only the object required by the supplied strict JSON Schema.",
+    userPrompt: "Return ready=true, count=2, a non-empty label, and tool_ids=[alpha,beta]."
+  }, { signal: input.signal });
+  if (!validStructuredOutputProbe(output)) {
+    throw new Error("structured_output_probe_invalid");
+  }
+  const evidence = structuredOutputVerificationEvidence(
+    input.model.adapterKind,
+    input.model.upstreamModelId
+  );
+  if (!evidence) throw new Error("structured_output_adapter_unsupported");
+  return evidence;
+}
+
 async function runTinyGeneration(
   input: AdminProviderDraftTesterInput,
   options: TesterOptions
 ): Promise<AdminProviderDraftTestOutcome> {
-  const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
-    configuration: input.connection
-  });
   if (input.model.modelClass === "embedding") {
+    const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
+      configuration: input.connection
+    });
     await createOpenAICompatibleEmbeddingAdapter({
       connection: input.connection,
       model: input.model,
@@ -131,11 +203,20 @@ async function runTinyGeneration(
       status: "available"
     };
   }
-  const runtime = createProviderRuntimeBinding({
-    options: { allowFake: false, fetchFn },
-    secret: input.secret,
-    snapshot: executionSnapshot(input)
-  });
+  if (supportsStructuredOutputAdapter(input.model.adapterKind)) {
+    const structuredOutput = await runStructuredOutputProbe(input, options);
+    return {
+      evidence: {
+        detail: "ok",
+        method: "tiny_generation",
+        selectedProviders: input.model.openRouterRouting?.providers ?? [],
+        structuredOutput,
+        upstreamModelId: input.model.upstreamModelId
+      },
+      status: "available"
+    };
+  }
+  const runtime = providerRuntime(input, options);
   const stream = runtime.adapter.stream(tinyGenerationRequest(input), {
     signal: input.signal
   });
@@ -211,11 +292,16 @@ async function testOpenRouterCatalog(
     }
   }
 
+  const structuredOutput = input.model.modelClass === "answer"
+    ? await runStructuredOutputProbe(input, options)
+    : null;
+
   return {
     evidence: {
       detail: "ok",
       method: "openrouter_account_catalog",
       selectedProviders,
+      ...(structuredOutput ? { structuredOutput } : {}),
       upstreamModelId: input.model.upstreamModelId
     },
     status: "available"

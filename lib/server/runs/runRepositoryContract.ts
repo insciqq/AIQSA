@@ -2,7 +2,8 @@ import type {
   ChatContextStats,
   ChatUsageStats,
   ThreadArtifactSummary,
-  ThreadAssistantIdentity
+  ThreadAssistantIdentity,
+  ThreadToolActivity
 } from "../../contracts/chats";
 import type { CatalogAdapterKind } from "../../domain/catalog";
 import type { ModelRunStatus } from "../../contracts/runs";
@@ -130,6 +131,7 @@ export type RunChatUpdateRecord = {
     provider: string | null;
     role: string;
     status: string;
+    toolActivity?: ThreadToolActivity | null;
   }[];
 };
 
@@ -331,7 +333,8 @@ export type RunRepository = {
   admitPreparingRun(input: PreparingRunAdmissionInput): Promise<PreparingRunAdmissionResult>;
   appendMcpDiscoveryEpoch?(input: {
     bindings: readonly McpRunPlanBinding[];
-    query: string;
+    goal: string;
+    modelRunToolCallId: string;
     roundIndex: number;
     runId: string;
     snapshot: McpRunPlanSnapshot;

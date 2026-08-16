@@ -88,6 +88,15 @@ export type AdminProviderTestEvidence = {
   detail: "model_missing" | "ok" | "route_missing";
   method: "models_catalog" | "openrouter_account_catalog" | "tiny_generation";
   selectedProviders: string[];
+  structuredOutput?: {
+    adapterKind:
+      | "openai_responses_compatible"
+      | "openai_responses_native"
+      | "openrouter_chat_completions";
+    probeVersion: 2;
+    upstreamModelId: string;
+    verified: true;
+  };
   upstreamModelId: string;
 };
 

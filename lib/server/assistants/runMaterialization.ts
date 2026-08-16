@@ -21,6 +21,7 @@ export type AssistantRunMaterialization = {
   revisionNumber: number;
   runControls: AssistantRunControls;
   searchPlan: SearchPlan;
+  skillIds: string[];
   systemPrompt: string;
 };
 

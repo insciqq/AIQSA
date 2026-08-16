@@ -60,6 +60,7 @@ export type ThreadMessage = {
   role: "assistant" | "user";
   runId?: string | null;
   status: "cancelled" | "complete" | "error" | "streaming";
+  toolActivity?: ThreadToolActivity | null;
 };
 
 /**
@@ -79,6 +80,24 @@ export type ThreadArtifactSummary = {
   memoryAction?: MemoryActionFeedback;
   reasoningText: string[];
   sources: ThreadSearchSource[];
+};
+
+export type ThreadToolActivity = {
+  calls: ThreadToolActivityCall[];
+  warning?: ThreadToolBudgetWarning;
+};
+
+export type ThreadToolActivityCall = {
+  durationMs?: number;
+  round: number;
+  serverName?: string;
+  status: "cancelled" | "complete" | "error" | "running";
+  toolName: string;
+};
+
+export type ThreadToolBudgetWarning = {
+  kind: "calls" | "rounds";
+  limit: number;
 };
 
 export type ThreadKnowledgeCitation = {
@@ -168,6 +187,7 @@ export type ChatMessageWire = {
   provider: string | null;
   role: string;
   status: string;
+  toolActivity?: ThreadToolActivity | null;
 };
 
 export type WorkspaceChatSummaryWire = Omit<
@@ -746,6 +766,50 @@ function decodeThreadAssistantIdentity(value: unknown): ThreadAssistantIdentity 
   };
 }
 
+function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
+  if (!isRecord(value) || !Array.isArray(value.calls)) return null;
+  const calls: ThreadToolActivityCall[] = [];
+  for (const candidate of value.calls) {
+    if (!isRecord(candidate)) return null;
+    const toolName = boundedRequiredString(candidate.toolName, 160);
+    const serverName = candidate.serverName === undefined
+      ? undefined
+      : boundedRequiredString(candidate.serverName, 160);
+    const round = nonNegativeInteger(candidate.round);
+    const durationMs = candidate.durationMs === undefined
+      ? undefined
+      : nonNegativeInteger(candidate.durationMs);
+    const status = candidate.status === "cancelled" || candidate.status === "complete" ||
+      candidate.status === "error" || candidate.status === "running"
+      ? candidate.status
+      : null;
+    if (!toolName || round === null || round < 1 || !status ||
+      (candidate.serverName !== undefined && !serverName) ||
+      (candidate.durationMs !== undefined && durationMs === null)) return null;
+    calls.push({
+      ...(typeof durationMs === "number" ? { durationMs } : {}),
+      round,
+      ...(serverName ? { serverName } : {}),
+      status,
+      toolName
+    });
+  }
+
+  let warning: ThreadToolBudgetWarning | undefined;
+  if (value.warning !== undefined) {
+    if (!isRecord(value.warning) ||
+      (value.warning.kind !== "calls" && value.warning.kind !== "rounds") ||
+      nonNegativeInteger(value.warning.limit) === null || Number(value.warning.limit) < 1) {
+      return null;
+    }
+    warning = {
+      kind: value.warning.kind,
+      limit: Number(value.warning.limit)
+    };
+  }
+  return { calls, ...(warning ? { warning } : {}) };
+}
+
 function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   if (!isRecord(value)) {
     return null;
@@ -785,6 +849,13 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
       return null;
     }
   }
+  let toolActivity: ThreadToolActivity | null | undefined;
+  if (value.toolActivity === undefined || value.toolActivity === null) {
+    toolActivity = value.toolActivity;
+  } else {
+    toolActivity = decodeThreadToolActivity(value.toolActivity);
+    if (!toolActivity) return null;
+  }
   if (
     !id ||
     !createdAt ||
@@ -811,7 +882,8 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     parentMessageId,
     provider,
     role,
-    status
+    status,
+    ...(toolActivity !== undefined ? { toolActivity } : {})
   };
 }
 

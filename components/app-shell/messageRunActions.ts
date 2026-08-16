@@ -201,9 +201,7 @@ export function useMessageRunActions({
       controlDefaults: { ...buildControlDraft() },
       knowledgeBaseIds: [...selectedKnowledgeBaseIds],
       knowledgePlanSource,
-      mcpSelection: mcpSelection.mode === "selected"
-        ? { mode: "selected", serverIds: [...mcpSelection.serverIds] }
-        : { ...mcpSelection },
+      mcpSelection: { ...mcpSelection },
       model,
       modelId: selectedModelId,
       params: { ...buildParams() },
@@ -278,7 +276,10 @@ export function useMessageRunActions({
       // The server resolves the currently authorized revision at admission;
       // the request carries only the Assistant identity plus user content and
       // never an expanded client copy of the governed controls.
-      return { assistantId: snapshot.assistantId };
+      return {
+        assistantId: snapshot.assistantId,
+        ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {})
+      };
     }
 
     const effectiveSearchPlan = reconcileModelSearchPlan(

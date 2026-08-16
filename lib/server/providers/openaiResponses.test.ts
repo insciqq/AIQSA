@@ -154,6 +154,7 @@ describe("OpenAI Responses adapter", () => {
       "attachment_filename",
       "image_data_url",
       "pdf_base64",
+      "selected_skill_instructions",
       "provider_continuation_opaque_fields"
     ]);
     expect(preview.body.input.at(-1)?.content).toEqual([

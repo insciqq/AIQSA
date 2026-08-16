@@ -34,8 +34,7 @@ import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
 import type {
   ComposerConfig,
-  ComposerConfigKnowledgeBase,
-  ComposerConfigMcpServer
+  ComposerConfigKnowledgeBase
 } from "@/lib/contracts/composerConfig";
 import {
   useEffect,
@@ -97,13 +96,16 @@ export type ComposerV2Props = Readonly<{
   onToggleMcpServer?(serverId: string, enabled: boolean): void;
   onUploadFiles?(files: readonly File[]): Promise<void> | void;
   runId?: string | null;
-  selectedAssistant?: Pick<AssistantSummary, "id" | "name"> | null;
+  selectedAssistant?: (Pick<AssistantSummary, "id" | "name"> & {
+    includedSkills?: readonly { id: string; name: string }[];
+  }) | null;
   mcpSelection?: McpRunSelection;
   selectedKnowledgeBaseIds?: readonly string[];
   selectedModelId: string;
   selectedProvider: string;
   selectedSearchOptionIds?: readonly string[];
   selectedSkillIds?: readonly string[];
+  selectedSkills?: readonly { id: string; name: string }[];
   sending?: boolean;
   stopping?: boolean;
   uploading?: boolean;
@@ -216,32 +218,6 @@ function modelCapabilityLabels(model: CatalogModel): string[] {
   return labels;
 }
 
-function mcpAvailabilityLabel(server: ComposerConfigMcpServer): string {
-  const knownTools = `${server.knownToolCount} known tool${server.knownToolCount === 1 ? "" : "s"}`;
-  switch (server.readiness) {
-    case "ready":
-    case "idle":
-      return `${knownTools} · available on demand`;
-    case "authorizing":
-      return "Authorization in progress";
-    case "needs_authorization":
-      return "Authorization required in Settings";
-    case "reauthorization_required":
-      return "Reconnect in Settings";
-    case "needs_setup":
-      return "Setup required in Settings";
-    case "queued":
-    case "starting":
-      return "Starting on demand";
-    case "restarting":
-      return "Restarting";
-    case "unavailable":
-      return "Unavailable · review Settings";
-    case "disabled":
-      return "Disabled";
-  }
-}
-
 function focusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(
     'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]'
@@ -258,7 +234,8 @@ function CapabilityRow({
   icon,
   onClick,
   reason,
-  selected = false
+  selected = false,
+  selectionRole = "checkbox"
 }: Readonly<{
   children: ReactNode;
   disabled?: boolean;
@@ -266,13 +243,14 @@ function CapabilityRow({
   onClick?(): void;
   reason?: string | null;
   selected?: boolean;
+  selectionRole?: "checkbox" | "radio";
 }>) {
   return (
     <button
       className="v2-composer-capability-row v2-focusable"
       data-v2-composer-option="true"
       type="button"
-      role="menuitemcheckbox"
+      role={selectionRole === "radio" ? "menuitemradio" : "menuitemcheckbox"}
       aria-checked={selected}
       disabled={disabled}
       onClick={onClick}
@@ -330,6 +308,7 @@ export function ComposerV2({
   selectedProvider,
   selectedSearchOptionIds = [],
   selectedSkillIds = [],
+  selectedSkills = [],
   sending = false,
   stopping = false,
   uploading = false,
@@ -398,11 +377,14 @@ export function ComposerV2({
   const selectedKnowledgeNames = selectedKnowledgeBaseIds.map(
     (id) => knowledgeById.get(id)?.name ?? "unavailable"
   );
-  const enabledMcpServers = config?.mcpServers.filter((server) => server.enabled) ?? [];
-  const selectedMcpServerIds = mcpSelection.mode === "selected" ? mcpSelection.serverIds : [];
-  const selectedMcpSet = new Set(selectedMcpServerIds);
   const availableSkills = (config?.skills ?? []).filter((skill) => !skill.archived);
   const selectedSkillSet = new Set(selectedSkillIds);
+  const selectedSkillNames = selectedSkillIds.map((id) =>
+    selectedSkills.find((skill) => skill.id === id)?.name ??
+    availableSkills.find((skill) => skill.id === id)?.name ??
+    "Selected Skill"
+  );
+  const assistantSkills = selectedAssistant?.includedSkills ?? [];
 
   const groupedModels = useMemo(() => {
     const normalizedQuery = modelQuery.trim().toLocaleLowerCase();
@@ -620,26 +602,9 @@ export function ComposerV2({
     closeLayer();
   }
 
-  function selectMcpMode(mode: "auto" | "off" | "selected") {
+  function selectMcpMode(mode: McpRunSelection["mode"]) {
     if (!onSelectMcp) return;
-    if (mode !== "selected") {
-      onSelectMcp({ mode });
-      return;
-    }
-    const allowed = new Set(enabledMcpServers.map((server) => server.id));
-    const retained = selectedMcpServerIds.filter((id) => allowed.has(id));
-    const serverIds = retained.length > 0
-      ? retained
-      : enabledMcpServers.map((server) => server.id);
-    if (serverIds.length > 0) onSelectMcp({ mode: "selected", serverIds });
-  }
-
-  function toggleSelectedMcpServer(serverId: string) {
-    if (!onSelectMcp) return;
-    const serverIds = selectedMcpSet.has(serverId)
-      ? selectedMcpServerIds.filter((id) => id !== serverId)
-      : [...selectedMcpServerIds, serverId];
-    onSelectMcp(serverIds.length > 0 ? { mode: "selected", serverIds } : { mode: "auto" });
+    onSelectMcp({ mode });
   }
 
   function toggleSkill(skillId: string) {
@@ -693,6 +658,42 @@ export function ComposerV2({
               <button className="v2-focusable" type="button" onClick={onRemoveAssistant}>
                 Remove
               </button>
+            ) : null}
+          </div>
+        ) : null}
+        {selectedAssistant && (assistantSkills.length > 0 || selectedSkillNames.length > 0) ? (
+          <div className="v2-composer-skill-ledger" data-testid="composer-v2-skill-ledger">
+            {assistantSkills.length > 0 ? (
+              <div>
+                <strong>Included by Assistant</strong>
+                <ol>
+                  {assistantSkills.map((skill, index) => (
+                    <li key={skill.id}>{index + 1}. {skill.name}</li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
+            {selectedSkillNames.length > 0 ? (
+              <div>
+                <span className="v2-composer-skill-ledger-heading">
+                  <strong>Added manually</strong>
+                  {onOpenSkillLibrary ? (
+                    <button
+                      className="v2-focusable"
+                      disabled={activeRun}
+                      type="button"
+                      onClick={onOpenSkillLibrary}
+                    >
+                      Manage
+                    </button>
+                  ) : null}
+                </span>
+                <ol>
+                  {selectedSkillNames.map((name, index) => (
+                    <li key={selectedSkillIds[index]}>{index + 1}. {name}</li>
+                  ))}
+                </ol>
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -807,7 +808,7 @@ export function ComposerV2({
                 {!controlsLocked ? <UiV2Icon name="close" /> : null}
               </button>
             ) : null}
-            {!controlsLocked && mcpSelection.mode !== "off" && enabledMcpServers.length > 0 ? (
+            {!controlsLocked ? (
               <button
                 className="v2-composer-indicator v2-focusable"
                 type="button"
@@ -815,16 +816,16 @@ export function ComposerV2({
                 aria-label="Change MCP tool mode"
                 onClick={(event) => openLayer("capabilities", event.currentTarget)}
               >
-                <span aria-hidden="true" />Tools: {mcpSelection.mode === "auto"
-                  ? "Auto"
-                  : selectedMcpServerIds.length}
+                <span aria-hidden="true" />Tools: {mcpSelection.mode === "load_all"
+                  ? "Load all"
+                  : mcpSelection.mode === "off" ? "Off" : "Auto"}
               </button>
             ) : null}
             {selectedSkillIds.length > 0 ? (
               <button
                 className="v2-composer-indicator v2-focusable"
                 type="button"
-                disabled={activeRun || controlsLocked || !onOpenSkillLibrary}
+                disabled={activeRun || !onOpenSkillLibrary}
                 aria-label="Manage selected Skills"
                 onClick={onOpenSkillLibrary}
               >
@@ -1003,12 +1004,10 @@ export function ComposerV2({
                         key={skill.id}
                         icon="book"
                         selected={selected}
-                        disabled={controlsLocked || activeRun || atLimit || !onSelectSkillIds}
-                        reason={controlsLocked
-                          ? "Skills are selected in standard chat"
-                          : atLimit
-                            ? `Select up to ${SKILL_MAX_SELECTED} Skills`
-                            : skill.description || "Reusable text instructions"}
+                        disabled={activeRun || atLimit || !onSelectSkillIds}
+                        reason={atLimit
+                          ? `Select up to ${SKILL_MAX_SELECTED} Skills`
+                          : skill.description || "Reusable text instructions"}
                         onClick={() => toggleSkill(skill.id)}
                       >
                         {skill.name}
@@ -1046,61 +1045,36 @@ export function ComposerV2({
                         icon="tool"
                         selected={mcpSelection.mode === "auto"}
                         disabled={activeRun || !currentModel?.capabilities.toolCalling || !onSelectMcp}
-                        reason="Find and load only relevant tools during the run"
+                        reason={!currentModel?.capabilities.toolCalling
+                          ? "The current model cannot use tools; this mode is preserved"
+                          : "Find and load relevant enabled MCP tools when needed"}
+                        selectionRole="radio"
                         onClick={() => selectMcpMode("auto")}
                       >
                         Auto
                       </CapabilityRow>
                       <CapabilityRow
                         icon="tool"
-                        selected={mcpSelection.mode === "selected"}
-                        disabled={
-                          activeRun || !currentModel?.capabilities.toolCalling ||
-                          !onSelectMcp || enabledMcpServers.length === 0
-                        }
-                        reason={enabledMcpServers.length === 0
-                          ? "Enable an MCP server in settings first"
-                          : `${selectedMcpServerIds.length || enabledMcpServers.length} server${(selectedMcpServerIds.length || enabledMcpServers.length) === 1 ? "" : "s"} loaded explicitly`}
-                        onClick={() => selectMcpMode("selected")}
+                        selected={mcpSelection.mode === "load_all"}
+                        disabled={activeRun || !currentModel?.capabilities.toolCalling || !onSelectMcp}
+                        reason={!currentModel?.capabilities.toolCalling
+                          ? "The current model cannot use tools; this mode is preserved"
+                          : "Load every enabled MCP tool into the request immediately"}
+                        selectionRole="radio"
+                        onClick={() => selectMcpMode("load_all")}
                       >
-                        Selected
+                        Load all
                       </CapabilityRow>
                       <CapabilityRow
                         icon="tool"
                         selected={mcpSelection.mode === "off"}
                         disabled={activeRun || !onSelectMcp}
-                        reason="Do not expose MCP tools to this run"
+                        reason="Do not use MCP tools"
+                        selectionRole="radio"
                         onClick={() => selectMcpMode("off")}
                       >
                         Off
                       </CapabilityRow>
-                      {mcpSelection.mode === "selected" ? enabledMcpServers.map((server) => (
-                        <CapabilityRow
-                          key={server.id}
-                          icon="tool"
-                          selected={selectedMcpSet.has(server.id)}
-                          disabled={activeRun || !onSelectMcp}
-                          reason={mcpAvailabilityLabel(server)}
-                          onClick={() => toggleSelectedMcpServer(server.id)}
-                        >
-                          {server.name}
-                        </CapabilityRow>
-                      )) : null}
-                      {mcpSelection.mode === "selected" &&
-                      selectedMcpServerIds.length < enabledMcpServers.length ? (
-                        <button
-                          className="v2-composer-text-action v2-focusable"
-                          data-v2-composer-option="true"
-                          type="button"
-                          role="menuitem"
-                          onClick={() => onSelectMcp?.({
-                            mode: "selected",
-                            serverIds: enabledMcpServers.map((server) => server.id)
-                          })}
-                        >
-                          Select all enabled servers
-                        </button>
-                      ) : null}
                     </>
                   )}
                   {onOpenMcpSettings ? (

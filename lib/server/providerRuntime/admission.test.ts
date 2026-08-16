@@ -187,6 +187,7 @@ function admissionDb(input: Readonly<{
   fullAccess?: boolean;
   grantedSearchOptionIds?: readonly string[];
   options: readonly OptionSpec[];
+  structuredOutputEvidenceByModel?: Readonly<Record<string, unknown>>;
   technicalModels?: readonly ModelSpec[];
   unassignedPolicy?: "require_assignment" | "use_default";
   unavailableModelIds?: readonly string[];
@@ -256,7 +257,14 @@ function admissionDb(input: Readonly<{
       findFirst: providerModelFindFirst,
       findUnique: providerModelFindUnique
     },
-    providerModelCredentialCheck: { findFirst: vi.fn(async () => ({ id: "check-1" })) },
+    providerModelCredentialCheck: {
+      findFirst: vi.fn(async (args?: { where?: { providerModelId?: string } }) => ({
+        evidence: input.structuredOutputEvidenceByModel?.[
+          args?.where?.providerModelId ?? input.answer.id
+        ] ?? {},
+        id: "check-1"
+      }))
+    },
     searchOption: { findFirst: searchOptionFindFirst },
     user: {
       findFirst: vi.fn(async () => ({ id: "user-1", role: input.userRole ?? "admin" }))
@@ -490,6 +498,47 @@ describe("provider admission", () => {
     expect(plan.answer.modelConfiguration.capabilities.contextWindow).toBe(1_050_000);
     expect(plan.answer.snapshot.model.capabilities.contextWindow).toBe(1_050_000);
     expect(plan.answer.credentialSource).toBe("user");
+  });
+
+  it("grants structured output only from exact current-tuple probe evidence", async () => {
+    const verified = admissionDb({
+      answer: officialOpenAiModel,
+      options: [off],
+      structuredOutputEvidenceByModel: {
+        [officialOpenAiModel.id]: {
+          structuredOutput: {
+            adapterKind: officialOpenAiModel.adapterKind,
+            probeVersion: 2,
+            upstreamModelId: officialOpenAiModel.upstreamModelId,
+            verified: true
+          }
+        }
+      }
+    });
+    const withoutEvidence = admissionDb({
+      answer: officialOpenAiModel,
+      options: [off]
+    });
+
+    const [verifiedPlan, unverifiedPlan] = await Promise.all([
+      loadProviderAdmissionPlan(verified.db as unknown as Prisma.TransactionClient, {
+        providerConnectionId: officialOpenAiModel.connectionId,
+        providerModelId: officialOpenAiModel.id,
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        userId: "user-1"
+      }),
+      loadProviderAdmissionPlan(withoutEvidence.db as unknown as Prisma.TransactionClient, {
+        providerConnectionId: officialOpenAiModel.connectionId,
+        providerModelId: officialOpenAiModel.id,
+        searchPlan: { mode: "all_selected", optionIds: [] },
+        userId: "user-1"
+      })
+    ]);
+
+    expect(verifiedPlan.answer.modelConfiguration.capabilities.structuredOutput).toBe(true);
+    expect(verifiedPlan.answer.snapshot.model.capabilities.structuredOutput).toBe(true);
+    expect(unverifiedPlan.answer.modelConfiguration.capabilities.structuredOutput).not.toBe(true);
+    expect(unverifiedPlan.answer.snapshot.model.capabilities.structuredOutput).not.toBe(true);
   });
 
   it.each([

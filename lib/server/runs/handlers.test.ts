@@ -766,6 +766,13 @@ function activeRunRecord(input: Partial<{
   };
 }
 
+function staleRunRecord(input: Parameters<typeof activeRunRecord>[0] = {}) {
+  return {
+    ...activeRunRecord(input),
+    updatedAt: new Date(0)
+  };
+}
+
 function openAiCreatedRun(): Parameters<RunRepository["createRun"]>[0] {
   return {
     chatId: "chat-1",
@@ -2862,7 +2869,7 @@ describe("model run route handlers", () => {
     });
   });
 
-  it("uses the handler's effective attachment limits during GET-assisted recovery", async () => {
+  it("uses the handler's effective attachment limits during stale GET-assisted recovery", async () => {
     const { repository, state } = createMemoryRepository();
     const created = openAiCreatedRun();
     const normalizedRequest = {
@@ -2876,6 +2883,13 @@ describe("model run route handlers", () => {
       }
     };
     state.created = { ...created, normalizedRequest };
+    state.staleActiveRuns = [staleRunRecord({
+      assistantMessageId: "assistant-message-1",
+      chatId: "chat-1",
+      id: "run-1",
+      modelId: created.modelId,
+      provider: created.provider
+    })];
     const checkpoint = toolLoopCheckpoint({
       phase: "tools_pending",
       providerContinuation: {},
@@ -3317,7 +3331,49 @@ describe("model run route handlers", () => {
     expect(state.regenerated).toBeNull();
   });
 
-  it("refreshes and finalizes an active provider run when a provider response id exists", async () => {
+  it("keeps a fresh active provider run read-only even when a response id exists", async () => {
+    const { repository, state } = createMemoryRepository({
+      modelKeys: new Set(["openai:gpt-5.5"]),
+      providerKeys: new Set(),
+      searchStrategies: new Set()
+    });
+    state.created = openAiCreatedRun();
+    state.providerResponseId = "resp-fresh-1";
+    const refresh = vi.fn();
+    const GET = createGetModelRunHandler({
+      ...authDeps,
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          refresh,
+          async *stream() {
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "",
+              usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }
+            };
+          }
+        }
+      },
+      repository
+    });
+
+    const response = await GET(
+      new Request("http://app.local/api/model-runs/run-1", {
+        headers: { cookie: authCookie() }
+      }),
+      { params: { runId: "run-1" } }
+    );
+
+    expect(response.status).toBe(200);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(state.completed).toBeNull();
+    await expect(response.json()).resolves.toMatchObject({
+      run: { id: "run-1", status: "streaming" }
+    });
+  });
+
+  it("refreshes and finalizes a stale provider run when a provider response id exists", async () => {
     const { repository, state } = createMemoryRepository({
       modelKeys: new Set(["openai:gpt-5.5"]),
       providerKeys: new Set(),
@@ -3362,6 +3418,14 @@ describe("model run route handlers", () => {
       userId: config.bootstrapUserId
     };
     state.providerResponseId = "resp-refresh-1";
+    state.staleActiveRuns = [staleRunRecord({
+      assistantMessageId: "assistant-message-1",
+      chatId: "chat-1",
+      id: "run-1",
+      modelId: "gpt-5.5",
+      provider: "openai",
+      providerResponseId: state.providerResponseId
+    })];
 
     const GET = createGetModelRunHandler({
       ...authDeps,
@@ -3539,6 +3603,12 @@ describe("model run route handlers", () => {
     }
 
     expect(state.providerResponseId).toBe("resp-live-foreground");
+    state.staleActiveRuns = [staleRunRecord({
+      assistantMessageId: "assistant-message-1",
+      chatId: "chat-1",
+      id: "run-1",
+      providerResponseId: state.providerResponseId
+    })];
     const getResponse = await GET(
       new Request("http://app.local/api/model-runs/run-1", {
         headers: {
@@ -3579,6 +3649,14 @@ describe("model run route handlers", () => {
     });
     state.created = openAiCreatedRun();
     state.providerResponseId = "resp-refresh-lost";
+    state.staleActiveRuns = [staleRunRecord({
+      assistantMessageId: "assistant-message-1",
+      chatId: "chat-1",
+      id: "run-1",
+      modelId: "gpt-5.5",
+      provider: "openai",
+      providerResponseId: state.providerResponseId
+    })];
     repository.completeRun = async () => false;
 
     const GET = createGetModelRunHandler({
@@ -3653,6 +3731,14 @@ describe("model run route handlers", () => {
     });
     state.created = openAiCreatedRun();
     state.providerResponseId = "resp-refresh-append-race";
+    state.staleActiveRuns = [staleRunRecord({
+      assistantMessageId: "assistant-message-1",
+      chatId: "chat-1",
+      id: "run-1",
+      modelId: "gpt-5.5",
+      provider: "openai",
+      providerResponseId: state.providerResponseId
+    })];
     const GET = createGetModelRunHandler({
       ...authDeps,
       providers: {
@@ -3772,6 +3858,15 @@ describe("model run route handlers", () => {
       },
       runId: "run-1"
     };
+    state.staleActiveRuns = [staleRunRecord({
+      assistantMessageId: "assistant-message-1",
+      chatId: "chat-1",
+      id: "run-1",
+      modelId: "gpt-5.5",
+      provider: "openai",
+      providerResponseId: state.providerResponseId,
+      status: "error"
+    })];
 
     const GET = createGetModelRunHandler({
       ...authDeps,
@@ -3873,6 +3968,15 @@ describe("model run route handlers", () => {
       },
       runId: "run-1"
     };
+    state.staleActiveRuns = [staleRunRecord({
+      assistantMessageId: "assistant-message-1",
+      chatId: "chat-1",
+      id: "run-1",
+      modelId: "gpt-5.5",
+      provider: "openai",
+      providerResponseId: state.providerResponseId,
+      status: "error"
+    })];
     const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
       error: {
         code: "provider_terminal_error",
@@ -5095,6 +5199,7 @@ describe("model run route handlers", () => {
       new Request("http://app.local/api/chats/chat-1/messages", {
         body: JSON.stringify({
           modelId: "anthropic/claude-opus-4.8",
+          mcp: { mode: "load_all" },
           provider: "openrouter",
           searchPlan: { mode: "all_selected", optionIds: [] },
           text: "Use MCP"
@@ -5109,7 +5214,10 @@ describe("model run route handlers", () => {
 
     const regenerateResponse = await regenerate(
       new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
-        body: JSON.stringify({ searchPlan: { mode: "all_selected", optionIds: [] } }),
+        body: JSON.stringify({
+          mcp: { mode: "load_all" },
+          searchPlan: { mode: "all_selected", optionIds: [] }
+        }),
         headers: { cookie: authCookie() },
         method: "POST"
       }),

@@ -1,6 +1,7 @@
 import {
   McpClientSessionError,
   validateMcpToolArguments,
+  type AiqsaMcpServerEvidence,
   type AiqsaMcpToolCallResult,
   type McpFatalResponseErrorCode
 } from "./clientSession";
@@ -52,6 +53,7 @@ export type McpRuntimeSession = {
   fatalResponseErrorCode?(): McpFatalResponseErrorCode | null;
   isClosed?(): boolean;
   listTools(signal?: AbortSignal): Promise<McpRuntimeInventoryTool[]>;
+  serverEvidence?(): AiqsaMcpServerEvidence | null;
 };
 
 export type McpRuntimeSessionFactory = {

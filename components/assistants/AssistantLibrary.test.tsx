@@ -73,6 +73,7 @@ function makeDraft(overrides: Partial<AssistantEditorDraftState> = {}): Assistan
     reasoningMode: "",
     searchOptionIds: [],
     searchPlanMode: "model_choice",
+    skillIds: [],
     starterPrompts: [],
     streamMode: true,
     systemPrompt: "Help carefully.",
@@ -104,7 +105,11 @@ function makeEditor(overrides: Partial<AssistantEditorView> = {}): AssistantEdit
         { controls: makeControls(), id: "model-1", label: "GPT-5.2", providerLabel: "OpenAI", supportsTools: true }
       ],
       onRetryKnowledge: vi.fn(),
-      searchOptions: []
+      onRetrySkills: vi.fn(),
+      searchOptions: [],
+      skillDataError: null,
+      skillDataState: "ready",
+      skills: []
     },
     publications: null,
     publishableGroups: [],
@@ -343,6 +348,86 @@ describe("AssistantLibrary", () => {
     expect(screen.queryByText("No Knowledge bases are available.")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry Knowledge" }));
     expect(onRetryKnowledge).toHaveBeenCalledOnce();
+  });
+
+  it("edits ordered Assistant Skills, retains unavailable choices, and enforces the ceiling", () => {
+    const onChange = vi.fn();
+    const skills = [
+      {
+        archived: true,
+        description: "Old workflow",
+        id: "skill-archived",
+        instructionCharacterCount: 20,
+        name: "Archived workflow",
+        owned: true,
+        ownerDisplayName: "Dana Ops",
+        scope: { kind: "owner" as const },
+        updatedAt: "2026-08-01T10:00:00.000Z",
+        version: 2
+      },
+      {
+        archived: false,
+        description: "Current workflow",
+        id: "skill-active",
+        instructionCharacterCount: 40,
+        name: "Active workflow",
+        owned: false,
+        ownerDisplayName: "Alex",
+        scope: { kind: "workspace" as const, workspaceNames: ["Design"] },
+        updatedAt: "2026-08-02T10:00:00.000Z",
+        version: 1
+      },
+      {
+        archived: false,
+        description: "Extra workflow",
+        id: "skill-extra",
+        instructionCharacterCount: 30,
+        name: "Extra workflow",
+        owned: false,
+        ownerDisplayName: "Bea",
+        scope: { kind: "installation" as const },
+        updatedAt: "2026-08-03T10:00:00.000Z",
+        version: 1
+      }
+    ];
+    const editor = makeEditor({
+      draft: makeDraft({
+        skillIds: [
+          "skill-missing",
+          "skill-archived",
+          "skill-active",
+          "skill-4",
+          "skill-5",
+          "skill-6",
+          "skill-7",
+          "skill-8"
+        ]
+      }),
+      onChange,
+      options: { ...makeEditor().options, skills }
+    });
+    render(<AssistantLibrary view={makeView({ editor, task: "editor" })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    expect(screen.getByText(/Unavailable Skill · selection retained · order 1/)).toBeVisible();
+    expect(screen.getByText(/Archived workflow.*order 2/)).toBeVisible();
+    expect(screen.getByText(/Active workflow.*order 3/)).toBeVisible();
+    expect(screen.getByText("Alex · Design")).toBeVisible();
+    const active = screen.getByText(/Active workflow.*order 3/).closest("label");
+    fireEvent.click(within(active!).getByRole("checkbox"));
+    expect(onChange).toHaveBeenCalledWith({
+      skillIds: [
+        "skill-missing",
+        "skill-archived",
+        "skill-4",
+        "skill-5",
+        "skill-6",
+        "skill-7",
+        "skill-8"
+      ]
+    });
+    const extra = screen.getByText("Extra workflow").closest("label");
+    expect(within(extra!).getByRole("checkbox")).toBeDisabled();
   });
 
   it("guards every dirty editor exit behind one discard confirmation", () => {

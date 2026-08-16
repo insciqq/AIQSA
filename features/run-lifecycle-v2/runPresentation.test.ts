@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RunEventView } from "@/lib/contracts/runs";
 import {
   presentRunLifecycleV2,
+  presentToolActivityV2,
   type RunLifecycleStateV2,
   type RunLifecycleStatusV2
 } from "./runPresentation";
@@ -58,7 +59,12 @@ describe("run lifecycle v2 presentation", () => {
     const requested = {
       data: {
         artifactType: "tool_call",
-        payload: { name: "create_workbook", status: "requested" }
+        payload: {
+          name: "create_workbook",
+          round: 2,
+          serverName: "Spreadsheet Studio",
+          status: "requested"
+        }
       },
       type: "artifact"
     } satisfies RunEventView;
@@ -73,7 +79,8 @@ describe("run lifecycle v2 presentation", () => {
     expect(presentRunLifecycleV2(state({ events: [requested] }))).toMatchObject({
       activity: {
         kind: "tool",
-        label: "Tool: create_workbook…",
+        label: "Using Spreadsheet Studio: create_workbook…",
+        serverName: "Spreadsheet Studio",
         toolName: "create_workbook"
       }
     });
@@ -88,9 +95,50 @@ describe("run lifecycle v2 presentation", () => {
 
     expect(presentRunLifecycleV2(state({ events: [tool, token] })).kind).toBe("streaming");
     expect(presentRunLifecycleV2(state({ events: [token, tool] }))).toMatchObject({
-      activity: { kind: "tool", label: "Tool: lookup…" },
+      activity: { kind: "tool", label: "Running lookup…" },
       kind: "activity"
     });
+  });
+
+  it("merges safe live tool calls without exposing event payload internals", () => {
+    const events = [{
+      data: {
+        artifactType: "tool_call",
+        payload: {
+          arguments: { secret: "never-project" },
+          name: "find_tools",
+          round: 1,
+          serverName: "Auto tools",
+          status: "requested"
+        }
+      },
+      type: "artifact"
+    }] satisfies RunEventView[];
+
+    const activity = presentToolActivityV2(events);
+    expect(activity).toEqual({
+      calls: [{
+        round: 1,
+        serverName: "Auto tools",
+        status: "running",
+        toolName: "find_tools"
+      }]
+    });
+    expect(JSON.stringify(activity)).not.toContain("never-project");
+  });
+
+  it("does not surface an internal MCP namespace from a live event", () => {
+    expect(presentToolActivityV2([{
+      data: {
+        artifactType: "tool_call",
+        payload: {
+          name: "mcp_private_internal_tool_0123456789",
+          round: 1,
+          status: "requested"
+        }
+      },
+      type: "artifact"
+    }])).toBeNull();
   });
 
   it("keeps ambiguous EOF distinct until terminal server truth arrives", () => {

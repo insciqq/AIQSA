@@ -49,6 +49,8 @@ describe("administrator model policy service", () => {
       modelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
           defaultProviderModel: unavailableTarget,
+          maxToolCalls: 20n,
+          maxToolRounds: 8n,
           updatedAt: NOW,
           updatedBy: { displayName: "Administrator", id: "admin-1" },
           version: 4
@@ -81,6 +83,8 @@ describe("administrator model policy service", () => {
           displayName: "Answer model",
           id: "model-old"
         },
+        maxToolCalls: 20,
+        maxToolRounds: 8,
         updatedAt: NOW.toISOString(),
         updatedBy: { displayName: "Administrator", id: "admin-1" },
         version: 4
@@ -168,6 +172,34 @@ describe("administrator model policy service", () => {
       new AdminModelPolicyServiceError("model_policy_target_unavailable")
     );
     expect(targetTx.modelPolicy.update).not.toHaveBeenCalled();
+  });
+
+  it("updates positive safe tool budgets without imposing a product cap", async () => {
+    const update = vi.fn().mockResolvedValue({});
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ version: 5 }]),
+      modelPolicy: { update }
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) => operation(tx))
+    } as unknown as PrismaClient;
+
+    await createAdminModelPolicyService(prisma).updateToolBudgets({
+      expectedVersion: 5,
+      maxToolCalls: 200,
+      maxToolRounds: 200,
+      userId: "admin-1"
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      data: {
+        maxToolCalls: 200n,
+        maxToolRounds: 200n,
+        updatedByUserId: "admin-1",
+        version: { increment: 1 }
+      },
+      where: { id: "installation" }
+    });
   });
 
   it("maps a serializable transaction conflict to a stable stale-policy error", async () => {

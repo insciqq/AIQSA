@@ -23,7 +23,16 @@ describe("shell error formatting", () => {
       "Choose a model with tool calling to use MCP (mcp_tool_calling_not_supported)"
     );
     expect(humanizeErrorCode("mcp_not_ready")).toBe(
-      "A selected MCP server or tool is no longer ready. Review MCP settings and try again (mcp_not_ready)"
+      "An enabled MCP server or tool is no longer ready. Review MCP settings and try again (mcp_not_ready)"
+    );
+    expect(humanizeErrorCode("mcp_selection_invalid")).toBe(
+      "Choose Auto, Load all, or Off for MCP tools and try again (mcp_selection_invalid)"
+    );
+    expect(humanizeErrorCode("mcp_auto_discovery_unavailable")).toBe(
+      "Automatic tool discovery is unavailable. Retry in Auto or use Load all (mcp_auto_discovery_unavailable)"
+    );
+    expect(humanizeErrorCode("structured_output_not_supported")).toBe(
+      "The selected System Model does not have verified structured output (structured_output_not_supported)"
     );
     expect(humanizeErrorCode("skill_not_available")).toBe(
       "A selected Skill is no longer available. Review Skills and try again (skill_not_available)"

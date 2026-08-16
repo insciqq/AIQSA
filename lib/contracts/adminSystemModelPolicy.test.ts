@@ -9,7 +9,8 @@ const response = {
       defaultReasoningEffort: "medium",
       displayName: "Model",
       id: "model-1",
-      reasoningEfforts: ["low", "medium", "high", "xhigh"]
+      reasoningEfforts: ["low", "medium", "high", "xhigh"],
+      structuredOutput: "verified"
     }],
     policy: {
       reasoningEffort: null,

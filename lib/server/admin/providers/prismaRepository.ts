@@ -28,6 +28,7 @@ import type {
   ProviderDraftTestCandidate,
   StoredProviderDraftCheck
 } from "./repositoryContract";
+import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 import {
   countBlockingMemoryExecutionBindings,
   detachExpiredMemoryExecutionBindings,
@@ -67,10 +68,12 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
   ) {
     return null;
   }
+  const structuredOutput = decodeStructuredOutputVerificationEvidence(value.structuredOutput);
   return {
     detail: value.detail,
     method: value.method,
     selectedProviders: value.selectedProviders as string[],
+    ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: value.upstreamModelId
   };
 }

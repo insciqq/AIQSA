@@ -42,6 +42,8 @@ export type AssistantRevisionRow = {
   revisionNumber: number;
   runControls: unknown;
   searchPlan: unknown;
+  skillSummaries?: { id: string; name: string }[];
+  skillIds: string[];
   starterPrompts: string[];
   systemPrompt: string;
 };
@@ -79,7 +81,12 @@ export type AssistantWriteResult =
   | { assistantId: string; kind: "ok" }
   | { kind: "archived" }
   | { kind: "not_found" }
+  | { kind: "skills_not_available" }
   | { kind: "version_conflict" };
+
+export type AssistantCreateResult =
+  | { assistantId: string; kind: "ok" }
+  | { kind: "skills_not_available" };
 
 export type AssistantPublishInput = {
   actorIsAdmin: boolean;
@@ -94,6 +101,7 @@ export type AssistantPublishResult =
   | { kind: "forbidden" }
   | { kind: "invalid" }
   | { kind: "not_found" }
+  | { kind: "skill_audience_mismatch" }
   | { kind: "ok"; publication: AssistantPublicationRow };
 
 export type AssistantDuplicateResult =
@@ -103,6 +111,7 @@ export type AssistantDuplicateResult =
   | { kind: "not_found" }
   | { kind: "run_controls_invalid" }
   | { kind: "search_not_available" }
+  | { kind: "skills_not_available" }
   | { kind: "tools_not_available" };
 
 const revisionSelect = {
@@ -120,6 +129,13 @@ const revisionSelect = {
   revisionNumber: true,
   runControls: true,
   searchPlan: true,
+  skillLinks: {
+    orderBy: { ordinal: "asc" },
+    select: {
+      skill: { select: { currentRevision: { select: { name: true } } } },
+      skillId: true
+    }
+  },
   starterPrompts: true,
   systemPrompt: true
 } satisfies Prisma.AssistantRevisionSelect;
@@ -142,6 +158,12 @@ function revisionRow(record: RevisionRecord): AssistantRevisionRow {
     revisionNumber: record.revisionNumber,
     runControls: record.runControls,
     searchPlan: record.searchPlan,
+    skillSummaries: record.skillLinks.flatMap((link) =>
+      link.skill.currentRevision
+        ? [{ id: link.skillId, name: link.skill.currentRevision.name }]
+        : []
+    ),
+    skillIds: record.skillLinks.map((link) => link.skillId),
     starterPrompts: [...record.starterPrompts],
     systemPrompt: record.systemPrompt
   };
@@ -186,6 +208,21 @@ function revisionDraftData(draft: AssistantDraft): Omit<
     starterPrompts: [...draft.starterPrompts],
     systemPrompt: draft.systemPrompt
   };
+}
+
+async function createAssistantRevisionSkillLinks(
+  tx: Prisma.TransactionClient,
+  assistantRevisionId: string,
+  skillIds: readonly string[]
+): Promise<void> {
+  if (skillIds.length === 0) return;
+  await tx.assistantRevisionSkill.createMany({
+    data: skillIds.map((skillId, ordinal) => ({
+      assistantRevisionId,
+      ordinal,
+      skillId
+    }))
+  });
 }
 
 async function activeMemberGroupIds(
@@ -286,6 +323,102 @@ async function lockActiveMemberGroupRows(
     ORDER BY membership."groupId"
     FOR SHARE OF membership, team
   `;
+}
+
+function distinctSortedSkillIds(skillIds: readonly string[]): string[] {
+  return [...new Set(skillIds)].sort((left, right) => left.localeCompare(right));
+}
+
+async function lockSkillDefinitionRows(
+  tx: Prisma.TransactionClient,
+  skillIds: readonly string[]
+): Promise<boolean> {
+  const ids = distinctSortedSkillIds(skillIds);
+  if (ids.length === 0) return true;
+  const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT definition."id"
+    FROM "SkillDefinition" AS definition
+    WHERE definition."id" IN (${Prisma.join(ids)})
+    ORDER BY definition."id"
+    FOR SHARE OF definition
+  `);
+  return rows.length === ids.length;
+}
+
+async function skillDependenciesAvailable(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  skillIds: readonly string[]
+): Promise<boolean> {
+  const ids = distinctSortedSkillIds(skillIds);
+  if (ids.length === 0) return true;
+  const available = await tx.skillDefinition.count({
+    where: {
+      archivedAt: null,
+      currentRevisionId: { not: null },
+      deletedAt: null,
+      id: { in: ids },
+      OR: [
+        { ownerUserId: userId },
+        {
+          publications: {
+            some: {
+              OR: [
+                { scope: "installation" },
+                {
+                  group: {
+                    archivedAt: null,
+                    users: { some: { userId } }
+                  },
+                  scope: "group"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  });
+  return available === ids.length;
+}
+
+async function lockAndCheckSkillDependencies(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  skillIds: readonly string[]
+): Promise<boolean> {
+  if (!await lockSkillDefinitionRows(tx, skillIds)) return false;
+  await lockActiveMemberGroupRows(tx, userId);
+  return skillDependenciesAvailable(tx, userId, skillIds);
+}
+
+async function skillsReachPublicationAudience(
+  tx: Prisma.TransactionClient,
+  skillIds: readonly string[],
+  audience: Readonly<{ groupId: string | null; scope: "group" | "installation" }>
+): Promise<boolean> {
+  const ids = distinctSortedSkillIds(skillIds);
+  if (ids.length === 0) return true;
+  if (!await lockSkillDefinitionRows(tx, ids)) return false;
+  const available = await tx.skillDefinition.count({
+    where: {
+      archivedAt: null,
+      currentRevisionId: { not: null },
+      deletedAt: null,
+      id: { in: ids },
+      publications: {
+        some: audience.scope === "installation"
+          ? { scope: "installation" }
+          : {
+              OR: [
+                { scope: "installation" },
+                { groupId: audience.groupId, scope: "group" }
+              ]
+            }
+      }
+    }
+  });
+  return available === ids.length;
 }
 
 function distinctKnowledgeBaseIds(knowledgeBaseIds: readonly string[]): string[] {
@@ -479,8 +612,11 @@ export function createPrismaAssistantRepository(
     loadAccessEntryWith(client, userId, assistantId);
 
   const repository = {
-    async create(userId: string, draft: AssistantDraft): Promise<string> {
+    async create(userId: string, draft: AssistantDraft): Promise<AssistantCreateResult> {
       return client.$transaction(async (tx) => {
+        if (!await lockAndCheckSkillDependencies(tx, userId, draft.skillIds)) {
+          return { kind: "skills_not_available" as const };
+        }
         const definition = await tx.assistantDefinition.create({
           data: { ownerUserId: userId }
         });
@@ -492,11 +628,12 @@ export function createPrismaAssistantRepository(
             revisionNumber: 1
           }
         });
+        await createAssistantRevisionSkillLinks(tx, revision.id, draft.skillIds);
         await tx.assistantDefinition.update({
           data: { currentRevisionId: revision.id },
           where: { id: definition.id }
         });
-        return definition.id;
+        return { assistantId: definition.id, kind: "ok" as const };
       });
     },
 
@@ -528,8 +665,12 @@ export function createPrismaAssistantRepository(
             const knowledgeBaseIds = distinctKnowledgeBaseIds(
               provisionalSource.revision.knowledgeBaseIds
             );
+            const skillIds = distinctSortedSkillIds(provisionalSource.revision.skillIds);
             if (!await lockKnowledgeBaseRowsForDuplicate(tx, knowledgeBaseIds)) {
               return { kind: "knowledge_not_available" as const };
+            }
+            if (!await lockSkillDefinitionRows(tx, skillIds)) {
+              return { kind: "skills_not_available" as const };
             }
             await lockActiveMemberGroupRows(tx, userId);
             await lockKnowledgePublicationRowsForDuplicate(tx, knowledgeBaseIds);
@@ -549,6 +690,9 @@ export function createPrismaAssistantRepository(
               knowledgeBaseIds
             )) {
               return { kind: "knowledge_not_available" as const };
+            }
+            if (!await skillDependenciesAvailable(tx, userId, skillIds)) {
+              return { kind: "skills_not_available" as const };
             }
             const invalid = validateAssistantConfigurationAgainstCatalog(
               {
@@ -590,6 +734,7 @@ export function createPrismaAssistantRepository(
                 systemPrompt: source.revision.systemPrompt
               }
             });
+            await createAssistantRevisionSkillLinks(tx, revision.id, source.revision.skillIds);
             await tx.assistantDefinition.update({
               data: { currentRevisionId: revision.id },
               where: { id: definition.id }
@@ -791,6 +936,9 @@ export function createPrismaAssistantRepository(
         if (!definition) return { kind: "not_found" as const };
         if (definition.version !== expectedVersion) return { kind: "version_conflict" as const };
         if (definition.archivedAt) return { kind: "archived" as const };
+        if (!await lockAndCheckSkillDependencies(tx, userId, draft.skillIds)) {
+          return { kind: "skills_not_available" as const };
+        }
 
         const latest = await tx.assistantRevision.aggregate({
           _max: { revisionNumber: true },
@@ -804,6 +952,7 @@ export function createPrismaAssistantRepository(
             revisionNumber: (latest._max.revisionNumber ?? 0) + 1
           }
         });
+        await createAssistantRevisionSkillLinks(tx, revision.id, draft.skillIds);
         await tx.assistantDefinition.update({
           data: {
             currentRevisionId: revision.id,
@@ -898,18 +1047,43 @@ export function createPrismaAssistantRepository(
         const revision = input.revisionNumber === null
           ? await tx.assistantDefinition
               .findUnique({
-                select: { currentRevision: { select: { id: true, revisionNumber: true } } },
+                select: {
+                  currentRevision: {
+                    select: {
+                      id: true,
+                      revisionNumber: true,
+                      skillLinks: {
+                        orderBy: { ordinal: "asc" },
+                        select: { skillId: true }
+                      }
+                    }
+                  }
+                },
                 where: { id: input.assistantId }
               })
               .then((row) => row?.currentRevision ?? null)
           : await tx.assistantRevision.findFirst({
-              select: { id: true, revisionNumber: true },
+              select: {
+                id: true,
+                revisionNumber: true,
+                skillLinks: {
+                  orderBy: { ordinal: "asc" },
+                  select: { skillId: true }
+                }
+              },
               where: {
                 assistantId: input.assistantId,
                 revisionNumber: input.revisionNumber
               }
             });
         if (!revision) return { kind: "invalid" as const };
+        if (!await skillsReachPublicationAudience(
+          tx,
+          revision.skillLinks.map((link) => link.skillId),
+          { groupId: input.groupId, scope: input.scope }
+        )) {
+          return { kind: "skill_audience_mismatch" as const };
+        }
 
         const existing = await tx.assistantPublication.findFirst({
           select: { id: true },
@@ -1077,6 +1251,7 @@ export function createPrismaAssistantRepository(
         revisionNumber: entry.revision.revisionNumber,
         runControls,
         searchPlan: searchPlan.plan,
+        skillIds: [...entry.revision.skillIds],
         systemPrompt: entry.revision.systemPrompt
       };
       return { assistant, ok: true };

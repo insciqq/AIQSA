@@ -97,6 +97,62 @@
   background: var(--v2-color-hover);
 }
 
+.v2-composer-skill-ledger {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 1rem;
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border-top: 1px solid var(--v2-color-line);
+  border-bottom: 1px solid var(--v2-color-line);
+  color: var(--v2-color-text2);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+}
+
+.v2-composer-skill-ledger strong {
+  color: var(--v2-color-text);
+  font-weight: 500;
+}
+
+.v2-composer-skill-ledger ol {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 0.125rem 0.625rem;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v2-composer-skill-ledger li {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-composer-skill-ledger-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.v2-composer-skill-ledger button {
+  padding: 0;
+  border: 0;
+  color: var(--v2-color-accent);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.v2-composer-skill-ledger button:disabled {
+  color: var(--v2-color-text3);
+  cursor: default;
+}
+
 .v2-composer-status {
   display: flex;
   min-height: 1.5rem;
@@ -863,6 +919,10 @@
 }
 
 @media (max-width: 42rem) {
+  .v2-composer-skill-ledger {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .v2-composer-indicators {
     flex: 1 1 auto;
   }

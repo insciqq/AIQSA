@@ -16,6 +16,10 @@ import {
   createPrismaMcpCapabilityCatalogLoader,
   createPrismaMcpRunPlanLoader
 } from "./runPlanRepository";
+import { prisma } from "../prisma";
+import { createSystemModelRoleResolver } from "../providerRuntime/systemModelRole";
+import { createAcceptedStructuredOutputExecutor } from "../providerRuntime/structuredOutputExecutor";
+import { createMcpSemanticRouter } from "./router";
 
 const DEFAULT_RUNTIME_LIMITS = {
   maxListPages: 16,
@@ -78,6 +82,11 @@ export function kickDefaultMcpRuntime(userId?: string): void {
 
 const loadRunPlan = createPrismaMcpRunPlanLoader();
 const loadCapabilityCatalog = createPrismaMcpCapabilityCatalogLoader();
+const systemModelRole = createSystemModelRoleResolver(prisma);
+const defaultMcpSemanticRouter = createMcpSemanticRouter({
+  executeStructuredOutput: createAcceptedStructuredOutputExecutor(prisma),
+  resolveSystemModel: () => systemModelRole.resolve()
+});
 
 async function prepareExactMcpRunPlan(
   userId: string,
@@ -136,5 +145,6 @@ export const defaultMcpRunPlan = {
     const serverIds = options?.allowedServerIds ??
       (await loadCapabilityCatalog(userId)).servers.map((server) => server.serverId);
     return prepareExactMcpRunPlan(userId, serverIds);
-  }
+  },
+  router: defaultMcpSemanticRouter
 };

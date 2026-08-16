@@ -11,6 +11,8 @@ Direct-user credentials precede identical group grants, which precede an explici
 
 Every adapter has an immutable response deadline (`model override ?? connection`), bounded buffered and streaming bytes/events, cancellation, strict terminal proof, and normalized value-free failures. Timeout, cancellation, truncation, malformed wire data, and safety overflow are distinct. Never persist or log raw bodies, reasoning, tool arguments, credentials, custom endpoints, or provider errors merely for diagnosis.
 
+Structured output is a separate runtime capability from tool calling. It is granted only by a successful strict-JSON-Schema probe for the exact active connection/model/credential tuple; missing or stale evidence is not support. The bounded non-streaming utility adapter exists only for native or compatible OpenAI Responses and OpenRouter Chat. OpenRouter structured requests preserve the configured route and force parameter support; every other adapter fails closed. Administrator model metadata or provider identity never substitutes for probe evidence. The System Model control may explicitly probe its current supported deployment through the installation-default credential; already-valid evidence avoids another request, and unsupported adapters never receive that action.
+
 Custom compatible roots require an explicit protocol and canonical base root; do not guess or append `/v1` heuristically. Public endpoints require HTTPS and bearer auth. Private/local HTTP and explicit no-auth require their dedicated reviewed flags, pinned resolution/redirect validation, and immutable tested evidence; no Authorization header is emitted for no-auth.
 
 ## Runtime Identities

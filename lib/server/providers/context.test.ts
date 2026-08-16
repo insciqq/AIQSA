@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { textConversationForRequest } from "./context";
+import { conversationPreview, textConversationForRequest } from "./context";
 import type { ProviderConversationMessage, ProviderRunRequest } from "./types";
 
 function requestWithMessages(messages: ProviderConversationMessage[]): ProviderRunRequest {
@@ -72,6 +72,31 @@ describe("provider context helpers", () => {
         id: "current-user-message",
         role: "user"
       }
+    ]);
+  });
+
+  it("redacts hidden Skill instructions from previewable conversation evidence", () => {
+    const runRequest = requestWithMessages([
+      {
+        content: { blocks: [{ text: "PRIVATE_SKILL_CANARY", type: "text" }] },
+        id: "skill-context:current",
+        purpose: "skill_context",
+        role: "user"
+      },
+      {
+        content: { blocks: [{ text: "Current question", type: "text" }] },
+        id: "current",
+        role: "user"
+      }
+    ]);
+
+    expect(conversationPreview(runRequest)).toEqual([
+      {
+        id: "skill-context:current",
+        role: "user",
+        text: "[selected Skill instructions omitted]"
+      },
+      { id: "current", role: "user", text: "Current question" }
     ]);
   });
 });

@@ -917,6 +917,7 @@ describe("Anthropic Messages adapter", () => {
         "attachment_media_type",
         "image_base64",
         "pdf_base64",
+        "selected_skill_instructions",
         "provider_continuation_opaque_fields"
       ]
     });

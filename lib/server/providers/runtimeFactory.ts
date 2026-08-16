@@ -49,6 +49,11 @@ import {
   openRouterChatToolBridge
 } from "../tools/bridges";
 import type { ProviderToolBridge } from "../tools/types";
+import {
+  createOpenAIResponsesStructuredOutputAdapter,
+  createOpenRouterStructuredOutputAdapter,
+  type ProviderStructuredOutputAdapter
+} from "./structuredOutput";
 
 const MAX_DISPLAY_TEXT = 256;
 const MAX_SNAPSHOT_BYTES = 96 * 1024;
@@ -80,6 +85,7 @@ type ProviderRuntimeComponents = Readonly<{
   adapter: ProviderAdapter;
   backgroundPollTimeoutMs?: number;
   searchAdapter?: ProviderSearchAdapter;
+  structuredOutputAdapter?: ProviderStructuredOutputAdapter;
   toolBridge?: ProviderToolBridge;
 }>;
 
@@ -263,6 +269,10 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
           client,
           reasoningRequestMapping: snapshot.model.reasoningRequestMapping
         }),
+        structuredOutputAdapter: createOpenAIResponsesStructuredOutputAdapter({
+          client,
+          model: snapshot.model
+        }),
         ...(snapshot.model.capabilities.nativeSearch
           ? {
               searchAdapter: createOpenAIResponsesSearchAdapter({
@@ -333,6 +343,10 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       return {
         adapter: createOpenAIResponsesAdapter({ client, pollTimeoutMs: backgroundPollTimeoutMs }),
         backgroundPollTimeoutMs,
+        structuredOutputAdapter: createOpenAIResponsesStructuredOutputAdapter({
+          client,
+          model: snapshot.model
+        }),
         ...(snapshot.model.capabilities.nativeSearch
           ? {
               searchAdapter: createOpenAIResponsesSearchAdapter({
@@ -355,6 +369,10 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         adapter: createCompatibleResponsesAdapter({
           client,
           reasoningRequestMapping: snapshot.model.reasoningRequestMapping
+        }),
+        structuredOutputAdapter: createOpenAIResponsesStructuredOutputAdapter({
+          client,
+          model: snapshot.model
         }),
         ...(snapshot.model.capabilities.nativeSearch
           ? {
@@ -409,6 +427,10 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       return {
         adapter: createOpenRouterChatAdapter({ client }),
         searchAdapter: createOpenRouterPerplexitySearchAdapter({ client }),
+        structuredOutputAdapter: createOpenRouterStructuredOutputAdapter({
+          client,
+          model: snapshot.model
+        }),
         toolBridge: openRouterChatToolBridge
       };
     }
@@ -494,10 +516,28 @@ function withProviderStreamSafetyObservability(
         }
       } satisfies ProviderSearchAdapter
     : undefined;
+  const structuredOutputAdapter = binding.structuredOutputAdapter
+    ? {
+        async execute(request, options) {
+          const timeoutMs = operationTimeoutMs(options?.timeoutMs);
+          const timeout = withTimeoutSignal(options?.signal, timeoutMs);
+          try {
+            return await binding.structuredOutputAdapter!.execute(request, {
+              ...options,
+              signal: timeout.signal,
+              timeoutMs
+            });
+          } finally {
+            timeout.clear();
+          }
+        }
+      } satisfies ProviderStructuredOutputAdapter
+    : undefined;
   return {
     adapter: observedAdapter,
     responseTimeoutMs,
     ...(searchAdapter ? { searchAdapter } : {}),
+    ...(structuredOutputAdapter ? { structuredOutputAdapter } : {}),
     ...(binding.toolBridge ? { toolBridge: binding.toolBridge } : {})
   };
 }

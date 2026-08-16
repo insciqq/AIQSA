@@ -3,7 +3,8 @@
 import {
   adminSystemModelPolicyErrorMessage,
   getAdminSystemModelPolicy,
-  updateAdminSystemModelPolicy
+  updateAdminSystemModelPolicy,
+  verifyAdminSystemModelStructuredOutput
 } from "@/components/admin/adminSystemModelPolicyApi";
 import {
   inputClass,
@@ -11,10 +12,19 @@ import {
   quietButton
 } from "@/components/admin/adminPrimitives";
 import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
-import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
+import type {
+  AdminSystemModelCandidate,
+  AdminSystemModelPolicyCatalog
+} from "@/lib/contracts/adminSystemModelPolicy";
 import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+function mcpAutoStatus(status: AdminSystemModelCandidate["structuredOutput"]): string {
+  if (status === "verified") return "MCP Auto: Ready.";
+  if (status === "not_verified") return "MCP Auto: Verification required.";
+  return "MCP Auto: Not supported by this adapter.";
+}
 
 export function AdminProviderSystemModelTask({
   active,
@@ -27,7 +37,8 @@ export function AdminProviderSystemModelTask({
   const [selectedId, setSelectedId] = useState("");
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
   const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const autoLoadAttemptedRef = useRef(false);
@@ -51,6 +62,7 @@ export function AdminProviderSystemModelTask({
   const draftDirty = Boolean(catalog) && (
     selectedId !== currentId || selectedReasoningEffort !== currentReasoningEffort
   );
+  const busy = saving || verifying;
   const requestDraftDiscard = useAdminDraftProtection({
     dirty: draftDirty,
     onDiscard: () => {
@@ -98,7 +110,7 @@ export function AdminProviderSystemModelTask({
 
   const save = async (providerModelId: string | null, reasoningEffort: string | null) => {
     if (!catalog || busy) return;
-    setBusy(true);
+    setSaving(true);
     setError(null);
     setNotice(null);
     const result = await updateAdminSystemModelPolicy({
@@ -106,13 +118,31 @@ export function AdminProviderSystemModelTask({
       providerModelId,
       reasoningEffort
     });
-    setBusy(false);
+    setSaving(false);
     if (!result.ok) {
       setError(adminSystemModelPolicyErrorMessage(result.error));
       return;
     }
     apply(result.data);
     setNotice(providerModelId ? "System model updated." : "System model cleared.");
+    void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
+  };
+
+  const verifyStructuredOutput = async () => {
+    const systemModel = catalog?.policy.systemModel;
+    if (!systemModel || systemModel.structuredOutput !== "not_verified" ||
+      busy || draftDirty) return;
+    setVerifying(true);
+    setError(null);
+    setNotice(null);
+    const result = await verifyAdminSystemModelStructuredOutput(systemModel.id);
+    setVerifying(false);
+    if (!result.ok) {
+      setError(adminSystemModelPolicyErrorMessage(result.error));
+      return;
+    }
+    apply(result.data);
+    setNotice("Structured output verified. MCP Auto is ready.");
     void Promise.resolve(onMutationCommitted?.()).catch(() => undefined);
   };
 
@@ -179,12 +209,38 @@ export function AdminProviderSystemModelTask({
                   : "None"}.
               </p>
               {catalog.policy.systemModel ? (
-                <p className={catalog.policy.systemModel.available ? "text-ink-secondary" : "text-caution"}>
-                  Status: {catalog.policy.systemModel.available ? "Available" : "Unavailable"}.
-                  {!catalog.policy.systemModel.available
-                    ? " It remains selected, but internal work fails closed until you re-save, replace, or clear it."
-                    : ""}
-                </p>
+                <>
+                  <p className={catalog.policy.systemModel.available ? "text-ink-secondary" : "text-caution"}>
+                    Status: {catalog.policy.systemModel.available ? "Available" : "Unavailable"}.
+                    {!catalog.policy.systemModel.available
+                      ? " It remains selected, but internal work fails closed until you re-save, replace, or clear it."
+                      : ""}
+                  </p>
+                  <p className={catalog.policy.systemModel.structuredOutput === "verified"
+                    ? "text-ink-secondary"
+                    : "text-caution"}>
+                    {mcpAutoStatus(catalog.policy.systemModel.structuredOutput)}
+                  </p>
+                  {catalog.policy.systemModel.structuredOutput === "not_verified" ? (
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <p className="max-w-xl text-ink-muted">
+                        Verification sends one small model request and may incur provider charges.
+                      </p>
+                      <button
+                        className={quietButton}
+                        disabled={busy || loading || draftDirty}
+                        onClick={() => void verifyStructuredOutput()}
+                        type="button"
+                      >
+                        {verifying ? "Verifying…" : "Run verification"}
+                      </button>
+                    </div>
+                  ) : catalog.policy.systemModel.structuredOutput === "unsupported" ? (
+                    <p className="text-ink-muted">
+                      Supported paths are OpenAI Responses, Responses-compatible deployments, and OpenRouter Chat Completions.
+                    </p>
+                  ) : null}
+                </>
               ) : null}
               <p>Policy version: {catalog.policy.version}.</p>
               {catalog.policy.updatedBy ? (

@@ -6,6 +6,7 @@ export type AssistantRevisionSection =
   | "model"
   | "run-setup"
   | "search"
+  | "skills"
   | "starters"
   | "tools";
 
@@ -21,6 +22,7 @@ type ComparableRevision = Pick<
   | "providerModelId"
   | "runControls"
   | "searchPlan"
+  | "skillIds"
   | "starterPrompts"
   | "systemPrompt"
 >;
@@ -42,7 +44,7 @@ export function assistantRevisionChangedSections(
   next: ComparableRevision
 ): AssistantRevisionSection[] {
   if (!previous) {
-    return ["identity", "instructions", "model", "run-setup", "search", "starters", "tools"];
+    return ["identity", "instructions", "model", "run-setup", "search", "skills", "starters", "tools"];
   }
 
   const changed: AssistantRevisionSection[] = [];
@@ -71,6 +73,9 @@ export function assistantRevisionChangedSections(
   }
   if (stable(previous.searchPlan) !== stable(next.searchPlan)) {
     changed.push("search");
+  }
+  if (stable(previous.skillIds) !== stable(next.skillIds)) {
+    changed.push("skills");
   }
   if (stable(previous.starterPrompts) !== stable(next.starterPrompts)) {
     changed.push("starters");

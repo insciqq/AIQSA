@@ -412,7 +412,9 @@ export function buildAnthropicMessagesRequest(
   const storedConversationById = new Map(
     conversationMessagesForRequest(request).map((message) => [message.id, message.content])
   );
-  const conversation = textConversationForRequest(request);
+  const conversation = textConversationForRequest(request, {
+    redactSkillContext: options.preview ?? false
+  });
   const messages = mergeAdjacentAnthropicMessages(
     [
       ...conversation.map((message, index) => {
@@ -706,6 +708,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           "attachment_media_type",
           "image_base64",
           "pdf_base64",
+          "selected_skill_instructions",
           "provider_continuation_opaque_fields"
         ]
       };

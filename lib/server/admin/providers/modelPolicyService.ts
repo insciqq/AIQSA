@@ -113,6 +113,8 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
                 )
               }
             : null,
+          maxToolCalls: Number(policy.maxToolCalls),
+          maxToolRounds: Number(policy.maxToolRounds),
           updatedAt: policy.updatedAt.toISOString(),
           updatedBy: policy.updatedBy,
           version: policy.version
@@ -165,6 +167,47 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
           await tx.modelPolicy.update({
             data: {
               defaultProviderModelId: input.providerModelId,
+              updatedByUserId: input.userId,
+              version: { increment: 1 }
+            },
+            where: { id: "installation" }
+          });
+        }, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10_000,
+          timeout: 30_000
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
+          throw new AdminModelPolicyServiceError("model_policy_stale");
+        }
+        throw error;
+      }
+    },
+
+    async updateToolBudgets(input: Readonly<{
+      expectedVersion: number;
+      maxToolCalls: number;
+      maxToolRounds: number;
+      userId: string;
+    }>): Promise<void> {
+      try {
+        await prisma.$transaction(async (tx) => {
+          const policies = await tx.$queryRaw<Array<{ version: number }>>(Prisma.sql`
+            SELECT "version"
+            FROM "ModelPolicy"
+            WHERE "id" = 'installation'
+            FOR UPDATE
+          `);
+          if (!policies[0]) throw new Error("installation_model_policy_missing");
+          if (policies[0].version !== input.expectedVersion) {
+            throw new AdminModelPolicyServiceError("model_policy_stale");
+          }
+
+          await tx.modelPolicy.update({
+            data: {
+              maxToolCalls: BigInt(input.maxToolCalls),
+              maxToolRounds: BigInt(input.maxToolRounds),
               updatedByUserId: input.userId,
               version: { increment: 1 }
             },

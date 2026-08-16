@@ -39,6 +39,7 @@ export function createFakeProviderAdapter(): ProviderAdapter {
         prompt: request.prompt,
         provider: "fake",
         replayedContext: conversationPreview(request),
+        redactions: ["selected_skill_instructions"],
         searchOptionIds: request.searchPlan.options.map((option) => option.optionId),
         text: textFromContentBlocks(request.content)
       };
@@ -46,7 +47,10 @@ export function createFakeProviderAdapter(): ProviderAdapter {
     async *stream(request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const question = textFromContentBlocks(request.content) || "empty question";
       const priorUserMessages = textConversationForRequest(request).filter(
-        (message, index, messages) => message.role === "user" && index < messages.length - 1
+        (message, index, messages) =>
+          message.role === "user" &&
+          message.purpose !== "skill_context" &&
+          index < messages.length - 1
       );
       const contextSuffix =
         priorUserMessages.length > 0

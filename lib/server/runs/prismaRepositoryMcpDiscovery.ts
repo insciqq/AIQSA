@@ -1,8 +1,11 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
-  MCP_DISCOVERY_MAX_ACTIVE_TOOLS,
+  MCP_DISCOVERY_MAX_RESULTS,
+  MCP_FIND_TOOLS_NAME,
+  mcpFindToolsArguments,
   mergeMcpRunPlanSnapshots
 } from "../mcp/discovery";
+import { decodeMcpDiscoveryState } from "../mcp/discoveryState";
 import type {
   McpDiscoveryState,
   McpRunPlanBinding,
@@ -16,14 +19,6 @@ type McpDiscoveryOperations = Pick<Required<RunRepository>, "appendMcpDiscoveryE
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function discoveryState(value: unknown): McpDiscoveryState | null {
-  if (!isRecord(value) || value.version !== 1 ||
-    value.maxActiveTools !== MCP_DISCOVERY_MAX_ACTIVE_TOOLS ||
-    !isRecord(value.catalog) || value.catalog.version !== 1 ||
-    !Array.isArray(value.catalog.servers) || !Array.isArray(value.epochs)) return null;
-  return value as unknown as McpDiscoveryState;
 }
 
 function runPlanSnapshot(value: unknown): McpRunPlanSnapshot | undefined {
@@ -46,7 +41,8 @@ function addedSnapshotMatchesCatalog(
   ));
   const snapshotServers = new Map(snapshot.servers.map((server) => [server.serverId, server] as const));
   const usedServerIds = new Set(snapshot.tools.map((tool) => tool.serverId));
-  return snapshot.tools.length > 0 &&
+  if (snapshot.tools.length === 0) return snapshot.servers.length === 0;
+  return snapshot.tools.length <= MCP_DISCOVERY_MAX_RESULTS &&
     snapshotServers.size === snapshot.servers.length &&
     new Set(snapshot.tools.map((tool) => tool.namespacedName)).size === snapshot.tools.length &&
     usedServerIds.size === snapshot.servers.length &&
@@ -80,10 +76,20 @@ export function createPrismaMcpDiscoveryOperations(
       `;
       if (!run || !["queued", "streaming", "in_progress"].includes(run.status) ||
         !isRecord(run.normalizedRequest)) return null;
-      const currentDiscovery = discoveryState(run.normalizedRequest.mcpDiscovery);
+      const currentDiscovery = decodeMcpDiscoveryState(run.normalizedRequest.mcpDiscovery);
       if (!currentDiscovery || !addedSnapshotMatchesCatalog(currentDiscovery, input.snapshot)) {
         return null;
       }
+      const persistedCall = await tx.modelRunToolCall.findFirst({
+        select: { arguments: true, roundIndex: true, toolName: true },
+        where: { id: input.modelRunToolCallId, modelRunId: input.runId }
+      });
+      const persistedArguments = persistedCall && isRecord(persistedCall.arguments)
+        ? mcpFindToolsArguments(persistedCall.arguments)
+        : null;
+      if (!persistedCall || persistedCall.toolName !== MCP_FIND_TOOLS_NAME ||
+        persistedCall.roundIndex !== input.roundIndex ||
+        persistedArguments?.goal !== input.goal) return null;
       const snapshotServers = new Map(
         input.snapshot.servers.map((server) => [server.serverId, server] as const)
       );
@@ -96,9 +102,10 @@ export function createPrismaMcpDiscoveryOperations(
       }
       const currentSnapshot = runPlanSnapshot(run.normalizedRequest.mcp);
       const replay = currentDiscovery.epochs.find((epoch) =>
-        epoch.roundIndex === input.roundIndex && epoch.query === input.query);
+        epoch.modelRunToolCallId === input.modelRunToolCallId);
       if (replay) {
-        return currentSnapshot
+        return currentSnapshot && replay.goal === input.goal &&
+          replay.roundIndex === input.roundIndex
           ? { discovery: currentDiscovery, snapshot: currentSnapshot }
           : null;
       }
@@ -127,9 +134,10 @@ export function createPrismaMcpDiscoveryOperations(
           ...currentDiscovery.epochs,
           {
             epoch: currentDiscovery.epochs.length + 1,
-            query: input.query,
+            goal: input.goal,
+            modelRunToolCallId: input.modelRunToolCallId,
             roundIndex: input.roundIndex,
-            toolNames: input.snapshot.tools.map((tool) => tool.namespacedName)
+            toolIds: input.snapshot.tools.map((tool) => tool.namespacedName)
           }
         ]
       };

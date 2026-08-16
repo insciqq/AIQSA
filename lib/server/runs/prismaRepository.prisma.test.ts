@@ -909,10 +909,29 @@ describe("Prisma-backed run repository", () => {
             version: 1
           },
           epochs: [],
-          maxActiveTools: 12,
-          version: 1
+          version: 2
         };
         const created = await repository.createRun(runInput);
+        await expect(repository.beginToolLoopProviderRound({
+          providerContinuation: null,
+          roundIndex: 0,
+          runId: created.runId,
+          userId
+        })).resolves.toBe("started");
+        const persisted = await repository.persistToolLoopCallBatch({
+          calls: [{
+            arguments: { goal: "echo a value" },
+            ordinal: 0,
+            providerCallId: "provider-find-tools-call",
+            toolName: "find_tools"
+          }],
+          providerContinuation: null,
+          roundIndex: 0,
+          runId: created.runId,
+          userId
+        });
+        if (persisted.kind !== "persisted") throw new Error("expected persisted discovery call");
+        const modelRunToolCallId = persisted.calls[0]!.id;
         const snapshot = {
           servers: [{
             fingerprint: fixture.binding.fingerprint,
@@ -935,7 +954,8 @@ describe("Prisma-backed run repository", () => {
         const append = repository.appendMcpDiscoveryEpoch!;
         const appended = await append({
           bindings: [fixture.binding],
-          query: "echo a value",
+          goal: "echo a value",
+          modelRunToolCallId,
           roundIndex: 0,
           runId: created.runId,
           snapshot,
@@ -946,9 +966,10 @@ describe("Prisma-backed run repository", () => {
           discovery: {
             epochs: [{
               epoch: 1,
-              query: "echo a value",
+              goal: "echo a value",
+              modelRunToolCallId,
               roundIndex: 0,
-              toolNames: [namespacedName]
+              toolIds: [namespacedName]
             }]
           },
           snapshot: { tools: [{ namespacedName }] }
@@ -958,7 +979,8 @@ describe("Prisma-backed run repository", () => {
         })).resolves.toBe(1);
         await expect(append({
           bindings: [fixture.binding],
-          query: "echo a value",
+          goal: "echo a value",
+          modelRunToolCallId,
           roundIndex: 0,
           runId: created.runId,
           snapshot,

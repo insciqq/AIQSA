@@ -11,28 +11,46 @@ export type SkillDraft = {
 
 export type SkillScope =
   | { kind: "owner" }
-  | { groupNames: string[]; kind: "group" }
+  | { kind: "workspace"; workspaceNames: string[] }
   | { kind: "installation" };
 
 export type SkillSummary = {
   archived: boolean;
   description: string;
   id: string;
-  instructions: string;
+  instructionCharacterCount: number;
   name: string;
   owned: boolean;
   ownerDisplayName: string;
   scope: SkillScope;
+  updatedAt: string;
   version: number;
 };
 
 export type SkillListResponse = {
-  publishableGroups: { id: string; name: string }[];
+  nextCursor: string | null;
+  publishableWorkspaces: { id: string; name: string }[];
   skills: SkillSummary[];
   viewer: { canPublishInstallation: boolean };
 };
 
-export type SkillMutationResponse = { skill: SkillSummary };
+export type SkillAudience =
+  | { id: string; kind: "everyone"; name: "Everyone" }
+  | { id: string; kind: "workspace"; name: string; workspaceId: string };
+
+export type SkillDetail = SkillSummary & {
+  assistantUsageCount: number;
+  audiences: SkillAudience[];
+  canDelete: boolean;
+  canEdit: boolean;
+  canPublish: boolean;
+  canUnshare: boolean;
+  instructions: string;
+  owner: { displayName: string };
+  workspaceUsageCount: number;
+};
+
+export type SkillMutationResponse = { skill: SkillDetail };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);

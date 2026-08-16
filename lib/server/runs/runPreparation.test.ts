@@ -757,6 +757,25 @@ async function expectFailure(input: {
 
 describe("run preparation", () => {
 
+  it("freezes the installation tool budgets into the accepted request", async () => {
+    const harness = createHarness();
+    const load = vi.fn().mockResolvedValue({ maxToolCalls: 200, maxToolRounds: 17 });
+    const prepared = preparedFrom(await prepareRun({
+      ...harness.deps,
+      runPolicy: { load }
+    }, sendInput()));
+
+    expect(load).toHaveBeenCalledOnce();
+    expect(prepared.normalizedRequest.toolBudgets).toEqual({
+      maxToolCalls: 200,
+      maxToolRounds: 17
+    });
+    expect(prepared.providerRequest.toolBudgets).toEqual({
+      maxToolCalls: 200,
+      maxToolRounds: 17
+    });
+  });
+
   it("defensively separates and deeply freezes prepared data without freezing service dependencies", async () => {
     const originalBlock = {
       text: "Shared question",
@@ -865,8 +884,40 @@ describe("run preparation", () => {
       { name: "Careful editor", revisionId: "skill-revision-2", skillId: "skill-editor" },
       { name: "Action closer", revisionId: "skill-revision-4", skillId: "skill-actions" }
     ]);
-    expect(prepared.providerRequest.prompt.developer).toContain("## Skill: Careful editor");
-    expect(prepared.providerRequest.prompt.developer).toContain("End with a short action list.");
+    expect(prepared.providerRequest.prompt.developer).not.toContain("Careful editor");
+    expect(prepared.providerRequest.context?.messages.slice(-2)).toEqual([
+      {
+        content: {
+          blocks: [{
+            text: [
+              "<selected_skills>",
+              "  <skill name=\"Careful editor\">",
+              "Verify every factual claim before answering.",
+              "  </skill>",
+              "  <skill name=\"Action closer\">",
+              "End with a short action list.",
+              "  </skill>",
+              "</selected_skills>"
+            ].join("\n"),
+            type: "text"
+          }]
+        },
+        id: "skill-context:current-user-message",
+        purpose: "skill_context",
+        role: "user"
+      },
+      {
+        content: { blocks: [{ text: "Shared question", type: "text" }] },
+        id: "current-user-message",
+        role: "user"
+      }
+    ]);
+    expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain(
+      "Verify every factual claim"
+    );
+    expect(JSON.stringify(prepared.providerRequestPreview)).toContain(
+      "[selected Skill instructions omitted]"
+    );
   });
 
   it("fails before snapshotting unsupported Buffer data without mutating it", async () => {
@@ -942,6 +993,7 @@ describe("run preparation", () => {
       harness.deps,
       sendInput(successBody({
         content: textMessageContent("Remember that my favorite color is teal"),
+        mcp: { mode: "load_all" },
         modelId: "openai-tool-model",
         params: { background: true, stream: true },
         provider: "openai"
@@ -1304,6 +1356,7 @@ describe("run preparation", () => {
     const result = await prepareRun(
       harness.deps,
       sendInput(successBody({
+        mcp: { mode: "load_all" },
         modelId: "openai-tool-model",
         params,
         provider: "openai"
@@ -1365,7 +1418,7 @@ describe("run preparation", () => {
       .not.toContain("inputSchema");
   });
 
-  it("keeps Off empty and materializes only the exact Selected MCP servers", async () => {
+  it("keeps Off empty and materializes every enabled MCP in Load all", async () => {
     const harness = createHarness({
       capabilities: { ...baseCapabilities, toolCalling: true }
     });
@@ -1386,19 +1439,17 @@ describe("run preparation", () => {
     expect(catalog).not.toHaveBeenCalled();
     expect(prepare).not.toHaveBeenCalled();
 
-    const selected = preparedFrom(await prepareRun(
+    const loadAll = preparedFrom(await prepareRun(
       { ...harness.deps, mcp: { catalog, prepare } },
       sendInput(successBody({
-        mcp: { mode: "selected", serverIds: ["server-1"] },
+        mcp: { mode: "load_all" },
         modelId: "openai-tool-model",
         provider: "openai"
       }))
     ));
-    expect(prepare).toHaveBeenCalledWith("user-1", {
-      allowedServerIds: ["server-1"]
-    });
-    expect(selected.normalizedRequest.mcpDiscovery).toBeUndefined();
-    expect(selected.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+    expect(prepare).toHaveBeenCalledWith("user-1");
+    expect(loadAll.normalizedRequest.mcpDiscovery).toBeUndefined();
+    expect(loadAll.providerRequest.tools?.map((tool) => tool.name)).toEqual([
       ...memoryToolNames,
       "mcp_team_lookup_1"
     ]);
@@ -1420,6 +1471,7 @@ describe("run preparation", () => {
     const result = await prepareRun(
       harness.deps,
       sendInput(successBody({
+        mcp: { mode: "load_all" },
         modelId: "openai-tool-model",
         params: { background: true, stream: true },
         provider: "openai"
@@ -1445,7 +1497,11 @@ describe("run preparation", () => {
 
     const prepared = preparedFrom(await prepareRun(
       harness.deps,
-      sendInput(successBody({ modelId: "openai-no-tools", provider: "openai" }))
+      sendInput(successBody({
+        mcp: { mode: "load_all" },
+        modelId: "openai-no-tools",
+        provider: "openai"
+      }))
     ));
 
     expect(prepared.normalizedRequest.mcp).toEqual(mcpPlan.snapshot);
@@ -1466,6 +1522,7 @@ describe("run preparation", () => {
         providerAdmission: { async load() { return plan; } }
       },
       sendInput(successBody({
+        mcp: { mode: "load_all" },
         modelId: plan.selection.providerModelId,
         provider: plan.selection.providerConnectionId
       }))
@@ -1577,6 +1634,7 @@ describe("run preparation", () => {
             { attachmentId: attachment.id, type: "attachment" }
           ]
         },
+        mcp: { mode: "load_all" },
         modelId: hosted.selection.providerModelId,
         params: {},
         provider: hosted.selection.providerConnectionId,
@@ -1810,6 +1868,7 @@ describe("run preparation", () => {
       },
       sendInput(successBody({
         knowledgePlan: { baseIds: ["knowledge-base-1"] },
+        mcp: { mode: "load_all" },
         modelId: hosted.selection.providerModelId,
         params: {},
         provider: hosted.selection.providerConnectionId,
@@ -1855,6 +1914,7 @@ describe("run preparation", () => {
                 revisionNumber: 1,
                 runControls: { maxOutputTokens: 512 },
                 searchPlan: { mode: "model_choice" as const, optionIds: [optionId] },
+                skillIds: [],
                 systemPrompt: "Answer from admitted evidence."
               },
               ok: true as const
@@ -2422,7 +2482,11 @@ describe("run preparation", () => {
 
     const result = await prepareRun(
       harness.deps,
-      sendInput(successBody({ modelId: "openai-tool-model", provider: "openai" }))
+      sendInput(successBody({
+        mcp: { mode: "load_all" },
+        modelId: "openai-tool-model",
+        provider: "openai"
+      }))
     );
 
     expect(result).toMatchObject({ code: "context_too_large", ok: false, status: 400 });

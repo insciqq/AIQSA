@@ -25,6 +25,7 @@ import {
   type AssistantSummary
 } from "@/lib/contracts/assistants";
 import { KNOWLEDGE_PLAN_MAX_BASES } from "@/lib/contracts/knowledge";
+import { SKILL_MAX_SELECTED, type SkillSummary } from "@/lib/contracts/skills";
 import { MAX_SEARCH_PLAN_OPTIONS } from "@/lib/domain/search";
 import { ArrowLeft, ChevronDown, LoaderCircle, Plus, RotateCcw, Search } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
@@ -65,6 +66,7 @@ const HISTORY_SECTION_LABELS: Readonly<Record<string, string>> = {
   model: "Model",
   "run-setup": "Run setup",
   search: "Search",
+  skills: "Skills",
   starters: "Starters",
   tools: "Tools"
 };
@@ -101,6 +103,14 @@ function capabilityLine(fingerprint: AssistantCapabilityFingerprint): string {
     parts.push(`${fingerprint.mcpServerCount} MCP`);
   }
   return parts.join(" · ");
+}
+
+function skillScopeLabel(skill: SkillSummary): string {
+  if (skill.owned) return "Yours";
+  if (skill.scope.kind === "workspace") {
+    return skill.scope.workspaceNames.join(", ") || "Shared Workspace";
+  }
+  return "Shared with everyone";
 }
 
 function matchesFilter(assistant: AssistantSummary, filter: LibraryFilter, mode: LibraryMode): boolean {
@@ -880,6 +890,7 @@ function EditorTask({
   const title = draft.name.trim() || "New assistant";
   const searchLimitReached = draft.searchOptionIds.length >= MAX_SEARCH_PLAN_OPTIONS;
   const knowledgeLimitReached = draft.knowledgeBaseIds.length >= KNOWLEDGE_PLAN_MAX_BASES;
+  const skillLimitReached = draft.skillIds.length >= SKILL_MAX_SELECTED;
   const toolsCaution = selectedModel !== null && !selectedModel.supportsTools && draft.mcpServerIds.length > 0;
 
   const providerGroups: { models: AssistantEditorView["options"]["models"]; providerLabel: string }[] = [];
@@ -914,6 +925,13 @@ function EditorTask({
       knowledgeBaseIds: checked
         ? [...draft.knowledgeBaseIds, baseId]
         : draft.knowledgeBaseIds.filter((id) => id !== baseId)
+    });
+
+  const toggleSkill = (skillId: string, checked: boolean) =>
+    editor.onChange({
+      skillIds: checked
+        ? [...draft.skillIds, skillId]
+        : draft.skillIds.filter((id) => id !== skillId)
     });
 
   const updateStarter = (index: number, value: string) => {
@@ -1288,6 +1306,85 @@ function EditorTask({
                 <p className="text-metadata text-ink-muted">No Knowledge bases are available.</p>
               ) : null}
               <p className="text-metadata text-ink-muted">Up to {KNOWLEDGE_PLAN_MAX_BASES} bases per Assistant.</p>
+            </EditorGroup>
+
+            <EditorGroup
+              id="skills"
+              onToggle={() => toggleGroup("skills")}
+              open={openGroups.skills ?? false}
+              title="Skills"
+            >
+              <p className="text-metadata leading-5 text-ink-muted">
+                Skills run in this order. Their latest text applies to future runs automatically.
+              </p>
+              <fieldset>
+                <legend className="mb-1.5 text-xs font-medium text-ink-secondary">Included Skills</legend>
+                <div className="space-y-2">
+                  {draft.skillIds
+                    .filter((skillId) => !editor.options.skills.some((skill) => skill.id === skillId))
+                    .map((skillId) => {
+                      const order = draft.skillIds.indexOf(skillId) + 1;
+                      return (
+                        <label className={checkboxRow} key={skillId}>
+                          <input
+                            checked
+                            className="size-4 shrink-0 accent-proof"
+                            disabled={mutationLocked}
+                            type="checkbox"
+                            onChange={(event) => toggleSkill(skillId, event.currentTarget.checked)}
+                          />
+                          <span className="min-w-0 break-words text-caution [overflow-wrap:anywhere]">
+                            Unavailable Skill · selection retained · order {order}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  {editor.options.skills.map((skill) => {
+                    const checked = draft.skillIds.includes(skill.id);
+                    const available = !skill.archived;
+                    return (
+                      <label className={checkboxRow} key={skill.id}>
+                        <input
+                          checked={checked}
+                          className="size-4 shrink-0 accent-proof"
+                          disabled={mutationLocked || (!checked && (!available || skillLimitReached))}
+                          type="checkbox"
+                          onChange={(event) => toggleSkill(skill.id, event.currentTarget.checked)}
+                        />
+                        <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+                          <span className={available ? "block" : "block text-caution"}>
+                            {skill.name}{available ? "" : checked ? " · unavailable, retained" : " · unavailable"}
+                            {checked ? ` · order ${draft.skillIds.indexOf(skill.id) + 1}` : ""}
+                          </span>
+                          <span className="block text-metadata text-ink-muted">
+                            {skill.ownerDisplayName} · {skillScopeLabel(skill)}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+              {editor.options.skillDataState === "loading" && editor.options.skills.length === 0 ? (
+                <p className="text-metadata text-ink-muted" role="status">Loading Skills…</p>
+              ) : null}
+              {editor.options.skillDataState === "error" ? (
+                <div className="rounded-control border border-critical/30 bg-critical/10 p-3 text-metadata text-critical" role="alert">
+                  <p>{editor.options.skillDataError ?? "Skills could not be loaded."}</p>
+                  <button
+                    className="mt-2 h-touch rounded-control bg-control-surface px-3 font-semibold text-ink outline-none hover:bg-control-hover focus-visible:ring-2 focus-visible:ring-focus sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
+                    type="button"
+                    disabled={mutationLocked}
+                    onClick={editor.options.onRetrySkills}
+                  >
+                    Retry Skills
+                  </button>
+                </div>
+              ) : null}
+              {editor.options.skillDataState === "ready" && editor.options.skills.length === 0 && draft.skillIds.length === 0 ? (
+                <p className="text-metadata text-ink-muted">No Skills are available.</p>
+              ) : null}
+              <p className="text-metadata text-ink-muted">Up to {SKILL_MAX_SELECTED} Skills per Assistant.</p>
             </EditorGroup>
 
             <EditorGroup

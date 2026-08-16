@@ -38,6 +38,7 @@ import {
   ToolHiveRuntimeError,
   type ToolHiveMcpRuntimeDriver
 } from "./toolhiveRuntimeDriver";
+import { compactMcpToolInventoryEntry } from "./catalogMetadata";
 
 const MAX_EVIDENCE_TOOLS = 256;
 const MAX_DESCRIPTION_LENGTH = 2_048;
@@ -137,7 +138,10 @@ function inventoryFor(
       ? tool.description.slice(0, MAX_DESCRIPTION_LENGTH)
       : null;
     names.add(tool.name);
-    inventory.push({ description, name: tool.name });
+    inventory.push(compactMcpToolInventoryEntry({
+      ...tool,
+      description
+    }, secrets));
   }
   return { inventory, issue: null };
 }
@@ -285,6 +289,11 @@ export function createLocalMcpDraftValidator(
         }
         const inventory = inventoryFor(tools, secrets);
         if (inventory.issue) return { issues: [inventory.issue], kind: "invalid" };
+        const serverEvidence = session.serverEvidence?.() ?? null;
+        if (serverEvidence && secrets.some((secret) =>
+          JSON.stringify(serverEvidence).includes(secret))) {
+          return invalid("mcp_local_inventory_unsafe", "source");
+        }
 
         const detail = await options.client.getWorkload(options.driver.workloadName(generationToken));
         const artifact: McpLocalResolvedArtifact = source.kind === "oci"
@@ -306,6 +315,7 @@ export function createLocalMcpDraftValidator(
         const evidence: McpJsonObject = {
           artifactIdentityHash: hashCanonicalMcpValue(artifactJson),
           materializer: artifact.materializer,
+          ...(serverEvidence ? { server: serverEvidence } : {}),
           toolCount: tools.length,
           toolDefinitionHashes: definitionHashes,
           toolInventoryHash: hashCanonicalMcpValue(

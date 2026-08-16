@@ -86,4 +86,78 @@ describe("administrator system model policy handlers", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ systemModelPolicy: catalog });
   });
+
+  it("runs explicit structured-output verification and returns the refreshed projection", async () => {
+    const catalog = {
+      candidates: [],
+      policy: {
+        reasoningEffort: null,
+        systemModel: null,
+        updatedAt: "2026-08-08T00:00:00.000Z",
+        updatedBy: null,
+        version: 1
+      }
+    };
+    const service = {
+      list: vi.fn().mockResolvedValue(catalog),
+      update: vi.fn(),
+      verifyStructuredOutput: vi.fn().mockResolvedValue(undefined)
+    };
+    const handlers = createAdminSystemModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const response = await handlers.POST(new Request(
+      "http://local.test/api/admin/providers/system-model-policy",
+      {
+        body: JSON.stringify({ providerModelId: "model-1" }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      }
+    ));
+
+    expect(response.status).toBe(200);
+    expect(service.verifyStructuredOutput).toHaveBeenCalledWith({
+      providerModelId: "model-1",
+      signal: expect.any(AbortSignal)
+    });
+    await expect(response.json()).resolves.toEqual({ systemModelPolicy: catalog });
+  });
+
+  it("validates verification input and maps provider probe failures", async () => {
+    const service = {
+      list: vi.fn(),
+      update: vi.fn(),
+      verifyStructuredOutput: vi.fn().mockRejectedValue(
+        new AdminSystemModelPolicyServiceError("system_model_policy_verification_failed")
+      )
+    };
+    const handlers = createAdminSystemModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const invalid = await handlers.POST(new Request(
+      "http://local.test/api/admin/providers/system-model-policy",
+      {
+        body: JSON.stringify({ extra: true, providerModelId: "model-1" }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      }
+    ));
+    expect(invalid.status).toBe(400);
+    expect(service.verifyStructuredOutput).not.toHaveBeenCalled();
+
+    const failed = await handlers.POST(new Request(
+      "http://local.test/api/admin/providers/system-model-policy",
+      {
+        body: JSON.stringify({ providerModelId: "model-1" }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      }
+    ));
+    expect(failed.status).toBe(422);
+    await expect(failed.json()).resolves.toEqual({
+      error: "system_model_policy_verification_failed"
+    });
+  });
 });

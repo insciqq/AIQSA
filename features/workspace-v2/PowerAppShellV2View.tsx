@@ -28,7 +28,6 @@ import {
   useMcpSettingsStore
 } from "@/components/app-shell/mcpSettingsStore";
 import {
-  refreshSkillLibrary,
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
 import type { PowerAppShellV2Props } from "@/components/app-shell/powerAppShellV2Contracts";
@@ -69,6 +68,7 @@ import {
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import {
   presentRunLifecycleV2,
+  presentToolActivityV2,
   settledRunPresentationV2
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { documentTitleV2 } from "@/features/workspace-v2/documentTitle";
@@ -80,6 +80,7 @@ import { SettingsV2 } from "@/features/settings-v2/SettingsV2";
 import { attachmentItemsForV2 } from "@/features/attachments-v2/attachmentPresentation";
 import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
+import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
 import type {
   ChatNavigationFolderWire,
   ChatNavigationSummaryWire
@@ -149,6 +150,36 @@ export function answerIdentityV2(
   return null;
 }
 
+export function retryAutoMcpDiscoveryV2(regenerate: () => void): void {
+  useComposerControlStore.getState().setMcpSelection({ mode: "auto" });
+  regenerate();
+}
+
+export function applyLoadAllAfterMcpDiscoveryFailureV2(regenerate: () => void): void {
+  useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
+  regenerate();
+}
+
+export function SkillLibraryOverlayV2({
+  onClose,
+  onSelectionChange,
+  open,
+  selectedIds
+}: Readonly<{
+  onClose(): void;
+  onSelectionChange(skillIds: readonly string[]): void;
+  open: boolean;
+  selectedIds: readonly string[];
+}>) {
+  return open ? (
+    <SkillLibraryDialog
+      onClose={onClose}
+      onSelectionChange={onSelectionChange}
+      selectedIds={selectedIds}
+    />
+  ) : null;
+}
+
 
 export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
@@ -160,7 +191,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [skillLibraryOpen, setSkillLibraryOpen] = useState(false);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const mcpServers = useMcpSettingsStore((state) => state.servers);
-  const mcpLoadState = useMcpSettingsStore((state) => state.loadState);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
   const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
@@ -175,20 +205,18 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 
   useEffect(() => {
     void refreshMcpSettings().catch(() => undefined);
-    void refreshSkillLibrary().catch(() => undefined);
   }, []);
   useEffect(() => {
     if (!skillCatalog || selectedSkills.length === 0) return;
-    const available = new Map(
-      skillCatalog.skills.filter((skill) => !skill.archived).map((skill) => [skill.id, skill] as const)
-    );
+    const catalogById = new Map(skillCatalog.skills.map((skill) => [skill.id, skill] as const));
     const next = selectedSkills.flatMap((selected) => {
-      const skill = available.get(selected.id);
-      return skill ? [{
+      const skill = catalogById.get(selected.id);
+      if (!skill) return [selected];
+      return !skill.archived ? [{
         description: skill.description,
         id: skill.id,
         name: skill.name,
-        promptCharacterCount: skill.instructions.length
+        promptCharacterCount: skill.instructionCharacterCount
       }] : [];
     });
     if (next.length !== selectedSkills.length || next.some((skill, index) =>
@@ -198,15 +226,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       useComposerControlStore.getState().setSelectedSkills(next);
     }
   }, [selectedSkills, skillCatalog]);
-  useEffect(() => {
-    if (mcpSelection.mode !== "selected" || mcpLoadState !== "ready") return;
-    const enabledIds = new Set(mcpServers.filter((server) => server.enabled).map((server) => server.id));
-    const serverIds = mcpSelection.serverIds.filter((id) => enabledIds.has(id));
-    if (serverIds.length === mcpSelection.serverIds.length) return;
-    useComposerControlStore.getState().setMcpSelection(
-      serverIds.length > 0 ? { mode: "selected", serverIds } : { mode: "auto" }
-    );
-  }, [mcpLoadState, mcpSelection, mcpServers]);
   // The tab title follows the visible active chat (rename/switch included);
   // the Library replaces it while it owns the workspace. Next.js re-applies
   // its static route metadata after hydration, so the effect also watches the
@@ -309,14 +328,19 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
       onSelectSkillIds={(ids) => {
         const byId = new Map((skillCatalog?.skills ?? []).map((skill) => [skill.id, skill] as const));
+        const selectedById = new Map(selectedSkills.map((skill) => [skill.id, skill] as const));
         useComposerControlStore.getState().setSelectedSkills(ids.flatMap((id) => {
           const skill = byId.get(id);
-          return skill && !skill.archived ? [{
-            description: skill.description,
-            id: skill.id,
-            name: skill.name,
-            promptCharacterCount: skill.instructions.length
-          }] : [];
+          if (skill) {
+            return !skill.archived ? [{
+              description: skill.description,
+              id: skill.id,
+              name: skill.name,
+              promptCharacterCount: skill.instructionCharacterCount
+            }] : [];
+          }
+          const selected = selectedById.get(id);
+          return selected ? [selected] : [];
         }));
       }}
       onSend={() => void composer.submitComposer()}
@@ -330,6 +354,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       selectedProvider={composer.selectedProvider}
       selectedSearchOptionIds={composer.selectedSearchOptionIds}
       selectedSkillIds={selectedSkills.map((skill) => skill.id)}
+      selectedSkills={selectedSkills.map(({ id, name }) => ({ id, name }))}
       uploading={composer.uploading}
       usageStats={composer.composerUsageStats}
     />
@@ -478,6 +503,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       events,
       runId: source.runId ?? null
     });
+    const toolActivity = presentToolActivityV2(events, source.toolActivity ?? null);
     // A live run shows only its factual status and streamed content. A settled
     // answer adds only direct user outputs; it never grows a receipt row or
     // post-hoc execution surface.
@@ -502,9 +528,19 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         content={messageText(source)}
         onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}
         onRegenerate={() => thread.handleRegenerateMessage(source.id)}
-        onRetry={() => thread.handleRegenerateMessage(source.id)}
+        onRetry={() => {
+          if (presentation.failure?.code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE) {
+            retryAutoMcpDiscoveryV2(() => thread.handleRegenerateMessage(source.id));
+            return;
+          }
+          thread.handleRegenerateMessage(source.id);
+        }}
         onSelectModel={() => setRunSetupOpen(true)}
+        onUseLoadAll={() => applyLoadAllAfterMcpDiscoveryFailureV2(
+          () => thread.handleRegenerateMessage(source.id)
+        )}
         presentation={presentation}
+        toolActivity={toolActivity}
       />
     );
   };
@@ -736,20 +772,30 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           selectedAssistantId={composer.assistant.selected?.id ?? null}
         />
       ) : null}
-      {skillLibraryOpen ? (
-        <SkillLibraryDialog
-          selectedIds={selectedSkills.map((skill) => skill.id)}
-          onClose={() => setSkillLibraryOpen(false)}
-          onSelectionChange={(skills) => {
-            useComposerControlStore.getState().setSelectedSkills(skills.map((skill) => ({
-              description: skill.description,
-              id: skill.id,
-              name: skill.name,
-              promptCharacterCount: skill.instructions.length
-            })));
-          }}
-        />
-      ) : null}
+      <SkillLibraryOverlayV2
+        open={skillLibraryOpen}
+        selectedIds={selectedSkills.map((skill) => skill.id)}
+        onClose={() => setSkillLibraryOpen(false)}
+        onSelectionChange={(ids) => {
+            const catalogById = new Map(
+              (skillCatalog?.skills ?? []).map((skill) => [skill.id, skill] as const)
+            );
+            const selectedById = new Map(selectedSkills.map((skill) => [skill.id, skill] as const));
+            useComposerControlStore.getState().setSelectedSkills(ids.flatMap((id) => {
+              const skill = catalogById.get(id);
+              if (skill) {
+                return !skill.archived ? [{
+                  description: skill.description,
+                  id: skill.id,
+                  name: skill.name,
+                  promptCharacterCount: skill.instructionCharacterCount
+                }] : [];
+              }
+              const selected = selectedById.get(id);
+              return selected ? [selected] : [];
+            }));
+        }}
+      />
 
       {settings.settings.open && !libraryOpen ? (
         <SettingsV2

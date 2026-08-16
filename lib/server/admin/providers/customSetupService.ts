@@ -7,6 +7,7 @@ import {
   type AdminProviderCustomSetupRequest
 } from "../../../contracts/adminProviderCustomSetup";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
+import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 import {
   adminSearchExecutionDefaults,
   type AdminSearchDraft,
@@ -174,12 +175,19 @@ function validatedEvidence(
   outcome: AdminProviderDraftTestOutcome,
   model: ProviderModelConfiguration
 ): AdminProviderTestEvidence {
+  const structuredOutput = decodeStructuredOutputVerificationEvidence(
+    outcome.evidence.structuredOutput
+  );
   if (
     outcome.status !== "available" ||
     outcome.evidence.detail !== "ok" ||
     outcome.evidence.method !== "tiny_generation" ||
     outcome.evidence.upstreamModelId !== model.upstreamModelId ||
-    outcome.evidence.selectedProviders.length !== 0
+    outcome.evidence.selectedProviders.length !== 0 ||
+    (structuredOutput !== null && (
+      structuredOutput.adapterKind !== model.adapterKind ||
+      structuredOutput.upstreamModelId !== model.upstreamModelId
+    ))
   ) {
     throw new AdminProviderCustomSetupServiceError(
       "provider_custom_setup_test_failed"
@@ -189,6 +197,7 @@ function validatedEvidence(
     detail: "ok",
     method: "tiny_generation",
     selectedProviders: [],
+    ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: model.upstreamModelId
   };
 }

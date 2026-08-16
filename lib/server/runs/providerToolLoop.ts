@@ -172,7 +172,10 @@ export async function runProviderToolLoop(
     } : undefined,
     async runProviderRound({ continuation, emitText, previousToolResults, progress, round, signal }) {
       const effectiveContinuation = continuationForRound(input.bridge, continuation, previousToolResults);
-      const toolChoice = progress.toolRounds >= input.budgets.maxToolRounds ? "none" : "auto";
+      const toolChoice = progress.toolRounds >= input.budgets.maxToolRounds ||
+        progress.toolCalls >= input.budgets.maxToolCalls
+        ? "none"
+        : "auto";
       const roundRequest = await input.prepareRequest?.({
         ...input.initialRequest,
         parallelToolCalls: input.parallelToolCalls,

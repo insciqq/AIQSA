@@ -234,6 +234,7 @@ function revisionContent(
             view.entitledSearchOptionIds.has(optionId)
           )
         },
+    skillIds: [...revision.skillIds],
     starterPrompts: [...revision.starterPrompts],
     systemPrompt: revision.systemPrompt
   };
@@ -247,6 +248,7 @@ function detailFromEntry(
   view: RunnerCatalogView
 ): AssistantDetail {
   const decoded = decodeStoredRevision(entry.revision);
+  const skillSummaries = entry.revision.skillSummaries ?? [];
   return {
     archived: entry.archived,
     availability: availabilityFor(entry.revision, decoded.searchPlan.optionIds, view),
@@ -268,6 +270,9 @@ function detailFromEntry(
       : {}),
     revision: revisionContent(entry.revision, view, { owned: entry.owned }),
     ...(entry.revisionCount !== null ? { revisionCount: entry.revisionCount } : {}),
+    ...(skillSummaries.length === entry.revision.skillIds.length
+      ? { skills: skillSummaries.map((skill) => ({ ...skill })) }
+      : {}),
     ...(entry.owned ? { version: entry.version } : {})
   };
 }
@@ -347,8 +352,11 @@ export function createCreateAssistantHandler(deps: AssistantHandlerDeps) {
     const invalid = validateDraftAgainstCatalog(decoded.draft, resolved.view);
     if (invalid) return invalid;
 
-    const assistantId = await deps.repository.create(resolved.auth.userId, decoded.draft);
-    const detail = await deps.repository.getDetail(resolved.auth.userId, assistantId);
+    const created = await deps.repository.create(resolved.auth.userId, decoded.draft);
+    if (created.kind === "skills_not_available") {
+      return errorJson("assistant_skills_not_available", 400);
+    }
+    const detail = await deps.repository.getDetail(resolved.auth.userId, created.assistantId);
     if (!detail) return errorJson("assistant_not_available", 404);
     return Response.json(
       { assistant: detailFromEntry(detail, resolved.view) } satisfies AssistantDetailResponse,
@@ -419,6 +427,9 @@ export function createUpdateAssistantHandler(deps: AssistantHandlerDeps) {
     if (result.kind === "not_found") return errorJson("assistant_not_available", 404);
     if (result.kind === "version_conflict") return errorJson("assistant_version_conflict", 409);
     if (result.kind === "archived") return errorJson("assistant_archived", 409);
+    if (result.kind === "skills_not_available") {
+      return errorJson("assistant_skills_not_available", 400);
+    }
 
     const detail = await deps.repository.getDetail(resolved.auth.userId, assistantId);
     if (!detail) return errorJson("assistant_not_available", 404);
@@ -452,6 +463,9 @@ export function createDuplicateAssistantHandler(deps: AssistantHandlerDeps) {
     }
     if (result.kind === "search_not_available") {
       return errorJson("assistant_search_option_not_available", 400);
+    }
+    if (result.kind === "skills_not_available") {
+      return errorJson("assistant_not_available", 404);
     }
     if (result.kind === "tools_not_available") {
       return errorJson("assistant_tools_not_available", 400);
@@ -562,6 +576,13 @@ export function createPublishAssistantHandler(deps: AssistantHandlerDeps) {
     if (result.kind === "not_found") return errorJson("assistant_not_available", 404);
     if (result.kind === "forbidden") return errorJson("forbidden", 403);
     if (result.kind === "invalid") return errorJson("assistant_publication_invalid", 400);
+    if (result.kind === "skill_audience_mismatch") {
+      return errorJson(
+        "assistant_skill_audience_mismatch",
+        409,
+        "Share every included Skill with this audience before publishing the Assistant."
+      );
+    }
     return Response.json({
       publication: {
         groupId: result.publication.groupId,

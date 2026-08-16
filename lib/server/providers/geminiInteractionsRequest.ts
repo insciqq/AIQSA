@@ -63,6 +63,7 @@ export type GeminiInteractionsRequestPreview = {
     "attachment_filename",
     "attachment_media_type",
     "grounding_suggestions",
+    "selected_skill_instructions",
     "provider_signatures"
   ];
   replayedContext: {
@@ -382,7 +383,9 @@ function buildGeminiInteractionsBody(
   const storedConversationById = new Map(
     conversationMessagesForRequest(request).map((message) => [message.id, message.content])
   );
-  const conversation = textConversationForRequest(request);
+  const conversation = textConversationForRequest(request, {
+    redactSkillContext: options.preview
+  });
   let latestUserIndex = -1;
   for (let index = conversation.length - 1; index >= 0; index -= 1) {
     if (conversation[index]?.role === "user") {
@@ -470,6 +473,7 @@ export function buildGeminiInteractionsRequestPreview(
       "attachment_filename",
       "attachment_media_type",
       "grounding_suggestions",
+      "selected_skill_instructions",
       "provider_signatures"
     ],
     replayedContext: conversationPreview(request)
