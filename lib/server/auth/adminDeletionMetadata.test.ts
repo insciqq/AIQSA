@@ -179,6 +179,19 @@ describe("admin deletion metadata", () => {
 
     expect(
       adminGroupDeletionInfo({
+        _count: { skillPublications: 2, users: 0 },
+        accessGrants: [],
+        mcpGrants: [],
+        systemRole: null
+      })
+    ).toEqual({
+      canDelete: false,
+      reason: "group_has_grants",
+      summary: "Remove 2 Skill publications before deleting this group."
+    });
+
+    expect(
+      adminGroupDeletionInfo({
         _count: { users: 0 },
         accessGrants: [{ enabled: false }],
         mcpGrants: [],
@@ -187,7 +200,7 @@ describe("admin deletion metadata", () => {
     ).toEqual({
       canDelete: true,
       reason: null,
-      summary: "No members, active grants, provider credential assignments, Assistant publications, or Knowledge Base publications; this group can be deleted."
+      summary: "No members, active grants, provider credential assignments, Assistant, Skill, or Knowledge Base publications; this group can be deleted."
     });
   });
 

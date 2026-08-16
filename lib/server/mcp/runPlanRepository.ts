@@ -1,7 +1,11 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { McpReadiness } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
-import type { McpRunPlanRecord } from "./runPlan";
+import {
+  buildMcpCapabilityCatalog,
+  type McpCapabilityCatalog,
+  type McpRunPlanRecord
+} from "./runPlan";
 
 const runPlanPreferenceSelect = {
   desiredRuntimeGeneration: {
@@ -23,8 +27,15 @@ const runPlanPreferenceSelect = {
   id: true,
   server: {
     select: {
+      activeRevision: {
+        select: {
+          configuration: true,
+          validationEvidence: true
+        }
+      },
       activeRevisionId: true,
       archivedAt: true,
+      description: true,
       displayName: true,
       enabled: true,
       grants: {
@@ -59,6 +70,9 @@ function inaccessibleRecord(
   errorCode: string
 ): McpRunPlanRecord {
   return {
+    // A revoked grant or unavailable server must not leak tool metadata into
+    // the user's private Auto-discovery catalog.
+    catalogTools: [],
     credentialSources: [],
     enabled: preference.enabled,
     errorCode,
@@ -71,6 +85,7 @@ function inaccessibleRecord(
     readiness: "unavailable",
     revisionId: preference.server.activeRevisionId ?? "",
     serverId: preference.server.id,
+    serverDescription: preference.server.description,
     serverName: preference.server.displayName
   };
 }
@@ -84,6 +99,34 @@ function runtimeReadiness(state: string, errorCode: string | null): {
   if (state === "idle") return { errorCode: null, readiness: "idle" };
   if (state === "stopping") return { errorCode: null, readiness: "restarting" };
   return { errorCode: errorCode ?? "mcp_runtime_unavailable", readiness: "unavailable" };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function revisionCatalogTools(
+  validationEvidence: unknown,
+  configuration: unknown
+): { description: string | null; name: string; title?: string }[] {
+  if (!isRecord(validationEvidence) || !Array.isArray(validationEvidence.toolInventory)) return [];
+  const disabled = new Set(
+    isRecord(configuration) && Array.isArray(configuration.disabledToolNames)
+      ? configuration.disabledToolNames.filter((name): name is string => typeof name === "string")
+      : []
+  );
+  return validationEvidence.toolInventory.flatMap((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.name !== "string" || !candidate.name.trim() ||
+      disabled.has(candidate.name) ||
+      !(candidate.description === null || typeof candidate.description === "string")) return [];
+    return [{
+      description: candidate.description as string | null,
+      name: candidate.name,
+      ...(typeof candidate.title === "string" && candidate.title.trim()
+        ? { title: candidate.title.trim() }
+        : {})
+    }];
+  });
 }
 
 function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRunPlanRecord {
@@ -105,6 +148,10 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
         preference,
         preference.desiredRuntimeGenerationId ? "mcp_runtime_stale" : "mcp_runtime_pending"
       ),
+      catalogTools: revisionCatalogTools(
+        preference.server.activeRevision?.validationEvidence,
+        preference.server.activeRevision?.configuration
+      ),
       errorCode: preference.desiredRuntimeGenerationId ? "mcp_runtime_stale" : null,
       readiness: preference.desiredRuntimeGenerationId ? "unavailable" : "queued"
     };
@@ -118,6 +165,10 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
 
   const runtime = runtimeReadiness(generation.state, generation.errorCode);
   return {
+    catalogTools: revisionCatalogTools(
+      preference.server.activeRevision?.validationEvidence,
+      preference.server.activeRevision?.configuration
+    ),
     credentialSources: generation.credentialSources.filter((source): source is "oauth" | "personal" | "shared" =>
       source === "oauth" || source === "personal" || source === "shared"),
     enabled: preference.enabled,
@@ -131,6 +182,7 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
     readiness: runtime.readiness,
     revisionId: generation.revisionId,
     serverId: preference.server.id,
+    serverDescription: preference.server.description,
     serverName: preference.server.displayName
   };
 }
@@ -146,6 +198,13 @@ export async function loadMcpRunPlanRecords(
   return preferences
     .map(serializeRunPlanPreference)
     .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId));
+}
+
+export async function loadMcpCapabilityCatalog(
+  userId: string,
+  client: PrismaClient = prisma
+): Promise<McpCapabilityCatalog> {
+  return buildMcpCapabilityCatalog(await loadMcpRunPlanRecords(userId, client));
 }
 
 /**
@@ -174,4 +233,8 @@ export function createPrismaMcpRunPlanLoader(client: PrismaClient = prisma) {
     serverIds
       ? loadMcpRunPlanRecordsForServers(userId, serverIds, client)
       : loadMcpRunPlanRecords(userId, client);
+}
+
+export function createPrismaMcpCapabilityCatalogLoader(client: PrismaClient = prisma) {
+  return (userId: string) => loadMcpCapabilityCatalog(userId, client);
 }

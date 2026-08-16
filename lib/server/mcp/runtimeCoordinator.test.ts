@@ -133,6 +133,21 @@ function harness(input: {
 }
 
 describe("MCP runtime coordinator", () => {
+  it("starts only the explicitly requested on-demand servers", async () => {
+    const test = harness();
+
+    await test.coordinator.ensureUserServersReady("user-1", ["server-2", "server-2"]);
+
+    expect(test.repository.synchronizeDesired).toHaveBeenCalledWith({
+      now,
+      onDemand: true,
+      serverIds: ["server-2"],
+      userId: "user-1"
+    });
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    await test.coordinator.stop();
+  });
+
   it("publishes only enabled tools and fences disabled calls before settlement or I/O", async () => {
     const test = harness({
       inventory: ["echo", "Echo", "new_tool"].map((name) => ({

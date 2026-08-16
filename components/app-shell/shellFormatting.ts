@@ -63,10 +63,21 @@ export function humanizeErrorCode(code: string): string {
     catalog_malformed: "Catalog response was malformed",
     chat_detail_malformed: "Chat detail response was malformed",
     edit_malformed: "Message edit response was malformed",
+    mcp_background_not_supported: "Turn off background mode to use MCP with this model",
+    mcp_background_streaming_not_supported:
+      "Turn off streaming or background mode to use MCP with this model",
+    mcp_not_ready:
+      "A selected MCP server or tool is no longer ready. Review MCP settings and try again",
+    mcp_plan_too_large:
+      "The selected MCP tools exceed the per-run limit. Select fewer servers or tools and try again",
+    mcp_tool_calling_not_supported: "Choose a model with tool calling to use MCP",
     provider_not_available: "Provider is not available",
     run_malformed: "Run response was malformed",
     search_provider_not_available: "Search provider is not available",
     settings_malformed: "Settings response was malformed",
+    skill_not_available:
+      "A selected Skill is no longer available. Review Skills and try again",
+    skills_invalid: "Choose up to 8 distinct Skills and try again",
     unsupported_attachment_type: "Attachment is not supported by this model",
     unsupported_search_strategy: "Search is not supported for this model",
     upload_malformed: "Upload response was malformed",

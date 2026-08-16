@@ -7,6 +7,7 @@ import {
   decodeAssistantAvatarRecipe,
   type AssistantAvatarRecipe
 } from "../../contracts/assistants";
+import { SKILL_MAX_SELECTED } from "../../contracts/skills";
 import {
   applySettingsUpdateInTransaction,
   type SettingsTransactionClient
@@ -30,6 +31,8 @@ import {
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
+  SkillRunConflictError,
+  type AcceptedSkillRun,
   type AcceptedRunDefaults
 } from "./runRepositoryContract";
 import { isRecord, json } from "./prismaRepositoryShared";
@@ -84,6 +87,13 @@ class AssistantProvenanceSerializationError extends Error {
   constructor() {
     super("assistant_provenance_serialization_conflict");
     this.name = "AssistantProvenanceSerializationError";
+  }
+}
+
+class SkillProvenanceSerializationError extends Error {
+  constructor() {
+    super("skill_provenance_serialization_conflict");
+    this.name = "SkillProvenanceSerializationError";
   }
 }
 
@@ -253,6 +263,197 @@ export async function insertAcceptedMcpRunBindings(
         )
     `;
     if (inserted !== 1) throw new McpRunPlanConflictError();
+  }
+}
+
+export async function insertAcceptedSkillRunBindings(
+  tx: Pick<Prisma.TransactionClient, "$executeRaw" | "$queryRaw">,
+  input: {
+    bindings: readonly AcceptedSkillRun[] | undefined;
+    runId: string;
+    userId: string;
+  }
+): Promise<void> {
+  const bindings = input.bindings ?? [];
+  if (bindings.length > SKILL_MAX_SELECTED ||
+    new Set(bindings.map((binding) => binding.skillId)).size !== bindings.length ||
+    new Set(bindings.map((binding) => binding.revisionId)).size !== bindings.length ||
+    bindings.some((binding) => !binding.skillId || !binding.revisionId)) {
+    throw new SkillRunConflictError();
+  }
+  for (const binding of [...bindings].sort((left, right) =>
+    left.skillId.localeCompare(right.skillId))) {
+    await assertSkillRunProvenance(tx, {
+      revisionId: binding.revisionId,
+      skillId: binding.skillId,
+      userId: input.userId
+    });
+    const inserted = await tx.$executeRaw`
+      INSERT INTO "ModelRunSkillBinding" (
+        "modelRunId",
+        "skillId",
+        "revisionId"
+      )
+      SELECT
+        run."id",
+        revision."skillId",
+        revision."id"
+      FROM "ModelRun" AS run
+      INNER JOIN "User" AS runner
+        ON runner."id" = run."userId"
+      INNER JOIN "SkillRevision" AS revision
+        ON revision."skillId" = ${binding.skillId}
+       AND revision."id" = ${binding.revisionId}
+      INNER JOIN "SkillDefinition" AS definition
+        ON definition."id" = revision."skillId"
+       AND definition."archivedAt" IS NULL
+      WHERE run."id" = ${input.runId}
+        AND run."userId" = ${input.userId}
+        AND runner."status" = 'active'
+        AND (
+          definition."ownerUserId" = ${input.userId}
+          OR EXISTS (
+            SELECT 1
+            FROM "SkillPublication" AS publication
+            WHERE publication."skillId" = definition."id"
+              AND publication."revisionId" = revision."id"
+              AND (
+                publication."scope" = 'installation'
+                OR (
+                  publication."scope" = 'group'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM "UserGroup" AS membership
+                    INNER JOIN "Group" AS member_group
+                      ON member_group."id" = membership."groupId"
+                     AND member_group."archivedAt" IS NULL
+                    WHERE membership."groupId" = publication."groupId"
+                      AND membership."userId" = ${input.userId}
+                  )
+                )
+              )
+          )
+        )
+    `;
+    if (inserted !== 1) throw new SkillRunConflictError();
+  }
+}
+
+async function assertSkillRunProvenance(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  input: AcceptedSkillRun & { userId: string }
+): Promise<void> {
+  try {
+    const definitions = await tx.$queryRaw<Array<{ ownerUserId: string }>>`
+      SELECT definition."ownerUserId"
+      FROM "SkillDefinition" AS definition
+      INNER JOIN "SkillRevision" AS revision
+        ON revision."skillId" = definition."id"
+       AND revision."id" = ${input.revisionId}
+      WHERE definition."id" = ${input.skillId}
+        AND definition."archivedAt" IS NULL
+      FOR SHARE OF definition
+    `;
+    const definition = definitions[0];
+    if (!definition) throw new SkillRunConflictError();
+    if (definition.ownerUserId === input.userId) return;
+
+    const installationPublications = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT publication."id"
+      FROM "SkillPublication" AS publication
+      WHERE publication."skillId" = ${input.skillId}
+        AND publication."revisionId" = ${input.revisionId}
+        AND publication."scope" = 'installation'
+      ORDER BY publication."id"
+      FOR SHARE OF publication
+    `;
+    if (installationPublications[0]) return;
+
+    const groupPublications = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT publication."id"
+      FROM "SkillPublication" AS publication
+      INNER JOIN "UserGroup" AS membership
+        ON membership."groupId" = publication."groupId"
+       AND membership."userId" = ${input.userId}
+      INNER JOIN "Group" AS member_group
+        ON member_group."id" = membership."groupId"
+       AND member_group."archivedAt" IS NULL
+      WHERE publication."skillId" = ${input.skillId}
+        AND publication."revisionId" = ${input.revisionId}
+        AND publication."scope" = 'group'
+      ORDER BY publication."id"
+      FOR SHARE OF publication, membership, member_group
+    `;
+    if (!groupPublications[0]) throw new SkillRunConflictError();
+  } catch (error) {
+    if (isPrismaSerializationConflict(error)) {
+      throw new SkillProvenanceSerializationError();
+    }
+    throw error;
+  }
+}
+
+export async function assertCurrentSkillRunBindings(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  input: {
+    bindings: readonly AcceptedSkillRun[] | undefined;
+    runId: string;
+    userId: string;
+  }
+): Promise<void> {
+  const bindings = input.bindings ?? [];
+  const [{ count }] = await tx.$queryRaw<Array<{ count: bigint }>>`
+    SELECT COUNT(*)::bigint AS count
+    FROM "ModelRunSkillBinding"
+    WHERE "modelRunId" = ${input.runId}
+  `;
+  if (Number(count) !== bindings.length) throw new SkillRunConflictError();
+  for (const binding of [...bindings].sort((left, right) =>
+    left.skillId.localeCompare(right.skillId))) {
+    await assertSkillRunProvenance(tx, {
+      revisionId: binding.revisionId,
+      skillId: binding.skillId,
+      userId: input.userId
+    });
+    const rows = await tx.$queryRaw<Array<{ skillId: string }>>`
+      SELECT run_skill."skillId"
+      FROM "ModelRunSkillBinding" AS run_skill
+      INNER JOIN "ModelRun" AS run
+        ON run."id" = run_skill."modelRunId"
+       AND run."userId" = ${input.userId}
+      INNER JOIN "SkillDefinition" AS definition
+        ON definition."id" = run_skill."skillId"
+       AND definition."archivedAt" IS NULL
+      WHERE run_skill."modelRunId" = ${input.runId}
+        AND run_skill."skillId" = ${binding.skillId}
+        AND run_skill."revisionId" = ${binding.revisionId}
+        AND (
+          definition."ownerUserId" = ${input.userId}
+          OR EXISTS (
+            SELECT 1
+            FROM "SkillPublication" AS publication
+            WHERE publication."skillId" = run_skill."skillId"
+              AND publication."revisionId" = run_skill."revisionId"
+              AND (
+                publication."scope" = 'installation'
+                OR (
+                  publication."scope" = 'group'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM "UserGroup" AS membership
+                    INNER JOIN "Group" AS member_group
+                      ON member_group."id" = membership."groupId"
+                     AND member_group."archivedAt" IS NULL
+                    WHERE membership."groupId" = publication."groupId"
+                      AND membership."userId" = ${input.userId}
+                  )
+                )
+              )
+          )
+        )
+      FOR SHARE OF run_skill, run, definition
+    `;
+    if (!rows[0]) throw new SkillRunConflictError();
   }
 }
 
@@ -455,11 +656,13 @@ export async function repeatableReadTransaction<Value>(
     } catch (error) {
       const assistantSerializationConflict =
         error instanceof AssistantProvenanceSerializationError;
-      const serializationConflict = assistantSerializationConflict ||
+      const skillSerializationConflict = error instanceof SkillProvenanceSerializationError;
+      const serializationConflict = assistantSerializationConflict || skillSerializationConflict ||
         isPrismaSerializationConflict(error);
       if (serializationConflict) {
         if (attempt < 2) continue;
         if (assistantSerializationConflict) throw new AssistantRunConflictError();
+        if (skillSerializationConflict) throw new SkillRunConflictError();
         throw new ProviderAdmissionConflictError();
       }
       throw error;

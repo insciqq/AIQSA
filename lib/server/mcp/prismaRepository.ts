@@ -114,7 +114,6 @@ const adminServerInclude = {
   }
 } satisfies Prisma.McpServerInclude;
 
-const MCP_QUEUE_GRACE_MS = 2 * 60_000;
 
 type AdminServerRecord = Prisma.McpServerGetPayload<{ include: typeof adminServerInclude }>;
 type McpDataClient = Pick<
@@ -537,9 +536,7 @@ export function deriveMcpUserReadiness(input: {
     };
   }
   if (!input.runtime) {
-    const changedAt = input.preferenceUpdatedAt?.getTime() ?? input.now.getTime();
-    const readiness = input.now.getTime() - changedAt <= MCP_QUEUE_GRACE_MS ? "queued" : "idle";
-    return { errorCode: null, readiness, tools: [] };
+    return { errorCode: null, readiness: "idle", tools: [] };
   }
   if (input.runtime.state === "ready") {
     return { errorCode: null, readiness: "ready", tools: toolInventory(input.runtime.inventory) ?? [] };

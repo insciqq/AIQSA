@@ -12,7 +12,10 @@ import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
 import { createMcpSafeFetch } from "./safeFetch";
 import { createToolHiveMcpSessionFactory } from "./toolhiveSessionFactory";
 import { prepareMcpRunPlan } from "./runPlan";
-import { createPrismaMcpRunPlanLoader } from "./runPlanRepository";
+import {
+  createPrismaMcpCapabilityCatalogLoader,
+  createPrismaMcpRunPlanLoader
+} from "./runPlanRepository";
 
 const DEFAULT_RUNTIME_LIMITS = {
   maxListPages: 16,
@@ -74,24 +77,64 @@ export function kickDefaultMcpRuntime(userId?: string): void {
 }
 
 const loadRunPlan = createPrismaMcpRunPlanLoader();
+const loadCapabilityCatalog = createPrismaMcpCapabilityCatalogLoader();
+
+async function prepareExactMcpRunPlan(
+  userId: string,
+  serverIds: readonly string[],
+  toolNames?: readonly string[]
+) {
+  let coordinator: McpRuntimeCoordinator | null = null;
+  const currentCoordinator = () => {
+    coordinator ??= getDefaultMcpRuntimeCoordinator();
+    return coordinator;
+  };
+  await currentCoordinator().ensureUserServersReady(userId, serverIds);
+  return prepareMcpRunPlan({
+    allowedServerIds: serverIds,
+    ...(toolNames ? { allowedToolNames: toolNames } : {}),
+    isGenerationLive: (generationId) => currentCoordinator().hasLiveGeneration(generationId),
+    load: () => loadRunPlan(userId, serverIds),
+    reconcile: () => currentCoordinator().reconcileNow(userId)
+  });
+}
 
 export const defaultMcpRunPlan = {
-  prepare(
+  catalog(userId: string) {
+    return loadCapabilityCatalog(userId);
+  },
+  async materialize(
+    userId: string,
+    tools: readonly Readonly<{
+      namespacedName: string;
+      revisionId: string;
+      serverId: string;
+    }>[]
+  ) {
+    const serverIds = [...new Set(tools.map((tool) => tool.serverId))];
+    const toolNames = tools.map((tool) => tool.namespacedName);
+    const plan = await prepareExactMcpRunPlan(userId, serverIds, toolNames);
+    if (!plan.ok) return plan;
+    const revisions = new Map(plan.snapshot.servers.map((server) => [server.serverId, server.revisionId]));
+    if (tools.some((tool) => revisions.get(tool.serverId) !== tool.revisionId)) {
+      return {
+        code: "mcp_not_ready" as const,
+        issues: [{
+          errorCode: "mcp_revision_changed",
+          name: "Selected MCP tool",
+          readiness: "unavailable" as const
+        }],
+        ok: false as const
+      };
+    }
+    return plan;
+  },
+  async prepare(
     userId: string,
     options?: Readonly<{ allowedServerIds?: readonly string[] }>
   ) {
-    let coordinator: McpRuntimeCoordinator | null = null;
-    const currentCoordinator = () => {
-      coordinator ??= getDefaultMcpRuntimeCoordinator();
-      return coordinator;
-    };
-    return prepareMcpRunPlan({
-      ...(options?.allowedServerIds
-        ? { allowedServerIds: options.allowedServerIds }
-        : {}),
-      isGenerationLive: (generationId) => currentCoordinator().hasLiveGeneration(generationId),
-      load: () => loadRunPlan(userId, options?.allowedServerIds),
-      reconcile: () => currentCoordinator().reconcileNow(userId)
-    });
+    const serverIds = options?.allowedServerIds ??
+      (await loadCapabilityCatalog(userId)).servers.map((server) => server.serverId);
+    return prepareExactMcpRunPlan(userId, serverIds);
   }
 };

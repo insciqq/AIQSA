@@ -42,7 +42,8 @@ import {
   AttachmentLinkConflictError,
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
-  ProviderAdmissionConflictError
+  ProviderAdmissionConflictError,
+  SkillRunConflictError
 } from "./runRepositoryContract";
 import type { RunRepository } from "./runRepositoryContract";
 import { serializeRunOutcome } from "./runOutcome";
@@ -78,6 +79,7 @@ export type RunHandlerDeps = {
   repository: RunRepository;
   resolveAuth: RequestAuthResolver;
   searchProviders?: Record<string, ProviderSearchAdapter>;
+  skills?: RunPreparationDeps["skills"];
   storage?: StorageAdapter;
 };
 
@@ -185,6 +187,11 @@ function isProviderAdmissionConflictError(
 function isAssistantRunConflictError(error: unknown): error is AssistantRunConflictError {
   return error instanceof AssistantRunConflictError ||
     (error instanceof Error && error.name === "AssistantRunConflictError");
+}
+
+function isSkillRunConflictError(error: unknown): error is SkillRunConflictError {
+  return error instanceof SkillRunConflictError ||
+    (error instanceof Error && error.name === "SkillRunConflictError");
 }
 
 function isMemoryPreparingRunConflictError(
@@ -414,6 +421,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           ? { knowledgeAdmissionPlan: preparedData.knowledgeAdmissionPlan }
           : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
+        ...(preparedData.skillBindings ? { skillBindings: preparedData.skillBindings } : {}),
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
         modelId: preparedData.normalizedRequest.modelId,
         memoryMaterializer: createPreparingMemoryMaterializer(
@@ -454,6 +462,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
       if (isAssistantRunConflictError(error)) {
         return Response.json({ error: "assistant_not_available" }, { status: 409 });
+      }
+
+      if (isSkillRunConflictError(error)) {
+        return Response.json({ error: "skill_not_available" }, { status: 409 });
       }
 
       if (isMemoryPreparingRunConflictError(error)) {
@@ -557,6 +569,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           ? { knowledgeAdmissionPlan: preparedData.knowledgeAdmissionPlan }
           : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
+        ...(preparedData.skillBindings ? { skillBindings: preparedData.skillBindings } : {}),
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
         modelId: preparedData.normalizedRequest.modelId,
         memoryMaterializer: createPreparingMemoryMaterializer(
@@ -595,6 +608,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
 
       if (isAssistantRunConflictError(error)) {
         return Response.json({ error: "assistant_not_available" }, { status: 409 });
+      }
+
+      if (isSkillRunConflictError(error)) {
+        return Response.json({ error: "skill_not_available" }, { status: 409 });
       }
 
       if (isMemoryPreparingRunConflictError(error)) {

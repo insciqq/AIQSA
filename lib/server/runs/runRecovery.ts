@@ -9,9 +9,21 @@ import {
   sumTokenUsage
 } from "../../domain/usage";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
-import type { McpRunPlanResult } from "../mcp/runPlan";
+import type {
+  McpDiscoveryState,
+  McpRunPlanResult,
+  McpRunPlanSnapshot
+} from "../mcp/runPlan";
 import { validateRunAccess } from "../auth/entitlements";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
+import {
+  MCP_FIND_TOOLS_NAME,
+  mcpCatalogToolsByNames,
+  mcpFindToolsArguments,
+  mcpFindToolsExecutionResult,
+  mcpFindToolsTool,
+  rankMcpCatalogTools
+} from "../mcp/discovery";
 import { mcpRunTools, mcpToolExecutionResult, resolveMcpRunTool } from "../mcp/toolExecutor";
 import type {
   ProviderAdapter,
@@ -118,6 +130,7 @@ export type RunRecoveryRegistry = Readonly<{
 export type RunRecoveryRepository = Pick<
   RunRepository,
   | "advanceToolLoopCallBatch"
+  | "appendMcpDiscoveryEpoch"
   | "appendAssistantText"
   | "appendRunOutputEvent"
   | "claimToolLoopCall"
@@ -167,6 +180,14 @@ export type RunRecoveryDeps = Readonly<{
   memoryHistoryToolExecutor?: MemoryHistoryToolExecutor;
   mcpRuntime?: RunRecoveryMcpRuntime;
   mcp?: Readonly<{
+    materialize?(
+      userId: string,
+      tools: readonly Readonly<{
+        namespacedName: string;
+        revisionId: string;
+        serverId: string;
+      }>[]
+    ): Promise<McpRunPlanResult>;
     prepare(
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
@@ -494,8 +515,11 @@ type RecoverySearchExecutor = Readonly<{
   tools: readonly RunTool[];
 }>;
 
-type RecoveryToolContext = Readonly<{
+type RecoveryToolContext = {
+  activeMcpDiscovery: McpDiscoveryState | undefined;
+  activeMcpSnapshot: McpRunPlanSnapshot | undefined;
   deps: RunRecoveryDeps;
+  mcpDiscoveryQueue: Promise<void>;
   persistedUsageRecordedAt: number | null;
   providerRequest: ProviderRunRequest;
   run: CheckpointedToolLoopRun;
@@ -504,8 +528,9 @@ type RecoveryToolContext = Readonly<{
   memoryActionExecutor: MemoryActionExecutor | null;
   memoryHistoryToolExecutor: MemoryHistoryToolExecutor | null;
   searchExecutor: RecoverySearchExecutor | null;
+  tools: RunTool[];
   usageAttributions: RunUsageAttribution[];
-}>;
+};
 
 function isRecoveredSearchCall(context: RecoveryToolContext, name: string): boolean {
   return context.searchExecutor?.accepts(name) === true;
@@ -524,6 +549,13 @@ function isRecoveredMemoryHistoryCall(
   name: string
 ): boolean {
   return context.memoryHistoryToolExecutor?.accepts(name) === true;
+}
+
+function isRecoveredMcpDiscoveryCall(
+  context: RecoveryToolContext,
+  name: string
+): boolean {
+  return name === MCP_FIND_TOOLS_NAME && context.activeMcpDiscovery !== undefined;
 }
 
 async function currentRecoverySearchDispatchAllowed(
@@ -572,7 +604,7 @@ async function currentRecoveryMcpDispatchAllowed(
   generationId: string
 ): Promise<boolean> {
   if (!context.deps.mcp) return process.env.NODE_ENV !== "production";
-  const route = resolveMcpRunTool(context.run.normalizedRequest.mcp, callName);
+  const route = resolveMcpRunTool(context.activeMcpSnapshot, callName);
   if (!route) return false;
   try {
     const current = await context.deps.mcp.prepare(context.run.userId, {
@@ -635,6 +667,82 @@ async function recordRecoveredSearchResult(input: Readonly<{
       repository: input.context.deps.repository
     });
   }
+}
+
+async function executeRecoveredMcpDiscovery(
+  call: ModelToolCall,
+  persisted: PersistedToolLoopCall,
+  context: RecoveryToolContext
+): Promise<ToolExecutionResult> {
+  const operation = async (): Promise<ToolExecutionResult> => {
+    const discovery = context.activeMcpDiscovery;
+    const parsed = mcpFindToolsArguments(call.arguments);
+    const materialize = context.deps.mcp?.materialize;
+    const appendEpoch = context.deps.repository.appendMcpDiscoveryEpoch;
+    if (!discovery || !parsed || !materialize || !appendEpoch) {
+      throw new Error("mcp_discovery_arguments_invalid");
+    }
+    const activeNames = new Set(
+      (context.activeMcpSnapshot?.tools ?? []).map((tool) => tool.namespacedName)
+    );
+    const replay = discovery.epochs.find((epoch) =>
+      epoch.roundIndex === persisted.roundIndex && epoch.query === parsed.query);
+    if (replay) {
+      const replayTools = mcpCatalogToolsByNames(
+        discovery.catalog,
+        replay.toolNames
+      ).filter((tool) => activeNames.has(tool.namespacedName));
+      if (replayTools.length !== replay.toolNames.length) {
+        throw new Error("mcp_discovery_checkpoint_conflict");
+      }
+      return mcpFindToolsExecutionResult(call, replayTools);
+    }
+    const remaining = Math.max(0, discovery.maxActiveTools - activeNames.size);
+    const ranked = remaining === 0
+      ? []
+      : rankMcpCatalogTools({
+          activeToolNames: activeNames,
+          catalog: discovery.catalog,
+          limit: Math.min(parsed.limit, remaining),
+          query: parsed.query
+        });
+    if (ranked.length === 0) return mcpFindToolsExecutionResult(call, []);
+    const plan = await materialize(
+      context.run.userId,
+      ranked.map((tool) => ({
+        namespacedName: tool.namespacedName,
+        revisionId: tool.revisionId,
+        serverId: tool.serverId
+      }))
+    );
+    if (!plan.ok) throw new Error(plan.code);
+    const appended = await appendEpoch({
+      bindings: plan.bindings,
+      query: parsed.query,
+      roundIndex: persisted.roundIndex,
+      runId: context.run.id,
+      snapshot: plan.snapshot,
+      userId: context.run.userId
+    });
+    if (!appended) throw new Error("mcp_discovery_checkpoint_conflict");
+    context.activeMcpSnapshot = appended.snapshot;
+    context.activeMcpDiscovery = appended.discovery;
+    const knownToolNames = new Set(context.tools.map((tool) => tool.name));
+    for (const tool of mcpRunTools(appended.snapshot)) {
+      if (!knownToolNames.has(tool.name)) {
+        context.tools.push(tool);
+        knownToolNames.add(tool.name);
+      }
+    }
+    const loadedNames = new Set(appended.snapshot.tools.map((tool) => tool.namespacedName));
+    return mcpFindToolsExecutionResult(
+      call,
+      ranked.filter((tool) => loadedNames.has(tool.namespacedName))
+    );
+  };
+  const result = context.mcpDiscoveryQueue.then(operation, operation);
+  context.mcpDiscoveryQueue = result.then(() => undefined, () => undefined);
+  return result;
 }
 
 async function executePersistedToolCall(
@@ -704,13 +812,14 @@ async function executePersistedToolCall(
     if (hasInvalidProviderToolArguments(call.arguments)) {
       throw new Error("provider_tool_arguments_invalid");
     }
-    const externalCall = !isRecoveredMemoryCall(context, call.name) &&
+    const externalCall = !isRecoveredMcpDiscoveryCall(context, call.name) &&
+      !isRecoveredMemoryCall(context, call.name) &&
       !isRecoveredMemoryHistoryCall(context, call.name);
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
       }
-      const route = resolveMcpRunTool(context.run.normalizedRequest.mcp, call.name);
+      const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
       const destinationSnapshot = isRecoveredKnowledgeCall(context, call.name)
           ? {
             baseIds: context.run.normalizedRequest.knowledgePlan.baseIds,
@@ -773,7 +882,9 @@ async function executePersistedToolCall(
           })
         : null;
     }
-    if (isRecoveredKnowledgeCall(context, call.name)) {
+    if (isRecoveredMcpDiscoveryCall(context, call.name)) {
+      result = await executeRecoveredMcpDiscovery(call, persisted, context);
+    } else if (isRecoveredKnowledgeCall(context, call.name)) {
       result = await context.knowledgeExecutor!.execute(call, {
         persistedToolCallId: claim.call.id,
         request: context.providerRequest,
@@ -816,7 +927,7 @@ async function executePersistedToolCall(
       );
       await recordRecoveredSearchResult({ context, includeUsage: true, result });
     } else {
-      const route = resolveMcpRunTool(context.run.normalizedRequest.mcp, call.name);
+      const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
       if (!route || !generationId ||
         claim.call.mcpBinding?.runtimeGenerationFingerprint !== route.fingerprint) {
@@ -892,7 +1003,8 @@ async function executePersistedToolBatch(
   signal: AbortSignal
 ): Promise<readonly ToolLoopSettledCall<ToolExecutionResult>[]> {
   const ordered = [...calls].sort((left, right) => left.ordinal - right.ordinal);
-  const ambiguous = ordered.find((call) => call.state === "running");
+  const ambiguous = ordered.find((call) =>
+    call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME);
   if (ambiguous) {
     throw new ToolLoopRecoveryError(
       "tool_call_outcome_unknown",
@@ -1103,11 +1215,20 @@ async function recoverCheckpointedToolLoop(
     const memoryHistoryToolExecutor = memoryHistoryEnabled
       ? deps.memoryHistoryToolExecutor ?? defaultMemoryHistoryToolExecutor
       : null;
+    const activeMcpDiscovery = run.normalizedRequest.mcpDiscovery;
+    if (activeMcpDiscovery &&
+      (!deps.mcp?.materialize || !deps.repository.appendMcpDiscoveryEpoch)) {
+      throw new ToolLoopRecoveryError(
+        "mcp_discovery_not_available",
+        "The saved MCP discovery policy is no longer available."
+      );
+    }
     const tools: RunTool[] = [
       ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
       ...(searchExecutor?.tools ?? []),
       ...(memoryActionExecutor ? memoryActionTools : []),
       ...(memoryHistoryToolExecutor ? [memoryHistoryToolExecutor.tool] : []),
+      ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
       ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : [])
     ];
     if (tools.length === 0) {
@@ -1131,7 +1252,10 @@ async function recoverCheckpointedToolLoop(
     assertPersonalContextEgressSafe(providerRequest);
     let runtime = deps.mcpRuntime;
     const context: RecoveryToolContext = {
+      activeMcpDiscovery,
+      activeMcpSnapshot: run.normalizedRequest.mcp,
       deps,
+      mcpDiscoveryQueue: Promise.resolve(),
       persistedUsageRecordedAt,
       providerRequest,
       run,
@@ -1143,6 +1267,7 @@ async function recoverCheckpointedToolLoop(
         return runtime;
       },
       searchExecutor,
+      tools,
       usageAttributions
     };
     tokenBuffer = createRunTokenPersistenceBuffer({
@@ -1363,11 +1488,12 @@ async function recoverCheckpointedToolLoop(
     ): Promise<readonly PersistedToolLoopCall[]> {
       const persisted = await deps.repository.persistToolLoopCallBatch({
         calls: calls.map((call, ordinal) => {
-          const route = resolveMcpRunTool(run.normalizedRequest.mcp, call.name);
+          const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
           if (!route && searchExecutor?.accepts(call.name) !== true &&
             knowledgeExecutor?.accepts(call.name) !== true &&
             memoryActionExecutor?.accepts(call.name) !== true &&
-            memoryHistoryToolExecutor?.accepts(call.name) !== true) {
+            memoryHistoryToolExecutor?.accepts(call.name) !== true &&
+            !isRecoveredMcpDiscoveryCall(context, call.name)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`
@@ -1678,7 +1804,13 @@ async function recoverCheckpointedToolLoop(
       prepareRequest: async (roundRequest) => {
         const budgeted = applyProviderRequestContextBudget({
           bridge,
-          request: roundRequest
+          request: {
+            ...roundRequest,
+            ...(context.activeMcpSnapshot ? { mcp: context.activeMcpSnapshot } : {}),
+            ...(context.activeMcpDiscovery
+              ? { mcpDiscovery: context.activeMcpDiscovery }
+              : {})
+          }
         });
         if (!budgeted.ok) {
           throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);

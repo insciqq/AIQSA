@@ -57,6 +57,7 @@ import {
   isRecoveredRunTerminalPayload,
   recoveredRunErrorPayload
 } from "./prismaRepositoryToolLoop";
+import { createPrismaMcpDiscoveryOperations } from "./prismaRepositoryMcpDiscovery";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -141,6 +142,7 @@ export function createPrismaRunRepository(
     prismaClient,
     memorySourceHooks
   );
+  const mcpDiscoveryOperations = createPrismaMcpDiscoveryOperations(prismaClient);
   async function loadConversationPath(
     chatId: string,
     userId: string,
@@ -234,6 +236,7 @@ export function createPrismaRunRepository(
       retryPreparingRunAttemptWithClient(prismaClient, input),
     settlePreparingRunFailure: (input) =>
       settlePreparingRunFailureWithClient(prismaClient, input, memorySourceHooks),
+    ...mcpDiscoveryOperations,
     ...toolLoopOperations,
     sweepBootOrphanedRuns: async ({ createdBefore, liveRunIds }) => {
       const liveRunIdFilter = unique(liveRunIds);

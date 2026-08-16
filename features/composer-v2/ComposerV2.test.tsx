@@ -165,15 +165,43 @@ describe("Composer v2", () => {
     await waitFor(() => expect(modelTrigger).toHaveFocus());
   });
 
-  it("applies each capability toggle in one action and closes the menu", () => {
+  it("closes direct capability toggles while keeping Skills and MCP setup open", () => {
     const onKnowledge = vi.fn();
     const onSearch = vi.fn();
-    const onToggleMcp = vi.fn();
+    const onSelectMcp = vi.fn();
+    const onSelectSkills = vi.fn();
+    const config: ComposerConfig = {
+      ...composerGalleryConfig,
+      mcpServers: [
+        ...composerGalleryConfig.mcpServers,
+        {
+          description: "Issue tracking",
+          enabled: true,
+          id: "mcp-jira-enabled",
+          knownToolCount: 4,
+          name: "jira",
+          readiness: "idle"
+        }
+      ],
+      skills: [{
+        archived: false,
+        description: "Checks claims",
+        id: "skill-editor",
+        instructions: "Verify every factual claim.",
+        name: "Careful editor",
+        owned: true,
+        ownerDisplayName: "Viewer",
+        scope: { kind: "owner" },
+        version: 1
+      }]
+    };
     render(<ComposerV2 {...props({
+      config,
       initialLayer: "capabilities",
       onSelectKnowledgeBaseIds: onKnowledge,
       onSelectSearchOptionIds: onSearch,
-      onToggleMcpServer: onToggleMcp,
+      onSelectMcp,
+      onSelectSkillIds: onSelectSkills,
       selectedKnowledgeBaseIds: ["kb-finance", "missing-base"]
     })} />);
     const reopen = () => fireEvent.click(screen.getByRole("button", { name: "Capabilities" }));
@@ -195,9 +223,16 @@ describe("Composer v2", () => {
     menuClosed();
 
     reopen();
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /office-compute/ }));
-    expect(onToggleMcp).toHaveBeenCalledWith("mcp-office", false);
-    menuClosed();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Careful editor/ }));
+    expect(onSelectSkills).toHaveBeenCalledWith(["skill-editor"]);
+    expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /^Selected/ }));
+    expect(onSelectMcp).toHaveBeenCalledWith({
+      mode: "selected",
+      serverIds: ["mcp-office", "mcp-jira-enabled"]
+    });
+    expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
   });
 
   it("opens the Assistant quick picker within two actions and explains manual restoration", () => {

@@ -17,10 +17,10 @@ function readiness(preferenceUpdatedAt: Date) {
 }
 
 describe("MCP user readiness", () => {
-  it("shows a fresh runtime-less preference as queued and an old evicted one as idle", () => {
+  it("keeps an enabled runtime-less server idle until an on-demand start", () => {
     expect(readiness(new Date(now.getTime() - 30_000))).toEqual({
       errorCode: null,
-      readiness: "queued",
+      readiness: "idle",
       tools: []
     });
     expect(readiness(new Date(now.getTime() - 15 * 60_000))).toEqual({

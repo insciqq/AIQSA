@@ -52,7 +52,7 @@ describe("McpSettingsSection", () => {
     await screen.findByRole("heading", { name: "Todoist" });
 
     expect(
-      screen.getByText(/The model may pass conversation-derived data to an enabled tool/)
+      screen.getByText(/Enabled servers join your private tool catalog/)
     ).toBeVisible();
     const disclosure = screen.getByText("How tools use data").closest("details");
     expect(disclosure).not.toHaveAttribute("open");
@@ -61,11 +61,9 @@ describe("McpSettingsSection", () => {
     fireEvent.click(screen.getByText("How tools use data"));
 
     expect(disclosure).toHaveAttribute("open");
-    expect(screen.getByText("Every ready, administrator-enabled tool is automatically available to your chats.")).toBeVisible();
-    expect(screen.getByText("One tool’s output may influence a later call to another enabled server.")).toBeVisible();
-    expect(screen.getByText(
-      `Up to ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers and ${MCP_RUN_PLAN_LIMITS.maxTools} enabled tools can enter one run; exact schema and context fit is checked again before the model starts.`
-    )).toBeVisible();
+    expect(screen.getByText(/Auto starts with a small schema-free catalog/)).toBeVisible();
+    expect(screen.getByText(/Selected eagerly loads the servers you choose/)).toBeVisible();
+    expect(screen.getByText(/Enabled runtimes stay asleep until a run actually needs them/)).toBeVisible();
   });
 
   it("keeps availability separate from the enable and disable actions", async () => {
@@ -302,7 +300,7 @@ describe("McpSettingsSection", () => {
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
 
-  it("prevents a known discovered-tool set from exceeding the shared limit", async () => {
+  it("does not treat the enabled catalog size as schemas loaded into every run", async () => {
     const full = {
       ...userServer("full", "Full catalog"),
       enabled: true,
@@ -314,21 +312,21 @@ describe("McpSettingsSection", () => {
       }))
     };
     const candidate = userServer("candidate", "Candidate");
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      response({ servers: [full, candidate] }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === "PATCH"
+        ? response({ server: { ...candidate, enabled: true, readiness: "idle" } })
+        : response({ servers: [full, candidate] }));
     vi.stubGlobal("fetch", fetchMock);
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Candidate" });
     fireEvent.click(screen.getByRole("button", { name: "Enable Candidate" }));
 
-    expect(screen.getByText(
-      `This would expose ${MCP_RUN_PLAN_LIMITS.maxTools + 1} enabled tools, above the ${MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit.`
-    )).toBeVisible();
-    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    expect(screen.queryByText(/above the .*tool run limit/)).not.toBeInTheDocument();
   });
 
-  it("uses the saved known count when a disabled server has no live runtime tools", async () => {
+  it("keeps dormant catalog counts informational rather than blocking enablement", async () => {
     const full = {
       ...userServer("full", "Full catalog"),
       enabled: true,
@@ -341,21 +339,21 @@ describe("McpSettingsSection", () => {
       knownToolCount: 1,
       tools: []
     };
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      response({ servers: [full, candidate] }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === "PATCH"
+        ? response({ server: { ...candidate, enabled: true, readiness: "idle" } })
+        : response({ servers: [full, candidate] }));
     vi.stubGlobal("fetch", fetchMock);
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Candidate" });
     fireEvent.click(screen.getByRole("button", { name: "Enable Candidate" }));
 
-    expect(screen.getByText(
-      `This would expose ${MCP_RUN_PLAN_LIMITS.maxTools + 1} enabled tools, above the ${MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit.`
-    )).toBeVisible();
-    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    expect(screen.queryByText(/above the .*tool run limit/)).not.toBeInTheDocument();
   });
 
-  it("shows queued and idle readiness as active progress rather than setup work", async () => {
+  it("shows queued readiness as progress and idle readiness as on-demand availability", async () => {
     const authorizing = {
       ...userServer("authorizing", "Authorizing server"),
       enabled: true,
@@ -378,11 +376,11 @@ describe("McpSettingsSection", () => {
 
     const authorizingReadiness = screen.getByText("Authorizing").closest("p");
     const queuedReadiness = screen.getByText("Activating").closest("p");
-    const idleReadiness = screen.getByText("Waking up").closest("p");
+    const idleReadiness = screen.getByText("Available on demand").closest("p");
     expect(authorizingReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
     expect(queuedReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
-    expect(idleReadiness?.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
-    expect(idleReadiness?.querySelector("svg")).not.toHaveClass("lucide-circle-alert");
+    expect(idleReadiness?.querySelector("svg")).not.toHaveClass("lucide-loader-circle", "animate-spin");
+    expect(idleReadiness?.querySelector("svg")).toHaveClass("lucide-circle-check");
     expect(screen.queryByText("Queued")).not.toBeInTheDocument();
     expect(screen.queryByText("Needs setup")).not.toBeInTheDocument();
   });

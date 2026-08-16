@@ -39,6 +39,7 @@ type PowerAppShellViewModelInput = {
   renderActiveLeafId: string | null;
   runSurface: RunSurfaceSnapshot;
   selectedAssistantPromptCharacterCount: number | null;
+  selectedSkillPromptCharacterCount?: number;
   selectedModelId: string;
   selectedProvider: string;
   visibleMessages: ThreadMessage[];
@@ -130,6 +131,7 @@ export function usePowerAppShellViewModel({
   renderActiveLeafId,
   runSurface,
   selectedAssistantPromptCharacterCount,
+  selectedSkillPromptCharacterCount = 0,
   selectedModelId,
   selectedProvider,
   visibleMessages
@@ -226,7 +228,8 @@ export function usePowerAppShellViewModel({
       estimateApproxTokens(promptSystem) +
       (selectedAssistantPromptCharacterCount !== null
         ? Math.ceil(selectedAssistantPromptCharacterCount / 4)
-        : 0);
+        : 0) +
+      Math.ceil(selectedSkillPromptCharacterCount / 4);
     const branchTokens = activeThreadContextStats?.approximateActiveBranchInputTokens ??
       visibleMessages.reduce((total, message) => total + estimateApproxTokens(message.content), 0);
     const draftTokens = estimateApproxTokens({
@@ -247,7 +250,7 @@ export function usePowerAppShellViewModel({
       safeInputBudgetTokens: currentContextWindow ? safeInputBudget : null,
       totalContextTokens: currentContextWindow || null
     };
-  }, [activeThreadContextStats, attachments, currentContextWindow, currentModel, draft, projectMemory, safeInputBudget, selectedAssistantPromptCharacterCount, visibleMessages]);
+  }, [activeThreadContextStats, attachments, currentContextWindow, currentModel, draft, projectMemory, safeInputBudget, selectedAssistantPromptCharacterCount, selectedSkillPromptCharacterCount, visibleMessages]);
   const composerUsageStats = activeThreadUsageStats ?? {
     activeBranchMessageCount: visibleMessages.length,
     cachedInputTokens: 0,

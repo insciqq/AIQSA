@@ -10,6 +10,7 @@ import { providerAdmissionService } from "@/lib/server/providerRuntime/defaultAd
 import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
 import { createRegenerateModelRunHandler } from "@/lib/server/runs/handlers";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
+import { defaultSkillRepository } from "@/lib/server/skills/defaultSkills";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
 
 export const runtime = "nodejs";
@@ -29,5 +30,6 @@ export const POST = createRegenerateModelRunHandler({
   providers: {},
   repository,
   resolveAuth: resolveRequestAuth,
+  skills: defaultSkillRepository,
   storage: createS3StorageAdapter()
 });

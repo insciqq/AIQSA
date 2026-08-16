@@ -9,6 +9,7 @@ import type { McpRuntimeInventoryTool } from "./runtimeCoordinator";
 const INVENTORY_FRESH_MS = 5 * 60_000;
 
 export type McpRunPlanRecord = {
+  catalogTools?: { description: string | null; name: string; title?: string }[];
   credentialSources: McpCredentialSource[];
   enabled: boolean;
   errorCode: string | null;
@@ -21,6 +22,7 @@ export type McpRunPlanRecord = {
   readiness: McpReadiness;
   revisionId: string;
   serverId: string;
+  serverDescription?: string;
   serverName: string;
 };
 
@@ -35,6 +37,42 @@ export type McpRunPlanTool = McpRuntimeInventoryTool & {
   originalName: string;
   serverId: string;
   serverName: string;
+};
+
+export type McpCapabilityCatalogTool = {
+  description: string | null;
+  namespacedName: string;
+  originalName: string;
+  title?: string;
+};
+
+export type McpCapabilityCatalogServer = {
+  description: string;
+  namespace: string;
+  revisionId: string;
+  serverId: string;
+  serverName: string;
+  tools: McpCapabilityCatalogTool[];
+};
+
+/** Private, schema-free catalog frozen at run admission for Auto discovery. */
+export type McpCapabilityCatalog = {
+  servers: McpCapabilityCatalogServer[];
+  version: 1;
+};
+
+export type McpDiscoveryEpoch = {
+  epoch: number;
+  query: string;
+  roundIndex: number;
+  toolNames: string[];
+};
+
+export type McpDiscoveryState = {
+  catalog: McpCapabilityCatalog;
+  epochs: McpDiscoveryEpoch[];
+  maxActiveTools: number;
+  version: 1;
 };
 
 export type McpRunPlanSnapshot = {
@@ -117,6 +155,32 @@ export function namespacedMcpToolName(namespace: string, originalName: string): 
   return `mcp_${token(namespace, 20)}_${token(originalName, 24)}_${suffix}`.slice(0, 64);
 }
 
+export function buildMcpCapabilityCatalog(
+  records: readonly McpRunPlanRecord[]
+): McpCapabilityCatalog {
+  return {
+    servers: records
+      .map((record) => ({
+        description: record.serverDescription ?? "",
+        namespace: record.namespace,
+        revisionId: record.revisionId,
+        serverId: record.serverId,
+        serverName: record.serverName,
+        tools: (record.catalogTools ?? []).map((tool) => ({
+          description: tool.description,
+          namespacedName: namespacedMcpToolName(record.namespace, tool.name),
+          originalName: tool.name,
+          ...(tool.title ? { title: tool.title } : {})
+        }))
+      }))
+      .filter((server) => server.tools.length > 0)
+      .sort((left, right) =>
+        left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId)
+      ),
+    version: 1
+  };
+}
+
 function issues(records: readonly McpRunPlanRecord[]) {
   return records.map((record) => ({
     errorCode: record.errorCode,
@@ -128,7 +192,8 @@ function issues(records: readonly McpRunPlanRecord[]) {
 export function buildMcpRunPlan(
   records: readonly McpRunPlanRecord[],
   now: Date,
-  isGenerationLive: (generationId: string) => boolean
+  isGenerationLive: (generationId: string) => boolean,
+  allowedToolNames?: ReadonlySet<string>
 ): McpRunPlanResult {
   if (records.length > MCP_RUN_PLAN_LIMITS.maxEnabledServers) {
     return { code: "mcp_plan_too_large", issues: issues(records), ok: false };
@@ -176,6 +241,11 @@ export function buildMcpRunPlan(
   let schemaBytes = 0;
   for (const record of records) {
     const inventory = inventoryTools(record.inventory)!;
+    const selectedInventory = allowedToolNames
+      ? inventory.filter((tool) =>
+          allowedToolNames.has(namespacedMcpToolName(record.namespace, tool.name)))
+      : inventory;
+    if (allowedToolNames && selectedInventory.length === 0) continue;
     bindings.push({
       fingerprint: record.fingerprint!,
       runtimeGenerationId: record.generationId!,
@@ -189,7 +259,7 @@ export function buildMcpRunPlan(
       serverId: record.serverId,
       serverName: record.serverName
     });
-    for (const tool of inventory) {
+    for (const tool of selectedInventory) {
       schemaBytes += Buffer.byteLength(JSON.stringify({ input: tool.inputSchema, output: tool.outputSchema }), "utf8");
       tools.push({
         ...tool,
@@ -199,6 +269,17 @@ export function buildMcpRunPlan(
         serverName: record.serverName
       });
     }
+  }
+  if (allowedToolNames && tools.length !== allowedToolNames.size) {
+    return {
+      code: "mcp_not_ready",
+      issues: [{
+        errorCode: "mcp_tool_not_available",
+        name: "Selected MCP tool",
+        readiness: "unavailable"
+      }],
+      ok: false
+    };
   }
   if (tools.length > MCP_RUN_PLAN_LIMITS.maxTools ||
     schemaBytes > MCP_RUN_PLAN_LIMITS.maxToolSchemaBytes ||
@@ -233,14 +314,32 @@ export async function prepareMcpRunPlan(input: {
    * servers are excluded.
    */
   allowedServerIds?: readonly string[];
+  /** Optional exact tool subset for Auto materialization. Limits and schema
+   * accounting apply only to these tools, never to an MCP server's full
+   * inventory. */
+  allowedToolNames?: readonly string[];
   isGenerationLive(generationId: string): boolean;
   load(): Promise<McpRunPlanRecord[]>;
   now?: () => Date;
   reconcile?(): Promise<void>;
 }): Promise<McpRunPlanResult> {
+  const allowedToolNames = input.allowedToolNames
+    ? new Set(input.allowedToolNames)
+    : undefined;
+  if (allowedToolNames && allowedToolNames.size !== input.allowedToolNames?.length) {
+    return {
+      code: "mcp_not_ready",
+      issues: [{
+        errorCode: "mcp_tool_not_available",
+        name: "Selected MCP tool",
+        readiness: "unavailable"
+      }],
+      ok: false
+    };
+  }
   const build = (records: McpRunPlanRecord[], at: Date): McpRunPlanResult => {
     if (!input.allowedServerIds) {
-      return buildMcpRunPlan(records, at, input.isGenerationLive);
+      return buildMcpRunPlan(records, at, input.isGenerationLive, allowedToolNames);
     }
     const subset = applyAllowedServerSubset(records, input.allowedServerIds);
     if (subset.missing.length > 0) {
@@ -254,7 +353,7 @@ export async function prepareMcpRunPlan(input: {
         ok: false
       };
     }
-    return buildMcpRunPlan(subset.records, at, input.isGenerationLive);
+    return buildMcpRunPlan(subset.records, at, input.isGenerationLive, allowedToolNames);
   };
 
   const now = input.now?.() ?? new Date();

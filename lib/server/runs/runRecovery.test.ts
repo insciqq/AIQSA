@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { McpClientSessionError } from "../mcp/clientSession";
+import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -3963,6 +3964,103 @@ describe("run recovery", () => {
     ]));
     expect(checkpointState.calls()).toHaveLength(2);
     expect(harness.state.completed).toMatchObject({ finalText: "two rounds complete" });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("restores an Auto MCP catalog and its exact discovered tools without rediscovery", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const snapshot = normalizedToolRequest().mcp!;
+    const prepare = vi.fn<NonNullable<RunRecoveryDeps["mcp"]>["prepare"]>(async () => ({
+      bindings: [{
+        fingerprint: recoveryFingerprint,
+        runtimeGenerationId: "generation-1",
+        serverId: "server-1"
+      }],
+      ok: true,
+      snapshot
+    }));
+    const materialize = vi.fn<NonNullable<
+      NonNullable<RunRecoveryDeps["mcp"]>["materialize"]
+    >>(async () => ({ bindings: [], ok: true, snapshot: { servers: [], tools: [], version: 1 } }));
+    const runtimeCall = vi.fn(async () => ({
+      isError: false,
+      structuredContent: null,
+      text: ["remembered"],
+      unsupportedContentTypes: []
+    }));
+    const harness = createHarness({
+      mcp: { materialize, prepare },
+      mcpRuntime: {
+        callTool: runtimeCall,
+        ensureAcceptedGeneration: async () => true
+      },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered Auto MCP answer",
+              usage: { inputTokens: 2, outputTokens: 2, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const appendEpoch = vi.fn(async () => null);
+    harness.repository.appendMcpDiscoveryEpoch = appendEpoch;
+    const durable = checkpointedRun({
+      calls: [persistedRecoveryCall()],
+      phase: "tools_pending"
+    });
+    installCheckpointState(harness, {
+      ...durable,
+      normalizedRequest: {
+        ...durable.normalizedRequest,
+        mcpDiscovery: {
+          catalog: {
+            servers: [{
+              description: "Store durable memories",
+              namespace: "memory",
+              revisionId: "revision-1",
+              serverId: "server-1",
+              serverName: "Memory",
+              tools: [{
+                description: "Remember a value",
+                namespacedName: recoveryToolName,
+                originalName: "remember"
+              }]
+            }],
+            version: 1
+          },
+          epochs: [{
+            epoch: 1,
+            query: "remember this",
+            roundIndex: 0,
+            toolNames: [recoveryToolName]
+          }],
+          maxActiveTools: 12,
+          version: 1
+        }
+      }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.mcpDiscovery?.catalog.servers[0]?.tools[0]).not.toHaveProperty(
+      "inputSchema"
+    );
+    expect(requests[0]?.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: MCP_FIND_TOOLS_NAME }),
+      expect.objectContaining({ name: recoveryToolName })
+    ]));
+    expect(runtimeCall).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(materialize).not.toHaveBeenCalled();
+    expect(appendEpoch).not.toHaveBeenCalled();
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered Auto MCP answer" });
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 

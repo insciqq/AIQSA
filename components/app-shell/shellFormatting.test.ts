@@ -19,6 +19,15 @@ describe("shell error formatting", () => {
     expect(humanizeErrorCode("branch_checkout_failed_409")).toBe(
       "Open version failed with HTTP 409 (branch_checkout_failed_409)"
     );
+    expect(humanizeErrorCode("mcp_tool_calling_not_supported")).toBe(
+      "Choose a model with tool calling to use MCP (mcp_tool_calling_not_supported)"
+    );
+    expect(humanizeErrorCode("mcp_not_ready")).toBe(
+      "A selected MCP server or tool is no longer ready. Review MCP settings and try again (mcp_not_ready)"
+    );
+    expect(humanizeErrorCode("skill_not_available")).toBe(
+      "A selected Skill is no longer available. Review Skills and try again (skill_not_available)"
+    );
   });
 
   it("leaves already-readable provider messages unchanged", () => {

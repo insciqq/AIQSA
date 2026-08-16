@@ -2,7 +2,7 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { SearchRunParamControls } from "../../domain/runParams";
 import type { ModelToolCall, RunTool } from "../tools/types";
-import type { McpRunPlanSnapshot } from "../mcp/runPlan";
+import type { McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { SearchSource } from "../search/evidence";
 import type {
   SearchAdapterKind,
@@ -92,6 +92,7 @@ export type NormalizedRunRequest = {
     pageSize: 20;
   }>;
   modelCapabilities: ProviderModelCapabilities;
+  mcpDiscovery?: McpDiscoveryState;
   mcp?: McpRunPlanSnapshot;
   modelId: string;
   personalContext?: Readonly<{
@@ -102,6 +103,11 @@ export type NormalizedRunRequest = {
     mode: "prefetched";
     text: string;
   }>;
+  skills?: ReadonlyArray<Readonly<{
+    name: string;
+    revisionId: string;
+    skillId: string;
+  }>>;
   params: Record<string, unknown>;
   prompt: {
     /**

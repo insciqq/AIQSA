@@ -588,6 +588,32 @@ describe("local MCP runtime candidates", () => {
 });
 
 describe("Prisma MCP runtime desired-state snapshots", () => {
+  it("keeps background reconciliation dormant and scopes on-demand activation exactly", async () => {
+    const findMany = vi.fn(async () => []);
+    const client = {
+      mcpUserServer: { findMany }
+    } as unknown as PrismaClient;
+    const repository = createPrismaMcpRuntimeRepository({
+      encryptionKey: () => KEY,
+      prisma: client
+    });
+
+    await repository.synchronizeDesired({ now: NOW, userId: USER_ID });
+    expect(findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ desiredRuntimeGenerationId: { not: null } })
+    }));
+
+    await repository.synchronizeDesired({
+      now: NOW,
+      onDemand: true,
+      serverIds: [SERVER_ID],
+      userId: USER_ID
+    });
+    expect(findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ serverId: { in: [SERVER_ID] } })
+    }));
+  });
+
   it("persists only an encrypted effective snapshot while returning the required launch headers", async () => {
     const record = runtimeRecord({
       configuration: { ...configuration, disabledToolNames: ["dangerous_tool"] }

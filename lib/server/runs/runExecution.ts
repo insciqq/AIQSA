@@ -30,6 +30,14 @@ import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import {
+  MCP_FIND_TOOLS_NAME,
+  mcpCatalogToolsByNames,
+  mcpFindToolsArguments,
+  mcpFindToolsExecutionResult,
+  mcpFindToolsTool,
+  rankMcpCatalogTools
+} from "../mcp/discovery";
+import {
   mcpRunTools,
   mcpToolExecutionResult,
   resolveMcpRunTool
@@ -157,6 +165,7 @@ export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.f
 export type RunExecutionRepository = Pick<
   RunRepository,
   | "advanceToolLoopCallBatch"
+  | "appendMcpDiscoveryEpoch"
   | "appendAssistantText"
   | "appendRunOutputEvent"
   | "beginToolLoopProviderRound"
@@ -198,6 +207,14 @@ export type RunExecutionInput = Readonly<{
   memoryHistoryToolExecutor?: MemoryHistoryToolExecutor;
   memoryEgress?: MemoryToolEgressReceiptService;
   mcp?: Readonly<{
+    materialize?(
+      userId: string,
+      tools: readonly Readonly<{
+        namespacedName: string;
+        revisionId: string;
+        serverId: string;
+      }>[]
+    ): Promise<import("../mcp/runPlan").McpRunPlanResult>;
     prepare(
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
@@ -840,12 +857,25 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           memoryActionExecutor?.accepts(name) === true;
         const isMemoryHistoryCall = (name: string) =>
           memoryHistoryExecutor?.accepts(name) === true;
+        let activeMcpSnapshot = normalizedRequest.mcp;
+        let activeMcpDiscovery = normalizedRequest.mcpDiscovery;
+        const materializeMcpTools = input.mcp?.materialize;
+        const appendMcpDiscoveryEpoch = input.repository.appendMcpDiscoveryEpoch;
+        if (activeMcpDiscovery && (!materializeMcpTools || !appendMcpDiscoveryEpoch)) {
+          throw new RunPipelineError(
+            "mcp_discovery_not_available",
+            "MCP discovery is not available"
+          );
+        }
+        const isMcpDiscoveryCall = (name: string) =>
+          name === MCP_FIND_TOOLS_NAME && activeMcpDiscovery !== undefined;
         const tools: RunTool[] = [
           ...(knowledgeExecutor ? [knowledgeExecutor.tool] : []),
           ...(searchPlanRouter?.tools ?? []),
           ...(memoryActionExecutor ? memoryActionTools : []),
           ...(memoryHistoryExecutor ? [memoryHistoryExecutor.tool] : []),
-          ...(clientToolsEnabled ? mcpRunTools(normalizedRequest.mcp) : [])
+          ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
+          ...(clientToolsEnabled ? mcpRunTools(activeMcpSnapshot) : [])
         ];
         if (tools.length === 0) {
           throw new RunPipelineError("tool_configuration_empty", "No run tools are configured");
@@ -853,6 +883,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
         const persistedCalls = new Map<string, PersistedToolLoopCall>();
         let memoryMutationAttempted = false;
+        let mcpDiscoveryQueue = Promise.resolve();
+        const serializeMcpDiscovery = async <T>(operation: () => Promise<T>): Promise<T> => {
+          const result = mcpDiscoveryQueue.then(operation, operation);
+          mcpDiscoveryQueue = result.then(() => undefined, () => undefined);
+          return result;
+        };
         const hasMcpTools = tools.some((tool) => tool.capability === "mcp");
         let mcpRuntime = input.mcpRuntime ?? null;
         const runtime = () => {
@@ -1017,9 +1053,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 if (hasInvalidProviderToolArguments(call.arguments)) {
                   throw new Error("provider_tool_arguments_invalid");
                 }
-                const externalCall = isKnowledgeCall(call.name) ||
+                const externalCall = !isMcpDiscoveryCall(call.name) && (
+                  isKnowledgeCall(call.name) ||
                   isSearchCall(call.name) ||
-                  (!isMemoryCall(call.name) && !isMemoryHistoryCall(call.name));
+                  (!isMemoryCall(call.name) && !isMemoryHistoryCall(call.name))
+                );
                 if (externalCall) {
                   const destinationSnapshot = isKnowledgeCall(call.name)
                     ? {
@@ -1036,7 +1074,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                           version: 1
                         }
                       : (() => {
-                          const mcpRoute = resolveMcpRunTool(normalizedRequest.mcp, call.name);
+                          const mcpRoute = resolveMcpRunTool(activeMcpSnapshot, call.name);
                           return {
                             fingerprint: mcpRoute?.fingerprint ?? null,
                             kind: "mcp",
@@ -1050,7 +1088,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     : isSearchCall(call.name)
                       ? currentSearchDispatchAllowed()
                       : (() => {
-                          const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
+                          const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                           const generationId = claim.call.mcpBinding?.runtimeGenerationId;
                           return route && generationId
                             ? currentMcpDispatchAllowed({
@@ -1094,7 +1132,82 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       })
                     : null;
                 }
-                if (isKnowledgeCall(call.name)) {
+                if (isMcpDiscoveryCall(call.name)) {
+                  result = await serializeMcpDiscovery(async () => {
+                    const discovery = activeMcpDiscovery;
+                    const parsed = mcpFindToolsArguments(call.arguments);
+                    if (!discovery || !parsed || !materializeMcpTools ||
+                      !appendMcpDiscoveryEpoch) {
+                      throw new Error("mcp_discovery_arguments_invalid");
+                    }
+                    const activeNames = new Set(
+                      (activeMcpSnapshot?.tools ?? []).map((tool) => tool.namespacedName)
+                    );
+                    const replay = discovery.epochs.find((epoch) =>
+                      epoch.roundIndex === context.round && epoch.query === parsed.query);
+                    if (replay) {
+                      const replayTools = mcpCatalogToolsByNames(
+                        discovery.catalog,
+                        replay.toolNames
+                      ).filter((tool) => activeNames.has(tool.namespacedName));
+                      if (replayTools.length !== replay.toolNames.length) {
+                        throw new Error("mcp_discovery_checkpoint_conflict");
+                      }
+                      return mcpFindToolsExecutionResult(call, replayTools);
+                    }
+                    const remaining = Math.max(
+                      0,
+                      discovery.maxActiveTools - activeNames.size
+                    );
+                    const ranked = remaining === 0
+                      ? []
+                      : rankMcpCatalogTools({
+                          activeToolNames: activeNames,
+                          catalog: discovery.catalog,
+                          limit: Math.min(parsed.limit, remaining),
+                          query: parsed.query
+                        });
+                    if (ranked.length === 0) {
+                      return mcpFindToolsExecutionResult(call, []);
+                    }
+                    const plan = await materializeMcpTools(
+                      input.userId,
+                      ranked.map((tool) => ({
+                        namespacedName: tool.namespacedName,
+                        revisionId: tool.revisionId,
+                        serverId: tool.serverId
+                      }))
+                    );
+                    if (!plan.ok) throw new Error(plan.code);
+                    const appended = await appendMcpDiscoveryEpoch({
+                      bindings: plan.bindings,
+                      query: parsed.query,
+                      roundIndex: context.round,
+                      runId,
+                      snapshot: plan.snapshot,
+                      userId: input.userId
+                    });
+                    if (!appended) throw new Error("mcp_discovery_checkpoint_conflict");
+                    activeMcpSnapshot = appended.snapshot;
+                    activeMcpDiscovery = appended.discovery;
+                    normalizedRequest.mcp = appended.snapshot;
+                    normalizedRequest.mcpDiscovery = appended.discovery;
+                    const knownToolNames = new Set(tools.map((tool) => tool.name));
+                    for (const tool of mcpRunTools(appended.snapshot)) {
+                      if (!knownToolNames.has(tool.name)) {
+                        tools.push(tool);
+                        knownToolNames.add(tool.name);
+                      }
+                    }
+                    const loadedNames = new Set(
+                      appended.snapshot.tools.map((tool) => tool.namespacedName)
+                    );
+                    return mcpFindToolsExecutionResult(
+                      call,
+                      ranked.filter((tool) => loadedNames.has(tool.namespacedName))
+                    );
+                  });
+                } else if (isKnowledgeCall(call.name)) {
                   result = await knowledgeExecutor!.execute(call, {
                     persistedToolCallId: claim.call.id,
                     request,
@@ -1129,7 +1242,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     { signal: context.signal }
                   );
                 } else {
-                  const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
+                  const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                   const generationId = claim.call.mcpBinding?.runtimeGenerationId;
                   if (!route || !generationId ||
                     claim.call.mcpBinding?.runtimeGenerationFingerprint !== route.fingerprint) {
@@ -1233,10 +1346,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           persistToolBatch: async ({ calls, continuation, round }) => {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
-                const route = resolveMcpRunTool(normalizedRequest.mcp, call.name);
+                const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isSearchCall(call.name) &&
                   !isKnowledgeCall(call.name) && !isMemoryCall(call.name) &&
-                  !isMemoryHistoryCall(call.name)) {
+                  !isMemoryHistoryCall(call.name) && !isMcpDiscoveryCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -1288,7 +1401,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           prepareRequest: async (roundRequest) => {
             const budgeted = applyProviderRequestContextBudget({
               bridge: toolBridge,
-              request: roundRequest
+              request: {
+                ...roundRequest,
+                ...(activeMcpSnapshot ? { mcp: activeMcpSnapshot } : {}),
+                ...(activeMcpDiscovery ? { mcpDiscovery: activeMcpDiscovery } : {})
+              }
             });
             if (!budgeted.ok) {
               throw new RunPipelineError("context_too_large", budgeted.error.message);
@@ -1377,6 +1494,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           option.adapterKind === "provider_model_client");
         const hasClientTools = hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
+          normalizedRequest.mcpDiscovery !== undefined ||
           knowledgeEnabled || memoryActionEnabled || memoryHistoryEnabled;
         assertPersonalContextEgressSafe(input.prepared.providerRequest);
         const providerResult = hasClientTools

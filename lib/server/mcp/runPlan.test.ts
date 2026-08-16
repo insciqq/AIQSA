@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import type { McpRunPlanRecord } from "./runPlan";
 import { namespacedMcpToolName, prepareMcpRunPlan } from "./runPlan";
 
@@ -72,6 +73,33 @@ describe("MCP run plans", () => {
     }
     expect(namespacedMcpToolName("mcp_example", "equal name"))
       .not.toBe(namespacedMcpToolName("mcp_other", "equal name"));
+  });
+
+  it("materializes one requested tool without charging the server's full inventory", async () => {
+    const inventory = Array.from(
+      { length: MCP_RUN_PLAN_LIMITS.maxTools + 1 },
+      (_, index) => ({
+        definitionHash: index.toString(16).padStart(64, "0"),
+        description: `Tool ${index}`,
+        inputSchema: { properties: { value: { type: "string" } }, type: "object" },
+        name: `tool_${index}`
+      })
+    );
+    const selectedName = namespacedMcpToolName("mcp_example", "tool_0");
+    const result = await prepareMcpRunPlan({
+      allowedServerIds: ["server-1"],
+      allowedToolNames: [selectedName],
+      isGenerationLive: () => true,
+      load: async () => [record({ inventory: { tools: inventory, version: 1 } })],
+      now: () => now
+    });
+
+    expect(result).toMatchObject({
+      bindings: [{ serverId: "server-1" }],
+      ok: true,
+      snapshot: { tools: [{ namespacedName: selectedName }] }
+    });
+    if (result.ok) expect(result.snapshot.tools).toHaveLength(1);
   });
 
   it("never silently omits an enabled unavailable server and reconciles once", async () => {

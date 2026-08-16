@@ -539,6 +539,9 @@ model User {
   searchPolicyUpdates           SearchPolicy[]                     @relation("SearchPolicyUpdater")
   settings                      UserSettings?
   sharedSnapshots               SharedChatSnapshot[]
+  skillDefinitions              SkillDefinition[]                  @relation("SkillDefinitionOwner")
+  skillPublications             SkillPublication[]                 @relation("SkillPublicationPublisher")
+  skillRevisionsAuthored        SkillRevision[]                    @relation("SkillRevisionAuthor")
   smtpActivations               SmtpControl[]                      @relation("SmtpControlActivator")
   smtpConfigurationEdits        SmtpControl[]                      @relation("SmtpControlUpdater")
   systemModelPolicyUpdates      SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
@@ -723,6 +726,7 @@ model Group {
   authInviteDefaults            AuthInviteGroup[]
   knowledgeBasePublications     KnowledgeBasePublication[]
   mcpGrants                     McpGrant[]
+  skillPublications             SkillPublication[]
   providerCredentialAssignments ProviderGroupCredentialAssignment[]
   users                         UserGroup[]
 
@@ -881,6 +885,11 @@ enum AssistantPublicationScope {
   installation
 }
 
+enum SkillPublicationScope {
+  group
+  installation
+}
+
 enum KnowledgeBasePublicationScope {
   group
   installation
@@ -985,6 +994,67 @@ model AssistantPin {
 
   @@id([userId, assistantId])
   @@index([assistantId])
+}
+
+model SkillDefinition {
+  id                String             @id @default(uuid())
+  ownerUserId       String
+  currentRevisionId String?            @unique
+  version           Int                @default(1)
+  archivedAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  /// The composite relation proves the current pointer targets a revision of this definition.
+  currentRevision   SkillRevision?     @relation("SkillCurrentRevision", fields: [id, currentRevisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillDefinition_currentRevision_fkey")
+  owner             User               @relation("SkillDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  publications      SkillPublication[]
+  revisions         SkillRevision[]    @relation("SkillRevisions")
+
+  @@unique([id, currentRevisionId])
+  @@unique([ownerUserId, id])
+  @@index([ownerUserId, archivedAt])
+}
+
+model SkillRevision {
+  id               String                 @id @default(uuid())
+  skillId          String
+  revisionNumber   Int
+  schemaVersion    Int                    @default(1)
+  name             String
+  description      String                 @default("")
+  instructions     String
+  authorUserId     String?
+  createdAt        DateTime               @default(now())
+  skill            SkillDefinition        @relation("SkillRevisions", fields: [skillId], references: [id], onDelete: Restrict)
+  author           User?                  @relation("SkillRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  currentFor       SkillDefinition?       @relation("SkillCurrentRevision")
+  publications     SkillPublication[]     @relation("SkillPublicationRevision")
+  modelRunBindings ModelRunSkillBinding[]
+
+  @@unique([skillId, revisionNumber])
+  @@unique([skillId, id])
+  @@index([authorUserId])
+}
+
+model SkillPublication {
+  id                String                @id @default(uuid())
+  skillId           String
+  revisionId        String
+  scope             SkillPublicationScope
+  groupId           String?
+  publishedByUserId String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  skill             SkillDefinition       @relation(fields: [skillId], references: [id], onDelete: Restrict)
+  group             Group?                @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  publishedBy       User?                 @relation("SkillPublicationPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  /// The composite relation proves the pinned revision belongs to the published definition.
+  revision          SkillRevision         @relation("SkillPublicationRevision", fields: [skillId, revisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillPublication_revision_fkey")
+
+  @@unique([skillId, groupId])
+  @@index([groupId])
+  @@index([skillId, scope])
+  @@index([revisionId])
 }
 
 model KnowledgeBase {
@@ -1617,6 +1687,7 @@ model ModelRun {
   memoryToolEgressReceipts MemoryToolEgressReceipt[]
   providerRunBindings      ProviderRunBinding[]
   searchRuns               SearchRun[]
+  skillRunBindings         ModelRunSkillBinding[]
   toolCalls                ModelRunToolCall[]
   user                     User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   userMessage              Message                   @relation("UserMessageRun", fields: [userMessageId], references: [id], onDelete: Restrict)
@@ -1629,6 +1700,19 @@ model ModelRun {
   @@index([provider, modelId])
   @@index([status])
   @@index([userId, createdAt])
+}
+
+model ModelRunSkillBinding {
+  modelRunId String
+  skillId    String
+  revisionId String
+  createdAt  DateTime      @default(now())
+  modelRun   ModelRun      @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  revision   SkillRevision @relation(fields: [skillId, revisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "ModelRunSkillBinding_revision_fkey")
+
+  @@id([modelRunId, skillId])
+  @@unique([modelRunId, revisionId])
+  @@index([skillId, revisionId])
 }
 
 model ModelRunEvent {

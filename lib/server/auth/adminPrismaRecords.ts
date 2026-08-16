@@ -6,6 +6,7 @@ export const adminGroupRecordInclude = {
       assistantPublications: true,
       knowledgeBasePublications: true,
       providerCredentialAssignments: true,
+      skillPublications: true,
       users: true
     }
   },

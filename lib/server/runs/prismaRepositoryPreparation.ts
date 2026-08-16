@@ -78,6 +78,7 @@ import {
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
+  SkillRunConflictError,
   type PreparingRunAdmissionInput,
   type PreparingRunAdmissionResult,
   type PreparingRunFinalizationInput,
@@ -86,9 +87,11 @@ import {
 } from "./runRepositoryContract";
 import {
   assertAssistantRunProvenance,
+  assertCurrentSkillRunBindings,
   insertAcceptedKnowledgeRunBindings,
   insertAcceptedMcpRunBindings,
   insertAcceptedProviderRunBindings,
+  insertAcceptedSkillRunBindings,
   lockKnowledgeRunAdmissionSources,
   persistAcceptedRunDefaults,
   repeatableReadTransaction
@@ -318,6 +321,13 @@ async function createPreparingAttempt(
 
 function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void {
   const initialMode = "initialChatMode" in input ? input.initialChatMode : undefined;
+  const requestSkills = input.normalizedRequest.skills ?? [];
+  const skillBindings = input.skillBindings ?? [];
+  if (requestSkills.length !== skillBindings.length || requestSkills.some((skill, index) =>
+    skill.skillId !== skillBindings[index]?.skillId ||
+    skill.revisionId !== skillBindings[index]?.revisionId)) {
+    throw new SkillRunConflictError();
+  }
   if (initialMode !== undefined && !decodeMemoryInitialChatMode(initialMode).ok) {
     throw new MemoryPreparingRunConflictError(
       "memory_temporary_policy_review_required",
@@ -680,6 +690,11 @@ export async function admitPreparingRunWithClient(
       });
       await insertAcceptedMcpRunBindings(tx, {
         bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
+        runId: run.id,
+        userId: input.userId
+      });
+      await insertAcceptedSkillRunBindings(tx, {
+        bindings: input.skillBindings,
         runId: run.id,
         userId: input.userId
       });
@@ -1558,6 +1573,11 @@ export async function finalizePreparingRunWithClient(
       runId: input.runId,
       userId: input.userId
     });
+    await assertCurrentSkillRunBindings(tx, {
+      bindings: input.skillBindings,
+      runId: input.runId,
+      userId: input.userId
+    });
 
     if (attempt.chatMemoryModeSnapshot === "TEMPORARY") {
       if (
@@ -2163,6 +2183,7 @@ export async function createDormantPreparingRun(
             ? { knowledgeAdmissionPlan: admission.knowledgeAdmissionPlan }
             : {}),
           ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
+          ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
           normalizedRequest: materializedRequest?.normalizedRequest ?? admission.normalizedRequest,
           providerAdmissionPlan: admission.providerAdmissionPlan,
           providerRequestPreview:

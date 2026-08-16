@@ -17,16 +17,20 @@ import {
   attachmentWarningsForModel
 } from "@/components/app-shell/attachmentCapabilities";
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
+import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { refreshMemoryList } from "@/components/app-shell/memoryManagerStore";
 import {
   refreshMemorySettings,
   useMemorySettingsStore
 } from "@/components/app-shell/memorySettingsStore";
-import { updateUserMcpServer } from "@/components/app-shell/mcpSettingsApi";
 import {
   refreshMcpSettings,
   useMcpSettingsStore
 } from "@/components/app-shell/mcpSettingsStore";
+import {
+  refreshSkillLibrary,
+  useSkillLibraryStore
+} from "@/components/app-shell/skillLibraryStore";
 import type { PowerAppShellV2Props } from "@/components/app-shell/powerAppShellV2Contracts";
 import type {
   WorkspaceChatSummary,
@@ -40,6 +44,7 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { CommandPalette } from "@/components/command-palette/CommandPalette";
 import { UiV2IconSprite } from "@/components/ui-v2";
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
+import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
 import {
   BranchDrawerV2,
   BranchPagerSlotV2,
@@ -152,8 +157,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [mcpBusy, setMcpBusy] = useState(false);
   const [mcpDirty, setMcpDirty] = useState(false);
   const [mcpKey, setMcpKey] = useState(0);
+  const [skillLibraryOpen, setSkillLibraryOpen] = useState(false);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const mcpServers = useMcpSettingsStore((state) => state.servers);
+  const mcpLoadState = useMcpSettingsStore((state) => state.loadState);
+  const skillCatalog = useSkillLibraryStore((state) => state.data);
+  const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
+  const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
   const navigationFolders = useWorkspaceStore((state) => state.navigationFolders);
   // Server-verified capability gate for the direct "Delete…" entries; the
   // deletion confirm surface and its semantics stay unchanged.
@@ -165,7 +175,38 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 
   useEffect(() => {
     void refreshMcpSettings().catch(() => undefined);
+    void refreshSkillLibrary().catch(() => undefined);
   }, []);
+  useEffect(() => {
+    if (!skillCatalog || selectedSkills.length === 0) return;
+    const available = new Map(
+      skillCatalog.skills.filter((skill) => !skill.archived).map((skill) => [skill.id, skill] as const)
+    );
+    const next = selectedSkills.flatMap((selected) => {
+      const skill = available.get(selected.id);
+      return skill ? [{
+        description: skill.description,
+        id: skill.id,
+        name: skill.name,
+        promptCharacterCount: skill.instructions.length
+      }] : [];
+    });
+    if (next.length !== selectedSkills.length || next.some((skill, index) =>
+      skill.name !== selectedSkills[index]?.name ||
+      skill.description !== selectedSkills[index]?.description ||
+      skill.promptCharacterCount !== selectedSkills[index]?.promptCharacterCount)) {
+      useComposerControlStore.getState().setSelectedSkills(next);
+    }
+  }, [selectedSkills, skillCatalog]);
+  useEffect(() => {
+    if (mcpSelection.mode !== "selected" || mcpLoadState !== "ready") return;
+    const enabledIds = new Set(mcpServers.filter((server) => server.enabled).map((server) => server.id));
+    const serverIds = mcpSelection.serverIds.filter((id) => enabledIds.has(id));
+    if (serverIds.length === mcpSelection.serverIds.length) return;
+    useComposerControlStore.getState().setMcpSelection(
+      serverIds.length > 0 ? { mode: "selected", serverIds } : { mode: "auto" }
+    );
+  }, [mcpLoadState, mcpSelection, mcpServers]);
   // The tab title follows the visible active chat (rename/switch included);
   // the Library replaces it while it owns the workspace. Next.js re-applies
   // its static route metadata after hydration, so the effect also watches the
@@ -211,8 +252,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       knownToolCount: server.knownToolCount,
       name: server.name,
       readiness: server.readiness
-    }))
-  }) : null, [composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, mcpServers]);
+    })),
+    skills: skillCatalog?.skills ?? []
+  }) : null, [composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, mcpServers, skillCatalog?.skills]);
   const attachmentItems = useMemo(
     () => attachmentItemsForV2(
       composer.attachments,
@@ -255,28 +297,39 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onOpenAssistantPicker={() => composer.assistant.setPickerOpen(true)}
       onOpenMcpSettings={settings.openMcp}
       onOpenModelParameters={() => setRunSetupOpen(true)}
+      onOpenSkillLibrary={() => setSkillLibraryOpen(true)}
       onRemoveAssistant={composer.assistant.remove}
       onRemoveAttachment={composer.composerActions.removeAttachment}
       onRejectedFiles={(files) => composer.composerActions.rejectAttachments(files.map((file) => file.name))}
       onRetryAttachment={composer.composerActions.retryAttachment}
       onRetryConfig={composer.retryCatalog}
       onSelectKnowledgeBaseIds={composer.knowledge.select}
+      onSelectMcp={(selection) => useComposerControlStore.getState().setMcpSelection(selection)}
       onSelectModel={composer.selectModel}
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
+      onSelectSkillIds={(ids) => {
+        const byId = new Map((skillCatalog?.skills ?? []).map((skill) => [skill.id, skill] as const));
+        useComposerControlStore.getState().setSelectedSkills(ids.flatMap((id) => {
+          const skill = byId.get(id);
+          return skill && !skill.archived ? [{
+            description: skill.description,
+            id: skill.id,
+            name: skill.name,
+            promptCharacterCount: skill.instructions.length
+          }] : [];
+        }));
+      }}
       onSend={() => void composer.submitComposer()}
       onStop={() => void composer.stopCurrentRun()}
-      onToggleMcpServer={(serverId, enabled) => {
-        void updateUserMcpServer(serverId, { enabled }).then((server) => {
-          useMcpSettingsStore.getState().replaceServer(server);
-        }).catch(() => settings.openMcp());
-      }}
       onUploadFiles={(files) => composer.uploadFiles(files)}
       runId={thread.currentRunId}
       selectedAssistant={composer.assistant.selected}
+      mcpSelection={mcpSelection}
       selectedKnowledgeBaseIds={composer.knowledge.selectedBaseIds}
       selectedModelId={composer.selectedModelId}
       selectedProvider={composer.selectedProvider}
       selectedSearchOptionIds={composer.selectedSearchOptionIds}
+      selectedSkillIds={selectedSkills.map((skill) => skill.id)}
       uploading={composer.uploading}
       usageStats={composer.composerUsageStats}
     />
@@ -681,6 +734,20 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onSelect={composer.assistant.selectById}
           recentIds={composer.assistant.recentIds}
           selectedAssistantId={composer.assistant.selected?.id ?? null}
+        />
+      ) : null}
+      {skillLibraryOpen ? (
+        <SkillLibraryDialog
+          selectedIds={selectedSkills.map((skill) => skill.id)}
+          onClose={() => setSkillLibraryOpen(false)}
+          onSelectionChange={(skills) => {
+            useComposerControlStore.getState().setSelectedSkills(skills.map((skill) => ({
+              description: skill.description,
+              id: skill.id,
+              name: skill.name,
+              promptCharacterCount: skill.instructions.length
+            })));
+          }}
         />
       ) : null}
 

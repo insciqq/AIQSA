@@ -9,7 +9,11 @@ import type { ModelRunStatus } from "../../contracts/runs";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelTokenPricing } from "../../domain/usage";
 import type { ResolvedEntitlements } from "../auth/entitlements";
-import type { McpRunPlanBinding } from "../mcp/runPlan";
+import type {
+  McpDiscoveryState,
+  McpRunPlanBinding,
+  McpRunPlanSnapshot
+} from "../mcp/runPlan";
 import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
@@ -178,10 +182,22 @@ export class AssistantRunConflictError extends Error {
   }
 }
 
+export class SkillRunConflictError extends Error {
+  constructor() {
+    super("skill_not_available");
+    this.name = "SkillRunConflictError";
+  }
+}
+
 /** Exact accepted Assistant provenance persisted with the run. */
 export type AcceptedAssistantRun = {
   assistantId: string;
   revisionId: string;
+};
+
+export type AcceptedSkillRun = {
+  revisionId: string;
+  skillId: string;
 };
 
 export type AcceptedRunDefaults = {
@@ -228,6 +244,7 @@ export type CreateRunInput = {
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   initialChatMode?: MemoryInitialChatMode;
   mcpBindings?: McpRunPlanBinding[];
+  skillBindings?: AcceptedSkillRun[];
   modelId: string;
   memoryMaterializer?: PreparingRunMemoryMaterializer;
   normalizedRequest: NormalizedRunRequest;
@@ -244,6 +261,7 @@ export type CreateRegenerationRunInput = {
   defaults?: AcceptedRunDefaults;
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
+  skillBindings?: AcceptedSkillRun[];
   modelId: string;
   memoryMaterializer?: PreparingRunMemoryMaterializer;
   normalizedRequest: NormalizedRunRequest;
@@ -296,6 +314,7 @@ export type PreparingRunFinalizationInput = Readonly<{
   attemptId: string;
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: readonly McpRunPlanBinding[];
+  skillBindings?: readonly AcceptedSkillRun[];
   normalizedRequest: NormalizedRunRequest;
   providerAdmissionPlan?: ProviderAdmissionPlan;
   providerRequestPreview: Readonly<Record<string, unknown>>;
@@ -310,6 +329,17 @@ export type PreparingRunRecoveryResult =
 
 export type RunRepository = {
   admitPreparingRun(input: PreparingRunAdmissionInput): Promise<PreparingRunAdmissionResult>;
+  appendMcpDiscoveryEpoch?(input: {
+    bindings: readonly McpRunPlanBinding[];
+    query: string;
+    roundIndex: number;
+    runId: string;
+    snapshot: McpRunPlanSnapshot;
+    userId: string;
+  }): Promise<Readonly<{
+    discovery: McpDiscoveryState;
+    snapshot: McpRunPlanSnapshot;
+  }> | null>;
   advanceToolLoopCallBatch(input: {
     roundIndex: number;
     runId: string;

@@ -835,6 +835,40 @@ describe("run preparation", () => {
     );
   });
 
+  it("resolves selected Skills server-side and binds immutable revisions into the run", async () => {
+    const harness = createHarness();
+    const resolveForRun = vi.fn(async () => ({
+      ok: true as const,
+      skills: [{
+        instructions: "Verify every factual claim before answering.",
+        name: "Careful editor",
+        revisionId: "skill-revision-2",
+        skillId: "skill-editor"
+      }, {
+        instructions: "End with a short action list.",
+        name: "Action closer",
+        revisionId: "skill-revision-4",
+        skillId: "skill-actions"
+      }]
+    }));
+    const prepared = preparedFrom(await prepareRun(
+      { ...harness.deps, skills: { resolveForRun } },
+      sendInput(successBody({ skillIds: ["skill-editor", "skill-actions"] }))
+    ));
+
+    expect(resolveForRun).toHaveBeenCalledWith("user-1", ["skill-editor", "skill-actions"]);
+    expect(prepared.skillBindings).toEqual([
+      { revisionId: "skill-revision-2", skillId: "skill-editor" },
+      { revisionId: "skill-revision-4", skillId: "skill-actions" }
+    ]);
+    expect(prepared.normalizedRequest.skills).toEqual([
+      { name: "Careful editor", revisionId: "skill-revision-2", skillId: "skill-editor" },
+      { name: "Action closer", revisionId: "skill-revision-4", skillId: "skill-actions" }
+    ]);
+    expect(prepared.providerRequest.prompt.developer).toContain("## Skill: Careful editor");
+    expect(prepared.providerRequest.prompt.developer).toContain("End with a short action list.");
+  });
+
   it("fails before snapshotting unsupported Buffer data without mutating it", async () => {
     const opaqueBuffer = Buffer.from("leave-buffer-mutable");
     const harness = createHarness();
@@ -1292,6 +1326,82 @@ describe("run preparation", () => {
 
     expect(prepared.normalizedRequest.mcp).toBeUndefined();
     expect(prepared.mcpBindings).toBeUndefined();
+  });
+
+  it("starts Auto with only schema-free discovery and no eager runtime plan", async () => {
+    const harness = createHarness({
+      capabilities: { ...baseCapabilities, toolCalling: true }
+    });
+    const prepare = vi.fn(async () => readyMcpPlan());
+    const catalog = vi.fn(async () => ({
+      servers: [{
+        description: "Issue tracking",
+        namespace: "jira",
+        revisionId: "revision-jira",
+        serverId: "server-jira",
+        serverName: "Jira",
+        tools: [{
+          description: "Create an issue",
+          namespacedName: "mcp_jira_create_issue_1",
+          originalName: "create_issue"
+        }]
+      }],
+      version: 1 as const
+    }));
+    const prepared = preparedFrom(await prepareRun(
+      { ...harness.deps, mcp: { catalog, prepare } },
+      sendInput(successBody({ modelId: "openai-tool-model", provider: "openai" }))
+    ));
+
+    expect(catalog).toHaveBeenCalledWith("user-1");
+    expect(prepare).not.toHaveBeenCalled();
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      ...memoryToolNames,
+      "find_tools"
+    ]);
+    expect(prepared.normalizedRequest.mcp).toBeUndefined();
+    expect(prepared.mcpBindings).toBeUndefined();
+    expect(JSON.stringify(prepared.normalizedRequest.mcpDiscovery?.catalog))
+      .not.toContain("inputSchema");
+  });
+
+  it("keeps Off empty and materializes only the exact Selected MCP servers", async () => {
+    const harness = createHarness({
+      capabilities: { ...baseCapabilities, toolCalling: true }
+    });
+    const prepare = vi.fn(async () => readyMcpPlan());
+    const catalog = vi.fn(async () => ({ servers: [], version: 1 as const }));
+
+    const off = preparedFrom(await prepareRun(
+      { ...harness.deps, mcp: { catalog, prepare } },
+      sendInput(successBody({
+        mcp: { mode: "off" },
+        modelId: "openai-tool-model",
+        provider: "openai"
+      }))
+    ));
+    expect(off.normalizedRequest.mcp).toBeUndefined();
+    expect(off.normalizedRequest.mcpDiscovery).toBeUndefined();
+    expect(off.providerRequest.tools?.map((tool) => tool.name)).toEqual(memoryToolNames);
+    expect(catalog).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+
+    const selected = preparedFrom(await prepareRun(
+      { ...harness.deps, mcp: { catalog, prepare } },
+      sendInput(successBody({
+        mcp: { mode: "selected", serverIds: ["server-1"] },
+        modelId: "openai-tool-model",
+        provider: "openai"
+      }))
+    ));
+    expect(prepare).toHaveBeenCalledWith("user-1", {
+      allowedServerIds: ["server-1"]
+    });
+    expect(selected.normalizedRequest.mcpDiscovery).toBeUndefined();
+    expect(selected.providerRequest.tools?.map((tool) => tool.name)).toEqual([
+      ...memoryToolNames,
+      "mcp_team_lookup_1"
+    ]);
   });
 
   it("accepts an MCP snapshot for a provider model with explicit effective tool capabilities", async () => {

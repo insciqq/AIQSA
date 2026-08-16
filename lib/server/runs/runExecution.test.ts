@@ -7,7 +7,7 @@ import {
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
-import type { McpRunPlanSnapshot } from "../mcp/runPlan";
+import type { McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
@@ -315,6 +315,7 @@ function preparedData(input: Readonly<{
   contextTruncation?: ContextTruncationSummary | null;
   knowledgeBaseIds?: string[];
   memoryActions?: boolean;
+  mcpDiscovery?: McpDiscoveryState;
   mcp?: McpRunPlanSnapshot;
   modelId?: string;
   provider?: string;
@@ -359,6 +360,7 @@ function preparedData(input: Readonly<{
     ...(input.memoryActions
       ? { memoryActionTools: { version: "model-driven-v2" as const } }
       : {}),
+    ...(input.mcpDiscovery ? { mcpDiscovery: input.mcpDiscovery } : {}),
     ...(input.mcp ? { mcp: input.mcp } : {}),
     modelId,
     params: {},
@@ -2719,6 +2721,166 @@ describe("run execution", () => {
     expect(durable).not.toContain("ENCRYPTED_CONTENT_CANARY");
     expect(durable).not.toContain("ENCRYPTED_INDEX_CANARY");
     expect(durable).not.toContain("RAW_ANTHROPIC_RESULT_CANARY");
+  });
+
+  it("discovers, checkpoints, and exposes only a relevant MCP schema on the next round", async () => {
+    const namespacedName = "mcp_jira_create_issue_auto";
+    const fingerprint = "fingerprint-auto";
+    const snapshot: McpRunPlanSnapshot = {
+      servers: [{
+        fingerprint,
+        revisionId: "revision-jira",
+        serverId: "server-jira",
+        serverName: "Jira"
+      }],
+      tools: [{
+        definitionHash: "a".repeat(64),
+        description: "Create a Jira issue",
+        inputSchema: {
+          properties: { title: { type: "string" } },
+          required: ["title"],
+          type: "object"
+        },
+        name: "create_issue",
+        namespacedName,
+        originalName: "create_issue",
+        serverId: "server-jira",
+        serverName: "Jira"
+      }],
+      version: 1
+    };
+    const discovery: McpDiscoveryState = {
+      catalog: {
+        servers: [{
+          description: "Issue tracking",
+          namespace: "jira",
+          revisionId: "revision-jira",
+          serverId: "server-jira",
+          serverName: "Jira",
+          tools: [{
+            description: "Create a Jira issue",
+            namespacedName,
+            originalName: "create_issue"
+          }]
+        }],
+        version: 1
+      },
+      epochs: [],
+      maxActiveTools: 12,
+      version: 1
+    };
+    const basePrepared = preparedData({
+      mcpDiscovery: discovery,
+      modelId: "gpt-tool-model",
+      provider: "openai"
+    });
+    const prepared: MaterializedPreparedRunData = {
+      ...basePrepared,
+      providerRequest: {
+        ...basePrepared.providerRequest,
+        tools: [{
+          capability: "mcp",
+          description: "Find relevant tools",
+          inputSchema: { type: "object" },
+          name: "find_tools"
+        }]
+      }
+    };
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      if (providerRequests.length === 1) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { query: "create a Jira issue" },
+            id: "find-call",
+            name: "find_tools"
+          }]
+        });
+      }
+      if (providerRequests.length === 2) {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { title: "Ship Auto discovery" },
+            id: "jira-call",
+            name: namespacedName
+          }]
+        });
+      }
+      return providerResult({ finalText: "Issue created" });
+    });
+    const repository = createRepository();
+    const appendMcpDiscoveryEpoch = vi.fn<
+      NonNullable<RunExecutionRepository["appendMcpDiscoveryEpoch"]>
+    >(async (input) => {
+      expect(providerRequests).toHaveLength(1);
+      return {
+        discovery: {
+          ...discovery,
+          epochs: [{
+            epoch: 1,
+            query: input.query,
+            roundIndex: input.roundIndex,
+            toolNames: [namespacedName]
+          }]
+        },
+        snapshot
+      };
+    });
+    const plan = {
+      bindings: [{
+        fingerprint,
+        runtimeGenerationId: `generation-${fingerprint}`,
+        serverId: "server-jira"
+      }],
+      ok: true as const,
+      snapshot
+    };
+    const materialize = vi.fn(async () => plan);
+    const prepare = vi.fn(async () => plan);
+    const callTool = vi.fn(async () => ({
+      isError: false,
+      structuredContent: { issue: "AIQSA-42" },
+      text: ["Created AIQSA-42"],
+      unsupportedContentTypes: [] as string[]
+    }));
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      mcp: { materialize, prepare },
+      mcpRuntime: {
+        callTool,
+        async ensureAcceptedGeneration() { return true; }
+      },
+      prepared,
+      repository: {
+        ...repository.repository,
+        appendMcpDiscoveryEpoch
+      }
+    })).text();
+
+    expect(providerRequests).toHaveLength(3);
+    expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["find_tools"]);
+    expect(JSON.stringify(providerRequests[0]?.mcpDiscovery?.catalog)).not.toContain("inputSchema");
+    expect(providerRequests[1]?.tools?.map((tool) => tool.name)).toEqual([
+      "find_tools",
+      namespacedName
+    ]);
+    expect(providerRequests[1]?.tools?.find((tool) => tool.name === namespacedName)?.inputSchema)
+      .toEqual(snapshot.tools[0]?.inputSchema);
+    expect(materialize).toHaveBeenCalledWith("user-1", [{
+      namespacedName,
+      revisionId: "revision-jira",
+      serverId: "server-jira"
+    }]);
+    expect(appendMcpDiscoveryEpoch).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({
+      generationId: `generation-${fingerprint}`,
+      name: "create_issue"
+    }));
+    expect(repository.completeRuns[0]?.finalText).toBe("Issue created");
   });
 
   it("coexists with MCP in one ordinary context and records provider and tool destinations", async () => {
