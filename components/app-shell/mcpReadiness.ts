@@ -8,7 +8,7 @@ export type McpReadinessPresentation = Readonly<{
 const presentations: Record<McpReadiness, McpReadinessPresentation> = {
   authorizing: { kind: "progress", label: "Authorizing" },
   disabled: { kind: "disabled", label: "Disabled" },
-  idle: { kind: "progress", label: "Waking up" },
+  idle: { kind: "ready", label: "Available on demand" },
   needs_authorization: { kind: "attention", label: "Needs authorization" },
   needs_setup: { kind: "attention", label: "Needs setup" },
   queued: { kind: "progress", label: "Activating" },

@@ -13,6 +13,7 @@ describe("MCP readiness presentation", () => {
     expect(mcpReadinessPresentation("needs_setup")).toEqual({ kind: "attention", label: "Needs setup" });
     expect(mcpReadinessPresentation("unavailable")).toEqual({ kind: "failed", label: "Activation failed" });
     expect(mcpReadinessPresentation("ready")).toEqual({ kind: "ready", label: "Ready" });
+    expect(mcpReadinessPresentation("idle")).toEqual({ kind: "ready", label: "Available on demand" });
   });
 
   it("polls only enabled servers in a transient readiness state", () => {

@@ -33,6 +33,7 @@ const adminDashboardUserSelect = {
       mcpUserServers: true,
       modelRuns: true,
       assistantDefinitions: true,
+      skillDefinitions: true,
       sharedSnapshots: true,
       usageEvents: true
     }

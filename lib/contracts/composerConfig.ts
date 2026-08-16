@@ -1,6 +1,7 @@
 import type { AssistantSummary } from "./assistants";
 import type { Catalog } from "./catalog";
 import type { McpReadiness } from "./mcp";
+import type { SkillSummary } from "./skills";
 
 export type ComposerConfigKnowledgeBase = Readonly<{
   archived: boolean;
@@ -24,4 +25,5 @@ export type ComposerConfig = Readonly<{
   catalog: Catalog;
   knowledgeBases: ComposerConfigKnowledgeBase[];
   mcpServers: ComposerConfigMcpServer[];
+  skills?: SkillSummary[];
 }>;

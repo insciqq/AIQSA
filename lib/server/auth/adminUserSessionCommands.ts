@@ -257,6 +257,7 @@ async function countUserOwnedAppData(
     mcpUserServers,
     modelRuns,
     assistantDefinitions,
+    skillDefinitions,
     settings,
     sharedSnapshots,
     usageEvents,
@@ -317,6 +318,11 @@ async function countUserOwnedAppData(
         ownerUserId: userId
       }
     }),
+    tx.skillDefinition.count({
+      where: {
+        ownerUserId: userId
+      }
+    }),
     tx.userSettings.count({
       where: {
         userId
@@ -349,6 +355,7 @@ async function countUserOwnedAppData(
     mcpUserServers,
     modelRuns,
     assistantDefinitions,
+    skillDefinitions,
     settings,
     sharedSnapshots,
     usageEvents

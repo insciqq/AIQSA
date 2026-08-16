@@ -7,6 +7,7 @@ import {
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
+import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import {
   parseToolLoopCheckpoint,
@@ -314,7 +315,7 @@ export function createPrismaRunToolLoopOperations(
       if (call.state === "complete" || call.state === "error") {
         return { call: persistedToolLoopCall(call), kind: "settled" as const };
       }
-      if (call.state === "running") {
+      if (call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME) {
         const history = await tx.memoryHistoryRun.findUnique({
           select: {
             completedAt: true,

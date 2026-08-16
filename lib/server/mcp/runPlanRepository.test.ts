@@ -1,6 +1,9 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import { loadMcpRunPlanRecords } from "./runPlanRepository";
+import {
+  loadMcpCapabilityCatalog,
+  loadMcpRunPlanRecords
+} from "./runPlanRepository";
 
 const NOW = new Date("2026-07-22T20:00:00.000Z");
 const HASH = "a".repeat(64);
@@ -22,8 +25,13 @@ type PreferenceFixture = {
   enabled: boolean;
   id: string;
   server: {
+    activeRevision: {
+      configuration: Record<string, unknown>;
+      validationEvidence: Record<string, unknown>;
+    } | null;
     activeRevisionId: string | null;
     archivedAt: Date | null;
+    description: string;
     displayName: string;
     enabled: boolean;
     grants: { canUse: boolean; groupId: string | null; userId: string | null }[];
@@ -64,8 +72,15 @@ function preference(overrides: Partial<PreferenceFixture> = {}): PreferenceFixtu
     enabled: true,
     id,
     server: {
+      activeRevision: {
+        configuration: {},
+        validationEvidence: {
+          toolInventory: [{ description: "Echo", name: "echo", title: "Echo input" }]
+        }
+      },
       activeRevisionId: "revision-1",
       archivedAt: null,
+      description: "Example tools",
       displayName: "Example MCP",
       enabled: true,
       grants: [{ canUse: true, groupId: null, userId: "user-1" }],
@@ -94,6 +109,7 @@ describe("Prisma MCP run-plan loader", () => {
     const { client, findMany } = clientWith([preference()]);
 
     await expect(loadMcpRunPlanRecords("user-1", client)).resolves.toEqual([{
+      catalogTools: [{ description: "Echo", name: "echo", title: "Echo input" }],
       credentialSources: ["personal"],
       enabled: true,
       errorCode: null,
@@ -105,12 +121,39 @@ describe("Prisma MCP run-plan loader", () => {
       namespace: "example",
       readiness: "ready",
       revisionId: "revision-1",
+      serverDescription: "Example tools",
       serverId: "server-1",
       serverName: "Example MCP"
     }]);
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { enabled: true, userId: "user-1" }
     }));
+  });
+
+  it("builds a schema-free catalog for accessible dormant servers only", async () => {
+    const accessible = preference({
+      desiredRuntimeGeneration: null,
+      desiredRuntimeGenerationId: null
+    });
+    const revoked = preference({ id: "preference-2" });
+    revoked.server = {
+      ...revoked.server,
+      grants: [],
+      id: "server-revoked",
+      namespace: "revoked"
+    };
+
+    const catalog = await loadMcpCapabilityCatalog(
+      "user-1",
+      clientWith([accessible, revoked]).client
+    );
+
+    expect(catalog.servers).toEqual([expect.objectContaining({
+      serverId: "server-1",
+      tools: [expect.objectContaining({ originalName: "echo" })]
+    })]);
+    expect(JSON.stringify(catalog)).not.toContain("inputSchema");
+    expect(JSON.stringify(catalog)).not.toContain("server-revoked");
   });
 
   it("accepts a matching active-group grant", async () => {

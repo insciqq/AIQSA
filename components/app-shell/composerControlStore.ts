@@ -33,6 +33,18 @@ export type ComposerAssistantSelection = {
   starterPrompts: string[];
 };
 
+export type ComposerMcpSelection =
+  | { mode: "auto" }
+  | { mode: "off" }
+  | { mode: "selected"; serverIds: string[] };
+
+export type ComposerSkillSelection = {
+  description: string;
+  id: string;
+  name: string;
+  promptCharacterCount: number;
+};
+
 export type ComposerManualDraftBackup = {
   backgroundMode: boolean;
   maxOutputTokens: string;
@@ -42,8 +54,10 @@ export type ComposerManualDraftBackup = {
   searchPlanMode: SearchPlanMode;
   selectedModelId: string;
   selectedKnowledgeBaseIds: string[];
+  mcpSelection: ComposerMcpSelection;
   selectedProvider: string;
   selectedSearchOptionIds: string[];
+  selectedSkills: ComposerSkillSelection[];
   streamMode: boolean;
   temperature: string;
 };
@@ -58,9 +72,11 @@ export type ComposerControlSnapshot = {
   reasoningMode: string;
   selectedAssistant: ComposerAssistantSelection | null;
   selectedKnowledgeBaseIds: string[];
+  mcpSelection: ComposerMcpSelection;
   selectedModelId: string;
   selectedProvider: string;
   selectedSearchOptionIds: string[];
+  selectedSkills: ComposerSkillSelection[];
   searchPlanMode: SearchPlanMode;
   showCitations: boolean;
   showReasoningBlocks: boolean;
@@ -87,6 +103,7 @@ export type ComposerControlStore = ComposerControlSnapshot & {
   removeAssistant(): void;
   setBackgroundMode(value: boolean): void;
   setMaxOutputTokens(value: string): void;
+  setMcpSelection(value: ComposerMcpSelection): void;
   setSelectedKnowledgePlan(
     baseIds: readonly string[],
     source?: Exclude<ComposerKnowledgePlanSource, "assistant">,
@@ -101,6 +118,7 @@ export type ComposerControlStore = ComposerControlSnapshot & {
     mode: SearchPlanMode,
     origin?: ComposerControlChangeOrigin
   ): void;
+  setSelectedSkills(skills: readonly ComposerSkillSelection[]): void;
   setShowCitations(update: StateUpdate<boolean>): void;
   setShowReasoningBlocks(update: StateUpdate<boolean>): void;
   setStreamMode(value: boolean): void;
@@ -112,6 +130,7 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   assistantRemovedNotice: false,
   backgroundMode: true,
   maxOutputTokens: "128000",
+  mcpSelection: { mode: "auto" },
   knowledgePlanSource: "off",
   reasoningEffort: "medium",
   reasoningMode: "standard",
@@ -120,6 +139,7 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   selectedModelId: "gpt-5.5",
   selectedProvider: "openai",
   selectedSearchOptionIds: ["openai-native-web-search"],
+  selectedSkills: [],
   searchPlanMode: "all_selected",
   showCitations: true,
   showReasoningBlocks: false,
@@ -135,6 +155,9 @@ function manualBackupFrom(state: ComposerControlSnapshot): ComposerManualDraftBa
   return {
     backgroundMode: state.backgroundMode,
     maxOutputTokens: state.maxOutputTokens,
+    mcpSelection: state.mcpSelection.mode === "selected"
+      ? { mode: "selected", serverIds: [...state.mcpSelection.serverIds] }
+      : { ...state.mcpSelection },
     knowledgePlanSource: state.knowledgePlanSource === "assistant" ? "off" : state.knowledgePlanSource,
     reasoningEffort: state.reasoningEffort,
     reasoningMode: state.reasoningMode,
@@ -143,6 +166,7 @@ function manualBackupFrom(state: ComposerControlSnapshot): ComposerManualDraftBa
     selectedKnowledgeBaseIds: [...state.selectedKnowledgeBaseIds],
     selectedProvider: state.selectedProvider,
     selectedSearchOptionIds: [...state.selectedSearchOptionIds],
+    selectedSkills: state.selectedSkills.map((skill) => ({ ...skill })),
     streamMode: state.streamMode,
     temperature: state.temperature
   };
@@ -186,6 +210,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       assistantRemovedNotice: false,
       backgroundMode: controlDefaults.backgroundMode,
       maxOutputTokens: controlDefaults.maxOutputTokens,
+      mcpSelection: { mode: "auto" },
       knowledgePlanSource: "assistant",
       reasoningEffort: controlDefaults.reasoningEffort,
       reasoningMode: controlDefaults.reasoningMode,
@@ -197,6 +222,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       selectedModelId: modelId,
       selectedProvider: provider,
       selectedSearchOptionIds: [...searchOptionIds],
+      selectedSkills: [],
       searchPlanMode,
       streamMode: controlDefaults.streamMode,
       temperature: controlDefaults.temperature
@@ -242,6 +268,9 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
           ? {
               backgroundMode: backup.backgroundMode,
               maxOutputTokens: backup.maxOutputTokens,
+              mcpSelection: backup.mcpSelection.mode === "selected"
+                ? { mode: "selected", serverIds: [...backup.mcpSelection.serverIds] }
+                : { ...backup.mcpSelection },
               knowledgePlanSource: backup.knowledgePlanSource,
               reasoningEffort: backup.reasoningEffort,
               reasoningMode: backup.reasoningMode,
@@ -250,6 +279,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
               selectedKnowledgeBaseIds: [...backup.selectedKnowledgeBaseIds],
               selectedProvider: backup.selectedProvider,
               selectedSearchOptionIds: [...backup.selectedSearchOptionIds],
+              selectedSkills: backup.selectedSkills.map((skill) => ({ ...skill })),
               streamMode: backup.streamMode,
               temperature: backup.temperature
             }
@@ -262,6 +292,15 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
   },
   setMaxOutputTokens(value) {
     set((state) => ({ ...droppedAssistantIdentity(state, "user"), maxOutputTokens: value }));
+  },
+  setMcpSelection(mcpSelection) {
+    set((state) => state.selectedAssistant
+      ? {}
+      : {
+          mcpSelection: mcpSelection.mode === "selected"
+            ? { mode: "selected", serverIds: [...mcpSelection.serverIds] }
+            : { ...mcpSelection }
+        });
   },
   setSelectedKnowledgePlan(baseIds, source = "explicit", origin = "user") {
     const selectedKnowledgeBaseIds = [...baseIds];
@@ -294,6 +333,11 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       searchPlanMode: mode,
       selectedSearchOptionIds
     }));
+  },
+  setSelectedSkills(selectedSkills) {
+    set((state) => state.selectedAssistant
+      ? {}
+      : { selectedSkills: selectedSkills.map((skill) => ({ ...skill })) });
   },
   setShowCitations(update) {
     set((state) => ({ showCitations: applyUpdate(state.showCitations, update) }));

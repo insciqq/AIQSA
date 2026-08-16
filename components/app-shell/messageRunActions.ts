@@ -40,7 +40,10 @@ import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import { reconcileModelSearchPlan } from "@/lib/domain/catalogMatrix";
-import type { ComposerKnowledgePlanSource } from "@/components/app-shell/composerControlStore";
+import type {
+  ComposerKnowledgePlanSource,
+  ComposerMcpSelection
+} from "@/components/app-shell/composerControlStore";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
 
 type MutableRef<T> = { current: T };
@@ -52,6 +55,7 @@ type MessageRunControlSnapshot = {
   modelId: string;
   knowledgeBaseIds: string[];
   knowledgePlanSource: ComposerKnowledgePlanSource;
+  mcpSelection: ComposerMcpSelection;
   params: Record<string, unknown>;
   provider: string;
   searchPreferencePlan: {
@@ -60,6 +64,7 @@ type MessageRunControlSnapshot = {
   };
   searchPreferenceSource: Catalog["defaults"]["searchPreferenceSource"];
   searchOptions: Catalog["searchStrategies"];
+  skillIds: string[];
   toolsOverride: { tools: "none" } | Record<string, never>;
 };
 
@@ -160,7 +165,9 @@ export function useMessageRunActions({
       selectedProvider,
       selectedSearchOptionIds,
       searchPlanMode,
-      knowledgePlanSource
+      knowledgePlanSource,
+      mcpSelection,
+      selectedSkills
     } = useComposerControlStore.getState();
     const catalog = useWorkspaceStore.getState().catalog;
     const selectedModel = modelForCurrentSelection(
@@ -194,6 +201,9 @@ export function useMessageRunActions({
       controlDefaults: { ...buildControlDraft() },
       knowledgeBaseIds: [...selectedKnowledgeBaseIds],
       knowledgePlanSource,
+      mcpSelection: mcpSelection.mode === "selected"
+        ? { mode: "selected", serverIds: [...mcpSelection.serverIds] }
+        : { ...mcpSelection },
       model,
       modelId: selectedModelId,
       params: { ...buildParams() },
@@ -209,6 +219,7 @@ export function useMessageRunActions({
           ? { executionModes: [...option.executionModes] }
           : {})
       })),
+      skillIds: selectedSkills.map((skill) => skill.id),
       toolsOverride: toolsOverride(model)
     };
   }
@@ -285,6 +296,7 @@ export function useMessageRunActions({
         ? { knowledgePlan: { baseIds: [...snapshot.knowledgeBaseIds] } }
         : {}),
       params: snapshot.params,
+      ...(snapshot.mcpSelection.mode === "auto" ? {} : { mcp: snapshot.mcpSelection }),
       provider: snapshot.provider,
       searchPlan: effectiveSearchPlan,
       ...(snapshot.searchPreferenceSource
@@ -294,6 +306,7 @@ export function useMessageRunActions({
           }
         : {}),
       ...(timeZone ? { timeZone } : {}),
+      ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
       ...snapshot.toolsOverride
     };
   }

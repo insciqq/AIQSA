@@ -498,13 +498,13 @@ export function createPrismaMcpRuntimeRepository(input: {
       }
     },
 
-    synchronizeDesired: async ({ now, userId }) => {
+    synchronizeDesired: async ({ now, onDemand = false, serverIds, userId }) => {
       await input.reconcileOAuthConnections?.().catch(() => undefined);
       const recentActivityCutoff = new Date(now.getTime() - RECENT_ACTIVITY_MS);
       if (!userId) {
         // Eviction is observed runtime state, not a user preference mutation.
-        // Keep McpUserServer.updatedAt as the enable/config-change timestamp so
-        // the catalog can distinguish a fresh queued change from an old idle one.
+        // Keep McpUserServer.updatedAt as the enable/config-change timestamp;
+        // an enabled server remains available for a later on-demand start.
         await client.$executeRaw`
           UPDATE "McpUserServer" AS preference
           SET "desiredRuntimeGenerationId" = NULL
@@ -543,6 +543,9 @@ export function createPrismaMcpRuntimeRepository(input: {
           }
         },
         where: {
+          ...(onDemand
+            ? { serverId: { in: [...(serverIds ?? [])] } }
+            : { desiredRuntimeGenerationId: { not: null } }),
           enabled: true,
           server: { activeRevisionId: { not: null }, archivedAt: null, enabled: true },
           user: {

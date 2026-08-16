@@ -1,5 +1,7 @@
 import { textMessageContent } from "../../domain/content";
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
+import { decodeMcpRunSelection } from "../../contracts/mcp";
+import { decodeSkillIds } from "../../contracts/skills";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import { materializeAssistantRunParams } from "../assistants/runControlMaterialization";
 import type {
@@ -41,9 +43,21 @@ import {
   KnowledgeRunAdmissionError,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
-import type { McpRunPlanBinding, McpRunPlanResult } from "../mcp/runPlan";
+import type {
+  McpCapabilityCatalog,
+  McpRunPlanBinding,
+  McpRunPlanResult
+} from "../mcp/runPlan";
+import {
+  MCP_DISCOVERY_MAX_ACTIVE_TOOLS,
+  mcpFindToolsTool
+} from "../mcp/discovery";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderToolBridge } from "../tools/types";
+import type {
+  SkillRunMaterialization,
+  SkillRunResolver
+} from "../skills/runMaterialization";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { knowledgeRetrievalTool } from "../knowledge/toolExecutor";
 import { memoryActionTools } from "../memory/actions/tools";
@@ -62,6 +76,7 @@ import {
 } from "./runAttachmentMaterialization";
 import type {
   AcceptedRunDefaults,
+  AcceptedSkillRun,
   RunModelConfiguration,
   RunRepository
 } from "./runRepositoryContract";
@@ -97,6 +112,15 @@ export type RunPreparationDeps = Readonly<{
     load(input: { knowledgePlan: KnowledgePlan; userId: string }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
   mcp?: Readonly<{
+    catalog?(userId: string): Promise<McpCapabilityCatalog>;
+    materialize?(
+      userId: string,
+      tools: readonly Readonly<{
+        namespacedName: string;
+        revisionId: string;
+        serverId: string;
+      }>[]
+    ): Promise<McpRunPlanResult>;
     prepare(
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
@@ -115,6 +139,7 @@ export type RunPreparationDeps = Readonly<{
     }): Promise<ProviderAdmissionPlan>;
   }>;
   repository: RunPreparationRepository;
+  skills?: SkillRunResolver;
   storage?: Pick<StorageAdapter, "getObject">;
 }>;
 
@@ -191,6 +216,7 @@ export type MaterializedPreparedRunData = {
   initialChatMode?: MemoryInitialChatMode;
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
+  skillBindings?: AcceptedSkillRun[];
   normalizedRequest: NormalizedRunRequest;
   providerAdmissionPlan: ProviderAdmissionPlan;
   providerRequest: ProviderRunRequest;
@@ -419,6 +445,9 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
     ...(prepared.mcpBindings
       ? { mcpBindings: mutablePreparedData<McpRunPlanBinding[]>(prepared.mcpBindings) }
       : {}),
+    ...(prepared.skillBindings
+      ? { skillBindings: mutablePreparedData<AcceptedSkillRun[]>(prepared.skillBindings) }
+      : {}),
     normalizedRequest: mutablePreparedData<NormalizedRunRequest>(prepared.normalizedRequest),
     providerAdmissionPlan: mutablePreparedData<ProviderAdmissionPlan>(
       prepared.providerAdmissionPlan
@@ -597,9 +626,27 @@ function assistantPrompt(assistant: AssistantRunMaterialization): NormalizedRunR
   };
 }
 
+function promptWithSkills(
+  prompt: NormalizedRunRequest["prompt"],
+  skills: readonly SkillRunMaterialization[]
+): NormalizedRunRequest["prompt"] {
+  if (skills.length === 0) return prompt;
+  const instructions = [
+    "Apply the following user-selected workflow Skills when they are relevant to the request.",
+    ...skills.map((skill) => `## Skill: ${skill.name}\n${skill.instructions}`)
+  ].join("\n\n");
+  return {
+    ...prompt,
+    developer: [instructions, prompt.developer]
+      .filter((part): part is string => typeof part === "string" && Boolean(part.trim()))
+      .join("\n\n")
+  };
+}
+
 const assistantGovernedBodyKeys = [
   "controlDefaults",
   "modelId",
+  "mcp",
   "knowledgePlan",
   "params",
   "prompt",
@@ -607,6 +654,7 @@ const assistantGovernedBodyKeys = [
   "searchPlan",
   "searchPreferencePlan",
   "searchPreferenceSource",
+  "skillIds",
   "tools"
 ] as const;
 
@@ -785,6 +833,18 @@ export async function prepareRun(
     assistantRun = resolution.assistant;
   }
 
+  let skillRuns: SkillRunMaterialization[] = [];
+  if (!assistantRun && body && Object.prototype.hasOwnProperty.call(body, "skillIds")) {
+    const decoded = decodeSkillIds(body.skillIds);
+    if (!decoded.ok) return failure(decoded.code, 400);
+    if (decoded.ids.length > 0) {
+      if (!deps.skills) return failure("skill_not_available", 404);
+      const resolution = await deps.skills.resolveForRun(input.userId, decoded.ids);
+      if (!resolution.ok) return failure(resolution.code, resolution.status);
+      skillRuns = resolution.skills;
+    }
+  }
+
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
   const resolvedChatMode = resolveRunChatMode(body, input.source);
   if ("ok" in resolvedChatMode) {
@@ -916,8 +976,19 @@ export async function prepareRun(
     return failure("content_required", 400);
   }
 
+  const ordinaryMcpSelection = assistantRun || body?.tools === "none"
+    ? null
+    : body?.mcp === undefined
+      ? { mode: "auto" as const }
+      : decodeMcpRunSelection(body.mcp);
+  if (!assistantRun && body?.tools !== "none" && ordinaryMcpSelection === null) {
+    return failure("mcp_selection_invalid", 400);
+  }
   const assistantMcpUnavailable = Boolean(
     assistantRun && assistantRun.mcpServerIds.length > 0 && !deps.mcp
+  );
+  const ordinarySelectedMcpUnavailable = Boolean(
+    ordinaryMcpSelection?.mode === "selected" && !deps.mcp
   );
   const mcpPlan = assistantRun
     ? assistantRun.mcpServerIds.length > 0 && deps.mcp
@@ -925,9 +996,17 @@ export async function prepareRun(
           allowedServerIds: assistantRun.mcpServerIds
         })
       : null
-    : deps.mcp && body?.tools !== "none"
-      ? await deps.mcp.prepare(input.userId)
+    : ordinaryMcpSelection?.mode === "selected" && deps.mcp
+      ? await deps.mcp.prepare(input.userId, {
+          allowedServerIds: ordinaryMcpSelection.serverIds
+        })
+      : ordinaryMcpSelection?.mode === "auto" && deps.mcp && !deps.mcp.catalog
+        ? await deps.mcp.prepare(input.userId)
       : null;
+  const mcpCatalog = ordinaryMcpSelection?.mode === "auto" && deps.mcp?.catalog
+    ? await deps.mcp.catalog(input.userId)
+    : null;
+  const mcpDiscoveryEnabled = Boolean(mcpCatalog?.servers.length);
 
   const memoryActionToolsRequested = resolvedChatMode.mode === "NORMAL" &&
     input.source.kind === "send" &&
@@ -938,7 +1017,8 @@ export async function prepareRun(
     body?.tools !== "none" &&
     modelConfiguration.capabilities.toolCalling === true &&
     Boolean(knowledgeAdmissionPlan);
-  const mcpToolsEnabled = Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
+  const mcpToolsEnabled = mcpDiscoveryEnabled ||
+    Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length > 0);
   const memoryHistoryToolsRequested =
     resolvedChatMode.mode === "NORMAL" &&
     body?.tools !== "none" &&
@@ -1018,7 +1098,10 @@ export async function prepareRun(
   const executionAdapterKind = modelConfiguration.adapterKind;
   const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
 
-  const normalizedPrompt = assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body);
+  const normalizedPrompt = promptWithSkills(
+    assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body),
+    skillRuns
+  );
   const prompt = promptWithProjectMemory(
     normalizedPrompt,
     resolvedChatMode.mode === "TEMPORARY" ? null : chat.projectMemory
@@ -1089,6 +1172,9 @@ export async function prepareRun(
   if (assistantMcpUnavailable) {
     return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
   }
+  if (ordinarySelectedMcpUnavailable) {
+    return failure("mcp_not_ready", 409, "Selected MCP tools are unavailable.");
+  }
   if (mcpPlan && !mcpPlan.ok) {
     if (assistantRun) {
       // Consumers may lack visibility into a required server, so the failure
@@ -1105,7 +1191,7 @@ export async function prepareRun(
   const mcpCompatibility = validateMcpCapabilities({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     capabilities: modelCapabilities,
-    enabled: Boolean(mcpPlan?.ok && mcpPlan.snapshot.tools.length),
+    enabled: mcpToolsEnabled,
     modelId: executionModelId,
     params: runParams,
     provider: executionProvider
@@ -1157,7 +1243,26 @@ export async function prepareRun(
       : {}),
     modelCapabilities,
     modelId: executionModelId,
+    ...(mcpDiscoveryEnabled && mcpCatalog
+      ? {
+          mcpDiscovery: {
+            catalog: mcpCatalog,
+            epochs: [],
+            maxActiveTools: MCP_DISCOVERY_MAX_ACTIVE_TOOLS,
+            version: 1 as const
+          }
+        }
+      : {}),
     ...(mcpPlan?.ok && mcpPlan.snapshot.servers.length ? { mcp: mcpPlan.snapshot } : {}),
+    ...(skillRuns.length > 0
+      ? {
+          skills: skillRuns.map((skill) => ({
+            name: skill.name,
+            revisionId: skill.revisionId,
+            skillId: skill.skillId
+          }))
+        }
+      : {}),
     params: runParams,
     prompt,
     provider: executionProvider,
@@ -1195,6 +1300,7 @@ export async function prepareRun(
         ...plannedSearchTools,
         ...(memoryActionToolsEnabled ? memoryActionTools : []),
         ...(memoryHistoryToolsEnabled ? [memoryHistorySearchTool] : []),
+        ...(mcpDiscoveryEnabled ? [mcpFindToolsTool] : []),
         ...mcpRunTools(unbudgetedNormalizedRequest.mcp)
       ];
   const unbudgetedProviderRequest: ProviderRunRequest = {
@@ -1251,6 +1357,14 @@ export async function prepareRun(
       : {}),
     ...(knowledgeAdmissionPlan ? { knowledgeAdmissionPlan } : {}),
     ...(mcpPlan?.ok ? { mcpBindings: [...mcpPlan.bindings] } : {}),
+    ...(skillRuns.length > 0
+      ? {
+          skillBindings: skillRuns.map((skill) => ({
+            revisionId: skill.revisionId,
+            skillId: skill.skillId
+          }))
+        }
+      : {}),
     normalizedRequest,
     providerAdmissionPlan: admissionPlan,
     providerRequest,

@@ -487,8 +487,7 @@ export function McpSettingsSection({
             <p className="mt-3 flex max-w-3xl items-start gap-2 border-l-2 border-caution/45 bg-caution/[0.05] px-3 py-2 text-xs leading-5 text-ink-secondary">
               <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-caution" aria-hidden="true" />
               <span>
-                The model may pass conversation-derived data to an enabled tool. Review the servers before enabling
-                them.
+                Enabled servers join your private tool catalog. A chat uses them only in Auto or Selected tool mode.
               </span>
             </p>
             <details className="mt-2 max-w-3xl border-y border-trace-subtle">
@@ -497,11 +496,11 @@ export function McpSettingsSection({
                 How tools use data
               </summary>
               <div className="space-y-2 border-t border-trace-subtle px-3 py-3 text-xs leading-5 text-ink-muted">
-                <p>Every ready, administrator-enabled tool is automatically available to your chats.</p>
-                <p>One tool’s output may influence a later call to another enabled server.</p>
+                <p>Auto starts with a small schema-free catalog and loads only matching tools when the model asks.</p>
+                <p>Selected eagerly loads the servers you choose for that chat; Off loads none.</p>
                 <p>
-                  Up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers and {MCP_RUN_PLAN_LIMITS.maxTools} enabled
-                  tools can enter one run; exact schema and context fit is checked again before the model starts.
+                  You can enable up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers. Enabled runtimes stay asleep
+                  until a run actually needs them.
                 </p>
               </div>
             </details>
@@ -519,12 +518,6 @@ export function McpSettingsSection({
               <button className={`shrink-0 rounded-control px-2 text-xs ${focusRing}`} onClick={() => setOAuthOutcome(null)} type="button">Dismiss</button>
             </div>
           </div>
-        ) : null}
-
-        {enabledToolCount > MCP_RUN_PLAN_LIMITS.maxTools ? (
-          <p className="mt-4 border-l-2 border-critical/45 bg-critical/[0.05] px-3 py-2 text-sm text-critical" role="alert">
-            Your enabled MCPs expose {enabledToolCount} enabled tools, above the {MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit. Disable at least one server before sending a run.
-          </p>
         ) : null}
 
         {loadState === "loading" && servers.length === 0 ? (
@@ -549,9 +542,6 @@ export function McpSettingsSection({
                 edits={edits[server.id] ?? {}}
                 enableIssue={!server.enabled && enabledCount >= MCP_RUN_PLAN_LIMITS.maxEnabledServers
                   ? `You can enable at most ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} MCP servers.`
-                  : !server.enabled && server.knownToolCount > 0 &&
-                      enabledToolCount + server.knownToolCount > MCP_RUN_PLAN_LIMITS.maxTools
-                    ? `This would expose ${enabledToolCount + server.knownToolCount} enabled tools, above the ${MCP_RUN_PLAN_LIMITS.maxTools}-tool run limit.`
                   : null}
                 key={server.id}
                 onBusyChange={(busy) => setServerBusy(server.id, busy)}

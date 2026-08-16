@@ -219,6 +219,7 @@ export function PowerAppShellV2({
   const selectedModelId = useComposerControlStore((state) => state.selectedModelId);
   const selectedProvider = useComposerControlStore((state) => state.selectedProvider);
   const selectedSearchOptionIds = useComposerControlStore((state) => state.selectedSearchOptionIds);
+  const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
   const searchPlanMode = useComposerControlStore((state) => state.searchPlanMode);
   const showCitations = useComposerControlStore((state) => state.showCitations);
   const showReasoningBlocks = useComposerControlStore((state) => state.showReasoningBlocks);
@@ -363,6 +364,10 @@ export function PowerAppShellV2({
     renderActiveLeafId,
     runSurface: activeRunSurface,
     selectedAssistantPromptCharacterCount: selectedAssistant?.promptCharacterCount ?? null,
+    selectedSkillPromptCharacterCount: selectedSkills.reduce(
+      (total, skill) => total + skill.promptCharacterCount,
+      0
+    ),
     selectedModelId,
     selectedProvider,
     visibleMessages

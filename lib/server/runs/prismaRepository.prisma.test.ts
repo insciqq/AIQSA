@@ -11,6 +11,7 @@ import {
   encryptMcpEnvelope,
   mcpRuntimeGenerationEnvelopeContext
 } from "../mcp/encryption";
+import { namespacedMcpToolName } from "../mcp/runPlan";
 import { createPrismaMcpRuntimeRepository } from "../mcp/runtimeRepository";
 import { prisma } from "../prisma";
 import { createPrismaSettingsRepository } from "../settings/prismaRepository";
@@ -867,6 +868,111 @@ describe("Prisma-backed run repository", () => {
           { modelRunId: sent.runId, runtimeGenerationId: fixture.binding.runtimeGenerationId },
           { modelRunId: regenerated.runId, runtimeGenerationId: fixture.binding.runtimeGenerationId }
         ].sort((left, right) => left.modelRunId.localeCompare(right.modelRunId)));
+      } finally {
+        await deleteMcpFixture(fixture.server.id);
+      }
+    });
+  });
+
+  it("atomically checkpoints an Auto discovery epoch with its exact runtime binding", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({
+        data: {
+          defaultProviderModelId: providerTemplateIds.fakeModel,
+          title: "MCP Auto discovery checkpoint",
+          userId
+        }
+      });
+      const fixture = await createReadyMcpBinding(userId);
+      try {
+        const repository = createPrismaRunRepository(prisma);
+        const namespacedName = namespacedMcpToolName(fixture.server.namespace, "echo");
+        const runInput = createRunInput({
+          chatId: chat.id,
+          question: "Discover the echo tool",
+          userId
+        });
+        runInput.normalizedRequest.mcpDiscovery = {
+          catalog: {
+            servers: [{
+              description: fixture.server.description,
+              namespace: fixture.server.namespace,
+              revisionId: fixture.revision.id,
+              serverId: fixture.server.id,
+              serverName: fixture.server.displayName,
+              tools: [{
+                description: "Echo",
+                namespacedName,
+                originalName: "echo"
+              }]
+            }],
+            version: 1
+          },
+          epochs: [],
+          maxActiveTools: 12,
+          version: 1
+        };
+        const created = await repository.createRun(runInput);
+        const snapshot = {
+          servers: [{
+            fingerprint: fixture.binding.fingerprint,
+            revisionId: fixture.revision.id,
+            serverId: fixture.server.id,
+            serverName: fixture.server.displayName
+          }],
+          tools: [{
+            definitionHash: "a".repeat(64),
+            description: "Echo",
+            inputSchema: { type: "object" },
+            name: "echo",
+            namespacedName,
+            originalName: "echo",
+            serverId: fixture.server.id,
+            serverName: fixture.server.displayName
+          }],
+          version: 1 as const
+        };
+        const append = repository.appendMcpDiscoveryEpoch!;
+        const appended = await append({
+          bindings: [fixture.binding],
+          query: "echo a value",
+          roundIndex: 0,
+          runId: created.runId,
+          snapshot,
+          userId
+        });
+
+        expect(appended).toMatchObject({
+          discovery: {
+            epochs: [{
+              epoch: 1,
+              query: "echo a value",
+              roundIndex: 0,
+              toolNames: [namespacedName]
+            }]
+          },
+          snapshot: { tools: [{ namespacedName }] }
+        });
+        await expect(prisma.mcpRunBinding.count({
+          where: { modelRunId: created.runId }
+        })).resolves.toBe(1);
+        await expect(append({
+          bindings: [fixture.binding],
+          query: "echo a value",
+          roundIndex: 0,
+          runId: created.runId,
+          snapshot,
+          userId
+        })).resolves.toEqual(appended);
+        await expect(prisma.modelRun.findUnique({
+          select: { normalizedRequest: true },
+          where: { id: created.runId }
+        })).resolves.toMatchObject({
+          normalizedRequest: {
+            mcp: { tools: [{ namespacedName }] },
+            mcpDiscovery: { epochs: [{ epoch: 1 }] }
+          }
+        });
       } finally {
         await deleteMcpFixture(fixture.server.id);
       }

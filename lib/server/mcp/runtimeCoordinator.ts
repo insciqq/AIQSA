@@ -77,7 +77,12 @@ export type McpRuntimeCoordinatorRepository = {
     now: Date;
   }): Promise<boolean>;
   markStarting(input: { fingerprint: string; generationId: string; now: Date }): Promise<boolean>;
-  synchronizeDesired(input: { now: Date; userId?: string }): Promise<McpRuntimeLaunch[]>;
+  synchronizeDesired(input: {
+    now: Date;
+    onDemand?: boolean;
+    serverIds?: readonly string[];
+    userId?: string;
+  }): Promise<McpRuntimeLaunch[]>;
   touchLastUsed(generationId: string, now: Date): Promise<void>;
 };
 
@@ -306,6 +311,19 @@ export class McpRuntimeCoordinator {
     await this.#runPromise;
   }
 
+  async ensureUserServersReady(userId: string, serverIds: readonly string[]): Promise<void> {
+    const uniqueServerIds = [...new Set(serverIds)];
+    if (uniqueServerIds.length === 0) return;
+    const launches = await this.#repository.synchronizeDesired({
+      now: this.#now(),
+      onDemand: true,
+      serverIds: uniqueServerIds,
+      userId
+    });
+    await this.#reconcileLaunches(launches);
+    await this.#drainUnused();
+  }
+
   async callTool(input: {
     arguments: Record<string, unknown>;
     generationId: string;
@@ -394,6 +412,11 @@ export class McpRuntimeCoordinator {
       now,
       ...(userId ? { userId } : {})
     });
+    await this.#reconcileLaunches(launches);
+    await this.#drainUnused();
+  }
+
+  async #reconcileLaunches(launches: McpRuntimeLaunch[]): Promise<void> {
     await mapLimit(launches, MAX_PARALLEL_STARTS, async (launch) => {
       const live = this.#live.get(launch.generationId);
       if (live && isClosedSession(live.session)) {
@@ -416,7 +439,6 @@ export class McpRuntimeCoordinator {
       }
       await this.#start(launch);
     });
-    await this.#drainUnused();
   }
 
   #start(launch: McpRuntimeLaunch): Promise<void> {

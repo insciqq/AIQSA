@@ -724,6 +724,29 @@ describe("message run actions", () => {
     });
   });
 
+  it("freezes the selected MCP servers and manual Skills in the outgoing run", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Use my workflow" });
+    useComposerControlStore.setState({
+      mcpSelection: { mode: "selected", serverIds: ["server-jira", "server-github"] },
+      selectedSkills: [{
+        description: "Review before changing",
+        id: "skill-review",
+        name: "Careful review",
+        promptCharacterCount: 120
+      }]
+    });
+
+    await actions.submitComposer();
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      mcp: { mode: "selected", serverIds: ["server-jira", "server-github"] },
+      skillIds: ["skill-review"]
+    });
+  });
+
   it.each(["chat", "project", "off"] as const)(
     "leaves a %s Knowledge default for server-side admission",
     async (knowledgePlanSource) => {
