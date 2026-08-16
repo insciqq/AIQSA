@@ -81,6 +81,7 @@ export type OpenAIResponsesRequestPreview = {
     "attachment_filename",
     "image_data_url",
     "pdf_base64",
+    "selected_skill_instructions",
     "provider_continuation_opaque_fields"
   ];
   replayedContext: {
@@ -295,7 +296,7 @@ function buildOpenAIResponsesBody(
   const instructions = combineInstructions(request);
   const conversation = request.previousProviderResponseId
     ? []
-    : textConversationForRequest(request);
+    : textConversationForRequest(request, { redactSkillContext: options.preview });
   const input: OpenAIResponsesInputItem[] = conversation.map((message, index): OpenAIResponsesInputMessage => ({
     content:
       index === conversation.length - 1 && message.role === "user"
@@ -388,6 +389,7 @@ export function buildOpenAIResponsesRequestPreview(
       "attachment_filename",
       "image_data_url",
       "pdf_base64",
+      "selected_skill_instructions",
       "provider_continuation_opaque_fields"
     ]
   };

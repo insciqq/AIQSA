@@ -96,7 +96,8 @@ export function createMcpClientSessionFactory(input: Readonly<{
             ...(signal ? { signal } : {}),
             timeoutMs: launch.callTimeoutMs
           })];
-        }
+        },
+        serverEvidence: () => session.serverEvidence
       };
     }
   };

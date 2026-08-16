@@ -107,7 +107,6 @@ export type AdvanceToolLoopCallBatchResult =
   | "not_found";
 
 export const toolLoopPersistenceLimits = Object.freeze({
-  answerRounds: 4,
   argumentsBytes: 64 * 1_024,
   batchCalls: 64,
   checkpointBytes: 4 * 1_024 * 1_024,
@@ -165,7 +164,7 @@ function normalizedUsage(value: unknown): NormalizedTokenUsage | null {
 }
 
 function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAnswerRoundUsage[] | null {
-  if (!Array.isArray(value) || value.length > toolLoopPersistenceLimits.answerRounds) return null;
+  if (!Array.isArray(value) || value.length > checkpointRound) return null;
   const entries: PersistedAnswerRoundUsage[] = [];
   const cumulativeUsage = Object.fromEntries(
     normalizedUsageFields.map((field) => [field, 0])
@@ -176,7 +175,7 @@ function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAns
       !["completeness", "roundIndex", "usage"].every((key) => Object.hasOwn(candidate, key)) ||
       (candidate.completeness !== "partial" && candidate.completeness !== "terminal") ||
       !Number.isSafeInteger(candidate.roundIndex) || Number(candidate.roundIndex) <= previousRound ||
-      Number(candidate.roundIndex) > toolLoopPersistenceLimits.answerRounds ||
+      Number(candidate.roundIndex) > toolLoopPersistenceLimits.roundIndex ||
       Number(candidate.roundIndex) > checkpointRound) {
       return null;
     }
@@ -257,7 +256,7 @@ export function mergeAnswerRoundUsage(
   if (!current || entry.completeness !== "partial" && entry.completeness !== "terminal" ||
     !Number.isSafeInteger(entry.roundIndex) || entry.roundIndex < 1 ||
     entry.roundIndex > checkpointRound ||
-    entry.roundIndex > toolLoopPersistenceLimits.answerRounds || !normalizedUsage(entry.usage)) {
+    entry.roundIndex > toolLoopPersistenceLimits.roundIndex || !normalizedUsage(entry.usage)) {
     return null;
   }
   const index = current.findIndex((candidate) => candidate.roundIndex === entry.roundIndex);

@@ -2,6 +2,7 @@ import type {
   ModelRunStatus,
   RunEventView
 } from "@/lib/contracts/runs";
+import type { ThreadToolActivity } from "@/lib/contracts/chats";
 
 export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
 
@@ -34,6 +35,7 @@ export type RunPresentationV2 = Readonly<{
   activity?: Readonly<{
     kind: RunActivityKindV2;
     label: string;
+    serverName?: string;
     toolName?: string;
   }>;
   failure?: Readonly<{
@@ -58,6 +60,7 @@ type TerminalSignal = "cancelled" | "complete" | "error";
 type ActivitySignal = Readonly<{
   index: number;
   kind: Exclude<RunActivityKindV2, "preparing" | "queued">;
+  serverName?: string;
   toolName?: string;
 }>;
 
@@ -76,7 +79,12 @@ function boundedText(value: unknown, limit: number): string | null {
 
 function safeToolName(value: unknown): string | null {
   const name = boundedText(value, 80);
-  return name && safeToolNamePattern.test(name) ? name : null;
+  return name && !name.startsWith("mcp_") && safeToolNamePattern.test(name) ? name : null;
+}
+
+function safeServerName(value: unknown): string | null {
+  const name = boundedText(value, 160);
+  return name && !/[\u0000-\u001f\u007f]/u.test(name) ? name : null;
 }
 
 function safeErrorCode(value: unknown): string | null {
@@ -108,8 +116,9 @@ function activityFromEvent(event: RunEventView, index: number): ActivitySignal |
 
   if (artifactType === "tool_call" && payload.status === "requested") {
     const toolName = safeToolName(payload.name ?? payload.toolName);
+    const serverName = safeServerName(payload.serverName);
     return toolName
-      ? { index, kind: "tool", toolName }
+      ? { index, kind: "tool", ...(serverName ? { serverName } : {}), toolName }
       : { index, kind: "tool" };
   }
 
@@ -146,9 +155,11 @@ function activityLabel(signal: Omit<ActivitySignal, "index">): string {
     case "search":
       return "Searching the web…";
     case "tool":
-      return signal.toolName
-        ? `Tool: ${signal.toolName}…`
-        : "Running tools…";
+      if (signal.toolName === "find_tools") return "Finding relevant tools…";
+      if (signal.serverName && signal.toolName) {
+        return `Using ${signal.serverName}: ${signal.toolName}…`;
+      }
+      return signal.toolName ? `Running ${signal.toolName}…` : "Running tools…";
     case "compute":
       return "Computing…";
     case "preview":
@@ -156,6 +167,42 @@ function activityLabel(signal: Omit<ActivitySignal, "index">): string {
     case "provider":
       return "Running at the provider…";
   }
+}
+
+/** Merges safe live call facts into an existing persisted projection. */
+export function presentToolActivityV2(
+  events: readonly RunEventView[],
+  persisted: ThreadToolActivity | null = null
+): ThreadToolActivity | null {
+  const calls = [...(persisted?.calls ?? [])];
+  const matched = new Set<number>();
+  for (const event of events) {
+    const payload = eventPayload(event);
+    if (event.type !== "artifact" || !isRecord(event.data) ||
+      event.data.artifactType !== "tool_call" || payload?.status !== "requested") continue;
+    const toolName = safeToolName(payload.name ?? payload.toolName);
+    const serverName = safeServerName(payload.serverName);
+    const round = Number.isSafeInteger(payload.round) && Number(payload.round) > 0
+      ? Number(payload.round)
+      : null;
+    if (!toolName || round === null) continue;
+    const existing = calls.findIndex((call, index) =>
+      !matched.has(index) && call.round === round && call.toolName === toolName &&
+      (call.serverName ?? null) === serverName);
+    if (existing >= 0) {
+      matched.add(existing);
+      continue;
+    }
+    calls.push({
+      round,
+      ...(serverName ? { serverName } : {}),
+      status: "running",
+      toolName
+    });
+  }
+  return calls.length > 0 || persisted?.warning
+    ? { calls, ...(persisted?.warning ? { warning: persisted.warning } : {}) }
+    : null;
 }
 
 function statusActivity(status: RunLifecycleStatusV2 | null | undefined) {

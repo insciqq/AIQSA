@@ -8,7 +8,8 @@ const candidate = {
   defaultReasoningEffort: "medium",
   displayName: "Model A",
   id: "model-a",
-  reasoningEfforts: ["low", "medium", "high", "xhigh"]
+  reasoningEfforts: ["low", "medium", "high", "xhigh"],
+  structuredOutput: "not_verified" as const
 };
 
 const catalog = {
@@ -127,11 +128,123 @@ describe("administrator provider system model task", () => {
 
     render(<AdminProviderSystemModelTask active />);
     expect(await screen.findByText(/Status: Unavailable/)).toBeVisible();
+    expect(screen.getByText(/MCP Auto: Verification required/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Run verification" })).toBeEnabled();
     const save = screen.getByRole("button", { name: "Save system model" });
     expect(save).toBeEnabled();
     fireEvent.click(save);
     await screen.findByText("System model updated.");
     expect(screen.getByText(/Last saved by Current administrator/)).toBeVisible();
+  });
+
+  it("verifies the current supported model with one explicit provider request", async () => {
+    const current = {
+      candidates: [candidate],
+      policy: {
+        ...catalog.policy,
+        systemModel: { ...candidate, available: true }
+      }
+    };
+    const verified = {
+      candidates: [{ ...candidate, structuredOutput: "verified" as const }],
+      policy: {
+        ...current.policy,
+        systemModel: {
+          ...candidate,
+          available: true,
+          structuredOutput: "verified" as const
+        }
+      }
+    };
+    const onMutationCommitted = vi.fn();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ systemModelPolicy: current }),
+        { status: 200 }
+      ))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ systemModelPolicy: verified }),
+        { status: 200 }
+      ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminProviderSystemModelTask active onMutationCommitted={onMutationCommitted} />);
+    expect(await screen.findByText(/MCP Auto: Verification required/)).toBeVisible();
+    expect(screen.getByText(/one small model request.*provider charges/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Run verification" }));
+
+    await screen.findByText("Structured output verified. MCP Auto is ready.");
+    expect(screen.getByText(/MCP Auto: Ready/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Run verification" })).not.toBeInTheDocument();
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe("/api/admin/providers/system-model-policy");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ providerModelId: "model-a" });
+    await waitFor(() => expect(onMutationCommitted).toHaveBeenCalled());
+  });
+
+  it("reports verified structured output without another paid action", async () => {
+    const verified = {
+      candidates: [{ ...candidate, structuredOutput: "verified" as const }],
+      policy: {
+        ...catalog.policy,
+        systemModel: {
+          ...candidate,
+          available: true,
+          structuredOutput: "verified" as const
+        }
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ systemModelPolicy: verified }), { status: 200 })
+    ));
+
+    render(<AdminProviderSystemModelTask active />);
+    expect(await screen.findByText(/MCP Auto: Ready/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Run verification" })).not.toBeInTheDocument();
+  });
+
+  it("does not let verification discard an unsaved system-model draft", async () => {
+    const current = {
+      candidates: [candidate],
+      policy: {
+        ...catalog.policy,
+        systemModel: { ...candidate, available: true }
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ systemModelPolicy: current }), { status: 200 })
+    ));
+
+    render(<AdminProviderSystemModelTask active />);
+    const verification = await screen.findByRole("button", { name: "Run verification" });
+    expect(verification).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Reasoning effort"), {
+      target: { value: "low" }
+    });
+    expect(verification).toBeDisabled();
+  });
+
+  it("explains unsupported adapters without offering verification", async () => {
+    const unsupported = {
+      candidates: [{ ...candidate, structuredOutput: "unsupported" as const }],
+      policy: {
+        ...catalog.policy,
+        systemModel: {
+          ...candidate,
+          available: true,
+          structuredOutput: "unsupported" as const
+        }
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ systemModelPolicy: unsupported }), { status: 200 })
+    ));
+
+    render(<AdminProviderSystemModelTask active />);
+    expect(await screen.findByText(/MCP Auto: Not supported by this adapter/)).toBeVisible();
+    expect(screen.getByText(/Supported paths are OpenAI Responses/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Run verification" })).not.toBeInTheDocument();
   });
 
   it("keeps a stale edit visible and actionable", async () => {

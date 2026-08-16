@@ -60,19 +60,35 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       if (!record(value) || !Number.isSafeInteger(value.expectedVersion) ||
-        Number(value.expectedVersion) < 1 ||
-        !(value.providerModelId === null || typeof value.providerModelId === "string" &&
-          value.providerModelId.trim() === value.providerModelId &&
-          value.providerModelId.length > 0 && value.providerModelId.length <= 256 &&
-          !/[\u0000-\u001f\u007f]/u.test(value.providerModelId))) {
+        Number(value.expectedVersion) < 1) {
         return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
       }
       try {
-        await input.service.update({
-          expectedVersion: Number(value.expectedVersion),
-          providerModelId: value.providerModelId,
-          userId: auth.session.userId
-        });
+        if ("maxToolCalls" in value || "maxToolRounds" in value) {
+          if (!Number.isSafeInteger(value.maxToolCalls) || Number(value.maxToolCalls) < 1 ||
+            !Number.isSafeInteger(value.maxToolRounds) || Number(value.maxToolRounds) < 1 ||
+            "providerModelId" in value) {
+            return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
+          }
+          await input.service.updateToolBudgets({
+            expectedVersion: Number(value.expectedVersion),
+            maxToolCalls: Number(value.maxToolCalls),
+            maxToolRounds: Number(value.maxToolRounds),
+            userId: auth.session.userId
+          });
+        } else {
+          if (!(value.providerModelId === null || typeof value.providerModelId === "string" &&
+            value.providerModelId.trim() === value.providerModelId &&
+            value.providerModelId.length > 0 && value.providerModelId.length <= 256 &&
+            !/[\u0000-\u001f\u007f]/u.test(value.providerModelId))) {
+            return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
+          }
+          await input.service.update({
+            expectedVersion: Number(value.expectedVersion),
+            providerModelId: value.providerModelId,
+            userId: auth.session.userId
+          });
+        }
         return Response.json({ modelPolicy: await input.service.list() });
       } catch (error) {
         return failure(error);

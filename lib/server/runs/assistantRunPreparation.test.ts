@@ -46,6 +46,7 @@ function assistantResolution(
       revisionNumber: 3,
       runControls: { reasoningEffort: "high", temperature: 0.3 },
       searchPlan: { mode: "all_selected", optionIds: [] },
+      skillIds: [],
       systemPrompt: "You review code carefully.",
       ...overrides
     },
@@ -475,6 +476,82 @@ describe("assistant run admission", () => {
         baseIds: ["base-a", "base-b"]
       });
     }
+  });
+
+  it("merges Assistant and manual Skills in deterministic order and deduplicates by id", async () => {
+    const resolveSkills = vi.fn(async (_userId: string, skillIds: readonly string[]) => ({
+      ok: true as const,
+      skills: skillIds.map((skillId, index) => ({
+        instructions: `Instructions ${index + 1}`,
+        name: `Skill ${index + 1}`,
+        revisionId: `revision-${skillId}`,
+        skillId
+      }))
+    }));
+    const result = await prepareRun(
+      deps({
+        assistants: {
+          resolveForRun: async () => assistantResolution({
+            skillIds: ["skill-assistant", "skill-shared"]
+          })
+        },
+        skills: { resolveForRun: resolveSkills }
+      }),
+      {
+        body: {
+          assistantId: "assistant-1",
+          skillIds: ["skill-shared", "skill-manual"],
+          text: "Review this"
+        },
+        source: sendSource(),
+        userId: "user-1"
+      }
+    );
+
+    expect(resolveSkills).toHaveBeenCalledWith("user-1", [
+      "skill-assistant",
+      "skill-shared",
+      "skill-manual"
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.prepared.skillBindings).toEqual([
+        { revisionId: "revision-skill-assistant", skillId: "skill-assistant" },
+        { revisionId: "revision-skill-shared", skillId: "skill-shared" },
+        { revisionId: "revision-skill-manual", skillId: "skill-manual" }
+      ]);
+      expect(result.prepared.normalizedRequest.skills?.map((skill) => skill.skillId)).toEqual([
+        "skill-assistant",
+        "skill-shared",
+        "skill-manual"
+      ]);
+    }
+  });
+
+  it("rejects an effective Assistant and manual Skill union above the global limit", async () => {
+    const resolveSkills = vi.fn();
+    const result = await prepareRun(
+      deps({
+        assistants: {
+          resolveForRun: async () => assistantResolution({
+            skillIds: Array.from({ length: 8 }, (_, index) => `skill-${index + 1}`)
+          })
+        },
+        skills: { resolveForRun: resolveSkills }
+      }),
+      {
+        body: {
+          assistantId: "assistant-1",
+          skillIds: ["skill-8", "skill-9"],
+          text: "Review this"
+        },
+        source: sendSource(),
+        userId: "user-1"
+      }
+    );
+
+    expect(result).toMatchObject({ code: "skills_invalid", ok: false, status: 400 });
+    expect(resolveSkills).not.toHaveBeenCalled();
   });
 
   it("rejects assistant requests that carry governed overrides", async () => {

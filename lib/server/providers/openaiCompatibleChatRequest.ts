@@ -44,6 +44,7 @@ export type OpenAICompatibleChatRequestPreview = {
   redactions: [
     "attachment_extracted_text",
     "image_data_url",
+    "selected_skill_instructions",
     "provider_continuation_opaque_fields"
   ];
   replayedContext: {
@@ -163,7 +164,9 @@ function buildMessages(
 ): OpenAICompatibleChatMessage[] {
   const messages: OpenAICompatibleChatMessage[] = [];
   const instructions = combineInstructions(request);
-  const conversation = textConversationForRequest(request);
+  const conversation = textConversationForRequest(request, {
+    redactSkillContext: options.preview
+  });
 
   if (instructions) {
     messages.push({ content: instructions, role: "system" });
@@ -261,6 +264,7 @@ export function buildOpenAICompatibleChatRequestPreview(
     redactions: [
       "attachment_extracted_text",
       "image_data_url",
+      "selected_skill_instructions",
       "provider_continuation_opaque_fields"
     ],
     replayedContext: conversationPreview(request)

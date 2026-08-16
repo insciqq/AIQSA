@@ -283,6 +283,43 @@ test.describe("system model policy", () => {
     await page.getByRole("button", { name: "Save system model" }).click();
     await expect(page.getByText("System model updated.", { exact: true })).toBeVisible();
     await expect(page.getByText("Status: Available.", { exact: true })).toBeVisible();
+    await expect(page.getByText("MCP Auto: Verification required.", { exact: true }))
+      .toBeVisible();
+
+    await page.route("**/api/admin/providers/system-model-policy", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      expect(route.request().postDataJSON()).toEqual({ providerModelId: fixture.modelId });
+      await prisma.providerModelCredentialCheck.update({
+        data: {
+          evidence: {
+            method: "system_policy_fixture",
+            structuredOutput: {
+              adapterKind: "openai_responses_compatible",
+              probeVersion: 2,
+              upstreamModelId: modelConfiguration.upstreamModelId,
+              verified: true
+            }
+          }
+        },
+        where: { id: fixture.checkId }
+      });
+      const systemModelPolicy = await createAdminSystemModelPolicyService(prisma).list();
+      await route.fulfill({
+        contentType: "application/json",
+        json: { systemModelPolicy },
+        status: 200
+      });
+    });
+    await page.getByRole("button", { name: "Run verification" }).click();
+    await expect(page.getByText(
+      "Structured output verified. MCP Auto is ready.",
+      { exact: true }
+    )).toBeVisible();
+    await expect(page.getByText("MCP Auto: Ready.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Run verification" })).toHaveCount(0);
 
     const response = await page.request.get("/api/admin/providers/system-model-policy");
     expect(response.status()).toBe(200);

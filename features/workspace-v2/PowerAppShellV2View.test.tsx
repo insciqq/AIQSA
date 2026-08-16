@@ -1,6 +1,9 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
+import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
+import { resetSkillLibraryStoreForTest } from "@/components/app-shell/skillLibraryStore";
+import { resetComposerControlStoreForTest } from "@/tests/support/appShellStores";
 import {
   RunSetupV2,
   TemporaryChatIndicatorV2,
@@ -8,10 +11,57 @@ import {
   WorkspaceHeaderV2,
   answerIdentityV2,
   blankWelcomeStartersVisibleV2,
+  retryAutoMcpDiscoveryV2,
+  applyLoadAllAfterMcpDiscoveryFailureV2,
+  SkillLibraryOverlayV2,
   type RunSetupComposerV2
 } from "./PowerAppShellV2View";
 
 const galleryModels = composerGalleryConfig.catalog.models;
+
+afterEach(() => {
+  resetComposerControlStoreForTest();
+  resetSkillLibraryStoreForTest();
+  vi.unstubAllGlobals();
+});
+
+describe("Skill Library overlay v2", () => {
+  it("performs no list request until the shell opens the Library", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => Response.json({
+      nextCursor: null,
+      publishableWorkspaces: [],
+      skills: [],
+      viewer: { canPublishInstallation: false }
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const props = {
+      onClose: vi.fn(),
+      onSelectionChange: vi.fn(),
+      selectedIds: []
+    };
+    const { rerender } = render(<SkillLibraryOverlayV2 {...props} open={false} />);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    rerender(<SkillLibraryOverlayV2 {...props} open />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/me/skills");
+  });
+});
+
+describe("MCP discovery failure actions v2", () => {
+  it("preserves Auto on Retry and switches only on explicit Load all", () => {
+    const regenerate = vi.fn();
+    useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
+
+    retryAutoMcpDiscoveryV2(regenerate);
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "auto" });
+
+    applyLoadAllAfterMcpDiscoveryFailureV2(regenerate);
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
+    expect(regenerate).toHaveBeenCalledTimes(2);
+  });
+});
 
 function runSetupComposer(overrides: Partial<RunSetupComposerV2> = {}): RunSetupComposerV2 {
   return {

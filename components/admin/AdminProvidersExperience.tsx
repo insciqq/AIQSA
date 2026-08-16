@@ -5,6 +5,7 @@ import { AdminProviderCustomSetup } from "@/components/admin/AdminProviderCustom
 import { AdminProvidersSection } from "@/components/admin/AdminProvidersSection";
 import { AdminProviderModelDefaultTask } from "@/components/admin/AdminProviderModelDefaultTask";
 import { AdminProviderSystemModelTask } from "@/components/admin/AdminProviderSystemModelTask";
+import { AdminProviderRunLimitsTask } from "@/components/admin/AdminProviderRunLimitsTask";
 import { focusRing, touchTarget } from "@/components/admin/adminPrimitives";
 import {
   useAdminDiscardAction,
@@ -21,7 +22,7 @@ import type {
 import type { AdminGroup } from "@/lib/contracts/admin";
 import { useState } from "react";
 
-type ProviderWorkspaceTask = "connections" | "defaults" | "setup" | "system";
+type ProviderWorkspaceTask = "connections" | "defaults" | "limits" | "setup" | "system";
 
 export type AdminProvidersExperienceProps = Readonly<{
   active: boolean;
@@ -134,6 +135,7 @@ export function AdminProvidersExperience({
           ["setup", "Quick setup"],
           ["connections", "Connections"],
           ["defaults", "Default model"],
+          ["limits", "Tool limits"],
           ["system", "System model"]
         ] as const).map(([task, label]) => (
           <button
@@ -191,6 +193,12 @@ export function AdminProvidersExperience({
           <div hidden={workspaceTask !== "system"}>
             <AdminProviderSystemModelTask
               active={active && workspaceTask === "system"}
+              onMutationCommitted={onMutationCommitted}
+            />
+          </div>
+          <div hidden={workspaceTask !== "limits"}>
+            <AdminProviderRunLimitsTask
+              active={active && workspaceTask === "limits"}
               onMutationCommitted={onMutationCommitted}
             />
           </div>

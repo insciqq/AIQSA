@@ -22,6 +22,7 @@ import type {
   McpDraftValidator
 } from "./draftValidator";
 import { McpDraftValidationAbortedError } from "./draftValidator";
+import { compactMcpToolInventoryEntry } from "./catalogMetadata";
 
 const MAX_EVIDENCE_TOOLS = 256;
 const MAX_TOOL_DESCRIPTION_LENGTH = 2_048;
@@ -167,7 +168,10 @@ function sanitizedInventory(
       ? tool.description.slice(0, MAX_TOOL_DESCRIPTION_LENGTH)
       : null;
     names.add(tool.name);
-    inventory.push({ description, name: tool.name });
+    inventory.push(compactMcpToolInventoryEntry({
+      ...tool,
+      description
+    }, secrets));
   }
   return { inventory, issue: null };
 }

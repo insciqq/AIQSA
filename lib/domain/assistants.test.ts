@@ -25,6 +25,7 @@ function revision(overrides: Partial<AssistantRevisionContent> = {}): AssistantR
     revisionNumber: 2,
     runControls: { reasoningEffort: "high" },
     searchPlan: { mode: "all_selected", optionIds: [] },
+    skillIds: [],
     starterPrompts: ["Review a diff"],
     systemPrompt: "You review code.",
     ...overrides
@@ -39,6 +40,7 @@ describe("assistantRevisionChangedSections", () => {
       "model",
       "run-setup",
       "search",
+      "skills",
       "starters",
       "tools"
     ]);
@@ -67,6 +69,9 @@ describe("assistantRevisionChangedSections", () => {
     expect(
       assistantRevisionChangedSections(previous, revision({ starterPrompts: [] }))
     ).toEqual(["starters"]);
+    expect(
+      assistantRevisionChangedSections(previous, revision({ skillIds: ["skill-1"] }))
+    ).toEqual(["skills"]);
   });
 
   it("ignores MCP server ordering but not membership", () => {

@@ -1,5 +1,10 @@
 import type { ErrorResponse, SessionErrorCode } from "./http";
 
+export const MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE =
+  "mcp_auto_discovery_unavailable" as const;
+export const MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE =
+  "Automatic tool discovery is unavailable." as const;
+
 export type RunEventView = {
   data: unknown;
   type: string;

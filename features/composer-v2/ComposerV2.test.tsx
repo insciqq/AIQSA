@@ -187,11 +187,12 @@ describe("Composer v2", () => {
         archived: false,
         description: "Checks claims",
         id: "skill-editor",
-        instructions: "Verify every factual claim.",
+        instructionCharacterCount: "Verify every factual claim.".length,
         name: "Careful editor",
         owned: true,
         ownerDisplayName: "Viewer",
         scope: { kind: "owner" },
+        updatedAt: "2026-08-16T00:00:00.000Z",
         version: 1
       }]
     };
@@ -227,12 +228,28 @@ describe("Composer v2", () => {
     expect(onSelectSkills).toHaveBeenCalledWith(["skill-editor"]);
     expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
 
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /^Selected/ }));
-    expect(onSelectMcp).toHaveBeenCalledWith({
-      mode: "selected",
-      serverIds: ["mcp-office", "mcp-jira-enabled"]
-    });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Load all/ }));
+    expect(onSelectMcp).toHaveBeenCalledWith({ mode: "load_all" });
     expect(screen.getByRole("menu", { name: "Capabilities" })).toBeVisible();
+  });
+
+  it("keeps every MCP mode visible, including Off with no enabled servers", () => {
+    const onSelectMcp = vi.fn();
+    render(<ComposerV2 {...props({
+      config: { ...composerGalleryConfig, mcpServers: [] },
+      initialLayer: "capabilities",
+      mcpSelection: { mode: "off" },
+      onSelectMcp
+    })} />);
+
+    expect(screen.getByRole("button", { name: "Change MCP tool mode" }))
+      .toHaveTextContent("Tools: Off");
+    expect(screen.getByRole("menuitemradio", { name: /^Auto/ })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("menuitemradio", { name: /^Load all/ })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("menuitemradio", { name: /^Off/ })).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Auto/ }));
+    expect(onSelectMcp).toHaveBeenCalledWith({ mode: "auto" });
   });
 
   it("opens the Assistant quick picker within two actions and explains manual restoration", () => {
@@ -275,6 +292,52 @@ describe("Composer v2", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(onRemoveAssistant).toHaveBeenCalledOnce();
     expect(onSelectSearch).not.toHaveBeenCalled();
+  });
+
+  it("separates Assistant-included and manual Skills while keeping manual controls available", () => {
+    const onOpenSkillLibrary = vi.fn();
+    const onSelectSkillIds = vi.fn();
+    const manualSkill = {
+      archived: false,
+      description: "Checks claims",
+      id: "skill-manual",
+      instructionCharacterCount: 24,
+      name: "Careful editor",
+      owned: true,
+      ownerDisplayName: "Viewer",
+      scope: { kind: "owner" as const },
+      updatedAt: "2026-08-16T00:00:00.000Z",
+      version: 1
+    };
+    render(<ComposerV2 {...props({
+      config: { ...composerGalleryConfig, skills: [manualSkill] },
+      initialLayer: "capabilities",
+      onOpenSkillLibrary,
+      onSelectSkillIds,
+      selectedAssistant: {
+        ...composerGalleryConfig.assistants[0]!,
+        includedSkills: [
+          { id: "skill-incident", name: "Incident brief" },
+          { id: "skill-review", name: "Careful reviewer" }
+        ]
+      },
+      selectedSkillIds: [manualSkill.id],
+      selectedSkills: [{ id: manualSkill.id, name: manualSkill.name }]
+    })} />);
+
+    const ledger = screen.getByTestId("composer-v2-skill-ledger");
+    expect(ledger).toHaveTextContent("Included by Assistant");
+    expect(ledger).toHaveTextContent("1. Incident brief");
+    expect(ledger).toHaveTextContent("2. Careful reviewer");
+    expect(ledger).toHaveTextContent("Added manually");
+    expect(ledger).toHaveTextContent("1. Careful editor");
+
+    const manualRow = screen.getByRole("menuitemcheckbox", { name: /Careful editor/ });
+    expect(manualRow).toBeEnabled();
+    fireEvent.click(manualRow);
+    expect(onSelectSkillIds).toHaveBeenCalledWith([]);
+    fireEvent.click(within(ledger).getByRole("button", { name: "Manage" }));
+    expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
   });
 
   it("keeps loading, malformed, and zero-entitlement authority states explicit", () => {

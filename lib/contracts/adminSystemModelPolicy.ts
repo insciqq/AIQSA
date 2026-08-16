@@ -3,6 +3,7 @@ import type { AdminModelDefaultCandidate } from "./adminModelPolicy";
 export type AdminSystemModelCandidate = AdminModelDefaultCandidate & {
   defaultReasoningEffort: string | null;
   reasoningEfforts: string[];
+  structuredOutput: "not_verified" | "unsupported" | "verified";
 };
 
 export type AdminSystemModelPolicyCatalog = {
@@ -35,7 +36,10 @@ function candidate(value: unknown): value is AdminSystemModelCandidate {
     !boundedText(value.id, 256) || !Array.isArray(value.reasoningEfforts) ||
     value.reasoningEfforts.length > 16 ||
     !value.reasoningEfforts.every((effort) => boundedText(effort, 32)) ||
-    new Set(value.reasoningEfforts).size !== value.reasoningEfforts.length) return false;
+    new Set(value.reasoningEfforts).size !== value.reasoningEfforts.length ||
+    (value.structuredOutput !== "verified" &&
+      value.structuredOutput !== "not_verified" &&
+      value.structuredOutput !== "unsupported")) return false;
   return value.defaultReasoningEffort === null ||
     boundedText(value.defaultReasoningEffort, 32) &&
     value.reasoningEfforts.includes(value.defaultReasoningEffort);

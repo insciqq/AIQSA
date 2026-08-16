@@ -108,6 +108,55 @@ describe("provider tool loop", () => {
     ]);
   });
 
+  it("forces final synthesis after the accepted call budget is used", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(roundRequest) {
+        requests.push(roundRequest);
+        if (requests.length === 1) {
+          return {
+            finalProviderResponsePreview: {},
+            finalText: "",
+            toolCalls: [{ arguments: {}, id: "call-a", name: "alpha" }],
+            usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+          };
+        }
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "budgeted answer",
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+        };
+      }
+    };
+
+    const outcome = await runProviderToolLoop({
+      adapter,
+      bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 8 },
+      executeTool: async (call) => ({
+        status: "complete",
+        value: {
+          callId: call.id,
+          content: [{ text: "result", type: "text" }],
+          name: call.name,
+          status: "complete"
+        }
+      }),
+      initialRequest: request(),
+      parallelToolCalls: false,
+      tools: [{
+        capability: "mcp",
+        description: "A",
+        inputSchema: { type: "object" },
+        name: "alpha"
+      }]
+    });
+
+    expect(outcome).toMatchObject({ final: { finalText: "budgeted answer" }, status: "complete" });
+    expect(requests.map((candidate) => candidate.toolChoice)).toEqual(["auto", "none"]);
+  });
+
   it("replays the complete recovered provider transcript without a hidden provider chain", async () => {
     const requests: ProviderRunRequest[] = [];
     const adapter: ProviderAdapter = {

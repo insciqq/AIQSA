@@ -11,6 +11,7 @@ import type {
 } from "@/lib/contracts/assistants";
 import type { ModelParameterControls } from "@/lib/contracts/catalog";
 import type { SearchPlanMode } from "@/lib/domain/search";
+import type { SkillSummary } from "@/lib/contracts/skills";
 
 export type LibraryNotice = {
   kind: "error" | "success";
@@ -47,6 +48,7 @@ export type AssistantEditorDraftState = {
   reasoningMode: string;
   searchOptionIds: string[];
   searchPlanMode: SearchPlanMode;
+  skillIds: string[];
   starterPrompts: string[];
   streamMode: boolean;
   backgroundMode: boolean;
@@ -69,7 +71,11 @@ export type AssistantEditorOptions = {
   mcpServers: { id: string; name: string }[];
   models: AssistantEditorModelOption[];
   onRetryKnowledge(): void;
+  onRetrySkills(): void;
   searchOptions: { id: string; label: string }[];
+  skillDataError: string | null;
+  skillDataState: "error" | "loading" | "ready";
+  skills: SkillSummary[];
 };
 
 export type AssistantEditorView = {
@@ -187,6 +193,7 @@ export function assistantDraftFromEditorState(
       mode: state.searchPlanMode,
       optionIds: [...state.searchOptionIds]
     },
+    skillIds: [...state.skillIds],
     starterPrompts: state.starterPrompts
       .map((starter) => starter.trim())
       .filter((starter) => starter.length > 0),
@@ -224,6 +231,7 @@ export function editorStateFromRevision(
     reasoningMode: controls.reasoningMode ?? fallbackControls.reasoningMode,
     searchOptionIds: [...revision.searchPlan.optionIds],
     searchPlanMode: revision.searchPlan.mode,
+    skillIds: [...revision.skillIds],
     starterPrompts: [...revision.starterPrompts],
     streamMode: controls.streamMode ?? fallbackControls.streamMode,
     systemPrompt: revision.systemPrompt,

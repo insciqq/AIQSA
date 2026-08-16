@@ -884,6 +884,7 @@ describe("admin provider service", () => {
     })));
 
     await expect(providers.refreshActive({
+      confirmPaidRequest: true,
       connectionId: "connection-active",
       credentialId: "credential-active",
       providerModelId: "model-active"
@@ -988,6 +989,7 @@ describe("admin provider service", () => {
     const providers = service(providerRepository, providerTester);
 
     await expect(providers.refreshActive({
+      confirmPaidRequest: true,
       connectionId: "connection-active",
       credentialId: "credential-active",
       providerModelId: "model-active"

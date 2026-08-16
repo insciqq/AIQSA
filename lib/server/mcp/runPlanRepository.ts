@@ -1,5 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { McpReadiness } from "@/lib/contracts/mcp";
+import type {
+  McpToolArgumentInventoryEntry,
+  McpToolInventoryEntry
+} from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
 import {
   buildMcpCapabilityCatalog,
@@ -108,7 +112,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function revisionCatalogTools(
   validationEvidence: unknown,
   configuration: unknown
-): { description: string | null; name: string; title?: string }[] {
+): McpToolInventoryEntry[] {
   if (!isRecord(validationEvidence) || !Array.isArray(validationEvidence.toolInventory)) return [];
   const disabled = new Set(
     isRecord(configuration) && Array.isArray(configuration.disabledToolNames)
@@ -119,7 +123,22 @@ function revisionCatalogTools(
     if (!isRecord(candidate) || typeof candidate.name !== "string" || !candidate.name.trim() ||
       disabled.has(candidate.name) ||
       !(candidate.description === null || typeof candidate.description === "string")) return [];
+    const argumentsValue: McpToolArgumentInventoryEntry[] = Array.isArray(candidate.arguments)
+      ? candidate.arguments.flatMap((argument) => {
+          if (!isRecord(argument) || typeof argument.name !== "string" ||
+            !argument.name.trim() ||
+            (argument.description !== null && typeof argument.description !== "string") ||
+            !Array.isArray(argument.types) || argument.types.length > 7 ||
+            argument.types.some((type) => typeof type !== "string" || type.length > 32)) return [];
+          return [{
+            description: argument.description as string | null,
+            name: argument.name,
+            types: argument.types as string[]
+          }];
+        })
+      : [];
     return [{
+      arguments: argumentsValue,
       description: candidate.description as string | null,
       name: candidate.name,
       ...(typeof candidate.title === "string" && candidate.title.trim()
@@ -127,6 +146,14 @@ function revisionCatalogTools(
         : {})
     }];
   });
+}
+
+function revisionServerInstructions(validationEvidence: unknown): string | undefined {
+  if (!isRecord(validationEvidence) || !isRecord(validationEvidence.evidence) ||
+    !isRecord(validationEvidence.evidence.server) ||
+    typeof validationEvidence.evidence.server.instructions !== "string") return undefined;
+  const instructions = validationEvidence.evidence.server.instructions.trim();
+  return instructions && instructions.length <= 8_192 ? instructions : undefined;
 }
 
 function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRunPlanRecord {
@@ -140,6 +167,9 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
   if (!preference.server.enabled || preference.server.archivedAt || !preference.server.activeRevisionId) {
     return inaccessibleRecord(preference, "mcp_server_unavailable");
   }
+  const serverInstructions = revisionServerInstructions(
+    preference.server.activeRevision?.validationEvidence
+  );
 
   const generation = preference.desiredRuntimeGeneration;
   if (!generation) {
@@ -152,6 +182,7 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
         preference.server.activeRevision?.validationEvidence,
         preference.server.activeRevision?.configuration
       ),
+      ...(serverInstructions ? { serverInstructions } : {}),
       errorCode: preference.desiredRuntimeGenerationId ? "mcp_runtime_stale" : null,
       readiness: preference.desiredRuntimeGenerationId ? "unavailable" : "queued"
     };
@@ -183,6 +214,7 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
     revisionId: generation.revisionId,
     serverId: preference.server.id,
     serverDescription: preference.server.description,
+    ...(serverInstructions ? { serverInstructions } : {}),
     serverName: preference.server.displayName
   };
 }

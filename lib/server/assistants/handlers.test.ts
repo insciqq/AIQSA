@@ -128,6 +128,7 @@ function revisionRow(overrides: Partial<AssistantRevisionRow> = {}): AssistantRe
     revisionNumber: 4,
     runControls: { reasoningEffort: "high" },
     searchPlan: { mode: "all_selected", optionIds: ["openai-native-web-search"] },
+    skillIds: [],
     starterPrompts: ["Review a diff"],
     systemPrompt: "You review code.",
     ...overrides
@@ -153,7 +154,7 @@ function accessEntry(overrides: Partial<AssistantAccessEntry> = {}): AssistantAc
 
 function fakeRepository(overrides: Partial<AssistantHandlerDeps["repository"]> = {}) {
   return {
-    create: vi.fn(async () => "assistant-1"),
+    create: vi.fn(async () => ({ assistantId: "assistant-1", kind: "ok" as const })),
     duplicate: vi.fn(async () => ({ kind: "not_found" as const })),
     getDetail: vi.fn(async () => null),
     getRevision: vi.fn(async () => null),
@@ -276,7 +277,12 @@ describe("assistant detail handler", () => {
             searchPlan: {
               mode: "all_selected",
               optionIds: ["openai-native-web-search", "hidden-search"]
-            }
+            },
+            skillSummaries: [
+              { id: "skill-review", name: "Careful reviewer" },
+              { id: "skill-finish", name: "Action closer" }
+            ],
+            skillIds: ["skill-review", "skill-finish"]
           })
         }),
         publications: null,
@@ -298,6 +304,11 @@ describe("assistant detail handler", () => {
       mode: "all_selected",
       optionIds: ["openai-native-web-search"]
     });
+    expect(revision.skillIds).toEqual(["skill-review", "skill-finish"]);
+    expect(body.assistant.skills).toEqual([
+      { id: "skill-review", name: "Careful reviewer" },
+      { id: "skill-finish", name: "Action closer" }
+    ]);
     expect(body.assistant.publications).toBeUndefined();
     expect(body.assistant.version).toBeUndefined();
   });
@@ -348,7 +359,7 @@ describe("assistant duplicate handler", () => {
 
 describe("assistant create handler", () => {
   it("rejects model-incompatible controls, Search, and MCP before persistence", async () => {
-    const create = vi.fn(async () => "assistant-1");
+    const create = vi.fn(async () => ({ assistantId: "assistant-1", kind: "ok" as const }));
     const noTools = catalogModel();
     noTools.capabilities = { ...noTools.capabilities, toolCalling: false };
     const incompatibleCatalog = catalogData();
@@ -411,6 +422,38 @@ describe("assistant create handler", () => {
       error: "assistant_tools_not_available"
     });
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it("preserves ordered Skill ids and maps unavailable dependencies", async () => {
+    const create = vi.fn(async () => ({ kind: "skills_not_available" as const }));
+    const response = await createCreateAssistantHandler(handlerDeps({ create }))(
+      new Request("http://test/api/me/assistants", {
+        body: JSON.stringify({
+          avatar,
+          category: null,
+          description: "",
+          developerPrompt: null,
+          knowledgeBaseIds: [],
+          mcpServerIds: [],
+          name: "Reviewer",
+          providerModelId: "model-1",
+          runControls: {},
+          searchPlan: { mode: "all_selected", optionIds: [] },
+          skillIds: ["skill-review", "skill-finish"],
+          starterPrompts: [],
+          systemPrompt: ""
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "assistant_skills_not_available" });
+    expect(create).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({ skillIds: ["skill-review", "skill-finish"] })
+    );
   });
 });
 
@@ -581,6 +624,44 @@ describe("assistant update handler", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "assistant_version_conflict" });
   });
+
+  it("maps an unavailable Skill dependency during revision", async () => {
+    const revise = vi.fn(async () => ({ kind: "skills_not_available" as const }));
+    const response = await createUpdateAssistantHandler(handlerDeps({ revise }))(
+      new Request("http://test/api/me/assistants/assistant-1", {
+        body: JSON.stringify({
+          expectedVersion: 3,
+          revision: {
+            avatar,
+            category: null,
+            description: "",
+            developerPrompt: null,
+            knowledgeBaseIds: [],
+            mcpServerIds: [],
+            name: "Reviewer",
+            providerModelId: "model-1",
+            runControls: {},
+            searchPlan: { mode: "all_selected", optionIds: [] },
+            skillIds: ["skill-private"],
+            starterPrompts: [],
+            systemPrompt: ""
+          }
+        }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      }),
+      { params: { assistantId: "assistant-1" } }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "assistant_skills_not_available" });
+    expect(revise).toHaveBeenCalledWith(
+      "user-1",
+      "assistant-1",
+      3,
+      expect.objectContaining({ skillIds: ["skill-private"] })
+    );
+  });
 });
 
 describe("assistant publish handler", () => {
@@ -613,6 +694,25 @@ describe("assistant publish handler", () => {
     );
     expect(response.status).toBe(400);
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("returns an actionable conflict when included Skills do not reach the audience", async () => {
+    const response = await createPublishAssistantHandler(handlerDeps({
+      publish: vi.fn(async () => ({ kind: "skill_audience_mismatch" as const }))
+    }))(
+      new Request("http://test/api/me/assistants/assistant-1/publications", {
+        body: JSON.stringify({ groupId: "group-1", scope: "group" }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      }),
+      { params: { assistantId: "assistant-1" } }
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "assistant_skill_audience_mismatch",
+      message: "Share every included Skill with this audience before publishing the Assistant."
+    });
   });
 });
 

@@ -46,4 +46,41 @@ describe("administrator model policy handlers", () => {
       userId: "user-1"
     });
   });
+
+  it("accepts uncapped positive safe tool budgets and rejects invalid values", async () => {
+    const service = {
+      list: vi.fn().mockResolvedValue({}),
+      update: vi.fn(),
+      updateToolBudgets: vi.fn()
+    };
+    const handlers = createAdminModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const accepted = await handlers.PATCH(new Request(
+      "http://local.test/api/admin/providers/model-policy",
+      {
+        body: JSON.stringify({ expectedVersion: 2, maxToolCalls: 200, maxToolRounds: 200 }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      }
+    ));
+    expect(accepted.status).toBe(200);
+    expect(service.updateToolBudgets).toHaveBeenCalledWith({
+      expectedVersion: 2,
+      maxToolCalls: 200,
+      maxToolRounds: 200,
+      userId: "user-1"
+    });
+
+    const rejected = await handlers.PATCH(new Request(
+      "http://local.test/api/admin/providers/model-policy",
+      {
+        body: JSON.stringify({ expectedVersion: 2, maxToolCalls: 0, maxToolRounds: 8 }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH"
+      }
+    ));
+    expect(rejected.status).toBe(400);
+  });
 });

@@ -499,6 +499,7 @@ export function useRunControlsActions({
       avatar: import("@/lib/contracts/assistants").AssistantAvatarRecipe;
       description: string;
       id: string;
+      includedSkills?: { id: string; name: string }[];
       name: string;
       promptCharacterCount: number;
       starterPrompts: string[];

@@ -11,11 +11,32 @@ import {
   serializeAdminAnswerModel,
   type AdminAnswerModelRow
 } from "./modelPolicyService";
+import { structuredOutputVerificationStatus } from "../../providers/structuredOutputEvidence";
+import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
+
+type SystemModelRow = AdminAnswerModelRow & {
+  activeCredentialChecks: Array<{
+    connectionVersion: number;
+    credentialId: string;
+    credentialVersionId: string;
+    evidence: unknown;
+    modelVersion: number;
+    status: "available" | "unavailable";
+  }>;
+  connection: AdminAnswerModelRow["connection"] & {
+    defaultCredential: null | {
+      activeVersion: null | { id: string };
+      id: string;
+    };
+  };
+};
 
 export type AdminSystemModelPolicyServiceErrorCode =
   | "system_model_policy_reasoning_unavailable"
   | "system_model_policy_stale"
-  | "system_model_policy_target_unavailable";
+  | "system_model_policy_structured_output_unsupported"
+  | "system_model_policy_target_unavailable"
+  | "system_model_policy_verification_failed";
 
 export class AdminSystemModelPolicyServiceError extends Error {
   constructor(readonly code: AdminSystemModelPolicyServiceErrorCode) {
@@ -26,11 +47,24 @@ export class AdminSystemModelPolicyServiceError extends Error {
 
 type RoleLoader = typeof loadInstallationAnswerProviderRole;
 
-function serializeSystemModel(row: AdminAnswerModelRow) {
+type ActiveRefresh = (input: Readonly<{
+  confirmPaidRequest: true;
+  connectionId: string;
+  credentialId: string;
+  providerModelId: string;
+  signal?: AbortSignal;
+}>) => Promise<Readonly<{
+  evidence: unknown;
+  status: "available" | "unavailable";
+}>>;
+
+function serializeSystemModel(row: SystemModelRow) {
   let reasoningEfforts: string[] = [];
   let defaultReasoningEffort: string | null = null;
+  let structuredOutput: "not_verified" | "unsupported" | "verified" = "unsupported";
   try {
-    const capabilities = normalizeProviderModelConfiguration(row.activeConfig).capabilities;
+    const configuration = normalizeProviderModelConfiguration(row.activeConfig);
+    const capabilities = configuration.capabilities;
     if (capabilities.reasoning) {
       reasoningEfforts = [...(capabilities.reasoningEfforts ?? [])];
       defaultReasoningEffort = capabilities.defaultReasoningEffort &&
@@ -38,6 +72,19 @@ function serializeSystemModel(row: AdminAnswerModelRow) {
         ? capabilities.defaultReasoningEffort
         : null;
     }
+    const credential = row.connection.defaultCredential;
+    const check = credential?.activeVersion
+      ? row.activeCredentialChecks.find((candidate) =>
+          candidate.connectionVersion === row.connection.activeVersion &&
+          candidate.credentialId === credential.id &&
+          candidate.credentialVersionId === credential.activeVersion!.id &&
+          candidate.modelVersion === row.activeVersion &&
+          candidate.status === "available")
+      : null;
+    structuredOutput = structuredOutputVerificationStatus(
+      check?.evidence,
+      configuration
+    );
   } catch {
     // An unavailable retained target remains inspectable without trusting its
     // stale or malformed capability payload.
@@ -45,7 +92,8 @@ function serializeSystemModel(row: AdminAnswerModelRow) {
   return {
     ...serializeAdminAnswerModel(row),
     defaultReasoningEffort,
-    reasoningEfforts
+    reasoningEfforts,
+    structuredOutput
   };
 }
 
@@ -63,6 +111,7 @@ export function createAdminSystemModelPolicyService(
   prisma: PrismaClient,
   dependencies: Readonly<{
     loadRole?: RoleLoader;
+    refreshActive?: ActiveRefresh;
     resolveRole?: ReturnType<typeof createSystemModelRoleResolver>["resolve"];
   }> = {}
 ) {
@@ -75,13 +124,51 @@ export function createAdminSystemModelPolicyService(
       const [policy, rows, resolution] = await Promise.all([
         prisma.systemModelPolicy.findUnique({
           include: {
-            providerModel: { include: { connection: true } },
+            providerModel: {
+              include: {
+                activeCredentialChecks: {
+                  select: {
+                    connectionVersion: true,
+                    credentialId: true,
+                    credentialVersionId: true,
+                    evidence: true,
+                    modelVersion: true,
+                    status: true
+                  }
+                },
+                connection: {
+                  include: {
+                    defaultCredential: {
+                      include: { activeVersion: { select: { id: true } } }
+                    }
+                  }
+                }
+              }
+            },
             updatedBy: { select: { displayName: true, id: true } }
           },
           where: { id: "installation" }
         }),
         prisma.providerModel.findMany({
-          include: { connection: true },
+          include: {
+            activeCredentialChecks: {
+              select: {
+                connectionVersion: true,
+                credentialId: true,
+                credentialVersionId: true,
+                evidence: true,
+                modelVersion: true,
+                status: true
+              }
+            },
+            connection: {
+              include: {
+                defaultCredential: {
+                  include: { activeVersion: { select: { id: true } } }
+                }
+              }
+            }
+          },
           orderBy: [
             { connection: { displayName: "asc" } },
             { displayName: "asc" },
@@ -92,7 +179,7 @@ export function createAdminSystemModelPolicyService(
         resolveRole()
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
-      const models = rows as AdminAnswerModelRow[];
+      const models = rows as SystemModelRow[];
       return {
         candidates: models
           .filter(adminAnswerModelAvailable)
@@ -102,7 +189,7 @@ export function createAdminSystemModelPolicyService(
           systemModel: policy.providerModel
             ? {
                 ...serializeSystemModel(
-                  policy.providerModel as AdminAnswerModelRow
+                  policy.providerModel as SystemModelRow
                 ),
                 available: resolution.ok &&
                   resolution.providerModelId === policy.providerModelId &&
@@ -114,6 +201,116 @@ export function createAdminSystemModelPolicyService(
           version: policy.version
         }
       };
+    },
+
+    async verifyStructuredOutput(input: Readonly<{
+      providerModelId: string;
+      signal?: AbortSignal;
+    }>): Promise<void> {
+      const policy = await prisma.systemModelPolicy.findUnique({
+        select: {
+          providerModel: {
+            select: {
+              activeConfig: true,
+              activeCredentialChecks: {
+                select: {
+                  connectionVersion: true,
+                  credentialId: true,
+                  credentialVersionId: true,
+                  evidence: true,
+                  modelVersion: true,
+                  status: true
+                }
+              },
+              activeVersion: true,
+              connection: {
+                select: {
+                  activeConfig: true,
+                  activeVersion: true,
+                  defaultCredential: {
+                    select: {
+                      activeVersion: { select: { id: true, revokedAt: true } },
+                      enabled: true,
+                      id: true
+                    }
+                  },
+                  enabled: true,
+                  id: true
+                }
+              },
+              enabled: true,
+              id: true
+            }
+          },
+          providerModelId: true
+        },
+        where: { id: "installation" }
+      });
+      const model = policy?.providerModel;
+      const credential = model?.connection.defaultCredential;
+      if (
+        !policy || !model || policy.providerModelId !== input.providerModelId ||
+        model.id !== input.providerModelId || !model.enabled ||
+        !model.activeConfig || model.activeVersion < 1 ||
+        !model.connection.enabled || !model.connection.activeConfig ||
+        model.connection.activeVersion < 1 || !credential?.enabled ||
+        !credential.activeVersion || credential.activeVersion.revokedAt
+      ) {
+        throw new AdminSystemModelPolicyServiceError(
+          "system_model_policy_target_unavailable"
+        );
+      }
+
+      let configuration;
+      try {
+        configuration = normalizeProviderModelConfiguration(model.activeConfig);
+      } catch {
+        throw new AdminSystemModelPolicyServiceError(
+          "system_model_policy_target_unavailable"
+        );
+      }
+      if (!supportsStructuredOutputAdapter(configuration.adapterKind)) {
+        throw new AdminSystemModelPolicyServiceError(
+          "system_model_policy_structured_output_unsupported"
+        );
+      }
+
+      const existingCheck = model.activeCredentialChecks.find((check) =>
+        check.connectionVersion === model.connection.activeVersion &&
+        check.credentialId === credential.id &&
+        check.credentialVersionId === credential.activeVersion!.id &&
+        check.modelVersion === model.activeVersion &&
+        check.status === "available"
+      );
+      if (structuredOutputVerificationStatus(
+        existingCheck?.evidence,
+        configuration
+      ) === "verified") return;
+
+      if (!dependencies.refreshActive) {
+        throw new AdminSystemModelPolicyServiceError(
+          "system_model_policy_verification_failed"
+        );
+      }
+      try {
+        const result = await dependencies.refreshActive({
+          confirmPaidRequest: true,
+          connectionId: model.connection.id,
+          credentialId: credential.id,
+          providerModelId: model.id,
+          signal: input.signal
+        });
+        if (
+          result.status !== "available" ||
+          structuredOutputVerificationStatus(result.evidence, configuration) !== "verified"
+        ) {
+          throw new Error("structured_output_not_verified");
+        }
+      } catch {
+        throw new AdminSystemModelPolicyServiceError(
+          "system_model_policy_verification_failed"
+        );
+      }
     },
 
     async update(input: Readonly<{

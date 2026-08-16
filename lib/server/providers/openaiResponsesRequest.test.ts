@@ -146,6 +146,7 @@ describe("OpenAI Responses request builder", () => {
         "attachment_filename",
         "image_data_url",
         "pdf_base64",
+        "selected_skill_instructions",
         "provider_continuation_opaque_fields"
       ],
       replayedContext: [
@@ -469,6 +470,7 @@ describe("OpenAI Responses request builder", () => {
       "attachment_filename",
       "image_data_url",
       "pdf_base64",
+      "selected_skill_instructions",
       "provider_continuation_opaque_fields"
     ]);
 

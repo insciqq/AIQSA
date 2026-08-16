@@ -1533,28 +1533,30 @@ describe("AdminProvidersSection", () => {
 
     expect(screen.queryByText("Available · refresh needs attention")).not.toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Check model route" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Test model" })).not.toBeInTheDocument();
     openConnection();
     expect(screen.queryByText("Available · refresh needs attention")).not.toBeVisible();
     openTask("Diagnostics");
     expect(screen.getByText("Available · refresh needs attention")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Check model route" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Check model route" }));
+    expect(screen.getByRole("button", { name: "Test model" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Test model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm run paid diagnostic" }));
     expect(view.actions.testDraft).toHaveBeenCalledWith(
       "connection-1",
       "model-active",
       {
-        confirmPaidRequest: false,
+        confirmPaidRequest: true,
         credentialId: "credential-1",
         mode: "account_catalog"
       }
     );
     fireEvent.click(screen.getByRole("button", { name: "Refresh active check" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm refresh active check" }));
     expect(view.actions.refreshActive).toHaveBeenCalledWith(
       "connection-1",
       "model-active",
       "credential-1",
-      false
+      true
     );
   });
 

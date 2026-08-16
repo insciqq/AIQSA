@@ -9,6 +9,8 @@ Scope: Durable HTTP/API, service-boundary, upload, and control-plane principles.
 
 All private operations recheck authentication, ownership, entitlement, and lifecycle at the operation boundary. Browser filtering is presentation, not authority. State-changing browser requests pass the shared same-origin and bounded-body boundary. Stable error codes and privacy-neutral unavailable responses replace raw exceptions and existence leaks.
 
+Skill collection responses are metadata-only. Full Skill instructions cross the browser boundary only through an individually authorized detail response, while search and pagination remain server-side so library discovery does not disclose or eagerly transfer instruction bodies.
+
 Keep route handlers thin. Domain rules belong in `lib/domain/`, client-safe wire contracts in `lib/contracts/`, and server policy, repositories, adapters, and orchestration in `lib/server/`. Server modules may depend inward; browser code never imports Prisma, secrets, storage, or provider transports.
 
 ## Control Planes

@@ -11,6 +11,8 @@ const catalog = {
   }],
   policy: {
     defaultModel: null,
+    maxToolCalls: 20,
+    maxToolRounds: 8,
     updatedAt: "2026-08-08T00:00:00.000Z",
     updatedBy: null,
     version: 1

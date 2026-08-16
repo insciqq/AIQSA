@@ -86,8 +86,16 @@ export type McpJsonValue =
 export type McpJsonObject = { [key: string]: McpJsonValue };
 
 export type McpToolInventoryEntry = {
+  arguments?: McpToolArgumentInventoryEntry[];
   description: string | null;
   name: string;
+  title?: string;
+};
+
+export type McpToolArgumentInventoryEntry = {
+  description: string | null;
+  name: string;
+  types: string[];
 };
 
 export type McpValidationEvidence = {
@@ -228,25 +236,16 @@ export type UserMcpCatalogResponse = {
 
 export type McpRunSelection =
   | { mode: "auto" }
-  | { mode: "off" }
-  | { mode: "selected"; serverIds: string[] };
+  | { mode: "load_all" }
+  | { mode: "off" };
 
 export function decodeMcpRunSelection(value: unknown): McpRunSelection | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  if (record.mode === "auto" || record.mode === "off") {
+  if (record.mode === "auto" || record.mode === "load_all" || record.mode === "off") {
     return Object.keys(record).length === 1 ? { mode: record.mode } : null;
   }
-  if (record.mode !== "selected" || !Array.isArray(record.serverIds) ||
-    record.serverIds.length === 0 || record.serverIds.length > MCP_RUN_PLAN_LIMITS.maxEnabledServers ||
-    record.serverIds.some((id) => typeof id !== "string" || !id.trim() || id.trim().length > 64) ||
-    Object.keys(record).some((key) => key !== "mode" && key !== "serverIds")) {
-    return null;
-  }
-  const serverIds = (record.serverIds as string[]).map((id) => id.trim());
-  return new Set(serverIds).size === serverIds.length
-    ? { mode: "selected", serverIds }
-    : null;
+  return null;
 }
 
 export type McpErrorCode =

@@ -224,12 +224,34 @@ function toolInventoryFrom(value: unknown): McpToolInventoryEntry[] | null {
     if (!isRecord(candidate) || typeof candidate.name !== "string" ||
       candidate.name.length === 0 || candidate.name.length > 256 ||
       (candidate.description !== null && typeof candidate.description !== "string") ||
-      (typeof candidate.description === "string" && candidate.description.length > 4_000)) {
+      (typeof candidate.description === "string" && candidate.description.length > 4_000) ||
+      (candidate.title !== undefined && (typeof candidate.title !== "string" ||
+        candidate.title.length === 0)) ||
+      (candidate.arguments !== undefined && !Array.isArray(candidate.arguments))) {
+      return null;
+    }
+    const argumentsValue = candidate.arguments === undefined
+      ? undefined
+      : candidate.arguments.flatMap((argument) => {
+          if (!isRecord(argument) || typeof argument.name !== "string" ||
+            !argument.name ||
+            (argument.description !== null && typeof argument.description !== "string") ||
+            !Array.isArray(argument.types) || argument.types.length > 7 ||
+            argument.types.some((type) => typeof type !== "string" || type.length > 32)) return [];
+          return [{
+            description: argument.description as string | null,
+            name: argument.name,
+            types: argument.types as string[]
+          }];
+        });
+    if (candidate.arguments !== undefined && argumentsValue?.length !== candidate.arguments.length) {
       return null;
     }
     tools.push({
+      ...(argumentsValue ? { arguments: argumentsValue } : {}),
       description: candidate.description as string | null,
-      name: candidate.name
+      name: candidate.name,
+      ...(typeof candidate.title === "string" ? { title: candidate.title } : {})
     });
   }
   return tools;
@@ -309,7 +331,12 @@ function revisionIdentityHash(input: Readonly<{
     evidence: input.evidence,
     resolvedArtifact: input.resolvedArtifact,
     toolInventory: input.toolInventory
-      .map((tool) => ({ description: tool.description, name: tool.name }))
+      .map((tool) => ({
+        ...(tool.arguments ? { arguments: tool.arguments } : {}),
+        description: tool.description,
+        name: tool.name,
+        ...(tool.title ? { title: tool.title } : {})
+      }))
       .sort((left, right) => left.name.localeCompare(right.name))
   });
 }
@@ -776,10 +803,7 @@ function validationResultContainsSensitiveValue(input: {
   const output: McpJsonObject = {
     evidence: input.evidence,
     resolvedArtifact: input.resolvedArtifact,
-    toolInventory: input.toolInventory.map((tool) => ({
-      description: tool.description,
-      name: tool.name
-    }))
+    toolInventory: input.toolInventory.map((tool) => ({ ...tool }))
   };
   return input.draft.slots.some((slot) => {
     const value = input.values[slot.slotKey];

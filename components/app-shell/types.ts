@@ -22,6 +22,9 @@ export type {
   ThreadKnowledgeCitation,
   ThreadKnowledgeOutcome,
   ThreadMessage,
+  ThreadToolActivity,
+  ThreadToolActivityCall,
+  ThreadToolBudgetWarning,
   ThreadSearchSource
 } from "@/lib/contracts/chats";
 

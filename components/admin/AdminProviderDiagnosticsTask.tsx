@@ -63,18 +63,19 @@ export function AdminProviderDiagnosticsTask({
         check.credentialVersionId === activeCredential.activeVersion!.id
       ) ?? null
     : null;
-  const paid = connection.family !== "openrouter";
   const draftEmbedding = (draftModel?.modelClass ?? draftModel?.draftConfig.modelClass) === "embedding";
   const activeEmbedding = (activeModel?.modelClass ?? activeModel?.activeConfig?.modelClass) === "embedding";
+  const draftPaid = connection.family !== "openrouter" || !draftEmbedding;
+  const activePaid = connection.family !== "openrouter" || !activeEmbedding;
 
   const runDraftDiagnostic = () => {
     if (!draftModel || !draftCredential) return;
     const run = () => controller.actions.testDraft(connection.id, draftModel.id, {
-      confirmPaidRequest: paid,
+      confirmPaidRequest: draftPaid,
       credentialId: draftCredential.id,
-      mode: paid ? "tiny_generation" : "account_catalog"
+      mode: connection.family === "openrouter" ? "account_catalog" : "tiny_generation"
     });
-    if (!paid) {
+    if (!draftPaid) {
       void run();
       return;
     }
@@ -99,9 +100,9 @@ export function AdminProviderDiagnosticsTask({
       connection.id,
       activeModel.id,
       activeCredential.id,
-      paid
+      activePaid
     );
-    if (!paid) {
+    if (!activePaid) {
       void run();
       return;
     }
@@ -162,7 +163,7 @@ export function AdminProviderDiagnosticsTask({
             </label>
             <button className={quietButton} disabled={controller.state.busy} onClick={runDraftDiagnostic} type="button">
               <TestTube2 aria-hidden="true" className="size-3.5" />
-              {paid ? "Test model" : "Check model route"}
+              {draftPaid ? "Test model" : "Check model route"}
             </button>
             <p className="text-xs text-ink-muted md:col-span-3">
               Latest exact draft result: <span className={

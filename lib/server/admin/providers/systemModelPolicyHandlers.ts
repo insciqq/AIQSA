@@ -36,7 +36,9 @@ function contentTypeIsJson(request: Request): boolean {
 function failure(error: unknown): Response {
   if (error instanceof AdminSystemModelPolicyServiceError) {
     return Response.json({ error: error.code }, {
-      status: error.code === "system_model_policy_stale" ? 409 : 400
+      status: error.code === "system_model_policy_stale"
+        ? 409
+        : error.code === "system_model_policy_verification_failed" ? 422 : 400
     });
   }
   console.error("system_model_policy_admin_action_failed");
@@ -89,6 +91,36 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
           providerModelId: value.providerModelId,
           reasoningEffort: value.reasoningEffort,
           userId: auth.session.userId
+        });
+        return Response.json({ systemModelPolicy: await input.service.list() });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+
+    async POST(request: Request): Promise<Response> {
+      if (!contentTypeIsJson(request)) {
+        return Response.json({ error: "json_required" }, { status: 415 });
+      }
+      const auth = await requireAdmin(request, input.resolveAuth);
+      if (auth.error) return auth.error;
+      const value = await readJsonBodyOrNull(request, "json");
+      const bodyError = requestBodyErrorResponse(value);
+      if (bodyError) return bodyError;
+      if (!record(value) || Object.keys(value).length !== 1 ||
+        typeof value.providerModelId !== "string" ||
+        value.providerModelId.trim() !== value.providerModelId ||
+        value.providerModelId.length < 1 || value.providerModelId.length > 256 ||
+        /[\u0000-\u001f\u007f]/u.test(value.providerModelId)) {
+        return Response.json(
+          { error: "system_model_policy_verification_invalid" },
+          { status: 400 }
+        );
+      }
+      try {
+        await input.service.verifyStructuredOutput({
+          providerModelId: value.providerModelId,
+          signal: request.signal
         });
         return Response.json({ systemModelPolicy: await input.service.list() });
       } catch (error) {

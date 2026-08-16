@@ -75,7 +75,15 @@ function preference(overrides: Partial<PreferenceFixture> = {}): PreferenceFixtu
       activeRevision: {
         configuration: {},
         validationEvidence: {
-          toolInventory: [{ description: "Echo", name: "echo", title: "Echo input" }]
+          evidence: {
+            server: { instructions: "Echo only validated input." }
+          },
+          toolInventory: [{
+            arguments: [{ description: "Text to echo", name: "text", types: ["string"] }],
+            description: "Echo",
+            name: "echo",
+            title: "Echo input"
+          }]
         }
       },
       activeRevisionId: "revision-1",
@@ -109,7 +117,12 @@ describe("Prisma MCP run-plan loader", () => {
     const { client, findMany } = clientWith([preference()]);
 
     await expect(loadMcpRunPlanRecords("user-1", client)).resolves.toEqual([{
-      catalogTools: [{ description: "Echo", name: "echo", title: "Echo input" }],
+      catalogTools: [{
+        arguments: [{ description: "Text to echo", name: "text", types: ["string"] }],
+        description: "Echo",
+        name: "echo",
+        title: "Echo input"
+      }],
       credentialSources: ["personal"],
       enabled: true,
       errorCode: null,
@@ -123,6 +136,7 @@ describe("Prisma MCP run-plan loader", () => {
       revisionId: "revision-1",
       serverDescription: "Example tools",
       serverId: "server-1",
+      serverInstructions: "Echo only validated input.",
       serverName: "Example MCP"
     }]);
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -149,8 +163,13 @@ describe("Prisma MCP run-plan loader", () => {
     );
 
     expect(catalog.servers).toEqual([expect.objectContaining({
+      instructions: "Echo only validated input.",
       serverId: "server-1",
-      tools: [expect.objectContaining({ originalName: "echo" })]
+      tools: [expect.objectContaining({
+        arguments: [{ description: "Text to echo", name: "text", types: ["string"] }],
+        originalName: "echo",
+        title: "Echo input"
+      })]
     })]);
     expect(JSON.stringify(catalog)).not.toContain("inputSchema");
     expect(JSON.stringify(catalog)).not.toContain("server-revoked");

@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  MCP_DISCOVERY_MAX_ACTIVE_TOOLS,
-  MCP_DISCOVERY_MAX_RESULTS,
   mcpCatalogToolsByNames,
   mcpFindToolsArguments,
-  mergeMcpRunPlanSnapshots,
-  rankMcpCatalogTools
+  mergeMcpRunPlanSnapshots
 } from "./discovery";
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "./runPlan";
 
@@ -65,33 +62,20 @@ function snapshot(toolName: string, index: number): McpRunPlanSnapshot {
 }
 
 describe("MCP Auto discovery", () => {
-  it("ranks a bounded schema-free catalog and excludes tools already active", () => {
+  it("keeps the frozen capability catalog schema-free", () => {
     expect(JSON.stringify(catalog)).not.toContain("inputSchema");
-
-    const ranked = rankMcpCatalogTools({
-      activeToolNames: new Set(["mcp_jira_read_sprint_1"]),
-      catalog,
-      limit: MCP_DISCOVERY_MAX_RESULTS,
-      query: "create a Jira issue"
-    });
-
-    expect(ranked[0]?.namespacedName).toBe("mcp_jira_create_issue_1");
-    expect(ranked.map((tool) => tool.namespacedName)).not.toContain("mcp_jira_read_sprint_1");
-    expect(ranked.length).toBeLessThanOrEqual(MCP_DISCOVERY_MAX_RESULTS);
-    expect(ranked[0]).toMatchObject({
+    expect(mcpCatalogToolsByNames(catalog, ["mcp_jira_create_issue_1"])[0]).toMatchObject({
       revisionId: "revision-jira",
       serverId: "server-jira"
     });
   });
 
   it("strictly validates the internal discovery call arguments", () => {
-    expect(mcpFindToolsArguments({ query: "  create issue  " })).toEqual({
-      limit: MCP_DISCOVERY_MAX_RESULTS,
-      query: "create issue"
-    });
-    expect(mcpFindToolsArguments({ limit: MCP_DISCOVERY_MAX_RESULTS + 1, query: "issue" })).toBeNull();
-    expect(mcpFindToolsArguments({ query: "issue", unexpected: true })).toBeNull();
-    expect(mcpFindToolsArguments({ query: "" })).toBeNull();
+    expect(mcpFindToolsArguments({ goal: "  create issue  " })).toEqual({ goal: "create issue" });
+    expect(mcpFindToolsArguments({ goal: "issue", limit: 1 })).toBeNull();
+    expect(mcpFindToolsArguments({ goal: "issue", unexpected: true })).toBeNull();
+    expect(mcpFindToolsArguments({ goal: "" })).toBeNull();
+    expect(mcpFindToolsArguments({ query: "legacy query" })).toBeNull();
   });
 
   it("reconstructs an already checkpointed result without schemas or reranking", () => {
@@ -101,18 +85,16 @@ describe("MCP Auto discovery", () => {
     ])).toEqual([
       expect.objectContaining({
         namespacedName: "mcp_github_create_pull_request_1",
-        revisionId: "revision-github",
-        score: 0
+        revisionId: "revision-github"
       }),
       expect.objectContaining({
         namespacedName: "mcp_jira_create_issue_1",
-        revisionId: "revision-jira",
-        score: 0
+        revisionId: "revision-jira"
       })
     ]);
   });
 
-  it("grows an immutable run snapshot monotonically and enforces the active-tool bound", () => {
+  it("grows an immutable run snapshot monotonically beyond the former 12-tool bound", () => {
     const first = snapshot("first", 1);
     const second = snapshot("second", 2);
     const merged = mergeMcpRunPlanSnapshots(first, second);
@@ -121,13 +103,10 @@ describe("MCP Auto discovery", () => {
     expect(first.tools).toHaveLength(1);
 
     let current: McpRunPlanSnapshot | undefined;
-    for (let index = 0; index < MCP_DISCOVERY_MAX_ACTIVE_TOOLS; index += 1) {
+    for (let index = 0; index < 13; index += 1) {
       current = mergeMcpRunPlanSnapshots(current, snapshot(`tool_${index}`, index + 10));
     }
-    expect(() => mergeMcpRunPlanSnapshots(
-      current,
-      snapshot("overflow", MCP_DISCOVERY_MAX_ACTIVE_TOOLS + 20)
-    )).toThrow("mcp_discovery_tool_limit");
+    expect(current?.tools).toHaveLength(13);
   });
 
   it("keeps cumulative discovered schemas inside the run-plan byte bound", () => {
@@ -144,6 +123,6 @@ describe("MCP Auto discovery", () => {
         ...second,
         tools: second.tools.map((tool) => ({ ...tool, inputSchema: largeSchema }))
       }
-    )).toThrow("mcp_discovery_schema_limit");
+    )).toThrow("mcp_plan_too_large");
   });
 });

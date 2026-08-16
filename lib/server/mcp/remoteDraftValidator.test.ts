@@ -79,6 +79,7 @@ function tool(input: Partial<AiqsaMcpToolDefinition> & { name: string }): AiqsaM
 function sessionHarness(input: {
   initializeError?: Error;
   listError?: Error;
+  serverEvidence?: McpRemoteDraftValidationSession["serverEvidence"];
   tools?: readonly AiqsaMcpToolDefinition[];
 } = {}) {
   const events: string[] = [];
@@ -95,7 +96,8 @@ function sessionHarness(input: {
       events.push("listAllTools");
       if (input.listError) throw input.listError;
       return input.tools ?? [];
-    }
+    },
+    serverEvidence: input.serverEvidence ?? null
   };
   const sessionFactory: McpRemoteDraftValidationSessionFactory = (sessionOptions) => {
     options.push(sessionOptions);
@@ -110,8 +112,30 @@ describe("remote MCP draft validator", () => {
   it("discovers a static-header remote draft through the injected safe session", async () => {
     const progress: string[] = [];
     const harness = sessionHarness({
+      serverEvidence: {
+        capabilities: {
+          completions: false,
+          logging: false,
+          prompts: null,
+          resources: null,
+          tasks: false,
+          tools: { listChanged: false }
+        },
+        implementation: { name: "tasks", version: "1.0.0" },
+        instructions: "Use the workspace header for task operations."
+      },
       tools: [
-        tool({ description: "Create a task", name: "create_task" }),
+        tool({
+          description: "Create a task",
+          inputSchema: {
+            properties: {
+              summary: { description: "Task summary", type: "string" }
+            },
+            type: "object"
+          },
+          name: "create_task",
+          title: "Create task"
+        }),
         tool({ definitionHash: "b".repeat(64), description: "List tasks", name: "list_tasks" })
       ]
     });
@@ -134,6 +158,9 @@ describe("remote MCP draft validator", () => {
     expect(outcome).toMatchObject({
       evidence: {
         endpointHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        server: {
+          instructions: "Use the workspace header for task operations."
+        },
         toolCount: 2,
         toolDefinitionHashes: ["a".repeat(64), "b".repeat(64)],
         toolInventoryHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
@@ -146,7 +173,12 @@ describe("remote MCP draft validator", () => {
         transport: "streamable_http"
       },
       toolInventory: [
-        { description: "Create a task", name: "create_task" },
+        {
+          arguments: [{ description: "Task summary", name: "summary", types: ["string"] }],
+          description: "Create a task",
+          name: "create_task",
+          title: "Create task"
+        },
         { description: "List tasks", name: "list_tasks" }
       ]
     });

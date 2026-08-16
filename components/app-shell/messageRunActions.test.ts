@@ -667,7 +667,7 @@ describe("message run actions", () => {
     expect(optimisticUserMessage?.content).toEqual(expectedContent);
   });
 
-  it("sends only the assistant identity with content when an assistant is selected", async () => {
+  it("sends the assistant identity and independently selected manual Skills", async () => {
     const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const actions = useMessageRunActionsForTest({
@@ -692,7 +692,13 @@ describe("message run actions", () => {
         promptCharacterCount: 42,
         starterPrompts: []
       },
-      selectedKnowledgeBaseIds: ["assistant-base-private"]
+      selectedKnowledgeBaseIds: ["assistant-base-private"],
+      selectedSkills: [{
+        description: "Finish with actions",
+        id: "skill-actions",
+        name: "Action closer",
+        promptCharacterCount: 60
+      }]
     });
 
     await actions.submitComposer();
@@ -703,7 +709,8 @@ describe("message run actions", () => {
       content: {
         blocks: [{ text: "Question for the assistant", type: "text" }]
       },
-      expectedActiveLeafId: null
+      expectedActiveLeafId: null,
+      skillIds: ["skill-actions"]
     });
   });
 
@@ -724,12 +731,12 @@ describe("message run actions", () => {
     });
   });
 
-  it("freezes the selected MCP servers and manual Skills in the outgoing run", async () => {
+  it("freezes Load all and manual Skills in the outgoing run", async () => {
     const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const actions = useMessageRunActionsForTest({ attachments: [], draft: "Use my workflow" });
     useComposerControlStore.setState({
-      mcpSelection: { mode: "selected", serverIds: ["server-jira", "server-github"] },
+      mcpSelection: { mode: "load_all" },
       selectedSkills: [{
         description: "Review before changing",
         id: "skill-review",
@@ -742,7 +749,7 @@ describe("message run actions", () => {
 
     const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(String(requestInit.body))).toMatchObject({
-      mcp: { mode: "selected", serverIds: ["server-jira", "server-github"] },
+      mcp: { mode: "load_all" },
       skillIds: ["skill-review"]
     });
   });

@@ -22,26 +22,52 @@ type FakeMcpServer = {
 
 test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer capabilities coherent", async ({ page }) => {
   await installMatrixCatalogFixture(page);
+  let skillListRequests = 0;
   await page.route("**/api/me/skills**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
     if (route.request().method() !== "GET") {
       await route.fulfill({ contentType: "application/json", json: { error: "unexpected_skill_e2e_request" }, status: 400 });
       return;
     }
+    const summary = {
+      archived: false,
+      description: "Turn rough notes into a concise incident brief",
+      id: "incident-brief",
+      instructionCharacterCount: 64,
+      name: "Incident brief",
+      owned: true,
+      ownerDisplayName: "Local admin",
+      scope: { kind: "owner" },
+      updatedAt: "2026-08-16T00:00:00.000Z",
+      version: 1
+    };
+    if (path === "/api/me/skills/incident-brief") {
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          skill: {
+            ...summary,
+            assistantUsageCount: 0,
+            audiences: [],
+            canDelete: true,
+            canEdit: true,
+            canPublish: true,
+            canUnshare: false,
+            instructions: "Summarize impact, timeline, current status, and next actions.",
+            owner: { displayName: "Local admin" },
+            workspaceUsageCount: 0
+          }
+        }
+      });
+      return;
+    }
+    skillListRequests += 1;
     await route.fulfill({
       contentType: "application/json",
       json: {
-        publishableGroups: [],
-        skills: [{
-          archived: false,
-          description: "Turn rough notes into a concise incident brief",
-          id: "incident-brief",
-          instructions: "Summarize impact, timeline, current status, and next actions.",
-          name: "Incident brief",
-          owned: true,
-          ownerDisplayName: "Local admin",
-          scope: { kind: "owner" },
-          version: 1
-        }],
+        nextCursor: null,
+        publishableWorkspaces: [],
+        skills: [summary],
         viewer: { canPublishInstallation: true }
       }
     });
@@ -159,10 +185,10 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await page.setViewportSize({ height: 900, width: 1440 });
   await capabilitiesTrigger.click();
   let capabilities = page.getByRole("menu", { name: "Capabilities" });
-  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Auto/u }))
+  await expect(capabilities.getByRole("menuitemradio", { name: /^Auto/u }))
     .toHaveAttribute("aria-checked", "true");
-  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Selected/u })).toBeDisabled();
-  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Off/u }))
+  await expect(capabilities.getByRole("menuitemradio", { name: /^Load all/u })).toBeEnabled();
+  await expect(capabilities.getByRole("menuitemradio", { name: /^Off/u }))
     .toHaveAttribute("aria-checked", "false");
   await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Mem0/u })).toHaveCount(0);
   await capabilities.getByRole("menuitem", { name: /Manage enabled MCP servers/u }).click();
@@ -197,42 +223,38 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await settings.getByRole("button", { name: "Close settings" }).click();
   await capabilitiesTrigger.click();
   capabilities = page.getByRole("menu", { name: "Capabilities" });
-  const autoMode = capabilities.getByRole("menuitemcheckbox", { name: /^Auto/u });
-  const selectedMode = capabilities.getByRole("menuitemcheckbox", { name: /^Selected/u });
-  const offMode = capabilities.getByRole("menuitemcheckbox", { name: /^Off/u });
+  const autoMode = capabilities.getByRole("menuitemradio", { name: /^Auto/u });
+  const loadAllMode = capabilities.getByRole("menuitemradio", { name: /^Load all/u });
+  const offMode = capabilities.getByRole("menuitemradio", { name: /^Off/u });
   await expect(autoMode).toHaveAttribute("aria-checked", "true");
-  await selectedMode.click();
-  await expect(selectedMode).toHaveAttribute("aria-checked", "true");
-  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Mem0/u }))
-    .toHaveAttribute("aria-checked", "true");
-  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Mem0/u }))
-    .toContainText("1 known tool");
-  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Todoist/u }))
-    .toHaveAttribute("aria-checked", "true");
+  await loadAllMode.click();
+  await expect(loadAllMode).toHaveAttribute("aria-checked", "true");
+  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Mem0/u })).toHaveCount(0);
+  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Todoist/u })).toHaveCount(0);
   await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Notion/u })).toHaveCount(0);
-  await capabilities.getByRole("menuitemcheckbox", { name: /^Todoist/u }).click();
-  await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Todoist/u }))
-    .toHaveAttribute("aria-checked", "false");
   await offMode.click();
   await expect(offMode).toHaveAttribute("aria-checked", "true");
   await autoMode.click();
   await expect(autoMode).toHaveAttribute("aria-checked", "true");
   await expect(capabilities.getByRole("menuitemcheckbox", { name: /^Mem0/u })).toHaveCount(0);
 
-  const incidentSkill = capabilities.getByRole("menuitemcheckbox", { name: /^Incident brief/u });
-  await incidentSkill.click();
-  await expect(incidentSkill).toHaveAttribute("aria-checked", "true");
-  await capabilities.getByRole("button", { name: "Close" }).click();
+  expect(skillListRequests).toBe(0);
+  await capabilities.getByRole("menuitem", { name: "Manage Skills…" }).click();
+  let skillLibrary = page.getByRole("dialog", { name: "Skills" });
+  await expect(skillLibrary.getByRole("button", { name: "Open Incident brief" })).toBeVisible();
+  expect(skillListRequests).toBe(1);
+  await skillLibrary.getByRole("button", { name: "Use Incident brief" }).click();
+  await skillLibrary.getByRole("button", { name: "Close Skills" }).click();
   await expect(page.getByRole("button", { name: "Change MCP tool mode" })).toContainText("Tools: Auto");
 
   const skillsIndicator = page.getByRole("button", { name: "Manage selected Skills" });
   await expect(skillsIndicator).toContainText("Skills: 1");
   await page.setViewportSize({ height: 844, width: 390 });
   await skillsIndicator.click();
-  const skillLibrary = page.getByRole("dialog", { name: "Skills" });
+  skillLibrary = page.getByRole("dialog", { name: "Skills" });
   await expectWithinViewport(page, skillLibrary);
   await expectNoHorizontalOverflow(page);
-  await expect(skillLibrary.getByText("Text-only by design")).toBeVisible();
+  await expect(skillLibrary.getByText(/Skills are text-only/u)).toBeVisible();
   await expect(skillLibrary.getByRole("button", { name: "Remove Incident brief" }))
     .toHaveAttribute("aria-pressed", "true");
   await expect(skillLibrary.getByRole("button", { name: "New Skill" })).toBeFocused();

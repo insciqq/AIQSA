@@ -795,6 +795,8 @@ model KnowledgePolicy {
 model ModelPolicy {
   id                     String         @id
   defaultProviderModelId String?
+  maxToolCalls           BigInt         @default(20)
+  maxToolRounds          BigInt         @default(8)
   version                Int            @default(1)
   updatedByUserId        String?
   createdAt              DateTime       @default(now())
@@ -957,6 +959,7 @@ model AssistantRevision {
   modelRuns        ModelRun[]             @relation("ModelRunAssistantRevision")
   providerModel    ProviderModel          @relation(fields: [providerModelId], references: [id], onDelete: Restrict)
   publications     AssistantPublication[] @relation("AssistantPublicationRevision")
+  skillLinks       AssistantRevisionSkill[]
 
   @@unique([assistantId, revisionNumber])
   @@unique([assistantId, id])
@@ -1002,17 +1005,20 @@ model SkillDefinition {
   currentRevisionId String?            @unique
   version           Int                @default(1)
   archivedAt        DateTime?
+  deletedAt         DateTime?
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   /// The composite relation proves the current pointer targets a revision of this definition.
   currentRevision   SkillRevision?     @relation("SkillCurrentRevision", fields: [id, currentRevisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillDefinition_currentRevision_fkey")
   owner             User               @relation("SkillDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  assistantRevisionLinks AssistantRevisionSkill[]
   publications      SkillPublication[]
   revisions         SkillRevision[]    @relation("SkillRevisions")
 
   @@unique([id, currentRevisionId])
   @@unique([ownerUserId, id])
   @@index([ownerUserId, archivedAt])
+  @@index([deletedAt, updatedAt, id])
 }
 
 model SkillRevision {
@@ -1028,7 +1034,6 @@ model SkillRevision {
   skill            SkillDefinition        @relation("SkillRevisions", fields: [skillId], references: [id], onDelete: Restrict)
   author           User?                  @relation("SkillRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
   currentFor       SkillDefinition?       @relation("SkillCurrentRevision")
-  publications     SkillPublication[]     @relation("SkillPublicationRevision")
   modelRunBindings ModelRunSkillBinding[]
 
   @@unique([skillId, revisionNumber])
@@ -1039,7 +1044,6 @@ model SkillRevision {
 model SkillPublication {
   id                String                @id @default(uuid())
   skillId           String
-  revisionId        String
   scope             SkillPublicationScope
   groupId           String?
   publishedByUserId String?
@@ -1048,13 +1052,22 @@ model SkillPublication {
   skill             SkillDefinition       @relation(fields: [skillId], references: [id], onDelete: Restrict)
   group             Group?                @relation(fields: [groupId], references: [id], onDelete: Restrict)
   publishedBy       User?                 @relation("SkillPublicationPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
-  /// The composite relation proves the pinned revision belongs to the published definition.
-  revision          SkillRevision         @relation("SkillPublicationRevision", fields: [skillId, revisionId], references: [skillId, id], onDelete: Restrict, onUpdate: Restrict, map: "SkillPublication_revision_fkey")
 
   @@unique([skillId, groupId])
   @@index([groupId])
   @@index([skillId, scope])
-  @@index([revisionId])
+}
+
+model AssistantRevisionSkill {
+  assistantRevisionId String
+  skillId             String
+  ordinal             Int
+  assistantRevision   AssistantRevision @relation(fields: [assistantRevisionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  skill               SkillDefinition   @relation(fields: [skillId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([assistantRevisionId, skillId])
+  @@unique([assistantRevisionId, ordinal])
+  @@index([skillId])
 }
 
 model KnowledgeBase {

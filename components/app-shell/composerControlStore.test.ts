@@ -33,6 +33,7 @@ describe("composer control store", () => {
   });
 
   it("applies assistant selection and control defaults", () => {
+    useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
     useComposerControlStore.getState().applyAssistantSelection({
       assistant: assistantSelection(),
       controlDefaults: {
@@ -62,6 +63,7 @@ describe("composer control store", () => {
       assistantRemovedNotice: false,
       backgroundMode: false,
       maxOutputTokens: "96",
+      mcpSelection: { mode: "load_all" },
       reasoningEffort: "high",
       reasoningMode: "pro",
       searchPlanMode: "model_choice",
@@ -72,6 +74,61 @@ describe("composer control store", () => {
       streamMode: true,
       temperature: "0.4"
     });
+  });
+
+  it("keeps manual Skills editable while an Assistant is selected", () => {
+    const first = {
+      description: "Review carefully",
+      id: "skill-review",
+      name: "Reviewer",
+      promptCharacterCount: 80
+    };
+    const second = {
+      description: "Finish with actions",
+      id: "skill-actions",
+      name: "Action closer",
+      promptCharacterCount: 60
+    };
+    useComposerControlStore.getState().setSelectedSkills([first]);
+    useComposerControlStore.getState().applyAssistantSelection({
+      assistant: assistantSelection(),
+      controlDefaults: {
+        backgroundMode: false,
+        maxOutputTokens: "128",
+        reasoningEffort: "medium",
+        reasoningMode: "standard",
+        streamMode: false,
+        temperature: "1"
+      },
+      knowledgeBaseIds: [],
+      modelId: "gpt-5.6-sol",
+      provider: "openai",
+      searchOptionIds: [],
+      searchPlanMode: "all_selected"
+    });
+
+    expect(useComposerControlStore.getState().selectedSkills).toEqual([first]);
+    useComposerControlStore.getState().setSelectedSkills([second]);
+    expect(useComposerControlStore.getState()).toMatchObject({
+      selectedAssistant: { id: "assistant-a" },
+      selectedSkills: [second]
+    });
+
+    useComposerControlStore.getState().removeAssistant();
+    expect(useComposerControlStore.getState()).toMatchObject({
+      selectedAssistant: null,
+      selectedSkills: [second]
+    });
+  });
+
+  it("changes MCP mode only on an explicit selection", () => {
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "auto" });
+
+    useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
+
+    useComposerControlStore.getState().setMcpSelection({ mode: "off" });
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "off" });
   });
 
   it("drops the assistant identity on a user control change and restores the manual backup on removal", () => {

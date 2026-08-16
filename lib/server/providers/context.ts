@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import { SKILL_CONTEXT_PREVIEW_PLACEHOLDER } from "../skills/userContext";
 import type { ProviderConversationMessage, ProviderRunRequest } from "./types";
 
 export type TextConversationMessage = {
   content: string;
   id: string;
+  purpose?: "skill_context";
   role: "assistant" | "user";
 };
 
@@ -38,12 +40,18 @@ export function conversationMessagesForRequest(request: ProviderRunRequest): Pro
   return messages;
 }
 
-export function textConversationForRequest(request: ProviderRunRequest): TextConversationMessage[] {
+export function textConversationForRequest(
+  request: ProviderRunRequest,
+  options: Readonly<{ redactSkillContext?: boolean }> = {}
+): TextConversationMessage[] {
   return conversationMessagesForRequest(request)
     .map((message) => ({
-      content: textFromConversationMessage(message),
+      content: message.purpose === "skill_context" && options.redactSkillContext
+        ? SKILL_CONTEXT_PREVIEW_PLACEHOLDER
+        : textFromConversationMessage(message),
       hasAttachmentContent: hasAttachmentContent(message),
       id: message.id,
+      ...(message.purpose ? { purpose: message.purpose } : {}),
       role: message.role
     }))
     .filter((message) => message.content.trim() || (message.role === "user" && message.hasAttachmentContent))
@@ -51,7 +59,7 @@ export function textConversationForRequest(request: ProviderRunRequest): TextCon
 }
 
 export function conversationPreview(request: ProviderRunRequest) {
-  return textConversationForRequest(request).map((message) => ({
+  return textConversationForRequest(request, { redactSkillContext: true }).map((message) => ({
     id: message.id,
     role: message.role,
     text: message.content.length > 240 ? `${message.content.slice(0, 237)}...` : message.content

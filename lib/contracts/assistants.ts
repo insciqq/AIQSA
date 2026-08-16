@@ -4,6 +4,7 @@ import {
   type SearchPlan
 } from "./search";
 import { KNOWLEDGE_PLAN_MAX_BASES } from "./knowledge";
+import { SKILL_MAX_SELECTED } from "./skills";
 
 export const ASSISTANT_NAME_MAX_LENGTH = 80;
 export const ASSISTANT_DESCRIPTION_MAX_LENGTH = 400;
@@ -275,6 +276,7 @@ export type AssistantDraft = {
   providerModelId: string;
   runControls: AssistantRunControls;
   searchPlan: SearchPlan;
+  skillIds: string[];
   starterPrompts: string[];
   systemPrompt: string;
 };
@@ -367,6 +369,19 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
     return { code: "assistant_knowledge_bases_invalid", ok: false };
   }
 
+  const skillIds = value.skillIds ?? [];
+  const normalizedSkillIds = Array.isArray(skillIds)
+    ? skillIds.map((id) => typeof id === "string" ? id.trim() : id)
+    : skillIds;
+  if (
+    !Array.isArray(normalizedSkillIds) ||
+    normalizedSkillIds.length > SKILL_MAX_SELECTED ||
+    !normalizedSkillIds.every(boundedId) ||
+    new Set(normalizedSkillIds).size !== normalizedSkillIds.length
+  ) {
+    return { code: "assistant_skills_invalid", ok: false };
+  }
+
   const starterPromptsInput = value.starterPrompts ?? [];
   if (
     !Array.isArray(starterPromptsInput) ||
@@ -391,6 +406,7 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
       providerModelId: (value.providerModelId as string).trim(),
       runControls,
       searchPlan: decodedPlan.plan,
+      skillIds: normalizedSkillIds as string[],
       starterPrompts: starterPromptsInput.map((starter) => (starter as string).trim()),
       systemPrompt
     },
@@ -449,6 +465,7 @@ export type AssistantRevisionContent = {
   revisionNumber: number;
   runControls: AssistantRunControls;
   searchPlan: SearchPlan;
+  skillIds: string[];
   starterPrompts: string[];
   systemPrompt: string;
 };
@@ -472,6 +489,7 @@ export type AssistantDetail = {
   publications?: AssistantPublicationView[];
   revision: AssistantRevisionContent;
   revisionCount?: number;
+  skills?: { id: string; name: string }[];
   version?: number;
 };
 
@@ -614,6 +632,7 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
   const runControls = decodeAssistantRunControls(value.runControls);
   const searchPlan = decodeSearchPlan(value.searchPlan);
   const knowledgeBaseIds = value.knowledgeBaseIds;
+  const skillIds = value.skillIds;
   if (
     !stringOrNull(value.authorDisplayName) ||
     !avatar ||
@@ -632,6 +651,11 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
     typeof value.revisionNumber !== "number" ||
     !runControls ||
     !searchPlan.ok ||
+    !stringArray(skillIds) ||
+    !skillIds.every(boundedId) ||
+    skillIds.some((id) => id !== id.trim()) ||
+    skillIds.length > SKILL_MAX_SELECTED ||
+    new Set(skillIds).size !== skillIds.length ||
     !stringArray(value.starterPrompts) ||
     typeof value.systemPrompt !== "string"
   ) {
@@ -652,6 +676,7 @@ export function decodeAssistantRevisionContent(value: unknown): AssistantRevisio
     revisionNumber: value.revisionNumber,
     runControls,
     searchPlan: searchPlan.plan,
+    skillIds,
     starterPrompts: value.starterPrompts,
     systemPrompt: value.systemPrompt
   };
@@ -705,6 +730,21 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
 
   if (value.revisionCount !== undefined && typeof value.revisionCount !== "number") return null;
   if (value.version !== undefined && typeof value.version !== "number") return null;
+  let skills: { id: string; name: string }[] | undefined;
+  if (value.skills !== undefined) {
+    if (!Array.isArray(value.skills)) return null;
+    skills = [];
+    for (const skill of value.skills) {
+      if (!isRecord(skill) || !boundedId(skill.id) || !nonEmptyString(skill.name)) return null;
+      skills.push({ id: skill.id, name: skill.name });
+    }
+    if (
+      skills.length !== revision.skillIds.length ||
+      skills.some((skill, index) => skill.id !== revision.skillIds[index])
+    ) {
+      return null;
+    }
+  }
 
   return {
     archived: value.archived,
@@ -716,6 +756,7 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
     ...(publications ? { publications } : {}),
     revision,
     ...(value.revisionCount !== undefined ? { revisionCount: value.revisionCount } : {}),
+    ...(skills ? { skills } : {}),
     ...(value.version !== undefined ? { version: value.version } : {})
   };
 }

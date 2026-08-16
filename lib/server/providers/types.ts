@@ -49,6 +49,9 @@ export type ProviderModelCapabilities = {
   reasoningEfforts?: string[];
   reasoningModes?: string[];
   streaming?: boolean;
+  /** Verified strict JSON Schema output for the exact active model/credential
+   * tuple. Configuration normalization never trusts this field directly. */
+  structuredOutput?: boolean;
   /** Opts a compatible Chat endpoint into `stream_options.include_usage`. */
   streamUsage?: boolean;
   toolCalling?: boolean;
@@ -126,6 +129,11 @@ export type NormalizedRunRequest = {
   };
   provider: string;
   searchPlan: NormalizedSearchPlan;
+  /** Exact installation tool-loop limits frozen when the run is accepted. */
+  toolBudgets?: Readonly<{
+    maxToolCalls: number;
+    maxToolRounds: number;
+  }>;
   /** Durable operator/client suppression for all client-side run tools. */
   toolMode: "auto" | "none";
 };
@@ -172,6 +180,8 @@ export type ProviderConversationMessage = {
     blocks: unknown[];
   };
   id: string;
+  /** Internal provider-facing context that is never rendered as a chat message. */
+  purpose?: "skill_context";
   role: "assistant" | "user";
 };
 

@@ -12,6 +12,7 @@ import { providerAdmissionService } from "@/lib/server/providerRuntime/defaultAd
 import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
 import { createSendMessageHandler } from "@/lib/server/runs/handlers";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
+import { installationToolBudgetPolicy } from "@/lib/server/runs/toolBudgets";
 import { defaultSkillRepository } from "@/lib/server/skills/defaultSkills";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
 
@@ -38,6 +39,7 @@ export const POST = createSendMessageHandler({
   providers: {},
   repository,
   resolveAuth: resolveRequestAuth,
+  runPolicy: installationToolBudgetPolicy,
   skills: defaultSkillRepository,
   storage: createS3StorageAdapter()
 });

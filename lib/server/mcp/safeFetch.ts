@@ -269,12 +269,31 @@ async function defaultLookupHostname(hostname: string): Promise<readonly McpReso
   }));
 }
 
-async function resolvePinnedAddress(url: URL, options: McpSafeFetchOptions): Promise<McpResolvedAddress> {
+function awaitWithSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
+async function resolvePinnedAddress(
+  url: URL,
+  options: McpSafeFetchOptions,
+  signal: AbortSignal
+): Promise<McpResolvedAddress> {
   const hostname = hostnameWithoutBrackets(url);
   let records: readonly McpResolvedAddress[];
   try {
-    records = await (options.lookupHostname ?? defaultLookupHostname)(hostname);
+    records = await awaitWithSignal(
+      Promise.resolve().then(() => (options.lookupHostname ?? defaultLookupHostname)(hostname)),
+      signal
+    );
   } catch {
+    if (signal.aborted) throw abortReason(signal);
     throw new McpSafeFetchError("mcp_http_dns_failed");
   }
   if (records.length === 0 || records.some((record) =>
@@ -489,7 +508,7 @@ export async function mcpSafeFetch(
   while (true) {
     if (current.signal.aborted) throw abortReason(current.signal);
     validateUrl(current.url, options);
-    const address = await resolvePinnedAddress(current.url, options);
+    const address = await resolvePinnedAddress(current.url, options, current.signal);
     const pinnedRequest = { ...current, address };
     const response = await (options.dispatch ?? defaultDispatch)(pinnedRequest);
     if (!isRedirectStatus(response.status) || !response.headers.has("location")) {

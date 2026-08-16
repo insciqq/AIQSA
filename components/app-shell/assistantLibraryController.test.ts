@@ -5,11 +5,15 @@ import type {
 } from "@/lib/contracts/assistants";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantEditorDraftState } from "@/components/assistants/libraryViewContracts";
-import { resetAssistantLibraryStoreForTest } from "@/tests/support/appShellStores";
+import {
+  resetAssistantLibraryStoreForTest,
+  resetComposerControlStoreForTest
+} from "@/tests/support/appShellStores";
 import {
   initialAssistantLibrarySnapshot,
   useAssistantLibraryStore
 } from "./assistantLibraryStore";
+import { useComposerControlStore } from "./composerControlStore";
 import {
   buildAssistantLibraryView,
   createAssistantLibraryActions,
@@ -74,6 +78,7 @@ function revision(revisionNumber = 3): AssistantRevisionContent {
     revisionNumber,
     runControls: {},
     searchPlan: { mode: "model_choice", optionIds: [] },
+    skillIds: [],
     starterPrompts: [],
     systemPrompt: "Review carefully."
   };
@@ -118,6 +123,7 @@ function draft(): AssistantEditorDraftState {
     reasoningMode: "",
     searchOptionIds: [],
     searchPlanMode: "model_choice",
+    skillIds: [],
     starterPrompts: [],
     streamMode: false,
     systemPrompt: "Review carefully.",
@@ -136,7 +142,11 @@ function controllerInput(): AssistantLibraryControllerInput {
     knowledgeDataState: "ready",
     retryCatalog: vi.fn(),
     retryKnowledge: vi.fn(),
-    setShellNotice: vi.fn()
+    retrySkills: vi.fn(),
+    setShellNotice: vi.fn(),
+    skillDataError: null,
+    skillDataState: "ready",
+    skills: []
   };
 }
 
@@ -164,6 +174,7 @@ function installEditor(options: { busy?: boolean } = {}) {
 beforeEach(() => {
   vi.resetAllMocks();
   resetAssistantLibraryStoreForTest();
+  resetComposerControlStoreForTest();
   mocks.fetchAssistantList.mockResolvedValue({
     data: {
       assistants: [],
@@ -177,6 +188,34 @@ beforeEach(() => {
 });
 
 describe("assistantLibraryController", () => {
+  it("loads Skill options lazily and prefills manual Skills from the current setup", () => {
+    useComposerControlStore.setState({
+      selectedSkills: [{
+        description: "Review carefully",
+        id: "skill-review",
+        name: "Reviewer",
+        promptCharacterCount: 80
+      }, {
+        description: "Finish with actions",
+        id: "skill-actions",
+        name: "Action closer",
+        promptCharacterCount: 60
+      }]
+    });
+    const input = controllerInput();
+    const actions = createAssistantLibraryActions(input);
+
+    actions.openNewAssistantFromCurrentSetup();
+
+    expect(input.retrySkills).toHaveBeenCalledOnce();
+    expect(useAssistantLibraryStore.getState()).toMatchObject({
+      editor: {
+        draft: { skillIds: ["skill-review", "skill-actions"] }
+      },
+      task: "editor"
+    });
+  });
+
   it("names the Assistants surface in a revision conflict recovery action", async () => {
     installEditor();
     mocks.reviseAssistant.mockResolvedValue({
@@ -270,6 +309,33 @@ describe("assistantLibraryController", () => {
     expect(input.applyAssistantToComposer).toHaveBeenCalledWith(
       expect.objectContaining({ revision: expect.objectContaining({ revisionNumber: 2 }) })
     );
+  });
+
+  it("resolves ordered Assistant Skill names only when the Assistant is used", async () => {
+    mocks.fetchAssistantDetail.mockResolvedValue({
+      data: {
+        ...detail(),
+        revision: { ...revision(), skillIds: ["skill-incident", "skill-review"] },
+        skills: [
+          { id: "skill-incident", name: "Incident brief" },
+          { id: "skill-review", name: "Careful reviewer" }
+        ]
+      },
+      ok: true
+    });
+    const input = controllerInput();
+    const actions = createAssistantLibraryActions(input);
+
+    await actions.useAssistant("assistant-1", { navigate: false });
+
+    expect(input.applyAssistantToComposer).toHaveBeenCalledWith(expect.objectContaining({
+      assistant: expect.objectContaining({
+        includedSkills: [
+          { id: "skill-incident", name: "Incident brief" },
+          { id: "skill-review", name: "Careful reviewer" }
+        ]
+      })
+    }));
   });
 
   it.each(["publish", "revoke"] as const)(

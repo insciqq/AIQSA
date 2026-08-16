@@ -9,6 +9,8 @@ export type AdminModelPolicyCatalog = {
   candidates: AdminModelDefaultCandidate[];
   policy: {
     defaultModel: (AdminModelDefaultCandidate & { available: boolean }) | null;
+    maxToolCalls: number;
+    maxToolRounds: number;
     updatedAt: string;
     updatedBy: { displayName: string; id: string } | null;
     version: number;
@@ -48,6 +50,8 @@ export function decodeAdminModelPolicyResponse(
       typeof (defaultModel as Record<string, unknown>).available !== "boolean")) ||
     (updatedBy !== null && (!record(updatedBy) || !boundedText(updatedBy.displayName, 160) ||
       !boundedText(updatedBy.id, 256))) ||
+    !Number.isSafeInteger(policy.maxToolCalls) || Number(policy.maxToolCalls) < 1 ||
+    !Number.isSafeInteger(policy.maxToolRounds) || Number(policy.maxToolRounds) < 1 ||
     typeof policy.updatedAt !== "string" || !Number.isFinite(Date.parse(policy.updatedAt)) ||
     !Number.isSafeInteger(policy.version) ||
     Number(policy.version) < 1) return null;
@@ -57,6 +61,8 @@ export function decodeAdminModelPolicyResponse(
       candidates: catalog.candidates,
       policy: {
         defaultModel: defaultModel as (AdminModelDefaultCandidate & { available: boolean }) | null,
+        maxToolCalls: Number(policy.maxToolCalls),
+        maxToolRounds: Number(policy.maxToolRounds),
         updatedAt: policy.updatedAt,
         updatedBy: updatedBy as { displayName: string; id: string } | null,
         version: Number(policy.version)

@@ -88,7 +88,9 @@ describe("tool-loop persistence values", () => {
     ]))).toBeNull();
     expect(parseToolLoopCheckpoint(checkpoint([
       { completeness: "terminal", roundIndex: 5, usage }
-    ], 5))).toBeNull();
+    ], 5))).toEqual(checkpoint([
+      { completeness: "terminal", roundIndex: 5, usage }
+    ], 5));
     expect(parseToolLoopCheckpoint(checkpoint([
       {
         completeness: "terminal",
@@ -106,6 +108,32 @@ describe("tool-loop persistence values", () => {
       roundIndex: 2,
       usage
     }, 2)).toBeNull();
+  });
+
+  it("keeps usage evidence for 200 tool rounds plus final synthesis", () => {
+    const usage = {
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      inputTokens: 1,
+      outputTokens: 1,
+      reasoningTokens: 0,
+      totalTokens: 2
+    };
+    const answerRoundUsage = Array.from({ length: 201 }, (_, index) => ({
+      completeness: "terminal" as const,
+      roundIndex: index + 1,
+      usage
+    }));
+
+    const checkpoint = toolLoopCheckpoint({
+      answerRoundUsage,
+      phase: "provider_running",
+      providerContinuation: null,
+      roundIndex: 201
+    });
+
+    expect(checkpoint?.answerRoundUsage).toHaveLength(201);
+    expect(checkpoint?.answerRoundUsage.at(-1)?.roundIndex).toBe(201);
   });
 
   it("rejects invalid and oversized continuation data", () => {

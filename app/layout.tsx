@@ -6,7 +6,6 @@ import {
   resolveThemeColorScheme,
   resolveThemeId
 } from "@/components/app-shell/theme";
-import { isTestAuthEnabled } from "@/lib/server/auth/config";
 import "katex/dist/katex.min.css";
 import "../styles/tokens-v2.css";
 import "../components/ui-v2/primitives.css";
@@ -55,8 +54,6 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // Test runs assert state, not motion; the off switch keeps Playwright deterministic.
-  const motionOff = isTestAuthEnabled();
   const cookieStore = await cookies();
   const themeId = resolveThemeId(cookieStore.get(AIQSA_THEME_COOKIE_NAME)?.value);
   const colorScheme = resolveThemeColorScheme(themeId);
@@ -67,7 +64,6 @@ export default async function RootLayout({
       className={`${sans.variable} ${mono.variable}`}
       data-color-scheme={colorScheme}
       data-theme={themeId}
-      data-motion={motionOff ? "off" : undefined}
       suppressHydrationWarning
     >
       <body>{children}</body>

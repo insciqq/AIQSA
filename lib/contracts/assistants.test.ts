@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assistantAvatarRecipeFromBytes,
   decodeAssistantAvatarRecipe,
+  decodeAssistantDetail,
   decodeAssistantDraft,
   decodeAssistantListResponse,
   decodeAssistantRevisionContent,
@@ -120,6 +121,7 @@ function validDraft(): Record<string, unknown> {
     providerModelId: "model-1",
     runControls: { reasoningEffort: "high" },
     searchPlan: { mode: "all_selected", optionIds: ["openai-native-web-search"] },
+    skillIds: [],
     starterPrompts: ["Review a diff"],
     systemPrompt: "You review code."
   };
@@ -155,6 +157,12 @@ describe("assistant draft decode", () => {
       [{ ...validDraft(), knowledgeBaseIds: ["a", "b", "c", "d"] }, "assistant_knowledge_bases_invalid"],
       [{ ...validDraft(), knowledgeBaseIds: ["  "] }, "assistant_knowledge_bases_invalid"],
       [{ ...validDraft(), mcpServerIds: ["a", "a"] }, "assistant_mcp_servers_invalid"],
+      [{ ...validDraft(), skillIds: ["a", "a"] }, "assistant_skills_invalid"],
+      [
+        { ...validDraft(), skillIds: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] },
+        "assistant_skills_invalid"
+      ],
+      [{ ...validDraft(), skillIds: ["  "] }, "assistant_skills_invalid"],
       [
         { ...validDraft(), starterPrompts: ["one", "two", "three", "four", "five"] },
         "assistant_starter_prompts_invalid"
@@ -169,6 +177,17 @@ describe("assistant draft decode", () => {
         expect(decoded.code).toBe(code);
       }
     }
+  });
+
+  it("preserves the declared Skill order", () => {
+    const decoded = decodeAssistantDraft({
+      ...validDraft(),
+      skillIds: ["skill-review", "skill-finish"]
+    });
+    expect(decoded).toMatchObject({
+      draft: { skillIds: ["skill-review", "skill-finish"] },
+      ok: true
+    });
   });
 });
 
@@ -227,7 +246,7 @@ describe("assistant wire decoders", () => {
     ).toBeNull();
   });
 
-  it("requires and decodes bounded revision Knowledge ids", () => {
+  it("requires and decodes bounded revision Knowledge and Skill ids", () => {
     const revision = {
       ...validDraft(),
       authorDisplayName: "Alex",
@@ -248,6 +267,46 @@ describe("assistant wire decoders", () => {
     expect(decodeAssistantRevisionContent({
       ...revision,
       knowledgeBaseIds: [" "]
+    })).toBeNull();
+    const withoutSkills: Record<string, unknown> = { ...revision };
+    delete withoutSkills.skillIds;
+    expect(decodeAssistantRevisionContent(withoutSkills)).toBeNull();
+    expect(decodeAssistantRevisionContent({
+      ...revision,
+      skillIds: ["skill-review", "skill-finish"]
+    })?.skillIds).toEqual(["skill-review", "skill-finish"]);
+    expect(decodeAssistantRevisionContent({
+      ...revision,
+      skillIds: ["skill-review", "skill-review"]
+    })).toBeNull();
+  });
+
+  it("accepts only ordered Assistant Skill summaries matching the declared ids", () => {
+    const revision = {
+      ...validDraft(),
+      authorDisplayName: "Alex",
+      createdAt: "2026-08-08T00:00:00.000Z",
+      revisionNumber: 2,
+      skillIds: ["skill-review", "skill-finish"]
+    };
+    const detail = {
+      archived: false,
+      availability: { ok: true },
+      id: "assistant-1",
+      owned: false,
+      ownerDisplayName: "Alex",
+      pinned: false,
+      revision,
+      skills: [
+        { id: "skill-review", name: "Careful reviewer" },
+        { id: "skill-finish", name: "Action closer" }
+      ]
+    };
+
+    expect(decodeAssistantDetail(detail)?.skills).toEqual(detail.skills);
+    expect(decodeAssistantDetail({
+      ...detail,
+      skills: [...detail.skills].reverse()
     })).toBeNull();
   });
 });

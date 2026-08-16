@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import {
+  MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
+  MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
+} from "../../contracts/runs";
+import {
   GROUNDED_LIVE_ONLY_PLACEHOLDER
 } from "../../domain/grounding";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
@@ -1919,7 +1923,12 @@ describe("run execution", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           artifactType: "tool_call",
-          payload: { name: "retrieve_knowledge", status: "requested" }
+          payload: expect.objectContaining({
+            name: "retrieve_knowledge",
+            round: 1,
+            serverName: "Knowledge",
+            status: "requested"
+          })
         })
       })
     ]));
@@ -2766,8 +2775,7 @@ describe("run execution", () => {
         version: 1
       },
       epochs: [],
-      maxActiveTools: 12,
-      version: 1
+      version: 2
     };
     const basePrepared = preparedData({
       mcpDiscovery: discovery,
@@ -2793,7 +2801,7 @@ describe("run execution", () => {
         return providerResult({
           finalText: "",
           toolCalls: [{
-            arguments: { query: "create a Jira issue" },
+            arguments: { goal: "create a Jira issue" },
             id: "find-call",
             name: "find_tools"
           }]
@@ -2821,9 +2829,10 @@ describe("run execution", () => {
           ...discovery,
           epochs: [{
             epoch: 1,
-            query: input.query,
+            goal: input.goal,
+            modelRunToolCallId: input.modelRunToolCallId,
             roundIndex: input.roundIndex,
-            toolNames: [namespacedName]
+            toolIds: [namespacedName]
           }]
         },
         snapshot
@@ -2840,6 +2849,14 @@ describe("run execution", () => {
     };
     const materialize = vi.fn(async () => plan);
     const prepare = vi.fn(async () => plan);
+    const route = vi.fn(async () => ({
+      toolNames: [namespacedName],
+      usageAttribution: {
+        modelId: "gpt-router",
+        provider: "openai",
+        usage: { inputTokens: 7, outputTokens: 2, reasoningTokens: 0 }
+      }
+    }));
     const callTool = vi.fn(async () => ({
       isError: false,
       structuredContent: { issue: "AIQSA-42" },
@@ -2849,7 +2866,7 @@ describe("run execution", () => {
 
     await createRunExecutionResponse(executionInput({
       adapter,
-      mcp: { materialize, prepare },
+      mcp: { materialize, prepare, router: { route } },
       mcpRuntime: {
         callTool,
         async ensureAcceptedGeneration() { return true; }
@@ -2881,6 +2898,101 @@ describe("run execution", () => {
       name: "create_issue"
     }));
     expect(repository.completeRuns[0]?.finalText).toBe("Issue created");
+    expect(repository.completeRuns[0]?.usageAttributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        modelId: "gpt-router",
+        provider: "openai",
+        usage: expect.objectContaining({ inputTokens: 7, outputTokens: 2 })
+      })
+    ]));
+  });
+
+  it("completes an Auto run without consulting the router when find_tools is not called", async () => {
+    const discovery: McpDiscoveryState = {
+      catalog: { servers: [], version: 1 },
+      epochs: [],
+      version: 2
+    };
+    const route = vi.fn(async () => {
+      throw new Error("System Model is unavailable");
+    });
+    const materialize = vi.fn(async () => ({
+      bindings: [],
+      ok: true as const,
+      snapshot: { servers: [], tools: [], version: 1 as const }
+    }));
+    const appendMcpDiscoveryEpoch = vi.fn(async () => null);
+    const repository = createRepository();
+
+    await createRunExecutionResponse(executionInput({
+      adapter: createAdapter(async function* () {
+        return providerResult({ finalText: "No integration was needed" });
+      }),
+      mcp: { materialize, prepare: materialize, router: { route } },
+      prepared: preparedData({
+        mcpDiscovery: discovery,
+        modelId: "gpt-tool-model",
+        provider: "openai"
+      }),
+      repository: { ...repository.repository, appendMcpDiscoveryEpoch }
+    })).text();
+
+    expect(route).not.toHaveBeenCalled();
+    expect(materialize).not.toHaveBeenCalled();
+    expect(appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
+    expect(repository.completeRuns[0]?.finalText).toBe("No integration was needed");
+    expect(repository.failedRuns).toEqual([]);
+  });
+
+  it("fails an invoked Auto discovery with one safe public router error", async () => {
+    const discovery: McpDiscoveryState = {
+      catalog: { servers: [], version: 1 },
+      epochs: [],
+      version: 2
+    };
+    const rawFailure = "PRIVATE_SYSTEM_MODEL_ENDPOINT_FAILURE";
+    const route = vi.fn(async () => { throw new Error(rawFailure); });
+    const materialize = vi.fn(async () => ({
+      bindings: [],
+      ok: true as const,
+      snapshot: { servers: [], tools: [], version: 1 as const }
+    }));
+    const appendMcpDiscoveryEpoch = vi.fn(async () => null);
+    const repository = createRepository();
+
+    await createRunExecutionResponse(executionInput({
+      adapter: createAdapter(async function* () {
+        return providerResult({
+          finalText: "",
+          toolCalls: [{
+            arguments: { goal: "create an issue" },
+            id: "provider-find-tools-failure",
+            name: "find_tools"
+          }]
+        });
+      }),
+      mcp: { materialize, prepare: materialize, router: { route } },
+      prepared: preparedData({
+        mcpDiscovery: discovery,
+        modelId: "gpt-tool-model",
+        provider: "openai"
+      }),
+      repository: { ...repository.repository, appendMcpDiscoveryEpoch }
+    })).text();
+
+    expect(repository.failedRuns).toEqual([expect.objectContaining({
+      error: {
+        code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
+        message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
+      }
+    })]);
+    expect(JSON.stringify(repository.failedRuns)).not.toContain(rawFailure);
+    expect([...repository.toolCalls.values()]).toEqual([
+      expect.objectContaining({ state: "error", toolName: "find_tools" })
+    ]);
+    expect(materialize).not.toHaveBeenCalled();
+    expect(appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
+    expect(repository.completeRuns).toEqual([]);
   });
 
   it("coexists with MCP in one ordinary context and records provider and tool destinations", async () => {
@@ -3350,7 +3462,12 @@ describe("run execution", () => {
     );
     expect(toolCallEvent).toMatchObject({
       data: {
-        payload: { name: firstTool, status: "requested" }
+        payload: {
+          name: "lookup",
+          round: 1,
+          serverName: "Memory",
+          status: "requested"
+        }
       }
     });
     expect(repository.completeRuns[0]?.finalText).toBe("Combined answer");

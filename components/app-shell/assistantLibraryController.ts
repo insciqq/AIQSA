@@ -68,6 +68,10 @@ function editorErrorText(code: string, message: string): string {
     assistant_run_controls_invalid: "The run controls are outside the model's supported range.",
     assistant_search_option_not_available: "One selected Search source is not available to you.",
     assistant_search_plan_invalid: "The Search selection is invalid.",
+    assistant_skill_audience_mismatch:
+      "Share every included Skill with this audience before publishing the Assistant.",
+    assistant_skills_invalid: "The Skill selection is invalid.",
+    assistant_skills_not_available: "One selected Skill is no longer available to you.",
     assistant_knowledge_bases_invalid: "The Knowledge selection is invalid.",
     assistant_starter_prompts_invalid: "Starter prompts must be short, non-empty lines.",
     assistant_system_prompt_invalid: "Shorten the system prompt.",
@@ -105,6 +109,7 @@ function blankEditorDraft(prefill?: Partial<AssistantEditorDraftState>): Assista
     reasoningMode: "",
     searchOptionIds: [],
     searchPlanMode: "all_selected",
+    skillIds: [],
     starterPrompts: [],
     streamMode: false,
     systemPrompt: "",
@@ -120,6 +125,7 @@ export type AssistantLibraryControllerInput = {
       avatar: import("@/lib/contracts/assistants").AssistantAvatarRecipe;
       description: string;
       id: string;
+      includedSkills: { id: string; name: string }[];
       name: string;
       promptCharacterCount: number;
       starterPrompts: string[];
@@ -133,7 +139,11 @@ export type AssistantLibraryControllerInput = {
   knowledgeDataState: "error" | "loading" | "ready";
   retryCatalog(): void;
   retryKnowledge(): void;
+  retrySkills(): void;
   setShellNotice(notice: { kind: "error"; text: string }): void;
+  skillDataError: string | null;
+  skillDataState: "error" | "loading" | "ready";
+  skills: import("@/lib/contracts/skills").SkillSummary[];
 };
 
 export function createAssistantLibraryActions(input: AssistantLibraryControllerInput) {
@@ -251,6 +261,7 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     store().patch({ editor, history: null, notice: null, open: true, task: "editor" });
     void refreshList();
     void refreshMcpOptions();
+    input.retrySkills();
   }
 
   /** `Create from current setup` prefills the editor from the manual controls. */
@@ -265,6 +276,7 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       reasoningMode: controls.reasoningMode,
       searchOptionIds: [...controls.selectedSearchOptionIds],
       searchPlanMode: controls.searchPlanMode,
+      skillIds: controls.selectedSkills.map((skill) => skill.id),
       streamMode: controls.streamMode,
       temperature: controls.temperature
     });
@@ -296,6 +308,7 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   async function openAssistantEditor(assistantId: string) {
     const requestId = beginBusyOperation();
     if (requestId === null) return;
+    input.retrySkills();
     const result = await fetchAssistantDetail(assistantId);
     if (!ownsBusyOperation(requestId)) return;
     if (!result.ok || !result.data.owned) {
@@ -490,7 +503,9 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     const result = await setAssistantPinned(assistantId, pinned);
     if (!ownsBusyOperation(requestId)) return;
     if (!result.ok) {
-      finishBusyOperation(requestId, { notice: { kind: "error", text: result.message } });
+      finishBusyOperation(requestId, {
+        notice: { kind: "error", text: editorErrorText(result.code, result.message) }
+      });
       return;
     }
     const data = store().data;
@@ -648,11 +663,18 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     if (options.navigate) {
       input.activateBlankWorkspace();
     }
+    const skillSummaries = new Map(
+      input.skills.map((skill) => [skill.id, { id: skill.id, name: skill.name }] as const)
+    );
+    for (const skill of detail.skills ?? []) skillSummaries.set(skill.id, skill);
     const applied = input.applyAssistantToComposer({
       assistant: {
         avatar: detail.revision.avatar,
         description: detail.revision.description,
         id: detail.id,
+        includedSkills: detail.revision.skillIds.map((id) =>
+          skillSummaries.get(id) ?? { id, name: "Unavailable Skill" }
+        ),
         name: detail.revision.name,
         promptCharacterCount:
           detail.revision.systemPrompt.length + (detail.revision.developerPrompt?.length ?? 0),
@@ -784,7 +806,11 @@ export function buildAssistantLibraryView(
             mcpServers: snapshot.mcpOptions,
             models: editorModels,
             onRetryKnowledge: input.retryKnowledge,
-            searchOptions
+            onRetrySkills: input.retrySkills,
+            searchOptions,
+            skillDataError: input.skillDataError,
+            skillDataState: input.skillDataState,
+            skills: input.skills
           },
           publications: editor.publications,
           publishableGroups: snapshot.data?.publishableGroups ?? [],

@@ -9,6 +9,7 @@ import {
   settledRunPresentationV2,
   type RunPresentationV2
 } from "./runPresentation";
+import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
 
 function presentation(
   overrides: Partial<RunPresentationV2> = {}
@@ -63,6 +64,55 @@ describe("Run lifecycle v2", () => {
 
     expect(screen.getByTestId("run-status-line")).toHaveTextContent("Preparing request…");
     expect(screen.queryByText("This message has no text.")).toBeNull();
+  });
+
+  it("keeps tool history inline, collapsed, and leaves a visible budget warning", () => {
+    render(
+      <RunAnswerV2
+        content="Answer"
+        presentation={presentation({ kind: "complete" })}
+        toolActivity={{
+          calls: [{
+            durationMs: 1250,
+            round: 1,
+            serverName: "AWS Documentation",
+            status: "complete",
+            toolName: "search_documentation"
+          }],
+          warning: { kind: "rounds", limit: 8 }
+        }}
+      />
+    );
+
+    const disclosure = screen.getByTestId("tool-activity-disclosure");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(screen.getByText("1 tool call")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Tool round limit (8) stopped further tool use."
+    );
+    fireEvent.click(screen.getByText("1 tool call"));
+    expect(disclosure).toHaveAttribute("open");
+    expect(screen.getByText("AWS Documentation · search_documentation")).toBeVisible();
+    expect(screen.getByText("Round 1 · Completed · 1.3 s")).toBeVisible();
+  });
+
+  it("restores the semantic shimmering tool status from persisted running activity", () => {
+    render(
+      <RunAnswerV2
+        content=""
+        presentation={presentation({
+          activity: { kind: "provider", label: "Running at the provider…" },
+          kind: "activity"
+        })}
+        toolActivity={{
+          calls: [{ round: 1, serverName: "Auto tools", status: "running", toolName: "find_tools" }]
+        }}
+      />
+    );
+
+    const status = screen.getByText("Finding relevant tools…");
+    expect(status).toHaveClass("v2-run-shimmer");
+    expect(screen.queryByText("Running at the provider…")).toBeNull();
   });
 
   it("keeps partial output for streaming, cancellation, and connection loss", async () => {
@@ -152,6 +202,38 @@ describe("Run lifecycle v2", () => {
     fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     expect(selectModel).toHaveBeenCalledOnce();
     expect(regenerate).toHaveBeenCalledOnce();
+  });
+
+  it("offers only Auto retry and an explicit Load all fallback for discovery failure", () => {
+    const retry = vi.fn();
+    const useLoadAll = vi.fn();
+    render(
+      <RunAnswerV2
+        content=""
+        onRegenerate={vi.fn()}
+        onRetry={retry}
+        onSelectModel={vi.fn()}
+        onUseLoadAll={useLoadAll}
+        presentation={presentation({
+          failure: {
+            code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
+            message: "Automatic tool discovery is unavailable.",
+            recovery: "change_parameters"
+          },
+          kind: "terminal_error"
+        })}
+      />
+    );
+
+    expect(screen.getByRole("region", {
+      name: "Automatic tool discovery is unavailable"
+    })).toHaveTextContent("Automatic tool discovery is unavailable");
+    expect(screen.queryByRole("button", { name: "Choose model…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Regenerate" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use Load all" }));
+    expect(retry).toHaveBeenCalledOnce();
+    expect(useLoadAll).toHaveBeenCalledOnce();
   });
 
   it("changes Send to Stop but cannot cancel before a durable run id", () => {

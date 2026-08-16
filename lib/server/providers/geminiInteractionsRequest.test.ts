@@ -231,6 +231,7 @@ describe("Gemini Interactions request builder", () => {
       "attachment_filename",
       "attachment_media_type",
       "grounding_suggestions",
+      "selected_skill_instructions",
       "provider_signatures"
     ]);
   });

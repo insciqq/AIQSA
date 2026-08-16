@@ -49,6 +49,8 @@ import type {
   AdminProviderDraftTestMode,
   AdminProviderDraftTestOutcome
 } from "./tester";
+import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
+import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
 
 const MAX_NAME_LENGTH = 160;
 
@@ -198,12 +200,19 @@ function validateEvidence(
     : "tiny_generation";
   const expectedProviders = model.openRouterRouting?.providers ?? [];
   const evidence = outcome.evidence;
+  const structuredOutput = decodeStructuredOutputVerificationEvidence(
+    evidence.structuredOutput
+  );
   if (
     evidence.method !== expectedMethod ||
     evidence.upstreamModelId !== model.upstreamModelId ||
     evidence.selectedProviders.length !== expectedProviders.length ||
     evidence.selectedProviders.some((provider, index) => provider !== expectedProviders[index]) ||
-    (outcome.status === "available") !== (evidence.detail === "ok")
+    (outcome.status === "available") !== (evidence.detail === "ok") ||
+    (structuredOutput !== null && (
+      structuredOutput.adapterKind !== model.adapterKind ||
+      structuredOutput.upstreamModelId !== model.upstreamModelId
+    ))
   ) {
     throw new AdminProviderServiceError("provider_test_evidence_invalid");
   }
@@ -211,6 +220,7 @@ function validateEvidence(
     detail: evidence.detail,
     method: evidence.method,
     selectedProviders: [...evidence.selectedProviders],
+    ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: evidence.upstreamModelId
   };
 }
@@ -447,7 +457,9 @@ export function createAdminProviderService(input: Readonly<{
       const mode: AdminProviderDraftTestMode = candidate.connection.family === "openrouter"
         ? "account_catalog"
         : "tiny_generation";
-      if (mode === "tiny_generation" && value.confirmPaidRequest !== true) {
+      if ((mode === "tiny_generation" ||
+        model.modelClass === "answer" && supportsStructuredOutputAdapter(model.adapterKind)) &&
+        value.confirmPaidRequest !== true) {
         throw new AdminProviderServiceError("provider_paid_test_confirmation_required");
       }
       const secret = credentialSecretSource(candidate.credential.id, {
@@ -678,6 +690,11 @@ export function createAdminProviderService(input: Readonly<{
       validateFamily(candidate.connection.family, model);
       if (value.mode === "account_catalog" && candidate.connection.family !== "openrouter") {
         throw new AdminProviderServiceError("provider_test_mode_invalid");
+      }
+      if (model.modelClass === "answer" &&
+        supportsStructuredOutputAdapter(model.adapterKind) &&
+        value.confirmPaidRequest !== true) {
+        throw new AdminProviderServiceError("provider_paid_test_confirmation_required");
       }
       const source = candidate.credential.source;
       const secret = credentialSecretSource(candidate.credential.id, source);

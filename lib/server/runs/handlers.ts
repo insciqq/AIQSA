@@ -32,7 +32,6 @@ import {
 import {
   activeRunStaleMs,
   reconcileStaleRuns,
-  refreshProviderRunIfNeeded,
   sweepBootOrphanedRunsOnce
 } from "./runRecovery";
 import {
@@ -78,6 +77,7 @@ export type RunHandlerDeps = {
   providers: Record<string, ProviderAdapter>;
   repository: RunRepository;
   resolveAuth: RequestAuthResolver;
+  runPolicy?: RunPreparationDeps["runPolicy"];
   searchProviders?: Record<string, ProviderSearchAdapter>;
   skills?: RunPreparationDeps["skills"];
   storage?: StorageAdapter;
@@ -678,12 +678,11 @@ export function createGetModelRunHandler(
     }
 
     const params = await context.params;
-    // The installation scheduler is the primary recovery owner. A GET may provide
-    // a low-latency assist only when it has the complete provider-neutral adapter
-    // set; otherwise it must remain a read and leave the checkpoint untouched.
+    // The installation scheduler is the primary recovery owner. A GET may assist
+    // only through the same guarded stale-run boundary; eagerly recovering a fresh
+    // run can create a second owner when route runtimes do not share process state.
     if (deps.providerRuntime || deps.searchProviders || deps.knowledgeExecutor) {
       const recovery = recoveryDeps(deps);
-      await refreshProviderRunIfNeeded(recovery, params.runId, auth.userId).catch(() => undefined);
       await reconcileStaleRuns(recovery, {
         runId: params.runId,
         userId: auth.userId

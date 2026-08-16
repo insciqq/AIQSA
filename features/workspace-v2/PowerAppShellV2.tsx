@@ -54,6 +54,10 @@ import {
   createKnowledgeLibraryActions
 } from "@/components/app-shell/knowledgeLibraryController";
 import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
+import {
+  refreshSkillLibrary,
+  useSkillLibraryStore
+} from "@/components/app-shell/skillLibraryStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import {
   consumeMcpOAuthReturn,
@@ -243,6 +247,7 @@ export function PowerAppShellV2({
   const closeGeneralSettings = useSettingsDestinationStore((state) => state.closeSettings);
   const librarySnapshot = useAssistantLibraryStore();
   const knowledgeSnapshot = useKnowledgeLibraryStore();
+  const skillSnapshot = useSkillLibraryStore();
   const appearance = useShellAppearanceController();
   const { change: changeTheme, id: themeId } = appearance.theme;
   const workspaceInteraction = useWorkspaceInteractionController();
@@ -641,7 +646,13 @@ export function PowerAppShellV2({
     knowledgeDataState: knowledgeSnapshot.dataState,
     retryCatalog: () => void retryCatalog(),
     retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
-    setShellNotice: setNotice
+    retrySkills: () => void refreshSkillLibrary(true).catch(() => undefined),
+    setShellNotice: setNotice,
+    skillDataError: skillSnapshot.error,
+    skillDataState: skillSnapshot.loadState === "error"
+      ? "error"
+      : skillSnapshot.loadState === "ready" ? "ready" : "loading",
+    skills: skillSnapshot.data?.skills ?? []
   });
   const openAssistantLibrary = () => {
     closeMemoryWorkspace();
@@ -1141,7 +1152,13 @@ export function PowerAppShellV2({
         knowledgeDataState: knowledgeSnapshot.dataState,
         retryCatalog: () => void retryCatalog(),
         retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
-        setShellNotice: setNotice
+        retrySkills: () => void refreshSkillLibrary(true).catch(() => undefined),
+        setShellNotice: setNotice,
+        skillDataError: skillSnapshot.error,
+        skillDataState: skillSnapshot.loadState === "error"
+          ? "error"
+          : skillSnapshot.loadState === "ready" ? "ready" : "loading",
+        skills: skillSnapshot.data?.skills ?? []
       },
       assistantLibraryActions,
       librarySnapshot

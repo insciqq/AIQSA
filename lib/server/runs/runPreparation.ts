@@ -1,7 +1,7 @@
 import { textMessageContent } from "../../domain/content";
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { decodeMcpRunSelection } from "../../contracts/mcp";
-import { decodeSkillIds } from "../../contracts/skills";
+import { decodeSkillIds, SKILL_MAX_SELECTED } from "../../contracts/skills";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import { materializeAssistantRunParams } from "../assistants/runControlMaterialization";
 import type {
@@ -48,16 +48,15 @@ import type {
   McpRunPlanBinding,
   McpRunPlanResult
 } from "../mcp/runPlan";
-import {
-  MCP_DISCOVERY_MAX_ACTIVE_TOOLS,
-  mcpFindToolsTool
-} from "../mcp/discovery";
+import type { McpSemanticRouter } from "../mcp/router";
+import { mcpFindToolsTool } from "../mcp/discovery";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderToolBridge } from "../tools/types";
 import type {
   SkillRunMaterialization,
   SkillRunResolver
 } from "../skills/runMaterialization";
+import { withSelectedSkillContext } from "../skills/userContext";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { knowledgeRetrievalTool } from "../knowledge/toolExecutor";
 import { memoryActionTools } from "../memory/actions/tools";
@@ -80,6 +79,10 @@ import type {
   RunModelConfiguration,
   RunRepository
 } from "./runRepositoryContract";
+import {
+  DEFAULT_TOOL_RUN_BUDGETS,
+  type ToolRunBudgets
+} from "./toolBudgets";
 
 const visibleAnswerContract =
   "Visible answer contract: answer the user directly in the chat message. Do not include debug sections such as Question, Search, Provider Parameters, Request Preview, Artifacts, Usage, or Errors, and do not expose provider, retrieval, tool, request, usage, or event internals. Include citations naturally only when they help the answer.";
@@ -125,6 +128,7 @@ export type RunPreparationDeps = Readonly<{
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
     ): Promise<McpRunPlanResult>;
+    router?: McpSemanticRouter;
   }>;
   providers: Readonly<Record<string, ProviderAdapter>>;
   providerAdmission?: Readonly<{
@@ -139,6 +143,9 @@ export type RunPreparationDeps = Readonly<{
     }): Promise<ProviderAdmissionPlan>;
   }>;
   repository: RunPreparationRepository;
+  runPolicy?: Readonly<{
+    load(): Promise<ToolRunBudgets>;
+  }>;
   skills?: SkillRunResolver;
   storage?: Pick<StorageAdapter, "getObject">;
 }>;
@@ -626,23 +633,6 @@ function assistantPrompt(assistant: AssistantRunMaterialization): NormalizedRunR
   };
 }
 
-function promptWithSkills(
-  prompt: NormalizedRunRequest["prompt"],
-  skills: readonly SkillRunMaterialization[]
-): NormalizedRunRequest["prompt"] {
-  if (skills.length === 0) return prompt;
-  const instructions = [
-    "Apply the following user-selected workflow Skills when they are relevant to the request.",
-    ...skills.map((skill) => `## Skill: ${skill.name}\n${skill.instructions}`)
-  ].join("\n\n");
-  return {
-    ...prompt,
-    developer: [instructions, prompt.developer]
-      .filter((part): part is string => typeof part === "string" && Boolean(part.trim()))
-      .join("\n\n")
-  };
-}
-
 const assistantGovernedBodyKeys = [
   "controlDefaults",
   "modelId",
@@ -654,7 +644,6 @@ const assistantGovernedBodyKeys = [
   "searchPlan",
   "searchPreferencePlan",
   "searchPreferenceSource",
-  "skillIds",
   "tools"
 ] as const;
 
@@ -802,6 +791,9 @@ export async function prepareRun(
   input: RunPreparationInput
 ): Promise<RunPreparationResult> {
   const body = input.body;
+  const toolBudgets = deps.runPolicy
+    ? await deps.runPolicy.load()
+    : DEFAULT_TOOL_RUN_BUDGETS;
 
   let assistantRun: AssistantRunMaterialization | null = null;
   if (body && "assistantId" in body && body.assistantId !== undefined && body.assistantId !== null) {
@@ -833,16 +825,23 @@ export async function prepareRun(
     assistantRun = resolution.assistant;
   }
 
-  let skillRuns: SkillRunMaterialization[] = [];
-  if (!assistantRun && body && Object.prototype.hasOwnProperty.call(body, "skillIds")) {
+  let manualSkillIds: string[] = [];
+  if (body && Object.prototype.hasOwnProperty.call(body, "skillIds")) {
     const decoded = decodeSkillIds(body.skillIds);
     if (!decoded.ok) return failure(decoded.code, 400);
-    if (decoded.ids.length > 0) {
-      if (!deps.skills) return failure("skill_not_available", 404);
-      const resolution = await deps.skills.resolveForRun(input.userId, decoded.ids);
-      if (!resolution.ok) return failure(resolution.code, resolution.status);
-      skillRuns = resolution.skills;
-    }
+    manualSkillIds = decoded.ids;
+  }
+  const effectiveSkillIds = [...(assistantRun?.skillIds ?? []), ...manualSkillIds]
+    .filter((skillId, index, values) => values.indexOf(skillId) === index);
+  if (effectiveSkillIds.length > SKILL_MAX_SELECTED) {
+    return failure("skills_invalid", 400);
+  }
+  let skillRuns: SkillRunMaterialization[] = [];
+  if (effectiveSkillIds.length > 0) {
+    if (!deps.skills) return failure("skill_not_available", 404);
+    const resolution = await deps.skills.resolveForRun(input.userId, effectiveSkillIds);
+    if (!resolution.ok) return failure(resolution.code, resolution.status);
+    skillRuns = resolution.skills;
   }
 
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
@@ -987,8 +986,8 @@ export async function prepareRun(
   const assistantMcpUnavailable = Boolean(
     assistantRun && assistantRun.mcpServerIds.length > 0 && !deps.mcp
   );
-  const ordinarySelectedMcpUnavailable = Boolean(
-    ordinaryMcpSelection?.mode === "selected" && !deps.mcp
+  const ordinaryLoadAllMcpUnavailable = Boolean(
+    ordinaryMcpSelection?.mode === "load_all" && !deps.mcp
   );
   const mcpPlan = assistantRun
     ? assistantRun.mcpServerIds.length > 0 && deps.mcp
@@ -996,12 +995,8 @@ export async function prepareRun(
           allowedServerIds: assistantRun.mcpServerIds
         })
       : null
-    : ordinaryMcpSelection?.mode === "selected" && deps.mcp
-      ? await deps.mcp.prepare(input.userId, {
-          allowedServerIds: ordinaryMcpSelection.serverIds
-        })
-      : ordinaryMcpSelection?.mode === "auto" && deps.mcp && !deps.mcp.catalog
-        ? await deps.mcp.prepare(input.userId)
+    : ordinaryMcpSelection?.mode === "load_all" && deps.mcp
+      ? await deps.mcp.prepare(input.userId)
       : null;
   const mcpCatalog = ordinaryMcpSelection?.mode === "auto" && deps.mcp?.catalog
     ? await deps.mcp.catalog(input.userId)
@@ -1098,10 +1093,7 @@ export async function prepareRun(
   const executionAdapterKind = modelConfiguration.adapterKind;
   const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
 
-  const normalizedPrompt = promptWithSkills(
-    assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body),
-    skillRuns
-  );
+  const normalizedPrompt = assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body);
   const prompt = promptWithProjectMemory(
     normalizedPrompt,
     resolvedChatMode.mode === "TEMPORARY" ? null : chat.projectMemory
@@ -1117,7 +1109,7 @@ export async function prepareRun(
   if (input.source.kind === "send" && !sendContext) {
     return failure("active_leaf_changed", 409);
   }
-  const contextMessages: ProviderConversationMessage[] =
+  const conversationMessages: ProviderConversationMessage[] =
     input.source.kind === "send"
       ? [
           ...(sendContext ?? []),
@@ -1132,6 +1124,7 @@ export async function prepareRun(
           input.userId,
           input.source.source.userMessage.id
         );
+  const contextMessages = withSelectedSkillContext(conversationMessages, skillRuns);
   const parameterControls = parameterControlsForModel({
     adapterKind: executionAdapterKind,
     defaultParams,
@@ -1172,8 +1165,8 @@ export async function prepareRun(
   if (assistantMcpUnavailable) {
     return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
   }
-  if (ordinarySelectedMcpUnavailable) {
-    return failure("mcp_not_ready", 409, "Selected MCP tools are unavailable.");
+  if (ordinaryLoadAllMcpUnavailable) {
+    return failure("mcp_not_ready", 409, "Enabled MCP tools are unavailable.");
   }
   if (mcpPlan && !mcpPlan.ok) {
     if (assistantRun) {
@@ -1248,8 +1241,7 @@ export async function prepareRun(
           mcpDiscovery: {
             catalog: mcpCatalog,
             epochs: [],
-            maxActiveTools: MCP_DISCOVERY_MAX_ACTIVE_TOOLS,
-            version: 1 as const
+            version: 2 as const
           }
         }
       : {}),
@@ -1282,6 +1274,10 @@ export async function prepareRun(
         revisionId: candidate.revisionId,
         searchStrategyRowId: candidate.integrationId
       }))
+    },
+    toolBudgets: {
+      maxToolCalls: toolBudgets.maxToolCalls,
+      maxToolRounds: toolBudgets.maxToolRounds
     },
     toolMode: body?.tools === "none" ? "none" : "auto"
   };

@@ -66,10 +66,13 @@ export function humanizeErrorCode(code: string): string {
     mcp_background_not_supported: "Turn off background mode to use MCP with this model",
     mcp_background_streaming_not_supported:
       "Turn off streaming or background mode to use MCP with this model",
+    mcp_auto_discovery_unavailable:
+      "Automatic tool discovery is unavailable. Retry in Auto or use Load all",
     mcp_not_ready:
-      "A selected MCP server or tool is no longer ready. Review MCP settings and try again",
+      "An enabled MCP server or tool is no longer ready. Review MCP settings and try again",
     mcp_plan_too_large:
-      "The selected MCP tools exceed the per-run limit. Select fewer servers or tools and try again",
+      "The enabled MCP tools exceed the per-run limit. Disable some servers and try again",
+    mcp_selection_invalid: "Choose Auto, Load all, or Off for MCP tools and try again",
     mcp_tool_calling_not_supported: "Choose a model with tool calling to use MCP",
     provider_not_available: "Provider is not available",
     run_malformed: "Run response was malformed",
@@ -78,6 +81,8 @@ export function humanizeErrorCode(code: string): string {
     skill_not_available:
       "A selected Skill is no longer available. Review Skills and try again",
     skills_invalid: "Choose up to 8 distinct Skills and try again",
+    structured_output_not_supported:
+      "The selected System Model does not have verified structured output",
     unsupported_attachment_type: "Attachment is not supported by this model",
     unsupported_search_strategy: "Search is not supported for this model",
     upload_malformed: "Upload response was malformed",

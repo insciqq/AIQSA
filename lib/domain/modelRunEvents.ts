@@ -39,6 +39,7 @@ export type ModelRunChatUpdateData = {
     provider: string | null;
     role: string;
     status: string;
+    toolActivity?: unknown;
   }[];
 };
 

@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useComposerControlStore } from "./composerControlStore";
 import { isMcpOAuthAuthorizing, markMcpOAuthAuthorizing, consumeMcpOAuthReturn, refreshMcpSettings, useMcpSettingsStore } from "./mcpSettingsStore";
-import { resetMcpSettingsStoreForTest } from "@/tests/support/appShellStores";
+import {
+  resetComposerControlStoreForTest,
+  resetMcpSettingsStoreForTest
+} from "@/tests/support/appShellStores";
 
 const server = {
   accountLabel: null,
@@ -19,6 +23,7 @@ const server = {
 
 describe("MCP settings store", () => {
   afterEach(() => {
+    resetComposerControlStoreForTest();
     resetMcpSettingsStoreForTest();
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -97,6 +102,26 @@ describe("MCP settings store", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     unsubscribe();
+  });
+
+  it("never changes the composer mode when the last server disables or readiness changes", () => {
+    useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
+    useMcpSettingsStore.setState({ loadState: "ready", servers: [server] });
+
+    useMcpSettingsStore.getState().replaceServer({
+      ...server,
+      enabled: false,
+      readiness: "disabled",
+      tools: []
+    });
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
+
+    useMcpSettingsStore.getState().replaceServer({
+      ...server,
+      readiness: "queued",
+      tools: []
+    });
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
   });
 
   it("records and scrubs an OAuth callback outcome", () => {

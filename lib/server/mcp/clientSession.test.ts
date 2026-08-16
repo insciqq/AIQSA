@@ -29,6 +29,7 @@ type FixtureOptions = Readonly<{
   }>) => CallToolResult | Promise<CallToolResult>;
   enableJsonResponse?: boolean;
   enableLogging?: boolean;
+  instructions?: string;
   listTools?: (cursor: string | undefined) => ListToolsResult | Promise<ListToolsResult>;
 }>;
 
@@ -97,7 +98,8 @@ async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
       capabilities: {
         ...(options.enableLogging ? { logging: {} } : {}),
         tools: { listChanged: true }
-      }
+      },
+      ...(options.instructions ? { instructions: options.instructions } : {})
     }
   );
   server.setRequestHandler(ListToolsRequestSchema, async (request) =>
@@ -218,6 +220,7 @@ describe("McpClientSession", () => {
     let schemaOrderReversed = false;
     const changed = deferred();
     const fixture = await startFixture({
+      instructions: "Prefer project-scoped operations.",
       listTools(cursor) {
         listCursors.push(cursor);
         if (cursor === undefined) {
@@ -267,7 +270,8 @@ describe("McpClientSession", () => {
         name: "aiqsa-test-mcp",
         title: "AIQSA test MCP",
         version: "1.0.0"
-      }
+      },
+      instructions: "Prefer project-scoped operations."
     });
     const firstInventory = await session.listAllTools();
 

@@ -20,6 +20,7 @@ export default defineConfig({
   reporter: "list",
   use: {
     baseURL,
+    contextOptions: { reducedMotion: "reduce" },
     trace: "retain-on-failure"
   },
   webServer: {

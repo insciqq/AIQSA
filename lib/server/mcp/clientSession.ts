@@ -143,6 +143,7 @@ export type AiqsaMcpServerEvidence = Readonly<{
     title?: string;
     version: string;
   }>;
+  instructions?: string;
 }>;
 
 export type AiqsaMcpToolCallResult = Readonly<{
@@ -406,7 +407,8 @@ function normalizeAnnotations(annotations: Readonly<{
 
 function normalizeServerEvidence(
   implementation: Implementation | undefined,
-  capabilities: ServerCapabilities | undefined
+  capabilities: ServerCapabilities | undefined,
+  instructions: string | undefined
 ): AiqsaMcpServerEvidence {
   if (!implementation || !capabilities || !implementation.name || !implementation.version) {
     throw sessionError("mcp_initialize_failed", "initialize");
@@ -433,7 +435,8 @@ function normalizeServerEvidence(
       name: implementation.name,
       ...(implementation.title !== undefined ? { title: implementation.title } : {}),
       version: implementation.version
-    }
+    },
+    ...(instructions?.trim() ? { instructions: instructions.trim() } : {})
   };
   if (Buffer.byteLength(canonicalMcpJson(evidence), "utf8") > MAX_SERVER_EVIDENCE_BYTES) {
     throw sessionError("mcp_initialize_failed", "initialize");
@@ -680,7 +683,8 @@ export class McpClientSession {
         }
         this.serverEvidenceValue = normalizeServerEvidence(
           this.client.getServerVersion(),
-          this.client.getServerCapabilities()
+          this.client.getServerCapabilities(),
+          this.client.getInstructions()
         );
         this.state = "ready";
       } catch (error) {

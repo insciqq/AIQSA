@@ -8,7 +8,8 @@ import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
 import {
   loadChatBranchSnapshotStats,
-  summarizeMessageRunArtifacts
+  summarizeMessageRunArtifacts,
+  summarizeMessageRunToolActivity
 } from "../chats/prismaRepository";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { prisma } from "../prisma";
@@ -1079,6 +1080,7 @@ export function createPrismaRunRepository(
                       eventType: "artifact"
                     }
                   },
+                  errorPayload: true,
                   id: true,
                   knowledgeRuns: {
                     orderBy: { invocationOrdinal: "asc" },
@@ -1096,6 +1098,19 @@ export function createPrismaRunRepository(
                       artifacts: true
                     }
                   },
+                  normalizedRequest: true,
+                  status: true,
+                  toolCalls: {
+                    orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
+                    select: {
+                      completedAt: true,
+                      ordinal: true,
+                      roundIndex: true,
+                      startedAt: true,
+                      state: true,
+                      toolName: true
+                    }
+                  }
                 },
                 take: 1
               }
@@ -1172,7 +1187,8 @@ export function createPrismaRunRepository(
               parentMessageId: message.parentMessageId,
               provider: message.provider,
               role: message.role,
-              status: message.status
+              status: message.status,
+              toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null
             };
           })
         };

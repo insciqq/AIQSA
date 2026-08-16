@@ -26,6 +26,7 @@ import {
   searchExecutionModes
 } from "../search/configuration";
 import type { SearchProbeBinding } from "../search/probeBinding";
+import { hasVerifiedStructuredOutput } from "../providers/structuredOutputEvidence";
 
 export type ProviderAdmissionErrorCode =
   | "credential_active_version_missing"
@@ -399,7 +400,7 @@ async function loadRole(
   if (!credential.ok) throw new ProviderAdmissionError(credential.code);
 
   const check = await db.providerModelCredentialCheck.findFirst({
-    select: { id: true },
+    select: { evidence: true, id: true },
     where: {
       connectionId: model.connectionId,
       connectionVersion: model.connection.activeVersion,
@@ -411,6 +412,8 @@ async function loadRole(
     }
   });
   if (!check) throw new ProviderAdmissionError("model_not_available");
+  const structuredOutput = input.modelClass === "answer" &&
+    hasVerifiedStructuredOutput(check.evidence, modelConfig);
 
   const normalizedSnapshot = normalizeProviderExecutionSnapshot({
     connection: connectionConfig,
@@ -424,9 +427,21 @@ async function loadRole(
     providerModelId: model.id,
     version: 1
   });
-  const snapshot = input.modelClass === "answer"
+  const resolvedSnapshot = input.modelClass === "answer"
     ? withResolvedModelCapabilities(normalizedSnapshot)
     : normalizedSnapshot;
+  const snapshot = structuredOutput && resolvedSnapshot.model.adapterKind !== "fake"
+    ? {
+        ...resolvedSnapshot,
+        model: {
+          ...resolvedSnapshot.model,
+          capabilities: {
+            ...resolvedSnapshot.model.capabilities,
+            structuredOutput: true
+          }
+        }
+      }
+    : resolvedSnapshot;
   const resolvedModel = snapshot.model;
   const authority = {
     connectionId: model.connectionId,

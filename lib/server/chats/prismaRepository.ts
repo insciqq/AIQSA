@@ -31,7 +31,8 @@ import type {
   ChatSummaryRecord,
   ChatUsageStats,
   ThreadArtifactSummary,
-  ThreadCitation
+  ThreadCitation,
+  ThreadToolActivity
 } from "./handlers";
 import type {
   ArchivedChatDetailRecord,
@@ -76,6 +77,7 @@ const assistantRunDetailSelect = {
       eventType: "artifact"
     }
   },
+  errorPayload: true,
   id: true,
   knowledgeRuns: {
     orderBy: { invocationOrdinal: "asc" },
@@ -90,6 +92,19 @@ const assistantRunDetailSelect = {
     },
     select: {
       artifacts: true
+    }
+  },
+  normalizedRequest: true,
+  status: true,
+  toolCalls: {
+    orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
+    select: {
+      completedAt: true,
+      ordinal: true,
+      roundIndex: true,
+      startedAt: true,
+      state: true,
+      toolName: true
     }
   }
 } satisfies Prisma.ModelRunSelect;
@@ -178,6 +193,20 @@ type ArtifactSummaryRun = {
   }[];
   searchRuns: {
     artifacts?: unknown;
+  }[];
+};
+
+type ToolActivityRun = {
+  errorPayload: unknown;
+  normalizedRequest: unknown;
+  status: string;
+  toolCalls: {
+    completedAt: Date | null;
+    ordinal: number;
+    roundIndex: number;
+    startedAt: Date | null;
+    state: string;
+    toolName: string;
   }[];
 };
 
@@ -522,7 +551,8 @@ function serializeHydratedMessage(
     parentMessageId: message.parentMessageId,
     provider: message.provider,
     role: message.role,
-    status: message.status
+    status: message.status,
+    toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun) : null
   };
 }
 
@@ -651,6 +681,148 @@ async function defaultResumeSuppressionPreflight(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function activityName(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const normalized = value.trim().replace(/\s+/gu, " ");
+  return normalized && !/[\u0000-\u001f\u007f]/u.test(normalized)
+    ? normalized.slice(0, 160)
+    : fallback;
+}
+
+function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
+  serverName?: string;
+  toolName: string;
+}> {
+  const descriptors = new Map<string, { serverName?: string; toolName: string }>();
+  if (!isRecord(normalizedRequest)) return descriptors;
+
+  const mcp = isRecord(normalizedRequest.mcp) ? normalizedRequest.mcp : null;
+  if (mcp && Array.isArray(mcp.tools)) {
+    for (const value of mcp.tools) {
+      if (!isRecord(value) || typeof value.namespacedName !== "string") continue;
+      descriptors.set(value.namespacedName, {
+        serverName: activityName(value.serverName, "MCP server"),
+        toolName: activityName(value.originalName, "Tool")
+      });
+    }
+  }
+
+  const discovery = isRecord(normalizedRequest.mcpDiscovery)
+    ? normalizedRequest.mcpDiscovery
+    : null;
+  const catalog = discovery && isRecord(discovery.catalog) ? discovery.catalog : null;
+  if (catalog && Array.isArray(catalog.servers)) {
+    for (const server of catalog.servers) {
+      if (!isRecord(server) || !Array.isArray(server.tools)) continue;
+      for (const value of server.tools) {
+        if (!isRecord(value) || typeof value.namespacedName !== "string") continue;
+        if (!descriptors.has(value.namespacedName)) {
+          descriptors.set(value.namespacedName, {
+            serverName: activityName(server.serverName, "MCP server"),
+            toolName: activityName(value.originalName, "Tool")
+          });
+        }
+      }
+    }
+  }
+
+  const searchPlan = isRecord(normalizedRequest.searchPlan) ? normalizedRequest.searchPlan : null;
+  if (searchPlan && Array.isArray(searchPlan.options)) {
+    searchPlan.options.forEach((option, index) => {
+      descriptors.set(`search_engine_${index + 1}`, {
+        serverName: isRecord(option)
+          ? activityName(option.displayName, "Web search")
+          : "Web search",
+        toolName: "search"
+      });
+    });
+  }
+
+  descriptors.set("find_tools", { serverName: "Auto tools", toolName: "find_tools" });
+  descriptors.set("retrieve_knowledge", { serverName: "Knowledge", toolName: "retrieve_knowledge" });
+  for (const name of [
+    "forget_memory",
+    "list_memories",
+    "mark_memory_incorrect",
+    "save_memory",
+    "search_memory",
+    "update_memory"
+  ]) {
+    descriptors.set(name, { serverName: "Memory", toolName: name });
+  }
+  return descriptors;
+}
+
+function acceptedToolBudgets(normalizedRequest: unknown): {
+  maxToolCalls: number;
+  maxToolRounds: number;
+} | null {
+  if (!isRecord(normalizedRequest) || !isRecord(normalizedRequest.toolBudgets)) return null;
+  const budgets = normalizedRequest.toolBudgets;
+  return Number.isSafeInteger(budgets.maxToolCalls) && Number(budgets.maxToolCalls) > 0 &&
+    Number.isSafeInteger(budgets.maxToolRounds) && Number(budgets.maxToolRounds) > 0
+    ? {
+        maxToolCalls: Number(budgets.maxToolCalls),
+        maxToolRounds: Number(budgets.maxToolRounds)
+      }
+    : null;
+}
+
+function toolBudgetWarning(
+  run: ToolActivityRun,
+  budgets: { maxToolCalls: number; maxToolRounds: number } | null
+): ThreadToolActivity["warning"] {
+  const errorCode = isRecord(run.errorPayload) && typeof run.errorPayload.code === "string"
+    ? run.errorPayload.code
+    : null;
+  if (errorCode === "tool_call_limit_exceeded") {
+    return { kind: "calls", limit: budgets?.maxToolCalls ?? 16 };
+  }
+  if (errorCode === "tool_round_limit_exceeded") {
+    return { kind: "rounds", limit: budgets?.maxToolRounds ?? 3 };
+  }
+  if (!budgets || run.status !== "complete") return undefined;
+  if (run.toolCalls.length >= budgets.maxToolCalls) {
+    return { kind: "calls", limit: budgets.maxToolCalls };
+  }
+  const rounds = new Set(run.toolCalls.map((call) => call.roundIndex)).size;
+  return rounds >= budgets.maxToolRounds
+    ? { kind: "rounds", limit: budgets.maxToolRounds }
+    : undefined;
+}
+
+/** Owner-safe activity only: no arguments, results, internal ids, or raw events. */
+export function summarizeMessageRunToolActivity(
+  run: ToolActivityRun
+): ThreadToolActivity | null {
+  const descriptors = toolActivityDescriptors(run.normalizedRequest);
+  const calls = run.toolCalls.map((call) => {
+    const descriptor = descriptors.get(call.toolName) ?? {
+      toolName: call.toolName.startsWith("mcp_")
+        ? "MCP tool"
+        : activityName(call.toolName, "Tool")
+    };
+    const duration = call.startedAt && call.completedAt
+      ? call.completedAt.getTime() - call.startedAt.getTime()
+      : null;
+    const status = call.state === "complete" || call.state === "error" ||
+      call.state === "cancelled"
+      ? call.state
+      : "running";
+    return {
+      ...(duration !== null && duration >= 0 ? { durationMs: duration } : {}),
+      round: call.roundIndex,
+      ...(descriptor.serverName ? { serverName: descriptor.serverName } : {}),
+      status,
+      toolName: descriptor.toolName
+    } satisfies ThreadToolActivity["calls"][number];
+  });
+  const warning = toolBudgetWarning(run, acceptedToolBudgets(run.normalizedRequest));
+  return calls.length > 0 || warning
+    ? { calls, ...(warning ? { warning } : {}) }
+    : null;
 }
 
 function safeJsonSnippet(value: unknown): string {

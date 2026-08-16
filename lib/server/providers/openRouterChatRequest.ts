@@ -63,6 +63,7 @@ export type OpenRouterChatRequestPreview = {
     "attachment_filename",
     "image_data_url",
     "pdf_base64",
+    "selected_skill_instructions",
     "provider_continuation_opaque_fields"
   ];
   replayedContext: {
@@ -293,7 +294,9 @@ function providerToolPreviewMessages(messages: unknown[] | undefined): OpenRoute
 function buildMessages(request: ProviderRunRequest, options: PrivateBuildOptions): OpenRouterMessage[] {
   const messages: OpenRouterMessage[] = [];
   const instructions = combineInstructions(request);
-  const conversation = textConversationForRequest(request);
+  const conversation = textConversationForRequest(request, {
+    redactSkillContext: options.preview
+  });
 
   if (instructions) {
     messages.push({
@@ -486,6 +489,7 @@ export function buildOpenRouterChatRequestPreview(
       "attachment_filename",
       "image_data_url",
       "pdf_base64",
+      "selected_skill_instructions",
       "provider_continuation_opaque_fields"
     ]
   };

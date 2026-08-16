@@ -35,14 +35,34 @@ function activeModel(overrides: Record<string, unknown> = {}) {
       activatedAt: NOW,
       displayName: "Answer provider",
       enabled: true,
-      id: "connection-1"
+      id: "connection-1",
+      defaultCredential: null
     },
+    activeCredentialChecks: [],
     connectionId: "connection-1",
     displayName: "Answer model",
     enabled: true,
     id: "model-1",
     ...overrides
   };
+}
+
+function verifiableModel(overrides: Record<string, unknown> = {}) {
+  const base = activeModel();
+  return activeModel({
+    connection: {
+      ...base.connection,
+      defaultCredential: {
+        activeVersion: {
+          id: "credential-version-1",
+          revokedAt: null
+        },
+        enabled: true,
+        id: "credential-1"
+      }
+    },
+    ...overrides
+  });
 }
 
 describe("administrator system model policy service", () => {
@@ -80,7 +100,8 @@ describe("administrator system model policy service", () => {
         defaultReasoningEffort: "medium",
         displayName: "Answer model",
         id: "model-1",
-        reasoningEfforts: ["low", "medium", "high", "xhigh"]
+        reasoningEfforts: ["low", "medium", "high", "xhigh"],
+        structuredOutput: "not_verified"
       }],
       policy: {
         reasoningEffort: "xhigh",
@@ -91,7 +112,8 @@ describe("administrator system model policy service", () => {
           defaultReasoningEffort: "medium",
           displayName: "Answer model",
           id: "model-old",
-          reasoningEfforts: ["low", "medium", "high", "xhigh"]
+          reasoningEfforts: ["low", "medium", "high", "xhigh"],
+          structuredOutput: "not_verified"
         },
         updatedAt: NOW.toISOString(),
         updatedBy: { displayName: "Administrator", id: "admin-1" },
@@ -129,6 +151,177 @@ describe("administrator system model policy service", () => {
     }).list()).resolves.toMatchObject({
       policy: { systemModel: { available: true, id: "model-1" } }
     });
+  });
+
+  it("derives verified and unsupported status from exact active tuple evidence", async () => {
+    const base = activeModel();
+    const verified = activeModel({
+      activeCredentialChecks: [{
+        connectionVersion: 1,
+        credentialId: "credential-1",
+        credentialVersionId: "credential-version-1",
+        evidence: {
+          structuredOutput: {
+            adapterKind: "openai_responses_compatible",
+            probeVersion: 2,
+            upstreamModelId: "vendor/answer",
+            verified: true
+          }
+        },
+        modelVersion: 1,
+        status: "available"
+      }],
+      connection: {
+        ...base.connection,
+        defaultCredential: {
+          activeVersion: { id: "credential-version-1" },
+          id: "credential-1"
+        }
+      }
+    });
+    const unsupported = activeModel({
+      activeConfig: {
+        ...activeConfiguration,
+        adapterKind: "anthropic_messages"
+      },
+      id: "model-anthropic"
+    });
+    const prisma = {
+      providerModel: { findMany: vi.fn().mockResolvedValue([verified, unsupported]) },
+      systemModelPolicy: {
+        findUnique: vi.fn().mockResolvedValue({
+          providerModel: null,
+          providerModelId: null,
+          reasoningEffort: null,
+          updatedAt: NOW,
+          updatedBy: null,
+          version: 1
+        })
+      }
+    } as unknown as PrismaClient;
+
+    await expect(createAdminSystemModelPolicyService(prisma, {
+      resolveRole: vi.fn().mockResolvedValue({ code: "system_model_not_configured", ok: false })
+    }).list()).resolves.toMatchObject({
+      candidates: [
+        { id: "model-1", structuredOutput: "verified" },
+        { id: "model-anthropic", structuredOutput: "unsupported" }
+      ]
+    });
+  });
+
+  it("runs one paid exact-tuple verification for the current supported system model", async () => {
+    const target = verifiableModel();
+    const refreshActive = vi.fn().mockResolvedValue({
+      evidence: {
+        structuredOutput: {
+          adapterKind: "openai_responses_compatible",
+          probeVersion: 2,
+          upstreamModelId: "vendor/answer",
+          verified: true
+        }
+      },
+      status: "available"
+    });
+    const prisma = {
+      systemModelPolicy: {
+        findUnique: vi.fn().mockResolvedValue({
+          providerModel: target,
+          providerModelId: "model-1"
+        })
+      }
+    } as unknown as PrismaClient;
+
+    await expect(createAdminSystemModelPolicyService(prisma, {
+      refreshActive
+    }).verifyStructuredOutput({
+      providerModelId: "model-1"
+    })).resolves.toBeUndefined();
+    expect(refreshActive).toHaveBeenCalledWith({
+      confirmPaidRequest: true,
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      providerModelId: "model-1",
+      signal: undefined
+    });
+  });
+
+  it("does not repeat a paid verification when exact active evidence is already valid", async () => {
+    const target = verifiableModel({
+      activeCredentialChecks: [{
+        connectionVersion: 1,
+        credentialId: "credential-1",
+        credentialVersionId: "credential-version-1",
+        evidence: {
+          structuredOutput: {
+            adapterKind: "openai_responses_compatible",
+            probeVersion: 2,
+            upstreamModelId: "vendor/answer",
+            verified: true
+          }
+        },
+        modelVersion: 1,
+        status: "available"
+      }]
+    });
+    const refreshActive = vi.fn();
+    const prisma = {
+      systemModelPolicy: {
+        findUnique: vi.fn().mockResolvedValue({
+          providerModel: target,
+          providerModelId: "model-1"
+        })
+      }
+    } as unknown as PrismaClient;
+
+    await expect(createAdminSystemModelPolicyService(prisma, {
+      refreshActive
+    }).verifyStructuredOutput({
+      providerModelId: "model-1"
+    })).resolves.toBeUndefined();
+    expect(refreshActive).not.toHaveBeenCalled();
+  });
+
+  it("rejects verification for unsupported adapters and non-current models", async () => {
+    const refreshActive = vi.fn();
+    const unsupported = verifiableModel({
+      activeConfig: {
+        ...activeConfiguration,
+        adapterKind: "anthropic_messages"
+      }
+    });
+    const unsupportedPrisma = {
+      systemModelPolicy: {
+        findUnique: vi.fn().mockResolvedValue({
+          providerModel: unsupported,
+          providerModelId: "model-1"
+        })
+      }
+    } as unknown as PrismaClient;
+    await expect(createAdminSystemModelPolicyService(unsupportedPrisma, {
+      refreshActive
+    }).verifyStructuredOutput({
+      providerModelId: "model-1"
+    })).rejects.toEqual(new AdminSystemModelPolicyServiceError(
+      "system_model_policy_structured_output_unsupported"
+    ));
+
+    const mismatchPrisma = {
+      systemModelPolicy: {
+        findUnique: vi.fn().mockResolvedValue({
+          providerModel: verifiableModel(),
+          providerModelId: "model-1"
+        })
+      }
+    } as unknown as PrismaClient;
+    await expect(createAdminSystemModelPolicyService(mismatchPrisma, {
+      refreshActive
+    }).verifyStructuredOutput({
+      providerModelId: "model-other"
+    })).rejects.toEqual(new AdminSystemModelPolicyServiceError(
+      "system_model_policy_target_unavailable"
+    ));
+    expect(refreshActive).not.toHaveBeenCalled();
   });
 
   it("locks, revalidates administrator access, and validates installation authority", async () => {

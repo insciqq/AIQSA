@@ -56,7 +56,8 @@ export function createToolHiveMcpSessionFactory(input: Readonly<{
         exactKnownSecrets: () => active.exactKnownSecrets?.() ?? [],
         fatalResponseErrorCode: () => active.fatalResponseErrorCode?.() ?? null,
         isClosed: () => active.isClosed?.() ?? false,
-        listTools: (signal) => active.listTools(signal)
+        listTools: (signal) => active.listTools(signal),
+        serverEvidence: () => active.serverEvidence?.() ?? null
       };
     }
   };

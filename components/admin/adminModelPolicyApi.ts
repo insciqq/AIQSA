@@ -49,6 +49,18 @@ export function updateAdminModelPolicy(input: Readonly<{
   }, fetcher);
 }
 
+export function updateAdminToolBudgets(input: Readonly<{
+  expectedVersion: number;
+  maxToolCalls: number;
+  maxToolRounds: number;
+}>, fetcher: Fetcher = fetch) {
+  return request({
+    body: JSON.stringify(input),
+    headers: { "content-type": "application/json" },
+    method: "PATCH"
+  }, fetcher);
+}
+
 export function adminModelPolicyErrorMessage(code: string): string {
   const messages: Record<string, string> = {
     model_policy_admin_action_failed: "The installation default could not be updated.",

@@ -1,6 +1,7 @@
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
 import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
 import { KNOWLEDGE_PLAN_MAX_BASES } from "@/lib/contracts/knowledge";
+import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import { create } from "zustand";
 
@@ -27,16 +28,14 @@ export type ComposerAssistantSelection = {
   avatar: AssistantAvatarRecipe;
   description: string;
   id: string;
+  includedSkills?: { id: string; name: string }[];
   name: string;
   /** Approximate prompt size for the context gauge only; text stays server-side. */
   promptCharacterCount: number;
   starterPrompts: string[];
 };
 
-export type ComposerMcpSelection =
-  | { mode: "auto" }
-  | { mode: "off" }
-  | { mode: "selected"; serverIds: string[] };
+export type ComposerMcpSelection = McpRunSelection;
 
 export type ComposerSkillSelection = {
   description: string;
@@ -155,9 +154,7 @@ function manualBackupFrom(state: ComposerControlSnapshot): ComposerManualDraftBa
   return {
     backgroundMode: state.backgroundMode,
     maxOutputTokens: state.maxOutputTokens,
-    mcpSelection: state.mcpSelection.mode === "selected"
-      ? { mode: "selected", serverIds: [...state.mcpSelection.serverIds] }
-      : { ...state.mcpSelection },
+    mcpSelection: { ...state.mcpSelection },
     knowledgePlanSource: state.knowledgePlanSource === "assistant" ? "off" : state.knowledgePlanSource,
     reasoningEffort: state.reasoningEffort,
     reasoningMode: state.reasoningMode,
@@ -210,19 +207,19 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       assistantRemovedNotice: false,
       backgroundMode: controlDefaults.backgroundMode,
       maxOutputTokens: controlDefaults.maxOutputTokens,
-      mcpSelection: { mode: "auto" },
       knowledgePlanSource: "assistant",
       reasoningEffort: controlDefaults.reasoningEffort,
       reasoningMode: controlDefaults.reasoningMode,
       selectedAssistant: {
         ...assistant,
+        includedSkills: assistant.includedSkills?.map((skill) => ({ ...skill })) ?? [],
         starterPrompts: [...assistant.starterPrompts]
       },
       selectedKnowledgeBaseIds: [...knowledgeBaseIds],
       selectedModelId: modelId,
       selectedProvider: provider,
       selectedSearchOptionIds: [...searchOptionIds],
-      selectedSkills: [],
+      selectedSkills: state.selectedSkills.map((skill) => ({ ...skill })),
       searchPlanMode,
       streamMode: controlDefaults.streamMode,
       temperature: controlDefaults.temperature
@@ -268,9 +265,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
           ? {
               backgroundMode: backup.backgroundMode,
               maxOutputTokens: backup.maxOutputTokens,
-              mcpSelection: backup.mcpSelection.mode === "selected"
-                ? { mode: "selected", serverIds: [...backup.mcpSelection.serverIds] }
-                : { ...backup.mcpSelection },
+              mcpSelection: { ...backup.mcpSelection },
               knowledgePlanSource: backup.knowledgePlanSource,
               reasoningEffort: backup.reasoningEffort,
               reasoningMode: backup.reasoningMode,
@@ -297,9 +292,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
     set((state) => state.selectedAssistant
       ? {}
       : {
-          mcpSelection: mcpSelection.mode === "selected"
-            ? { mode: "selected", serverIds: [...mcpSelection.serverIds] }
-            : { ...mcpSelection }
+          mcpSelection: { ...mcpSelection }
         });
   },
   setSelectedKnowledgePlan(baseIds, source = "explicit", origin = "user") {
@@ -335,9 +328,20 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
     }));
   },
   setSelectedSkills(selectedSkills) {
-    set((state) => state.selectedAssistant
-      ? {}
-      : { selectedSkills: selectedSkills.map((skill) => ({ ...skill })) });
+    set((state) => {
+      const next = selectedSkills.map((skill) => ({ ...skill }));
+      return {
+        selectedSkills: next,
+        ...(state.assistantManualBackup
+          ? {
+              assistantManualBackup: {
+                ...state.assistantManualBackup,
+                selectedSkills: next.map((skill) => ({ ...skill }))
+              }
+            }
+          : {})
+      };
+    });
   },
   setShowCitations(update) {
     set((state) => ({ showCitations: applyUpdate(state.showCitations, update) }));

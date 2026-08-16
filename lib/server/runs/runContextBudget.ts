@@ -72,11 +72,33 @@ export function applyRunContextBudget(input: Readonly<{
   prompt: NormalizedRunRequest["prompt"];
   provider: string;
 }>): RunContextBudgetResult {
+  const skillContextMessages = input.contextMessages.filter(
+    (message) => message.purpose === "skill_context"
+  );
+  const budgetMessages = input.contextMessages.filter(
+    (message) => message.purpose !== "skill_context"
+  );
+  const currentMessage = budgetMessages.at(-1);
+  const skillContextTokens = skillContextMessages.reduce((total, message) => {
+    const extra = input.messageExtraTokens?.[message.id] ?? 0;
+    return total + estimateApproxTokens(message.content) +
+      (Number.isFinite(extra) && extra > 0 ? Math.ceil(extra) : 0);
+  }, 0);
+  const messageExtraTokens = currentMessage && skillContextTokens > 0
+    ? {
+        ...input.messageExtraTokens,
+        [currentMessage.id]:
+          (Number.isFinite(input.messageExtraTokens?.[currentMessage.id]) &&
+          (input.messageExtraTokens?.[currentMessage.id] ?? 0) > 0
+            ? Math.ceil(input.messageExtraTokens![currentMessage.id]!)
+            : 0) + skillContextTokens
+      }
+    : input.messageExtraTokens;
   const budget = applyContextBudget({
     contextWindow: input.modelCapabilities.contextWindow ?? 0,
     maxOutputTokens: maxOutputTokensForBudget(input.params, input.modelCapabilities, input.provider),
-    messageExtraTokens: input.messageExtraTokens,
-    messages: input.contextMessages,
+    messageExtraTokens,
+    messages: budgetMessages,
     prompt: input.prompt
   });
 
@@ -84,27 +106,42 @@ export function applyRunContextBudget(input: Readonly<{
     return {
       error: {
         code: "context_too_large",
-        message: `Prompt and current message exceed the model context budget (${budget.budgetTokens} estimated tokens available).`
+        message: skillContextMessages.length > 0
+          ? `Prompt, selected Skills, and current message exceed the model context budget (${budget.budgetTokens} estimated tokens available). Remove a Skill or choose a model with a larger context window.`
+          : `Prompt and current message exceed the model context budget (${budget.budgetTokens} estimated tokens available).`
       },
       ok: false,
       status: 400
     };
   }
 
+  const messages = skillContextMessages.length > 0 && budget.messages.length > 0
+    ? [
+        ...budget.messages.slice(0, -1),
+        ...skillContextMessages,
+        budget.messages.at(-1)!
+      ]
+    : budget.messages;
+  const truncation = budget.truncation
+    ? {
+        ...budget.truncation,
+        keptMessages: budget.truncation.keptMessages + skillContextMessages.length
+      }
+    : null;
   const context: NonNullable<NormalizedRunRequest["context"]> = {
-    messages: budget.messages,
+    messages,
     mode: "branch_path"
   };
 
-  if (budget.truncation) {
+  if (truncation) {
     context.summary = {
-      truncation: budget.truncation
+      truncation
     };
   }
 
   return {
     context,
-    contextTruncation: budget.truncation,
+    contextTruncation: truncation,
     ok: true
   };
 }
@@ -220,6 +257,9 @@ function fitProviderAttachmentText(input: Readonly<{
     const currentContent = input.request.context?.messages.at(-1)?.content ?? input.request.content;
     const promptTokens = estimateApproxTokens(input.request.prompt.system ?? "") +
       estimateApproxTokens(input.request.prompt.developer ?? "");
+    const skillContextTokens = (input.request.context?.messages ?? [])
+      .filter((message) => message.purpose === "skill_context")
+      .reduce((total, message) => total + estimateApproxTokens(message.content), 0);
     const fixedAttachments = attachments.map((attachment) =>
       textModeAttachment(attachment, input.request.modelCapabilities)
         ? { ...attachment, extractedText: null }
@@ -227,6 +267,7 @@ function fitProviderAttachmentText(input: Readonly<{
     );
     const fixedTokens = promptTokens +
       estimateApproxTokens(currentContent) +
+      skillContextTokens +
       input.fixedExtraTokens +
       providerAttachmentBudgetTokens({
         attachments: fixedAttachments,

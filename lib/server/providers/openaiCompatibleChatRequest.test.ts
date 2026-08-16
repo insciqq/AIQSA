@@ -319,6 +319,7 @@ describe("OpenAI-compatible Chat Completions request", () => {
     expect(preview.redactions).toEqual([
       "attachment_extracted_text",
       "image_data_url",
+      "selected_skill_instructions",
       "provider_continuation_opaque_fields"
     ]);
     expect(preview.provider).toBe("custom-connection-1");
