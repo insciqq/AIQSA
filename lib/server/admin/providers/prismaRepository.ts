@@ -807,7 +807,6 @@ export function createPrismaAdminProviderRepository(
             ? null
             : adminProviderModelConfiguration(model.activeConfig),
           activeVersion: model.activeVersion,
-          availableInProjects: model.availableInProjects,
           connectionId: model.connectionId,
           createdAt: model.createdAt.toISOString(),
           displayName: model.displayName,
@@ -882,7 +881,6 @@ export function createPrismaAdminProviderRepository(
       await prisma.providerModel.create({
         data: {
           ...modelColumns(input.configuration),
-          availableInProjects: input.availableInProjects ?? false,
           connectionId: input.connectionId,
           displayName: input.displayName,
           draftConfig: json(input.configuration),
@@ -907,9 +905,6 @@ export function createPrismaAdminProviderRepository(
       }
       const updated = await prisma.providerModel.updateMany({
         data: {
-          ...(input.availableInProjects !== undefined
-            ? { availableInProjects: input.availableInProjects }
-            : {}),
           displayName: input.displayName,
           draftConfig: json(input.configuration),
           draftVersion: { increment: 1 }

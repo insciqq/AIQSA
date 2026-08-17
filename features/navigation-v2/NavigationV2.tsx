@@ -96,6 +96,8 @@ export type NavigationSidebarProps = Readonly<{
   onShare?(chat: ChatNavigationSummaryWire): void;
   onSettings?(): void;
   onSearch(value: string): void;
+  /** A selected Project owns the sidebar list region; personal chats stay hidden until it is left. */
+  projectContextActive?: boolean;
   /** Shared-workspace navigation rendered before the personal chat tree. */
   projectsSlot?: ReactNode | ((onNavigate: () => void) => ReactNode);
   ready: boolean;
@@ -527,7 +529,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     .filter((group) => group.chats.length > 0);
 
   return (
-    <aside className="v2-navigation" aria-label="Chat navigation">
+    <aside
+      className="v2-navigation"
+      aria-label="Chat navigation"
+      data-project-context={props.projectContextActive || undefined}
+    >
       <div className="v2-navigation-header">
         <div className="v2-navigation-brand">
           <span className="v2-navigation-wordmark">
@@ -622,6 +628,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         {typeof props.projectsSlot === "function"
           ? props.projectsSlot(props.onClose)
           : props.projectsSlot}
+        {!props.projectContextActive ? <>
         {!props.ready && props.loading ? (
           <div className="v2-navigation-skeletons" aria-label="Loading chats">
             {[0, 1, 2, 3, 4].map((index) => (
@@ -728,6 +735,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             Show earlier
           </button>
         ) : null}
+        </> : null}
       </div>
 
       <div className="v2-navigation-footer">

@@ -266,7 +266,6 @@ export async function insertAcceptedMcpRunBindings(
       WHERE server."id" = ${binding.serverId}
         AND server."enabled" = true
         AND server."archivedAt" IS NULL
-        AND server."availableInProjects" = true
         AND server."activeRevisionId" = generation."revisionId"
         AND (
           server."sharedConfigEnvelope" IS NOT NULL

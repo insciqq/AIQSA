@@ -163,7 +163,6 @@ export type AdminMcpServer = {
   activePersonalSlots: AdminMcpPersonalSlotSummary[];
   activeRevision: McpRevisionSummary | null;
   archivedAt: string | null;
-  availableInProjects?: boolean;
   description: string;
   draft: McpDraftConfiguration;
   draftTest: McpDraftTestSummary | null;
@@ -272,7 +271,6 @@ export type McpErrorResponse = {
 
 export type AdminMcpCreateRequest = {
   activate?: boolean;
-  availableInProjects?: boolean;
   description?: string;
   draft: McpDraftConfiguration;
   name: string;
@@ -280,7 +278,6 @@ export type AdminMcpCreateRequest = {
 };
 
 export type AdminMcpUpdateRequest = {
-  availableInProjects?: boolean;
   description?: string;
   draft?: McpDraftConfiguration;
   enabled?: boolean;

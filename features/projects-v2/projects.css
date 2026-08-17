@@ -201,6 +201,7 @@
 }
 
 .v2-project-folder-heading {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -220,13 +221,35 @@
   white-space: nowrap;
 }
 
-.v2-project-folder-heading button {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font-size: inherit;
-  padding: 0.15rem;
+.v2-project-folder-actions {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.v2-project-folder-menu-trigger {
+  width: 1.75rem;
+  height: 1.75rem;
+  opacity: 0;
+}
+
+.v2-project-folder-heading:hover .v2-project-folder-menu-trigger,
+.v2-project-folder-heading:focus-within .v2-project-folder-menu-trigger,
+.v2-project-folder-menu-trigger[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.v2-project-folder-menu {
+  position: absolute;
+  z-index: 45;
+  top: 1.75rem;
+  right: 0;
+  width: 12.5rem;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-project-folder-menu-trigger {
+    opacity: 1;
+  }
 }
 
 .v2-project-folder-empty {

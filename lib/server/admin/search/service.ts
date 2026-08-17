@@ -323,7 +323,6 @@ type SearchChild = {
 
 type SearchOptionRow = {
   archivedAt: Date | null;
-  availableInProjects?: boolean;
   description: string;
   displayName: string;
   enabled: boolean;
@@ -430,7 +429,6 @@ function serializeIntegration(
   );
   return {
     archivedAt: option.archivedAt?.toISOString() ?? null,
-    availableInProjects: option.availableInProjects ?? false,
     broaderModelSetup: kind !== "web_search"
       ? "not_applicable"
       : readyClient
@@ -1154,19 +1152,6 @@ export function createAdminSearchService(input: Readonly<{
     });
   }
 
-  async function setProjectAvailability(args: Readonly<{
-    available: boolean;
-    id: string;
-  }>): Promise<void> {
-    const updated = await input.prisma.searchOption.updateMany({
-      data: { availableInProjects: args.available },
-      where: { archivedAt: null, id: args.id, kind: { not: "none" } }
-    });
-    if (updated.count !== 1) {
-      throw new AdminSearchServiceError("search_integration_not_found");
-    }
-  }
-
   async function archive(args: Readonly<{ id: string }>): Promise<void> {
     const current = await input.prisma.searchOption.findUnique({
       select: { templateKey: true },
@@ -1188,7 +1173,6 @@ export function createAdminSearchService(input: Readonly<{
     createDraft,
     list,
     setEnabled,
-    setProjectAvailability,
     testDraft,
     updateDraft,
     updatePolicy

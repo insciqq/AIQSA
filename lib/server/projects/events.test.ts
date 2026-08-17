@@ -104,7 +104,6 @@ describe("Project event cursors", () => {
           providerModel: {
             activeConfig: { adapterKind: "fake" },
             activeVersion: 1,
-            availableInProjects: true,
             connection: {
               activeConfig: { adapterKind: "fake" },
               activeVersion: 1,

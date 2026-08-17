@@ -835,7 +835,7 @@ function DetailTask({
   catalog: AdminSearchCatalog;
   form: SearchForm;
   integration: AdminSearchIntegration;
-  onAction(action: "archive" | "disable" | "disable_projects" | "enable" | "enable_projects" | "test"): void;
+  onAction(action: "archive" | "disable" | "enable" | "test"): void;
   onSave(): void;
   setForm(value: SearchForm): void;
   task: SearchTask;
@@ -907,14 +907,6 @@ function DetailTask({
       <div className="flex flex-wrap gap-2 border-t border-trace-subtle pt-4">
         <button className={integration.enabled ? quietButton : enableButton} disabled={busy || (!integration.enabled && !integration.ready)} onClick={() => onAction(integration.enabled ? "disable" : "enable")} type="button">
           {integration.enabled ? "Disable" : "Enable"}
-        </button>
-        <button
-          className={integration.availableInProjects ? quietButton : enableButton}
-          disabled={busy || !integration.ready}
-          onClick={() => onAction(integration.availableInProjects ? "disable_projects" : "enable_projects")}
-          type="button"
-        >
-          {integration.availableInProjects ? "Remove from Projects" : "Make available in Projects"}
         </button>
         {!integration.system ? <button className={dangerButton} disabled={busy} onClick={() => onAction("archive")} type="button"><Trash2 aria-hidden="true" className="size-3.5" />Archive</button> : null}
       </div>
@@ -1065,15 +1057,11 @@ export function AdminSearchSection({
   }
 
   function performAction(
-    action: "archive" | "disable" | "disable_projects" | "enable" | "enable_projects" | "test",
+    action: "archive" | "disable" | "enable" | "test",
     target: AdminSearchIntegration
   ) {
     const success = action === "test"
       ? "Live Search check completed."
-      : action === "enable_projects"
-        ? "Search source is available in Projects."
-        : action === "disable_projects"
-          ? "Search source removed from Projects."
       : action === "enable"
           ? "Search source enabled."
           : action === "disable"
@@ -1094,7 +1082,7 @@ export function AdminSearchSection({
     );
   }
 
-  function runAction(action: "archive" | "disable" | "disable_projects" | "enable" | "enable_projects" | "test") {
+  function runAction(action: "archive" | "disable" | "enable" | "test") {
     if (!selected || !catalog) return;
     if (action === "archive") {
       setArchiveCandidate(selected);

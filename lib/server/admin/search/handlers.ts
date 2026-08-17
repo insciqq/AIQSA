@@ -196,11 +196,6 @@ export function createAdminSearchActionHandler(input: Readonly<{
           id: integrationId,
           userId: auth.session!.userId
         });
-      } else if (action === "enable_projects" || action === "disable_projects") {
-        await input.service.setProjectAvailability({
-          available: action === "enable_projects",
-          id: integrationId
-        });
       } else if (action === "archive") {
         if (value?.confirmed !== true) {
           return Response.json({ error: "search_archive_confirmation_required" }, { status: 409 });

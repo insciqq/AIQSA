@@ -10,7 +10,6 @@ const projectModelAuthoritySelect = {
     select: {
       activeConfig: true,
       activeVersion: true,
-      availableInProjects: true,
       connection: {
         select: {
           activeConfig: true,
@@ -42,7 +41,6 @@ const projectKnowledgeAuthoritySelect = {
             select: {
               activeConfig: true,
               activeVersion: true,
-              availableInProjects: true,
               connection: {
                 select: {
                   activeConfig: true,
@@ -88,7 +86,7 @@ function activeSharedConnection(connection: ProjectModelAuthorityRow["providerMo
 
 function activeProjectModel(row: ProjectModelAuthorityRow): boolean {
   const model = row.providerModel;
-  return model.availableInProjects && model.enabled && model.modelClass === "answer" &&
+  return model.enabled && model.modelClass === "answer" &&
     model.activeVersion > 0 && model.activeConfig !== null && activeSharedConnection(model.connection);
 }
 
@@ -97,7 +95,7 @@ function activeProjectKnowledge(row: ProjectKnowledgeAuthorityRow): boolean {
   const generation = base.activeIndexGeneration;
   const embedding = generation?.embeddingProviderModel;
   return base.archivedAt === null && generation?.status === "active" &&
-    Boolean(embedding) && embedding!.availableInProjects && embedding!.enabled &&
+    Boolean(embedding) && embedding!.enabled &&
     embedding!.modelClass === "embedding" && embedding!.activeVersion > 0 &&
     embedding!.activeConfig !== null && embedding!.connection.family !== "fake" &&
     activeSharedConnection(embedding!.connection);

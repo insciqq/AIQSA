@@ -1531,7 +1531,6 @@ async function assertCurrentMcpAdmission(
       WHERE server."id" = ${binding.serverId}
         AND server."enabled" = true
         AND server."archivedAt" IS NULL
-        AND server."availableInProjects" = true
         AND server."activeRevisionId" = generation."revisionId"
         AND revision."id" = generation."revisionId"
         AND (

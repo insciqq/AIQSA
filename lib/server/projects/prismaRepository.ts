@@ -116,7 +116,6 @@ const projectDetailInclude = {
                 select: {
                   activeConfig: true,
                   activeVersion: true,
-                  availableInProjects: true,
                   connection: {
                     select: {
                       activeConfig: true,
@@ -150,7 +149,6 @@ const projectDetailInclude = {
           activeRevision: { select: { configuration: true, validationEvidence: true } },
           activeRevisionId: true,
           archivedAt: true,
-          availableInProjects: true,
           description: true,
           displayName: true,
           enabled: true,
@@ -164,7 +162,6 @@ const projectDetailInclude = {
     include: {
       providerModel: {
         select: {
-          availableInProjects: true,
           connection: {
             select: {
               activeConfig: true,
@@ -214,7 +211,6 @@ const projectDetailInclude = {
       searchOption: {
         select: {
           archivedAt: true,
-          availableInProjects: true,
           description: true,
           displayName: true,
           enabled: true,
@@ -409,7 +405,6 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
   const modelEligible = (model: ProjectDetailRow["modelBindings"][number]["providerModel"]) =>
     model.enabled && model.modelClass === "answer" &&
     model.activeConfig !== null && model.activeVersion > 0 &&
-    model.availableInProjects &&
     model.connection.enabled && model.connection.activeConfig !== null &&
     model.connection.activeVersion > 0 && (
       model.connection.family === "fake" || Boolean(
@@ -439,7 +434,7 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
         binding.searchOption as unknown as CatalogSearchOptionRow
       );
       const eligible = binding.searchOption.enabled && binding.searchOption.archivedAt === null &&
-        binding.searchOption.availableInProjects && Boolean(connection) &&
+        Boolean(connection) &&
         Boolean(catalogEntry?.routes.length) &&
         connection!.enabled && connection!.activeConfig !== null && connection!.activeVersion > 0 && (
           connection!.family === "fake" || Boolean(
@@ -457,7 +452,7 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
     }; }),
     ...row.mcpBindings.map((binding) => {
       const eligible = binding.server.enabled && binding.server.archivedAt === null &&
-        Boolean(binding.server.activeRevisionId) && binding.server.availableInProjects && (
+        Boolean(binding.server.activeRevisionId) && (
           Boolean(binding.server.sharedConfigEnvelope) || Boolean(
             binding.server.activeRevision &&
             mcpRevisionUsesNoAuth(binding.server.activeRevision.configuration)
@@ -479,7 +474,7 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
         Boolean(embedding) && Boolean(connection) &&
         embedding!.enabled && embedding!.modelClass === "embedding" &&
         embedding!.activeConfig !== null && embedding!.activeVersion > 0 &&
-        embedding!.availableInProjects && connection!.family !== "fake" &&
+        connection!.family !== "fake" &&
         connection!.enabled && connection!.activeConfig !== null && connection!.activeVersion > 0 && Boolean(
           connection!.defaultCredential?.enabled &&
           connection!.defaultCredential.activeVersion?.revokedAt === null
@@ -713,7 +708,6 @@ function readiness(row: ProjectDetailRow): ProjectReadinessWire {
   const eligibleModelIds = new Set(row.modelBindings.filter((binding) =>
     binding.providerModel.enabled && binding.providerModel.modelClass === "answer" &&
     binding.providerModel.activeConfig !== null && binding.providerModel.activeVersion > 0 &&
-    binding.providerModel.availableInProjects &&
     binding.providerModel.connection.enabled && binding.providerModel.connection.activeConfig !== null &&
     binding.providerModel.connection.activeVersion > 0 && (
       binding.providerModel.connection.family === "fake" || Boolean(
@@ -991,7 +985,6 @@ async function hasUsableProjectMcp(
       server: {
         activeRevisionId: { not: null },
         archivedAt: null,
-        availableInProjects: true,
         enabled: true
       }
     }
@@ -1196,7 +1189,6 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
         activeVersion: { gt: 0 },
         enabled: true,
         modelClass: "answer",
-        availableInProjects: true,
         connection: {
           activeConfig: { not: Prisma.DbNull },
           activeVersion: { gt: 0 },
@@ -1263,7 +1255,6 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             select: { displayName: true, id: true, optionId: true },
             where: {
               archivedAt: null,
-              availableInProjects: true,
               enabled: true,
               optionId: { in: requiredSearchIds },
               sourceConnection: {
@@ -1334,7 +1325,6 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             where: {
               activeRevisionId: { not: null },
               archivedAt: null,
-              availableInProjects: true,
               enabled: true,
               id: { in: requiredMcpIds }
             }
@@ -1404,7 +1394,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       const eligible = Boolean(base && generation?.status === "active" && embedding && connection &&
         embedding.enabled && embedding.modelClass === "embedding" &&
         embedding.activeConfig !== null && embedding.activeVersion > 0 &&
-        embedding.availableInProjects && connection.family !== "fake" &&
+        connection.family !== "fake" &&
         connection.enabled && connection.activeConfig !== null && connection.activeVersion > 0 && Boolean(
           connection.defaultCredential?.enabled &&
           connection.defaultCredential.activeVersion?.revokedAt === null
@@ -1708,7 +1698,6 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           take,
           where: {
             archivedAt: null,
-            availableInProjects: true,
             enabled: true,
             sourceConnection: {
               is: {
@@ -1771,7 +1760,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             generation.embeddingProviderModel.modelClass === "embedding" &&
             generation.embeddingProviderModel.activeConfig !== null &&
             generation.embeddingProviderModel.activeVersion > 0 &&
-            generation.embeddingProviderModel.availableInProjects && connection?.family !== "fake" &&
+            connection?.family !== "fake" &&
             connection?.enabled && connection.activeConfig !== null && connection.activeVersion > 0 && Boolean(
               connection.defaultCredential?.enabled &&
               connection.defaultCredential.activeVersion?.revokedAt === null
@@ -1836,7 +1825,6 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           where: {
             activeRevisionId: { not: null },
             archivedAt: null,
-            availableInProjects: true,
             enabled: true,
             ...(contains ? { displayName: { contains, mode: "insensitive" } } : {})
           }
@@ -2501,7 +2489,6 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
               select: { id: true, optionId: true },
               where: {
                 archivedAt: null,
-                availableInProjects: true,
                 enabled: true,
                 AND: [{ OR: [{ id: input.resourceId }, { optionId: input.resourceId }] }],
                 sourceConnection: {
@@ -2531,11 +2518,10 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             });
           } else if (input.type === "mcp") {
             const target = await tx.mcpServer.findFirst({
-              select: { activeRevisionId: true, availableInProjects: true, enabled: true, id: true, sharedConfigEnvelope: true },
+              select: { activeRevisionId: true, enabled: true, id: true, sharedConfigEnvelope: true },
               where: {
                 activeRevisionId: { not: null },
                 archivedAt: null,
-                availableInProjects: true,
                 enabled: true,
                 id: input.resourceId
               }
@@ -2583,7 +2569,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             if (!target || generation?.status !== "active" || !embedding || !connection ||
               !embedding.enabled || embedding.modelClass !== "embedding" ||
               embedding.activeConfig === null || embedding.activeVersion <= 0 ||
-              !embedding.availableInProjects || connection.family === "fake" ||
+              connection.family === "fake" ||
               !connection.enabled || connection.activeConfig === null || connection.activeVersion <= 0 || !(
                 connection.defaultCredential?.enabled &&
                 connection.defaultCredential.activeVersion?.revokedAt === null

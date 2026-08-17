@@ -181,7 +181,6 @@ export type AdminProviderRepository = Readonly<{
     label: string;
   }): Promise<"created" | "connection_not_found">;
   createModel(input: {
-    availableInProjects?: boolean;
     configuration: ProviderModelConfiguration;
     connectionId: string;
     displayName: string;
@@ -254,7 +253,6 @@ export type AdminProviderRepository = Readonly<{
     expectedDraftVersion: number;
   }): Promise<ProviderDraftMutationResult>;
   updateModelDraft(input: {
-    availableInProjects?: boolean;
     configuration: ProviderModelConfiguration;
     displayName: string;
     expectedDraftVersion: number;

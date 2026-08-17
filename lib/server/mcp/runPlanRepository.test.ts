@@ -137,7 +137,6 @@ function projectGeneration(overrides: Record<string, unknown> = {}) {
       server: {
         activeRevisionId: "project-revision-1",
         archivedAt: null,
-        availableInProjects: true,
         description: "Shared Project tools",
         displayName: "Project MCP",
         enabled: true,
@@ -213,6 +212,29 @@ describe("Prisma MCP run-plan loader", () => {
     const [record] = await loadMcpRunPlanRecordsForProjectServers(
       ["project-server-1"],
       projectClientWith([projectGeneration(override)]).client
+    );
+
+    expect(record).toMatchObject({
+      credentialSources: [],
+      enabled: false,
+      errorCode: "mcp_project_credentials_unavailable",
+      generationId: null,
+      readiness: "unavailable"
+    });
+  });
+
+  it.each([
+    ["disabled server", { archivedAt: null, enabled: false }],
+    ["archived server", { archivedAt: NOW, enabled: true }]
+  ])("fails Project MCP closed for a %s", async (_label, serverOverride) => {
+    const generation = projectGeneration();
+    Object.assign(
+      generation.revision.server as { archivedAt: Date | null; enabled: boolean },
+      serverOverride
+    );
+    const [record] = await loadMcpRunPlanRecordsForProjectServers(
+      ["project-server-1"],
+      projectClientWith([generation]).client
     );
 
     expect(record).toMatchObject({

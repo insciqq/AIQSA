@@ -17,7 +17,6 @@ export type NormalizedMcpImport = Readonly<{
 export type AdminMcpSharedValueDraft = Record<string, McpSlotValue | null | undefined>;
 
 export type AdminMcpServerForm = {
-  availableInProjects: boolean;
   description: string;
   draft: McpDraftConfiguration;
   name: string;
@@ -121,7 +120,6 @@ export function defaultMcpDraft(kind: McpSource["kind"] = "remote"): McpDraftCon
 
 export function blankMcpServerForm(): AdminMcpServerForm {
   return {
-    availableInProjects: false,
     description: "",
     draft: defaultMcpDraft(),
     name: "",
@@ -136,7 +134,6 @@ export function editableMcpServerForm(server: AdminMcpServer): AdminMcpServerFor
     draft.auth = preparedMcpOAuthPolicy(draft.source, draft.auth);
   }
   return {
-    availableInProjects: server.availableInProjects ?? false,
     description: server.description,
     draft,
     name: server.name,

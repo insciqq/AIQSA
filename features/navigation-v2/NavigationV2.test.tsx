@@ -109,6 +109,19 @@ describe("Navigation v2", () => {
     expect(screen.getByText("Nothing found")).toBeVisible();
   });
 
+  it("gives the sidebar list region to a selected Project", () => {
+    sidebar({
+      chats: [],
+      onArchivedChats: vi.fn(),
+      projectContextActive: true,
+      projectsSlot: <div>Project chat tree</div>
+    });
+
+    expect(screen.getByText("Project chat tree")).toBeVisible();
+    expect(screen.queryByText("Start your first chat")).toBeNull();
+    expect(screen.getByRole("button", { name: "Archived chats" })).toBeVisible();
+  });
+
   it("routes Normal, Memory-off, and Temporary new-chat intents and marks the current mode", () => {
     const onNewChat = vi.fn();
     sidebar({ currentNewChatMode: "EXCLUDED", onNewChat });

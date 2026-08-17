@@ -236,7 +236,6 @@ const projectRunGenerationSelect = {
         select: {
           activeRevisionId: true,
           archivedAt: true,
-          availableInProjects: true,
           description: true,
           displayName: true,
           enabled: true,
@@ -279,8 +278,10 @@ function serializeProjectRunGeneration(
   generation: ProjectRunGenerationRecord
 ): McpRunPlanRecord {
   const server = generation.revision.server;
-  const sharedSafe = server.availableInProjects &&
-    (Boolean(server.sharedConfigEnvelope) || authMode(generation.revision.configuration) === "none");
+  const sharedSafe = server.enabled && server.archivedAt === null && (
+    Boolean(server.sharedConfigEnvelope) ||
+    authMode(generation.revision.configuration) === "none"
+  );
   const credentialSources = generation.credentialSources.filter(
     (source): source is "shared" => source === "shared"
   );
