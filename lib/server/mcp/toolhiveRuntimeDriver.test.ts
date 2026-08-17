@@ -38,6 +38,7 @@ type FakeWorkload = {
 
 function fakeToolHive() {
   const groups = new Set<string>();
+  let restartStatus: ToolHiveWorkloadStatus = "running";
   const workloads = new Map<string, FakeWorkload>();
   const requests: Array<Readonly<{
     body: Record<string, unknown> | null;
@@ -165,7 +166,7 @@ function fakeToolHive() {
       if (!action && method === "GET") return json(workload.detail);
       if (action === "status" && method === "GET") return json({ status: workload.status });
       if (action === "restart" && method === "POST") {
-        workload.status = "running";
+        workload.status = restartStatus;
         return new Response(null, { status: 202 });
       }
       if (action === "stop" && method === "POST") {
@@ -192,6 +193,9 @@ function fakeToolHive() {
     fetch,
     groups,
     requests,
+    setRestartStatus(status: ToolHiveWorkloadStatus) {
+      restartStatus = status;
+    },
     workloads
   };
 }
@@ -203,18 +207,27 @@ function harness() {
     baseUrl: "http://toolhive-runtime:8080",
     fetch: api.fetch
   });
+  const sleep = vi.fn(async (ms: number) => {
+    now += ms;
+    api.advance();
+  });
   const driver = new ToolHiveMcpRuntimeDriver({
     client,
     lifecycleTimeoutMs: 1_000,
     now: () => now,
     ownerToken,
     pollIntervalMs: 10,
-    sleep: async (ms) => {
-      now += ms;
-      api.advance();
-    }
+    sleep
   });
-  return { api, client, driver };
+  return { api, client, driver, sleep };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 describe("ToolHive MCP runtime driver", () => {
@@ -265,6 +278,100 @@ describe("ToolHive MCP runtime driver", () => {
       transport: "stdio"
     });
     expect(probe).toHaveBeenCalledWith("http://toolhive-runtime:31337/mcp", undefined);
+  });
+
+  it("reuses an exact ready workload left by the same installation", async () => {
+    const test = harness();
+    test.api.groups.add(groupName);
+    test.api.add({ generationToken: generationOne });
+
+    await expect(test.driver.ensureReadyWorkload({
+      cmdArguments: ["--stdio"],
+      envVars: { MEM0_API_KEY: "personal-key" },
+      generationToken: generationOne,
+      image
+    }, { probe: async () => undefined })).resolves.toMatchObject({ status: "running" });
+
+    expect(test.api.requests.filter((request) =>
+      request.method === "POST" && request.path === "/api/v1beta/workloads"
+    )).toHaveLength(0);
+    expect(test.api.requests.some((request) => request.path.endsWith("/restart"))).toBe(false);
+  });
+
+  it("serializes concurrent local workload lifecycles until the first workload is ready", async () => {
+    const test = harness();
+    const firstProbeEntered = deferred();
+    const releaseFirstProbe = deferred();
+    const first = test.driver.ensureReadyWorkload({
+      cmdArguments: ["--stdio"],
+      envVars: {},
+      generationToken: generationOne,
+      image
+    }, {
+      probe: async () => {
+        firstProbeEntered.resolve();
+        await releaseFirstProbe.promise;
+      }
+    });
+    await firstProbeEntered.promise;
+
+    const second = test.driver.ensureReadyWorkload({
+      cmdArguments: ["--stdio"],
+      envVars: {},
+      generationToken: generationTwo,
+      image
+    }, { probe: async () => undefined });
+    await Promise.resolve();
+
+    expect(test.api.requests.filter((request) =>
+      request.method === "POST" && request.path === "/api/v1beta/workloads"
+    )).toHaveLength(1);
+
+    releaseFirstProbe.resolve();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ name: `${groupName}-${generationOne}` }),
+      expect.objectContaining({ name: `${groupName}-${generationTwo}` })
+    ]);
+    expect(test.api.requests.filter((request) =>
+      request.method === "POST" && request.path === "/api/v1beta/workloads"
+    )).toHaveLength(2);
+  });
+
+  it("removes an aborted lifecycle waiter without blocking the next workload", async () => {
+    const test = harness();
+    const firstProbeEntered = deferred();
+    const releaseFirstProbe = deferred();
+    const first = test.driver.ensureReadyWorkload({
+      cmdArguments: [],
+      envVars: {},
+      generationToken: generationOne,
+      image
+    }, {
+      probe: async () => {
+        firstProbeEntered.resolve();
+        await releaseFirstProbe.promise;
+      }
+    });
+    await firstProbeEntered.promise;
+
+    const controller = new AbortController();
+    const aborted = test.driver.ensureReadyWorkload({
+      cmdArguments: [],
+      envVars: {},
+      generationToken: generationTwo,
+      image
+    }, { probe: async () => undefined, signal: controller.signal });
+    const next = test.driver.ensureReadyWorkload({
+      cmdArguments: [],
+      envVars: {},
+      generationToken: generationTwo,
+      image
+    }, { probe: async () => undefined });
+
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ code: "toolhive_lifecycle_aborted" });
+    releaseFirstProbe.resolve();
+    await expect(Promise.all([first, next])).resolves.toHaveLength(2);
   });
 
   it("accepts ToolHive's generated local image when first materializing an exact package URI", async () => {
@@ -323,6 +430,68 @@ describe("ToolHive MCP runtime driver", () => {
       path: `/api/v1beta/workloads/${groupName}-${generationOne}/restart`
     });
     expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it("restarts a failed exact workload once and reuses it when recovery succeeds", async () => {
+    const test = harness();
+    test.api.groups.add(groupName);
+    test.api.add({ generationToken: generationOne, status: "error" });
+
+    await expect(test.driver.ensureReadyWorkload({
+      cmdArguments: ["--stdio"],
+      envVars: { MEM0_API_KEY: "personal-key" },
+      generationToken: generationOne,
+      image
+    }, { probe: async () => undefined })).resolves.toMatchObject({ status: "running" });
+
+    expect(test.api.requests.filter((request) =>
+      request.method === "POST" && request.path.endsWith("/restart")
+    )).toHaveLength(1);
+    expect(test.sleep).not.toHaveBeenCalled();
+  });
+
+  it("fails after a bounded settle when an exact workload remains failed after one restart", async () => {
+    const test = harness();
+    test.api.groups.add(groupName);
+    test.api.add({ generationToken: generationOne, status: "error" });
+    test.api.setRestartStatus("error");
+
+    await expect(test.driver.ensureReadyWorkload({
+      cmdArguments: ["--stdio"],
+      envVars: { MEM0_API_KEY: "personal-key" },
+      generationToken: generationOne,
+      image
+    }, { probe: async () => undefined })).rejects.toMatchObject({
+      code: "toolhive_workload_failed"
+    });
+
+    expect(test.api.requests.filter((request) =>
+      request.method === "POST" && request.path.endsWith("/restart")
+    )).toHaveLength(1);
+    expect(test.sleep).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    "stopping",
+    "removing",
+    "unauthenticated",
+    "policy_stopped"
+  ] as const)("fails immediately for terminal workload status %s", async (status) => {
+    const test = harness();
+    test.api.groups.add(groupName);
+    test.api.add({ generationToken: generationOne, status });
+
+    await expect(test.driver.ensureReadyWorkload({
+      cmdArguments: ["--stdio"],
+      envVars: { MEM0_API_KEY: "personal-key" },
+      generationToken: generationOne,
+      image
+    }, { probe: async () => undefined })).rejects.toMatchObject({
+      code: "toolhive_workload_failed"
+    });
+
+    expect(test.api.requests.some((request) => request.path.endsWith("/restart"))).toBe(false);
+    expect(test.sleep).not.toHaveBeenCalled();
   });
 
   it.each([

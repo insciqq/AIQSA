@@ -3144,6 +3144,80 @@ describe("run execution", () => {
     expect(repository.completeRuns).toEqual([]);
   });
 
+  it("fails Auto discovery without another model round when a selected MCP is not ready", async () => {
+    const namespacedName = "mcp_catalog_check_quota";
+    const discovery: McpDiscoveryState = {
+      catalog: {
+        servers: [{
+          description: "Quota documentation",
+          namespace: "catalog",
+          revisionId: "revision-catalog",
+          serverId: "server-catalog",
+          serverName: "Catalog",
+          tools: [{
+            description: "Check a quota",
+            namespacedName,
+            originalName: "check_quota"
+          }]
+        }],
+        version: 1
+      },
+      epochs: [],
+      version: 2
+    };
+    const rawFailure = "PRIVATE_TOOLHIVE_STARTUP_FAILURE";
+    const materialize = vi.fn(async () => ({
+      code: "mcp_not_ready" as const,
+      issues: [{ errorCode: rawFailure, name: "Catalog", readiness: "unavailable" as const }],
+      ok: false as const
+    }));
+    const appendMcpDiscoveryEpoch = vi.fn(async () => null);
+    const repository = createRepository();
+    let providerRounds = 0;
+
+    await createRunExecutionResponse(executionInput({
+      adapter: createAdapter(async function* () {
+        providerRounds += 1;
+        if (providerRounds === 1) {
+          return providerResult({
+            finalText: "",
+            toolCalls: [{
+              arguments: { goal: "check an AWS quota" },
+              id: "provider-find-tools-not-ready",
+              name: "find_tools"
+            }]
+          });
+        }
+        return providerResult({ finalText: "This round must not run" });
+      }),
+      mcp: {
+        materialize,
+        prepare: materialize,
+        router: {
+          route: async () => ({ toolNames: [namespacedName], usageAttribution: null })
+        }
+      },
+      prepared: preparedData({
+        mcpDiscovery: discovery,
+        modelId: "gpt-tool-model",
+        provider: "openai"
+      }),
+      repository: { ...repository.repository, appendMcpDiscoveryEpoch }
+    })).text();
+
+    expect(providerRounds).toBe(1);
+    expect(materialize).toHaveBeenCalledOnce();
+    expect(appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
+    expect(repository.failedRuns).toEqual([expect.objectContaining({
+      error: {
+        code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
+        message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
+      }
+    })]);
+    expect(JSON.stringify(repository.failedRuns)).not.toContain(rawFailure);
+    expect(repository.completeRuns).toEqual([]);
+  });
+
   it("coexists with MCP in one ordinary context and records provider and tool destinations", async () => {
     const canaries = {
       assistant: "ASSISTANT_MEMORY_CANARY_8421",

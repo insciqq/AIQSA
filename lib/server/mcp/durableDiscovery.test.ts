@@ -274,4 +274,71 @@ describe("durable MCP discovery", () => {
       message: "Automatic tool discovery is unavailable."
     } satisfies Partial<McpAutoDiscoveryUnavailableError>);
   });
+
+  it("treats a selected tool that is not ready as a fatal discovery failure", async () => {
+    const state = harness();
+    const materialize = vi.fn(async () => ({
+      code: "mcp_not_ready" as const,
+      issues: [{ errorCode: "private-runtime-detail", name: "Catalog", readiness: "unavailable" as const }],
+      ok: false as const
+    }));
+
+    await expect(executeDurableMcpDiscovery({
+      activeDiscovery: state.discovery(),
+      activeSnapshot: state.snapshot(),
+      appendEpoch: state.appendEpoch,
+      call: call("provider-materialization-failure"),
+      materialize,
+      modelRunToolCallId: "persisted-materialization-failure",
+      request,
+      roundIndex: 0,
+      router: {
+        route: async () => ({ toolNames: [toolIds[0]!], usageAttribution: null })
+      },
+      runId: "run-1",
+      userId: "user-1"
+    })).rejects.toMatchObject({
+      code: "mcp_auto_discovery_unavailable",
+      internalReason: "mcp_materialization_mcp_not_ready",
+      message: "Automatic tool discovery is unavailable."
+    } satisfies Partial<McpAutoDiscoveryUnavailableError>);
+
+    expect(materialize).toHaveBeenCalledOnce();
+    expect(state.appendEpoch).not.toHaveBeenCalled();
+    expect(state.discovery().epochs).toEqual([]);
+  });
+
+  it("redacts unexpected materialization errors and does not checkpoint them", async () => {
+    const state = harness();
+    const rawFailure = "PRIVATE_TOOLHIVE_ENDPOINT_FAILURE";
+
+    let failure: unknown;
+    try {
+      await executeDurableMcpDiscovery({
+        activeDiscovery: state.discovery(),
+        activeSnapshot: state.snapshot(),
+        appendEpoch: state.appendEpoch,
+        call: call("provider-materialization-exception"),
+        materialize: async () => { throw new Error(rawFailure); },
+        modelRunToolCallId: "persisted-materialization-exception",
+        request,
+        roundIndex: 0,
+        router: {
+          route: async () => ({ toolNames: [toolIds[0]!], usageAttribution: null })
+        },
+        runId: "run-1",
+        userId: "user-1"
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({
+      code: "mcp_auto_discovery_unavailable",
+      internalReason: "mcp_materialization_failed",
+      message: "Automatic tool discovery is unavailable."
+    } satisfies Partial<McpAutoDiscoveryUnavailableError>);
+    expect(`${String(failure)} ${JSON.stringify(failure)}`).not.toContain(rawFailure);
+    expect(state.appendEpoch).not.toHaveBeenCalled();
+  });
 });
