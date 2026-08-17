@@ -31,7 +31,6 @@ const adminDashboardUserSelect = {
       mcpGrants: true,
       mcpOAuthConnections: true,
       mcpUserServers: true,
-      modelRuns: true,
       assistantDefinitions: true,
       skillDefinitions: true,
       sharedSnapshots: true,
@@ -155,7 +154,8 @@ export async function listAdminDashboard(
     usageRows,
     mcpServer,
     smtpConfiguration,
-    memoryOwnedCounts
+    memoryOwnedCounts,
+    personalModelRunCounts
   ] = await Promise.all([
     prisma.user.findMany({
       orderBy: {
@@ -252,8 +252,17 @@ export async function listAdminDashboard(
         ]
       }
     }),
-    loadAccountMemoryOwnedCounts(prisma)
+    loadAccountMemoryOwnedCounts(prisma),
+    prisma.modelRun.groupBy({
+      _count: { _all: true },
+      by: ["userId"],
+      where: { chat: { projectId: null } }
+    })
   ]);
+  const personalModelRunCountByUserId = new Map(personalModelRunCounts.map((row) => [
+    row.userId,
+    row._count._all
+  ]));
   const groupNamesById = new Map(groups.map((group) => [group.id, { name: group.name }]));
   const usage = serializeAdminUsageDashboard({
     groups,
@@ -273,7 +282,13 @@ export async function listAdminDashboard(
     return {
       deletion: adminUserDeletionInfo({
         ownedDataCount: adminUserOwnedDataCountWithMemory(
-          user,
+          {
+            ...user,
+            _count: {
+              ...user._count,
+              modelRuns: personalModelRunCountByUserId.get(user.id) ?? 0
+            }
+          },
           memoryOwnedCounts.get(user.id) ?? 0
         ),
         status: user.status

@@ -32,6 +32,7 @@ const summary = {
   memoryMode: "NORMAL",
   messageCount: 2,
   pinned: false,
+  projectId: null,
   sourceRevision: 4,
   title: "Archived source",
   updatedAt

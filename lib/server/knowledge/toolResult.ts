@@ -192,6 +192,13 @@ function decodePassage(value: unknown): KnowledgeRetrievedPassageEvidence | null
   };
 }
 
+/** Strict decoder for one persisted result used by reauthorized citation reads. */
+export function decodeKnowledgeRetrievedPassage(
+  value: unknown
+): KnowledgeRetrievedPassageEvidence | null {
+  return decodePassage(value);
+}
+
 export function knowledgeToolResultText(evidence: KnowledgeRetrievalEvidence): string {
   if (evidence.outcome === "complete") {
     return [

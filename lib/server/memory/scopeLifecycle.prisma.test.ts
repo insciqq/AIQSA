@@ -132,6 +132,7 @@ async function cleanup(userIds: readonly string[]): Promise<void> {
     await prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe("SET CONSTRAINTS ALL DEFERRED");
       for (const chat of temporaryChats) {
+        if (!chat.userId) throw new Error("temporary_chat_owner_missing");
         const leaseToken = `scope-cleanup-${randomUUID()}`;
         await tx.memoryDeletionOutbox.upsert({
           create: {

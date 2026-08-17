@@ -146,6 +146,7 @@ export function useWorkspaceActions({
       id: detail.id,
       messageCount: detail.messageCount,
       pinned: detail.pinned,
+      projectId: detail.projectId ?? null,
       title: detail.title,
       updatedAt: detail.updatedAt
     };
@@ -175,6 +176,7 @@ export function useWorkspaceActions({
     useWorkspaceStore.getState().upsertChat(chat);
     if (
       useWorkspaceStore.getState().navigationReady &&
+      !resolvedChat.projectId &&
       resolvedChat.memoryMode !== "TEMPORARY" &&
       resolvedChat.pendingInitialMemoryMode !== "TEMPORARY"
     ) {

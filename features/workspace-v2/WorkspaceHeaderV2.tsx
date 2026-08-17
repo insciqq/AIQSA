@@ -181,6 +181,7 @@ export function WorkspaceHeaderV2({
   deleteDisabled = false,
   editingTitle = null,
   folders = [],
+  moveDisabled = false,
   onArchive,
   onBranches,
   onCommands,
@@ -189,6 +190,7 @@ export function WorkspaceHeaderV2({
   onExport,
   onLibrary,
   onMove,
+  renameDisabled = false,
   onRenameCancel,
   onRenameChange,
   onRenameSave,
@@ -207,6 +209,7 @@ export function WorkspaceHeaderV2({
   /** Non-null while the header title is being renamed inline. */
   editingTitle?: string | null;
   folders?: readonly WorkspaceHeaderFolderV2[];
+  moveDisabled?: boolean;
   onArchive(): void;
   onBranches(): void;
   onCommands(): void;
@@ -216,6 +219,7 @@ export function WorkspaceHeaderV2({
   onExport(format: "json" | "markdown"): void;
   onLibrary(): void;
   onMove(folderId: string | null): void;
+  renameDisabled?: boolean;
   onRenameCancel(): void;
   onRenameChange(value: string): void;
   onRenameSave(): void;
@@ -251,8 +255,9 @@ export function WorkspaceHeaderV2({
   // 900px, where the Share text button collapses.
   const overflowActions: HeaderOverflowActionV2[] = [
     { disabled: shareDisabled, label: "Share", mobileOnly: true, onSelect: onShare },
-    { label: "Rename", onSelect: onRenameStart },
+    { disabled: renameDisabled, label: "Rename", onSelect: onRenameStart },
     {
+      disabled: moveDisabled,
       label: "Move to…",
       submenu: [
         { label: "No folder", onSelect: () => onMove(null) },
@@ -307,7 +312,8 @@ export function WorkspaceHeaderV2({
               <button
                 className="v2-live-title-button v2-focusable"
                 data-testid="header-title"
-                title="Rename chat"
+                disabled={renameDisabled}
+                title={renameDisabled ? undefined : "Rename chat"}
                 type="button"
                 onClick={onRenameStart}
               >

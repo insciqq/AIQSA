@@ -8,6 +8,7 @@ import { loadEntitlementsForUser } from "./dbEntitlements";
 import { hashPassword, isPlausibleEmail } from "./password";
 import { createPrismaAuthRegistrationRepository } from "./registrationRepository";
 import { hashToken } from "./token";
+import { createPrismaProjectRepository } from "../projects/prismaRepository";
 
 function startBarrier(parties: number) {
   let waiting = 0;
@@ -1154,6 +1155,122 @@ describe("Prisma-backed admin repository", () => {
           userId: withData.id
         })
       ).resolves.toBe("user_has_owned_data");
+    });
+  });
+
+  it("does not treat Project-owned run evidence as account-owned deletion data", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const participant = await createPasswordUser({
+        displayName: "Former Project Participant",
+        domain,
+        emailLocalPart: "former-project-participant",
+        status: "active"
+      });
+      const projects = createPrismaProjectRepository(prisma);
+      const created = await projects.create({
+        actorDisplayName: "Admin Test Operator",
+        description: "Project evidence account-deletion fixture",
+        name: `Deletion evidence ${randomUUID()}`,
+        userId: adminId
+      });
+      if (created.kind !== "ok") throw new Error(`project_fixture_create_${created.kind}`);
+      const projectId = created.value.id;
+
+      try {
+        const granted = await projects.addGrant({
+          actorDisplayName: "Admin Test Operator",
+          expectedAccessRevision: created.value.accessRevision,
+          projectId,
+          role: "CONTRIBUTOR",
+          targetUserId: participant.id,
+          userId: adminId
+        });
+        if (granted.kind !== "ok") throw new Error(`project_fixture_grant_${granted.kind}`);
+        const accepted = await projects.getDetail(participant.id, projectId);
+        if (!accepted) throw new Error("project_fixture_member_detail_missing");
+        const chat = await prisma.chat.create({
+          data: {
+            createdByDisplayName: participant.displayName,
+            createdByUserId: participant.id,
+            memoryMode: "EXCLUDED",
+            projectId,
+            title: "Shared evidence",
+            userId: null
+          }
+        });
+        const userMessage = await prisma.message.create({
+          data: {
+            authorDisplayName: participant.displayName,
+            authorProjectRole: "CONTRIBUTOR",
+            authorUserId: participant.id,
+            chatId: chat.id,
+            content: { blocks: [{ text: "Shared question", type: "text" }] },
+            role: "user",
+            status: "complete"
+          }
+        });
+        const assistantMessage = await prisma.message.create({
+          data: {
+            chatId: chat.id,
+            content: { blocks: [{ text: "Shared answer", type: "text" }] },
+            modelId: "fake-qsa",
+            parentMessageId: userMessage.id,
+            provider: "fake",
+            role: "assistant",
+            status: "complete"
+          }
+        });
+        const run = await prisma.$transaction(async (tx) => {
+          const acceptedRun = await tx.modelRun.create({
+            data: {
+              assistantMessageId: assistantMessage.id,
+              chatId: chat.id,
+              modelId: "fake-qsa",
+              normalizedRequest: {},
+              provider: "fake",
+              status: "complete",
+              userId: participant.id,
+              userMessageId: userMessage.id
+            }
+          });
+          await tx.projectRunBinding.create({
+            data: {
+              acceptedRole: "CONTRIBUTOR",
+              accessRevision: accepted.accessRevision,
+              initiatorUserId: participant.id,
+              instructionsRevision: accepted.instructionsRevision,
+              memoryRevision: accepted.memoryRevision,
+              modelRunId: acceptedRun.id,
+              personalMemoryDisabled: true,
+              policyRevision: accepted.policyRevision,
+              projectId
+            }
+          });
+          return acceptedRun;
+        });
+        await prisma.user.update({
+          data: { status: "disabled" },
+          where: { id: participant.id }
+        });
+
+        const dashboard = await repository.listDashboard(adminId);
+        expect(dashboard.users.find((user) => user.id === participant.id)?.deletion)
+          .toMatchObject({ canDelete: true, reason: null });
+        await expect(repository.deleteStaleUser({
+          actingAdminUserId: adminId,
+          userId: participant.id
+        })).resolves.toBe("deleted");
+        await expect(prisma.modelRun.findUnique({ where: { id: run.id } })).resolves.not.toBeNull();
+      } finally {
+        const deleted = await projects.delete({
+          actorDisplayName: "Admin Test Operator",
+          projectId,
+          userId: adminId
+        });
+        if (deleted.kind !== "ok" && deleted.kind !== "not_found") {
+          throw new Error(`project_fixture_delete_${deleted.kind}`);
+        }
+      }
     });
   });
 

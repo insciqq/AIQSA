@@ -378,6 +378,7 @@ export async function loadProviderAttachments(
   options: Readonly<{
     capabilities: ProviderModelCapabilities;
     limits: RunAttachmentLimits;
+    projectId?: string;
     signal?: AbortSignal;
   }>
 ): Promise<ProviderAttachment[]> {
@@ -395,7 +396,11 @@ export async function loadProviderAttachments(
     return [];
   }
 
-  const loadedRecords = await deps.repository.loadAttachments(userId, [...attachmentIds]);
+  const loadedRecords = await deps.repository.loadAttachments(
+    userId,
+    [...attachmentIds],
+    options.projectId
+  );
   if (options.signal?.aborted) throw abortReason(options.signal);
   const records = orderedAttachmentRecords(loadedRecords, attachmentIds);
   if (records.some((record) => record.status !== "ready")) {

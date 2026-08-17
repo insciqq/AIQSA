@@ -279,6 +279,25 @@ describe("Navigation v2", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("keeps shared-project navigation visible after a desktop destination is selected", () => {
+    render(
+      <ReadingRoomShellV2
+        onNewChat={vi.fn()}
+        onSelectChat={vi.fn()}
+        projectsSlot={(onNavigate) => (
+          <button type="button" onClick={onNavigate}>Project destination</button>
+        )}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    fireEvent.click(screen.getByRole("button", { name: "Project destination" }));
+    expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
+    expect(screen.getByRole("complementary", { name: "Chat navigation" })).toBeVisible();
+  });
+
   it("moves focus into the mobile drawer and keeps its edge Tab cycle contained", () => {
     vi.stubGlobal("matchMedia", vi.fn(() => ({
       matches: true

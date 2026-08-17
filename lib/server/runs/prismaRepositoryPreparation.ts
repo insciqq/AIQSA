@@ -83,8 +83,10 @@ import {
   type PreparingRunAdmissionResult,
   type PreparingRunFinalizationInput,
   type PreparingRunMaterializedRequest,
-  type PreparingRunRecoveryResult
+  type PreparingRunRecoveryResult,
+  type ProjectRunAdmission
 } from "./runRepositoryContract";
+import { resolveProjectAccess } from "../projects/access";
 import {
   assertAssistantRunProvenance,
   assertCurrentSkillRunBindings,
@@ -345,6 +347,287 @@ function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void 
   ) {
     throw new MemoryPreparingRunConflictError("memory_base_request_invalid", false);
   }
+}
+
+/**
+ * Project runs deliberately bypass the personal Memory preparing pipeline.
+ * Admission is still transactional: the project revisions, membership, DAG
+ * leaf, attachments, provider bindings, and immutable ProjectRunBinding are
+ * fenced before any provider request is allowed to start.
+ */
+export async function admitProjectRunWithClient(
+  prismaClient: PrismaClient,
+  input: PreparingRunAdmissionInput
+): Promise<PreparingRunAdmissionResult> {
+  if (!input.project) throw new Error("project_admission_context_required");
+  assertPreparingAdmissionInput(input);
+  const project = input.project;
+  return mapActiveRunConflict(() =>
+    repeatableReadTransaction(prismaClient, async (tx) => {
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "Project"
+        WHERE "id" = ${project.projectId}
+        FOR UPDATE
+      `);
+      const access = await resolveProjectAccess(tx, {
+        minimumRole: "CONTRIBUTOR",
+        projectId: project.projectId,
+        requireActive: true,
+        userId: input.userId
+      });
+      if (!access || access.accessRevision !== project.accessRevision) {
+        throw new ActiveLeafConflictError();
+      }
+      const currentProject = await tx.project.findUnique({
+        select: {
+          accessRevision: true,
+          instructionsRevision: true,
+          memoryRevision: true,
+          policyRevision: true,
+          status: true
+        },
+        where: { id: project.projectId }
+      });
+      if (!currentProject || currentProject.status !== "ACTIVE" ||
+        currentProject.accessRevision !== project.accessRevision ||
+        currentProject.instructionsRevision !== project.instructionsRevision ||
+        currentProject.policyRevision !== project.policyRevision ||
+        currentProject.memoryRevision !== project.memoryRevision) {
+        throw new ActiveLeafConflictError();
+      }
+      if (input.assistant) {
+        await assertAssistantRunProvenance(tx, {
+          assistantId: input.assistant.assistantId,
+          revisionId: input.assistant.revisionId,
+          userId: input.userId
+        });
+      }
+      const lockedChats = await tx.$queryRaw<Array<{
+        activeLeafMessageId: string | null;
+        archived: boolean;
+        id: string;
+        projectFolderId: string | null;
+        projectId: string | null;
+      }>>(Prisma.sql`
+        SELECT "id", "projectId", "projectFolderId", "activeLeafMessageId", "archived"
+        FROM "Chat"
+        WHERE "id" = ${input.chatId}
+          AND "projectId" = ${project.projectId}
+          AND "userId" IS NULL
+          AND "memoryMode" = 'EXCLUDED'::"MemoryChatMode"
+          AND "permanentDeletionAt" IS NULL
+        FOR UPDATE
+      `);
+      const lockedChat = lockedChats[0];
+      if (!lockedChat || lockedChat.archived) throw new ActiveLeafConflictError();
+
+      let assistantMessageId: string;
+      let userMessageId: string;
+      if (input.admissionKind === "NORMAL_SEND") {
+        if (lockedChat.activeLeafMessageId !== input.expectedActiveLeafId) {
+          throw new ActiveLeafConflictError();
+        }
+        const count = await tx.message.count({ where: { chatId: input.chatId } });
+        const user = await tx.user.findUnique({ select: { displayName: true }, where: { id: input.userId } });
+        if (!user) throw new ActiveLeafConflictError();
+        const userMessage = await tx.message.create({
+          data: {
+            authorDisplayName: user.displayName,
+            authorProjectRole: access.effectiveRole,
+            authorUserId: input.userId,
+            chatId: input.chatId,
+            content: json(input.content),
+            modelId: input.modelId,
+            parentMessageId: input.expectedActiveLeafId,
+            provider: input.provider,
+            role: "user",
+            status: "complete"
+          }
+        });
+        const assistantMessage = await tx.message.create({
+          data: {
+            chatId: input.chatId,
+            content: json(textMessageContent("")),
+            modelId: input.modelId,
+            parentMessageId: userMessage.id,
+            provider: input.provider,
+            role: "assistant",
+            status: "streaming"
+          }
+        });
+        const attachmentIds = unique(input.normalizedRequest.attachmentIds);
+        if (attachmentIds.length > 0) {
+          const linked = await tx.attachment.updateMany({
+            data: { chatId: input.chatId, messageId: userMessage.id },
+            where: {
+              chatId: null,
+              id: { in: attachmentIds },
+              messageId: null,
+              projectId: project.projectId,
+              status: "ready"
+            }
+          });
+          if (linked.count !== attachmentIds.length) throw new AttachmentLinkConflictError();
+        }
+        assistantMessageId = assistantMessage.id;
+        userMessageId = userMessage.id;
+        await tx.chat.update({
+          data: { activeLeafMessageId: assistantMessage.id },
+          where: { id: input.chatId }
+        });
+        if (count === 0) {
+          await tx.chat.updateMany({
+            data: { title: titleFromMessageContent(input.content) },
+            where: { id: input.chatId, title: { in: ["New Chat", "Untitled QSA"] } }
+          });
+        }
+      } else {
+        const sourceLeaf = input.preSendAssistantMessageId ?? input.userMessageId;
+        if (!sourceLeaf || lockedChat.activeLeafMessageId !== sourceLeaf) {
+          throw new ActiveLeafConflictError();
+        }
+        const source = await tx.message.findFirst({
+          select: { parentMessageId: true, role: true },
+          where: { chatId: input.chatId, id: sourceLeaf }
+        });
+        if (!source || (input.preSendAssistantMessageId && source.role !== "assistant")) {
+          throw new ActiveLeafConflictError();
+        }
+        const assistantMessage = await tx.message.create({
+          data: {
+            chatId: input.chatId,
+            content: json(textMessageContent("")),
+            modelId: input.modelId,
+            parentMessageId: input.userMessageId,
+            provider: input.provider,
+            role: "assistant",
+            status: "streaming"
+          }
+        });
+        assistantMessageId = assistantMessage.id;
+        userMessageId = input.userMessageId;
+        await tx.chat.update({
+          data: { activeLeafMessageId: assistantMessage.id },
+          where: { id: input.chatId }
+        });
+      }
+
+      await assertCurrentProviderAdmission(tx, { plan: input.providerAdmissionPlan, userId: input.userId });
+      await assertCurrentKnowledgeAdmission(tx, { plan: input.knowledgeAdmissionPlan, userId: input.userId });
+      if (input.mcpBindings?.some((binding) => !project.mcpServerIds.includes(binding.serverId))) {
+        throw new McpRunPlanConflictError();
+      }
+      if (!project.policy.externalToolsEnabled && input.mcpBindings?.length) {
+        throw new McpRunPlanConflictError();
+      }
+      if (input.mcpBindings?.length) {
+        const forbiddenCredentials = await tx.mcpRuntimeGeneration.count({
+          where: {
+            credentialSources: { hasSome: ["oauth", "personal"] },
+            id: { in: input.mcpBindings.map((binding) => binding.runtimeGenerationId) }
+          }
+        });
+        if (forbiddenCredentials > 0) throw new McpRunPlanConflictError();
+      }
+      if (input.skillBindings?.length) throw new SkillRunConflictError();
+      const run = await tx.modelRun.create({
+        data: {
+          assistantMessageId,
+          ...(input.assistant
+            ? { assistantId: input.assistant.assistantId, assistantRevisionId: input.assistant.revisionId }
+            : {}),
+          chatId: input.chatId,
+          modelId: input.modelId,
+          normalizedRequest: json(input.normalizedRequest),
+          provider: input.provider,
+          status: "streaming",
+          userId: input.userId,
+          userMessageId
+        }
+      });
+      await insertAcceptedKnowledgeRunBindings(tx, {
+        plan: input.knowledgeAdmissionPlan,
+        runId: run.id,
+        userId: input.userId
+      });
+      await insertAcceptedMcpRunBindings(tx, {
+        bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
+        runId: run.id,
+        userId: input.userId
+      });
+      await insertAcceptedProviderRunBindings(tx, {
+        nativeBackgroundRequested: input.normalizedRequest.params.background === true,
+        plan: input.providerAdmissionPlan,
+        runId: run.id,
+        userId: input.userId
+      });
+      await tx.projectRunBinding.create({
+        data: {
+          accessRevision: project.accessRevision,
+          acceptedRole: access.effectiveRole,
+          initiatorUserId: input.userId,
+          instructionsRevision: project.instructionsRevision,
+          memoryRevision: project.memoryRevision,
+          modelRunId: run.id,
+          personalMemoryDisabled: true,
+          policyRevision: project.policyRevision,
+          projectId: project.projectId
+        }
+      });
+      if (project.memoryEnabled && project.memoryItems.length > 0) {
+        const validFacts = await tx.projectMemoryFact.findMany({
+          select: {
+            currentVersion: { select: { id: true, text: true } },
+            currentVersionId: true,
+            id: true
+          },
+          where: {
+            currentVersionId: { in: project.memoryItems.map((item) => item.factVersionId) },
+            currentVersion: {
+              is: { OR: [{ validUntil: null }, { validUntil: { gt: new Date() } }] }
+            },
+            id: { in: project.memoryItems.map((item) => item.factId) },
+            projectId: project.projectId,
+            state: "ACTIVE"
+          }
+        });
+        const valid = new Map(validFacts.map((fact) => [
+          `${fact.id}:${fact.currentVersionId}`,
+          fact.currentVersion?.text ?? null
+        ]));
+        const itemKeys = project.memoryItems.map((item) => `${item.factId}:${item.factVersionId}`);
+        if (
+          new Set(itemKeys).size !== itemKeys.length ||
+          project.memoryItems.some((item, index) =>
+            item.ordinal !== index || valid.get(itemKeys[index]!) !== item.includedText
+          )
+        ) {
+          throw new ActiveLeafConflictError();
+        }
+        await tx.projectMemoryRunItem.createMany({
+          data: project.memoryItems.map((item) => ({
+            factId: item.factId,
+            factVersionId: item.factVersionId,
+            includedText: item.includedText,
+            ordinal: item.ordinal,
+            projectId: project.projectId,
+            projectRunBindingId: run.id
+          }))
+        });
+      }
+      return {
+        assistantMessageId,
+        attemptId: "",
+        chatMemoryMode: "EXCLUDED" as const,
+        folderId: lockedChat.projectFolderId,
+        memoryGeneration: 0,
+        memoryRevision: project.memoryRevision,
+        runId: run.id,
+        settingsSnapshot: memoryPreparingSettingsSnapshot(TEMPORARY_PREPARING_SETTINGS),
+        userMessageId
+      };
+    })
+  );
 }
 
 export async function admitPreparingRunWithClient(
@@ -1948,6 +2231,14 @@ export async function settleTerminalMemorySource(
   }>,
   memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<void> {
+  const ownership = await tx.chat.findUnique({
+    select: { projectId: true, userId: true },
+    where: { id: input.chatId }
+  });
+  if (ownership?.projectId && ownership.userId === null) {
+    // Project chats never enter the personal Memory source state machine.
+    return;
+  }
   const chat = await lockMemorySourceChat(tx, {
     chatId: input.chatId,
     lock: "UPDATE",
@@ -2090,6 +2381,9 @@ export async function createDormantPreparingRun(
 ): Promise<PreparingRunAdmissionResult & Readonly<{
   materializedRequest?: PreparingRunMaterializedRequest;
 }>> {
+  if (admission.project) {
+    return admitProjectRunWithClient(prismaClient, admission);
+  }
   const created = await admitPreparingRunWithClient(
     prismaClient,
     admission,

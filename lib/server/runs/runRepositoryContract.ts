@@ -1,4 +1,5 @@
 import type {
+  ChatMessageWire,
   ChatContextStats,
   ChatUsageStats,
   ThreadArtifactSummary,
@@ -50,6 +51,34 @@ import type {
   MemoryPreparingSettingsSnapshot
 } from "./preparingRun";
 import type { MemoryInitialChatMode } from "../../contracts/memory";
+import type { ProjectDefaultsWire, ProjectPolicyWire } from "../../contracts/projects";
+
+export type ProjectRunMemoryItem = Readonly<{
+  factId: string;
+  factVersionId: string;
+  includedText: string;
+  ordinal: number;
+}>;
+
+/** Immutable, server-loaded Project context carried into run admission. */
+export type ProjectRunAdmission = Readonly<{
+  accessRevision: number;
+  assistantBindings: readonly Readonly<{ assistantId: string; revisionId: string }>[];
+  defaults: ProjectDefaultsWire;
+  instructions: string;
+  instructionsRevision: number;
+  knowledgeBaseIds: readonly string[];
+  mcpServerIds: readonly string[];
+  memoryEnabled: boolean;
+  memoryItems: readonly ProjectRunMemoryItem[];
+  memoryRevision: number;
+  modelIds: readonly string[];
+  policy: ProjectPolicyWire;
+  policyRevision: number;
+  projectId: string;
+  role: "CONTRIBUTOR" | "MANAGER" | "OWNER" | "VIEWER";
+  searchOptionIds: readonly string[];
+}>;
 
 export type RunAttachmentRecord = ProviderAttachment & {
   storageKey: string;
@@ -114,6 +143,7 @@ export type RunChatUpdateRecord = {
     id: string;
     messageCount: number;
     pinned: boolean;
+    projectId?: string | null;
     title: string;
     updatedAt: Date | string;
     usageStats?: ChatUsageStats | null;
@@ -127,6 +157,7 @@ export type RunChatUpdateRecord = {
     id: string;
     modelId: string | null;
     modelRunId?: string | null;
+    author?: ChatMessageWire["author"];
     parentMessageId: string | null;
     provider: string | null;
     role: string;
@@ -253,6 +284,7 @@ export type CreateRunInput = {
   providerAdmissionPlan?: ProviderAdmissionPlan;
   provider: string;
   providerRequestPreview: Record<string, unknown>;
+  project?: ProjectRunAdmission;
   signal?: AbortSignal;
   userId: string;
 };
@@ -272,6 +304,7 @@ export type CreateRegenerationRunInput = {
   providerAdmissionPlan?: ProviderAdmissionPlan;
   provider: string;
   providerRequestPreview: Record<string, unknown>;
+  project?: ProjectRunAdmission;
   signal?: AbortSignal;
   userId: string;
   userMessageId: string;
@@ -427,6 +460,7 @@ export type RunRepository = {
     memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
     messageCount: number;
     projectMemory: string | null;
+    project?: ProjectRunAdmission;
     title: string;
   } | null>;
   findRecentActiveRunForChat(input: { chatId: string; since: Date; userId: string }): Promise<RunControlRecord | null>;
@@ -458,6 +492,7 @@ export type RunRepository = {
       id: string;
       memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
       projectMemory: string | null;
+      project?: ProjectRunAdmission;
     };
     userMessage: {
       content: unknown;
@@ -483,8 +518,16 @@ export type RunRepository = {
     userId: string;
     userMessageId: string;
   }): Promise<RunChatUpdateRecord | null>;
+  isProjectRunAccessCurrent?(input: {
+    accessRevision: number;
+    instructionsRevision: number;
+    memoryRevision: number;
+    policyRevision: number;
+    projectId: string;
+    userId: string;
+  }): Promise<boolean>;
   isSearchStrategyEnabled(searchStrategyId: string): Promise<boolean>;
-  loadAttachments(userId: string, attachmentIds: string[]): Promise<RunAttachmentRecord[]>;
+  loadAttachments(userId: string, attachmentIds: string[], projectId?: string): Promise<RunAttachmentRecord[]>;
   loadEntitlements(userId: string): Promise<ResolvedEntitlements>;
   loadModelPricing(provider: string, modelId: string): Promise<ModelTokenPricing | null>;
   loadRunUsageAttributions(input: {

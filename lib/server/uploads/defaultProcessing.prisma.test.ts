@@ -22,7 +22,7 @@ async function createProcessingAttachment(nextAttemptAt: Date) {
       kind: "document",
       metadata: {},
       mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      processingJob: { create: { nextAttemptAt } },
+      processingJob: { create: { nextAttemptAt, ownerUserId: user.id } },
       status: "processing",
       storageKey: `attachment-processing/${suffix}`,
       userId: user.id
@@ -71,7 +71,8 @@ async function createOwnedProcessingAttachments(input: {
         processingJob: {
           create: {
             createdAt: new Date(input.createdAtOffset + index),
-            nextAttemptAt: input.nextAttemptAt
+            nextAttemptAt: input.nextAttemptAt,
+            ownerUserId: input.userId
           }
         },
         status: "processing",

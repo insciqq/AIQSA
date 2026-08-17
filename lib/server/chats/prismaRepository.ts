@@ -24,6 +24,8 @@ import {
 } from "../../contracts/memory";
 import { prisma } from "../prisma";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
+import { resolveChatAccess } from "../projects/access";
+import { projectRoleAtLeast } from "../../domain/projects";
 import type {
   ChatBranchGraphRecord,
   ChatDetailRecord,
@@ -119,6 +121,9 @@ const hydratedMessageSelect = {
   },
   content: true,
   createdAt: true,
+  authorDisplayName: true,
+  authorProjectRole: true,
+  authorUserId: true,
   errorMessage: true,
   id: true,
   modelId: true,
@@ -164,6 +169,8 @@ const chatSummarySelect = {
   folderId: true,
   id: true,
   pinned: true,
+  projectFolderId: true,
+  projectId: true,
   title: true,
   updatedAt: true
 } satisfies Prisma.ChatSelect;
@@ -542,6 +549,13 @@ function serializeHydratedMessage(
   return {
     artifactSummary,
     assistantIdentity: serializeAssistantIdentity(modelRun),
+    author: message.authorDisplayName && message.authorProjectRole
+      ? {
+          displayName: message.authorDisplayName,
+          role: message.authorProjectRole,
+          userId: message.authorUserId
+        }
+      : null,
     content: message.content,
     createdAt: message.createdAt,
     errorMessage: message.errorMessage,
@@ -570,7 +584,7 @@ function serializeChatDetail(input: {
     defaultKnowledgePlan: storedKnowledgeDefault(chat.defaultKnowledgePlan),
     defaultModelId: chat.defaultProviderModel?.id ?? null,
     defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
-    folderId: chat.folderId,
+    folderId: chat.projectFolderId ?? chat.folderId,
     id: chat.id,
     contextStats: {
       approximateActiveBranchInputTokens: input.contextInputTokens
@@ -591,6 +605,7 @@ function serializeChatDetail(input: {
       snapshotUpdatedAt: chat.updatedAt
     },
     pinned: chat.pinned,
+    projectId: chat.projectId,
     title: chat.title,
     updatedAt: chat.updatedAt,
     usageStats: summarizeChatUsageStats({
@@ -621,10 +636,11 @@ function serializeChatSummary(chat: ChatSummaryRow): ChatSummaryRecord {
     defaultKnowledgePlan: storedKnowledgeDefault(chat.defaultKnowledgePlan),
     defaultModelId: chat.defaultProviderModel?.id ?? null,
     defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
-    folderId: chat.folderId,
+    folderId: chat.projectFolderId ?? chat.folderId,
     id: chat.id,
     messageCount: chat._count.messages,
     pinned: chat.pinned,
+    projectId: chat.projectId,
     title: chat.title,
     updatedAt: chat.updatedAt
   };
@@ -1432,13 +1448,14 @@ export function createPrismaChatRepository(
     },
     getChat: async ({ chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
+        const access = await resolveChatAccess(tx, { chatId, userId });
+        if (!access) return null;
         const chat = await tx.chat.findFirst({
           select: chatSummarySelect,
           where: {
             archived: false,
             id: chatId,
-            permanentDeletionAt: null,
-            userId
+            permanentDeletionAt: null
           }
         });
         if (!chat) return null;
@@ -1498,13 +1515,15 @@ export function createPrismaChatRepository(
     },
     getMessagesPage: async ({ before, chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
+        const access = await resolveChatAccess(tx, { chatId, userId });
+        if (!access) return { kind: "not_found" as const };
         const chat = await tx.chat.findFirst({
           select: {
             activeLeafMessageId: true,
             id: true,
             updatedAt: true
           },
-          where: { archived: false, id: chatId, permanentDeletionAt: null, userId }
+          where: { archived: false, id: chatId, permanentDeletionAt: null }
         });
         if (!chat) return { kind: "not_found" as const };
         const cursor = decodeHistoryCursor(before);
@@ -1553,9 +1572,11 @@ export function createPrismaChatRepository(
     },
     getBranches: async ({ chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
+        const access = await resolveChatAccess(tx, { chatId, userId });
+        if (!access) return null;
         const chat = await tx.chat.findFirst({
           select: { activeLeafMessageId: true, updatedAt: true },
-          where: { archived: false, id: chatId, permanentDeletionAt: null, userId }
+          where: { archived: false, id: chatId, permanentDeletionAt: null }
         });
         if (!chat) return null;
         const rows = await tx.$queryRaw<Array<{
@@ -1908,8 +1929,93 @@ export function createPrismaChatRepository(
       pinned,
       title,
       userId
-    }) =>
-      prismaClient.$transaction(async (tx) => {
+    }) => {
+      const access = await resolveChatAccess(prismaClient, {
+        chatId,
+        minimumProjectRole: "CONTRIBUTOR",
+        requireMutable: true,
+        userId
+      });
+      if (!access) return null;
+      if (access.kind === "project") {
+        return prismaClient.$transaction(async (tx) => {
+          await tx.$queryRaw(Prisma.sql`
+            SELECT "id" FROM "Project"
+            WHERE "id" = ${access.project.projectId}
+            FOR UPDATE
+          `);
+          const currentAccess = await resolveChatAccess(tx, {
+            chatId,
+            minimumProjectRole: "CONTRIBUTOR",
+            requireMutable: true,
+            userId
+          });
+          if (currentAccess?.kind !== "project") return null;
+          const rows = await tx.$queryRaw<Array<{
+            activeLeafMessageId: string | null;
+            archived: boolean;
+            createdByUserId: string | null;
+            id: string;
+            projectId: string;
+          }>>(Prisma.sql`
+            SELECT "id", "projectId", "activeLeafMessageId", "archived", "createdByUserId"
+            FROM "Chat"
+            WHERE "id" = ${chatId}
+              AND "projectId" = ${currentAccess.project.projectId}
+              AND "permanentDeletionAt" IS NULL
+            FOR UPDATE
+          `);
+          const current = rows[0];
+          if (!current || current.archived) return null;
+          const manager = projectRoleAtLeast(currentAccess.project.effectiveRole, "MANAGER");
+          if (!manager && (
+            defaultKnowledgePlan !== undefined ||
+            folderId !== undefined ||
+            pinned !== undefined ||
+            (title !== undefined && current.createdByUserId !== userId)
+          )) return null;
+          if (folderId) {
+            const folder = await tx.projectFolder.findUnique({
+              where: {
+                projectId_id: { id: folderId, projectId: current.projectId }
+              }
+            });
+            if (!folder) return null;
+          }
+          if (activeLeafMessageId) {
+            const message = await tx.message.findFirst({
+              select: { id: true },
+              where: { chatId, id: activeLeafMessageId }
+            });
+            if (!message) return null;
+          }
+          if (activeLeafMessageId !== undefined) {
+            const activeRun = await tx.modelRun.findFirst({
+              select: { id: true },
+              where: {
+                chatId,
+                status: { in: ["preparing", "streaming", "queued", "in_progress"] }
+              }
+            });
+            if (activeRun) throw new ActiveRunConflictError();
+          }
+          const updated = await tx.chat.update({
+            data: {
+              ...(activeLeafMessageId !== undefined ? { activeLeafMessageId } : {}),
+              ...(defaultKnowledgePlan !== undefined
+                ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
+                : {}),
+              ...(folderId !== undefined ? { projectFolderId: folderId } : {}),
+              ...(pinned !== undefined ? { pinned } : {}),
+              ...(title ? { title: title.trim().slice(0, 80) } : {})
+            },
+            select: chatSummarySelect,
+            where: { id: chatId }
+          });
+          return serializeChatSummary(updated);
+        });
+      }
+      return prismaClient.$transaction(async (tx) => {
         if (folderId) {
           const folders = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT "id"
@@ -2010,6 +2116,7 @@ export function createPrismaChatRepository(
             });
 
         return serializeChatSummary(updated);
-      })
+      });
+    }
   };
 }

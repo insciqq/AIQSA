@@ -176,6 +176,7 @@ export type RunExecutionRepository = Pick<
   | "failRun"
   | "getChatUpdateForRun"
   | "getRunControlForUser"
+  | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadEntitlements"
   | "loadModelPricing"
@@ -281,6 +282,7 @@ function serializeChatUpdate(
       id: update.chat.id,
       messageCount: update.chat.messageCount,
       pinned: update.chat.pinned,
+      ...(update.chat.projectId !== undefined ? { projectId: update.chat.projectId } : {}),
       title: update.chat.title,
       updatedAt: iso(update.chat.updatedAt),
       usageStats: update.chat.usageStats ?? null
@@ -288,6 +290,7 @@ function serializeChatUpdate(
     messages: update.messages.map((message) => ({
       artifactSummary: message.artifactSummary ?? null,
       assistantIdentity: message.assistantIdentity ?? null,
+      ...(message.author !== undefined ? { author: message.author } : {}),
       content:
         liveGroundedAnswer && message.id === liveGroundedAnswer.assistantMessageId
           ? textMessageContent(liveGroundedAnswer.finalText)
@@ -526,7 +529,64 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       });
       let persistedProviderResponseId: string | null = null;
       let groundedLiveOnly = false;
+      let projectAccessCheck: Promise<boolean> | null = null;
+      let projectAccessRevoked = false;
+      let projectAccessValidatedAt = Number.NEGATIVE_INFINITY;
       const reportedUsageAttributions: RunUsageAttribution[] = [];
+
+      async function assertProjectRunAccessCurrent(force = false): Promise<void> {
+        const project = input.prepared.project;
+        if (!project) return;
+        if (projectAccessRevoked) {
+          throw new RunPipelineError(
+            "project_access_changed",
+            "Project access changed during the run"
+          );
+        }
+        const validate = input.repository.isProjectRunAccessCurrent;
+        if (!validate) {
+          if (process.env.NODE_ENV === "production") {
+            throw new RunPipelineError(
+              "project_access_revalidation_unavailable",
+              "Project access could not be revalidated"
+            );
+          }
+          return;
+        }
+        const now = Date.now();
+        if (!projectAccessCheck && !force && now - projectAccessValidatedAt < 250) return;
+        if (!projectAccessCheck) {
+          projectAccessValidatedAt = now;
+          projectAccessCheck = validate({
+            accessRevision: project.accessRevision,
+            instructionsRevision: project.instructionsRevision,
+            memoryRevision: project.memoryRevision,
+            policyRevision: project.policyRevision,
+            projectId: project.projectId,
+            userId: input.userId
+          });
+        }
+        let current: boolean;
+        try {
+          current = await projectAccessCheck;
+        } catch {
+          throw new RunPipelineError(
+            "project_access_revalidation_failed",
+            "Project access could not be revalidated"
+          );
+        } finally {
+          projectAccessCheck = null;
+        }
+        if (current) return;
+        projectAccessRevoked = true;
+        if (persistedProviderResponseId) {
+          await input.adapter.cancel?.(persistedProviderResponseId).catch(() => undefined);
+        }
+        throw new RunPipelineError(
+          "project_access_changed",
+          "Project access changed during the run"
+        );
+      }
 
       function rememberReportedUsage(provider: string, modelId: string, usage: ModelRunUsage): void {
         if (!hasReportedUsage(usage)) {
@@ -568,6 +628,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         event: ModelRunSseEvent,
         options: Readonly<{ includeTokenEvents?: boolean }> = {}
       ): Promise<void> {
+        await assertProjectRunAccessCurrent();
         const includeTokenEvents = options.includeTokenEvents ?? true;
         const effectiveEvent = withPinnedHostedSearchIdentity(event, normalizedRequest);
 
@@ -662,28 +723,30 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
       async function currentSearchDispatchAllowed(): Promise<boolean> {
         const optionIds = normalizedRequest.searchPlan.options.map((option) => option.optionId);
+        const selection = input.prepared.providerAdmissionPlan.selection;
         const [entitlements, enabled] = await Promise.all([
           input.repository.loadEntitlements(input.userId),
           Promise.all(optionIds.map((optionId) =>
             input.repository.isSearchStrategyEnabled(optionId)))
         ]);
         const modelAccess = validateRunAccess(entitlements, {
-          modelId: normalizedRequest.modelId,
-          provider: normalizedRequest.provider
+          modelId: selection.providerModelId,
+          provider: selection.providerConnectionId
         });
         return modelAccess.ok && optionIds.every((optionId, index) => enabled[index] === true &&
           validateRunAccess(entitlements, {
-            modelId: normalizedRequest.modelId,
-            provider: normalizedRequest.provider,
+            modelId: selection.providerModelId,
+            provider: selection.providerConnectionId,
             searchStrategy: optionId
           }).ok);
       }
 
       async function currentAnswerDispatchAllowed(): Promise<boolean> {
         const entitlements = await input.repository.loadEntitlements(input.userId);
+        const selection = input.prepared.providerAdmissionPlan.selection;
         return validateRunAccess(entitlements, {
-          modelId: normalizedRequest.modelId,
-          provider: normalizedRequest.provider
+          modelId: selection.providerModelId,
+          provider: selection.providerConnectionId
         }).ok;
       }
 
@@ -740,6 +803,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         request: ProviderRunRequest,
         dispatchSignal: AbortSignal = signal
       ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        await assertProjectRunAccessCurrent(true);
         if (!(await currentAnswerDispatchAllowed())) {
           throw new RunPipelineError(
             "model_not_available",
@@ -796,6 +860,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               userId: input.userId
             })
           : null;
+        await assertProjectRunAccessCurrent(true);
         const stream = input.adapter.stream(request, { signal: dispatchSignal });
         try {
           let next = await stream.next();
@@ -921,6 +986,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
           },
           onToolBatchSettled: async ({ results }) => {
+            await assertProjectRunAccessCurrent(true);
             for (const settled of results) {
               const call = modelToolCall(settled.call);
               const result = settled.result.status === "complete"
@@ -966,6 +1032,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             await persistReportedUsageForIncompleteRun();
           },
           beforeProviderRound: async ({ continuation, round }) => {
+            await assertProjectRunAccessCurrent(true);
             if (round === 1) {
               const started = await input.repository.beginToolLoopProviderRound({
                 providerContinuation: toolLoopJson(
@@ -1049,6 +1116,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       status: "error"
                     };
               }
+
+              await assertProjectRunAccessCurrent(true);
 
               let result: ToolExecutionResult;
               let fatalToolError: Readonly<{
@@ -1450,6 +1519,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
       try {
         throwIfAborted(signal);
+        await assertProjectRunAccessCurrent(true);
         const dispatchControl = await input.repository.getRunControlForUser(
           runId,
           input.userId
@@ -1504,6 +1574,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
         await tokenBuffer.flush();
         throwIfAborted(signal);
+        await assertProjectRunAccessCurrent(true);
         const persistedProviderResult = groundedLiveOnly
           ? {
               ...providerResult,

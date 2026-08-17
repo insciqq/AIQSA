@@ -54,7 +54,8 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
               FROM "AttachmentProcessingJob" AS job
               INNER JOIN "Attachment" AS attachment
                 ON attachment."id" = job."attachmentId"
-                AND attachment."userId" = job."ownerUserId"
+                AND (attachment."userId" = job."ownerUserId"
+                  OR attachment."projectId" IS NOT NULL)
               WHERE attachment."status" = 'processing'::"AttachmentStatus"
                 AND job."nextAttemptAt" <= ${input.now}
                 AND (job."claimedAt" IS NULL OR job."claimedAt" < ${input.staleBefore})
@@ -73,7 +74,8 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
               FROM "AttachmentProcessingJob" AS job
               INNER JOIN "Attachment" AS attachment
                 ON attachment."id" = job."attachmentId"
-                AND attachment."userId" = job."ownerUserId"
+                AND (attachment."userId" = job."ownerUserId"
+                  OR attachment."projectId" IS NOT NULL)
               WHERE attachment."status" = 'processing'::"AttachmentStatus"
                 AND job."ownerUserId" > ${lastGrantedOwnerUserId}
                 AND job."nextAttemptAt" <= ${input.now}
@@ -91,7 +93,8 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
               FROM "AttachmentProcessingJob" AS job
               INNER JOIN "Attachment" AS attachment
                 ON attachment."id" = job."attachmentId"
-                AND attachment."userId" = job."ownerUserId"
+                AND (attachment."userId" = job."ownerUserId"
+                  OR attachment."projectId" IS NOT NULL)
               WHERE NOT EXISTS (SELECT 1 FROM after_cursor)
                 AND attachment."status" = 'processing'::"AttachmentStatus"
                 AND job."ownerUserId" <= ${lastGrantedOwnerUserId}
@@ -137,7 +140,8 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
         FROM claimed
         INNER JOIN "Attachment" AS attachment
           ON attachment."id" = claimed."attachmentId"
-          AND attachment."userId" = claimed."ownerUserId"
+          AND (attachment."userId" = claimed."ownerUserId"
+            OR attachment."projectId" IS NOT NULL)
       `);
       const claimed = rows[0];
       if (!claimed) return null;

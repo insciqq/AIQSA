@@ -35,7 +35,11 @@ import {
 } from "./runExecution";
 import { activeRunControllersForTest } from "@/tests/support/runExecution";
 import type { MaterializedPreparedRunData } from "./runPreparation";
-import type { RunChatUpdateRecord, RunRepository } from "./runRepositoryContract";
+import type {
+  ProjectRunAdmission,
+  RunChatUpdateRecord,
+  RunRepository
+} from "./runRepositoryContract";
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import { knowledgeRetrievalTool, type KnowledgeToolExecutor } from "../knowledge/toolExecutor";
@@ -57,12 +61,14 @@ type FailedRun = {
   runId: string;
 };
 type GroundedMark = Parameters<RunRepository["markAssistantMessageGroundedLiveOnly"]>[0];
+type ProjectAccessCheck = Parameters<NonNullable<RunRepository["isProjectRunAccessCurrent"]>>[0];
 
 type RepositoryOptions = Readonly<{
   chatUpdate?: RunChatUpdateRecord | null;
   completionWins?: boolean;
   entitlements?: ResolvedEntitlements;
   failureWins?: boolean;
+  projectAccessCurrent?: boolean | (() => boolean);
   runStatus?: string;
   searchStrategyEnabled?: boolean;
   responseIdPublication?: "cancelled" | "published" | "terminal";
@@ -84,6 +90,34 @@ function providerResult(overrides: Partial<ProviderRunResult> = {}): ProviderRun
     finalText: "Final answer",
     usage: usage(),
     ...overrides
+  };
+}
+
+function projectAdmission(): ProjectRunAdmission {
+  return {
+    accessRevision: 3,
+    assistantBindings: [],
+    defaults: {
+      assistantId: null,
+      controlValues: {},
+      knowledgePlan: { baseIds: [] },
+      mcpMode: "off",
+      providerModelId: "fake-qsa",
+      searchPlan: { mode: "all_selected", optionIds: [] }
+    },
+    instructions: "Shared instructions",
+    instructionsRevision: 2,
+    knowledgeBaseIds: [],
+    mcpServerIds: [],
+    memoryEnabled: false,
+    memoryItems: [],
+    memoryRevision: 1,
+    modelIds: ["fake-qsa"],
+    policy: { externalToolsEnabled: true },
+    policyRevision: 4,
+    projectId: "project-1",
+    role: "CONTRIBUTOR",
+    searchOptionIds: []
   };
 }
 
@@ -322,6 +356,7 @@ function preparedData(input: Readonly<{
   mcpDiscovery?: McpDiscoveryState;
   mcp?: McpRunPlanSnapshot;
   modelId?: string;
+  project?: ProjectRunAdmission;
   provider?: string;
   searchPlan?: NormalizedRunRequest["searchPlan"];
   toolMode?: "auto" | "none";
@@ -401,6 +436,7 @@ function preparedData(input: Readonly<{
       attachments: []
     },
     providerRequestPreview: {},
+    ...(input.project ? { project: input.project } : {}),
     sourceKind: "send"
   };
 }
@@ -472,6 +508,7 @@ function createRepository(options: RepositoryOptions = {}) {
   const persistedEvents: { event: ModelRunSseEvent; runId: string; sequence: number }[] = [];
   const providerResponseIds: string[] = [];
   const providerRequestPreviews: Record<string, unknown>[] = [];
+  const projectAccessChecks: ProjectAccessCheck[] = [];
   const recordedRunUsageEvents: RecordRunUsageEventsInput[] = [];
   const searchRuns: CreateSearchRunInput[] = [];
   const toolCalls = new Map<string, PersistedToolLoopCall>();
@@ -550,6 +587,12 @@ function createRepository(options: RepositoryOptions = {}) {
         providerResponseId: null,
         status: options.runStatus ?? "streaming"
       };
+    },
+    async isProjectRunAccessCurrent(input) {
+      projectAccessChecks.push(input);
+      return typeof options.projectAccessCurrent === "function"
+        ? options.projectAccessCurrent()
+        : options.projectAccessCurrent ?? true;
     },
     async isSearchStrategyEnabled() {
       return options.searchStrategyEnabled ?? true;
@@ -642,6 +685,7 @@ function createRepository(options: RepositoryOptions = {}) {
       return chatUpdateLoads;
     },
     persistedEvents,
+    projectAccessChecks,
     providerRequestPreviews,
     providerResponseIds,
     recordedRunUsageEvents,
@@ -772,6 +816,7 @@ describe("run execution", () => {
 
   afterEach(() => {
     activeRunControllersForTest().clear();
+    vi.restoreAllMocks();
   });
 
   it("refuses PREPARING dispatch before any provider or start event", async () => {
@@ -802,6 +847,77 @@ describe("run execution", () => {
     ]);
     expect(events.at(-1)).toMatchObject({
       data: { code: "memory_preparing_run_not_finalized" },
+      type: "error"
+    });
+  });
+
+  it("fails stale Project access before provider I/O or streaming starts", async () => {
+    const repository = createRepository({ projectAccessCurrent: false });
+    let providerCalls = 0;
+    const adapter = createAdapter(async function* () {
+      providerCalls += 1;
+      return providerResult();
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      prepared: preparedData({ project: projectAdmission() }),
+      repository: repository.repository
+    })).text());
+
+    expect(providerCalls).toBe(0);
+    expect(repository.projectAccessChecks).toEqual([{
+      accessRevision: 3,
+      instructionsRevision: 2,
+      memoryRevision: 1,
+      policyRevision: 4,
+      projectId: "project-1",
+      userId: "user-1"
+    }]);
+    expect(repository.completeRuns).toHaveLength(0);
+    expect(repository.persistedEvents.some(({ event }) => event.type === "run_start"))
+      .toBe(false);
+    expect(repository.failedRuns).toEqual([{
+      assistantMessageId: "assistant-1",
+      error: {
+        code: "project_access_changed",
+        message: "Project access changed during the run"
+      },
+      runId: "run-1"
+    }]);
+    expect(events.at(-1)).toMatchObject({
+      data: { code: "project_access_changed" },
+      type: "error"
+    });
+  });
+
+  it("stops Project stream output when access changes during the provider response", async () => {
+    let accessCurrent = true;
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const repository = createRepository({ projectAccessCurrent: () => accessCurrent });
+    const adapter = createAdapter(async function* () {
+      yield { data: { delta: "Visible" }, type: "token" };
+      accessCurrent = false;
+      now += 300;
+      yield { data: { delta: "Hidden" }, type: "token" };
+      return providerResult({ finalText: "VisibleHidden" });
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      prepared: preparedData({ project: projectAdmission() }),
+      repository: repository.repository
+    })).text());
+
+    expect(events.filter((event) => event.type === "token")).toEqual([
+      { data: { delta: "Visible" }, type: "token" }
+    ]);
+    expect(repository.assistantTexts).toEqual(["Visible"]);
+    expect(repository.completeRuns).toHaveLength(0);
+    expect(repository.failedRuns.at(-1)?.error.code).toBe("project_access_changed");
+    expect(events.at(-1)).toMatchObject({
+      data: { code: "project_access_changed" },
       type: "error"
     });
   });
@@ -845,6 +961,39 @@ describe("run execution", () => {
       },
       type: "error"
     });
+  });
+
+  it("rechecks model access with the accepted database binding rather than runtime names", async () => {
+    const prepared = preparedData();
+    prepared.providerAdmissionPlan = {
+      ...prepared.providerAdmissionPlan,
+      selection: {
+        providerConnectionId: "connection-row-1",
+        providerModelId: "model-row-1"
+      }
+    };
+    const repository = createRepository({
+      entitlements: {
+        modelKeys: new Set(["connection-row-1:model-row-1"]),
+        providerKeys: new Set<string>(),
+        searchStrategies: new Set<string>()
+      }
+    });
+    let providerCalls = 0;
+    const adapter = createAdapter(async function* () {
+      providerCalls += 1;
+      return providerResult();
+    });
+
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      prepared,
+      repository: repository.repository
+    })).text());
+
+    expect(providerCalls).toBe(1);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe("done");
   });
 
   it.each([

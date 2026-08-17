@@ -271,7 +271,7 @@ export function useMessageRunActions({
     }
   }
 
-  function runControlPayload(snapshot: MessageRunControlSnapshot) {
+  function runControlPayload(snapshot: MessageRunControlSnapshot, projectScoped: boolean) {
     if (snapshot.assistantId) {
       // The server resolves the currently authorized revision at admission;
       // the request carries only the Assistant identity plus user content and
@@ -300,7 +300,7 @@ export function useMessageRunActions({
       ...(snapshot.mcpSelection.mode === "auto" ? {} : { mcp: snapshot.mcpSelection }),
       provider: snapshot.provider,
       searchPlan: effectiveSearchPlan,
-      ...(snapshot.searchPreferenceSource
+      ...(!projectScoped && snapshot.searchPreferenceSource
         ? {
             searchPreferencePlan: snapshot.searchPreferencePlan,
             searchPreferenceSource: snapshot.searchPreferenceSource
@@ -395,7 +395,7 @@ export function useMessageRunActions({
       request(signal) {
         return shellFetch(`/api/messages/${editedUserMessageId}/regenerate`, {
           body: JSON.stringify({
-            ...runControlPayload(runControlSnapshot)
+            ...runControlPayload(runControlSnapshot, Boolean(activeChat?.projectId))
           }),
           headers: {
             "content-type": "application/json"
@@ -651,15 +651,13 @@ export function useMessageRunActions({
           : { attachmentId: attachment.id, fileName: attachment.fileName, type: "file" as const }
       )
     ];
-    const sendControlPayload = runControlPayload(runControlSnapshot);
-
     let sendOutcome: "cancelled" | "failed" | "succeeded" = "failed";
     let sendFailureMessage: string | null = null;
     let sendFailureLive = true;
     try {
       let chatIdForSend = sourceComposerChatId;
       const thread = selectThreadSnapshot(useThreadStore.getState(), chatIdForSend);
-      const currentChatSummary = chatIdForSend
+      let currentChatSummary = chatIdForSend
         ? useWorkspaceStore
             .getState()
             .chats.find((candidate) => candidate.id === chatIdForSend)
@@ -679,8 +677,13 @@ export function useMessageRunActions({
         }
 
         chatIdForSend = chat.id;
+        currentChatSummary = chat;
         parentLeafForSend = chat.activeLeafMessageId;
       }
+      const sendControlPayload = runControlPayload(
+        runControlSnapshot,
+        Boolean(currentChatSummary?.projectId)
+      );
 
       if (useRunLifecycleStore.getState().activeStreams[chatIdForSend]) {
         return;
@@ -885,12 +888,10 @@ export function useMessageRunActions({
     }
 
     const contentBlocks = [{ text, type: "text" as const }];
-    const starterControlPayload = runControlPayload(runControlSnapshot);
-
     try {
       let chatIdForSend = sourceComposerChatId;
       const thread = selectThreadSnapshot(useThreadStore.getState(), chatIdForSend);
-      const currentChatSummary = chatIdForSend
+      let currentChatSummary = chatIdForSend
         ? useWorkspaceStore
             .getState()
             .chats.find((candidate) => candidate.id === chatIdForSend)
@@ -910,8 +911,13 @@ export function useMessageRunActions({
         }
 
         chatIdForSend = chat.id;
+        currentChatSummary = chat;
         parentLeafForSend = chat.activeLeafMessageId;
       }
+      const starterControlPayload = runControlPayload(
+        runControlSnapshot,
+        Boolean(currentChatSummary?.projectId)
+      );
 
       if (useRunLifecycleStore.getState().activeStreams[chatIdForSend]) {
         return;
@@ -1058,7 +1064,10 @@ export function useMessageRunActions({
     }
     const regenerationParentMessageId =
       original.role === "assistant" ? original.parentMessageId : original.id;
-    const regenerateControlPayload = runControlPayload(runControlSnapshot);
+    const regenerateControlPayload = runControlPayload(
+      runControlSnapshot,
+      Boolean(activeChat?.projectId)
+    );
 
     const assistantId = `assistant-regen-${Date.now()}`;
     const assistantMessage: ThreadMessage = {

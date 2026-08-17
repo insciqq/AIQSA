@@ -52,6 +52,7 @@ export type {
 export type ThreadMessage = {
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
+  author?: ProjectMessageAuthorWire | null;
   content: unknown;
   id: string;
   modelId?: string;
@@ -144,6 +145,7 @@ export type WorkspaceChatSummary = {
   memorySourceRevision?: number;
   pendingInitialMemoryMode?: "TEMPORARY";
   pinned?: boolean;
+  projectId?: string | null;
   temporaryRetentionDeadline?: string | null;
   title: string;
   updatedAt: string;
@@ -177,6 +179,7 @@ export type ChatDetail = WorkspaceChatSummary & {
 export type ChatMessageWire = {
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
+  author?: ProjectMessageAuthorWire | null;
   content: unknown;
   createdAt: string;
   errorMessage: string | null;
@@ -189,6 +192,12 @@ export type ChatMessageWire = {
   status: string;
   toolActivity?: ThreadToolActivity | null;
 };
+
+export type ProjectMessageAuthorWire = Readonly<{
+  displayName: string;
+  role: "CONTRIBUTOR" | "MANAGER" | "OWNER" | "VIEWER";
+  userId: string | null;
+}>;
 
 export type WorkspaceChatSummaryWire = Omit<
   WorkspaceChatSummary,
@@ -203,6 +212,7 @@ export type WorkspaceChatSummaryWire = Omit<
   defaultModelId: string | null;
   defaultProvider: string | null;
   pinned: boolean;
+  projectId?: string | null;
 };
 
 export type ChatDetailWire = WorkspaceChatSummaryWire & {
@@ -856,6 +866,23 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     toolActivity = decodeThreadToolActivity(value.toolActivity);
     if (!toolActivity) return null;
   }
+  let author: ProjectMessageAuthorWire | null | undefined;
+  if (value.author === undefined || value.author === null) {
+    author = value.author;
+  } else if (
+    isRecord(value.author) &&
+    typeof value.author.displayName === "string" &&
+    (value.author.userId === null || typeof value.author.userId === "string") &&
+    ["CONTRIBUTOR", "MANAGER", "OWNER", "VIEWER"].includes(String(value.author.role))
+  ) {
+    author = {
+      displayName: value.author.displayName,
+      role: value.author.role as ProjectMessageAuthorWire["role"],
+      userId: value.author.userId as string | null
+    };
+  } else {
+    return null;
+  }
   if (
     !id ||
     !createdAt ||
@@ -873,6 +900,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   return {
     artifactSummary,
     ...(assistantIdentity !== undefined ? { assistantIdentity } : {}),
+    ...(author !== undefined ? { author } : {}),
     content: value.content,
     createdAt,
     errorMessage,
@@ -923,6 +951,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   const defaultKnowledgePlan = decodeKnowledgeDefault(value.defaultKnowledgePlan);
   const folderId = nullableId(value.folderId);
   const messageCount = nonNegativeInteger(value.messageCount);
+  const projectId = value.projectId === undefined ? null : nullableId(value.projectId);
   const title = requiredString(value.title);
   const updatedAt = requiredString(value.updatedAt);
   if (
@@ -933,6 +962,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     !defaultSelection ||
     folderId === undefined ||
     messageCount === null ||
+    projectId === undefined ||
     typeof value.pinned !== "boolean" ||
     !title ||
     !updatedAt
@@ -950,6 +980,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     id,
     messageCount,
     pinned: value.pinned,
+    projectId,
     title,
     updatedAt
   };
@@ -1435,11 +1466,13 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "memoryMode",
       "messageCount",
       "pinned",
+      "projectId",
       "sourceRevision",
       "title",
       "updatedAt"
     ])
   ) return null;
+  if (value.projectId !== null) return null;
   const summary = decodeWorkspaceChatSummaryWire(value);
   const memoryMode = retainedMemoryMode(value.memoryMode);
   const sourceRevision = nonNegativeInteger(value.sourceRevision);
@@ -1491,11 +1524,13 @@ export function decodeArchivedChatDetailResponse(
     "messages",
     "pageInfo",
     "pinned",
+    "projectId",
     "sourceRevision",
     "title",
     "updatedAt",
     "usageStats"
   ])) return null;
+  if (value.chat.projectId !== null) return null;
   const memoryMode = retainedMemoryMode(value.chat.memoryMode);
   const sourceRevision = nonNegativeInteger(value.chat.sourceRevision);
   return memoryMode && sourceRevision !== null && Number.isSafeInteger(sourceRevision)

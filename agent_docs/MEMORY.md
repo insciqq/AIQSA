@@ -13,6 +13,8 @@ The answer model may receive typed save, list, update, forget, incorrect, and se
 
 Temporary chats never read or write personal Memory, inherit project Memory, advance Memory counters, or schedule Memory work. Anonymous shares retain only visible assistant prose and strip all Memory context, facts, attempts, bindings, sources, receipts, identifiers, and lifecycle metadata.
 
+Shared Project Memory is a separate Project-owned aggregate, not a scope of personal Memory. Project runs include only current active approved fact versions; pending proposals are excluded until a Manager or Owner explicitly approves them. Project chats never read, write, learn from, or schedule work for personal Memory, and facts are never copied automatically between a user and a Project.
+
 ## Evidence, Scope, And Trust
 
 Raw direct-user messages and explicit user actions are primary evidence; chunks, candidates, facts, vectors, and search entries are derivatives. Assistant, web, MCP, tool, Knowledge, and attachment text do not establish a user fact by default. Secret-shaped source windows are rejected before derivative storage or provider egress. Structured extraction must cite exact source spans and may store or abstain; the server validates shape, ownership, source, modality, sensitivity, scope, time, and recognizable-secret safety without inventing semantic meaning from regexes or numeric confidence thresholds.

@@ -28,7 +28,7 @@ type HandlerContext = {
   params: Promise<{ attachmentId: string }> | { attachmentId: string };
 };
 
-function serialize(record: AttachmentLifecycleRecord): UploadedAttachmentWire {
+export function serializeAttachmentLifecycle(record: AttachmentLifecycleRecord): UploadedAttachmentWire {
   const pdf = record.kind === "pdf" &&
     typeof record.metadata === "object" && record.metadata !== null &&
     "pdf" in record.metadata
@@ -68,7 +68,7 @@ export function createAttachmentStatusHandler(input: Readonly<{
     const record = await input.repository.load({ attachmentId: id, userId: auth.userId });
     if (!record) return Response.json({ error: "attachment_not_found" }, { status: 404 });
     return Response.json(
-      { attachment: serialize(record) },
+      { attachment: serializeAttachmentLifecycle(record) },
       { headers: { "cache-control": "no-store" } }
     );
   };
@@ -102,6 +102,6 @@ export function createAttachmentRetryHandler(input: Readonly<{
       // Retry state and its durable job have already committed. A later
       // coordinator reconciliation can safely advance them.
     }
-    return Response.json({ attachment: serialize(result.attachment) });
+    return Response.json({ attachment: serializeAttachmentLifecycle(result.attachment) });
   };
 }

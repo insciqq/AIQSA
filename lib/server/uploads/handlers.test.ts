@@ -4,7 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
 import { createUploadPermitGate } from "../http/uploadPermitGate";
-import { createUploadHandler, type CreatedAttachment } from "./handlers";
+import {
+  createUploadHandler,
+  type CreatedAttachment,
+  UploadTargetUnavailableError
+} from "./handlers";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 
 const oneByOnePng = Buffer.from(
@@ -17,9 +21,14 @@ const config = getAuthConfig({
 });
 const auth = createTestAuth({ user: { id: config.bootstrapUserId } });
 
-function authenticatedUploadRequest(file: File, signal?: AbortSignal): Request {
+function authenticatedUploadRequest(
+  file: File,
+  signal?: AbortSignal,
+  projectId?: string
+): Request {
   const form = new FormData();
   form.set("file", file);
+  if (projectId) form.set("projectId", projectId);
   return new Request("http://app.local/api/uploads", {
     body: form,
     headers: { cookie: auth.cookie },
@@ -260,6 +269,32 @@ describe("upload handler", () => {
       new File([oneByOnePng], "failed.png", { type: "image/png" })
     ))).rejects.toThrow("attachment_row_failed");
     expect(staged).toHaveLength(1);
+    expect(completed).toEqual(["cleanup-job"]);
+    expect(storage.objects.size).toBe(0);
+  });
+
+  it("returns an unavailable Project target without retaining the uploaded object", async () => {
+    const storage = createMemoryStorageAdapter();
+    const completed: string[] = [];
+    const POST = createUploadHandler({
+      createAttachment: async () => { throw new UploadTargetUnavailableError(); },
+      deletionOutbox: {
+        async complete(jobId) { completed.push(jobId); },
+        async stage() { return { id: "cleanup-job" }; }
+      },
+      resolveAuth: auth.resolveAuth,
+      resolveTarget: async ({ projectId }) => ({ projectId }),
+      storage
+    });
+
+    const response = await POST(authenticatedUploadRequest(
+      new File([oneByOnePng], "revoked.png", { type: "image/png" }),
+      undefined,
+      "project-1"
+    ));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "project_not_found" });
     expect(completed).toEqual(["cleanup-job"]);
     expect(storage.objects.size).toBe(0);
   });

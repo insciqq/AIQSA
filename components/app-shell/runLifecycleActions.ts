@@ -1,4 +1,5 @@
 import {
+  chatIdFromComposerSessionKey,
   type ComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore
@@ -108,6 +109,7 @@ type RunLifecycleActionsInput = {
   activeChatIdRef: MutableRef<string | null>;
   activeStreamAbortRef: MutableRef<Map<string, AbortController>>;
   notifyAnswerReady(): Promise<void>;
+  projectIdForChat?(chatId: string | null): string | null;
   refreshActiveChat(
     chatId: string | null,
     options?: { forceDetail?: boolean; preserveControls?: boolean; resumeRuns?: boolean }
@@ -127,9 +129,17 @@ export function useRunLifecycleActions({
   activeChatIdRef,
   activeStreamAbortRef,
   notifyAnswerReady,
+  projectIdForChat = () => null,
   refreshActiveChat,
   setNotice
 }: RunLifecycleActionsInput) {
+  function attachmentPath(sourceKey: ComposerSessionKey, attachmentId: string): string {
+    const projectId = projectIdForChat(chatIdFromComposerSessionKey(sourceKey));
+    return projectId
+      ? `/api/projects/${encodeURIComponent(projectId)}/attachments/${encodeURIComponent(attachmentId)}`
+      : `/api/uploads/${encodeURIComponent(attachmentId)}`;
+  }
+
   function startAttachmentPoll(sourceKey: ComposerSessionKey, attachmentId: string): void {
     const key = attachmentPollKey(sourceKey, attachmentId);
     if (attachmentPolls.has(key)) return;
@@ -145,7 +155,7 @@ export function useRunLifecycleActions({
         await wait(delayMs);
         let response: Response;
         try {
-          response = await shellFetch(`/api/uploads/${encodeURIComponent(attachmentId)}`);
+          response = await shellFetch(attachmentPath(sourceKey, attachmentId));
         } catch {
           delayMs = Math.min(Math.round(delayMs * 1.5), 3_000);
           continue;
@@ -222,6 +232,8 @@ export function useRunLifecycleActions({
         try {
           const formData = new FormData();
           formData.append("file", file);
+          const projectId = projectIdForChat(chatIdFromComposerSessionKey(sourceSessionKey));
+          if (projectId) formData.append("projectId", projectId);
           const response = await shellFetch("/api/uploads", {
             body: formData,
             method: "POST"
@@ -289,7 +301,7 @@ export function useRunLifecycleActions({
       return;
     }
     try {
-      const response = await shellFetch(`/api/uploads/${encodeURIComponent(attachmentId)}`, {
+      const response = await shellFetch(attachmentPath(sourceSessionKey, attachmentId), {
         method: "POST"
       });
       if (!response.ok) throw new Error(`attachment_retry_failed_${response.status}`);

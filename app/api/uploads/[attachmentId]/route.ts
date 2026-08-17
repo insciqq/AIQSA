@@ -20,27 +20,29 @@ const select = {
   mimeType: true,
   processingErrorCode: true,
   status: true,
+  userId: true,
   updatedAt: true
 } as const;
 
 const repository: AttachmentLifecycleRepository = {
   async load(input) {
-    return prisma.attachment.findFirst({
+    const attachment = await prisma.attachment.findFirst({
       select,
-      where: {
-        id: input.attachmentId,
-        userId: input.userId
-      }
-    }) as Promise<AttachmentLifecycleRecord | null>;
+      where: { id: input.attachmentId, userId: input.userId }
+    });
+    if (!attachment) return null;
+    return attachment as AttachmentLifecycleRecord;
   },
 
   async retry(input) {
     return prisma.$transaction(async (tx) => {
-      const exists = await tx.attachment.findFirst({
+      const existing = await tx.attachment.findFirst({
         select: { id: true },
         where: { id: input.attachmentId, userId: input.userId }
       });
-      if (!exists) return { kind: "not_found" as const };
+      if (!existing) {
+        return { kind: "not_found" as const };
+      }
       const updated = await tx.attachment.updateMany({
         data: {
           extractedText: null,
