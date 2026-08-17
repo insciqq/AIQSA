@@ -23,7 +23,6 @@ type ModelSpec = Readonly<{
     | "openai_responses_native"
     | "openrouter_chat_completions";
   answerSelectable?: boolean;
-  availableInProjects?: boolean;
   connectionResponseTimeoutMs?: number;
   connectionId: string;
   contextWindow?: number;
@@ -50,7 +49,6 @@ type RouteSpec = Readonly<{
 }>;
 
 type OptionSpec = Readonly<{
-  availableInProjects?: boolean;
   displayName: string;
   kind: "gemini_google_search" | "none" | "perplexity_search" | "web_search";
   optionId: string;
@@ -90,7 +88,6 @@ function providerModel(
       upstreamModelId: spec.upstreamModelId
     },
     activeVersion: 1,
-    availableInProjects: spec.availableInProjects ?? true,
     connection: {
       activeConfig: {
         allowPrivateNetwork: false,
@@ -171,7 +168,6 @@ function physicalRoute(spec: RouteSpec) {
 function logicalOption(spec: OptionSpec) {
   return {
     archivedAt: null,
-    availableInProjects: spec.availableInProjects ?? true,
     displayName: spec.displayName,
     enabled: true,
     id: `option-row:${spec.optionId}`,
@@ -456,24 +452,9 @@ describe("provider admission", () => {
     expect(db.providerUserCredentialAssignment.findUnique).not.toHaveBeenCalled();
   });
 
-  it("rejects a model or Search option that was not explicitly made available to Projects", async () => {
-    const unavailableModel = admissionDb({
-      answer: { ...officialOpenAiModel, availableInProjects: false },
-      options: [off]
-    });
-    await expect(loadProviderAdmissionPlan(
-      unavailableModel.db as unknown as Prisma.TransactionClient,
-      {
-        executionScope: "project",
-        providerConnectionId: officialOpenAiModel.connectionId,
-        providerModelId: officialOpenAiModel.id,
-        searchPlan: { mode: "all_selected", optionIds: [] },
-        userId: "user-1"
-      }
-    )).rejects.toEqual(new ProviderAdmissionError("model_not_available"));
-
-    const option = { ...openAiOption(), availableInProjects: false };
-    const unavailableSearch = admissionDb({
+  it("admits enabled Project resources without a separate publication flag", async () => {
+    const option = openAiOption();
+    const projectResources = admissionDb({
       answer: officialOpenAiModel,
       defaultCredentialIdByConnection: {
         [officialOpenAiModel.connectionId]: `credential:${officialOpenAiModel.connectionId}`
@@ -481,8 +462,8 @@ describe("provider admission", () => {
       options: [option],
       technicalModels: [officialOpenAiSearchModel]
     });
-    await expect(loadProviderAdmissionPlan(
-      unavailableSearch.db as unknown as Prisma.TransactionClient,
+    const plan = await loadProviderAdmissionPlan(
+      projectResources.db as unknown as Prisma.TransactionClient,
       {
         executionScope: "project",
         providerConnectionId: officialOpenAiModel.connectionId,
@@ -490,7 +471,10 @@ describe("provider admission", () => {
         searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
         userId: "user-1"
       }
-    )).rejects.toEqual(new ProviderAdmissionError("search_strategy_not_available"));
+    );
+
+    expect(plan.answer.credentialSource).toBe("default");
+    expect(expectSearch(plan).optionId).toBe(option.optionId);
   });
 
   it("resolves installation answer work through only the explicit default credential", async () => {

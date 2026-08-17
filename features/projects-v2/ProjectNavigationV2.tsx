@@ -1,8 +1,75 @@
 "use client";
 
-import { UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
+import {
+  UiV2Icon,
+  UiV2IconButton,
+  UiV2MenuItem,
+  UiV2MenuSurface
+} from "@/components/ui-v2";
+import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { useState } from "react";
 import type { ProjectWorkspaceController } from "./useProjectWorkspaceController";
+
+function ProjectFolderActions({
+  busy,
+  canCreateChat,
+  canManage,
+  folderName,
+  onCreateChat,
+  onDelete,
+  onRename
+}: Readonly<{
+  busy: boolean;
+  canCreateChat: boolean;
+  canManage: boolean;
+  folderName: string;
+  onCreateChat(): void;
+  onDelete(): void;
+  onRename(): void;
+}>) {
+  const [open, setOpen] = useState(false);
+  const close = () => setOpen(false);
+  const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: close, open });
+  if (!canCreateChat && !canManage) return null;
+
+  return (
+    <span className="v2-project-folder-actions">
+      <UiV2IconButton
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className="v2-project-folder-menu-trigger"
+        disabled={busy}
+        icon="more"
+        label={`Folder actions: ${folderName}`}
+        ref={triggerRef}
+        onClick={() => (open ? close() : setOpen(true))}
+      />
+      {open ? (
+        <UiV2MenuSurface
+          className="v2-project-folder-menu"
+          label={`Folder actions: ${folderName}`}
+          ref={menuRef}
+        >
+          {canCreateChat ? (
+            <UiV2MenuItem onClick={() => { close(); onCreateChat(); }}>
+              New chat in folder
+            </UiV2MenuItem>
+          ) : null}
+          {canManage ? (
+            <>
+              <UiV2MenuItem onClick={() => { close(); onRename(); }}>
+                Rename folder
+              </UiV2MenuItem>
+              <UiV2MenuItem onClick={() => { close(); onDelete(); }}>
+                Delete folder…
+              </UiV2MenuItem>
+            </>
+          ) : null}
+        </UiV2MenuSurface>
+      ) : null}
+    </span>
+  );
+}
 
 export function ProjectNavigationV2({
   activeChatId,
@@ -151,9 +218,22 @@ export function ProjectNavigationV2({
                   <section className="v2-project-folder" key={folder.id}>
                     <div className="v2-project-folder-heading">
                       <span>{folder.name}</span>
-                      {selected?.status === "ACTIVE" && selected.capabilities.mutateChats ? <button disabled={controller.busy} type="button" onClick={() => void controller.actions.createChat(folder.id)}>+ chat</button> : null}
-                      {selected?.status === "ACTIVE" && selected.capabilities.manageProject ? <button disabled={controller.busy} type="button" onClick={() => { setFolderDialog({ mode: "rename", folderId: folder.id, initial: folder.name }); setFolderName(folder.name); }}>rename</button> : null}
-                      {selected?.status === "ACTIVE" && selected.capabilities.manageProject ? <button disabled={controller.busy} type="button" onClick={() => setDeleteFolderId(folder.id)}>delete</button> : null}
+                      <ProjectFolderActions
+                        busy={controller.busy}
+                        canCreateChat={selected?.status === "ACTIVE" && selected.capabilities.mutateChats}
+                        canManage={selected?.status === "ACTIVE" && selected.capabilities.manageProject}
+                        folderName={folder.name}
+                        onCreateChat={() => void controller.actions.createChat(folder.id)}
+                        onDelete={() => setDeleteFolderId(folder.id)}
+                        onRename={() => {
+                          setFolderDialog({
+                            mode: "rename",
+                            folderId: folder.id,
+                            initial: folder.name
+                          });
+                          setFolderName(folder.name);
+                        }}
+                      />
                     </div>
                     {folderChats.length > 0 ? folderChats.map(renderChat) : <p className="v2-project-folder-empty">No chats</p>}
                   </section>

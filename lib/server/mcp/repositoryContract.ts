@@ -21,7 +21,6 @@ export type McpRepository = {
   activateDraft(serverId: string): Promise<McpRepositoryResult<AdminMcpServer>>;
   createServer(input: {
     activate?: boolean;
-    availableInProjects?: boolean;
     description: string;
     draft: McpDraftConfiguration;
     name: string;
@@ -61,7 +60,6 @@ export type McpRepository = {
     validationUserId?: string;
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   updateServer(input: {
-    availableInProjects?: boolean;
     description?: string;
     draft?: McpDraftConfiguration;
     enabled?: boolean;

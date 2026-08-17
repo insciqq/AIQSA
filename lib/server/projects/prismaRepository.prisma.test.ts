@@ -57,40 +57,25 @@ describe("Prisma-backed Project repository", () => {
   });
 
   it("atomically bootstraps the Owner, preferred eligible model, default, and outbox event", async () => {
-    const original = await prisma.providerModel.findUniqueOrThrow({
-      select: { availableInProjects: true },
-      where: { id: providerTemplateIds.fakeModel }
-    });
-    await prisma.providerModel.update({
-      data: { availableInProjects: true },
-      where: { id: providerTemplateIds.fakeModel }
-    });
-    try {
-      await withProjectFixture(async ({ ownerId, projectId }) => {
-        const detail = await createPrismaProjectRepository(prisma).getDetail(ownerId, projectId);
-        expect(detail).toMatchObject({
-          defaults: { providerModelId: providerTemplateIds.fakeModel },
-          directRole: "OWNER",
-          effectiveRole: "OWNER",
-          readiness: "READY"
-        });
-        await expect(prisma.projectGrant.count({
-          where: { projectId, role: "OWNER", userId: ownerId }
-        })).resolves.toBe(1);
-        await expect(prisma.projectModelBinding.count({
-          where: { projectId, providerModelId: providerTemplateIds.fakeModel }
-        })).resolves.toBe(1);
-        await expect(prisma.projectEvent.findMany({
-          select: { eventType: true },
-          where: { projectId }
-        })).resolves.toContainEqual({ eventType: "project_created" });
-      }, 0, providerTemplateIds.fakeModel);
-    } finally {
-      await prisma.providerModel.update({
-        data: { availableInProjects: original.availableInProjects },
-        where: { id: providerTemplateIds.fakeModel }
+    await withProjectFixture(async ({ ownerId, projectId }) => {
+      const detail = await createPrismaProjectRepository(prisma).getDetail(ownerId, projectId);
+      expect(detail).toMatchObject({
+        defaults: { providerModelId: providerTemplateIds.fakeModel },
+        directRole: "OWNER",
+        effectiveRole: "OWNER",
+        readiness: "READY"
       });
-    }
+      await expect(prisma.projectGrant.count({
+        where: { projectId, role: "OWNER", userId: ownerId }
+      })).resolves.toBe(1);
+      await expect(prisma.projectModelBinding.count({
+        where: { projectId, providerModelId: providerTemplateIds.fakeModel }
+      })).resolves.toBe(1);
+      await expect(prisma.projectEvent.findMany({
+        select: { eventType: true },
+        where: { projectId }
+      })).resolves.toContainEqual({ eventType: "project_created" });
+    }, 0, providerTemplateIds.fakeModel);
   });
 
   it("writes durable Project outbox rows for run artifacts and tool checkpoints", async () => {
@@ -187,19 +172,15 @@ describe("Prisma-backed Project repository", () => {
     });
   });
 
-  it("omits globally ineligible resource identity and clears it from the safe defaults projection", async () => {
+  it("omits a disabled resource identity and clears it from the safe defaults projection", async () => {
     const original = await prisma.providerModel.findUniqueOrThrow({
-      select: { availableInProjects: true },
-      where: { id: providerTemplateIds.fakeModel }
-    });
-    await prisma.providerModel.update({
-      data: { availableInProjects: true },
+      select: { enabled: true },
       where: { id: providerTemplateIds.fakeModel }
     });
     try {
       await withProjectFixture(async ({ ownerId, projectId }) => {
         await prisma.providerModel.update({
-          data: { availableInProjects: false },
+          data: { enabled: false },
           where: { id: providerTemplateIds.fakeModel }
         });
         const detail = await createPrismaProjectRepository(prisma).getDetail(ownerId, projectId);
@@ -214,7 +195,7 @@ describe("Prisma-backed Project repository", () => {
       }, 0, providerTemplateIds.fakeModel);
     } finally {
       await prisma.providerModel.update({
-        data: { availableInProjects: original.availableInProjects },
+        data: { enabled: original.enabled },
         where: { id: providerTemplateIds.fakeModel }
       });
     }
@@ -283,68 +264,53 @@ describe("Prisma-backed Project repository", () => {
   });
 
   it("rolls back stale unlink and atomically clears Project and chat defaults on commit", async () => {
-    const original = await prisma.providerModel.findUniqueOrThrow({
-      select: { availableInProjects: true },
-      where: { id: providerTemplateIds.fakeModel }
-    });
-    await prisma.providerModel.update({
-      data: { availableInProjects: true },
-      where: { id: providerTemplateIds.fakeModel }
-    });
-    try {
-      await withProjectFixture(async ({ ownerId, projectId }) => {
-        const repository = createPrismaProjectRepository(prisma);
-        const content = createPrismaProjectContentRepository(prisma);
-        const detail = await repository.getDetail(ownerId, projectId);
-        if (!detail) throw new Error("project_fixture_detail_missing");
-        const model = detail.resources.find((resource) =>
-          resource.type === "model" && resource.resourceId === providerTemplateIds.fakeModel
-        );
-        if (!model) throw new Error("project_fixture_model_missing");
-        const createdChat = await content.createChat({
-          actorDisplayName: "Project Owner",
-          projectId,
-          title: "Default cleanup",
-          userId: ownerId
-        });
-        if (createdChat.kind !== "ok") throw new Error(`project_chat_${createdChat.kind}`);
-        const eventsBefore = await prisma.projectEvent.count({ where: { projectId } });
-
-        await expect(repository.removeResource({
-          actorDisplayName: "Project Owner",
-          bindingId: model.id,
-          expectedPolicyRevision: detail.policyRevision - 1,
-          projectId,
-          userId: ownerId
-        })).resolves.toEqual({ kind: "conflict", reason: "policy_revision_conflict" });
-        await expect(prisma.projectEvent.count({ where: { projectId } })).resolves.toBe(eventsBefore);
-
-        await expect(repository.removeResource({
-          actorDisplayName: "Project Owner",
-          bindingId: model.id,
-          expectedPolicyRevision: detail.policyRevision,
-          projectId,
-          userId: ownerId
-        })).resolves.toEqual({ kind: "ok", value: { id: model.id } });
-        const stored = await prisma.project.findUniqueOrThrow({
-          select: { defaults: true },
-          where: { id: projectId }
-        });
-        expect(stored.defaults).toMatchObject({ providerModelId: null });
-        await expect(prisma.chat.findUniqueOrThrow({
-          select: { defaultProviderModelId: true },
-          where: { id: createdChat.value.id }
-        })).resolves.toEqual({ defaultProviderModelId: null });
-        await expect(prisma.projectEvent.count({ where: { projectId } })).resolves.toBeGreaterThan(eventsBefore);
-        const activity = await repository.activity({ limit: 20, projectId, userId: ownerId });
-        expect(JSON.stringify(activity)).not.toContain(providerTemplateIds.fakeModel);
-      }, 0, providerTemplateIds.fakeModel);
-    } finally {
-      await prisma.providerModel.update({
-        data: { availableInProjects: original.availableInProjects },
-        where: { id: providerTemplateIds.fakeModel }
+    await withProjectFixture(async ({ ownerId, projectId }) => {
+      const repository = createPrismaProjectRepository(prisma);
+      const content = createPrismaProjectContentRepository(prisma);
+      const detail = await repository.getDetail(ownerId, projectId);
+      if (!detail) throw new Error("project_fixture_detail_missing");
+      const model = detail.resources.find((resource) =>
+        resource.type === "model" && resource.resourceId === providerTemplateIds.fakeModel
+      );
+      if (!model) throw new Error("project_fixture_model_missing");
+      const createdChat = await content.createChat({
+        actorDisplayName: "Project Owner",
+        projectId,
+        title: "Default cleanup",
+        userId: ownerId
       });
-    }
+      if (createdChat.kind !== "ok") throw new Error(`project_chat_${createdChat.kind}`);
+      const eventsBefore = await prisma.projectEvent.count({ where: { projectId } });
+
+      await expect(repository.removeResource({
+        actorDisplayName: "Project Owner",
+        bindingId: model.id,
+        expectedPolicyRevision: detail.policyRevision - 1,
+        projectId,
+        userId: ownerId
+      })).resolves.toEqual({ kind: "conflict", reason: "policy_revision_conflict" });
+      await expect(prisma.projectEvent.count({ where: { projectId } })).resolves.toBe(eventsBefore);
+
+      await expect(repository.removeResource({
+        actorDisplayName: "Project Owner",
+        bindingId: model.id,
+        expectedPolicyRevision: detail.policyRevision,
+        projectId,
+        userId: ownerId
+      })).resolves.toEqual({ kind: "ok", value: { id: model.id } });
+      const stored = await prisma.project.findUniqueOrThrow({
+        select: { defaults: true },
+        where: { id: projectId }
+      });
+      expect(stored.defaults).toMatchObject({ providerModelId: null });
+      await expect(prisma.chat.findUniqueOrThrow({
+        select: { defaultProviderModelId: true },
+        where: { id: createdChat.value.id }
+      })).resolves.toEqual({ defaultProviderModelId: null });
+      await expect(prisma.projectEvent.count({ where: { projectId } })).resolves.toBeGreaterThan(eventsBefore);
+      const activity = await repository.activity({ limit: 20, projectId, userId: ownerId });
+      expect(JSON.stringify(activity)).not.toContain(providerTemplateIds.fakeModel);
+    }, 0, providerTemplateIds.fakeModel);
   });
 
   it("counts only active direct Owners when protecting the last Owner", async () => {

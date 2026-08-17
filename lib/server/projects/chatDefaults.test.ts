@@ -5,12 +5,11 @@ import {
   projectChatDefaultsProjection
 } from "./chatDefaults";
 
-function answerModel(input: { available?: boolean; family?: string; id: string }) {
+function answerModel(input: { enabled?: boolean; family?: string; id: string }) {
   return {
     providerModel: {
       activeConfig: { adapterKind: input.family === "fake" ? "fake" : "openai_responses" },
       activeVersion: 1,
-      availableInProjects: input.available ?? true,
       connection: {
         activeConfig: {},
         activeVersion: 1,
@@ -21,21 +20,20 @@ function answerModel(input: { available?: boolean; family?: string; id: string }
         family: input.family ?? "openai"
       },
       connectionId: `connection:${input.id}`,
-      enabled: true,
+      enabled: input.enabled ?? true,
       id: input.id,
       modelClass: "answer"
     }
   };
 }
 
-function knowledgeBase(input: { available?: boolean; id: string }) {
+function knowledgeBase(input: { enabled?: boolean; id: string }) {
   return {
     knowledgeBase: {
       activeIndexGeneration: {
         embeddingProviderModel: {
           activeConfig: {},
           activeVersion: 1,
-          availableInProjects: input.available ?? true,
           connection: {
             activeConfig: {},
             activeVersion: 1,
@@ -43,7 +41,7 @@ function knowledgeBase(input: { available?: boolean; id: string }) {
             enabled: true,
             family: "openai"
           },
-          enabled: true,
+          enabled: input.enabled ?? true,
           modelClass: "embedding"
         },
         status: "active"
@@ -60,13 +58,13 @@ describe("Project chat default projection", () => {
       projectKnowledgeBaseBinding: {
         findMany: vi.fn().mockResolvedValue([
           knowledgeBase({ id: "knowledge-safe" }),
-          knowledgeBase({ available: false, id: "knowledge-revoked" })
+          knowledgeBase({ enabled: false, id: "knowledge-revoked" })
         ])
       },
       projectModelBinding: {
         findMany: vi.fn().mockResolvedValue([
           answerModel({ family: "fake", id: "model-safe" }),
-          answerModel({ available: false, id: "model-revoked" })
+          answerModel({ enabled: false, id: "model-revoked" })
         ])
       }
     } as unknown as PrismaClient;

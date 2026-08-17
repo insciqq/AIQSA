@@ -786,6 +786,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             if (full) void workspace.pane.actions.shareChat(full);
           }}
           onSettings={settings.open}
+          projectContextActive={Boolean(workspace.projects.selectedProjectId)}
           projectsSlot={(onNavigate) => (
             <ProjectNavigationV2
               activeChatId={session.activeChatId}

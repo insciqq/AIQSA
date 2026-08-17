@@ -489,7 +489,6 @@ export function createAdminProviderModelCreateHandler(deps: AdminProviderHandler
     const { connectionId } = await context.params;
     return safely(async () => {
       await deps.service.createModelDraft({
-        availableInProjects: body.availableInProjects === true,
         configuration: body.configuration as AdminProviderModelConfiguration,
         connectionId,
         displayName
@@ -520,9 +519,6 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
           return errorJson("provider_configuration_invalid", 400);
         }
         await deps.service.updateModelDraft({
-          ...(typeof body.availableInProjects === "boolean"
-            ? { availableInProjects: body.availableInProjects }
-            : {}),
           configuration: body.configuration as AdminProviderModelConfiguration,
           displayName,
           expectedDraftVersion,

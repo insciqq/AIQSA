@@ -467,7 +467,6 @@ function serializeAdminServer(
       : [],
     activeRevision: record.activeRevision ? serializeRevision(record.activeRevision) : null,
     archivedAt: record.archivedAt?.toISOString() ?? null,
-    availableInProjects: record.availableInProjects,
     description: record.description,
     draft,
     draftTest,
@@ -1023,7 +1022,6 @@ export function createPrismaMcpRepository(input: {
 
     createServer: async ({
       activate,
-      availableInProjects,
       description,
       draft,
       name,
@@ -1068,7 +1066,6 @@ export function createPrismaMcpRepository(input: {
         }
         const server = await tx.mcpServer.create({
           data: {
-            availableInProjects: availableInProjects ?? false,
             description,
             displayName: name,
             draft: draft as Prisma.InputJsonValue,
@@ -1670,7 +1667,6 @@ export function createPrismaMcpRepository(input: {
     },
 
     updateServer: async ({
-      availableInProjects,
       description,
       draft,
       enabled,
@@ -1698,7 +1694,6 @@ export function createPrismaMcpRepository(input: {
           draftChanged && draft && draftDefinitionHash(draft) === draftDefinitionHash(storedDraft)
         );
         const sharedConfigChanged = Boolean(sharedValues && Object.keys(sharedValues).length);
-        if (availableInProjects !== undefined) data.availableInProjects = availableInProjects;
         if (description !== undefined) data.description = description;
         if (name !== undefined) data.displayName = name;
         if (enabled !== undefined) data.enabled = enabled;

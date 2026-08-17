@@ -556,13 +556,12 @@ export async function loadProjectEmbeddingProviderRole(
 ): Promise<EmbeddingProviderAdmissionRole> {
   const model = await db.providerModel.findUnique({
     select: {
-      availableInProjects: true,
       connection: { select: { family: true } },
       connectionId: true
     },
     where: { id: input.providerModelId }
   });
-  if (!model || !model.availableInProjects || model.connection.family === "fake") {
+  if (!model || model.connection.family === "fake") {
     throw new ProviderAdmissionError("model_not_available");
   }
   return loadRole(db, {
@@ -606,7 +605,6 @@ export async function loadInstallationAnswerProviderRole(
 
 type LoadedSearchOption = Readonly<{
   archivedAt: Date | null;
-  availableInProjects: boolean;
   displayName: string;
   enabled: boolean;
   id: string;
@@ -958,15 +956,12 @@ export async function loadProviderAdmissionPlan(
   const projectModel = projectScope
     ? await db.providerModel.findFirst({
         select: {
-          availableInProjects: true,
           connection: { select: { family: true } }
         },
         where: { id: input.providerModelId }
       })
     : null;
-  // Fake remains a credential-free deterministic adapter, but it still needs
-  // the same explicit installation opt-in as every other Project model.
-  if (projectScope && (!projectModel || !projectModel.availableInProjects)) {
+  if (projectScope && !projectModel) {
     throw new ProviderAdmissionError("model_not_available");
   }
 
@@ -1021,7 +1016,7 @@ export async function loadProviderAdmissionPlan(
           groupIds,
           strategyId: optionId,
           userId: input.userId
-        })) || (projectScope && !option.availableInProjects))) {
+        })))) {
         throw new ProviderAdmissionError("search_strategy_not_available");
       }
       const routes = option.strategies.flatMap((strategy) => {
@@ -1092,7 +1087,7 @@ export async function loadProviderAdmissionPlan(
       groupIds,
       strategyId: optionId,
       userId: input.userId
-      }))) || (projectScope && !option.availableInProjects)) {
+      })))) {
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
     if (option.kind === "none") continue;

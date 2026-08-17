@@ -17,6 +17,7 @@ type LocalDevProfileModule = Readonly<{
 
 type LocalDevProfileLoaderOptions = Readonly<{
   disabled?: boolean;
+  ensureDefaultCredentials?: (prisma: PrismaClient) => Promise<void>;
   loadModule?: (url: string) => Promise<unknown>;
   profilePath?: string;
   repositoryRoot?: string;
@@ -34,6 +35,44 @@ function profileModule(value: unknown): LocalDevProfileModule | null {
   return typeof value === "object" && value !== null
     ? value as LocalDevProfileModule
     : null;
+}
+
+export async function ensureLocalDevProfileDefaultCredentials(
+  prisma: PrismaClient
+): Promise<void> {
+  const connections = await prisma.providerConnection.findMany({
+    orderBy: { id: "asc" },
+    select: {
+      credentials: {
+        orderBy: { id: "asc" },
+        select: { id: true },
+        where: {
+          activeVersion: { is: { revokedAt: null } },
+          enabled: true
+        }
+      },
+      defaultCredentialId: true,
+      family: true,
+      id: true
+    }
+  });
+
+  for (const connection of connections) {
+    if (
+      connection.family === "fake" ||
+      connection.credentials.length === 0 ||
+      connection.credentials.some(({ id }) => id === connection.defaultCredentialId)
+    ) {
+      continue;
+    }
+    if (connection.credentials.length !== 1) {
+      throw new Error("local_dev_profile_default_credential_ambiguous");
+    }
+    await prisma.providerConnection.update({
+      data: { defaultCredentialId: connection.credentials[0]!.id },
+      where: { id: connection.id }
+    });
+  }
 }
 
 export async function runOptionalLocalDevProfile(
@@ -67,5 +106,6 @@ export async function runOptionalLocalDevProfile(
     throw new Error("local_dev_profile_entrypoint_invalid");
   }
   await loaded.run({ prisma, repositoryRoot, version: 1 });
+  await (options.ensureDefaultCredentials ?? ensureLocalDevProfileDefaultCredentials)(prisma);
   return "executed";
 }

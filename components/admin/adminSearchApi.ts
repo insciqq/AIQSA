@@ -85,7 +85,7 @@ export function updateAdminSearchIntegration(input: Readonly<{
 }
 
 export function runAdminSearchAction(input: Readonly<{
-  action: "activate" | "archive" | "disable" | "disable_projects" | "enable" | "enable_projects" | "test";
+  action: "activate" | "archive" | "disable" | "enable" | "test";
   confirmed?: boolean;
   id: string;
 }>, fetcher?: Fetcher): Promise<AdminSearchApiResult> {

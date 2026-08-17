@@ -45,7 +45,6 @@ function service(overrides: Partial<SearchService> = {}): SearchService {
     createDraft: vi.fn(async () => ({ created: true, id: "integration-1" })),
     list: vi.fn(async () => emptyCatalog),
     setEnabled: vi.fn(async () => undefined),
-    setProjectAvailability: vi.fn(async () => undefined),
     testDraft: vi.fn(async () => undefined),
     updateDraft: vi.fn(async () => undefined),
     updatePolicy: vi.fn(async () => undefined),
