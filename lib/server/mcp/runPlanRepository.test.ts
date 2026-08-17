@@ -2,7 +2,8 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import {
   loadMcpCapabilityCatalog,
-  loadMcpRunPlanRecords
+  loadMcpRunPlanRecords,
+  loadMcpRunPlanRecordsForProjectServers
 } from "./runPlanRepository";
 
 const NOW = new Date("2026-07-22T20:00:00.000Z");
@@ -112,7 +113,117 @@ function clientWith(records: PreferenceFixture[]) {
   };
 }
 
+function projectGeneration(overrides: Record<string, unknown> = {}) {
+  return {
+    credentialSources: ["shared"],
+    errorCode: null,
+    externalAccountLabel: null,
+    fingerprint: "project-fingerprint-1",
+    id: "project-generation-1",
+    inventory: {
+      tools: [{
+        definitionHash: HASH,
+        description: "Echo",
+        inputSchema: { type: "object" },
+        name: "echo"
+      }],
+      version: 1
+    },
+    inventoryUpdatedAt: NOW,
+    oauthConnectionId: null,
+    revision: {
+      configuration: { auth: { mode: "none" } },
+      id: "project-revision-1",
+      server: {
+        activeRevisionId: "project-revision-1",
+        archivedAt: null,
+        availableInProjects: true,
+        description: "Shared Project tools",
+        displayName: "Project MCP",
+        enabled: true,
+        id: "project-server-1",
+        namespace: "project_tools",
+        sharedConfigEnvelope: null
+      },
+      validationEvidence: {
+        toolInventory: [{ arguments: [], description: "Echo", name: "echo" }]
+      }
+    },
+    state: "ready",
+    userServer: {
+      desiredRuntimeGenerationId: "project-generation-1",
+      enabled: true,
+      personalConfigEnvelope: null,
+      serverId: "project-server-1"
+    },
+    ...overrides
+  };
+}
+
+function projectClientWith(records: unknown[]) {
+  const findMany = vi.fn(async () => records);
+  return {
+    client: { mcpRuntimeGeneration: { findMany } } as unknown as PrismaClient,
+    findMany
+  };
+}
+
 describe("Prisma MCP run-plan loader", () => {
+  it("admits a current shared/no-auth runtime for Project scope without a personal grant", async () => {
+    const { client, findMany } = projectClientWith([projectGeneration()]);
+
+    await expect(loadMcpRunPlanRecordsForProjectServers(["project-server-1"], client))
+      .resolves.toEqual([expect.objectContaining({
+        credentialSources: ["shared"],
+        enabled: true,
+        externalAccountLabel: null,
+        generationId: "project-generation-1",
+        readiness: "ready",
+        serverId: "project-server-1"
+      })]);
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        oauthConnectionId: null,
+        state: "ready",
+        userServer: { personalConfigEnvelope: null }
+      })
+    }));
+  });
+
+  it.each([
+    ["personal credential source", { credentialSources: ["personal"] }],
+    ["OAuth connection", { oauthConnectionId: "oauth-1" }],
+    ["personal slot envelope", {
+      userServer: {
+        desiredRuntimeGenerationId: "project-generation-1",
+        enabled: true,
+        personalConfigEnvelope: "encrypted",
+        serverId: "project-server-1"
+      }
+    }],
+    ["historical non-current generation", {
+      userServer: {
+        desiredRuntimeGenerationId: "project-generation-2",
+        enabled: true,
+        personalConfigEnvelope: null,
+        serverId: "project-server-1"
+      }
+    }]
+  ])("fails Project MCP closed for %s", async (_label, override) => {
+    const [record] = await loadMcpRunPlanRecordsForProjectServers(
+      ["project-server-1"],
+      projectClientWith([projectGeneration(override)]).client
+    );
+
+    expect(record).toMatchObject({
+      credentialSources: [],
+      enabled: false,
+      errorCode: "mcp_project_credentials_unavailable",
+      generationId: null,
+      readiness: "unavailable"
+    });
+  });
+
   it("loads a current ready generation through a direct grant", async () => {
     const { client, findMany } = clientWith([preference()]);
 

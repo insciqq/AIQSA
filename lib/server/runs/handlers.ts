@@ -84,6 +84,22 @@ export type RunHandlerDeps = {
 };
 
 const activeRunGateWindowMs = activeRunStaleMs;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+function projectDraftFromBody(body: Record<string, unknown> | null):
+  | Readonly<{ folderId: string | null; projectId: string }>
+  | "invalid"
+  | null {
+  if (!body || body.projectDraft === undefined) return null;
+  const value = body.projectDraft;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return "invalid";
+  const draft = value as Record<string, unknown>;
+  const folderId = draft.folderId ?? null;
+  if (!uuidPattern.test(String(draft.projectId ?? "")) ||
+    (folderId !== null && !uuidPattern.test(String(folderId))) ||
+    Object.keys(draft).some((key) => key !== "folderId" && key !== "projectId")) return "invalid";
+  return { folderId: folderId === null ? null : String(folderId), projectId: String(draft.projectId) };
+}
 
 async function readJson(
   request: Request
@@ -131,6 +147,7 @@ function recoveryDeps(
     | "knowledgeExecutor"
     | "memoryEgress"
     | "mcp"
+    | "providerAdmission"
     | "providerRuntime"
     | "providers"
     | "repository"
@@ -144,6 +161,7 @@ function recoveryDeps(
     ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
     ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
     ...(deps.mcp ? { mcp: deps.mcp } : {}),
+    ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
     ...(deps.providerRuntime ? { providerRuntime: deps.providerRuntime } : {}),
     providers: deps.providers,
     registry: activeRunControllerRegistry,
@@ -368,9 +386,30 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     });
 
     const params = await context.params;
-    const chat = await deps.repository.findOwnedChat(params.chatId, auth.userId);
+    let chat = await deps.repository.findOwnedChat(params.chatId, auth.userId);
+    let projectChat: Readonly<{ folderId: string | null }> | null = null;
+    const projectDraft = projectDraftFromBody(body);
+    if (projectDraft === "invalid" ||
+      (projectDraft && !chat && !uuidPattern.test(params.chatId))) {
+      return Response.json({ error: "project_draft_invalid" }, { status: 400 });
+    }
+    if (!chat && projectDraft) {
+      if (!deps.repository.loadProjectFirstSend || body?.expectedActiveLeafId !== null) {
+        return Response.json({ error: "project_draft_invalid" }, { status: 400 });
+      }
+      chat = await deps.repository.loadProjectFirstSend({
+        chatId: params.chatId,
+        folderId: projectDraft.folderId,
+        projectId: projectDraft.projectId,
+        userId: auth.userId
+      });
+      if (chat) projectChat = { folderId: projectDraft.folderId };
+    }
     if (!chat) {
-      return Response.json({ error: "chat_not_found" }, { status: 404 });
+      return Response.json({ error: projectDraft ? "project_not_found" : "chat_not_found" }, { status: 404 });
+    }
+    if (chat && projectDraft && !projectChat) {
+      return Response.json({ error: "project_draft_conflict" }, { status: 409 });
     }
 
     const activeRunResponse = await activeRunConflictResponse(chat.id, deps.repository, auth.userId);
@@ -390,6 +429,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           ...chat,
           activeLeafMessageId: expectedActiveLeaf.value
         },
+        ...(projectChat ? { draftProjectChat: true } : {}),
         kind: "send"
       },
       userId: auth.userId
@@ -433,6 +473,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         normalizedRequest: preparedData.normalizedRequest,
         provider: preparedData.normalizedRequest.provider,
         providerRequestPreview: preparedData.providerRequestPreview,
+        ...(projectChat ? { projectChat } : {}),
         signal: request.signal,
         userId: auth.userId
       });
@@ -494,6 +535,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
+      ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
@@ -641,6 +683,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       ...(deps.knowledgeExecutor ? { knowledgeExecutor: deps.knowledgeExecutor } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
+      ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
@@ -657,6 +700,7 @@ export function createGetModelRunHandler(
     | "knowledgeExecutor"
     | "memoryEgress"
     | "mcp"
+    | "providerAdmission"
     | "providerRuntime"
     | "providers"
     | "repository"

@@ -1,36 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { initialComposerControlSnapshot } from "@/components/app-shell/composerControlStore";
 import {
+  effectiveComposerDisabledHint,
   effectiveProjectCatalog,
   runCatalogLoadDeduped,
   workspaceDefaultControlsFingerprint
 } from "./PowerAppShellV2";
-import { isShellShortcutTextEntryTarget } from "@/components/app-shell/useShellOverlayController";
 import type { Catalog } from "@/lib/contracts/catalog";
 import type { ProjectDetailWire } from "@/lib/contracts/projects";
-
-describe("PowerAppShellV2 shortcut targets", () => {
-  it("treats typing surfaces as local shortcut targets", () => {
-    const input = document.createElement("input");
-    input.type = "text";
-    const textarea = document.createElement("textarea");
-    const editable = document.createElement("div");
-    editable.setAttribute("contenteditable", "true");
-
-    expect(isShellShortcutTextEntryTarget(input)).toBe(true);
-    expect(isShellShortcutTextEntryTarget(textarea)).toBe(true);
-    expect(isShellShortcutTextEntryTarget(editable)).toBe(true);
-  });
-
-  it("allows global shortcuts from non-typing controls", () => {
-    const button = document.createElement("button");
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-
-    expect(isShellShortcutTextEntryTarget(button)).toBe(false);
-    expect(isShellShortcutTextEntryTarget(checkbox)).toBe(false);
-  });
-});
 
 describe("PowerAppShellV2 catalog loading", () => {
   it.each([
@@ -117,59 +94,43 @@ describe("PowerAppShellV2 catalog loading", () => {
 });
 
 describe("Project effective catalog", () => {
-  it("intersects the user catalog with available Project model and Search bindings", () => {
-    const catalog = {
+  it("does not let missing personal model grants disable a ready Project composer", () => {
+    expect(effectiveComposerDisabledHint({
+      personalHint: "No model access. Ask an admin to grant model access.",
+      projectContext: true,
+      projectHint: null
+    })).toBeNull();
+  });
+
+  it("uses the server-authored Project catalog without intersecting personal grants", () => {
+    const personalCatalog = {
       defaults: {},
-      models: [
-        {
-          modelId: "model-linked",
-          provider: "provider-linked",
-          searchOptionCompatibility: {
-            "search-linked": { clientToolCompatible: true, executionModes: ["model_choice"] },
-            "search-private": { clientToolCompatible: true, executionModes: ["model_choice"] }
-          },
-          searchStrategyIds: ["search-disabled", "search-linked", "search-private"]
-        },
-        {
-          modelId: "model-private",
-          provider: "provider-private",
-          searchStrategyIds: ["search-disabled"]
-        }
-      ],
-      providers: [
-        { id: "provider-linked", models: ["model-linked"], name: "Linked" },
-        { id: "provider-private", models: ["model-private"], name: "Private" }
-      ],
-      searchStrategies: [
-        { displayName: "No Search", kind: "none", strategyId: "search-disabled" },
-        { displayName: "Linked Search", kind: "web_search", strategyId: "search-linked" },
-        { displayName: "Private Search", kind: "web_search", strategyId: "search-private" }
-      ]
+      models: [{ modelId: "personal-model", provider: "personal-provider", searchStrategyIds: [] }],
+      providers: [{ id: "personal-provider", models: ["personal-model"], name: "Personal" }],
+      searchStrategies: []
+    } as unknown as Catalog;
+    const projectCatalog = {
+      defaults: {},
+      models: [{ modelId: "project-model", provider: "project-provider", searchStrategyIds: [] }],
+      providers: [{ id: "project-provider", models: ["project-model"], name: "Project" }],
+      searchStrategies: []
     } as unknown as Catalog;
     const project = {
-      resources: [
-        { available: true, resourceId: "model-linked", type: "model" },
-        { available: false, resourceId: "model-private", type: "model" },
-        { available: true, resourceId: "search-linked", type: "search" }
-      ]
+      composer: {
+        assistants: [],
+        catalog: projectCatalog,
+        knowledgeBases: [],
+        mcpServers: []
+      }
     } as unknown as ProjectDetailWire;
 
-    const effective = effectiveProjectCatalog(catalog, project);
+    expect(effectiveProjectCatalog(personalCatalog, project)).toBe(projectCatalog);
+  });
 
-    expect(effective?.models.map((model) => model.modelId)).toEqual(["model-linked"]);
-    expect(effective?.providers).toEqual([
-      { id: "provider-linked", models: ["model-linked"], name: "Linked" }
-    ]);
-    expect(effective?.searchStrategies.map((strategy) => strategy.strategyId)).toEqual([
-      "search-disabled",
-      "search-linked"
-    ]);
-    expect(effective?.models[0]?.searchStrategyIds).toEqual([
-      "search-disabled",
-      "search-linked"
-    ]);
-    expect(Object.keys(effective?.models[0]?.searchOptionCompatibility ?? {})).toEqual([
-      "search-linked"
-    ]);
+  it("does not fall back to a personal catalog while Project authority is unavailable", () => {
+    const personalCatalog = { defaults: {}, models: [], providers: [], searchStrategies: [] } as unknown as Catalog;
+    const project = {} as ProjectDetailWire;
+
+    expect(effectiveProjectCatalog(personalCatalog, project)).toBeNull();
   });
 });

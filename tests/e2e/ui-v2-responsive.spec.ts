@@ -117,7 +117,7 @@ test("v2 sidebar transfers focus across desktop, compact, and mobile composition
   await expect(source).toBeFocused();
 });
 
-test("v2 sidebar leaves Ctrl/Cmd+K to the single shell command-palette owner", async ({ page }) => {
+test("v2 sidebar leaves Ctrl/Cmd+K unassigned", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/ui-v2-fixture?fixture=navigation");
   const opener = page.getByRole("button", { name: "Open sidebar" });

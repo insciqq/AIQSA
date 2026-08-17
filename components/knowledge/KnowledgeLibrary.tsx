@@ -1269,9 +1269,17 @@ function PublicationSection({ busy, detail }: { busy: boolean; detail: Knowledge
             <li key={publication.id} className="flex min-w-0 flex-wrap items-center justify-between gap-3 py-3">
               <div className="min-w-0">
                 <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">
-                  {publication.scope === "installation" ? "Entire installation" : publication.groupName ?? "Group"}
+                  {publication.scope === "installation"
+                    ? "Entire installation"
+                    : publication.scope === "project"
+                      ? "Project publication"
+                      : publication.groupName ?? "Group"}
                 </p>
-                <p className="mt-0.5 text-metadata text-ink-muted">Live access · updated {formatDate(publication.updatedAt)}</p>
+                <p className="mt-0.5 text-metadata text-ink-muted">
+                  {publication.scope === "project"
+                    ? "Project details stay private after membership loss · published"
+                    : "Live access · updated"} {formatDate(publication.updatedAt)}
+                </p>
               </div>
               <button
                 className={`${quietButton} text-critical hover:bg-critical/10 hover:text-critical`}

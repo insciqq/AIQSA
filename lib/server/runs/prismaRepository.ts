@@ -50,6 +50,7 @@ import {
   dispatchableModelRunStatuses,
   isRecord,
   json,
+  projectRunRecoveryAuthority,
   runControlRecord,
   unique
 } from "./prismaRepositoryShared";
@@ -280,7 +281,8 @@ export function createPrismaRunRepository(
           }
         },
         modelBindings: { select: { providerModelId: true } },
-        searchBindings: { include: { searchOption: { select: { id: true, optionId: true } } } }
+        searchBindings: { include: { searchOption: { select: { id: true, optionId: true } } } },
+        skillBindings: { select: { skillId: true } }
       },
       where: { id: projectId }
     });
@@ -312,10 +314,12 @@ export function createPrismaRunRepository(
       policy: policy.policy,
       policyRevision: access.policyRevision,
       projectId,
+      executionScope: "project",
       role: access.effectiveRole,
       searchOptionIds: project.searchBindings.flatMap(({ searchOption }) =>
         [searchOption.id, searchOption.optionId]
-      )
+      ),
+      skillIds: project.skillBindings.map(({ skillId }) => skillId)
     };
   }
 
@@ -899,6 +903,40 @@ export function createPrismaRunRepository(
         title: chat.title
       };
     },
+    loadProjectFirstSend: async ({ chatId, folderId, projectId, userId }) => {
+      const [existing, project] = await Promise.all([
+        prismaClient.chat.findUnique({ select: { id: true }, where: { id: chatId } }),
+        loadProjectRunAdmission(projectId, userId)
+      ]);
+      if (existing || !project) return null;
+      if (folderId) {
+        const folder = await prismaClient.projectFolder.findUnique({
+          select: { id: true },
+          where: { projectId_id: { id: folderId, projectId } }
+        });
+        if (!folder) return null;
+      }
+      const defaultModelId = project.defaults.providerModelId;
+      const model = defaultModelId && project.modelIds.includes(defaultModelId)
+        ? await prismaClient.providerModel.findUnique({
+            select: { connectionId: true, id: true },
+            where: { id: defaultModelId }
+          })
+        : null;
+      return {
+        activeLeafMessageId: null,
+        defaultKnowledgePlan: project.defaults.knowledgePlan,
+        defaultModelId: model?.id ?? "",
+        defaultProvider: model?.connectionId ?? "",
+        folderDefaultKnowledgePlan: null,
+        id: chatId,
+        memoryMode: "EXCLUDED",
+        messageCount: 0,
+        project,
+        projectMemory: null,
+        title: "New Chat"
+      };
+    },
     findRecentActiveRunForChat: async ({ chatId, since, userId }) => {
       const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: chatId } });
       const access = chat?.projectId
@@ -1093,6 +1131,20 @@ export function createPrismaRunRepository(
           errorPayload: true,
           id: true,
           modelId: true,
+          projectRunBinding: {
+            select: {
+              accessRevision: true,
+              instructionsRevision: true,
+              memoryRevision: true,
+              policyRevision: true,
+              projectId: true,
+              providerAdmissionFingerprint: true,
+              providerConnectionId: true,
+              providerModelId: true,
+              providerRequiresClientTools: true,
+              providerSearchPlan: true
+            }
+          },
           provider: true,
           providerResponseId: true,
           status: true
@@ -1113,6 +1165,9 @@ export function createPrismaRunRepository(
             chatId: run.chatId,
             id: run.id,
             modelId: run.modelId,
+            ...(run.projectRunBinding
+              ? { project: projectRunRecoveryAuthority(run.projectRunBinding)! }
+              : {}),
             provider: run.provider,
             providerResponseId: run.providerResponseId,
             recoverySettled: isRecoveredRunTerminalPayload(run.errorPayload),

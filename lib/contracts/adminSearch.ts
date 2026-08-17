@@ -50,6 +50,7 @@ export type AdminSearchBroaderModelSetup = "not_applicable" | "ready" | "setup_r
  * implementations stay aggregated behind this parent identity. */
 export type AdminSearchIntegration = {
   archivedAt: string | null;
+  availableInProjects?: boolean;
   broaderModelSetup: AdminSearchBroaderModelSetup;
   configurable: boolean;
   configuration: AdminSearchDraft | null;
@@ -175,6 +176,7 @@ function integration(value: unknown): boolean {
   const providerModel = value.providerModel;
   return (
     nullableString(value.archivedAt) &&
+    (value.availableInProjects === undefined || typeof value.availableInProjects === "boolean") &&
     (value.broaderModelSetup === "not_applicable" || value.broaderModelSetup === "ready" ||
       value.broaderModelSetup === "setup_required") &&
     typeof value.configurable === "boolean" &&

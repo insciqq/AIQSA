@@ -2,14 +2,8 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 export async function runAccountMenuAction(
   page: Page,
-  name: "Command palette" | "Assistants" | "Knowledge" | "Memory" | "Settings"
+  name: "Assistants" | "Knowledge" | "Memory" | "Settings"
 ): Promise<Locator> {
-  if (name === "Command palette") {
-    const commandTrigger = page.getByRole("button", { name: "Commands" });
-    await commandTrigger.click();
-    return commandTrigger;
-  }
-
   const accountTrigger = page.getByRole("button", { name: "Account menu" });
   await accountTrigger.click();
   const accountMenu = page.getByRole("menu", { name: "Account" });

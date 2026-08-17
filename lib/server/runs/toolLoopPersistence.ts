@@ -1,4 +1,5 @@
 import type { ModelRunStatus } from "@prisma/client";
+import type { SearchPlan } from "../../domain/search";
 import type { NormalizedTokenUsage } from "../../domain/usage";
 import type { NormalizedRunRequest } from "../providers/types";
 
@@ -47,6 +48,20 @@ export type PersistedToolLoopCall = Readonly<{
   toolName: string;
 }>;
 
+/** Immutable Project authority needed before recovery performs external I/O. */
+export type ProjectRunRecoveryAuthority = Readonly<{
+  accessRevision: number;
+  instructionsRevision: number;
+  memoryRevision: number;
+  policyRevision: number;
+  projectId: string;
+  providerAdmissionFingerprint: string;
+  providerConnectionId: string;
+  providerModelId: string;
+  providerRequiresClientTools: boolean;
+  providerSearchPlan: SearchPlan;
+}>;
+
 export type CheckpointedToolLoopRun = Readonly<{
   assistantMessageId: string | null;
   assistantText: string | null;
@@ -56,6 +71,7 @@ export type CheckpointedToolLoopRun = Readonly<{
   id: string;
   modelId: string;
   normalizedRequest: NormalizedRunRequest;
+  project?: ProjectRunRecoveryAuthority;
   provider: string;
   providerResponseId: string | null;
   status: ModelRunStatus;

@@ -83,7 +83,6 @@ export function NavigationV2Gallery({ state = "default" }: { state?: NavigationG
       onLoadMore={() => undefined}
       onMemoryMode={(_chat, nextMode) => setMode(nextMode)}
       onNewChat={setMode}
-      onOpenSearch={() => undefined}
       onRetry={() => undefined}
       onSearch={setSearch}
       onSelectChat={(chat) => setSelected(chat.id)}

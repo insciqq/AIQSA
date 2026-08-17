@@ -9,11 +9,13 @@ import type {
 } from "@/lib/contracts/projects";
 
 const apiMocks = vi.hoisted(() => ({
+  leaveProject: vi.fn(),
   loadProject: vi.fn(),
   loadProjectActivity: vi.fn(),
   loadProjectMemory: vi.fn(),
   loadProjects: vi.fn(),
-  loadProjectWorkspace: vi.fn()
+  loadProjectWorkspace: vi.fn(),
+  removeProjectResource: vi.fn()
 }));
 
 vi.mock("@/components/app-shell/projectWorkspaceApi", async (importOriginal) => ({
@@ -114,6 +116,34 @@ function controllerInput() {
   };
 }
 
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  readonly listeners = new Map<string, Set<EventListener>>();
+  onerror: ((event: Event) => void) | null = null;
+  onopen: ((event: Event) => void) | null = null;
+
+  constructor(readonly url: string) {
+    FakeEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: EventListener): void {
+    const bucket = this.listeners.get(type) ?? new Set<EventListener>();
+    bucket.add(listener);
+    this.listeners.set(type, bucket);
+  }
+
+  removeEventListener(type: string, listener: EventListener): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  emit(type: string, data: unknown): void {
+    const event = new MessageEvent(type, { data: JSON.stringify(data) });
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
+
+  close(): void {}
+}
+
 describe("useProjectWorkspaceController shared-desk reconciliation", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -123,10 +153,95 @@ describe("useProjectWorkspaceController shared-desk reconciliation", () => {
     apiMocks.loadProject.mockResolvedValue(projectDetail);
     apiMocks.loadProjectActivity.mockResolvedValue({ events: [], nextCursor: null });
     apiMocks.loadProjectMemory.mockResolvedValue({ enabled: true, facts: [], proposals: [], revision: 1 });
+    FakeEventSource.instances = [];
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("merges a safe SSE chat delta without refetching the whole Project workspace", async () => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    apiMocks.loadProjectWorkspace.mockResolvedValue({
+      chats: [projectChat({ id: "chat-1", title: "Plan" })],
+      folders: []
+    });
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const stream = FakeEventSource.instances.at(-1);
+    expect(stream?.url).toBe("/api/projects/project-1/events");
+    const teammateChat = projectChat({ id: "chat-2", title: "Created live" });
+
+    await act(async () => {
+      stream?.emit("project_changed", {
+        category: "chat_changed",
+        chat: teammateChat,
+        chatId: teammateChat.id,
+        revision: "10"
+      });
+      stream?.emit("project_changed", {
+        category: "chat_changed",
+        chat: { ...teammateChat, title: "Stale replay" },
+        chatId: teammateChat.id,
+        revision: "9"
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(result.current.workspace?.chats.find((chat) => chat.id === "chat-2")?.title)
+      .toBe("Created live");
+    expect(useWorkspaceStore.getState().chats.some((chat) => chat.id === "chat-2")).toBe(true);
+    expect(apiMocks.loadProjectWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the Project open when a stale resource target returns a typed 404", async () => {
+    apiMocks.loadProjectWorkspace.mockResolvedValue({ chats: [], folders: [] });
+    apiMocks.removeProjectResource.mockRejectedValueOnce(
+      new ProjectApiError(404, "project_resource_not_found")
+    );
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    await act(async () => {
+      expect(await result.current.actions.removeResource("stale-binding", 1)).toBe(false);
+    });
+
+    expect(result.current.selectedProjectId).toBe("project-1");
+    expect(result.current.actionError).toBe("That Project resource is no longer linked.");
+    expect(input.onProjectAccessLost).not.toHaveBeenCalled();
+  });
+
+  it("leaves Project navigation without removing the member grant", async () => {
+    apiMocks.loadProjectWorkspace.mockResolvedValue({
+      chats: [projectChat({ id: "chat-1", title: "Plan" })],
+      folders: []
+    });
+    const input = controllerInput();
+    const { result } = renderHook(() => useProjectWorkspaceController(input));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await result.current.actions.selectProject("project-1")).toBe(true);
+    });
+    act(() => result.current.actions.leave());
+
+    expect(result.current.selectedProjectId).toBeNull();
+    expect(apiMocks.leaveProject).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().chats.some((chat) => chat.projectId === "project-1"))
+      .toBe(true);
   });
 
   it("discovers another member's chat and refreshes the open run projection without a manual reload", async () => {

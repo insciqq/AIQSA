@@ -29,7 +29,8 @@ import {
   activeMessageStatuses,
   dispatchableModelRunStatuses,
   isRecord,
-  json
+  json,
+  projectRunRecoveryAuthority
 } from "./prismaRepositoryShared";
 
 export async function appendRunOutputEvents(
@@ -409,6 +410,20 @@ export function createPrismaRunToolLoopOperations(
               groundedAt: true
             }
           },
+          projectRunBinding: {
+            select: {
+              accessRevision: true,
+              instructionsRevision: true,
+              memoryRevision: true,
+              policyRevision: true,
+              projectId: true,
+              providerAdmissionFingerprint: true,
+              providerConnectionId: true,
+              providerModelId: true,
+              providerRequiresClientTools: true,
+              providerSearchPlan: true
+            }
+          },
           toolCalls: {
             include: toolLoopCallInclude,
             orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }]
@@ -432,6 +447,9 @@ export function createPrismaRunToolLoopOperations(
         id: run.id,
         modelId: run.modelId,
         normalizedRequest: run.normalizedRequest as unknown as CheckpointedToolLoopRun["normalizedRequest"],
+        ...(run.projectRunBinding
+          ? { project: projectRunRecoveryAuthority(run.projectRunBinding)! }
+          : {}),
         provider: run.provider,
         providerResponseId: run.providerResponseId,
         status: run.status,

@@ -16,6 +16,7 @@ import { createPrismaMcpRuntimeRepository } from "../mcp/runtimeRepository";
 import { prisma } from "../prisma";
 import { createPrismaSettingsRepository } from "../settings/prismaRepository";
 import { createPrismaProjectRepository } from "../projects/prismaRepository";
+import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaRunRepository } from "./prismaRepository";
 import {
   ActiveLeafConflictError,
@@ -158,12 +159,23 @@ async function deleteMcpFixture(serverId: string): Promise<void> {
   await prisma.mcpServer.deleteMany({ where: { id: serverId } });
 }
 
+function projectProviderAdmission(userId: string) {
+  return loadProviderAdmissionPlan(prisma, {
+    executionScope: "project",
+    providerConnectionId: providerTemplateIds.fakeConnection,
+    providerModelId: providerTemplateIds.fakeModel,
+    searchPlan: { mode: "all_selected", optionIds: [] },
+    userId
+  });
+}
+
 function createRunInput(input: {
   assistant?: { assistantId: string; revisionId: string };
   attachmentIds?: string[];
   chatId: string;
   defaults?: Partial<AcceptedRunDefaults>;
   project?: ProjectRunAdmission;
+  providerAdmissionPlan?: Awaited<ReturnType<typeof projectProviderAdmission>>;
   question: string;
   userId: string;
 }): Parameters<RunRepository["createRun"]>[0] {
@@ -207,6 +219,9 @@ function createRunInput(input: {
       searchPlan: { mode: "all_selected", options: [] }
     },
     provider: "fake",
+    ...(input.providerAdmissionPlan
+      ? { providerAdmissionPlan: input.providerAdmissionPlan }
+      : {}),
     providerRequestPreview: {},
     ...(input.project ? { project: input.project } : {}),
     userId: input.userId
@@ -475,6 +490,7 @@ describe("Prisma-backed run repository", () => {
             role: "OWNER",
             searchOptionIds: []
           },
+          providerAdmissionPlan: await projectProviderAdmission(userId),
           question: "Keep this request outside Personal Memory",
           userId
         });
@@ -491,7 +507,25 @@ describe("Prisma-backed run repository", () => {
           where: { modelRunId: created.runId }
         })).resolves.toMatchObject({
           personalMemoryDisabled: true,
-          projectId: project.id
+          projectId: project.id,
+          providerAdmissionFingerprint: input.providerAdmissionPlan?.fingerprint,
+          providerConnectionId: providerTemplateIds.fakeConnection,
+          providerModelId: providerTemplateIds.fakeModel,
+          providerRequiresClientTools: false,
+          providerSearchPlan: { mode: "all_selected", optionIds: [] }
+        });
+        await expect(createPrismaRunRepository(prisma).getRunControlForUser(
+          created.runId,
+          userId
+        )).resolves.toMatchObject({
+          project: {
+            accessRevision: project.accessRevision,
+            projectId: project.id,
+            providerAdmissionFingerprint: input.providerAdmissionPlan?.fingerprint,
+            providerConnectionId: providerTemplateIds.fakeConnection,
+            providerModelId: providerTemplateIds.fakeModel,
+            providerSearchPlan: { mode: "all_selected", optionIds: [] }
+          }
         });
         await expect(prisma.modelRunMemoryBinding.findUnique({
           where: { modelRunId: created.runId }
@@ -588,6 +622,7 @@ describe("Prisma-backed run repository", () => {
             role: "OWNER",
             searchOptionIds: []
           },
+          providerAdmissionPlan: await projectProviderAdmission(userId),
           question: "Do not admit stale Project Memory",
           userId
         }))).rejects.toBeInstanceOf(ActiveLeafConflictError);
@@ -683,6 +718,7 @@ describe("Prisma-backed run repository", () => {
             role: "OWNER",
             searchOptionIds: []
           },
+          providerAdmissionPlan: await projectProviderAdmission(userId),
           question: "Do not admit an archived Assistant",
           userId
         }))).rejects.toBeInstanceOf(AssistantRunConflictError);

@@ -2,15 +2,21 @@ import { shellFetch } from "@/components/app-shell/shellApi";
 import type { WorkspaceChatSummary } from "@/components/app-shell/types";
 import {
   decodeProjectKnowledgeCitationResponse,
+  decodeProjectGrantRemovalPreview,
+  decodeProjectResourceChangePreview,
   decodeProjectResponse,
   decodeProjectsResponse,
   decodeProjectWorkspaceResponse,
   type ProjectActivityResponseWire,
   type ProjectChatSummaryWire,
+  type ProjectCandidatesResponseWire,
+  type ProjectCandidateTypeWire,
   type ProjectDetailWire,
   type ProjectFolderWire,
+  type ProjectGrantRemovalPreviewWire,
   type ProjectKnowledgeCitationWire,
   type ProjectMemoryResponseWire,
+  type ProjectResourceChangePreviewWire,
   type ProjectSummaryWire,
   type ProjectWorkspaceResponseWire,
   type UpdateProjectRequestWire
@@ -127,10 +133,30 @@ export async function loadProjectKnowledgeCitation(input: Readonly<{
   return decoded.citation;
 }
 
-export async function createProject(input: { description?: string; name: string }): Promise<ProjectDetailWire> {
+export async function createProject(input: { description?: string; name: string; preferredModelId?: string }): Promise<ProjectDetailWire> {
   const decoded = decodeProjectResponse(await jsonRequest("/api/projects", jsonMutation("POST", input)));
   if (!decoded) throw new Error("project_malformed");
   return decoded.project;
+}
+
+export async function loadProjectCandidates(
+  projectId: string,
+  type: ProjectCandidateTypeWire,
+  query: string,
+  cursor?: string
+): Promise<ProjectCandidatesResponseWire> {
+  const params = new URLSearchParams({ limit: "20", q: query, type });
+  if (cursor) params.set("cursor", cursor);
+  const value = await jsonRequest(
+    `/api/projects/${encodeURIComponent(projectId)}/candidates?${params.toString()}`
+  );
+  if (!isRecord(value) || !Array.isArray(value.items) || !nullableString(value.nextCursor) ||
+    value.items.some((item) => !isRecord(item) || typeof item.id !== "string" ||
+      typeof item.label !== "string" || item.type !== type || !nullableString(item.description) ||
+      !nullableString(item.disabledReason))) {
+    throw new Error("project_candidates_malformed");
+  }
+  return value as ProjectCandidatesResponseWire;
 }
 
 export async function updateProject(
@@ -254,14 +280,54 @@ export async function removeProjectGrant(
   );
 }
 
+export async function previewProjectGrantRemoval(
+  projectId: string,
+  grantId: string,
+  expectedAccessRevision: number
+): Promise<ProjectGrantRemovalPreviewWire> {
+  const decoded = decodeProjectGrantRemovalPreview(await jsonRequest(
+    `/api/projects/${encodeURIComponent(projectId)}/grants/${encodeURIComponent(grantId)}?expectedAccessRevision=${expectedAccessRevision}`
+  ));
+  if (!decoded) throw new Error("project_grant_preview_malformed");
+  return decoded;
+}
+
+export async function leaveProject(
+  projectId: string,
+  expectedAccessRevision: number
+): Promise<{ accessRemaining: boolean }> {
+  const value = await jsonRequest(
+    `/api/projects/${encodeURIComponent(projectId)}/leave`,
+    jsonMutation("POST", { expectedAccessRevision })
+  );
+  if (!isRecord(value) || typeof value.accessRemaining !== "boolean") {
+    throw new Error("project_leave_malformed");
+  }
+  return { accessRemaining: value.accessRemaining };
+}
+
 export async function addProjectResource(
   projectId: string,
-  input: { expectedPolicyRevision: number; resourceId: string; revisionId?: string; type: "assistant" | "knowledge" | "mcp" | "model" | "search" }
+  input: { expectedPolicyRevision: number; resourceId: string; revisionId?: string; type: "assistant" | "knowledge" | "mcp" | "model" | "search" | "skill" }
 ): Promise<void> {
   await jsonRequest(
     `/api/projects/${encodeURIComponent(projectId)}/resources`,
     jsonMutation("POST", input)
   );
+}
+
+export async function previewProjectResourceChange(
+  projectId: string,
+  input:
+    | { action: "add"; expectedPolicyRevision: number; resourceId: string; type: "assistant" }
+    | { action: "remove"; bindingId: string; expectedPolicyRevision: number }
+): Promise<ProjectResourceChangePreviewWire> {
+  const decoded = decodeProjectResourceChangePreview(await jsonRequest(
+    `/api/projects/${encodeURIComponent(projectId)}/resources/preview`,
+    jsonMutation("POST", input)
+  ));
+  if (!decoded) throw new Error("project_resource_preview_malformed");
+  return decoded;
 }
 
 export async function removeProjectResource(
@@ -330,8 +396,10 @@ export async function forgetProjectMemoryFact(projectId: string, factId: string)
   if (!response.ok) await responseValue(response);
 }
 
-export async function loadProjectActivity(projectId: string): Promise<ProjectActivityResponseWire> {
-  const value = await jsonRequest(`/api/projects/${encodeURIComponent(projectId)}/activity`);
+export async function loadProjectActivity(projectId: string, before?: string): Promise<ProjectActivityResponseWire> {
+  const value = await jsonRequest(
+    `/api/projects/${encodeURIComponent(projectId)}/activity${before ? `?before=${encodeURIComponent(before)}` : ""}`
+  );
   if (!isRecord(value) || !Array.isArray(value.events) || !nullableString(value.nextCursor)) {
     throw new Error("project_activity_malformed");
   }

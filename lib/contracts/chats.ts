@@ -144,6 +144,9 @@ export type WorkspaceChatSummary = {
   memoryMode?: MemoryChatMode;
   memorySourceRevision?: number;
   pendingInitialMemoryMode?: "TEMPORARY";
+  /** Local-only first-send reservation. The server creates this Project chat
+   * atomically with its first message/run and never serializes this field. */
+  pendingProjectDraft?: Readonly<{ folderId: string | null; projectId: string }>;
   pinned?: boolean;
   projectId?: string | null;
   temporaryRetentionDeadline?: string | null;

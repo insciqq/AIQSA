@@ -793,14 +793,20 @@ function SharingGroup({ editor, locked }: { editor: AssistantEditorView; locked:
       ) : (
         <ul aria-label="Publications" className="divide-y divide-trace-subtle">
           {publications.map((publication) => {
-            const target = publication.scope === "installation" ? "Installation" : publication.groupName ?? "Group";
+            const target = publication.scope === "installation"
+              ? "Installation"
+              : publication.scope === "project"
+                ? "Project publication"
+                : publication.groupName ?? "Group";
             return (
               <li className="flex items-center justify-between gap-2 py-2 first:pt-0 last:pb-0" key={publication.id}>
                 <span className="min-w-0">
                   <span className="block break-words text-xs font-medium text-ink [overflow-wrap:anywhere]">
                     {target}
                   </span>
-                  <span className="block text-metadata text-ink-muted">Revision {publication.revisionNumber}</span>
+                  <span className="block text-metadata text-ink-muted">
+                    Revision {publication.revisionNumber}{publication.scope === "project" ? " · Project details remain private" : ""}
+                  </span>
                 </span>
                 <button
                   aria-label={`Revoke ${target} publication`}

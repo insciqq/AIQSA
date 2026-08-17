@@ -225,7 +225,7 @@ function useMessageRunActionsForTest(input: {
   draft?: string;
   editingMessageId?: string | null;
   fetchRun?: (runId: string, chatId: string) => Promise<unknown>;
-  model?: CatalogModel;
+  model?: CatalogModel | null;
   openMemorySettings?: () => void;
   pendingChatFolderId?: string | null;
   persistActiveLeaf?: (chatId: string, messageId: string | null) => Promise<unknown>;
@@ -233,6 +233,7 @@ function useMessageRunActionsForTest(input: {
     chatId: string | null,
     options?: { forceDetail?: boolean; preserveControls?: boolean; resumeRuns?: boolean }
   ) => Promise<ChatDetail | null>;
+  resolveCatalog?: () => Catalog | null;
 }) {
   resetRunLifecycleStoreForTest();
   resetRunSurfaceStoreForTest();
@@ -318,13 +319,14 @@ function useMessageRunActionsForTest(input: {
       flush: vi.fn(),
       push: vi.fn()
     }),
-    currentModel: input.model ?? model,
+    currentModel: input.model === null ? undefined : input.model ?? model,
     fetchRun,
     notifyAnswerReady,
     openMemorySettings: input.openMemorySettings ?? vi.fn(),
     persistActiveLeaf: input.persistActiveLeaf ?? vi.fn(async () => null),
     primeAnswerSound,
     refreshActiveChat,
+    resolveCatalog: input.resolveCatalog,
     resetThreadToLatest,
     setNotice,
     activeChatStreaming: input.activeChatStreaming ?? false
@@ -357,6 +359,21 @@ describe("message run actions", () => {
     resetMemorySettingsStoreForTest();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("does not fall back to the personal catalog when scoped authority is empty", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ error: "unexpected" }, { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      model: null,
+      resolveCatalog: () => null
+    });
+    useWorkspaceStore.setState({ catalog: mixedSearchCatalog("personal") });
+
+    await actions.submitComposer();
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("routes an ambiguous Memory target to Manage Memories without claiming a mutation", async () => {

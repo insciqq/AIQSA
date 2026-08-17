@@ -1,5 +1,6 @@
 import {
   PROJECT_ACTIVITY_PAGE_SIZE,
+  PROJECT_CANDIDATE_TYPES,
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_INSTRUCTIONS_MAX_LENGTH,
   PROJECT_NAME_MAX_LENGTH,
@@ -37,6 +38,8 @@ function error(code: string, status: number, message?: string): Response {
 
 function mutationResponse<T>(result: ProjectRepositoryResult<T>, success: (value: T) => Response): Response {
   if (result.kind === "not_found") return error("project_not_found", 404);
+  if (result.kind === "target_not_found") return error(result.reason, 404);
+  if (result.kind === "unavailable") return error(result.reason, 422);
   if (result.kind === "conflict") return error(result.reason, 409);
   return success(result.value);
 }
@@ -90,17 +93,21 @@ export function createCreateProjectHandler(deps: ProjectHandlerDeps) {
     if (session instanceof Response) return session;
     const [body, bodyError] = await jsonBody(request);
     if (bodyError) return bodyError;
-    if (!body || !hasOnly(body, ["description", "name"])) {
+    if (!body || !hasOnly(body, ["description", "name", "preferredModelId"])) {
       return error("project_input_invalid", 400);
     }
     const name = nonEmptyText(body.name, PROJECT_NAME_MAX_LENGTH);
     const description = optionalText(body.description, PROJECT_DESCRIPTION_MAX_LENGTH) ?? "";
-    if (!name || description === null) return error("project_input_invalid", 400);
+    const preferredModelId = body.preferredModelId === undefined
+      ? undefined
+      : nonEmptyText(body.preferredModelId, 128);
+    if (!name || description === null || preferredModelId === null) return error("project_input_invalid", 400);
     return mutationResponse(
       await deps.repository.create({
         actorDisplayName: session.user.displayName,
         description,
         name,
+        preferredModelId,
         userId: session.userId
       }),
       (project) => Response.json({ project } satisfies ProjectResponseWire, { status: 201 })
@@ -206,6 +213,32 @@ export function createDeleteProjectHandler(deps: ProjectHandlerDeps) {
   };
 }
 
+export function createLeaveProjectHandler(deps: ProjectHandlerDeps) {
+  return async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+    const session = await authenticated(deps, request);
+    if (session instanceof Response) return session;
+    const [body, bodyError] = await jsonBody(request);
+    if (bodyError) return bodyError;
+    if (!body || !hasOnly(body, ["expectedAccessRevision"])) {
+      return error("project_grant_input_invalid", 400);
+    }
+    const expectedAccessRevision = optionalRevision(body.expectedAccessRevision);
+    if (expectedAccessRevision === null || expectedAccessRevision === undefined) {
+      return error("project_grant_input_invalid", 400);
+    }
+    const { projectId } = await context.params;
+    return mutationResponse(
+      await deps.repository.leave({
+        actorDisplayName: session.user.displayName,
+        expectedAccessRevision,
+        projectId,
+        userId: session.userId
+      }),
+      (value) => Response.json(value)
+    );
+  };
+}
+
 export function createListProjectGrantsHandler(deps: ProjectHandlerDeps) {
   return async function GET(request: Request, context: RouteContext<"projectId">): Promise<Response> {
     const session = await authenticated(deps, request);
@@ -300,6 +333,28 @@ export function createDeleteProjectGrantHandler(deps: ProjectHandlerDeps) {
   };
 }
 
+export function createPreviewProjectGrantRemovalHandler(deps: ProjectHandlerDeps) {
+  return async function GET(
+    request: Request,
+    context: RouteContext<"grantId" | "projectId">
+  ): Promise<Response> {
+    const session = await authenticated(deps, request);
+    if (session instanceof Response) return session;
+    const expectedAccessRevision = queryRevision(request, "expectedAccessRevision");
+    if (expectedAccessRevision === null) return error("project_grant_input_invalid", 400);
+    const { grantId, projectId } = await context.params;
+    return mutationResponse(
+      await deps.repository.previewGrantRemoval({
+        expectedAccessRevision,
+        grantId,
+        projectId,
+        userId: session.userId
+      }),
+      (preview) => Response.json({ preview })
+    );
+  };
+}
+
 export function createListProjectResourcesHandler(deps: ProjectHandlerDeps) {
   return async function GET(request: Request, context: RouteContext<"projectId">): Promise<Response> {
     const session = await authenticated(deps, request);
@@ -307,6 +362,34 @@ export function createListProjectResourcesHandler(deps: ProjectHandlerDeps) {
     const { projectId } = await context.params;
     const resources = await deps.repository.listResources(session.userId, projectId);
     return resources ? Response.json({ resources }) : error("project_not_found", 404);
+  };
+}
+
+export function createProjectCandidatesHandler(deps: ProjectHandlerDeps) {
+  return async function GET(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+    const session = await authenticated(deps, request);
+    if (session instanceof Response) return session;
+    const url = new URL(request.url);
+    const type = url.searchParams.get("type");
+    const query = url.searchParams.get("q")?.trim().slice(0, 120) ?? "";
+    const cursor = url.searchParams.get("cursor")?.trim() || undefined;
+    const limitRaw = url.searchParams.get("limit") ?? "20";
+    const limit = /^\d+$/u.test(limitRaw) ? Number(limitRaw) : 0;
+    if (!type || !PROJECT_CANDIDATE_TYPES.includes(type as (typeof PROJECT_CANDIDATE_TYPES)[number]) ||
+      (cursor !== undefined && (!/^\d+$/u.test(cursor) || Number(cursor) > 10_000)) ||
+      !Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+      return error("project_candidate_input_invalid", 400);
+    }
+    const { projectId } = await context.params;
+    const candidates = await deps.repository.candidates({
+      cursor,
+      limit,
+      projectId,
+      query,
+      type: type as (typeof PROJECT_CANDIDATE_TYPES)[number],
+      userId: session.userId
+    });
+    return candidates ? Response.json(candidates) : error("project_not_found", 404);
   };
 }
 
@@ -326,7 +409,7 @@ export function createAddProjectResourceHandler(deps: ProjectHandlerDeps) {
     if (
       expectedPolicyRevision === null || expectedPolicyRevision === undefined ||
       !resourceId || revisionId === null ||
-      !["assistant", "knowledge", "mcp", "model", "search"].includes(String(type))
+      !["assistant", "knowledge", "mcp", "model", "search", "skill"].includes(String(type))
     ) return error("project_resource_input_invalid", 400);
     const { projectId } = await context.params;
     return mutationResponse(
@@ -336,10 +419,46 @@ export function createAddProjectResourceHandler(deps: ProjectHandlerDeps) {
         projectId,
         resourceId,
         revisionId,
-        type: type as "assistant" | "knowledge" | "mcp" | "model" | "search",
+        type: type as "assistant" | "knowledge" | "mcp" | "model" | "search" | "skill",
         userId: session.userId
       }),
       (resources) => Response.json({ resources }, { status: 201 })
+    );
+  };
+}
+
+export function createProjectResourcePreviewHandler(deps: ProjectHandlerDeps) {
+  return async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+    const session = await authenticated(deps, request);
+    if (session instanceof Response) return session;
+    const [body, bodyError] = await jsonBody(request);
+    if (bodyError) return bodyError;
+    if (!body || !hasOnly(body, [
+      "action", "bindingId", "expectedPolicyRevision", "resourceId", "type"
+    ])) return error("project_resource_input_invalid", 400);
+    const expectedPolicyRevision = optionalRevision(body.expectedPolicyRevision);
+    const action = body.action;
+    const bindingId = body.bindingId === undefined ? undefined : nonEmptyText(body.bindingId, 256);
+    const resourceId = body.resourceId === undefined ? undefined : nonEmptyText(body.resourceId, 128);
+    const type = body.type;
+    const addValid = action === "add" && type === "assistant" && resourceId && bindingId === undefined;
+    const removeValid = action === "remove" && bindingId && resourceId === undefined && type === undefined;
+    if (expectedPolicyRevision === null || expectedPolicyRevision === undefined ||
+      bindingId === null || resourceId === null || (!addValid && !removeValid)) {
+      return error("project_resource_input_invalid", 400);
+    }
+    const { projectId } = await context.params;
+    return mutationResponse(
+      await deps.repository.previewResourceChange({
+        action,
+        bindingId,
+        expectedPolicyRevision,
+        projectId,
+        resourceId,
+        type: type as "assistant" | undefined,
+        userId: session.userId
+      }),
+      (preview) => Response.json({ preview })
     );
   };
 }

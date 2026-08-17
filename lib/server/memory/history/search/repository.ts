@@ -404,6 +404,7 @@ function searchSql(
         )
         AND chunk."redactionState" <> 'EXCLUDED'::"MemoryRedactionState"
         AND source_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+        AND source_chat."projectId" IS NULL
         AND source_chat."memoryBranchGeneration" = chunk."branchGeneration"
         AND source_chat."memorySourceRevision" = chunk."sourceRevisionAtCreation"
         AND checkpoint."branchGeneration" = chunk."branchGeneration"

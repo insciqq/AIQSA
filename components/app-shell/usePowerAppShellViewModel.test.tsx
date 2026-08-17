@@ -74,16 +74,6 @@ describe("usePowerAppShellViewModel", () => {
     expect(result.current.activeChatStreaming).toBe(false);
   });
 
-  it("keeps the complete command-palette chat inventory", () => {
-    const alpha = { ...chat("chat-alpha"), title: "Alpha notes" };
-    const beta = { ...chat("chat-beta"), title: "Beta plan" };
-    const { result } = renderViewModel({ chats: [alpha, beta] });
-
-    expect(
-      result.current.commandChatGroups.flatMap((group) => group.chats.map((item) => item.id))
-    ).toEqual(expect.arrayContaining(["chat-alpha", "chat-beta"]));
-  });
-
   it("marks only the owning chat as streaming", () => {
     const { result } = renderViewModel({
       activeChatStreaming: true

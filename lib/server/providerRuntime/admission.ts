@@ -67,6 +67,9 @@ export type EmbeddingProviderAdmissionRole = Readonly<{
 
 export type ProviderAdmissionPlan = Readonly<{
   answer: ProviderAdmissionRole;
+  /** `project` means installation/shared authority; it never consults the
+   * initiating user's provider grants or credential assignments. */
+  executionScope?: "personal" | "project";
   fingerprint: string;
   requiresClientToolCoexistence?: true;
   requestedSearchPlan: SearchPlan;
@@ -544,6 +547,33 @@ export async function loadEmbeddingProviderRole(
   });
 }
 
+/** Project Knowledge retrieval uses the installation/shared embedding
+ * deployment selected by the Project authority.  Personal grants and
+ * credential assignments are deliberately not consulted. */
+export async function loadProjectEmbeddingProviderRole(
+  db: AdmissionPrisma,
+  input: { providerModelId: string }
+): Promise<EmbeddingProviderAdmissionRole> {
+  const model = await db.providerModel.findUnique({
+    select: {
+      availableInProjects: true,
+      connection: { select: { family: true } },
+      connectionId: true
+    },
+    where: { id: input.providerModelId }
+  });
+  if (!model || !model.availableInProjects || model.connection.family === "fake") {
+    throw new ProviderAdmissionError("model_not_available");
+  }
+  return loadRole(db, {
+    connectionId: model.connectionId,
+    credentialAuthority: { kind: "installation" },
+    modelClass: "embedding",
+    modelId: input.providerModelId,
+    requireEntitlement: false
+  });
+}
+
 /** Resolve installation-owned internal answer work through the connection's
  * explicit default credential. The policy author is audit metadata only, and
  * ordinary user/group credential precedence is intentionally not consulted. */
@@ -576,6 +606,7 @@ export async function loadInstallationAnswerProviderRole(
 
 type LoadedSearchOption = Readonly<{
   archivedAt: Date | null;
+  availableInProjects: boolean;
   displayName: string;
   enabled: boolean;
   id: string;
@@ -802,6 +833,7 @@ function firstCompleteRouteAssignment(input: Readonly<{
 async function loadClientRouteRole(
   db: AdmissionPrisma,
   input: {
+    credentialAuthority?: RoleCredentialAuthority;
     fullAccess: boolean;
     groupIds: string[];
     option: LoadedSearchOption;
@@ -827,7 +859,7 @@ async function loadClientRouteRole(
   }
   const role = await loadRole(db, {
     connectionId: technicalModel.connectionId,
-    credentialAuthority: {
+    credentialAuthority: input.credentialAuthority ?? {
       fullAccess: input.fullAccess,
       groupIds: input.groupIds,
       kind: "user",
@@ -884,6 +916,7 @@ export async function loadProviderAdmissionPlan(
   input: {
     providerConnectionId: string;
     providerModelId: string;
+    executionScope?: "personal" | "project";
     requiresClientToolCoexistence?: boolean;
     searchPlan: SearchPlan;
     searchPreferencePlan?: SearchPlan | null;
@@ -913,6 +946,29 @@ export async function loadProviderAdmissionPlan(
   const fullAccess = memberships.some(
     (membership) => membership.group.systemRole === FULL_ACCESS_GROUP_SYSTEM_ROLE
   );
+  const projectScope = input.executionScope === "project";
+  if (projectScope && input.searchPreferenceSource === "personal") {
+    // A Project run never imports a member's personal Search preference.  The
+    // caller may still select an explicitly Project-eligible option through
+    // the canonical Project defaults, but a personal preference is an
+    // authority boundary violation even when the option happens to be
+    // installation-safe.
+    throw new ProviderAdmissionError("search_strategy_not_available");
+  }
+  const projectModel = projectScope
+    ? await db.providerModel.findFirst({
+        select: {
+          availableInProjects: true,
+          connection: { select: { family: true } }
+        },
+        where: { id: input.providerModelId }
+      })
+    : null;
+  // Fake remains a credential-free deterministic adapter, but it still needs
+  // the same explicit installation opt-in as every other Project model.
+  if (projectScope && (!projectModel || !projectModel.availableInProjects)) {
+    throw new ProviderAdmissionError("model_not_available");
+  }
 
   const optionCache = new Map<string, Promise<LoadedSearchOption | null>>();
   const loadOption = (optionId: string): Promise<LoadedSearchOption | null> => {
@@ -960,12 +1016,12 @@ export async function loadProviderAdmissionPlan(
     for (const optionId of requestedSearchPreferencePlan.optionIds) {
       const option = await loadOption(optionId);
       if (!option || !supportedSearchOption(option) || option.kind === "none" ||
-        !(await hasSearchEntitlement(db, {
+        (!projectScope && !(await hasSearchEntitlement(db, {
           fullAccess,
           groupIds,
           strategyId: optionId,
           userId: input.userId
-      }))) {
+        })) || (projectScope && !option.availableInProjects))) {
         throw new ProviderAdmissionError("search_strategy_not_available");
       }
       const routes = option.strategies.flatMap((strategy) => {
@@ -985,7 +1041,8 @@ export async function loadProviderAdmissionPlan(
               groupIds,
               option,
               route,
-              userId: input.userId
+              userId: input.userId,
+              ...(projectScope ? { credentialAuthority: { kind: "installation" as const } } : {})
             })) {
               ready = true;
               break;
@@ -1008,16 +1065,13 @@ export async function loadProviderAdmissionPlan(
   }
   const answer = await loadRole(db, {
     connectionId: input.providerConnectionId,
-    credentialAuthority: {
-      fullAccess,
-      groupIds,
-      kind: "user",
-      userId: input.userId
-    },
+    credentialAuthority: projectScope
+      ? { kind: "installation" }
+      : { fullAccess, groupIds, kind: "user", userId: input.userId },
     modelClass: "answer",
     modelId: input.providerModelId,
     requireAnswerSelectable: true,
-    requireEntitlement: true
+    requireEntitlement: !projectScope
   });
 
   const decodedPlan = decodeSearchPlan(input.searchPlan);
@@ -1032,12 +1086,13 @@ export async function loadProviderAdmissionPlan(
 
   for (const [ordinal, optionId] of strategyIds.entries()) {
     const option = await loadOption(optionId);
-    if (!option || !supportedSearchOption(option) || !(await hasSearchEntitlement(db, {
+    if (!option || !supportedSearchOption(option) ||
+      (!projectScope && !(await hasSearchEntitlement(db, {
       fullAccess,
       groupIds,
       strategyId: optionId,
       userId: input.userId
-    }))) {
+      }))) || (projectScope && !option.availableInProjects)) {
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
     if (option.kind === "none") continue;
@@ -1062,7 +1117,8 @@ export async function loadProviderAdmissionPlan(
           groupIds,
           option,
           route,
-          userId: input.userId
+          userId: input.userId,
+          ...(projectScope ? { credentialAuthority: { kind: "installation" as const } } : {})
         });
         if (role) candidates.push({ option, ordinal, role, route });
       } catch (error) {
@@ -1102,6 +1158,7 @@ export async function loadProviderAdmissionPlan(
 
   const withoutFingerprint = {
     answer,
+    ...(input.executionScope ? { executionScope: input.executionScope } : {}),
     ...(input.requiresClientToolCoexistence ? { requiresClientToolCoexistence: true as const } : {}),
     requestedSearchPlan,
     ...(input.searchPreferenceSource

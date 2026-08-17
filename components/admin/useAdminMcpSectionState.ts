@@ -55,6 +55,7 @@ export function useAdminMcpSectionState(): AdminMcpSectionState {
         try {
           const normalized = normalizeMcpImport(importValue);
           setForm({
+            availableInProjects: false,
             description: normalized.description,
             draft: structuredClone(normalized.draft),
             name: normalized.name,

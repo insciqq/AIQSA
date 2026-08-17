@@ -32,7 +32,7 @@ Workspace state is stored in PostgreSQL and private S3-compatible storage. Conte
 - Optional Memory for explicitly saved facts and retained-chat recall, with private management, lifecycle, and deletion controls.
 - MCP server administration, user enablement, personal fields, OAuth flows, readiness checks, and approval before protected tool execution.
 - Multi-user accounts, invitations, access rules and groups, optional Google/Yandex sign-in, usage views, and an administrative Control Center.
-- System, light, and dark themes; responsive desktop/mobile layouts; a command palette; code and math rendering; and private S3-compatible uploads.
+- System, light, and dark themes; responsive desktop/mobile layouts; code and math rendering; and private S3-compatible uploads.
 
 ## Quick start
 

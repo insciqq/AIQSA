@@ -8,6 +8,7 @@ import { canAccessModel } from "../auth/entitlements";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { prisma } from "../prisma";
 import { normalizeProviderModelConfiguration } from "../providers/providerConfiguration";
+import { revokeOwnedProjectResourcePublication } from "../projects/prismaRepository";
 import {
   KNOWLEDGE_CHUNKING_PROFILE_VERSION,
   createKnowledgeVectorSpacePin,
@@ -18,7 +19,7 @@ export type KnowledgeBasePublicationRow = Readonly<{
   groupId: string | null;
   groupName: string | null;
   id: string;
-  scope: "group" | "installation";
+  scope: "group" | "installation" | "project";
   updatedAt: Date;
 }>;
 
@@ -86,7 +87,8 @@ const baseInclude = {
   owner: { select: { displayName: true } },
   publications: {
     include: { group: { select: { archivedAt: true, name: true } } }
-  }
+  },
+  projectBindings: { select: { createdAt: true, id: true } }
 } satisfies Prisma.KnowledgeBaseInclude;
 
 type BaseRecord = Prisma.KnowledgeBaseGetPayload<{ include: typeof baseInclude }>;
@@ -145,7 +147,7 @@ function accessEntry(
     name: record.name,
     owned,
     ownerDisplayName: record.owner.displayName,
-    published: record.publications.length > 0,
+    published: record.publications.length > 0 || record.projectBindings.length > 0,
     updatedAt: record.updatedAt,
     version: record.version
   };
@@ -304,7 +306,16 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
         ...entry,
         documentCount: record._count.documents,
         publications: entry.owned
-          ? record.publications.map(publicationRow).sort((left, right) =>
+          ? [
+              ...record.publications.map(publicationRow),
+              ...record.projectBindings.map((binding) => ({
+                groupId: null,
+                groupName: null,
+                id: `project:${binding.id}`,
+                scope: "project" as const,
+                updatedAt: binding.createdAt
+              }))
+            ].sort((left, right) =>
               left.scope.localeCompare(right.scope) ||
               (left.groupName ?? "").localeCompare(right.groupName ?? "")
             )
@@ -449,6 +460,16 @@ export function createPrismaKnowledgeRepository(client: PrismaClient = prisma) {
       publicationId: string;
       userId: string;
     }>): Promise<KnowledgeBaseRevokeResult> {
+      if (input.publicationId.startsWith("project:")) {
+        const bindingId = input.publicationId.slice("project:".length);
+        if (!bindingId) return { kind: "not_found" };
+        return await revokeOwnedProjectResourcePublication(client, {
+          bindingId,
+          resourceId: input.knowledgeBaseId,
+          type: "knowledge",
+          userId: input.userId
+        }) ? { kind: "ok" } : { kind: "not_found" };
+      }
       return client.$transaction(async (tx) => {
         const publication = await tx.knowledgeBasePublication.findFirst({
           include: { knowledgeBase: { select: { ownerUserId: true } } },

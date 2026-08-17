@@ -366,6 +366,24 @@ function ServerEditor({
           <textarea className={`${inputClass} mt-1.5 min-h-20 py-2`} disabled={disabled} maxLength={4000} onChange={(event) => setForm({ ...form, description: event.currentTarget.value })} value={form.description} />
         </label>
       </div>
+      <label className="flex min-h-touch items-start gap-2 rounded-control bg-control-surface px-3 py-2 text-xs text-ink-secondary">
+        <input
+          checked={form.availableInProjects}
+          className="mt-0.5 size-4 shrink-0 accent-proof"
+          disabled={disabled}
+          onChange={(event) => setForm({
+            ...form,
+            availableInProjects: event.currentTarget.checked
+          })}
+          type="checkbox"
+        />
+        <span>
+          <span className="block font-medium text-ink">Available in Projects</span>
+          <span className="mt-0.5 block leading-4 text-ink-muted">
+            Project runs can use only an active shared or credential-free configuration. Personal grants and credentials are ignored.
+          </span>
+        </span>
+      </label>
       <AdminMcpDraftEditor
         disabled={disabled}
         draft={form.draft}
@@ -454,6 +472,7 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
     if (mode === "create") {
       const oauth = form.draft.auth.mode === "oauth";
       const created = await controller.actions.create({
+        availableInProjects: form.availableInProjects,
         description: form.description,
         draft: form.draft,
         name: form.name.trim(),
@@ -466,6 +485,7 @@ export function AdminMcpServersSection({ controller, section }: AdminMcpServersS
       }
     } else if (mode === "edit" && selected) {
       const saved = await controller.actions.update(selected.id, {
+        availableInProjects: form.availableInProjects,
         description: form.description,
         draft: form.draft,
         name: form.name.trim(),

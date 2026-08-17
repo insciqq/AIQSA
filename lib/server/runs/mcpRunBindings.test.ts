@@ -23,6 +23,36 @@ const bindings = [
 ];
 
 describe("atomic MCP run bindings", () => {
+  it("uses Project authority and shared-current runtime fences without a personal grant", async () => {
+    const executeRaw = vi.fn<ExecuteRaw>(async () => 1);
+
+    await insertAcceptedMcpRunBindings(transaction(executeRaw), {
+      bindings: [bindings[0]!],
+      projectId: "project-1",
+      runId: "run-1",
+      userId: "contributor-without-grant"
+    });
+
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    const query = executeRaw.mock.calls[0]![0] as unknown as {
+      join?: (separator: string) => string;
+      strings?: readonly string[];
+    };
+    const sql = query.strings?.join(" ") ?? query.join?.(" ") ?? "";
+    expect(sql).toContain('INNER JOIN "ProjectMcpBinding"');
+    expect(sql).toContain('preference."desiredRuntimeGenerationId" = generation."id"');
+    expect(sql).toContain('preference."personalConfigEnvelope" IS NULL');
+    expect(sql).toContain('generation."oauthConnectionId" IS NULL');
+    expect(sql).toContain("ARRAY['oauth', 'personal']");
+    expect(sql).not.toContain('FROM "McpGrant"');
+    expect((query as { values?: readonly unknown[] }).values).toEqual(expect.arrayContaining([
+      "project-1",
+      "server-1",
+      "generation-1",
+      "fingerprint-1"
+    ]));
+  });
+
   it("uses one guarded INSERT SELECT for every exact prepared binding", async () => {
     const executeRaw = vi.fn<ExecuteRaw>(async () => 1);
 

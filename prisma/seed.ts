@@ -303,6 +303,13 @@ async function main() {
   if (!fakeProviderModelId) {
     throw new Error("Fake provider model template was not seeded");
   }
+  // The deterministic local model is the explicit shared Project fixture.
+  // Production/code-owned synchronization still defaults every model to
+  // unavailable until an administrator opts it in.
+  await prisma.providerModel.update({
+    data: { availableInProjects: true },
+    where: { id: fakeProviderModelId }
+  });
 
   await prisma.modelPolicy.upsert({
     create: {

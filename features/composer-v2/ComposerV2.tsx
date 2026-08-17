@@ -106,6 +106,8 @@ export type ComposerV2Props = Readonly<{
   selectedSearchOptionIds?: readonly string[];
   selectedSkillIds?: readonly string[];
   selectedSkills?: readonly { id: string; name: string }[];
+  /** Shared Project uploads are visible to Project members. */
+  sharedProject?: boolean;
   sending?: boolean;
   stopping?: boolean;
   uploading?: boolean;
@@ -309,6 +311,7 @@ export function ComposerV2({
   selectedSearchOptionIds = [],
   selectedSkillIds = [],
   selectedSkills = [],
+  sharedProject = false,
   sending = false,
   stopping = false,
   uploading = false,
@@ -721,6 +724,7 @@ export function ComposerV2({
           onRemove={onRemoveAttachment}
           onRetry={onRetryAttachment}
           usage={attachmentLimitUsage}
+          sharedProject={sharedProject}
         />
 
         {editStatusSlot}
@@ -1105,7 +1109,7 @@ export function ComposerV2({
                     Model parameters
                   </CapabilityRow>
                   <p className="v2-composer-privacy-note">
-                    Files are private and visible only to you. Unavailable capabilities show a reason.
+                    {sharedProject ? "Files are visible to Project members." : "Files are private and visible only to you."} Unavailable capabilities show a reason.
                   </p>
                 </div>
               )}

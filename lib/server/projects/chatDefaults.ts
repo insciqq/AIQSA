@@ -1,0 +1,168 @@
+import { Prisma, type PrismaClient } from "@prisma/client";
+import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
+
+type ProjectChatDefaultClient =
+  | Pick<PrismaClient, "projectKnowledgeBaseBinding" | "projectModelBinding">
+  | Prisma.TransactionClient;
+
+const projectModelAuthoritySelect = {
+  providerModel: {
+    select: {
+      activeConfig: true,
+      activeVersion: true,
+      availableInProjects: true,
+      connection: {
+        select: {
+          activeConfig: true,
+          activeVersion: true,
+          defaultCredential: {
+            select: {
+              activeVersion: { select: { revokedAt: true } },
+              enabled: true
+            }
+          },
+          enabled: true,
+          family: true
+        }
+      },
+      connectionId: true,
+      enabled: true,
+      id: true,
+      modelClass: true
+    }
+  }
+} satisfies Prisma.ProjectModelBindingSelect;
+
+const projectKnowledgeAuthoritySelect = {
+  knowledgeBase: {
+    select: {
+      activeIndexGeneration: {
+        select: {
+          embeddingProviderModel: {
+            select: {
+              activeConfig: true,
+              activeVersion: true,
+              availableInProjects: true,
+              connection: {
+                select: {
+                  activeConfig: true,
+                  activeVersion: true,
+                  defaultCredential: {
+                    select: {
+                      activeVersion: { select: { revokedAt: true } },
+                      enabled: true
+                    }
+                  },
+                  enabled: true,
+                  family: true
+                }
+              },
+              enabled: true,
+              modelClass: true
+            }
+          },
+          status: true
+        }
+      },
+      archivedAt: true,
+      id: true
+    }
+  }
+} satisfies Prisma.ProjectKnowledgeBaseBindingSelect;
+
+type ProjectModelAuthorityRow = Prisma.ProjectModelBindingGetPayload<{
+  select: typeof projectModelAuthoritySelect;
+}>;
+type ProjectKnowledgeAuthorityRow = Prisma.ProjectKnowledgeBaseBindingGetPayload<{
+  select: typeof projectKnowledgeAuthoritySelect;
+}>;
+
+function activeSharedConnection(connection: ProjectModelAuthorityRow["providerModel"]["connection"]): boolean {
+  return connection.enabled && connection.activeVersion > 0 && connection.activeConfig !== null && (
+    connection.family === "fake" || Boolean(
+      connection.defaultCredential?.enabled &&
+      connection.defaultCredential.activeVersion?.revokedAt === null
+    )
+  );
+}
+
+function activeProjectModel(row: ProjectModelAuthorityRow): boolean {
+  const model = row.providerModel;
+  return model.availableInProjects && model.enabled && model.modelClass === "answer" &&
+    model.activeVersion > 0 && model.activeConfig !== null && activeSharedConnection(model.connection);
+}
+
+function activeProjectKnowledge(row: ProjectKnowledgeAuthorityRow): boolean {
+  const base = row.knowledgeBase;
+  const generation = base.activeIndexGeneration;
+  const embedding = generation?.embeddingProviderModel;
+  return base.archivedAt === null && generation?.status === "active" &&
+    Boolean(embedding) && embedding!.availableInProjects && embedding!.enabled &&
+    embedding!.modelClass === "embedding" && embedding!.activeVersion > 0 &&
+    embedding!.activeConfig !== null && embedding!.connection.family !== "fake" &&
+    activeSharedConnection(embedding!.connection);
+}
+
+export type ProjectChatDefaultAuthority = Readonly<{
+  knowledgeBaseIds: ReadonlySet<string>;
+  modelProviders: ReadonlyMap<string, string>;
+}>;
+
+/** Load only currently runnable Project authority. Stored chat defaults are
+ * hints, never authorization evidence, so callers must project them through
+ * this snapshot before returning them to a member. */
+export async function loadProjectChatDefaultAuthority(
+  client: ProjectChatDefaultClient,
+  projectId: string
+): Promise<ProjectChatDefaultAuthority> {
+  const [models, knowledgeBases] = await Promise.all([
+    client.projectModelBinding.findMany({
+      select: projectModelAuthoritySelect,
+      where: { projectId }
+    }),
+    client.projectKnowledgeBaseBinding.findMany({
+      select: projectKnowledgeAuthoritySelect,
+      where: { projectId }
+    })
+  ]);
+  return {
+    knowledgeBaseIds: new Set(
+      knowledgeBases.filter(activeProjectKnowledge).map((row) => row.knowledgeBase.id)
+    ),
+    modelProviders: new Map(
+      models.filter(activeProjectModel).map((row) => [
+        row.providerModel.id,
+        row.providerModel.connectionId
+      ])
+    )
+  };
+}
+
+export function projectChatDefaultsProjection(
+  authority: ProjectChatDefaultAuthority,
+  input: Readonly<{
+    defaultKnowledgePlan: Prisma.JsonValue | KnowledgePlan | null;
+    defaultModelId: string | null;
+  }>
+): Readonly<{
+  defaultKnowledgePlan: KnowledgePlan | null;
+  defaultModelId: string | null;
+  defaultProvider: string | null;
+}> {
+  const provider = input.defaultModelId
+    ? authority.modelProviders.get(input.defaultModelId) ?? null
+    : null;
+  const decoded = input.defaultKnowledgePlan === null
+    ? null
+    : decodeKnowledgePlan(input.defaultKnowledgePlan);
+  const knowledge = decoded?.ok
+    ? {
+        baseIds: decoded.plan.baseIds.filter((baseId) => authority.knowledgeBaseIds.has(baseId))
+      }
+    : null;
+  return {
+    defaultKnowledgePlan: knowledge,
+    defaultModelId: provider ? input.defaultModelId : null,
+    defaultProvider: provider
+  };
+}

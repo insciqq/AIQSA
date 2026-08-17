@@ -68,7 +68,7 @@ export type KnowledgeBasePublication = Readonly<{
   groupId: string | null;
   groupName: string | null;
   id: string;
-  scope: "group" | "installation";
+  scope: "group" | "installation" | "project";
   updatedAt: string;
 }>;
 
@@ -412,10 +412,11 @@ function decodeKnowledgeBasePublicationValue(
     !stringOrNull(value.groupId) ||
     !stringOrNull(value.groupName) ||
     !nonEmptyString(value.id) ||
-    (value.scope !== "group" && value.scope !== "installation") ||
+    (value.scope !== "group" && value.scope !== "installation" && value.scope !== "project") ||
     !nonEmptyString(value.updatedAt) ||
     (value.scope === "group" && (!nonEmptyString(value.groupId) || !nonEmptyString(value.groupName))) ||
-    (value.scope === "installation" && (value.groupId !== null || value.groupName !== null))
+    ((value.scope === "installation" || value.scope === "project") &&
+      (value.groupId !== null || value.groupName !== null))
   ) {
     return null;
   }

@@ -41,7 +41,6 @@ import {
 } from "@/components/app-shell/threadContent";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { loadProjectKnowledgeCitation } from "@/components/app-shell/projectWorkspaceApi";
-import { CommandPalette } from "@/components/command-palette/CommandPalette";
 import { UiV2IconSprite } from "@/components/ui-v2";
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
@@ -211,23 +210,47 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const composerDockRef = useRef<HTMLDivElement>(null);
   const libraryOpen = Boolean(settings.library || settings.knowledge || settings.memory.open);
   const activeChatSummary = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
+  const selectedProjectContext = Boolean(
+    workspace.projects.detail &&
+    workspace.projects.selectedProjectId === workspace.projects.detail.id
+  );
+  const projectContext = Boolean(
+    activeChatSummary?.projectId || (!activeChatSummary && workspace.projects.selectedProjectId)
+  );
   const activeProjectChat = activeChatSummary?.projectId
     ? workspace.projects.workspace?.chats.find((chat) => chat.id === activeChatSummary.id) ?? null
     : null;
-  const activeProject = activeChatSummary?.projectId === workspace.projects.detail?.id
+  const activeProject = activeChatSummary?.projectId === workspace.projects.detail?.id ||
+    (selectedProjectContext && !activeChatSummary)
     ? workspace.projects.detail
     : null;
-  const projectMcpServerIds = useMemo(() => new Set(activeProject?.resources.flatMap((resource) =>
-    resource.type === "mcp" && resource.available ? [resource.resourceId] : []
-  ) ?? []), [activeProject]);
 
   useEffect(() => {
     void refreshMcpSettings().catch(() => undefined);
   }, []);
   useEffect(() => {
-    if (activeProject) {
-      if (selectedSkills.length > 0) {
-        useComposerControlStore.getState().setSelectedSkills([]);
+    if (projectContext) {
+      const available = new Map((activeProject?.resources ?? []).flatMap((resource) =>
+        resource.type === "skill" && resource.available
+          ? [[resource.resourceId, {
+              description: resource.description ?? "",
+              id: resource.resourceId,
+              name: resource.label,
+              promptCharacterCount: resource.promptCharacterCount ?? 0
+            }] as const]
+          : []
+      ));
+      const next = selectedSkills.flatMap((skill) => {
+        const published = available.get(skill.id);
+        return published ? [published] : [];
+      });
+      if (next.length !== selectedSkills.length || next.some((skill, index) =>
+        skill.id !== selectedSkills[index]?.id ||
+        skill.name !== selectedSkills[index]?.name ||
+        skill.description !== selectedSkills[index]?.description ||
+        skill.promptCharacterCount !== selectedSkills[index]?.promptCharacterCount
+      )) {
+        useComposerControlStore.getState().setSelectedSkills(next);
       }
       return;
     }
@@ -249,7 +272,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       skill.promptCharacterCount !== selectedSkills[index]?.promptCharacterCount)) {
       useComposerControlStore.getState().setSelectedSkills(next);
     }
-  }, [activeProject, selectedSkills, skillCatalog]);
+  }, [activeProject, projectContext, selectedSkills, skillCatalog]);
   // The tab title follows the visible active chat (rename/switch included);
   // the Library replaces it while it owns the workspace. Next.js re-applies
   // its static route metadata after hydration, so the effect also watches the
@@ -288,20 +311,37 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       name: base.name,
       owned: base.owned
     })),
-    mcpServers: mcpServers.filter((server) =>
-      !activeProject || (
-        activeProject.policy.externalToolsEnabled && projectMcpServerIds.has(server.id)
-      )
-    ).map((server) => ({
-      description: server.description,
-      enabled: server.enabled,
-      id: server.id,
-      knownToolCount: server.knownToolCount,
-      name: server.name,
-      readiness: server.readiness
-    })),
-    skills: activeProject ? [] : skillCatalog?.skills ?? []
-  }) : null, [activeProject, composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, mcpServers, projectMcpServerIds, skillCatalog?.skills]);
+    mcpServers: projectContext
+      ? activeProject?.policy.externalToolsEnabled
+        ? activeProject.composer?.mcpServers ?? []
+        : []
+      : mcpServers.map((server) => ({
+          description: server.description,
+          enabled: server.enabled,
+          id: server.id,
+          knownToolCount: server.knownToolCount,
+          name: server.name,
+          readiness: server.readiness
+        })),
+    skills: projectContext
+      ? (activeProject?.resources ?? []).flatMap((resource) =>
+          resource.type === "skill" && resource.available
+            ? [{
+                archived: false,
+                description: resource.description ?? "",
+                id: resource.resourceId,
+                instructionCharacterCount: resource.promptCharacterCount ?? 0,
+                name: resource.label,
+                owned: false,
+                ownerDisplayName: "Project",
+                scope: { kind: "workspace", workspaceNames: [activeProject?.name ?? "Project"] },
+                updatedAt: activeProject?.updatedAt ?? new Date(0).toISOString(),
+                version: 1
+              }]
+            : []
+        )
+      : skillCatalog?.skills ?? []
+  }) : null, [activeProject, composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, mcpServers, projectContext, skillCatalog?.skills]);
   const attachmentItems = useMemo(
     () => attachmentItemsForV2(
       composer.attachments,
@@ -342,10 +382,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onDraftChange={composer.composerActions.changeDraft}
       onMakeModelDefault={composer.makeModelDefault}
       onOpenAssistantPicker={() => composer.assistant.setPickerOpen(true)}
-      onOpenMcpSettings={activeProject ? workspace.projects.actions.openSettings : settings.openMcp}
+      onOpenMcpSettings={projectContext ? workspace.projects.actions.openSettings : settings.openMcp}
       onOpenModelParameters={() => setRunSetupOpen(true)}
       onOpenSkillLibrary={() => {
-        if (!activeProject) setSkillLibraryOpen(true);
+        if (!projectContext) setSkillLibraryOpen(true);
       }}
       onRemoveAssistant={composer.assistant.remove}
       onRemoveAttachment={composer.composerActions.removeAttachment}
@@ -357,7 +397,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectModel={composer.selectModel}
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
       onSelectSkillIds={(ids) => {
-        const byId = new Map((skillCatalog?.skills ?? []).map((skill) => [skill.id, skill] as const));
+        const byId = new Map((config?.skills ?? []).map((skill) => [skill.id, skill] as const));
         const selectedById = new Map(selectedSkills.map((skill) => [skill.id, skill] as const));
         useComposerControlStore.getState().setSelectedSkills(ids.flatMap((id) => {
           const skill = byId.get(id);
@@ -383,8 +423,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       selectedModelId={composer.selectedModelId}
       selectedProvider={composer.selectedProvider}
       selectedSearchOptionIds={composer.selectedSearchOptionIds}
-      selectedSkillIds={activeProject ? [] : selectedSkills.map((skill) => skill.id)}
-      selectedSkills={activeProject ? [] : selectedSkills.map(({ id, name }) => ({ id, name }))}
+      selectedSkillIds={selectedSkills.map((skill) => skill.id)}
+      selectedSkills={selectedSkills.map(({ id, name }) => ({ id, name }))}
+      sharedProject={projectContext}
       uploading={composer.uploading}
       usageStats={composer.composerUsageStats}
     />
@@ -465,7 +506,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       : projectMutationReason;
     return {
       branchDisabled: mutationBlocked,
-      deleteDisabled: mutationBlocked || Boolean(activeProject),
+      deleteDisabled: mutationBlocked || projectContext,
       disabledReason,
       editDisabled: mutationBlocked,
       onBranchFromHere: () => thread.handleBranchFromMessage(message.id),
@@ -634,8 +675,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ? { favorite: Boolean(full.pinned), memoryMode: full.memoryMode ?? "NORMAL" }
       : null;
   };
-  const projectMutationReason = activeProject
-    ? activeProject.status !== "ACTIVE"
+  const projectMutationReason = projectContext
+    ? !activeProject
+      ? "Project access is being revalidated."
+      : activeProject.status !== "ACTIVE"
       ? "This project is archived and read-only."
       : activeProjectChat?.archived
         ? "This shared chat is archived and read-only."
@@ -643,8 +686,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           ? "Viewer access is read-only."
           : null
     : null;
-  const canRenameActiveProjectChat = !activeProjectChat || Boolean(
-    activeProject?.capabilities.manageProject || activeProjectChat.createdByUserId === session.accountId
+  const canRenameActiveProjectChat = !projectContext || Boolean(
+    activeProject && activeProjectChat && (
+      activeProject.capabilities.manageProject || activeProjectChat.createdByUserId === session.accountId
+    )
   );
   const currentNewChatMode: NewChatMode = composer.memory.mode === "TEMPORARY"
     ? "TEMPORARY"
@@ -719,7 +764,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             if (full) void workspace.pane.actions.moveFolder(full, folderId);
           }}
           onNewChat={createNavigationChat}
-          onOpenSearch={overlays.palette.show}
           onRenameChat={(chat) => {
             const full = currentWorkspaceChat(chat.id);
             if (full) workspace.pane.actions.startChatEdit(full);
@@ -750,15 +794,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             />
           )}
         >
-          <section className="v2-live-workspace" data-project-context={Boolean(activeProject) || undefined}>
+          <section className="v2-live-workspace" data-project-context={projectContext || undefined}>
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
               accountEmail={session.accountEmail}
               adminEntryVisible={session.adminEntryVisible}
               archiveDisabled={thread.activeChatStreaming || temporarySession || Boolean(
-                activeProject && (!activeProject.capabilities.archiveChats || activeProjectChat?.archived)
+                projectContext && (
+                  !activeProject || !activeProject.capabilities.archiveChats || activeProjectChat?.archived
+                )
               )}
-              deleteDisabled={thread.activeChatStreaming || temporarySession}
+              deleteDisabled={thread.activeChatStreaming || temporarySession || projectContext}
               editingTitle={
                 session.activeChatId &&
                 workspace.pane.state.editingChatId === session.activeChatId
@@ -766,21 +812,25 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   : null
               }
               folders={navigationFolders}
-              moveDisabled={Boolean(activeProject)}
+              moveDisabled={projectContext}
               onArchive={withActiveChat((full) => {
-                if (activeProject) void workspace.projects.actions.archiveChat(full.id, true);
+                if (projectContext) {
+                  if (activeProject) void workspace.projects.actions.archiveChat(full.id, true);
+                }
                 else void workspace.pane.actions.deleteChat(full);
               })}
               onBranches={branches.show}
-              onCommands={overlays.palette.show}
+              onCopyLink={activeProjectChat ? () => void session.copyProjectChatLink() : null}
               onCopyThread={() => void thread.copyVisibleThread()}
-              onDelete={activeProject ? null : deleteActiveChatPermanently}
+              onDelete={projectContext ? null : deleteActiveChatPermanently}
               onExport={(format) => {
                 const chatId = session.activeChatId;
                 const full = chatId ? currentWorkspaceChat(chatId) : null;
                 if (full) workspace.pane.actions.exportChat(full, format);
               }}
-              onLibrary={settings.openLibrary}
+              onLibrary={projectContext
+                ? () => workspace.projects.actions.openSettings("resources")
+                : settings.openLibrary}
               onMove={(folderId) => {
                 const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
                 if (full) void workspace.pane.actions.moveChat(full.id, folderId);
@@ -792,14 +842,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               renameDisabled={!canRenameActiveProjectChat || Boolean(projectMutationReason)}
               onSettings={settings.open}
               onShare={() => void session.shareActiveBranch()}
-              shareDisabled={temporarySession || Boolean(projectMutationReason) || Boolean(activeProject && (
-                !activeProject.publicSharingEnabled || !activeProject.capabilities.archiveChats
+              shareDisabled={temporarySession || Boolean(projectMutationReason) || Boolean(projectContext && (
+                !activeProject || !activeProject.publicSharingEnabled || !activeProject.capabilities.archiveChats
               ))}
               temporaryMemory={temporarySession ? composer.memory : null}
               title={session.activeChatTitle}
             />
             <ProjectContextRailV2
-              activeChatProjectId={activeChatSummary?.projectId ?? null}
+              activeChatProjectId={activeProject?.id ?? activeChatSummary?.projectId ?? null}
               controller={workspace.projects}
             />
             {session.notice ? (
@@ -808,11 +858,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               </div>
             ) : null}
             <ConversationV2
-              composerSlot={conversationMessages.length === 0 && (
-                !workspace.projects.selectedProjectId || Boolean(session.activeChatId)
-              )
-                ? composerSurface
-                : undefined}
+              composerSlot={conversationMessages.length === 0 ? composerSurface : undefined}
               error={thread.activeChatDetailError}
               hasOlder={thread.hasOlderMessages}
               jumpToLatestBottomOffset={composerDockHeight}
@@ -881,7 +927,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       ) : null}
       <SkillLibraryOverlayV2
-        open={skillLibraryOpen && !activeProject}
+        open={skillLibraryOpen && !projectContext}
         selectedIds={selectedSkills.map((skill) => skill.id)}
         onClose={() => setSkillLibraryOpen(false)}
         onSelectionChange={(ids) => {
@@ -990,9 +1036,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       ) : null}
       <PermanentChatDeletionSurface />
-      {overlays.palette.open ? (
-        <CommandPalette items={overlays.palette.items} onClose={overlays.palette.close} onRun={overlays.palette.run} />
-      ) : null}
     </main>
   );
 }

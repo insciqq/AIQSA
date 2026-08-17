@@ -67,13 +67,16 @@ export function createPrismaMcpDiscoveryOperations(
     appendMcpDiscoveryEpoch: async (input) => client.$transaction(async (tx) => {
       const [run] = await tx.$queryRaw<Array<{
         normalizedRequest: Prisma.JsonValue | null;
+        projectId: string | null;
         status: string;
       }>>`
-        SELECT "normalizedRequest", "status"
-        FROM "ModelRun"
-        WHERE "id" = ${input.runId}
-          AND "userId" = ${input.userId}
-        FOR UPDATE
+        SELECT run."normalizedRequest", run."status", project_binding."projectId"
+        FROM "ModelRun" AS run
+        LEFT JOIN "ProjectRunBinding" AS project_binding
+          ON project_binding."modelRunId" = run."id"
+        WHERE run."id" = ${input.runId}
+          AND run."userId" = ${input.userId}
+        FOR UPDATE OF run
       `;
       if (!run || !["queued", "streaming", "in_progress"].includes(run.status) ||
         !isRecord(run.normalizedRequest)) return null;
@@ -144,6 +147,7 @@ export function createPrismaMcpDiscoveryOperations(
         .map((binding) => ({ ...binding }));
       await insertAcceptedMcpRunBindings(tx, {
         bindings: newBindings,
+        ...(run.projectId ? { projectId: run.projectId } : {}),
         runId: input.runId,
         userId: input.userId
       });

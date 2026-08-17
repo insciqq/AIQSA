@@ -27,6 +27,8 @@ export type KnowledgeRunAdmissionPlan = Readonly<{
   bindings: readonly KnowledgeRunAdmissionBinding[];
   fingerprint: string;
   knowledgePlan: KnowledgePlan;
+  executionScope?: "project";
+  projectId?: string;
   userId: string;
 }>;
 
@@ -63,7 +65,7 @@ function fingerprint(value: Omit<KnowledgeRunAdmissionPlan, "fingerprint">): str
 
 export async function loadKnowledgeRunAdmissionPlan(
   client: KnowledgeRunAdmissionStore,
-  input: Readonly<{ knowledgePlan: KnowledgePlan; userId: string }>
+  input: Readonly<{ executionScope?: "project"; knowledgePlan: KnowledgePlan; projectId?: string; userId: string }>
 ): Promise<KnowledgeRunAdmissionPlan> {
   const decodedKnowledgePlan = decodeKnowledgePlan(input.knowledgePlan);
   if (!decodedKnowledgePlan.ok) throw new KnowledgeRunAdmissionError();
@@ -73,10 +75,13 @@ export async function loadKnowledgeRunAdmissionPlan(
     where: { id: input.userId, status: "active" }
   });
   if (!user) throw new KnowledgeRunAdmissionError();
+  const projectScope = input.executionScope === "project";
+  if (projectScope && !input.projectId) throw new KnowledgeRunAdmissionError();
   if (knowledgePlan.baseIds.length === 0) {
     const empty = {
       bindings: [],
       knowledgePlan: { baseIds: [] },
+      ...(projectScope ? { executionScope: "project" as const, projectId: input.projectId } : {}),
       userId: input.userId
     } satisfies Omit<KnowledgeRunAdmissionPlan, "fingerprint">;
     return { ...empty, fingerprint: fingerprint(empty) };
@@ -110,21 +115,25 @@ export async function loadKnowledgeRunAdmissionPlan(
       where: {
         archivedAt: null,
         id: knowledgeBaseId,
-        OR: [
-          { ownerUserId: input.userId },
-          {
-            publications: {
-              some: {
-                OR: [
-                  { scope: "installation" },
-                  ...(groupIds.length > 0
-                    ? [{ groupId: { in: groupIds }, scope: "group" as const }]
-                    : [])
-                ]
-              }
-            }
-          }
-        ]
+        ...(projectScope
+          ? { projectBindings: { some: { projectId: input.projectId } } }
+          : {
+              OR: [
+                { ownerUserId: input.userId },
+                {
+                  publications: {
+                    some: {
+                      OR: [
+                        { scope: "installation" },
+                        ...(groupIds.length > 0
+                          ? [{ groupId: { in: groupIds }, scope: "group" as const }]
+                          : [])
+                      ]
+                    }
+                  }
+                }
+              ]
+            })
       }
     });
     const generation = base?.activeIndexGeneration;
@@ -133,10 +142,12 @@ export async function loadKnowledgeRunAdmissionPlan(
     }
 
     try {
-      const embedding = await embeddingRuntime.resolveForUser({
-        providerModelId: generation.embeddingProviderModelId,
-        userId: input.userId
-      });
+      const embedding = projectScope
+        ? await embeddingRuntime.resolveForProject({ providerModelId: generation.embeddingProviderModelId })
+        : await embeddingRuntime.resolveForUser({
+            providerModelId: generation.embeddingProviderModelId,
+            userId: input.userId
+          });
       const currentPin = createKnowledgeVectorSpacePin({
         configuration: embedding.configuration,
         deploymentId: generation.embeddingProviderModelId
@@ -176,6 +187,7 @@ export async function loadKnowledgeRunAdmissionPlan(
   const accepted = {
     bindings,
     knowledgePlan: { baseIds: [...knowledgePlan.baseIds] },
+    ...(projectScope ? { executionScope: "project" as const, projectId: input.projectId } : {}),
     userId: input.userId
   } satisfies Omit<KnowledgeRunAdmissionPlan, "fingerprint">;
   return { ...accepted, fingerprint: fingerprint(accepted) };
@@ -192,7 +204,7 @@ export function createKnowledgeRunAdmissionService(
   client: KnowledgeRunAdmissionStore = prisma
 ) {
   return {
-    load(input: Readonly<{ knowledgePlan: KnowledgePlan; userId: string }>) {
+    load(input: Readonly<{ executionScope?: "project"; knowledgePlan: KnowledgePlan; projectId?: string; userId: string }>) {
       return loadKnowledgeRunAdmissionPlan(client, input);
     }
   };

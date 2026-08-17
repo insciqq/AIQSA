@@ -87,8 +87,6 @@ export type NavigationSidebarProps = Readonly<{
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
   onMoveFolder?(folder: ChatNavigationFolderWire, folderId: string | null): void;
   onNewChat(mode: NewChatMode): void;
-  /** Opens the single shell command palette from the quiet "Search ⌘K" row. */
-  onOpenSearch?(): void;
   onRenameChat?(chat: ChatNavigationSummaryWire): void;
   onRenameFolder?(folder: ChatNavigationFolderWire): void;
   onSaveChatRename?(chat: ChatNavigationSummaryWire): Promise<unknown> | unknown;
@@ -597,17 +595,6 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             </UiV2MenuSurface>
           ) : null}
         </div>
-        {props.onOpenSearch ? (
-          <button
-            className="v2-navigation-search-row v2-focusable"
-            type="button"
-            onClick={props.onOpenSearch}
-          >
-            <UiV2Icon name="search" />
-            <span>Search</span>
-            <kbd aria-hidden="true" className="v2-navigation-kbd">⌘K</kbd>
-          </button>
-        ) : null}
         {props.onCreateFolder && newFolderOpen ? (
           <form className="v2-new-folder-inline" onSubmit={(event) => {
             event.preventDefault();
@@ -942,8 +929,6 @@ export function ReadingRoomShellV2({
     };
   }, [searchQuery]);
 
-  // Ctrl/Cmd+K stays owned by the single shell command-palette controller
-  // (`useShellOverlayController`); this shell adds no second global listener.
   useEffect(() => {
     if (!mobileOpen) return;
     const keydown = (event: KeyboardEvent) => {

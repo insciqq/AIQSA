@@ -13,6 +13,7 @@ import type {
 } from "../providers/types";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
+import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   PersistedRunUsageAttribution,
   RunControlRecord,
@@ -26,6 +27,7 @@ import {
   type CheckpointedToolLoopRun,
   type PersistedAnswerRoundUsage,
   type PersistedToolLoopCall,
+  type ProjectRunRecoveryAuthority,
   type ToolLoopCheckpoint,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
@@ -106,6 +108,24 @@ function control(overrides: Partial<RunControlRecord> = {}): RunControlRecord {
   };
 }
 
+function projectRecoveryAuthority(
+  overrides: Partial<ProjectRunRecoveryAuthority> = {}
+): ProjectRunRecoveryAuthority {
+  return {
+    accessRevision: 3,
+    instructionsRevision: 4,
+    memoryRevision: 5,
+    policyRevision: 6,
+    projectId: "project-1",
+    providerAdmissionFingerprint: "a".repeat(64),
+    providerConnectionId: "connection-1",
+    providerModelId: "model-1",
+    providerRequiresClientTools: false,
+    providerSearchPlan: { mode: "all_selected", optionIds: [] },
+    ...overrides
+  };
+}
+
 function staleControl(overrides: Partial<StaleRunControlRecord> = {}): StaleRunControlRecord {
   return {
     ...control(overrides),
@@ -175,6 +195,8 @@ function createHarness(options: Readonly<{
   memoryHistoryToolExecutor?: RunRecoveryDeps["memoryHistoryToolExecutor"];
   mcp?: RunRecoveryDeps["mcp"];
   mcpRuntime?: RunRecoveryDeps["mcpRuntime"];
+  projectAccessCurrent?: boolean;
+  providerAdmission?: RunRecoveryDeps["providerAdmission"];
   pricing?: {
     inputTokenPriceMicros: number;
     outputTokenPriceMicros: number;
@@ -290,6 +312,7 @@ function createHarness(options: Readonly<{
     loadAttachments: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
     isSearchStrategyEnabled: async () => options.searchStrategyEnabled ?? true,
+    isProjectRunAccessCurrent: async () => options.projectAccessCurrent ?? true,
     loadEntitlements: async () => ({
       fullAccess: true,
       modelKeys: new Set<string>(),
@@ -369,6 +392,7 @@ function createHarness(options: Readonly<{
       : {}),
     ...(options.mcp ? { mcp: options.mcp } : {}),
     ...(options.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
+    ...(options.providerAdmission ? { providerAdmission: options.providerAdmission } : {}),
     providers: options.providers ?? {},
     registry: options.registry ?? registry(options.liveRunIds),
     repository,
@@ -939,6 +963,44 @@ describe("run recovery", () => {
     expect(harness.state.preparingRecoveries).toEqual([{ now, runId, userId }]);
     expect(refresh).not.toHaveBeenCalled();
     expect(harness.state.failed).toEqual([]);
+  });
+
+  it("fails Project background recovery before provider I/O when accepted authority drifted", async () => {
+    const project = projectRecoveryAuthority();
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [],
+      providerResponseId: "response-old",
+      status: "in_progress",
+      terminal: false
+    }));
+    const load = vi.fn(async () => ({
+      fingerprint: "b".repeat(64)
+    }) as ProviderAdmissionPlan);
+    const harness = createHarness({
+      controls: [control({ project })],
+      projectAccessCurrent: true,
+      providerAdmission: { load },
+      providers: { openai: providerWithRefresh(refresh) }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(load).toHaveBeenCalledWith({
+      executionScope: "project",
+      providerConnectionId: project.providerConnectionId,
+      providerModelId: project.providerModelId,
+      searchPlan: project.providerSearchPlan,
+      userId
+    });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(harness.state.failed).toEqual([{
+      assistantMessageId: "assistant-1",
+      error: {
+        code: "provider_admission_changed",
+        message: "Project provider authority is no longer current."
+      },
+      runId
+    }]);
   });
 
   it("sweeps boot-orphaned runs once with the injected live-run ids", async () => {
@@ -3142,6 +3204,75 @@ describe("run recovery", () => {
     expect(harness.state.completed).toMatchObject({
       finalText: "Recovered dispatch remained blocked"
     });
+  });
+
+  it("revalidates recovered Project MCP through shared authority only", async () => {
+    const project = projectRecoveryAuthority({ providerRequiresClientTools: true });
+    const snapshot = normalizedToolRequest().mcp!;
+    const prepare = vi.fn<NonNullable<RunRecoveryDeps["mcp"]>["prepare"]>(async () => {
+      throw new Error("personal_mcp_path_used");
+    });
+    const prepareProject = vi.fn<NonNullable<
+      NonNullable<RunRecoveryDeps["mcp"]>["prepareProject"]
+    >>(async () => ({
+      bindings: [{
+        fingerprint: recoveryFingerprint,
+        runtimeGenerationId: "generation-1",
+        serverId: "server-1"
+      }],
+      ok: true,
+      snapshot
+    }));
+    const runtimeCall = vi.fn<NonNullable<RunRecoveryDeps["mcpRuntime"]>["callTool"]>(
+      async () => ({
+        isError: false,
+        structuredContent: { accepted: true },
+        text: ["accepted"],
+        unsupportedContentTypes: []
+      })
+    );
+    const providerLoad = vi.fn(async () => ({
+      fingerprint: project.providerAdmissionFingerprint
+    }) as ProviderAdmissionPlan);
+    const harness = createHarness({
+      mcp: { prepare, prepareProject },
+      mcpRuntime: {
+        callTool: runtimeCall,
+        ensureAcceptedGeneration: async () => true
+      },
+      projectAccessCurrent: true,
+      providerAdmission: { load: providerLoad },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream() {
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered Project MCP",
+              usage: { inputTokens: 2, outputTokens: 2, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [persistedRecoveryCall()],
+        phase: "tools_pending"
+      }),
+      project
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(prepareProject).toHaveBeenCalledWith(["server-1"]);
+    expect(runtimeCall).toHaveBeenCalledOnce();
+    expect(providerLoad).toHaveBeenCalledWith(expect.objectContaining({
+      executionScope: "project",
+      requiresClientToolCoexistence: true
+    }));
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered Project MCP" });
   });
 
   it("rehydrates settled Knowledge evidence and usage without repeating retrieval", async () => {

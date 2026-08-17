@@ -4,6 +4,7 @@ import type {
   SkillRunMaterialization,
   SkillRunResolver
 } from "./runMaterialization";
+import { revokeOwnedProjectResourcePublication } from "../projects/prismaRepository";
 
 export type SkillRevisionRow = {
   createdAt: Date;
@@ -17,6 +18,7 @@ export type SkillRevisionRow = {
 
 export type SkillAudienceEntry =
   | { id: string; kind: "installation" }
+  | { id: string; kind: "project" }
   | { id: string; kind: "workspace"; name: string; workspaceId: string };
 
 export type SkillListEntry = {
@@ -172,6 +174,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       include: {
         currentRevision: true,
         owner: { select: { displayName: true } },
+        projectBindings: { select: { id: true } },
         publications: {
           include: { group: { select: { name: true } } },
           where: accessiblePublicationWhere(userId)
@@ -229,6 +232,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       include: {
         currentRevision: true,
         owner: { select: { displayName: true } },
+        projectBindings: { select: { id: true } },
         publications: {
           include: {
             group: {
@@ -266,9 +270,16 @@ export function createPrismaSkillRepository(client: PrismaClient) {
         name: publication.group.name,
         workspaceId: publication.group.id
       }] : [];
-    }).sort((left, right) => {
-      const leftName = left.kind === "installation" ? "" : left.name;
-      const rightName = right.kind === "installation" ? "" : right.name;
+    });
+    if (owned) {
+      audiences.push(...definition.projectBindings.map((binding) => ({
+        id: `project:${binding.id}`,
+        kind: "project" as const
+      })));
+    }
+    audiences.sort((left, right) => {
+      const leftName = left.kind === "workspace" ? left.name : left.kind;
+      const rightName = right.kind === "workspace" ? right.name : right.kind;
       return leftName.localeCompare(rightName) || left.id.localeCompare(right.id);
     });
     const revision = definition.currentRevision;
@@ -472,6 +483,33 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       return { ok: true as const, skills };
     },
 
+    async resolveForProject(projectId: string, skillIds: readonly string[]) {
+      const bindings = await client.projectSkillBinding.findMany({
+        include: { skill: { include: { currentRevision: true } } },
+        where: {
+          projectId,
+          skillId: { in: [...skillIds] },
+          skill: { archivedAt: null, currentRevisionId: { not: null }, deletedAt: null }
+        }
+      });
+      const available = new Map(bindings.flatMap((binding) =>
+        binding.skill.currentRevision
+          ? [[binding.skillId, binding.skill.currentRevision] as const]
+          : []));
+      const skills: SkillRunMaterialization[] = [];
+      for (const skillId of skillIds) {
+        const revision = available.get(skillId);
+        if (!revision) return { code: "skill_not_available" as const, ok: false as const, status: 404 as const };
+        skills.push({
+          instructions: revision.instructions,
+          name: revision.name,
+          revisionId: revision.id,
+          skillId
+        });
+      }
+      return { ok: true as const, skills };
+    },
+
     async revise(
       userId: string,
       skillId: string,
@@ -521,6 +559,16 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       skillId: string;
       userId: string;
     }): Promise<SkillRevokePublicationResult> {
+      if (input.publicationId.startsWith("project:")) {
+        const bindingId = input.publicationId.slice("project:".length);
+        if (!bindingId) return "not_found";
+        return await revokeOwnedProjectResourcePublication(client, {
+          bindingId,
+          resourceId: input.skillId,
+          type: "skill",
+          userId: input.userId
+        }) ? "ok" : "not_found";
+      }
       return client.$transaction(async (tx) => {
         const [skill] = await tx.$queryRaw<Array<{
           deletedAt: Date | null;
@@ -587,4 +635,8 @@ export function createPrismaSkillRepository(client: PrismaClient) {
   return repository satisfies SkillRunResolver & typeof repository;
 }
 
-export type PrismaSkillRepository = ReturnType<typeof createPrismaSkillRepository>;
+// Keep the Project resolver additive for callers/test doubles that only
+// implement the historical personal Skill repository contract.
+export type PrismaSkillRepository = Omit<ReturnType<typeof createPrismaSkillRepository>, "resolveForProject"> & {
+  resolveForProject?: SkillRunResolver["resolveForProject"];
+};

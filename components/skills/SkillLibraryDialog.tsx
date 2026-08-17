@@ -472,7 +472,10 @@ export function SkillLibraryDialog({
                     <ul className="mt-3 space-y-2">
                       {detail.audiences.map((audience) => (
                         <li key={audience.id} className="flex items-center justify-between gap-3 text-sm text-ink-secondary">
-                          <span>{audience.name}</span>
+                          <span>
+                            {audience.name}
+                            {audience.kind === "project" ? <small className="ml-2 text-ink-muted">Project details remain private</small> : null}
+                          </span>
                           {detail.owned && detail.canUnshare ? (
                             <button
                               className="v2-focusable rounded-lg px-2 py-1 text-xs text-critical disabled:opacity-50"

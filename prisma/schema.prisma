@@ -575,6 +575,7 @@ model User {
   projectMessagesAuthored        Message[]                          @relation("ProjectMessageAuthor")
   projectModelBindingsAdded      ProjectModelBinding[]              @relation("ProjectModelBindingAdder")
   projectSearchBindingsAdded     ProjectSearchBinding[]             @relation("ProjectSearchBindingAdder")
+  projectSkillBindingsAdded      ProjectSkillBinding[]              @relation("ProjectSkillBindingAdder")
   projectsCreated                Project[]                          @relation("ProjectCreator")
   searchPolicyUpdates            SearchPolicy[]                     @relation("SearchPolicyUpdater")
   settings                       UserSettings?
@@ -834,18 +835,18 @@ model KnowledgePolicy {
 }
 
 model ModelPolicy {
-  id                              String         @id
-  defaultProviderModelId          String?
-  maxToolCalls                    BigInt         @default(20)
-  maxToolRounds                   BigInt         @default(8)
-  maxMcpToolsPerDiscovery         BigInt         @default(10)
+  id                             String         @id
+  defaultProviderModelId         String?
+  maxToolCalls                   BigInt         @default(20)
+  maxToolRounds                  BigInt         @default(8)
+  maxMcpToolsPerDiscovery        BigInt         @default(10)
   mcpAutoDiscoveryTimeoutSeconds BigInt         @default(60)
-  version                         Int            @default(1)
-  updatedByUserId                 String?
-  createdAt                       DateTime       @default(now())
-  updatedAt                       DateTime       @updatedAt
-  defaultProviderModel            ProviderModel? @relation("InstallationDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
-  updatedBy                       User?          @relation("ModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  version                        Int            @default(1)
+  updatedByUserId                String?
+  createdAt                      DateTime       @default(now())
+  updatedAt                      DateTime       @updatedAt
+  defaultProviderModel           ProviderModel? @relation("InstallationDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
+  updatedBy                      User?          @relation("ModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([defaultProviderModelId])
   @@index([updatedByUserId])
@@ -1058,6 +1059,7 @@ model SkillDefinition {
   owner                  User                     @relation("SkillDefinitionOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   assistantRevisionLinks AssistantRevisionSkill[]
   publications           SkillPublication[]
+  projectBindings        ProjectSkillBinding[]
   revisions              SkillRevision[]          @relation("SkillRevisions")
 
   @@unique([id, currentRevisionId])
@@ -1326,6 +1328,8 @@ model ProviderModel {
   supportsReasoning         Boolean                        @default(false)
   supportsNativeSearch      Boolean                        @default(false)
   enabled                   Boolean                        @default(true)
+  /// Installation-controlled opt-in for shared Project execution.
+  availableInProjects       Boolean                        @default(false)
   draftConfig               Json                           @default("{}")
   draftVersion              Int                            @default(1)
   activeConfig              Json?
@@ -1383,20 +1387,22 @@ model ProviderConnection {
 }
 
 model SearchOption {
-  id                 String                 @id @default(uuid())
-  optionId           String                 @unique
-  displayName        String
-  description        String
-  kind               String
-  templateKey        String?                @unique
-  sourceConnectionId String?
-  enabled            Boolean                @default(true)
-  archivedAt         DateTime?
-  createdAt          DateTime               @default(now())
-  updatedAt          DateTime               @updatedAt
-  sourceConnection   ProviderConnection?    @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
-  projectBindings    ProjectSearchBinding[]
-  strategies         SearchStrategy[]
+  id                  String                 @id @default(uuid())
+  optionId            String                 @unique
+  displayName         String
+  description         String
+  kind                String
+  templateKey         String?                @unique
+  sourceConnectionId  String?
+  enabled             Boolean                @default(true)
+  /// Installation-controlled opt-in for shared Project execution.
+  availableInProjects Boolean                @default(false)
+  archivedAt          DateTime?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  sourceConnection    ProviderConnection?    @relation(fields: [sourceConnectionId], references: [id], onDelete: Restrict)
+  projectBindings     ProjectSearchBinding[]
+  strategies          SearchStrategy[]
 
   @@unique([sourceConnectionId, kind])
   @@index([sourceConnectionId])
@@ -1808,6 +1814,8 @@ model McpServer {
   displayName          String
   description          String               @default("")
   enabled              Boolean              @default(false)
+  /// Installation-controlled opt-in for shared/no-auth Project execution.
+  availableInProjects  Boolean              @default(false)
   archivedAt           DateTime?
   activeRevisionId     String?              @unique
   draft                Json                 @default("{}")
@@ -2237,6 +2245,8 @@ model Project {
   modelBindings         ProjectModelBinding[]
   runBindings           ProjectRunBinding[]
   searchBindings        ProjectSearchBinding[]
+  skillBindings         ProjectSkillBinding[]
+  events                ProjectEvent[]
   sharedSnapshots       SharedChatSnapshot[]
   usageEvents           UsageEvent[]
 
@@ -2360,6 +2370,41 @@ model ProjectAssistantBinding {
   @@index([assistantId, revisionId])
 }
 
+/// Canonical Project authority for a published Skill. The current Skill
+/// revision is resolved at admission; accepted runs retain their exact
+/// revision through ModelRunSkillBinding.
+model ProjectSkillBinding {
+  id            String          @id @default(uuid())
+  projectId     String
+  skillId       String
+  addedByUserId String?
+  createdAt     DateTime        @default(now())
+  addedBy       User?           @relation("ProjectSkillBindingAdder", fields: [addedByUserId], references: [id], onDelete: SetNull)
+  project       Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  skill         SkillDefinition @relation(fields: [skillId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, skillId])
+  @@index([addedByUserId])
+  @@index([skillId])
+}
+
+/// Durable, content-free Project change log. `sequence` is the opaque replay
+/// cursor; safe projections are reconstructed from authoritative tables.
+model ProjectEvent {
+  sequence       BigInt   @id @default(autoincrement())
+  projectId      String
+  eventType      String   @db.VarChar(64)
+  entityType     String?  @db.VarChar(64)
+  entityId       String?  @db.VarChar(128)
+  entityRevision Int?
+  accessRevision Int?
+  createdAt      DateTime @default(now())
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, sequence])
+  @@index([createdAt])
+}
+
 model ProjectAuditEvent {
   id               String   @id @default(uuid())
   projectId        String
@@ -2449,19 +2494,25 @@ model ProjectMemoryProposal {
 }
 
 model ProjectRunBinding {
-  modelRunId             String                 @id
-  projectId              String
-  initiatorUserId        String
-  acceptedRole           ProjectRole
-  accessRevision         Int
-  policyRevision         Int
-  instructionsRevision   Int
-  memoryRevision         Int
-  personalMemoryDisabled Boolean                @default(true)
-  createdAt              DateTime               @default(now())
-  memoryItems            ProjectMemoryRunItem[]
-  modelRun               ModelRun               @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
-  project                Project                @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  modelRunId                   String                 @id
+  projectId                    String
+  initiatorUserId              String
+  acceptedRole                 ProjectRole
+  accessRevision               Int
+  policyRevision               Int
+  instructionsRevision         Int
+  memoryRevision               Int
+  personalMemoryDisabled       Boolean                @default(true)
+  providerAdmissionFingerprint String?
+  providerConnectionId         String?
+  providerModelId              String?
+  providerSearchPlan           Json?
+  providerRequiresClientTools  Boolean                @default(false)
+  sharedCredentialVersionIds   String[]               @default([])
+  createdAt                    DateTime               @default(now())
+  memoryItems                  ProjectMemoryRunItem[]
+  modelRun                     ModelRun               @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
+  project                      Project                @relation(fields: [projectId], references: [id], onDelete: Restrict)
 
   @@unique([projectId, modelRunId])
   @@index([initiatorUserId])

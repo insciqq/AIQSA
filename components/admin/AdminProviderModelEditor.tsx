@@ -58,6 +58,7 @@ const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" })
 type ModelForm = {
   adapterKind: AdminProviderAdapterKind;
   answerSelectable: boolean;
+  availableInProjects: boolean;
   capabilities: AdminProviderModelCapabilities;
   defaultParamsText: string;
   displayName: string;
@@ -121,6 +122,7 @@ function blankModel(connection: AdminProviderConnection): ModelForm {
   return {
     adapterKind: adapterFor(connection.family),
     answerSelectable: true,
+    availableInProjects: false,
     capabilities: initialCapabilities(connection.family),
     defaultParamsText: "{}",
     displayName: "",
@@ -148,6 +150,7 @@ function existingModel(model: AdminProviderModel): ModelForm {
   return {
     adapterKind: model.draftConfig.adapterKind,
     answerSelectable: model.draftConfig.answerSelectable,
+    availableInProjects: model.availableInProjects ?? false,
     capabilities: { ...model.draftConfig.capabilities },
     defaultParamsText: JSON.stringify(model.draftConfig.defaultParams, null, 2),
     displayName: model.displayName,
@@ -543,6 +546,7 @@ export function AdminProviderModelEditor({
     setFormError(null);
     const body = {
       ...(editing ? { action: "update", expectedDraftVersion: editing.draftVersion } : {}),
+      availableInProjects: form.availableInProjects,
       configuration: {
         adapterKind: form.adapterKind,
         answerSelectable: form.answerSelectable,
@@ -847,6 +851,25 @@ export function AdminProviderModelEditor({
           <span className="block font-medium text-ink">Available as answer model</span>
           <span className="mt-0.5 block leading-4 text-ink-muted">
             Turn this off for a technical runtime used only by Search. Search integrations can still use it after activation.
+          </span>
+        </span>
+      </label>
+
+      <label className={`flex min-h-touch items-start gap-2 rounded-control bg-control-surface px-3 py-2 text-xs text-ink-secondary ${touchTarget}`}>
+        <input
+          checked={form.availableInProjects}
+          className="mt-0.5 size-4 shrink-0 accent-proof"
+          disabled={controller.state.busy}
+          onChange={(event) => setForm({
+            ...form,
+            availableInProjects: event.currentTarget.checked
+          })}
+          type="checkbox"
+        />
+        <span>
+          <span className="block font-medium text-ink">Available in Projects</span>
+          <span className="mt-0.5 block leading-4 text-ink-muted">
+            Project runs use the installation default credential; member grants and personal credentials are ignored.
           </span>
         </span>
       </label>

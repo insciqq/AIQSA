@@ -106,6 +106,7 @@ async function main() {
   if (
     !fakeModel ||
     !fakeModel.enabled ||
+    !fakeModel.availableInProjects ||
     fakeModel.activeVersion !== 1 ||
     !fakeModel.activeConfig ||
     !fakeModel.activatedAt ||

@@ -45,6 +45,7 @@ import {
 } from "../providers/streamSafety";
 import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservability";
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
+import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import { providerToolBridges } from "../tools/bridges";
 import {
   createSearchPlanToolRouter,
@@ -112,6 +113,7 @@ import {
   type CheckpointedToolLoopRun,
   type PersistedAnswerRoundUsage,
   type PersistedToolLoopCall,
+  type ProjectRunRecoveryAuthority,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
@@ -158,7 +160,10 @@ export type RunRecoveryRepository = Pick<
   | "settleToolLoopCall"
   | "sweepBootOrphanedRuns"
   | "updateRunProviderResponseId"
-> & Partial<Pick<RunRepository, "isSearchStrategyEnabled" | "loadEntitlements">>;
+> & Partial<Pick<
+  RunRepository,
+  "isProjectRunAccessCurrent" | "isSearchStrategyEnabled" | "loadEntitlements"
+>>;
 
 export type RunRecoveryMcpRuntime = Readonly<{
   callTool(input: {
@@ -176,7 +181,9 @@ export type RunRecoveryDeps = Readonly<{
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeAdmission?: Readonly<{
     load(input: {
+      executionScope?: "project";
       knowledgePlan: ProviderRunRequest["knowledgePlan"];
+      projectId?: string;
       userId: string;
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
@@ -197,7 +204,18 @@ export type RunRecoveryDeps = Readonly<{
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
     ): Promise<McpRunPlanResult>;
+    prepareProject?(serverIds: readonly string[]): Promise<McpRunPlanResult>;
     router?: McpSemanticRouter;
+  }>;
+  providerAdmission?: Readonly<{
+    load(input: {
+      executionScope?: "project";
+      providerConnectionId: string;
+      providerModelId: string;
+      requiresClientToolCoexistence?: boolean;
+      searchPlan: ProviderAdmissionPlan["requestedSearchPlan"];
+      userId: string;
+    }): Promise<ProviderAdmissionPlan>;
   }>;
   providerRuntime?: ProviderRuntimeResolver;
   providers: Readonly<Record<string, ProviderAdapter>>;
@@ -567,9 +585,50 @@ function isRecoveredMcpDiscoveryCall(
   return name === MCP_FIND_TOOLS_NAME && context.activeMcpDiscovery !== undefined;
 }
 
+async function currentProjectRecoveryAuthorityAllowed(
+  deps: RunRecoveryDeps,
+  project: ProjectRunRecoveryAuthority,
+  userId: string
+): Promise<boolean> {
+  if (!deps.repository.isProjectRunAccessCurrent || !deps.providerAdmission) {
+    return false;
+  }
+  try {
+    const accessCurrent = await deps.repository.isProjectRunAccessCurrent({
+      accessRevision: project.accessRevision,
+      instructionsRevision: project.instructionsRevision,
+      memoryRevision: project.memoryRevision,
+      policyRevision: project.policyRevision,
+      projectId: project.projectId,
+      userId
+    });
+    if (!accessCurrent) return false;
+    const current = await deps.providerAdmission.load({
+      executionScope: "project",
+      providerConnectionId: project.providerConnectionId,
+      providerModelId: project.providerModelId,
+      ...(project.providerRequiresClientTools
+        ? { requiresClientToolCoexistence: true }
+        : {}),
+      searchPlan: project.providerSearchPlan,
+      userId
+    });
+    return current.fingerprint === project.providerAdmissionFingerprint;
+  } catch {
+    return false;
+  }
+}
+
 async function currentRecoverySearchDispatchAllowed(
   context: RecoveryToolContext
 ): Promise<boolean> {
+  if (context.run.project) {
+    return currentProjectRecoveryAuthorityAllowed(
+      context.deps,
+      context.run.project,
+      context.run.userId
+    );
+  }
   if (!context.deps.repository.loadEntitlements ||
     !context.deps.repository.isSearchStrategyEnabled) {
     return process.env.NODE_ENV !== "production";
@@ -592,11 +651,18 @@ async function currentRecoverySearchDispatchAllowed(
 async function currentRecoveryKnowledgeDispatchAllowed(
   context: RecoveryToolContext
 ): Promise<boolean> {
+  if (context.run.project && !(await currentProjectRecoveryAuthorityAllowed(
+    context.deps,
+    context.run.project,
+    context.run.userId
+  ))) return false;
   if (!context.deps.knowledgeAdmission) return process.env.NODE_ENV !== "production";
   try {
     const expected = context.run.normalizedRequest.knowledgePlan.baseIds;
     const current = await context.deps.knowledgeAdmission.load({
+      ...(context.run.project ? { executionScope: "project" as const } : {}),
       knowledgePlan: { baseIds: expected },
+      ...(context.run.project ? { projectId: context.run.project.projectId } : {}),
       userId: context.run.userId
     });
     return current.bindings.length === expected.length &&
@@ -612,13 +678,23 @@ async function currentRecoveryMcpDispatchAllowed(
   callName: string,
   generationId: string
 ): Promise<boolean> {
+  if (context.run.project && !(await currentProjectRecoveryAuthorityAllowed(
+    context.deps,
+    context.run.project,
+    context.run.userId
+  ))) return false;
   if (!context.deps.mcp) return process.env.NODE_ENV !== "production";
   const route = resolveMcpRunTool(context.activeMcpSnapshot, callName);
   if (!route) return false;
   try {
-    const current = await context.deps.mcp.prepare(context.run.userId, {
-      allowedServerIds: [route.serverId]
-    });
+    const current = context.run.project
+      ? context.deps.mcp.prepareProject
+        ? await context.deps.mcp.prepareProject([route.serverId])
+        : null
+      : await context.deps.mcp.prepare(context.run.userId, {
+          allowedServerIds: [route.serverId]
+        });
+    if (!current) return false;
     if (!current.ok) return false;
     const binding = current.bindings.find((candidate) =>
       candidate.serverId === route.serverId);
@@ -1371,6 +1447,16 @@ async function recoverCheckpointedToolLoop(
           "Memory egress evidence is unavailable."
         );
       }
+      if (run.project && !(await currentProjectRecoveryAuthorityAllowed(
+        deps,
+        run.project,
+        run.userId
+      ))) {
+        throw new ToolLoopRecoveryError(
+          "provider_admission_changed",
+          "Project provider authority is no longer current."
+        );
+      }
       let preview: Record<string, unknown> | null = null;
       const requestPreview = () => {
         preview ??= adapter!.buildRequestPreview(request);
@@ -2073,6 +2159,20 @@ async function refreshProviderRunOnceRegistered(
 
   if (!control.providerResponseId) return;
 
+  if (control.project && !(await currentProjectRecoveryAuthorityAllowed(
+    deps,
+    control.project,
+    userId
+  ))) {
+    if (control.assistantMessageId) {
+      await deps.repository.failRun(runId, control.assistantMessageId, {
+        code: "provider_admission_changed",
+        message: "Project provider authority is no longer current."
+      });
+    }
+    return;
+  }
+
   const adapter = (await resolveAnswerRuntime(deps, runId, control.provider))?.adapter;
   if (!adapter?.refresh) {
     return;
@@ -2099,6 +2199,19 @@ async function refreshProviderRunOnceRegistered(
 
   const latestBeforeAppend = await deps.repository.getRunControlForUser(runId, userId);
   if (!latestBeforeAppend || !isRefreshableRun(latestBeforeAppend)) {
+    return;
+  }
+  if (latestBeforeAppend.project && !(await currentProjectRecoveryAuthorityAllowed(
+    deps,
+    latestBeforeAppend.project,
+    userId
+  ))) {
+    if (latestBeforeAppend.assistantMessageId) {
+      await deps.repository.failRun(runId, latestBeforeAppend.assistantMessageId, {
+        code: "provider_admission_changed",
+        message: "Project provider authority changed during recovery."
+      });
+    }
     return;
   }
 

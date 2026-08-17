@@ -1,6 +1,13 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectDetailWire, ProjectWorkspaceResponseWire } from "@/lib/contracts/projects";
+
+const apiMocks = vi.hoisted(() => ({ loadProjectCandidates: vi.fn() }));
+vi.mock("@/components/app-shell/projectWorkspaceApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/app-shell/projectWorkspaceApi")>()),
+  ...apiMocks
+}));
+
 import {
   CreateProjectDialogV2,
   ProjectContextRailV2,
@@ -98,17 +105,22 @@ function controller(role: "OWNER" | "VIEWER" = "OWNER"): ProjectWorkspaceControl
     closeSettings: vi.fn(),
     create: vi.fn().mockResolvedValue(true),
     createChat: vi.fn().mockResolvedValue(true),
+    createChatForSend: vi.fn().mockResolvedValue(null),
     createFolder: vi.fn().mockResolvedValue(true),
     deleteFolder: vi.fn().mockResolvedValue(true),
     deleteProject: vi.fn().mockResolvedValue(true),
     editMemoryFact: vi.fn().mockResolvedValue(true),
     forgetMemoryFact: vi.fn().mockResolvedValue(true),
     leave: vi.fn(),
+    leaveProject: vi.fn().mockResolvedValue(true),
     openCreate: vi.fn(),
     openSettings: vi.fn(),
     refresh: vi.fn().mockResolvedValue(true),
     refreshList: vi.fn().mockResolvedValue(true),
+    previewGrantRemoval: vi.fn().mockResolvedValue(null),
     removeGrant: vi.fn().mockResolvedValue(true),
+    previewResourceAdd: vi.fn().mockResolvedValue(null),
+    previewResourceRemoval: vi.fn().mockResolvedValue(null),
     removeResource: vi.fn().mockResolvedValue(true),
     moveChat: vi.fn().mockResolvedValue(true),
     reviewMemoryProposal: vi.fn().mockResolvedValue(true),
@@ -123,6 +135,7 @@ function controller(role: "OWNER" | "VIEWER" = "OWNER"): ProjectWorkspaceControl
   return {
     actionError: null,
     activity: { events: [], nextCursor: null },
+    activityError: null,
     actions,
     busy: false,
     createOpen: false,
@@ -134,12 +147,18 @@ function controller(role: "OWNER" | "VIEWER" = "OWNER"): ProjectWorkspaceControl
     projects: [detail],
     selectedProjectId: detail.id,
     settingsOpen: true,
+    settingsInitialTab: "general",
     syncState: "idle",
     workspace: { chats: [activeChat, archivedChat], folders: [] }
   };
 }
 
 describe("Project workspace surfaces", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMocks.loadProjectCandidates.mockResolvedValue({ items: [], nextCursor: null });
+  });
+
   it("keeps the application interactive while the create dialog is closed", () => {
     const application = document.createElement("main");
     document.body.appendChild(application);
@@ -188,5 +207,137 @@ describe("Project workspace surfaces", () => {
     expect(within(viewerDialog).queryByRole("button", { name: "Restore" })).toBeNull();
     expect(within(viewerDialog).queryByRole("button", { name: "Save changes" })).toBeNull();
     expect(within(viewerDialog).queryByRole("button", { name: "Delete project" })).toBeNull();
+  });
+
+  it("uses filtered people candidates with loading-safe disabled reasons and pagination", async () => {
+    apiMocks.loadProjectCandidates
+      .mockResolvedValueOnce({
+        items: [
+          {
+            description: "member@example.test",
+            disabledReason: null,
+            id: "candidate-member",
+            label: "Project Member",
+            type: "user"
+          },
+          {
+            description: "already@example.test",
+            disabledReason: "already_has_direct_access",
+            id: "candidate-existing",
+            label: "Existing Member",
+            type: "user"
+          }
+        ],
+        nextCursor: "2"
+      })
+      .mockResolvedValueOnce({
+        items: [{
+          description: "later@example.test",
+          disabledReason: null,
+          id: "candidate-later",
+          label: "Later Member",
+          type: "user"
+        }],
+        nextCursor: null
+      });
+    const projectController = controller();
+    render(<ProjectSettingsDialogV2 controller={projectController} />);
+    const dialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Members" }));
+
+    expect(await within(dialog).findByRole("option", { name: /Project Member/ })).toBeEnabled();
+    const disabled = within(dialog).getByRole("option", { name: /Existing Member/ });
+    expect(disabled).toBeDisabled();
+    expect(disabled).toHaveTextContent("Already has direct access");
+    expect(within(dialog).queryByLabelText(/UUID|user id|group id/i)).toBeNull();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Load more" }));
+    expect(await within(dialog).findByRole("option", { name: /Later Member/ })).toBeVisible();
+    expect(apiMocks.loadProjectCandidates).toHaveBeenLastCalledWith(
+      "project-1", "user", "", "2"
+    );
+  });
+
+  it("preserves the active tab and dirty fields through a background Project revision", async () => {
+    const first = controller();
+    const view = render(<ProjectSettingsDialogV2 controller={first} />);
+    const dialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+    const name = within(dialog).getByRole("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Unsaved local title" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Activity" }));
+    expect(within(dialog).getByRole("heading", { name: "Activity" })).toBeVisible();
+
+    const canonical = controller();
+    const updated: ProjectWorkspaceController = {
+      ...canonical,
+      detail: {
+        ...canonical.detail!,
+        instructions: "Changed by another manager.",
+        instructionsRevision: 3,
+        policyRevision: 6,
+        updatedAt: "2026-08-17T00:04:00.000Z"
+      }
+    };
+    view.rerender(<ProjectSettingsDialogV2 controller={updated} />);
+
+    expect(within(dialog).getByRole("heading", { name: "Activity" })).toBeVisible();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Project" }));
+    expect(within(dialog).getByRole("textbox", { name: "Name" })).toHaveValue("Unsaved local title");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close project settings" }));
+    expect(await screen.findByRole("dialog", { name: /Discard Project settings changes/i })).toBeVisible();
+  });
+
+  it("keeps a conflicting draft for review and reloads canonical values only on request", async () => {
+    const base = controller();
+    const refresh = vi.fn().mockResolvedValue(true);
+    const projectController: ProjectWorkspaceController = {
+      ...base,
+      actionError: "Project resources changed elsewhere. Review the current values and try again.",
+      actions: { ...base.actions, refresh }
+    };
+    render(<ProjectSettingsDialogV2 controller={projectController} />);
+    const dialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+    const name = within(dialog).getByRole("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Conflicting local title" } });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Review / retry" }));
+    expect(name).toHaveValue("Conflicting local title");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reload current values" }));
+
+    expect(name).toHaveValue("Launch room");
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("formats paginated Activity without rendering private identifiers", async () => {
+    const base = controller();
+    const loadMoreActivity = vi.fn().mockResolvedValue(true);
+    const projectController: ProjectWorkspaceController = {
+      ...base,
+      actions: { ...base.actions, loadMoreActivity },
+      activity: {
+        events: [{
+          actorDisplayName: "Dana",
+          createdAt: "2026-08-17T00:05:00.000Z",
+          eventType: "resource_detached",
+          id: "activity-1",
+          metadata: {
+            affectedChatCount: 2,
+            clearedDefaultCount: 1,
+            dependentAssistantCount: 1,
+            resourceType: "knowledge"
+          }
+        }],
+        nextCursor: "activity-1"
+      }
+    };
+    render(<ProjectSettingsDialogV2 controller={projectController} />);
+    const dialog = await screen.findByRole("dialog", { name: "Launch room settings" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Activity" }));
+
+    expect(within(dialog).getByText("Shared resource removed")).toBeVisible();
+    expect(within(dialog).getByText(/2 chat defaults cleared/)).toBeVisible();
+    expect(dialog).not.toHaveTextContent("activity-1");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(loadMoreActivity).toHaveBeenCalledTimes(1));
   });
 });

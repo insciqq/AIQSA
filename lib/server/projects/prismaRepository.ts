@@ -6,31 +6,56 @@ import {
 import {
   DEFAULT_PROJECT_POLICY,
   EMPTY_PROJECT_DEFAULTS,
+  decodeProjectDefaults,
   type ProjectActivityResponseWire,
   type ProjectAuditEventWire,
+  type ProjectCandidatesResponseWire,
+  type ProjectCandidateTypeWire,
+  type ProjectCandidateWire,
   type ProjectDefaultsWire,
   type ProjectDetailWire,
   type ProjectGrantWire,
   type ProjectPolicyWire,
+  type ProjectReadinessWire,
+  type ProjectGrantRemovalPreviewWire,
+  type ProjectResourceChangePreviewWire,
+  type ProjectResourceDependencyPreviewWire,
   type ProjectResourceTypeWire,
   type ProjectResourceWire,
   type ProjectSummaryWire
 } from "../../contracts/projects";
+import {
+  ASSISTANT_CATEGORIES,
+  decodeAssistantAvatarRecipe,
+  decodeAssistantRunControls,
+  type AssistantCategory
+} from "../../contracts/assistants";
+import { buildCatalogModel, toCatalogSearchStrategy } from "../../domain/catalogMatrix";
+import { decodeSearchPlan } from "../../domain/search";
+import {
+  providerModelToCatalogEntry,
+  searchOptionToCatalogEntry,
+  type CatalogProviderModelRow,
+  type CatalogSearchOptionRow
+} from "../catalog/prismaCatalogData";
+import {
+  getRunAttachmentLimits,
+  toCatalogAttachmentLimits
+} from "../runs/attachmentLimits";
 import {
   PROJECT_ROLE_CAPABILITIES,
   highestProjectRole,
   projectRoleAtLeast,
   type ProjectRole
 } from "../../domain/projects";
-import { canAccessModel, canAccessSearchStrategy } from "../auth/entitlements";
-import { loadEntitlementsForUser } from "../auth/dbEntitlements";
-import { createPrismaAssistantRepository } from "../assistants/prismaRepository";
-import { resolveEffectiveMcpGrant } from "../mcp/access";
 import { resolveProjectAccess } from "./access";
+import { notifyProjectEvent } from "./events";
 
 export type ProjectRepositoryResult<Value> =
   | Readonly<{ kind: "conflict"; reason: string }>
   | Readonly<{ kind: "not_found" }>
+  | Readonly<{ kind: "target_not_found"; reason: string }>
+  | Readonly<{ kind: "unavailable"; reason: string }>
   | Readonly<{ kind: "ok"; value: Value }>;
 
 export type ProjectRepository = ReturnType<typeof createPrismaProjectRepository>;
@@ -48,11 +73,30 @@ const projectListInclude = {
 type ProjectListRow = Prisma.ProjectGetPayload<{ include: typeof projectListInclude }>;
 
 const projectDetailInclude = {
-  _count: { select: { chats: true } },
+  _count: { select: { attachments: true, chats: true } },
   assistantBindings: {
     include: {
       assistant: { select: { archivedAt: true } },
-      revision: { select: { id: true, name: true } }
+      revision: {
+        select: {
+          avatar: true,
+          category: true,
+          createdAt: true,
+          description: true,
+          developerPrompt: true,
+          id: true,
+          knowledgeBaseIds: true,
+          mcpServerIds: true,
+          name: true,
+          providerModelId: true,
+          revisionNumber: true,
+          runControls: true,
+          searchPlan: true,
+          skillLinks: { select: { skillId: true } },
+          starterPrompts: true,
+          systemPrompt: true
+        }
+      }
     }
   },
   grants: {
@@ -63,12 +107,56 @@ const projectDetailInclude = {
     orderBy: { createdAt: "asc" as const }
   },
   knowledgeBaseBindings: {
-    include: { knowledgeBase: { select: { archivedAt: true, id: true, name: true } } }
+    include: {
+      knowledgeBase: {
+        select: {
+          activeIndexGeneration: {
+            select: {
+              embeddingProviderModel: {
+                select: {
+                  activeConfig: true,
+                  activeVersion: true,
+                  availableInProjects: true,
+                  connection: {
+                    select: {
+                      activeConfig: true,
+                      activeVersion: true,
+                      defaultCredential: {
+                        select: { activeVersion: { select: { revokedAt: true } }, enabled: true }
+                      },
+                      enabled: true,
+                      family: true
+                    }
+                  },
+                  enabled: true,
+                  modelClass: true
+                }
+              },
+              status: true
+            }
+          },
+          archivedAt: true,
+          description: true,
+          id: true,
+          name: true
+        }
+      }
+    }
   },
   mcpBindings: {
     include: {
       server: {
-        select: { activeRevisionId: true, archivedAt: true, displayName: true, enabled: true, id: true }
+        select: {
+          activeRevision: { select: { configuration: true, validationEvidence: true } },
+          activeRevisionId: true,
+          archivedAt: true,
+          availableInProjects: true,
+          description: true,
+          displayName: true,
+          enabled: true,
+          id: true,
+          sharedConfigEnvelope: true
+        }
       }
     }
   },
@@ -76,19 +164,121 @@ const projectDetailInclude = {
     include: {
       providerModel: {
         select: {
+          availableInProjects: true,
+          connection: {
+            select: {
+              activeConfig: true,
+              activeVersion: true,
+              activatedAt: true,
+              defaultCredential: {
+                select: { activeVersion: { select: { revokedAt: true } }, enabled: true }
+              },
+              defaultCredentialId: true,
+              displayName: true,
+              enabled: true,
+              family: true,
+              id: true,
+              templateKey: true,
+              unassignedPolicy: true
+            }
+          },
+          activeConfig: true,
+          activeVersion: true,
+          activatedAt: true,
+          capabilities: true,
           connectionId: true,
+          createdAt: true,
+          defaultParams: true,
           displayName: true,
+          draftConfig: true,
+          draftVersion: true,
           enabled: true,
           id: true,
+          inputTokenPriceMicros: true,
           modelClass: true,
-          modelId: true
+          modelId: true,
+          outputTokenPriceMicros: true,
+          provider: true,
+          supportsNativeSearch: true,
+          supportsPdf: true,
+          supportsReasoning: true,
+          supportsVision: true,
+          templateKey: true,
+          updatedAt: true
         }
       }
     }
   },
   searchBindings: {
     include: {
-      searchOption: { select: { archivedAt: true, displayName: true, enabled: true, id: true, optionId: true } }
+      searchOption: {
+        select: {
+          archivedAt: true,
+          availableInProjects: true,
+          description: true,
+          displayName: true,
+          enabled: true,
+          id: true,
+          kind: true,
+          optionId: true,
+          sourceConnection: {
+            select: {
+              activeConfig: true,
+              activeVersion: true,
+              defaultCredential: {
+                select: { activeVersion: { select: { revokedAt: true } }, enabled: true }
+              },
+              enabled: true,
+              family: true,
+              id: true
+            }
+          },
+          sourceConnectionId: true,
+          strategies: {
+            select: {
+              activeRevision: {
+                select: {
+                  adapterKind: true,
+                  configuration: true,
+                  credentialMode: true,
+                  id: true,
+                  providerModelId: true
+                }
+              },
+              activeRevisionId: true,
+              adapterKind: true,
+              archivedAt: true,
+              config: true,
+              credentialMode: true,
+              description: true,
+              displayName: true,
+              draft: true,
+              draftTestEvidence: true,
+              draftVersion: true,
+              enabled: true,
+              id: true,
+              kind: true,
+              modelId: true,
+              provider: true,
+              providerModelId: true,
+              searchOptionId: true,
+              strategyId: true,
+              testedDraftHash: true,
+              updatedAt: true,
+              createdAt: true,
+              activatedAt: true
+            },
+            where: { activeRevisionId: { not: null }, archivedAt: null, enabled: true }
+          }
+        }
+      }
+    }
+  },
+  skillBindings: {
+    include: {
+      skill: {
+        include: { currentRevision: { select: { description: true, id: true, instructions: true, name: true } } }
+      }
     }
   }
 } satisfies Prisma.ProjectInclude;
@@ -103,6 +293,20 @@ function jsonObject(value: Prisma.JsonValue): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function searchOptionIds(value: Prisma.JsonValue): string[] {
+  const plan = jsonObject(value);
+  return Array.isArray(plan.optionIds)
+    ? [...new Set(plan.optionIds.filter((id): id is string => typeof id === "string" && id.length > 0))]
+    : [];
+}
+
+function mcpRevisionUsesNoAuth(value: Prisma.JsonValue): boolean {
+  const configuration = jsonObject(value);
+  const auth = configuration.auth;
+  return typeof auth === "object" && auth !== null && !Array.isArray(auth) &&
+    "mode" in auth && auth.mode === "none";
 }
 
 function storedDefaults(value: Prisma.JsonValue): ProjectDefaultsWire {
@@ -155,11 +359,11 @@ function rolesFor(row: ProjectListRow, userId: string, activeGroupIds: ReadonlyS
 
 function summary(
   row: ProjectListRow,
-  input: { activeGroupIds: ReadonlySet<string>; userId: string }
+  input: { activeGroupIds: ReadonlySet<string>; audienceCount?: number; userId: string }
 ): ProjectSummaryWire | null {
   const roles = rolesFor(row, input.userId, input.activeGroupIds);
   if (!roles.effectiveRole) return null;
-  const audienceCount = row.grants.filter((grant) =>
+  const audienceCount = input.audienceCount ?? row.grants.filter((grant) =>
     (grant.userId !== null && grant.user?.status === "active") ||
     (grant.groupId !== null && grant.group?.archivedAt === null)
   ).length;
@@ -202,47 +406,92 @@ function grantWire(grant: ProjectDetailRow["grants"][number]): ProjectGrantWire 
 }
 
 function resources(row: ProjectDetailRow): ProjectResourceWire[] {
-  return [
+  const modelEligible = (model: ProjectDetailRow["modelBindings"][number]["providerModel"]) =>
+    model.enabled && model.modelClass === "answer" &&
+    model.activeConfig !== null && model.activeVersion > 0 &&
+    model.availableInProjects &&
+    model.connection.enabled && model.connection.activeConfig !== null &&
+    model.connection.activeVersion > 0 && (
+      model.connection.family === "fake" || Boolean(
+        model.connection.defaultCredential?.enabled &&
+        model.connection.defaultCredential.activeVersion?.revokedAt === null
+      )
+    );
+  const values = [
     ...row.modelBindings.map((binding) => ({
-      available: binding.providerModel.enabled && binding.providerModel.modelClass === "answer",
+      available: modelEligible(binding.providerModel),
       id: `model:${binding.providerModelId}`,
       label: binding.providerModel.displayName,
-      modelId: binding.providerModel.modelId,
+      // Catalog/run APIs address the installation deployment by ProviderModel
+      // id. The legacy `modelId` column is an upstream label and must never be
+      // used as Project authority.
+      modelId: binding.providerModelId,
       provider: binding.providerModel.connectionId,
-      reason: binding.providerModel.enabled && binding.providerModel.modelClass === "answer"
+      reason: modelEligible(binding.providerModel)
         ? null
         : "resource_unavailable",
       resourceId: binding.providerModelId,
       type: "model" as const
     })),
-    ...row.searchBindings.map((binding) => ({
-      available: binding.searchOption.enabled && binding.searchOption.archivedAt === null,
+    ...row.searchBindings.map((binding) => {
+      const connection = binding.searchOption.sourceConnection;
+      const catalogEntry = searchOptionToCatalogEntry(
+        binding.searchOption as unknown as CatalogSearchOptionRow
+      );
+      const eligible = binding.searchOption.enabled && binding.searchOption.archivedAt === null &&
+        binding.searchOption.availableInProjects && Boolean(connection) &&
+        Boolean(catalogEntry?.routes.length) &&
+        connection!.enabled && connection!.activeConfig !== null && connection!.activeVersion > 0 && (
+          connection!.family === "fake" || Boolean(
+            connection!.defaultCredential?.enabled &&
+            connection!.defaultCredential.activeVersion?.revokedAt === null
+          )
+        );
+      return {
+      available: eligible,
       id: `search:${binding.searchOptionId}`,
       label: binding.searchOption.displayName,
-      reason: binding.searchOption.enabled && binding.searchOption.archivedAt === null
-        ? null
-        : "resource_unavailable",
+      reason: eligible ? null : "resource_unavailable",
       resourceId: binding.searchOption.optionId,
       type: "search" as const
-    })),
-    ...row.mcpBindings.map((binding) => ({
-      available: binding.server.enabled && binding.server.archivedAt === null && Boolean(binding.server.activeRevisionId),
+    }; }),
+    ...row.mcpBindings.map((binding) => {
+      const eligible = binding.server.enabled && binding.server.archivedAt === null &&
+        Boolean(binding.server.activeRevisionId) && binding.server.availableInProjects && (
+          Boolean(binding.server.sharedConfigEnvelope) || Boolean(
+            binding.server.activeRevision &&
+            mcpRevisionUsesNoAuth(binding.server.activeRevision.configuration)
+          )
+        );
+      return {
+      available: eligible,
       id: `mcp:${binding.serverId}`,
       label: binding.server.displayName,
-      reason: binding.server.enabled && binding.server.archivedAt === null && binding.server.activeRevisionId
-        ? null
-        : "resource_unavailable",
+      reason: eligible ? null : "resource_unavailable",
       resourceId: binding.serverId,
       type: "mcp" as const
-    })),
-    ...row.knowledgeBaseBindings.map((binding) => ({
-      available: binding.knowledgeBase.archivedAt === null,
+    }; }),
+    ...row.knowledgeBaseBindings.map((binding) => {
+      const generation = binding.knowledgeBase.activeIndexGeneration;
+      const embedding = generation?.embeddingProviderModel;
+      const connection = embedding?.connection;
+      const eligible = binding.knowledgeBase.archivedAt === null && generation?.status === "active" &&
+        Boolean(embedding) && Boolean(connection) &&
+        embedding!.enabled && embedding!.modelClass === "embedding" &&
+        embedding!.activeConfig !== null && embedding!.activeVersion > 0 &&
+        embedding!.availableInProjects && connection!.family !== "fake" &&
+        connection!.enabled && connection!.activeConfig !== null && connection!.activeVersion > 0 && Boolean(
+          connection!.defaultCredential?.enabled &&
+          connection!.defaultCredential.activeVersion?.revokedAt === null
+        );
+      return {
+      available: eligible,
       id: binding.id,
       label: binding.knowledgeBase.name,
-      reason: binding.knowledgeBase.archivedAt === null ? null : "resource_archived",
+      reason: eligible ? null : "resource_unavailable",
       resourceId: binding.knowledgeBaseId,
       type: "knowledge" as const
-    })),
+    }; }),
     ...row.assistantBindings.map((binding) => ({
       available: binding.assistant.archivedAt === null,
       id: binding.id,
@@ -251,17 +500,281 @@ function resources(row: ProjectDetailRow): ProjectResourceWire[] {
       resourceId: binding.assistantId,
       revisionId: binding.revisionId,
       type: "assistant" as const
+    })),
+    ...row.skillBindings.map((binding) => ({
+      available: binding.skill.archivedAt === null && binding.skill.deletedAt === null &&
+        binding.skill.currentRevision !== null,
+      id: binding.id,
+      label: binding.skill.currentRevision?.name ?? "Unavailable skill",
+      ...(binding.skill.currentRevision ? {
+        description: binding.skill.currentRevision.description,
+        promptCharacterCount: binding.skill.currentRevision.instructions.length
+      } : {}),
+      reason: binding.skill.currentRevision ? null : "resource_unavailable",
+      resourceId: binding.skillId,
+      revisionId: binding.skill.currentRevision?.id,
+      type: "skill" as const
     }))
   ];
+  // A revoked/disabled resource is not a diagnostic projection.  Omitting it
+  // prevents stale IDs, labels, and revisions from becoming a privacy leak;
+  // the generic activity event remains visible to managers.
+  const independentlyAvailable = values.filter((resource) =>
+    resource.available && resource.type !== "assistant"
+  );
+  const activeByType = (type: ProjectResourceTypeWire) => new Set(
+    independentlyAvailable.flatMap((resource) => resource.type === type ? [resource.resourceId] : [])
+  );
+  const models = activeByType("model");
+  const searches = activeByType("search");
+  const knowledge = activeByType("knowledge");
+  const mcp = activeByType("mcp");
+  const skills = activeByType("skill");
+  const assistants = values.filter((resource) => {
+    if (!resource.available || resource.type !== "assistant") return false;
+    const binding = row.assistantBindings.find((candidate) =>
+      candidate.assistantId === resource.resourceId && candidate.revisionId === resource.revisionId
+    );
+    return Boolean(binding) && models.has(binding!.revision.providerModelId) &&
+      binding!.revision.knowledgeBaseIds.every((id) => knowledge.has(id)) &&
+      binding!.revision.mcpServerIds.every((id) => mcp.has(id)) &&
+      searchOptionIds(binding!.revision.searchPlan).every((id) => searches.has(id)) &&
+      binding!.revision.skillLinks.every((link) => skills.has(link.skillId));
+  });
+  return [...independentlyAvailable, ...assistants];
+}
+
+function mcpKnownToolCount(value: Prisma.JsonValue | undefined): number {
+  const evidence = value ? jsonObject(value) : {};
+  return Array.isArray(evidence.toolInventory) ? evidence.toolInventory.length : 0;
+}
+
+function projectComposer(
+  row: ProjectDetailRow,
+  visibleResources: readonly ProjectResourceWire[],
+  defaults: ProjectDefaultsWire
+): ProjectDetailWire["composer"] {
+  const visible = new Map(visibleResources.map((resource) => [resource.id, resource] as const));
+  const visibleModelIds = new Set(visibleResources.flatMap((resource) =>
+    resource.type === "model" ? [resource.resourceId] : []
+  ));
+  const visibleSearchIds = new Set(visibleResources.flatMap((resource) =>
+    resource.type === "search" ? [resource.resourceId] : []
+  ));
+  const searchEntries = row.searchBindings.flatMap((binding) => {
+    if (!visibleSearchIds.has(binding.searchOption.optionId)) return [];
+    const entry = searchOptionToCatalogEntry(
+      binding.searchOption as unknown as CatalogSearchOptionRow
+    );
+    return entry ? [entry] : [];
+  });
+  const modelEntries = row.modelBindings.flatMap((binding) => {
+    if (!visibleModelIds.has(binding.providerModelId)) return [];
+    const entry = providerModelToCatalogEntry({
+      ...binding.providerModel,
+      activeCredentialChecks: [],
+      connection: {
+        ...binding.providerModel.connection,
+        credentials: []
+      }
+    } as unknown as CatalogProviderModelRow);
+    return entry ? [entry] : [];
+  });
+  const models = modelEntries.map((entry) => buildCatalogModel(entry, searchEntries));
+  const defaultModel = models.find((model) => model.modelId === defaults.providerModelId) ?? null;
+  const providers = Array.from(new Set(models.map((model) => model.provider))).map((provider) => {
+    const source = modelEntries.find((model) => model.provider === provider);
+    return {
+      family: source?.providerFamily ?? "unknown",
+      id: provider,
+      models: models.filter((model) => model.provider === provider).map((model) => model.modelId),
+      name: source?.providerDisplayName ?? provider
+    };
+  });
+
+  const assistants = row.assistantBindings.flatMap((binding) => {
+    if (!visible.has(binding.id)) return [];
+    const avatar = decodeAssistantAvatarRecipe(binding.revision.avatar);
+    const controls = decodeAssistantRunControls(binding.revision.runControls);
+    const searchPlan = decodeSearchPlan(binding.revision.searchPlan);
+    if (!avatar || !controls || !searchPlan.ok) return [];
+    const category = binding.revision.category !== null &&
+      ASSISTANT_CATEGORIES.includes(binding.revision.category as AssistantCategory)
+      ? binding.revision.category as AssistantCategory
+      : null;
+    const promptCharacterCount = binding.revision.systemPrompt.length +
+      (binding.revision.developerPrompt?.length ?? 0);
+    const modelLabel = models.find((model) =>
+      model.modelId === binding.revision.providerModelId
+    )?.displayName ?? null;
+    const skillIds = binding.revision.skillLinks.map((link) => link.skillId);
+    return [{
+      promptCharacterCount,
+      revision: {
+        authorDisplayName: null,
+        avatar,
+        category,
+        createdAt: iso(binding.revision.createdAt),
+        description: binding.revision.description,
+        // Prompts remain server-side; only the bounded size participates in
+        // the composer context gauge.
+        developerPrompt: null,
+        knowledgeBaseIds: binding.revision.knowledgeBaseIds,
+        mcpServerIds: binding.revision.mcpServerIds,
+        name: binding.revision.name,
+        providerModelId: binding.revision.providerModelId,
+        revisionNumber: binding.revision.revisionNumber,
+        runControls: controls,
+        searchPlan: searchPlan.plan,
+        skillIds,
+        starterPrompts: binding.revision.starterPrompts,
+        systemPrompt: ""
+      },
+      summary: {
+        archived: false,
+        availability: { ok: true as const },
+        avatar,
+        category,
+        description: binding.revision.description,
+        fingerprint: {
+          mcpServerCount: binding.revision.mcpServerIds.length,
+          modelLabel,
+          reasoningEffort: controls.reasoningEffort ?? null,
+          searchOptionCount: searchPlan.plan.optionIds.length
+        },
+        id: binding.assistantId,
+        name: binding.revision.name,
+        owned: false,
+        ownerDisplayName: "Project",
+        pinned: false,
+        published: true,
+        revisionNumber: binding.revision.revisionNumber,
+        scope: { kind: "installation" as const },
+        starterPrompts: binding.revision.starterPrompts,
+        updatedAt: iso(binding.revision.createdAt)
+      }
+    }];
+  });
+  const knowledgeBases = row.knowledgeBaseBindings.flatMap((binding) =>
+    visible.has(binding.id)
+      ? [{
+          archived: false,
+          description: binding.knowledgeBase.description,
+          id: binding.knowledgeBaseId,
+          name: binding.knowledgeBase.name,
+          owned: false
+        }]
+      : []
+  );
+  const mcpServers = row.mcpBindings.flatMap((binding) =>
+    visible.has(`mcp:${binding.serverId}`)
+      ? [{
+          description: binding.server.description,
+          enabled: true,
+          id: binding.serverId,
+          knownToolCount: mcpKnownToolCount(binding.server.activeRevision?.validationEvidence),
+          name: binding.server.displayName,
+          readiness: "ready" as const
+        }]
+      : []
+  );
+  const defaultSelection = defaultModel
+    ? { modelId: defaultModel.modelId, provider: defaultModel.provider }
+    : null;
+
+  return {
+    assistants,
+    catalog: {
+      attachmentLimits: toCatalogAttachmentLimits(getRunAttachmentLimits()),
+      defaults: {
+        controlValues: { ...defaults.controlValues },
+        hasPersonalModelDefault: false,
+        modelId: defaultModel?.modelId ?? "",
+        modelPreferenceSource: defaultSelection ? "organization" : "none",
+        organizationModelDefault: defaultSelection,
+        organizationSearchPlan: defaults.searchPlan,
+        personalModelDefault: null,
+        provider: defaultModel?.provider ?? "",
+        searchPlan: defaults.searchPlan,
+        searchPreferenceSource: "organization",
+        showCitations: true,
+        showReasoningBlocks: false
+      },
+      models,
+      providers,
+      searchStrategies: searchEntries.map(toCatalogSearchStrategy)
+    },
+    knowledgeBases,
+    mcpServers
+  };
+}
+
+function readiness(row: ProjectDetailRow): ProjectReadinessWire {
+  const eligibleModelIds = new Set(row.modelBindings.filter((binding) =>
+    binding.providerModel.enabled && binding.providerModel.modelClass === "answer" &&
+    binding.providerModel.activeConfig !== null && binding.providerModel.activeVersion > 0 &&
+    binding.providerModel.availableInProjects &&
+    binding.providerModel.connection.enabled && binding.providerModel.connection.activeConfig !== null &&
+    binding.providerModel.connection.activeVersion > 0 && (
+      binding.providerModel.connection.family === "fake" || Boolean(
+        binding.providerModel.connection.defaultCredential?.enabled &&
+        binding.providerModel.connection.defaultCredential.activeVersion?.revokedAt === null
+      )
+    )
+  ).map((binding) => binding.providerModelId));
+  const defaultModelId = storedDefaults(row.defaults).providerModelId;
+  return defaultModelId && eligibleModelIds.has(defaultModelId)
+    ? { readiness: "READY", setupReasons: [] }
+    : {
+        readiness: "SETUP_REQUIRED",
+        setupReasons: [
+          "default_model_required",
+          ...(eligibleModelIds.size === 0 ? ["shared_model_unavailable" as const] : [])
+        ]
+      };
 }
 
 function detail(
   row: ProjectDetailRow,
-  access: NonNullable<Awaited<ReturnType<typeof resolveProjectAccess>>>
+  access: NonNullable<Awaited<ReturnType<typeof resolveProjectAccess>>>,
+  audienceCount?: number
 ): ProjectDetailWire {
+  const visibleResources = resources(row);
+  const visibleModels = new Set(visibleResources.flatMap((resource) =>
+    resource.type === "model" ? [resource.resourceId] : []
+  ));
+  const visibleAssistants = new Set(visibleResources.flatMap((resource) =>
+    resource.type === "assistant" ? [resource.resourceId] : []
+  ));
+  const visibleKnowledge = new Set(visibleResources.flatMap((resource) =>
+    resource.type === "knowledge" ? [resource.resourceId] : []
+  ));
+  const visibleSearch = new Set(visibleResources.flatMap((resource) =>
+    resource.type === "search" ? [resource.resourceId] : []
+  ));
+  const rawDefaults = storedDefaults(row.defaults);
+  const safeDefaults: ProjectDefaultsWire = {
+    ...rawDefaults,
+    assistantId: rawDefaults.assistantId && visibleAssistants.has(rawDefaults.assistantId)
+      ? rawDefaults.assistantId
+      : null,
+    knowledgePlan: {
+      baseIds: rawDefaults.knowledgePlan.baseIds.filter((id) => visibleKnowledge.has(id))
+    },
+    mcpMode: visibleResources.some((resource) => resource.type === "mcp")
+      ? rawDefaults.mcpMode
+      : "off",
+    providerModelId: rawDefaults.providerModelId && visibleModels.has(rawDefaults.providerModelId)
+      ? rawDefaults.providerModelId
+      : null,
+    searchPlan: {
+      ...rawDefaults.searchPlan,
+      optionIds: rawDefaults.searchPlan.optionIds.filter((id) => visibleSearch.has(id))
+    }
+  };
   const base: ProjectSummaryWire = {
     accessRevision: row.accessRevision,
-    audienceCount: row.grants.filter((grant) =>
+    audienceCount: audienceCount ?? row.grants.filter((grant) =>
       (grant.user !== null && grant.user.status === "active") ||
       (grant.group !== null && grant.group.archivedAt === null)
     ).length,
@@ -278,8 +791,10 @@ function detail(
   return {
     ...base,
     capabilities: PROJECT_ROLE_CAPABILITIES[access.effectiveRole],
+    composer: projectComposer(row, visibleResources, safeDefaults),
     createdAt: iso(row.createdAt),
-    defaults: storedDefaults(row.defaults),
+    defaults: safeDefaults,
+    fileCount: row._count.attachments,
     grants: row.grants.map(grantWire),
     instructions: row.instructions,
     instructionsRevision: row.instructionsRevision,
@@ -288,7 +803,8 @@ function detail(
     policy: storedPolicy(row.policy),
     policyRevision: row.policyRevision,
     publicSharingEnabled: row.publicSharingEnabled,
-    resources: resources(row)
+    ...readiness(row),
+    resources: visibleResources
   };
 }
 
@@ -296,13 +812,32 @@ function auditMetadata(value: Prisma.JsonValue): ProjectAuditEventWire["metadata
   const raw = jsonObject(value);
   return Object.fromEntries(
     Object.entries(raw).filter((entry): entry is [string, boolean | number | string | null] =>
-      entry[1] === null || ["boolean", "number", "string"].includes(typeof entry[1])
+      !/(?:Id$|Ids$|Token|secret|credential|payload|revision|version)/iu.test(entry[0]) &&
+      (entry[1] === null || ["boolean", "number", "string"].includes(typeof entry[1]))
     )
   );
 }
 
 async function lockProject(tx: Prisma.TransactionClient, projectId: string): Promise<void> {
   await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR UPDATE`);
+}
+
+async function effectiveAudienceCount(db: PrismaClient | Prisma.TransactionClient, projectId: string): Promise<number> {
+  const grants = await db.projectGrant.findMany({
+    select: { groupId: true, userId: true },
+    where: { projectId }
+  });
+  const userIds = new Set(grants.flatMap((grant) => grant.userId ? [grant.userId] : []));
+  const groupIds = grants.flatMap((grant) => grant.groupId ? [grant.groupId] : []);
+  if (groupIds.length) {
+    const members = await db.userGroup.findMany({
+      select: { userId: true },
+      where: { groupId: { in: groupIds }, group: { archivedAt: null }, user: { status: "active" } }
+    });
+    members.forEach(({ userId }) => userIds.add(userId));
+  }
+  if (userIds.size === 0) return 0;
+  return db.user.count({ where: { id: { in: [...userIds] }, status: "active" } });
 }
 
 function audit(input: {
@@ -321,6 +856,299 @@ function audit(input: {
   };
 }
 
+type BoundProjectResource = Readonly<{
+  bindingId: string;
+  label: string;
+  resourceId: string;
+  storageId: string;
+  type: ProjectResourceTypeWire;
+}>;
+
+type ProjectDataClient = PrismaClient | Prisma.TransactionClient;
+
+async function resolveBoundProjectResource(
+  db: ProjectDataClient,
+  projectId: string,
+  bindingId: string
+): Promise<BoundProjectResource | null> {
+  const prefixed = /^(model|search|mcp):(.+)$/u.exec(bindingId);
+  if (prefixed?.[1] === "model") {
+    const binding = await db.projectModelBinding.findUnique({
+      include: { providerModel: { select: { displayName: true } } },
+      where: { projectId_providerModelId: { projectId, providerModelId: prefixed[2]! } }
+    });
+    return binding ? {
+      bindingId,
+      label: binding.providerModel.displayName,
+      resourceId: binding.providerModelId,
+      storageId: binding.providerModelId,
+      type: "model"
+    } : null;
+  }
+  if (prefixed?.[1] === "search") {
+    const binding = await db.projectSearchBinding.findUnique({
+      include: { searchOption: { select: { displayName: true, optionId: true } } },
+      where: { projectId_searchOptionId: { projectId, searchOptionId: prefixed[2]! } }
+    });
+    return binding ? {
+      bindingId,
+      label: binding.searchOption.displayName,
+      resourceId: binding.searchOption.optionId,
+      storageId: binding.searchOptionId,
+      type: "search"
+    } : null;
+  }
+  if (prefixed?.[1] === "mcp") {
+    const binding = await db.projectMcpBinding.findUnique({
+      include: { server: { select: { displayName: true } } },
+      where: { projectId_serverId: { projectId, serverId: prefixed[2]! } }
+    });
+    return binding ? {
+      bindingId,
+      label: binding.server.displayName,
+      resourceId: binding.serverId,
+      storageId: binding.serverId,
+      type: "mcp"
+    } : null;
+  }
+  const knowledge = await db.projectKnowledgeBaseBinding.findFirst({
+    include: { knowledgeBase: { select: { name: true } } },
+    where: { id: bindingId, projectId }
+  });
+  if (knowledge) return {
+    bindingId,
+    label: knowledge.knowledgeBase.name,
+    resourceId: knowledge.knowledgeBaseId,
+    storageId: knowledge.id,
+    type: "knowledge"
+  };
+  const assistant = await db.projectAssistantBinding.findFirst({
+    include: { revision: { select: { name: true } } },
+    where: { id: bindingId, projectId }
+  });
+  if (assistant) return {
+    bindingId,
+    label: assistant.revision.name,
+    resourceId: assistant.assistantId,
+    storageId: assistant.id,
+    type: "assistant"
+  };
+  const skill = await db.projectSkillBinding.findFirst({
+    include: { skill: { include: { currentRevision: { select: { name: true } } } } },
+    where: { id: bindingId, projectId }
+  });
+  return skill ? {
+    bindingId,
+    label: skill.skill.currentRevision?.name ?? "Unavailable Skill",
+    resourceId: skill.skillId,
+    storageId: skill.id,
+    type: "skill"
+  } : null;
+}
+
+async function dependentAssistantBindings(
+  db: ProjectDataClient,
+  input: Readonly<{ projectId: string; resourceId: string; type: ProjectResourceTypeWire }>
+) {
+  if (!(["model", "search", "knowledge", "mcp", "skill"] as const).includes(
+    input.type as "model" | "search" | "knowledge" | "mcp" | "skill"
+  )) return [];
+  const bindings = await db.projectAssistantBinding.findMany({
+    include: {
+      revision: {
+        select: {
+          knowledgeBaseIds: true,
+          mcpServerIds: true,
+          name: true,
+          providerModelId: true,
+          searchPlan: true,
+          skillLinks: { select: { skillId: true } }
+        }
+      }
+    },
+    where: { projectId: input.projectId }
+  });
+  return bindings.filter((binding) => {
+    const revision = binding.revision;
+    return input.type === "model" && revision.providerModelId === input.resourceId ||
+      input.type === "knowledge" && revision.knowledgeBaseIds.includes(input.resourceId) ||
+      input.type === "mcp" && revision.mcpServerIds.includes(input.resourceId) ||
+      input.type === "search" && searchOptionIds(revision.searchPlan).includes(input.resourceId) ||
+      input.type === "skill" && revision.skillLinks.some((link) => link.skillId === input.resourceId);
+  });
+}
+
+async function hasUsableProjectMcp(
+  db: ProjectDataClient,
+  projectId: string,
+  excludingServerId?: string
+): Promise<boolean> {
+  const bindings = await db.projectMcpBinding.findMany({
+    include: { server: { include: { activeRevision: { select: { configuration: true } } } } },
+    where: {
+      projectId,
+      ...(excludingServerId ? { serverId: { not: excludingServerId } } : {}),
+      server: {
+        activeRevisionId: { not: null },
+        archivedAt: null,
+        availableInProjects: true,
+        enabled: true
+      }
+    }
+  });
+  return bindings.some(({ server }) => Boolean(server.sharedConfigEnvelope) || Boolean(
+    server.activeRevision && mcpRevisionUsesNoAuth(server.activeRevision.configuration)
+  ));
+}
+
+function defaultsAfterResourceRemoval(
+  defaults: ProjectDefaultsWire,
+  input: Readonly<{
+    dependentAssistantIds: ReadonlySet<string>;
+    hasRemainingMcp: boolean;
+    resourceId: string;
+    type: ProjectResourceTypeWire;
+  }>
+): ProjectDefaultsWire {
+  return {
+    ...defaults,
+    assistantId: defaults.assistantId && (
+      input.type === "assistant" && defaults.assistantId === input.resourceId ||
+      input.dependentAssistantIds.has(defaults.assistantId)
+    ) ? null : defaults.assistantId,
+    knowledgePlan: {
+      baseIds: input.type === "knowledge"
+        ? defaults.knowledgePlan.baseIds.filter((id) => id !== input.resourceId)
+        : [...defaults.knowledgePlan.baseIds]
+    },
+    mcpMode: input.type === "mcp" && !input.hasRemainingMcp ? "off" : defaults.mcpMode,
+    providerModelId: input.type === "model" && defaults.providerModelId === input.resourceId
+      ? null
+      : defaults.providerModelId,
+    searchPlan: input.type === "search"
+      ? { ...defaults.searchPlan, optionIds: defaults.searchPlan.optionIds.filter((id) => id !== input.resourceId) }
+      : defaults.searchPlan
+  };
+}
+
+async function resourceRemovalConsequences(
+  db: ProjectDataClient,
+  input: Readonly<{ projectId: string; resource: BoundProjectResource }>
+) {
+  const project = await db.project.findUnique({ select: { defaults: true }, where: { id: input.projectId } });
+  if (!project) return null;
+  const decoded = decodeProjectDefaults(project.defaults);
+  const defaults = decoded.ok ? decoded.defaults : EMPTY_PROJECT_DEFAULTS;
+  const dependents = await dependentAssistantBindings(db, {
+    projectId: input.projectId,
+    resourceId: input.resource.resourceId,
+    type: input.resource.type
+  });
+  const hasRemainingMcp = input.resource.type !== "mcp" || await hasUsableProjectMcp(
+    db,
+    input.projectId,
+    input.resource.storageId
+  );
+  const dependentAssistantIds = new Set(dependents.map((binding) => binding.assistantId));
+  const next = defaultsAfterResourceRemoval(defaults, {
+    dependentAssistantIds,
+    hasRemainingMcp,
+    resourceId: input.resource.resourceId,
+    type: input.resource.type
+  });
+  const clearedDefaults: string[] = [];
+  if (defaults.providerModelId !== next.providerModelId) clearedDefaults.push("Project default model");
+  if (defaults.assistantId !== next.assistantId) clearedDefaults.push("Project default Assistant");
+  if (defaults.knowledgePlan.baseIds.length !== next.knowledgePlan.baseIds.length) {
+    clearedDefaults.push("Project default Knowledge");
+  }
+  if (defaults.searchPlan.optionIds.length !== next.searchPlan.optionIds.length) {
+    clearedDefaults.push("Project default Search");
+  }
+  if (defaults.mcpMode !== next.mcpMode) clearedDefaults.push("Project default MCP mode");
+  let affectedChatCount = 0;
+  if (input.resource.type === "model") {
+    affectedChatCount = await db.chat.count({
+      where: { defaultProviderModelId: input.resource.resourceId, projectId: input.projectId }
+    });
+  } else if (input.resource.type === "knowledge") {
+    const chats = await db.chat.findMany({
+      select: { defaultKnowledgePlan: true },
+      where: { projectId: input.projectId }
+    });
+    affectedChatCount = chats.filter((chat) => {
+      const plan = chat.defaultKnowledgePlan;
+      return typeof plan === "object" && plan !== null && !Array.isArray(plan) &&
+        Array.isArray(plan.baseIds) && plan.baseIds.includes(input.resource.resourceId);
+    }).length;
+  }
+  return {
+    affectedChatCount,
+    clearedDefaults,
+    dependentAssistantIds,
+    dependentAssistants: dependents.map((binding) => binding.revision.name),
+    hasRemainingMcp,
+    next
+  };
+}
+
+async function cleanupResourceReferences(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{ projectId: string; resourceId: string; type: ProjectResourceTypeWire }>
+) {
+  const resource: BoundProjectResource = {
+    bindingId: "",
+    label: "",
+    resourceId: input.resourceId,
+    storageId: input.resourceId,
+    type: input.type
+  };
+  const consequences = await resourceRemovalConsequences(tx, { projectId: input.projectId, resource });
+  if (!consequences) return null;
+  const next = consequences.next;
+  const project = await tx.project.findUnique({ select: { defaults: true }, where: { id: input.projectId } });
+  if (!project) return null;
+  const decoded = decodeProjectDefaults(project.defaults);
+  const defaults = decoded.ok ? decoded.defaults : EMPTY_PROJECT_DEFAULTS;
+  if (!decoded.ok || JSON.stringify(next) !== JSON.stringify(defaults)) {
+    await tx.project.update({
+      data: {
+        defaults: next as unknown as Prisma.InputJsonValue
+      },
+      where: { id: input.projectId }
+    });
+  }
+  if (input.type === "model") {
+    await tx.chat.updateMany({
+      data: { defaultProviderModelId: null },
+      where: { defaultProviderModelId: input.resourceId, projectId: input.projectId }
+    });
+  }
+  if (input.type === "knowledge") {
+    const chats = await tx.chat.findMany({
+      select: { defaultKnowledgePlan: true, id: true },
+      where: { projectId: input.projectId }
+    });
+    for (const chat of chats) {
+      const plan = chat.defaultKnowledgePlan;
+      if (typeof plan !== "object" || plan === null || Array.isArray(plan) || !Array.isArray(plan.baseIds)) continue;
+      const baseIds = plan.baseIds.filter((id): id is string => typeof id === "string" && id !== input.resourceId);
+      if (baseIds.length !== plan.baseIds.length) {
+        await tx.chat.update({ data: { defaultKnowledgePlan: { baseIds } }, where: { id: chat.id } });
+      }
+    }
+  }
+  if (consequences.dependentAssistantIds.size > 0) {
+    await tx.projectAssistantBinding.deleteMany({
+      where: {
+        assistantId: { in: [...consequences.dependentAssistantIds] },
+        projectId: input.projectId
+      }
+    });
+  }
+  return consequences;
+}
+
 function canManageGrant(
   actorRole: ProjectRole,
   oldRole: ProjectRole | null,
@@ -336,12 +1164,377 @@ function knownConflict(error: unknown): boolean {
     ["P2002", "P2003", "P2004", "P2025", "P2034"].includes(error.code);
 }
 
+async function publishProjectResult<Value>(
+  projectId: string,
+  operation: Promise<ProjectRepositoryResult<Value | undefined>>
+): Promise<ProjectRepositoryResult<Value>> {
+  const result = await operation;
+  if (result.kind === "ok") {
+    if (result.value === undefined) return { kind: "not_found" };
+    notifyProjectEvent(projectId);
+    return { kind: "ok", value: result.value };
+  }
+  return result;
+}
+
 export function createPrismaProjectRepository(prisma: PrismaClient) {
+  async function eligibleProjectModels(
+    db: PrismaClient | Prisma.TransactionClient,
+    preferredModelId?: string
+  ) {
+    const models = await db.providerModel.findMany({
+      include: {
+        connection: {
+          include: {
+            defaultCredential: { include: { activeVersion: true } }
+          }
+        }
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      where: {
+        activeConfig: { not: Prisma.DbNull },
+        activeVersion: { gt: 0 },
+        enabled: true,
+        modelClass: "answer",
+        availableInProjects: true,
+        connection: {
+          activeConfig: { not: Prisma.DbNull },
+          activeVersion: { gt: 0 },
+          enabled: true,
+          OR: [
+            { family: "fake" },
+            {
+              defaultCredential: {
+                enabled: true,
+                activeVersion: { is: { revokedAt: null } }
+              }
+            }
+          ]
+        }
+      }
+    });
+    const preferred = preferredModelId ? models.find((model) => model.id === preferredModelId) : undefined;
+    if (preferred) return [preferred, ...models.filter((model) => model.id !== preferred.id)];
+    const policy = await db.modelPolicy.findUnique({ select: { defaultProviderModelId: true }, where: { id: "installation" } });
+    const configured = policy?.defaultProviderModelId
+      ? models.find((model) => model.id === policy.defaultProviderModelId)
+      : undefined;
+    return configured
+      ? [configured, ...models.filter((model) => model.id !== configured.id)]
+      : models;
+  }
+
+  async function assistantResourcePlan(
+    db: ProjectDataClient,
+    input: Readonly<{ projectId: string; resourceId: string; userId: string }>
+  ) {
+    const target = await db.assistantDefinition.findFirst({
+      include: {
+        currentRevision: { include: { skillLinks: { select: { skillId: true } } } }
+      },
+      where: {
+        archivedAt: null,
+        id: input.resourceId,
+        ownerUserId: input.userId
+      }
+    });
+    const revision = target?.currentRevision ?? null;
+    if (!target || !revision) return null;
+
+    const requiredSearchIds = [...new Set(searchOptionIds(revision.searchPlan))];
+    const requiredKnowledgeIds = [...new Set(revision.knowledgeBaseIds)];
+    const requiredSkillIds = [...new Set(revision.skillLinks.map((link) => link.skillId))];
+    const requiredMcpIds = [...new Set(revision.mcpServerIds)];
+    const [
+      eligibleModels,
+      searchOptions,
+      knowledgeBases,
+      skills,
+      mcpServers,
+      activeModels,
+      activeSearch,
+      activeKnowledge,
+      activeSkills,
+      activeMcp
+    ] = await Promise.all([
+      eligibleProjectModels(db),
+      requiredSearchIds.length > 0
+        ? db.searchOption.findMany({
+            select: { displayName: true, id: true, optionId: true },
+            where: {
+              archivedAt: null,
+              availableInProjects: true,
+              enabled: true,
+              optionId: { in: requiredSearchIds },
+              sourceConnection: {
+                is: {
+                  activeConfig: { not: Prisma.DbNull },
+                  activeVersion: { gt: 0 },
+                  enabled: true,
+                  OR: [
+                    { family: "fake" },
+                    {
+                      defaultCredential: {
+                        enabled: true,
+                        activeVersion: { is: { revokedAt: null } }
+                      }
+                    }
+                  ]
+                }
+              },
+              strategies: {
+                some: { activeRevisionId: { not: null }, archivedAt: null, enabled: true }
+              }
+            }
+          })
+        : Promise.resolve([]),
+      requiredKnowledgeIds.length > 0
+        ? db.knowledgeBase.findMany({
+            include: {
+              activeIndexGeneration: {
+                include: {
+                  embeddingProviderModel: {
+                    include: {
+                      connection: {
+                        include: { defaultCredential: { include: { activeVersion: true } } }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            where: {
+              archivedAt: null,
+              id: { in: requiredKnowledgeIds },
+              OR: [
+                { ownerUserId: input.userId },
+                { projectBindings: { some: { projectId: input.projectId } } }
+              ]
+            }
+          })
+        : Promise.resolve([]),
+      requiredSkillIds.length > 0
+        ? db.skillDefinition.findMany({
+            include: { currentRevision: { select: { name: true } } },
+            where: {
+              archivedAt: null,
+              currentRevisionId: { not: null },
+              deletedAt: null,
+              id: { in: requiredSkillIds },
+              OR: [
+                { ownerUserId: input.userId },
+                { projectBindings: { some: { projectId: input.projectId } } }
+              ]
+            }
+          })
+        : Promise.resolve([]),
+      requiredMcpIds.length > 0
+        ? db.mcpServer.findMany({
+            include: { activeRevision: { select: { configuration: true } } },
+            where: {
+              activeRevisionId: { not: null },
+              archivedAt: null,
+              availableInProjects: true,
+              enabled: true,
+              id: { in: requiredMcpIds }
+            }
+          })
+        : Promise.resolve([]),
+      db.projectModelBinding.findMany({
+        select: { providerModelId: true }, where: { projectId: input.projectId }
+      }),
+      db.projectSearchBinding.findMany({
+        select: { searchOptionId: true }, where: { projectId: input.projectId }
+      }),
+      db.projectKnowledgeBaseBinding.findMany({
+        select: { knowledgeBaseId: true }, where: { projectId: input.projectId }
+      }),
+      db.projectSkillBinding.findMany({
+        select: { skillId: true }, where: { projectId: input.projectId }
+      }),
+      db.projectMcpBinding.findMany({
+        select: { serverId: true }, where: { projectId: input.projectId }
+      })
+    ]);
+
+    const active = {
+      knowledge: new Set(activeKnowledge.map((binding) => binding.knowledgeBaseId)),
+      mcp: new Set(activeMcp.map((binding) => binding.serverId)),
+      model: new Set(activeModels.map((binding) => binding.providerModelId)),
+      search: new Set(activeSearch.map((binding) => binding.searchOptionId)),
+      skill: new Set(activeSkills.map((binding) => binding.skillId))
+    };
+    const dependencies: ProjectResourceDependencyPreviewWire[] = [];
+    const model = eligibleModels.find((entry) => entry.id === revision.providerModelId);
+    dependencies.push(model ? {
+      label: model.displayName,
+      reason: null,
+      state: active.model.has(model.id) ? "active" : "will_add",
+      type: "model"
+    } : {
+      label: "Required answer model",
+      reason: "Not available to Projects with an active shared installation credential.",
+      state: "ineligible",
+      type: "model"
+    });
+
+    const searchByOptionId = new Map(searchOptions.map((option) => [option.optionId, option]));
+    for (const optionId of requiredSearchIds) {
+      const option = searchByOptionId.get(optionId);
+      dependencies.push(option ? {
+        label: option.displayName,
+        reason: null,
+        state: active.search.has(option.id) ? "active" : "will_add",
+        type: "search"
+      } : {
+        label: "Required Search integration",
+        reason: "Not available to Projects with an active shared installation credential.",
+        state: "ineligible",
+        type: "search"
+      });
+    }
+
+    const knowledgeById = new Map(knowledgeBases.map((base) => [base.id, base]));
+    const eligibleKnowledgeIds = new Set<string>();
+    for (const baseId of requiredKnowledgeIds) {
+      const base = knowledgeById.get(baseId);
+      const generation = base?.activeIndexGeneration;
+      const embedding = generation?.embeddingProviderModel;
+      const connection = embedding?.connection;
+      const eligible = Boolean(base && generation?.status === "active" && embedding && connection &&
+        embedding.enabled && embedding.modelClass === "embedding" &&
+        embedding.activeConfig !== null && embedding.activeVersion > 0 &&
+        embedding.availableInProjects && connection.family !== "fake" &&
+        connection.enabled && connection.activeConfig !== null && connection.activeVersion > 0 && Boolean(
+          connection.defaultCredential?.enabled &&
+          connection.defaultCredential.activeVersion?.revokedAt === null
+        ));
+      if (base && eligible) eligibleKnowledgeIds.add(base.id);
+      dependencies.push(base && eligible ? {
+        label: base.name,
+        reason: null,
+        state: active.knowledge.has(base.id) ? "active" : "will_add",
+        type: "knowledge"
+      } : {
+        label: base?.name ?? "Required Knowledge Base",
+        reason: "Not publishable with an active shared embedding configuration.",
+        state: "ineligible",
+        type: "knowledge"
+      });
+    }
+
+    const skillsById = new Map(skills.map((skill) => [skill.id, skill]));
+    for (const skillId of requiredSkillIds) {
+      const skill = skillsById.get(skillId);
+      dependencies.push(skill ? {
+        label: skill.currentRevision?.name ?? "Skill",
+        reason: null,
+        state: active.skill.has(skill.id) ? "active" : "will_add",
+        type: "skill"
+      } : {
+        label: "Required Skill",
+        reason: "Not publishable by this Project manager.",
+        state: "ineligible",
+        type: "skill"
+      });
+    }
+
+    const mcpById = new Map(mcpServers.map((server) => [server.id, server]));
+    const eligibleMcpIds = new Set<string>();
+    for (const serverId of requiredMcpIds) {
+      const server = mcpById.get(serverId);
+      const eligible = Boolean(server && (
+        server.sharedConfigEnvelope ||
+        server.activeRevision && mcpRevisionUsesNoAuth(server.activeRevision.configuration)
+      ));
+      if (server && eligible) eligibleMcpIds.add(server.id);
+      dependencies.push(server && eligible ? {
+        label: server.displayName,
+        reason: null,
+        state: active.mcp.has(server.id) ? "active" : "will_add",
+        type: "mcp"
+      } : {
+        label: server?.displayName ?? "Required MCP server",
+        reason: "An active shared or no-auth Project configuration is required.",
+        state: "ineligible",
+        type: "mcp"
+      });
+    }
+
+    return {
+      canCommit: dependencies.every((dependency) => dependency.state !== "ineligible"),
+      dependencies,
+      knowledgeBases: knowledgeBases.filter((base) => eligibleKnowledgeIds.has(base.id)),
+      mcpServers: mcpServers.filter((server) => eligibleMcpIds.has(server.id)),
+      revision,
+      searchOptions,
+      skills,
+      target
+    };
+  }
+
+  async function grantRemovalImpact(
+    db: ProjectDataClient,
+    projectId: string,
+    grantId: string
+  ) {
+    const grants = await db.projectGrant.findMany({
+      include: {
+        group: {
+          include: {
+            users: {
+              select: { userId: true },
+              where: { user: { status: "active" } }
+            }
+          }
+        },
+        user: { select: { displayName: true, id: true, status: true } }
+      },
+      where: { projectId }
+    });
+    const target = grants.find((grant) => grant.id === grantId);
+    if (!target) return null;
+    const rolesByUser = new Map<string, Array<{ grantId: string; role: ProjectRole }>>();
+    for (const grant of grants) {
+      const userIds = grant.user?.status === "active"
+        ? [grant.user.id]
+        : grant.group && !grant.group.archivedAt
+          ? grant.group.users.map(({ userId }) => userId)
+          : [];
+      for (const userId of userIds) {
+        const roles = rolesByUser.get(userId) ?? [];
+        roles.push({ grantId: grant.id, role: grant.role });
+        rolesByUser.set(userId, roles);
+      }
+    }
+    const targetUsers = target.user?.status === "active"
+      ? [target.user.id]
+      : target.group && !target.group.archivedAt
+        ? target.group.users.map(({ userId }) => userId)
+        : [];
+    let losesAccessCount = 0;
+    let roleChangeCount = 0;
+    for (const userId of targetUsers) {
+      const current = highestProjectRole((rolesByUser.get(userId) ?? []).map(({ role }) => role));
+      const next = highestProjectRole((rolesByUser.get(userId) ?? [])
+        .filter((entry) => entry.grantId !== target.id)
+        .map(({ role }) => role));
+      if (!next) losesAccessCount += 1;
+      else if (next !== current) roleChangeCount += 1;
+    }
+    return {
+      grant: target,
+      label: target.user?.displayName ?? target.group?.name ?? "Unavailable principal",
+      losesAccessCount,
+      roleChangeCount
+    };
+  }
+
   async function getDetail(userId: string, projectId: string): Promise<ProjectDetailWire | null> {
     const access = await resolveProjectAccess(prisma, { projectId, userId });
     if (!access) return null;
     const row = await prisma.project.findUnique({ include: projectDetailInclude, where: { id: projectId } });
-    return row ? detail(row, access) : null;
+    return row ? detail(row, access, await effectiveAudienceCount(prisma, projectId)) : null;
   }
 
   return {
@@ -370,18 +1563,313 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           status: { not: "DELETING" }
         }
       });
-      return rows.flatMap((row) => {
-        const value = summary(row, { activeGroupIds, userId });
+      const counts = await Promise.all(rows.map((row) => effectiveAudienceCount(prisma, row.id)));
+      return rows.flatMap((row, index) => {
+        const value = summary(row, { activeGroupIds, audienceCount: counts[index], userId });
         return value ? [value] : [];
       });
     },
 
     getDetail,
 
+    async candidates(input: {
+      cursor?: string;
+      limit: number;
+      projectId: string;
+      query: string;
+      type: ProjectCandidateTypeWire;
+      userId: string;
+    }): Promise<ProjectCandidatesResponseWire | null> {
+      const access = await resolveProjectAccess(prisma, {
+        minimumRole: "MANAGER",
+        projectId: input.projectId,
+        requireActive: true,
+        userId: input.userId
+      });
+      if (!access) return null;
+      const offset = input.cursor && /^\d+$/u.test(input.cursor) ? Number(input.cursor) : 0;
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10_000) return null;
+      const take = Math.min(Math.max(input.limit, 1), 50) + 1;
+      const contains = input.query.trim();
+      const existingGrants = input.type === "user" || input.type === "group"
+        ? await prisma.projectGrant.findMany({
+            include: { group: { select: { name: true } } },
+            where: { projectId: input.projectId }
+          })
+        : [];
+      const directGrants = new Map(existingGrants.flatMap((grant) =>
+        grant.userId ? [[grant.userId, grant.role] as const] : []
+      ));
+      const groupGrants = new Map(existingGrants.flatMap((grant) =>
+        grant.groupId && grant.group
+          ? [[grant.groupId, { name: grant.group.name, role: grant.role }] as const]
+          : []
+      ));
+      const linkedResourceIds = new Set<string>(
+        input.type === "model"
+          ? (await prisma.projectModelBinding.findMany({
+              select: { providerModelId: true }, where: { projectId: input.projectId }
+            })).map((binding) => binding.providerModelId)
+          : input.type === "search"
+            ? (await prisma.projectSearchBinding.findMany({
+                select: { searchOptionId: true }, where: { projectId: input.projectId }
+              })).map((binding) => binding.searchOptionId)
+            : input.type === "knowledge"
+              ? (await prisma.projectKnowledgeBaseBinding.findMany({
+                  select: { knowledgeBaseId: true }, where: { projectId: input.projectId }
+                })).map((binding) => binding.knowledgeBaseId)
+              : input.type === "assistant"
+                ? (await prisma.projectAssistantBinding.findMany({
+                    select: { assistantId: true }, where: { projectId: input.projectId }
+                  })).map((binding) => binding.assistantId)
+                : input.type === "skill"
+                  ? (await prisma.projectSkillBinding.findMany({
+                      select: { skillId: true }, where: { projectId: input.projectId }
+                    })).map((binding) => binding.skillId)
+                  : input.type === "mcp"
+                    ? (await prisma.projectMcpBinding.findMany({
+                        select: { serverId: true }, where: { projectId: input.projectId }
+                      })).map((binding) => binding.serverId)
+                    : []
+      );
+      let items: ProjectCandidateWire[] = [];
+      if (input.type === "user") {
+        const rows = await prisma.user.findMany({
+          orderBy: [{ displayName: "asc" }, { id: "asc" }],
+          select: {
+            displayName: true,
+            email: true,
+            groups: {
+              select: { groupId: true },
+              where: { groupId: { in: [...groupGrants.keys()] } }
+            },
+            id: true
+          },
+          skip: offset,
+          take,
+          where: {
+            status: "active",
+            ...(contains ? { OR: [
+              { displayName: { contains, mode: "insensitive" } },
+              { email: { contains, mode: "insensitive" } }
+            ] } : {})
+          }
+        });
+        items = rows.map((row) => {
+          const sources = row.groups.flatMap(({ groupId }) => {
+            const grant = groupGrants.get(groupId);
+            return grant ? [`${grant.name} (${grant.role.toLowerCase()})`] : [];
+          });
+          return {
+            description: [row.email, sources.length ? `Current via ${sources.join(", ")}` : null]
+              .filter(Boolean)
+              .join(" · "),
+            disabledReason: directGrants.has(row.id) ? "already_has_direct_access" : null,
+            id: row.id,
+            label: row.displayName,
+            type: "user" as const
+          };
+        });
+      } else if (input.type === "group") {
+        const rows = await prisma.group.findMany({
+          orderBy: [{ name: "asc" }, { id: "asc" }],
+          select: {
+            _count: { select: { users: { where: { user: { status: "active" } } } } },
+            id: true,
+            name: true
+          },
+          skip: offset,
+          take,
+          where: { archivedAt: null, ...(contains ? { name: { contains, mode: "insensitive" } } : {}) }
+        });
+        items = rows.map((row) => ({
+          description: `${row._count.users} active ${row._count.users === 1 ? "member" : "members"}`,
+          disabledReason: groupGrants.has(row.id) ? "already_has_group_access" : null,
+          id: row.id,
+          label: row.name,
+          type: "group"
+        }));
+      } else if (input.type === "model") {
+        const rows = await eligibleProjectModels(prisma);
+        items = rows.filter((row) => !contains || row.displayName.toLocaleLowerCase().includes(contains.toLocaleLowerCase()))
+          .slice(offset, offset + take)
+          .map((row) => ({
+            description: row.modelId,
+            disabledReason: linkedResourceIds.has(row.id) ? "already_linked_to_project" : null,
+            id: row.id,
+            label: row.displayName,
+            type: "model"
+          }));
+      } else if (input.type === "search") {
+        const rows = await prisma.searchOption.findMany({
+          orderBy: [{ displayName: "asc" }, { id: "asc" }],
+          select: { description: true, displayName: true, id: true },
+          skip: offset,
+          take,
+          where: {
+            archivedAt: null,
+            availableInProjects: true,
+            enabled: true,
+            sourceConnection: {
+              is: {
+                activeConfig: { not: Prisma.DbNull },
+                activeVersion: { gt: 0 },
+                enabled: true,
+                OR: [
+                  { family: "fake" },
+                  {
+                    defaultCredential: {
+                      enabled: true,
+                      activeVersion: { is: { revokedAt: null } }
+                    }
+                  }
+                ]
+              }
+            },
+            strategies: {
+              some: { activeRevisionId: { not: null }, archivedAt: null, enabled: true }
+            },
+            ...(contains ? { displayName: { contains, mode: "insensitive" } } : {})
+          }
+        });
+        items = rows.map((row) => ({
+          description: row.description || null,
+          disabledReason: linkedResourceIds.has(row.id) ? "already_linked_to_project" : null,
+          id: row.id,
+          label: row.displayName,
+          type: "search"
+        }));
+      } else if (input.type === "knowledge") {
+        const rows = await prisma.knowledgeBase.findMany({
+          include: {
+            activeIndexGeneration: {
+              include: {
+                embeddingProviderModel: {
+                  include: {
+                    connection: {
+                      include: { defaultCredential: { include: { activeVersion: true } } }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          orderBy: [{ name: "asc" }, { id: "asc" }],
+          skip: offset,
+          take,
+          where: {
+            archivedAt: null,
+            ownerUserId: input.userId,
+            ...(contains ? { name: { contains, mode: "insensitive" } } : {})
+          }
+        });
+        items = rows.map((row) => {
+          const generation = row.activeIndexGeneration;
+          const connection = generation?.embeddingProviderModel.connection;
+          const embeddingEligible = generation && generation.status === "active" &&
+            generation.embeddingProviderModel.enabled &&
+            generation.embeddingProviderModel.modelClass === "embedding" &&
+            generation.embeddingProviderModel.activeConfig !== null &&
+            generation.embeddingProviderModel.activeVersion > 0 &&
+            generation.embeddingProviderModel.availableInProjects && connection?.family !== "fake" &&
+            connection?.enabled && connection.activeConfig !== null && connection.activeVersion > 0 && Boolean(
+              connection.defaultCredential?.enabled &&
+              connection.defaultCredential.activeVersion?.revokedAt === null
+            );
+          return {
+            description: row.description || null,
+            disabledReason: linkedResourceIds.has(row.id)
+              ? "already_linked_to_project"
+              : embeddingEligible ? null : "shared_embedding_required",
+            id: row.id,
+            label: row.name,
+            type: "knowledge" as const
+          };
+        });
+      } else if (input.type === "assistant") {
+        const rows = await prisma.assistantDefinition.findMany({
+          include: { currentRevision: true },
+          orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
+          skip: offset,
+          take,
+          where: {
+            archivedAt: null,
+            currentRevisionId: { not: null },
+            ownerUserId: input.userId,
+            ...(contains ? { currentRevision: { is: { name: { contains, mode: "insensitive" } } } } : {})
+          }
+        });
+        items = rows.flatMap((row) => row.currentRevision ? [{
+          description: row.currentRevision.description || null,
+          disabledReason: linkedResourceIds.has(row.id) ? "already_linked_to_project" : null,
+          id: row.id,
+          label: row.currentRevision.name,
+          type: "assistant" as const
+        }] : []);
+      } else if (input.type === "skill") {
+        const rows = await prisma.skillDefinition.findMany({
+          include: { currentRevision: true },
+          orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
+          skip: offset,
+          take,
+          where: {
+            archivedAt: null,
+            currentRevisionId: { not: null },
+            deletedAt: null,
+            ownerUserId: input.userId,
+            ...(contains ? { currentRevision: { is: { name: { contains, mode: "insensitive" } } } } : {})
+          }
+        });
+        items = rows.flatMap((row) => row.currentRevision ? [{
+          description: row.currentRevision.description || null,
+          disabledReason: linkedResourceIds.has(row.id) ? "already_linked_to_project" : null,
+          id: row.id,
+          label: row.currentRevision.name,
+          type: "skill" as const
+        }] : []);
+      } else {
+        const rows = await prisma.mcpServer.findMany({
+          include: { activeRevision: { select: { configuration: true } } },
+          orderBy: [{ displayName: "asc" }, { id: "asc" }],
+          skip: offset,
+          take,
+          where: {
+            activeRevisionId: { not: null },
+            archivedAt: null,
+            availableInProjects: true,
+            enabled: true,
+            ...(contains ? { displayName: { contains, mode: "insensitive" } } : {})
+          }
+        });
+        items = rows.map((row) => {
+          const config = row.activeRevision?.configuration;
+          const auth = typeof config === "object" && config !== null && !Array.isArray(config) &&
+            "auth" in config && typeof config.auth === "object" && config.auth !== null && "mode" in config.auth
+            ? config.auth.mode : null;
+          return {
+            description: row.description || null,
+            disabledReason: linkedResourceIds.has(row.id)
+              ? "already_linked_to_project"
+              : row.sharedConfigEnvelope || auth === "none" ? null : "shared_configuration_required",
+            id: row.id,
+            label: row.displayName,
+            type: "mcp" as const
+          };
+        });
+      }
+      const hasMore = items.length > input.limit;
+      const page = items.slice(0, input.limit);
+      return {
+        items: page,
+        nextCursor: hasMore ? String(offset + page.length) : null
+      };
+    },
+
     async create(input: {
       actorDisplayName: string;
       description: string;
       name: string;
+      preferredModelId?: string;
       userId: string;
     }): Promise<ProjectRepositoryResult<ProjectDetailWire>> {
       try {
@@ -391,11 +1879,16 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             where: { id: input.userId, status: "active" }
           });
           if (!user) return null;
+          const candidates = await eligibleProjectModels(tx, input.preferredModelId);
+          const selectedModel = candidates[0] ?? null;
+          const defaults = selectedModel
+            ? { ...EMPTY_PROJECT_DEFAULTS, providerModelId: selectedModel.id }
+            : EMPTY_PROJECT_DEFAULTS;
           const project = await tx.project.create({
             data: {
               createdByDisplayName: input.actorDisplayName,
               createdByUserId: input.userId,
-              defaults: EMPTY_PROJECT_DEFAULTS as unknown as Prisma.InputJsonValue,
+              defaults: defaults as unknown as Prisma.InputJsonValue,
               description: input.description,
               name: input.name,
               policy: DEFAULT_PROJECT_POLICY as unknown as Prisma.InputJsonValue
@@ -410,6 +1903,15 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
               userId: input.userId
             }
           });
+          if (selectedModel) {
+            await tx.projectModelBinding.create({
+              data: {
+                addedByUserId: input.userId,
+                projectId: project.id,
+                providerModelId: selectedModel.id
+              }
+            });
+          }
           await tx.projectAuditEvent.create({
             data: audit({
               actorDisplayName: input.actorDisplayName,
@@ -421,6 +1923,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           return project.id;
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
         if (!projectId) return { kind: "not_found" };
+        notifyProjectEvent(projectId);
         const value = await getDetail(input.userId, projectId);
         return value ? { kind: "ok", value } : { kind: "not_found" };
       } catch (error) {
@@ -485,23 +1988,31 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             input.expectedPolicyRevision !== current.policyRevision
           ) return { kind: "conflict" as const, reason: "policy_revision_conflict" };
           if (input.defaults !== undefined) {
-            const [models, searches, knowledge, assistants, mcpServers] = await Promise.all([
-              tx.projectModelBinding.findMany({ select: { providerModelId: true }, where: { projectId: input.projectId } }),
-              tx.projectSearchBinding.findMany({ include: { searchOption: { select: { id: true, optionId: true } } }, where: { projectId: input.projectId } }),
-              tx.projectKnowledgeBaseBinding.findMany({ select: { knowledgeBaseId: true }, where: { projectId: input.projectId } }),
-              tx.projectAssistantBinding.findMany({ select: { assistantId: true }, where: { projectId: input.projectId } }),
-              tx.projectMcpBinding.count({ where: { projectId: input.projectId } })
-            ]);
-            const modelIds = new Set(models.map(({ providerModelId }) => providerModelId));
-            const searchIds = new Set(searches.flatMap(({ searchOption }) => [searchOption.id, searchOption.optionId]));
-            const knowledgeIds = new Set(knowledge.map(({ knowledgeBaseId }) => knowledgeBaseId));
-            const assistantIds = new Set(assistants.map(({ assistantId }) => assistantId));
+            const authority = await tx.project.findUnique({
+              include: projectDetailInclude,
+              where: { id: input.projectId }
+            });
+            if (!authority) return { kind: "not_found" as const };
+            const activeResources = resources(authority);
+            const modelIds = new Set(activeResources.flatMap((resource) =>
+              resource.type === "model" ? [resource.resourceId] : []
+            ));
+            const searchIds = new Set(activeResources.flatMap((resource) =>
+              resource.type === "search" ? [resource.resourceId] : []
+            ));
+            const knowledgeIds = new Set(activeResources.flatMap((resource) =>
+              resource.type === "knowledge" ? [resource.resourceId] : []
+            ));
+            const assistantIds = new Set(activeResources.flatMap((resource) =>
+              resource.type === "assistant" ? [resource.resourceId] : []
+            ));
+            const hasMcp = activeResources.some((resource) => resource.type === "mcp");
             if (
               (input.defaults.providerModelId !== null && !modelIds.has(input.defaults.providerModelId)) ||
               input.defaults.knowledgePlan.baseIds.some((id) => !knowledgeIds.has(id)) ||
               input.defaults.searchPlan.optionIds.some((id) => !searchIds.has(id)) ||
               (input.defaults.assistantId !== null && !assistantIds.has(input.defaults.assistantId)) ||
-              (input.defaults.mcpMode !== "off" && mcpServers === 0)
+              (input.defaults.mcpMode !== "off" && !hasMcp)
             ) return { kind: "conflict" as const, reason: "project_default_resource_unavailable" };
           }
           const effectivePolicy = input.policy ?? storedPolicy(current.policy);
@@ -521,7 +2032,10 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
             data.name = input.name;
             events.push({ eventType: "project_renamed" });
           }
-          if (input.description !== undefined) data.description = input.description;
+          if (input.description !== undefined && input.description !== current.description) {
+            data.description = input.description;
+            events.push({ eventType: "project_description_updated" });
+          }
           if (input.instructions !== undefined && input.instructions !== current.instructions) {
             data.instructions = input.instructions;
             data.instructionsRevision = { increment: 1 };
@@ -578,6 +2092,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           return { kind: "ok" as const };
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
         if (changed.kind !== "ok") return changed;
+        notifyProjectEvent(input.projectId);
         const value = await getDetail(input.userId, input.projectId);
         return value ? { kind: "ok", value } : { kind: "not_found" };
       } catch (error) {
@@ -601,7 +2116,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       targetUserId?: string;
     }): Promise<ProjectRepositoryResult<ProjectGrantWire>> {
       try {
-        return await prisma.$transaction(async (tx) => {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             minimumRole: "MANAGER",
@@ -618,10 +2133,10 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           }
           if (input.targetUserId) {
             const target = await tx.user.findFirst({ where: { id: input.targetUserId, status: "active" } });
-            if (!target) return { kind: "not_found" as const };
+            if (!target) return { kind: "target_not_found" as const, reason: "project_user_not_found" };
           } else if (input.groupId) {
             const target = await tx.group.findFirst({ where: { archivedAt: null, id: input.groupId } });
-            if (!target) return { kind: "not_found" as const };
+            if (!target) return { kind: "target_not_found" as const, reason: "project_group_not_found" };
           } else {
             return { kind: "conflict" as const, reason: "grant_subject_invalid" };
           }
@@ -640,15 +2155,12 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
               actorDisplayName: input.actorDisplayName,
               actorUserId: input.userId,
               eventType: input.groupId ? "group_grant_added" : "user_grant_added",
-              metadata: {
-                role: input.role,
-                subjectId: input.groupId ?? input.targetUserId ?? null
-              },
+              metadata: { role: input.role },
               projectId: input.projectId
             })
           });
           return { kind: "ok" as const, value: grantWire(created) };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "grant_conflict" };
         throw error;
@@ -664,7 +2176,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       userId: string;
     }): Promise<ProjectRepositoryResult<ProjectGrantWire>> {
       try {
-        return await prisma.$transaction(async (tx) => {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             minimumRole: "MANAGER",
@@ -679,7 +2191,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           const current = await tx.projectGrant.findFirst({
             where: { id: input.grantId, projectId: input.projectId }
           });
-          if (!current) return { kind: "not_found" as const };
+          if (!current) return { kind: "target_not_found" as const, reason: "project_grant_not_found" };
           if (!canManageGrant(access.effectiveRole, current.role, input.role) || (current.groupId && input.role === "OWNER")) {
             return { kind: "conflict" as const, reason: "grant_role_not_permitted" };
           }
@@ -704,16 +2216,69 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
               actorDisplayName: input.actorDisplayName,
               actorUserId: input.userId,
               eventType: current.groupId ? "group_grant_changed" : "user_grant_changed",
-              metadata: { fromRole: current.role, grantId: current.id, toRole: input.role },
+              metadata: { fromRole: current.role, toRole: input.role },
               projectId: input.projectId
             })
           });
           return { kind: "ok" as const, value: grantWire(updated) };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "grant_conflict" };
         throw error;
       }
+    },
+
+    async previewGrantRemoval(input: Readonly<{
+      expectedAccessRevision: number;
+      grantId: string;
+      projectId: string;
+      userId: string;
+    }>): Promise<ProjectRepositoryResult<ProjectGrantRemovalPreviewWire>> {
+      return prisma.$transaction(async (tx) => {
+        await lockProject(tx, input.projectId);
+        const access = await resolveProjectAccess(tx, {
+          minimumRole: "MANAGER",
+          projectId: input.projectId,
+          requireActive: true,
+          userId: input.userId
+        });
+        if (!access) return { kind: "not_found" as const };
+        if (access.accessRevision !== input.expectedAccessRevision) {
+          return { kind: "conflict" as const, reason: "access_revision_conflict" };
+        }
+        const impact = await grantRemovalImpact(tx, input.projectId, input.grantId);
+        if (!impact) return { kind: "target_not_found" as const, reason: "project_grant_not_found" };
+        if (!canManageGrant(access.effectiveRole, impact.grant.role, null)) {
+          return { kind: "conflict" as const, reason: "grant_role_not_permitted" };
+        }
+        let reason: string | null = null;
+        if (impact.grant.role === "OWNER") {
+          const ownerCount = await tx.projectGrant.count({
+            where: {
+              projectId: input.projectId,
+              role: "OWNER",
+              user: { status: "active" },
+              userId: { not: null }
+            }
+          });
+          if (ownerCount <= 1) reason = "last_owner_required";
+        }
+        return {
+          kind: "ok" as const,
+          value: {
+            accessRevision: access.accessRevision,
+            canCommit: reason === null,
+            grant: {
+              label: impact.label,
+              role: impact.grant.role,
+              type: impact.grant.groupId ? "group" : "user"
+            },
+            losesAccessCount: impact.losesAccessCount,
+            reason,
+            roleChangeCount: impact.roleChangeCount
+          }
+        };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     },
 
     async removeGrant(input: {
@@ -724,7 +2289,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       userId: string;
     }): Promise<ProjectRepositoryResult<{ id: string }>> {
       try {
-        return await prisma.$transaction(async (tx) => {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             minimumRole: "MANAGER",
@@ -739,7 +2304,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           const current = await tx.projectGrant.findFirst({
             where: { id: input.grantId, projectId: input.projectId }
           });
-          if (!current) return { kind: "not_found" as const };
+          if (!current) return { kind: "target_not_found" as const, reason: "project_grant_not_found" };
           if (!canManageGrant(access.effectiveRole, current.role, null)) {
             return { kind: "conflict" as const, reason: "grant_role_not_permitted" };
           }
@@ -760,12 +2325,60 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
               actorDisplayName: input.actorDisplayName,
               actorUserId: input.userId,
               eventType: current.groupId ? "group_grant_removed" : "user_grant_removed",
-              metadata: { grantId: current.id, role: current.role },
+              metadata: { role: current.role },
               projectId: input.projectId
             })
           });
           return { kind: "ok" as const, value: { id: current.id } };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+      } catch (error) {
+        if (knownConflict(error)) return { kind: "conflict", reason: "grant_conflict" };
+        throw error;
+      }
+    },
+
+    async leave(input: Readonly<{
+      actorDisplayName: string;
+      expectedAccessRevision: number;
+      projectId: string;
+      userId: string;
+    }>): Promise<ProjectRepositoryResult<{ accessRemaining: boolean }>> {
+      try {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
+          await lockProject(tx, input.projectId);
+          const access = await resolveProjectAccess(tx, {
+            minimumRole: "VIEWER",
+            projectId: input.projectId,
+            userId: input.userId
+          });
+          if (!access) return { kind: "not_found" as const };
+          if (access.accessRevision !== input.expectedAccessRevision) {
+            return { kind: "conflict" as const, reason: "access_revision_conflict" };
+          }
+          const direct = await tx.projectGrant.findFirst({
+            where: { projectId: input.projectId, userId: input.userId }
+          });
+          if (!direct) {
+            return { kind: "conflict" as const, reason: "project_direct_access_not_found" };
+          }
+          if (direct.role === "OWNER") {
+            return { kind: "conflict" as const, reason: "project_owner_cannot_leave" };
+          }
+          await tx.projectGrant.delete({ where: { id: direct.id } });
+          await tx.projectAuditEvent.create({
+            data: audit({
+              actorDisplayName: input.actorDisplayName,
+              actorUserId: input.userId,
+              eventType: "user_left_project",
+              metadata: { role: direct.role },
+              projectId: input.projectId
+            })
+          });
+          return {
+            kind: "ok" as const,
+            value: { accessRemaining: access.groupGrants.length > 0 }
+          };
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "grant_conflict" };
         throw error;
@@ -775,6 +2388,83 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
     async listResources(userId: string, projectId: string): Promise<ProjectResourceWire[] | null> {
       const value = await getDetail(userId, projectId);
       return value ? [...value.resources] : null;
+    },
+
+    async previewResourceChange(input: Readonly<{
+      action: "add" | "remove";
+      bindingId?: string;
+      expectedPolicyRevision: number;
+      projectId: string;
+      resourceId?: string;
+      type?: ProjectResourceTypeWire;
+      userId: string;
+    }>): Promise<ProjectRepositoryResult<ProjectResourceChangePreviewWire>> {
+      return prisma.$transaction(async (tx) => {
+        await lockProject(tx, input.projectId);
+        const access = await resolveProjectAccess(tx, {
+          minimumRole: "MANAGER",
+          projectId: input.projectId,
+          requireActive: true,
+          userId: input.userId
+        });
+        if (!access) return { kind: "not_found" as const };
+        if (access.policyRevision !== input.expectedPolicyRevision) {
+          return { kind: "conflict" as const, reason: "policy_revision_conflict" };
+        }
+        if (input.action === "add") {
+          if (input.type !== "assistant" || !input.resourceId) {
+            return { kind: "unavailable" as const, reason: "project_resource_preview_unsupported" };
+          }
+          const plan = await assistantResourcePlan(tx, {
+            projectId: input.projectId,
+            resourceId: input.resourceId,
+            userId: input.userId
+          });
+          if (!plan) return { kind: "unavailable" as const, reason: "project_assistant_unavailable" };
+          return {
+            kind: "ok" as const,
+            value: {
+              action: "add",
+              canCommit: plan.canCommit,
+              consequences: {
+                affectedChatCount: 0,
+                clearedDefaults: [],
+                dependentAssistants: []
+              },
+              dependencies: plan.dependencies,
+              policyRevision: access.policyRevision,
+              resource: { label: plan.revision.name, type: "assistant" },
+              revisionId: plan.revision.id
+            }
+          };
+        }
+        if (!input.bindingId) {
+          return { kind: "target_not_found" as const, reason: "project_resource_not_found" };
+        }
+        const resource = await resolveBoundProjectResource(tx, input.projectId, input.bindingId);
+        if (!resource) return { kind: "target_not_found" as const, reason: "project_resource_not_found" };
+        const consequences = await resourceRemovalConsequences(tx, {
+          projectId: input.projectId,
+          resource
+        });
+        if (!consequences) return { kind: "conflict" as const, reason: "project_defaults_invalid" };
+        return {
+          kind: "ok" as const,
+          value: {
+            action: "remove",
+            canCommit: true,
+            consequences: {
+              affectedChatCount: consequences.affectedChatCount,
+              clearedDefaults: consequences.clearedDefaults,
+              dependentAssistants: consequences.dependentAssistants
+            },
+            dependencies: [],
+            policyRevision: access.policyRevision,
+            resource: { label: resource.label, type: resource.type },
+            revisionId: null
+          }
+        };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     },
 
     async addResource(input: {
@@ -801,15 +2491,8 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           }
           let eventType = "resource_attached";
           if (input.type === "model") {
-            const target = await tx.providerModel.findFirst({
-              select: { connectionId: true, id: true },
-              where: { enabled: true, id: input.resourceId, modelClass: "answer" }
-            });
-            if (!target) return { kind: "not_found" as const };
-            const entitlements = await loadEntitlementsForUser(input.userId, tx);
-            if (!canAccessModel(entitlements, target.connectionId, target.id)) {
-              return { kind: "not_found" as const };
-            }
+            const target = (await eligibleProjectModels(tx)).find((model) => model.id === input.resourceId);
+            if (!target) return { kind: "unavailable" as const, reason: "project_model_unavailable" };
             await tx.projectModelBinding.create({
               data: { addedByUserId: input.userId, projectId: input.projectId, providerModelId: input.resourceId }
             });
@@ -818,81 +2501,163 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
               select: { id: true, optionId: true },
               where: {
                 archivedAt: null,
+                availableInProjects: true,
                 enabled: true,
-                OR: [{ id: input.resourceId }, { optionId: input.resourceId }]
+                AND: [{ OR: [{ id: input.resourceId }, { optionId: input.resourceId }] }],
+                sourceConnection: {
+                  is: {
+                    activeConfig: { not: Prisma.DbNull },
+                    activeVersion: { gt: 0 },
+                    enabled: true,
+                    OR: [
+                      { family: "fake" },
+                      {
+                        defaultCredential: {
+                          enabled: true,
+                          activeVersion: { is: { revokedAt: null } }
+                        }
+                      }
+                    ]
+                  }
+                },
+                strategies: {
+                  some: { activeRevisionId: { not: null }, archivedAt: null, enabled: true }
+                }
               }
             });
-            if (!target) return { kind: "not_found" as const };
-            const entitlements = await loadEntitlementsForUser(input.userId, tx);
-            if (!canAccessSearchStrategy(entitlements, target.optionId)) {
-              return { kind: "not_found" as const };
-            }
+            if (!target) return { kind: "unavailable" as const, reason: "project_search_unavailable" };
             await tx.projectSearchBinding.create({
               data: { addedByUserId: input.userId, projectId: input.projectId, searchOptionId: target.id }
             });
           } else if (input.type === "mcp") {
             const target = await tx.mcpServer.findFirst({
-              where: { activeRevisionId: { not: null }, archivedAt: null, enabled: true, id: input.resourceId }
-            });
-            if (!target) return { kind: "not_found" as const };
-            const memberships = await tx.userGroup.findMany({
-              select: { groupId: true },
-              where: { group: { archivedAt: null }, userId: input.userId }
-            });
-            const groupIds = memberships.map(({ groupId }) => groupId);
-            const grants = await tx.mcpGrant.findMany({
-              select: { canUse: true, groupId: true, personalSlotKeys: true, userId: true },
+              select: { activeRevisionId: true, availableInProjects: true, enabled: true, id: true, sharedConfigEnvelope: true },
               where: {
-                OR: [
-                  { userId: input.userId },
-                  ...(groupIds.length > 0 ? [{ groupId: { in: groupIds } }] : [])
-                ],
-                serverId: input.resourceId
+                activeRevisionId: { not: null },
+                archivedAt: null,
+                availableInProjects: true,
+                enabled: true,
+                id: input.resourceId
               }
             });
-            const mcpAccess = resolveEffectiveMcpGrant({
-              direct: grants.find((grant) => grant.userId === input.userId) ?? null,
-              groups: grants.filter((grant) => grant.groupId !== null)
-            });
-            if (!mcpAccess.canUse) return { kind: "not_found" as const };
+            if (!target) return { kind: "unavailable" as const, reason: "project_mcp_unavailable" };
+            // A Project MCP binding is only valid with a shared envelope or a
+            // no-auth active configuration. Personal grants/slots are never a
+            // delegation source.
+            if (!target.sharedConfigEnvelope) {
+              const revision = await tx.mcpRevision.findFirst({
+                select: { configuration: true },
+                where: { id: target.activeRevisionId! }
+              });
+              if (!revision || !mcpRevisionUsesNoAuth(revision.configuration)) {
+                return { kind: "unavailable" as const, reason: "project_mcp_shared_configuration_required" };
+              }
+            }
             await tx.projectMcpBinding.create({
               data: { addedByUserId: input.userId, projectId: input.projectId, serverId: input.resourceId }
             });
           } else if (input.type === "knowledge") {
             const target = await tx.knowledgeBase.findFirst({
-              where: {
-                archivedAt: null,
-                id: input.resourceId,
-                OR: [
-                  { ownerUserId: input.userId },
-                  {
-                    publications: {
-                      some: {
-                        OR: [
-                          { scope: "installation" },
-                          ...(await tx.userGroup.findMany({
-                            select: { groupId: true },
-                            where: { group: { archivedAt: null }, userId: input.userId }
-                          })).map(({ groupId }) => ({ groupId, scope: "group" as const }))
-                        ]
+              include: {
+                activeIndexGeneration: {
+                  include: {
+                    embeddingProviderModel: {
+                      include: {
+                        connection: {
+                          include: { defaultCredential: { include: { activeVersion: true } } }
+                        }
                       }
                     }
                   }
-                ]
+                }
+              },
+              where: {
+                archivedAt: null,
+                id: input.resourceId,
+                ownerUserId: input.userId
               }
             });
-            if (!target) return { kind: "not_found" as const };
+            const generation = target?.activeIndexGeneration;
+            const embedding = generation?.embeddingProviderModel;
+            const connection = embedding?.connection;
+            if (!target || generation?.status !== "active" || !embedding || !connection ||
+              !embedding.enabled || embedding.modelClass !== "embedding" ||
+              embedding.activeConfig === null || embedding.activeVersion <= 0 ||
+              !embedding.availableInProjects || connection.family === "fake" ||
+              !connection.enabled || connection.activeConfig === null || connection.activeVersion <= 0 || !(
+                connection.defaultCredential?.enabled &&
+                connection.defaultCredential.activeVersion?.revokedAt === null
+              )) {
+              return { kind: "unavailable" as const, reason: "project_knowledge_unavailable" };
+            }
             await tx.projectKnowledgeBaseBinding.create({
               data: { addedByUserId: input.userId, knowledgeBaseId: input.resourceId, projectId: input.projectId }
             });
+          } else if (input.type === "skill") {
+            const target = await tx.skillDefinition.findFirst({
+              where: {
+                archivedAt: null,
+                currentRevisionId: { not: null },
+                deletedAt: null,
+                id: input.resourceId,
+                ownerUserId: input.userId
+              }
+            });
+            if (!target) return { kind: "unavailable" as const, reason: "project_skill_unavailable" };
+            await tx.projectSkillBinding.create({
+              data: { addedByUserId: input.userId, projectId: input.projectId, skillId: target.id }
+            });
           } else {
-            const resolution = await createPrismaAssistantRepository(
-              tx as unknown as PrismaClient
-            ).resolveForRun(input.userId, input.resourceId);
-            if (!resolution.ok || (input.revisionId && input.revisionId !== resolution.assistant.revisionId)) {
-              return { kind: "not_found" as const };
+            const plan = await assistantResourcePlan(tx, input);
+            if (!plan || (input.revisionId && input.revisionId !== plan.revision.id)) {
+              return { kind: "unavailable" as const, reason: "project_assistant_unavailable" };
             }
-            const revisionId = resolution.assistant.revisionId;
+            if (!plan.canCommit) {
+              return { kind: "unavailable" as const, reason: "project_assistant_dependency_unavailable" };
+            }
+            // Preview and commit share this exact plan. The serializable
+            // transaction plus policy/revision checks makes Assistant and all
+            // newly delegated dependencies one atomic publication.
+            const { knowledgeBases, mcpServers, revision, searchOptions, skills } = plan;
+
+            await tx.projectModelBinding.createMany({
+              data: [{ addedByUserId: input.userId, projectId: input.projectId, providerModelId: revision.providerModelId }],
+              skipDuplicates: true
+            });
+            if (searchOptions.length > 0) await tx.projectSearchBinding.createMany({
+              data: searchOptions.map((option) => ({
+                addedByUserId: input.userId,
+                projectId: input.projectId,
+                searchOptionId: option.id
+              })),
+              skipDuplicates: true
+            });
+            if (knowledgeBases.length > 0) await tx.projectKnowledgeBaseBinding.createMany({
+              data: knowledgeBases.map((base) => ({
+                addedByUserId: input.userId,
+                knowledgeBaseId: base.id,
+                projectId: input.projectId
+              })),
+              skipDuplicates: true
+            });
+            if (skills.length > 0) await tx.projectSkillBinding.createMany({
+              data: skills.map((skill) => ({
+                addedByUserId: input.userId,
+                projectId: input.projectId,
+                skillId: skill.id
+              })),
+              skipDuplicates: true
+            });
+            if (mcpServers.length > 0) await tx.projectMcpBinding.createMany({
+              data: mcpServers.map((server) => ({
+                addedByUserId: input.userId,
+                projectId: input.projectId,
+                serverId: server.id
+              })),
+              skipDuplicates: true
+            });
+
+            const revisionId = revision.id;
             const existing = await tx.projectAssistantBinding.findUnique({
               where: { projectId_assistantId: { assistantId: input.resourceId, projectId: input.projectId } }
             });
@@ -922,13 +2687,14 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
               actorDisplayName: input.actorDisplayName,
               actorUserId: input.userId,
               eventType,
-              metadata: { resourceId: input.resourceId, resourceType: input.type },
+              metadata: { resourceType: input.type },
               projectId: input.projectId
             })
           });
           return { kind: "ok" as const };
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
         if (outcome.kind !== "ok") return outcome;
+        notifyProjectEvent(input.projectId);
         const values = await this.listResources(input.userId, input.projectId);
         return values ? { kind: "ok", value: values } : { kind: "not_found" };
       } catch (error) {
@@ -945,7 +2711,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       userId: string;
     }): Promise<ProjectRepositoryResult<{ id: string }>> {
       try {
-        return await prisma.$transaction(async (tx) => {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             minimumRole: "MANAGER",
@@ -957,41 +2723,52 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           if (access.policyRevision !== input.expectedPolicyRevision) {
             return { kind: "conflict" as const, reason: "policy_revision_conflict" };
           }
-          let removed: { resourceId: string; type: ProjectResourceTypeWire } | null = null;
-          const prefixed = /^(model|search|mcp):(.+)$/.exec(input.bindingId);
-          if (prefixed?.[1] === "model") {
-            const result = await tx.projectModelBinding.deleteMany({
-              where: { projectId: input.projectId, providerModelId: prefixed[2] }
-            });
-            if (result.count) removed = { resourceId: prefixed[2], type: "model" };
-          } else if (prefixed?.[1] === "search") {
-            const result = await tx.projectSearchBinding.deleteMany({
-              where: { projectId: input.projectId, searchOptionId: prefixed[2] }
-            });
-            if (result.count) removed = { resourceId: prefixed[2], type: "search" };
-          } else if (prefixed?.[1] === "mcp") {
-            const result = await tx.projectMcpBinding.deleteMany({
-              where: { projectId: input.projectId, serverId: prefixed[2] }
-            });
-            if (result.count) removed = { resourceId: prefixed[2], type: "mcp" };
-          } else {
-            const knowledge = await tx.projectKnowledgeBaseBinding.findFirst({
-              where: { id: input.bindingId, projectId: input.projectId }
-            });
-            if (knowledge) {
-              await tx.projectKnowledgeBaseBinding.delete({ where: { id: knowledge.id } });
-              removed = { resourceId: knowledge.knowledgeBaseId, type: "knowledge" };
-            } else {
-              const assistant = await tx.projectAssistantBinding.findFirst({
-                where: { id: input.bindingId, projectId: input.projectId }
-              });
-              if (assistant) {
-                await tx.projectAssistantBinding.delete({ where: { id: assistant.id } });
-                removed = { resourceId: assistant.assistantId, type: "assistant" };
+          const removed = await resolveBoundProjectResource(tx, input.projectId, input.bindingId);
+          if (!removed) return { kind: "target_not_found" as const, reason: "project_resource_not_found" };
+          if (!await resourceRemovalConsequences(tx, {
+            projectId: input.projectId,
+            resource: removed
+          })) return { kind: "conflict" as const, reason: "project_defaults_invalid" };
+          if (removed.type === "model") {
+            await tx.projectModelBinding.delete({
+              where: {
+                projectId_providerModelId: {
+                  projectId: input.projectId,
+                  providerModelId: removed.storageId
+                }
               }
-            }
+            });
+          } else if (removed.type === "search") {
+            await tx.projectSearchBinding.delete({
+              where: {
+                projectId_searchOptionId: {
+                  projectId: input.projectId,
+                  searchOptionId: removed.storageId
+                }
+              }
+            });
+          } else if (removed.type === "mcp") {
+            await tx.projectMcpBinding.delete({
+              where: {
+                projectId_serverId: {
+                  projectId: input.projectId,
+                  serverId: removed.storageId
+                }
+              }
+            });
+          } else if (removed.type === "knowledge") {
+            await tx.projectKnowledgeBaseBinding.delete({ where: { id: removed.storageId } });
+          } else if (removed.type === "assistant") {
+            await tx.projectAssistantBinding.delete({ where: { id: removed.storageId } });
+          } else {
+            await tx.projectSkillBinding.delete({ where: { id: removed.storageId } });
           }
-          if (!removed) return { kind: "not_found" as const };
+          const consequences = await cleanupResourceReferences(tx, {
+            projectId: input.projectId,
+            resourceId: removed.resourceId,
+            type: removed.type
+          });
+          if (!consequences) throw new Error("project_resource_cleanup_invariant");
           await tx.project.update({
             data: { policyRevision: { increment: 1 } },
             where: { id: input.projectId }
@@ -1001,12 +2778,17 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
               actorDisplayName: input.actorDisplayName,
               actorUserId: input.userId,
               eventType: "resource_detached",
-              metadata: { resourceId: removed.resourceId, resourceType: removed.type },
+              metadata: {
+                affectedChatCount: consequences?.affectedChatCount ?? 0,
+                clearedDefaultCount: consequences?.clearedDefaults.length ?? 0,
+                dependentAssistantCount: consequences?.dependentAssistants.length ?? 0,
+                resourceType: removed.type
+              },
               projectId: input.projectId
             })
           });
           return { kind: "ok" as const, value: { id: input.bindingId } };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "resource_binding_conflict" };
         throw error;
@@ -1067,7 +2849,7 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
       userId: string;
     }): Promise<ProjectRepositoryResult<{ id: string }>> {
       try {
-        return await prisma.$transaction(async (tx) => {
+        return await publishProjectResult(input.projectId, prisma.$transaction(async (tx) => {
           await lockProject(tx, input.projectId);
           const access = await resolveProjectAccess(tx, {
             allowDeleting: true,
@@ -1114,11 +2896,117 @@ export function createPrismaProjectRepository(prisma: PrismaClient) {
           });
           await tx.project.delete({ where: { id: input.projectId } });
           return { kind: "ok" as const, value: { id: input.projectId } };
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
       } catch (error) {
         if (knownConflict(error)) return { kind: "conflict", reason: "project_delete_conflict" };
         throw error;
       }
     }
   };
+}
+
+/**
+ * Resource-owner revoke intentionally does not resolve Project membership or
+ * return Project metadata. Ownership of the private definition is sufficient
+ * to fence its future Project use; the same cleanup used by Manager unlink
+ * removes defaults and dependent Assistant publications atomically.
+ */
+export async function revokeOwnedProjectResourcePublication(
+  prisma: PrismaClient,
+  input: Readonly<{
+    bindingId: string;
+    resourceId: string;
+    type: "assistant" | "knowledge" | "skill";
+    userId: string;
+  }>
+): Promise<boolean> {
+  const initial = input.type === "knowledge"
+    ? await prisma.projectKnowledgeBaseBinding.findFirst({
+        select: { projectId: true },
+        where: {
+          id: input.bindingId,
+          knowledgeBaseId: input.resourceId,
+          knowledgeBase: { ownerUserId: input.userId }
+        }
+      })
+    : input.type === "assistant"
+      ? await prisma.projectAssistantBinding.findFirst({
+          select: { projectId: true },
+          where: {
+            assistant: { ownerUserId: input.userId },
+            assistantId: input.resourceId,
+            id: input.bindingId
+          }
+        })
+      : await prisma.projectSkillBinding.findFirst({
+          select: { projectId: true },
+          where: {
+            id: input.bindingId,
+            skill: { ownerUserId: input.userId },
+            skillId: input.resourceId
+          }
+        });
+  if (!initial) return false;
+  const removed = await prisma.$transaction(async (tx) => {
+    await lockProject(tx, initial.projectId);
+    const actor = await tx.user.findFirst({
+      select: { displayName: true },
+      where: { id: input.userId, status: "active" }
+    });
+    if (!actor) return false;
+    const count = input.type === "knowledge"
+      ? await tx.projectKnowledgeBaseBinding.deleteMany({
+          where: {
+            id: input.bindingId,
+            knowledgeBaseId: input.resourceId,
+            knowledgeBase: { ownerUserId: input.userId },
+            projectId: initial.projectId
+          }
+        })
+      : input.type === "assistant"
+        ? await tx.projectAssistantBinding.deleteMany({
+            where: {
+              assistant: { ownerUserId: input.userId },
+              assistantId: input.resourceId,
+              id: input.bindingId,
+              projectId: initial.projectId
+            }
+          })
+        : await tx.projectSkillBinding.deleteMany({
+            where: {
+              id: input.bindingId,
+              projectId: initial.projectId,
+              skill: { ownerUserId: input.userId },
+              skillId: input.resourceId
+            }
+          });
+    if (count.count !== 1) return false;
+    const consequences = await cleanupResourceReferences(tx, {
+      projectId: initial.projectId,
+      resourceId: input.resourceId,
+      type: input.type
+    });
+    if (!consequences) throw new Error("project_resource_cleanup_invariant");
+    await tx.project.update({
+      data: { policyRevision: { increment: 1 } },
+      where: { id: initial.projectId }
+    });
+    await tx.projectAuditEvent.create({
+      data: audit({
+        actorDisplayName: actor.displayName,
+        actorUserId: input.userId,
+        eventType: "resource_owner_revoked",
+        metadata: {
+          affectedChatCount: consequences?.affectedChatCount ?? 0,
+          clearedDefaultCount: consequences?.clearedDefaults.length ?? 0,
+          dependentAssistantCount: consequences?.dependentAssistants.length ?? 0,
+          resourceType: input.type
+        },
+        projectId: initial.projectId
+      })
+    });
+    return true;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  if (removed) notifyProjectEvent(initial.projectId);
+  return removed;
 }

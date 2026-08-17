@@ -26,11 +26,13 @@ export function AttachmentTrayV2({
   items,
   onRemove,
   onRetry,
+  sharedProject = false,
   usage
 }: Readonly<{
   items: readonly ComposerAttachmentItemV2[];
   onRemove?(id: string): void;
   onRetry?(id: string): void;
+  sharedProject?: boolean;
   usage?: AttachmentLimitUsage | null;
 }>) {
   if (items.length === 0) return null;
@@ -91,10 +93,10 @@ export function AttachmentTrayV2({
       {/* Privacy disclosure stays reachable as a quiet tooltip/AT note instead
           of a permanent line; the capability menu keeps the full sentence. */}
       <p
-        aria-label="Files are private and visible only to you."
+        aria-label={sharedProject ? "Files are visible to Project members." : "Files are private and visible only to you."}
         className="v2-attachment-privacy"
         role="note"
-        title="Files are private and visible only to you."
+        title={sharedProject ? "Files are visible to Project members." : "Files are private and visible only to you."}
       >
         <UiV2Icon name="lock" />
       </p>
